@@ -725,6 +725,43 @@ mod tests {
         slice
     }
 
+    /// A helper function to build a series of cumulative monotonic double data points from deltas.
+    /// Mimics the `buildMonotonicDoublePoints` helper in the Go tests.
+    fn build_monotonic_double_points(deltas: &[f64]) -> Vec<OtlpNumberDataPoint> {
+        let mut cumulative = Vec::with_capacity(deltas.len() + 1);
+        cumulative.push(0.0);
+        for (i, delta) in deltas.iter().enumerate() {
+            let next_val = cumulative[i] + delta;
+            cumulative.push(next_val);
+        }
+
+        let mut slice = Vec::with_capacity(cumulative.len());
+        for (i, val) in cumulative.iter().enumerate() {
+            slice.push(OtlpNumberDataPoint {
+                value: Some(OtlpNumberDataPointValue::AsDouble(*val)),
+                time_unix_nano: nanos_from_seconds((i * 10) as u64),
+                ..Default::default()
+            });
+        }
+        slice
+    }
+
+    /// A helper function to build a series of cumulative monotonic double data points that includes a reset.
+    /// Mimics the `buildMonotonicDoubleRebootPoints` helper in the Go tests.
+    fn build_monotonic_double_reboot_points() -> Vec<OtlpNumberDataPoint> {
+        let values = [0.0, 30.0, 0.0, 20.0];
+        let mut slice = Vec::with_capacity(values.len());
+
+        for (i, val) in values.iter().enumerate() {
+            slice.push(OtlpNumberDataPoint {
+                value: Some(OtlpNumberDataPointValue::AsDouble(*val)),
+                time_unix_nano: nanos_from_seconds((i * 10) as u64),
+                ..Default::default()
+            });
+        }
+        slice
+    }
+
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L296
     #[test]
     fn test_map_int_monotonic_metrics() {
@@ -1307,6 +1344,192 @@ mod tests {
                 Some(&Tag::from("attribute_tag:attribute_value"))
             );
             assert_eq!(metric.values(), &MetricValues::gauge((ts_s, std::f64::consts::PI)));
+        }
+    }
+
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L1456
+    #[test]
+    fn test_map_double_monotonic_metrics() {
+        let metrics = build_metrics();
+        let deltas = vec![1.0, 2.0, 200.0, 3.0, 7.0, 0.0];
+
+        // Test Case 1: "diff" mode
+        {
+            let context_resolver = ContextResolverBuilder::for_tests().build();
+            let mut translator = OtlpTranslator::new(Default::default(), context_resolver);
+            let slice = build_monotonic_double_points(&deltas);
+            let dims = Dimensions {
+                name: "metric.example".to_string(),
+                ..Default::default()
+            };
+
+            let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+            assert_eq!(events.len(), deltas.len());
+
+            for (i, event) in events.iter().enumerate() {
+                let metric = event.try_as_metric().unwrap();
+                assert_eq!(
+                    metric.values(),
+                    &MetricValues::counter((((i + 1) * 10) as u64, deltas[i]))
+                );
+            }
+        }
+
+        // Test Case 2: "rate" mode
+        {
+            let context_resolver = ContextResolverBuilder::for_tests().build();
+            let mut translator = OtlpTranslator::new(Default::default(), context_resolver);
+            let slice = build_monotonic_double_points(&deltas);
+            let dims = Dimensions {
+                name: "kafka.net.bytes_out.rate".to_string(),
+                ..Default::default()
+            };
+
+            let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+            assert_eq!(events.len(), deltas.len());
+
+            for (i, event) in events.iter().enumerate() {
+                let metric = event.try_as_metric().unwrap();
+                assert_eq!(
+                    metric.values(),
+                    &MetricValues::gauge((((i + 1) * 10) as u64, deltas[i] / 10.0),)
+                );
+            }
+        }
+    }
+
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L1493
+    #[test]
+    fn test_map_double_monotonic_different_dimensions() {
+        let metrics = build_metrics();
+        let context_resolver = ContextResolverBuilder::for_tests().build();
+        let mut translator = OtlpTranslator::new(Default::default(), context_resolver);
+
+        let mut slice = Vec::new();
+
+        // Series with no tags
+        slice.push(OtlpNumberDataPoint {
+            time_unix_nano: nanos_from_seconds(0),
+            ..Default::default()
+        });
+        slice.push(OtlpNumberDataPoint {
+            value: Some(OtlpNumberDataPointValue::AsDouble(20.0)),
+            time_unix_nano: nanos_from_seconds(1),
+            ..Default::default()
+        });
+
+        // Series with tag key1:valA
+        let attributes_a = vec![OtlpKeyValue {
+            key: "key1".to_string(),
+            value: Some(otlp_protos::opentelemetry::proto::common::v1::AnyValue {
+                value: Some(
+                    otlp_protos::opentelemetry::proto::common::v1::any_value::Value::StringValue("valA".to_string()),
+                ),
+            }),
+        }];
+        slice.push(OtlpNumberDataPoint {
+            time_unix_nano: nanos_from_seconds(0),
+            attributes: attributes_a.clone(),
+            ..Default::default()
+        });
+        slice.push(OtlpNumberDataPoint {
+            value: Some(OtlpNumberDataPointValue::AsDouble(30.0)),
+            time_unix_nano: nanos_from_seconds(1),
+            attributes: attributes_a,
+            ..Default::default()
+        });
+
+        // Series with tag key1:valB
+        let attributes_b = vec![OtlpKeyValue {
+            key: "key1".to_string(),
+            value: Some(otlp_protos::opentelemetry::proto::common::v1::AnyValue {
+                value: Some(
+                    otlp_protos::opentelemetry::proto::common::v1::any_value::Value::StringValue("valB".to_string()),
+                ),
+            }),
+        }];
+        slice.push(OtlpNumberDataPoint {
+            time_unix_nano: nanos_from_seconds(0),
+            attributes: attributes_b.clone(),
+            ..Default::default()
+        });
+        slice.push(OtlpNumberDataPoint {
+            value: Some(OtlpNumberDataPointValue::AsDouble(40.0)),
+            time_unix_nano: nanos_from_seconds(1),
+            attributes: attributes_b,
+            ..Default::default()
+        });
+
+        let dims = Dimensions {
+            name: "metric.example".to_string(),
+            ..Default::default()
+        };
+        let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+        assert_eq!(events.len(), 3);
+
+        assert_eq!(
+            events[0].try_as_metric().unwrap().values(),
+            &MetricValues::counter((1, 20.0))
+        );
+        let metric2 = events[1].try_as_metric().unwrap();
+        assert_eq!(
+            metric2.context().tags().get_single_tag("key1"),
+            Some(&Tag::from("key1:valA"))
+        );
+        assert_eq!(metric2.values(), &MetricValues::counter((1, 30.0)));
+        let metric3 = events[2].try_as_metric().unwrap();
+        assert_eq!(
+            metric3.context().tags().get_single_tag("key1"),
+            Some(&Tag::from("key1:valB"))
+        );
+        assert_eq!(metric3.values(), &MetricValues::counter((1, 40.0)));
+    }
+
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L1555
+    #[test]
+    fn test_map_double_monotonic_with_reboot_within_slice() {
+        let metrics = build_metrics();
+
+        {
+            let context_resolver = ContextResolverBuilder::for_tests().build();
+            let mut translator = OtlpTranslator::new(Default::default(), context_resolver);
+            let slice = build_monotonic_double_reboot_points();
+            let dims = Dimensions {
+                name: "metric.example".to_string(),
+                ..Default::default()
+            };
+
+            let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+            assert_eq!(events.len(), 2);
+            assert_eq!(
+                events[0].try_as_metric().unwrap().values(),
+                &MetricValues::counter((10, 30.0))
+            );
+            assert_eq!(
+                events[1].try_as_metric().unwrap().values(),
+                &MetricValues::counter((30, 20.0))
+            );
+        }
+
+        {
+            let context_resolver = ContextResolverBuilder::for_tests().build();
+            let mut translator = OtlpTranslator::new(Default::default(), context_resolver);
+            let slice = build_monotonic_double_reboot_points();
+            let dims = Dimensions {
+                name: "kafka.net.bytes_out.rate".to_string(),
+                ..Default::default()
+            };
+
+            let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+            assert_eq!(events.len(), 2);
+            assert_eq!(
+                events[0].try_as_metric().unwrap().values(),
+                &MetricValues::gauge((10, 3.0))
+            );
+            assert_eq!(
+                events[1].try_as_metric().unwrap().values(),
+                &MetricValues::gauge((30, 2.0))
+            );
         }
     }
 }
