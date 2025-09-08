@@ -15,7 +15,7 @@ use saluki_context::ContextResolver;
 use saluki_core::data_model::event::metric::{Metric, MetricMetadata, MetricValues};
 use saluki_core::data_model::event::Event;
 use saluki_error::GenericError;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use super::super::attributes::source::{Source, SourceKind};
 use super::super::attributes::translator::AttributeTranslator;
@@ -338,7 +338,7 @@ impl OtlpTranslator {
             let point_dims = base_dims.with_attribute_map(&dp.attributes);
             let value = get_number_data_point_value(dp);
             if is_skippable(value) {
-                warn!(
+                debug!(
                     metric_name = point_dims.name,
                     value, "Skipping metric with unsupported value (NaN or Infinity)."
                 );
@@ -351,10 +351,10 @@ impl OtlpTranslator {
                         .monotonic_rate(&point_dims, dp.start_time_unix_nano, dp.time_unix_nano, value);
 
                 if should_drop_point {
-                    warn!(
-                        metric_name = point_dims.name,
-                        "Dropping cumulative monotonic data point (rate) due to reset or out-of-order timestamp."
-                    );
+                    // debug!(
+                    //     metric_name = point_dims.name,
+                    //     "Dropping cumulative monotonic data point (rate) due to reset or out-of-order timestamp."
+                    // );
                     continue;
                 }
 
@@ -377,7 +377,7 @@ impl OtlpTranslator {
                     .monotonic_diff(&point_dims, dp.start_time_unix_nano, dp.time_unix_nano, value);
 
             if should_drop_point {
-                // warn!(
+                // debug!(
                 //     metric_name = point_dims.name,
                 //     "Dropping cumulative monotonic data point due to reset or out-of-order timestamp."
                 // );
