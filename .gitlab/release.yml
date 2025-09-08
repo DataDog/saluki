@@ -33,8 +33,7 @@
     - mkdir -p /tmp/tarball/opt/datadog /tmp/tarball/opt/datadog-agent/embedded/bin
     - cp /tmp/image/usr/local/bin/agent-data-plane /tmp/tarball/opt/datadog-agent/embedded/bin
     - cp -R /tmp/image/opt/datadog/agent-data-plane /tmp/tarball/opt/datadog/agent-data-plane
-    - tar -C /tmp/tarball -czf /tmp/agent-data-plane-${IMAGE_VERSION}-${TARGET_OS}-${TARGET_ARCH}.tar.gz .
-    - ls -l /tmp
+    - tar -C /tmp/tarball -czf /tmp/agent-data-plane-${SOURCE_IMAGE_VERSION}-${TARGET_OS}-${TARGET_ARCH}.tar.gz .
     - aws s3 cp /tmp/agent-data-plane-${SOURCE_IMAGE_VERSION}-${TARGET_OS}-${TARGET_ARCH}.tar.gz ${TARGET_BUCKET_PATH}
 
 # Publish our standalone ADP images,
