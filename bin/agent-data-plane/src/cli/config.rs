@@ -1,37 +1,24 @@
 use saluki_common::scrubber;
 use tracing::{error, info};
 
-/// Handles the config subcommand.
+use crate::cli::utils::APIClient;
+
+/// Entrypoint for the `config` subcommand.
 pub async fn handle_config_command() {
-    let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .build()
-        .unwrap();
-
-    get_config(client).await;
-}
-
-/// Gets the current configuration.
-async fn get_config(client: reqwest::Client) {
-    let response = match client.get("https://localhost:5101/config").send().await {
-        Ok(resp) => resp,
+    let api_client = APIClient::new();
+    let response_body = match api_client.config().await {
+        Ok(body) => body,
         Err(e) => {
-            error!("Failed to send request: {}.", e);
+            error!("Failed to get configuration: {}.", e);
             std::process::exit(1);
         }
     };
 
-    if response.status().is_success() {
-        let bytes = response.bytes().await.unwrap_or_default();
+    let scrubber = scrubber::default_scrubber();
+    let scrubbed_bytes = scrubber.scrub_bytes(response_body.as_bytes());
 
-        let scrubber = scrubber::default_scrubber();
-        let scrubbed_bytes = scrubber.scrub_bytes(&bytes);
+    let yaml_value: serde_yaml::Value = serde_yaml::from_slice(&scrubbed_bytes).unwrap();
+    let yaml = serde_yaml::to_string(&yaml_value).unwrap_or_default();
 
-        let yaml_value: serde_yaml::Value = serde_yaml::from_slice(&scrubbed_bytes).unwrap();
-        let yaml = serde_yaml::to_string(&yaml_value).unwrap_or_default();
-
-        info!("\n{}", yaml);
-    } else {
-        error!("Failed to retrieve config: {}.", response.status());
-    }
+    info!("\n{}", yaml);
 }
