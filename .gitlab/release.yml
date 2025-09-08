@@ -21,6 +21,21 @@
     IMG_DESTINATIONS: ${TARGET_IMAGE}
     IMG_SIGNING: "false"
 
+.push-release-tarball-definition:
+  stage: release
+  image: ${DOCKER_BUILD_IMAGE}
+  variables:
+    TARGET_BUCKET_PATH: "s3://binaries-ddbuild-io-prod/saluki/"
+  script:
+    - apt-get update && DEBIAN_FRONTEND=noninteractive apt install -yy --no-install-recommends awscli >/dev/null
+    - mkdir /tmp/image && mkdir /tmp/tarball
+    - crane export ${SOURCE_IMAGE} - --platform ${TARGET_OS}/${TARGET_ARCH} | tar -C /tmp/image -xf -
+    - mkdir -p /tmp/tarball/opt/datadog /tmp/tarball/opt/datadog-agent/embedded/bin
+    - cp /tmp/image/usr/local/bin/agent-data-plane /tmp/tarball/opt/datadog-agent/embedded/bin
+    - cp -R /tmp/image/opt/datadog/agent-data-plane /tmp/tarball/opt/datadog/agent-data-plane
+    - tar -C /tmp/tarball -czf /tmp/agent-data-plane-${IMAGE_VERSION}-${TARGET_OS}-${TARGET_ARCH}.tar.gz .
+    - aws s3 cp /tmp/agent-data-plane-${SOURCE_IMAGE_VERSION}-${TARGET_OS}-${TARGET_ARCH}.tar.gz ${TARGET_BUCKET_PATH}
+
 # Publish our standalone ADP images,
 publish-standalone-adp-image-linux:
   extends: [.build-common-variables, .publish-image-linux-definition]
@@ -37,3 +52,43 @@ publish-standalone-adp-image-linux-fips:
   variables:
     SOURCE_IMAGE: ${ADP_FULL_IMAGE_TAG_FIPS}
     TARGET_IMAGE: ${ADP_IMAGE_TAG_FIPS}
+
+push-release-tarball-linux-amd64:
+  extends: [.build-common-variables, .push-release-tarball-definition]
+  needs:
+    - build-adp-image
+  variables:
+    TARGET_OS: "linux"
+    TARGET_ARCH: "amd64"
+    SOURCE_IMAGE: ${ADP_FULL_IMAGE_TAG}
+    SOURCE_IMAGE_VERSION: ${ADP_IMAGE_VERSION}
+
+push-release-tarball-linux-arm64:
+  extends: [.build-common-variables, .push-release-tarball-definition]
+  needs:
+    - build-adp-image
+  variables:
+    TARGET_OS: "linux"
+    TARGET_ARCH: "arm64"
+    SOURCE_IMAGE: ${ADP_FULL_IMAGE_TAG}
+    SOURCE_IMAGE_VERSION: ${ADP_IMAGE_VERSION}
+
+push-release-tarball-linux-amd64-fips:
+  extends: [.build-common-variables, .push-release-tarball-definition]
+  needs:
+    - build-adp-image
+  variables:
+    TARGET_OS: "linux"
+    TARGET_ARCH: "amd64"
+    SOURCE_IMAGE: ${ADP_FULL_IMAGE_TAG_FIPS}
+    SOURCE_IMAGE_VERSION: ${ADP_IMAGE_VERSION_FIPS}
+
+push-release-tarball-linux-arm64-fips:
+  extends: [.build-common-variables, .push-release-tarball-definition]
+  needs:
+    - build-adp-image
+  variables:
+    TARGET_OS: "linux"
+    TARGET_ARCH: "arm64"
+    SOURCE_IMAGE: ${ADP_FULL_IMAGE_TAG_FIPS}
+    SOURCE_IMAGE_VERSION: ${ADP_IMAGE_VERSION_FIPS}
