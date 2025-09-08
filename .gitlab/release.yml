@@ -23,6 +23,9 @@
 
 .push-release-tarball-definition:
   stage: release
+  rules:
+    - if: !reference [.on_official_release, rules, if]
+      when: manual
   image: ${DOCKER_BUILD_IMAGE}
   variables:
     TARGET_BUCKET_PATH: "s3://binaries-ddbuild-io-prod/saluki/"
