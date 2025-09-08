@@ -277,12 +277,14 @@ impl OtlpTranslator {
     ) {
         metrics.metrics_received().increment(1);
 
+        let ts = timestamp_ns / 1_000_000_000;
+
         // TODO: Handle origin
         match self.context_resolver.resolve(&dims.name, &dims.tags, None) {
             Some(context) => {
                 let values = match data_type {
-                    DataType::Gauge => MetricValues::gauge((timestamp_ns, value)),
-                    DataType::Count => MetricValues::counter((timestamp_ns, value)),
+                    DataType::Gauge => MetricValues::gauge((ts, value)),
+                    DataType::Count => MetricValues::counter((ts, value)),
                 };
 
                 let metric = Metric::from_parts(context, values, MetricMetadata::default());
@@ -315,7 +317,7 @@ impl OtlpTranslator {
                 continue;
             }
 
-            let ts = dp.time_unix_nano / 1_000_000_000;
+            let ts = dp.time_unix_nano;
 
             self.record_metric_event(&point_dims, value, ts, data_type, &mut events, metrics);
         }
