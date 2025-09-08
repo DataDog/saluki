@@ -315,7 +315,7 @@ impl OtlpTranslator {
                 continue;
             }
 
-            let ts = dp.time_unix_nano;
+            let ts = dp.time_unix_nano / 1_000_000_000;
 
             self.record_metric_event(&point_dims, value, ts, data_type, &mut events, metrics);
         }
