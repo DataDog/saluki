@@ -684,8 +684,8 @@ mod tests {
         }
     }
 
-    fn seconds_from_nanos(ns: u64) -> u64 {
-        ns * 1_000_000_000
+    fn nanos_from_seconds(s: u64) -> u64 {
+        s * 1_000_000_000
     }
 
     /// A helper function to build a series of cumulative monotonic integer data points from deltas.
@@ -702,7 +702,7 @@ mod tests {
         for (i, val) in cumulative.iter().enumerate() {
             slice.push(OtlpNumberDataPoint {
                 value: Some(OtlpNumberDataPointValue::AsInt(*val)),
-                time_unix_nano: seconds_from_nanos((i * 10) as u64),
+                time_unix_nano: nanos_from_seconds((i * 10) as u64),
                 ..Default::default()
             });
         }
@@ -718,7 +718,7 @@ mod tests {
         for (i, val) in values.iter().enumerate() {
             slice.push(OtlpNumberDataPoint {
                 value: Some(OtlpNumberDataPointValue::AsInt(*val)),
-                time_unix_nano: seconds_from_nanos((i * 10) as u64),
+                time_unix_nano: nanos_from_seconds((i * 10) as u64),
                 ..Default::default()
             });
         }
@@ -749,7 +749,7 @@ mod tests {
                 let metric = event.try_as_metric().unwrap();
                 assert_eq!(
                     metric.values(),
-                    &MetricValues::counter((seconds_from_nanos(((i + 1) * 10) as u64), deltas[i] as f64))
+                    &MetricValues::counter((((i + 1) * 10) as u64, deltas[i] as f64))
                 );
             }
         }
@@ -777,7 +777,7 @@ mod tests {
                 // The rate is delta / 10s interval
                 assert_eq!(
                     metric.values(),
-                    &MetricValues::gauge((seconds_from_nanos(((i + 1) * 10) as u64), deltas[i] as f64 / 10.0),)
+                    &MetricValues::gauge((((i + 1) * 10) as u64, deltas[i] as f64 / 10.0),)
                 );
             }
         }
@@ -800,21 +800,21 @@ mod tests {
                 OtlpNumberDataPoint {
                     value: Some(OtlpNumberDataPointValue::AsInt(10)),
                     start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + seconds_from_nanos(2),
+                    time_unix_nano: start_ts + nanos_from_seconds(2),
                     ..Default::default()
                 },
                 // Second point - DUPLICATE timestamp. This should be dropped.
                 OtlpNumberDataPoint {
                     value: Some(OtlpNumberDataPointValue::AsInt(20)),
                     start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + seconds_from_nanos(2),
+                    time_unix_nano: start_ts + nanos_from_seconds(2),
                     ..Default::default()
                 },
                 // Third point
                 OtlpNumberDataPoint {
                     value: Some(OtlpNumberDataPointValue::AsInt(40)),
                     start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + seconds_from_nanos(4),
+                    time_unix_nano: start_ts + nanos_from_seconds(4),
                     ..Default::default()
                 },
             ];
@@ -829,17 +829,13 @@ mod tests {
 
             // First metric: the initial value of the counter.
             let metric = events[0].try_as_metric().unwrap();
-            assert_eq!(
-                metric.values(),
-                &MetricValues::counter((start_ts + seconds_from_nanos(2), 10.0))
-            );
+            let expected_ts_s = (start_ts + nanos_from_seconds(2)) / 1_000_000_000;
+            assert_eq!(metric.values(), &MetricValues::counter((expected_ts_s, 10.0)));
 
             // Second metric: the delta between the third and first points.
             let metric = events[1].try_as_metric().unwrap();
-            assert_eq!(
-                metric.values(),
-                &MetricValues::counter((start_ts + seconds_from_nanos(4), 30.0))
-            );
+            let expected_ts_s = (start_ts + nanos_from_seconds(4)) / 1_000_000_000;
+            assert_eq!(metric.values(), &MetricValues::counter((expected_ts_s, 30.0)));
         }
 
         // Test Case 2: "equal-rate" timestamp.
@@ -853,21 +849,21 @@ mod tests {
                 OtlpNumberDataPoint {
                     value: Some(OtlpNumberDataPointValue::AsInt(10)),
                     start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + seconds_from_nanos(2),
+                    time_unix_nano: start_ts + nanos_from_seconds(2),
                     ..Default::default()
                 },
                 // Second point - DUPLICATE timestamp. This should be dropped.
                 OtlpNumberDataPoint {
                     value: Some(OtlpNumberDataPointValue::AsInt(20)),
                     start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + seconds_from_nanos(2),
+                    time_unix_nano: start_ts + nanos_from_seconds(2),
                     ..Default::default()
                 },
                 // Third point
                 OtlpNumberDataPoint {
                     value: Some(OtlpNumberDataPointValue::AsInt(40)),
                     start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + seconds_from_nanos(4),
+                    time_unix_nano: start_ts + nanos_from_seconds(4),
                     ..Default::default()
                 },
             ];
@@ -885,10 +881,8 @@ mod tests {
 
             let metric = events[0].try_as_metric().unwrap();
             // rate is (40-10) / (4s-2s) = 30 / 2 = 15
-            assert_eq!(
-                metric.values(),
-                &MetricValues::gauge((start_ts + seconds_from_nanos(4), 15.0))
-            );
+            let expected_ts_s = (start_ts + nanos_from_seconds(4)) / 1_000_000_000;
+            assert_eq!(metric.values(), &MetricValues::gauge((expected_ts_s, 15.0)));
         }
 
         // Test Case 3: "older" timestamp.
@@ -903,21 +897,21 @@ mod tests {
                 OtlpNumberDataPoint {
                     value: Some(OtlpNumberDataPointValue::AsInt(10)),
                     start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + seconds_from_nanos(3),
+                    time_unix_nano: start_ts + nanos_from_seconds(3),
                     ..Default::default()
                 },
                 // Second point - OLDER timestamp. This should be dropped.
                 OtlpNumberDataPoint {
                     value: Some(OtlpNumberDataPointValue::AsInt(25)),
                     start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + seconds_from_nanos(2),
+                    time_unix_nano: start_ts + nanos_from_seconds(2),
                     ..Default::default()
                 },
                 // Third point
                 OtlpNumberDataPoint {
                     value: Some(OtlpNumberDataPointValue::AsInt(40)),
                     start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + seconds_from_nanos(5),
+                    time_unix_nano: start_ts + nanos_from_seconds(5),
                     ..Default::default()
                 },
             ];
@@ -930,16 +924,12 @@ mod tests {
             assert_eq!(events.len(), 2, "Expected two metrics after dropping an older point");
 
             let metric = events[0].try_as_metric().unwrap();
-            assert_eq!(
-                metric.values(),
-                &MetricValues::counter((start_ts + seconds_from_nanos(3), 10.0))
-            );
+            let expected_ts_s = (start_ts + nanos_from_seconds(3)) / 1_000_000_000;
+            assert_eq!(metric.values(), &MetricValues::counter((expected_ts_s, 10.0)));
 
             let metric = events[1].try_as_metric().unwrap();
-            assert_eq!(
-                metric.values(),
-                &MetricValues::counter((start_ts + seconds_from_nanos(5), 30.0))
-            );
+            let expected_ts_s = (start_ts + nanos_from_seconds(5)) / 1_000_000_000;
+            assert_eq!(metric.values(), &MetricValues::counter((expected_ts_s, 30.0)));
         }
 
         // Test Case 4: "older-rate" timestamp.
@@ -953,21 +943,21 @@ mod tests {
                 OtlpNumberDataPoint {
                     value: Some(OtlpNumberDataPointValue::AsInt(10)),
                     start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + seconds_from_nanos(3),
+                    time_unix_nano: start_ts + nanos_from_seconds(3),
                     ..Default::default()
                 },
                 // Second point - OLDER timestamp. This should be dropped.
                 OtlpNumberDataPoint {
                     value: Some(OtlpNumberDataPointValue::AsInt(25)),
                     start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + seconds_from_nanos(2),
+                    time_unix_nano: start_ts + nanos_from_seconds(2),
                     ..Default::default()
                 },
                 // Third point
                 OtlpNumberDataPoint {
                     value: Some(OtlpNumberDataPointValue::AsInt(40)),
                     start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + seconds_from_nanos(5),
+                    time_unix_nano: start_ts + nanos_from_seconds(5),
                     ..Default::default()
                 },
             ];
@@ -985,10 +975,8 @@ mod tests {
 
             let metric = events[0].try_as_metric().unwrap();
             // rate is (40-10) / (5s-3s) = 30 / 2 = 15
-            assert_eq!(
-                metric.values(),
-                &MetricValues::gauge((start_ts + seconds_from_nanos(5), 15.0))
-            );
+            let expected_ts_s = (start_ts + nanos_from_seconds(5)) / 1_000_000_000;
+            assert_eq!(metric.values(), &MetricValues::gauge((expected_ts_s, 15.0)));
         }
     }
 
@@ -1006,7 +994,7 @@ mod tests {
         for i in 0..values.len() {
             slice.push(OtlpNumberDataPoint {
                 value: Some(OtlpNumberDataPointValue::AsInt(values[i])),
-                time_unix_nano: seconds_from_nanos(timestamps[i]),
+                time_unix_nano: nanos_from_seconds(timestamps[i]),
                 ..Default::default()
             });
         }
@@ -1029,10 +1017,10 @@ mod tests {
         );
 
         let metric = events[0].try_as_metric().unwrap();
-        assert_eq!(metric.values(), &MetricValues::counter((seconds_from_nanos(2), 2.0)));
+        assert_eq!(metric.values(), &MetricValues::counter((2, 2.0)));
 
         let metric = events[1].try_as_metric().unwrap();
-        assert_eq!(metric.values(), &MetricValues::counter((seconds_from_nanos(3), 1.0)));
+        assert_eq!(metric.values(), &MetricValues::counter((3, 1.0)));
     }
 
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L332
@@ -1046,12 +1034,12 @@ mod tests {
 
         // Series with no tags
         slice.push(OtlpNumberDataPoint {
-            time_unix_nano: seconds_from_nanos(0),
+            time_unix_nano: nanos_from_seconds(0),
             ..Default::default()
         });
         slice.push(OtlpNumberDataPoint {
             value: Some(OtlpNumberDataPointValue::AsInt(20)),
-            time_unix_nano: seconds_from_nanos(1),
+            time_unix_nano: nanos_from_seconds(1),
             ..Default::default()
         });
 
@@ -1065,13 +1053,13 @@ mod tests {
             }),
         }];
         slice.push(OtlpNumberDataPoint {
-            time_unix_nano: seconds_from_nanos(0),
+            time_unix_nano: nanos_from_seconds(0),
             attributes: attributes_a.clone(),
             ..Default::default()
         });
         slice.push(OtlpNumberDataPoint {
             value: Some(OtlpNumberDataPointValue::AsInt(30)),
-            time_unix_nano: seconds_from_nanos(1),
+            time_unix_nano: nanos_from_seconds(1),
             attributes: attributes_a,
             ..Default::default()
         });
@@ -1086,13 +1074,13 @@ mod tests {
             }),
         }];
         slice.push(OtlpNumberDataPoint {
-            time_unix_nano: seconds_from_nanos(0),
+            time_unix_nano: nanos_from_seconds(0),
             attributes: attributes_b.clone(),
             ..Default::default()
         });
         slice.push(OtlpNumberDataPoint {
             value: Some(OtlpNumberDataPointValue::AsInt(40)),
-            time_unix_nano: seconds_from_nanos(1),
+            time_unix_nano: nanos_from_seconds(1),
             attributes: attributes_b,
             ..Default::default()
         });
@@ -1106,20 +1094,20 @@ mod tests {
 
         assert_eq!(
             events[0].try_as_metric().unwrap().values(),
-            &MetricValues::counter((seconds_from_nanos(1), 20.0))
+            &MetricValues::counter((1, 20.0))
         );
         let metric2 = events[1].try_as_metric().unwrap();
         assert_eq!(
             metric2.context().tags().get_single_tag("key1"),
             Some(&Tag::from("key1:valA"))
         );
-        assert_eq!(metric2.values(), &MetricValues::counter((seconds_from_nanos(1), 30.0)));
+        assert_eq!(metric2.values(), &MetricValues::counter((1, 30.0)));
         let metric3 = events[2].try_as_metric().unwrap();
         assert_eq!(
             metric3.context().tags().get_single_tag("key1"),
             Some(&Tag::from("key1:valB"))
         );
-        assert_eq!(metric3.values(), &MetricValues::counter((seconds_from_nanos(1), 40.0)));
+        assert_eq!(metric3.values(), &MetricValues::counter((1, 40.0)));
     }
 
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L201
@@ -1128,6 +1116,7 @@ mod tests {
         let metrics = build_metrics();
         // Setup test data that will be reused
         let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
+        let ts_s = ts / 1_000_000_000;
 
         let slice = vec![OtlpNumberDataPoint {
             value: Some(OtlpNumberDataPointValue::AsInt(17)),
@@ -1148,7 +1137,7 @@ mod tests {
             assert_eq!(events.len(), 1, "Expected one event for the gauge test");
             let metric = events[0].try_as_metric().unwrap();
             assert_eq!(metric.context().name(), "int64.test");
-            assert_eq!(metric.values(), &MetricValues::gauge((ts, 17.0)));
+            assert_eq!(metric.values(), &MetricValues::gauge((ts_s, 17.0)));
             assert!(
                 metric.context().tags().is_empty(),
                 "Expected no tags for the simple gauge test"
@@ -1168,7 +1157,7 @@ mod tests {
             assert_eq!(events.len(), 1, "Expected one event for the count test");
             let metric = events[0].try_as_metric().unwrap();
             assert_eq!(metric.context().name(), "int64.delta.test");
-            assert_eq!(metric.values(), &MetricValues::counter((ts, 17.0)));
+            assert_eq!(metric.values(), &MetricValues::counter((ts_s, 17.0)));
             assert!(
                 metric.context().tags().is_empty(),
                 "Expected no tags for the simple count test"
@@ -1191,7 +1180,7 @@ mod tests {
             assert_eq!(events.len(), 1, "Expected one event for the gauge with tags test");
             let metric = events[0].try_as_metric().unwrap();
             assert_eq!(metric.context().name(), "int64.test");
-            assert_eq!(metric.values(), &MetricValues::gauge((ts, 17.0)));
+            assert_eq!(metric.values(), &MetricValues::gauge((ts_s, 17.0)));
             assert_eq!(
                 metric.context().tags().get_single_tag("attribute_tag"),
                 Some(&Tag::from("attribute_tag:attribute_value"))
@@ -1219,10 +1208,10 @@ mod tests {
             assert_eq!(events.len(), 2, "Expected two metrics after a reboot");
 
             let metric = events[0].try_as_metric().unwrap();
-            assert_eq!(metric.values(), &MetricValues::counter((seconds_from_nanos(10), 30.0)));
+            assert_eq!(metric.values(), &MetricValues::counter((10, 30.0)));
 
             let metric = events[1].try_as_metric().unwrap();
-            assert_eq!(metric.values(), &MetricValues::counter((seconds_from_nanos(30), 20.0)));
+            assert_eq!(metric.values(), &MetricValues::counter((30, 20.0)));
         }
 
         // Test Case 2: "rate" mode with reset
@@ -1242,14 +1231,82 @@ mod tests {
             let metric = events[0].try_as_metric().unwrap();
             assert_eq!(
                 metric.values(),
-                &MetricValues::gauge((seconds_from_nanos(10), 3.0)) // 30 / 10s
+                &MetricValues::gauge((10, 3.0)) // 30 / 10s
             );
 
             let metric = events[1].try_as_metric().unwrap();
             assert_eq!(
                 metric.values(),
-                &MetricValues::gauge((seconds_from_nanos(30), 2.0)) // 20 / 10s
+                &MetricValues::gauge((30, 2.0)) // 20 / 10s
             );
+        }
+    }
+
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L236
+    #[test]
+    fn test_map_double_metrics() {
+        let metrics = build_metrics();
+        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
+        let ts_s = ts / 1_000_000_000;
+
+        let slice = vec![OtlpNumberDataPoint {
+            value: Some(OtlpNumberDataPointValue::AsDouble(std::f64::consts::PI)),
+            time_unix_nano: ts,
+            ..Default::default()
+        }];
+
+        // Test Case 1: Gauge
+        {
+            let context_resolver = ContextResolverBuilder::for_tests().build();
+            let mut translator = OtlpTranslator::new(Default::default(), context_resolver);
+            let dims = Dimensions {
+                name: "float64.test".to_string(),
+                ..Default::default()
+            };
+            let events = translator.map_number_metrics(dims, slice.clone(), DataType::Gauge, &metrics);
+
+            assert_eq!(events.len(), 1, "Expected one event for the gauge test");
+            let metric = events[0].try_as_metric().unwrap();
+            assert_eq!(metric.context().name(), "float64.test");
+            assert_eq!(metric.values(), &MetricValues::gauge((ts_s, std::f64::consts::PI)));
+        }
+
+        // Test Case 2: Count
+        {
+            let context_resolver = ContextResolverBuilder::for_tests().build();
+            let mut translator = OtlpTranslator::new(Default::default(), context_resolver);
+            let dims = Dimensions {
+                name: "float64.delta.test".to_string(),
+                ..Default::default()
+            };
+            let events = translator.map_number_metrics(dims, slice.clone(), DataType::Count, &metrics);
+
+            assert_eq!(events.len(), 1, "Expected one event for the count test");
+            let metric = events[0].try_as_metric().unwrap();
+            assert_eq!(metric.context().name(), "float64.delta.test");
+            assert_eq!(metric.values(), &MetricValues::counter((ts_s, std::f64::consts::PI)));
+        }
+
+        // Test Case 3: Gauge with Tags
+        {
+            let context_resolver = ContextResolverBuilder::for_tests().build();
+            let mut translator = OtlpTranslator::new(Default::default(), context_resolver);
+            let mut tags = TagSet::default();
+            tags.insert_tag("attribute_tag:attribute_value");
+            let dims = Dimensions {
+                name: "float64.test".to_string(),
+                tags: tags.into_shared(),
+                ..Default::default()
+            };
+            let events = translator.map_number_metrics(dims, slice.clone(), DataType::Gauge, &metrics);
+
+            assert_eq!(events.len(), 1, "Expected one event for the gauge with tags test");
+            let metric = events[0].try_as_metric().unwrap();
+            assert_eq!(
+                metric.context().tags().get_single_tag("attribute_tag"),
+                Some(&Tag::from("attribute_tag:attribute_value"))
+            );
+            assert_eq!(metric.values(), &MetricValues::gauge((ts_s, std::f64::consts::PI)));
         }
     }
 }
