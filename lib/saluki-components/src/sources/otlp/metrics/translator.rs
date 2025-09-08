@@ -1532,4 +1532,138 @@ mod tests {
             );
         }
     }
+
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L1678
+    #[test]
+    fn test_map_double_monotonic_drop_point_within_slice() {
+        let metrics = build_metrics();
+
+        // Test Case 1: "equal" timestamp.
+        {
+            let context_resolver = ContextResolverBuilder::for_tests().build();
+            let mut translator = OtlpTranslator::new(Default::default(), context_resolver);
+            let start_ts = translator.process_start_time_ns + 1;
+
+            let slice = vec![
+                OtlpNumberDataPoint {
+                    value: Some(OtlpNumberDataPointValue::AsDouble(10.0)),
+                    start_time_unix_nano: start_ts,
+                    time_unix_nano: start_ts + nanos_from_seconds(2),
+                    ..Default::default()
+                },
+                OtlpNumberDataPoint {
+                    value: Some(OtlpNumberDataPointValue::AsDouble(20.0)),
+                    start_time_unix_nano: start_ts,
+                    time_unix_nano: start_ts + nanos_from_seconds(2),
+                    ..Default::default()
+                },
+                OtlpNumberDataPoint {
+                    value: Some(OtlpNumberDataPointValue::AsDouble(40.0)),
+                    start_time_unix_nano: start_ts,
+                    time_unix_nano: start_ts + nanos_from_seconds(4),
+                    ..Default::default()
+                },
+            ];
+
+            let dims = Dimensions {
+                name: "metric.example".to_string(),
+                ..Default::default()
+            };
+            let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+            assert_eq!(events.len(), 2);
+
+            let expected_ts_s_1 = (start_ts + nanos_from_seconds(2)) / 1_000_000_000;
+            assert_eq!(
+                events[0].try_as_metric().unwrap().values(),
+                &MetricValues::counter((expected_ts_s_1, 10.0))
+            );
+            let expected_ts_s_2 = (start_ts + nanos_from_seconds(4)) / 1_000_000_000;
+            assert_eq!(
+                events[1].try_as_metric().unwrap().values(),
+                &MetricValues::counter((expected_ts_s_2, 30.0))
+            );
+        }
+
+        // Test Case 2: "older" timestamp.
+        {
+            let context_resolver = ContextResolverBuilder::for_tests().build();
+            let mut translator = OtlpTranslator::new(Default::default(), context_resolver);
+            let start_ts = translator.process_start_time_ns + 1;
+
+            let slice = vec![
+                OtlpNumberDataPoint {
+                    value: Some(OtlpNumberDataPointValue::AsDouble(10.0)),
+                    start_time_unix_nano: start_ts,
+                    time_unix_nano: start_ts + nanos_from_seconds(3),
+                    ..Default::default()
+                },
+                OtlpNumberDataPoint {
+                    value: Some(OtlpNumberDataPointValue::AsDouble(25.0)),
+                    start_time_unix_nano: start_ts,
+                    time_unix_nano: start_ts + nanos_from_seconds(2),
+                    ..Default::default()
+                },
+                OtlpNumberDataPoint {
+                    value: Some(OtlpNumberDataPointValue::AsDouble(40.0)),
+                    start_time_unix_nano: start_ts,
+                    time_unix_nano: start_ts + nanos_from_seconds(5),
+                    ..Default::default()
+                },
+            ];
+
+            let dims = Dimensions {
+                name: "metric.example".to_string(),
+                ..Default::default()
+            };
+            let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+            assert_eq!(events.len(), 2);
+
+            let expected_ts_s_1 = (start_ts + nanos_from_seconds(3)) / 1_000_000_000;
+            assert_eq!(
+                events[0].try_as_metric().unwrap().values(),
+                &MetricValues::counter((expected_ts_s_1, 10.0))
+            );
+            let expected_ts_s_2 = (start_ts + nanos_from_seconds(5)) / 1_000_000_000;
+            assert_eq!(
+                events[1].try_as_metric().unwrap().values(),
+                &MetricValues::counter((expected_ts_s_2, 30.0))
+            );
+        }
+    }
+
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L2033
+    #[test]
+    fn test_map_double_monotonic_out_of_order() {
+        let metrics = build_metrics();
+        let context_resolver = ContextResolverBuilder::for_tests().build();
+        let mut translator = OtlpTranslator::new(Default::default(), context_resolver);
+
+        let timestamps = [1, 0, 2, 3];
+        let values = [0.0, 1.0, 2.0, 3.0];
+
+        let mut slice = Vec::with_capacity(values.len());
+        for i in 0..values.len() {
+            slice.push(OtlpNumberDataPoint {
+                value: Some(OtlpNumberDataPointValue::AsDouble(values[i])),
+                time_unix_nano: nanos_from_seconds(timestamps[i]),
+                ..Default::default()
+            });
+        }
+
+        let dims = Dimensions {
+            name: "metric.example".to_string(),
+            ..Default::default()
+        };
+        let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+        assert_eq!(events.len(), 2);
+
+        assert_eq!(
+            events[0].try_as_metric().unwrap().values(),
+            &MetricValues::counter((2, 2.0))
+        );
+        assert_eq!(
+            events[1].try_as_metric().unwrap().values(),
+            &MetricValues::counter((3, 1.0))
+        );
+    }
 }
