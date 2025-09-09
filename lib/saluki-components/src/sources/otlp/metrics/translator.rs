@@ -198,7 +198,7 @@ impl OtlpTranslator {
     }
 
     // TODO: Implement
-    pub fn map_logs(&mut self, _resource_logs: OtlpResourceLogs, _logs: &Logs) -> () {
+    pub fn map_logs(&mut self, _resource_logs: OtlpResourceLogs, _logs: &Logs) {
         warn!("OTLP logs are not supported yet.");
     }
 

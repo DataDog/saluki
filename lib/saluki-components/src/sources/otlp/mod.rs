@@ -524,12 +524,8 @@ async fn run_converter(
 
                     }
                     OtlpResource::Logs(resource_logs) => {
-                        match translator.map_logs(resource_logs, &logs) {
-                            () => {
-                                // TODO: handle translating OTLP logs to DD native format.
-                                ()
-                            }
-                        }
+                        // TODO: handle translating OTLP logs to DD native format.
+                        translator.map_logs(resource_logs, &logs);
                     }
                 }
             },
