@@ -10,6 +10,10 @@ use otlp_protos::opentelemetry::proto::metrics::v1::{
     HistogramDataPoint as OtlpHistogramDataPoint, Metric as OtlpMetric, NumberDataPoint as OtlpNumberDataPoint,
     ResourceMetrics as OtlpResourceMetrics,
 };
+use otlp_protos::opentelemetry::proto::logs::v1::ResourceLogs as OtlpResourceLogs;
+
+
+use crate::sources::otlp::Logs;
 use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_context::ContextResolver;
 use saluki_core::data_model::event::metric::{Metric, MetricMetadata, MetricValues};
@@ -193,6 +197,13 @@ impl OtlpTranslator {
         // }
 
         Ok(events)
+    }
+
+    // TODO: Implement
+    pub fn map_logs(
+        &mut self, _resource_logs: OtlpResourceLogs, _logs: &Logs,
+    ) -> () {
+        warn!("OTLP logs are not supported yet.");
     }
 
     /// Translates a single OTLP `Metric` into a collection of Saluki `Event`s.
