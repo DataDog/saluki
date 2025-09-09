@@ -5,7 +5,6 @@ use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use otlp_protos::opentelemetry::proto::common::v1::KeyValue as OtlpKeyValue;
-use otlp_protos::opentelemetry::proto::logs::v1::ResourceLogs as OtlpResourceLogs;
 use otlp_protos::opentelemetry::proto::metrics::v1::{
     metric::Data as OtlpMetricData, AggregationTemporality, DataPointFlags,
     HistogramDataPoint as OtlpHistogramDataPoint, Metric as OtlpMetric, NumberDataPoint as OtlpNumberDataPoint,
@@ -27,7 +26,6 @@ use super::internal::{instrumentationlibrary, instrumentationscope};
 use super::remap;
 use super::runtime_metrics::{RuntimeMetricMapping, RUNTIME_METRICS_MAPPINGS};
 use crate::sources::otlp::metrics::config::InitialCumulMonoValueMode;
-use crate::sources::otlp::Logs;
 use crate::sources::otlp::Metrics;
 
 // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator.go#L48-L63
@@ -195,11 +193,6 @@ impl OtlpTranslator {
         // }
 
         Ok(events)
-    }
-
-    // TODO: Implement
-    pub fn map_logs(&mut self, _resource_logs: OtlpResourceLogs, _logs: &Logs) {
-        warn!("OTLP logs are not supported yet.");
     }
 
     /// Translates a single OTLP `Metric` into a collection of Saluki `Event`s.

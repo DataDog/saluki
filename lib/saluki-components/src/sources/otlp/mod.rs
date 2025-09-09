@@ -492,7 +492,7 @@ async fn dispatch_events(events: EventsBuffer, source_context: &SourceContext) {
 
 async fn run_converter(
     mut receiver: mpsc::Receiver<OtlpResource>, source_context: SourceContext, shutdown_handle: DynamicShutdownHandle,
-    mut translator: OtlpTranslator, metrics: Metrics, logs: Logs,
+    mut translator: OtlpTranslator, metrics: Metrics, _logs: Logs,
 ) {
     tokio::pin!(shutdown_handle);
     debug!("OTLP resource converter task started.");
@@ -523,9 +523,8 @@ async fn run_converter(
                         }
 
                     }
-                    OtlpResource::Logs(resource_logs) => {
+                    OtlpResource::Logs(_resource_logs) => {
                         // TODO: handle translating OTLP logs to DD native format.
-                        translator.map_logs(resource_logs, &logs);
                     }
                 }
             },
