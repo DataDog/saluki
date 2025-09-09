@@ -8,8 +8,9 @@ fn main() {
         .build_server(true)
         .include_file("otlp.mod.rs")
         .compile_protos(
-            &["proto/opentelemetry/proto/collector/metrics/v1/metrics_service.proto",
-                      "proto/opentelemetry/proto/collector/logs/v1/logs_service.proto"
+            &[
+                "proto/opentelemetry/proto/collector/metrics/v1/metrics_service.proto",
+                "proto/opentelemetry/proto/collector/logs/v1/logs_service.proto",
             ],
             &["proto"],
         )

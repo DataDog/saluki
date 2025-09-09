@@ -9,16 +9,16 @@ use axum::http::StatusCode;
 use axum::routing::post;
 use axum::Router;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, MemoryLimiter};
+use otlp_protos::opentelemetry::proto::collector::logs::v1::logs_service_server::{LogsService, LogsServiceServer};
+use otlp_protos::opentelemetry::proto::collector::logs::v1::{ExportLogsServiceRequest, ExportLogsServiceResponse};
 use otlp_protos::opentelemetry::proto::collector::metrics::v1::metrics_service_server::{
     MetricsService, MetricsServiceServer,
 };
 use otlp_protos::opentelemetry::proto::collector::metrics::v1::{
     ExportMetricsServiceRequest, ExportMetricsServiceResponse,
 };
-use otlp_protos::opentelemetry::proto::metrics::v1::ResourceMetrics as OtlpResourceMetrics;
-use otlp_protos::opentelemetry::proto::collector::logs::v1::logs_service_server::{LogsService, LogsServiceServer};
-use otlp_protos::opentelemetry::proto::collector::logs::v1::{ExportLogsServiceRequest, ExportLogsServiceResponse};
 use otlp_protos::opentelemetry::proto::logs::v1::ResourceLogs as OtlpResourceLogs;
+use otlp_protos::opentelemetry::proto::metrics::v1::ResourceMetrics as OtlpResourceMetrics;
 use prost::Message;
 use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
@@ -164,7 +164,9 @@ fn default_logs_enabled() -> bool {
 
 impl Default for LogsConfig {
     fn default() -> Self {
-        Self { enabled: default_logs_enabled() }
+        Self {
+            enabled: default_logs_enabled(),
+        }
     }
 }
 
@@ -197,9 +199,7 @@ impl OtlpConfiguration {
 }
 
 // TODO: implement
-pub struct Logs {
-     
-}
+pub struct Logs {}
 
 // TODO: implement
 fn build_logs() -> Logs {
@@ -326,11 +326,13 @@ impl Source for Otlp {
         );
 
         // Create and spawn the gRPC server.
-        let grpc_metrics_server =
-            MetricsServiceServer::new(GrpcService::new(tx.clone(), memory_limiter.clone())).max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
-        let grpc_logs_server =
-            LogsServiceServer::new(GrpcService::new(tx.clone(), memory_limiter.clone())).max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
-        let grpc_server = Server::builder().add_service(grpc_metrics_server).add_service(grpc_logs_server);
+        let grpc_metrics_server = MetricsServiceServer::new(GrpcService::new(tx.clone(), memory_limiter.clone()))
+            .max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
+        let grpc_logs_server = LogsServiceServer::new(GrpcService::new(tx.clone(), memory_limiter.clone()))
+            .max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
+        let grpc_server = Server::builder()
+            .add_service(grpc_metrics_server)
+            .add_service(grpc_logs_server);
 
         let grpc_socket_addr = self
             .grpc_endpoint
@@ -344,7 +346,7 @@ impl Source for Otlp {
             Router::new()
                 .route("/v1/metrics", post(http_metric_handler))
                 .route("/v1/logs", post(http_logs_handler))
-                .with_state((tx, memory_limiter.clone()))
+                .with_state((tx, memory_limiter.clone())),
         );
         let http_listener = ConnectionOrientedListener::from_listen_address(self.http_endpoint)
             .await
@@ -383,7 +385,9 @@ impl Source for Otlp {
     }
 }
 
-async fn http_logs_handler(State((tx, memory_limiter)): State<(mpsc::Sender<OtlpResource>, MemoryLimiter)>, body: Bytes,) -> (StatusCode, &'static str) {
+async fn http_logs_handler(
+    State((tx, memory_limiter)): State<(mpsc::Sender<OtlpResource>, MemoryLimiter)>, body: Bytes,
+) -> (StatusCode, &'static str) {
     memory_limiter.wait_for_capacity().await;
     match ExportLogsServiceRequest::decode(body) {
         Ok(request) => {
@@ -487,8 +491,8 @@ async fn dispatch_events(events: EventsBuffer, source_context: &SourceContext) {
 }
 
 async fn run_converter(
-    mut receiver: mpsc::Receiver<OtlpResource>, source_context: SourceContext,
-    shutdown_handle: DynamicShutdownHandle, mut translator: OtlpTranslator, metrics: Metrics, logs: Logs,
+    mut receiver: mpsc::Receiver<OtlpResource>, source_context: SourceContext, shutdown_handle: DynamicShutdownHandle,
+    mut translator: OtlpTranslator, metrics: Metrics, logs: Logs,
 ) {
     tokio::pin!(shutdown_handle);
     debug!("OTLP resource converter task started.");
