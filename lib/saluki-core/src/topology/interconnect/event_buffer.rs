@@ -90,14 +90,14 @@ impl<const N: usize> FixedSizeEventBuffer<N> {
     /// Removes events from the event buffer if they match the given predicate.
     pub fn remove_if<F>(&mut self, predicate: F)
     where
-        F: Fn(&Event) -> bool,
+        F: Fn(&mut Event) -> bool,
     {
         let mut seen_event_types = EventType::none();
 
         let mut i = 0;
         let mut end = self.events.len();
         while i < end {
-            if predicate(&self.events[i]) {
+            if predicate(&mut self.events[i]) {
                 self.events.swap_remove_back(i);
                 end -= 1;
             } else {
