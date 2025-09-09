@@ -86,7 +86,7 @@ impl TransformBuilder for DogstatsDPrefixFilterConfiguration {
     async fn build(&self, _: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         // Ensure our metric prefix has a trailing period so that we don't have to check for, and possibly add it, when we're
         // actually processing metrics.
-        let metric_prefix = if self.metric_prefix.ends_with(".") {
+        let metric_prefix = if self.metric_prefix.ends_with(".") || self.metric_prefix.is_empty() {
             self.metric_prefix.clone()
         } else {
             let mut suffixed_metric_prefix = self.metric_prefix.clone();
