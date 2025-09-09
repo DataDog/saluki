@@ -1,63 +1,41 @@
 use tracing::{error, info};
 
-use crate::config::{DebugConfig, SetLogLevelConfig};
+use crate::{
+    cli::utils::APIClient,
+    config::{DebugConfig, SetLogLevelConfig},
+};
 
-/// Handles the various debug subcommands.
+/// Entrypoint for all `debug` subcommands.
 pub async fn handle_debug_command(config: DebugConfig) {
-    let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .build()
-        .unwrap();
-
     match config {
-        DebugConfig::ResetLogLevel => {
-            reset_log_level(client).await;
-        }
-        DebugConfig::SetLogLevel(config) => {
-            set_log_level(client, config).await;
-        }
+        DebugConfig::ResetLogLevel => reset_log_level().await,
+        DebugConfig::SetLogLevel(config) => set_log_level(config).await,
     }
 }
 
 /// Resets the log level to the default configuration.
-async fn reset_log_level(client: reqwest::Client) {
-    let response = match client.post("https://localhost:5101/logging/reset").send().await {
-        Ok(resp) => resp,
+async fn reset_log_level() {
+    let api_client = APIClient::new();
+    match api_client.reset_log_level().await {
+        Ok(()) => info!("Log level reset successful."),
         Err(e) => {
-            error!("Failed to send request: {}.", e);
+            error!("Failed to reset log level: {}", e);
             std::process::exit(1);
         }
-    };
-
-    if response.status().is_success() {
-        info!("Log level reset successful.");
-    } else {
-        error!("Failed to reset log level: {}.", response.status());
     }
 }
 
 /// Sets the log level filter directives for a specified duration in seconds.
-async fn set_log_level(client: reqwest::Client, config: SetLogLevelConfig) {
-    let filter_directives = config.filter_directives;
-    let duration_secs = config.duration_secs;
-
-    let response = match client
-        .post("https://localhost:5101/logging/override")
-        .query(&[("time_secs", duration_secs)])
-        .body(filter_directives)
-        .send()
+async fn set_log_level(config: SetLogLevelConfig) {
+    let api_client = APIClient::new();
+    match api_client
+        .set_log_level(config.filter_directives, config.duration_secs)
         .await
     {
-        Ok(resp) => resp,
+        Ok(()) => info!("Log level override successful."),
         Err(e) => {
-            error!("Failed to send request: {}.", e);
+            error!("Failed to override log level: {}", e);
             std::process::exit(1);
         }
-    };
-
-    if response.status().is_success() {
-        info!("Log level override successful.");
-    } else {
-        error!("Failed to override log level: {}.", response.status());
     }
 }
