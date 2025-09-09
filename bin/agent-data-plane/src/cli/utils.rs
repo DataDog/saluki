@@ -1,3 +1,4 @@
+use http::StatusCode;
 use reqwest::Client;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 
@@ -100,6 +101,46 @@ impl APIClient {
     pub async fn config(&self) -> Result<String, GenericError> {
         let url = self.get_privileged_url("/config");
         let response = self.inner.get(url).send().await?;
+
+        let response = process_response(response).await?;
+        let response_body = response.text().await.error_context("Failed to read response body.")?;
+        Ok(response_body)
+    }
+
+    /// Retrieves the tags from the workload provider.
+    ///
+    /// The response body is returned as a plain string with no decoding or modification performed.
+    ///
+    /// # Errors
+    ///
+    /// If the request fails, or if the server responds with an unexpected status code, or if a workload provider is not
+    /// configured, an error is returned.
+    pub async fn workload_tags(&self) -> Result<String, GenericError> {
+        let url = self.get_privileged_url("/workload/remote_agent/tags/dump");
+        let response = self.inner.get(url).send().await?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Err(generic_error!("Workload provider not configured: no tags available."));
+        }
+
+        let response = process_response(response).await?;
+        let response_body = response.text().await.error_context("Failed to read response body.")?;
+        Ok(response_body)
+    }
+
+    /// Retrieves the External Data entries from the workload provider.
+    ///
+    /// The response body is returned as a plain string with no decoding or modification performed.
+    ///
+    /// # Errors
+    ///
+    /// If the request fails, or if the server responds with an unexpected status code, or if a workload provider is not
+    /// configured, an error is returned.
+    pub async fn workload_external_data(&self) -> Result<String, GenericError> {
+        let url = self.get_privileged_url("/workload/remote_agent/external_data/dump");
+        let response = self.inner.get(url).send().await?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Err(generic_error!("Workload provider not configured: no tags available."));
+        }
 
         let response = process_response(response).await?;
         let response_body = response.text().await.error_context("Failed to read response body.")?;
