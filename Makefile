@@ -333,7 +333,7 @@ ifeq ($(shell test -d test/k8s/charts || echo not-found), not-found)
 endif
 	@git -C test/k8s/charts pull origin
 	@helm dependency build ./test/k8s/charts/charts/datadog
-ifeq ($(shell timeout 1s helm --kube-context adp-local list 2>&1 | grep datadog || echo not-found), not-found)
+ifeq ($(shell helm --kube-context adp-local list 2>&1 | grep datadog || echo not-found), not-found)
 	@echo "[*] Installing Datadog Agent..."
 	@helm upgrade --install --kube-context adp-local datadog ./test/k8s/charts/charts/datadog \
 		--namespace datadog \
