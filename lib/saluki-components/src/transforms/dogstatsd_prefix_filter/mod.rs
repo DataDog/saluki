@@ -2,6 +2,7 @@ use std::ops::Deref;
 
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_config::dynamic::ConfigChangeEvent;
 use saluki_config::GenericConfiguration;
 use saluki_core::data_model::event::{metric::Metric, EventType};
 use saluki_core::{
@@ -37,6 +38,9 @@ pub struct DogstatsDPrefixFilterConfiguration {
 
     #[serde(default, rename = "statsd_metric_blocklist_match_prefix")]
     metric_blocklist_match_prefix: bool,
+
+    #[serde(skip)]
+    configuration: Option<GenericConfiguration>,
 }
 
 fn default_metric_prefix_blocklist() -> Vec<String> {
@@ -68,7 +72,9 @@ fn default_metric_prefix_blocklist() -> Vec<String> {
 impl DogstatsDPrefixFilterConfiguration {
     /// Creates a new `DogstatsdPrefixFilterConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
+        let mut typed_config: DogstatsDPrefixFilterConfiguration = config.as_typed()?;
+        typed_config.configuration = Some(config.clone());
+        Ok(typed_config)
     }
 }
 
@@ -95,6 +101,7 @@ impl TransformBuilder for DogstatsDPrefixFilterConfiguration {
             metric_prefix,
             metric_prefix_blocklist: self.metric_prefix_blocklist.clone(),
             blocklist: Blocklist::new(&self.metric_blocklist, self.metric_blocklist_match_prefix),
+            configuration: self.configuration.clone(),
         }))
     }
 }
@@ -162,6 +169,7 @@ pub struct DogstatsDPrefixFilter {
     metric_prefix: String,
     metric_prefix_blocklist: Vec<String>,
     blocklist: Blocklist,
+    configuration: Option<GenericConfiguration>,
 }
 
 impl DogstatsDPrefixFilter {
@@ -215,6 +223,9 @@ impl Transform for DogstatsDPrefixFilter {
         let mut health = context.take_health_handle();
         health.mark_ready();
 
+        let config = self.configuration.as_ref().unwrap();
+        let mut config_updates = config.subscribe_for_updates();
+
         debug!("DogStatsD Prefix Filter transform started.");
 
         loop {
@@ -235,6 +246,13 @@ impl Transform for DogstatsDPrefixFilter {
                     },
                     None => break,
                 },
+                Ok(change) = async { config_updates.as_mut().unwrap().recv().await }, if config_updates.is_some() => {
+                    let maybe_new_metric_blocklist = try_extract_blocklist_from_change(change);
+                    if let Some(new_metric_blocklist) = maybe_new_metric_blocklist {
+                        debug!(?new_metric_blocklist, "Updated metric blocklist.");
+                        self.blocklist = Blocklist::new(&new_metric_blocklist, self.blocklist.match_prefix);
+                    }
+                },
             }
         }
 
@@ -242,6 +260,27 @@ impl Transform for DogstatsDPrefixFilter {
 
         Ok(())
     }
+}
+
+fn try_extract_blocklist_from_change(change: ConfigChangeEvent) -> Option<Vec<String>> {
+    match change {
+        ConfigChangeEvent::Modified { key, new_value, .. } | ConfigChangeEvent::Added { key, value: new_value } => {
+            if key == "statsd_metric_blocklist" {
+                let new_metric_blocklist = value_to_blocklist_vec(&new_value);
+                return Some(new_metric_blocklist);
+            }
+        }
+    }
+    None
+}
+
+fn value_to_blocklist_vec(value: &serde_json::Value) -> Vec<String> {
+    value
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect::<Vec<String>>()
 }
 
 #[cfg(test)]
@@ -254,6 +293,7 @@ mod tests {
             metric_prefix: "foo.".to_string(),
             metric_prefix_blocklist: vec![],
             blocklist: Blocklist::default(),
+            configuration: None,
         };
 
         let mut metric = Metric::gauge("bar", 1.0);
@@ -267,6 +307,7 @@ mod tests {
             metric_prefix: "foo".to_string(),
             metric_prefix_blocklist: vec!["foo".to_string(), "bar".to_string()],
             blocklist: Blocklist::default(),
+            configuration: None,
         };
 
         let mut metric = Metric::gauge("barbar", 1.0);
@@ -280,6 +321,7 @@ mod tests {
             metric_prefix: "".to_string(),
             metric_prefix_blocklist: vec![],
             blocklist: Blocklist::new(&["foobar".to_string(), "test".to_string()], false),
+            configuration: None,
         };
 
         let mut metric = Metric::gauge("foobar", 1.0);
@@ -296,6 +338,7 @@ mod tests {
             metric_prefix: "foo.".to_string(),
             metric_prefix_blocklist: vec![],
             blocklist: Blocklist::new(&["foo.bar".to_string(), "test".to_string()], false),
+            configuration: None,
         };
 
         let mut metric = Metric::gauge("bar", 1.0);
@@ -305,6 +348,7 @@ mod tests {
             metric_prefix: "foo.".to_string(),
             metric_prefix_blocklist: vec!["foo".to_string()],
             blocklist: Blocklist::default(),
+            configuration: None,
         };
 
         let mut metric = Metric::gauge("foo", 1.0);
@@ -318,6 +362,7 @@ mod tests {
             metric_prefix: "".to_string(),
             metric_prefix_blocklist: vec![],
             blocklist: Blocklist::new(&["b".to_string(), "test".to_string()], true),
+            configuration: None,
         };
 
         // match prefix is true, "bar" has prefix "b"
@@ -335,6 +380,7 @@ mod tests {
             metric_prefix: "foo".to_string(),
             metric_prefix_blocklist: vec![],
             blocklist: Blocklist::new(&["fo".to_string(), "test".to_string()], true),
+            configuration: None,
         };
 
         // new_metric is "foo.bar", match prefix is true, "foo.bar" has prefix "fo"
