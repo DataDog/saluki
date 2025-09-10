@@ -200,11 +200,17 @@ impl OtlpConfiguration {
 
 pub struct Metrics {
     metrics_received: Counter,
+    _logs_received: Counter, // TODO: remove _ after implementing translator for logs
 }
 
 impl Metrics {
     fn metrics_received(&self) -> &Counter {
         &self.metrics_received
+    }
+
+    fn _logs_received(&self) -> &Counter {
+        // TODO: remove _ after implementing translator for logs
+        &self._logs_received
     }
 }
 
@@ -214,6 +220,8 @@ fn build_metrics(component_context: &ComponentContext) -> Metrics {
     Metrics {
         metrics_received: builder
             .register_debug_counter_with_tags("component_events_received_total", [("message_type", "otlp_metrics")]),
+        _logs_received: builder // TODO: remove _ after implementing translator for logs
+            .register_debug_counter_with_tags("component_events_received_total", [("message_type", "otlp_logs")]),
     }
 }
 
@@ -480,7 +488,7 @@ async fn dispatch_events(events: EventsBuffer, source_context: &SourceContext) {
 
 async fn run_converter(
     mut receiver: mpsc::Receiver<OtlpResource>, source_context: SourceContext, shutdown_handle: DynamicShutdownHandle,
-    mut translator: OtlpTranslator, metrics: Metrics
+    mut translator: OtlpTranslator, metrics: Metrics,
 ) {
     tokio::pin!(shutdown_handle);
     debug!("OTLP resource converter task started.");
