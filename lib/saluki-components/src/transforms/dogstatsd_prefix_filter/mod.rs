@@ -246,7 +246,7 @@ impl Transform for DogstatsDPrefixFilter {
                     },
                     None => break,
                 },
-                Ok(change) = async { config_updates.as_mut().unwrap().recv().await }, if config_updates.is_some() => {
+                Ok(change) = config_updates.as_mut().unwrap().recv(), if config_updates.is_some() => {
                     let maybe_new_metric_blocklist = try_extract_blocklist_from_change(change);
                     if let Some(new_metric_blocklist) = maybe_new_metric_blocklist {
                         debug!(?new_metric_blocklist, "Updated metric blocklist.");
