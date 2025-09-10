@@ -198,14 +198,6 @@ impl OtlpConfiguration {
     }
 }
 
-// TODO: implement
-pub struct Logs {}
-
-// TODO: implement
-fn build_logs() -> Logs {
-    Logs {}
-}
-
 pub struct Metrics {
     metrics_received: Counter,
 }
@@ -266,8 +258,7 @@ impl SourceBuilder for OtlpConfiguration {
         let context_resolver = ContextResolverBuilder::from_name(format!("{}/otlp", context.component_id()))?.build();
         let translator_config = metrics::config::OtlpTranslatorConfig::default().with_remapping(true);
         let grpc_max_recv_msg_size_bytes = self.receiver.protocols.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
-        let metrics = build_metrics(&context);
-        let logs = build_logs(); // TODO: finish implementing
+        let metrics: Metrics = build_metrics(&context);
         Ok(Box::new(Otlp {
             context_resolver,
             grpc_endpoint,
@@ -275,7 +266,6 @@ impl SourceBuilder for OtlpConfiguration {
             grpc_max_recv_msg_size_bytes,
             translator_config,
             metrics,
-            logs,
         }))
     }
 }
@@ -296,7 +286,6 @@ pub struct Otlp {
     grpc_max_recv_msg_size_bytes: usize,
     translator_config: metrics::config::OtlpTranslatorConfig,
     metrics: Metrics,
-    logs: Logs,
 }
 
 #[async_trait]
@@ -321,7 +310,6 @@ impl Source for Otlp {
                 converter_shutdown_coordinator.register(),
                 translator,
                 self.metrics,
-                self.logs,
             ),
         );
 
@@ -492,7 +480,7 @@ async fn dispatch_events(events: EventsBuffer, source_context: &SourceContext) {
 
 async fn run_converter(
     mut receiver: mpsc::Receiver<OtlpResource>, source_context: SourceContext, shutdown_handle: DynamicShutdownHandle,
-    mut translator: OtlpTranslator, metrics: Metrics, _logs: Logs,
+    mut translator: OtlpTranslator, metrics: Metrics
 ) {
     tokio::pin!(shutdown_handle);
     debug!("OTLP resource converter task started.");
