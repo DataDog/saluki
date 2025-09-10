@@ -312,7 +312,7 @@ impl Source for Otlp {
         let mut converter_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
         let translator = OtlpTranslator::new(self.translator_config, self.context_resolver);
-
+        // Spawn the converter task. This task is shared by both servers.
         spawn_traced_named(
             "otlp-resource-converter",
             run_converter(
