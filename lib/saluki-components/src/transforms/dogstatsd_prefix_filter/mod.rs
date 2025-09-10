@@ -265,6 +265,7 @@ impl Transform for DogstatsDPrefixFilter {
 fn try_extract_blocklist_from_change(change: ConfigChangeEvent) -> Option<Vec<String>> {
     match change {
         ConfigChangeEvent::Modified { key, new_value, .. } | ConfigChangeEvent::Added { key, value: new_value } => {
+            // Note: The agent metric blocklist feature via RC only changes this key. This may change in the future.
             if key == "statsd_metric_blocklist" {
                 let new_metric_blocklist = value_to_blocklist_vec(&new_value);
                 return Some(new_metric_blocklist);
