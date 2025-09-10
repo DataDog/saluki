@@ -9,12 +9,15 @@ use axum::http::StatusCode;
 use axum::routing::post;
 use axum::Router;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, MemoryLimiter};
+use otlp_protos::opentelemetry::proto::collector::logs::v1::logs_service_server::{LogsService, LogsServiceServer};
+use otlp_protos::opentelemetry::proto::collector::logs::v1::{ExportLogsServiceRequest, ExportLogsServiceResponse};
 use otlp_protos::opentelemetry::proto::collector::metrics::v1::metrics_service_server::{
     MetricsService, MetricsServiceServer,
 };
 use otlp_protos::opentelemetry::proto::collector::metrics::v1::{
     ExportMetricsServiceRequest, ExportMetricsServiceResponse,
 };
+use otlp_protos::opentelemetry::proto::logs::v1::ResourceLogs as OtlpResourceLogs;
 use otlp_protos::opentelemetry::proto::metrics::v1::ResourceMetrics as OtlpResourceMetrics;
 use prost::Message;
 use saluki_common::task::spawn_traced_named;
@@ -57,6 +60,8 @@ pub struct OtlpConfiguration {
     receiver: Receiver,
     #[serde(default)]
     metrics: MetricsConfig,
+    #[serde(default)]
+    logs: LogsConfig,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -139,6 +144,32 @@ fn default_max_recv_msg_size_mib() -> u64 {
     4
 }
 
+enum OtlpResource {
+    Metrics(OtlpResourceMetrics),
+    Logs(OtlpResourceLogs),
+}
+
+#[derive(Deserialize, Debug)]
+pub struct LogsConfig {
+    /// Whether to enable OTLP logs support.
+    ///
+    /// Defaults to true.
+    #[serde(default = "default_logs_enabled")]
+    pub enabled: bool,
+}
+
+fn default_logs_enabled() -> bool {
+    true
+}
+
+impl Default for LogsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_logs_enabled(),
+        }
+    }
+}
+
 #[derive(Deserialize, Debug)]
 pub struct MetricsConfig {
     /// Whether to enable OTLP metrics support.
@@ -169,11 +200,17 @@ impl OtlpConfiguration {
 
 pub struct Metrics {
     metrics_received: Counter,
+    _logs_received: Counter, // TODO: remove _ after implementing translator for logs
 }
 
 impl Metrics {
     fn metrics_received(&self) -> &Counter {
         &self.metrics_received
+    }
+
+    fn _logs_received(&self) -> &Counter {
+        // TODO: remove _ after implementing translator for logs
+        &self._logs_received
     }
 }
 
@@ -183,6 +220,8 @@ fn build_metrics(component_context: &ComponentContext) -> Metrics {
     Metrics {
         metrics_received: builder
             .register_debug_counter_with_tags("component_events_received_total", [("message_type", "otlp_metrics")]),
+        _logs_received: builder // TODO: remove _ after implementing translator for logs
+            .register_debug_counter_with_tags("component_events_received_total", [("message_type", "otlp_logs")]),
     }
 }
 
@@ -198,6 +237,10 @@ impl SourceBuilder for OtlpConfiguration {
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
         if !self.metrics.enabled {
             return Err(generic_error!("OTLP metrics support is disabled."));
+        }
+
+        if !self.logs.enabled {
+            return Err(generic_error!("OTLP logs support is disabled."));
         }
 
         let grpc_listen_str = format!(
@@ -223,8 +266,7 @@ impl SourceBuilder for OtlpConfiguration {
         let context_resolver = ContextResolverBuilder::from_name(format!("{}/otlp", context.component_id()))?.build();
         let translator_config = metrics::config::OtlpTranslatorConfig::default().with_remapping(true);
         let grpc_max_recv_msg_size_bytes = self.receiver.protocols.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
-        let metrics = build_metrics(&context);
-
+        let metrics: Metrics = build_metrics(&context);
         Ok(Box::new(Otlp {
             context_resolver,
             grpc_endpoint,
@@ -262,14 +304,14 @@ impl Source for Otlp {
         let memory_limiter = context.topology_context().memory_limiter();
 
         // Create the internal channel for decoupling the servers from the converter.
-        let (tx, rx) = mpsc::channel(1024);
+        let (tx, rx) = mpsc::channel::<OtlpResource>(1024);
+
         let mut converter_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
         let translator = OtlpTranslator::new(self.translator_config, self.context_resolver);
-
         // Spawn the converter task. This task is shared by both servers.
         spawn_traced_named(
-            "otlp-metric-converter",
+            "otlp-resource-converter",
             run_converter(
                 rx,
                 context.clone(),
@@ -280,10 +322,13 @@ impl Source for Otlp {
         );
 
         // Create and spawn the gRPC server.
-        let grpc_service = GrpcService::new(tx.clone(), memory_limiter.clone());
-        let grpc_server =
-            MetricsServiceServer::new(grpc_service).max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
-        let grpc_server = Server::builder().add_service(grpc_server);
+        let grpc_metrics_server = MetricsServiceServer::new(GrpcService::new(tx.clone(), memory_limiter.clone()))
+            .max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
+        let grpc_logs_server = LogsServiceServer::new(GrpcService::new(tx.clone(), memory_limiter.clone()))
+            .max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
+        let grpc_server = Server::builder()
+            .add_service(grpc_metrics_server)
+            .add_service(grpc_logs_server);
 
         let grpc_socket_addr = self
             .grpc_endpoint
@@ -295,7 +340,8 @@ impl Source for Otlp {
         // Create and spawn the HTTP server.
         let service = TowerToHyperService::new(
             Router::new()
-                .route("/v1/metrics", post(http_handler))
+                .route("/v1/metrics", post(http_metric_handler))
+                .route("/v1/logs", post(http_logs_handler))
                 .with_state((tx, memory_limiter.clone())),
         );
         let http_listener = ConnectionOrientedListener::from_listen_address(self.http_endpoint)
@@ -335,14 +381,35 @@ impl Source for Otlp {
     }
 }
 
-async fn http_handler(
-    State((tx, memory_limiter)): State<(mpsc::Sender<OtlpResourceMetrics>, MemoryLimiter)>, body: Bytes,
+async fn http_logs_handler(
+    State((tx, memory_limiter)): State<(mpsc::Sender<OtlpResource>, MemoryLimiter)>, body: Bytes,
+) -> (StatusCode, &'static str) {
+    memory_limiter.wait_for_capacity().await;
+    match ExportLogsServiceRequest::decode(body) {
+        Ok(request) => {
+            for resource_logs in request.resource_logs {
+                if tx.send(OtlpResource::Logs(resource_logs)).await.is_err() {
+                    error!("Failed to send resource logs to converter; channel is closed.");
+                    return (StatusCode::INTERNAL_SERVER_ERROR, "Internal processing channel closed.");
+                }
+            }
+            (StatusCode::OK, "OK")
+        }
+        Err(e) => {
+            error!(error = %e, "Failed to decode OTLP protobuf request.");
+            (StatusCode::BAD_REQUEST, "Bad Request: Invalid protobuf.")
+        }
+    }
+}
+
+async fn http_metric_handler(
+    State((tx, memory_limiter)): State<(mpsc::Sender<OtlpResource>, MemoryLimiter)>, body: Bytes,
 ) -> (StatusCode, &'static str) {
     memory_limiter.wait_for_capacity().await;
     match ExportMetricsServiceRequest::decode(body) {
         Ok(request) => {
             for resource_metrics in request.resource_metrics {
-                if tx.send(resource_metrics).await.is_err() {
+                if tx.send(OtlpResource::Metrics(resource_metrics)).await.is_err() {
                     error!("Failed to send resource metrics to converter; channel is closed.");
                     return (StatusCode::INTERNAL_SERVER_ERROR, "Internal processing channel closed.");
                 }
@@ -357,12 +424,12 @@ async fn http_handler(
 }
 
 struct GrpcService {
-    sender: mpsc::Sender<OtlpResourceMetrics>,
+    sender: mpsc::Sender<OtlpResource>,
     memory_limiter: MemoryLimiter,
 }
 
 impl GrpcService {
-    fn new(sender: mpsc::Sender<OtlpResourceMetrics>, memory_limiter: MemoryLimiter) -> Self {
+    fn new(sender: mpsc::Sender<OtlpResource>, memory_limiter: MemoryLimiter) -> Self {
         Self { sender, memory_limiter }
     }
 }
@@ -376,13 +443,32 @@ impl MetricsService for GrpcService {
         let request = request.into_inner();
 
         for resource_metrics in request.resource_metrics {
-            if self.sender.send(resource_metrics).await.is_err() {
+            if self.sender.send(OtlpResource::Metrics(resource_metrics)).await.is_err() {
                 error!("Failed to send resource metrics to converter; channel is closed.");
                 return Err(Status::internal("Internal processing channel closed."));
             }
         }
 
         Ok(Response::new(ExportMetricsServiceResponse { partial_success: None }))
+    }
+}
+
+#[async_trait]
+impl LogsService for GrpcService {
+    async fn export(
+        &self, request: Request<ExportLogsServiceRequest>,
+    ) -> Result<Response<ExportLogsServiceResponse>, Status> {
+        self.memory_limiter.wait_for_capacity().await;
+        let request = request.into_inner();
+
+        for resource_logs in request.resource_logs {
+            if self.sender.send(OtlpResource::Logs(resource_logs)).await.is_err() {
+                error!("Failed to send resource logs to converter; channel is closed.");
+                return Err(Status::internal("Internal processing channel closed."));
+            }
+        }
+
+        Ok(Response::new(ExportLogsServiceResponse { partial_success: None }))
     }
 }
 
@@ -401,11 +487,11 @@ async fn dispatch_events(events: EventsBuffer, source_context: &SourceContext) {
 }
 
 async fn run_converter(
-    mut receiver: mpsc::Receiver<OtlpResourceMetrics>, source_context: SourceContext,
-    shutdown_handle: DynamicShutdownHandle, mut translator: OtlpTranslator, metrics: Metrics,
+    mut receiver: mpsc::Receiver<OtlpResource>, source_context: SourceContext, shutdown_handle: DynamicShutdownHandle,
+    mut translator: OtlpTranslator, metrics: Metrics,
 ) {
     tokio::pin!(shutdown_handle);
-    debug!("OTLP metric converter task started.");
+    debug!("OTLP resource converter task started.");
 
     // Set a buffer flush interval of 100ms, which will ensure we always flush buffered events at least every 100ms if
     // we're otherwise idle and not receiving packets from the client.
@@ -416,17 +502,25 @@ async fn run_converter(
 
     loop {
         select! {
-            Some(resource_metrics) = receiver.recv() => {
-                match translator.map_metrics(resource_metrics, &metrics) {
-                    Ok(events) => {
-                        for event in events {
-                            if let Some(event_buffer) = event_buffer_manager.try_push(event) {
-                                dispatch_events(event_buffer, &source_context).await;
+            Some(otlp_resource) = receiver.recv() => {
+                match otlp_resource {
+                    OtlpResource::Metrics(resource_metrics) => {
+                        match translator.map_metrics(resource_metrics, &metrics) {
+                            Ok(events) => {
+                                for event in events {
+                                    if let Some(event_buffer) = event_buffer_manager.try_push(event) {
+                                        dispatch_events(event_buffer, &source_context).await;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!(error = %e, "Failed to handle resource metrics.");
                             }
                         }
+
                     }
-                    Err(e) => {
-                        error!(error = %e, "Failed to handle resource metrics.");
+                    OtlpResource::Logs(_resource_logs) => {
+                        // TODO: handle translating OTLP logs to DD native format.
                     }
                 }
             },
@@ -446,5 +540,5 @@ async fn run_converter(
         dispatch_events(event_buffer, &source_context).await;
     }
 
-    debug!("OTLP metric converter task stopped.");
+    debug!("OTLP resource converter task stopped.");
 }
