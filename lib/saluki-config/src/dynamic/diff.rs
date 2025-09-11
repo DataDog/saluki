@@ -27,18 +27,19 @@ fn diff_recursive(
                         if new_value.as_dict().is_some() && old_value.as_dict().is_some() {
                             diff_recursive(old_value, new_value, &current_path, changes);
                         } else {
-                            changes.push(ConfigChangeEvent::Modified {
+                            changes.push(ConfigChangeEvent {
                                 key: current_path,
-                                old_value: serde_json::to_value(old_value).unwrap(),
-                                new_value: serde_json::to_value(new_value).unwrap(),
+                                old_value: Some(serde_json::to_value(old_value).unwrap()),
+                                new_value: Some(serde_json::to_value(new_value).unwrap()),
                             });
                         }
                     }
                 }
                 None => {
-                    changes.push(ConfigChangeEvent::Added {
+                    changes.push(ConfigChangeEvent {
                         key: current_path,
-                        value: serde_json::to_value(new_value).unwrap(),
+                        old_value: None,
+                        new_value: Some(serde_json::to_value(new_value).unwrap()),
                     });
                 }
             }
@@ -89,23 +90,25 @@ mod tests {
 
         println!("changes: {:?}", changes);
 
-        assert!(changes.contains(&ConfigChangeEvent::Modified {
+        assert!(changes.contains(&ConfigChangeEvent {
             key: "a".to_string(),
-            old_value: "original".into(),
-            new_value: "updated".into()
+            old_value: Some("original".into()),
+            new_value: Some("updated".into())
         }));
-        assert!(changes.contains(&ConfigChangeEvent::Modified {
+        assert!(changes.contains(&ConfigChangeEvent {
             key: "nested.b".to_string(),
-            old_value: 100.into(),
-            new_value: 200.into()
+            old_value: Some(100.into()),
+            new_value: Some(200.into())
         }));
-        assert!(changes.contains(&ConfigChangeEvent::Added {
+        assert!(changes.contains(&ConfigChangeEvent {
             key: "nested.c".to_string(),
-            value: "new".into()
+            old_value: None,
+            new_value: Some("new".into())
         }));
-        assert!(changes.contains(&ConfigChangeEvent::Added {
+        assert!(changes.contains(&ConfigChangeEvent {
             key: "d".to_string(),
-            value: "added".into()
+            old_value: None,
+            new_value: Some("added".into())
         }));
     }
 

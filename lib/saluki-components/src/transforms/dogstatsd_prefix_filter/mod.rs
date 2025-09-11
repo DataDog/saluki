@@ -2,7 +2,6 @@ use std::ops::Deref;
 
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_config::dynamic::ConfigChangeEvent;
 use saluki_config::GenericConfiguration;
 use saluki_core::data_model::event::{metric::Metric, EventType};
 use saluki_core::{
@@ -224,7 +223,7 @@ impl Transform for DogstatsDPrefixFilter {
         health.mark_ready();
 
         let config = self.configuration.as_ref().unwrap();
-        let mut config_updates = config.subscribe_for_updates();
+        let mut blocklist_watcher = config.watch_for_updates("statsd_metric_blocklist");
 
         debug!("DogStatsD Prefix Filter transform started.");
 
@@ -246,11 +245,10 @@ impl Transform for DogstatsDPrefixFilter {
                     },
                     None => break,
                 },
-                Ok(change) = config_updates.as_mut().unwrap().recv(), if config_updates.is_some() => {
-                    let maybe_new_metric_blocklist = try_extract_blocklist_from_change(change);
+                (_, maybe_new_metric_blocklist) = blocklist_watcher.changed::<Vec<String>>() => {
                     if let Some(new_metric_blocklist) = maybe_new_metric_blocklist {
-                        debug!(?new_metric_blocklist, "Updated metric blocklist.");
                         self.blocklist = Blocklist::new(&new_metric_blocklist, self.blocklist.match_prefix);
+                        debug!(?new_metric_blocklist, "Updated metric blocklist.");
                     }
                 },
             }
@@ -261,29 +259,6 @@ impl Transform for DogstatsDPrefixFilter {
         Ok(())
     }
 }
-
-fn try_extract_blocklist_from_change(change: ConfigChangeEvent) -> Option<Vec<String>> {
-    match change {
-        ConfigChangeEvent::Modified { key, new_value, .. } | ConfigChangeEvent::Added { key, value: new_value } => {
-            // Note: The agent metric blocklist feature via RC only changes this key. This may change in the future.
-            if key == "statsd_metric_blocklist" {
-                let new_metric_blocklist = value_to_blocklist_vec(&new_value);
-                return Some(new_metric_blocklist);
-            }
-        }
-    }
-    None
-}
-
-fn value_to_blocklist_vec(value: &serde_json::Value) -> Vec<String> {
-    value
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_str().unwrap().to_string())
-        .collect::<Vec<String>>()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
