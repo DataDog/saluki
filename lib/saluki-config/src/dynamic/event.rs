@@ -4,23 +4,13 @@ use serde_json::Value as JsonValue;
 
 /// An event that occurs when the configuration changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConfigChangeEvent {
-    /// A configuration key was added.
-    Added {
-        /// The key that was added.
-        key: String,
-        /// The new value.
-        value: JsonValue,
-    },
-    /// A configuration key was modified.
-    Modified {
-        /// The key that was updated.
-        key: String,
-        /// The old value.
-        old_value: JsonValue,
-        /// The new value.
-        new_value: JsonValue,
-    },
+pub struct ConfigChangeEvent {
+    /// The key that changed.
+    pub key: String,
+    /// The previous value, if any.
+    pub old_value: Option<JsonValue>,
+    /// The new value.
+    pub new_value: Option<JsonValue>,
 }
 
 /// An update message for the dynamic configuration state, sent from the config stream to the updater task.

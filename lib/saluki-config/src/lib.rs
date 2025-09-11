@@ -21,6 +21,7 @@ pub mod dynamic;
 mod provider;
 mod secrets;
 
+pub use self::dynamic::FieldUpdateWatcher;
 use self::dynamic::{ConfigChangeEvent, ConfigUpdate};
 use self::provider::ResolvedProvider;
 
@@ -708,6 +709,17 @@ impl GenericConfiguration {
     /// Subscribes for updates to the configuration.
     pub fn subscribe_for_updates(&self) -> Option<broadcast::Receiver<dynamic::ConfigChangeEvent>> {
         self.inner.event_sender.as_ref().map(|s| s.subscribe())
+    }
+
+    /// Creates a watcher that yields only when the given key changes.
+    ///
+    /// If dynamic configuration is disabled, the returned watcher's `changed()`
+    /// will wait indefinitely.
+    pub fn watch_for_updates(&self, key: &str) -> FieldUpdateWatcher {
+        FieldUpdateWatcher {
+            key: key.to_string(),
+            rx: self.subscribe_for_updates(),
+        }
     }
 }
 
