@@ -4,6 +4,7 @@ use std::future::pending as pending_forever;
 
 use serde::de::DeserializeOwned;
 use tokio::sync::broadcast;
+use tracing::warn;
 
 use crate::dynamic::ConfigChangeEvent;
 
@@ -15,9 +16,9 @@ use crate::dynamic::ConfigChangeEvent;
 /// If dynamic configuration is disabled, [`changed`](Self::changed) will wait indefinitely and never yield.
 pub struct FieldUpdateWatcher {
     /// The configuration key to watch for updates.
-    pub key: String,
+    pub(crate) key: String,
     /// Receiver of global configuration change events (None when dynamic is disabled).
-    pub rx: Option<broadcast::Receiver<ConfigChangeEvent>>,
+    pub(crate) rx: Option<broadcast::Receiver<ConfigChangeEvent>>,
 }
 
 impl FieldUpdateWatcher {
@@ -35,28 +36,52 @@ impl FieldUpdateWatcher {
         loop {
             match rx.recv().await {
                 Ok(event) if event.key == self.key => {
-                    // Attempt to deserialize old/new; tolerate failures by setting None.
-                    let old_t = match event.old_value {
-                        Some(ref ov) => serde_json::from_value::<T>(ov.clone()).ok(),
-                        None => None,
-                    };
-                    let new_t = match event.new_value {
-                        Some(ref nv) => serde_json::from_value::<T>(nv.clone()).ok(),
-                        None => None,
-                    };
+                    let old_ref = event.old_value.as_ref();
+                    let new_ref = event.new_value.as_ref();
+
+                    let old_t = old_ref.and_then(|ov| serde_json::from_value::<T>(ov.clone()).ok());
+                    let new_t = new_ref.and_then(|nv| serde_json::from_value::<T>(nv.clone()).ok());
 
                     if new_t.is_some() || old_t.is_some() {
                         return (old_t, new_t);
                     }
+
+                    // If a new value was present but failed to deserialize, warn so we don't silently hide updates.
+                    if new_ref.is_some() {
+                        warn!(
+                            key = %self.key,
+                            expected = %std::any::type_name::<T>(),
+                            actual = %get_type_name(new_ref.as_ref().unwrap()),
+                            "FieldUpdateWatcher failed to deserialize new value. Skipping update."
+                        );
+                    }
                 }
                 // Ignore other key changes.
                 Ok(_) => continue,
-                Err(_) => {
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    warn!(
+                        "FieldUpdateWatcher dropped events for key: {}. Continuing to wait for the next event.",
+                        self.key
+                    );
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Closed) => {
                     // Keep pending forever to match "might never fire" semantics.
                     pending_forever::<()>().await;
                     unreachable!();
                 }
             }
         }
+    }
+}
+
+fn get_type_name(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "bool",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
     }
 }
