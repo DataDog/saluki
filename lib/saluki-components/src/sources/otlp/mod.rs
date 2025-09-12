@@ -311,7 +311,7 @@ impl Source for Otlp {
         let mut converter_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
         let metrics_translator = OtlpMetricsTranslator::new(self.translator_config, self.context_resolver);
-        let logs_translator = OtlpLogsTranslator::new(self.translator_config);
+        let logs_translator = OtlpLogsTranslator::new();
         // Spawn the converter task. This task is shared by both servers.
         spawn_traced_named(
             "otlp-resource-converter",
@@ -526,11 +526,11 @@ async fn run_converter(
                         match logs_translator.map_logs(resource_logs, &metrics) {
                             Ok(events) => {
                                 for event in events {
-                                    info!("WACK TEST Event: {:?}", event);
+                                    info!("\n\nWACK TEST EVENT IS: {:?}\n\n", event);
                                 }
                             }
                             Err(e) => {
-                                info!(error = %e, "WACK TEST Failed to handle resource logs.");
+                                info!(error = %e, "converter: failed to handle resource logs\n");
                             }
                         }
                     }

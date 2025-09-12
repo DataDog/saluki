@@ -1,9 +1,10 @@
 //! Logs.
 
 use std::num::NonZeroU64;
-
+use std::collections::HashMap;
 use saluki_context::tags::SharedTagSet;
 use stringtheory::MetaString;
+use serde_json::Value as JsonValue;
 
 /// A log event.
 #[derive(Clone, Debug, PartialEq)]
@@ -22,6 +23,8 @@ pub struct Log {
     source: MetaString,
     /// Tags of the log.
     tags: SharedTagSet,
+    /// Additional properties of the log.
+    additional_properties: HashMap<String, JsonValue>,
 }
 
 /// Log status.
@@ -56,8 +59,9 @@ impl Log {
             service: MetaString::empty(),
             source: MetaString::empty(),
             tags: SharedTagSet::default(),
+            additional_properties: HashMap::new(),
         }
-    }
+    }   
 
     /// Sets the log status.
     pub fn with_status(mut self, status: impl Into<Option<LogStatus>>) -> Self {
@@ -94,6 +98,12 @@ impl Log {
     /// Sets the tags string.
     pub fn with_ddtags(mut self, ddtags: impl Into<Option<SharedTagSet>>) -> Self {
         self.tags = ddtags.into().unwrap_or_else(SharedTagSet::default);
+        self
+    }
+
+    /// Sets the addtional properties map.
+    pub fn with_additional_properties(mut self, additional_properties: impl Into<Option<HashMap<String, JsonValue>>>) -> Self {
+        self.additional_properties = additional_properties.into().unwrap_or_default();
         self
     }
 
