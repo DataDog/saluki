@@ -49,9 +49,11 @@ use tonic::{Request, Response, Status};
 use tracing::{debug, error, info};
 
 mod attributes;
+mod logs;
 mod metrics;
 
-use self::metrics::translator::OtlpTranslator;
+use self::logs::translator::OtlpLogsTranslator;
+use self::metrics::translator::OtlpMetricsTranslator;
 
 /// Configuration for the OTLP source.
 #[derive(Deserialize, Debug, Default)]
@@ -293,7 +295,7 @@ pub struct Otlp {
     http_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
     translator_config: metrics::config::OtlpTranslatorConfig,
-    metrics: Metrics,
+    metrics: Metrics, // Telemetry metrics, not DD native metrics.
 }
 
 #[async_trait]
@@ -308,7 +310,8 @@ impl Source for Otlp {
 
         let mut converter_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
-        let translator = OtlpTranslator::new(self.translator_config, self.context_resolver);
+        let metrics_translator = OtlpMetricsTranslator::new(self.translator_config, self.context_resolver);
+        let logs_translator = OtlpLogsTranslator::new();
         // Spawn the converter task. This task is shared by both servers.
         spawn_traced_named(
             "otlp-resource-converter",
@@ -316,7 +319,8 @@ impl Source for Otlp {
                 rx,
                 context.clone(),
                 converter_shutdown_coordinator.register(),
-                translator,
+                metrics_translator,
+                logs_translator,
                 self.metrics,
             ),
         );
@@ -488,7 +492,7 @@ async fn dispatch_events(events: EventsBuffer, source_context: &SourceContext) {
 
 async fn run_converter(
     mut receiver: mpsc::Receiver<OtlpResource>, source_context: SourceContext, shutdown_handle: DynamicShutdownHandle,
-    mut translator: OtlpTranslator, metrics: Metrics,
+    mut metrics_translator: OtlpMetricsTranslator, mut logs_translator: OtlpLogsTranslator, metrics: Metrics,
 ) {
     tokio::pin!(shutdown_handle);
     debug!("OTLP resource converter task started.");
@@ -505,7 +509,7 @@ async fn run_converter(
             Some(otlp_resource) = receiver.recv() => {
                 match otlp_resource {
                     OtlpResource::Metrics(resource_metrics) => {
-                        match translator.map_metrics(resource_metrics, &metrics) {
+                        match metrics_translator.map_metrics(resource_metrics, &metrics) {
                             Ok(events) => {
                                 for event in events {
                                     if let Some(event_buffer) = event_buffer_manager.try_push(event) {
@@ -517,10 +521,18 @@ async fn run_converter(
                                 error!(error = %e, "Failed to handle resource metrics.");
                             }
                         }
-
                     }
-                    OtlpResource::Logs(_resource_logs) => {
-                        // TODO: handle translating OTLP logs to DD native format.
+                    OtlpResource::Logs(resource_logs) => {
+                        match logs_translator.map_logs(resource_logs, &metrics) {
+                            Ok(events) => {
+                                for event in events {
+                                    info!("\n\nWACK TEST EVENT IS: {:?}\n\n", event);
+                                }
+                            }
+                            Err(e) => {
+                                info!(error = %e, "converter: failed to handle resource logs\n");
+                            }
+                        }
                     }
                 }
             },
