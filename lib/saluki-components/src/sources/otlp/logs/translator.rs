@@ -42,17 +42,9 @@ impl OtlpLogsTranslator {
 
         let base_resource_tags: SharedTagSet = self.attribute_translator.tags_from_attributes(&resource.attributes);
 
-        // Build base tags once per resource, ensuring canonical service and adding otel_source
+        // Build base tags once per resource and add otel_source
         let mut base_tags_owned = TagSet::default();
         base_tags_owned.merge_missing_shared(&base_resource_tags);
-        // Remove any pre-existing service:* tags (e.g., from raw `service` resource attribute)
-        base_tags_owned.remove_tags("service");
-        // Prefer service.name for service tag
-        if let Some(svc) = &service {
-            if !svc.is_empty() {
-                base_tags_owned.insert_tag(format!("service:{}", svc));
-            }
-        }
         // Add otel_source tag if a source is detected
         if let Some(src) = &source {
             base_tags_owned.insert_tag(format!("otel_source:{}", src.tag()));
