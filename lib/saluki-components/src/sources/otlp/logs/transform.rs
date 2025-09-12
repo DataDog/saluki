@@ -1,6 +1,5 @@
 use otlp_protos::opentelemetry::proto::common::v1 as otlp_common;
 use otlp_protos::opentelemetry::proto::logs::v1::SeverityNumber as OtlpSeverityNumber;
-
 use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_core::data_model::event::log::{Log as DdLog, LogStatus};
 use serde_json::Value as JsonValue;
@@ -28,7 +27,9 @@ pub fn get_string_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &s
     })
 }
 
-pub fn get_string_attribute_case_insensitive<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<&'a str> {
+pub fn get_string_attribute_case_insensitive<'a>(
+    attributes: &'a [otlp_common::KeyValue], key: &str,
+) -> Option<&'a str> {
     attributes.iter().find_map(|kv| {
         if kv.key.eq_ignore_ascii_case(key) {
             if let Some(otlp_common::any_value::Value::StringValue(s_val)) =
@@ -44,7 +45,9 @@ pub fn get_string_attribute_case_insensitive<'a>(attributes: &'a [otlp_common::K
     })
 }
 
-pub fn get_first_string_attr_case_insensitive<'a>(attributes: &'a [otlp_common::KeyValue], keys: &[&str]) -> Option<&'a str> {
+pub fn get_first_string_attr_case_insensitive<'a>(
+    attributes: &'a [otlp_common::KeyValue], keys: &[&str],
+) -> Option<&'a str> {
     for key in keys {
         if let Some(v) = get_string_attribute_case_insensitive(attributes, key) {
             return Some(v);
@@ -86,31 +89,37 @@ pub fn map_severity_number(severity_number: i32) -> Option<LogStatus> {
     match OtlpSeverityNumber::try_from(severity_number) {
         Ok(
             OtlpSeverityNumber::Trace
-                | OtlpSeverityNumber::Trace2
-                | OtlpSeverityNumber::Trace3
-                | OtlpSeverityNumber::Trace4
-                | OtlpSeverityNumber::Debug
-                | OtlpSeverityNumber::Debug2
-                | OtlpSeverityNumber::Debug3
-                | OtlpSeverityNumber::Debug4,
+            | OtlpSeverityNumber::Trace2
+            | OtlpSeverityNumber::Trace3
+            | OtlpSeverityNumber::Trace4
+            | OtlpSeverityNumber::Debug
+            | OtlpSeverityNumber::Debug2
+            | OtlpSeverityNumber::Debug3
+            | OtlpSeverityNumber::Debug4,
         ) => Some(LogStatus::Debug),
         Ok(
-            OtlpSeverityNumber::Info | OtlpSeverityNumber::Info2 | OtlpSeverityNumber::Info3 | OtlpSeverityNumber::Info4,
+            OtlpSeverityNumber::Info
+            | OtlpSeverityNumber::Info2
+            | OtlpSeverityNumber::Info3
+            | OtlpSeverityNumber::Info4,
         ) => Some(LogStatus::Info),
         Ok(
-            OtlpSeverityNumber::Warn | OtlpSeverityNumber::Warn2 | OtlpSeverityNumber::Warn3 | OtlpSeverityNumber::Warn4,
+            OtlpSeverityNumber::Warn
+            | OtlpSeverityNumber::Warn2
+            | OtlpSeverityNumber::Warn3
+            | OtlpSeverityNumber::Warn4,
         ) => Some(LogStatus::Warning),
         Ok(
             OtlpSeverityNumber::Error
-                | OtlpSeverityNumber::Error2
-                | OtlpSeverityNumber::Error3
-                | OtlpSeverityNumber::Error4,
+            | OtlpSeverityNumber::Error2
+            | OtlpSeverityNumber::Error3
+            | OtlpSeverityNumber::Error4,
         ) => Some(LogStatus::Error),
         Ok(
             OtlpSeverityNumber::Fatal
-                | OtlpSeverityNumber::Fatal2
-                | OtlpSeverityNumber::Fatal3
-                | OtlpSeverityNumber::Fatal4,
+            | OtlpSeverityNumber::Fatal2
+            | OtlpSeverityNumber::Fatal3
+            | OtlpSeverityNumber::Fatal4,
         ) => Some(LogStatus::Critical),
         Ok(OtlpSeverityNumber::Unspecified) => None,
         Err(_) => None,
@@ -205,17 +214,15 @@ pub fn from_hex_nibble(b: u8) -> Option<u8> {
 pub struct LogRecordTransformer;
 
 impl LogRecordTransformer {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn transform(
-        &self,
-        lr: otlp_protos::opentelemetry::proto::logs::v1::LogRecord,
+        &self, lr: otlp_protos::opentelemetry::proto::logs::v1::LogRecord,
         resource: &otlp_protos::opentelemetry::proto::resource::v1::Resource,
-        scope: Option<&otlp_common::InstrumentationScope>,
-        host_for_record: Option<String>,
-        service_for_record: Option<String>,
-        base_tags_for_resource: &SharedTagSet,
+        scope: Option<&otlp_common::InstrumentationScope>, host_for_record: Option<String>,
+        service_for_record: Option<String>, base_tags_for_resource: &SharedTagSet,
     ) -> DdLog {
         // Start with curated resource tags only
         let mut tags = base_tags_for_resource.clone();
@@ -233,8 +240,8 @@ impl LogRecordTransformer {
         }
 
         // Status derivation
-        let status_text_from_attrs = get_first_string_attr_case_insensitive(&lr.attributes, STATUS_KEYS)
-            .map(|s| s.to_string());
+        let status_text_from_attrs =
+            get_first_string_attr_case_insensitive(&lr.attributes, STATUS_KEYS).map(|s| s.to_string());
         let status = derive_status(
             status_text_from_attrs.as_deref(),
             lr.severity_text.as_str(),
@@ -338,19 +345,19 @@ impl LogRecordTransformer {
         }
 
         // Message: prefer attributes (msg|message|log), else body
-        let message_from_attrs = get_first_string_attr_case_insensitive(&lr.attributes, MESSAGE_KEYS)
-            .map(|s| s.to_string());
+        let message_from_attrs =
+            get_first_string_attr_case_insensitive(&lr.attributes, MESSAGE_KEYS).map(|s| s.to_string());
         let message = match message_from_attrs {
             Some(m) => m,
-            None => lr
-                .body
-                .as_ref()
-                .map(any_value_to_message_string)
-                .unwrap_or_else(String::new),
+            None => lr.body.as_ref().map(any_value_to_message_string).unwrap_or_default(),
         };
 
         // Timestamp: prefer event time, else observed time; seconds
-        let ts_ns = if lr.time_unix_nano != 0 { lr.time_unix_nano } else { lr.observed_time_unix_nano };
+        let ts_ns = if lr.time_unix_nano != 0 {
+            lr.time_unix_nano
+        } else {
+            lr.observed_time_unix_nano
+        };
         let ts_s = if ts_ns != 0 { Some(ts_ns / 1_000_000_000) } else { None };
 
         // Build Log

@@ -6,10 +6,7 @@ use saluki_error::GenericError;
 
 use crate::sources::otlp::attributes::source::SourceKind;
 use crate::sources::otlp::attributes::translator::AttributeTranslator;
-use crate::sources::otlp::logs::transform::{
-    get_string_attribute,
-    LogRecordTransformer,
-};
+use crate::sources::otlp::logs::transform::{get_string_attribute, LogRecordTransformer};
 use crate::sources::otlp::Metrics;
 
 /// A translator for converting OTLP logs into DD native logs.
