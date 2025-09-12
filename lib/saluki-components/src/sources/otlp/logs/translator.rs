@@ -29,7 +29,6 @@ impl OtlpLogsTranslator {
 
         let resource = resource_logs.resource.unwrap_or_default();
         let source = self.attribute_translator.resource_to_source(&resource);
-
         let host: Option<String> = match &source {
             Some(src) if matches!(src.kind, SourceKind::HostnameKind) => Some(src.identifier.clone()),
             _ => None,
@@ -37,11 +36,9 @@ impl OtlpLogsTranslator {
 
         let service: Option<String> = get_string_attribute(&resource.attributes, SERVICE_NAME).map(|s| s.to_string());
 
-        let base_resource_tags: SharedTagSet = self.attribute_translator.tags_from_attributes(&resource.attributes);
-
         // Build base tags once per resource and add otel_source
         let mut base_tags_owned = TagSet::default();
-        base_tags_owned.merge_missing_shared(&base_resource_tags);
+        base_tags_owned.merge_missing_shared(&self.attribute_translator.tags_from_attributes(&resource.attributes));
         // Add otel_source tag if a source is detected
         if let Some(src) = &source {
             base_tags_owned.insert_tag(format!("otel_source:{}", src.tag()));
@@ -49,14 +46,11 @@ impl OtlpLogsTranslator {
         let base_tags_for_resource: SharedTagSet = base_tags_owned.into_shared();
 
         for mut scope_logs in resource_logs.scope_logs {
-            // Keep a handle to curated resource tags
-            let base_tags = base_tags_for_resource.clone();
 
             for lr in scope_logs.log_records.drain(..) {
                 metrics._logs_received().increment(1);
 
                 // Host/service fallbacks from record attributes if missing
-
                 let mut host_for_record = host.clone();
                 if host_for_record.is_none() {
                     host_for_record = get_string_attribute(&lr.attributes, HOST_NAME).map(|s| s.to_string());
@@ -72,7 +66,7 @@ impl OtlpLogsTranslator {
                     scope_logs.scope.as_ref(),
                     host_for_record,
                     service_for_record,
-                    &base_tags,
+                    &base_tags_for_resource,
                 );
 
                 events.push(Event::Log(log));

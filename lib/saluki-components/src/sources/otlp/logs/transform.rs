@@ -1,8 +1,10 @@
 use otlp_protos::opentelemetry::proto::common::v1 as otlp_common;
+use chrono::DateTime;
 use otlp_protos::opentelemetry::proto::logs::v1::SeverityNumber as OtlpSeverityNumber;
 use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_core::data_model::event::log::{Log as DdLog, LogStatus};
 use serde_json::Value as JsonValue;
+use otlp_common::any_value::Value::StringValue as OtlpStringValue;
 use stringtheory::MetaString;
 
 pub const DDTAGS_ATTR: &str = "ddtags";
@@ -14,7 +16,7 @@ pub const SPAN_ID_ATTR_KEYS: &[&str] = &["spanid", "span_id", "contextmap.spanid
 pub fn get_string_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<&'a str> {
     attributes.iter().find_map(|kv| {
         if kv.key == key {
-            if let Some(otlp_common::any_value::Value::StringValue(s_val)) =
+            if let Some(OtlpStringValue(s_val)) =
                 kv.value.as_ref().and_then(|v| v.value.as_ref())
             {
                 Some(s_val.as_str())
@@ -32,7 +34,7 @@ pub fn get_string_attribute_case_insensitive<'a>(
 ) -> Option<&'a str> {
     attributes.iter().find_map(|kv| {
         if kv.key.eq_ignore_ascii_case(key) {
-            if let Some(otlp_common::any_value::Value::StringValue(s_val)) =
+            if let Some(OtlpStringValue(s_val)) =
                 kv.value.as_ref().and_then(|v| v.value.as_ref())
             {
                 Some(s_val.as_str())
@@ -128,7 +130,7 @@ pub fn map_severity_number(severity_number: i32) -> Option<LogStatus> {
 
 pub fn any_value_to_message_string(av: &otlp_common::AnyValue) -> String {
     match av.value.as_ref() {
-        Some(otlp_common::any_value::Value::StringValue(s)) => s.clone(),
+        Some(OtlpStringValue(s)) => s.clone(),
         _ => serde_json::to_string(&any_value_to_json(av)).unwrap_or_else(|_| String::new()),
     }
 }
@@ -138,7 +140,7 @@ pub fn any_value_to_json(av: &otlp_common::AnyValue) -> JsonValue {
         Some(otlp_common::any_value::Value::BoolValue(b)) => JsonValue::Bool(*b),
         Some(otlp_common::any_value::Value::IntValue(i)) => JsonValue::from(*i),
         Some(otlp_common::any_value::Value::DoubleValue(d)) => JsonValue::from(*d),
-        Some(otlp_common::any_value::Value::StringValue(s)) => JsonValue::String(s.clone()),
+        Some(OtlpStringValue(s)) => JsonValue::String(s.clone()),
         Some(otlp_common::any_value::Value::BytesValue(bytes)) => match String::from_utf8(bytes.clone()) {
             Ok(s) => JsonValue::String(s),
             Err(_) => JsonValue::String(format!("<{} bytes>", bytes.len())),
@@ -209,6 +211,50 @@ pub fn from_hex_nibble(b: u8) -> Option<u8> {
     }
 }
 
+// Flatten an AnyValue map into dotted keys, up to a maximum depth.
+// For leaf values, coerce primitives to native JSON types, otherwise stringify.
+pub fn flatten_attribute(
+    base_key: &str, av: &otlp_common::AnyValue, depth: usize,
+) -> Vec<(String, JsonValue)> {
+    const MAX_DEPTH: usize = 10;
+
+    fn to_leaf_json(av: &otlp_common::AnyValue) -> JsonValue {
+        match av.value.as_ref() {
+            Some(OtlpStringValue(s)) => JsonValue::String(s.clone()),
+            Some(otlp_common::any_value::Value::IntValue(i)) => JsonValue::from(*i),
+            Some(otlp_common::any_value::Value::BoolValue(b)) => JsonValue::Bool(*b),
+            Some(otlp_common::any_value::Value::DoubleValue(d)) => JsonValue::from(*d),
+            Some(otlp_common::any_value::Value::BytesValue(bytes)) => match String::from_utf8(bytes.clone()) {
+                Ok(s) => JsonValue::String(s),
+                Err(_) => JsonValue::String(format!("<{} bytes>", bytes.len())),
+            },
+            _ => JsonValue::String(
+                serde_json::to_string(&any_value_to_json(av)).unwrap_or_else(|_| String::new()),
+            ),
+        }
+    }
+
+    if depth < MAX_DEPTH {
+        if let Some(otlp_common::any_value::Value::KvlistValue(kvl)) = av.value.as_ref() {
+            let mut out = Vec::new();
+            for kv in &kvl.values {
+                if let Some(v) = kv.value.as_ref() {
+                    let new_key = format!("{}.{}", base_key, kv.key);
+                    let nested = flatten_attribute(&new_key, v, depth + 1);
+                    if nested.is_empty() {
+                        out.push((new_key, to_leaf_json(v)));
+                    } else {
+                        out.extend(nested);
+                    }
+                }
+            }
+            return out;
+        }
+    }
+
+    vec![(base_key.to_string(), to_leaf_json(av))]
+}
+
 // Transformer that converts a single OTLP LogRecord into a Datadog-native log (DdLog),
 // given resource/scope context and resolved host/service plus base tags.
 pub struct LogRecordTransformer;
@@ -224,34 +270,12 @@ impl LogRecordTransformer {
         scope: Option<&otlp_common::InstrumentationScope>, host_for_record: Option<String>,
         service_for_record: Option<String>, base_tags_for_resource: &SharedTagSet,
     ) -> DdLog {
-        // Start with curated resource tags only
         let mut tags = base_tags_for_resource.clone();
-
-        // Merge ddtags (append, not overwrite)
-        if let Some(ddtags) = get_string_attribute_case_insensitive(&lr.attributes, DDTAGS_ATTR) {
-            let mut extra = TagSet::default();
-            for raw in ddtags.split(',') {
-                let s = raw.trim();
-                if !s.is_empty() {
-                    extra.insert_tag(s.to_string());
-                }
-            }
-            tags.extend_from_shared(&extra.into_shared());
-        }
-
-        // Status derivation
-        let status_text_from_attrs =
-            get_first_string_attr_case_insensitive(&lr.attributes, STATUS_KEYS).map(|s| s.to_string());
-        let status = derive_status(
-            status_text_from_attrs.as_deref(),
-            lr.severity_text.as_str(),
-            lr.severity_number,
-        );
 
         // Build additional properties map with resource, scope and record attributes
         let mut additional_properties = std::collections::HashMap::<String, JsonValue>::new();
 
-        // Helper to insert safely avoiding collisions with reserved top-level fields
+        // Helper to insert safely avoid overwriting fields that are already set
         fn safe_insert(map: &mut std::collections::HashMap<String, JsonValue>, key: &str, value: JsonValue) {
             if key == "hostname" || key == "service" {
                 map.insert(format!("otel.{}", key), value);
@@ -260,11 +284,97 @@ impl LogRecordTransformer {
             }
         }
 
+        // Single-pass over record attributes: handle special keys and flatten others
+        let mut status_text_from_attrs: Option<String> = None;
+        let mut msg_from_attrs: Option<String> = None;
+
+        for kv in &lr.attributes {
+            let k_lower = kv.key.to_ascii_lowercase();
+            match k_lower.as_str() {
+                // Message keys
+                k if MESSAGE_KEYS.iter().any(|m| k == *m) => {
+                    if let Some(av) = kv.value.as_ref() {
+                        if let Some(OtlpStringValue(s)) = av.value.as_ref() {
+                            msg_from_attrs.get_or_insert_with(|| s.clone());
+                        }
+                    }
+                }
+                // Status/severity text from attributes
+                k if STATUS_KEYS.iter().any(|s| k == *s) => {
+                    if let Some(av) = kv.value.as_ref() {
+                        if let Some(OtlpStringValue(s)) = av.value.as_ref() {
+                            status_text_from_attrs.get_or_insert_with(|| s.clone());
+                        }
+                    }
+                }
+                // Trace correlation from attributes
+                k if TRACE_ID_ATTR_KEYS.iter().any(|t| k == *t) => {
+                    if let Some(av) = kv.value.as_ref() {
+                        if let Some(OtlpStringValue(trace_hex)) = av.value.as_ref() {
+                            if additional_properties.get("dd.trace_id").is_none() {
+                                if let Some(bytes) = decode_hex_exact(trace_hex, 16) {
+                                    let dd = be_u64_from_last_8(&bytes);
+                                    additional_properties.insert("dd.trace_id".to_string(), JsonValue::from(dd));
+                                    additional_properties.insert(
+                                        "otel.trace_id".to_string(),
+                                        JsonValue::String(trace_hex.clone()),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                // Span correlation from attributes
+                k if SPAN_ID_ATTR_KEYS.iter().any(|s| k == *s) => {
+                    if let Some(av) = kv.value.as_ref() {
+                        if let Some(OtlpStringValue(span_hex)) = av.value.as_ref() {
+                            if additional_properties.get("dd.span_id").is_none() {
+                                if let Some(bytes) = decode_hex_exact(span_hex, 8) {
+                                    let dd = be_u64_from_first_8(&bytes);
+                                    additional_properties.insert("dd.span_id".to_string(), JsonValue::from(dd));
+                                    additional_properties.insert(
+                                        "otel.span_id".to_string(),
+                                        JsonValue::String(span_hex.clone()),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                // ddtags aggregation
+                k if k == DDTAGS_ATTR => {
+                    if let Some(av) = kv.value.as_ref() {
+                        if let Some(OtlpStringValue(s)) = av.value.as_ref() {
+                            let mut extra = TagSet::default();
+                            for raw in s.split(',') {
+                                let t = raw.trim();
+                                if !t.is_empty() {
+                                    extra.insert_tag(t.to_string());
+                                }
+                            }
+                            tags.extend_from_shared(&extra.into_shared());
+                        }
+                    }
+                }
+                // Default: flatten map or coerce to leaf and insert safely
+                _ => {
+                    if let Some(av) = kv.value.as_ref() {
+                        let flattened = flatten_attribute(&kv.key, av, 1);
+                        for (key, val) in flattened {
+                            if !val.is_null() {
+                                safe_insert(&mut additional_properties, &key, val);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Resource attributes
         for kv in &resource.attributes {
             if let Some(av) = kv.value.as_ref() {
                 let val = match av.value.as_ref() {
-                    Some(otlp_common::any_value::Value::StringValue(s)) => JsonValue::String(s.clone()),
+                    Some(OtlpStringValue(s)) => JsonValue::String(s.clone()),
                     _ => any_value_to_json(av),
                 };
                 if !val.is_null() {
@@ -278,37 +388,12 @@ impl LogRecordTransformer {
             for kv in &scope.attributes {
                 if let Some(av) = kv.value.as_ref() {
                     let val = match av.value.as_ref() {
-                        Some(otlp_common::any_value::Value::StringValue(s)) => JsonValue::String(s.clone()),
+                        Some(OtlpStringValue(s)) => JsonValue::String(s.clone()),
                         _ => any_value_to_json(av),
                     };
                     if !val.is_null() {
                         safe_insert(&mut additional_properties, &kv.key, val);
                     }
-                }
-            }
-        }
-
-        // Record attributes (skip keys that collide with message/status/tags/correlation)
-        fn is_skip_key(key: &str) -> bool {
-            let k = key.to_ascii_lowercase();
-            k == DDTAGS_ATTR
-                || MESSAGE_KEYS.iter().any(|m| k == *m)
-                || STATUS_KEYS.iter().any(|s| k == *s)
-                || TRACE_ID_ATTR_KEYS.iter().any(|t| k == *t)
-                || SPAN_ID_ATTR_KEYS.iter().any(|s| k == *s)
-        }
-
-        for kv in &lr.attributes {
-            if is_skip_key(&kv.key) {
-                continue;
-            }
-            if let Some(av) = kv.value.as_ref() {
-                let val = match av.value.as_ref() {
-                    Some(otlp_common::any_value::Value::StringValue(s)) => JsonValue::String(s.clone()),
-                    _ => any_value_to_json(av),
-                };
-                if !val.is_null() {
-                    safe_insert(&mut additional_properties, &kv.key, val);
                 }
             }
         }
@@ -344,10 +429,45 @@ impl LogRecordTransformer {
             }
         }
 
+        // Derive status once using attribute-provided status, severity text and number
+        let status = derive_status(
+            status_text_from_attrs.as_deref(),
+            lr.severity_text.as_str(),
+            lr.severity_number,
+        );
+
+        // Add explicit OpenTelemetry severity properties to additional_properties
+        if !lr.severity_text.is_empty() {
+            additional_properties.insert(
+                "otel.severity_text".to_string(),
+                JsonValue::String(lr.severity_text.clone()),
+            );
+        }
+        if lr.severity_number != 0 {
+            additional_properties.insert(
+                "otel.severity_number".to_string(),
+                JsonValue::String(lr.severity_number.to_string()),
+            );
+        }
+
+        // For Datadog to use the same timestamp add both otel.timestamp (ns) and @timestamp (RFC3339-like)
+        if lr.time_unix_nano != 0 {
+            additional_properties.insert(
+                "otel.timestamp".to_string(),
+                JsonValue::String(lr.time_unix_nano.to_string()),
+            );
+
+            let secs = (lr.time_unix_nano / 1_000_000_000) as i64;
+            let subnsec = (lr.time_unix_nano % 1_000_000_000) as u32;
+            if let Some(dt) = DateTime::from_timestamp(secs, subnsec) {
+                // Match Go's pattern 2006-01-02T15:04:05.000Z07:00
+                let formatted = dt.format("%Y-%m-%dT%H:%M:%S%.3fZ%:z").to_string();
+                additional_properties.insert("@timestamp".to_string(), JsonValue::String(formatted));
+            }
+        }
+
         // Message: prefer attributes (msg|message|log), else body
-        let message_from_attrs =
-            get_first_string_attr_case_insensitive(&lr.attributes, MESSAGE_KEYS).map(|s| s.to_string());
-        let message = match message_from_attrs {
+        let message = match msg_from_attrs {
             Some(m) => m,
             None => lr.body.as_ref().map(any_value_to_message_string).unwrap_or_default(),
         };
@@ -372,5 +492,3 @@ impl LogRecordTransformer {
         log
     }
 }
-
-// Re-export service/host names for callers that need them alongside helpers.
