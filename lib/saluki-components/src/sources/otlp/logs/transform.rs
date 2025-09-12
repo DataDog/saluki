@@ -1,8 +1,10 @@
 use otlp_protos::opentelemetry::proto::common::v1 as otlp_common;
-use otlp_protos::opentelemetry::proto::logs::v1::{ SeverityNumber as OtlpSeverityNumber};
+use otlp_protos::opentelemetry::proto::logs::v1::SeverityNumber as OtlpSeverityNumber;
 
-use saluki_core::data_model::event::log::LogStatus;
+use saluki_context::tags::{SharedTagSet, TagSet};
+use saluki_core::data_model::event::log::{Log as DdLog, LogStatus};
 use serde_json::Value as JsonValue;
+use stringtheory::MetaString;
 
 pub const DDTAGS_ATTR: &str = "ddtags";
 pub const STATUS_KEYS: &[&str] = &["status", "severity", "level", "syslog.severity"];
@@ -198,5 +200,170 @@ pub fn from_hex_nibble(b: u8) -> Option<u8> {
     }
 }
 
-// Re-export service/host names for callers that need them alongside helpers.
+// Transformer that converts a single OTLP LogRecord into a Datadog-native log (DdLog),
+// given resource/scope context and resolved host/service plus base tags.
+pub struct LogRecordTransformer;
 
+impl LogRecordTransformer {
+    pub fn new() -> Self { Self }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn transform(
+        &self,
+        lr: otlp_protos::opentelemetry::proto::logs::v1::LogRecord,
+        resource: &otlp_protos::opentelemetry::proto::resource::v1::Resource,
+        scope: Option<&otlp_common::InstrumentationScope>,
+        host_for_record: Option<String>,
+        service_for_record: Option<String>,
+        base_tags_for_resource: &SharedTagSet,
+    ) -> DdLog {
+        // Start with curated resource tags only
+        let mut tags = base_tags_for_resource.clone();
+
+        // Merge ddtags (append, not overwrite)
+        if let Some(ddtags) = get_string_attribute_case_insensitive(&lr.attributes, DDTAGS_ATTR) {
+            let mut extra = TagSet::default();
+            for raw in ddtags.split(',') {
+                let s = raw.trim();
+                if !s.is_empty() {
+                    extra.insert_tag(s.to_string());
+                }
+            }
+            tags.extend_from_shared(&extra.into_shared());
+        }
+
+        // Status derivation
+        let status_text_from_attrs = get_first_string_attr_case_insensitive(&lr.attributes, STATUS_KEYS)
+            .map(|s| s.to_string());
+        let status = derive_status(
+            status_text_from_attrs.as_deref(),
+            lr.severity_text.as_str(),
+            lr.severity_number,
+        );
+
+        // Build additional properties map with resource, scope and record attributes
+        let mut additional_properties = std::collections::HashMap::<String, JsonValue>::new();
+
+        // Helper to insert safely avoiding collisions with reserved top-level fields
+        fn safe_insert(map: &mut std::collections::HashMap<String, JsonValue>, key: &str, value: JsonValue) {
+            if key == "hostname" || key == "service" {
+                map.insert(format!("otel.{}", key), value);
+            } else {
+                map.insert(key.to_string(), value);
+            }
+        }
+
+        // Resource attributes
+        for kv in &resource.attributes {
+            if let Some(av) = kv.value.as_ref() {
+                let val = match av.value.as_ref() {
+                    Some(otlp_common::any_value::Value::StringValue(s)) => JsonValue::String(s.clone()),
+                    _ => any_value_to_json(av),
+                };
+                if !val.is_null() {
+                    safe_insert(&mut additional_properties, &kv.key, val);
+                }
+            }
+        }
+
+        // Scope attributes
+        if let Some(scope) = scope {
+            for kv in &scope.attributes {
+                if let Some(av) = kv.value.as_ref() {
+                    let val = match av.value.as_ref() {
+                        Some(otlp_common::any_value::Value::StringValue(s)) => JsonValue::String(s.clone()),
+                        _ => any_value_to_json(av),
+                    };
+                    if !val.is_null() {
+                        safe_insert(&mut additional_properties, &kv.key, val);
+                    }
+                }
+            }
+        }
+
+        // Record attributes (skip keys that collide with message/status/tags/correlation)
+        fn is_skip_key(key: &str) -> bool {
+            let k = key.to_ascii_lowercase();
+            k == DDTAGS_ATTR
+                || MESSAGE_KEYS.iter().any(|m| k == *m)
+                || STATUS_KEYS.iter().any(|s| k == *s)
+                || TRACE_ID_ATTR_KEYS.iter().any(|t| k == *t)
+                || SPAN_ID_ATTR_KEYS.iter().any(|s| k == *s)
+        }
+
+        for kv in &lr.attributes {
+            if is_skip_key(&kv.key) {
+                continue;
+            }
+            if let Some(av) = kv.value.as_ref() {
+                let val = match av.value.as_ref() {
+                    Some(otlp_common::any_value::Value::StringValue(s)) => JsonValue::String(s.clone()),
+                    _ => any_value_to_json(av),
+                };
+                if !val.is_null() {
+                    safe_insert(&mut additional_properties, &kv.key, val);
+                }
+            }
+        }
+
+        // Correlation fields: from record bytes first
+        if !lr.trace_id.is_empty() {
+            let hex = to_hex_lower(&lr.trace_id);
+            additional_properties.insert("otel.trace_id".to_string(), JsonValue::String(hex));
+            if lr.trace_id.len() >= 8 {
+                let dd = be_u64_from_last_8(&lr.trace_id);
+                additional_properties.insert("dd.trace_id".to_string(), JsonValue::from(dd));
+            }
+        } else if let Some(trace_hex) = get_first_string_attr_case_insensitive(&lr.attributes, TRACE_ID_ATTR_KEYS) {
+            if let Some(bytes) = decode_hex_exact(trace_hex, 16) {
+                additional_properties.insert("otel.trace_id".to_string(), JsonValue::String(trace_hex.to_string()));
+                let dd = be_u64_from_last_8(&bytes);
+                additional_properties.insert("dd.trace_id".to_string(), JsonValue::from(dd));
+            }
+        }
+
+        if !lr.span_id.is_empty() {
+            let hex = to_hex_lower(&lr.span_id);
+            additional_properties.insert("otel.span_id".to_string(), JsonValue::String(hex));
+            if lr.span_id.len() == 8 {
+                let dd = be_u64_from_first_8(&lr.span_id);
+                additional_properties.insert("dd.span_id".to_string(), JsonValue::from(dd));
+            }
+        } else if let Some(span_hex) = get_first_string_attr_case_insensitive(&lr.attributes, SPAN_ID_ATTR_KEYS) {
+            if let Some(bytes) = decode_hex_exact(span_hex, 8) {
+                additional_properties.insert("otel.span_id".to_string(), JsonValue::String(span_hex.to_string()));
+                let dd = be_u64_from_first_8(&bytes);
+                additional_properties.insert("dd.span_id".to_string(), JsonValue::from(dd));
+            }
+        }
+
+        // Message: prefer attributes (msg|message|log), else body
+        let message_from_attrs = get_first_string_attr_case_insensitive(&lr.attributes, MESSAGE_KEYS)
+            .map(|s| s.to_string());
+        let message = match message_from_attrs {
+            Some(m) => m,
+            None => lr
+                .body
+                .as_ref()
+                .map(any_value_to_message_string)
+                .unwrap_or_else(String::new),
+        };
+
+        // Timestamp: prefer event time, else observed time; seconds
+        let ts_ns = if lr.time_unix_nano != 0 { lr.time_unix_nano } else { lr.observed_time_unix_nano };
+        let ts_s = if ts_ns != 0 { Some(ts_ns / 1_000_000_000) } else { None };
+
+        // Build Log
+        let log = DdLog::new(message)
+            .with_status(status)
+            .with_timestamp_unix_s(ts_s)
+            .with_hostname(host_for_record.as_deref().map(MetaString::from))
+            .with_service(service_for_record.as_deref().map(MetaString::from))
+            .with_ddtags(tags)
+            .with_additional_properties(Some(additional_properties));
+
+        log
+    }
+}
+
+// Re-export service/host names for callers that need them alongside helpers.
