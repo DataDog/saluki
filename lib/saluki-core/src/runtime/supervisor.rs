@@ -134,13 +134,13 @@ impl ChildSpecification {
     ) -> Result<Option<(Process, SupervisorFuture)>, SupervisorError> {
         match self {
             Self::Worker(worker) => {
-                let process = Process::scoped(parent_process, worker.name()).context(InvalidName {
+                let process = Process::worker(worker.name(), parent_process).context(InvalidName {
                     name: worker.name().to_string(),
                 })?;
                 Ok(worker.initialize(process_shutdown).map(|future| (process, future)))
             }
             Self::Supervisor(sup) => {
-                let process = Process::scoped(parent_process, &sup.supervisor_id).context(InvalidName {
+                let process = Process::supervisor(&sup.supervisor_id, Some(parent_process)).context(InvalidName {
                     name: sup.supervisor_id.to_string(),
                 })?;
                 Ok(Some((
@@ -346,7 +346,7 @@ impl Supervisor {
         // Create a no-op `ProcessShutdown` to satisfy the `run_inner` function. This is never used since we want to
         // run forever, but we need to satisfy the signature.
         let process_shutdown = ProcessShutdown::noop();
-        let process = Process::root(&self.supervisor_id).context(InvalidName {
+        let process = Process::supervisor(&self.supervisor_id, None).context(InvalidName {
             name: self.supervisor_id.to_string(),
         })?;
 
@@ -366,7 +366,7 @@ impl Supervisor {
     /// If the supervisor exceeds its restart limits, or fails to initialize a child process, an error is returned.
     pub async fn run_with_shutdown<F: Future + Send + 'static>(&mut self, shutdown: F) -> Result<(), SupervisorError> {
         let process_shutdown = ProcessShutdown::wrapped(shutdown);
-        let process = Process::root(&self.supervisor_id).context(InvalidName {
+        let process = Process::supervisor(&self.supervisor_id, None).context(InvalidName {
             name: self.supervisor_id.to_string(),
         })?;
 

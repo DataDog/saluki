@@ -6,6 +6,7 @@ license = { workspace = true }
 repository = { workspace = true }
 
 [dependencies]
+memory-accounting = { workspace = true }
 saluki-app = { workspace = true, features = ["logging"] }
 saluki-core = { workspace = true }
 saluki-error = { workspace = true }

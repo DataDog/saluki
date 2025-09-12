@@ -89,19 +89,20 @@ pub struct Process {
 }
 
 impl Process {
-    pub(crate) fn root<N: AsRef<str>>(name: N) -> Option<Self> {
-        let name = Name::root(name)?;
-        Some(Self::from_parts(Id::new(), name))
-    }
-
-    pub(crate) fn scoped<N: AsRef<str>>(parent: &Process, name: N) -> Option<Self> {
-        let name = Name::scoped(&parent.name, name)?;
-        Some(Self::from_parts(Id::new(), name))
-    }
-
-    fn from_parts(id: Id, name: Name) -> Self {
+    pub(crate) fn supervisor<N: AsRef<str>>(name: N, parent: Option<&Process>) -> Option<Self> {
+        let name = parent
+            .and_then(|p| Name::scoped(&p.name, &name))
+            .or_else(|| Name::root(name))?;
         let alloc_group_token = AllocationGroupRegistry::global().register_allocation_group(&*name);
+        Some(Self::from_parts(Id::new(), name, alloc_group_token))
+    }
 
+    pub(crate) fn worker<N: AsRef<str>>(name: N, parent: &Process) -> Option<Self> {
+        let name = Name::scoped(&parent.name, name)?;
+        Some(Self::from_parts(Id::new(), name, parent.alloc_group_token.clone()))
+    }
+
+    fn from_parts(id: Id, name: Name, alloc_group_token: AllocationGroupToken) -> Self {
         Self {
             id,
             name,

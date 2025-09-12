@@ -1,10 +1,15 @@
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
+use memory_accounting::allocator::{AllocationGroupRegistry, AllocationStatsSnapshot};
 use saluki_app::prelude::{fatal_and_exit, initialize_logging};
 use saluki_core::runtime::{ProcessShutdown, Supervisable, Supervisor, SupervisorFuture};
 use saluki_error::GenericError;
 use tokio::{pin, select};
 use tracing::{error, info};
+
+#[global_allocator]
+static ALLOC: memory_accounting::allocator::TrackingAllocator<std::alloc::System> =
+    memory_accounting::allocator::TrackingAllocator::new(std::alloc::System);
 
 #[tokio::main]
 async fn main() -> Result<(), GenericError> {
@@ -13,7 +18,9 @@ async fn main() -> Result<(), GenericError> {
         return Ok(());
     };
 
-    let mut supervisor = Supervisor::new("root")?;
+    std::thread::spawn(|| log_alloc_groups());
+
+    let mut supervisor = Supervisor::new("topology")?;
     supervisor.add_worker(WithDelay::never("infinite"));
     supervisor.add_worker(WithDelay::panic("delayed-panic", Duration::from_secs(9)));
 
@@ -21,6 +28,11 @@ async fn main() -> Result<(), GenericError> {
     nested_supervisor.add_worker(WithDelay::success("delayed-success", Duration::from_secs(6)));
     nested_supervisor.add_worker(WithDelay::failure("delayed-failure", "failed", Duration::from_secs(15)));
     supervisor.add_worker(nested_supervisor);
+
+    let mut nested_alloc_supervisor = Supervisor::new("nested-alloc")?;
+    nested_alloc_supervisor.add_worker(SlowAlloc);
+    //nested_alloc_supervisor.add_worker(WithDelay::success("delayed-success", Duration::from_secs(6)));
+    supervisor.add_worker(nested_alloc_supervisor);
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
 
@@ -122,5 +134,58 @@ impl Supervisable for WithDelay {
 
             result.map_err(GenericError::msg)
         }))
+    }
+}
+
+struct SlowAlloc;
+
+impl Supervisable for SlowAlloc {
+    fn name(&self) -> &str {
+        "slow_alloc"
+    }
+
+    fn initialize(&self, mut process_shutdown: ProcessShutdown) -> Option<SupervisorFuture> {
+        let worker_name = self.name().to_string();
+        Some(Box::pin(async move {
+            info!(worker_name, "Worker started.");
+
+            let mut items = Vec::new();
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+            let shutdown = process_shutdown.wait_for_shutdown();
+            pin!(shutdown);
+
+            loop {
+                select! {
+                    _ = &mut shutdown => {
+                        info!(worker_name, "Worker received shutdown signal.");
+                        break;
+                    }
+                    _ = interval.tick() => {
+                        items.push(String::from("hello, world! it's me!"));
+                    }
+                }
+            }
+
+            Ok(())
+        }))
+    }
+}
+
+fn log_alloc_groups() {
+    loop {
+        info!("Current allocation group stats:");
+        let alloc_registry = AllocationGroupRegistry::global();
+        alloc_registry.visit_allocation_groups(|group, stats| {
+            let empty = AllocationStatsSnapshot::empty();
+            let delta_snapshot = stats.snapshot_delta(&empty);
+            info!(
+                "  - {}: objects={} bytes={}",
+                group,
+                delta_snapshot.live_objects(),
+                delta_snapshot.live_bytes()
+            );
+        });
+
+        std::thread::sleep(std::time::Duration::from_secs(2));
     }
 }
