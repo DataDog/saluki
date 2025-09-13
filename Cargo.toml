@@ -133,6 +133,7 @@ prost-types = { version = "0.13", default-features = false }
 serde_json = { version = "1.0.138", default-features = false, features = [
   "std",
 ] }
+faster-hex = { version = "0.10", default-features = false }
 rustls-pemfile = { version = "2.2", default-features = false }
 tokio-rustls = { version = "0.26.0", default-features = false, features = [
   "aws_lc_rs",

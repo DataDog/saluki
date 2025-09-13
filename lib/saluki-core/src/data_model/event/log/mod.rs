@@ -143,4 +143,9 @@ impl Log {
     pub fn tags(&self) -> &SharedTagSet {
         &self.tags
     }
+
+    /// Returns the additional properties map.
+    pub fn additional_properties(&self) -> &HashMap<String, JsonValue> {
+        &self.additional_properties
+    }
 }
