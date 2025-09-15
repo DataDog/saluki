@@ -62,22 +62,21 @@ pub fn map_status_text(text: &str) -> Option<LogStatus> {
 /// https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/logs/data-model.md#field-severitynumber
 pub fn status_from_severity_number(severity_number: i32) -> Option<LogStatus> {
     if severity_number <= 4 {
-        Some(LogStatus::Trace)      
+        Some(LogStatus::Trace)
     } else if severity_number <= 8 {
-        Some(LogStatus::Debug)      
+        Some(LogStatus::Debug)
     } else if severity_number <= 12 {
-        Some(LogStatus::Info)       
+        Some(LogStatus::Info)
     } else if severity_number <= 16 {
-        Some(LogStatus::Warning)    
+        Some(LogStatus::Warning)
     } else if severity_number <= 20 {
-        Some(LogStatus::Error)      
+        Some(LogStatus::Error)
     } else if severity_number <= 24 {
-        Some(LogStatus::Fatal)   
+        Some(LogStatus::Fatal)
     } else {
-        Some(LogStatus::Error)      
+        Some(LogStatus::Error)
     }
 }
-
 
 pub fn any_value_to_message_string(av: &otlp_common::AnyValue) -> String {
     match av.value.as_ref() {
@@ -391,18 +390,9 @@ impl LogRecordTransformer {
             None => lr.body.as_ref().map(any_value_to_message_string).unwrap_or_default(),
         };
 
-        // Timestamp: prefer event time, else observed time; seconds
-        let ts_ns = if lr.time_unix_nano != 0 {
-            lr.time_unix_nano
-        } else {
-            lr.observed_time_unix_nano
-        };
-        let ts_s = if ts_ns != 0 { Some(ts_ns / 1_000_000_000) } else { None };
-
         // Build Log
         let log = Log::new(message)
             .with_status(status)
-            .with_timestamp_unix_s(ts_s)
             .with_hostname(host_for_record.as_deref().map(MetaString::from))
             .with_service(service_for_record.as_deref().map(MetaString::from))
             .with_ddtags(tags)

@@ -1,7 +1,6 @@
 //! Logs.
 
 use std::collections::HashMap;
-use std::num::NonZeroU64;
 
 use saluki_context::tags::SharedTagSet;
 use serde_json::Value as JsonValue;
@@ -14,8 +13,6 @@ pub struct Log {
     message: MetaString,
     /// Log status/severity (e.g., "info", "warn", "error").
     status: Option<LogStatus>,
-    /// Timestamp.
-    timestamp: Option<NonZeroU64>,
     /// Hostname associated with the log.
     hostname: MetaString,
     /// Service associated with the log.
@@ -57,7 +54,6 @@ impl Log {
         Self {
             message: message.into(),
             status: None,
-            timestamp: None,
             hostname: MetaString::empty(),
             service: MetaString::empty(),
             source: MetaString::empty(),
@@ -69,14 +65,6 @@ impl Log {
     /// Sets the log status.
     pub fn with_status(mut self, status: impl Into<Option<LogStatus>>) -> Self {
         self.status = status.into();
-        self
-    }
-
-    /// Set the timestamp.
-    ///
-    /// Represented as a Unix timestamp, or the number of seconds since the Unix epoch.
-    pub fn with_timestamp_unix_s(mut self, ts: impl Into<Option<u64>>) -> Self {
-        self.timestamp = ts.into().and_then(NonZeroU64::new);
         self
     }
 
@@ -115,10 +103,6 @@ impl Log {
     /// Returns the message string slice.
     pub fn message(&self) -> &str {
         &self.message
-    }
-    /// Returns the timestamp in seconds, if set.
-    pub fn timestamp_unix_s(&self) -> Option<u64> {
-        self.timestamp.map(|v| v.get())
     }
 
     /// Returns the log status, if set.
