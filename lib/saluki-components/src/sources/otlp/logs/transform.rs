@@ -379,8 +379,8 @@ impl LogRecordTransformer {
             let secs = (lr.time_unix_nano / 1_000_000_000) as i64;
             let subnsec = (lr.time_unix_nano % 1_000_000_000) as u32;
             if let Some(dt) = DateTime::from_timestamp(secs, subnsec) {
-                // Match Go's pattern 2006-01-02T15:04:05.000Z07:00
-                let formatted = dt.format("%Y-%m-%dT%H:%M:%S%.3fZ%:z").to_string();
+                // Match pattern 2006-01-02T15:04:05.000Z
+                let formatted = dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
                 additional_properties.insert("@timestamp".to_string(), JsonValue::String(formatted));
             }
         }
@@ -955,7 +955,7 @@ mod tests {
             Some(&JsonValue::String("val2".to_string()))
         );
         assert_eq!(props.get("root.nest13"), Some(&JsonValue::String("val3".to_string())));
-        assert_eq!(log.status(), None);
+        assert_eq!(log.status(), Some(LogStatus::Trace));
     }
 
     #[test]
@@ -1063,7 +1063,7 @@ mod tests {
         );
         assert_eq!(
             props.get("@timestamp"),
-            Some(&JsonValue::String("2023-11-20T16:55:03.397Z+00:00".to_string()))
+            Some(&JsonValue::String("2023-11-20T16:55:03.397Z".to_string()))
         );
     }
 
