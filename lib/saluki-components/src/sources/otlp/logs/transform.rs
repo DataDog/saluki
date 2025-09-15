@@ -1,10 +1,10 @@
-use otlp_protos::opentelemetry::proto::common::v1 as otlp_common;
 use chrono::DateTime;
+use otlp_common::any_value::Value::StringValue as OtlpStringValue;
+use otlp_protos::opentelemetry::proto::common::v1 as otlp_common;
 use otlp_protos::opentelemetry::proto::logs::v1::SeverityNumber as OtlpSeverityNumber;
 use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_core::data_model::event::log::{Log, LogStatus};
 use serde_json::Value as JsonValue;
-use otlp_common::any_value::Value::StringValue as OtlpStringValue;
 use stringtheory::MetaString;
 use tracing::error;
 
@@ -17,9 +17,7 @@ pub const SPAN_ID_ATTR_KEYS: &[&str] = &["spanid", "span_id", "contextmap.spanid
 pub fn get_string_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<&'a str> {
     attributes.iter().find_map(|kv| {
         if kv.key == key {
-            if let Some(OtlpStringValue(s_val)) =
-                kv.value.as_ref().and_then(|v| v.value.as_ref())
-            {
+            if let Some(OtlpStringValue(s_val)) = kv.value.as_ref().and_then(|v| v.value.as_ref()) {
                 Some(s_val.as_str())
             } else {
                 None
@@ -28,35 +26,6 @@ pub fn get_string_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &s
             None
         }
     })
-}
-
-pub fn get_string_attribute_case_insensitive<'a>(
-    attributes: &'a [otlp_common::KeyValue], key: &str,
-) -> Option<&'a str> {
-    attributes.iter().find_map(|kv| {
-        if kv.key.eq_ignore_ascii_case(key) {
-            if let Some(OtlpStringValue(s_val)) =
-                kv.value.as_ref().and_then(|v| v.value.as_ref())
-            {
-                Some(s_val.as_str())
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    })
-}
-
-pub fn get_first_string_attr_case_insensitive<'a>(
-    attributes: &'a [otlp_common::KeyValue], keys: &[&str],
-) -> Option<&'a str> {
-    for key in keys {
-        if let Some(v) = get_string_attribute_case_insensitive(attributes, key) {
-            return Some(v);
-        }
-    }
-    None
 }
 
 pub fn derive_status(status_text_opt: Option<&str>, severity_text: &str, severity_number: i32) -> Option<LogStatus> {
@@ -182,7 +151,7 @@ pub fn be_u64_from_first_8(bytes: &[u8]) -> u64 {
 }
 
 // Convert a byte slice to a lower case hex string.
-pub fn to_hex_lower(bytes: &[u8]) -> String {
+pub fn bytes_to_hex_lowercase(bytes: &[u8]) -> String {
     if bytes.is_empty() {
         return String::new();
     }
@@ -196,7 +165,7 @@ pub fn to_hex_lower(bytes: &[u8]) -> String {
 }
 
 /// Decode a hex string into a vector of bytes.
-pub fn decode_hex_exact(s: &str, expected_len_bytes: usize) -> Option<Vec<u8>> {
+pub fn decode_hex_exact_to_bytes(s: &str, expected_len_bytes: usize) -> Option<Vec<u8>> {
     if s.len() != expected_len_bytes * 2 {
         return None;
     }
@@ -205,12 +174,9 @@ pub fn decode_hex_exact(s: &str, expected_len_bytes: usize) -> Option<Vec<u8>> {
     Some(out)
 }
 
-
 // Flatten an AnyValue map into dotted keys, up to a maximum depth.
 // For leaf values, coerce primitives to native JSON types, otherwise stringify.
-pub fn flatten_attribute(
-    base_key: &str, av: &otlp_common::AnyValue, depth: usize,
-) -> Vec<(String, JsonValue)> {
+pub fn flatten_attribute(base_key: &str, av: &otlp_common::AnyValue, depth: usize) -> Vec<(String, JsonValue)> {
     const MAX_DEPTH: usize = 10;
 
     fn to_leaf_json(av: &otlp_common::AnyValue) -> JsonValue {
@@ -223,9 +189,7 @@ pub fn flatten_attribute(
                 Ok(s) => JsonValue::String(s),
                 Err(_) => JsonValue::String(format!("<{} bytes>", bytes.len())),
             },
-            _ => JsonValue::String(
-                serde_json::to_string(&any_value_to_json(av)).unwrap_or_else(|_| String::new()),
-            ),
+            _ => JsonValue::String(serde_json::to_string(&any_value_to_json(av)).unwrap_or_else(|_| String::new())),
         }
     }
 
@@ -306,13 +270,11 @@ impl LogRecordTransformer {
                     if let Some(av) = kv.value.as_ref() {
                         if let Some(OtlpStringValue(trace_hex)) = av.value.as_ref() {
                             if additional_properties.get("dd.trace_id").is_none() {
-                                if let Some(bytes) = decode_hex_exact(trace_hex, 16) {
+                                if let Some(bytes) = decode_hex_exact_to_bytes(trace_hex, 16) {
                                     let dd = be_u64_from_last_8(&bytes);
                                     additional_properties.insert("dd.trace_id".to_string(), JsonValue::from(dd));
-                                    additional_properties.insert(
-                                        "otel.trace_id".to_string(),
-                                        JsonValue::String(trace_hex.clone()),
-                                    );
+                                    additional_properties
+                                        .insert("otel.trace_id".to_string(), JsonValue::String(trace_hex.clone()));
                                 }
                             }
                         }
@@ -323,13 +285,11 @@ impl LogRecordTransformer {
                     if let Some(av) = kv.value.as_ref() {
                         if let Some(OtlpStringValue(span_hex)) = av.value.as_ref() {
                             if additional_properties.get("dd.span_id").is_none() {
-                                if let Some(bytes) = decode_hex_exact(span_hex, 8) {
+                                if let Some(bytes) = decode_hex_exact_to_bytes(span_hex, 8) {
                                     let dd = be_u64_from_first_8(&bytes);
                                     additional_properties.insert("dd.span_id".to_string(), JsonValue::from(dd));
-                                    additional_properties.insert(
-                                        "otel.span_id".to_string(),
-                                        JsonValue::String(span_hex.clone()),
-                                    );
+                                    additional_properties
+                                        .insert("otel.span_id".to_string(), JsonValue::String(span_hex.clone()));
                                 }
                             }
                         }
@@ -371,7 +331,7 @@ impl LogRecordTransformer {
         // Resource attributes
         for kv in &resource.attributes {
             if let Some(av) = kv.value.as_ref() {
-                let val = match av.value.as_ref() {
+                let val: JsonValue = match av.value.as_ref() {
                     Some(OtlpStringValue(s)) => JsonValue::String(s.clone()),
                     _ => any_value_to_json(av),
                 };
@@ -396,35 +356,19 @@ impl LogRecordTransformer {
             }
         }
 
-        // Correlation fields: from record bytes first
-        if !lr.trace_id.is_empty() {
-            let hex = to_hex_lower(&lr.trace_id);
+        if lr.trace_id.len() == 16 && !lr.trace_id.iter().all(|&b| b == 0) {
+            let hex = bytes_to_hex_lowercase(&lr.trace_id);
             additional_properties.insert("otel.trace_id".to_string(), JsonValue::String(hex));
-            if lr.trace_id.len() >= 8 {
-                let dd = be_u64_from_last_8(&lr.trace_id);
-                additional_properties.insert("dd.trace_id".to_string(), JsonValue::from(dd));
-            }
-        } else if let Some(trace_hex) = get_first_string_attr_case_insensitive(&lr.attributes, TRACE_ID_ATTR_KEYS) {
-            if let Some(bytes) = decode_hex_exact(trace_hex, 16) {
-                additional_properties.insert("otel.trace_id".to_string(), JsonValue::String(trace_hex.to_string()));
-                let dd = be_u64_from_last_8(&bytes);
-                additional_properties.insert("dd.trace_id".to_string(), JsonValue::from(dd));
-            }
+
+            let dd = be_u64_from_last_8(&lr.trace_id);
+            additional_properties.insert("dd.trace_id".to_string(), JsonValue::from(dd));
         }
 
-        if !lr.span_id.is_empty() {
-            let hex = to_hex_lower(&lr.span_id);
+        if lr.span_id.len() == 8 && !lr.span_id.iter().all(|&b| b == 0) {
+            let hex = bytes_to_hex_lowercase(&lr.span_id);
             additional_properties.insert("otel.span_id".to_string(), JsonValue::String(hex));
-            if lr.span_id.len() == 8 {
-                let dd = be_u64_from_first_8(&lr.span_id);
-                additional_properties.insert("dd.span_id".to_string(), JsonValue::from(dd));
-            }
-        } else if let Some(span_hex) = get_first_string_attr_case_insensitive(&lr.attributes, SPAN_ID_ATTR_KEYS) {
-            if let Some(bytes) = decode_hex_exact(span_hex, 8) {
-                additional_properties.insert("otel.span_id".to_string(), JsonValue::String(span_hex.to_string()));
-                let dd = be_u64_from_first_8(&bytes);
-                additional_properties.insert("dd.span_id".to_string(), JsonValue::from(dd));
-            }
+            let dd = be_u64_from_first_8(&lr.span_id);
+            additional_properties.insert("dd.span_id".to_string(), JsonValue::from(dd));
         }
 
         // Derive status once using attribute-provided status, severity text and number
@@ -493,8 +437,9 @@ impl LogRecordTransformer {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use opentelemetry_semantic_conventions::resource::SERVICE_NAME;
+
+    use super::*;
 
     fn kv_str(key: &str, value: &str) -> otlp_common::KeyValue {
         otlp_common::KeyValue {
@@ -514,10 +459,15 @@ mod tests {
     fn av_map(entries: Vec<(&str, otlp_common::AnyValue)>) -> otlp_common::AnyValue {
         let kvs: Vec<otlp_common::KeyValue> = entries
             .into_iter()
-            .map(|(k, v)| otlp_common::KeyValue { key: k.to_string(), value: Some(v) })
+            .map(|(k, v)| otlp_common::KeyValue {
+                key: k.to_string(),
+                value: Some(v),
+            })
             .collect();
         otlp_common::AnyValue {
-            value: Some(otlp_common::any_value::Value::KvlistValue(otlp_common::KeyValueList { values: kvs })),
+            value: Some(otlp_common::any_value::Value::KvlistValue(otlp_common::KeyValueList {
+                values: kvs,
+            })),
         }
     }
 
@@ -541,7 +491,10 @@ mod tests {
     fn test_flatten_attribute() {
         let av = av_str("test");
         let flattened = flatten_attribute("test", &av, 1);
-        assert_eq!(flattened, vec![("test".to_string(), JsonValue::String("test".to_string()))]);
+        assert_eq!(
+            flattened,
+            vec![("test".to_string(), JsonValue::String("test".to_string()))]
+        );
     }
 
     #[test]
@@ -570,7 +523,10 @@ mod tests {
         assert!(log.tags().has_tag("otel_source:test"));
         let props = log.additional_properties();
         assert_eq!(props.get("app"), Some(&JsonValue::String("test".to_string())));
-        assert_eq!(props.get("otel.severity_number"), Some(&JsonValue::String("5".to_string())));
+        assert_eq!(
+            props.get("otel.severity_number"),
+            Some(&JsonValue::String("5".to_string()))
+        );
     }
 
     #[test]
@@ -603,7 +559,10 @@ mod tests {
         assert!(log.tags().has_tag("service:otlp_col"));
         assert!(log.tags().has_tag("otel_source:test"));
         let props = log.additional_properties();
-        assert_eq!(props.get("service.name"), Some(&JsonValue::String("otlp_col".to_string())));
+        assert_eq!(
+            props.get("service.name"),
+            Some(&JsonValue::String("otlp_col".to_string()))
+        );
     }
 
     #[test]
@@ -653,14 +612,19 @@ mod tests {
         let log = transformer.transform(lr, &empty_resource(), None, None, Some("otlp_col".to_string()), &tags);
         assert_eq!(log.service(), "otlp_col");
         let props = log.additional_properties();
-        assert_eq!(props.get("service.name"), Some(&JsonValue::String("otlp_col".to_string())));
+        assert_eq!(
+            props.get("service.name"),
+            Some(&JsonValue::String("otlp_col".to_string()))
+        );
     }
 
     #[test]
     fn test_transform_trace_from_bytes() {
         let transformer = LogRecordTransformer::new();
         // Build trace id with some bytes, and span id as last 8 bytes of trace
-        let mut trace_id = vec![0x08, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x00, 0x00, 0x00, 0x00, 0x0a];
+        let mut trace_id = vec![
+            0x08, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x00, 0x00, 0x00, 0x00, 0x0a,
+        ];
         trace_id.resize(16, 0x00);
         let span_id = trace_id[8..16].to_vec();
         let dd_tr = be_u64_from_last_8(&trace_id);
@@ -683,7 +647,10 @@ mod tests {
         let tags = base_tags(&["otel_source:test"]);
         let log = transformer.transform(lr, &empty_resource(), None, None, Some("otlp_col".to_string()), &tags);
         let props = log.additional_properties();
-        assert_eq!(props.get("otel.severity_number"), Some(&JsonValue::String("5".to_string())));
+        assert_eq!(
+            props.get("otel.severity_number"),
+            Some(&JsonValue::String("5".to_string()))
+        );
         assert_eq!(props.get("dd.trace_id"), Some(&JsonValue::from(dd_tr)));
         assert_eq!(props.get("dd.span_id"), Some(&JsonValue::from(dd_sp)));
         assert!(props.get("otel.trace_id").is_some());
@@ -714,10 +681,19 @@ mod tests {
         let tags = base_tags(&["otel_source:test"]);
         let log = transformer.transform(lr, &empty_resource(), None, None, Some("otlp_col".to_string()), &tags);
         let props = log.additional_properties();
-        assert_eq!(props.get("otel.trace_id"), Some(&JsonValue::String("437ab4d83468c540bb0f3398a39faa59".to_string())));
-        assert_eq!(props.get("otel.span_id"), Some(&JsonValue::String("2e26da881214cd7c".to_string())));
+        assert_eq!(
+            props.get("otel.trace_id"),
+            Some(&JsonValue::String("437ab4d83468c540bb0f3398a39faa59".to_string()))
+        );
+        assert_eq!(
+            props.get("otel.span_id"),
+            Some(&JsonValue::String("2e26da881214cd7c".to_string()))
+        );
         assert_eq!(props.get("dd.span_id"), Some(&JsonValue::from(3325585652813450620u64)));
-        assert_eq!(props.get("dd.trace_id"), Some(&JsonValue::from(13479048940416379481u64)));
+        assert_eq!(
+            props.get("dd.trace_id"),
+            Some(&JsonValue::from(13479048940416379481u64))
+        );
     }
 
     #[test]
@@ -746,7 +722,10 @@ mod tests {
         let props = log.additional_properties();
         assert!(props.get("otel.trace_id").is_none());
         assert!(props.get("dd.trace_id").is_none());
-        assert_eq!(props.get("otel.span_id"), Some(&JsonValue::String("2e26da881214cd7c".to_string())));
+        assert_eq!(
+            props.get("otel.span_id"),
+            Some(&JsonValue::String("2e26da881214cd7c".to_string()))
+        );
         assert_eq!(props.get("dd.span_id"), Some(&JsonValue::from(3325585652813450620u64)));
     }
 
@@ -762,7 +741,10 @@ mod tests {
             attributes: vec![
                 kv_str("app", "test"),
                 kv_str("spanid", "2023675201651514964"),
-                kv_str("traceid", "eb068afe5e53704f3b0dc3d3e1e397cb760549a7b58547db4f1dee845d9101f8db1ccf8fdd0976a9112f"),
+                kv_str(
+                    "traceid",
+                    "eb068afe5e53704f3b0dc3d3e1e397cb760549a7b58547db4f1dee845d9101f8db1ccf8fdd0976a9112f",
+                ),
                 kv_str(SERVICE_NAME, "otlp_col"),
             ],
             dropped_attributes_count: 0,
@@ -796,11 +778,24 @@ mod tests {
             span_id: vec![0; 8],
             event_name: String::new(),
         };
-        let log = transformer.transform(lr, &empty_resource(), None, None, Some("otlp_col".to_string()), &base_tags(&[]));
+        let log = transformer.transform(
+            lr,
+            &empty_resource(),
+            None,
+            None,
+            Some("otlp_col".to_string()),
+            &base_tags(&[]),
+        );
         assert_eq!(log.status(), Some(LogStatus::Alert));
         let props = log.additional_properties();
-        assert_eq!(props.get("otel.severity_text"), Some(&JsonValue::String("alert".to_string())));
-        assert_eq!(props.get("otel.severity_number"), Some(&JsonValue::String("5".to_string())));
+        assert_eq!(
+            props.get("otel.severity_text"),
+            Some(&JsonValue::String("alert".to_string()))
+        );
+        assert_eq!(
+            props.get("otel.severity_number"),
+            Some(&JsonValue::String("5".to_string()))
+        );
     }
 
     #[test]
@@ -820,11 +815,21 @@ mod tests {
             span_id: vec![0; 8],
             event_name: String::new(),
         };
-        let log = transformer.transform(lr, &empty_resource(), None, None, Some("otlp_col".to_string()), &base_tags(&["otel_source:test"]));
+        let log = transformer.transform(
+            lr,
+            &empty_resource(),
+            None,
+            None,
+            Some("otlp_col".to_string()),
+            &base_tags(&["otel_source:test"]),
+        );
         assert_eq!(log.message(), "This is log");
         assert_eq!(log.status(), Some(LogStatus::Warning));
         let props = log.additional_properties();
-        assert_eq!(props.get("otel.severity_number"), Some(&JsonValue::String("13".to_string())));
+        assert_eq!(
+            props.get("otel.severity_number"),
+            Some(&JsonValue::String("13".to_string()))
+        );
     }
 
     #[test]
@@ -844,7 +849,14 @@ mod tests {
             span_id: vec![0; 8],
             event_name: String::new(),
         };
-        let log = transformer.transform(lr, &empty_resource(), None, None, Some("otlp_col".to_string()), &base_tags(&["otel_source:test"]));
+        let log = transformer.transform(
+            lr,
+            &empty_resource(),
+            None,
+            None,
+            Some("otlp_col".to_string()),
+            &base_tags(&["otel_source:test"]),
+        );
         assert_eq!(log.message(), "This is log");
         assert_eq!(log.status(), Some(LogStatus::Error));
     }
@@ -870,10 +882,20 @@ mod tests {
             dropped_attributes_count: 0,
             entity_refs: vec![],
         };
-        let log = transformer.transform(lr, &resource, None, None, Some("otlp_col".to_string()), &base_tags(&["service:otlp_col", "otel_source:test"]));
+        let log = transformer.transform(
+            lr,
+            &resource,
+            None,
+            None,
+            Some("otlp_col".to_string()),
+            &base_tags(&["service:otlp_col", "otel_source:test"]),
+        );
         let props = log.additional_properties();
         assert_eq!(props.get("key"), Some(&JsonValue::String("val".to_string())));
-        assert_eq!(props.get("service.name"), Some(&JsonValue::String("otlp_col".to_string())));
+        assert_eq!(
+            props.get("service.name"),
+            Some(&JsonValue::String("otlp_col".to_string()))
+        );
     }
 
     #[test]
@@ -899,8 +921,14 @@ mod tests {
         };
         let log = transformer.transform(lr, &resource, None, None, None, &base_tags(&["otel_source:test"]));
         let props = log.additional_properties();
-        assert_eq!(props.get("otel.service"), Some(&JsonValue::String("otlp_col".to_string())));
-        assert_eq!(props.get("otel.hostname"), Some(&JsonValue::String("example_host".to_string())));
+        assert_eq!(
+            props.get("otel.service"),
+            Some(&JsonValue::String("otlp_col".to_string()))
+        );
+        assert_eq!(
+            props.get("otel.hostname"),
+            Some(&JsonValue::String("example_host".to_string()))
+        );
     }
 
     #[test]
@@ -909,7 +937,10 @@ mod tests {
         // Build nested structure described in the agent test
         let nested = av_map(vec![
             ("nest1", av_map(vec![("nest2", av_str("val"))])),
-            ("nest12", av_map(vec![("nest22", av_map(vec![("nest3", av_str("val2"))]))])),
+            (
+                "nest12",
+                av_map(vec![("nest22", av_map(vec![("nest3", av_str("val2"))]))]),
+            ),
             ("nest13", av_str("val3")),
         ]);
 
@@ -919,17 +950,33 @@ mod tests {
             severity_number: 0,
             severity_text: String::new(),
             body: None,
-            attributes: vec![otlp_common::KeyValue { key: "root".to_string(), value: Some(nested) }],
+            attributes: vec![otlp_common::KeyValue {
+                key: "root".to_string(),
+                value: Some(nested),
+            }],
             dropped_attributes_count: 0,
             flags: 0,
             trace_id: Vec::new(),
             span_id: Vec::new(),
             event_name: String::new(),
         };
-        let log = transformer.transform(lr, &empty_resource(), None, None, None, &base_tags(&["otel_source:test"]));
+        let log = transformer.transform(
+            lr,
+            &empty_resource(),
+            None,
+            None,
+            None,
+            &base_tags(&["otel_source:test"]),
+        );
         let props = log.additional_properties();
-        assert_eq!(props.get("root.nest1.nest2"), Some(&JsonValue::String("val".to_string())));
-        assert_eq!(props.get("root.nest12.nest22.nest3"), Some(&JsonValue::String("val2".to_string())));
+        assert_eq!(
+            props.get("root.nest1.nest2"),
+            Some(&JsonValue::String("val".to_string()))
+        );
+        assert_eq!(
+            props.get("root.nest12.nest22.nest3"),
+            Some(&JsonValue::String("val2".to_string()))
+        );
         assert_eq!(props.get("root.nest13"), Some(&JsonValue::String("val3".to_string())));
         assert_eq!(log.status(), None);
     }
@@ -938,43 +985,70 @@ mod tests {
     fn test_too_many_nestings() {
         let transformer = LogRecordTransformer::new();
         // Construct deeper than MAX_DEPTH entries
-        let deep = av_map(vec![
-            ("nest2", av_map(vec![
-                ("nest3", av_map(vec![
-                    ("nest4", av_map(vec![
-                        ("nest5", av_map(vec![
-                            ("nest6", av_map(vec![
-                                ("nest7", av_map(vec![
-                                    ("nest8", av_map(vec![
-                                        ("nest9", av_map(vec![
-                                            ("nest10", av_map(vec![("nest11", av_map(vec![("nest12", av_str("ok"))]))])),
-                                        ])),
-                                    ])),
-                                ])),
-                            ])),
+        let deep = av_map(vec![(
+            "nest2",
+            av_map(vec![(
+                "nest3",
+                av_map(vec![(
+                    "nest4",
+                    av_map(vec![(
+                        "nest5",
+                        av_map(vec![
+                            (
+                                "nest6",
+                                av_map(vec![(
+                                    "nest7",
+                                    av_map(vec![(
+                                        "nest8",
+                                        av_map(vec![(
+                                            "nest9",
+                                            av_map(vec![(
+                                                "nest10",
+                                                av_map(vec![("nest11", av_map(vec![("nest12", av_str("ok"))]))]),
+                                            )]),
+                                        )]),
+                                    )]),
+                                )]),
+                            ),
                             ("nest14", av_map(vec![("nest15", av_str("ok2"))])),
-                        ])),
-                    ])),
-                ])),
-            ])),
-        ]);
+                        ]),
+                    )]),
+                )]),
+            )]),
+        )]);
         let lr = otlp_protos::opentelemetry::proto::logs::v1::LogRecord {
             time_unix_nano: 0,
             observed_time_unix_nano: 0,
             severity_number: 0,
             severity_text: String::new(),
             body: None,
-            attributes: vec![otlp_common::KeyValue { key: "nest1".to_string(), value: Some(deep) }],
+            attributes: vec![otlp_common::KeyValue {
+                key: "nest1".to_string(),
+                value: Some(deep),
+            }],
             dropped_attributes_count: 0,
             flags: 0,
             trace_id: Vec::new(),
             span_id: Vec::new(),
             event_name: String::new(),
         };
-        let log = transformer.transform(lr, &empty_resource(), None, None, None, &base_tags(&["otel_source:test"]));
+        let log = transformer.transform(
+            lr,
+            &empty_resource(),
+            None,
+            None,
+            None,
+            &base_tags(&["otel_source:test"]),
+        );
         let props = log.additional_properties();
-        assert_eq!(props.get("nest1.nest2.nest3.nest4.nest5.nest6.nest7.nest8.nest9.nest10"), Some(&JsonValue::String("{\"nest11\":{\"nest12\":\"ok\"}}".to_string())));
-        assert_eq!(props.get("nest1.nest2.nest3.nest4.nest5.nest14.nest15"), Some(&JsonValue::String("ok2".to_string())));
+        assert_eq!(
+            props.get("nest1.nest2.nest3.nest4.nest5.nest6.nest7.nest8.nest9.nest10"),
+            Some(&JsonValue::String("{\"nest11\":{\"nest12\":\"ok\"}}".to_string()))
+        );
+        assert_eq!(
+            props.get("nest1.nest2.nest3.nest4.nest5.nest14.nest15"),
+            Some(&JsonValue::String("ok2".to_string()))
+        );
     }
 
     #[test]
@@ -993,11 +1067,27 @@ mod tests {
             span_id: Vec::new(),
             event_name: String::new(),
         };
-        let log = transformer.transform(lr, &empty_resource(), None, None, None, &base_tags(&["otel_source:test"]));
+        let log = transformer.transform(
+            lr,
+            &empty_resource(),
+            None,
+            None,
+            None,
+            &base_tags(&["otel_source:test"]),
+        );
         let props = log.additional_properties();
-        assert_eq!(props.get("otel.severity_number"), Some(&JsonValue::String("5".to_string())));
-        assert_eq!(props.get("otel.timestamp"), Some(&JsonValue::String("1700499303397000000".to_string())));
-        assert_eq!(props.get("@timestamp"), Some(&JsonValue::String("2023-11-20T16:55:03.397Z+00:00".to_string())));
+        assert_eq!(
+            props.get("otel.severity_number"),
+            Some(&JsonValue::String("5".to_string()))
+        );
+        assert_eq!(
+            props.get("otel.timestamp"),
+            Some(&JsonValue::String("1700499303397000000".to_string()))
+        );
+        assert_eq!(
+            props.get("@timestamp"),
+            Some(&JsonValue::String("2023-11-20T16:55:03.397Z+00:00".to_string()))
+        );
     }
 
     #[test]
@@ -1019,10 +1109,23 @@ mod tests {
         let mut scope = otlp_common::InstrumentationScope::default();
         scope.attributes.push(kv_str("otelcol.component.id", "otlp"));
         scope.attributes.push(kv_str("otelcol.component.kind", "Receiver"));
-        let log = transformer.transform(lr, &empty_resource(), Some(&scope), None, None, &base_tags(&["otel_source:test"]));
+        let log = transformer.transform(
+            lr,
+            &empty_resource(),
+            Some(&scope),
+            None,
+            None,
+            &base_tags(&["otel_source:test"]),
+        );
         assert_eq!(log.message(), "hello world");
         let props = log.additional_properties();
-        assert_eq!(props.get("otelcol.component.id"), Some(&JsonValue::String("otlp".to_string())));
-        assert_eq!(props.get("otelcol.component.kind"), Some(&JsonValue::String("Receiver".to_string())));
+        assert_eq!(
+            props.get("otelcol.component.id"),
+            Some(&JsonValue::String("otlp".to_string()))
+        );
+        assert_eq!(
+            props.get("otelcol.component.kind"),
+            Some(&JsonValue::String("Receiver".to_string()))
+        );
     }
 }

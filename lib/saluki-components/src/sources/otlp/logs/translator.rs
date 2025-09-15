@@ -46,7 +46,6 @@ impl OtlpLogsTranslator {
         let base_tags_for_resource: SharedTagSet = base_tags_owned.into_shared();
 
         for mut scope_logs in resource_logs.scope_logs {
-
             for lr in scope_logs.log_records.drain(..) {
                 metrics._logs_received().increment(1);
 
