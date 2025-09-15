@@ -443,9 +443,9 @@ impl ConfigurationLoader {
         }
     }
 
-    /// Configures a [`ConfigurationLoader`] that is suitable for tests.
+    /// Configures a [`GenericConfiguration`] that is suitable for tests.
     ///
-    /// This configures the builder with the following defaults:
+    /// This configures the loader with the following defaults:
     ///
     /// - configuration from a JSON file
     /// - configuration from environment variables
