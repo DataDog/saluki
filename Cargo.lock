@@ -3213,6 +3213,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "snafu",
+ "tempfile",
  "tokio",
  "tracing",
 ]
