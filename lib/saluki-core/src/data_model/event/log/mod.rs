@@ -31,12 +31,14 @@ pub struct Log {
 /// Log status.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LogStatus {
+    /// Trace status.
+    Trace,
     /// Emergency status.
     Emergency,
     /// Alert status.
     Alert,
-    /// Critical status.
-    Critical,
+    /// Fatal status.
+    Fatal,
     /// Error status.
     Error,
     /// Warning status.

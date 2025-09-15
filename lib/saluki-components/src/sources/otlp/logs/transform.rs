@@ -1,7 +1,6 @@
 use chrono::DateTime;
 use otlp_common::any_value::Value::StringValue as OtlpStringValue;
 use otlp_protos::opentelemetry::proto::common::v1 as otlp_common;
-use otlp_protos::opentelemetry::proto::logs::v1::SeverityNumber as OtlpSeverityNumber;
 use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_core::data_model::event::log::{Log, LogStatus};
 use serde_json::Value as JsonValue;
@@ -28,16 +27,16 @@ pub fn get_string_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &s
     })
 }
 
-pub fn derive_status(status_text_opt: Option<&str>, severity_text: &str, severity_number: i32) -> Option<LogStatus> {
-    if let Some(text) = status_text_opt {
+pub fn derive_status(status: Option<&str>, severity: &str, severity_number: i32) -> Option<LogStatus> {
+    if let Some(text) = status {
         if let Some(s) = map_status_text(text) {
             return Some(s);
         }
     }
-    if let Some(s) = map_status_text(severity_text) {
+    if let Some(s) = map_status_text(severity) {
         return Some(s);
     }
-    map_severity_number(severity_number)
+    status_from_severity_number(severity_number)
 }
 
 pub fn map_status_text(text: &str) -> Option<LogStatus> {
@@ -47,56 +46,38 @@ pub fn map_status_text(text: &str) -> Option<LogStatus> {
     match text.to_ascii_lowercase().as_str() {
         "emerg" | "emergency" => Some(LogStatus::Emergency),
         "alert" => Some(LogStatus::Alert),
-        "crit" | "critical" | "fatal" => Some(LogStatus::Critical),
+        "crit" | "critical" | "fatal" => Some(LogStatus::Fatal),
         "err" | "error" => Some(LogStatus::Error),
         "warn" | "warning" => Some(LogStatus::Warning),
         "notice" => Some(LogStatus::Notice),
         "info" | "information" => Some(LogStatus::Info),
-        "debug" | "trace" => Some(LogStatus::Debug),
+        "debug" => Some(LogStatus::Debug),
+        "trace" => Some(LogStatus::Trace),
         _ => None,
     }
 }
 
-pub fn map_severity_number(severity_number: i32) -> Option<LogStatus> {
-    match OtlpSeverityNumber::try_from(severity_number) {
-        Ok(
-            OtlpSeverityNumber::Trace
-            | OtlpSeverityNumber::Trace2
-            | OtlpSeverityNumber::Trace3
-            | OtlpSeverityNumber::Trace4
-            | OtlpSeverityNumber::Debug
-            | OtlpSeverityNumber::Debug2
-            | OtlpSeverityNumber::Debug3
-            | OtlpSeverityNumber::Debug4,
-        ) => Some(LogStatus::Debug),
-        Ok(
-            OtlpSeverityNumber::Info
-            | OtlpSeverityNumber::Info2
-            | OtlpSeverityNumber::Info3
-            | OtlpSeverityNumber::Info4,
-        ) => Some(LogStatus::Info),
-        Ok(
-            OtlpSeverityNumber::Warn
-            | OtlpSeverityNumber::Warn2
-            | OtlpSeverityNumber::Warn3
-            | OtlpSeverityNumber::Warn4,
-        ) => Some(LogStatus::Warning),
-        Ok(
-            OtlpSeverityNumber::Error
-            | OtlpSeverityNumber::Error2
-            | OtlpSeverityNumber::Error3
-            | OtlpSeverityNumber::Error4,
-        ) => Some(LogStatus::Error),
-        Ok(
-            OtlpSeverityNumber::Fatal
-            | OtlpSeverityNumber::Fatal2
-            | OtlpSeverityNumber::Fatal3
-            | OtlpSeverityNumber::Fatal4,
-        ) => Some(LogStatus::Critical),
-        Ok(OtlpSeverityNumber::Unspecified) => None,
-        Err(_) => None,
+/// status_from_severity_number converts the severity number to log level
+///
+/// https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/logs/data-model.md#field-severitynumber
+pub fn status_from_severity_number(severity_number: i32) -> Option<LogStatus> {
+    if severity_number <= 4 {
+        Some(LogStatus::Trace)      
+    } else if severity_number <= 8 {
+        Some(LogStatus::Debug)      
+    } else if severity_number <= 12 {
+        Some(LogStatus::Info)       
+    } else if severity_number <= 16 {
+        Some(LogStatus::Warning)    
+    } else if severity_number <= 20 {
+        Some(LogStatus::Error)      
+    } else if severity_number <= 24 {
+        Some(LogStatus::Fatal)   
+    } else {
+        Some(LogStatus::Error)      
     }
 }
+
 
 pub fn any_value_to_message_string(av: &otlp_common::AnyValue) -> String {
     match av.value.as_ref() {
@@ -132,7 +113,7 @@ pub fn any_value_to_json(av: &otlp_common::AnyValue) -> JsonValue {
 }
 
 // Convert the last 8 bytes of a byte slice to a u64 to get the trace id
-pub fn be_u64_from_last_8(bytes: &[u8]) -> u64 {
+pub fn u64_from_last_8(bytes: &[u8]) -> u64 {
     let n = bytes.len();
     let slice = if n >= 8 { &bytes[n - 8..n] } else { bytes };
     let mut buf = [0u8; 8];
@@ -142,7 +123,7 @@ pub fn be_u64_from_last_8(bytes: &[u8]) -> u64 {
 }
 
 // Convert the first 8 bytes of a byte slice to a u64 to get the span id
-pub fn be_u64_from_first_8(bytes: &[u8]) -> u64 {
+pub fn u64_from_first_8(bytes: &[u8]) -> u64 {
     let slice = if bytes.len() >= 8 { &bytes[..8] } else { bytes };
     let mut buf = [0u8; 8];
     let start = 8 - slice.len();
@@ -271,7 +252,7 @@ impl LogRecordTransformer {
                         if let Some(OtlpStringValue(trace_hex)) = av.value.as_ref() {
                             if !additional_properties.contains_key("dd.trace_id") {
                                 if let Some(bytes) = decode_hex_exact_to_bytes(trace_hex, 16) {
-                                    let dd = be_u64_from_last_8(&bytes);
+                                    let dd = u64_from_last_8(&bytes);
                                     additional_properties.insert("dd.trace_id".to_string(), JsonValue::from(dd));
                                     additional_properties
                                         .insert("otel.trace_id".to_string(), JsonValue::String(trace_hex.clone()));
@@ -286,7 +267,7 @@ impl LogRecordTransformer {
                         if let Some(OtlpStringValue(span_hex)) = av.value.as_ref() {
                             if !additional_properties.contains_key("dd.span_id") {
                                 if let Some(bytes) = decode_hex_exact_to_bytes(span_hex, 8) {
-                                    let dd = be_u64_from_first_8(&bytes);
+                                    let dd = u64_from_first_8(&bytes);
                                     additional_properties.insert("dd.span_id".to_string(), JsonValue::from(dd));
                                     additional_properties
                                         .insert("otel.span_id".to_string(), JsonValue::String(span_hex.clone()));
@@ -360,14 +341,14 @@ impl LogRecordTransformer {
             let hex = bytes_to_hex_lowercase(&lr.trace_id);
             additional_properties.insert("otel.trace_id".to_string(), JsonValue::String(hex));
 
-            let dd = be_u64_from_last_8(&lr.trace_id);
+            let dd = u64_from_last_8(&lr.trace_id);
             additional_properties.insert("dd.trace_id".to_string(), JsonValue::from(dd));
         }
 
         if lr.span_id.len() == 8 && !lr.span_id.iter().all(|&b| b == 0) {
             let hex = bytes_to_hex_lowercase(&lr.span_id);
             additional_properties.insert("otel.span_id".to_string(), JsonValue::String(hex));
-            let dd = be_u64_from_first_8(&lr.span_id);
+            let dd = u64_from_first_8(&lr.span_id);
             additional_properties.insert("dd.span_id".to_string(), JsonValue::from(dd));
         }
 
@@ -627,8 +608,8 @@ mod tests {
         ];
         trace_id.resize(16, 0x00);
         let span_id = trace_id[8..16].to_vec();
-        let dd_tr = be_u64_from_last_8(&trace_id);
-        let dd_sp = be_u64_from_first_8(&span_id);
+        let dd_tr = u64_from_last_8(&trace_id);
+        let dd_sp = u64_from_first_8(&span_id);
 
         let lr = otlp_protos::opentelemetry::proto::logs::v1::LogRecord {
             time_unix_nano: 0,
