@@ -2,7 +2,7 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::{borrow::Cow, collections::HashSet};
 
 pub use figment::value;
@@ -454,21 +454,14 @@ impl ConfigurationLoader {
     ///
     /// This is generally only useful for testing purposes, and is exposed publicly in order to be used in cross-crate testing scenarios.
     pub async fn for_tests(
+        file_values: Option<serde_json::Value>, env_vars: Option<&[(String, String)]>,
         enable_dynamic_configuration: bool,
     ) -> (GenericConfiguration, Option<tokio::sync::mpsc::Sender<ConfigUpdate>>) {
         let json_file = tempfile::NamedTempFile::new().expect("should not fail to create temp file.");
         let path = &json_file.path();
-        let json = serde_json::json!({
-            "foo": "bar",
-            "baz": 5,
-            "foobar": {
-                "a": false,
-                "b": "c",
-            }
-        });
-        serde_json::to_writer(&json_file, &json).expect("should not fail to write to temp file.");
+        let json_to_write = file_values.unwrap_or(serde_json::json!({}));
+        serde_json::to_writer(&json_file, &json_to_write).expect("should not fail to write to temp file.");
 
-        std::env::set_var("test_env_var", "from_env");
         let mut loader = ConfigurationLoader::default().try_from_json(path);
         let mut maybe_sender = None;
         if enable_dynamic_configuration {
@@ -477,15 +470,34 @@ impl ConfigurationLoader {
             maybe_sender = Some(sender);
         }
 
+        static ENV_MUTEX: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+
+        let guard = ENV_MUTEX.get_or_init(|| std::sync::Mutex::new(())).lock().unwrap();
+
+        if let Some(pairs) = env_vars.as_ref() {
+            for (k, v) in pairs.iter() {
+                std::env::set_var(k, v);
+            }
+        }
+
         // Add environment provider last so it has the highest precedence.
+        let loader = loader
+            .from_environment("TEST")
+            .expect("should not fail to add environment provider");
+
+        // Remove only the test-provided env vars after snapshotting.
+        if let Some(pairs) = env_vars.as_ref() {
+            for (k, _) in pairs.iter() {
+                std::env::remove_var(k);
+            }
+        }
+
+        drop(guard);
+
         let cfg = loader
-            .from_environment("test")
-            .expect("should not fail to add environment provider")
             .into_generic()
             .await
             .expect("should not fail to build generic configuration");
-
-        std::env::remove_var("test_env_var");
 
         (cfg, maybe_sender)
     }
@@ -840,7 +852,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_static_configuration() {
-        let (cfg, _) = ConfigurationLoader::for_tests(false).await;
+        let (cfg, _) = ConfigurationLoader::for_tests(
+            Some(serde_json::json!({
+                "foo": "bar",
+                "baz": 5,
+                "foobar": { "a": false, "b": "c" }
+            })),
+            Some(&[("TEST_ENV_VAR".to_string(), "from_env".to_string())]),
+            false,
+        )
+        .await;
         cfg.ready().await;
 
         assert_eq!(cfg.get_typed::<String>("foo").unwrap(), "bar");
@@ -855,7 +876,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_dynamic_configuration() {
-        let (cfg, sender) = ConfigurationLoader::for_tests(true).await;
+        let (cfg, sender) = ConfigurationLoader::for_tests(
+            Some(serde_json::json!({
+                "foo": "bar",
+                "baz": 5,
+                "foobar": { "a": false, "b": "c" }
+            })),
+            Some(&[("TEST_ENV_VAR".to_string(), "from_env".to_string())]),
+            true,
+        )
+        .await;
         let sender = sender.expect("sender should exist");
         sender
             .send(ConfigUpdate::Snapshot(serde_json::json!({
@@ -923,7 +953,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_environment_precedence_over_dynamic() {
-        let (cfg, sender) = ConfigurationLoader::for_tests(true).await;
+        let (cfg, sender) = ConfigurationLoader::for_tests(
+            Some(serde_json::json!({
+                "foo": "bar",
+                "baz": 5,
+                "foobar": { "a": false, "b": "c" }
+            })),
+            Some(&[("TEST_ENV_VAR".to_string(), "from_env".to_string())]),
+            true,
+        )
+        .await;
         let sender = sender.expect("sender should exist");
 
         sender
@@ -984,7 +1023,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_dynamic_configuration_add_new_nested_key() {
-        let (cfg, sender) = ConfigurationLoader::for_tests(true).await;
+        let (cfg, sender) = ConfigurationLoader::for_tests(
+            Some(serde_json::json!({
+                "foo": "bar",
+                "baz": 5,
+                "foobar": { "a": false, "b": "c" }
+            })),
+            None,
+            true,
+        )
+        .await;
         let sender = sender.expect("sender should exist");
 
         sender
@@ -1023,7 +1071,12 @@ mod tests {
     async fn test_underscore_fallback_on_get() {
         std::env::set_var("TEST_RANDOM_KEY", "from_env_only");
 
-        let (cfg, _) = ConfigurationLoader::for_tests(false).await;
+        let (cfg, _) = ConfigurationLoader::for_tests(
+            Some(serde_json::json!({})),
+            Some(&[("TEST_RANDOM_KEY".to_string(), "from_env_only".to_string())]),
+            false,
+        )
+        .await;
         cfg.ready().await;
 
         assert_eq!(cfg.get_typed::<String>("random.key").unwrap(), "from_env_only");
@@ -1033,7 +1086,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_static_configuration_ready_and_subscribe() {
-        let (cfg, maybe_sender) = ConfigurationLoader::for_tests(false).await;
+        let (cfg, maybe_sender) = ConfigurationLoader::for_tests(Some(serde_json::json!({})), None, false).await;
         assert!(maybe_sender.is_none());
 
         tokio::time::timeout(std::time::Duration::from_millis(500), cfg.ready())
@@ -1046,7 +1099,7 @@ mod tests {
     #[tokio::test]
     async fn test_dynamic_configuration_ready_requires_initial_snapshot() {
         // Enable dynamic but do not send the initial snapshot.
-        let (cfg, maybe_sender) = ConfigurationLoader::for_tests(true).await;
+        let (cfg, maybe_sender) = ConfigurationLoader::for_tests(Some(serde_json::json!({})), None, true).await;
         assert!(maybe_sender.is_some());
 
         // ready() should not resolve until the initial snapshot is processed.

@@ -368,7 +368,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_metric_blocklist_dynamic_update() {
-        let (cfg, sender) = ConfigurationLoader::for_tests(true).await;
+        let (cfg, sender) = ConfigurationLoader::for_tests(Some(serde_json::json!({})), None, true).await;
         let sender = sender.expect("sender should exist");
         sender
             .send(ConfigUpdate::Snapshot(serde_json::json!({})))

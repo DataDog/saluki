@@ -93,7 +93,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_basic_field_update_watcher() {
-        let (cfg, sender) = ConfigurationLoader::for_tests(true).await;
+        let (cfg, sender) = ConfigurationLoader::for_tests(
+            Some(serde_json::json!({ "foobar": { "a": false, "b": "c" } })),
+            None,
+            true,
+        )
+        .await;
         let sender = sender.expect("sender should exist");
 
         sender
@@ -122,7 +127,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_field_update_watcher_nested_key() {
-        let (cfg, sender) = ConfigurationLoader::for_tests(true).await;
+        let (cfg, sender) = ConfigurationLoader::for_tests(
+            Some(serde_json::json!({ "foobar": { "a": false, "b": "c" } })),
+            None,
+            true,
+        )
+        .await;
         let sender = sender.expect("sender should exist");
 
         sender
@@ -156,7 +166,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_field_update_watcher_parent_update() {
-        let (cfg, sender) = ConfigurationLoader::for_tests(true).await;
+        let (cfg, sender) = ConfigurationLoader::for_tests(
+            Some(serde_json::json!({ "foobar": { "a": false, "b": "c" } })),
+            None,
+            true,
+        )
+        .await;
         let sender = sender.expect("sender should exist");
 
         sender
