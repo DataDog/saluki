@@ -526,7 +526,8 @@ async fn run_converter(
                         match logs_translator.map_logs(resource_logs, &metrics) {
                             Ok(events) => {
                                 for event in events {
-                                    info!("\n\nWACK TEST EVENT IS: {:?}\n\n", event);
+                                    // TODO: process event
+                                    info!("\n Log event is : {:?}\n", event);
                                 }
                             }
                             Err(e) => {

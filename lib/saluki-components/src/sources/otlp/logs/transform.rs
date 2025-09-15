@@ -294,15 +294,11 @@ impl LogRecordTransformer {
                 // Default: flatten map and insert safely
                 _ => {
                     if let Some(av) = kv.value.as_ref() {
-                        println!("HEHEXD flatten_attribute: {}, {:?}", kv.key, av);
                         let flattened: Vec<(String, JsonValue)> = flatten_attribute(&kv.key, av, 1);
-                        println!("HEHEXD2 flattened: {:?}", flattened);
                         for (key, val) in flattened {
-                            println!("HEHEXD3 key: {}, val: {:?}", key, val);
                             if !val.is_null() {
                                 safe_insert(&mut additional_properties, &key, val);
                             }
-                            println!("HEHEXD4 additional_properties: {:?}", additional_properties);
                         }
                     }
                 }
