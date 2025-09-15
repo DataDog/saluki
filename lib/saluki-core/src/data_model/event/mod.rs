@@ -13,6 +13,9 @@ use self::eventd::EventD;
 pub mod service_check;
 use self::service_check::ServiceCheck;
 
+pub mod log;
+use self::log::Log;
+
 /// Telemetry event type.
 ///
 /// This type is a bitmask, which means different event types can be combined together. This makes `EventType` mainly
@@ -28,6 +31,9 @@ pub enum EventType {
 
     /// Service checks.
     ServiceCheck,
+
+    /// Logs.
+    Log,
 }
 
 impl Default for EventType {
@@ -52,6 +58,10 @@ impl fmt::Display for EventType {
             types.push("ServiceCheck");
         }
 
+        if self.contains(Self::Log) {
+            types.push("Log");
+        }
+
         write!(f, "{}", types.join("|"))
     }
 }
@@ -67,6 +77,9 @@ pub enum Event {
 
     /// A service check.
     ServiceCheck(ServiceCheck),
+
+    /// A log.
+    Log(Log),
 }
 
 impl Event {
@@ -76,6 +89,7 @@ impl Event {
             Event::Metric(_) => EventType::Metric,
             Event::EventD(_) => EventType::EventD,
             Event::ServiceCheck(_) => EventType::ServiceCheck,
+            Event::Log(_) => EventType::Log,
         }
     }
 
@@ -144,6 +158,11 @@ impl Event {
     pub fn is_service_check(&self) -> bool {
         matches!(self, Event::ServiceCheck(_))
     }
+
+    /// Returns `true` if the event is a log.
+    pub fn is_log(&self) -> bool {
+        matches!(self, Event::Log(_))
+    }
 }
 
 #[cfg(test)]
@@ -166,5 +185,6 @@ mod tests {
         );
         println!("EventD: {} bytes", std::mem::size_of::<EventD>());
         println!("ServiceCheck: {} bytes", std::mem::size_of::<ServiceCheck>());
+        println!("Log: {} bytes", std::mem::size_of::<Log>());
     }
 }
