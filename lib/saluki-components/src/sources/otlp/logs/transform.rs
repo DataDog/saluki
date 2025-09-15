@@ -250,7 +250,7 @@ impl LogRecordTransformer {
             let k_lower = kv.key.to_ascii_lowercase();
             match k_lower.as_str() {
                 // Message keys
-                k if MESSAGE_KEYS.iter().any(|m| k == *m) => {
+                k if MESSAGE_KEYS.contains(&k) => {
                     if let Some(av) = kv.value.as_ref() {
                         if let Some(OtlpStringValue(s)) = av.value.as_ref() {
                             msg_from_attrs = Some(s.clone());
@@ -258,7 +258,7 @@ impl LogRecordTransformer {
                     }
                 }
                 // Status/severity text from attributes
-                k if STATUS_KEYS.iter().any(|s| k == *s) => {
+                k if STATUS_KEYS.contains(&k) => {
                     if let Some(av) = kv.value.as_ref() {
                         if let Some(OtlpStringValue(s)) = av.value.as_ref() {
                             status_text_from_attrs = Some(s.clone());
@@ -266,10 +266,10 @@ impl LogRecordTransformer {
                     }
                 }
                 // Trace correlation from attributes
-                k if TRACE_ID_ATTR_KEYS.iter().any(|t| k == *t) => {
+                k if TRACE_ID_ATTR_KEYS.contains(&k) => {
                     if let Some(av) = kv.value.as_ref() {
                         if let Some(OtlpStringValue(trace_hex)) = av.value.as_ref() {
-                            if additional_properties.get("dd.trace_id").is_none() {
+                            if !additional_properties.contains_key("dd.trace_id") {
                                 if let Some(bytes) = decode_hex_exact_to_bytes(trace_hex, 16) {
                                     let dd = be_u64_from_last_8(&bytes);
                                     additional_properties.insert("dd.trace_id".to_string(), JsonValue::from(dd));
@@ -281,10 +281,10 @@ impl LogRecordTransformer {
                     }
                 }
                 // Span correlation from attributes
-                k if SPAN_ID_ATTR_KEYS.iter().any(|s| k == *s) => {
+                k if SPAN_ID_ATTR_KEYS.contains(&k) => {
                     if let Some(av) = kv.value.as_ref() {
                         if let Some(OtlpStringValue(span_hex)) = av.value.as_ref() {
-                            if additional_properties.get("dd.span_id").is_none() {
+                            if !additional_properties.contains_key("dd.span_id") {
                                 if let Some(bytes) = decode_hex_exact_to_bytes(span_hex, 8) {
                                     let dd = be_u64_from_first_8(&bytes);
                                     additional_properties.insert("dd.span_id".to_string(), JsonValue::from(dd));
