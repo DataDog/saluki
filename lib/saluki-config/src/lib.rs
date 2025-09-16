@@ -476,7 +476,7 @@ impl ConfigurationLoader {
 
         if let Some(pairs) = env_vars.as_ref() {
             for (k, v) in pairs.iter() {
-                std::env::set_var(k, v);
+                std::env::set_var(format!("TEST_{}", k), v);
             }
         }
 
@@ -858,7 +858,7 @@ mod tests {
                 "baz": 5,
                 "foobar": { "a": false, "b": "c" }
             })),
-            Some(&[("TEST_ENV_VAR".to_string(), "from_env".to_string())]),
+            Some(&[("ENV_VAR".to_string(), "from_env".to_string())]),
             false,
         )
         .await;
@@ -882,7 +882,7 @@ mod tests {
                 "baz": 5,
                 "foobar": { "a": false, "b": "c" }
             })),
-            Some(&[("TEST_ENV_VAR".to_string(), "from_env".to_string())]),
+            Some(&[("ENV_VAR".to_string(), "from_env".to_string())]),
             true,
         )
         .await;
@@ -959,7 +959,7 @@ mod tests {
                 "baz": 5,
                 "foobar": { "a": false, "b": "c" }
             })),
-            Some(&[("TEST_ENV_VAR".to_string(), "from_env".to_string())]),
+            Some(&[("ENV_VAR".to_string(), "from_env".to_string())]),
             true,
         )
         .await;
@@ -1069,19 +1069,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_underscore_fallback_on_get() {
-        std::env::set_var("TEST_RANDOM_KEY", "from_env_only");
-
         let (cfg, _) = ConfigurationLoader::for_tests(
             Some(serde_json::json!({})),
-            Some(&[("TEST_RANDOM_KEY".to_string(), "from_env_only".to_string())]),
+            Some(&[("RANDOM_KEY".to_string(), "from_env_only".to_string())]),
             false,
         )
         .await;
         cfg.ready().await;
 
         assert_eq!(cfg.get_typed::<String>("random.key").unwrap(), "from_env_only");
-
-        std::env::remove_var("TEST_RANDOM_KEY");
     }
 
     #[tokio::test]
