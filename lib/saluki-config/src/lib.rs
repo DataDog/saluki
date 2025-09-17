@@ -2,7 +2,7 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::{borrow::Cow, collections::HashSet};
 
 pub use figment::value;
@@ -442,6 +442,65 @@ impl ConfigurationLoader {
             })
         }
     }
+
+    /// Configures a [`GenericConfiguration`] that is suitable for tests.
+    ///
+    /// This configures the loader with the following defaults:
+    ///
+    /// - configuration from a JSON file
+    /// - configuration from environment variables
+    ///
+    /// If `enable_dynamic_configuration` is true, a dynamic configuration sender is returned.
+    ///
+    /// This is generally only useful for testing purposes, and is exposed publicly in order to be used in cross-crate testing scenarios.
+    pub async fn for_tests(
+        file_values: Option<serde_json::Value>, env_vars: Option<&[(String, String)]>,
+        enable_dynamic_configuration: bool,
+    ) -> (GenericConfiguration, Option<tokio::sync::mpsc::Sender<ConfigUpdate>>) {
+        let json_file = tempfile::NamedTempFile::new().expect("should not fail to create temp file.");
+        let path = &json_file.path();
+        let json_to_write = file_values.unwrap_or(serde_json::json!({}));
+        serde_json::to_writer(&json_file, &json_to_write).expect("should not fail to write to temp file.");
+
+        let mut loader = ConfigurationLoader::default().try_from_json(path);
+        let mut maybe_sender = None;
+        if enable_dynamic_configuration {
+            let (sender, receiver) = tokio::sync::mpsc::channel(1);
+            loader = loader.with_dynamic_configuration(receiver);
+            maybe_sender = Some(sender);
+        }
+
+        static ENV_MUTEX: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+
+        let guard = ENV_MUTEX.get_or_init(|| std::sync::Mutex::new(())).lock().unwrap();
+
+        if let Some(pairs) = env_vars.as_ref() {
+            for (k, v) in pairs.iter() {
+                std::env::set_var(format!("TEST_{}", k), v);
+            }
+        }
+
+        // Add environment provider last so it has the highest precedence.
+        let loader = loader
+            .from_environment("TEST")
+            .expect("should not fail to add environment provider");
+
+        // Remove only the test-provided env vars after snapshotting.
+        if let Some(pairs) = env_vars.as_ref() {
+            for (k, _) in pairs.iter() {
+                std::env::remove_var(k);
+            }
+        }
+
+        drop(guard);
+
+        let cfg = loader
+            .into_generic()
+            .await
+            .expect("should not fail to build generic configuration");
+
+        (cfg, maybe_sender)
+    }
 }
 
 fn build_figment_from_sources(sources: &[ProviderSource]) -> Figment {
@@ -450,6 +509,47 @@ fn build_figment_from_sources(sources: &[ProviderSource]) -> Figment {
         // No-op. The merging is handled by the updater task.
         ProviderSource::Dynamic(_) => figment,
     })
+}
+
+/// Inserts or updates a value for a key.
+///
+/// Intermediate objects are created if they don't exist.
+fn upsert(root: &mut serde_json::Value, key: &str, value: serde_json::Value) {
+    if !root.is_object() {
+        *root = serde_json::Value::Object(serde_json::Map::new());
+    }
+
+    let mut current = root;
+    // Create a new node for each segment if the key is dotted.
+    let mut segments = key.split('.').peekable();
+
+    while let Some(seg) = segments.next() {
+        let is_leaf = segments.peek().is_none();
+
+        // Ensure current is an object before operating
+        if !current.is_object() {
+            *current = serde_json::Value::Object(serde_json::Map::new());
+        }
+        let node = current.as_object_mut().expect("current node should be an object");
+
+        if is_leaf {
+            node.insert(seg.to_string(), value);
+            break;
+        } else {
+            // Ensure child exists and is an object
+            let should_create_node = match node.get(seg) {
+                Some(v) => !v.is_object(),
+                None => true,
+            };
+            // Check if we need to create an intermediate node if it doesn't exist.
+            if should_create_node {
+                node.insert(seg.to_string(), serde_json::Value::Object(serde_json::Map::new()));
+            }
+
+            // Advance the current node to the next level.
+            current = node.get_mut(seg).expect("should not fail to get nested object");
+        }
+    }
 }
 
 async fn run_dynamic_config_updater(
@@ -517,12 +617,11 @@ async fn run_dynamic_config_updater(
                 dynamic_state = new_state;
             }
             ConfigUpdate::Partial { key, value } => {
-                if let Some(obj) = dynamic_state.as_object_mut() {
-                    obj.insert(key, value);
-                } else if dynamic_state.is_null() {
-                    let mut map = serde_json::Map::new();
-                    map.insert(key, value);
-                    dynamic_state = serde_json::Value::Object(map);
+                if dynamic_state.is_null() {
+                    dynamic_state = serde_json::Value::Object(serde_json::Map::new());
+                }
+                if dynamic_state.is_object() {
+                    upsert(&mut dynamic_state, &key, value);
                 } else {
                     error!(
                         "Received partial update but current dynamic state is not an object. This should not happen."
@@ -744,5 +843,263 @@ fn from_figment_error(lookup_sources: &HashSet<LookupSource>, e: figment::Error)
             actual_ty: actual_ty.to_string(),
         },
         _ => ConfigurationError::Generic { source: e.into() },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_static_configuration() {
+        let (cfg, _) = ConfigurationLoader::for_tests(
+            Some(serde_json::json!({
+                "foo": "bar",
+                "baz": 5,
+                "foobar": { "a": false, "b": "c" }
+            })),
+            Some(&[("ENV_VAR".to_string(), "from_env".to_string())]),
+            false,
+        )
+        .await;
+        cfg.ready().await;
+
+        assert_eq!(cfg.get_typed::<String>("foo").unwrap(), "bar");
+        assert_eq!(cfg.get_typed::<i32>("baz").unwrap(), 5);
+        assert!(!cfg.get_typed::<bool>("foobar.a").unwrap());
+        assert_eq!(cfg.get_typed::<String>("env_var").unwrap(), "from_env");
+        assert!(matches!(
+            cfg.get::<String>("nonexistentKey"),
+            Err(ConfigurationError::MissingField { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_configuration() {
+        let (cfg, sender) = ConfigurationLoader::for_tests(
+            Some(serde_json::json!({
+                "foo": "bar",
+                "baz": 5,
+                "foobar": { "a": false, "b": "c" }
+            })),
+            Some(&[("ENV_VAR".to_string(), "from_env".to_string())]),
+            true,
+        )
+        .await;
+        let sender = sender.expect("sender should exist");
+        sender
+            .send(ConfigUpdate::Snapshot(serde_json::json!({
+                "new": "from_snapshot",
+            })))
+            .await
+            .unwrap();
+
+        cfg.ready().await;
+
+        // Test that existing values still exist.
+        assert_eq!(cfg.get_typed::<String>("foo").unwrap(), "bar");
+
+        // Test that new values from the snapshot exist.
+        assert_eq!(cfg.get_typed::<String>("new").unwrap(), "from_snapshot");
+
+        let mut rx = cfg.subscribe_for_updates().expect("dynamic updates should be enabled");
+
+        sender
+            .send(ConfigUpdate::Partial {
+                key: "new_key".to_string(),
+                value: "from dynamic update".to_string().into(),
+            })
+            .await
+            .unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                match rx.recv().await {
+                    Ok(ev) if ev.key == "new_key" => break ev,
+                    Err(e) => panic!("updates channel closed: {e}"),
+                    Ok(_) => continue,
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for new_key update");
+
+        assert_eq!(cfg.get_typed::<String>("new_key").unwrap(), "from dynamic update");
+
+        // Test that an update with a nested key is applied.
+        sender
+            .send(ConfigUpdate::Partial {
+                key: "foobar.a".to_string(),
+                value: serde_json::json!(true),
+            })
+            .await
+            .unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                match rx.recv().await {
+                    Ok(ev) if ev.key == "foobar.a" => break ev,
+                    Err(e) => panic!("updates channel closed: {e}"),
+                    Ok(_) => continue,
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for foobar.a update");
+
+        assert!(cfg.get_typed::<bool>("foobar.a").unwrap());
+        assert_eq!(cfg.get_typed::<String>("foobar.b").unwrap(), "c");
+    }
+
+    #[tokio::test]
+    async fn test_environment_precedence_over_dynamic() {
+        let (cfg, sender) = ConfigurationLoader::for_tests(
+            Some(serde_json::json!({
+                "foo": "bar",
+                "baz": 5,
+                "foobar": { "a": false, "b": "c" }
+            })),
+            Some(&[("ENV_VAR".to_string(), "from_env".to_string())]),
+            true,
+        )
+        .await;
+        let sender = sender.expect("sender should exist");
+
+        sender
+            .send(ConfigUpdate::Snapshot(serde_json::json!({
+                "env_var": "from_snapshot_env_var"
+            })))
+            .await
+            .unwrap();
+
+        cfg.ready().await;
+
+        // Env provider has highest precedence so the snapshot should not override it.
+        assert_eq!(cfg.get_typed::<String>("env_var").unwrap(), "from_env");
+
+        let mut rx = cfg.subscribe_for_updates().expect("dynamic updates should be enabled");
+
+        // Send a partial update that attempts to override the env-backed key.
+        sender
+            .send(ConfigUpdate::Partial {
+                key: "env_var".to_string(),
+                value: serde_json::json!("from_partial"),
+            })
+            .await
+            .unwrap();
+
+        // Also attempt to override the nested env-backed key via dynamic.
+        sender
+            .send(ConfigUpdate::Partial {
+                key: "foobar.a".to_string(),
+                value: serde_json::json!(false),
+            })
+            .await
+            .unwrap();
+
+        // Send a dummy partial update to ensure the updater has processed prior partials.
+        sender
+            .send(ConfigUpdate::Partial {
+                key: "dummy".to_string(),
+                value: serde_json::json!(1),
+            })
+            .await
+            .unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                match rx.recv().await {
+                    Ok(ev) if ev.key == "dummy" => break,
+                    Err(e) => panic!("updates channel closed: {e}"),
+                    Ok(_) => continue,
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for sync marker");
+
+        assert_eq!(cfg.get_typed::<String>("env_var").unwrap(), "from_env");
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_configuration_add_new_nested_key() {
+        let (cfg, sender) = ConfigurationLoader::for_tests(
+            Some(serde_json::json!({
+                "foo": "bar",
+                "baz": 5,
+                "foobar": { "a": false, "b": "c" }
+            })),
+            None,
+            true,
+        )
+        .await;
+        let sender = sender.expect("sender should exist");
+
+        sender
+            .send(ConfigUpdate::Snapshot(serde_json::json!({})))
+            .await
+            .unwrap();
+        cfg.ready().await;
+
+        let mut rx = cfg.subscribe_for_updates().expect("dynamic updates should be enabled");
+
+        sender
+            .send(ConfigUpdate::Partial {
+                key: "new_parent.new_child".to_string(),
+                value: serde_json::json!(42),
+            })
+            .await
+            .unwrap();
+
+        // new_parent object did not exist before, so the diff will emit the object "new_parent"
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                match rx.recv().await {
+                    Ok(ev) if ev.key == "new_parent" => break ev,
+                    Err(e) => panic!("updates channel closed: {e}"),
+                    Ok(_) => continue,
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for new_parent.new_child update");
+
+        assert_eq!(cfg.get_typed::<i32>("new_parent.new_child").unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn test_underscore_fallback_on_get() {
+        let (cfg, _) = ConfigurationLoader::for_tests(
+            Some(serde_json::json!({})),
+            Some(&[("RANDOM_KEY".to_string(), "from_env_only".to_string())]),
+            false,
+        )
+        .await;
+        cfg.ready().await;
+
+        assert_eq!(cfg.get_typed::<String>("random.key").unwrap(), "from_env_only");
+    }
+
+    #[tokio::test]
+    async fn test_static_configuration_ready_and_subscribe() {
+        let (cfg, maybe_sender) = ConfigurationLoader::for_tests(Some(serde_json::json!({})), None, false).await;
+        assert!(maybe_sender.is_none());
+
+        tokio::time::timeout(std::time::Duration::from_millis(500), cfg.ready())
+            .await
+            .expect("ready() should not block when dynamic is disabled");
+
+        assert!(cfg.subscribe_for_updates().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_configuration_ready_requires_initial_snapshot() {
+        // Enable dynamic but do not send the initial snapshot.
+        let (cfg, maybe_sender) = ConfigurationLoader::for_tests(Some(serde_json::json!({})), None, true).await;
+        assert!(maybe_sender.is_some());
+
+        // ready() should not resolve until the initial snapshot is processed.
+        let res = tokio::time::timeout(std::time::Duration::from_millis(1000), cfg.ready()).await;
+        assert!(res.is_err(), "ready() should time out without an initial snapshot");
     }
 }

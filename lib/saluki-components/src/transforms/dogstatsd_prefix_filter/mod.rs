@@ -261,6 +261,8 @@ impl Transform for DogstatsDPrefixFilter {
 }
 #[cfg(test)]
 mod tests {
+    use saluki_config::{dynamic::ConfigUpdate, ConfigurationLoader};
+
     use super::*;
 
     #[test]
@@ -361,6 +363,64 @@ mod tests {
 
         // new_metric is "foo.bar", match prefix is true, "foo.bar" has prefix "fo"
         let mut metric = Metric::gauge("bar", 1.0);
+        assert!(!filter.process_metric(&mut metric));
+    }
+
+    #[tokio::test]
+    async fn test_metric_blocklist_dynamic_update() {
+        let (cfg, sender) = ConfigurationLoader::for_tests(Some(serde_json::json!({})), None, true).await;
+        let sender = sender.expect("sender should exist");
+        sender
+            .send(ConfigUpdate::Snapshot(serde_json::json!({})))
+            .await
+            .unwrap();
+
+        cfg.ready().await;
+
+        let mut filter = DogstatsDPrefixFilter {
+            metric_prefix: "".to_string(),
+            metric_prefix_blocklist: vec![],
+            blocklist: Blocklist::new(&["foobar".to_string(), "test".to_string()], false),
+            configuration: Some(cfg.clone()),
+        };
+
+        let mut metric = Metric::gauge("foobar", 1.0);
+        assert!(!filter.process_metric(&mut metric));
+
+        let mut metric = Metric::gauge("foo", 1.0);
+        assert!(filter.process_metric(&mut metric));
+        assert_eq!(metric.context().name(), "foo");
+
+        let mut blocklist_watcher = cfg.watch_for_updates("statsd_metric_blocklist");
+
+        sender
+            .send(ConfigUpdate::Partial {
+                key: "statsd_metric_blocklist".to_string(),
+                value: serde_json::json!(["foo".to_string()]),
+            })
+            .await
+            .unwrap();
+
+        let (_, new) = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            blocklist_watcher.changed::<Vec<String>>(),
+        )
+        .await
+        .expect("timed out waiting for statsd_metric_blocklist update");
+
+        assert_eq!(new, Some(vec!["foo".to_string()]));
+
+        // Apply the dynamic update to the filter under test.
+        let new_blocklist = new.unwrap();
+        filter.blocklist = Blocklist::new(&new_blocklist, filter.blocklist.match_prefix);
+
+        // "foobar" is taken off the blocklist
+        let mut metric = Metric::gauge("foobar", 1.0);
+        assert!(filter.process_metric(&mut metric));
+        assert_eq!(metric.context().name(), "foobar");
+
+        // "foo" is added to the blocklist
+        let mut metric = Metric::gauge("foo", 1.0);
         assert!(!filter.process_metric(&mut metric));
     }
 }
