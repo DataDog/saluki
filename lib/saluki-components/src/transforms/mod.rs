@@ -18,5 +18,6 @@ pub use self::host_tags::HostTagsConfiguration;
 mod dogstatsd_mapper;
 pub use self::dogstatsd_mapper::DogstatsDMapperConfiguration;
 
-mod preaggregation_filter;
-pub use self::preaggregation_filter::PreaggregationFilterConfiguration;
+
+mod metric_router;
+pub use self::metric_router::MetricRouterConfiguration;
