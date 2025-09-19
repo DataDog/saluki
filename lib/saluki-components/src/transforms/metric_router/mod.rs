@@ -1,3 +1,5 @@
+use std::{collections::HashSet, sync::LazyLock};
+
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
@@ -10,7 +12,6 @@ use saluki_core::{
 };
 use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
-use std::{collections::HashSet, sync::LazyLock};
 use tokio::select;
 use tracing::{debug, error};
 
@@ -182,8 +183,9 @@ impl Transform for MetricRouter {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use saluki_core::data_model::event::{metric::Metric, Event};
+
+    use super::*;
 
     #[test]
     fn test_exact_metric_name_matching() {

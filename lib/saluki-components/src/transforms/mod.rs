@@ -18,6 +18,5 @@ pub use self::host_tags::HostTagsConfiguration;
 mod dogstatsd_mapper;
 pub use self::dogstatsd_mapper::DogstatsDMapperConfiguration;
 
-
 mod metric_router;
 pub use self::metric_router::MetricRouterConfiguration;
