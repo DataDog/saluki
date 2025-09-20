@@ -3274,6 +3274,7 @@ dependencies = [
  "saluki-health",
  "saluki-metrics",
  "serde",
+ "serde_json",
  "slab",
  "smallvec",
  "snafu",
