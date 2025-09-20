@@ -56,7 +56,7 @@ enum DataType {
 }
 
 /// A translator for converting OTLP metrics into Saluki `Event::Metric`s.
-pub struct OtlpTranslator {
+pub struct OtlpMetricsTranslator {
     config: OtlpTranslatorConfig,
     context_resolver: ContextResolver,
     prev_pts: Cache,
@@ -73,7 +73,7 @@ struct HistogramInfo {
     ok: bool,
 }
 
-impl OtlpTranslator {
+impl OtlpMetricsTranslator {
     /// Creates a new, empty `OtlpTranslator`.
     pub fn new(config: OtlpTranslatorConfig, context_resolver: ContextResolver) -> Self {
         let process_start_time_ns = SystemTime::now()
