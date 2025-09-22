@@ -33,7 +33,7 @@ use saluki_env::WorkloadProvider;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::{
     buf::{BytesBuffer, FixedSizeVec},
-    deser::{codec::dogstatsd::*, framing::FramerExt as _},
+    deser::codec::dogstatsd::*,
     net::{
         listener::{Listener, ListenerError},
         ConnectionAddress, ListenAddress, Stream,
@@ -425,6 +425,8 @@ impl SourceBuilder for DogStatsDConfiguration {
             ));
         }
 
+        let io_buffer_size = get_adjusted_buffer_size(self.buffer_size);
+
         let maybe_origin_tags_resolver = self
             .workload_provider
             .clone()
@@ -448,8 +450,9 @@ impl SourceBuilder for DogStatsDConfiguration {
         Ok(Box::new(DogStatsD {
             listeners,
             io_buffer_pool: FixedSizeObjectPool::with_builder("dsd_packet_bufs", self.buffer_count, || {
-                FixedSizeVec::with_capacity(get_adjusted_buffer_size(self.buffer_size))
+                FixedSizeVec::with_capacity(io_buffer_size)
             }),
+            io_buffer_size,
             codec,
             context_resolvers,
             enabled_filter: enable_payloads_filter,
@@ -494,6 +497,7 @@ impl MemoryBounds for DogStatsDConfiguration {
 pub struct DogStatsD {
     listeners: Vec<Listener>,
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
+    io_buffer_size: usize,
     codec: DogstatsdCodec,
     context_resolvers: ContextResolvers,
     enabled_filter: EnablePayloadsFilter,
@@ -504,6 +508,7 @@ struct ListenerContext {
     shutdown_handle: DynamicShutdownHandle,
     listener: Listener,
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
+    io_buffer_size: usize,
     codec: DogstatsdCodec,
     context_resolvers: ContextResolvers,
     additional_tags: Arc<[String]>,
@@ -680,6 +685,7 @@ impl Source for DogStatsD {
                 shutdown_handle: listener_shutdown_coordinator.register(),
                 listener,
                 io_buffer_pool: self.io_buffer_pool.clone(),
+                io_buffer_size: self.io_buffer_size,
                 codec: self.codec.clone(),
                 context_resolvers: self.context_resolvers.clone(),
                 additional_tags: self.additional_tags.clone(),
@@ -725,6 +731,7 @@ async fn process_listener(
         shutdown_handle,
         mut listener,
         io_buffer_pool,
+        io_buffer_size,
         codec,
         context_resolvers,
         additional_tags,
@@ -748,7 +755,7 @@ async fn process_listener(
 
                     let handler_context = HandlerContext {
                         listen_addr: listen_addr.clone(),
-                        framer: get_framer(&listen_addr),
+                        framer: get_framer(&listen_addr, io_buffer_size),
                         codec: codec.clone(),
                         io_buffer_pool: io_buffer_pool.clone(),
                         metrics: build_metrics(&listen_addr, source_context.component_context()),
@@ -792,7 +799,7 @@ async fn drive_stream(
 ) {
     let HandlerContext {
         listen_addr,
-        mut framer,
+        framer,
         codec,
         io_buffer_pool,
         metrics,
@@ -860,12 +867,12 @@ async fn drive_stream(
                         bytes_read
                     );
 
-                    let mut frames = io_buffer.framed(&mut framer, reached_eof);
+                    let mut frames = framer.framed(&mut io_buffer, reached_eof);
                     'frame: loop {
-                        match frames.next() {
+                        match frames.next_frame() {
                             Some(Ok(frame)) => {
                                 trace!(%listen_addr, %peer_addr, ?frame, "Decoded frame.");
-                                match handle_frame(&frame[..], &codec, &mut context_resolvers, &metrics, &peer_addr, enabled_filter, &additional_tags) {
+                                match handle_frame(frame, &codec, &mut context_resolvers, &metrics, &peer_addr, enabled_filter, &additional_tags) {
                                     Ok(Some(event)) => {
                                         if let Some(event_buffer) = event_buffer_manager.try_push(event) {
                                             debug!(%listen_addr, %peer_addr, "Event buffer is full. Forwarding events.");
@@ -880,7 +887,7 @@ async fn drive_stream(
                                         continue
                                     },
                                     Err(e) => {
-                                        let frame_lossy_str = String::from_utf8_lossy(&frame);
+                                        let frame_lossy_str = String::from_utf8_lossy(frame);
                                         warn!(%listen_addr, %peer_addr, frame = %frame_lossy_str, error = %e, "Failed to parse frame.");
                                     },
                                 }
