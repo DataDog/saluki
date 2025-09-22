@@ -46,7 +46,7 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, MissedTickBehavior};
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 mod attributes;
 mod logs;
@@ -328,8 +328,6 @@ impl Source for Otlp {
 
         let metrics_translator = OtlpMetricsTranslator::new(self.translator_config, self.context_resolver);
         let logs_translator = OtlpLogsTranslator::new(otel_source_tag());
-        // Spawn the converter task. This task is shared by both servers.
-        let translator = OtlpTranslator::new(self.translator_config, self.context_resolver);
 
         let thread_pool_handle = context.topology_context().global_thread_pool().clone();
 
