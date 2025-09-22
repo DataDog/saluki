@@ -46,7 +46,7 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, MissedTickBehavior};
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 mod attributes;
 mod metrics;
