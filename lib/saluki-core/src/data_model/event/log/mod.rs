@@ -17,8 +17,6 @@ pub struct Log {
     hostname: MetaString,
     /// Service associated with the log.
     service: MetaString,
-    /// Source of the log.
-    source: MetaString,
     /// Tags of the log.
     tags: SharedTagSet,
     /// Additional properties of the log.
@@ -56,7 +54,6 @@ impl Log {
             status: None,
             hostname: MetaString::empty(),
             service: MetaString::empty(),
-            source: MetaString::empty(),
             tags: SharedTagSet::default(),
             additional_properties: HashMap::new(),
         }
@@ -77,12 +74,6 @@ impl Log {
     /// Sets the service name.
     pub fn with_service(mut self, service: impl Into<Option<MetaString>>) -> Self {
         self.service = service.into().unwrap_or_else(MetaString::empty);
-        self
-    }
-
-    /// Sets the log source.
-    pub fn with_source(mut self, source: impl Into<Option<MetaString>>) -> Self {
-        self.source = source.into().unwrap_or_else(MetaString::empty);
         self
     }
 
@@ -118,11 +109,6 @@ impl Log {
     /// Returns the service name, if set.
     pub fn service(&self) -> &str {
         &self.service
-    }
-
-    /// Returns the log source, if set.
-    pub fn source(&self) -> &str {
-        &self.source
     }
 
     /// Returns the tags, if set.
