@@ -309,9 +309,9 @@ impl Source for Otlp {
         let mut converter_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
         let translator = OtlpTranslator::new(self.translator_config, self.context_resolver);
-        
+
         let thread_pool_handle = context.topology_context().global_thread_pool().clone();
-        
+
         // Spawn the converter task. This task is shared by both servers.
         thread_pool_handle.spawn_traced_named(
             "otlp-resource-converter",
