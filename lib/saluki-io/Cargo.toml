@@ -32,6 +32,7 @@ libc = { workspace = true }
 memchr = { workspace = true, features = ["std"] }
 metrics = { workspace = true }
 nom = { workspace = true, features = ["alloc"] }
+nougat = { workspace = true }
 pin-project = { workspace = true }
 pin-project-lite = { workspace = true }
 rand = { workspace = true, features = ["std", "std_rng", "thread_rng"] }
