@@ -197,6 +197,7 @@ ryu = { version = "1", default-features = false }
 colored = { version = "3", default-features = false }
 tracing-rolling-file = "0.1"
 tracing-appender = { version = "0.2", default-features = false }
+nougat = "0.2.4"
 
 [profile.release]
 debug = true
