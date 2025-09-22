@@ -20,7 +20,7 @@ use otlp_protos::opentelemetry::proto::collector::metrics::v1::{
 use otlp_protos::opentelemetry::proto::logs::v1::ResourceLogs as OtlpResourceLogs;
 use otlp_protos::opentelemetry::proto::metrics::v1::ResourceMetrics as OtlpResourceMetrics;
 use prost::Message;
-use saluki_common::task::spawn_traced_named;
+use saluki_common::task::HandleExt as _;
 use saluki_config::GenericConfiguration;
 use saluki_context::{ContextResolver, ContextResolverBuilder};
 use saluki_core::observability::ComponentMetricsExt;
@@ -309,8 +309,11 @@ impl Source for Otlp {
         let mut converter_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
         let translator = OtlpTranslator::new(self.translator_config, self.context_resolver);
+        
+        let thread_pool_handle = context.topology_context().global_thread_pool().clone();
+        
         // Spawn the converter task. This task is shared by both servers.
-        spawn_traced_named(
+        thread_pool_handle.spawn_traced_named(
             "otlp-resource-converter",
             run_converter(
                 rx,
@@ -334,7 +337,7 @@ impl Source for Otlp {
             .grpc_endpoint
             .as_local_connect_addr()
             .ok_or_else(|| generic_error!("OTLP gRPC endpoint is not a local TCP address."))?;
-        spawn_traced_named("otlp-grpc-server", grpc_server.serve(grpc_socket_addr));
+        thread_pool_handle.spawn_traced_named("otlp-grpc-server", grpc_server.serve(grpc_socket_addr));
         debug!(endpoint = %self.grpc_endpoint, "OTLP gRPC server started.");
 
         // Create and spawn the HTTP server.
