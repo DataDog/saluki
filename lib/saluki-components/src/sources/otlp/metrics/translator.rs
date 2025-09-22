@@ -278,7 +278,6 @@ impl OtlpTranslator {
         metrics.metrics_received().increment(1);
 
         let ts = timestamp_ns / 1_000_000_000;
-
         // TODO: Handle origin
         match self.context_resolver.resolve(&dims.name, &dims.tags, None) {
             Some(context) => {
@@ -664,7 +663,6 @@ fn get_number_data_point_value(dp: &OtlpNumberDataPoint) -> f64 {
 fn is_skippable(value: f64) -> bool {
     value.is_nan() || value.is_infinite()
 }
-
 #[cfg(test)]
 mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -681,6 +679,7 @@ mod tests {
     fn build_metrics() -> Metrics {
         Metrics {
             metrics_received: Counter::noop(),
+            _logs_received: Counter::noop(),
         }
     }
 
