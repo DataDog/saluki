@@ -115,10 +115,7 @@ where
     ///
     /// Returns `None` if the string exceeds the configured limit or if it cannot be interned.
     pub fn try_intern(&mut self) -> Option<MetaString> {
-        let interned = self.interner.try_intern(self.as_str());
-        self.clear();
-
-        interned.map(MetaString::from)
+        self.interner.try_intern(self.as_str()).map(MetaString::from)
     }
 }
 
@@ -204,6 +201,8 @@ mod tests {
 
         assert_eq!(builder.push_str("Hello World!"), Some(()));
         assert_eq!(builder.try_intern(), Some(MetaString::from("Hello World!")));
+
+        builder.clear();
 
         assert_eq!(builder.push_str("hello"), Some(()));
         assert_eq!(builder.push_str(" "), Some(()));
