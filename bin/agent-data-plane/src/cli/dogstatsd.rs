@@ -1,13 +1,15 @@
 use std::collections::{HashMap, HashSet};
 
 use comfy_table::{presets::ASCII_FULL_CONDENSED, Cell, ContentArrangement, Row, Table};
-use saluki_api::StatusCode;
-use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_error::{ErrorContext as _, GenericError};
 use serde::Deserialize;
 use tokio::io::{self, AsyncWriteExt};
 use tracing::{error, info};
 
-use crate::config::{AnalysisMode, DogstatsdConfig, DogstatsdStatsConfig, SortDirection};
+use crate::{
+    cli::utils::APIClient,
+    config::{AnalysisMode, DogstatsdConfig, DogstatsdStatsConfig, SortDirection},
+};
 
 #[derive(Deserialize)]
 struct MetricSummary<'a> {
@@ -23,11 +25,13 @@ struct StatsResponse<'a> {
     stats: Vec<MetricSummary<'a>>,
 }
 
+/// Entrypoint for all `dogstatsd` subcommands.
 pub async fn handle_dogstatsd_subcommand(config: DogstatsdConfig) {
     match config {
         DogstatsdConfig::Stats(config) => {
             if let Err(e) = handle_dogstatsd_stats(config).await {
                 error!("Failed to run stats subcommand: {}", e);
+                std::process::exit(1);
             }
         }
     }
@@ -39,26 +43,9 @@ async fn handle_dogstatsd_stats(config: DogstatsdStatsConfig) -> Result<(), Gene
         "Triggered statistics collection over the next {} seconds. Waiting for completion...",
         config.collection_duration_secs
     );
-    let client = get_http_client();
-    let response = client
-        .get("https://localhost:5101/dogstatsd/stats")
-        .query(&[("collection_duration_secs", config.collection_duration_secs)])
-        .send()
-        .await
-        .error_context("Failed to send statistics collection request.")?;
 
-    // Parse the response and extract the deserialized statistics.
-    let status = response.status();
-    let response_body = response.text().await.error_context("Failed to read response body.")?;
-
-    if status != StatusCode::OK {
-        output_lines([response_body]).await.unwrap();
-        return Err(generic_error!(
-            "Non-success response ({}) after statistics collection. Raw response payload has been logged to stdout.",
-            status
-        ));
-    }
-
+    let api_client = APIClient::new();
+    let response_body = api_client.dogstatsd_stats(config.collection_duration_secs).await?;
     let mut response = serde_json::from_str::<StatsResponse>(&response_body)
         .error_context("Failed to deserialize collected statistics response.")?;
 
@@ -219,12 +206,4 @@ where
     }
     stdout.flush().await?;
     Ok(())
-}
-
-fn get_http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        // We need this because our privileged API uses a self-signed certificate.
-        .danger_accept_invalid_certs(true)
-        .build()
-        .unwrap()
 }

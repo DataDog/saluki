@@ -1,8 +1,8 @@
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::sync::{LazyLock, OnceLock};
 
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use saluki_config::GenericConfiguration;
 use saluki_context::tags::TagSet;
 use saluki_core::data_model::event::{
     eventd::{AlertType, EventD, Priority},
@@ -10,35 +10,31 @@ use saluki_core::data_model::event::{
     Event,
 };
 use saluki_error::{generic_error, GenericError};
+use serde::Deserialize;
 use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, trace};
 
 use crate::sources::checks::check_metric::{CheckMetric, MetricType};
+use crate::sources::checks::execution_context::ExecutionContext;
 
 // Global state to store the sender
-static METRIC_SENDER: OnceLock<Sender<Event>> = OnceLock::new();
-// Global state to store the configuration
-static GLOBAL_CONFIGURATION: OnceLock<GenericConfiguration> = OnceLock::new();
-// Global state to store the configuration
-static GLOBAL_HOST: OnceLock<String> = OnceLock::new();
+static GLOBAL_METRIC_SENDER: OnceLock<Sender<Event>> = OnceLock::new();
+
+// Global state to store the execution context
+static GLOBAL_EXECUTION_CONTEXT: OnceLock<ExecutionContext> = OnceLock::new();
 
 /// Sets the event sender to be used by the aggregator module.
 pub fn set_event_sender(check_metrics_tx: Sender<Event>) -> &'static Sender<Event> {
-    METRIC_SENDER.get_or_init(|| check_metrics_tx)
+    GLOBAL_METRIC_SENDER.get_or_init(|| check_metrics_tx)
 }
 
-/// Sets the configuration to be used by the datadog_agent module.
-pub fn set_configuration(configuration: GenericConfiguration) -> &'static GenericConfiguration {
-    GLOBAL_CONFIGURATION.get_or_init(move || configuration)
-}
-
-/// Sets the hostname to be used by the datadog_agent module.
-pub fn set_hostname(hostname: String) -> &'static String {
-    GLOBAL_HOST.get_or_init(|| hostname)
+/// Sets the `ExecutionContext` to be used by the datadog_agent module.
+pub fn set_execution_context(execution_context: ExecutionContext) -> &'static ExecutionContext {
+    GLOBAL_EXECUTION_CONTEXT.get_or_init(|| execution_context)
 }
 
 fn try_send_metric(metric: CheckMetric) -> Result<(), GenericError> {
-    match METRIC_SENDER.get() {
+    match GLOBAL_METRIC_SENDER.get() {
         Some(sender) => sender
             .try_send(metric.into())
             .map_err(|e| generic_error!("Failed to send metric: {}", e)),
@@ -47,7 +43,7 @@ fn try_send_metric(metric: CheckMetric) -> Result<(), GenericError> {
 }
 
 fn try_send_service_check(service_check: ServiceCheck) -> Result<(), GenericError> {
-    match METRIC_SENDER.get() {
+    match GLOBAL_METRIC_SENDER.get() {
         Some(sender) => sender
             .try_send(Event::ServiceCheck(service_check))
             .map_err(|e| generic_error!("Failed to send service check: {}", e)),
@@ -56,7 +52,7 @@ fn try_send_service_check(service_check: ServiceCheck) -> Result<(), GenericErro
 }
 
 fn try_send_event(event: EventD) -> Result<(), GenericError> {
-    match METRIC_SENDER.get() {
+    match GLOBAL_METRIC_SENDER.get() {
         Some(sender) => sender
             .try_send(Event::EventD(event))
             .map_err(|e| generic_error!("Failed to send event: {}", e)),
@@ -64,18 +60,32 @@ fn try_send_event(event: EventD) -> Result<(), GenericError> {
     }
 }
 
-fn get_config_key(key: String) -> String {
-    match GLOBAL_CONFIGURATION.get() {
-        Some(configuration) => configuration.get_typed_or_default::<String>(&key),
-
-        None => "".to_string(),
+fn get_config_key<'a, S, T>(key: S) -> T
+where
+    S: AsRef<str>,
+    T: Default + Deserialize<'a>,
+{
+    match GLOBAL_EXECUTION_CONTEXT.get() {
+        Some(execution_context) => execution_context
+            .configuration()
+            .get_typed_or_default::<T>(key.as_ref()),
+        None => T::default(),
     }
 }
 
 fn fetch_hostname() -> &'static str {
-    match GLOBAL_HOST.get() {
-        Some(host) => host.as_str(),
+    match GLOBAL_EXECUTION_CONTEXT.get() {
+        Some(execution_context) => execution_context.hostname(),
         None => "",
+    }
+}
+
+fn fetch_http_headers() -> &'static HashMap<String, String> {
+    static EMPTY: LazyLock<HashMap<String, String>> = LazyLock::new(HashMap::new);
+
+    match GLOBAL_EXECUTION_CONTEXT.get() {
+        Some(ec) => ec.http_headers(),
+        None => &EMPTY,
     }
 }
 
@@ -248,34 +258,39 @@ pub mod datadog_agent {
     use super::*;
 
     #[pyfunction]
+    fn get_config(config_option: String) -> String {
+        trace!("Called get_config({})", config_option);
+        get_config_key(config_option)
+    }
+
+    #[pyfunction]
     fn get_hostname() -> &'static str {
         trace!("Called get_hostname()");
         fetch_hostname()
     }
 
     #[pyfunction]
-    fn get_config(config_option: String) -> String {
-        trace!("Called get_config({})", config_option);
-
-        get_config_key(config_option)
+    fn tracemalloc_enabled() -> bool {
+        trace!("Called tracemalloc_enabled()");
+        get_config_key("tracemalloc_debug")
     }
 
     #[pyfunction]
     fn get_version() -> &'static str {
         trace!("Called get_version()");
-        "0.0.0"
+        saluki_metadata::get_app_details().version().raw()
+    }
+
+    #[pyfunction]
+    fn headers() -> &'static HashMap<String, String> {
+        trace!("Called headers()");
+        fetch_http_headers()
     }
 
     #[pyfunction]
     fn set_check_metadata(check_id: String, name: String, value: String) {
         debug!("Called set_check_metadata({}, {}, {})", check_id, name, value);
         // Again, we can only log this because there's no structure to store it.
-    }
-
-    #[pyfunction]
-    fn tracemalloc_enabled() -> bool {
-        // tracemalloc unsupported for now
-        false
     }
 }
 
@@ -363,11 +378,6 @@ mod tests {
         assert_eq!(event_count, 2, "Expected 2 events, got {}", event_count);
     }
 
-    struct TestResults {
-        hostname: String,
-        config_value: String,
-    }
-
     #[tokio::test]
     async fn test_python_datadog_agent_integration() {
         std::env::set_var("DD_TEST_FOO", "bar");
@@ -379,37 +389,76 @@ mod tests {
             .await
             .expect("convert to generic configuration");
 
-        set_configuration(config);
-
-        set_hostname("agent-test-host".to_string());
+        set_execution_context(ExecutionContext::new(config));
 
         pyo3::append_to_inittab!(datadog_agent);
         pyo3::prepare_freethreaded_python();
 
-        let results = Python::with_gil(|py| -> Result<TestResults, Box<dyn std::error::Error>> {
+        let result = Python::with_gil(|py| -> Result<String, Box<dyn std::error::Error>> {
+            let datadog_agent = PyModule::import(py, "datadog_agent")?;
+            let value: String = datadog_agent.getattr("get_config")?.call1(("foo",))?.extract()?;
+            Ok(value)
+        });
+        assert!(result.is_ok(), "Python datadog_agent test failed: {:?}", result.err());
+
+        let value = result.unwrap();
+        assert!(value == "bar", "Config value mismatch: {}", value);
+        std::env::remove_var("DD_TEST_FOO");
+    }
+
+    struct TestResults {
+        hostname: String,
+        tracemalloc_enabled: bool,
+        http_headers: HashMap<String, String>,
+    }
+
+    #[tokio::test]
+    async fn test_python_checks_config() {
+        trace!("Starting test_python_checks_config");
+
+        let generic_configuration = ConfigurationLoader::default()
+            .from_yaml("src/sources/checks/builder/python/tests/test_checks_config.yaml")
+            .expect("configuration should be loaded")
+            .into_generic()
+            .await
+            .expect("convert to generic configuration");
+
+        let execution_context = ExecutionContext::new(generic_configuration).with_hostname("agent-test-host");
+        set_execution_context(execution_context);
+
+        pyo3::append_to_inittab!(datadog_agent);
+        pyo3::prepare_freethreaded_python();
+
+        let result = Python::with_gil(|py| -> Result<TestResults, Box<dyn std::error::Error>> {
             let datadog_agent = PyModule::import(py, "datadog_agent")?;
 
+            let tracemalloc_enabled: bool = datadog_agent.getattr("tracemalloc_enabled")?.call0()?.extract()?;
             let hostname: String = datadog_agent.getattr("get_hostname")?.call0()?.extract()?;
+            let http_headers: HashMap<String, String> = datadog_agent.getattr("headers")?.call0()?.extract()?;
 
-            let config_value: String = datadog_agent.getattr("get_config")?.call1(("foo",))?.extract()?;
-
-            Ok(TestResults { hostname, config_value })
+            Ok(TestResults {
+                hostname,
+                tracemalloc_enabled,
+                http_headers,
+            })
         });
+        assert!(result.is_ok(), "Python datadog_agent test failed: {:?}", result.err());
 
-        assert!(results.is_ok(), "Python datadog_agent test failed: {:?}", results.err());
-
-        let results = results.unwrap();
-
+        let result = result.unwrap();
         assert!(
-            results.hostname == "agent-test-host",
-            "Hostname mismatch: {}",
-            results.hostname
+            result.tracemalloc_enabled == true,
+            "tracemalloc_enabled mismatch: {}",
+            result.tracemalloc_enabled
         );
         assert!(
-            results.config_value == "bar",
-            "Config value mismatch: {}",
-            results.config_value
+            result.hostname == "agent-test-host",
+            "hostname mismatch: {}",
+            result.hostname
         );
-        std::env::remove_var("DD_TEST_FOO");
+        assert!(
+            result.http_headers["User-Agent"].contains("Datadog Agent"),
+            "http_headers User-Agent mismatch: {}",
+            result.http_headers["User-Agent"]
+        );
     }
 }

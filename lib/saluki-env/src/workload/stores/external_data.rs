@@ -198,11 +198,11 @@ impl ExternalDataStoreResolver {
     /// Executes the given function for each forward mapping in the latest snapshot.
     pub fn with_latest_snapshot<F>(&self, mut f: F)
     where
-        F: FnMut(&ExternalData),
+        F: FnMut(&ExternalData, &EntityId),
     {
         let snapshot = self.snapshot.load();
-        for external_data in snapshot.forward_mappings.keys() {
-            f(external_data);
+        for (external_data, resolved_ed) in snapshot.forward_mappings.iter() {
+            f(external_data, resolved_ed.container_entity_id());
         }
     }
 }

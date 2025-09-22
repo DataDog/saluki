@@ -97,6 +97,10 @@ const fn default_port() -> u16 {
     8125
 }
 
+const fn default_tcp_port() -> u16 {
+    0
+}
+
 const fn default_allow_context_heap_allocations() -> bool {
     true
 }
@@ -167,6 +171,14 @@ pub struct DogStatsDConfiguration {
     /// Defaults to 8125.
     #[serde(rename = "dogstatsd_port", default = "default_port")]
     port: u16,
+
+    /// The port to listen on in TCP mode.
+    ///
+    /// If set to `0`, TCP is not used.
+    ///
+    /// Defaults to 0.
+    #[serde(rename = "dogstatsd_tcp_port", default = "default_tcp_port")]
+    tcp_port: u16,
 
     /// The Unix domain socket path to listen on, in datagram mode.
     ///
@@ -336,6 +348,19 @@ impl DogStatsDConfiguration {
             let listener = Listener::from_listen_address(address)
                 .await
                 .context(FailedToCreateListener { listener_type: "UDP" })?;
+            listeners.push(listener);
+        }
+
+        if self.tcp_port != 0 {
+            let address = if self.non_local_traffic {
+                ListenAddress::Tcp(([0, 0, 0, 0], self.tcp_port).into())
+            } else {
+                ListenAddress::Tcp(([127, 0, 0, 1], self.tcp_port).into())
+            };
+
+            let listener = Listener::from_listen_address(address)
+                .await
+                .context(FailedToCreateListener { listener_type: "TCP" })?;
             listeners.push(listener);
         }
 
@@ -548,7 +573,7 @@ fn build_metrics(listen_addr: &ListenAddress, component_context: &ComponentConte
     let builder = MetricsBuilder::from_component_context(component_context);
 
     let listener_type = match listen_addr {
-        ListenAddress::Tcp(_) => unreachable!("TCP is not supported for DogStatsD"),
+        ListenAddress::Tcp(_) => "tcp",
         ListenAddress::Udp(_) => "udp",
         ListenAddress::Unix(_) => "unix",
         ListenAddress::Unixgram(_) => "unixgram",
