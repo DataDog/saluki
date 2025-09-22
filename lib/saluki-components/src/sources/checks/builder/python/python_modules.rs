@@ -351,6 +351,7 @@ mod tests {
                         panic!("Unexpected event title: {}", ev.title());
                     }
                 }
+                Event::Log(_) => todo!(),
             }
         }
 
