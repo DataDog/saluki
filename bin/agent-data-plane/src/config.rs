@@ -47,6 +47,10 @@ pub enum DebugConfig {
     /// Overrides the current log level.
     #[command(name = "set-log-level")]
     SetLogLevel(SetLogLevelConfig),
+
+    /// Query and interact with the workload provider.
+    #[command(subcommand)]
+    Workload(WorkloadConfig),
 }
 
 /// Set log level configuration.
@@ -117,4 +121,24 @@ pub enum AnalysisMode {
     /// Displays the cardinality of all collected metrics, sorted by cardinality.
     #[value(name = "cardinality")]
     Cardinality,
+}
+
+/// Workload subcommand configuration.
+#[derive(Subcommand, Debug)]
+pub enum WorkloadConfig {
+    /// Dump all entity tags.
+    #[command(name = "tags")]
+    Tags {
+        /// Output in JSON format.
+        #[arg(short = 'j', long = "json", default_value_t = false)]
+        json: bool,
+    },
+
+    /// Dump all External Data entries.
+    #[command(name = "eds")]
+    ExternalData {
+        /// Output in JSON format.
+        #[arg(short = 'j', long = "json", default_value_t = false)]
+        json: bool,
+    },
 }

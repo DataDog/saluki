@@ -4,7 +4,7 @@ use otlp_protos::opentelemetry::proto::common::v1 as otlp_common;
 use saluki_context::tags::{SharedTagSet, TagSet};
 
 /// A helper struct for building the identity of a metric.
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug, Default)]
 pub struct Dimensions {
     pub name: String,
     pub tags: SharedTagSet,
