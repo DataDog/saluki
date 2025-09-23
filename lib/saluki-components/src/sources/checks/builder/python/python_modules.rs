@@ -287,6 +287,8 @@ pub mod datadog_agent {
         fetch_http_headers()
     }
 
+    // Custom log level defined in:
+    // https://github.com/DataDog/integrations-core/blob/master/datadog_checks_base/datadog_checks/base/log.py
     #[pyfunction]
     fn log_message(message: String, level: isize) {
         match level {
