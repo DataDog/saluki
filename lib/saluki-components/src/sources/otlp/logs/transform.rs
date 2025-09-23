@@ -1,12 +1,13 @@
+use std::collections::HashMap;
+
 use chrono::DateTime;
 use otlp_common::any_value::Value::StringValue as OtlpStringValue;
+use otlp_common::any_value::Value::{ArrayValue, BoolValue, BytesValue, DoubleValue, IntValue, KvlistValue};
 use otlp_protos::opentelemetry::proto::common::v1 as otlp_common;
-use saluki_context::tags::{SharedTagSet, TagSet};
-use saluki_core::data_model::event::log::{Log, LogStatus};
 use otlp_protos::opentelemetry::proto::logs::v1::LogRecord;
 use otlp_protos::opentelemetry::proto::resource::v1::Resource;
-use otlp_common::any_value::Value::{ArrayValue, IntValue, DoubleValue, BoolValue, BytesValue, KvlistValue};
-use std::collections::HashMap;
+use saluki_context::tags::{SharedTagSet, TagSet};
+use saluki_core::data_model::event::log::{Log, LogStatus};
 use serde_json::Value as JsonValue;
 use stringtheory::MetaString;
 use tracing::error;
@@ -85,9 +86,7 @@ pub fn any_value_to_json(av: &otlp_common::AnyValue) -> JsonValue {
             Ok(s) => JsonValue::String(s),
             Err(_) => JsonValue::String(format!("<{} bytes>", bytes.len())),
         },
-        Some(ArrayValue(arr)) => {
-            JsonValue::Array(arr.values.iter().map(any_value_to_json).collect::<Vec<_>>())
-        }
+        Some(ArrayValue(arr)) => JsonValue::Array(arr.values.iter().map(any_value_to_json).collect::<Vec<_>>()),
         Some(KvlistValue(kvl)) => {
             let mut obj = serde_json::Map::new();
             for kv in &kvl.values {
@@ -184,6 +183,15 @@ pub fn flatten_attribute(base_key: &str, av: &otlp_common::AnyValue, depth: usiz
     vec![(base_key.to_string(), to_leaf_json(av))]
 }
 
+// Helper to insert safely avoid overwriting fields that are already set
+fn safe_insert(map: &mut HashMap<String, JsonValue>, key: &str, value: JsonValue) {
+    if key == "hostname" || key == "service" {
+        map.insert(format!("otel.{}", key), value);
+    } else {
+        map.insert(key.to_string(), value);
+    }
+}
+
 // Transformer that converts a OTLP LogRecord into a dd native log.
 pub struct LogRecordTransformer;
 
@@ -193,24 +201,13 @@ impl LogRecordTransformer {
     }
 
     pub fn transform(
-        &self, lr: LogRecord,
-        resource: &Resource,
-        scope: Option<&otlp_common::InstrumentationScope>, host_for_record: Option<String>,
-        service_for_record: Option<String>, base_tags_for_resource: &SharedTagSet,
+        &self, lr: LogRecord, resource: &Resource, scope: Option<&otlp_common::InstrumentationScope>,
+        host_for_record: Option<String>, service_for_record: Option<String>, base_tags_for_resource: &SharedTagSet,
     ) -> Log {
         let mut tags = base_tags_for_resource.clone();
 
         // Build additional properties map with resource, scope and record attributes
         let mut additional_properties = HashMap::<String, JsonValue>::new();
-
-        // Helper to insert safely avoid overwriting fields that are already set
-        fn safe_insert(map: &mut HashMap<String, JsonValue>, key: &str, value: JsonValue) {
-            if key == "hostname" || key == "service" {
-                map.insert(format!("otel.{}", key), value);
-            } else {
-                map.insert(key.to_string(), value);
-            }
-        }
 
         // Single-pass over record attributes: handle special keys and flatten others
         let mut status_text_from_attrs: Option<String> = None;
