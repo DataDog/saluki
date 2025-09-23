@@ -3,6 +3,10 @@ use otlp_common::any_value::Value::StringValue as OtlpStringValue;
 use otlp_protos::opentelemetry::proto::common::v1 as otlp_common;
 use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_core::data_model::event::log::{Log, LogStatus};
+use otlp_protos::opentelemetry::proto::logs::v1::LogRecord;
+use otlp_protos::opentelemetry::proto::resource::v1::Resource;
+use otlp_common::any_value::Value::{ArrayValue, IntValue, DoubleValue, BoolValue, BytesValue, KvlistValue};
+use std::collections::HashMap;
 use serde_json::Value as JsonValue;
 use stringtheory::MetaString;
 use tracing::error;
@@ -73,18 +77,18 @@ pub fn any_value_to_message_string(av: &otlp_common::AnyValue) -> String {
 
 pub fn any_value_to_json(av: &otlp_common::AnyValue) -> JsonValue {
     match av.value.as_ref() {
-        Some(otlp_common::any_value::Value::BoolValue(b)) => JsonValue::Bool(*b),
-        Some(otlp_common::any_value::Value::IntValue(i)) => JsonValue::from(*i),
-        Some(otlp_common::any_value::Value::DoubleValue(d)) => JsonValue::from(*d),
+        Some(BoolValue(b)) => JsonValue::Bool(*b),
+        Some(IntValue(i)) => JsonValue::from(*i),
+        Some(DoubleValue(d)) => JsonValue::from(*d),
         Some(OtlpStringValue(s)) => JsonValue::String(s.clone()),
-        Some(otlp_common::any_value::Value::BytesValue(bytes)) => match String::from_utf8(bytes.clone()) {
+        Some(BytesValue(bytes)) => match String::from_utf8(bytes.clone()) {
             Ok(s) => JsonValue::String(s),
             Err(_) => JsonValue::String(format!("<{} bytes>", bytes.len())),
         },
-        Some(otlp_common::any_value::Value::ArrayValue(arr)) => {
+        Some(ArrayValue(arr)) => {
             JsonValue::Array(arr.values.iter().map(any_value_to_json).collect::<Vec<_>>())
         }
-        Some(otlp_common::any_value::Value::KvlistValue(kvl)) => {
+        Some(KvlistValue(kvl)) => {
             let mut obj = serde_json::Map::new();
             for kv in &kvl.values {
                 if let Some(val) = kv.value.as_ref() {
@@ -148,10 +152,10 @@ pub fn flatten_attribute(base_key: &str, av: &otlp_common::AnyValue, depth: usiz
     fn to_leaf_json(av: &otlp_common::AnyValue) -> JsonValue {
         match av.value.as_ref() {
             Some(OtlpStringValue(s)) => JsonValue::String(s.clone()),
-            Some(otlp_common::any_value::Value::IntValue(i)) => JsonValue::from(*i),
-            Some(otlp_common::any_value::Value::BoolValue(b)) => JsonValue::Bool(*b),
-            Some(otlp_common::any_value::Value::DoubleValue(d)) => JsonValue::from(*d),
-            Some(otlp_common::any_value::Value::BytesValue(bytes)) => match String::from_utf8(bytes.clone()) {
+            Some(IntValue(i)) => JsonValue::from(*i),
+            Some(BoolValue(b)) => JsonValue::Bool(*b),
+            Some(DoubleValue(d)) => JsonValue::from(*d),
+            Some(BytesValue(bytes)) => match String::from_utf8(bytes.clone()) {
                 Ok(s) => JsonValue::String(s),
                 Err(_) => JsonValue::String(format!("<{} bytes>", bytes.len())),
             },
@@ -160,7 +164,7 @@ pub fn flatten_attribute(base_key: &str, av: &otlp_common::AnyValue, depth: usiz
     }
 
     if depth < MAX_DEPTH {
-        if let Some(otlp_common::any_value::Value::KvlistValue(kvl)) = av.value.as_ref() {
+        if let Some(KvlistValue(kvl)) = av.value.as_ref() {
             let mut out = Vec::new();
             for kv in &kvl.values {
                 if let Some(v) = kv.value.as_ref() {
@@ -189,18 +193,18 @@ impl LogRecordTransformer {
     }
 
     pub fn transform(
-        &self, lr: otlp_protos::opentelemetry::proto::logs::v1::LogRecord,
-        resource: &otlp_protos::opentelemetry::proto::resource::v1::Resource,
+        &self, lr: LogRecord,
+        resource: &Resource,
         scope: Option<&otlp_common::InstrumentationScope>, host_for_record: Option<String>,
         service_for_record: Option<String>, base_tags_for_resource: &SharedTagSet,
     ) -> Log {
         let mut tags = base_tags_for_resource.clone();
 
         // Build additional properties map with resource, scope and record attributes
-        let mut additional_properties = std::collections::HashMap::<String, JsonValue>::new();
+        let mut additional_properties = HashMap::<String, JsonValue>::new();
 
         // Helper to insert safely avoid overwriting fields that are already set
-        fn safe_insert(map: &mut std::collections::HashMap<String, JsonValue>, key: &str, value: JsonValue) {
+        fn safe_insert(map: &mut HashMap<String, JsonValue>, key: &str, value: JsonValue) {
             if key == "hostname" || key == "service" {
                 map.insert(format!("otel.{}", key), value);
             } else {
