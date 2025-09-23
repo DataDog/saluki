@@ -46,7 +46,7 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, MissedTickBehavior};
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 mod attributes;
 mod logs;
@@ -544,12 +544,13 @@ async fn run_converter(
                         match logs_translator.map_logs(resource_logs, &metrics) {
                             Ok(events) => {
                                 for event in events {
-                                    // TODO: process event
-                                    info!("\n Log event is : {:?}\n", event);
+                                    if let Some(event_buffer) = event_buffer_manager.try_push(event) {
+                                        dispatch_events(event_buffer, &source_context).await;
+                                    }
                                 }
                             }
                             Err(e) => {
-                                info!(error = %e, "converter: failed to handle resource logs\n");
+                                error!(error = %e, "Failed to handle resource logs.");
                             }
                         }
                     }
