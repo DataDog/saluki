@@ -78,8 +78,8 @@ impl Log {
     }
 
     /// Sets the tags string.
-    pub fn with_ddtags(mut self, ddtags: impl Into<Option<SharedTagSet>>) -> Self {
-        self.tags = ddtags.into().unwrap_or_else(SharedTagSet::default);
+    pub fn with_tags(mut self, tags: impl Into<Option<SharedTagSet>>) -> Self {
+        self.tags = tags.into().unwrap_or_else(SharedTagSet::default);
         self
     }
 

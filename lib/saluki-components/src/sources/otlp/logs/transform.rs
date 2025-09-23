@@ -379,7 +379,7 @@ impl LogRecordTransformer {
             .with_status(status)
             .with_hostname(host_for_record.as_deref().map(MetaString::from))
             .with_service(service_for_record.as_deref().map(MetaString::from))
-            .with_ddtags(tags)
+            .with_tags(tags)
             .with_additional_properties(Some(additional_properties));
 
         log
