@@ -34,6 +34,8 @@ use saluki_core::{
     data_model::event::EventType,
     topology::{EventsBuffer, OutputDefinition},
 };
+#[cfg(test)]
+use saluki_core::topology::ComponentId;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::listener::ConnectionOrientedListener;
 use saluki_io::net::server::http::HttpServer;
@@ -221,9 +223,9 @@ impl Metrics {
     /// Test-only helper to construct a `Metrics` instance.
     #[cfg(test)]
     pub fn for_test() -> Self {
-        let component_id =
-            saluki_core::topology::ComponentId::try_from("otlp_logs_translator_test").expect("valid component id");
-        let cc = saluki_core::components::ComponentContext::source(component_id);
+        let component_id = ComponentId::try_from("otlp_logs_translator_test").expect("valid component id");
+        // let component_id = try_from("otlp_logs_translator_test").expect("valid component id");
+        let cc = ComponentContext::source(component_id);
         build_metrics(&cc)
     }
 }
