@@ -26,6 +26,8 @@ use saluki_context::{ContextResolver, ContextResolverBuilder};
 use saluki_core::observability::ComponentMetricsExt;
 use saluki_core::topology::interconnect::EventBufferManager;
 use saluki_core::topology::shutdown::{DynamicShutdownCoordinator, DynamicShutdownHandle};
+#[cfg(test)]
+use saluki_core::topology::ComponentId;
 use saluki_core::{
     components::{
         sources::{Source, SourceBuilder, SourceContext},
@@ -34,8 +36,6 @@ use saluki_core::{
     data_model::event::EventType,
     topology::{EventsBuffer, OutputDefinition},
 };
-#[cfg(test)]
-use saluki_core::topology::ComponentId;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::listener::ConnectionOrientedListener;
 use saluki_io::net::server::http::HttpServer;
