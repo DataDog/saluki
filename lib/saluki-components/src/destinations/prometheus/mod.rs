@@ -242,166 +242,57 @@ impl Destination for Prometheus {
     }
 }
 
-fn render_payload(
-    metrics: &FastIndexMap<MetaString, GroupedValues>, payload_builder: &mut StringBuilder,
-    subpayload_builder: &mut StringBuilder,
-) {
-    payload_builder.clear();
-
-    let mut metrics_written = 0;
-    let metrics_total = metrics.len();
-
-    for (metric_name, grouped_values) in metrics {
-        // Write this single metric out to the subpayload builder, which will include all of the individual contexts/tagsets.
-        if write_metrics(grouped_values, subpayload_builder).is_err() {
-            debug!(
-                contexts_len = grouped_values.len(),
-                "Failed to render contexts for metric '{}'. Skipping.", metric_name,
-            );
-            continue;
-        }
-
-        // Push the subpayload builder's string into the payload builder.
-        if payload_builder.push_str(subpayload_builder.as_str()).is_none() {
-            debug!(
-                metrics_written,
-                metrics_total,
-                payload_len = payload_builder.len(),
-                "Failed to include metric '{}' in payload due to insufficient space. Skipping remaining metrics.",
-                metric_name
-            );
-            break;
-        }
-
-        metrics_written += 1;
-    }
+#[derive(Clone)]
+struct PrometheusHistogram {
+    sum: f64,
+    count: u64,
+    buckets: Vec<(f64, &'static str, u64)>,
 }
 
-fn get_help_text(metric_name: &str) -> Option<&'static str> {
-    // The HELP text for overlapped metrics MUST match the agent's HELP text exactly or else an error will occur on the
-    // agent's side when parsing the metrics.
-    match metric_name {
-        "no_aggregation__flush" => Some("Count the number of flushes done by the no-aggregation pipeline worker"),
-        "no_aggregation__processed" => {
-            Some("Count the number of samples processed by the no-aggregation pipeline worker")
-        }
-        "aggregator__dogstatsd_contexts_by_mtype" => {
-            Some("Count the number of dogstatsd contexts in the aggregator, by metric type")
-        }
-        "aggregator__flush" => Some("Number of metrics/service checks/events flushed"),
-        "aggregator__dogstatsd_contexts_bytes_by_mtype" => {
-            Some("Estimated count of bytes taken by contexts in the aggregator, by metric type")
-        }
-        "aggregator__dogstatsd_contexts" => Some("Count the number of dogstatsd contexts in the aggregator"),
-        "aggregator__processed" => Some("Amount of metrics/services_checks/events processed by the aggregator"),
-        "dogstatsd__processed" => Some("Count of service checks/events/metrics processed by dogstatsd"),
-        "dogstatsd__packet_pool_get" => Some("Count of get done in the packet pool"),
-        "dogstatsd__packet_pool_put" => Some("Count of put done in the packet pool"),
-        "dogstatsd__packet_pool" => Some("Usage of the packet pool in dogstatsd"),
-        _ => None,
-    }
-}
+impl PrometheusHistogram {
+    fn new(metric_name: &str) -> Self {
+        // Super hacky but effective way to decide when to switch to the time-oriented buckets.
+        let base_buckets = if metric_name.ends_with("_seconds") {
+            &TIME_HISTOGRAM_BUCKETS[..]
+        } else {
+            &NON_TIME_HISTOGRAM_BUCKETS[..]
+        };
 
-fn write_metrics(values: &GroupedValues, builder: &mut StringBuilder) -> fmt::Result {
-    builder.clear();
+        let buckets = base_buckets
+            .iter()
+            .map(|(upper_bound, upper_bound_str)| (*upper_bound, *upper_bound_str, 0))
+            .collect();
 
-    if values.is_empty() {
-        debug!("No contexts for metric '{}'. Skipping.", values.name());
-        return Ok(());
+        Self {
+            sum: 0.0,
+            count: 0,
+            buckets,
+        }
     }
 
-    let metric_name = values.name();
-
-    // Write HELP if available.
-    if let Some(help_text) = get_help_text(metric_name) {
-        writeln!(builder, "# HELP {} {}", metric_name, help_text)?;
+    fn merge_histogram(&mut self, histogram: &Histogram) {
+        for sample in histogram.samples() {
+            self.add_sample(sample.value.into_inner(), sample.weight);
+        }
     }
 
-    // Write the metric header.
-    writeln!(builder, "# TYPE {} {}", metric_name, values.type_str())?;
+    fn add_sample(&mut self, value: f64, weight: u64) {
+        self.sum += value * weight as f64;
+        self.count += weight;
 
-    for (_, (tags, value)) in &values.groups {
-        // Write the metric value itself.
-        match value {
-            PrometheusValue::Counter(value) | PrometheusValue::Gauge(value) => {
-                // No metric type-specific tags for counters or gauges, so just write them straight out.
-                write_metric_line(builder, metric_name, None, tags, None, *value)?;
-            }
-            PrometheusValue::Histogram(histogram) => {
-                // Write the histogram buckets.
-                for (le, count) in histogram.buckets() {
-                    write_metric_line(builder, metric_name, SUFFIX_BUCKET, tags, Some(("le", le)), count)?;
-                }
-
-                // Write the final bucket -- the +Inf bucket -- which is just equal to the count of the histogram.
-                write_metric_line(
-                    builder,
-                    metric_name,
-                    SUFFIX_BUCKET,
-                    tags,
-                    Some(("le", "+Inf")),
-                    histogram.count,
-                )?;
-
-                // Write the histogram sum and count.
-                write_metric_line(builder, metric_name, SUFFIX_SUM, tags, None, histogram.sum)?;
-                write_metric_line(builder, metric_name, SUFFIX_COUNT, tags, None, histogram.count)?;
-            }
-            PrometheusValue::Summary(sketch) => {
-                // We take a fixed set of quantiles from the sketch, which is hard-coded but should generally represent
-                // the quantiles people generally care about.
-                for (q, q_str) in HISTOGRAM_QUANTILES {
-                    let q_value = sketch.quantile(*q).unwrap_or_default();
-                    write_metric_line(builder, metric_name, None, tags, Some(("quantile", q_str)), q_value)?;
-                }
-
-                write_metric_line(
-                    builder,
-                    metric_name,
-                    SUFFIX_SUM,
-                    tags,
-                    None,
-                    sketch.sum().unwrap_or_default(),
-                )?;
-                write_metric_line(builder, metric_name, SUFFIX_COUNT, tags, None, sketch.count())?;
+        // Add the value to each bucket that it falls into, up to the maximum number of buckets.
+        for (upper_bound, _, count) in &mut self.buckets {
+            if value <= *upper_bound {
+                *count += weight;
             }
         }
     }
 
-    Ok(())
-}
-
-fn write_metric_line<N: Display>(
-    builder: &mut StringBuilder, metric_name: &str, suffix: Option<&str>, primary_tags: &str,
-    secondary_tag: Option<(&str, &str)>, value: N,
-) -> fmt::Result {
-    // We handle some different things here:
-    // - the metric name can be suffixed (used for things like `_bucket`, `_count`, `_sum`,  in histograms and summaries)
-    // - writing out the "primary" set of tags
-    // - passing in a single tag key/value pair (used for `le` in histograms, or `quantile` in summaries)
-
-    let has_tags = !primary_tags.is_empty() || secondary_tag.is_some();
-
-    write!(builder, "{metric_name}")?;
-    if let Some(suffix) = suffix {
-        write!(builder, "{suffix}")?;
+    fn buckets(&self) -> impl Iterator<Item = (&'static str, u64)> + '_ {
+        self.buckets
+            .iter()
+            .map(|(_, upper_bound_str, count)| (*upper_bound_str, *count))
     }
-
-    if has_tags {
-        write!(builder, "{{{primary_tags}")?;
-
-        if let Some((tag_key, tag_value)) = secondary_tag {
-            if !primary_tags.is_empty() {
-                builder.push(',').ok_or(fmt::Error)?;
-            }
-
-            write!(builder, "{tag_key}=\"{tag_value}\"")?;
-        }
-
-        write!(builder, "}}")?;
-    }
-
-    writeln!(builder, " {value}")
 }
 
 /// Prometheus metric type.
@@ -442,34 +333,6 @@ enum PrometheusValue {
     Gauge(f64),
     Histogram(PrometheusHistogram),
     Summary(DDSketch),
-}
-
-fn try_context_to_prom_name(context: &Context, builder: &mut InternedStringBuilder) -> Option<MetaString> {
-    match normalize_metric_name(context, builder) {
-        Some(name) => Some(name),
-        None => {
-            debug!(
-                "Failed to normalize metric name '{}'. Name either too long or interner is full.",
-                context.name()
-            );
-            None
-        }
-    }
-}
-
-fn try_context_to_prom_tags(
-    context: &Context, builder: &mut InternedStringBuilder, tags_deduplicator: &mut ReusableDeduplicator<Tag>,
-) -> Option<MetaString> {
-    match format_tags(context, builder, tags_deduplicator) {
-        Some(tags) => Some(tags),
-        None => {
-            debug!(
-                "Failed to format tags for metric '{}'. Tags either too long or interner is full.",
-                context.name()
-            );
-            None
-        }
-    }
 }
 
 /// Per-context values of a Prometheus metric.
@@ -536,6 +399,182 @@ impl GroupedValues {
                 true
             }
             None => false,
+        }
+    }
+}
+
+fn render_payload(
+    metrics: &FastIndexMap<MetaString, GroupedValues>, payload_builder: &mut StringBuilder,
+    subpayload_builder: &mut StringBuilder,
+) {
+    payload_builder.clear();
+
+    let mut metrics_written = 0;
+    let metrics_total = metrics.len();
+
+    for (metric_name, grouped_values) in metrics {
+        // Write this single metric out to the subpayload builder, which will include all of the individual contexts/tagsets.
+        if write_metrics(grouped_values, subpayload_builder).is_err() {
+            debug!(
+                contexts_len = grouped_values.len(),
+                "Failed to render contexts for metric '{}'. Skipping.", metric_name,
+            );
+            continue;
+        }
+
+        // Push the subpayload builder's string into the payload builder.
+        if payload_builder.push_str(subpayload_builder.as_str()).is_none() {
+            debug!(
+                metrics_written,
+                metrics_total,
+                payload_len = payload_builder.len(),
+                "Failed to include metric '{}' in payload due to insufficient space. Skipping remaining metrics.",
+                metric_name
+            );
+            break;
+        }
+
+        metrics_written += 1;
+    }
+}
+
+fn get_help_text(metric_name: &str) -> Option<&'static str> {
+    // The HELP text for overlapped metrics MUST match the agent's HELP text exactly or else an error will occur on the
+    // agent's side when parsing the metrics.
+    match metric_name {
+        "no_aggregation__flush" => Some("Count the number of flushes done by the no-aggregation pipeline worker"),
+        "no_aggregation__processed" => {
+            Some("Count the number of samples processed by the no-aggregation pipeline worker")
+        }
+        "aggregator__dogstatsd_contexts_by_mtype" => {
+            Some("Count the number of dogstatsd contexts in the aggregator, by metric type")
+        }
+        "aggregator__flush" => Some("Number of metrics/service checks/events flushed"),
+        "aggregator__dogstatsd_contexts_bytes_by_mtype" => {
+            Some("Estimated count of bytes taken by contexts in the aggregator, by metric type")
+        }
+        "aggregator__dogstatsd_contexts" => Some("Count the number of dogstatsd contexts in the aggregator"),
+        "aggregator__processed" => Some("Amount of metrics/services_checks/events processed by the aggregator"),
+        "dogstatsd__processed" => Some("Count of service checks/events/metrics processed by dogstatsd"),
+        "dogstatsd__packet_pool_get" => Some("Count of get done in the packet pool"),
+        "dogstatsd__packet_pool_put" => Some("Count of put done in the packet pool"),
+        "dogstatsd__packet_pool" => Some("Usage of the packet pool in dogstatsd"),
+        _ => None,
+    }
+}
+
+fn write_metrics(values: &GroupedValues, buf: &mut StringBuilder) -> fmt::Result {
+    buf.clear();
+
+    if values.is_empty() {
+        debug!("No contexts for metric '{}'. Skipping.", values.name());
+        return Ok(());
+    }
+
+    let metric_name = values.name();
+
+    // Write HELP if available.
+    if let Some(help_text) = get_help_text(metric_name) {
+        writeln!(buf, "# HELP {} {}", metric_name, help_text)?;
+    }
+
+    // Write the metric header.
+    writeln!(buf, "# TYPE {} {}", metric_name, values.type_str())?;
+
+    for (_, (tags, value)) in &values.groups {
+        // Write the metric value itself.
+        match value {
+            PrometheusValue::Counter(value) | PrometheusValue::Gauge(value) => {
+                // No metric type-specific tags for counters or gauges, so just write them straight out.
+                write_metric_line(buf, metric_name, None, tags, None, *value)?;
+            }
+            PrometheusValue::Histogram(hist) => {
+                // Write the histogram buckets.
+                for (le, count) in hist.buckets() {
+                    write_metric_line(buf, metric_name, SUFFIX_BUCKET, tags, Some(("le", le)), count)?;
+                }
+
+                // Write the final bucket -- the +Inf bucket -- which is just equal to the count of the histogram.
+                write_metric_line(buf, metric_name, SUFFIX_BUCKET, tags, Some(("le", "+Inf")), hist.count)?;
+
+                // Write the histogram sum and count.
+                write_metric_line(buf, metric_name, SUFFIX_SUM, tags, None, hist.sum)?;
+                write_metric_line(buf, metric_name, SUFFIX_COUNT, tags, None, hist.count)?;
+            }
+            PrometheusValue::Summary(sketch) => {
+                // We take a fixed set of quantiles from the sketch, which is hard-coded but should generally represent
+                // the quantiles people generally care about.
+                for (q, q_str) in HISTOGRAM_QUANTILES {
+                    let q_value = sketch.quantile(*q).unwrap_or_default();
+                    write_metric_line(buf, metric_name, None, tags, Some(("quantile", q_str)), q_value)?;
+                }
+
+                write_metric_line(buf, metric_name, SUFFIX_SUM, tags, None, sketch.sum().unwrap_or(0.0))?;
+                write_metric_line(buf, metric_name, SUFFIX_COUNT, tags, None, sketch.count())?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn write_metric_line<N: Display>(
+    builder: &mut StringBuilder, metric_name: &str, suffix: Option<&str>, primary_tags: &str,
+    secondary_tag: Option<(&str, &str)>, value: N,
+) -> fmt::Result {
+    // We handle some different things here:
+    // - the metric name can be suffixed (used for things like `_bucket`, `_count`, `_sum`,  in histograms and summaries)
+    // - writing out the "primary" set of tags
+    // - passing in a single tag key/value pair (used for `le` in histograms, or `quantile` in summaries)
+
+    let has_tags = !primary_tags.is_empty() || secondary_tag.is_some();
+
+    write!(builder, "{metric_name}")?;
+    if let Some(suffix) = suffix {
+        write!(builder, "{suffix}")?;
+    }
+
+    if has_tags {
+        write!(builder, "{{{primary_tags}")?;
+
+        if let Some((tag_key, tag_value)) = secondary_tag {
+            if !primary_tags.is_empty() {
+                builder.push(',').ok_or(fmt::Error)?;
+            }
+
+            write!(builder, "{tag_key}=\"{tag_value}\"")?;
+        }
+
+        write!(builder, "}}")?;
+    }
+
+    writeln!(builder, " {value}")
+}
+
+fn try_context_to_prom_name(context: &Context, builder: &mut InternedStringBuilder) -> Option<MetaString> {
+    match normalize_metric_name(context, builder) {
+        Some(name) => Some(name),
+        None => {
+            debug!(
+                "Failed to normalize metric name '{}'. Name either too long or interner is full.",
+                context.name()
+            );
+            None
+        }
+    }
+}
+
+fn try_context_to_prom_tags(
+    context: &Context, builder: &mut InternedStringBuilder, tags_deduplicator: &mut ReusableDeduplicator<Tag>,
+) -> Option<MetaString> {
+    match format_tags(context, builder, tags_deduplicator) {
+        Some(tags) => Some(tags),
+        None => {
+            debug!(
+                "Failed to format tags for metric '{}'. Tags either too long or interner is full.",
+                context.name()
+            );
+            None
         }
     }
 }
@@ -639,59 +678,6 @@ fn is_valid_name_start_char(c: char) -> bool {
 fn is_valid_name_char(c: char) -> bool {
     // Matches a regular expression of [a-zA-Z0-9_:].
     c.is_ascii_alphanumeric() || c == '_' || c == ':'
-}
-
-#[derive(Clone)]
-struct PrometheusHistogram {
-    sum: f64,
-    count: u64,
-    buckets: Vec<(f64, &'static str, u64)>,
-}
-
-impl PrometheusHistogram {
-    fn new(metric_name: &str) -> Self {
-        // Super hacky but effective way to decide when to switch to the time-oriented buckets.
-        let base_buckets = if metric_name.ends_with("_seconds") {
-            &TIME_HISTOGRAM_BUCKETS[..]
-        } else {
-            &NON_TIME_HISTOGRAM_BUCKETS[..]
-        };
-
-        let buckets = base_buckets
-            .iter()
-            .map(|(upper_bound, upper_bound_str)| (*upper_bound, *upper_bound_str, 0))
-            .collect();
-
-        Self {
-            sum: 0.0,
-            count: 0,
-            buckets,
-        }
-    }
-
-    fn merge_histogram(&mut self, histogram: &Histogram) {
-        for sample in histogram.samples() {
-            self.add_sample(sample.value.into_inner(), sample.weight);
-        }
-    }
-
-    fn add_sample(&mut self, value: f64, weight: u64) {
-        self.sum += value * weight as f64;
-        self.count += weight;
-
-        // Add the value to each bucket that it falls into, up to the maximum number of buckets.
-        for (upper_bound, _, count) in &mut self.buckets {
-            if value <= *upper_bound {
-                *count += weight;
-            }
-        }
-    }
-
-    fn buckets(&self) -> impl Iterator<Item = (&'static str, u64)> + '_ {
-        self.buckets
-            .iter()
-            .map(|(_, upper_bound_str, count)| (*upper_bound_str, *count))
-    }
 }
 
 fn histogram_buckets<const N: usize>(base: f64, scale: f64) -> [(f64, &'static str); N] {
