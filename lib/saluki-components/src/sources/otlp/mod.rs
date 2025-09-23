@@ -26,8 +26,6 @@ use saluki_context::{ContextResolver, ContextResolverBuilder};
 use saluki_core::observability::ComponentMetricsExt;
 use saluki_core::topology::interconnect::EventBufferManager;
 use saluki_core::topology::shutdown::{DynamicShutdownCoordinator, DynamicShutdownHandle};
-#[cfg(test)]
-use saluki_core::topology::ComponentId;
 use saluki_core::{
     components::{
         sources::{Source, SourceBuilder, SourceContext},
@@ -223,10 +221,10 @@ impl Metrics {
     /// Test-only helper to construct a `Metrics` instance.
     #[cfg(test)]
     pub fn for_test() -> Self {
-        let component_id = ComponentId::try_from("otlp_logs_translator_test").expect("valid component id");
-        // let component_id = try_from("otlp_logs_translator_test").expect("valid component id");
-        let cc = ComponentContext::source(component_id);
-        build_metrics(&cc)
+        Metrics {
+            metrics_received: Counter::noop(),
+            logs_received: Counter::noop(),
+        }
     }
 }
 
