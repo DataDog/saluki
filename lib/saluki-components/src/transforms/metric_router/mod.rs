@@ -67,23 +67,19 @@ impl MetricRouter {
         &self, mut events: EventsBuffer, context: &mut TransformContext,
     ) -> Result<(), GenericError> {
         // Extract matched events from the buffer, leaving unmatched ones behind
-        let matched_events: Vec<Event> = events.extract(|event| self.should_route_to_matched(event)).collect();
-        let matched_count = matched_events.len();
-        let unmatched_count = events.len();
+        let matched_events = events.extract(|event| self.should_route_to_matched(event));
 
-        // Send matched events if any exist
-        if !matched_events.is_empty() {
-            let mut matched_dispatcher = context.dispatcher().buffered_named("matched")?;
-            for event in matched_events {
-                matched_dispatcher.push(event).await?;
-            }
-            matched_dispatcher.flush().await?;
-        }
+        let matched_count = context
+            .dispatcher()
+            .buffered_named("matched")?
+            .send_all(matched_events)
+            .await?;
 
-        // Send remaining unmatched events if any exist
-        if !events.is_empty() {
-            context.dispatcher().dispatch_named("unmatched", events).await?;
-        }
+        let unmatched_count = context
+            .dispatcher()
+            .buffered_named("unmatched")?
+            .send_all(events)
+            .await?;
 
         debug!(
             matched_events = matched_count,
