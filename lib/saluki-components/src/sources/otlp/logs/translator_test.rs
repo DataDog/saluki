@@ -2,7 +2,7 @@ use opentelemetry_semantic_conventions::resource::SERVICE_NAME;
 use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common};
 use otlp_protos::opentelemetry::proto::logs::v1 as otlp_logs_v1;
 use otlp_protos::opentelemetry::proto::resource::v1 as otlp_resource_v1;
-use saluki_core::data_model::event::log::LogStatus;
+use saluki_core::data_model::event::log::{Log, LogStatus};
 use saluki_core::data_model::event::Event;
 use serde_json::Value as JsonValue;
 
@@ -61,7 +61,7 @@ fn test_metrics() -> Metrics {
 // Helper: run a single LogRecord through the translator with given resource/scope and return the Log event.
 fn translate_log(
     lr: otlp_logs_v1::LogRecord, resource: otlp_resource_v1::Resource, scope: Option<otlp_common::InstrumentationScope>,
-) -> saluki_core::data_model::event::log::Log {
+) -> Log {
     let mut translator = OtlpLogsTranslator::new("test".to_string());
     let metrics = test_metrics();
 
