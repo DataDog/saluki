@@ -53,6 +53,11 @@ use self::metrics::translator::OtlpTranslator;
 /// Configuration for the OTLP source.
 #[derive(Deserialize, Debug, Default)]
 pub struct OtlpConfiguration {
+    otlp_config: OtlpConfig,
+}
+
+#[derive(Deserialize, Debug, Default)]
+pub struct OtlpConfig {
     #[serde(default)]
     receiver: Receiver,
     #[serde(default)]
@@ -196,13 +201,13 @@ impl SourceBuilder for OtlpConfiguration {
     }
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
-        if !self.metrics.enabled {
+        if !self.otlp_config.metrics.enabled {
             return Err(generic_error!("OTLP metrics support is disabled."));
         }
 
         let grpc_listen_str = format!(
             "{}://{}",
-            self.receiver.protocols.grpc.transport, self.receiver.protocols.grpc.endpoint
+            self.otlp_config.receiver.protocols.grpc.transport, self.otlp_config.receiver.protocols.grpc.endpoint
         );
         let grpc_endpoint = ListenAddress::try_from(grpc_listen_str.as_str())
             .map_err(|e| generic_error!("Invalid gRPC endpoint address '{}': {}", grpc_listen_str, e))?;
@@ -212,17 +217,18 @@ impl SourceBuilder for OtlpConfiguration {
             return Err(generic_error!("Only 'tcp' transport is supported for OTLP gRPC"));
         }
 
-        let http_socket_addr = self.receiver.protocols.http.endpoint.parse().map_err(|e| {
+        let http_socket_addr = self.otlp_config.receiver.protocols.http.endpoint.parse().map_err(|e| {
             generic_error!(
                 "Invalid HTTP endpoint address '{}': {}",
-                self.receiver.protocols.http.endpoint,
+                self.otlp_config.receiver.protocols.http.endpoint,
                 e
             )
         })?;
 
         let context_resolver = ContextResolverBuilder::from_name(format!("{}/otlp", context.component_id()))?.build();
         let translator_config = metrics::config::OtlpTranslatorConfig::default().with_remapping(true);
-        let grpc_max_recv_msg_size_bytes = self.receiver.protocols.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
+        let grpc_max_recv_msg_size_bytes =
+            self.otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
         let metrics = build_metrics(&context);
 
         Ok(Box::new(Otlp {
