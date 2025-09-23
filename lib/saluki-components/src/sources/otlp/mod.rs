@@ -220,7 +220,7 @@ impl Metrics {
 
     /// Test-only helper to construct a `Metrics` instance.
     #[cfg(test)]
-    pub fn for_test() -> Self {
+    pub fn for_tests() -> Self {
         Metrics {
             metrics_received: Counter::noop(),
             logs_received: Counter::noop(),

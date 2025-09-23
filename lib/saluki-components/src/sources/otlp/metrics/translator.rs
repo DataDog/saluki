@@ -802,7 +802,7 @@ mod tests {
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L296
     #[test]
     fn test_map_int_monotonic_metrics() {
-        let metrics = Metrics::for_test();
+        let metrics = Metrics::for_tests();
         let deltas = vec![1, 2, 200, 3, 7, 0];
 
         // Test Case 1: "diff" mode (standard cumulative to delta)
@@ -860,7 +860,7 @@ mod tests {
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L549
     #[test]
     fn test_map_int_monotonic_drop_point_within_slice() {
-        let metrics = Metrics::for_test();
+        let metrics = Metrics::for_tests();
 
         // Test Case 1: "equal" timestamp.
         // Verifies that a point is dropped if its timestamp is the same as the previous point.
@@ -1057,7 +1057,7 @@ mod tests {
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L884
     #[test]
     fn test_map_int_monotonic_report_first_value() {
-        let metrics = Metrics::for_test();
+        let metrics = Metrics::for_tests();
         let context_resolver = ContextResolverBuilder::for_tests().build();
         let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
 
@@ -1091,7 +1091,7 @@ mod tests {
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L1411
     #[test]
     fn test_map_int_monotonic_out_of_order() {
-        let metrics = Metrics::for_test();
+        let metrics = Metrics::for_tests();
         let context_resolver = ContextResolverBuilder::for_tests().build();
         let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
 
@@ -1134,7 +1134,7 @@ mod tests {
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L332
     #[test]
     fn test_map_int_monotonic_different_dimensions() {
-        let metrics = Metrics::for_test();
+        let metrics = Metrics::for_tests();
         let context_resolver = ContextResolverBuilder::for_tests().build();
         let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
 
@@ -1221,7 +1221,7 @@ mod tests {
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L201
     #[test]
     fn test_map_number_metrics() {
-        let metrics = Metrics::for_test();
+        let metrics = Metrics::for_tests();
         // Setup test data that will be reused
         let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
         let ts_s = ts / 1_000_000_000;
@@ -1299,7 +1299,7 @@ mod tests {
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L395
     #[test]
     fn test_map_int_monotonic_with_reboot_within_slice() {
-        let metrics = Metrics::for_test();
+        let metrics = Metrics::for_tests();
 
         // Test Case 1: "diff" mode with reset
         {
@@ -1353,7 +1353,7 @@ mod tests {
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L236
     #[test]
     fn test_map_double_metrics() {
-        let metrics = Metrics::for_test();
+        let metrics = Metrics::for_tests();
         let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
         let ts_s = ts / 1_000_000_000;
 
@@ -1421,7 +1421,7 @@ mod tests {
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L1456
     #[test]
     fn test_map_double_monotonic_metrics() {
-        let metrics = Metrics::for_test();
+        let metrics = Metrics::for_tests();
         let deltas = vec![1.0, 2.0, 200.0, 3.0, 7.0, 0.0];
 
         // Test Case 1: "diff" mode
@@ -1472,7 +1472,7 @@ mod tests {
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L1493
     #[test]
     fn test_map_double_monotonic_different_dimensions() {
-        let metrics = Metrics::for_test();
+        let metrics = Metrics::for_tests();
         let context_resolver = ContextResolverBuilder::for_tests().build();
         let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
 
@@ -1559,7 +1559,7 @@ mod tests {
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L1555
     #[test]
     fn test_map_double_monotonic_with_reboot_within_slice() {
-        let metrics = Metrics::for_test();
+        let metrics = Metrics::for_tests();
 
         {
             let context_resolver = ContextResolverBuilder::for_tests().build();
@@ -1607,7 +1607,7 @@ mod tests {
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L1678
     #[test]
     fn test_map_double_monotonic_drop_point_within_slice() {
-        let metrics = Metrics::for_test();
+        let metrics = Metrics::for_tests();
 
         // Test Case 1: "equal" timestamp.
         {
@@ -1705,7 +1705,7 @@ mod tests {
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L2033
     #[test]
     fn test_map_double_monotonic_out_of_order() {
-        let metrics = Metrics::for_test();
+        let metrics = Metrics::for_tests();
         let context_resolver = ContextResolverBuilder::for_tests().build();
         let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
 
@@ -1741,7 +1741,7 @@ mod tests {
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L464
     #[test]
     fn test_map_int_monotonic_with_reboot_beginning_of_slice() {
-        let metrics = Metrics::for_test();
+        let metrics = Metrics::for_tests();
 
         // Test Case 1: "diff" mode
         {
@@ -1835,7 +1835,7 @@ mod tests {
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L901
     #[test]
     fn test_map_int_monotonic_rate_dont_report_first_value() {
-        let metrics = Metrics::for_test();
+        let metrics = Metrics::for_tests();
         let context_resolver = ContextResolverBuilder::for_tests().build();
         let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
 
@@ -1865,7 +1865,7 @@ mod tests {
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L917
     #[test]
     fn test_map_int_monotonic_not_report_first_value_if_start_ts_match_ts() {
-        let metrics = Metrics::for_test();
+        let metrics = Metrics::for_tests();
         let context_resolver = ContextResolverBuilder::for_tests().build();
         let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
 
@@ -1887,7 +1887,7 @@ mod tests {
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L926
     #[test]
     fn test_map_int_monotonic_rate_not_report_first_value_if_start_ts_match_ts() {
-        let metrics = Metrics::for_test();
+        let metrics = Metrics::for_tests();
         let context_resolver = ContextResolverBuilder::for_tests().build();
         let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
 
@@ -1909,7 +1909,7 @@ mod tests {
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L935
     #[test]
     fn test_map_int_monotonic_report_diff_for_first_value() {
-        let metrics = Metrics::for_test();
+        let metrics = Metrics::for_tests();
         let context_resolver = ContextResolverBuilder::for_tests().build();
         let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
 
@@ -1954,7 +1954,7 @@ mod tests {
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L955
     #[test]
     fn test_map_int_monotonic_report_rate_for_first_value() {
-        let metrics = Metrics::for_test();
+        let metrics = Metrics::for_tests();
         let context_resolver = ContextResolverBuilder::for_tests().build();
         let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
 
@@ -1999,7 +1999,7 @@ mod tests {
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L429
     #[test]
     fn test_map_int_monotonic_with_no_recorded_value_within_slice() {
-        let metrics = Metrics::for_test();
+        let metrics = Metrics::for_tests();
         let context_resolver = ContextResolverBuilder::for_tests().build();
         let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
 
@@ -2062,7 +2062,7 @@ mod tests {
     fn test_map_double_monotonic_with_reboot_beginning_of_slice() {
         // Test Case 1: "diff" mode
         {
-            let metrics = Metrics::for_test();
+            let metrics = Metrics::for_tests();
             let context_resolver = ContextResolverBuilder::for_tests().build();
             let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
             let start_ts = translator.process_start_time_ns + 1;
@@ -2105,7 +2105,7 @@ mod tests {
 
         // Test Case 2: "rate" mode
         {
-            let metrics = Metrics::for_test();
+            let metrics = Metrics::for_tests();
             let context_resolver = ContextResolverBuilder::for_tests().build();
             let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
             let start_ts = translator.process_start_time_ns + 1;
@@ -2150,7 +2150,7 @@ mod tests {
     fn test_map_double_monotonic_drop_point_beginning_of_slice() {
         // Test Case 1: "equal"
         {
-            let metrics = Metrics::for_test();
+            let metrics = Metrics::for_tests();
             let context_resolver = ContextResolverBuilder::for_tests().build();
             let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
             let start_ts = translator.process_start_time_ns + 1;
@@ -2192,7 +2192,7 @@ mod tests {
 
         // Test Case 2: "older"
         {
-            let metrics = Metrics::for_test();
+            let metrics = Metrics::for_tests();
             let context_resolver = ContextResolverBuilder::for_tests().build();
             let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
             let start_ts = translator.process_start_time_ns + 1;
@@ -2236,7 +2236,7 @@ mod tests {
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L1932
     #[test]
     fn test_map_double_monotonic_report_first_value() {
-        let metrics = Metrics::for_test();
+        let metrics = Metrics::for_tests();
         let context_resolver = ContextResolverBuilder::for_tests().build();
         let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
         let dims = Dimensions {
@@ -2258,7 +2258,7 @@ mod tests {
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L1948
     #[test]
     fn test_map_double_monotonic_rate_dont_report_first_value() {
-        let metrics = Metrics::for_test();
+        let metrics = Metrics::for_tests();
         let context_resolver = ContextResolverBuilder::for_tests().build();
         let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
         let dims = Dimensions {
@@ -2278,7 +2278,7 @@ mod tests {
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L1964
     #[test]
     fn test_map_double_monotonic_not_report_first_value_if_start_ts_match_ts() {
-        let metrics = Metrics::for_test();
+        let metrics = Metrics::for_tests();
         let context_resolver = ContextResolverBuilder::for_tests().build();
         let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
         let dims = Dimensions {
@@ -2293,7 +2293,7 @@ mod tests {
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L1994
     #[test]
     fn test_map_double_monotonic_report_diff_for_first_value() {
-        let metrics = Metrics::for_test();
+        let metrics = Metrics::for_tests();
         let context_resolver = ContextResolverBuilder::for_tests().build();
         let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
         let dims = Dimensions {
@@ -2319,7 +2319,7 @@ mod tests {
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L2013
     #[test]
     fn test_map_double_monotonic_report_rate_for_first_value() {
-        let metrics = Metrics::for_test();
+        let metrics = Metrics::for_tests();
         let context_resolver = ContextResolverBuilder::for_tests().build();
         let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
         let dims = Dimensions {

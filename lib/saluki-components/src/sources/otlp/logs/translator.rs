@@ -132,18 +132,13 @@ mod tests {
         }
     }
 
-    // Build a minimal Metrics instance for translator tests.
-    fn test_metrics() -> Metrics {
-        Metrics::for_test()
-    }
-
     // Helper: run a single LogRecord through the translator with given resource/scope and return the Log event.
     fn translate_log(
         lr: otlp_logs_v1::LogRecord, resource: otlp_resource_v1::Resource,
         scope: Option<otlp_common::InstrumentationScope>,
     ) -> Log {
         let mut translator = OtlpLogsTranslator::new("test".to_string());
-        let metrics = test_metrics();
+        let metrics = Metrics::for_tests();
 
         let scope_logs = otlp_logs_v1::ScopeLogs {
             scope,
