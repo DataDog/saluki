@@ -64,32 +64,31 @@ impl MetricRouter {
 
     /// Processes a batch of events by routing them to matched or unmatched outputs.
     async fn process_event_batch(
-        &self, events: EventsBuffer, context: &mut TransformContext,
+        &self, mut events: EventsBuffer, context: &mut TransformContext,
     ) -> Result<(), GenericError> {
-        let mut matched_dispatcher = context.dispatcher().buffered_named("matched")?;
-        let mut unmatched_dispatcher = context.dispatcher().buffered_named("unmatched")?;
+        // Extract matched events from the buffer, leaving unmatched ones behind
+        let matched_events: Vec<Event> = events.extract(|event| self.should_route_to_matched(event)).collect();
+        let matched_count = matched_events.len();
+        let unmatched_count = events.len();
 
-        let mut matched_count = 0;
-        let mut unmatched_count = 0;
-
-        // Route each event to the appropriate output
-        for event in events.into_iter() {
-            if self.should_route_to_matched(&event) {
-                matched_count += 1;
+        // Send matched events if any exist
+        if !matched_events.is_empty() {
+            let mut matched_dispatcher = context.dispatcher().buffered_named("matched")?;
+            for event in matched_events {
                 matched_dispatcher.push(event).await?;
-            } else {
-                unmatched_count += 1;
-                unmatched_dispatcher.push(event).await?;
             }
+            matched_dispatcher.flush().await?;
         }
 
-        matched_dispatcher.flush().await?;
-        unmatched_dispatcher.flush().await?;
+        // Send remaining unmatched events if any exist
+        if !events.is_empty() {
+            context.dispatcher().dispatch_named("unmatched", events).await?;
+        }
 
         debug!(
             matched_events = matched_count,
             unmatched_events = unmatched_count,
-            "Successfully processed event batch"
+            "Successfully processed event batch."
         );
 
         Ok(())
@@ -155,7 +154,7 @@ impl Transform for MetricRouter {
         health.mark_ready();
         debug!(
             metric_names = ?self.metric_names,
-            "Metric router transform started"
+            "Metric Router transform started."
         );
 
         loop {
@@ -165,7 +164,7 @@ impl Transform for MetricRouter {
                     Some(events) => {
                         // Process the batch of events with proper error handling
                         if let Err(e) = self.process_event_batch(events, &mut context).await {
-                            error!(error = %e, "Failed to process event batch");
+                            error!(error = %e, "Failed to process event batch.");
                             // Continue processing subsequent batches even if one fails
                         }
                     }
@@ -177,6 +176,7 @@ impl Transform for MetricRouter {
             }
         }
 
+        debug!("Metric Router transform stopped.");
         Ok(())
     }
 }
