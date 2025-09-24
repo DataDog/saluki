@@ -117,7 +117,7 @@ async fn process_override_requests(filter_handle: FilterHandle, mut rx: mpsc::Re
         select! {
             maybe_override = rx.recv() => match maybe_override {
                 Some(Some((duration, new_level))) => {
-                    // TODO: Using the `Debug` representation of `Leve` is noisy, and we should add a method upstream to
+                    // TODO: Using the `Debug` representation of `Level` is noisy, and we should add a method upstream to
                     // just get the stringified representation of the level instead.
                     info!(level = ?new_level, "Overriding existing metric filtering directive for {} seconds...", duration.as_secs());
 
