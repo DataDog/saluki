@@ -6,6 +6,7 @@ use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
 use serde_json::{Map, Value};
 use tokio::sync::mpsc;
+use tokio::time::Duration;
 use tracing::{debug, error, warn};
 
 use crate::helpers::remote_agent::RemoteAgentClient;
@@ -68,6 +69,9 @@ async fn run_config_stream_event_loop(mut client: RemoteAgentClient, sender: mps
                 Err(e) => error!("Error while reading config event stream: {}.", e),
             }
         }
+
+        debug!("Config stream ended, retrying in 5 seconds...");
+        tokio::time::sleep(Duration::from_secs(5)).await;
     }
 }
 
