@@ -223,13 +223,10 @@ async fn create_topology(
     let dd_forwarder_config = DatadogConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog forwarder.")?;
 
-    let otlp_config = OtlpConfiguration::from_configuration(configuration)?;
-
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
     blueprint
         // Components.
         .add_source("dsd_in", dsd_config)?
-        .add_source("otlp_in", otlp_config)?
         .add_transform("dsd_agg", dsd_agg_config)?
         .add_transform("dsd_enrich", enrich_config)?
         .add_transform("dsd_prefix_filter", dsd_prefix_filter_configuration)?
@@ -239,7 +236,7 @@ async fn create_topology(
         .add_forwarder("dd_out", dd_forwarder_config)?
         .add_destination("dsd_stats_out", dsd_stats_config.clone())?
         // Metrics.
-        .connect_component("dsd_agg", ["dsd_in.metrics", "otlp_in.metrics"])?
+        .connect_component("dsd_agg", ["dsd_in.metrics"])?
         .connect_component("dsd_prefix_filter", ["dsd_agg"])?
         .connect_component("dsd_enrich", ["dsd_prefix_filter"])?
         .connect_component("dd_metrics_encode", ["dsd_enrich"])?
@@ -256,6 +253,12 @@ async fn create_topology(
         .connect_component("dsd_stats_out", ["dsd_in.metrics"])?;
 
     add_checks_to_blueprint(&mut blueprint, configuration, env_provider)?;
+
+    if configuration.get_typed_or_default::<bool>("adp.otlp.enabled") {
+        let otlp_config = OtlpConfiguration::from_configuration(configuration)?;
+        blueprint.add_source("otlp_in", otlp_config)?;
+        blueprint.connect_component("dsd_agg", ["otlp_in.metrics"])?;
+    }
 
     if configuration.get_typed_or_default::<bool>("preaggregation.enabled") {
         let preaggr_dd_url = configuration

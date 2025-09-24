@@ -12,7 +12,7 @@ use saluki_core::data_model::event::{
 use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
 use tokio::sync::mpsc::Sender;
-use tracing::{debug, error, trace};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::sources::checks::check_metric::{CheckMetric, MetricType};
 use crate::sources::checks::execution_context::ExecutionContext;
@@ -285,6 +285,21 @@ pub mod datadog_agent {
     fn headers() -> &'static HashMap<String, String> {
         trace!("Called headers()");
         fetch_http_headers()
+    }
+
+    // Custom log level defined in:
+    // https://github.com/DataDog/integrations-core/blob/master/datadog_checks_base/datadog_checks/base/log.py
+    #[pyfunction]
+    fn log_message(message: String, level: isize) {
+        match level {
+            50 => error!(message), // We don't have a critical level, log as error
+            40 => error!(message),
+            30 => warn!(message),
+            20 => info!(message),
+            10 => debug!(message),
+            7 => trace!(message),
+            _ => info!(message),
+        }
     }
 
     #[pyfunction]

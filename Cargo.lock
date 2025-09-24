@@ -3185,6 +3185,7 @@ dependencies = [
  "saluki-metrics",
  "serde_yaml",
  "sha3",
+ "stringtheory",
  "tokio",
  "tokio-test",
  "tracing",
