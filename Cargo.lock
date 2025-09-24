@@ -34,6 +34,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "memory-accounting",
+ "otlp-protos",
  "papaya",
  "prost-types",
  "rand",
@@ -1047,6 +1048,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "faster-hex"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7223ae2d2f179b803433d9c830478527e92b8117eab39460edae7f1614d9fb73"
+dependencies = [
+ "heapless",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1318,6 +1328,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hash32"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47d60b12902ba28e2730cd37e95b8c9223af2808df9e902d4df49588d1470606"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1354,6 +1373,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "54b4a22553d4242c49fddb9ba998a99962b5cc6f22cb5a3482bec22522403ce4"
 dependencies = [
  "http",
+]
+
+[[package]]
+name = "heapless"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bfb9eb618601c89945a70e254898da93b13be0388091d42117462b265bb3fad"
+dependencies = [
+ "hash32",
+ "stable_deref_trait",
 ]
 
 [[package]]
@@ -1920,9 +1949,9 @@ dependencies = [
 
 [[package]]
 name = "log"
-version = "0.4.27"
+version = "0.4.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13dc2df351e3202783a1fe0d44375f7295ffb4049267b0f3018346dc122a1d94"
+checksum = "34080505efa8e45a4b816c349525ebe327ceaa8559756f0356cba97ef3bf7432"
 
 [[package]]
 name = "loom"
@@ -2221,6 +2250,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "opentelemetry-semantic-conventions"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "83d059a296a47436748557a353c5e6c5705b9470ef6c95cfc52c21a8814ddac2"
+
+[[package]]
 name = "opentelemetry_sdk"
 version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2243,6 +2278,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7bb71e1b3fa6ca1c61f383464aaf2bb0e2f8e772a1f01d486832464de363b951"
 dependencies = [
  "num-traits",
+]
+
+[[package]]
+name = "otlp-protos"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "prost",
+ "protobuf",
+ "protobuf-codegen",
+ "tonic",
+ "tonic-build",
 ]
 
 [[package]]
@@ -3138,6 +3185,7 @@ dependencies = [
  "saluki-metrics",
  "serde_yaml",
  "sha3",
+ "stringtheory",
  "tokio",
  "tokio-test",
  "tracing",
@@ -3148,11 +3196,13 @@ name = "saluki-components"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "axum",
  "bytes",
  "bytesize",
  "chrono",
  "datadog-protos",
  "ddsketch-agent",
+ "faster-hex",
  "float-cmp",
  "foldhash",
  "futures",
@@ -3167,8 +3217,11 @@ dependencies = [
  "indexmap 2.11.0",
  "memory-accounting",
  "metrics",
+ "opentelemetry-semantic-conventions",
+ "otlp-protos",
  "pin-project",
  "proptest",
+ "prost",
  "protobuf",
  "pyo3",
  "pyo3-ffi",
@@ -3194,6 +3247,7 @@ dependencies = [
  "stringtheory",
  "test-strategy",
  "tokio",
+ "tonic",
  "tower",
  "tracing",
  "url",
@@ -3261,6 +3315,7 @@ dependencies = [
  "saluki-health",
  "saluki-metrics",
  "serde",
+ "serde_json",
  "slab",
  "smallvec",
  "snafu",

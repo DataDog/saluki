@@ -11,7 +11,7 @@ use saluki_components::{
         DatadogServiceChecksConfiguration,
     },
     forwarders::DatadogConfiguration,
-    sources::DogStatsDConfiguration,
+    sources::{DogStatsDConfiguration, OtlpConfiguration},
     transforms::{
         AggregateConfiguration, ChainedConfiguration, DogstatsDMapperConfiguration, DogstatsDPrefixFilterConfiguration,
         HostEnrichmentConfiguration, HostTagsConfiguration, MetricRouterConfiguration,
@@ -252,6 +252,13 @@ async fn create_topology(
         .connect_component("dsd_stats_out", ["dsd_in.metrics"])?;
 
     add_checks_to_blueprint(&mut blueprint, configuration, env_provider)?;
+
+    if configuration.get_typed_or_default::<bool>("adp.otlp.enabled") {
+        let otlp_config = OtlpConfiguration::from_configuration(configuration)?;
+        blueprint.add_source("otlp_in", otlp_config)?;
+        blueprint.connect_component("dsd_agg", ["otlp_in.metrics"])?;
+    }
+
     add_preaggregation_to_blueprint(&mut blueprint, configuration)?;
 
     Ok(blueprint)

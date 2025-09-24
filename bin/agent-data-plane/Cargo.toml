@@ -36,6 +36,7 @@ http = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true }
 memory-accounting = { workspace = true }
+otlp-protos = { workspace = true }
 papaya = { workspace = true }
 prost-types = { workspace = true }
 rand = { workspace = true }

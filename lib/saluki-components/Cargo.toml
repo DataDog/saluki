@@ -14,11 +14,13 @@ python-checks = ["dep:pyo3"]
 
 [dependencies]
 async-trait = { workspace = true }
+axum = { workspace = true }
 bytes = { workspace = true }
 bytesize = { workspace = true }
 chrono = { workspace = true }
 datadog-protos = { workspace = true }
 ddsketch-agent = { workspace = true }
+faster-hex = { workspace = true }
 float-cmp = { workspace = true, features = ["ratio"] }
 foldhash = { workspace = true }
 futures = { workspace = true }
@@ -33,7 +35,10 @@ hyper-http-proxy = { workspace = true }
 indexmap = { workspace = true, features = ["std"] }
 memory-accounting = { workspace = true }
 metrics = { workspace = true }
+opentelemetry-semantic-conventions = { workspace = true, features = ["semconv_experimental"] }
+otlp-protos = { workspace = true }
 pin-project = { workspace = true }
+prost = { workspace = true }
 protobuf = { workspace = true }
 pyo3 = { workspace = true, features = ["macros"], optional = true }
 rand = { workspace = true, features = ["std", "std_rng"] }
@@ -65,6 +70,7 @@ tokio = { workspace = true, features = [
   "signal",
   "sync",
 ] }
+tonic = { workspace = true }
 tower = { workspace = true, features = ["limit", "retry", "timeout", "util"] }
 tracing = { workspace = true }
 url = { workspace = true }
