@@ -1,0 +1,31 @@
+optimization_goal: ingress_throughput
+erratic: false
+
+target:
+  name: saluki
+  command: /usr/local/bin/agent-data-plane
+  cpu_allotment: 4
+  memory_allotment: 2GiB
+
+  environment:
+    DD_API_KEY: foo00000001
+    DD_HOSTNAME: smp-regression
+    DD_DD_URL: http://127.0.0.1:9091
+
+    # Set the context limit in the aggregator to right above 3K, which matches the maximum number of contexts we expect
+    # to generate. We essentially don't want the aggregator to be a limiting factor.
+    DD_AGGREGATE_CONTEXT_LIMIT: "50100"
+
+    # Disables UDP and enables listening on UDS in SOCK_DGRAM mode.
+    DD_DOGSTATSD_PORT: "0"
+    DD_DOGSTATSD_SOCKET: /tmp/adp-dogstatsd-dgram.sock
+
+    # Runs ADP in standalone mode, which decouples ADP from any dependency on the Datadog Agent.
+    DD_ADP_STANDALONE_MODE: "true"
+
+    # Enable internal telemetry endpoint.
+    DD_TELEMETRY_ENABLED: "true"
+    DD_PROMETHEUS_LISTEN_ADDR: tcp://127.0.0.1:5102
+
+    # Enable OTLP.
+    DD_ADP_OTLP_ENABLED: "true"
