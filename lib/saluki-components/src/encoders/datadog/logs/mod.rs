@@ -50,7 +50,7 @@ fn default_ddsource() -> String {
 /// Datadog Logs incremental encoder.
 #[derive(Deserialize, Debug)]
 pub struct DatadogLogsConfiguration {
-    /// Compression kind to use for the request payloads. Defaults to `zstd`.
+    /// Compression kind for Logs payloads. Defaults to `zstd`.
     #[serde(
         rename = "serializer_compressor_kind",
         default = "default_serializer_compressor_kind"
@@ -71,7 +71,7 @@ pub struct DatadogLogsConfiguration {
 
 impl DatadogLogsConfiguration {
     /// WIP
-    /// 
+    ///
     /// TODO: write the documentation
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(config.as_typed()?)
@@ -193,6 +193,8 @@ impl LogsEndpointEncoder {
         }
     }
 
+    // TODO: add source for logs
+
     fn build_agent_json(&mut self, log: &Log) -> JsonValue {
         let mut obj = JsonMap::new();
 
@@ -200,7 +202,10 @@ impl LogsEndpointEncoder {
         obj.insert("message".to_string(), JsonValue::String(log.message().to_string()));
 
         if let Some(status) = log.status() {
-            obj.insert("status".to_string(), JsonValue::String(Self::status_to_str(status).to_string()));
+            obj.insert(
+                "status".to_string(),
+                JsonValue::String(Self::status_to_str(status).to_string()),
+            );
         }
 
         if !log.hostname().is_empty() {
