@@ -49,9 +49,6 @@ get_checks_smp_dashboard_url() {
 ensure_file_exists "adp_run_id"
 ensure_file_exists "adp_job_start_time"
 ensure_file_exists "adp_job_end_time"
-ensure_file_exists "dsd_run_id"
-ensure_file_exists "dsd_job_start_time"
-ensure_file_exists "dsd_job_end_time"
 ensure_file_exists "adp_checks_run_id"
 ensure_file_exists "adp_checks_job_start_time"
 ensure_file_exists "adp_checks_job_end_time"
@@ -59,30 +56,14 @@ ensure_file_exists "adp_checks_job_end_time"
 adp_run_id=$(cat adp_run_id)
 adp_start_time=$(cat adp_job_start_time)
 adp_end_time=$(cat adp_job_end_time)
-dsd_run_id=$(cat dsd_run_id)
-dsd_start_time=$(cat dsd_job_start_time)
-dsd_end_time=$(cat dsd_job_end_time)
 adp_checks_run_id=$(cat adp_checks_run_id)
 adp_checks_start_time=$(cat adp_checks_job_start_time)
 adp_checks_end_time=$(cat adp_checks_job_end_time)
 
-# Load the job start/end times and figure out which job started first and which job ended last, which we'll use as the
-# start/end time for our dashboard, which shows both sides -- ADP and DSD -- in the same pane of glass.
-# SMP does some shifting of timestamps for the metrics it captures/submits, so we need to port some of that logic here
-# so that the timestamps we generated for the dashboard time range is consistent.
-#
-# Essentially, we take the earliest "end" time between the two jobs and go back 30 minutes, which is where the metrics
-# for that job will be aligned to, and then we take the other "end" time, and go back 30 minutes _minus_ 10 minutes (our
-# experiment duration) which is the end of the window for both jobs overall.
-smp_negative_time_offset_secs=$((30*60))
-experiment_duration_secs=600
-if [ "$adp_end_time" -lt "$dsd_end_time" ]; then
-    common_start_time=$(echo "${adp_end_time} - ${smp_negative_time_offset_secs}" | bc)
-    common_end_time=$(echo "${dsd_end_time} - ${smp_negative_time_offset_secs} + ${experiment_duration_secs}" | bc)
-else
-    common_start_time=$(echo "${dsd_end_time} - ${smp_negative_time_offset_secs}" | bc)
-    common_end_time=$(echo "${adp_end_time} - ${smp_negative_time_offset_secs} + ${experiment_duration_secs}" | bc)
-fi
+# Load the job start/end times and figure out the start/end time for our dashboard.
+# Without DogStatsD runs, use the ADP job's time bounds directly.
+common_start_time=${adp_start_time}
+common_end_time=${adp_end_time}
 
 if [ "$adp_checks_end_time" -lt "$adp_end_time" ]; then
     common_adp_checks_start_time=$(echo "${adp_checks_end_time} - ${smp_negative_time_offset_secs}" | bc)
@@ -92,41 +73,21 @@ else
     common_adp_checks_end_time=$(echo "${adp_checks_end_time} - ${smp_negative_time_offset_secs} + ${experiment_duration_secs}" | bc)
 fi
 
-# Grab the experiments for both DSD and ADP, which may or may not overlap.
-find test/smp/regression/saluki/cases -mindepth 1 -maxdepth 1 -type d | sed s#test/smp/regression/saluki/cases/##g | sort | uniq > adp-experiments
-find test/smp/regression/dogstatsd/cases -mindepth 1 -maxdepth 1 -type d | sed s#test/smp/regression/dogstatsd/cases/##g | sort | uniq > dsd-experiments
-
-adp_only_experiments=$(comm -23 adp-experiments dsd-experiments)
-dsd_only_experiments=$(comm -13 adp-experiments dsd-experiments)
-common_experiments=$(comm -12 adp-experiments dsd-experiments)
+# Grab the experiments for ADP and ADP+Checks.
+adp_experiments=$(find test/smp/regression/saluki/cases -mindepth 1 -maxdepth 1 -type d | sed s#test/smp/regression/saluki/cases/##g | sort | uniq)
 adp_checks_agent_experiments=$(find test/smp/regression/adp-checks-agent/cases -mindepth 1 -maxdepth 1 -type d | sed s#test/smp/regression/adp-checks-agent/cases/##g | sort | uniq)
 
-# Write out our table of links, doing common experiments first, then ADP-only, then DSD-only.
+# Write out our table of links for ADP experiments.
 echo "## ADP Experiment Result Links"
 echo ""
 echo "| experiment | link(s) |"
 echo "|------------|---------|"
 
-for experiment in $common_experiments; do
+for experiment in $adp_experiments; do
     adp_continuous_profiler_url=$(get_continuous_profiler_url "$adp_run_id" "$adp_start_time" "$adp_end_time" "$experiment")
-    dsd_continuous_profiler_url=$(get_continuous_profiler_url "$dsd_run_id" "$dsd_start_time" "$dsd_end_time" "$experiment")
-    adp_smp_dashboard_url=$(get_adp_smp_dashboard_url "$adp_run_id" "$dsd_run_id" "$common_start_time" "$common_end_time" "$experiment")
+    adp_smp_dashboard_url=$(get_adp_smp_dashboard_url "$adp_run_id" "non-existent" "$common_start_time" "$common_end_time" "$experiment")
 
-    echo "| $experiment | \\[[Profiling (ADP)]($adp_continuous_profiler_url)\\] \\[[Profiling (DSD)]($dsd_continuous_profiler_url)\\] \\[[SMP Dashboard]($adp_smp_dashboard_url)\\] |"
-done
-
-for experiment in $adp_only_experiments; do
-    adp_continuous_profiler_url=$(get_continuous_profiler_url "$adp_run_id" "$adp_start_time" "$adp_end_time" "$experiment")
-    adp_smp_dashboard_url=$(get_adp_smp_dashboard_url "$adp_run_id" "$dsd_run_id" "$adp_start_time" "$adp_end_time" "$experiment")
-
-    echo "| $experiment (ADP only) | \\[[Profiling (ADP)]($adp_continuous_profiler_url)\\] \\[[SMP Dashboard]($adp_smp_dashboard_url)\\] |"
-done
-
-for experiment in $dsd_only_experiments; do
-    dsd_continuous_profiler_url=$(get_continuous_profiler_url "$dsd_run_id" "$dsd_start_time" "$dsd_end_time" "$experiment")
-    adp_smp_dashboard_url=$(get_adp_smp_dashboard_url "$adp_run_id" "$dsd_run_id" "$dsd_start_time" "$dsd_end_time" "$experiment")
-
-    echo "| $experiment (DSD only) | \\[[Profiling (DSD)]($dsd_continuous_profiler_url)\\] \\[[SMP Dashboard]($adp_smp_dashboard_url)\\] |"
+    echo "| $experiment | \\[[Profiling (ADP)]($adp_continuous_profiler_url)\\] \\[[SMP Dashboard]($adp_smp_dashboard_url)\\] |"
 done
 
 echo "## ADP && Checks Experiment Result Links"
