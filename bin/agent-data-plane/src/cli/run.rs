@@ -7,8 +7,8 @@ use saluki_components::sources::ChecksConfiguration;
 use saluki_components::{
     destinations::DogStatsDStatisticsConfiguration,
     encoders::{
-        BufferedIncrementalConfiguration, DatadogEventsConfiguration, DatadogMetricsConfiguration,
-        DatadogServiceChecksConfiguration,
+        BufferedIncrementalConfiguration, DatadogEventsConfiguration, DatadogLogsConfiguration,
+        DatadogMetricsConfiguration, DatadogServiceChecksConfiguration,
     },
     forwarders::DatadogConfiguration,
     sources::{DogStatsDConfiguration, OtlpConfiguration},
@@ -220,6 +220,9 @@ async fn create_topology(
     let dd_service_checks_config = DatadogServiceChecksConfiguration::from_configuration(configuration)
         .map(BufferedIncrementalConfiguration::from_encoder_builder)
         .error_context("Failed to configure Datadog Service Checks encoder.")?;
+    let dd_logs_config = DatadogLogsConfiguration::from_configuration(configuration)
+        .map(BufferedIncrementalConfiguration::from_encoder_builder)
+        .error_context("Failed to configure Datadog Logs encoder.")?;
     let dd_forwarder_config = DatadogConfiguration::from_configuration(configuration)
         .error_context("Failed to configure Datadog forwarder.")?;
 
@@ -233,6 +236,7 @@ async fn create_topology(
         .add_encoder("dd_metrics_encode", dd_metrics_config)?
         .add_encoder("dd_events_encode", dd_events_config)?
         .add_encoder("dd_service_checks_encode", dd_service_checks_config)?
+        .add_encoder("dd_logs_encode", dd_logs_config)?
         .add_forwarder("dd_out", dd_forwarder_config)?
         .add_destination("dsd_stats_out", dsd_stats_config.clone())?
         // Metrics.
@@ -247,7 +251,7 @@ async fn create_topology(
         // Forwarding.
         .connect_component(
             "dd_out",
-            ["dd_metrics_encode", "dd_events_encode", "dd_service_checks_encode"],
+            ["dd_metrics_encode", "dd_events_encode", "dd_service_checks_encode", "dd_logs_encode"],
         )?
         // DogStatsD Stats.
         .connect_component("dsd_stats_out", ["dsd_in.metrics"])?;
@@ -258,6 +262,7 @@ async fn create_topology(
         let otlp_config = OtlpConfiguration::from_configuration(configuration)?;
         blueprint.add_source("otlp_in", otlp_config)?;
         blueprint.connect_component("dsd_agg", ["otlp_in.metrics"])?;
+        blueprint.connect_component("dd_logs_encode", ["otlp_in.logs"])?;
     }
 
     if configuration.get_typed_or_default::<bool>("preaggregation.enabled") {

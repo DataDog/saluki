@@ -21,7 +21,7 @@ use saluki_io::compression::CompressionScheme;
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use serde_json::{Map as JsonMap, Value as JsonValue};
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 use crate::common::datadog::{
     io::RB_BUFFER_CHUNK_SIZE,
@@ -127,6 +127,7 @@ pub struct DatadogLogs {
 #[async_trait]
 impl IncrementalEncoder for DatadogLogs {
     async fn process_event(&mut self, event: Event) -> Result<ProcessResult, GenericError> {
+        info!("WACKTEST event received in encoder {:?} ", event);
         let log = match event {
             Event::Log(log) => log,
             _ => return Ok(ProcessResult::Continue),
