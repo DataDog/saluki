@@ -6,7 +6,7 @@ use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
 use serde_json::{Map, Value};
 use tokio::sync::mpsc;
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 use crate::helpers::remote_agent::RemoteAgentClient;
 
@@ -28,42 +28,45 @@ pub async fn create_config_stream(config: &GenericConfiguration) -> Result<mpsc:
 }
 
 async fn run_config_stream_event_loop(mut client: RemoteAgentClient, sender: mpsc::Sender<ConfigUpdate>) {
-    let mut rac = client.stream_config_events();
+    loop {
+        debug!("Establishing a new config stream connection to the core agent...");
+        let mut rac = client.stream_config_events();
 
-    while let Some(result) = rac.next().await {
-        match result {
-            Ok(event) => {
-                let update = match event.event {
-                    Some(config_event::Event::Snapshot(snapshot)) => {
-                        let map = snapshot_to_map(&snapshot);
-                        Some(ConfigUpdate::Snapshot(map))
-                    }
-                    Some(config_event::Event::Update(update)) => {
-                        if let Some(setting) = update.setting {
-                            let v = proto_value_to_serde_value(&setting.value);
-                            Some(ConfigUpdate::Partial {
-                                key: setting.key,
-                                value: v,
-                            })
-                        } else {
+        while let Some(result) = rac.next().await {
+            match result {
+                Ok(event) => {
+                    let update = match event.event {
+                        Some(config_event::Event::Snapshot(snapshot)) => {
+                            let map = snapshot_to_map(&snapshot);
+                            Some(ConfigUpdate::Snapshot(map))
+                        }
+                        Some(config_event::Event::Update(update)) => {
+                            if let Some(setting) = update.setting {
+                                let v = proto_value_to_serde_value(&setting.value);
+                                Some(ConfigUpdate::Partial {
+                                    key: setting.key,
+                                    value: v,
+                                })
+                            } else {
+                                None
+                            }
+                        }
+                        None => {
+                            error!("Received a configuration update event with no data.");
                             None
                         }
-                    }
-                    None => {
-                        error!("Received a configuration update event with no data.");
-                        None
-                    }
-                };
+                    };
 
-                if let Some(update) = update {
-                    if sender.send(update).await.is_err() {
-                        // The receiver was dropped
-                        warn!("Dynamic configuration channel closed. Config stream shutting down.");
-                        break;
+                    if let Some(update) = update {
+                        if sender.send(update).await.is_err() {
+                            // The receiver was dropped
+                            warn!("Dynamic configuration channel closed. Config stream shutting down.");
+                            break;
+                        }
                     }
                 }
+                Err(e) => error!("Error while reading config event stream: {}.", e),
             }
-            Err(e) => error!("Error while reading config event stream: {}.", e),
         }
     }
 }
