@@ -2,15 +2,20 @@
 use std::{
     num::NonZeroUsize,
     pin::Pin,
-    sync::{atomic::Ordering, Arc, LazyLock, OnceLock},
+    sync::{atomic::Ordering, Arc, LazyLock, Mutex, OnceLock},
     task::{self, ready, Poll},
     time::Duration,
 };
 
 use futures::Stream;
-use metrics::{Counter, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SetRecorderError, SharedString, Unit};
+use metrics::{
+    Counter, Gauge, Histogram, Key, KeyName, Level, Metadata, Recorder, SetRecorderError, SharedString, Unit,
+};
 use metrics_util::registry::{AtomicStorage, Registry};
-use saluki_common::{collections::FastHashMap, task::spawn_traced_named};
+use saluki_common::{
+    collections::{FastConcurrentHashMap, FastHashMap},
+    task::spawn_traced_named,
+};
 use saluki_context::{
     origin::RawOrigin,
     tags::{Tag, TagSet},
@@ -30,10 +35,45 @@ static RECEIVER_STATE: OnceLock<Arc<State>> = OnceLock::new();
 /// A collection of events that can be cheaply cloned and shared between multiple consumers.
 pub type SharedEvents = Arc<Vec<Event>>;
 
+/// Handle to the metrics filter.
+///
+/// Allows for overriding the current metrics filter level, which influences which metrics are emitted to downstream
+/// receivers.
+pub struct FilterHandle {
+    state: Arc<State>,
+}
+
+impl FilterHandle {
+    /// Overrides the current metrics filter level.
+    pub fn override_filter(&self, level: Level) {
+        *self.state.current_level.lock().unwrap() = Some(level);
+    }
+
+    /// Resets the metrics filter level to the default (INFO).
+    pub fn reset_filter(&self) {
+        *self.state.current_level.lock().unwrap() = None;
+    }
+}
+
 struct State {
     registry: Registry<Key, AtomicStorage>,
+    level_map: FastConcurrentHashMap<Key, Level>,
     flush_tx: broadcast::Sender<SharedEvents>,
     metrics_prefix: String,
+    current_level: Mutex<Option<Level>>,
+}
+
+impl State {
+    fn is_metric_filtered(&self, key: &Key, filter_level: &Level) -> bool {
+        match self.level_map.pin().get(key) {
+            // We have to know about a metric to be sure it's allowed.
+            None => true,
+
+            // Higher verbosity levels have lower values, so if the metric's level is lower than our filter level, that
+            // means we're actively filtering it out.
+            Some(level) => level < filter_level,
+        }
+    }
 }
 
 struct MetricsRecorder {
@@ -45,10 +85,18 @@ impl MetricsRecorder {
         let (flush_tx, _) = broadcast::channel(2);
         Self {
             state: Arc::new(State {
-                registry: Registry::new(AtomicStorage {}),
+                registry: Registry::new(AtomicStorage),
+                level_map: FastConcurrentHashMap::default(),
                 flush_tx,
                 metrics_prefix,
+                current_level: Mutex::new(None),
             }),
+        }
+    }
+
+    fn filter_handle(&self) -> FilterHandle {
+        FilterHandle {
+            state: Arc::clone(&self.state),
         }
     }
 
@@ -73,25 +121,37 @@ impl Recorder for MetricsRecorder {
     fn describe_gauge(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
     fn describe_histogram(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
 
-    fn register_counter(&self, key: &Key, _: &Metadata<'_>) -> Counter {
+    fn register_counter(&self, key: &Key, metadata: &Metadata<'_>) -> Counter {
         let prefixed_key = self.prefix_key(key);
-        self.state
+        let handle = self
+            .state
             .registry
-            .get_or_create_counter(&prefixed_key, |c| c.clone().into())
+            .get_or_create_counter(&prefixed_key, |c| c.clone().into());
+        self.state.level_map.pin().insert(prefixed_key, *metadata.level());
+
+        handle
     }
 
-    fn register_gauge(&self, key: &Key, _: &Metadata<'_>) -> Gauge {
+    fn register_gauge(&self, key: &Key, metadata: &Metadata<'_>) -> Gauge {
         let prefixed_key = self.prefix_key(key);
-        self.state
+        let handle = self
+            .state
             .registry
-            .get_or_create_gauge(&prefixed_key, |g| g.clone().into())
+            .get_or_create_gauge(&prefixed_key, |g| g.clone().into());
+        self.state.level_map.pin().insert(prefixed_key, *metadata.level());
+
+        handle
     }
 
-    fn register_histogram(&self, key: &Key, _: &Metadata<'_>) -> Histogram {
+    fn register_histogram(&self, key: &Key, metadata: &Metadata<'_>) -> Histogram {
         let prefixed_key = self.prefix_key(key);
-        self.state
+        let handle = self
+            .state
             .registry
-            .get_or_create_histogram(&prefixed_key, |h| h.clone().into())
+            .get_or_create_histogram(&prefixed_key, |h| h.clone().into());
+        self.state.level_map.pin().insert(prefixed_key, *metadata.level());
+
+        handle
     }
 }
 
@@ -165,12 +225,20 @@ async fn flush_metrics(flush_interval: Duration) {
         }
 
         let mut metrics = Vec::new();
+        let current_level = {
+            let current_level = state.current_level.lock().unwrap();
+            current_level.as_ref().copied().unwrap_or(Level::DEBUG)
+        };
 
         let counters = state.registry.get_counter_handles();
         let gauges = state.registry.get_gauge_handles();
         let histograms = state.registry.get_histogram_handles();
 
         for (key, counter) in counters {
+            if state.is_metric_filtered(&key, &current_level) {
+                continue;
+            }
+
             let context = context_resolver.resolve_from_key(key);
             let value = counter.swap(0, Ordering::Relaxed) as f64;
 
@@ -179,6 +247,10 @@ async fn flush_metrics(flush_interval: Duration) {
         }
 
         for (key, gauge) in gauges {
+            if state.is_metric_filtered(&key, &current_level) {
+                continue;
+            }
+
             let context = context_resolver.resolve_from_key(key);
             let value = f64::from_bits(gauge.load(Ordering::Relaxed));
 
@@ -187,6 +259,10 @@ async fn flush_metrics(flush_interval: Duration) {
         }
 
         for (key, histogram) in histograms {
+            if state.is_metric_filtered(&key, &current_level) {
+                continue;
+            }
+
             let context = context_resolver.resolve_from_key(key);
 
             // Collect all of the samples from the histogram.
@@ -260,11 +336,14 @@ impl MetricsContextResolver {
 /// ## Errors
 ///
 /// If a global recorder was already installed, an error will be returned.
-pub async fn initialize_metrics(metrics_prefix: String) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub async fn initialize_metrics(
+    metrics_prefix: String,
+) -> Result<FilterHandle, Box<dyn std::error::Error + Send + Sync>> {
     let recorder = MetricsRecorder::new(metrics_prefix);
+    let filter_handle = recorder.filter_handle();
     recorder.install()?;
 
     spawn_traced_named("internal-telemetry-metrics-flusher", flush_metrics(FLUSH_INTERVAL));
 
-    Ok(())
+    Ok(filter_handle)
 }

@@ -1,10 +1,15 @@
 //! Metrics.
 
-use std::time::Duration;
+use std::{sync::Mutex, time::Duration};
 
 use metrics::{gauge, Gauge};
 use saluki_common::task::spawn_traced_named;
 use tokio::{runtime::Handle, time::sleep};
+
+static API_HANDLER: Mutex<Option<MetricsAPIHandler>> = Mutex::new(None);
+
+mod api;
+pub use self::api::MetricsAPIHandler;
 
 /// Initializes the metrics subsystem for `metrics`.
 ///
@@ -22,7 +27,11 @@ pub async fn initialize_metrics(
     //
     // The implementation itself has to live in `saluki_core`, however, to have access to all of the underlying types
     // that are created and used to install the global recorder, such that they need not be exposed publicly.
-    saluki_core::observability::metrics::initialize_metrics(metrics_prefix.into()).await?;
+    let filter_handle = saluki_core::observability::metrics::initialize_metrics(metrics_prefix.into()).await?;
+    API_HANDLER
+        .lock()
+        .unwrap()
+        .replace(MetricsAPIHandler::new(filter_handle));
 
     // We also spawn a background task that collects and emits the Tokio runtime metrics.
     spawn_traced_named(
@@ -31,6 +40,17 @@ pub async fn initialize_metrics(
     );
 
     Ok(())
+}
+
+/// Acquires the metrics API handler.
+///
+/// This function is mutable, and consumes the handler if it's present. This means it should only be called once, and
+/// only after metrics have been initialized via `initialize_metrics`.
+///
+/// The metrics API handler can be used to install API routes which allow dynamically controlling the metrics level
+/// filtering. See [`MetricsAPIHandler`] for more information.
+pub fn acquire_metrics_api_handler() -> Option<MetricsAPIHandler> {
+    API_HANDLER.lock().unwrap().take()
 }
 
 /// Emits the startup metrics for the application.
