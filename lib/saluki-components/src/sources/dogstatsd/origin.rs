@@ -115,8 +115,8 @@ impl DogStatsDOriginTagResolver {
                 return collected_tags;
             }
 
-            // If we discovered an entity ID via origin detection, and no client-provided entity ID was provided (or it was,
-            // but entity ID precedence is disabled), then try to get tags for the detected entity ID.
+            // If we discovered an entity ID via origin detection, and no client-provided entity ID was provided (or it
+            // was, but entity ID precedence is disabled), then try to get tags for the detected entity ID.
             if let Some(entity_id) = maybe_process_id {
                 if maybe_entity_id.is_none() || !self.config.entity_id_precedence {
                     if let Some(tags) = self.workload_provider.get_tags_for_entity(entity_id, tag_cardinality) {
@@ -131,8 +131,8 @@ impl DogStatsDOriginTagResolver {
                 }
             }
 
-            // If we have a client-provided entity ID, try to get tags for the entity based on those. A
-            // client-provided entity ID takes precedence over the container ID.
+            // If we have a client-provided entity ID, try to get tags for the entity based on those. A client-provided
+            // entity ID takes precedence over the container ID.
             let maybe_client_entity_id = maybe_entity_id.or(maybe_container_id);
             if let Some(entity_id) = maybe_client_entity_id {
                 if let Some(tags) = self.workload_provider.get_tags_for_entity(entity_id, tag_cardinality) {
@@ -151,21 +151,39 @@ impl DogStatsDOriginTagResolver {
                 return collected_tags;
             }
 
-            // Try all possible detected entity IDs, enriching in the following order of precedence: local process ID,
-            // local container ID, client-provided entity ID, External Data-based pod ID, and External Data-based
-            // container ID.
-            let maybe_external_data_pod_uid = origin.resolved_external_data().map(|red| red.pod_entity_id());
+            // Try enriching via the detected container ID, if any. We only try subsequent container IDs if we get back
+            // no tags for the previous one.
+            //
+            // We go from highest precedence to lowest:
+            // - process ID-based (`maybe_process_id`)
+            // - Local Data-based (`maybe_container_id`)
+            // - External Data-based (`maybe_external_data_container_id`).
             let maybe_external_data_container_id = origin.resolved_external_data().map(|red| red.container_entity_id());
-            let maybe_entity_ids = &[
-                maybe_process_id,
-                maybe_container_id,
-                maybe_entity_id,
-                maybe_external_data_pod_uid,
-                maybe_external_data_container_id,
-            ];
-            for entity_id in maybe_entity_ids.iter().flatten() {
+            let maybe_container_entity_ids = &[maybe_process_id, maybe_container_id, maybe_external_data_container_id];
+            for entity_id in maybe_container_entity_ids.iter().flatten() {
                 if let Some(tags) = self.workload_provider.get_tags_for_entity(entity_id, tag_cardinality) {
-                    collected_tags.extend_from_shared(&tags);
+                    if !tags.is_empty() {
+                        collected_tags.extend_from_shared(&tags);
+                        break;
+                    }
+                } else {
+                    trace!(
+                        ?entity_id,
+                        cardinality = tag_cardinality.as_str(),
+                        "No tags found for entity."
+                    );
+                }
+            }
+
+            // Try any remaining entity IDs, which at this point are just related to the Kubernetes pod that the metric
+            // may have originated from.
+            let maybe_external_data_pod_uid = origin.resolved_external_data().map(|red| red.pod_entity_id());
+            let maybe_pod_entity_ids = &[maybe_entity_id, maybe_external_data_pod_uid];
+            for entity_id in maybe_pod_entity_ids.iter().flatten() {
+                if let Some(tags) = self.workload_provider.get_tags_for_entity(entity_id, tag_cardinality) {
+                    if !tags.is_empty() {
+                        collected_tags.extend_from_shared(&tags);
+                    }
                 } else {
                     trace!(
                         ?entity_id,
