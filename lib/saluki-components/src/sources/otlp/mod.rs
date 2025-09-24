@@ -49,9 +49,11 @@ use tonic::{Request, Response, Status};
 use tracing::{debug, error};
 
 mod attributes;
+mod logs;
 mod metrics;
 
-use self::metrics::translator::OtlpTranslator;
+use self::logs::translator::OtlpLogsTranslator;
+use self::metrics::translator::OtlpMetricsTranslator;
 
 /// Configuration for the OTLP source.
 #[derive(Deserialize, Debug, Default)]
@@ -149,6 +151,10 @@ fn default_max_recv_msg_size_mib() -> u64 {
     4
 }
 
+fn otel_source_tag() -> String {
+    "datadog_agent".to_string()
+}
+
 enum OtlpResource {
     Metrics(OtlpResourceMetrics),
     Logs(OtlpResourceLogs),
@@ -205,7 +211,7 @@ impl OtlpConfiguration {
 
 pub struct Metrics {
     metrics_received: Counter,
-    _logs_received: Counter, // TODO: remove _ after implementing translator for logs
+    logs_received: Counter,
 }
 
 impl Metrics {
@@ -213,9 +219,17 @@ impl Metrics {
         &self.metrics_received
     }
 
-    fn _logs_received(&self) -> &Counter {
-        // TODO: remove _ after implementing translator for logs
-        &self._logs_received
+    fn logs_received(&self) -> &Counter {
+        &self.logs_received
+    }
+
+    /// Test-only helper to construct a `Metrics` instance.
+    #[cfg(test)]
+    pub fn for_tests() -> Self {
+        Metrics {
+            metrics_received: Counter::noop(),
+            logs_received: Counter::noop(),
+        }
     }
 }
 
@@ -225,7 +239,7 @@ fn build_metrics(component_context: &ComponentContext) -> Metrics {
     Metrics {
         metrics_received: builder
             .register_debug_counter_with_tags("component_events_received_total", [("message_type", "otlp_metrics")]),
-        _logs_received: builder // TODO: remove _ after implementing translator for logs
+        logs_received: builder
             .register_debug_counter_with_tags("component_events_received_total", [("message_type", "otlp_logs")]),
     }
 }
@@ -233,8 +247,12 @@ fn build_metrics(component_context: &ComponentContext) -> Metrics {
 #[async_trait]
 impl SourceBuilder for OtlpConfiguration {
     fn outputs(&self) -> &[OutputDefinition] {
-        static OUTPUTS: LazyLock<Vec<OutputDefinition>> =
-            LazyLock::new(|| vec![OutputDefinition::named_output("metrics", EventType::Metric)]);
+        static OUTPUTS: LazyLock<Vec<OutputDefinition>> = LazyLock::new(|| {
+            vec![
+                OutputDefinition::named_output("metrics", EventType::Metric),
+                OutputDefinition::named_output("logs", EventType::Log),
+            ]
+        });
 
         &OUTPUTS
     }
@@ -298,7 +316,7 @@ pub struct Otlp {
     http_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
     translator_config: metrics::config::OtlpTranslatorConfig,
-    metrics: Metrics,
+    metrics: Metrics, // Telemetry metrics, not DD native metrics.
 }
 
 #[async_trait]
@@ -313,7 +331,8 @@ impl Source for Otlp {
 
         let mut converter_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
-        let translator = OtlpTranslator::new(self.translator_config, self.context_resolver);
+        let metrics_translator = OtlpMetricsTranslator::new(self.translator_config, self.context_resolver);
+        let logs_translator = OtlpLogsTranslator::new(otel_source_tag());
 
         let thread_pool_handle = context.topology_context().global_thread_pool().clone();
 
@@ -324,7 +343,8 @@ impl Source for Otlp {
                 rx,
                 context.clone(),
                 converter_shutdown_coordinator.register(),
-                translator,
+                metrics_translator,
+                logs_translator,
                 self.metrics,
             ),
         );
@@ -495,7 +515,7 @@ async fn dispatch_events(events: EventsBuffer, source_context: &SourceContext) {
 
 async fn run_converter(
     mut receiver: mpsc::Receiver<OtlpResource>, source_context: SourceContext, shutdown_handle: DynamicShutdownHandle,
-    mut translator: OtlpTranslator, metrics: Metrics,
+    mut metrics_translator: OtlpMetricsTranslator, mut logs_translator: OtlpLogsTranslator, metrics: Metrics,
 ) {
     tokio::pin!(shutdown_handle);
     debug!("OTLP resource converter task started.");
@@ -512,7 +532,7 @@ async fn run_converter(
             Some(otlp_resource) = receiver.recv() => {
                 match otlp_resource {
                     OtlpResource::Metrics(resource_metrics) => {
-                        match translator.map_metrics(resource_metrics, &metrics) {
+                        match metrics_translator.map_metrics(resource_metrics, &metrics) {
                             Ok(events) => {
                                 for event in events {
                                     if let Some(event_buffer) = event_buffer_manager.try_push(event) {
@@ -524,10 +544,20 @@ async fn run_converter(
                                 error!(error = %e, "Failed to handle resource metrics.");
                             }
                         }
-
                     }
-                    OtlpResource::Logs(_resource_logs) => {
-                        // TODO: handle translating OTLP logs to DD native format.
+                    OtlpResource::Logs(resource_logs) => {
+                        match logs_translator.map_logs(resource_logs, &metrics) {
+                            Ok(events) => {
+                                for event in events {
+                                    if let Some(event_buffer) = event_buffer_manager.try_push(event) {
+                                        dispatch_events(event_buffer, &source_context).await;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!(error = %e, "Failed to handle resource logs.");
+                            }
+                        }
                     }
                 }
             },

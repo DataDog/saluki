@@ -74,6 +74,7 @@ dyn-clone,https://github.com/dtolnay/dyn-clone,MIT OR Apache-2.0,David Tolnay <d
 either,https://github.com/rayon-rs/either,MIT OR Apache-2.0,bluss
 equivalent,https://github.com/indexmap-rs/equivalent,Apache-2.0 OR MIT,The equivalent Authors
 errno,https://github.com/lambda-fairy/rust-errno,MIT OR Apache-2.0,"Chris Wong <lambda.fairy@gmail.com>, Dan Gohman <dev@sunfishcode.online>"
+faster-hex,https://github.com/NervosFoundation/faster-hex,MIT,zhangsoledad <787953403@qq.com>
 fastrand,https://github.com/smol-rs/fastrand,Apache-2.0 OR MIT,Stjepan Glavina <stjepang@gmail.com>
 figment,https://github.com/SergioBenitez/Figment,MIT OR Apache-2.0,Sergio Benitez <sb@sergio.bz>
 fixedbitset,https://github.com/petgraph/fixedbitset,MIT OR Apache-2.0,bluss
@@ -97,8 +98,10 @@ gimli,https://github.com/gimli-rs/gimli,MIT OR Apache-2.0,The gimli Authors
 glob,https://github.com/rust-lang/glob,MIT OR Apache-2.0,The Rust Project Developers
 h2,https://github.com/hyperium/h2,MIT,"Carl Lerche <me@carllerche.com>, Sean McArthur <sean@seanmonstar.com>"
 half,https://github.com/VoidStarKat/half-rs,MIT OR Apache-2.0,Kathryn Long <squeeself@gmail.com>
+hash32,https://github.com/japaric/hash32,MIT OR Apache-2.0,Jorge Aparicio <jorge@japaric.io>
 hashbrown,https://github.com/rust-lang/hashbrown,MIT OR Apache-2.0,Amanieu d'Antras <amanieu@gmail.com>
 headers,https://github.com/hyperium/headers,MIT,Sean McArthur <sean@seanmonstar.com>
+heapless,https://github.com/rust-embedded/heapless,MIT OR Apache-2.0,"Jorge Aparicio <jorge@japaric.io>, Per Lindgren <per.lindgren@ltu.se>, Emil Fresk <emil.fresk@gmail.com>"
 heck,https://github.com/withoutboats/heck,MIT OR Apache-2.0,The heck Authors
 hex,https://github.com/KokaKiwi/rust-hex,MIT OR Apache-2.0,KokaKiwi <kokakiwi@kokakiwi.net>
 home,https://github.com/rust-lang/cargo,MIT OR Apache-2.0,Brian Anderson <andersrb@gmail.com>

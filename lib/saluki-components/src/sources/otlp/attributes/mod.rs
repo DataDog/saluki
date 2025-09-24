@@ -310,7 +310,7 @@ pub(super) fn origin_id_from_attributes(attributes: &[otlp_common::KeyValue]) ->
     pod_uid.map(|uid| format!("kubernetes_pod_uid://{}", uid))
 }
 
-fn get_string_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<&'a str> {
+pub(super) fn get_string_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<&'a str> {
     attributes.iter().find_map(|kv| {
         if kv.key == key {
             if let Some(otlp_common::any_value::Value::StringValue(s_val)) =
