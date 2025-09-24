@@ -46,7 +46,7 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, MissedTickBehavior};
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 mod attributes;
 mod logs;
@@ -549,6 +549,7 @@ async fn run_converter(
                         match logs_translator.map_logs(resource_logs, &metrics) {
                             Ok(events) => {
                                 for event in events {
+                                    info!("wacktest {:?}", event);
                                     if let Some(event_buffer) = event_buffer_manager.try_push(event) {
                                         dispatch_events(event_buffer, &source_context).await;
                                     }

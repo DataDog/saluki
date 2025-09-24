@@ -172,6 +172,7 @@ impl Forwarder for Datadog {
 }
 
 fn get_dd_endpoint_name(uri: &Uri) -> Option<MetaString> {
+    // TODO: add logs endpoint
     match uri.path() {
         "/api/v2/series" => Some(MetaString::from_static("series_v2")),
         "/api/beta/sketches" => Some(MetaString::from_static("sketches_v2")),
