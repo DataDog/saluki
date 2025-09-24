@@ -69,7 +69,7 @@ echo ""
 echo "| experiment | link(s) |"
 echo "|------------|---------|"
 
-for experiment in $ad_experiments; do
+for experiment in $adp_experiments; do
     continuous_profiler_url=$(get_continuous_profiler_url "$adp_run_id" "$adp_start_time" "$adp_end_time" "$experiment")
     smp_dashboard_url=$(get_adp_smp_dashboard_url "$adp_run_id" "$adp_start_time" "$adp_end_time" "$experiment")
 
