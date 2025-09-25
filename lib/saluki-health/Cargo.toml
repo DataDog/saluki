@@ -14,6 +14,7 @@ metrics = { workspace = true }
 saluki-api = { workspace = true }
 saluki-common = { workspace = true }
 saluki-error = { workspace = true }
+saluki-metrics = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 stringtheory = { workspace = true }

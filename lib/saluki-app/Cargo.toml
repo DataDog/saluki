@@ -43,7 +43,7 @@ memory = [
   "dep:tokio",
   "dep:tracing",
 ]
-metrics = ["api", "dep:saluki-common", "dep:saluki-core", "dep:metrics", "dep:serde", "dep:tokio"]
+metrics = ["api", "dep:saluki-common", "dep:saluki-core", "dep:saluki-metrics", "dep:metrics", "dep:serde", "dep:tokio"]
 tls = ["dep:saluki-error", "dep:saluki-tls"]
 tls-fips = ["saluki-tls?/fips"]
 config = ["api", "dep:arc-swap", "dep:saluki-config", "dep:serde_json"]
@@ -70,6 +70,7 @@ saluki-core = { workspace = true, optional = true }
 saluki-error = { workspace = true, optional = true }
 saluki-io = { workspace = true, optional = true }
 saluki-metadata = { workspace = true }
+saluki-metrics = { workspace = true, optional = true }
 saluki-tls = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }

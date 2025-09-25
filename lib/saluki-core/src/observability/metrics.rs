@@ -227,7 +227,7 @@ async fn flush_metrics(flush_interval: Duration) {
         let mut metrics = Vec::new();
         let current_level = {
             let current_level = state.current_level.lock().unwrap();
-            current_level.as_ref().copied().unwrap_or(Level::DEBUG)
+            current_level.as_ref().copied().unwrap_or(Level::TRACE)
         };
 
         let counters = state.registry.get_counter_handles();
