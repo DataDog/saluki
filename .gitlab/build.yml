@@ -4,7 +4,7 @@
   needs:
     - calculate-build-metadata
   retry: 2
-  timeout: 12m
+  timeout: 15m
   variables:
     APP_BUILD_TIME: "${CI_PIPELINE_CREATED_AT}"
     DDCI_CONFIGURE_OTEL_EXPORTER: true
