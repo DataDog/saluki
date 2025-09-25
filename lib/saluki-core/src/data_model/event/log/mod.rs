@@ -46,6 +46,24 @@ pub enum LogStatus {
     Debug,
 }
 
+impl LogStatus {
+    /// Returns the log status in string format
+    pub fn as_str(&self) -> &str {
+        match self {
+            LogStatus::Trace => "trace",
+            LogStatus::Emergency => "emerg",
+            LogStatus::Alert => "alert",
+            LogStatus::Fatal => "crit",
+            LogStatus::Error => "err",
+            LogStatus::Warning => "warn",
+            LogStatus::Notice => "notice",
+            LogStatus::Info => "info",
+            LogStatus::Debug => "debug",
+        }
+    }
+}
+
+
 impl Log {
     /// Creates a new `Log` with the given message.
     pub fn new(message: impl Into<MetaString>) -> Self {

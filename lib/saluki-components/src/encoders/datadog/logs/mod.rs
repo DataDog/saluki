@@ -8,7 +8,7 @@ use saluki_core::{
     components::{encoders::*, ComponentContext},
     data_model::{
         event::{
-            log::{Log, LogStatus},
+            log::Log,
             Event, EventType,
         },
         payload::{HttpPayload, Payload, PayloadMetadata, PayloadType},
@@ -70,9 +70,7 @@ pub struct DatadogLogsConfiguration {
 }
 
 impl DatadogLogsConfiguration {
-    /// WIP
-    ///
-    /// TODO: write the documentation
+    /// Creates a new `DatadogLogsConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(config.as_typed()?)
     }
@@ -128,11 +126,11 @@ pub struct DatadogLogs {
 impl IncrementalEncoder for DatadogLogs {
     async fn process_event(&mut self, event: Event) -> Result<ProcessResult, GenericError> {
         info!("WACKTEST event received in encoder {:?} ", event);
-        let log = match event {
+        let log: Log = match event {
             Event::Log(log) => log,
             _ => return Ok(ProcessResult::Continue),
         };
-
+        info!("WACKTEST2 valid log :) {:?} ", log);
         match self.request_builder.encode(log).await {
             Ok(None) => Ok(ProcessResult::Continue),
             Ok(Some(log)) => Ok(ProcessResult::FlushRequired(Event::Log(log))),
@@ -180,20 +178,6 @@ impl LogsEndpointEncoder {
         }
     }
 
-    fn status_to_str(status: LogStatus) -> &'static str {
-        match status {
-            LogStatus::Trace => "trace",
-            LogStatus::Emergency => "emerg",
-            LogStatus::Alert => "alert",
-            LogStatus::Fatal => "crit",
-            LogStatus::Error => "err",
-            LogStatus::Warning => "warn",
-            LogStatus::Notice => "notice",
-            LogStatus::Info => "info",
-            LogStatus::Debug => "debug",
-        }
-    }
-
     // TODO: add source for logs
 
     fn build_agent_json(&mut self, log: &Log) -> JsonValue {
@@ -205,7 +189,7 @@ impl LogsEndpointEncoder {
         if let Some(status) = log.status() {
             obj.insert(
                 "status".to_string(),
-                JsonValue::String(Self::status_to_str(status).to_string()),
+                JsonValue::String(status.as_str().to_string()),
             );
         }
 
