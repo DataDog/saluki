@@ -36,7 +36,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Set up Rust Nightly
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v1.15.1
         with:
           toolchain: nightly
           components: rustdoc
@@ -72,7 +72,7 @@ jobs:
       - name: Uncompress generated API documentation assets
         run: tar -C /tmp/docs/api-docs -x -z -f ./api-docs.tar.gz && rm ./api-docs.tar.gz
       - name: Publish to Github Pages
-        uses: peaceiris/actions-gh-pages@v4
+        uses: peaceiris/actions-gh-pages@v4.0.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: /tmp/docs
