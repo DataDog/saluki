@@ -120,9 +120,19 @@ impl RemoteAgentClient {
     /// If the Agent gRPC client cannot be created (invalid API endpoint, missing authentication token, etc), or if the
     /// authentication token is invalid, an error will be returned.
     pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let config = config
+        let mut config = config
             .as_typed::<RemoteAgentClientConfiguration>()
             .error_context("Failed to parse configuration for Remote Agent client.")?;
+
+        // The core-agent defaults to the empty string for the auth_token_file_path and ipc_cert_file_path. We need to handle this by resetting to the defaults.
+        if config.auth_token_file_path.as_os_str().is_empty() {
+            config.auth_token_file_path = default_agent_auth_token_file_path();
+        }
+        if let Some(ref cert_path) = config.ipc_cert_file_path {
+            if cert_path.as_os_str().is_empty() {
+                config.ipc_cert_file_path = None;
+            }
+        }
 
         // TODO: We need to write a Tower middleware service that allows applying a backoff between failed calls,
         // specifically so that we can throttle reconnection attempts.
