@@ -188,7 +188,7 @@ pub struct LoggingAPIHandler {
 
 impl LoggingAPIHandler {
     fn new(original_filter: Arc<EnvFilter>, reload_handle: Handle<SharedEnvFilter, Registry>) -> Self {
-        // Spawn our background task that will handle
+        // Spawn our background task that will handle override requests.
         let (override_tx, override_rx) = mpsc::channel(1);
         spawn_traced_named(
             "dynamic-logging-override-processor",
