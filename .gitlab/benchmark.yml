@@ -20,7 +20,7 @@ build-adp-baseline-image:
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
-  timeout: 12m
+  timeout: 15m
   before_script:
     - *setup-smp-env
   variables:
@@ -62,7 +62,7 @@ build-adp-comparison-image:
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
-  timeout: 12m
+  timeout: 15m
   before_script:
     - *setup-smp-env
   variables:
@@ -98,7 +98,7 @@ build-adp-check-image:
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
-  timeout: 12m
+  timeout: 15m
   before_script:
     - *setup-smp-env
   variables:
@@ -135,7 +135,7 @@ build-adp-check-comparison-image:
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
-  timeout: 12m
+  timeout: 15m
   before_script:
     - *setup-smp-env
   variables:
