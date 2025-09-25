@@ -1,6 +1,7 @@
 use std::future::pending;
 
 use memory_accounting::ComponentRegistry;
+use saluki_app::metrics::acquire_metrics_api_handler;
 use saluki_app::{api::APIBuilder, config::ConfigAPIHandler, prelude::acquire_logging_api_handler};
 use saluki_common::task::spawn_traced_named;
 use saluki_components::destinations::DogStatsDStatisticsConfiguration;
@@ -40,6 +41,7 @@ pub fn spawn_control_plane(
     let privileged_api = APIBuilder::new()
         .with_self_signed_tls()
         .with_optional_handler(acquire_logging_api_handler())
+        .with_optional_handler(acquire_metrics_api_handler())
         .with_handler(ConfigAPIHandler::new(config.clone()))
         .with_optional_handler(env_provider.workload_api_handler())
         .with_handler(dsd_stats_config.api_handler());
