@@ -1,0 +1,12 @@
+error: metric type must be `counter`, `gauge`, or `histogram` (can be prefixed with `trace_` or `debug_` to set metric level to something other than INFO)
+ --> tests/macros/06_invalid_level_prefix.rs:3:1
+  |
+3 | / static_metrics! {
+4 | |     name => Metrics,
+5 | |     prefix => basic_usage,
+6 | |     metrics => [
+... |
+9 | | }
+  | |_^
+  |
+  = note: this error originates in the macro `$crate::register_metric` which comes from the expansion of the macro `static_metrics` (in Nightly builds, run with -Z macro-backtrace for more info)
