@@ -40,6 +40,7 @@ jobs:
         with:
           toolchain: nightly
           components: rustdoc
+          cache: false
       - name: Generate API documentation
         run: |
           RUSTDOCFLAGS="--enable-index-page -Zunstable-options" cargo +nightly doc --no-deps -Zrustdoc-map --lib
