@@ -15,7 +15,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v5
       - name: Set up Node 23
         uses: actions/setup-node@v4
         with:
@@ -29,8 +29,27 @@ jobs:
       - name: Upload compressed documentation assets
         uses: actions/upload-artifact@v4
         with:
-          name: documentation
+          name: docs
           path: docs.tar.gz
+  generate-api-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Set up Rust Nightly
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly
+          components: rustdoc
+      - name: Generate API documentation
+        run: |
+          RUSTDOCFLAGS="--enable-index-page -Zunstable-options" cargo +nightly doc --no-deps -Zrustdoc-map --lib
+      - name: Compress generated API documentation assets
+        run: tar -C ./target/doc -c -z -f api-docs.tar.gz .
+      - name: Upload compressed API documentation assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-docs
+          path: api-docs.tar.gz
 
   publish:
     runs-on: ubuntu-latest
@@ -40,12 +59,18 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: documentation
+          name: docs
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: api-docs
           path: .
       - name: Create extract directory
-        run: mkdir -p /tmp/docs
+        run: mkdir -p /tmp/docs/api-docs
       - name: Uncompress generated documentation assets
         run: tar -C /tmp/docs -x -z -f ./docs.tar.gz && rm ./docs.tar.gz
+      - name: Uncompress generated API documentation assets
+        run: tar -C /tmp/docs/api-docs -x -z -f ./api-docs.tar.gz && rm ./api-docs.tar.gz
       - name: Publish to Github Pages
         uses: peaceiris/actions-gh-pages@v4
         with:

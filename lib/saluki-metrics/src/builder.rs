@@ -162,7 +162,7 @@ impl MetricsBuilder {
     ///
     /// The counter will include the configured default tags for this builder, in addition to the additional tags provided.
     ///
-    /// See [`add_default_tags`](MetricsBuilder::add_default_tags) for information on the supported tag formats.
+    /// See [`add_default_tag`](MetricsBuilder::add_default_tag) for information on the supported tag formats.
     pub fn register_debug_counter_with_tags<I, T>(&self, metric_name: &'static str, additional_tags: I) -> Counter
     where
         I: IntoIterator<Item = T>,
@@ -185,7 +185,7 @@ impl MetricsBuilder {
     ///
     /// The gauge will include the configured default tags for this builder, in addition to the additional tags provided.
     ///
-    /// See [`add_default_tags`](MetricsBuilder::add_default_tags) for information on the supported tag formats.
+    /// See [`add_default_tag`](MetricsBuilder::add_default_tag) for information on the supported tag formats.
     pub fn register_debug_gauge_with_tags<I, T>(&self, metric_name: &'static str, additional_tags: I) -> Gauge
     where
         I: IntoIterator<Item = T>,
@@ -208,7 +208,7 @@ impl MetricsBuilder {
     ///
     /// The histogram will include the configured default tags for this builder, in addition to the additional tags provided.
     ///
-    /// See [`add_default_tags`](MetricsBuilder::add_default_tags) for information on the supported tag formats.
+    /// See [`add_default_tag`](MetricsBuilder::add_default_tag) for information on the supported tag formats.
     pub fn register_debug_histogram_with_tags<I, T>(&self, metric_name: &'static str, additional_tags: I) -> Histogram
     where
         I: IntoIterator<Item = T>,

@@ -20,7 +20,7 @@ pub type DefaultHttpRetryPolicy =
 impl DefaultHttpRetryPolicy {
     /// Creates a new retry policy adapted to HTTP-based clients with the given exponential backoff strategy.
     ///
-    /// This policy uses the standard HTTP classifier ([`StandardHttpRClassifier`]) and retry lifecycle ([`StandardHttpRetryLifecycle`]).
+    /// This policy uses the standard HTTP classifier ([`StandardHttpClassifier`]) and retry lifecycle ([`StandardHttpRetryLifecycle`]).
     pub fn with_backoff(backoff: ExponentialBackoff) -> Self {
         RollingExponentialBackoffRetryPolicy::new(StandardHttpClassifier, backoff)
             .with_retry_lifecycle(StandardHttpRetryLifecycle)

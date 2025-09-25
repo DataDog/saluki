@@ -50,9 +50,9 @@ where
 pub trait JoinSetExt<T> {
     /// Spawns a new asynchronous task, returning an [`AbortHandle`] for it.
     ///
-    /// This is meant to be a thin wrapper over task management types like [`JoinSet`][tokio::task::JoinSet], and
-    /// provides implicit "tracing" for spawned futures by ensuring that the task is attached to the current `tracing`
-    /// span and the current allocation component.
+    /// This is meant to be a thin wrapper over task management types like [`JoinSet`], and provides implicit "tracing"
+    /// for spawned futures by ensuring that the task is attached to the current `tracing` span and the current
+    /// allocation component.
     fn spawn_traced<F>(&mut self, f: F) -> AbortHandle
     where
         F: Future<Output = T> + Send + 'static,
@@ -60,9 +60,9 @@ pub trait JoinSetExt<T> {
 
     /// Spawns a new named asynchronous task, returning an [`AbortHandle`] for it.
     ///
-    /// This is meant to be a thin wrapper over task management types like [`JoinSet`][tokio::task::JoinSet], and
-    /// provides implicit "tracing" for spawned futures by ensuring that the task is attached to the current `tracing`
-    /// span and the current allocation component.
+    /// This is meant to be a thin wrapper over task management types like [`JoinSet`], and provides implicit "tracing"
+    /// for spawned futures by ensuring that the task is attached to the current `tracing` span and the current
+    /// allocation component.
     fn spawn_traced_named<S, F>(&mut self, name: S, f: F) -> AbortHandle
     where
         S: Into<String>,
@@ -101,9 +101,9 @@ impl<T> JoinSetExt<T> for JoinSet<T> {
 pub trait HandleExt<T> {
     /// Spawns a new asynchronous task, returning a [`JoinHandle`] for it.
     ///
-    /// This is meant to be a thin wrapper over task management types like [`Handle`][tokio::runtime::Handle], and
-    /// provides implicit "tracing" for spawned futures by ensuring that the task is attached to the current `tracing`
-    /// span and the current allocation component.
+    /// This is meant to be a thin wrapper over task management types like [`Handle`], and provides implicit "tracing"
+    /// for spawned futures by ensuring that the task is attached to the current `tracing` span and the current
+    /// allocation component.
     fn spawn_traced<F>(&self, f: F) -> JoinHandle<T>
     where
         F: Future<Output = T> + Send + 'static,
@@ -111,9 +111,9 @@ pub trait HandleExt<T> {
 
     /// Spawns a new named asynchronous task, returning a [`JoinHandle`] for it.
     ///
-    /// This is meant to be a thin wrapper over task management types like [`Handle`][tokio::runtime::Handle], and
-    /// provides implicit "tracing" for spawned futures by ensuring that the task is attached to the current `tracing`
-    /// span and the current allocation component.
+    /// This is meant to be a thin wrapper over task management types like [`Handle`], and provides implicit "tracing"
+    /// for spawned futures by ensuring that the task is attached to the current `tracing` span and the current
+    /// allocation component.
     fn spawn_traced_named<S, F>(&self, name: S, f: F) -> JoinHandle<T>
     where
         S: Into<String>,

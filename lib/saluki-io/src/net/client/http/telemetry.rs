@@ -50,7 +50,7 @@ pub type EndpointNameFn = dyn Fn(&Uri) -> Option<MetaString> + Send + Sync;
 /// This requires that an exact body size is known, which is not always the case. If the body size is not known, this
 /// metric will not be emitted on a successful response.
 ///
-/// For common body types, like [`FrozenChunkedBytesBuffer`][crate::buf::chunked::FrozenChunkedBytesBuffer], the size
+/// For common body types, like [`FrozenChunkedBytesBuffer`][saluki_common::buf::FrozenChunkedBytesBuffer], the size
 /// hint is always exact and so this functionality should work as intended.
 #[derive(Clone, Default)]
 pub struct EndpointTelemetryLayer {

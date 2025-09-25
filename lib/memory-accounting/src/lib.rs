@@ -71,8 +71,9 @@ use std::collections::HashMap;
 pub mod test_util;
 
 pub mod allocator;
-//mod builder;
 mod api;
+pub use self::api::MemoryAPIHandler;
+
 mod registry;
 
 use serde::Serialize;

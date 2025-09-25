@@ -24,9 +24,8 @@ use tokio::{
 use tokio_util::time::{delay_queue::Key, DelayQueue};
 use tracing::{debug, info, trace};
 
-use self::api::HealthAPIHandler;
-
 mod api;
+pub use self::api::HealthAPIHandler;
 
 const DEFAULT_PROBE_TIMEOUT_DUR: Duration = Duration::from_secs(5);
 const DEFAULT_PROBE_BACKOFF_DUR: Duration = Duration::from_secs(1);
@@ -321,8 +320,8 @@ impl HealthRegistry {
 
     /// Gets an API handler for reporting the health of all components.
     ///
-    /// This handler can be used to register routes on an [`APIBuilder`][saluki_api::APIBuilder] to expose the health of
-    /// all registered components. See [`HealthAPIHandler`] for more information about routes and responses.
+    /// This handler exposes routes for querying the readiness and liveness of all registered components. See
+    /// [`HealthAPIHandler`] for more information about routes and responses.
     pub fn api_handler(&self) -> HealthAPIHandler {
         HealthAPIHandler::from_state(Arc::clone(&self.inner))
     }

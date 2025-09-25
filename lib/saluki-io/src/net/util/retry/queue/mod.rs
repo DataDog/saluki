@@ -85,8 +85,8 @@ where
     /// Creates a new `RetryQueue` instance with the given name and maximum size.
     ///
     /// The queue will only hold as many entries as can fit within the given maximum size. If the queue is full, the
-    /// oldest entries will be removed (or potentially persisted to disk, see [`with_disk_persistence`]) to make room
-    /// for new entries.
+    /// oldest entries will be removed (or potentially persisted to disk, see
+    /// [`with_disk_persistence`][Self::with_disk_persistence]) to make room for new entries.
     pub fn new(queue_name: String, max_in_memory_bytes: u64) -> Self {
         Self {
             queue_name,
