@@ -580,27 +580,27 @@ fn build_metrics(listen_addr: &ListenAddress, component_context: &ComponentConte
     };
 
     Metrics {
-        metrics_received: builder.register_debug_counter_with_tags(
+        metrics_received: builder.register_counter_with_tags(
             "component_events_received_total",
             [("message_type", "metrics"), ("listener_type", listener_type)],
         ),
-        events_received: builder.register_debug_counter_with_tags(
+        events_received: builder.register_counter_with_tags(
             "component_events_received_total",
             [("message_type", "events"), ("listener_type", listener_type)],
         ),
-        service_checks_received: builder.register_debug_counter_with_tags(
+        service_checks_received: builder.register_counter_with_tags(
             "component_events_received_total",
             [("message_type", "service_checks"), ("listener_type", listener_type)],
         ),
         bytes_received: builder
-            .register_debug_counter_with_tags("component_bytes_received_total", [("listener_type", listener_type)]),
+            .register_counter_with_tags("component_bytes_received_total", [("listener_type", listener_type)]),
         bytes_received_size: builder
-            .register_debug_histogram_with_tags("component_bytes_received_size", [("listener_type", listener_type)]),
-        framing_errors: builder.register_debug_counter_with_tags(
+            .register_trace_histogram_with_tags("component_bytes_received_size", [("listener_type", listener_type)]),
+        framing_errors: builder.register_counter_with_tags(
             "component_errors_total",
             [("listener_type", listener_type), ("error_type", "framing")],
         ),
-        metric_decoder_errors: builder.register_debug_counter_with_tags(
+        metric_decoder_errors: builder.register_counter_with_tags(
             "component_errors_total",
             [
                 ("listener_type", listener_type),
@@ -608,7 +608,7 @@ fn build_metrics(listen_addr: &ListenAddress, component_context: &ComponentConte
                 ("message_type", "metrics"),
             ],
         ),
-        event_decoder_errors: builder.register_debug_counter_with_tags(
+        event_decoder_errors: builder.register_counter_with_tags(
             "component_errors_total",
             [
                 ("listener_type", listener_type),
@@ -616,7 +616,7 @@ fn build_metrics(listen_addr: &ListenAddress, component_context: &ComponentConte
                 ("message_type", "events"),
             ],
         ),
-        service_check_decoder_errors: builder.register_debug_counter_with_tags(
+        service_check_decoder_errors: builder.register_counter_with_tags(
             "component_errors_total",
             [
                 ("listener_type", listener_type),
@@ -625,7 +625,7 @@ fn build_metrics(listen_addr: &ListenAddress, component_context: &ComponentConte
             ],
         ),
         connections_active: builder
-            .register_debug_gauge_with_tags("component_connections_active", [("listener_type", listener_type)]),
+            .register_gauge_with_tags("component_connections_active", [("listener_type", listener_type)]),
         packet_receive_success: builder.register_debug_counter_with_tags(
             "component_packets_received_total",
             [("listener_type", listener_type), ("state", "ok")],

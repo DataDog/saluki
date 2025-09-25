@@ -12,8 +12,8 @@ static_metrics!(
    prefix => runtime_task,
    labels => [task_name: String],
    metrics => [
-       counter(poll_count),
-       histogram(poll_duration_seconds),
+       debug_counter(poll_count),
+       trace_histogram(poll_duration_seconds),
    ],
 );
 

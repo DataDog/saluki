@@ -2,8 +2,9 @@
 
 use std::{sync::Mutex, time::Duration};
 
-use metrics::{gauge, Gauge};
+use metrics::gauge;
 use saluki_common::task::spawn_traced_named;
+use saluki_metrics::static_metrics;
 use tokio::{runtime::Handle, time::sleep};
 
 static API_HANDLER: Mutex<Option<MetricsAPIHandler>> = Mutex::new(None);
@@ -91,125 +92,126 @@ pub async fn collect_runtime_metrics(runtime_id: &str) {
     }
 }
 
-struct WorkerMetrics {
-    local_queue_depth: Gauge,
-    local_schedule_count: Gauge,
-    mean_poll_time: Gauge,
-    noop_count: Gauge,
-    overflow_count: Gauge,
-    park_count: Gauge,
-    park_unpark_count: Gauge,
-    poll_count: Gauge,
-    steal_count: Gauge,
-    steal_operations: Gauge,
-    total_busy_duration: Gauge,
-}
+static_metrics!(
+    name => WorkerMetrics,
+    prefix => runtime_worker,
+    labels => [runtime_id: String, worker_idx: String],
+    metrics => [
+        trace_gauge(local_queue_depth),
+        trace_gauge(local_schedule_count),
+        trace_gauge(mean_poll_time),
+        trace_gauge(noop_count),
+        trace_gauge(overflow_count),
+        trace_gauge(park_count),
+        trace_gauge(park_unpark_count),
+        trace_gauge(poll_count),
+        trace_gauge(steal_count),
+        trace_gauge(steal_operations),
+        trace_gauge(total_busy_duration),
+    ]
+);
 
 impl WorkerMetrics {
     fn with_worker_idx(runtime_id: &str, worker_idx: usize) -> Self {
-        let labels = [
-            ("runtime_id", runtime_id.to_string()),
-            ("worker_idx", worker_idx.to_string()),
-        ];
-
-        Self {
-            local_queue_depth: gauge!("runtime.worker.local_queue_depth", &labels),
-            local_schedule_count: gauge!("runtime.worker.local_schedule_count", &labels),
-            mean_poll_time: gauge!("runtime.worker.mean_poll_time_ns", &labels),
-            noop_count: gauge!("runtime.worker.noop_count", &labels),
-            overflow_count: gauge!("runtime.worker.overflow_count", &labels),
-            park_count: gauge!("runtime.worker.park_count", &labels),
-            park_unpark_count: gauge!("runtime.worker.park_unpark_count", &labels),
-            poll_count: gauge!("runtime.worker.poll_count", &labels),
-            steal_count: gauge!("runtime.worker.steal_count", &labels),
-            steal_operations: gauge!("runtime.worker.steal_operations", &labels),
-            total_busy_duration: gauge!("runtime.worker.total_busy_duration_ns", &labels),
-        }
+        Self::new(runtime_id.to_string(), worker_idx.to_string())
     }
 
     fn update(&self, worker_idx: usize, metrics: &tokio::runtime::RuntimeMetrics) {
-        self.local_queue_depth
+        self.local_queue_depth()
             .set(metrics.worker_local_queue_depth(worker_idx) as f64);
-        self.local_schedule_count
+        self.local_schedule_count()
             .set(metrics.worker_local_schedule_count(worker_idx) as f64);
-        self.mean_poll_time
+        self.mean_poll_time()
             .set(metrics.worker_mean_poll_time(worker_idx).as_nanos() as f64);
-        self.noop_count.set(metrics.worker_noop_count(worker_idx) as f64);
-        self.overflow_count
+        self.noop_count().set(metrics.worker_noop_count(worker_idx) as f64);
+        self.overflow_count()
             .set(metrics.worker_overflow_count(worker_idx) as f64);
-        self.park_count.set(metrics.worker_park_count(worker_idx) as f64);
-        self.park_unpark_count
+        self.park_count().set(metrics.worker_park_count(worker_idx) as f64);
+        self.park_unpark_count()
             .set(metrics.worker_park_unpark_count(worker_idx) as f64);
-        self.poll_count.set(metrics.worker_poll_count(worker_idx) as f64);
-        self.steal_count.set(metrics.worker_steal_count(worker_idx) as f64);
-        self.steal_operations
+        self.poll_count().set(metrics.worker_poll_count(worker_idx) as f64);
+        self.steal_count().set(metrics.worker_steal_count(worker_idx) as f64);
+        self.steal_operations()
             .set(metrics.worker_steal_operations(worker_idx) as f64);
-        self.total_busy_duration
+        self.total_busy_duration()
             .set(metrics.worker_total_busy_duration(worker_idx).as_nanos() as f64);
     }
 }
 
+static_metrics!(
+    name => GlobalRuntimeMetrics,
+    prefix => runtime,
+    labels => [runtime_id: String],
+    metrics => [
+        gauge(num_alive_tasks),
+        gauge(blocking_queue_depth),
+        gauge(budget_forced_yield_count),
+        gauge(global_queue_depth),
+        gauge(io_driver_fd_deregistered_count),
+        gauge(io_driver_fd_registered_count),
+        gauge(io_driver_ready_count),
+        gauge(num_blocking_threads),
+        gauge(num_idle_blocking_threads),
+        gauge(num_workers),
+        gauge(remote_schedule_count),
+        gauge(spawned_tasks_count),
+    ],
+);
+
 struct RuntimeMetrics {
-    num_alive_tasks: Gauge,
-    blocking_queue_depth: Gauge,
-    budget_forced_yield_count: Gauge,
-    global_queue_depth: Gauge,
-    io_driver_fd_deregistered_count: Gauge,
-    io_driver_fd_registered_count: Gauge,
-    io_driver_ready_count: Gauge,
-    num_blocking_threads: Gauge,
-    num_idle_blocking_threads: Gauge,
-    num_workers: Gauge,
-    remote_schedule_count: Gauge,
-    spawned_tasks_count: Gauge,
-    worker_metrics: Vec<WorkerMetrics>,
+    global: GlobalRuntimeMetrics,
+    workers: Vec<WorkerMetrics>,
 }
 
 impl RuntimeMetrics {
     fn with_workers(runtime_id: &str, workers_len: usize) -> Self {
-        let labels = [("runtime_id", runtime_id.to_string())];
-        let mut worker_metrics = Vec::with_capacity(workers_len);
+        let mut workers = Vec::with_capacity(workers_len);
         for i in 0..workers_len {
-            worker_metrics.push(WorkerMetrics::with_worker_idx(runtime_id, i));
+            workers.push(WorkerMetrics::with_worker_idx(runtime_id, i));
         }
 
         Self {
-            num_alive_tasks: gauge!("runtime.num_alive_tasks", &labels),
-            blocking_queue_depth: gauge!("runtime.blocking_queue_depth", &labels),
-            budget_forced_yield_count: gauge!("runtime.budget_forced_yield_count", &labels),
-            global_queue_depth: gauge!("runtime.global_queue_depth", &labels),
-            io_driver_fd_deregistered_count: gauge!("runtime.io_driver_fd_deregistered_count", &labels),
-            io_driver_fd_registered_count: gauge!("runtime.io_driver_fd_registered_count", &labels),
-            io_driver_ready_count: gauge!("runtime.io_driver_ready_count", &labels),
-            num_blocking_threads: gauge!("runtime.num_blocking_threads", &labels),
-            num_idle_blocking_threads: gauge!("runtime.num_idle_blocking_threads", &labels),
-            num_workers: gauge!("runtime.num_workers", &labels),
-            remote_schedule_count: gauge!("runtime.remote_schedule_count", &labels),
-            spawned_tasks_count: gauge!("runtime.spawned_tasks_count", &labels),
-            worker_metrics,
+            global: GlobalRuntimeMetrics::new(runtime_id.to_string()),
+            workers,
         }
     }
 
     fn update(&self, metrics: &tokio::runtime::RuntimeMetrics) {
-        self.num_alive_tasks.set(metrics.num_alive_tasks() as f64);
-        self.blocking_queue_depth.set(metrics.blocking_queue_depth() as f64);
-        self.budget_forced_yield_count
+        self.global.num_alive_tasks().set(metrics.num_alive_tasks() as f64);
+        self.global
+            .blocking_queue_depth()
+            .set(metrics.blocking_queue_depth() as f64);
+        self.global
+            .budget_forced_yield_count()
             .set(metrics.budget_forced_yield_count() as f64);
-        self.global_queue_depth.set(metrics.global_queue_depth() as f64);
-        self.io_driver_fd_deregistered_count
+        self.global
+            .global_queue_depth()
+            .set(metrics.global_queue_depth() as f64);
+        self.global
+            .io_driver_fd_deregistered_count()
             .set(metrics.io_driver_fd_deregistered_count() as f64);
-        self.io_driver_fd_registered_count
+        self.global
+            .io_driver_fd_registered_count()
             .set(metrics.io_driver_fd_registered_count() as f64);
-        self.io_driver_ready_count.set(metrics.io_driver_ready_count() as f64);
-        self.num_blocking_threads.set(metrics.num_blocking_threads() as f64);
-        self.num_idle_blocking_threads
+        self.global
+            .io_driver_ready_count()
+            .set(metrics.io_driver_ready_count() as f64);
+        self.global
+            .num_blocking_threads()
+            .set(metrics.num_blocking_threads() as f64);
+        self.global
+            .num_idle_blocking_threads()
             .set(metrics.num_idle_blocking_threads() as f64);
-        self.num_workers.set(metrics.num_workers() as f64);
-        self.remote_schedule_count.set(metrics.remote_schedule_count() as f64);
-        self.spawned_tasks_count.set(metrics.spawned_tasks_count() as f64);
+        self.global.num_workers().set(metrics.num_workers() as f64);
+        self.global
+            .remote_schedule_count()
+            .set(metrics.remote_schedule_count() as f64);
+        self.global
+            .spawned_tasks_count()
+            .set(metrics.spawned_tasks_count() as f64);
 
-        for (worker_idx, worker_metrics) in self.worker_metrics.iter().enumerate() {
-            worker_metrics.update(worker_idx, metrics);
+        for (worker_idx, worker) in self.workers.iter().enumerate() {
+            worker.update(worker_idx, metrics);
         }
     }
 }

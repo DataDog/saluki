@@ -82,6 +82,75 @@ impl MetricsBuilder {
         self
     }
 
+    /// Registers a counter at trace verbosity.
+    ///
+    /// The counter will include the configured default tags for this builder.
+    pub fn register_trace_counter(&self, metric_name: &'static str) -> Counter {
+        counter!(level: Level::TRACE, metric_name, self.default_tags.iter())
+    }
+
+    /// Registers a counter at trace verbosity with additional tags.
+    ///
+    /// The counter will include the configured default tags for this builder, in addition to the additional tags provided.
+    ///
+    /// See [`add_default_tags`](MetricsBuilder::add_default_tags) for information on the supported tag formats.
+    pub fn register_trace_counter_with_tags<I, T>(&self, metric_name: &'static str, additional_tags: I) -> Counter
+    where
+        I: IntoIterator<Item = T>,
+        T: MetricTag,
+    {
+        let mut tags = (*self.default_tags).clone();
+        tags.extend(additional_tags.into_iter().map(MetricTag::into_label));
+
+        counter!(level: Level::TRACE, metric_name, tags)
+    }
+
+    /// Registers a gauge at trace verbosity.
+    ///
+    /// The gauge will include the configured default tags for this builder.
+    pub fn register_trace_gauge(&self, metric_name: &'static str) -> Gauge {
+        gauge!(level: Level::TRACE, metric_name, self.default_tags.iter())
+    }
+
+    /// Registers a gauge at trace verbosity with additional tags.
+    ///
+    /// The gauge will include the configured default tags for this builder, in addition to the additional tags provided.
+    ///
+    /// See [`add_default_tags`](MetricsBuilder::add_default_tags) for information on the supported tag formats.
+    pub fn register_trace_gauge_with_tags<I, T>(&self, metric_name: &'static str, additional_tags: I) -> Gauge
+    where
+        I: IntoIterator<Item = T>,
+        T: MetricTag,
+    {
+        let mut tags = (*self.default_tags).clone();
+        tags.extend(additional_tags.into_iter().map(MetricTag::into_label));
+
+        gauge!(level: Level::TRACE, metric_name, tags)
+    }
+
+    /// Registers a histogram at trace verbosity.
+    ///
+    /// The histogram will include the configured default tags for this builder.
+    pub fn register_trace_histogram(&self, metric_name: &'static str) -> Histogram {
+        histogram!(level: Level::TRACE, metric_name, self.default_tags.iter())
+    }
+
+    /// Registers a histogram at trace verbosity with additional tags.
+    ///
+    /// The histogram will include the configured default tags for this builder, in addition to the additional tags provided.
+    ///
+    /// See [`add_default_tags`](MetricsBuilder::add_default_tags) for information on the supported tag formats.
+    pub fn register_trace_histogram_with_tags<I, T>(&self, metric_name: &'static str, additional_tags: I) -> Histogram
+    where
+        I: IntoIterator<Item = T>,
+        T: MetricTag,
+    {
+        let mut tags = (*self.default_tags).clone();
+        tags.extend(additional_tags.into_iter().map(MetricTag::into_label));
+
+        histogram!(level: Level::TRACE, metric_name, tags)
+    }
+
     /// Registers a counter at debug verbosity.
     ///
     /// The counter will include the configured default tags for this builder.
@@ -149,5 +218,74 @@ impl MetricsBuilder {
         tags.extend(additional_tags.into_iter().map(MetricTag::into_label));
 
         histogram!(level: Level::DEBUG, metric_name, tags)
+    }
+
+    /// Registers a counter at info verbosity.
+    ///
+    /// The counter will include the configured default tags for this builder.
+    pub fn register_counter(&self, metric_name: &'static str) -> Counter {
+        counter!(level: Level::INFO, metric_name, self.default_tags.iter())
+    }
+
+    /// Registers a counter at info verbosity with additional tags.
+    ///
+    /// The counter will include the configured default tags for this builder, in addition to the additional tags provided.
+    ///
+    /// See [`add_default_tags`](MetricsBuilder::add_default_tags) for information on the supported tag formats.
+    pub fn register_counter_with_tags<I, T>(&self, metric_name: &'static str, additional_tags: I) -> Counter
+    where
+        I: IntoIterator<Item = T>,
+        T: MetricTag,
+    {
+        let mut tags = (*self.default_tags).clone();
+        tags.extend(additional_tags.into_iter().map(MetricTag::into_label));
+
+        counter!(level: Level::INFO, metric_name, tags)
+    }
+
+    /// Registers a gauge at info verbosity.
+    ///
+    /// The gauge will include the configured default tags for this builder.
+    pub fn register_gauge(&self, metric_name: &'static str) -> Gauge {
+        gauge!(level: Level::INFO, metric_name, self.default_tags.iter())
+    }
+
+    /// Registers a gauge at info verbosity with additional tags.
+    ///
+    /// The gauge will include the configured default tags for this builder, in addition to the additional tags provided.
+    ///
+    /// See [`add_default_tags`](MetricsBuilder::add_default_tags) for information on the supported tag formats.
+    pub fn register_gauge_with_tags<I, T>(&self, metric_name: &'static str, additional_tags: I) -> Gauge
+    where
+        I: IntoIterator<Item = T>,
+        T: MetricTag,
+    {
+        let mut tags = (*self.default_tags).clone();
+        tags.extend(additional_tags.into_iter().map(MetricTag::into_label));
+
+        gauge!(level: Level::INFO, metric_name, tags)
+    }
+
+    /// Registers a histogram at info verbosity.
+    ///
+    /// The histogram will include the configured default tags for this builder.
+    pub fn register_histogram(&self, metric_name: &'static str) -> Histogram {
+        histogram!(level: Level::INFO, metric_name, self.default_tags.iter())
+    }
+
+    /// Registers a histogram at info verbosity with additional tags.
+    ///
+    /// The histogram will include the configured default tags for this builder, in addition to the additional tags provided.
+    ///
+    /// See [`add_default_tags`](MetricsBuilder::add_default_tags) for information on the supported tag formats.
+    pub fn register_histogram_with_tags<I, T>(&self, metric_name: &'static str, additional_tags: I) -> Histogram
+    where
+        I: IntoIterator<Item = T>,
+        T: MetricTag,
+    {
+        let mut tags = (*self.default_tags).clone();
+        tags.extend(additional_tags.into_iter().map(MetricTag::into_label));
+
+        histogram!(level: Level::INFO, metric_name, tags)
     }
 }
