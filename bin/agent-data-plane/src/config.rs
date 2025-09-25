@@ -48,6 +48,14 @@ pub enum DebugConfig {
     #[command(name = "set-log-level")]
     SetLogLevel(SetLogLevelConfig),
 
+    /// Resets metric level.
+    #[command(name = "reset-metric-level")]
+    ResetMetricLevel,
+
+    /// Overrides the current metric level.
+    #[command(name = "set-metric-level")]
+    SetMetricLevel(SetMetricLevelConfig),
+
     /// Query and interact with the workload provider.
     #[command(subcommand)]
     Workload(WorkloadConfig),
@@ -61,6 +69,18 @@ pub struct SetLogLevelConfig {
     pub filter_directives: String,
 
     /// Amount of time to apply the log level override, in seconds.
+    #[arg(required = true)]
+    pub duration_secs: u64,
+}
+
+/// Set metric level configuration.
+#[derive(Args, Debug)]
+pub struct SetMetricLevelConfig {
+    /// Metric level filter to apply (e.g. `INFO`, `DEBUG`, `TRACE`, `WARN`, `ERROR`).
+    #[arg(required = true)]
+    pub level: String,
+
+    /// Amount of time to apply the metric level override, in seconds.
     #[arg(required = true)]
     pub duration_secs: u64,
 }
