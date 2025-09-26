@@ -7,7 +7,7 @@ use saluki_common::buf::{ChunkedBytesBuffer, FrozenChunkedBytesBuffer};
 use saluki_io::compression::*;
 use snafu::{ResultExt, Snafu};
 use tokio::io::AsyncWriteExt as _;
-use tracing::{debug, error, trace, warn, info};
+use tracing::{debug, error, info, trace, warn};
 
 const SCRATCH_BUF_CAPACITY: usize = 8192;
 
@@ -301,7 +301,6 @@ where
             info!("\n HUH5 \n");
             Ok(Some(input))
         }
-
     }
 
     /// Internal implementation of `encode`.

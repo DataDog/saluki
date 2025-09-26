@@ -65,7 +65,6 @@ impl LogStatus {
     }
 }
 
-
 impl Log {
     /// Creates a new `Log` with the given message.
     pub fn new(message: impl Into<MetaString>) -> Self {

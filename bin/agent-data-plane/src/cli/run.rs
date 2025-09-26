@@ -251,7 +251,12 @@ async fn create_topology(
         // Forwarding.
         .connect_component(
             "dd_out",
-            ["dd_metrics_encode", "dd_events_encode", "dd_service_checks_encode", "dd_logs_encode"],
+            [
+                "dd_metrics_encode",
+                "dd_events_encode",
+                "dd_service_checks_encode",
+                "dd_logs_encode",
+            ],
         )?
         // DogStatsD Stats.
         .connect_component("dsd_stats_out", ["dsd_in.metrics"])?;

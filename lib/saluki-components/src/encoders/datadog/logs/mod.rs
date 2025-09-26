@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use chrono::Utc;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::iter::ReusableDeduplicator;
@@ -7,10 +8,7 @@ use saluki_context::tags::Tag;
 use saluki_core::{
     components::{encoders::*, ComponentContext},
     data_model::{
-        event::{
-            log::Log,
-            Event, EventType,
-        },
+        event::{log::Log, Event, EventType},
         payload::{HttpPayload, Payload, PayloadMetadata, PayloadType},
     },
     observability::ComponentMetricsExt as _,
@@ -22,7 +20,6 @@ use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use tracing::{error, info, warn};
-use chrono::Utc;
 
 use crate::common::datadog::{
     io::RB_BUFFER_CHUNK_SIZE,
@@ -112,9 +109,7 @@ impl IncrementalEncoderBuilder for DatadogLogsConfiguration {
 impl MemoryBounds for DatadogLogsConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         builder.minimum().with_single_value::<DatadogLogs>("component struct");
-        builder
-            .firm()
-            .with_array::<Log>("logs buffer", MAX_LOGS_PER_PAYLOAD);
+        builder.firm().with_array::<Log>("logs buffer", MAX_LOGS_PER_PAYLOAD);
     }
 }
 
@@ -183,17 +178,13 @@ impl LogsEndpointEncoder {
     // TODO: add source for logs
 
     fn build_agent_json(&mut self, log: &Log) -> JsonValue {
-
         let mut obj = JsonMap::new();
 
         // Required-ish envelope fields
         obj.insert("message".to_string(), JsonValue::String(log.message().to_string()));
 
         if let Some(status) = log.status() {
-            obj.insert(
-                "status".to_string(),
-                JsonValue::String(status.as_str().to_string()),
-            );
+            obj.insert("status".to_string(), JsonValue::String(status.as_str().to_string()));
         }
 
         if !log.hostname().is_empty() {
@@ -222,9 +213,8 @@ impl LogsEndpointEncoder {
             obj.insert(k.clone(), v.clone());
         }
 
-        
         let mut timestamp = Utc.to_string();
-        if let Some(ts) = log.additional_properties().get("@timestamp"){ 
+        if let Some(ts) = log.additional_properties().get("@timestamp") {
             timestamp = ts.to_string();
         }
         obj.insert("timestamp".to_string(), JsonValue::from(timestamp));
