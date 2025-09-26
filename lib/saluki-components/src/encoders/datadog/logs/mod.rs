@@ -22,6 +22,7 @@ use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use tracing::{error, info, warn};
+use chrono::Utc;
 
 use crate::common::datadog::{
     io::RB_BUFFER_CHUNK_SIZE,
@@ -209,7 +210,6 @@ impl LogsEndpointEncoder {
         }
         obj.insert("ddsource".to_string(), JsonValue::String(ddsource));
 
-
         // ddtags: comma-separated, deduplicated
         let tags_iter = self.tags_deduplicator.deduplicated(log.tags().into_iter());
         let tags_vec: Vec<&str> = tags_iter.map(|t| t.as_str()).collect();
@@ -222,12 +222,12 @@ impl LogsEndpointEncoder {
             obj.insert(k.clone(), v.clone());
         }
 
-        // If we have "otel.timestamp" as a numeric string, add a numeric "timestamp" field (nanoseconds since epoch).
-        if let Some(JsonValue::String(ns)) = obj.get("otel.timestamp") {
-            if let Ok(parsed) = ns.parse::<i64>() {
-                obj.insert("timestamp".to_string(), JsonValue::from(parsed));
-            }
+        
+        let mut timestamp = Utc.to_string();
+        if let Some(ts) = log.additional_properties().get("@timestamp"){ 
+            timestamp = ts.to_string();
         }
+        obj.insert("timestamp".to_string(), JsonValue::from(timestamp));
 
         JsonValue::Object(obj)
     }
