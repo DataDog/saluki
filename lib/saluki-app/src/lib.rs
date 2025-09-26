@@ -32,7 +32,7 @@ pub mod prelude {
     #[cfg(feature = "memory")]
     pub use super::memory::{initialize_allocator_telemetry, initialize_memory_bounds, MemoryBoundsConfiguration};
     #[cfg(feature = "metrics")]
-    pub use super::metrics::{emit_startup_metrics, initialize_metrics};
+    pub use super::metrics::{emit_startup_metrics, initialize_metrics, initialize_metrics_manual};
     #[cfg(feature = "tls")]
     pub use super::tls::initialize_tls;
 }

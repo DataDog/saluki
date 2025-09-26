@@ -1,6 +1,7 @@
-use std::num::NonZeroUsize;
+use std::{future::Future, num::NonZeroUsize};
 
 use memory_accounting::{ComponentRegistry, MemoryLimiter};
+use saluki_common::task::spawn_traced_named;
 use saluki_components::{destinations::PrometheusConfiguration, sources::InternalMetricsConfiguration};
 use saluki_config::GenericConfiguration;
 use saluki_core::topology::{RunningTopology, TopologyBlueprint};
@@ -15,6 +16,7 @@ const DEFAULT_INTERCONNECT_CAPACITY: NonZeroUsize = NonZeroUsize::new(4).unwrap(
 
 pub fn spawn_internal_observability_topology(
     config: &GenericConfiguration, component_registry: &ComponentRegistry, health_registry: HealthRegistry,
+    metrics_flusher: impl Future<Output = ()> + Send + Sync + 'static,
 ) -> Result<(), GenericError> {
     // When telemetry is enabled, we need to collect internal metrics, so add those components and route them here.
     let telemetry_enabled = config.get_typed_or_default::<bool>("telemetry_enabled");
@@ -43,6 +45,8 @@ pub fn spawn_internal_observability_topology(
         .connect_component("internal_metrics_out", ["internal_metrics_remap"])?;
 
     let init = async move {
+        spawn_traced_named("internal-telemetry-metrics-flusher", metrics_flusher);
+
         let built_topology = blueprint.build().await?;
         built_topology.spawn(&health_registry, MemoryLimiter::noop()).await
     };

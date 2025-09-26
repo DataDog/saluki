@@ -1,6 +1,6 @@
 //! Metrics.
 
-use std::{sync::Mutex, time::Duration};
+use std::{future::Future, sync::Mutex, time::Duration};
 
 use metrics::gauge;
 use saluki_common::task::spawn_traced_named;
@@ -17,30 +17,51 @@ pub use self::api::MetricsAPIHandler;
 /// The given prefix is used to namespace all metrics that are emitted by the application, and is prepended to all
 /// metrics, followed by a period (e.g. `<prefix>.<metric name>`).
 ///
-/// ## Errors
+/// # Errors
 ///
 /// If the metrics subsystem was already initialized, an error will be returned.
 pub async fn initialize_metrics(
     metrics_prefix: impl Into<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let flusher = initialize_metrics_manual(metrics_prefix).await?;
+
+    // Spawn the metrics flusher task.
+    spawn_traced_named("internal-telemetry-metrics-flusher", flusher);
+
+    Ok(())
+}
+
+/// Initializes the metrics subsystem for `metrics`, without spawning any background tasks.
+///
+/// The given prefix is used to namespace all metrics that are emitted by the application, and is prepended to all
+/// metrics, followed by a period (e.g. `<prefix>.<metric name>`).
+///
+/// The returned future must be spawned in order to collect and flush internal metrics.
+///
+/// # Errors
+///
+/// If the metrics subsystem was already initialized, an error will be returned.
+pub async fn initialize_metrics_manual(
+    metrics_prefix: impl Into<String>,
+) -> Result<impl Future<Output = ()> + Send + Sync + 'static, Box<dyn std::error::Error + Send + Sync>> {
     // We forward to the implementation in `saluki_core` so that we can have this crate be the collection point of all
     // helpers/types that are specific to generic application setup/initialization.
     //
     // The implementation itself has to live in `saluki_core`, however, to have access to all of the underlying types
     // that are created and used to install the global recorder, such that they need not be exposed publicly.
-    let filter_handle = saluki_core::observability::metrics::initialize_metrics(metrics_prefix.into()).await?;
+    let (filter_handle, flusher) = saluki_core::observability::metrics::initialize_metrics(metrics_prefix.into())?;
     API_HANDLER
         .lock()
         .unwrap()
         .replace(MetricsAPIHandler::new(filter_handle));
 
-    // We also spawn a background task that collects and emits the Tokio runtime metrics.
+    // Spawn a background task that collects and emits the Tokio runtime metrics.
     spawn_traced_named(
         "tokio-runtime-metrics-collector-primary",
         collect_runtime_metrics("primary"),
     );
 
-    Ok(())
+    Ok(flusher)
 }
 
 /// Acquires the metrics API handler.

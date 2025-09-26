@@ -1,7 +1,7 @@
 //! Memory management.
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::VecDeque,
     env, fs,
     sync::atomic::{AtomicBool, Ordering::Relaxed},
     time::Duration,
@@ -13,7 +13,7 @@ use memory_accounting::{
     ComponentBounds, ComponentRegistry, MemoryGrant, MemoryLimiter,
 };
 use metrics::{counter, gauge, Counter, Gauge, Level};
-use saluki_common::task::spawn_traced_named;
+use saluki_common::{collections::FastHashMap, task::spawn_traced_named};
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
@@ -263,12 +263,13 @@ pub async fn initialize_allocator_telemetry() -> Result<(), GenericError> {
 
     // Spawn the background task that will periodically collect memory usage statistics.
     spawn_traced_named("allocator-telemetry-collector", async {
-        let mut metrics = HashMap::new();
+        let mut metrics = FastHashMap::default();
+        let registry = AllocationGroupRegistry::global();
 
         loop {
             sleep(Duration::from_secs(1)).await;
 
-            AllocationGroupRegistry::global().visit_allocation_groups(|group_name, stats| {
+            registry.visit_allocation_groups(|group_name, stats| {
                 let group_metrics = match metrics.get_mut(group_name) {
                     Some(group_metrics) => group_metrics,
                     None => metrics

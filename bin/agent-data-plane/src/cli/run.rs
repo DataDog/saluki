@@ -1,4 +1,7 @@
-use std::time::{Duration, Instant};
+use std::{
+    future::Future,
+    time::{Duration, Instant},
+};
 
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::prelude::*;
@@ -29,7 +32,9 @@ use crate::config::RunConfig;
 use crate::env_provider::ADPEnvironmentProvider;
 use crate::internal::{spawn_control_plane, spawn_internal_observability_topology};
 
-pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericError> {
+pub async fn run(
+    started: Instant, run_config: RunConfig, metrics_flusher: impl Future<Output = ()> + Send + Sync + 'static,
+) -> Result<(), GenericError> {
     let app_details = saluki_metadata::get_app_details();
     info!(
         version = app_details.version().raw(),
@@ -102,8 +107,13 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
     )
     .await?;
 
-    spawn_internal_observability_topology(&configuration, &component_registry, health_registry.clone())
-        .error_context("Failed to spawn internal observability topology.")?;
+    spawn_internal_observability_topology(
+        &configuration,
+        &component_registry,
+        health_registry.clone(),
+        metrics_flusher,
+    )
+    .error_context("Failed to spawn internal observability topology.")?;
     spawn_control_plane(
         configuration.clone(),
         &component_registry,

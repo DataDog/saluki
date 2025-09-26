@@ -1,5 +1,6 @@
 //! Internal metrics support.
 use std::{
+    future::Future,
     num::NonZeroUsize,
     pin::Pin,
     sync::{atomic::Ordering, Arc, LazyLock, Mutex, OnceLock},
@@ -12,10 +13,7 @@ use metrics::{
     Counter, Gauge, Histogram, Key, KeyName, Level, Metadata, Recorder, SetRecorderError, SharedString, Unit,
 };
 use metrics_util::registry::{AtomicStorage, Registry};
-use saluki_common::{
-    collections::{FastConcurrentHashMap, FastHashMap},
-    task::spawn_traced_named,
-};
+use saluki_common::collections::{FastConcurrentHashMap, FastHashMap};
 use saluki_context::{
     origin::RawOrigin,
     tags::{Tag, TagSet},
@@ -212,6 +210,14 @@ async fn flush_metrics(flush_interval: Duration) {
 
     let mut histogram_samples = Vec::<f64>::new();
 
+    // We track how many events get generated per flush interval, and use that to estimate the necessary capacity of our
+    // metrics vector. This hopefully lets us converge on the right initial capacity so that we don't reallocate a bunch
+    // while flushing.
+    //
+    // Given that we don't actually expire metrics, this should be useful because it means we converge on the right
+    // initial capacity after a few flushes while metrics are being registered.
+    let mut last_events_len = 0;
+
     loop {
         flush_interval.tick().await;
 
@@ -224,7 +230,7 @@ async fn flush_metrics(flush_interval: Duration) {
             continue;
         }
 
-        let mut metrics = Vec::new();
+        let mut metrics = Vec::with_capacity(last_events_len);
         let current_level = {
             let current_level = state.current_level.lock().unwrap();
             current_level.as_ref().copied().unwrap_or(Level::TRACE)
@@ -280,6 +286,8 @@ async fn flush_metrics(flush_interval: Duration) {
             metrics.push(Event::Metric(metric));
         }
 
+        last_events_len = metrics.len();
+
         let shared = Arc::new(metrics);
         let _ = state.flush_tx.send(shared);
     }
@@ -331,19 +339,26 @@ impl MetricsContextResolver {
     }
 }
 
-/// Initializes the metrics subsystem with the given metrics prefix.
+/// Initializes the metrics subsystem with the given metrics prefix..
 ///
-/// ## Errors
+/// The given future must be spawned manually to drive the collection and flushing of metrics. It will periodically
+/// flush metrics which can be streamed via [`MetricsStream::register`].
+///
+/// The given filter handle can be used to control the filtering of metrics: metrics with a higher verbosity level than
+/// the filter's level will be ignored, and not included in the metrics stream.
+///
+/// # Errors
 ///
 /// If a global recorder was already installed, an error will be returned.
-pub async fn initialize_metrics(
+pub fn initialize_metrics(
     metrics_prefix: String,
-) -> Result<FilterHandle, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(FilterHandle, impl Future<Output = ()> + Send + Sync + 'static), Box<dyn std::error::Error + Send + Sync>>
+{
     let recorder = MetricsRecorder::new(metrics_prefix);
     let filter_handle = recorder.filter_handle();
     recorder.install()?;
 
-    spawn_traced_named("internal-telemetry-metrics-flusher", flush_metrics(FLUSH_INTERVAL));
+    let flusher = flush_metrics(FLUSH_INTERVAL);
 
-    Ok(filter_handle)
+    Ok((filter_handle, flusher))
 }

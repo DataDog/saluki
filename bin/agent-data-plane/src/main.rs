@@ -46,9 +46,13 @@ async fn main() {
         fatal_and_exit(format!("failed to initialize logging: {}", e));
     }
 
-    if let Err(e) = initialize_metrics("adp").await {
-        fatal_and_exit(format!("failed to initialize metrics: {}", e));
-    }
+    let metrics_flusher = match initialize_metrics_manual("adp").await {
+        Ok(flusher) => flusher,
+        Err(e) => {
+            fatal_and_exit(format!("failed to initialize metrics: {}", e));
+            unreachable!();
+        }
+    };
 
     if let Err(e) = initialize_allocator_telemetry().await {
         fatal_and_exit(format!("failed to initialize allocator telemetry: {}", e));
@@ -59,7 +63,7 @@ async fn main() {
     }
 
     match cli.action {
-        Some(Action::Run(config)) => match run(started, config).await {
+        Some(Action::Run(config)) => match run(started, config, metrics_flusher).await {
             Ok(()) => info!("Agent Data Plane stopped."),
             Err(e) => {
                 error!("{:?}", e);
@@ -80,7 +84,7 @@ async fn main() {
             let default_config = RunConfig {
                 config: std::path::PathBuf::from("/etc/datadog-agent/datadog.yaml"),
             };
-            match run(started, default_config).await {
+            match run(started, default_config, metrics_flusher).await {
                 Ok(()) => info!("Agent Data Plane stopped."),
                 Err(e) => {
                     error!("{:?}", e);
