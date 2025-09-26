@@ -10,8 +10,8 @@ use std::{
 };
 
 use futures::StreamExt as _;
-use metrics::{gauge, histogram, Gauge, Histogram};
 use saluki_error::{generic_error, GenericError};
+use saluki_metrics::static_metrics;
 use stringtheory::MetaString;
 use tokio::{
     select,
@@ -75,25 +75,24 @@ enum HealthState {
     Dead,
 }
 
-struct Telemetry {
-    component_ready: Gauge,
-    component_live: Gauge,
-    component_liveness_latency_secs: Histogram,
-}
+static_metrics!(
+    name => Telemetry,
+    prefix => health,
+    labels => [component_id: Arc<str>],
+    metrics => [
+        gauge(component_ready),
+        gauge(component_live),
+        trace_histogram(component_liveness_latency_seconds),
+    ]
+);
 
 impl Telemetry {
-    fn new(name: &str) -> Self {
-        let component_id: Arc<str> = Arc::from(name);
-
-        Self {
-            component_ready: gauge!("health.component.ready", "component_id" => Arc::clone(&component_id)),
-            component_live: gauge!("health.component.alive", "component_id" => Arc::clone(&component_id)),
-            component_liveness_latency_secs: histogram!("health.component.liveness_latency_secs", "component_id" => component_id),
-        }
+    fn from_name(name: &str) -> Self {
+        Self::new(Arc::from(name))
     }
 
     fn update_readiness(&self, ready: bool) {
-        self.component_ready.set(if ready { 1.0 } else { 0.0 });
+        self.component_ready().set(if ready { 1.0 } else { 0.0 });
     }
 
     fn update_liveness(&self, state: HealthState, response_latency: Duration) {
@@ -103,8 +102,8 @@ impl Telemetry {
             HealthState::Dead => -1.0,
         };
 
-        self.component_live.set(live);
-        self.component_liveness_latency_secs
+        self.component_live().set(live);
+        self.component_liveness_latency_seconds()
             .record(response_latency.as_secs_f64());
     }
 }
@@ -127,7 +126,7 @@ impl ComponentState {
     fn new(name: MetaString, response_tx: mpsc::Sender<LivenessResponse>) -> (Self, Health) {
         let shared = Arc::new(SharedComponentState {
             ready: AtomicBool::new(false),
-            telemetry: Telemetry::new(&name),
+            telemetry: Telemetry::from_name(&name),
         });
         let (request_tx, request_rx) = mpsc::channel(1);
 

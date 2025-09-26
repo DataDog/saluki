@@ -28,7 +28,7 @@ static_metrics! {
         counter(items_inserted_total),
         counter(items_removed_total),
         counter(items_expired_total),
-        histogram(items_expired_batch_size),
+        trace_histogram(items_expired_batch_size),
     ],
 }
 

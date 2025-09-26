@@ -55,9 +55,47 @@ impl APIClient {
     ///
     /// # Errors
     ///
-    /// If the request fails, or if the server responds with an unexpected status code, an error is returned.
+    /// If the request fails, or the server responds with an unexpected status code, an error is returned.
     pub async fn reset_log_level(&self) -> Result<(), GenericError> {
         let url = self.get_privileged_url("/logging/reset");
+        let response = self.inner.post(url).send().await?;
+
+        let _ = process_response(response).await?;
+        Ok(())
+    }
+
+    /// Temporarily overrides the metric level for the process.
+    ///
+    /// Metric levels follow traditional log levels: `trace`, `debug`, `info`, `warn`, and `error`. The duration of the
+    /// override is specified in seconds, and the override is reverted after that duration has passed. The same override
+    /// can be set again while an override is active in under to "refresh" its override duration.
+    ///
+    /// # Errors
+    ///
+    /// If the request fails, or the server responds with an unexpected status code, an error is returned.
+    pub async fn set_metric_level(&self, level: String, duration_secs: u64) -> Result<(), GenericError> {
+        let url = self.get_privileged_url("/metrics/override");
+        let response = self
+            .inner
+            .post(url)
+            .query(&[("time_secs", duration_secs)])
+            .body(level)
+            .send()
+            .await?;
+
+        let _ = process_response(response).await?;
+        Ok(())
+    }
+
+    /// Resets the metric level for the process.
+    ///
+    /// This can be used to proactively disable a previous metric level override.
+    ///
+    /// # Errors
+    ///
+    /// If the request fails, or the server responds with an unexpected status code, an error is returned.
+    pub async fn reset_metric_level(&self) -> Result<(), GenericError> {
+        let url = self.get_privileged_url("/metrics/reset");
         let response = self.inner.post(url).send().await?;
 
         let _ = process_response(response).await?;
