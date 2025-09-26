@@ -254,7 +254,7 @@ impl EndpointEncoder for LogsEndpointEncoder {
     fn encode(&mut self, input: &Self::Input, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError> {
         info!("\n WACK4 Encode function inside the logs yk? {:?} \n", input);
         let json = self.build_agent_json(input);
-        info!("\n WACK5 json value is {:?} \n", json);
+        println!("WACK5 {}", serde_json::to_string_pretty(&json).unwrap());
         serde_json::to_writer(buffer, &json)
     }
 
