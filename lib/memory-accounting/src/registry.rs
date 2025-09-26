@@ -212,9 +212,8 @@ impl ComponentRegistry {
 
     /// Gets an API handler for reporting the memory bounds and usage of all components.
     ///
-    /// This handler can be used to register routes on an [`APIBuilder`][saluki_api::APIBuilder] to expose the memory
-    /// bounds and usage of all registered components. See [`HealthAPIHandler`] for more information about routes and
-    /// responses.
+    /// This handler exposes routes for querying the memory bounds and usage of all registered components. See
+    /// [`MemoryAPIHandler`] for more information about routes and responses.
     pub fn api_handler(&self) -> MemoryAPIHandler {
         MemoryAPIHandler::from_state(Arc::clone(&self.inner))
     }

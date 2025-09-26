@@ -10,8 +10,8 @@ use std::{
 };
 
 use futures::StreamExt as _;
-use metrics::{gauge, histogram, Gauge, Histogram};
 use saluki_error::{generic_error, GenericError};
+use saluki_metrics::static_metrics;
 use stringtheory::MetaString;
 use tokio::{
     select,
@@ -24,9 +24,8 @@ use tokio::{
 use tokio_util::time::{delay_queue::Key, DelayQueue};
 use tracing::{debug, info, trace};
 
-use self::api::HealthAPIHandler;
-
 mod api;
+pub use self::api::HealthAPIHandler;
 
 const DEFAULT_PROBE_TIMEOUT_DUR: Duration = Duration::from_secs(5);
 const DEFAULT_PROBE_BACKOFF_DUR: Duration = Duration::from_secs(1);
@@ -75,25 +74,24 @@ enum HealthState {
     Dead,
 }
 
-struct Telemetry {
-    component_ready: Gauge,
-    component_live: Gauge,
-    component_liveness_latency_secs: Histogram,
-}
+static_metrics!(
+    name => Telemetry,
+    prefix => health,
+    labels => [component_id: Arc<str>],
+    metrics => [
+        gauge(component_ready),
+        gauge(component_live),
+        trace_histogram(component_liveness_latency_seconds),
+    ]
+);
 
 impl Telemetry {
-    fn new(name: &str) -> Self {
-        let component_id: Arc<str> = Arc::from(name);
-
-        Self {
-            component_ready: gauge!("health.component.ready", "component_id" => Arc::clone(&component_id)),
-            component_live: gauge!("health.component.alive", "component_id" => Arc::clone(&component_id)),
-            component_liveness_latency_secs: histogram!("health.component.liveness_latency_secs", "component_id" => component_id),
-        }
+    fn from_name(name: &str) -> Self {
+        Self::new(Arc::from(name))
     }
 
     fn update_readiness(&self, ready: bool) {
-        self.component_ready.set(if ready { 1.0 } else { 0.0 });
+        self.component_ready().set(if ready { 1.0 } else { 0.0 });
     }
 
     fn update_liveness(&self, state: HealthState, response_latency: Duration) {
@@ -103,8 +101,8 @@ impl Telemetry {
             HealthState::Dead => -1.0,
         };
 
-        self.component_live.set(live);
-        self.component_liveness_latency_secs
+        self.component_live().set(live);
+        self.component_liveness_latency_seconds()
             .record(response_latency.as_secs_f64());
     }
 }
@@ -127,7 +125,7 @@ impl ComponentState {
     fn new(name: MetaString, response_tx: mpsc::Sender<LivenessResponse>) -> (Self, Health) {
         let shared = Arc::new(SharedComponentState {
             ready: AtomicBool::new(false),
-            telemetry: Telemetry::new(&name),
+            telemetry: Telemetry::from_name(&name),
         });
         let (request_tx, request_rx) = mpsc::channel(1);
 
@@ -322,8 +320,8 @@ impl HealthRegistry {
 
     /// Gets an API handler for reporting the health of all components.
     ///
-    /// This handler can be used to register routes on an [`APIBuilder`][saluki_api::APIBuilder] to expose the health of
-    /// all registered components. See [`HealthAPIHandler`] for more information about routes and responses.
+    /// This handler exposes routes for querying the readiness and liveness of all registered components. See
+    /// [`HealthAPIHandler`] for more information about routes and responses.
     pub fn api_handler(&self) -> HealthAPIHandler {
         HealthAPIHandler::from_state(Arc::clone(&self.inner))
     }

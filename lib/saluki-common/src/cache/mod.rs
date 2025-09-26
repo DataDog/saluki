@@ -28,7 +28,7 @@ static_metrics! {
         counter(items_inserted_total),
         counter(items_removed_total),
         counter(items_expired_total),
-        histogram(items_expired_batch_size),
+        trace_histogram(items_expired_batch_size),
     ],
 }
 
@@ -97,7 +97,7 @@ impl<K, V, W, H> CacheBuilder<K, V, W, H> {
     /// The capacity is used, in conjunction with the item weighter, to determine how many items can be held in the
     /// cache and when items should be evicted to make room for new items.
     ///
-    /// See [`with_item_weighter`] for more information on how the item weighter is used.
+    /// See [`with_item_weighter`][Self::with_item_weighter] for more information on how the item weighter is used.
     ///
     /// Defaults to unlimited capacity.
     pub fn with_capacity(mut self, capacity: NonZeroUsize) -> Self {

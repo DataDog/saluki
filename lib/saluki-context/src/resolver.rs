@@ -55,7 +55,7 @@ static_metrics! {
 ///
 /// # Missing
 ///
-/// - Support for configuring the size limit of cached contexts. (See note in [`ContextResolver::new`])
+/// - Support for configuring the size limit of cached contexts.
 pub struct ContextResolverBuilder {
     name: String,
     caching_enabled: bool,

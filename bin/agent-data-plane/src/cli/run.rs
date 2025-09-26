@@ -14,7 +14,7 @@ use saluki_components::{
     sources::{DogStatsDConfiguration, OtlpConfiguration},
     transforms::{
         AggregateConfiguration, ChainedConfiguration, DogstatsDMapperConfiguration, DogstatsDPrefixFilterConfiguration,
-        HostEnrichmentConfiguration, HostTagsConfiguration, PreaggregationFilterConfiguration,
+        HostEnrichmentConfiguration, HostTagsConfiguration, MetricRouterConfiguration,
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
@@ -239,7 +239,6 @@ async fn create_topology(
         .connect_component("dsd_agg", ["dsd_in.metrics"])?
         .connect_component("dsd_prefix_filter", ["dsd_agg"])?
         .connect_component("dsd_enrich", ["dsd_prefix_filter"])?
-        .connect_component("dd_metrics_encode", ["dsd_enrich"])?
         // Events.
         .connect_component("dd_events_encode", ["dsd_in.events"])?
         // Service checks.
@@ -260,45 +259,85 @@ async fn create_topology(
         blueprint.connect_component("dsd_agg", ["otlp_in.metrics"])?;
     }
 
-    if configuration.get_typed_or_default::<bool>("preaggregation.enabled") {
-        let preaggr_dd_url = configuration
-            .get_typed::<String>("preaggregation.dd_url")
-            .error_context("Failed to query preaggregation URL.")?;
-        let preaggr_api_key = configuration
-            .get_typed::<String>("preaggregation.api_key")
-            .error_context("Failed to query preaggregation API key.")?;
-
-        if preaggr_dd_url.is_empty() {
-            return Err(GenericError::msg(
-                "preaggregation.dd_url is required when preaggregation.enabled is true",
-            ));
-        }
-        if preaggr_api_key.is_empty() {
-            return Err(GenericError::msg(
-                "preaggregation.api_key is required when preaggregation.enabled is true",
-            ));
-        }
-
-        let preaggr_processing = ChainedConfiguration::default()
-            .with_transform_builder("preaggr_filter", PreaggregationFilterConfiguration::default());
-
-        let preaggr_dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
-            .error_context("Failed to configure preaggregation Datadog Metrics encoder.")?;
-
-        let preaggr_dd_forwarder_config = DatadogConfiguration::from_configuration(configuration)
-            .map(|config| config.with_endpoint_override(preaggr_dd_url, preaggr_api_key))
-            .error_context("Failed to configure pre-aggregation Datadog forwarder.")?;
-
-        blueprint
-            .add_transform("preaggr_processing", preaggr_processing)?
-            .add_encoder("preaggr_dd_metrics_encode", preaggr_dd_metrics_config)?
-            .add_forwarder("preaggr_dd_out", preaggr_dd_forwarder_config)?
-            .connect_component("preaggr_processing", ["dsd_enrich"])?
-            .connect_component("preaggr_dd_metrics_encode", ["preaggr_processing"])?
-            .connect_component("preaggr_dd_out", ["preaggr_dd_metrics_encode"])?;
-    }
+    add_preaggregation_to_blueprint(&mut blueprint, configuration)?;
 
     Ok(blueprint)
+}
+
+/// Adds preaggregation components to the blueprint if preaggregation is enabled.
+///
+/// This handles the configuration and connection of:
+/// - MetricRouter for selective metric routing (when allowlist is configured)
+/// - Preaggregation-specific metrics encoder and forwarder
+/// - Proper connection to normal metrics flow based on configuration
+fn add_preaggregation_to_blueprint(
+    blueprint: &mut TopologyBlueprint, configuration: &GenericConfiguration,
+) -> Result<(), GenericError> {
+    let preaggregation_enabled = configuration.get_typed_or_default::<bool>("preaggregation.enabled");
+
+    if !preaggregation_enabled {
+        // Simple case: no preaggregation, just connect normal metrics flow
+        blueprint.connect_component("dd_metrics_encode", ["dsd_enrich"])?;
+        return Ok(());
+    }
+
+    let preaggr_dd_url = configuration
+        .get_typed::<String>("preaggregation.dd_url")
+        .error_context("Failed to query preaggregation URL.")?;
+    let preaggr_api_key = configuration
+        .get_typed::<String>("preaggregation.api_key")
+        .error_context("Failed to query preaggregation API key.")?;
+
+    // Validate required preaggregation configuration
+    if preaggr_dd_url.is_empty() {
+        return Err(GenericError::msg(
+            "preaggregation.dd_url is required when preaggregation.enabled is true",
+        ));
+    }
+    if preaggr_api_key.is_empty() {
+        return Err(GenericError::msg(
+            "preaggregation.api_key is required when preaggregation.enabled is true",
+        ));
+    }
+
+    // Create preaggregation components
+    let preaggr_dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
+        .error_context("Failed to configure preaggregation Datadog Metrics encoder.")?;
+
+    let preaggr_dd_forwarder_config = DatadogConfiguration::from_configuration(configuration)
+        .map(|config| config.with_endpoint_override(preaggr_dd_url, preaggr_api_key))
+        .error_context("Failed to configure pre-aggregation Datadog forwarder.")?;
+
+    blueprint
+        .add_encoder("preaggr_dd_metrics_encode", preaggr_dd_metrics_config)?
+        .add_forwarder("preaggr_dd_out", preaggr_dd_forwarder_config)?;
+
+    let metric_allowlist = configuration
+        .get_typed::<Vec<String>>("preaggregation.metric_allowlist")
+        .unwrap_or_default();
+
+    if metric_allowlist.is_empty() {
+        // No allowlist: all metrics flow to both normal and preaggregation destinations
+        blueprint
+            .connect_component("dd_metrics_encode", ["dsd_enrich"])?
+            .connect_component("preaggr_dd_metrics_encode", ["dsd_enrich"])?
+            .connect_component("preaggr_dd_out", ["preaggr_dd_metrics_encode"])?;
+    } else {
+        // Allowlist configured: use MetricRouter for selective routing
+        // Matched metrics → preaggregation, unmatched metrics → normal flow
+        let metric_router_config = MetricRouterConfiguration {
+            metric_names: metric_allowlist,
+        };
+
+        blueprint
+            .add_transform("preaggr_router", metric_router_config)?
+            .connect_component("preaggr_router", ["dsd_enrich"])?
+            .connect_component("preaggr_dd_metrics_encode", ["preaggr_router.matched"])?
+            .connect_component("preaggr_dd_out", ["preaggr_dd_metrics_encode"])?
+            .connect_component("dd_metrics_encode", ["preaggr_router.unmatched"])?;
+    }
+
+    Ok(())
 }
 
 fn add_checks_to_blueprint(

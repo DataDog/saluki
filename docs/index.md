@@ -11,6 +11,9 @@ hero:
     - theme: alt
       text: Agent Data Plane
       link: /agent-data-plane
+    - theme: alt
+      text: API Documentation
+      link: /api-docs
 
 features:
   - title: Plug-and-play

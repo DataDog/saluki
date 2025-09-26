@@ -74,7 +74,7 @@ pub fn initialize_logging(default_level: Option<LevelFilter>) -> Result<(), Box<
 /// formatted as JSON. If it is set to any other value, or not set at all, the logs will default to a rich, colored,
 /// human-readable format.
 ///
-/// An API handler can be acquired (via [`acquires_logging_api_handler`]) to install the API routes which allow for
+/// An API handler can be acquired (via [`acquire_logging_api_handler`]) to install the API routes which allow for
 /// dynamically controlling the logging level filtering. See [`LoggingAPIHandler`] for more information.
 ///
 /// # Errors
@@ -188,7 +188,7 @@ pub struct LoggingAPIHandler {
 
 impl LoggingAPIHandler {
     fn new(original_filter: Arc<EnvFilter>, reload_handle: Handle<SharedEnvFilter, Registry>) -> Self {
-        // Spawn our background task that will handle
+        // Spawn our background task that will handle override requests.
         let (override_tx, override_rx) = mpsc::channel(1);
         spawn_traced_named(
             "dynamic-logging-override-processor",

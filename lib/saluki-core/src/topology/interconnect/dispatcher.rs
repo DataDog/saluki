@@ -1,23 +1,25 @@
 use std::{borrow::Cow, time::Instant};
 
-use metrics::{Counter, Histogram, SharedString};
 use saluki_common::collections::FastHashMap;
 use saluki_error::{generic_error, GenericError};
-use saluki_metrics::MetricsBuilder;
+use saluki_metrics::static_metrics;
 use tokio::sync::mpsc;
 
 use super::Dispatchable;
-use crate::{components::ComponentContext, observability::ComponentMetricsExt as _, topology::OutputName};
+use crate::{components::ComponentContext, topology::OutputName};
 
-const METRIC_NAME_COMPONENT_EVENTS_SENT_TOTAL: &str = "component_events_sent_total";
-const METRIC_NAME_COMPONENT_SEND_LATENCY_SECONDS: &str = "component_send_latency_seconds";
-const METRIC_NAME_COMPONENT_EVENTS_DISCARDED_TOTAL: &str = "component_events_discarded_total";
-
-struct DispatcherMetrics {
-    events_sent: Counter,
-    send_latency: Histogram,
-    events_discarded: Counter,
-}
+// TODO: When we have support for additional static labels on a per-metric basis, add `discard_reason` to
+// `events_discarded_total` metric to indicate that it's due to the destination component being disconnected.
+static_metrics!(
+    name => DispatcherMetrics,
+    prefix => component,
+    labels => [component_id: String, component_type: &'static str, output: String],
+    metrics => [
+        counter(events_sent_total),
+        trace_histogram(send_latency_seconds),
+        counter(events_discarded_total),
+    ],
+);
 
 impl DispatcherMetrics {
     fn default_output(context: ComponentContext) -> Self {
@@ -25,23 +27,15 @@ impl DispatcherMetrics {
     }
 
     fn named_output(context: ComponentContext, output_name: &str) -> Self {
-        Self::with_output_name(context, output_name.to_string())
+        Self::with_output_name(context, output_name)
     }
 
-    fn with_output_name<N>(context: ComponentContext, output_name: N) -> Self
-    where
-        N: Into<SharedString>,
-    {
-        let metrics_builder = MetricsBuilder::from_component_context(&context).add_default_tag(("output", output_name));
-
-        Self {
-            events_sent: metrics_builder.register_debug_counter(METRIC_NAME_COMPONENT_EVENTS_SENT_TOTAL),
-            send_latency: metrics_builder.register_debug_histogram(METRIC_NAME_COMPONENT_SEND_LATENCY_SECONDS),
-            events_discarded: metrics_builder.register_debug_counter_with_tags(
-                METRIC_NAME_COMPONENT_EVENTS_DISCARDED_TOTAL,
-                [("discard_reason", "disconnected")],
-            ),
-        }
+    fn with_output_name(context: ComponentContext, output_name: &str) -> Self {
+        Self::new(
+            context.component_id().to_string(),
+            context.component_type().as_str(),
+            output_name.to_string(),
+        )
     }
 }
 
@@ -93,7 +87,7 @@ where
         if self.senders.is_empty() {
             // Track discarded events when no senders are attached to this output
             let item_count = item.item_count() as u64;
-            self.metrics.events_discarded.increment(item_count);
+            self.metrics.events_discarded_total().increment(item_count);
             return Ok(());
         }
 
@@ -120,10 +114,10 @@ where
 
         // TODO: We should consider splitting this out per-sender somehow. We would need to carry around the
         // destination component's ID, though, to properly associate it.
-        self.metrics.send_latency.record(elapsed);
+        self.metrics.send_latency_seconds().record(elapsed);
 
         let total_events_sent = (self.senders.len() * item_count) as u64;
-        self.metrics.events_sent.increment(total_events_sent);
+        self.metrics.events_sent_total().increment(total_events_sent);
 
         Ok(())
     }
@@ -226,7 +220,7 @@ where
 
         // We increment the "events sent" metric here because we want to count the number of buffered items, vs doing it in
         // `DispatchTarget::send` where all it knows is that it sent one item.
-        self.metrics.events_sent.increment(self.flushed_len as u64);
+        self.metrics.events_sent_total().increment(self.flushed_len as u64);
 
         Ok(self.flushed_len)
     }
@@ -530,19 +524,19 @@ mod tests {
     fn get_output_metrics(snapshotter: &Snapshotter, output_name: &'static str) -> (u64, u64, Vec<OrderedFloat<f64>>) {
         let events_sent_key = get_dispatcher_metric_ckey(
             MetricKind::Counter,
-            METRIC_NAME_COMPONENT_EVENTS_SENT_TOTAL,
+            DispatcherMetrics::events_sent_total_name(),
             output_name,
             &[],
         );
         let events_discarded_key = get_dispatcher_metric_ckey(
             MetricKind::Counter,
-            METRIC_NAME_COMPONENT_EVENTS_DISCARDED_TOTAL,
+            DispatcherMetrics::events_discarded_total_name(),
             output_name,
-            &[("discard_reason", "disconnected")],
+            &[],
         );
         let send_latency_key = get_dispatcher_metric_ckey(
             MetricKind::Histogram,
-            METRIC_NAME_COMPONENT_SEND_LATENCY_SECONDS,
+            DispatcherMetrics::send_latency_seconds_name(),
             output_name,
             &[],
         );

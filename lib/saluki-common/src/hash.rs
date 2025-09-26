@@ -15,7 +15,7 @@ use sha3::digest::{ExtendableOutput as _, Update as _};
 /// [foldhash]: http://github.com/orlp/foldhash
 pub type FastHasher = foldhash::quality::FoldHasher;
 
-/// [`BuildHasher`][std::hash::BuildHasher] implementation for [`FastHasher`].
+/// [`BuildHasher`] implementation for [`FastHasher`].
 pub type FastBuildHasher = foldhash::quality::RandomState;
 
 // Single global instance of the fast hasher state since we need a consistently-seeded state for `hash_single_fast` to
@@ -52,7 +52,7 @@ impl Hasher for NoopU64Hasher {
     }
 }
 
-/// A [`BuildHasher`][std::hash::BuildHasher] implementation for [`NoopU64Hasher`].
+/// A [`BuildHasher`] implementation for [`NoopU64Hasher`].
 #[derive(Clone, Default)]
 pub struct NoopU64BuildHasher;
 
@@ -64,21 +64,21 @@ impl BuildHasher for NoopU64BuildHasher {
     }
 }
 
-/// Returns a fresh `FastBuildHasher` instance.
+/// Returns a fresh [`FastBuildHasher`] instance.
 ///
 /// This instance should not be used to generate hashes that will be compared against hashes generated either with a
-/// hasher acquired from `get_fast_hasher` or `hash_single_fast`, and those methods use a shared global state to both
+/// hasher acquired from [`get_fast_hasher`] or [`hash_single_fast`], and those methods use a shared global state to both
 /// speed up hashing and ensure that the hashes are consistent across runs of those functions in particular.
 #[inline]
 pub fn get_fast_build_hasher() -> FastBuildHasher {
     foldhash::quality::RandomState::default()
 }
 
-/// Returns a `FastHasher` instance backed by a shared, global state.
+/// Returns a [`FastHasher`] instance backed by a shared, global state.
 ///
-/// Values hashed with a `FastHasher` instance created with this method will be consistent within the same process, but
+/// Values hashed with a `FastHasher`instance created with this method will be consistent within the same process, but
 /// will not be consistent across different runs of the application. Additionally, values hashed with this instance will
-/// not e consistent with those hashed by `get_fast_build_hasher`, as that function returns a randomly-seeded state for
+/// not be consistent with those hashed by [`get_fast_build_hasher`], as that function returns a randomly-seeded state for
 /// each call.
 #[inline]
 pub fn get_fast_hasher() -> FastHasher {

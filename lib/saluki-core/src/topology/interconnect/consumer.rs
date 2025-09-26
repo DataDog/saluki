@@ -1,20 +1,31 @@
-use metrics::{Counter, Histogram};
-use saluki_metrics::MetricsBuilder;
+use saluki_metrics::static_metrics;
 use tokio::sync::mpsc;
 
 use super::Dispatchable;
-use crate::{components::ComponentContext, observability::ComponentMetricsExt as _};
+use crate::components::ComponentContext;
 
-const METRIC_NAME_COMPONENT_EVENTS_RECEIVED_TOTAL: &str = "component_events_received_total";
-const METRIC_NAME_COMPONENT_EVENTS_RECEIVED_SIZE: &str = "component_events_received_size";
+static_metrics!(
+    name => ConsumerMetrics,
+    prefix => component,
+    labels => [component_id: String, component_type: &'static str],
+    metrics => [
+        counter(events_received_total),
+        trace_histogram(events_received_size),
+    ],
+);
+
+impl ConsumerMetrics {
+    fn from_component_context(context: ComponentContext) -> Self {
+        Self::new(context.component_id().to_string(), context.component_type().as_str())
+    }
+}
 
 /// A stream of items sent to a component.
 ///
-/// This represents the receiving end of a component interconnect, where the sending end is [`Dispatcher<T>`].
+/// This represents the receiving end of a component interconnect, where the sending end is [`Dispatcher<T>`][super::Dispatcher].
 pub struct Consumer<T> {
     inner: mpsc::Receiver<T>,
-    events_received: Counter,
-    events_received_size: Histogram,
+    metrics: ConsumerMetrics,
 }
 
 impl<T> Consumer<T>
@@ -23,12 +34,9 @@ where
 {
     /// Create a new `Consumer` for the given component context and inner receiver.
     pub fn new(context: ComponentContext, inner: mpsc::Receiver<T>) -> Self {
-        let metrics_builder = MetricsBuilder::from_component_context(&context);
-
         Self {
             inner,
-            events_received: metrics_builder.register_debug_counter(METRIC_NAME_COMPONENT_EVENTS_RECEIVED_TOTAL),
-            events_received_size: metrics_builder.register_debug_histogram(METRIC_NAME_COMPONENT_EVENTS_RECEIVED_SIZE),
+            metrics: ConsumerMetrics::from_component_context(context),
         }
     }
 
@@ -38,8 +46,8 @@ where
     pub async fn next(&mut self) -> Option<T> {
         match self.inner.recv().await {
             Some(item) => {
-                self.events_received.increment(item.item_count() as u64);
-                self.events_received_size.record(item.item_count() as f64);
+                self.metrics.events_received_total().increment(item.item_count() as u64);
+                self.metrics.events_received_size().record(item.item_count() as f64);
                 Some(item)
             }
             None => None,
@@ -124,9 +132,9 @@ mod tests {
     #[tokio::test]
     async fn metrics() {
         let events_received_key =
-            get_consumer_metric_composite_key(MetricKind::Counter, METRIC_NAME_COMPONENT_EVENTS_RECEIVED_TOTAL);
+            get_consumer_metric_composite_key(MetricKind::Counter, ConsumerMetrics::events_received_total_name());
         let events_received_size_key =
-            get_consumer_metric_composite_key(MetricKind::Histogram, METRIC_NAME_COMPONENT_EVENTS_RECEIVED_SIZE);
+            get_consumer_metric_composite_key(MetricKind::Histogram, ConsumerMetrics::events_received_size_name());
 
         let recorder = DebuggingRecorder::new();
         let snapshotter = recorder.snapshotter();

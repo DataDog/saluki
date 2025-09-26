@@ -10,11 +10,6 @@
   - export BASELINE_SALUKI_AND_CHECK_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-checks-${CI_PIPELINE_ID}-${BASELINE_SALUKI_SHA}"
   - export COMPARISON_SALUKI_AND_CHECK_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-checks-${CI_PIPELINE_ID}-${COMPARISON_SALUKI_SHA}"
   - export COMPARISON_SALUKI_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-${CI_PIPELINE_ID}-${COMPARISON_SALUKI_SHA}"
-  - export BASELINE_DSD_VERSION="${PUBLIC_DSD_VERSION}"
-  - export COMPARISON_DSD_VERSION="${PUBLIC_DSD_VERSION}"
-  - export SOURCE_DSD_IMG="public.ecr.aws/datadog/dogstatsd:${PUBLIC_DSD_VERSION}"
-  - export BASELINE_DSD_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:dogstatsd-${PUBLIC_DSD_VERSION}"
-  - export COMPARISON_DSD_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:dogstatsd-${PUBLIC_DSD_VERSION}"
 
 build-adp-baseline-image:
   extends: .build-common-variables
@@ -25,11 +20,13 @@ build-adp-baseline-image:
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
-  timeout: 12m
+  timeout: 15m
   before_script:
     - *setup-smp-env
   variables:
     AWS_NAMED_PROFILE: single-machine-performance
+    # Try to limit build concurrency to avoid issues with hitting container cgroup limits.
+    CARGO_BUILD_JOBS: 16
   script:
     # Initialize our AWS credentials.
     - ./test/smp/configure-smp-aws-credentials.sh
@@ -46,6 +43,7 @@ build-adp-baseline-image:
       --platform linux/amd64
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${BASELINE_SALUKI_IMG}
+      --build-arg CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
@@ -67,11 +65,13 @@ build-adp-comparison-image:
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
-  timeout: 12m
+  timeout: 15m
   before_script:
     - *setup-smp-env
   variables:
     AWS_NAMED_PROFILE: single-machine-performance
+    # Try to limit build concurrency to avoid issues with hitting container cgroup limits.
+    CARGO_BUILD_JOBS: 16
   script:
     # Initialize our AWS credentials.
     - ./test/smp/configure-smp-aws-credentials.sh
@@ -82,6 +82,7 @@ build-adp-comparison-image:
       --platform linux/amd64
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${COMPARISON_SALUKI_IMG}
+      --build-arg CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
@@ -103,11 +104,13 @@ build-adp-check-image:
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
-  timeout: 12m
+  timeout: 15m
   before_script:
     - *setup-smp-env
   variables:
     AWS_NAMED_PROFILE: single-machine-performance
+    # Try to limit build concurrency to avoid issues with hitting container cgroup limits.
+    CARGO_BUILD_JOBS: 16
   script:
     # Initialize our AWS credentials.
     - ./test/smp/configure-smp-aws-credentials.sh
@@ -118,6 +121,7 @@ build-adp-check-image:
       --platform linux/amd64
       --file ./docker/Dockerfile.adp-checks-smp
       --tag ${BASELINE_SALUKI_AND_CHECK_IMG}
+      --build-arg CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
@@ -140,11 +144,13 @@ build-adp-check-comparison-image:
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
-  timeout: 12m
+  timeout: 15m
   before_script:
     - *setup-smp-env
   variables:
     AWS_NAMED_PROFILE: single-machine-performance
+    # Try to limit build concurrency to avoid issues with hitting container cgroup limits.
+    CARGO_BUILD_JOBS: 16
   script:
     # Initialize our AWS credentials.
     - ./test/smp/configure-smp-aws-credentials.sh
@@ -155,6 +161,7 @@ build-adp-check-comparison-image:
       --platform linux/amd64
       --file ./docker/Dockerfile.adp-checks-smp
       --tag ${COMPARISON_SALUKI_AND_CHECK_IMG}
+      --build-arg CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
@@ -167,27 +174,6 @@ build-adp-check-comparison-image:
       --label ci.job_id=${CI_JOB_ID}
       --push
       .
-
-mirror-dsd-image-to-smp-ecr:
-  stage: benchmark
-  # Don't run benchmarks unless it's a PR, basically.
-  rules:
-    - if: !reference [.on_development_branch, rules, if]
-  needs: []
-  image: "${SALUKI_SMP_CI_IMAGE}"
-  before_script:
-    - *setup-smp-env
-  variables:
-    AWS_NAMED_PROFILE: single-machine-performance
-  script:
-    # Initialize our AWS credentials.
-    - ./test/smp/configure-smp-aws-credentials.sh
-
-    # Mirror the public `dogstatsd` image to the SMP ECR as SMP expects all target images to be sourceable from their
-    # ECR instance.
-    - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
-    - docker buildx imagetools create -t ${BASELINE_DSD_IMG} ${SOURCE_DSD_IMG}
-    - docker buildx imagetools create -t ${COMPARISON_DSD_IMG} ${SOURCE_DSD_IMG}
 
 run-benchmarks-adp:
   stage: benchmark
@@ -254,75 +240,6 @@ run-benchmarks-adp:
     - cat outputs/report.md | sed "s/^\$/$(echo -ne '\uFEFF\u00A0\u200B')/g"
     # Post the HTML report to the PR.
     - cat outputs/report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Saluki)"
-    # Finally, exit 1 if the job signals a regression else 0.
-    - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
-      job result
-      --submission-metadata submission_metadata
-
-run-benchmarks-dsd:
-  stage: benchmark
-  # Don't run benchmarks unless it's a PR, basically.
-  rules:
-    - if: !reference [.on_development_branch, rules, if]
-  timeout: 1h
-  image: "${SALUKI_SMP_CI_IMAGE}"
-  needs:
-    - mirror-dsd-image-to-smp-ecr
-  allow_failure: true
-  before_script:
-    - *setup-smp-env
-  artifacts:
-    expire_in: 1 weeks
-    paths:
-      - submission_metadata # for provenance, debugging
-      - dsd_job_start_time # for generating PR comments
-      - dsd_job_end_time # for generating PR comments
-      - dsd_run_id # for generating PR comments
-      - outputs/report.md # for debugging, also on S3
-      - outputs/report.html # for debugging, also on S3
-    when: always
-  variables:
-    AWS_NAMED_PROFILE: single-machine-performance
-    SMP_VERSION: 0.24.1
-    RUST_LOG: info,aws_config::profile::credentials=error
-  script:
-    # Do some pre-flight steps like creating directories, installing helper utilities, setting
-    # credentials, and so on.
-    - mkdir outputs && touch outputs/report.md outputs/report.html
-    - ./test/smp/configure-smp-aws-credentials.sh
-    # Download the SMP binary.
-    - aws --profile ${AWS_NAMED_PROFILE} s3 cp s3://smp-cli-releases/v${SMP_VERSION}/x86_64-unknown-linux-musl/smp smp && chmod +x smp
-    # Run SMP against our converged Agent image.
-    - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
-      job submit
-      --baseline-image ${BASELINE_DSD_IMG}
-      --comparison-image ${COMPARISON_DSD_IMG}
-      --baseline-sha ${BASELINE_DSD_VERSION}
-      --comparison-sha ${COMPARISON_DSD_VERSION}
-      --target-config-dir ./test/smp/regression/dogstatsd/
-      --submission-metadata submission_metadata
-    # Populate some data that we'll need later for generating links to experiment dashboards.
-    - date +%s > dsd_job_start_time
-    - cat submission_metadata | jq -r '.jobId' > dsd_run_id
-    # Wait for job to complete.
-    - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
-      job status
-      --wait
-      --wait-delay-seconds 60
-      --submission-metadata submission_metadata
-    # And populate some more data that we'll need later for generating links to experiment dashboards.
-    - date +%s > dsd_job_end_time
-    # Pull the analysis report and output it to stdout.
-    - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
-      job sync
-      --submission-metadata submission_metadata
-      --output-path outputs
-    # Replace empty lines in the output with lines containing various unicode space characters.
-    #
-    # This avoids  https://gitlab.com/gitlab-org/gitlab/-/issues/217231.
-    - cat outputs/report.md | sed "s/^\$/$(echo -ne '\uFEFF\u00A0\u200B')/g"
-    # Post the HTML report to the PR.
-    - cat outputs/report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (DogStatsD)"
     # Finally, exit 1 if the job signals a regression else 0.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job result
@@ -405,7 +322,6 @@ comment-smp-result-links:
     - if: !reference [.on_development_branch, rules, if]
   needs:
     - run-benchmarks-adp
-    - run-benchmarks-dsd
     - run-benchmarks-adp-and-checks
   image: "${SALUKI_SMP_CI_IMAGE}"
   before_script:

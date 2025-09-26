@@ -170,9 +170,8 @@ impl RemoteAgentWorkloadProvider {
 
     /// Returns an API handler for dumping the contents of the underlying data stores.
     ///
-    /// This handler can be used to register routes on an [`APIBuilder`][saluki_api::APIBuilder] for dumping the
-    /// contents of the underlying data stores powering this workload provider. See [`RemoteAgentWorkloadAPIHandler`]
-    /// for more information about routes and responses.
+    /// This handler exposes routes for querying the state of the workload provider. See
+    /// [`RemoteAgentWorkloadAPIHandler`] for more information about routes and responses.
     pub fn api_handler(&self) -> RemoteAgentWorkloadAPIHandler {
         RemoteAgentWorkloadAPIHandler::from_state(self.tags_querier.clone(), self.eds_resolver.clone())
     }
