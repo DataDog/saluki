@@ -1,4 +1,4 @@
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use ::metrics::Counter;
@@ -212,6 +212,7 @@ impl OtlpConfiguration {
 pub struct Metrics {
     metrics_received: Counter,
     logs_received: Counter,
+    bytes_received: Counter,
 }
 
 impl Metrics {
@@ -223,12 +224,17 @@ impl Metrics {
         &self.logs_received
     }
 
+    fn bytes_received(&self) -> &Counter {
+        &self.bytes_received
+    }
+
     /// Test-only helper to construct a `Metrics` instance.
     #[cfg(test)]
     pub fn for_tests() -> Self {
         Metrics {
             metrics_received: Counter::noop(),
             logs_received: Counter::noop(),
+            bytes_received: Counter::noop(),
         }
     }
 }
@@ -241,6 +247,7 @@ fn build_metrics(component_context: &ComponentContext) -> Metrics {
             .register_debug_counter_with_tags("component_events_received_total", [("message_type", "otlp_metrics")]),
         logs_received: builder
             .register_debug_counter_with_tags("component_events_received_total", [("message_type", "otlp_logs")]),
+        bytes_received: builder.register_counter("component_bytes_received_total"),
     }
 }
 
@@ -336,6 +343,8 @@ impl Source for Otlp {
 
         let thread_pool_handle = context.topology_context().global_thread_pool().clone();
 
+        let metrics_arc = Arc::new(self.metrics);
+
         // Spawn the converter task. This task is shared by both servers.
         thread_pool_handle.spawn_traced_named(
             "otlp-resource-converter",
@@ -345,7 +354,7 @@ impl Source for Otlp {
                 converter_shutdown_coordinator.register(),
                 metrics_translator,
                 logs_translator,
-                self.metrics,
+                metrics_arc.clone(),
             ),
         );
 
@@ -370,7 +379,7 @@ impl Source for Otlp {
             Router::new()
                 .route("/v1/metrics", post(http_metric_handler))
                 .route("/v1/logs", post(http_logs_handler))
-                .with_state((tx, memory_limiter.clone())),
+                .with_state((tx, memory_limiter.clone(), metrics_arc.clone())),
         );
         let http_listener = ConnectionOrientedListener::from_listen_address(self.http_endpoint)
             .await
@@ -410,9 +419,12 @@ impl Source for Otlp {
 }
 
 async fn http_logs_handler(
-    State((tx, memory_limiter)): State<(mpsc::Sender<OtlpResource>, MemoryLimiter)>, body: Bytes,
+    State((tx, memory_limiter, metrics)): State<(mpsc::Sender<OtlpResource>, MemoryLimiter, Arc<Metrics>)>, body: Bytes,
 ) -> (StatusCode, &'static str) {
     memory_limiter.wait_for_capacity().await;
+
+    metrics.bytes_received().increment(body.len() as u64);
+
     match ExportLogsServiceRequest::decode(body) {
         Ok(request) => {
             for resource_logs in request.resource_logs {
@@ -431,9 +443,13 @@ async fn http_logs_handler(
 }
 
 async fn http_metric_handler(
-    State((tx, memory_limiter)): State<(mpsc::Sender<OtlpResource>, MemoryLimiter)>, body: Bytes,
+    State((tx, memory_limiter, metrics)): State<(mpsc::Sender<OtlpResource>, MemoryLimiter, Arc<Metrics>)>, body: Bytes,
 ) -> (StatusCode, &'static str) {
     memory_limiter.wait_for_capacity().await;
+
+    // Track bytes received
+    metrics.bytes_received().increment(body.len() as u64);
+
     match ExportMetricsServiceRequest::decode(body) {
         Ok(request) => {
             for resource_metrics in request.resource_metrics {
@@ -515,7 +531,7 @@ async fn dispatch_events(events: EventsBuffer, source_context: &SourceContext) {
 
 async fn run_converter(
     mut receiver: mpsc::Receiver<OtlpResource>, source_context: SourceContext, shutdown_handle: DynamicShutdownHandle,
-    mut metrics_translator: OtlpMetricsTranslator, mut logs_translator: OtlpLogsTranslator, metrics: Metrics,
+    mut metrics_translator: OtlpMetricsTranslator, mut logs_translator: OtlpLogsTranslator, metrics: Arc<Metrics>,
 ) {
     tokio::pin!(shutdown_handle);
     debug!("OTLP resource converter task started.");
