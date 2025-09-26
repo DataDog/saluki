@@ -1,0 +1,37 @@
+optimization_goal: memory
+erratic: false
+
+target:
+  name: agent-data-plane
+  command: /usr/local/bin/agent-data-plane
+  cpu_allotment: 4
+  memory_allotment: 2GiB
+
+  environment:
+    DD_API_KEY: foo00000001
+    DD_HOSTNAME: smp-regression
+    DD_DD_URL: http://127.0.0.1:9091
+
+    # Set the context limit in the aggregator to right above 3K, which matches the maximum number of contexts we expect
+    # to generate. We essentially don't want the aggregator to be a limiting factor.
+    DD_AGGREGATE_CONTEXT_LIMIT: "3100"
+
+    # Disables UDP and enables listening on UDS in SOCK_DGRAM mode.
+    DD_DOGSTATSD_PORT: "0"
+    DD_DOGSTATSD_SOCKET: /tmp/adp-dogstatsd-dgram.sock
+
+    # Runs ADP in standalone mode, which decouples ADP from any dependency on the Datadog Agent.
+    DD_ADP_STANDALONE_MODE: "true"
+    DD_CHECKS_CONFIG_DIR: "/etc/adp-checks-agent/conf.d"
+    DD_ADDITIONAL_CHECKSD: "/etc/adp-checks-agent/checks.d"
+
+    # Enable internal telemetry endpoint.
+    DD_TELEMETRY_ENABLED: "true"
+    DD_PROMETHEUS_LISTEN_ADDR: tcp://127.0.0.1:5102
+
+checks:
+  - name: memory_usage
+    description: "Acceptable upper bound on the memory used by Checks Agent when running a simple check."
+    bounds:
+      series: total_rss_bytes
+      upper_bound: "40.0 MiB"
