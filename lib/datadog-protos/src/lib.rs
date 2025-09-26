@@ -3,8 +3,10 @@
 //! This crate contains generated code based on the Protocol Buffers definitions used by the Datadog Agent to
 //! communicate with the Datadog Platform, specifically for shipping metrics and traces.
 #![deny(warnings)]
+#![allow(dead_code)]
 #![allow(clippy::enum_variant_names)]
 #![allow(clippy::doc_overindented_list_items)]
+
 mod include {
     include!(concat!(env!("OUT_DIR"), "/protos/mod.rs"));
 }

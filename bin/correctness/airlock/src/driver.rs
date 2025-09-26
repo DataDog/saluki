@@ -227,7 +227,7 @@ impl DriverConfig {
     /// the range is defined by `/proc/sys/net/ipv4/ip_local_port_range`.
     ///
     /// When starting the driver via [`Driver::start`][crate::driver::Driver::start], the ephemeral port mappings will
-    /// be returned in [`DriverDetails`][crate::driver::DriverDetails].
+    /// be returned in [`DriverDetails`].
     pub fn with_exposed_port(mut self, protocol: &'static str, internal_port: u16) -> Self {
         self.exposed_ports.push((protocol, internal_port));
         self

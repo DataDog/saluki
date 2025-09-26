@@ -223,8 +223,8 @@ impl AllocationStatsSnapshot {
 
 /// A token associated with a specific allocation group.
 ///
-/// Used to attribute allocations and deallocations to a specific group with a scope guard, or
-/// through helpers provided by the [`TrackExt`] trait.
+/// Used to attribute allocations and deallocations to a specific group with a scope guard [`TrackingGuard`], or
+/// through helpers provided by the [`Track`] trait.
 #[derive(Clone, Copy)]
 pub struct AllocationGroupToken {
     group_ptr: NonNull<AllocationStats>,

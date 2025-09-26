@@ -22,7 +22,7 @@ impl ConsumerMetrics {
 
 /// A stream of items sent to a component.
 ///
-/// This represents the receiving end of a component interconnect, where the sending end is [`Dispatcher<T>`].
+/// This represents the receiving end of a component interconnect, where the sending end is [`Dispatcher<T>`][super::Dispatcher].
 pub struct Consumer<T> {
     inner: mpsc::Receiver<T>,
     metrics: ConsumerMetrics,

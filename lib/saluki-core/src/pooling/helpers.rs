@@ -143,8 +143,8 @@ macro_rules! pooled {
 /// cumbersome/confusing to do on the auto-generated inner type from [`pooled!`]. In these cases, `pooled_newtype!`
 /// provides the simplest possible wrapper over an existing struct definition to create a Poolable version.
 ///
-/// Implementors are required to define their data struct, including an implementation of [`Clearable`], and then use
-/// `pooled_newtype!` to wrap it.
+/// Implementors are required to define their data struct, including an implementation of
+/// [`Clearable`][super::Clearable], and then use `pooled_newtype!` to wrap it.
 ///
 /// ## Usage
 ///
