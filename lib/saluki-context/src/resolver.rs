@@ -12,7 +12,7 @@ use stringtheory::{
     CheapMetaString, MetaString,
 };
 use tokio::time::sleep;
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::{
     context::{Context, ContextInner},
@@ -261,6 +261,13 @@ impl ContextResolverBuilder {
         telemetry
             .interner_capacity_bytes()
             .set(interner.capacity_bytes() as f64);
+
+        info!(
+            "RZ6300 context cache name: {}, cached_context_limit: {}, idle_context_expiration: {:?}",
+            format!("{}/contexts", self.name),
+            cached_context_limit,
+            self.idle_context_expiration
+        );
 
         // NOTE: We should switch to using a size-based weighter so that we can do more firm bounding of what we cache.
         let context_cache = CacheBuilder::from_identifier(format!("{}/contexts", self.name))
