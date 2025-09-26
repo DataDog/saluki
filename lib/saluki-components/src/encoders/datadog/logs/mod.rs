@@ -113,7 +113,7 @@ impl MemoryBounds for DatadogLogsConfiguration {
         builder.minimum().with_single_value::<DatadogLogs>("component struct");
         builder
             .firm()
-            .with_array::<Log>("logs split re-encode buffer", MAX_LOGS_PER_PAYLOAD);
+            .with_array::<Log>("logs buffer", MAX_LOGS_PER_PAYLOAD);
     }
 }
 
@@ -147,6 +147,7 @@ impl IncrementalEncoder for DatadogLogs {
     }
 
     async fn flush(&mut self, dispatcher: &PayloadsDispatcher) -> Result<(), GenericError> {
+        info!("WACKTEST7 FLUSH FLUSH FLUSH");
         let maybe_requests = self.request_builder.flush().await;
         for maybe_request in maybe_requests {
             match maybe_request {
@@ -181,6 +182,7 @@ impl LogsEndpointEncoder {
     // TODO: add source for logs
 
     fn build_agent_json(&mut self, log: &Log) -> JsonValue {
+
         let mut obj = JsonMap::new();
 
         // Required-ish envelope fields
@@ -200,7 +202,15 @@ impl LogsEndpointEncoder {
             obj.insert("service".to_string(), JsonValue::String(log.service().to_string()));
         }
 
-        obj.insert("ddsource".to_string(), JsonValue::String(self.ddsource.clone()));
+        // ddsource's default value gets overriden from additional properties if present
+        let mut ddsource = self.ddsource.clone();
+        if let Some(JsonValue::String(src)) = log.additional_properties().get("datadog.log.source") {
+            if !src.is_empty() {
+                ddsource = src.clone();
+            }
+        }
+        obj.insert("ddsource".to_string(), JsonValue::String(ddsource));
+
 
         // ddtags: comma-separated, deduplicated
         let tags_iter = self.tags_deduplicator.deduplicated(log.tags().into_iter());
@@ -254,7 +264,9 @@ impl EndpointEncoder for LogsEndpointEncoder {
     }
 
     fn encode(&mut self, input: &Self::Input, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError> {
+        info!("\n WACK4 Encode function inside the logs yk? {:?} \n", input);
         let json = self.build_agent_json(input);
+        info!("\n WACK5 json value is {:?} \n", json);
         serde_json::to_writer(buffer, &json)
     }
 
