@@ -25,6 +25,8 @@ build-adp-baseline-image:
     - *setup-smp-env
   variables:
     AWS_NAMED_PROFILE: single-machine-performance
+    # Try to limit build concurrency to avoid issues with hitting container cgroup limits.
+    CARGO_BUILD_JOBS: 16
   script:
     # Initialize our AWS credentials.
     - ./test/smp/configure-smp-aws-credentials.sh
@@ -41,6 +43,7 @@ build-adp-baseline-image:
       --platform linux/amd64
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${BASELINE_SALUKI_IMG}
+      --build-arg CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
@@ -67,6 +70,8 @@ build-adp-comparison-image:
     - *setup-smp-env
   variables:
     AWS_NAMED_PROFILE: single-machine-performance
+    # Try to limit build concurrency to avoid issues with hitting container cgroup limits.
+    CARGO_BUILD_JOBS: 16
   script:
     # Initialize our AWS credentials.
     - ./test/smp/configure-smp-aws-credentials.sh
@@ -77,6 +82,7 @@ build-adp-comparison-image:
       --platform linux/amd64
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${COMPARISON_SALUKI_IMG}
+      --build-arg CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
@@ -103,6 +109,8 @@ build-adp-check-image:
     - *setup-smp-env
   variables:
     AWS_NAMED_PROFILE: single-machine-performance
+    # Try to limit build concurrency to avoid issues with hitting container cgroup limits.
+    CARGO_BUILD_JOBS: 16
   script:
     # Initialize our AWS credentials.
     - ./test/smp/configure-smp-aws-credentials.sh
@@ -113,6 +121,7 @@ build-adp-check-image:
       --platform linux/amd64
       --file ./docker/Dockerfile.adp-checks-smp
       --tag ${BASELINE_SALUKI_AND_CHECK_IMG}
+      --build-arg CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
@@ -140,6 +149,8 @@ build-adp-check-comparison-image:
     - *setup-smp-env
   variables:
     AWS_NAMED_PROFILE: single-machine-performance
+    # Try to limit build concurrency to avoid issues with hitting container cgroup limits.
+    CARGO_BUILD_JOBS: 16
   script:
     # Initialize our AWS credentials.
     - ./test/smp/configure-smp-aws-credentials.sh
@@ -150,6 +161,7 @@ build-adp-check-comparison-image:
       --platform linux/amd64
       --file ./docker/Dockerfile.adp-checks-smp
       --tag ${COMPARISON_SALUKI_AND_CHECK_IMG}
+      --build-arg CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
