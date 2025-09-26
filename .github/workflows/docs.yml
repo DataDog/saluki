@@ -6,7 +6,7 @@ permissions:
 on: push
 
 jobs:
-  build:
+  generate-docs-site:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -54,7 +54,8 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs:
-      - build
+      - generate-docs-site
+      - generate-api-docs
     steps:
       - uses: actions/download-artifact@v4
         with:
