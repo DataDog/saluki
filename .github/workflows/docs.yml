@@ -36,6 +36,7 @@ jobs:
         with:
           toolchain: nightly
           cache: false
+          rustflags: ""
       - name: Generate API documentation
         run: |
           ls -l .
