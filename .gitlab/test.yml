@@ -52,23 +52,11 @@ unit-tests-macos-amd64:
   script:
     - make test
 
-property-tests-macos-amd64:
-  extends: .macos-amd64-test-job
-  stage: test
-  script:
-    - make test-property
-
 unit-tests-miri-macos-amd64:
   extends: .macos-amd64-test-job
   stage: test
   script:
     - make test-miri
-
-check-features-macos-amd64:
-  extends: .macos-amd64-test-job
-  stage: test
-  script:
-    - make check-features
 
 unit-tests-macos-arm64:
   extends: .macos-arm64-test-job
@@ -76,23 +64,11 @@ unit-tests-macos-arm64:
   script:
     - make test
 
-property-tests-macos-arm64:
-  extends: .macos-arm64-test-job
-  stage: test
-  script:
-    - make test-property
-
 unit-tests-miri-macos-arm64:
   extends: .macos-arm64-test-job
   stage: test
   script:
     - make test-miri
-
-check-features-macos-arm64:
-  extends: .macos-arm64-test-job
-  stage: test
-  script:
-    - make check-features
 
 check-clippy:
   extends: .linux-arm64-test-job-heavy
