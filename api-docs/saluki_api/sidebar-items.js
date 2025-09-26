@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["extract","response","routing"],"struct":["StatusCode"],"trait":["APIHandler"]};

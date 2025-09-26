@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["DiskUsageRetrieverImpl","ExponentialBackoff","NoopRetryPolicy","PushResult","RetryQueue","RollingExponentialBackoffRetryPolicy","StandardHttpClassifier","StandardHttpRetryLifecycle"],"trait":["EventContainer","RetryClassifier","Retryable"],"type":["DefaultHttpRetryPolicy"]};

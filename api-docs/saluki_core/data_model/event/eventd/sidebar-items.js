@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["ALERT_TYPE_ERROR","ALERT_TYPE_SUCCESS","ALERT_TYPE_WARNING","PRIORITY_LOW"],"enum":["AlertType","Priority"],"struct":["EventD"]};

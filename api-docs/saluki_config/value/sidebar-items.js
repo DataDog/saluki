@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Empty","Num","Value"],"mod":["magic"],"struct":["Tag","Uncased","UncasedStr"],"type":["Dict","Map"]};

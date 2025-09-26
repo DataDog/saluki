@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Payload"],"struct":["HttpPayload","PayloadMetadata","PayloadType","RawPayload"]};

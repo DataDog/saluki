@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["EntityId","MetadataAction"],"mod":["origin","providers"],"struct":["MetadataOperation"],"trait":["WorkloadProvider"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["ProcessResult"],"struct":["EncoderContext"],"trait":["Encoder","EncoderBuilder","IncrementalEncoder","IncrementalEncoderBuilder"]};

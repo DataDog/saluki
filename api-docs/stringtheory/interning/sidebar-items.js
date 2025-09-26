@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["FixedSizeInterner","GenericMapInterner","InternedString"],"trait":["Interner"]};

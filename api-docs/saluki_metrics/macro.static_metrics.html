@@ -1,0 +1,67 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Creates statically-defined metrics within a dedicated container struct."><title>static_metrics in saluki_metrics - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-e56847b5.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="saluki_metrics" data-themes="" data-resource-suffix="" data-rustdoc-version="1.92.0-nightly (7ac0330c6 2025-09-25)" data-channel="nightly" data-search-js="search-e256b49e.js" data-stringdex-js="stringdex-061df703.js" data-settings-js="settings-c38705f0.js" ><script src="../static.files/storage-e2aeef58.js"></script><script defer src="sidebar-items.js"></script><script defer src="../static.files/main-ce535bd0.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-263c88ec.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc macro"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">static_metrics</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../saluki_metrics/index.html">saluki_<wbr>metrics</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">static_<wbr>metrics</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#labels" title="Labels">Labels</a></li><li><a href="#levels" title="Levels">Levels</a></li><li><a href="#examples" title="Examples">Examples</a><ul><li><a href="#basic" title="Basic">Basic</a></li><li><a href="#customized-levels" title="Customized Levels">Customized Levels</a></li></ul></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="index.html">In crate saluki_<wbr>metrics</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="index.html">saluki_metrics</a></div><h1>Macro <span class="macro">static_<wbr>metrics</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/saluki_metrics/macros.rs.html#163-221">Source</a> </span></div><pre class="rust item-decl"><code>macro_rules! static_metrics {
+    (name =&gt; $name:ident, prefix =&gt; $prefix:ident, metrics =&gt; [$($metric_type:ident($metric_name:ident)),+ $(,)?] $(,)?) =&gt; { ... };
+    (name =&gt; $name:ident, prefix =&gt; $prefix:ident, labels =&gt; [$($label_key:ident: $label_ty:ty),*], metrics =&gt; [$($metric_type:ident($metric_name:ident)),+ $(,)?] $(,)?) =&gt; { ... };
+}</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Creates statically-defined metrics within a dedicated container struct.</p>
+<p>In some cases, the metrics needed for a component are well-established and do not require a high-level of dynamism:
+perhaps only a single label is needed for all metrics, and the value is known ahead of time. In these cases, it can
+be useful to declare the metrics up front, and in a contained way, to avoid having to deal with the string-y metric
+names (and any labels) at each and every callsite.</p>
+<p><code>static_metrics!</code> allows defining a number of metrics contained within a single struct. The struct can be
+initialized with a fixed set of labels, which is used when registering the metrics. The metrics can then be accessed
+with simple accessors on the struct, allowing for ergonomic access from the calling code.</p>
+<h2 id="labels"><a class="doc-anchor" href="#labels">§</a>Labels</h2>
+<p>A fixed set of labels can be configured for all metrics that are registered. These labels have their definition
+defined when calling <code>static_metrics!</code>, and the label value is provided when initializing the generated struct.</p>
+<p>This allows for quickly applying the same set of labels to all metrics defined within the container struct, and
+being able to handle them in a strong-typed way right up until the moment where they need to be rendered as strings.</p>
+<h2 id="levels"><a class="doc-anchor" href="#levels">§</a>Levels</h2>
+<p>In <code>metrics</code>, metrics have an inherent “level”, similar to logs: trace, debug, info, warn, and error.  Levels can be
+used to filter metrics based on their importance or severity. For example, a trace-level metric might be only be
+required for debugging and should not be sent all the time, while warn- or error-level metrics should be sent all the
+time.</p>
+<p>We expose the ability to specify the level to use for a metric by specifying it as a prefix to the metric type. See the
+below examples for more details. Metrics can be defined at the trace, debug, or info level, and will default to the info
+level if no level is specified.</p>
+<h2 id="examples"><a class="doc-anchor" href="#examples">§</a>Examples</h2><h3 id="basic"><a class="doc-anchor" href="#basic">§</a>Basic</h3>
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="comment">// We are required to provide a name for the struct, as well as the metric prefix to apply to each of the defined metrics.
+//
+// Naturally, we also have to define metrics, but labels are optionally and can be excluded from the macro usage entirely.
+</span><span class="macro">static_metrics!</span>(
+   name =&gt; FrobulatorMetrics,
+   prefix =&gt; frobulator,
+   labels =&gt; [process_id: u32],
+   metrics =&gt; [
+       counter(successful_frobulations),
+   ],
+);
+
+<span class="kw">struct </span>Frobulator {
+    metrics: FrobulatorMetrics,
+}
+
+<span class="kw">impl </span>Frobulator {
+    <span class="kw">fn </span>new(process_id: u32) -&gt; <span class="self">Self </span>{
+        <span class="self">Self </span>{
+           metrics: FrobulatorMetrics::new(process_id),
+        }
+    }
+
+    <span class="kw">fn </span>frobulate(<span class="kw-2">&amp;</span><span class="self">self</span>) {
+        <span class="comment">/* Do the frobulation...*/
+        </span><span class="self">self</span>.metrics.successful_frobulations().increment(<span class="number">1</span>)
+    }
+}</code></pre></div><h3 id="customized-levels"><a class="doc-anchor" href="#customized-levels">§</a>Customized Levels</h3>
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code>
+<span class="comment">// In this example, we define the level of metrics by prefixing them, such that we have two debug metrics
+// (`tasks_preempted` and `pending_io_wakeups`) and one trace metric (`task_poll_duration`). Our non-prefixed
+// metric, `tasks_completed`, defaults to the INFO level.
+</span><span class="macro">static_metrics!</span>(
+   name =&gt; RuntimeMetrics,
+   prefix =&gt; runtime,
+   metrics =&gt; [
+       counter(tasks_completed),
+       debug_counter(tasks_preempted),
+       debug_gauge(pending_io_wakeups),
+       trace_histogram(task_poll_duration),
+   ],
+);</code></pre></div></div></details></section></div></main></body></html>

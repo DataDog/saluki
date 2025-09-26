@@ -1,0 +1,9 @@
+(function() {
+    var implementors = Object.fromEntries([["memory_accounting",[["impl APIHandler for <a class=\"struct\" href=\"memory_accounting/struct.MemoryAPIHandler.html\" title=\"struct memory_accounting::MemoryAPIHandler\">MemoryAPIHandler</a>"]]],["saluki_app",[["impl <a class=\"trait\" href=\"saluki_api/trait.APIHandler.html\" title=\"trait saluki_api::APIHandler\">APIHandler</a> for <a class=\"struct\" href=\"saluki_app/config/struct.ConfigAPIHandler.html\" title=\"struct saluki_app::config::ConfigAPIHandler\">ConfigAPIHandler</a>"],["impl <a class=\"trait\" href=\"saluki_api/trait.APIHandler.html\" title=\"trait saluki_api::APIHandler\">APIHandler</a> for <a class=\"struct\" href=\"saluki_app/logging/struct.LoggingAPIHandler.html\" title=\"struct saluki_app::logging::LoggingAPIHandler\">LoggingAPIHandler</a>"],["impl <a class=\"trait\" href=\"saluki_api/trait.APIHandler.html\" title=\"trait saluki_api::APIHandler\">APIHandler</a> for <a class=\"struct\" href=\"saluki_app/metrics/struct.MetricsAPIHandler.html\" title=\"struct saluki_app::metrics::MetricsAPIHandler\">MetricsAPIHandler</a>"]]],["saluki_env",[["impl <a class=\"trait\" href=\"saluki_api/trait.APIHandler.html\" title=\"trait saluki_api::APIHandler\">APIHandler</a> for <a class=\"struct\" href=\"saluki_env/workload/providers/struct.RemoteAgentWorkloadAPIHandler.html\" title=\"struct saluki_env::workload::providers::RemoteAgentWorkloadAPIHandler\">RemoteAgentWorkloadAPIHandler</a>"]]],["saluki_health",[["impl APIHandler for <a class=\"struct\" href=\"saluki_health/struct.HealthAPIHandler.html\" title=\"struct saluki_health::HealthAPIHandler\">HealthAPIHandler</a>"]]]]);
+    if (window.register_implementors) {
+        window.register_implementors(implementors);
+    } else {
+        window.pending_implementors = implementors;
+    }
+})()
+//{"start":57,"fragment_lengths":[197,864,360,186]}

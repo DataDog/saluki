@@ -1,0 +1,9 @@
+(function() {
+    var implementors = Object.fromEntries([["memory_accounting",[["impl <a class=\"trait\" href=\"https://docs.rs/snafu/0.8.8/snafu/trait.ErrorCompat.html\" title=\"trait snafu::ErrorCompat\">ErrorCompat</a> for <a class=\"enum\" href=\"memory_accounting/enum.VerifierError.html\" title=\"enum memory_accounting::VerifierError\">VerifierError</a>"]]],["saluki_config",[["impl <a class=\"trait\" href=\"https://docs.rs/snafu/0.8.8/snafu/trait.ErrorCompat.html\" title=\"trait snafu::ErrorCompat\">ErrorCompat</a> for <a class=\"enum\" href=\"saluki_config/enum.ConfigurationError.html\" title=\"enum saluki_config::ConfigurationError\">ConfigurationError</a>"]]],["saluki_core",[["impl <a class=\"trait\" href=\"https://docs.rs/snafu/0.8.8/snafu/trait.ErrorCompat.html\" title=\"trait snafu::ErrorCompat\">ErrorCompat</a> for <a class=\"enum\" href=\"saluki_core/topology/enum.BlueprintError.html\" title=\"enum saluki_core::topology::BlueprintError\">BlueprintError</a>"]]],["saluki_io",[["impl <a class=\"trait\" href=\"https://docs.rs/snafu/0.8.8/snafu/trait.ErrorCompat.html\" title=\"trait snafu::ErrorCompat\">ErrorCompat</a> for <a class=\"enum\" href=\"saluki_io/deser/framing/enum.FramingError.html\" title=\"enum saluki_io::deser::framing::FramingError\">FramingError</a>"],["impl <a class=\"trait\" href=\"https://docs.rs/snafu/0.8.8/snafu/trait.ErrorCompat.html\" title=\"trait snafu::ErrorCompat\">ErrorCompat</a> for <a class=\"enum\" href=\"saluki_io/net/listener/enum.ListenerError.html\" title=\"enum saluki_io::net::listener::ListenerError\">ListenerError</a>"]]]]);
+    if (window.register_implementors) {
+        window.register_implementors(implementors);
+    } else {
+        window.pending_implementors = implementors;
+    }
+})()
+//{"start":57,"fragment_lengths":[307,311,312,607]}

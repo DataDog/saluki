@@ -1,0 +1,9 @@
+(function() {
+    var implementors = Object.fromEntries([["saluki_components",[["impl <a class=\"trait\" href=\"saluki_core/components/transforms/builder/trait.TransformBuilder.html\" title=\"trait saluki_core::components::transforms::builder::TransformBuilder\">TransformBuilder</a> for <a class=\"struct\" href=\"saluki_components/transforms/struct.AggregateConfiguration.html\" title=\"struct saluki_components::transforms::AggregateConfiguration\">AggregateConfiguration</a>"],["impl <a class=\"trait\" href=\"saluki_core/components/transforms/builder/trait.TransformBuilder.html\" title=\"trait saluki_core::components::transforms::builder::TransformBuilder\">TransformBuilder</a> for <a class=\"struct\" href=\"saluki_components/transforms/struct.ChainedConfiguration.html\" title=\"struct saluki_components::transforms::ChainedConfiguration\">ChainedConfiguration</a>"],["impl <a class=\"trait\" href=\"saluki_core/components/transforms/builder/trait.TransformBuilder.html\" title=\"trait saluki_core::components::transforms::builder::TransformBuilder\">TransformBuilder</a> for <a class=\"struct\" href=\"saluki_components/transforms/struct.DogstatsDPrefixFilterConfiguration.html\" title=\"struct saluki_components::transforms::DogstatsDPrefixFilterConfiguration\">DogstatsDPrefixFilterConfiguration</a>"],["impl <a class=\"trait\" href=\"saluki_core/components/transforms/builder/trait.TransformBuilder.html\" title=\"trait saluki_core::components::transforms::builder::TransformBuilder\">TransformBuilder</a> for <a class=\"struct\" href=\"saluki_components/transforms/struct.MetricRouterConfiguration.html\" title=\"struct saluki_components::transforms::MetricRouterConfiguration\">MetricRouterConfiguration</a>"]]]]);
+    if (window.register_implementors) {
+        window.register_implementors(implementors);
+    } else {
+        window.pending_implementors = implementors;
+    }
+})()
+//{"start":57,"fragment_lengths":[1670]}

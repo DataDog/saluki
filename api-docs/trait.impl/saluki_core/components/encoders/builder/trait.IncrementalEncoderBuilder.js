@@ -1,0 +1,9 @@
+(function() {
+    var implementors = Object.fromEntries([["saluki_components",[["impl <a class=\"trait\" href=\"saluki_core/components/encoders/builder/trait.IncrementalEncoderBuilder.html\" title=\"trait saluki_core::components::encoders::builder::IncrementalEncoderBuilder\">IncrementalEncoderBuilder</a> for <a class=\"struct\" href=\"saluki_components/encoders/struct.DatadogEventsConfiguration.html\" title=\"struct saluki_components::encoders::DatadogEventsConfiguration\">DatadogEventsConfiguration</a>"],["impl <a class=\"trait\" href=\"saluki_core/components/encoders/builder/trait.IncrementalEncoderBuilder.html\" title=\"trait saluki_core::components::encoders::builder::IncrementalEncoderBuilder\">IncrementalEncoderBuilder</a> for <a class=\"struct\" href=\"saluki_components/encoders/struct.DatadogServiceChecksConfiguration.html\" title=\"struct saluki_components::encoders::DatadogServiceChecksConfiguration\">DatadogServiceChecksConfiguration</a>"]]]]);
+    if (window.register_implementors) {
+        window.register_implementors(implementors);
+    } else {
+        window.pending_implementors = implementors;
+    }
+})()
+//{"start":57,"fragment_lengths":[910]}

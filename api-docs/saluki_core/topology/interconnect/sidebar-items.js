@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["BufferedDispatcher","Consumer","Dispatcher","EventBufferManager","FixedSizeEventBuffer"],"trait":["Dispatchable"]};

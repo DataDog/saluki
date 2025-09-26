@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["helpers"],"struct":["ElasticObjectPool","FixedSizeObjectPool","OnDemandObjectPool"],"trait":["Clearable","ObjectPool","Poolable","ReclaimStrategy"]};

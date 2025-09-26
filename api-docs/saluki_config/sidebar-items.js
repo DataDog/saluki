@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["ConfigurationError"],"mod":["dynamic","value"],"struct":["ConfigurationLoader","GenericConfiguration"]};

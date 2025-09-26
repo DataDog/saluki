@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["weight"],"struct":["Cache","CacheBuilder"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["MetricType"],"struct":["MetricPoint","MetricSeries","Resource"]};

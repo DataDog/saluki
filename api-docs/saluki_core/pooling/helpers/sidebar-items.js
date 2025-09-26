@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["get_pooled_object_via_builder","get_pooled_object_via_default"],"macro":["pooled","pooled_newtype"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["ConfigUpdate"],"fn":["diff_config"],"struct":["ConfigChangeEvent","FieldUpdateWatcher"]};

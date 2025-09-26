@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["AutodiscoveryEvent","EventType"],"mod":["providers"],"struct":["AdvancedADIdentifier","CheckConfig","Config","Data","Instance","KubeNamespacedName"],"trait":["AutodiscoveryProvider","RawData"]};

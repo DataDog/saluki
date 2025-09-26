@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["OriginTagCardinality"],"struct":["ExternalData","RawExternalData","RawOrigin"],"trait":["OriginTagsResolver"]};

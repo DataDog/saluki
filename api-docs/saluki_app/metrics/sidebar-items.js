@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["acquire_metrics_api_handler","collect_runtime_metrics","emit_startup_metrics","initialize_metrics"],"struct":["MetricsAPIHandler"]};

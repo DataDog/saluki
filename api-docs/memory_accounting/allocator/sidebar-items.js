@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["AllocationGroupRegistry","AllocationGroupToken","AllocationStats","AllocationStatsSnapshot","Tracked","TrackingAllocator","TrackingGuard"],"trait":["Track"]};

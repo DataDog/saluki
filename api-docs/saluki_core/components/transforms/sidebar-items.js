@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["TransformContext"],"trait":["SynchronousTransform","SynchronousTransformBuilder","Transform","TransformBuilder"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["BytesBuffer","FixedSizeVec"],"trait":["ClearableIoBuffer","CollapsibleReadWriteIoBuffer","ReadIoBuffer","ReadWriteIoBuffer","WriteIoBuffer"]};

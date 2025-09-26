@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["AggregateConfiguration","ChainedConfiguration","DogstatsDMapperConfiguration","DogstatsDPrefixFilterConfiguration","HostEnrichmentConfiguration","HostTagsConfiguration","MetricRouterConfiguration"]};

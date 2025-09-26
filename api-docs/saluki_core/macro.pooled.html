@@ -1,0 +1,59 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Creates a struct that can be stored in an object pool, based on an inline struct definition."><title>pooled in saluki_core - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-e56847b5.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="saluki_core" data-themes="" data-resource-suffix="" data-rustdoc-version="1.92.0-nightly (7ac0330c6 2025-09-25)" data-channel="nightly" data-search-js="search-e256b49e.js" data-stringdex-js="stringdex-061df703.js" data-settings-js="settings-c38705f0.js" ><script src="../static.files/storage-e2aeef58.js"></script><script defer src="sidebar-items.js"></script><script defer src="../static.files/main-ce535bd0.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-263c88ec.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc macro"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">pooled</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../saluki_core/index.html">saluki_<wbr>core</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">pooled</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#limitations" title="Limitations">Limitations</a></li><li><a href="#clearing" title="Clearing">Clearing</a></li><li><a href="#usage" title="Usage">Usage</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="index.html">In crate saluki_<wbr>core</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="index.html">saluki_core</a></div><h1>Macro <span class="macro">pooled</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/saluki_core/pooling/helpers.rs.html#73-132">Source</a> </span></div><pre class="rust item-decl"><code>macro_rules! pooled {
+    ($(#[$outer:meta])* struct $name:ident {
+        $($field_name:ident: $field_type:ty,)*
+    }$(,)?
+    clear =&gt; $clear:expr) =&gt; { ... };
+}</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Creates a struct that can be stored in an object pool, based on an inline struct definition.</p>
+<p>In order to store a value in an object pool, the item must implement the <a href="pooling/trait.Poolable.html" title="trait saluki_core::pooling::Poolable"><code>Poolable</code></a> trait. This trait, and overall
+design of <a href="pooling/trait.ObjectPool.html" title="trait saluki_core::pooling::ObjectPool"><code>ObjectPool</code></a>, dictates that a pooled data type actually holds an inner value, which
+is the value that is actually pooled, while the outer struct is simply a wrapper around the data that ensures it is
+returned to the object pool when no longer in use.</p>
+<p>In practice, this means that if you wanted to create some struct that could be pooled (for example,
+<code>SimpleBuffer</code>), you would need to create that struct and bake in all of the boilerplate logic and
+implementations for <code>Poolable</code>/<code>Clearable</code>. Instead, <code>pooled!</code> can be used to define the desired struct inline,
+while the wrapper type that contains the relevant pooling logic and trait implementations is generated
+automatically.</p>
+<h3 id="limitations"><a class="doc-anchor" href="#limitations">§</a>Limitations</h3>
+<p>This macro is most appropriate when the desired struct is simple, such as only requiring control over the fields and
+not the presence of any methods or trait implementations. If more control is required, consider using
+<a href="macro.pooled_newtype.html" title="macro saluki_core::pooled_newtype"><code>pooled_newtype!</code></a> which can wrap over an existing struct defined outside of the macro.</p>
+<h3 id="clearing"><a class="doc-anchor" href="#clearing">§</a>Clearing</h3>
+<p>All poolable types must provide logic for “clearing” the pooled item before it is returned to the object pool.
+This is passed in as the <code>clear</code> parameter to the macro, and must be a closure that takes a mutable reference to
+the inner struct.</p>
+<p>Note that due to macro hygiene, the closure’s only parameter <em>cannot</em> be named <code>self</code>. In the usage example below, you can
+see how this is named <code>this</code> instead to avoid conflicts.</p>
+<h3 id="usage"><a class="doc-anchor" href="#usage">§</a>Usage</h3>
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>saluki_core::pooling::helpers::pooled;
+
+<span class="macro">pooled!</span> {
+   <span class="doccomment">/// A simple Poolable struct.
+  </span><span class="kw">struct </span>SimpleBuffer {
+     value: u32,
+  }
+
+  clear =&gt; |this| this.value = <span class="number">0
+</span>}
+
+<span class="comment">// This creates a new struct called `SimpleBufferInner` based on the definition of `SimpleBuffer`,
+// and `SimpleBuffer` contains the necessary logic/pointers to be stored in an object pool.
+//
+// Two helper methods are provided on the wrapper struct (`SimpleBuffer`, in this case), for accessing
+// the inner data: `data` and `data_mut`. We can see them in use below:
+</span><span class="kw">impl </span>SimpleBuffer {
+    <span class="kw">pub fn </span>value(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; u32 {
+        <span class="self">self</span>.data().value
+    }
+
+    <span class="kw">pub fn </span>multiply_by_two(<span class="kw-2">&amp;mut </span><span class="self">self</span>) {
+        <span class="self">self</span>.data_mut().value <span class="kw-2">*</span>= <span class="number">2</span>;
+    }
+}
+
+<span class="kw">fn </span>use_simple_buffer(<span class="kw-2">mut </span>buf: SimpleBuffer) {
+    <span class="kw">let </span>original_value = buf.value();
+    buf.multiply_by_two();
+
+    <span class="kw">let </span>doubled_value = buf.value();
+    <span class="macro">assert_eq!</span>(doubled_value, original_value * <span class="number">2</span>);
+}</code></pre></div></div></details></section></div></main></body></html>

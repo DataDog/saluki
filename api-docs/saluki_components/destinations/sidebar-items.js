@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["BlackholeConfiguration","DogStatsDStatisticsConfiguration","PrometheusConfiguration"]};

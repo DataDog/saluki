@@ -1,0 +1,1323 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `lib/ddsketch-agent/src/lib.rs`."><title>lib.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-e56847b5.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="ddsketch_agent" data-themes="" data-resource-suffix="" data-rustdoc-version="1.92.0-nightly (7ac0330c6 2025-09-25)" data-channel="nightly" data-search-js="search-e256b49e.js" data-stringdex-js="stringdex-061df703.js" data-settings-js="settings-c38705f0.js" ><script src="../../static.files/storage-e2aeef58.js"></script><script defer src="../../static.files/src-script-813739b1.js"></script><script defer src="../../src-files.js"></script><script defer src="../../static.files/main-ce535bd0.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-263c88ec.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content"><div class="main-heading"><h1><div class="sub-heading">ddsketch_agent/</div>lib.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-4"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="doccomment">//! A DDSketch implementation based on the Datadog Agent's DDSketch implementation.
+<a href=#2 id=2 data-nosnippet>2</a></span><span class="attr">#![deny(warnings)]
+<a href=#3 id=3 data-nosnippet>3</a>#![deny(missing_docs)]
+<a href=#4 id=4 data-nosnippet>4</a></span><span class="kw">use </span>std::{cmp::Ordering, mem};
+<a href=#5 id=5 data-nosnippet>5</a>
+<a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span>datadog_protos::metrics::Dogsketch;
+<a href=#7 id=7 data-nosnippet>7</a><span class="kw">use </span>float_cmp::ApproxEqRatio <span class="kw">as _</span>;
+<a href=#8 id=8 data-nosnippet>8</a><span class="kw">use </span>ordered_float::OrderedFloat;
+<a href=#9 id=9 data-nosnippet>9</a><span class="kw">use </span>smallvec::SmallVec;
+<a href=#10 id=10 data-nosnippet>10</a>
+<a href=#11 id=11 data-nosnippet>11</a><span class="attr">#[allow(dead_code)]
+<a href=#12 id=12 data-nosnippet>12</a></span><span class="kw">mod </span>config {
+<a href=#13 id=13 data-nosnippet>13</a>    <span class="macro">include!</span>(<span class="macro">concat!</span>(<span class="macro">env!</span>(<span class="string">"OUT_DIR"</span>), <span class="string">"/config.rs"</span>));
+<a href=#14 id=14 data-nosnippet>14</a>}
+<a href=#15 id=15 data-nosnippet>15</a>
+<a href=#16 id=16 data-nosnippet>16</a><span class="kw">static </span>SKETCH_CONFIG: Config = Config::new(
+<a href=#17 id=17 data-nosnippet>17</a>    config::DDSKETCH_CONF_BIN_LIMIT,
+<a href=#18 id=18 data-nosnippet>18</a>    config::DDSKETCH_CONF_GAMMA_V,
+<a href=#19 id=19 data-nosnippet>19</a>    config::DDSKETCH_CONF_GAMMA_LN,
+<a href=#20 id=20 data-nosnippet>20</a>    config::DDSKETCH_CONF_NORM_MIN,
+<a href=#21 id=21 data-nosnippet>21</a>    config::DDSKETCH_CONF_NORM_BIAS,
+<a href=#22 id=22 data-nosnippet>22</a>);
+<a href=#23 id=23 data-nosnippet>23</a><span class="kw">const </span>UV_INF: i16 = i16::MAX;
+<a href=#24 id=24 data-nosnippet>24</a><span class="kw">const </span>MAX_KEY: i16 = UV_INF;
+<a href=#25 id=25 data-nosnippet>25</a><span class="kw">const </span>MAX_BIN_WIDTH: u16 = u16::MAX;
+<a href=#26 id=26 data-nosnippet>26</a>
+<a href=#27 id=27 data-nosnippet>27</a><span class="attr">#[derive(Copy, Clone, Debug, PartialEq)]
+<a href=#28 id=28 data-nosnippet>28</a></span><span class="kw">struct </span>Config {
+<a href=#29 id=29 data-nosnippet>29</a>    <span class="comment">// Maximum number of bins per sketch.
+<a href=#30 id=30 data-nosnippet>30</a>    </span>bin_limit: u16,
+<a href=#31 id=31 data-nosnippet>31</a>
+<a href=#32 id=32 data-nosnippet>32</a>    <span class="comment">// gamma_ln is the natural log of gamma_v, used to speed up calculating log base gamma.
+<a href=#33 id=33 data-nosnippet>33</a>    </span>gamma_v: f64,
+<a href=#34 id=34 data-nosnippet>34</a>    gamma_ln: f64,
+<a href=#35 id=35 data-nosnippet>35</a>
+<a href=#36 id=36 data-nosnippet>36</a>    <span class="comment">// Minimum and maximum values representable by a sketch with these params.
+<a href=#37 id=37 data-nosnippet>37</a>    //
+<a href=#38 id=38 data-nosnippet>38</a>    // key(x) =
+<a href=#39 id=39 data-nosnippet>39</a>    //    0 : -min &gt; x &lt; min
+<a href=#40 id=40 data-nosnippet>40</a>    //    1 : x == min
+<a href=#41 id=41 data-nosnippet>41</a>    //   -1 : x == -min
+<a href=#42 id=42 data-nosnippet>42</a>    // +Inf : x &gt; max
+<a href=#43 id=43 data-nosnippet>43</a>    // -Inf : x &lt; -max.
+<a href=#44 id=44 data-nosnippet>44</a>    </span>norm_min: f64,
+<a href=#45 id=45 data-nosnippet>45</a>
+<a href=#46 id=46 data-nosnippet>46</a>    <span class="comment">// Bias of the exponent, used to ensure key(x) &gt;= 1.
+<a href=#47 id=47 data-nosnippet>47</a>    </span>norm_bias: i32,
+<a href=#48 id=48 data-nosnippet>48</a>}
+<a href=#49 id=49 data-nosnippet>49</a>
+<a href=#50 id=50 data-nosnippet>50</a><span class="kw">impl </span>Config {
+<a href=#51 id=51 data-nosnippet>51</a>    <span class="kw">const fn </span>new(bin_limit: u16, gamma_v: f64, gamma_ln: f64, norm_min: f64, norm_bias: i32) -&gt; <span class="self">Self </span>{
+<a href=#52 id=52 data-nosnippet>52</a>        <span class="self">Self </span>{
+<a href=#53 id=53 data-nosnippet>53</a>            bin_limit,
+<a href=#54 id=54 data-nosnippet>54</a>            gamma_v,
+<a href=#55 id=55 data-nosnippet>55</a>            gamma_ln,
+<a href=#56 id=56 data-nosnippet>56</a>            norm_min,
+<a href=#57 id=57 data-nosnippet>57</a>            norm_bias,
+<a href=#58 id=58 data-nosnippet>58</a>        }
+<a href=#59 id=59 data-nosnippet>59</a>    }
+<a href=#60 id=60 data-nosnippet>60</a>
+<a href=#61 id=61 data-nosnippet>61</a>    <span class="doccomment">/// Gets the value lower bound of the bin at the given key.
+<a href=#62 id=62 data-nosnippet>62</a>    </span><span class="attr">#[inline]
+<a href=#63 id=63 data-nosnippet>63</a>    </span><span class="kw">pub fn </span>bin_lower_bound(<span class="kw-2">&amp;</span><span class="self">self</span>, k: i16) -&gt; f64 {
+<a href=#64 id=64 data-nosnippet>64</a>        <span class="kw">if </span>k &lt; <span class="number">0 </span>{
+<a href=#65 id=65 data-nosnippet>65</a>            <span class="kw">return </span>-<span class="self">self</span>.bin_lower_bound(-k);
+<a href=#66 id=66 data-nosnippet>66</a>        }
+<a href=#67 id=67 data-nosnippet>67</a>
+<a href=#68 id=68 data-nosnippet>68</a>        <span class="kw">if </span>k == MAX_KEY {
+<a href=#69 id=69 data-nosnippet>69</a>            <span class="kw">return </span>f64::INFINITY;
+<a href=#70 id=70 data-nosnippet>70</a>        }
+<a href=#71 id=71 data-nosnippet>71</a>
+<a href=#72 id=72 data-nosnippet>72</a>        <span class="kw">if </span>k == <span class="number">0 </span>{
+<a href=#73 id=73 data-nosnippet>73</a>            <span class="kw">return </span><span class="number">0.0</span>;
+<a href=#74 id=74 data-nosnippet>74</a>        }
+<a href=#75 id=75 data-nosnippet>75</a>
+<a href=#76 id=76 data-nosnippet>76</a>        <span class="self">self</span>.gamma_v.powf(f64::from(i32::from(k) - <span class="self">self</span>.norm_bias))
+<a href=#77 id=77 data-nosnippet>77</a>    }
+<a href=#78 id=78 data-nosnippet>78</a>
+<a href=#79 id=79 data-nosnippet>79</a>    <span class="doccomment">/// Gets the key for the given value.
+<a href=#80 id=80 data-nosnippet>80</a>    ///
+<a href=#81 id=81 data-nosnippet>81</a>    /// The key corresponds to the bin where this value would be represented. The value returned here is such that: γ^k
+<a href=#82 id=82 data-nosnippet>82</a>    /// &lt;= v &lt; γ^(k+1).
+<a href=#83 id=83 data-nosnippet>83</a>    </span><span class="attr">#[allow(clippy::cast_possible_truncation)]
+<a href=#84 id=84 data-nosnippet>84</a>    #[inline]
+<a href=#85 id=85 data-nosnippet>85</a>    </span><span class="kw">pub fn </span>key(<span class="kw-2">&amp;</span><span class="self">self</span>, v: f64) -&gt; i16 {
+<a href=#86 id=86 data-nosnippet>86</a>        <span class="kw">if </span>v &lt; <span class="number">0.0 </span>{
+<a href=#87 id=87 data-nosnippet>87</a>            <span class="kw">return </span>-<span class="self">self</span>.key(-v);
+<a href=#88 id=88 data-nosnippet>88</a>        }
+<a href=#89 id=89 data-nosnippet>89</a>
+<a href=#90 id=90 data-nosnippet>90</a>        <span class="kw">if </span>v == <span class="number">0.0 </span>|| (v &gt; <span class="number">0.0 </span>&amp;&amp; v &lt; <span class="self">self</span>.norm_min) || (v &lt; <span class="number">0.0 </span>&amp;&amp; v &gt; -<span class="self">self</span>.norm_min) {
+<a href=#91 id=91 data-nosnippet>91</a>            <span class="kw">return </span><span class="number">0</span>;
+<a href=#92 id=92 data-nosnippet>92</a>        }
+<a href=#93 id=93 data-nosnippet>93</a>
+<a href=#94 id=94 data-nosnippet>94</a>        <span class="comment">// SAFETY: `rounded` is intentionally meant to be a whole integer, and additionally, based on our target gamma
+<a href=#95 id=95 data-nosnippet>95</a>        // ln, we expect `log_gamma` to return a value between -2^16 and 2^16, so it will always fit in an i32.
+<a href=#96 id=96 data-nosnippet>96</a>        </span><span class="kw">let </span>rounded = <span class="self">self</span>.log_gamma(v).round_ties_even() <span class="kw">as </span>i32;
+<a href=#97 id=97 data-nosnippet>97</a>        <span class="kw">let </span>key = rounded.wrapping_add(<span class="self">self</span>.norm_bias);
+<a href=#98 id=98 data-nosnippet>98</a>
+<a href=#99 id=99 data-nosnippet>99</a>        <span class="comment">// SAFETY: Our upper bound of POS_INF_KEY is i16, and our lower bound is simply one, so there is no risk of
+<a href=#100 id=100 data-nosnippet>100</a>        // truncation via conversion.
+<a href=#101 id=101 data-nosnippet>101</a>        </span>key.clamp(<span class="number">1</span>, i32::from(MAX_KEY)) <span class="kw">as </span>i16
+<a href=#102 id=102 data-nosnippet>102</a>    }
+<a href=#103 id=103 data-nosnippet>103</a>
+<a href=#104 id=104 data-nosnippet>104</a>    <span class="attr">#[inline]
+<a href=#105 id=105 data-nosnippet>105</a>    </span><span class="kw">pub fn </span>log_gamma(<span class="kw-2">&amp;</span><span class="self">self</span>, v: f64) -&gt; f64 {
+<a href=#106 id=106 data-nosnippet>106</a>        v.ln() / <span class="self">self</span>.gamma_ln
+<a href=#107 id=107 data-nosnippet>107</a>    }
+<a href=#108 id=108 data-nosnippet>108</a>}
+<a href=#109 id=109 data-nosnippet>109</a>
+<a href=#110 id=110 data-nosnippet>110</a><span class="doccomment">/// A sketch bin.
+<a href=#111 id=111 data-nosnippet>111</a></span><span class="attr">#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+<a href=#112 id=112 data-nosnippet>112</a>#[cfg_attr(feature = <span class="string">"serde"</span>, derive(serde::Deserialize, serde::Serialize))]
+<a href=#113 id=113 data-nosnippet>113</a></span><span class="kw">pub struct </span>Bin {
+<a href=#114 id=114 data-nosnippet>114</a>    <span class="doccomment">/// The bin index.
+<a href=#115 id=115 data-nosnippet>115</a>    </span>k: i16,
+<a href=#116 id=116 data-nosnippet>116</a>
+<a href=#117 id=117 data-nosnippet>117</a>    <span class="doccomment">/// The number of observations within the bin.
+<a href=#118 id=118 data-nosnippet>118</a>    </span>n: u16,
+<a href=#119 id=119 data-nosnippet>119</a>}
+<a href=#120 id=120 data-nosnippet>120</a>
+<a href=#121 id=121 data-nosnippet>121</a><span class="kw">impl </span>Bin {
+<a href=#122 id=122 data-nosnippet>122</a>    <span class="doccomment">/// Returns the key of the bin.
+<a href=#123 id=123 data-nosnippet>123</a>    </span><span class="kw">pub fn </span>key(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; i32 {
+<a href=#124 id=124 data-nosnippet>124</a>        <span class="self">self</span>.k <span class="kw">as </span>i32
+<a href=#125 id=125 data-nosnippet>125</a>    }
+<a href=#126 id=126 data-nosnippet>126</a>
+<a href=#127 id=127 data-nosnippet>127</a>    <span class="doccomment">/// Returns the number of observations within the bin.
+<a href=#128 id=128 data-nosnippet>128</a>    </span><span class="kw">pub fn </span>count(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; u32 {
+<a href=#129 id=129 data-nosnippet>129</a>        <span class="self">self</span>.n <span class="kw">as </span>u32
+<a href=#130 id=130 data-nosnippet>130</a>    }
+<a href=#131 id=131 data-nosnippet>131</a>
+<a href=#132 id=132 data-nosnippet>132</a>    <span class="attr">#[allow(clippy::cast_possible_truncation)]
+<a href=#133 id=133 data-nosnippet>133</a>    </span><span class="kw">fn </span>increment(<span class="kw-2">&amp;mut </span><span class="self">self</span>, n: u32) -&gt; u32 {
+<a href=#134 id=134 data-nosnippet>134</a>        <span class="kw">let </span>next = n + u32::from(<span class="self">self</span>.n);
+<a href=#135 id=135 data-nosnippet>135</a>        <span class="kw">if </span>next &gt; u32::from(MAX_BIN_WIDTH) {
+<a href=#136 id=136 data-nosnippet>136</a>            <span class="self">self</span>.n = MAX_BIN_WIDTH;
+<a href=#137 id=137 data-nosnippet>137</a>            <span class="kw">return </span>next - u32::from(MAX_BIN_WIDTH);
+<a href=#138 id=138 data-nosnippet>138</a>        }
+<a href=#139 id=139 data-nosnippet>139</a>
+<a href=#140 id=140 data-nosnippet>140</a>        <span class="comment">// SAFETY: We already know `next` is less than or equal to `MAX_BIN_WIDTH` if we got here, and `MAX_BIN_WIDTH`
+<a href=#141 id=141 data-nosnippet>141</a>        // is u16, so next can't possibly be larger than a u16.
+<a href=#142 id=142 data-nosnippet>142</a>        </span><span class="self">self</span>.n = next <span class="kw">as </span>u16;
+<a href=#143 id=143 data-nosnippet>143</a>        <span class="number">0
+<a href=#144 id=144 data-nosnippet>144</a>    </span>}
+<a href=#145 id=145 data-nosnippet>145</a>}
+<a href=#146 id=146 data-nosnippet>146</a>
+<a href=#147 id=147 data-nosnippet>147</a><span class="doccomment">/// A histogram bucket.
+<a href=#148 id=148 data-nosnippet>148</a>///
+<a href=#149 id=149 data-nosnippet>149</a>/// This type can be used to represent a classic histogram bucket, such as those defined by Prometheus or OpenTelemetry,
+<a href=#150 id=150 data-nosnippet>150</a>/// in a way that is then able to be inserted into the DDSketch via linear interpolation.
+<a href=#151 id=151 data-nosnippet>151</a></span><span class="kw">pub struct </span>Bucket {
+<a href=#152 id=152 data-nosnippet>152</a>    <span class="doccomment">/// The upper limit (inclusive) of values in the bucket.
+<a href=#153 id=153 data-nosnippet>153</a>    </span><span class="kw">pub </span>upper_limit: f64,
+<a href=#154 id=154 data-nosnippet>154</a>
+<a href=#155 id=155 data-nosnippet>155</a>    <span class="doccomment">/// The number of values in the bucket.
+<a href=#156 id=156 data-nosnippet>156</a>    </span><span class="kw">pub </span>count: u64,
+<a href=#157 id=157 data-nosnippet>157</a>}
+<a href=#158 id=158 data-nosnippet>158</a>
+<a href=#159 id=159 data-nosnippet>159</a><span class="doccomment">/// [DDSketch][ddsketch] implementation based on the [Datadog Agent][ddagent].
+<a href=#160 id=160 data-nosnippet>160</a>///
+<a href=#161 id=161 data-nosnippet>161</a>/// This implementation is subtly different from the open-source implementations of `DDSketch`, as Datadog made some
+<a href=#162 id=162 data-nosnippet>162</a>/// slight tweaks to configuration values and in-memory layout to optimize it for insertion performance within the
+<a href=#163 id=163 data-nosnippet>163</a>/// agent.
+<a href=#164 id=164 data-nosnippet>164</a>///
+<a href=#165 id=165 data-nosnippet>165</a>/// We've mimicked the agent version of `DDSketch` here in order to support a future where we can take sketches shipped
+<a href=#166 id=166 data-nosnippet>166</a>/// by the agent, handle them internally, merge them, and so on, without any loss of accuracy, eventually forwarding
+<a href=#167 id=167 data-nosnippet>167</a>/// them to Datadog ourselves.
+<a href=#168 id=168 data-nosnippet>168</a>///
+<a href=#169 id=169 data-nosnippet>169</a>/// As such, this implementation is constrained in the same ways: the configuration parameters cannot be changed, the
+<a href=#170 id=170 data-nosnippet>170</a>/// collapsing strategy is fixed, and we support a limited number of methods for inserting into the sketch.
+<a href=#171 id=171 data-nosnippet>171</a>///
+<a href=#172 id=172 data-nosnippet>172</a>/// Importantly, we have a special function, again taken from the agent version, to allow us to interpolate histograms,
+<a href=#173 id=173 data-nosnippet>173</a>/// specifically our own aggregated histograms, into a sketch so that we can emit useful default quantiles, rather than
+<a href=#174 id=174 data-nosnippet>174</a>/// having to ship the buckets -- upper bound and count -- to a downstream system that might have no native way to do
+<a href=#175 id=175 data-nosnippet>175</a>/// the same thing, basically providing no value as they have no way to render useful data from them.
+<a href=#176 id=176 data-nosnippet>176</a>///
+<a href=#177 id=177 data-nosnippet>177</a>/// # Features
+<a href=#178 id=178 data-nosnippet>178</a>///
+<a href=#179 id=179 data-nosnippet>179</a>/// This crate exposes a single feature, `serde`, which enables serialization and deserialization of `DDSketch` with
+<a href=#180 id=180 data-nosnippet>180</a>/// `serde`. This feature is not enabled by default, as it can be slightly risky to use. This is primarily due to the
+<a href=#181 id=181 data-nosnippet>181</a>/// fact that the format of `DDSketch` is not promised to be stable over time. If you enable this feature, you should
+<a href=#182 id=182 data-nosnippet>182</a>/// take care to avoid storing serialized `DDSketch` data for long periods of time, as deserializing it in the future
+<a href=#183 id=183 data-nosnippet>183</a>/// may work but could lead to incorrect/unexpected behavior or issues with correctness.
+<a href=#184 id=184 data-nosnippet>184</a>///
+<a href=#185 id=185 data-nosnippet>185</a>/// [ddsketch]: https://www.vldb.org/pvldb/vol12/p2195-masson.pdf
+<a href=#186 id=186 data-nosnippet>186</a>/// [ddagent]: https://github.com/DataDog/datadog-agent
+<a href=#187 id=187 data-nosnippet>187</a></span><span class="attr">#[derive(Clone, Debug)]
+<a href=#188 id=188 data-nosnippet>188</a>#[cfg_attr(feature = <span class="string">"serde"</span>, derive(serde::Deserialize, serde::Serialize))]
+<a href=#189 id=189 data-nosnippet>189</a></span><span class="kw">pub struct </span>DDSketch {
+<a href=#190 id=190 data-nosnippet>190</a>    <span class="doccomment">/// The bins within the sketch.
+<a href=#191 id=191 data-nosnippet>191</a>    </span>bins: SmallVec&lt;[Bin; <span class="number">4</span>]&gt;,
+<a href=#192 id=192 data-nosnippet>192</a>
+<a href=#193 id=193 data-nosnippet>193</a>    <span class="doccomment">/// The number of observations within the sketch.
+<a href=#194 id=194 data-nosnippet>194</a>    </span>count: u32,
+<a href=#195 id=195 data-nosnippet>195</a>
+<a href=#196 id=196 data-nosnippet>196</a>    <span class="doccomment">/// The minimum value of all observations within the sketch.
+<a href=#197 id=197 data-nosnippet>197</a>    </span>min: f64,
+<a href=#198 id=198 data-nosnippet>198</a>
+<a href=#199 id=199 data-nosnippet>199</a>    <span class="doccomment">/// The maximum value of all observations within the sketch.
+<a href=#200 id=200 data-nosnippet>200</a>    </span>max: f64,
+<a href=#201 id=201 data-nosnippet>201</a>
+<a href=#202 id=202 data-nosnippet>202</a>    <span class="doccomment">/// The sum of all observations within the sketch.
+<a href=#203 id=203 data-nosnippet>203</a>    </span>sum: f64,
+<a href=#204 id=204 data-nosnippet>204</a>
+<a href=#205 id=205 data-nosnippet>205</a>    <span class="doccomment">/// The average value of all observations within the sketch.
+<a href=#206 id=206 data-nosnippet>206</a>    </span>avg: f64,
+<a href=#207 id=207 data-nosnippet>207</a>}
+<a href=#208 id=208 data-nosnippet>208</a>
+<a href=#209 id=209 data-nosnippet>209</a><span class="kw">impl </span>DDSketch {
+<a href=#210 id=210 data-nosnippet>210</a>    <span class="doccomment">/// Returns the number of bins in the sketch.
+<a href=#211 id=211 data-nosnippet>211</a>    </span><span class="kw">pub fn </span>bin_count(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; usize {
+<a href=#212 id=212 data-nosnippet>212</a>        <span class="self">self</span>.bins.len()
+<a href=#213 id=213 data-nosnippet>213</a>    }
+<a href=#214 id=214 data-nosnippet>214</a>
+<a href=#215 id=215 data-nosnippet>215</a>    <span class="doccomment">/// Whether or not this sketch is empty.
+<a href=#216 id=216 data-nosnippet>216</a>    </span><span class="kw">pub fn </span>is_empty(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; bool {
+<a href=#217 id=217 data-nosnippet>217</a>        <span class="self">self</span>.count == <span class="number">0
+<a href=#218 id=218 data-nosnippet>218</a>    </span>}
+<a href=#219 id=219 data-nosnippet>219</a>
+<a href=#220 id=220 data-nosnippet>220</a>    <span class="doccomment">/// Number of samples currently represented by this sketch.
+<a href=#221 id=221 data-nosnippet>221</a>    </span><span class="kw">pub fn </span>count(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; u32 {
+<a href=#222 id=222 data-nosnippet>222</a>        <span class="self">self</span>.count
+<a href=#223 id=223 data-nosnippet>223</a>    }
+<a href=#224 id=224 data-nosnippet>224</a>
+<a href=#225 id=225 data-nosnippet>225</a>    <span class="doccomment">/// Minimum value seen by this sketch.
+<a href=#226 id=226 data-nosnippet>226</a>    ///
+<a href=#227 id=227 data-nosnippet>227</a>    /// Returns `None` if the sketch is empty.
+<a href=#228 id=228 data-nosnippet>228</a>    </span><span class="kw">pub fn </span>min(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;f64&gt; {
+<a href=#229 id=229 data-nosnippet>229</a>        <span class="kw">if </span><span class="self">self</span>.is_empty() {
+<a href=#230 id=230 data-nosnippet>230</a>            <span class="prelude-val">None
+<a href=#231 id=231 data-nosnippet>231</a>        </span>} <span class="kw">else </span>{
+<a href=#232 id=232 data-nosnippet>232</a>            <span class="prelude-val">Some</span>(<span class="self">self</span>.min)
+<a href=#233 id=233 data-nosnippet>233</a>        }
+<a href=#234 id=234 data-nosnippet>234</a>    }
+<a href=#235 id=235 data-nosnippet>235</a>
+<a href=#236 id=236 data-nosnippet>236</a>    <span class="doccomment">/// Maximum value seen by this sketch.
+<a href=#237 id=237 data-nosnippet>237</a>    ///
+<a href=#238 id=238 data-nosnippet>238</a>    /// Returns `None` if the sketch is empty.
+<a href=#239 id=239 data-nosnippet>239</a>    </span><span class="kw">pub fn </span>max(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;f64&gt; {
+<a href=#240 id=240 data-nosnippet>240</a>        <span class="kw">if </span><span class="self">self</span>.is_empty() {
+<a href=#241 id=241 data-nosnippet>241</a>            <span class="prelude-val">None
+<a href=#242 id=242 data-nosnippet>242</a>        </span>} <span class="kw">else </span>{
+<a href=#243 id=243 data-nosnippet>243</a>            <span class="prelude-val">Some</span>(<span class="self">self</span>.max)
+<a href=#244 id=244 data-nosnippet>244</a>        }
+<a href=#245 id=245 data-nosnippet>245</a>    }
+<a href=#246 id=246 data-nosnippet>246</a>
+<a href=#247 id=247 data-nosnippet>247</a>    <span class="doccomment">/// Sum of all values seen by this sketch.
+<a href=#248 id=248 data-nosnippet>248</a>    ///
+<a href=#249 id=249 data-nosnippet>249</a>    /// Returns `None` if the sketch is empty.
+<a href=#250 id=250 data-nosnippet>250</a>    </span><span class="kw">pub fn </span>sum(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;f64&gt; {
+<a href=#251 id=251 data-nosnippet>251</a>        <span class="kw">if </span><span class="self">self</span>.is_empty() {
+<a href=#252 id=252 data-nosnippet>252</a>            <span class="prelude-val">None
+<a href=#253 id=253 data-nosnippet>253</a>        </span>} <span class="kw">else </span>{
+<a href=#254 id=254 data-nosnippet>254</a>            <span class="prelude-val">Some</span>(<span class="self">self</span>.sum)
+<a href=#255 id=255 data-nosnippet>255</a>        }
+<a href=#256 id=256 data-nosnippet>256</a>    }
+<a href=#257 id=257 data-nosnippet>257</a>
+<a href=#258 id=258 data-nosnippet>258</a>    <span class="doccomment">/// Average value seen by this sketch.
+<a href=#259 id=259 data-nosnippet>259</a>    ///
+<a href=#260 id=260 data-nosnippet>260</a>    /// Returns `None` if the sketch is empty.
+<a href=#261 id=261 data-nosnippet>261</a>    </span><span class="kw">pub fn </span>avg(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;f64&gt; {
+<a href=#262 id=262 data-nosnippet>262</a>        <span class="kw">if </span><span class="self">self</span>.is_empty() {
+<a href=#263 id=263 data-nosnippet>263</a>            <span class="prelude-val">None
+<a href=#264 id=264 data-nosnippet>264</a>        </span>} <span class="kw">else </span>{
+<a href=#265 id=265 data-nosnippet>265</a>            <span class="prelude-val">Some</span>(<span class="self">self</span>.avg)
+<a href=#266 id=266 data-nosnippet>266</a>        }
+<a href=#267 id=267 data-nosnippet>267</a>    }
+<a href=#268 id=268 data-nosnippet>268</a>
+<a href=#269 id=269 data-nosnippet>269</a>    <span class="doccomment">/// Returns the current bins of this sketch.
+<a href=#270 id=270 data-nosnippet>270</a>    </span><span class="kw">pub fn </span>bins(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>[Bin] {
+<a href=#271 id=271 data-nosnippet>271</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.bins
+<a href=#272 id=272 data-nosnippet>272</a>    }
+<a href=#273 id=273 data-nosnippet>273</a>
+<a href=#274 id=274 data-nosnippet>274</a>    <span class="doccomment">/// Clears the sketch, removing all bins and resetting all statistics.
+<a href=#275 id=275 data-nosnippet>275</a>    </span><span class="kw">pub fn </span>clear(<span class="kw-2">&amp;mut </span><span class="self">self</span>) {
+<a href=#276 id=276 data-nosnippet>276</a>        <span class="self">self</span>.count = <span class="number">0</span>;
+<a href=#277 id=277 data-nosnippet>277</a>        <span class="self">self</span>.min = f64::MAX;
+<a href=#278 id=278 data-nosnippet>278</a>        <span class="self">self</span>.max = f64::MIN;
+<a href=#279 id=279 data-nosnippet>279</a>        <span class="self">self</span>.avg = <span class="number">0.0</span>;
+<a href=#280 id=280 data-nosnippet>280</a>        <span class="self">self</span>.sum = <span class="number">0.0</span>;
+<a href=#281 id=281 data-nosnippet>281</a>        <span class="self">self</span>.bins.clear();
+<a href=#282 id=282 data-nosnippet>282</a>    }
+<a href=#283 id=283 data-nosnippet>283</a>
+<a href=#284 id=284 data-nosnippet>284</a>    <span class="kw">fn </span>adjust_basic_stats(<span class="kw-2">&amp;mut </span><span class="self">self</span>, v: f64, n: u32) {
+<a href=#285 id=285 data-nosnippet>285</a>        <span class="kw">if </span>v &lt; <span class="self">self</span>.min {
+<a href=#286 id=286 data-nosnippet>286</a>            <span class="self">self</span>.min = v;
+<a href=#287 id=287 data-nosnippet>287</a>        }
+<a href=#288 id=288 data-nosnippet>288</a>
+<a href=#289 id=289 data-nosnippet>289</a>        <span class="kw">if </span>v &gt; <span class="self">self</span>.max {
+<a href=#290 id=290 data-nosnippet>290</a>            <span class="self">self</span>.max = v;
+<a href=#291 id=291 data-nosnippet>291</a>        }
+<a href=#292 id=292 data-nosnippet>292</a>
+<a href=#293 id=293 data-nosnippet>293</a>        <span class="self">self</span>.count += n;
+<a href=#294 id=294 data-nosnippet>294</a>        <span class="self">self</span>.sum += v * f64::from(n);
+<a href=#295 id=295 data-nosnippet>295</a>
+<a href=#296 id=296 data-nosnippet>296</a>        <span class="kw">if </span>n == <span class="number">1 </span>{
+<a href=#297 id=297 data-nosnippet>297</a>            <span class="self">self</span>.avg += (v - <span class="self">self</span>.avg) / f64::from(<span class="self">self</span>.count);
+<a href=#298 id=298 data-nosnippet>298</a>        } <span class="kw">else </span>{
+<a href=#299 id=299 data-nosnippet>299</a>            <span class="comment">// TODO: From the Agent source code, this method apparently loses precision when the
+<a href=#300 id=300 data-nosnippet>300</a>            // two averages -- v and self.avg -- are close.  Is there a better approach?
+<a href=#301 id=301 data-nosnippet>301</a>            </span><span class="self">self</span>.avg = <span class="self">self</span>.avg + (v - <span class="self">self</span>.avg) * f64::from(n) / f64::from(<span class="self">self</span>.count);
+<a href=#302 id=302 data-nosnippet>302</a>        }
+<a href=#303 id=303 data-nosnippet>303</a>    }
+<a href=#304 id=304 data-nosnippet>304</a>
+<a href=#305 id=305 data-nosnippet>305</a>    <span class="kw">fn </span>insert_key_counts(<span class="kw-2">&amp;mut </span><span class="self">self</span>, <span class="kw-2">mut </span>counts: Vec&lt;(i16, u32)&gt;) {
+<a href=#306 id=306 data-nosnippet>306</a>        <span class="comment">// Counts need to be sorted by key.
+<a href=#307 id=307 data-nosnippet>307</a>        </span>counts.sort_unstable_by(|(k1, <span class="kw">_</span>), (k2, <span class="kw">_</span>)| k1.cmp(k2));
+<a href=#308 id=308 data-nosnippet>308</a>
+<a href=#309 id=309 data-nosnippet>309</a>        <span class="kw">let </span><span class="kw-2">mut </span>temp = SmallVec::&lt;[Bin; <span class="number">4</span>]&gt;::new();
+<a href=#310 id=310 data-nosnippet>310</a>
+<a href=#311 id=311 data-nosnippet>311</a>        <span class="kw">let </span><span class="kw-2">mut </span>bins_idx = <span class="number">0</span>;
+<a href=#312 id=312 data-nosnippet>312</a>        <span class="kw">let </span><span class="kw-2">mut </span>key_idx = <span class="number">0</span>;
+<a href=#313 id=313 data-nosnippet>313</a>        <span class="kw">let </span>bins_len = <span class="self">self</span>.bins.len();
+<a href=#314 id=314 data-nosnippet>314</a>        <span class="kw">let </span>counts_len = counts.len();
+<a href=#315 id=315 data-nosnippet>315</a>
+<a href=#316 id=316 data-nosnippet>316</a>        <span class="comment">// PERF TODO: there's probably a fast path to be had where could check if all if the counts have existing bins
+<a href=#317 id=317 data-nosnippet>317</a>        // that aren't yet full, and we just update them directly, although we'd still be doing a linear scan to find
+<a href=#318 id=318 data-nosnippet>318</a>        // them since keys aren't 1:1 with their position in `self.bins` but using this method just to update one or two
+<a href=#319 id=319 data-nosnippet>319</a>        // bins is clearly suboptimal and we wouldn't really want to scan them all just to have to back out and actually
+<a href=#320 id=320 data-nosnippet>320</a>        // do the non-fast path.. maybe a first pass could be checking if the first/last key falls within our known
+<a href=#321 id=321 data-nosnippet>321</a>        // min/max key, and if it doesn't, then we know we have to go through the non-fast path, and if it passes, we do
+<a href=#322 id=322 data-nosnippet>322</a>        // the scan to see if we can just update bins directly?
+<a href=#323 id=323 data-nosnippet>323</a>        </span><span class="kw">while </span>bins_idx &lt; bins_len &amp;&amp; key_idx &lt; counts_len {
+<a href=#324 id=324 data-nosnippet>324</a>            <span class="kw">let </span>bin = <span class="self">self</span>.bins[bins_idx];
+<a href=#325 id=325 data-nosnippet>325</a>            <span class="kw">let </span>vk = counts[key_idx].<span class="number">0</span>;
+<a href=#326 id=326 data-nosnippet>326</a>            <span class="kw">let </span>kn = counts[key_idx].<span class="number">1</span>;
+<a href=#327 id=327 data-nosnippet>327</a>
+<a href=#328 id=328 data-nosnippet>328</a>            <span class="kw">match </span>bin.k.cmp(<span class="kw-2">&amp;</span>vk) {
+<a href=#329 id=329 data-nosnippet>329</a>                Ordering::Greater =&gt; {
+<a href=#330 id=330 data-nosnippet>330</a>                    generate_bins(<span class="kw-2">&amp;mut </span>temp, vk, kn);
+<a href=#331 id=331 data-nosnippet>331</a>                    key_idx += <span class="number">1</span>;
+<a href=#332 id=332 data-nosnippet>332</a>                }
+<a href=#333 id=333 data-nosnippet>333</a>                Ordering::Less =&gt; {
+<a href=#334 id=334 data-nosnippet>334</a>                    temp.push(bin);
+<a href=#335 id=335 data-nosnippet>335</a>                    bins_idx += <span class="number">1</span>;
+<a href=#336 id=336 data-nosnippet>336</a>                }
+<a href=#337 id=337 data-nosnippet>337</a>                Ordering::Equal =&gt; {
+<a href=#338 id=338 data-nosnippet>338</a>                    generate_bins(<span class="kw-2">&amp;mut </span>temp, bin.k, u32::from(bin.n) + kn);
+<a href=#339 id=339 data-nosnippet>339</a>                    bins_idx += <span class="number">1</span>;
+<a href=#340 id=340 data-nosnippet>340</a>                    key_idx += <span class="number">1</span>;
+<a href=#341 id=341 data-nosnippet>341</a>                }
+<a href=#342 id=342 data-nosnippet>342</a>            }
+<a href=#343 id=343 data-nosnippet>343</a>        }
+<a href=#344 id=344 data-nosnippet>344</a>
+<a href=#345 id=345 data-nosnippet>345</a>        temp.extend_from_slice(<span class="kw-2">&amp;</span><span class="self">self</span>.bins[bins_idx..]);
+<a href=#346 id=346 data-nosnippet>346</a>
+<a href=#347 id=347 data-nosnippet>347</a>        <span class="kw">while </span>key_idx &lt; counts_len {
+<a href=#348 id=348 data-nosnippet>348</a>            <span class="kw">let </span>vk = counts[key_idx].<span class="number">0</span>;
+<a href=#349 id=349 data-nosnippet>349</a>            <span class="kw">let </span>kn = counts[key_idx].<span class="number">1</span>;
+<a href=#350 id=350 data-nosnippet>350</a>            generate_bins(<span class="kw-2">&amp;mut </span>temp, vk, kn);
+<a href=#351 id=351 data-nosnippet>351</a>            key_idx += <span class="number">1</span>;
+<a href=#352 id=352 data-nosnippet>352</a>        }
+<a href=#353 id=353 data-nosnippet>353</a>
+<a href=#354 id=354 data-nosnippet>354</a>        trim_left(<span class="kw-2">&amp;mut </span>temp, SKETCH_CONFIG.bin_limit);
+<a href=#355 id=355 data-nosnippet>355</a>
+<a href=#356 id=356 data-nosnippet>356</a>        <span class="comment">// PERF TODO: This is where we might do a mem::swap instead so that we could shove the bin vector into an object
+<a href=#357 id=357 data-nosnippet>357</a>        // pool but I'm not sure this actually matters at the moment.
+<a href=#358 id=358 data-nosnippet>358</a>        </span><span class="self">self</span>.bins = temp;
+<a href=#359 id=359 data-nosnippet>359</a>    }
+<a href=#360 id=360 data-nosnippet>360</a>
+<a href=#361 id=361 data-nosnippet>361</a>    <span class="kw">fn </span>insert_keys(<span class="kw-2">&amp;mut </span><span class="self">self</span>, <span class="kw-2">mut </span>keys: Vec&lt;i16&gt;) {
+<a href=#362 id=362 data-nosnippet>362</a>        <span class="comment">// Updating more than 4 billion keys would be very very weird and likely indicative of something horribly
+<a href=#363 id=363 data-nosnippet>363</a>        // broken.
+<a href=#364 id=364 data-nosnippet>364</a>        </span><span class="macro">assert!</span>(keys.len() &lt;= u32::MAX.try_into().expect(<span class="string">"we don't support 16-bit systems"</span>));
+<a href=#365 id=365 data-nosnippet>365</a>
+<a href=#366 id=366 data-nosnippet>366</a>        keys.sort_unstable();
+<a href=#367 id=367 data-nosnippet>367</a>
+<a href=#368 id=368 data-nosnippet>368</a>        <span class="kw">let </span><span class="kw-2">mut </span>temp = SmallVec::&lt;[Bin; <span class="number">4</span>]&gt;::new();
+<a href=#369 id=369 data-nosnippet>369</a>
+<a href=#370 id=370 data-nosnippet>370</a>        <span class="kw">let </span><span class="kw-2">mut </span>bins_idx = <span class="number">0</span>;
+<a href=#371 id=371 data-nosnippet>371</a>        <span class="kw">let </span><span class="kw-2">mut </span>key_idx = <span class="number">0</span>;
+<a href=#372 id=372 data-nosnippet>372</a>        <span class="kw">let </span>bins_len = <span class="self">self</span>.bins.len();
+<a href=#373 id=373 data-nosnippet>373</a>        <span class="kw">let </span>keys_len = keys.len();
+<a href=#374 id=374 data-nosnippet>374</a>
+<a href=#375 id=375 data-nosnippet>375</a>        <span class="comment">// PERF TODO: there's probably a fast path to be had where could check if all if the counts have existing bins
+<a href=#376 id=376 data-nosnippet>376</a>        // that aren't yet full, and we just update them directly, although we'd still be doing a linear scan to find
+<a href=#377 id=377 data-nosnippet>377</a>        // them since keys aren't 1:1 with their position in `self.bins` but using this method just to update one or two
+<a href=#378 id=378 data-nosnippet>378</a>        // bins is clearly suboptimal and we wouldn't really want to scan them all just to have to back out and actually
+<a href=#379 id=379 data-nosnippet>379</a>        // do the non-fast path.. maybe a first pass could be checking if the first/last key falls within our known
+<a href=#380 id=380 data-nosnippet>380</a>        // min/max key, and if it doesn't, then we know we have to go through the non-fast path, and if it passes, we do
+<a href=#381 id=381 data-nosnippet>381</a>        // the scan to see if we can just update bins directly?
+<a href=#382 id=382 data-nosnippet>382</a>        </span><span class="kw">while </span>bins_idx &lt; bins_len &amp;&amp; key_idx &lt; keys_len {
+<a href=#383 id=383 data-nosnippet>383</a>            <span class="kw">let </span>bin = <span class="self">self</span>.bins[bins_idx];
+<a href=#384 id=384 data-nosnippet>384</a>            <span class="kw">let </span>vk = keys[key_idx];
+<a href=#385 id=385 data-nosnippet>385</a>
+<a href=#386 id=386 data-nosnippet>386</a>            <span class="kw">match </span>bin.k.cmp(<span class="kw-2">&amp;</span>vk) {
+<a href=#387 id=387 data-nosnippet>387</a>                Ordering::Greater =&gt; {
+<a href=#388 id=388 data-nosnippet>388</a>                    <span class="kw">let </span>kn = buf_count_leading_equal(<span class="kw-2">&amp;</span>keys, key_idx);
+<a href=#389 id=389 data-nosnippet>389</a>                    generate_bins(<span class="kw-2">&amp;mut </span>temp, vk, kn);
+<a href=#390 id=390 data-nosnippet>390</a>                    key_idx += kn <span class="kw">as </span>usize;
+<a href=#391 id=391 data-nosnippet>391</a>                }
+<a href=#392 id=392 data-nosnippet>392</a>                Ordering::Less =&gt; {
+<a href=#393 id=393 data-nosnippet>393</a>                    temp.push(bin);
+<a href=#394 id=394 data-nosnippet>394</a>                    bins_idx += <span class="number">1</span>;
+<a href=#395 id=395 data-nosnippet>395</a>                }
+<a href=#396 id=396 data-nosnippet>396</a>                Ordering::Equal =&gt; {
+<a href=#397 id=397 data-nosnippet>397</a>                    <span class="kw">let </span>kn = buf_count_leading_equal(<span class="kw-2">&amp;</span>keys, key_idx);
+<a href=#398 id=398 data-nosnippet>398</a>                    generate_bins(<span class="kw-2">&amp;mut </span>temp, bin.k, u32::from(bin.n) + kn);
+<a href=#399 id=399 data-nosnippet>399</a>                    bins_idx += <span class="number">1</span>;
+<a href=#400 id=400 data-nosnippet>400</a>                    key_idx += kn <span class="kw">as </span>usize;
+<a href=#401 id=401 data-nosnippet>401</a>                }
+<a href=#402 id=402 data-nosnippet>402</a>            }
+<a href=#403 id=403 data-nosnippet>403</a>        }
+<a href=#404 id=404 data-nosnippet>404</a>
+<a href=#405 id=405 data-nosnippet>405</a>        temp.extend_from_slice(<span class="kw-2">&amp;</span><span class="self">self</span>.bins[bins_idx..]);
+<a href=#406 id=406 data-nosnippet>406</a>
+<a href=#407 id=407 data-nosnippet>407</a>        <span class="kw">while </span>key_idx &lt; keys_len {
+<a href=#408 id=408 data-nosnippet>408</a>            <span class="kw">let </span>vk = keys[key_idx];
+<a href=#409 id=409 data-nosnippet>409</a>            <span class="kw">let </span>kn = buf_count_leading_equal(<span class="kw-2">&amp;</span>keys, key_idx);
+<a href=#410 id=410 data-nosnippet>410</a>            generate_bins(<span class="kw-2">&amp;mut </span>temp, vk, kn);
+<a href=#411 id=411 data-nosnippet>411</a>            key_idx += kn <span class="kw">as </span>usize;
+<a href=#412 id=412 data-nosnippet>412</a>        }
+<a href=#413 id=413 data-nosnippet>413</a>
+<a href=#414 id=414 data-nosnippet>414</a>        trim_left(<span class="kw-2">&amp;mut </span>temp, SKETCH_CONFIG.bin_limit);
+<a href=#415 id=415 data-nosnippet>415</a>
+<a href=#416 id=416 data-nosnippet>416</a>        <span class="comment">// PERF TODO: This is where we might do a mem::swap instead so that we could shove the bin vector into an object
+<a href=#417 id=417 data-nosnippet>417</a>        // pool but I'm not sure this actually matters at the moment.
+<a href=#418 id=418 data-nosnippet>418</a>        </span><span class="self">self</span>.bins = temp;
+<a href=#419 id=419 data-nosnippet>419</a>    }
+<a href=#420 id=420 data-nosnippet>420</a>
+<a href=#421 id=421 data-nosnippet>421</a>    <span class="doccomment">/// Inserts a single value into the sketch.
+<a href=#422 id=422 data-nosnippet>422</a>    </span><span class="kw">pub fn </span>insert(<span class="kw-2">&amp;mut </span><span class="self">self</span>, v: f64) {
+<a href=#423 id=423 data-nosnippet>423</a>        <span class="comment">// TODO: This should return a result that makes sure we have enough room to actually add 1 more sample without
+<a href=#424 id=424 data-nosnippet>424</a>        // hitting `self.config.max_count()`
+<a href=#425 id=425 data-nosnippet>425</a>        </span><span class="self">self</span>.adjust_basic_stats(v, <span class="number">1</span>);
+<a href=#426 id=426 data-nosnippet>426</a>
+<a href=#427 id=427 data-nosnippet>427</a>        <span class="kw">let </span>key = SKETCH_CONFIG.key(v);
+<a href=#428 id=428 data-nosnippet>428</a>
+<a href=#429 id=429 data-nosnippet>429</a>        <span class="kw">let </span><span class="kw-2">mut </span>insert_at = <span class="prelude-val">None</span>;
+<a href=#430 id=430 data-nosnippet>430</a>
+<a href=#431 id=431 data-nosnippet>431</a>        <span class="kw">for </span>(bin_idx, b) <span class="kw">in </span><span class="self">self</span>.bins.iter_mut().enumerate() {
+<a href=#432 id=432 data-nosnippet>432</a>            <span class="kw">if </span>b.k == key {
+<a href=#433 id=433 data-nosnippet>433</a>                <span class="kw">if </span>b.n &lt; MAX_BIN_WIDTH {
+<a href=#434 id=434 data-nosnippet>434</a>                    <span class="comment">// Fast path for adding to an existing bin without overflow.
+<a href=#435 id=435 data-nosnippet>435</a>                    </span>b.n += <span class="number">1</span>;
+<a href=#436 id=436 data-nosnippet>436</a>                    <span class="kw">return</span>;
+<a href=#437 id=437 data-nosnippet>437</a>                } <span class="kw">else </span>{
+<a href=#438 id=438 data-nosnippet>438</a>                    insert_at = <span class="prelude-val">Some</span>(bin_idx);
+<a href=#439 id=439 data-nosnippet>439</a>                    <span class="kw">break</span>;
+<a href=#440 id=440 data-nosnippet>440</a>                }
+<a href=#441 id=441 data-nosnippet>441</a>            }
+<a href=#442 id=442 data-nosnippet>442</a>            <span class="kw">if </span>b.k &gt; key {
+<a href=#443 id=443 data-nosnippet>443</a>                insert_at = <span class="prelude-val">Some</span>(bin_idx);
+<a href=#444 id=444 data-nosnippet>444</a>                <span class="kw">break</span>;
+<a href=#445 id=445 data-nosnippet>445</a>            }
+<a href=#446 id=446 data-nosnippet>446</a>        }
+<a href=#447 id=447 data-nosnippet>447</a>
+<a href=#448 id=448 data-nosnippet>448</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(bin_idx) = insert_at {
+<a href=#449 id=449 data-nosnippet>449</a>            <span class="self">self</span>.bins.insert(bin_idx, Bin { k: key, n: <span class="number">1 </span>});
+<a href=#450 id=450 data-nosnippet>450</a>        } <span class="kw">else </span>{
+<a href=#451 id=451 data-nosnippet>451</a>            <span class="self">self</span>.bins.push(Bin { k: key, n: <span class="number">1 </span>});
+<a href=#452 id=452 data-nosnippet>452</a>        }
+<a href=#453 id=453 data-nosnippet>453</a>        trim_left(<span class="kw-2">&amp;mut </span><span class="self">self</span>.bins, SKETCH_CONFIG.bin_limit);
+<a href=#454 id=454 data-nosnippet>454</a>    }
+<a href=#455 id=455 data-nosnippet>455</a>
+<a href=#456 id=456 data-nosnippet>456</a>    <span class="doccomment">/// Inserts many values into the sketch.
+<a href=#457 id=457 data-nosnippet>457</a>    </span><span class="kw">pub fn </span>insert_many(<span class="kw-2">&amp;mut </span><span class="self">self</span>, vs: <span class="kw-2">&amp;</span>[f64]) {
+<a href=#458 id=458 data-nosnippet>458</a>        <span class="comment">// TODO: This should return a result that makes sure we have enough room to actually add N more samples without
+<a href=#459 id=459 data-nosnippet>459</a>        // hitting `self.config.bin_limit`.
+<a href=#460 id=460 data-nosnippet>460</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>keys = Vec::with_capacity(vs.len());
+<a href=#461 id=461 data-nosnippet>461</a>        <span class="kw">for </span>v <span class="kw">in </span>vs {
+<a href=#462 id=462 data-nosnippet>462</a>            <span class="self">self</span>.adjust_basic_stats(<span class="kw-2">*</span>v, <span class="number">1</span>);
+<a href=#463 id=463 data-nosnippet>463</a>            keys.push(SKETCH_CONFIG.key(<span class="kw-2">*</span>v));
+<a href=#464 id=464 data-nosnippet>464</a>        }
+<a href=#465 id=465 data-nosnippet>465</a>        <span class="self">self</span>.insert_keys(keys);
+<a href=#466 id=466 data-nosnippet>466</a>    }
+<a href=#467 id=467 data-nosnippet>467</a>
+<a href=#468 id=468 data-nosnippet>468</a>    <span class="doccomment">/// Inserts a single value into the sketch `n` times.
+<a href=#469 id=469 data-nosnippet>469</a>    </span><span class="kw">pub fn </span>insert_n(<span class="kw-2">&amp;mut </span><span class="self">self</span>, v: f64, n: u32) {
+<a href=#470 id=470 data-nosnippet>470</a>        <span class="comment">// TODO: this should return a result that makes sure we have enough room to actually add N more samples without
+<a href=#471 id=471 data-nosnippet>471</a>        // hitting `self.config.max_count()`
+<a href=#472 id=472 data-nosnippet>472</a>        </span><span class="self">self</span>.adjust_basic_stats(v, n);
+<a href=#473 id=473 data-nosnippet>473</a>
+<a href=#474 id=474 data-nosnippet>474</a>        <span class="kw">let </span>key = SKETCH_CONFIG.key(v);
+<a href=#475 id=475 data-nosnippet>475</a>        <span class="self">self</span>.insert_key_counts(<span class="macro">vec!</span>[(key, n)]);
+<a href=#476 id=476 data-nosnippet>476</a>    }
+<a href=#477 id=477 data-nosnippet>477</a>
+<a href=#478 id=478 data-nosnippet>478</a>    <span class="kw">fn </span>insert_interpolate_bucket(<span class="kw-2">&amp;mut </span><span class="self">self</span>, lower: f64, upper: f64, count: u32) {
+<a href=#479 id=479 data-nosnippet>479</a>        <span class="comment">// Find the keys for the bins where the lower bound and upper bound would end up, and collect all of the keys in
+<a href=#480 id=480 data-nosnippet>480</a>        // between, inclusive.
+<a href=#481 id=481 data-nosnippet>481</a>        </span><span class="kw">let </span>lower_key = SKETCH_CONFIG.key(lower);
+<a href=#482 id=482 data-nosnippet>482</a>        <span class="kw">let </span>upper_key = SKETCH_CONFIG.key(upper);
+<a href=#483 id=483 data-nosnippet>483</a>        <span class="kw">let </span>keys = (lower_key..=upper_key).collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;();
+<a href=#484 id=484 data-nosnippet>484</a>
+<a href=#485 id=485 data-nosnippet>485</a>        <span class="kw">let </span><span class="kw-2">mut </span>key_counts = Vec::new();
+<a href=#486 id=486 data-nosnippet>486</a>        <span class="kw">let </span><span class="kw-2">mut </span>remaining_count = count;
+<a href=#487 id=487 data-nosnippet>487</a>        <span class="kw">let </span>distance = upper - lower;
+<a href=#488 id=488 data-nosnippet>488</a>        <span class="kw">let </span><span class="kw-2">mut </span>start_idx = <span class="number">0</span>;
+<a href=#489 id=489 data-nosnippet>489</a>        <span class="kw">let </span><span class="kw-2">mut </span>end_idx = <span class="number">1</span>;
+<a href=#490 id=490 data-nosnippet>490</a>        <span class="kw">let </span><span class="kw-2">mut </span>lower_bound = SKETCH_CONFIG.bin_lower_bound(keys[start_idx]);
+<a href=#491 id=491 data-nosnippet>491</a>        <span class="kw">let </span><span class="kw-2">mut </span>remainder = <span class="number">0.0</span>;
+<a href=#492 id=492 data-nosnippet>492</a>
+<a href=#493 id=493 data-nosnippet>493</a>        <span class="kw">while </span>end_idx &lt; keys.len() &amp;&amp; remaining_count &gt; <span class="number">0 </span>{
+<a href=#494 id=494 data-nosnippet>494</a>            <span class="comment">// For each key, map the total distance between the input lower/upper bound against the sketch lower/upper
+<a href=#495 id=495 data-nosnippet>495</a>            // bound for the current sketch bin, which tells us how much of the input count to apply to the current
+<a href=#496 id=496 data-nosnippet>496</a>            // sketch bin.
+<a href=#497 id=497 data-nosnippet>497</a>            </span><span class="kw">let </span>upper_bound = SKETCH_CONFIG.bin_lower_bound(keys[end_idx]);
+<a href=#498 id=498 data-nosnippet>498</a>            <span class="kw">let </span>fkn = ((upper_bound - lower_bound) / distance) * f64::from(count);
+<a href=#499 id=499 data-nosnippet>499</a>            <span class="kw">if </span>fkn &gt; <span class="number">1.0 </span>{
+<a href=#500 id=500 data-nosnippet>500</a>                remainder += fkn - fkn.trunc();
+<a href=#501 id=501 data-nosnippet>501</a>            }
+<a href=#502 id=502 data-nosnippet>502</a>
+<a href=#503 id=503 data-nosnippet>503</a>            <span class="comment">// SAFETY: This integer cast is intentional: we want to get the non-fractional part, as we've captured the
+<a href=#504 id=504 data-nosnippet>504</a>            // fractional part in the above conditional.
+<a href=#505 id=505 data-nosnippet>505</a>            </span><span class="attr">#[allow(clippy::cast_possible_truncation)]
+<a href=#506 id=506 data-nosnippet>506</a>            </span><span class="kw">let </span><span class="kw-2">mut </span>kn = fkn <span class="kw">as </span>u32;
+<a href=#507 id=507 data-nosnippet>507</a>            <span class="kw">if </span>remainder &gt; <span class="number">1.0 </span>{
+<a href=#508 id=508 data-nosnippet>508</a>                kn += <span class="number">1</span>;
+<a href=#509 id=509 data-nosnippet>509</a>                remainder -= <span class="number">1.0</span>;
+<a href=#510 id=510 data-nosnippet>510</a>            }
+<a href=#511 id=511 data-nosnippet>511</a>
+<a href=#512 id=512 data-nosnippet>512</a>            <span class="kw">if </span>kn &gt; <span class="number">0 </span>{
+<a href=#513 id=513 data-nosnippet>513</a>                <span class="kw">if </span>kn &gt; remaining_count {
+<a href=#514 id=514 data-nosnippet>514</a>                    kn = remaining_count;
+<a href=#515 id=515 data-nosnippet>515</a>                }
+<a href=#516 id=516 data-nosnippet>516</a>
+<a href=#517 id=517 data-nosnippet>517</a>                <span class="self">self</span>.adjust_basic_stats(lower_bound, kn);
+<a href=#518 id=518 data-nosnippet>518</a>                key_counts.push((keys[start_idx], kn));
+<a href=#519 id=519 data-nosnippet>519</a>
+<a href=#520 id=520 data-nosnippet>520</a>                remaining_count -= kn;
+<a href=#521 id=521 data-nosnippet>521</a>                start_idx = end_idx;
+<a href=#522 id=522 data-nosnippet>522</a>                lower_bound = upper_bound;
+<a href=#523 id=523 data-nosnippet>523</a>            }
+<a href=#524 id=524 data-nosnippet>524</a>
+<a href=#525 id=525 data-nosnippet>525</a>            end_idx += <span class="number">1</span>;
+<a href=#526 id=526 data-nosnippet>526</a>        }
+<a href=#527 id=527 data-nosnippet>527</a>
+<a href=#528 id=528 data-nosnippet>528</a>        <span class="kw">if </span>remaining_count &gt; <span class="number">0 </span>{
+<a href=#529 id=529 data-nosnippet>529</a>            <span class="kw">let </span>last_key = keys[start_idx];
+<a href=#530 id=530 data-nosnippet>530</a>            lower_bound = SKETCH_CONFIG.bin_lower_bound(last_key);
+<a href=#531 id=531 data-nosnippet>531</a>            <span class="self">self</span>.adjust_basic_stats(lower_bound, remaining_count);
+<a href=#532 id=532 data-nosnippet>532</a>            key_counts.push((last_key, remaining_count));
+<a href=#533 id=533 data-nosnippet>533</a>        }
+<a href=#534 id=534 data-nosnippet>534</a>
+<a href=#535 id=535 data-nosnippet>535</a>        <span class="self">self</span>.insert_key_counts(key_counts);
+<a href=#536 id=536 data-nosnippet>536</a>    }
+<a href=#537 id=537 data-nosnippet>537</a>
+<a href=#538 id=538 data-nosnippet>538</a>    <span class="doccomment">/// ## Errors
+<a href=#539 id=539 data-nosnippet>539</a>    ///
+<a href=#540 id=540 data-nosnippet>540</a>    /// Returns an error if a bucket size is greater that `u32::MAX`.
+<a href=#541 id=541 data-nosnippet>541</a>    </span><span class="kw">pub fn </span>insert_interpolate_buckets(<span class="kw-2">&amp;mut </span><span class="self">self</span>, <span class="kw-2">mut </span>buckets: Vec&lt;Bucket&gt;) -&gt; <span class="prelude-ty">Result</span>&lt;(), <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str&gt; {
+<a href=#542 id=542 data-nosnippet>542</a>        <span class="comment">// Buckets need to be sorted from lowest to highest so that we can properly calculate the rolling lower/upper
+<a href=#543 id=543 data-nosnippet>543</a>        // bounds.
+<a href=#544 id=544 data-nosnippet>544</a>        </span>buckets.sort_by(|a, b| {
+<a href=#545 id=545 data-nosnippet>545</a>            <span class="kw">let </span>oa = OrderedFloat(a.upper_limit);
+<a href=#546 id=546 data-nosnippet>546</a>            <span class="kw">let </span>ob = OrderedFloat(b.upper_limit);
+<a href=#547 id=547 data-nosnippet>547</a>
+<a href=#548 id=548 data-nosnippet>548</a>            oa.cmp(<span class="kw-2">&amp;</span>ob)
+<a href=#549 id=549 data-nosnippet>549</a>        });
+<a href=#550 id=550 data-nosnippet>550</a>
+<a href=#551 id=551 data-nosnippet>551</a>        <span class="kw">let </span><span class="kw-2">mut </span>lower = f64::NEG_INFINITY;
+<a href=#552 id=552 data-nosnippet>552</a>
+<a href=#553 id=553 data-nosnippet>553</a>        <span class="kw">if </span>buckets.iter().any(|bucket| bucket.count &gt; u64::from(u32::MAX)) {
+<a href=#554 id=554 data-nosnippet>554</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(<span class="string">"bucket size greater than u32::MAX"</span>);
+<a href=#555 id=555 data-nosnippet>555</a>        }
+<a href=#556 id=556 data-nosnippet>556</a>
+<a href=#557 id=557 data-nosnippet>557</a>        <span class="kw">for </span>bucket <span class="kw">in </span>buckets {
+<a href=#558 id=558 data-nosnippet>558</a>            <span class="kw">let </span><span class="kw-2">mut </span>upper = bucket.upper_limit;
+<a href=#559 id=559 data-nosnippet>559</a>            <span class="kw">if </span>upper.is_sign_positive() &amp;&amp; upper.is_infinite() {
+<a href=#560 id=560 data-nosnippet>560</a>                upper = lower;
+<a href=#561 id=561 data-nosnippet>561</a>            } <span class="kw">else if </span>lower.is_sign_negative() &amp;&amp; lower.is_infinite() {
+<a href=#562 id=562 data-nosnippet>562</a>                lower = upper;
+<a href=#563 id=563 data-nosnippet>563</a>            }
+<a href=#564 id=564 data-nosnippet>564</a>
+<a href=#565 id=565 data-nosnippet>565</a>            <span class="comment">// Each bucket should only have the values that fit within that bucket, which is generally enforced at the
+<a href=#566 id=566 data-nosnippet>566</a>            // source level by converting from cumulative buckets, or enforced by the internal structures that hold
+<a href=#567 id=567 data-nosnippet>567</a>            // bucketed data i.e. Vector's internal `Histogram` data structure used for collecting histograms from
+<a href=#568 id=568 data-nosnippet>568</a>            // `metrics`.
+<a href=#569 id=569 data-nosnippet>569</a>            </span><span class="kw">let </span>count =
+<a href=#570 id=570 data-nosnippet>570</a>                u32::try_from(bucket.count).unwrap_or_else(|<span class="kw">_</span>| <span class="macro">unreachable!</span>(<span class="string">"count range has already been checked."</span>));
+<a href=#571 id=571 data-nosnippet>571</a>
+<a href=#572 id=572 data-nosnippet>572</a>            <span class="self">self</span>.insert_interpolate_bucket(lower, upper, count);
+<a href=#573 id=573 data-nosnippet>573</a>            lower = bucket.upper_limit;
+<a href=#574 id=574 data-nosnippet>574</a>        }
+<a href=#575 id=575 data-nosnippet>575</a>
+<a href=#576 id=576 data-nosnippet>576</a>        <span class="prelude-val">Ok</span>(())
+<a href=#577 id=577 data-nosnippet>577</a>    }
+<a href=#578 id=578 data-nosnippet>578</a>
+<a href=#579 id=579 data-nosnippet>579</a>    <span class="doccomment">/// Adds a bin directly into the sketch.
+<a href=#580 id=580 data-nosnippet>580</a>    ///
+<a href=#581 id=581 data-nosnippet>581</a>    /// Used only for unit testing so that we can create a sketch with an exact layout, which allows testing around the
+<a href=#582 id=582 data-nosnippet>582</a>    /// resulting bins when feeding in specific values, as well as generating explicitly bad layouts for testing.
+<a href=#583 id=583 data-nosnippet>583</a>    </span><span class="attr">#[allow(dead_code)]
+<a href=#584 id=584 data-nosnippet>584</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>insert_raw_bin(<span class="kw-2">&amp;mut </span><span class="self">self</span>, k: i16, n: u16) {
+<a href=#585 id=585 data-nosnippet>585</a>        <span class="kw">let </span>v = SKETCH_CONFIG.bin_lower_bound(k);
+<a href=#586 id=586 data-nosnippet>586</a>        <span class="self">self</span>.adjust_basic_stats(v, u32::from(n));
+<a href=#587 id=587 data-nosnippet>587</a>        <span class="self">self</span>.bins.push(Bin { k, n });
+<a href=#588 id=588 data-nosnippet>588</a>    }
+<a href=#589 id=589 data-nosnippet>589</a>
+<a href=#590 id=590 data-nosnippet>590</a>    <span class="doccomment">/// Gets the value at a given quantile.
+<a href=#591 id=591 data-nosnippet>591</a>    </span><span class="kw">pub fn </span>quantile(<span class="kw-2">&amp;</span><span class="self">self</span>, q: f64) -&gt; <span class="prelude-ty">Option</span>&lt;f64&gt; {
+<a href=#592 id=592 data-nosnippet>592</a>        <span class="kw">if </span><span class="self">self</span>.count == <span class="number">0 </span>{
+<a href=#593 id=593 data-nosnippet>593</a>            <span class="kw">return </span><span class="prelude-val">None</span>;
+<a href=#594 id=594 data-nosnippet>594</a>        }
+<a href=#595 id=595 data-nosnippet>595</a>
+<a href=#596 id=596 data-nosnippet>596</a>        <span class="kw">if </span>q &lt;= <span class="number">0.0 </span>{
+<a href=#597 id=597 data-nosnippet>597</a>            <span class="kw">return </span><span class="prelude-val">Some</span>(<span class="self">self</span>.min);
+<a href=#598 id=598 data-nosnippet>598</a>        }
+<a href=#599 id=599 data-nosnippet>599</a>
+<a href=#600 id=600 data-nosnippet>600</a>        <span class="kw">if </span>q &gt;= <span class="number">1.0 </span>{
+<a href=#601 id=601 data-nosnippet>601</a>            <span class="kw">return </span><span class="prelude-val">Some</span>(<span class="self">self</span>.max);
+<a href=#602 id=602 data-nosnippet>602</a>        }
+<a href=#603 id=603 data-nosnippet>603</a>
+<a href=#604 id=604 data-nosnippet>604</a>        <span class="kw">let </span><span class="kw-2">mut </span>n = <span class="number">0.0</span>;
+<a href=#605 id=605 data-nosnippet>605</a>        <span class="kw">let </span><span class="kw-2">mut </span>estimated = <span class="prelude-val">None</span>;
+<a href=#606 id=606 data-nosnippet>606</a>        <span class="kw">let </span>wanted_rank = rank(<span class="self">self</span>.count, q);
+<a href=#607 id=607 data-nosnippet>607</a>
+<a href=#608 id=608 data-nosnippet>608</a>        <span class="kw">for </span>(i, bin) <span class="kw">in </span><span class="self">self</span>.bins.iter().enumerate() {
+<a href=#609 id=609 data-nosnippet>609</a>            n += f64::from(bin.n);
+<a href=#610 id=610 data-nosnippet>610</a>            <span class="kw">if </span>n &lt;= wanted_rank {
+<a href=#611 id=611 data-nosnippet>611</a>                <span class="kw">continue</span>;
+<a href=#612 id=612 data-nosnippet>612</a>            }
+<a href=#613 id=613 data-nosnippet>613</a>
+<a href=#614 id=614 data-nosnippet>614</a>            <span class="kw">let </span>weight = (n - wanted_rank) / f64::from(bin.n);
+<a href=#615 id=615 data-nosnippet>615</a>            <span class="kw">let </span><span class="kw-2">mut </span>v_low = SKETCH_CONFIG.bin_lower_bound(bin.k);
+<a href=#616 id=616 data-nosnippet>616</a>            <span class="kw">let </span><span class="kw-2">mut </span>v_high = v_low * SKETCH_CONFIG.gamma_v;
+<a href=#617 id=617 data-nosnippet>617</a>
+<a href=#618 id=618 data-nosnippet>618</a>            <span class="kw">if </span>i == <span class="self">self</span>.bins.len() {
+<a href=#619 id=619 data-nosnippet>619</a>                v_high = <span class="self">self</span>.max;
+<a href=#620 id=620 data-nosnippet>620</a>            } <span class="kw">else if </span>i == <span class="number">0 </span>{
+<a href=#621 id=621 data-nosnippet>621</a>                v_low = <span class="self">self</span>.min;
+<a href=#622 id=622 data-nosnippet>622</a>            }
+<a href=#623 id=623 data-nosnippet>623</a>
+<a href=#624 id=624 data-nosnippet>624</a>            estimated = <span class="prelude-val">Some</span>(v_low * weight + v_high * (<span class="number">1.0 </span>- weight));
+<a href=#625 id=625 data-nosnippet>625</a>            <span class="kw">break</span>;
+<a href=#626 id=626 data-nosnippet>626</a>        }
+<a href=#627 id=627 data-nosnippet>627</a>
+<a href=#628 id=628 data-nosnippet>628</a>        estimated.map(|v| v.clamp(<span class="self">self</span>.min, <span class="self">self</span>.max)).or(<span class="prelude-val">Some</span>(f64::NAN))
+<a href=#629 id=629 data-nosnippet>629</a>    }
+<a href=#630 id=630 data-nosnippet>630</a>
+<a href=#631 id=631 data-nosnippet>631</a>    <span class="doccomment">/// Merges another sketch into this sketch, without a loss of accuracy.
+<a href=#632 id=632 data-nosnippet>632</a>    ///
+<a href=#633 id=633 data-nosnippet>633</a>    /// All samples present in the other sketch will be correctly represented in this sketch, and summary statistics
+<a href=#634 id=634 data-nosnippet>634</a>    /// such as the sum, average, count, min, and max, will represent the sum of samples from both sketches.
+<a href=#635 id=635 data-nosnippet>635</a>    </span><span class="kw">pub fn </span>merge(<span class="kw-2">&amp;mut </span><span class="self">self</span>, other: <span class="kw-2">&amp;</span>DDSketch) {
+<a href=#636 id=636 data-nosnippet>636</a>        <span class="comment">// Merge the basic statistics together.
+<a href=#637 id=637 data-nosnippet>637</a>        </span><span class="self">self</span>.count += other.count;
+<a href=#638 id=638 data-nosnippet>638</a>        <span class="kw">if </span>other.max &gt; <span class="self">self</span>.max {
+<a href=#639 id=639 data-nosnippet>639</a>            <span class="self">self</span>.max = other.max;
+<a href=#640 id=640 data-nosnippet>640</a>        }
+<a href=#641 id=641 data-nosnippet>641</a>        <span class="kw">if </span>other.min &lt; <span class="self">self</span>.min {
+<a href=#642 id=642 data-nosnippet>642</a>            <span class="self">self</span>.min = other.min;
+<a href=#643 id=643 data-nosnippet>643</a>        }
+<a href=#644 id=644 data-nosnippet>644</a>        <span class="self">self</span>.sum += other.sum;
+<a href=#645 id=645 data-nosnippet>645</a>        <span class="self">self</span>.avg = <span class="self">self</span>.avg + (other.avg - <span class="self">self</span>.avg) * f64::from(other.count) / f64::from(<span class="self">self</span>.count);
+<a href=#646 id=646 data-nosnippet>646</a>
+<a href=#647 id=647 data-nosnippet>647</a>        <span class="comment">// Now merge the bins.
+<a href=#648 id=648 data-nosnippet>648</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>temp = SmallVec::&lt;[Bin; <span class="number">4</span>]&gt;::new();
+<a href=#649 id=649 data-nosnippet>649</a>
+<a href=#650 id=650 data-nosnippet>650</a>        <span class="kw">let </span><span class="kw-2">mut </span>bins_idx = <span class="number">0</span>;
+<a href=#651 id=651 data-nosnippet>651</a>        <span class="kw">for </span>other_bin <span class="kw">in </span><span class="kw-2">&amp;</span>other.bins {
+<a href=#652 id=652 data-nosnippet>652</a>            <span class="kw">let </span>start = bins_idx;
+<a href=#653 id=653 data-nosnippet>653</a>            <span class="kw">while </span>bins_idx &lt; <span class="self">self</span>.bins.len() &amp;&amp; <span class="self">self</span>.bins[bins_idx].k &lt; other_bin.k {
+<a href=#654 id=654 data-nosnippet>654</a>                bins_idx += <span class="number">1</span>;
+<a href=#655 id=655 data-nosnippet>655</a>            }
+<a href=#656 id=656 data-nosnippet>656</a>
+<a href=#657 id=657 data-nosnippet>657</a>            temp.extend_from_slice(<span class="kw-2">&amp;</span><span class="self">self</span>.bins[start..bins_idx]);
+<a href=#658 id=658 data-nosnippet>658</a>
+<a href=#659 id=659 data-nosnippet>659</a>            <span class="kw">if </span>bins_idx &gt;= <span class="self">self</span>.bins.len() || <span class="self">self</span>.bins[bins_idx].k &gt; other_bin.k {
+<a href=#660 id=660 data-nosnippet>660</a>                temp.push(<span class="kw-2">*</span>other_bin);
+<a href=#661 id=661 data-nosnippet>661</a>            } <span class="kw">else if </span><span class="self">self</span>.bins[bins_idx].k == other_bin.k {
+<a href=#662 id=662 data-nosnippet>662</a>                generate_bins(
+<a href=#663 id=663 data-nosnippet>663</a>                    <span class="kw-2">&amp;mut </span>temp,
+<a href=#664 id=664 data-nosnippet>664</a>                    other_bin.k,
+<a href=#665 id=665 data-nosnippet>665</a>                    u32::from(other_bin.n) + u32::from(<span class="self">self</span>.bins[bins_idx].n),
+<a href=#666 id=666 data-nosnippet>666</a>                );
+<a href=#667 id=667 data-nosnippet>667</a>                bins_idx += <span class="number">1</span>;
+<a href=#668 id=668 data-nosnippet>668</a>            }
+<a href=#669 id=669 data-nosnippet>669</a>        }
+<a href=#670 id=670 data-nosnippet>670</a>
+<a href=#671 id=671 data-nosnippet>671</a>        temp.extend_from_slice(<span class="kw-2">&amp;</span><span class="self">self</span>.bins[bins_idx..]);
+<a href=#672 id=672 data-nosnippet>672</a>        trim_left(<span class="kw-2">&amp;mut </span>temp, SKETCH_CONFIG.bin_limit);
+<a href=#673 id=673 data-nosnippet>673</a>
+<a href=#674 id=674 data-nosnippet>674</a>        <span class="self">self</span>.bins = temp;
+<a href=#675 id=675 data-nosnippet>675</a>    }
+<a href=#676 id=676 data-nosnippet>676</a>
+<a href=#677 id=677 data-nosnippet>677</a>    <span class="doccomment">/// Merges this sketch into the `Dogsketch` Protocol Buffers representation.
+<a href=#678 id=678 data-nosnippet>678</a>    </span><span class="kw">pub fn </span>merge_to_dogsketch(<span class="kw-2">&amp;</span><span class="self">self</span>, dogsketch: <span class="kw-2">&amp;mut </span>Dogsketch) {
+<a href=#679 id=679 data-nosnippet>679</a>        dogsketch.set_cnt(i64::from(<span class="self">self</span>.count));
+<a href=#680 id=680 data-nosnippet>680</a>        dogsketch.set_min(<span class="self">self</span>.min);
+<a href=#681 id=681 data-nosnippet>681</a>        dogsketch.set_max(<span class="self">self</span>.max);
+<a href=#682 id=682 data-nosnippet>682</a>        dogsketch.set_avg(<span class="self">self</span>.avg);
+<a href=#683 id=683 data-nosnippet>683</a>        dogsketch.set_sum(<span class="self">self</span>.sum);
+<a href=#684 id=684 data-nosnippet>684</a>
+<a href=#685 id=685 data-nosnippet>685</a>        <span class="kw">let </span><span class="kw-2">mut </span>k = Vec::new();
+<a href=#686 id=686 data-nosnippet>686</a>        <span class="kw">let </span><span class="kw-2">mut </span>n = Vec::new();
+<a href=#687 id=687 data-nosnippet>687</a>
+<a href=#688 id=688 data-nosnippet>688</a>        <span class="kw">for </span>bin <span class="kw">in </span><span class="kw-2">&amp;</span><span class="self">self</span>.bins {
+<a href=#689 id=689 data-nosnippet>689</a>            k.push(i32::from(bin.k));
+<a href=#690 id=690 data-nosnippet>690</a>            n.push(u32::from(bin.n));
+<a href=#691 id=691 data-nosnippet>691</a>        }
+<a href=#692 id=692 data-nosnippet>692</a>
+<a href=#693 id=693 data-nosnippet>693</a>        dogsketch.set_k(k);
+<a href=#694 id=694 data-nosnippet>694</a>        dogsketch.set_n(n);
+<a href=#695 id=695 data-nosnippet>695</a>    }
+<a href=#696 id=696 data-nosnippet>696</a>}
+<a href=#697 id=697 data-nosnippet>697</a>
+<a href=#698 id=698 data-nosnippet>698</a><span class="kw">impl </span>PartialEq <span class="kw">for </span>DDSketch {
+<a href=#699 id=699 data-nosnippet>699</a>    <span class="kw">fn </span>eq(<span class="kw-2">&amp;</span><span class="self">self</span>, other: <span class="kw-2">&amp;</span><span class="self">Self</span>) -&gt; bool {
+<a href=#700 id=700 data-nosnippet>700</a>        <span class="comment">// We skip checking the configuration because we don't allow creating configurations by hand, and it's always
+<a href=#701 id=701 data-nosnippet>701</a>        // locked to the constants used by the Datadog Agent.  We only check the configuration equality manually in
+<a href=#702 id=702 data-nosnippet>702</a>        // `DDSketch::merge`, to protect ourselves in the future if different configurations become allowed.
+<a href=#703 id=703 data-nosnippet>703</a>        //
+<a href=#704 id=704 data-nosnippet>704</a>        // Additionally, we also use floating-point-specific relative comparisons for sum/avg because they can be
+<a href=#705 id=705 data-nosnippet>705</a>        // minimally different between sketches purely due to floating-point behavior, despite being fed the same exact
+<a href=#706 id=706 data-nosnippet>706</a>        // data in terms of recorded samples.
+<a href=#707 id=707 data-nosnippet>707</a>        </span><span class="self">self</span>.count == other.count
+<a href=#708 id=708 data-nosnippet>708</a>            &amp;&amp; float_eq(<span class="self">self</span>.min, other.min)
+<a href=#709 id=709 data-nosnippet>709</a>            &amp;&amp; float_eq(<span class="self">self</span>.max, other.max)
+<a href=#710 id=710 data-nosnippet>710</a>            &amp;&amp; float_eq(<span class="self">self</span>.sum, other.sum)
+<a href=#711 id=711 data-nosnippet>711</a>            &amp;&amp; float_eq(<span class="self">self</span>.avg, other.avg)
+<a href=#712 id=712 data-nosnippet>712</a>            &amp;&amp; <span class="self">self</span>.bins == other.bins
+<a href=#713 id=713 data-nosnippet>713</a>    }
+<a href=#714 id=714 data-nosnippet>714</a>}
+<a href=#715 id=715 data-nosnippet>715</a>
+<a href=#716 id=716 data-nosnippet>716</a><span class="kw">impl </span>Default <span class="kw">for </span>DDSketch {
+<a href=#717 id=717 data-nosnippet>717</a>    <span class="kw">fn </span>default() -&gt; <span class="self">Self </span>{
+<a href=#718 id=718 data-nosnippet>718</a>        <span class="self">Self </span>{
+<a href=#719 id=719 data-nosnippet>719</a>            bins: SmallVec::new(),
+<a href=#720 id=720 data-nosnippet>720</a>            count: <span class="number">0</span>,
+<a href=#721 id=721 data-nosnippet>721</a>            min: f64::MAX,
+<a href=#722 id=722 data-nosnippet>722</a>            max: f64::MIN,
+<a href=#723 id=723 data-nosnippet>723</a>            sum: <span class="number">0.0</span>,
+<a href=#724 id=724 data-nosnippet>724</a>            avg: <span class="number">0.0</span>,
+<a href=#725 id=725 data-nosnippet>725</a>        }
+<a href=#726 id=726 data-nosnippet>726</a>    }
+<a href=#727 id=727 data-nosnippet>727</a>}
+<a href=#728 id=728 data-nosnippet>728</a>
+<a href=#729 id=729 data-nosnippet>729</a><span class="kw">impl </span>Eq <span class="kw">for </span>DDSketch {}
+<a href=#730 id=730 data-nosnippet>730</a>
+<a href=#731 id=731 data-nosnippet>731</a><span class="kw">impl </span>TryFrom&lt;Dogsketch&gt; <span class="kw">for </span>DDSketch {
+<a href=#732 id=732 data-nosnippet>732</a>    <span class="kw">type </span>Error = <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str;
+<a href=#733 id=733 data-nosnippet>733</a>
+<a href=#734 id=734 data-nosnippet>734</a>    <span class="kw">fn </span>try_from(value: Dogsketch) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, <span class="self">Self</span>::Error&gt; {
+<a href=#735 id=735 data-nosnippet>735</a>        <span class="kw">let </span><span class="kw-2">mut </span>sketch = DDSketch {
+<a href=#736 id=736 data-nosnippet>736</a>            count: u32::try_from(value.cnt).map_err(|<span class="kw">_</span>| <span class="string">"sketch count overflows u32"</span>)<span class="question-mark">?</span>,
+<a href=#737 id=737 data-nosnippet>737</a>            min: value.min,
+<a href=#738 id=738 data-nosnippet>738</a>            max: value.max,
+<a href=#739 id=739 data-nosnippet>739</a>            avg: value.avg,
+<a href=#740 id=740 data-nosnippet>740</a>            sum: value.sum,
+<a href=#741 id=741 data-nosnippet>741</a>            ..Default::default()
+<a href=#742 id=742 data-nosnippet>742</a>        };
+<a href=#743 id=743 data-nosnippet>743</a>
+<a href=#744 id=744 data-nosnippet>744</a>        <span class="kw">let </span>k = value.k;
+<a href=#745 id=745 data-nosnippet>745</a>        <span class="kw">let </span>n = value.n;
+<a href=#746 id=746 data-nosnippet>746</a>
+<a href=#747 id=747 data-nosnippet>747</a>        <span class="kw">if </span>k.len() != n.len() {
+<a href=#748 id=748 data-nosnippet>748</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(<span class="string">"k and n bin vectors have differing lengths"</span>);
+<a href=#749 id=749 data-nosnippet>749</a>        }
+<a href=#750 id=750 data-nosnippet>750</a>
+<a href=#751 id=751 data-nosnippet>751</a>        <span class="kw">for </span>(k, n) <span class="kw">in </span>k.into_iter().zip(n.into_iter()) {
+<a href=#752 id=752 data-nosnippet>752</a>            <span class="kw">let </span>k = i16::try_from(k).map_err(|<span class="kw">_</span>| <span class="string">"bin key overflows i16"</span>)<span class="question-mark">?</span>;
+<a href=#753 id=753 data-nosnippet>753</a>            <span class="kw">let </span>n = u16::try_from(n).map_err(|<span class="kw">_</span>| <span class="string">"bin count overflows u16"</span>)<span class="question-mark">?</span>;
+<a href=#754 id=754 data-nosnippet>754</a>
+<a href=#755 id=755 data-nosnippet>755</a>            sketch.bins.push(Bin { k, n });
+<a href=#756 id=756 data-nosnippet>756</a>        }
+<a href=#757 id=757 data-nosnippet>757</a>
+<a href=#758 id=758 data-nosnippet>758</a>        <span class="prelude-val">Ok</span>(sketch)
+<a href=#759 id=759 data-nosnippet>759</a>    }
+<a href=#760 id=760 data-nosnippet>760</a>}
+<a href=#761 id=761 data-nosnippet>761</a>
+<a href=#762 id=762 data-nosnippet>762</a><span class="kw">fn </span>float_eq(l_value: f64, r_value: f64) -&gt; bool {
+<a href=#763 id=763 data-nosnippet>763</a>    <span class="comment">// When comparing two values, the smaller value cannot deviate by more than 0.0000001% of the larger value.
+<a href=#764 id=764 data-nosnippet>764</a>    </span><span class="kw">const </span>RATIO_ERROR: f64 = <span class="number">0.00000001</span>;
+<a href=#765 id=765 data-nosnippet>765</a>
+<a href=#766 id=766 data-nosnippet>766</a>    (l_value.is_nan() &amp;&amp; r_value.is_nan()) || l_value.approx_eq_ratio(<span class="kw-2">&amp;</span>r_value, RATIO_ERROR)
+<a href=#767 id=767 data-nosnippet>767</a>}
+<a href=#768 id=768 data-nosnippet>768</a>
+<a href=#769 id=769 data-nosnippet>769</a><span class="kw">fn </span>rank(count: u32, q: f64) -&gt; f64 {
+<a href=#770 id=770 data-nosnippet>770</a>    <span class="kw">let </span>rank = q * f64::from(count - <span class="number">1</span>);
+<a href=#771 id=771 data-nosnippet>771</a>    rank.round_ties_even()
+<a href=#772 id=772 data-nosnippet>772</a>}
+<a href=#773 id=773 data-nosnippet>773</a>
+<a href=#774 id=774 data-nosnippet>774</a><span class="attr">#[allow(clippy::cast_possible_truncation)]
+<a href=#775 id=775 data-nosnippet>775</a></span><span class="kw">fn </span>buf_count_leading_equal(keys: <span class="kw-2">&amp;</span>[i16], start_idx: usize) -&gt; u32 {
+<a href=#776 id=776 data-nosnippet>776</a>    <span class="kw">if </span>start_idx == keys.len() - <span class="number">1 </span>{
+<a href=#777 id=777 data-nosnippet>777</a>        <span class="kw">return </span><span class="number">1</span>;
+<a href=#778 id=778 data-nosnippet>778</a>    }
+<a href=#779 id=779 data-nosnippet>779</a>
+<a href=#780 id=780 data-nosnippet>780</a>    <span class="kw">let </span><span class="kw-2">mut </span>idx = start_idx;
+<a href=#781 id=781 data-nosnippet>781</a>    <span class="kw">while </span>idx &lt; keys.len() &amp;&amp; keys[idx] == keys[start_idx] {
+<a href=#782 id=782 data-nosnippet>782</a>        idx += <span class="number">1</span>;
+<a href=#783 id=783 data-nosnippet>783</a>    }
+<a href=#784 id=784 data-nosnippet>784</a>
+<a href=#785 id=785 data-nosnippet>785</a>    <span class="comment">// SAFETY: We limit the size of the vector (used to provide the slice given to us here) to be no larger than 2^32,
+<a href=#786 id=786 data-nosnippet>786</a>    // so we can't exceed u32 here.
+<a href=#787 id=787 data-nosnippet>787</a>    </span>(idx - start_idx) <span class="kw">as </span>u32
+<a href=#788 id=788 data-nosnippet>788</a>}
+<a href=#789 id=789 data-nosnippet>789</a>
+<a href=#790 id=790 data-nosnippet>790</a><span class="kw">fn </span>trim_left(bins: <span class="kw-2">&amp;mut </span>SmallVec&lt;[Bin; <span class="number">4</span>]&gt;, bin_limit: u16) {
+<a href=#791 id=791 data-nosnippet>791</a>    <span class="comment">// We won't ever support Vector running on anything other than a 32-bit platform and above, I imagine, so this
+<a href=#792 id=792 data-nosnippet>792</a>    // should always be safe.
+<a href=#793 id=793 data-nosnippet>793</a>    </span><span class="kw">let </span>bin_limit = bin_limit <span class="kw">as </span>usize;
+<a href=#794 id=794 data-nosnippet>794</a>    <span class="kw">if </span>bin_limit == <span class="number">0 </span>|| bins.len() &lt; bin_limit {
+<a href=#795 id=795 data-nosnippet>795</a>        <span class="kw">return</span>;
+<a href=#796 id=796 data-nosnippet>796</a>    }
+<a href=#797 id=797 data-nosnippet>797</a>
+<a href=#798 id=798 data-nosnippet>798</a>    <span class="kw">let </span>num_to_remove = bins.len() - bin_limit;
+<a href=#799 id=799 data-nosnippet>799</a>    <span class="kw">let </span><span class="kw-2">mut </span>missing = <span class="number">0</span>;
+<a href=#800 id=800 data-nosnippet>800</a>    <span class="kw">let </span><span class="kw-2">mut </span>overflow = SmallVec::&lt;[Bin; <span class="number">4</span>]&gt;::new();
+<a href=#801 id=801 data-nosnippet>801</a>
+<a href=#802 id=802 data-nosnippet>802</a>    <span class="kw">for </span>bin <span class="kw">in </span>bins.iter().take(num_to_remove) {
+<a href=#803 id=803 data-nosnippet>803</a>        missing += u32::from(bin.n);
+<a href=#804 id=804 data-nosnippet>804</a>
+<a href=#805 id=805 data-nosnippet>805</a>        <span class="kw">if </span>missing &gt; u32::from(MAX_BIN_WIDTH) {
+<a href=#806 id=806 data-nosnippet>806</a>            overflow.push(Bin {
+<a href=#807 id=807 data-nosnippet>807</a>                k: bin.k,
+<a href=#808 id=808 data-nosnippet>808</a>                n: MAX_BIN_WIDTH,
+<a href=#809 id=809 data-nosnippet>809</a>            });
+<a href=#810 id=810 data-nosnippet>810</a>
+<a href=#811 id=811 data-nosnippet>811</a>            missing -= u32::from(MAX_BIN_WIDTH);
+<a href=#812 id=812 data-nosnippet>812</a>        }
+<a href=#813 id=813 data-nosnippet>813</a>    }
+<a href=#814 id=814 data-nosnippet>814</a>
+<a href=#815 id=815 data-nosnippet>815</a>    <span class="kw">let </span>bin_remove = <span class="kw-2">&amp;mut </span>bins[num_to_remove];
+<a href=#816 id=816 data-nosnippet>816</a>    missing = bin_remove.increment(missing);
+<a href=#817 id=817 data-nosnippet>817</a>    <span class="kw">if </span>missing &gt; <span class="number">0 </span>{
+<a href=#818 id=818 data-nosnippet>818</a>        generate_bins(<span class="kw-2">&amp;mut </span>overflow, bin_remove.k, missing);
+<a href=#819 id=819 data-nosnippet>819</a>    }
+<a href=#820 id=820 data-nosnippet>820</a>
+<a href=#821 id=821 data-nosnippet>821</a>    <span class="kw">let </span>overflow_len = overflow.len();
+<a href=#822 id=822 data-nosnippet>822</a>    <span class="kw">let </span>(<span class="kw">_</span>, bins_end) = bins.split_at(num_to_remove);
+<a href=#823 id=823 data-nosnippet>823</a>    overflow.extend_from_slice(bins_end);
+<a href=#824 id=824 data-nosnippet>824</a>
+<a href=#825 id=825 data-nosnippet>825</a>    <span class="comment">// I still don't yet understand how this works, since you'd think bin limit should be the overall limit of the
+<a href=#826 id=826 data-nosnippet>826</a>    // number of bins, but we're allowing more than that.. :thinkies:
+<a href=#827 id=827 data-nosnippet>827</a>    </span>overflow.truncate(bin_limit + overflow_len);
+<a href=#828 id=828 data-nosnippet>828</a>
+<a href=#829 id=829 data-nosnippet>829</a>    mem::swap(bins, <span class="kw-2">&amp;mut </span>overflow);
+<a href=#830 id=830 data-nosnippet>830</a>}
+<a href=#831 id=831 data-nosnippet>831</a>
+<a href=#832 id=832 data-nosnippet>832</a><span class="attr">#[allow(clippy::cast_possible_truncation)]
+<a href=#833 id=833 data-nosnippet>833</a></span><span class="kw">fn </span>generate_bins(bins: <span class="kw-2">&amp;mut </span>SmallVec&lt;[Bin; <span class="number">4</span>]&gt;, k: i16, n: u32) {
+<a href=#834 id=834 data-nosnippet>834</a>    <span class="kw">if </span>n &lt; u32::from(MAX_BIN_WIDTH) {
+<a href=#835 id=835 data-nosnippet>835</a>        <span class="comment">// SAFETY: Cannot truncate `n`, as it's less than a u16 value.
+<a href=#836 id=836 data-nosnippet>836</a>        </span>bins.push(Bin { k, n: n <span class="kw">as </span>u16 });
+<a href=#837 id=837 data-nosnippet>837</a>    } <span class="kw">else </span>{
+<a href=#838 id=838 data-nosnippet>838</a>        <span class="kw">let </span>overflow = n % u32::from(MAX_BIN_WIDTH);
+<a href=#839 id=839 data-nosnippet>839</a>        <span class="kw">if </span>overflow != <span class="number">0 </span>{
+<a href=#840 id=840 data-nosnippet>840</a>            bins.push(Bin {
+<a href=#841 id=841 data-nosnippet>841</a>                k,
+<a href=#842 id=842 data-nosnippet>842</a>                <span class="comment">// SAFETY: Cannot truncate `overflow`, as it's modulo'd by a u16 value.
+<a href=#843 id=843 data-nosnippet>843</a>                </span>n: overflow <span class="kw">as </span>u16,
+<a href=#844 id=844 data-nosnippet>844</a>            });
+<a href=#845 id=845 data-nosnippet>845</a>        }
+<a href=#846 id=846 data-nosnippet>846</a>
+<a href=#847 id=847 data-nosnippet>847</a>        <span class="kw">for _ in </span><span class="number">0</span>..(n / u32::from(MAX_BIN_WIDTH)) {
+<a href=#848 id=848 data-nosnippet>848</a>            bins.push(Bin { k, n: MAX_BIN_WIDTH });
+<a href=#849 id=849 data-nosnippet>849</a>        }
+<a href=#850 id=850 data-nosnippet>850</a>    }
+<a href=#851 id=851 data-nosnippet>851</a>}
+<a href=#852 id=852 data-nosnippet>852</a>
+<a href=#853 id=853 data-nosnippet>853</a><span class="attr">#[cfg(test)]
+<a href=#854 id=854 data-nosnippet>854</a></span><span class="kw">mod </span>tests {
+<a href=#855 id=855 data-nosnippet>855</a>    <span class="kw">use super</span>::{config::AGENT_DEFAULT_EPS, Bucket, Config, DDSketch, MAX_KEY, SKETCH_CONFIG};
+<a href=#856 id=856 data-nosnippet>856</a>
+<a href=#857 id=857 data-nosnippet>857</a>    <span class="kw">const </span>FLOATING_POINT_ACCEPTABLE_ERROR: f64 = <span class="number">1.0e-10</span>;
+<a href=#858 id=858 data-nosnippet>858</a>
+<a href=#859 id=859 data-nosnippet>859</a>    <span class="attr">#[test]
+<a href=#860 id=860 data-nosnippet>860</a>    </span><span class="kw">fn </span>test_ddsketch_config_key_lower_bound_identity() {
+<a href=#861 id=861 data-nosnippet>861</a>        <span class="kw">for </span>k <span class="kw">in </span>(-MAX_KEY + <span class="number">1</span>)..MAX_KEY {
+<a href=#862 id=862 data-nosnippet>862</a>            <span class="macro">assert_eq!</span>(k, SKETCH_CONFIG.key(SKETCH_CONFIG.bin_lower_bound(k)));
+<a href=#863 id=863 data-nosnippet>863</a>        }
+<a href=#864 id=864 data-nosnippet>864</a>    }
+<a href=#865 id=865 data-nosnippet>865</a>
+<a href=#866 id=866 data-nosnippet>866</a>    <span class="attr">#[test]
+<a href=#867 id=867 data-nosnippet>867</a>    </span><span class="kw">fn </span>test_ddsketch_basic() {
+<a href=#868 id=868 data-nosnippet>868</a>        <span class="kw">let </span><span class="kw-2">mut </span>sketch = DDSketch::default();
+<a href=#869 id=869 data-nosnippet>869</a>        <span class="macro">assert!</span>(sketch.is_empty());
+<a href=#870 id=870 data-nosnippet>870</a>        <span class="macro">assert_eq!</span>(sketch.count(), <span class="number">0</span>);
+<a href=#871 id=871 data-nosnippet>871</a>        <span class="macro">assert_eq!</span>(sketch.min(), <span class="prelude-val">None</span>);
+<a href=#872 id=872 data-nosnippet>872</a>        <span class="macro">assert_eq!</span>(sketch.max(), <span class="prelude-val">None</span>);
+<a href=#873 id=873 data-nosnippet>873</a>        <span class="macro">assert_eq!</span>(sketch.sum(), <span class="prelude-val">None</span>);
+<a href=#874 id=874 data-nosnippet>874</a>        <span class="macro">assert_eq!</span>(sketch.avg(), <span class="prelude-val">None</span>);
+<a href=#875 id=875 data-nosnippet>875</a>
+<a href=#876 id=876 data-nosnippet>876</a>        sketch.insert(<span class="number">3.15</span>);
+<a href=#877 id=877 data-nosnippet>877</a>        <span class="macro">assert!</span>(!sketch.is_empty());
+<a href=#878 id=878 data-nosnippet>878</a>        <span class="macro">assert_eq!</span>(sketch.count(), <span class="number">1</span>);
+<a href=#879 id=879 data-nosnippet>879</a>        <span class="macro">assert_eq!</span>(sketch.min(), <span class="prelude-val">Some</span>(<span class="number">3.15</span>));
+<a href=#880 id=880 data-nosnippet>880</a>        <span class="macro">assert_eq!</span>(sketch.max(), <span class="prelude-val">Some</span>(<span class="number">3.15</span>));
+<a href=#881 id=881 data-nosnippet>881</a>        <span class="macro">assert_eq!</span>(sketch.sum(), <span class="prelude-val">Some</span>(<span class="number">3.15</span>));
+<a href=#882 id=882 data-nosnippet>882</a>        <span class="macro">assert_eq!</span>(sketch.avg(), <span class="prelude-val">Some</span>(<span class="number">3.15</span>));
+<a href=#883 id=883 data-nosnippet>883</a>
+<a href=#884 id=884 data-nosnippet>884</a>        sketch.insert(<span class="number">2.28</span>);
+<a href=#885 id=885 data-nosnippet>885</a>        <span class="macro">assert!</span>(!sketch.is_empty());
+<a href=#886 id=886 data-nosnippet>886</a>        <span class="macro">assert_eq!</span>(sketch.count(), <span class="number">2</span>);
+<a href=#887 id=887 data-nosnippet>887</a>        <span class="macro">assert_eq!</span>(sketch.min(), <span class="prelude-val">Some</span>(<span class="number">2.28</span>));
+<a href=#888 id=888 data-nosnippet>888</a>        <span class="macro">assert_eq!</span>(sketch.max(), <span class="prelude-val">Some</span>(<span class="number">3.15</span>));
+<a href=#889 id=889 data-nosnippet>889</a>        <span class="macro">assert_eq!</span>(sketch.sum(), <span class="prelude-val">Some</span>(<span class="number">5.43</span>));
+<a href=#890 id=890 data-nosnippet>890</a>        <span class="macro">assert_eq!</span>(sketch.avg(), <span class="prelude-val">Some</span>(<span class="number">2.715</span>));
+<a href=#891 id=891 data-nosnippet>891</a>    }
+<a href=#892 id=892 data-nosnippet>892</a>
+<a href=#893 id=893 data-nosnippet>893</a>    <span class="attr">#[test]
+<a href=#894 id=894 data-nosnippet>894</a>    </span><span class="kw">fn </span>test_ddsketch_clear() {
+<a href=#895 id=895 data-nosnippet>895</a>        <span class="kw">let </span>sketch1 = DDSketch::default();
+<a href=#896 id=896 data-nosnippet>896</a>        <span class="kw">let </span><span class="kw-2">mut </span>sketch2 = DDSketch::default();
+<a href=#897 id=897 data-nosnippet>897</a>
+<a href=#898 id=898 data-nosnippet>898</a>        <span class="macro">assert_eq!</span>(sketch1, sketch2);
+<a href=#899 id=899 data-nosnippet>899</a>        <span class="macro">assert!</span>(sketch1.is_empty());
+<a href=#900 id=900 data-nosnippet>900</a>        <span class="macro">assert!</span>(sketch2.is_empty());
+<a href=#901 id=901 data-nosnippet>901</a>
+<a href=#902 id=902 data-nosnippet>902</a>        sketch2.insert(<span class="number">3.15</span>);
+<a href=#903 id=903 data-nosnippet>903</a>        <span class="macro">assert_ne!</span>(sketch1, sketch2);
+<a href=#904 id=904 data-nosnippet>904</a>        <span class="macro">assert!</span>(!sketch2.is_empty());
+<a href=#905 id=905 data-nosnippet>905</a>
+<a href=#906 id=906 data-nosnippet>906</a>        sketch2.clear();
+<a href=#907 id=907 data-nosnippet>907</a>        <span class="macro">assert_eq!</span>(sketch1, sketch2);
+<a href=#908 id=908 data-nosnippet>908</a>        <span class="macro">assert!</span>(sketch2.is_empty());
+<a href=#909 id=909 data-nosnippet>909</a>    }
+<a href=#910 id=910 data-nosnippet>910</a>
+<a href=#911 id=911 data-nosnippet>911</a>    <span class="attr">#[test]
+<a href=#912 id=912 data-nosnippet>912</a>    </span><span class="kw">fn </span>test_ddsketch_neg_to_pos() {
+<a href=#913 id=913 data-nosnippet>913</a>        <span class="comment">// This gives us 10k values because otherwise this test runs really slow in debug mode.
+<a href=#914 id=914 data-nosnippet>914</a>        </span><span class="kw">let </span>start = -<span class="number">1.0</span>;
+<a href=#915 id=915 data-nosnippet>915</a>        <span class="kw">let </span>end = <span class="number">1.0</span>;
+<a href=#916 id=916 data-nosnippet>916</a>        <span class="kw">let </span>delta = <span class="number">0.0002</span>;
+<a href=#917 id=917 data-nosnippet>917</a>
+<a href=#918 id=918 data-nosnippet>918</a>        <span class="kw">let </span><span class="kw-2">mut </span>sketch = DDSketch::default();
+<a href=#919 id=919 data-nosnippet>919</a>
+<a href=#920 id=920 data-nosnippet>920</a>        <span class="kw">let </span><span class="kw-2">mut </span>v = start;
+<a href=#921 id=921 data-nosnippet>921</a>        <span class="kw">while </span>v &lt;= end {
+<a href=#922 id=922 data-nosnippet>922</a>            sketch.insert(v);
+<a href=#923 id=923 data-nosnippet>923</a>
+<a href=#924 id=924 data-nosnippet>924</a>            v += delta;
+<a href=#925 id=925 data-nosnippet>925</a>        }
+<a href=#926 id=926 data-nosnippet>926</a>
+<a href=#927 id=927 data-nosnippet>927</a>        <span class="kw">let </span>min = sketch.quantile(<span class="number">0.0</span>).expect(<span class="string">"should have value"</span>);
+<a href=#928 id=928 data-nosnippet>928</a>        <span class="kw">let </span>median = sketch.quantile(<span class="number">0.5</span>).expect(<span class="string">"should have value"</span>);
+<a href=#929 id=929 data-nosnippet>929</a>        <span class="kw">let </span>max = sketch.quantile(<span class="number">1.0</span>).expect(<span class="string">"should have value"</span>);
+<a href=#930 id=930 data-nosnippet>930</a>
+<a href=#931 id=931 data-nosnippet>931</a>        <span class="macro">assert_eq!</span>(start, min);
+<a href=#932 id=932 data-nosnippet>932</a>        <span class="macro">assert!</span>(median.abs() &lt; FLOATING_POINT_ACCEPTABLE_ERROR);
+<a href=#933 id=933 data-nosnippet>933</a>        <span class="macro">assert!</span>((end - max).abs() &lt; FLOATING_POINT_ACCEPTABLE_ERROR);
+<a href=#934 id=934 data-nosnippet>934</a>    }
+<a href=#935 id=935 data-nosnippet>935</a>
+<a href=#936 id=936 data-nosnippet>936</a>    <span class="attr">#[test]
+<a href=#937 id=937 data-nosnippet>937</a>    </span><span class="kw">fn </span>test_out_of_range_buckets_error() {
+<a href=#938 id=938 data-nosnippet>938</a>        <span class="kw">let </span><span class="kw-2">mut </span>sketch = DDSketch::default();
+<a href=#939 id=939 data-nosnippet>939</a>
+<a href=#940 id=940 data-nosnippet>940</a>        <span class="kw">let </span>buckets = <span class="macro">vec!</span>[
+<a href=#941 id=941 data-nosnippet>941</a>            Bucket {
+<a href=#942 id=942 data-nosnippet>942</a>                upper_limit: <span class="number">5.4</span>,
+<a href=#943 id=943 data-nosnippet>943</a>                count: <span class="number">32</span>,
+<a href=#944 id=944 data-nosnippet>944</a>            },
+<a href=#945 id=945 data-nosnippet>945</a>            Bucket {
+<a href=#946 id=946 data-nosnippet>946</a>                upper_limit: <span class="number">5.8</span>,
+<a href=#947 id=947 data-nosnippet>947</a>                count: u64::from(u32::MAX) + <span class="number">1</span>,
+<a href=#948 id=948 data-nosnippet>948</a>            },
+<a href=#949 id=949 data-nosnippet>949</a>            Bucket {
+<a href=#950 id=950 data-nosnippet>950</a>                upper_limit: <span class="number">9.2</span>,
+<a href=#951 id=951 data-nosnippet>951</a>                count: <span class="number">320</span>,
+<a href=#952 id=952 data-nosnippet>952</a>            },
+<a href=#953 id=953 data-nosnippet>953</a>        ];
+<a href=#954 id=954 data-nosnippet>954</a>
+<a href=#955 id=955 data-nosnippet>955</a>        <span class="macro">assert_eq!</span>(
+<a href=#956 id=956 data-nosnippet>956</a>            <span class="prelude-val">Err</span>(<span class="string">"bucket size greater than u32::MAX"</span>),
+<a href=#957 id=957 data-nosnippet>957</a>            sketch.insert_interpolate_buckets(buckets)
+<a href=#958 id=958 data-nosnippet>958</a>        );
+<a href=#959 id=959 data-nosnippet>959</a>
+<a href=#960 id=960 data-nosnippet>960</a>        <span class="comment">// Assert the sketch remains unchanged.
+<a href=#961 id=961 data-nosnippet>961</a>        </span><span class="macro">assert_eq!</span>(sketch, DDSketch::default());
+<a href=#962 id=962 data-nosnippet>962</a>    }
+<a href=#963 id=963 data-nosnippet>963</a>
+<a href=#964 id=964 data-nosnippet>964</a>    <span class="attr">#[test]
+<a href=#965 id=965 data-nosnippet>965</a>    </span><span class="kw">fn </span>test_merge() {
+<a href=#966 id=966 data-nosnippet>966</a>        <span class="kw">let </span><span class="kw-2">mut </span>all_values = DDSketch::default();
+<a href=#967 id=967 data-nosnippet>967</a>        <span class="kw">let </span><span class="kw-2">mut </span>odd_values = DDSketch::default();
+<a href=#968 id=968 data-nosnippet>968</a>        <span class="kw">let </span><span class="kw-2">mut </span>even_values = DDSketch::default();
+<a href=#969 id=969 data-nosnippet>969</a>        <span class="kw">let </span><span class="kw-2">mut </span>all_values_many = DDSketch::default();
+<a href=#970 id=970 data-nosnippet>970</a>
+<a href=#971 id=971 data-nosnippet>971</a>        <span class="kw">let </span><span class="kw-2">mut </span>values = Vec::new();
+<a href=#972 id=972 data-nosnippet>972</a>        <span class="kw">for </span>i <span class="kw">in </span>-<span class="number">50</span>..=<span class="number">50 </span>{
+<a href=#973 id=973 data-nosnippet>973</a>            <span class="kw">let </span>v = f64::from(i);
+<a href=#974 id=974 data-nosnippet>974</a>
+<a href=#975 id=975 data-nosnippet>975</a>            all_values.insert(v);
+<a href=#976 id=976 data-nosnippet>976</a>
+<a href=#977 id=977 data-nosnippet>977</a>            <span class="kw">if </span>i &amp; <span class="number">1 </span>== <span class="number">0 </span>{
+<a href=#978 id=978 data-nosnippet>978</a>                odd_values.insert(v);
+<a href=#979 id=979 data-nosnippet>979</a>            } <span class="kw">else </span>{
+<a href=#980 id=980 data-nosnippet>980</a>                even_values.insert(v);
+<a href=#981 id=981 data-nosnippet>981</a>            }
+<a href=#982 id=982 data-nosnippet>982</a>
+<a href=#983 id=983 data-nosnippet>983</a>            values.push(v);
+<a href=#984 id=984 data-nosnippet>984</a>        }
+<a href=#985 id=985 data-nosnippet>985</a>
+<a href=#986 id=986 data-nosnippet>986</a>        all_values_many.insert_many(<span class="kw-2">&amp;</span>values);
+<a href=#987 id=987 data-nosnippet>987</a>
+<a href=#988 id=988 data-nosnippet>988</a>        odd_values.merge(<span class="kw-2">&amp;</span>even_values);
+<a href=#989 id=989 data-nosnippet>989</a>        <span class="kw">let </span>merged_values = odd_values;
+<a href=#990 id=990 data-nosnippet>990</a>
+<a href=#991 id=991 data-nosnippet>991</a>        <span class="comment">// Number of bins should be equal to the number of values we inserted.
+<a href=#992 id=992 data-nosnippet>992</a>        </span><span class="macro">assert_eq!</span>(all_values.bin_count(), values.len());
+<a href=#993 id=993 data-nosnippet>993</a>
+<a href=#994 id=994 data-nosnippet>994</a>        <span class="comment">// Values at both ends of the quantile range should be equal.
+<a href=#995 id=995 data-nosnippet>995</a>        </span><span class="kw">let </span>low_end = all_values.quantile(<span class="number">0.01</span>).expect(<span class="string">"should have estimated value"</span>);
+<a href=#996 id=996 data-nosnippet>996</a>        <span class="kw">let </span>high_end = all_values.quantile(<span class="number">0.99</span>).expect(<span class="string">"should have estimated value"</span>);
+<a href=#997 id=997 data-nosnippet>997</a>        <span class="macro">assert_eq!</span>(high_end, -low_end);
+<a href=#998 id=998 data-nosnippet>998</a>
+<a href=#999 id=999 data-nosnippet>999</a>        <span class="kw">let </span>target_bin_count = all_values.bin_count();
+<a href=#1000 id=1000 data-nosnippet>1000</a>        <span class="kw">for </span>sketch <span class="kw">in </span><span class="kw-2">&amp;</span>[all_values, all_values_many, merged_values] {
+<a href=#1001 id=1001 data-nosnippet>1001</a>            <span class="macro">assert_eq!</span>(sketch.quantile(<span class="number">0.5</span>), <span class="prelude-val">Some</span>(<span class="number">0.0</span>));
+<a href=#1002 id=1002 data-nosnippet>1002</a>            <span class="macro">assert_eq!</span>(sketch.quantile(<span class="number">0.0</span>), <span class="prelude-val">Some</span>(-<span class="number">50.0</span>));
+<a href=#1003 id=1003 data-nosnippet>1003</a>            <span class="macro">assert_eq!</span>(sketch.quantile(<span class="number">1.0</span>), <span class="prelude-val">Some</span>(<span class="number">50.0</span>));
+<a href=#1004 id=1004 data-nosnippet>1004</a>
+<a href=#1005 id=1005 data-nosnippet>1005</a>            <span class="kw">for </span>p <span class="kw">in </span><span class="number">0</span>..<span class="number">50 </span>{
+<a href=#1006 id=1006 data-nosnippet>1006</a>                <span class="kw">let </span>q = f64::from(p) / <span class="number">100.0</span>;
+<a href=#1007 id=1007 data-nosnippet>1007</a>                <span class="kw">let </span>positive = sketch.quantile(q + <span class="number">0.5</span>).expect(<span class="string">"should have estimated value"</span>);
+<a href=#1008 id=1008 data-nosnippet>1008</a>                <span class="kw">let </span>negative = -sketch.quantile(<span class="number">0.5 </span>- q).expect(<span class="string">"should have estimated value"</span>);
+<a href=#1009 id=1009 data-nosnippet>1009</a>
+<a href=#1010 id=1010 data-nosnippet>1010</a>                <span class="macro">assert!</span>(
+<a href=#1011 id=1011 data-nosnippet>1011</a>                    (positive - negative).abs() &lt;= <span class="number">1.0e-6</span>,
+<a href=#1012 id=1012 data-nosnippet>1012</a>                    <span class="string">"positive vs negative difference too great ({positive} vs {negative})"</span>,
+<a href=#1013 id=1013 data-nosnippet>1013</a>                );
+<a href=#1014 id=1014 data-nosnippet>1014</a>            }
+<a href=#1015 id=1015 data-nosnippet>1015</a>
+<a href=#1016 id=1016 data-nosnippet>1016</a>            <span class="macro">assert_eq!</span>(target_bin_count, sketch.bin_count());
+<a href=#1017 id=1017 data-nosnippet>1017</a>        }
+<a href=#1018 id=1018 data-nosnippet>1018</a>    }
+<a href=#1019 id=1019 data-nosnippet>1019</a>
+<a href=#1020 id=1020 data-nosnippet>1020</a>    <span class="attr">#[test]
+<a href=#1021 id=1021 data-nosnippet>1021</a>    </span><span class="kw">fn </span>test_relative_accuracy_fast() {
+<a href=#1022 id=1022 data-nosnippet>1022</a>        <span class="comment">// These values are based on the agent's unit tests for asserting relative accuracy of the DDSketch
+<a href=#1023 id=1023 data-nosnippet>1023</a>        // implementation.  Notably, it does not seem to test the full extent of values that the open-source
+<a href=#1024 id=1024 data-nosnippet>1024</a>        // implementations do, but then again... all we care about is parity with the agent version so we can pass them
+<a href=#1025 id=1025 data-nosnippet>1025</a>        // through.
+<a href=#1026 id=1026 data-nosnippet>1026</a>        //
+<a href=#1027 id=1027 data-nosnippet>1027</a>        // Another noteworthy thing: it seems that they don't test from the actual targeted minimum value, which is
+<a href=#1028 id=1028 data-nosnippet>1028</a>        // 1.0e-9, which would give nanosecond granularity vs just microsecond granularity.
+<a href=#1029 id=1029 data-nosnippet>1029</a>        </span><span class="kw">let </span>min_value = <span class="number">1.0</span>;
+<a href=#1030 id=1030 data-nosnippet>1030</a>        <span class="comment">// We don't care about precision loss, just consistency.
+<a href=#1031 id=1031 data-nosnippet>1031</a>        </span><span class="attr">#[allow(clippy::cast_possible_truncation)]
+<a href=#1032 id=1032 data-nosnippet>1032</a>        </span><span class="kw">let </span>max_value = SKETCH_CONFIG.gamma_v.powf(<span class="number">5.0</span>) <span class="kw">as </span>f32;
+<a href=#1033 id=1033 data-nosnippet>1033</a>
+<a href=#1034 id=1034 data-nosnippet>1034</a>        test_relative_accuracy(<span class="kw-2">&amp;</span>SKETCH_CONFIG, AGENT_DEFAULT_EPS, min_value, max_value);
+<a href=#1035 id=1035 data-nosnippet>1035</a>    }
+<a href=#1036 id=1036 data-nosnippet>1036</a>
+<a href=#1037 id=1037 data-nosnippet>1037</a>    <span class="attr">#[test]
+<a href=#1038 id=1038 data-nosnippet>1038</a>    #[cfg(feature = <span class="string">"ddsketch_extended"</span>)]
+<a href=#1039 id=1039 data-nosnippet>1039</a>    </span><span class="kw">fn </span>test_relative_accuracy_slow() {
+<a href=#1040 id=1040 data-nosnippet>1040</a>        <span class="comment">// These values are based on the agent's unit tests for asserting relative accuracy of the DDSketch
+<a href=#1041 id=1041 data-nosnippet>1041</a>        // implementation.  Notably, it does not seem to test the full extent of values that the open-source
+<a href=#1042 id=1042 data-nosnippet>1042</a>        // implementations do, but then again... all we care about is parity with the agent version so we can pass them
+<a href=#1043 id=1043 data-nosnippet>1043</a>        // through.
+<a href=#1044 id=1044 data-nosnippet>1044</a>        //
+<a href=#1045 id=1045 data-nosnippet>1045</a>        // Another noteworthy thing: it seems that they don't test from the actual targeted minimum value, which is
+<a href=#1046 id=1046 data-nosnippet>1046</a>        // 1.0e-9, which would give nanosecond granularity vs just microsecond granularity.
+<a href=#1047 id=1047 data-nosnippet>1047</a>        //
+<a href=#1048 id=1048 data-nosnippet>1048</a>        // This test uses a far larger range of values, and takes 60-70 seconds, hence why we've guarded it here behind
+<a href=#1049 id=1049 data-nosnippet>1049</a>        // a cfg flag.
+<a href=#1050 id=1050 data-nosnippet>1050</a>        </span><span class="kw">let </span>min_value = <span class="number">1.0e-6</span>;
+<a href=#1051 id=1051 data-nosnippet>1051</a>        <span class="kw">let </span>max_value = i64::MAX <span class="kw">as </span>f32;
+<a href=#1052 id=1052 data-nosnippet>1052</a>
+<a href=#1053 id=1053 data-nosnippet>1053</a>        test_relative_accuracy(<span class="kw-2">&amp;</span>SKETCH_CONFIG, AGENT_DEFAULT_EPS, min_value, max_value)
+<a href=#1054 id=1054 data-nosnippet>1054</a>    }
+<a href=#1055 id=1055 data-nosnippet>1055</a>
+<a href=#1056 id=1056 data-nosnippet>1056</a>    <span class="kw">fn </span>parse_sketch_from_string_bins(layout: <span class="kw-2">&amp;</span>str) -&gt; DDSketch {
+<a href=#1057 id=1057 data-nosnippet>1057</a>        layout
+<a href=#1058 id=1058 data-nosnippet>1058</a>            .split(<span class="string">' '</span>)
+<a href=#1059 id=1059 data-nosnippet>1059</a>            .filter(|v| !v.is_empty())
+<a href=#1060 id=1060 data-nosnippet>1060</a>            .map(|pair| pair.split(<span class="string">':'</span>).map(ToOwned::to_owned).collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;())
+<a href=#1061 id=1061 data-nosnippet>1061</a>            .fold(DDSketch::default(), |<span class="kw-2">mut </span>sketch, <span class="kw-2">mut </span>kn| {
+<a href=#1062 id=1062 data-nosnippet>1062</a>                <span class="kw">let </span>k = kn.remove(<span class="number">0</span>).parse::&lt;i16&gt;().unwrap();
+<a href=#1063 id=1063 data-nosnippet>1063</a>                <span class="kw">let </span>n = kn.remove(<span class="number">0</span>).parse::&lt;u16&gt;().unwrap();
+<a href=#1064 id=1064 data-nosnippet>1064</a>
+<a href=#1065 id=1065 data-nosnippet>1065</a>                sketch.insert_raw_bin(k, n);
+<a href=#1066 id=1066 data-nosnippet>1066</a>                sketch
+<a href=#1067 id=1067 data-nosnippet>1067</a>            })
+<a href=#1068 id=1068 data-nosnippet>1068</a>    }
+<a href=#1069 id=1069 data-nosnippet>1069</a>
+<a href=#1070 id=1070 data-nosnippet>1070</a>    <span class="kw">fn </span>compare_sketches(actual: <span class="kw-2">&amp;</span>DDSketch, expected: <span class="kw-2">&amp;</span>DDSketch, allowed_err: f64) {
+<a href=#1071 id=1071 data-nosnippet>1071</a>        <span class="kw">let </span>actual_sum = actual.sum().unwrap();
+<a href=#1072 id=1072 data-nosnippet>1072</a>        <span class="kw">let </span>expected_sum = expected.sum().unwrap();
+<a href=#1073 id=1073 data-nosnippet>1073</a>        <span class="kw">let </span>actual_avg = actual.avg().unwrap();
+<a href=#1074 id=1074 data-nosnippet>1074</a>        <span class="kw">let </span>expected_avg = expected.avg().unwrap();
+<a href=#1075 id=1075 data-nosnippet>1075</a>        <span class="kw">let </span>sum_delta = (actual_sum - expected_sum).abs();
+<a href=#1076 id=1076 data-nosnippet>1076</a>        <span class="kw">let </span>avg_delta = (actual_avg - expected_avg).abs();
+<a href=#1077 id=1077 data-nosnippet>1077</a>        <span class="macro">assert!</span>(sum_delta &lt;= allowed_err);
+<a href=#1078 id=1078 data-nosnippet>1078</a>        <span class="macro">assert!</span>(avg_delta &lt;= allowed_err);
+<a href=#1079 id=1079 data-nosnippet>1079</a>        <span class="macro">assert_eq!</span>(actual.min(), expected.min());
+<a href=#1080 id=1080 data-nosnippet>1080</a>        <span class="macro">assert_eq!</span>(actual.max(), expected.max());
+<a href=#1081 id=1081 data-nosnippet>1081</a>        <span class="macro">assert_eq!</span>(actual.count(), expected.count());
+<a href=#1082 id=1082 data-nosnippet>1082</a>        <span class="macro">assert_eq!</span>(actual.bins(), expected.bins());
+<a href=#1083 id=1083 data-nosnippet>1083</a>    }
+<a href=#1084 id=1084 data-nosnippet>1084</a>
+<a href=#1085 id=1085 data-nosnippet>1085</a>    <span class="attr">#[test]
+<a href=#1086 id=1086 data-nosnippet>1086</a>    </span><span class="kw">fn </span>test_sketch_insert_and_overflow() {
+<a href=#1087 id=1087 data-nosnippet>1087</a>        <span class="doccomment">/// values to insert into a sketch
+<a href=#1088 id=1088 data-nosnippet>1088</a>        </span><span class="attr">#[allow(dead_code)]
+<a href=#1089 id=1089 data-nosnippet>1089</a>        </span><span class="kw">enum </span>Value {
+<a href=#1090 id=1090 data-nosnippet>1090</a>            Float(f64),
+<a href=#1091 id=1091 data-nosnippet>1091</a>            Vec(Vec&lt;f64&gt;),
+<a href=#1092 id=1092 data-nosnippet>1092</a>            NFloats(u32, f64),
+<a href=#1093 id=1093 data-nosnippet>1093</a>        }
+<a href=#1094 id=1094 data-nosnippet>1094</a>        <span class="doccomment">/// ways to insert values into a sketch
+<a href=#1095 id=1095 data-nosnippet>1095</a>        </span><span class="attr">#[derive(Debug)]
+<a href=#1096 id=1096 data-nosnippet>1096</a>        </span><span class="kw">enum </span>InsertFn {
+<a href=#1097 id=1097 data-nosnippet>1097</a>            Insert,
+<a href=#1098 id=1098 data-nosnippet>1098</a>            InsertMany,
+<a href=#1099 id=1099 data-nosnippet>1099</a>            InsertN,
+<a href=#1100 id=1100 data-nosnippet>1100</a>        }
+<a href=#1101 id=1101 data-nosnippet>1101</a>        <span class="kw">struct </span>Case {
+<a href=#1102 id=1102 data-nosnippet>1102</a>            description: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str,
+<a href=#1103 id=1103 data-nosnippet>1103</a>            start: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str,
+<a href=#1104 id=1104 data-nosnippet>1104</a>            insert: Value,
+<a href=#1105 id=1105 data-nosnippet>1105</a>            expected: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str,
+<a href=#1106 id=1106 data-nosnippet>1106</a>        }
+<a href=#1107 id=1107 data-nosnippet>1107</a>
+<a href=#1108 id=1108 data-nosnippet>1108</a>        <span class="kw">let </span>cases = <span class="kw-2">&amp;</span>[
+<a href=#1109 id=1109 data-nosnippet>1109</a>            Case {
+<a href=#1110 id=1110 data-nosnippet>1110</a>                description: <span class="string">"baseline: inserting into an empty sketch"</span>,
+<a href=#1111 id=1111 data-nosnippet>1111</a>                start: <span class="string">""</span>,
+<a href=#1112 id=1112 data-nosnippet>1112</a>                insert: Value::Float(<span class="number">0.0</span>),
+<a href=#1113 id=1113 data-nosnippet>1113</a>                expected: <span class="string">"0:1"</span>,
+<a href=#1114 id=1114 data-nosnippet>1114</a>            },
+<a href=#1115 id=1115 data-nosnippet>1115</a>            Case {
+<a href=#1116 id=1116 data-nosnippet>1116</a>                description: <span class="string">"inserting a value into an existing bin"</span>,
+<a href=#1117 id=1117 data-nosnippet>1117</a>                start: <span class="string">"0:1"</span>,
+<a href=#1118 id=1118 data-nosnippet>1118</a>                insert: Value::Float(<span class="number">0.0</span>),
+<a href=#1119 id=1119 data-nosnippet>1119</a>                expected: <span class="string">"0:2"</span>,
+<a href=#1120 id=1120 data-nosnippet>1120</a>            },
+<a href=#1121 id=1121 data-nosnippet>1121</a>            Case {
+<a href=#1122 id=1122 data-nosnippet>1122</a>                description: <span class="string">"inserting a value into a new bin at the start"</span>,
+<a href=#1123 id=1123 data-nosnippet>1123</a>                start: <span class="string">"1338:1"</span>,
+<a href=#1124 id=1124 data-nosnippet>1124</a>                insert: Value::Float(<span class="number">0.0</span>),
+<a href=#1125 id=1125 data-nosnippet>1125</a>                expected: <span class="string">"0:1 1338:1"</span>,
+<a href=#1126 id=1126 data-nosnippet>1126</a>            },
+<a href=#1127 id=1127 data-nosnippet>1127</a>            Case {
+<a href=#1128 id=1128 data-nosnippet>1128</a>                description: <span class="string">"inserting a value into a new bin in the middle"</span>,
+<a href=#1129 id=1129 data-nosnippet>1129</a>                start: <span class="string">"0:1 1338:1"</span>,
+<a href=#1130 id=1130 data-nosnippet>1130</a>                insert: Value::Float(<span class="number">0.5</span>),
+<a href=#1131 id=1131 data-nosnippet>1131</a>                expected: <span class="string">"0:1 1293:1 1338:1"</span>,
+<a href=#1132 id=1132 data-nosnippet>1132</a>            },
+<a href=#1133 id=1133 data-nosnippet>1133</a>            Case {
+<a href=#1134 id=1134 data-nosnippet>1134</a>                description: <span class="string">"inserting a value into a new bin at the end"</span>,
+<a href=#1135 id=1135 data-nosnippet>1135</a>                start: <span class="string">"0:1"</span>,
+<a href=#1136 id=1136 data-nosnippet>1136</a>                insert: Value::Float(<span class="number">1.0</span>),
+<a href=#1137 id=1137 data-nosnippet>1137</a>                expected: <span class="string">"0:1 1338:1"</span>,
+<a href=#1138 id=1138 data-nosnippet>1138</a>            },
+<a href=#1139 id=1139 data-nosnippet>1139</a>            Case {
+<a href=#1140 id=1140 data-nosnippet>1140</a>                description: <span class="string">"inserting a value into an existing bin and filling it"</span>,
+<a href=#1141 id=1141 data-nosnippet>1141</a>                start: <span class="string">"0:65534"</span>,
+<a href=#1142 id=1142 data-nosnippet>1142</a>                insert: Value::Float(<span class="number">0.0</span>),
+<a href=#1143 id=1143 data-nosnippet>1143</a>                expected: <span class="string">"0:65535"</span>,
+<a href=#1144 id=1144 data-nosnippet>1144</a>            },
+<a href=#1145 id=1145 data-nosnippet>1145</a>            Case {
+<a href=#1146 id=1146 data-nosnippet>1146</a>                description: <span class="string">"inserting a value into an existing bin and causing an overflow"</span>,
+<a href=#1147 id=1147 data-nosnippet>1147</a>                start: <span class="string">"0:65535"</span>,
+<a href=#1148 id=1148 data-nosnippet>1148</a>                insert: Value::Float(<span class="number">0.0</span>),
+<a href=#1149 id=1149 data-nosnippet>1149</a>                expected: <span class="string">"0:1 0:65535"</span>,
+<a href=#1150 id=1150 data-nosnippet>1150</a>            },
+<a href=#1151 id=1151 data-nosnippet>1151</a>            Case {
+<a href=#1152 id=1152 data-nosnippet>1152</a>                description: <span class="string">"inserting many values into a sketch and causing an overflow"</span>,
+<a href=#1153 id=1153 data-nosnippet>1153</a>                start: <span class="string">"0:100"</span>,
+<a href=#1154 id=1154 data-nosnippet>1154</a>                insert: Value::NFloats(<span class="number">65535</span>, <span class="number">0.0</span>),
+<a href=#1155 id=1155 data-nosnippet>1155</a>                expected: <span class="string">"0:100 0:65535"</span>,
+<a href=#1156 id=1156 data-nosnippet>1156</a>            },
+<a href=#1157 id=1157 data-nosnippet>1157</a>            Case {
+<a href=#1158 id=1158 data-nosnippet>1158</a>                description: <span class="string">"inserting a value into a new bin in the middle and causing an overflow"</span>,
+<a href=#1159 id=1159 data-nosnippet>1159</a>                start: <span class="string">"0:1 1338:1"</span>,
+<a href=#1160 id=1160 data-nosnippet>1160</a>                insert: Value::NFloats(<span class="number">65536</span>, <span class="number">0.5</span>),
+<a href=#1161 id=1161 data-nosnippet>1161</a>                expected: <span class="string">"0:1 1293:1 1293:65535 1338:1"</span>,
+<a href=#1162 id=1162 data-nosnippet>1162</a>            },
+<a href=#1163 id=1163 data-nosnippet>1163</a>        ];
+<a href=#1164 id=1164 data-nosnippet>1164</a>
+<a href=#1165 id=1165 data-nosnippet>1165</a>        <span class="kw">for </span>case <span class="kw">in </span>cases {
+<a href=#1166 id=1166 data-nosnippet>1166</a>            <span class="kw">for </span>insert_fn <span class="kw">in </span><span class="kw-2">&amp;</span>[InsertFn::Insert, InsertFn::InsertMany, InsertFn::InsertN] {
+<a href=#1167 id=1167 data-nosnippet>1167</a>                <span class="comment">// Insert each value every way possible.
+<a href=#1168 id=1168 data-nosnippet>1168</a>
+<a href=#1169 id=1169 data-nosnippet>1169</a>                </span><span class="kw">let </span><span class="kw-2">mut </span>sketch = parse_sketch_from_string_bins(case.start);
+<a href=#1170 id=1170 data-nosnippet>1170</a>
+<a href=#1171 id=1171 data-nosnippet>1171</a>                <span class="kw">match </span>insert_fn {
+<a href=#1172 id=1172 data-nosnippet>1172</a>                    InsertFn::Insert =&gt; <span class="kw">match </span><span class="kw-2">&amp;</span>case.insert {
+<a href=#1173 id=1173 data-nosnippet>1173</a>                        Value::Float(v) =&gt; sketch.insert(<span class="kw-2">*</span>v),
+<a href=#1174 id=1174 data-nosnippet>1174</a>                        Value::Vec(vs) =&gt; {
+<a href=#1175 id=1175 data-nosnippet>1175</a>                            <span class="kw">for </span>v <span class="kw">in </span>vs {
+<a href=#1176 id=1176 data-nosnippet>1176</a>                                sketch.insert(<span class="kw-2">*</span>v);
+<a href=#1177 id=1177 data-nosnippet>1177</a>                            }
+<a href=#1178 id=1178 data-nosnippet>1178</a>                        }
+<a href=#1179 id=1179 data-nosnippet>1179</a>                        Value::NFloats(n, v) =&gt; {
+<a href=#1180 id=1180 data-nosnippet>1180</a>                            <span class="kw">for _ in </span><span class="number">0</span>..<span class="kw-2">*</span>n {
+<a href=#1181 id=1181 data-nosnippet>1181</a>                                sketch.insert(<span class="kw-2">*</span>v);
+<a href=#1182 id=1182 data-nosnippet>1182</a>                            }
+<a href=#1183 id=1183 data-nosnippet>1183</a>                        }
+<a href=#1184 id=1184 data-nosnippet>1184</a>                    },
+<a href=#1185 id=1185 data-nosnippet>1185</a>                    InsertFn::InsertMany =&gt; <span class="kw">match </span><span class="kw-2">&amp;</span>case.insert {
+<a href=#1186 id=1186 data-nosnippet>1186</a>                        Value::Float(v) =&gt; sketch.insert_many(<span class="kw-2">&amp;</span>[<span class="kw-2">*</span>v]),
+<a href=#1187 id=1187 data-nosnippet>1187</a>                        Value::Vec(vs) =&gt; sketch.insert_many(vs),
+<a href=#1188 id=1188 data-nosnippet>1188</a>                        Value::NFloats(n, v) =&gt; {
+<a href=#1189 id=1189 data-nosnippet>1189</a>                            <span class="kw">for _ in </span><span class="number">0</span>..<span class="kw-2">*</span>n {
+<a href=#1190 id=1190 data-nosnippet>1190</a>                                sketch.insert_many(<span class="kw-2">&amp;</span>[<span class="kw-2">*</span>v]);
+<a href=#1191 id=1191 data-nosnippet>1191</a>                            }
+<a href=#1192 id=1192 data-nosnippet>1192</a>                        }
+<a href=#1193 id=1193 data-nosnippet>1193</a>                    },
+<a href=#1194 id=1194 data-nosnippet>1194</a>                    InsertFn::InsertN =&gt; <span class="kw">match </span><span class="kw-2">&amp;</span>case.insert {
+<a href=#1195 id=1195 data-nosnippet>1195</a>                        Value::Float(v) =&gt; sketch.insert_n(<span class="kw-2">*</span>v, <span class="number">1</span>),
+<a href=#1196 id=1196 data-nosnippet>1196</a>                        Value::Vec(vs) =&gt; {
+<a href=#1197 id=1197 data-nosnippet>1197</a>                            <span class="kw">for </span>v <span class="kw">in </span>vs {
+<a href=#1198 id=1198 data-nosnippet>1198</a>                                sketch.insert_n(<span class="kw-2">*</span>v, <span class="number">1</span>);
+<a href=#1199 id=1199 data-nosnippet>1199</a>                            }
+<a href=#1200 id=1200 data-nosnippet>1200</a>                        }
+<a href=#1201 id=1201 data-nosnippet>1201</a>                        Value::NFloats(n, v) =&gt; sketch.insert_n(<span class="kw-2">*</span>v, <span class="kw-2">*</span>n),
+<a href=#1202 id=1202 data-nosnippet>1202</a>                    },
+<a href=#1203 id=1203 data-nosnippet>1203</a>                }
+<a href=#1204 id=1204 data-nosnippet>1204</a>
+<a href=#1205 id=1205 data-nosnippet>1205</a>                <span class="kw">let </span>expected = parse_sketch_from_string_bins(case.expected);
+<a href=#1206 id=1206 data-nosnippet>1206</a>                <span class="macro">assert_eq!</span>(expected.bins(), sketch.bins(), <span class="string">"{}"</span>, case.description);
+<a href=#1207 id=1207 data-nosnippet>1207</a>            }
+<a href=#1208 id=1208 data-nosnippet>1208</a>        }
+<a href=#1209 id=1209 data-nosnippet>1209</a>    }
+<a href=#1210 id=1210 data-nosnippet>1210</a>
+<a href=#1211 id=1211 data-nosnippet>1211</a>    <span class="attr">#[test]
+<a href=#1212 id=1212 data-nosnippet>1212</a>    </span><span class="kw">fn </span>test_histogram_interpolation_agent_similarity() {
+<a href=#1213 id=1213 data-nosnippet>1213</a>        <span class="attr">#[derive(Clone)]
+<a href=#1214 id=1214 data-nosnippet>1214</a>        </span><span class="kw">struct </span>Case {
+<a href=#1215 id=1215 data-nosnippet>1215</a>            lower: f64,
+<a href=#1216 id=1216 data-nosnippet>1216</a>            upper: f64,
+<a href=#1217 id=1217 data-nosnippet>1217</a>            count: u32,
+<a href=#1218 id=1218 data-nosnippet>1218</a>            allowed_err: f64,
+<a href=#1219 id=1219 data-nosnippet>1219</a>            expected: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str,
+<a href=#1220 id=1220 data-nosnippet>1220</a>        }
+<a href=#1221 id=1221 data-nosnippet>1221</a>
+<a href=#1222 id=1222 data-nosnippet>1222</a>        <span class="kw">let </span>check_result = |actual: <span class="kw-2">&amp;</span>DDSketch, case: <span class="kw-2">&amp;</span>Case| {
+<a href=#1223 id=1223 data-nosnippet>1223</a>            <span class="kw">let </span>expected = parse_sketch_from_string_bins(case.expected);
+<a href=#1224 id=1224 data-nosnippet>1224</a>
+<a href=#1225 id=1225 data-nosnippet>1225</a>            <span class="macro">assert_eq!</span>(expected.count(), case.count);
+<a href=#1226 id=1226 data-nosnippet>1226</a>            <span class="macro">assert_eq!</span>(actual.count(), case.count);
+<a href=#1227 id=1227 data-nosnippet>1227</a>            <span class="macro">assert_eq!</span>(actual.bins(), expected.bins());
+<a href=#1228 id=1228 data-nosnippet>1228</a>            compare_sketches(actual, <span class="kw-2">&amp;</span>expected, case.allowed_err);
+<a href=#1229 id=1229 data-nosnippet>1229</a>
+<a href=#1230 id=1230 data-nosnippet>1230</a>            <span class="kw">let </span>actual_count: u32 = actual.bins.iter().map(|b| u32::from(b.n)).sum();
+<a href=#1231 id=1231 data-nosnippet>1231</a>            <span class="macro">assert_eq!</span>(actual_count, case.count);
+<a href=#1232 id=1232 data-nosnippet>1232</a>        };
+<a href=#1233 id=1233 data-nosnippet>1233</a>
+<a href=#1234 id=1234 data-nosnippet>1234</a>        <span class="kw">let </span>cases = <span class="kw-2">&amp;</span>[
+<a href=#1235 id=1235 data-nosnippet>1235</a>            Case { lower: <span class="number">0.0</span>, upper: <span class="number">10.0</span>, count: <span class="number">2</span>, allowed_err: <span class="number">0.0</span>, expected: <span class="string">"0:1 1442:1" </span>},
+<a href=#1236 id=1236 data-nosnippet>1236</a>            Case { lower: <span class="number">10.0</span>, upper: <span class="number">20.0</span>, count: <span class="number">4</span>,  allowed_err: <span class="number">0.0</span>, expected: <span class="string">"1487:1 1502:1 1514:1 1524:1" </span>},
+<a href=#1237 id=1237 data-nosnippet>1237</a>		    Case { lower: -<span class="number">10.0</span>, upper: <span class="number">10.0</span>, count: <span class="number">4</span>, allowed_err: <span class="number">0.0</span>, expected: <span class="string">"-1487:1 -1442:1 -1067:1 1442:1"</span>},
+<a href=#1238 id=1238 data-nosnippet>1238</a>            Case { lower: <span class="number">0.0</span>, upper: <span class="number">10.0</span>, count: <span class="number">100</span>, allowed_err: <span class="number">0.0</span>, expected: <span class="string">"0:1 1190:1 1235:1 1261:1 1280:1 1295:1 1307:1 1317:1 1326:1 1334:1 1341:1 1347:1 1353:1 1358:1 1363:1 1368:1 1372:2 1376:1 1380:1 1384:1 1388:1 1391:1 1394:1 1397:2 1400:1 1403:1 1406:2 1409:1 1412:1 1415:2 1417:1 1419:1 1421:1 1423:1 1425:1 1427:1 1429:2 1431:1 1433:1 1435:2 1437:1 1439:2 1441:1 1443:2 1445:2 1447:1 1449:2 1451:2 1453:2 1455:2 1457:2 1459:1 1460:1 1461:1 1462:1 1463:1 1464:1 1465:1 1466:1 1467:2 1468:1 1469:1 1470:1 1471:1 1472:2 1473:1 1474:1 1475:1 1476:2 1477:1 1478:2 1479:1 1480:1 1481:2 1482:1 1483:2 1484:1 1485:2 1486:1" </span>},
+<a href=#1239 id=1239 data-nosnippet>1239</a>		    Case { lower: <span class="number">1_000.0</span>, upper: <span class="number">100_000.0</span>, count: <span class="number">1_000_000 </span>- <span class="number">1</span>, allowed_err: <span class="number">0.0</span>, expected: <span class="string">"1784:158 1785:162 1786:164 1787:166 1788:170 1789:171 1790:175 1791:177 1792:180 1793:183 1794:185 1795:189 1796:191 1797:195 1798:197 1799:201 1800:203 1801:207 1802:210 1803:214 1804:217 1805:220 1806:223 1807:227 1808:231 1809:234 1810:238 1811:242 1812:245 1813:249 1814:253 1815:257 1816:261 1817:265 1818:270 1819:273 1820:278 1821:282 1822:287 1823:291 1824:295 1825:300 1826:305 1827:310 1828:314 1829:320 1830:324 1831:329 1832:335 1833:340 1834:345 1835:350 1836:356 1837:362 1838:367 1839:373 1840:379 1841:384 1842:391 1843:397 1844:403 1845:409 1846:416 1847:422 1848:429 1849:435 1850:442 1851:449 1852:457 1853:463 1854:470 1855:478 1856:486 1857:493 1858:500 1859:509 1860:516 1861:525 1862:532 1863:541 1864:550 1865:558 1866:567 1867:575 1868:585 1869:594 1870:603 1871:612 1872:622 1873:632 1874:642 1875:651 1876:662 1877:672 1878:683 1879:693 1880:704 1881:716 1882:726 1883:738 1884:749 1885:761 1886:773 1887:785 1888:797 1889:809 1890:823 1891:835 1892:848 1893:861 1894:875 1895:889 1896:902 1897:917 1898:931 1899:945 1900:960 1901:975 1902:991 1903:1006 1904:1021 1905:1038 1906:1053 1907:1071 1908:1087 1909:1104 1910:1121 1911:1138 1912:1157 1913:1175 1914:1192 1915:1212 1916:1231 1917:1249 1918:1269 1919:1290 1920:1309 1921:1329 1922:1351 1923:1371 1924:1393 1925:1415 1926:1437 1927:1459 1928:1482 1929:1506 1930:1529 1931:1552 1932:1577 1933:1602 1934:1626 1935:1652 1936:1678 1937:1704 1938:1731 1939:1758 1940:1785 1941:1813 1942:1841 1943:1870 1944:1900 1945:1929 1946:1959 1947:1990 1948:2021 1949:2052 1950:2085 1951:2117 1952:2150 1953:2184 1954:2218 1955:2253 1956:2287 1957:2324 1958:2360 1959:2396 1960:2435 1961:2472 1962:2511 1963:2550 1964:2589 1965:2631 1966:2671 1967:2714 1968:2755 1969:2799 1970:2842 1971:2887 1972:2932 1973:2978 1974:3024 1975:3071 1976:3120 1977:3168 1978:3218 1979:3268 1980:3319 1981:3371 1982:3423 1983:3477 1984:3532 1985:3586 1986:3643 1987:3700 1988:3757 1989:3816 1990:3876 1991:3936 1992:3998 1993:4060 1994:4124 1995:4188 1996:4253 1997:4320 1998:4388 1999:4456 2000:4526 2001:4596 2002:4668 2003:4741 2004:4816 2005:4890 2006:4967 2007:5044 2008:5124 2009:5203 2010:5285 2011:5367 2012:5451 2013:5536 2014:5623 2015:5711 2016:5800 2017:5890 2018:5983 2019:6076 2020:6171 2021:6267 2022:6365 2023:6465 2024:6566 2025:6668 2026:6773 2027:6878 2028:6986 2029:7095 2030:7206 2031:7318 2032:7433 2033:7549 2034:7667 2035:7786 2036:7909 2037:8032 2038:8157 2039:8285 2040:8414 2041:8546 2042:8679 2043:8815 2044:8953 2045:9092 2046:9235 2047:9379 2048:9525 2049:9675 2050:9825 2051:9979 2052:10135 2053:10293 2054:10454 2055:10618 2056:10783 2057:10952 2058:11123 2059:11297 2060:11473 2061:11653 2062:11834 2063:12020 2064:12207 2065:12398 2066:12592 2067:12788 2068:12989 2069:13191 2070:13397 2071:13607 2072:13819 2073:14036 2074:14254 2075:14478 2076:14703 2077:14933 2078:15167 2079:15403 2080:8942" </span>},
+<a href=#1240 id=1240 data-nosnippet>1240</a>		    Case { lower: <span class="number">1_000.0</span>, upper: <span class="number">10_000.0</span>, count: <span class="number">10_000_000 </span>- <span class="number">1</span>, allowed_err: <span class="number">0.00001</span>, expected: <span class="string">"1784:17485 1785:17758 1786:18035 1787:18318 1788:18604 1789:18894 1790:19190 1791:19489 1792:19794 1793:20103 1794:20418 1795:20736 1796:21061 1797:21389 1798:21724 1799:22063 1800:22408 1801:22758 1802:23113 1803:23475 1804:23841 1805:24215 1806:24592 1807:24977 1808:25366 1809:25764 1810:26165 1811:26575 1812:26990 1813:27412 1814:27839 1815:28275 1816:28717 1817:29165 1818:29622 1819:30083 1820:30554 1821:31032 1822:31516 1823:32009 1824:32509 1825:33016 1826:33533 1827:34057 1828:34589 1829:35129 1830:35678 1831:36235 1832:36802 1833:37377 1834:37961 1835:38554 1836:39156 1837:39768 1838:40390 1839:41020 1840:41662 1841:42312 1842:42974 1843:43645 1844:44327 1845:45020 1846:45723 1847:46438 1848:47163 1849:47900 1850:48648 1851:49409 1852:50181 1853:50964 1854:51761 1855:52570 1856:53391 1857:54226 1858:55072 1859:55934 1860:56807 1861:57695 1862:58596 1863:59512 1864:60441 1865:61387 1866:62345 1867:63319 1868:64309 1869:65314 1870:799 1870:65535 1871:1835 1871:65535 1872:2889 1872:65535 1873:3957 1873:65535 1874:5043 1874:65535 1875:6146 1875:65535 1876:7266 1876:65535 1877:8404 1877:65535 1878:9559 1878:65535 1879:10732 1879:65535 1880:11923 1880:65535 1881:13135 1881:65535 1882:14363 1882:65535 1883:15612 1883:65535 1884:16879 1884:65535 1885:18168 1885:65535 1886:19475 1886:65535 1887:20803 1887:65535 1888:22153 1888:65535 1889:23523 1889:65535 1890:24914 1890:65535 1891:26327 1891:65535 1892:27763 1892:65535 1893:29221 1893:65535 1894:30701 1894:65535 1895:32205 1895:65535 1896:33732 1896:65535 1897:35283 1897:65535 1898:36858 1898:65535 1899:38458 1899:65535 1900:40084 1900:65535 1901:41733 1901:65535 1902:43409 1902:65535 1903:45112 1903:65535 1904:46841 1904:65535 1905:48596 1905:65535 1906:50380 1906:65535 1907:52191 1907:65535 1908:54030 1908:65535 1909:55899 1909:65535 1910:57796 1910:65535 1911:59723 1911:65535 1912:61680 1912:65535 1913:63668 1913:65535 1914:152 1914:65535 1914:65535 1915:2202 1915:65535 1915:65535 1916:4285 1916:65535 1916:65535 1917:6399 1917:65535 1917:65535 1918:8547 1918:65535 1918:65535 1919:10729 1919:65535 1919:65535 1920:12945 1920:65535 1920:65535 1921:15195 1921:65535 1921:65535 1922:17480 1922:65535 1922:65535 1923:19801 1923:65535 1923:65535 1924:22158 1924:65535 1924:65535 1925:24553 1925:65535 1925:65535 1926:26985 1926:65535 1926:65535 1927:29453 1927:65535 1927:65535 1928:31963 1928:65535 1928:65535 1929:34509 1929:65535 1929:65535 1930:37097 1930:65535 1930:65535 1931:39724 1931:65535 1931:65535 1932:17411"</span>},
+<a href=#1241 id=1241 data-nosnippet>1241</a>        ];
+<a href=#1242 id=1242 data-nosnippet>1242</a>
+<a href=#1243 id=1243 data-nosnippet>1243</a>        <span class="kw">let </span>double_insert_cases = <span class="kw-2">&amp;</span>[
+<a href=#1244 id=1244 data-nosnippet>1244</a>            Case { lower: <span class="number">1_000.0</span>, upper: <span class="number">10_000.0</span>, count: <span class="number">10_000_000 </span>- <span class="number">1</span>, allowed_err: <span class="number">0.0002</span>, expected: <span class="string">"1784:34970 1785:35516 1786:36070 1787:36636 1788:37208 1789:37788 1790:38380 1791:38978 1792:39588 1793:40206 1794:40836 1795:41472 1796:42122 1797:42778 1798:43448 1799:44126 1800:44816 1801:45516 1802:46226 1803:46950 1804:47682 1805:48430 1806:49184 1807:49954 1808:50732 1809:51528 1810:52330 1811:53150 1812:53980 1813:54824 1814:55678 1815:56550 1816:57434 1817:58330 1818:59244 1819:60166 1820:61108 1821:62064 1822:63032 1823:64018 1824:65018 1825:497 1825:65535 1826:1531 1826:65535 1827:2579 1827:65535 1828:3643 1828:65535 1829:4723 1829:65535 1830:5821 1830:65535 1831:6935 1831:65535 1832:8069 1832:65535 1833:9219 1833:65535 1834:10387 1834:65535 1835:11573 1835:65535 1836:12777 1836:65535 1837:14001 1837:65535 1838:15245 1838:65535 1839:16505 1839:65535 1840:17789 1840:65535 1841:19089 1841:65535 1842:20413 1842:65535 1843:21755 1843:65535 1844:23119 1844:65535 1845:24505 1845:65535 1846:25911 1846:65535 1847:27341 1847:65535 1848:28791 1848:65535 1849:30265 1849:65535 1850:31761 1850:65535 1851:33283 1851:65535 1852:34827 1852:65535 1853:36393 1853:65535 1854:37987 1854:65535 1855:39605 1855:65535 1856:41247 1856:65535 1857:42917 1857:65535 1858:44609 1858:65535 1859:46333 1859:65535 1860:48079 1860:65535 1861:49855 1861:65535 1862:51657 1862:65535 1863:53489 1863:65535 1864:55347 1864:65535 1865:57239 1865:65535 1866:59155 1866:65535 1867:61103 1867:65535 1868:63083 1868:65535 1869:65093 1869:65535 1870:1598 1870:65535 1870:65535 1871:3670 1871:65535 1871:65535 1872:5778 1872:65535 1872:65535 1873:7914 1873:65535 1873:65535 1874:10086 1874:65535 1874:65535 1875:12292 1875:65535 1875:65535 1876:14532 1876:65535 1876:65535 1877:16808 1877:65535 1877:65535 1878:19118 1878:65535 1878:65535 1879:21464 1879:65535 1879:65535 1880:23846 1880:65535 1880:65535 1881:26270 1881:65535 1881:65535 1882:28726 1882:65535 1882:65535 1883:31224 1883:65535 1883:65535 1884:33758 1884:65535 1884:65535 1885:36336 1885:65535 1885:65535 1886:38950 1886:65535 1886:65535 1887:41606 1887:65535 1887:65535 1888:44306 1888:65535 1888:65535 1889:47046 1889:65535 1889:65535 1890:49828 1890:65535 1890:65535 1891:52654 1891:65535 1891:65535 1892:55526 1892:65535 1892:65535 1893:58442 1893:65535 1893:65535 1894:61402 1894:65535 1894:65535 1895:64410 1895:65535 1895:65535 1896:1929 1896:65535 1896:65535 1896:65535 1897:5031 1897:65535 1897:65535 1897:65535 1898:8181 1898:65535 1898:65535 1898:65535 1899:11381 1899:65535 1899:65535 1899:65535 1900:14633 1900:65535 1900:65535 1900:65535 1901:17931 1901:65535 1901:65535 1901:65535 1902:21283 1902:65535 1902:65535 1902:65535 1903:24689 1903:65535 1903:65535 1903:65535 1904:28147 1904:65535 1904:65535 1904:65535 1905:31657 1905:65535 1905:65535 1905:65535 1906:35225 1906:65535 1906:65535 1906:65535 1907:38847 1907:65535 1907:65535 1907:65535 1908:42525 1908:65535 1908:65535 1908:65535 1909:46263 1909:65535 1909:65535 1909:65535 1910:50057 1910:65535 1910:65535 1910:65535 1911:53911 1911:65535 1911:65535 1911:65535 1912:57825 1912:65535 1912:65535 1912:65535 1913:61801 1913:65535 1913:65535 1913:65535 1914:304 1914:65535 1914:65535 1914:65535 1914:65535 1915:4404 1915:65535 1915:65535 1915:65535 1915:65535 1916:8570 1916:65535 1916:65535 1916:65535 1916:65535 1917:12798 1917:65535 1917:65535 1917:65535 1917:65535 1918:17094 1918:65535 1918:65535 1918:65535 1918:65535 1919:21458 1919:65535 1919:65535 1919:65535 1919:65535 1920:25890 1920:65535 1920:65535 1920:65535 1920:65535 1921:30390 1921:65535 1921:65535 1921:65535 1921:65535 1922:34960 1922:65535 1922:65535 1922:65535 1922:65535 1923:39602 1923:65535 1923:65535 1923:65535 1923:65535 1924:44316 1924:65535 1924:65535 1924:65535 1924:65535 1925:49106 1925:65535 1925:65535 1925:65535 1925:65535 1926:53970 1926:65535 1926:65535 1926:65535 1926:65535 1927:58906 1927:65535 1927:65535 1927:65535 1927:65535 1928:63926 1928:65535 1928:65535 1928:65535 1928:65535 1929:3483 1929:65535 1929:65535 1929:65535 1929:65535 1929:65535 1930:8659 1930:65535 1930:65535 1930:65535 1930:65535 1930:65535 1931:13913 1931:65535 1931:65535 1931:65535 1931:65535 1931:65535 1932:34822" </span>},
+<a href=#1245 id=1245 data-nosnippet>1245</a>        ];
+<a href=#1246 id=1246 data-nosnippet>1246</a>
+<a href=#1247 id=1247 data-nosnippet>1247</a>        <span class="kw">for </span>case <span class="kw">in </span>cases {
+<a href=#1248 id=1248 data-nosnippet>1248</a>            <span class="kw">let </span><span class="kw-2">mut </span>sketch = DDSketch::default();
+<a href=#1249 id=1249 data-nosnippet>1249</a>            <span class="macro">assert!</span>(sketch.is_empty());
+<a href=#1250 id=1250 data-nosnippet>1250</a>
+<a href=#1251 id=1251 data-nosnippet>1251</a>            sketch.insert_interpolate_bucket(case.lower, case.upper, case.count);
+<a href=#1252 id=1252 data-nosnippet>1252</a>            check_result(<span class="kw-2">&amp;</span>sketch, case);
+<a href=#1253 id=1253 data-nosnippet>1253</a>        }
+<a href=#1254 id=1254 data-nosnippet>1254</a>
+<a href=#1255 id=1255 data-nosnippet>1255</a>        <span class="kw">for </span>case <span class="kw">in </span>double_insert_cases {
+<a href=#1256 id=1256 data-nosnippet>1256</a>            <span class="kw">let </span><span class="kw-2">mut </span>sketch = DDSketch::default();
+<a href=#1257 id=1257 data-nosnippet>1257</a>            <span class="macro">assert!</span>(sketch.is_empty());
+<a href=#1258 id=1258 data-nosnippet>1258</a>
+<a href=#1259 id=1259 data-nosnippet>1259</a>            sketch.insert_interpolate_bucket(case.lower, case.upper, case.count);
+<a href=#1260 id=1260 data-nosnippet>1260</a>            sketch.insert_interpolate_bucket(case.lower, case.upper, case.count);
+<a href=#1261 id=1261 data-nosnippet>1261</a>
+<a href=#1262 id=1262 data-nosnippet>1262</a>            <span class="kw">let </span><span class="kw-2">mut </span>case = case.clone();
+<a href=#1263 id=1263 data-nosnippet>1263</a>            case.count <span class="kw-2">*</span>= <span class="number">2</span>;
+<a href=#1264 id=1264 data-nosnippet>1264</a>            check_result(<span class="kw-2">&amp;</span>sketch, <span class="kw-2">&amp;</span>case);
+<a href=#1265 id=1265 data-nosnippet>1265</a>        }
+<a href=#1266 id=1266 data-nosnippet>1266</a>    }
+<a href=#1267 id=1267 data-nosnippet>1267</a>
+<a href=#1268 id=1268 data-nosnippet>1268</a>    <span class="kw">fn </span>test_relative_accuracy(config: <span class="kw-2">&amp;</span>Config, rel_acc: f64, min_value: f32, max_value: f32) {
+<a href=#1269 id=1269 data-nosnippet>1269</a>        <span class="kw">let </span>max_observed_rel_acc = check_max_relative_accuracy(config, min_value, max_value);
+<a href=#1270 id=1270 data-nosnippet>1270</a>        <span class="macro">assert!</span>(
+<a href=#1271 id=1271 data-nosnippet>1271</a>            max_observed_rel_acc &lt;= rel_acc + FLOATING_POINT_ACCEPTABLE_ERROR,
+<a href=#1272 id=1272 data-nosnippet>1272</a>            <span class="string">"observed out of bound max relative acc: {max_observed_rel_acc}, target rel acc={rel_acc}"</span>,
+<a href=#1273 id=1273 data-nosnippet>1273</a>        );
+<a href=#1274 id=1274 data-nosnippet>1274</a>    }
+<a href=#1275 id=1275 data-nosnippet>1275</a>
+<a href=#1276 id=1276 data-nosnippet>1276</a>    <span class="kw">fn </span>compute_relative_accuracy(target: f64, actual: f64) -&gt; f64 {
+<a href=#1277 id=1277 data-nosnippet>1277</a>        <span class="macro">assert!</span>(
+<a href=#1278 id=1278 data-nosnippet>1278</a>            !(target &lt; <span class="number">0.0 </span>|| actual &lt; <span class="number">0.0</span>),
+<a href=#1279 id=1279 data-nosnippet>1279</a>            <span class="string">"expected/actual values must be greater than 0.0; target={target}, actual={actual}"</span>,
+<a href=#1280 id=1280 data-nosnippet>1280</a>        );
+<a href=#1281 id=1281 data-nosnippet>1281</a>
+<a href=#1282 id=1282 data-nosnippet>1282</a>        <span class="kw">if </span>target == actual {
+<a href=#1283 id=1283 data-nosnippet>1283</a>            <span class="number">0.0
+<a href=#1284 id=1284 data-nosnippet>1284</a>        </span>} <span class="kw">else if </span>target == <span class="number">0.0 </span>{
+<a href=#1285 id=1285 data-nosnippet>1285</a>            <span class="kw">if </span>actual == <span class="number">0.0 </span>{
+<a href=#1286 id=1286 data-nosnippet>1286</a>                <span class="number">0.0
+<a href=#1287 id=1287 data-nosnippet>1287</a>            </span>} <span class="kw">else </span>{
+<a href=#1288 id=1288 data-nosnippet>1288</a>                f64::INFINITY
+<a href=#1289 id=1289 data-nosnippet>1289</a>            }
+<a href=#1290 id=1290 data-nosnippet>1290</a>        } <span class="kw">else if </span>actual &lt; target {
+<a href=#1291 id=1291 data-nosnippet>1291</a>            (target - actual) / target
+<a href=#1292 id=1292 data-nosnippet>1292</a>        } <span class="kw">else </span>{
+<a href=#1293 id=1293 data-nosnippet>1293</a>            (actual - target) / target
+<a href=#1294 id=1294 data-nosnippet>1294</a>        }
+<a href=#1295 id=1295 data-nosnippet>1295</a>    }
+<a href=#1296 id=1296 data-nosnippet>1296</a>
+<a href=#1297 id=1297 data-nosnippet>1297</a>    <span class="kw">fn </span>check_max_relative_accuracy(config: <span class="kw-2">&amp;</span>Config, min_value: f32, max_value: f32) -&gt; f64 {
+<a href=#1298 id=1298 data-nosnippet>1298</a>        <span class="macro">assert!</span>(min_value &lt; max_value, <span class="string">"min_value must be less than max_value"</span>);
+<a href=#1299 id=1299 data-nosnippet>1299</a>
+<a href=#1300 id=1300 data-nosnippet>1300</a>        <span class="kw">let </span><span class="kw-2">mut </span>v = min_value;
+<a href=#1301 id=1301 data-nosnippet>1301</a>        <span class="kw">let </span><span class="kw-2">mut </span>max_relative_acc = <span class="number">0.0</span>;
+<a href=#1302 id=1302 data-nosnippet>1302</a>        <span class="kw">while </span>v &lt; max_value {
+<a href=#1303 id=1303 data-nosnippet>1303</a>            <span class="kw">let </span>target = f64::from(v);
+<a href=#1304 id=1304 data-nosnippet>1304</a>            <span class="kw">let </span>actual = config.bin_lower_bound(config.key(target));
+<a href=#1305 id=1305 data-nosnippet>1305</a>
+<a href=#1306 id=1306 data-nosnippet>1306</a>            <span class="kw">let </span>relative_acc = compute_relative_accuracy(target, actual);
+<a href=#1307 id=1307 data-nosnippet>1307</a>            <span class="kw">if </span>relative_acc &gt; max_relative_acc {
+<a href=#1308 id=1308 data-nosnippet>1308</a>                max_relative_acc = relative_acc;
+<a href=#1309 id=1309 data-nosnippet>1309</a>            }
+<a href=#1310 id=1310 data-nosnippet>1310</a>
+<a href=#1311 id=1311 data-nosnippet>1311</a>            v = f32::from_bits(v.to_bits() + <span class="number">1</span>);
+<a href=#1312 id=1312 data-nosnippet>1312</a>        }
+<a href=#1313 id=1313 data-nosnippet>1313</a>
+<a href=#1314 id=1314 data-nosnippet>1314</a>        <span class="comment">// Final iteration to make sure we hit the highest value.
+<a href=#1315 id=1315 data-nosnippet>1315</a>        </span><span class="kw">let </span>actual = config.bin_lower_bound(config.key(f64::from(max_value)));
+<a href=#1316 id=1316 data-nosnippet>1316</a>        <span class="kw">let </span>relative_acc = compute_relative_accuracy(f64::from(max_value), actual);
+<a href=#1317 id=1317 data-nosnippet>1317</a>        <span class="kw">if </span>relative_acc &gt; max_relative_acc {
+<a href=#1318 id=1318 data-nosnippet>1318</a>            max_relative_acc = relative_acc;
+<a href=#1319 id=1319 data-nosnippet>1319</a>        }
+<a href=#1320 id=1320 data-nosnippet>1320</a>
+<a href=#1321 id=1321 data-nosnippet>1321</a>        max_relative_acc
+<a href=#1322 id=1322 data-nosnippet>1322</a>    }
+<a href=#1323 id=1323 data-nosnippet>1323</a>}</code></pre></div></section></main></body></html>
