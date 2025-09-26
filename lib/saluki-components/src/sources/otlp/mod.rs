@@ -24,14 +24,14 @@ use saluki_common::task::HandleExt as _;
 use saluki_config::GenericConfiguration;
 use saluki_context::{ContextResolver, ContextResolverBuilder};
 use saluki_core::observability::ComponentMetricsExt;
-use saluki_core::topology::interconnect::EventBufferManager;
+use saluki_core::topology::interconnect::{EventBufferManager, FixedSizeEventBuffer};
 use saluki_core::topology::shutdown::{DynamicShutdownCoordinator, DynamicShutdownHandle};
 use saluki_core::{
     components::{
         sources::{Source, SourceBuilder, SourceContext},
         ComponentContext,
     },
-    data_model::event::EventType,
+    data_model::event::{Event, EventType},
     topology::{EventsBuffer, OutputDefinition},
 };
 use saluki_error::{generic_error, GenericError};
@@ -46,7 +46,7 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, MissedTickBehavior};
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 mod attributes;
 mod logs;
@@ -500,9 +500,27 @@ impl LogsService for GrpcService {
     }
 }
 
-async fn dispatch_events(events: EventsBuffer, source_context: &SourceContext) {
+async fn dispatch_events(mut events: EventsBuffer, source_context: &SourceContext) {
     if events.is_empty() {
         return;
+    }
+
+    if events.has_event_type(EventType::Log) {
+        // TODO: is there a better way of doing this?
+        let mut logs_buffer = FixedSizeEventBuffer::<1024>::default();
+        for log in events.extract(Event::is_log) {
+            if let Some(_overflow) = logs_buffer.try_push(log) {
+                // TODO: probably do something here
+
+                break;
+            }
+        }
+        info!("HEHEXD? {:?}", logs_buffer);
+        if let Err(e) = source_context.dispatcher().dispatch_named("logs", logs_buffer).await {
+            error!(error = %e, "Failed to dispatch logs")
+        } else {
+            debug!("Dispatched log events");
+        }
     }
 
     let len = events.len();
@@ -549,6 +567,7 @@ async fn run_converter(
                         match logs_translator.map_logs(resource_logs, &metrics) {
                             Ok(events) => {
                                 for event in events {
+                                    info!("wacktest {:?}", event);
                                     if let Some(event_buffer) = event_buffer_manager.try_push(event) {
                                         dispatch_events(event_buffer, &source_context).await;
                                     }

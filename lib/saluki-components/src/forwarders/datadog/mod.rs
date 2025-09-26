@@ -173,6 +173,7 @@ impl Forwarder for Datadog {
 
 fn get_dd_endpoint_name(uri: &Uri) -> Option<MetaString> {
     match uri.path() {
+        "/api/v2/logs" => Some(MetaString::from_static("logs_v2")),
         "/api/v2/series" => Some(MetaString::from_static("series_v2")),
         "/api/beta/sketches" => Some(MetaString::from_static("sketches_v2")),
         "/api/v1/check_run" => Some(MetaString::from_static("check_run_v1")),
