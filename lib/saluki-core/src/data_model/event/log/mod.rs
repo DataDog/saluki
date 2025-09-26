@@ -13,6 +13,8 @@ pub struct Log {
     message: MetaString,
     /// Log status/severity (e.g., "info", "warn", "error").
     status: Option<LogStatus>,
+    /// Log source
+    source: Option<MetaString>,
     /// Hostname associated with the log.
     hostname: MetaString,
     /// Service associated with the log.
@@ -70,6 +72,7 @@ impl Log {
         Self {
             message: message.into(),
             status: None,
+            source: None,
             hostname: MetaString::empty(),
             service: MetaString::empty(),
             tags: SharedTagSet::default(),
@@ -80,6 +83,12 @@ impl Log {
     /// Sets the log status.
     pub fn with_status(mut self, status: impl Into<Option<LogStatus>>) -> Self {
         self.status = status.into();
+        self
+    }
+
+    /// Sets the log source.
+    pub fn with_source(mut self, source: impl Into<Option<MetaString>>) -> Self {
+        self.source = source.into();
         self
     }
 
@@ -117,6 +126,11 @@ impl Log {
     /// Returns the log status, if set.
     pub fn status(&self) -> Option<LogStatus> {
         self.status
+    }
+
+    /// Returns the log source, if set.
+    pub fn source(&self) -> &Option<MetaString> {
+        &self.source
     }
 
     /// Returns the hostname, if set.

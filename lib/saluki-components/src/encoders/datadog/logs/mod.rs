@@ -204,10 +204,8 @@ impl LogsEndpointEncoder {
 
         // ddsource's default value gets overriden from additional properties if present
         let mut ddsource = self.ddsource.clone();
-        if let Some(JsonValue::String(src)) = log.additional_properties().get("datadog.log.source") {
-            if !src.is_empty() {
-                ddsource = src.clone();
-            }
+        if let Some(source) = log.source().clone() {
+            ddsource = source.into_owned();
         }
         obj.insert("ddsource".to_string(), JsonValue::String(ddsource));
 
