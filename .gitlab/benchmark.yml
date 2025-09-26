@@ -4,12 +4,12 @@
   - export SINGLE_MACHINE_PERFORMANCE_API=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-api --with-decryption --query "Parameter.Value" --out text)
   - export SMP_ECR_HOST="${SMP_ACCOUNT_ID}.dkr.ecr.us-west-2.amazonaws.com"
   - git fetch --verbose --deepen=999 origin ${CI_COMMIT_BRANCH} main
-  - export BASELINE_SALUKI_SHA=$(git merge-base origin/main origin/${CI_COMMIT_BRANCH})
-  - export COMPARISON_SALUKI_SHA="${CI_COMMIT_SHA}"
-  - export BASELINE_SALUKI_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-${CI_PIPELINE_ID}-${BASELINE_SALUKI_SHA}"
-  - export BASELINE_SALUKI_AND_CHECK_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-checks-${CI_PIPELINE_ID}-${BASELINE_SALUKI_SHA}"
-  - export COMPARISON_SALUKI_AND_CHECK_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-checks-${CI_PIPELINE_ID}-${COMPARISON_SALUKI_SHA}"
-  - export COMPARISON_SALUKI_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-${CI_PIPELINE_ID}-${COMPARISON_SALUKI_SHA}"
+  - export BASELINE_ADP_SHA=$(git merge-base origin/main origin/${CI_COMMIT_BRANCH})
+  - export COMPARISON_ADP_SHA="${CI_COMMIT_SHA}"
+  - export BASELINE_ADP_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-${CI_PIPELINE_ID}-${BASELINE_ADP_SHA}"
+  - export COMPARISON_ADP_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-${CI_PIPELINE_ID}-${COMPARISON_ADP_SHA}"
+  - export BASELINE_ADP_CHECKS_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-checks-${CI_PIPELINE_ID}-${BASELINE_ADP_SHA}"
+  - export COMPARISON_ADP_CHECKS_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-checks-${CI_PIPELINE_ID}-${COMPARISON_ADP_SHA}"
 
 build-adp-baseline-image:
   extends: .build-common-variables
@@ -42,12 +42,12 @@ build-adp-baseline-image:
     - docker buildx build
       --platform linux/amd64
       --file ./docker/Dockerfile.agent-data-plane
-      --tag ${BASELINE_SALUKI_IMG}
+      --tag ${BASELINE_ADP_IMG}
       --build-arg CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
-      --build-arg APP_GIT_HASH=${BASELINE_SALUKI_SHA}
+      --build-arg APP_GIT_HASH=${BASELINE_ADP_SHA}
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
       --label git.commit=${CI_COMMIT_SHA}
@@ -81,12 +81,12 @@ build-adp-comparison-image:
     - docker buildx build
       --platform linux/amd64
       --file ./docker/Dockerfile.agent-data-plane
-      --tag ${COMPARISON_SALUKI_IMG}
+      --tag ${COMPARISON_ADP_IMG}
       --build-arg CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
-      --build-arg APP_GIT_HASH=${COMPARISON_SALUKI_SHA}
+      --build-arg APP_GIT_HASH=${COMPARISON_ADP_SHA}
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
       --label git.commit=${CI_COMMIT_SHA}
@@ -120,12 +120,12 @@ build-adp-check-image:
     - docker buildx build
       --platform linux/amd64
       --file ./docker/Dockerfile.adp-checks-smp
-      --tag ${BASELINE_SALUKI_AND_CHECK_IMG}
+      --tag ${BASELINE_ADP_CHECKS_IMG}
       --build-arg CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
-      --build-arg APP_GIT_HASH=${COMPARISON_SALUKI_SHA}
+      --build-arg APP_GIT_HASH=${COMPARISON_ADP_SHA}
       --build-arg BUILD_FEATURES=python-checks
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
@@ -160,12 +160,12 @@ build-adp-check-comparison-image:
     - docker buildx build
       --platform linux/amd64
       --file ./docker/Dockerfile.adp-checks-smp
-      --tag ${COMPARISON_SALUKI_AND_CHECK_IMG}
+      --tag ${COMPARISON_ADP_CHECKS_IMG}
       --build-arg CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
-      --build-arg APP_GIT_HASH=${COMPARISON_SALUKI_SHA}
+      --build-arg APP_GIT_HASH=${COMPARISON_ADP_SHA}
       --build-arg BUILD_FEATURES=python-checks
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
@@ -212,11 +212,11 @@ run-benchmarks-adp:
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job submit
       --warmup-seconds 0
-      --baseline-image ${BASELINE_SALUKI_IMG}
-      --comparison-image ${COMPARISON_SALUKI_IMG}
-      --baseline-sha ${BASELINE_SALUKI_SHA}
-      --comparison-sha ${COMPARISON_SALUKI_SHA}
-      --target-config-dir ./test/smp/regression/saluki/
+      --baseline-image ${BASELINE_ADP_IMG}
+      --comparison-image ${COMPARISON_ADP_IMG}
+      --baseline-sha ${BASELINE_ADP_SHA}
+      --comparison-sha ${COMPARISON_ADP_SHA}
+      --target-config-dir ./test/smp/regression/adp/
       --submission-metadata submission_metadata
     # Populate some data that we'll need later for generating links to experiment dashboards.
     - date +%s > adp_job_start_time
@@ -239,7 +239,7 @@ run-benchmarks-adp:
     # This avoids  https://gitlab.com/gitlab-org/gitlab/-/issues/217231.
     - cat outputs/report.md | sed "s/^\$/$(echo -ne '\uFEFF\u00A0\u200B')/g"
     # Post the HTML report to the PR.
-    - cat outputs/report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Saluki)"
+    - cat outputs/report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Agent Data Plane)"
     # Finally, exit 1 if the job signals a regression else 0.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job result
@@ -282,10 +282,10 @@ run-benchmarks-adp-and-checks:
     # Run SMP against our converged Agent image.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job submit
-      --baseline-image ${BASELINE_SALUKI_AND_CHECK_IMG}
-      --comparison-image ${COMPARISON_SALUKI_AND_CHECK_IMG}
-      --baseline-sha ${BASELINE_SALUKI_SHA}
-      --comparison-sha ${COMPARISON_SALUKI_SHA}
+      --baseline-image ${BASELINE_ADP_CHECKS_IMG}
+      --comparison-image ${COMPARISON_ADP_CHECKS_IMG}
+      --baseline-sha ${BASELINE_ADP_SHA}
+      --comparison-sha ${COMPARISON_ADP_SHA}
       --target-config-dir ./test/smp/regression/adp-checks-agent/
       --submission-metadata submission_metadata
     # Populate some data that we'll need later for generating links to experiment dashboards.
@@ -309,7 +309,7 @@ run-benchmarks-adp-and-checks:
     # This avoids  https://gitlab.com/gitlab-org/gitlab/-/issues/217231.
     - cat outputs/report.md | sed "s/^\$/$(echo -ne '\uFEFF\u00A0\u200B')/g"
     # Post the HTML report to the PR.
-    - cat outputs/report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (ADP && Checks)"
+    - cat outputs/report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Agent Data Plane w/ Checks)"
     # Finally, exit 1 if the job signals a regression else 0.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job result
