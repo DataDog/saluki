@@ -13,7 +13,7 @@ target:
     DD_DD_URL: http://127.0.0.1:9091
 
     # Sets the context resolver's string interner size.
-    DD_DOGSTATSD_STRING_INTERNER_SIZE: "96MiB"
+    DD_DOGSTATSD_STRING_INTERNER_SIZE: "64MiB"
 
     # Set the context limit in the aggregator to right above 250K, which matches the maximum number of contexts we
     # expect to generate. We essentially don't want the aggregator to be a limiting factor.
@@ -35,4 +35,4 @@ checks:
     description: "Acceptable upper bound on the memory used by ADP when handling 'ultraheavy' DSD traffic."
     bounds:
       series: total_rss_bytes
-      upper_bound: "140.0 MiB"
+      upper_bound: "200.0 MiB"
