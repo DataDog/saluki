@@ -3,13 +3,7 @@ name: docs
 permissions:
   contents: write
 
-on:
-  push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
+on: push
 
 jobs:
   build:
