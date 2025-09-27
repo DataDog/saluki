@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use chrono::Utc;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::iter::ReusableDeduplicator;
@@ -175,50 +174,54 @@ impl LogsEndpointEncoder {
         }
     }
 
-    // TODO: add source for logs
-
     fn build_agent_json(&mut self, log: &Log) -> JsonValue {
+        // Build inner JSON (becomes the string value of the envelope "message")
+        let mut inner = JsonMap::new();
+        inner.insert("message".to_string(), JsonValue::String(log.message().to_string()));
+        for (k, v) in log.additional_properties() {
+            // Avoid duplicating fields that are also set in the outer envelope
+            // Duplicate keys across inner/outer can cause backend parsing issues.
+            match k.as_str() {
+                "hostname" | "service" | "status" | "ddsource" | "ddtags" | "@timestamp" => continue,
+                _ => {}
+            }
+            inner.insert(k.clone(), v.clone());
+        }
+        let inner_str = serde_json::to_string(&JsonValue::Object(inner))
+            .unwrap_or_else(|_| "{}".to_string());
+    
+        // Build envelope
         let mut obj = JsonMap::new();
-
-        // Required-ish envelope fields
-        obj.insert("message".to_string(), JsonValue::String(log.message().to_string()));
-
+        obj.insert("message".to_string(), JsonValue::String(inner_str));
+    
         if let Some(status) = log.status() {
             obj.insert("status".to_string(), JsonValue::String(status.as_str().to_string()));
         }
-
         if !log.hostname().is_empty() {
             obj.insert("hostname".to_string(), JsonValue::String(log.hostname().to_string()));
         }
         if !log.service().is_empty() {
             obj.insert("service".to_string(), JsonValue::String(log.service().to_string()));
         }
-
-        // ddsource's default value gets overriden from additional properties if present
+    
+        // ddsource (default "otel", overridden by explicit source if present)
         let mut ddsource = self.ddsource.clone();
         if let Some(source) = log.source().clone() {
             ddsource = source.into_owned();
         }
         obj.insert("ddsource".to_string(), JsonValue::String(ddsource));
-
+    
         // ddtags: comma-separated, deduplicated
         let tags_iter = self.tags_deduplicator.deduplicated(log.tags().into_iter());
         let tags_vec: Vec<&str> = tags_iter.map(|t| t.as_str()).collect();
         if !tags_vec.is_empty() {
             obj.insert("ddtags".to_string(), JsonValue::String(tags_vec.join(",")));
         }
-
-        // Copy additional properties flattened into the envelope
-        for (k, v) in log.additional_properties() {
-            obj.insert(k.clone(), v.clone());
-        }
-
-        let mut timestamp = Utc.to_string();
-        if let Some(ts) = log.additional_properties().get("@timestamp") {
-            timestamp = ts.to_string();
-        }
-        obj.insert("timestamp".to_string(), JsonValue::from(timestamp));
-
+    
+        // Envelope timestamp: epoch milliseconds (do not mirror "@timestamp" here)
+        let ts_millis = chrono::Utc::now().timestamp_millis();
+        obj.insert("timestamp".to_string(), JsonValue::from(ts_millis));
+    
         JsonValue::Object(obj)
     }
 }
