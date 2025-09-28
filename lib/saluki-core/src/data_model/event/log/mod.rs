@@ -52,15 +52,15 @@ impl LogStatus {
     /// Returns the log status in string format
     pub fn as_str(&self) -> &str {
         match self {
-            LogStatus::Trace => "trace",
-            LogStatus::Emergency => "emerg",
-            LogStatus::Alert => "alert",
-            LogStatus::Fatal => "crit",
-            LogStatus::Error => "err",
-            LogStatus::Warning => "warn",
-            LogStatus::Notice => "notice",
-            LogStatus::Info => "info",
-            LogStatus::Debug => "debug",
+            LogStatus::Trace => "Trace",
+            LogStatus::Emergency => "Emergency",
+            LogStatus::Alert => "Alert",
+            LogStatus::Fatal => "Fatal",
+            LogStatus::Error => "Error",
+            LogStatus::Warning => "Warning",
+            LogStatus::Notice => "Notice",
+            LogStatus::Info => "Info",
+            LogStatus::Debug => "Debug",
         }
     }
 }

@@ -175,25 +175,11 @@ impl LogsEndpointEncoder {
     }
 
     fn build_agent_json(&mut self, log: &Log) -> JsonValue {
-        // Build inner JSON (becomes the string value of the envelope "message")
-        let mut inner = JsonMap::new();
-        inner.insert("message".to_string(), JsonValue::String(log.message().to_string()));
-        for (k, v) in log.additional_properties() {
-            // Avoid duplicating fields that are also set in the outer envelope
-            // Duplicate keys across inner/outer can cause backend parsing issues.
-            match k.as_str() {
-                "hostname" | "service" | "status" | "ddsource" | "ddtags" | "@timestamp" => continue,
-                _ => {}
-            }
-            inner.insert(k.clone(), v.clone());
-        }
-        let inner_str = serde_json::to_string(&JsonValue::Object(inner))
-            .unwrap_or_else(|_| "{}".to_string());
-    
-        // Build envelope
         let mut obj = JsonMap::new();
-        obj.insert("message".to_string(), JsonValue::String(inner_str));
-    
+
+        // Top-level fields first
+        obj.insert("message".to_string(), JsonValue::String(log.message().to_string()));
+
         if let Some(status) = log.status() {
             obj.insert("status".to_string(), JsonValue::String(status.as_str().to_string()));
         }
@@ -203,25 +189,26 @@ impl LogsEndpointEncoder {
         if !log.service().is_empty() {
             obj.insert("service".to_string(), JsonValue::String(log.service().to_string()));
         }
-    
+
         // ddsource (default "otel", overridden by explicit source if present)
         let mut ddsource = self.ddsource.clone();
         if let Some(source) = log.source().clone() {
             ddsource = source.into_owned();
         }
         obj.insert("ddsource".to_string(), JsonValue::String(ddsource));
-    
+
         // ddtags: comma-separated, deduplicated
         let tags_iter = self.tags_deduplicator.deduplicated(log.tags().into_iter());
         let tags_vec: Vec<&str> = tags_iter.map(|t| t.as_str()).collect();
         if !tags_vec.is_empty() {
             obj.insert("ddtags".to_string(), JsonValue::String(tags_vec.join(",")));
         }
-    
-        // Envelope timestamp: epoch milliseconds (do not mirror "@timestamp" here)
-        let ts_millis = chrono::Utc::now().timestamp_millis();
-        obj.insert("timestamp".to_string(), JsonValue::from(ts_millis));
-    
+
+        // Last-write-wins: merge AdditionalProperties last
+        for (k, v) in log.additional_properties() {
+            obj.insert(k.clone(), v.clone());
+        }
+
         JsonValue::Object(obj)
     }
 }

@@ -1,9 +1,10 @@
+use std::str::FromStr as _;
+
 use http::{
     uri::{Authority, Scheme},
     HeaderName, HeaderValue, Request, Uri,
 };
 use tracing::info;
-use std::str::FromStr as _;
 
 use super::endpoints::ResolvedEndpoint;
 
@@ -22,20 +23,13 @@ pub fn for_resolved_endpoint<B>(mut endpoint: ResolvedEndpoint) -> impl FnMut(Re
         Scheme::try_from(endpoint.endpoint().scheme()).expect("should not fail to construct new endpoint scheme");
     move |mut request| {
         // Build an updated URI by taking the endpoint URL and slapping the request's URI path on the end of it.
-        let path_and_query = request
-            .uri()
-            .path_and_query()
-            .expect("request path must exist")
-            .clone();
+        let path_and_query = request.uri().path_and_query().expect("request path must exist").clone();
         info!("TEST1 path_and_query {:?}", path_and_query);
         // For logs, override to logs intake domain.
         let authority = if path_and_query.as_str().starts_with("/api/v2/logs") {
             // Attempt to derive the site from the endpoint host in the form "<version>.agent.<site>".
             // If the pattern isn't present, fall back to the default authority.
-            let base_host = endpoint
-                .endpoint()
-                .host_str()
-                .unwrap_or("");
+            let base_host = endpoint.endpoint().host_str().unwrap_or("");
             if let Some(idx) = base_host.find(".agent.") {
                 let site = &base_host[idx + ".agent.".len()..];
                 let logs_host = format!("agent-http-intake.logs.{}", site);
