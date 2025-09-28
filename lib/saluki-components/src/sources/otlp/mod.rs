@@ -59,6 +59,16 @@ use self::metrics::translator::OtlpMetricsTranslator;
 #[derive(Deserialize, Debug, Default)]
 pub struct OtlpConfiguration {
     otlp_config: OtlpConfig,
+
+    /// The maximum number of contexts to cache.
+    ///
+    /// Defaults to 500,000.
+    #[serde(default = "default_otlp_cached_context_limit")]
+    otlp_cached_context_limit: usize,
+}
+
+fn default_otlp_cached_context_limit() -> usize {
+    500_000
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -291,7 +301,10 @@ impl SourceBuilder for OtlpConfiguration {
             )
         })?;
 
-        let context_resolver = ContextResolverBuilder::from_name(format!("{}/otlp", context.component_id()))?.build();
+        println!("rz6300 otlp_cached_context_limit: {}", self.otlp_cached_context_limit);
+        let context_resolver = ContextResolverBuilder::from_name(format!("{}/otlp", context.component_id()))?
+            .with_cached_contexts_limit(self.otlp_cached_context_limit)
+            .build();
         let translator_config = metrics::config::OtlpTranslatorConfig::default().with_remapping(true);
         let grpc_max_recv_msg_size_bytes =
             self.otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
