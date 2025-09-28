@@ -304,6 +304,7 @@ impl SourceBuilder for OtlpConfiguration {
         println!("rz6300 otlp_cached_context_limit: {}", self.otlp_cached_context_limit);
         let context_resolver = ContextResolverBuilder::from_name(format!("{}/otlp", context.component_id()))?
             .with_cached_contexts_limit(self.otlp_cached_context_limit)
+            .with_idle_context_expiration(Duration::from_secs(30))
             .build();
         let translator_config = metrics::config::OtlpTranslatorConfig::default().with_remapping(true);
         let grpc_max_recv_msg_size_bytes =
