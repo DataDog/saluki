@@ -18,7 +18,7 @@ use saluki_io::compression::CompressionScheme;
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use serde_json::{Map as JsonMap, Value as JsonValue};
-use tracing::{error, info, warn};
+use tracing::{error, warn};
 
 use crate::common::datadog::{
     io::RB_BUFFER_CHUNK_SIZE,
@@ -120,12 +120,10 @@ pub struct DatadogLogs {
 #[async_trait]
 impl IncrementalEncoder for DatadogLogs {
     async fn process_event(&mut self, event: Event) -> Result<ProcessResult, GenericError> {
-        info!("WACKTEST event received in encoder {:?} ", event);
         let log: Log = match event {
             Event::Log(log) => log,
             _ => return Ok(ProcessResult::Continue),
         };
-        info!("WACKTEST2 valid log :) {:?} ", log);
         match self.request_builder.encode(log).await {
             Ok(None) => Ok(ProcessResult::Continue),
             Ok(Some(log)) => Ok(ProcessResult::FlushRequired(Event::Log(log))),
@@ -142,7 +140,6 @@ impl IncrementalEncoder for DatadogLogs {
     }
 
     async fn flush(&mut self, dispatcher: &PayloadsDispatcher) -> Result<(), GenericError> {
-        info!("WACKTEST7 FLUSH FLUSH FLUSH");
         let maybe_requests = self.request_builder.flush().await;
         for maybe_request in maybe_requests {
             match maybe_request {
@@ -242,9 +239,7 @@ impl EndpointEncoder for LogsEndpointEncoder {
     }
 
     fn encode(&mut self, input: &Self::Input, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError> {
-        info!("\n WACK4 Encode function inside the logs yk? {:?} \n", input);
         let json = self.build_agent_json(input);
-        println!("WACK5 {}", serde_json::to_string_pretty(&json).unwrap());
         serde_json::to_writer(buffer, &json)
     }
 
