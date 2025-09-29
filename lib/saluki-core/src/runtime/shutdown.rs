@@ -20,7 +20,7 @@ pub struct ShutdownHandle {
 impl ProcessShutdown {
     /// Creates a new `ProcessShutdown` and `ShutdownHandle` pair.
     ///
-    /// This allows a caller to trigger shutdown by utilizing `ShutdownHandle`.
+    /// When `ShutdownHandle` is triggered, or dropped, `ProcessShutdown` will resolve.
     pub fn paired() -> (Self, ShutdownHandle) {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
@@ -37,7 +37,7 @@ impl ProcessShutdown {
 
     /// Creates a new `ProcessShutdown` from the given `future`.
     ///
-    /// `ProcessShutdown` will be triggered only once `future` resolves.
+    /// `ProcessShutdown` will be resolve only once `future` resolves.
     pub fn wrapped<F: Future + Send + 'static>(future: F) -> Self {
         Self {
             shutdown: Some(Box::pin(async move {
@@ -68,7 +68,7 @@ impl ProcessShutdown {
 
 impl ShutdownHandle {
     /// Triggers the process to shutdown.
-    pub async fn trigger(self) {
+    pub fn trigger(self) {
         let _ = self.shutdown_tx.send(());
     }
 }

@@ -1,5 +1,3 @@
-//! Asynchronous task supervision.
-
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use saluki_common::collections::FastIndexMap;
@@ -176,34 +174,32 @@ where
     }
 }
 
-/// Supervises a set of tasks called child processes.
+/// Supervises a set of workers.
 ///
-/// `Supervisor` is the spiritual equivalent of `supervisor` in Erlang/OTP. To quote the Erlang documentation:
+/// # Workers
 ///
-/// > The supervisor is responsible for starting, stopping, and monitoring its child processes. The basic idea
-/// > of a supervisor is that it must keep its child processes alive by restarting them when necessary.
+/// All workers are defined through implementation of the [`Supervisable`] trait, which provides the logic for both
+/// creating the underlying worker future that is spawned, as well as other metadata, such as the worker's name, how the
+/// worker should be shutdown, and so on.
 ///
-/// `Supervisor` supports a variety of configuration options, which allow for customizing the degree of failure that is
-/// allowed, as well as how other child processes are affected by the failure of other child processes. `Supervisor` can
-/// also be used to supervise other `Supervisor` instances, allowing the construction of a "supervision tree".
+/// Supervisors also (indirectly) implement the [`Supervisable`] trait, allowing them to be supervised by other
+/// supervisors in order to construct _supervision trees_.
 ///
-/// # Terminology
+/// # Instrumentation
 ///
-/// Erlang/OTP uses a number of specific terms that are either specific to supervisors or specific to the Erlang runtime
-/// itself. Not all of these terms have directly equivalents in Rust or Tokio, so we've provided a mapping table below:
+/// Supervisors automatically create their own allocation group
+/// ([`TrackingAllocator`][memory_accounting::TrackingAllocator]), which is used to track both the memory usage of the
+/// supervisor itself and its children. Additionally, individual worker processes are wrapped in a dedicated
+/// [`tracing::Span`] to allow tracing the casual relationship between arbitrary code and the worker executing it.
 ///
-/// - **supervisor**: A `Supervisor` instance, which manages a set of child processes.
-/// - **process**: An asynchronous task running on the Tokio runtime.
-/// - **child process**: a worker process or a nested `Supervisor` instance being managed by a `Supervisor` instance.
-/// - **worker**: Any process that is not itself a `Supervisor` instance.
-/// - **termination**: The process of a child process exiting, either normally or abnormally.
+/// # Restart Strategies
 ///
-/// # Behaviors and difference from Erlang/OTP
+/// As the main purpose of a supervisor, restart behavior is fully configurable. A number of restart strategies are
+/// available, which generally relate to the purpose of the supervisor: whether the workers being managed are
+/// independent or interdependent.
 ///
-/// Supervisors in Erlang are heavily coupled to the Erlang runtime, which allows them to provide a vast amount of value
-/// and capabilities without immense boilerplate on the part of the managed child processes. However, in Rust, and with
-/// Tokio, we do not have this benefit and so we provide much of this functionality through explicit design patterns and
-/// primitives.
+/// All restart strategies are configured through [`RestartStrategy`], which has more information on the available
+/// strategies and configuration settings.
 pub struct Supervisor {
     supervisor_id: Arc<str>,
     child_specs: Vec<ChildSpecification>,
@@ -211,7 +207,7 @@ pub struct Supervisor {
 }
 
 impl Supervisor {
-    /// Creates a new `Supervisor` with the default restart strategy and no children.
+    /// Creates an empty `Supervisor` with the default restart strategy.
     pub fn new<S: AsRef<str>>(supervisor_id: S) -> Result<Self, SupervisorError> {
         // We try to throw an error about invalid names as early as possible. This is a manual check, so we might still
         // encounter an error later when actually running the supervisor, but this is a good first step to catch the
@@ -235,7 +231,10 @@ impl Supervisor {
         self
     }
 
-    /// Adds a worker process to the supervisor.
+    /// Adds a worker to the supervisor.
+    ///
+    /// A worker can be anything that implements the [`Serializable`] trait. A [`Supervisor`] can also be added as a
+    /// worker and managed in a nested fashion, known as a supervision tree.
     pub fn add_worker<T: Into<ChildSpecification>>(&mut self, process: T) {
         let child_spec = process.into();
         debug!(
@@ -248,14 +247,17 @@ impl Supervisor {
         self.child_specs.push(child_spec);
     }
 
-    fn spawn_child(&self, child_spec_idx: usize, worker_state: &mut WorkerState) -> Result<(), SupervisorError> {
+    fn get_child_spec(&self, child_spec_idx: usize) -> &ChildSpecification {
         match self.child_specs.get(child_spec_idx) {
-            Some(child_spec) => {
-                debug!(supervisor_id = %self.supervisor_id, "Spawning static child process #{} ({}).", child_spec_idx, child_spec.name());
-                worker_state.add_worker(child_spec_idx, child_spec)
-            }
+            Some(child_spec) => child_spec,
             None => unreachable!("child spec index should never be out of bounds"),
         }
+    }
+
+    fn spawn_child(&self, child_spec_idx: usize, worker_state: &mut WorkerState) -> Result<(), SupervisorError> {
+        let child_spec = self.get_child_spec(child_spec_idx);
+        debug!(supervisor_id = %self.supervisor_id, "Spawning static child process #{} ({}).", child_spec_idx, child_spec.name());
+        worker_state.add_worker(child_spec_idx, child_spec)
     }
 
     fn spawn_all_children(&self, worker_state: &mut WorkerState) -> Result<(), SupervisorError> {
@@ -297,21 +299,25 @@ impl Supervisor {
                     // legitimate failure. It does allow configuring this behavior on a per-process basis, however. We don't
                     // support dynamically adding child processes, which is the only real use case I can think of for having
                     // non-long-lived child processes... so I think for now, we're OK just always try to restart.
-                    Some((child_spec_idx, worker_result)) =>  match restart_state.evaluate_restart() {
-                        RestartAction::Restart(mode) => match mode {
-                            RestartMode::OneForOne => {
-                                warn!(supervisor_id = %self.supervisor_id, ?worker_result, "Child process terminated, restarting.");
-                                self.spawn_child(child_spec_idx, &mut worker_state)?;
-                            }
-                            RestartMode::OneForAll => {
-                                warn!(supervisor_id = %self.supervisor_id, ?worker_result, "Child process terminated, restarting all processes.");
+                    Some((child_spec_idx, worker_result)) =>  {
+                        let child_spec = self.get_child_spec(child_spec_idx);
+                        match restart_state.evaluate_restart() {
+                            RestartAction::Restart(mode) => match mode {
+                                RestartMode::OneForOne => {
+                                    warn!(supervisor_id = %self.supervisor_id, worker_name = child_spec.name(), ?worker_result, "Child process terminated, restarting.");
+                                    self.spawn_child(child_spec_idx, &mut worker_state)?;
+                                }
+                                RestartMode::OneForAll => {
+                                    warn!(supervisor_id = %self.supervisor_id, worker_name = child_spec.name(), ?worker_result, "Child process terminated, restarting all processes.");
+                                    worker_state.shutdown_workers().await;
+                                    self.spawn_all_children(&mut worker_state)?;
+                                }
+                            },
+                            RestartAction::Shutdown => {
+                                error!(supervisor_id = %self.supervisor_id, worker_name = child_spec.name(), ?worker_result, "Supervisor shutting down due to restart limits.");
                                 worker_state.shutdown_workers().await;
-                                self.spawn_all_children(&mut worker_state)?;
+                                return Err(SupervisorError::Shutdown);
                             }
-                        },
-                        RestartAction::Shutdown => {
-                            error!(supervisor_id = %self.supervisor_id, ?worker_result, "Supervisor shutting down due to restart limits.");
-                            return Err(SupervisorError::Shutdown);
                         }
                     },
                     None => unreachable!("should not have empty worker joinset prior to shutdown"),
@@ -488,7 +494,7 @@ impl WorkerState {
             let shutdown_deadline = match shutdown_strategy {
                 ShutdownStrategy::Graceful(timeout) => {
                     debug!(worker_id, shutdown_timeout = ?timeout, "Gracefully shutting down process.");
-                    shutdown_handle.trigger().await;
+                    shutdown_handle.trigger();
 
                     tokio::time::sleep(timeout)
                 }

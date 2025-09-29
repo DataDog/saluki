@@ -1,5 +1,3 @@
-#![allow(warnings)]
-
 use std::{
     future::Future,
     ops::Deref,
@@ -13,7 +11,7 @@ use std::{
 
 use memory_accounting::allocator::{AllocationGroupRegistry, AllocationGroupToken, Track as _, Tracked};
 use pin_project::pin_project;
-use tracing::{error_span, instrument::Instrumented, Instrument as _};
+use tracing::{debug_span, instrument::Instrumented, Instrument as _};
 
 static GLOBAL_PROCESS_ID_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -57,7 +55,7 @@ impl Name {
             return None;
         }
 
-        Some(Self(get_sanitized_name(name.as_ref())))
+        Some(Self(get_sanitized_name(name)))
     }
 
     pub(crate) fn scoped<N: AsRef<str>>(parent: &Name, name: N) -> Option<Self> {
@@ -99,7 +97,7 @@ impl Process {
 
     pub(crate) fn worker<N: AsRef<str>>(name: N, parent: &Process) -> Option<Self> {
         let name = Name::scoped(&parent.name, name)?;
-        Some(Self::from_parts(Id::new(), name, parent.alloc_group_token.clone()))
+        Some(Self::from_parts(Id::new(), name, parent.alloc_group_token))
     }
 
     fn from_parts(id: Id, name: Name, alloc_group_token: AllocationGroupToken) -> Self {
@@ -113,11 +111,6 @@ impl Process {
     /// Returns the process identifier.
     pub fn id(&self) -> &Id {
         &self.id
-    }
-
-    /// Returns the process name.
-    pub fn name(&self) -> &Name {
-        &self.name
     }
 
     pub fn into_instrumented<F>(self, inner: F) -> InstrumentedProcess<F>
@@ -140,7 +133,7 @@ where
     F: Future,
 {
     pub(crate) fn new(process: Process, inner: F) -> Self {
-        let span = error_span!(
+        let span = debug_span!(
             "process",
             process_id = process.id().as_usize(),
             process_name = &*process.name,
@@ -189,6 +182,11 @@ fn is_process_name_segment_valid(name: &str) -> bool {
         return false;
     }
 
+    // Process names cannot start or end with anything other than alphanumeric characters.
+    if !name.starts_with(|c: char| c.is_alphanumeric()) || !name.ends_with(|c: char| c.is_alphanumeric()) {
+        return false;
+    }
+
     // Process name segments can only include alphanumeric characters and underscores.
     //
     // Periods are allowed in process names overall, but they're only used as separators between segments.
@@ -212,19 +210,21 @@ fn get_sanitized_name(name: &str) -> Arc<str> {
         let mut sanitized = String::with_capacity(name.len());
 
         let mut last_was_underscore = true;
-        for (idx, c) in raw_sanitized.enumerate() {
+        for c in raw_sanitized {
             if c == '_' {
                 if !last_was_underscore {
                     sanitized.push(c);
+                    last_was_underscore = true;
                 }
-                last_was_underscore = true;
             } else {
                 sanitized.push(c);
                 last_was_underscore = false;
             }
         }
 
-        Arc::from(sanitized.trim_matches('_'))
+        // Remove all non-alphanumeric characters from beginning and end.
+        let trimmed = sanitized.trim_matches(|c: char| !c.is_alphanumeric());
+        Arc::from(trimmed)
     }
 }
 
@@ -243,7 +243,7 @@ mod tests {
             ("--worker_123", Some("worker_123")),
             ("worker 123", Some("worker_123")),
             ("worker===123", Some("worker_123")),
-            ("topology.worker", None),
+            ("topology.worker", Some("topology_worker")),
             ("", None),
         ];
 

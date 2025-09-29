@@ -20,7 +20,7 @@ pub enum RestartMode {
 ///
 /// # Restarts and permanent failure
 ///
-/// A supervisor will allow up to `intensity` process restarts, across all child processes, over a given `period`.  When
+/// A supervisor will allow up to `intensity` process restarts, across all child processes, over a given `period`. When
 /// this limit is exceeded, the supervisor will stop all child processes and return an error itself, indicating that the
 /// supervisor has failed overall.
 ///
