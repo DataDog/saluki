@@ -7,8 +7,35 @@ use http::{
 
 use super::endpoints::ResolvedEndpoint;
 
+use tracing::info;
+
 static DD_AGENT_VERSION_HEADER: HeaderName = HeaderName::from_static("dd-agent-version");
 static DD_API_KEY_HEADER: HeaderName = HeaderName::from_static("dd-api-key");
+
+/// Resolves the authority host to use for a given request path.
+///
+/// If the path targets the logs endpoint (`/api/v2/logs`), this derives the logs intake
+/// host from the resolved endpoint's base host in the form `agent-http-intake.logs.{site}`
+/// where `{site}` is extracted from `<version>.agent.{site}`. If the pattern isn't present
+/// or parsing fails, the `default_authority` is returned. For non-logs paths, the
+/// `default_authority` is always returned.
+fn resolve_logs_authority(
+    path_and_query: &str, endpoint: &ResolvedEndpoint, default_authority: &Authority,
+) -> Authority {
+    if path_and_query.starts_with("/api/v2/logs") {
+        let base_host = endpoint.endpoint().host_str().unwrap_or("");
+        // Handle different site/region suffixes (example .eu)
+        if let Some(idx) = base_host.find(".agent.") {
+            let site = &base_host[idx + ".agent.".len()..];
+            let logs_host = format!("agent-http-intake.logs.{}", site);
+            Authority::from_str(&logs_host).unwrap_or_else(|_| default_authority.clone())
+        } else {
+            default_authority.clone()
+        }
+    } else {
+        default_authority.clone()
+    }
+}
 
 /// Builds a middleware function that will update the request's URI to use the resolved endpoint's URI, and add the API
 /// key as a header.
@@ -16,29 +43,19 @@ static DD_API_KEY_HEADER: HeaderName = HeaderName::from_static("dd-api-key");
 /// The request's URI must already container a relative path component. Any existing scheme, host, and port components
 /// will be overridden by the resolved endpoint's URI.
 pub fn for_resolved_endpoint<B>(mut endpoint: ResolvedEndpoint) -> impl FnMut(Request<B>) -> Request<B> + Clone {
+    info!("WELLWELLLWELL1 {:?}", endpoint);
     let new_uri_authority = Authority::try_from(endpoint.endpoint().authority())
         .expect("should not fail to construct new endpoint authority");
+    info!("WELLWELLLWELL2 {:?}", new_uri_authority);
     let new_uri_scheme =
         Scheme::try_from(endpoint.endpoint().scheme()).expect("should not fail to construct new endpoint scheme");
+    info!("WELLWELLLWELL3 {:?}", new_uri_scheme);
     move |mut request| {
-        // Build an updated URI by taking the endpoint URL and slapping the request's URI path on the end of it.
         let path_and_query = request.uri().path_and_query().expect("request path must exist").clone();
-        // For logs, override to logs intake domain.
-        let authority = if path_and_query.as_str().starts_with("/api/v2/logs") {
-            // Attempt to derive the site from the endpoint host in the form "<version>.agent.<site>".
-            // If the pattern isn't present, fall back to the default authority.
-            let base_host = endpoint.endpoint().host_str().unwrap_or("");
-            if let Some(idx) = base_host.find(".agent.") {
-                let site = &base_host[idx + ".agent.".len()..];
-                let logs_host = format!("agent-http-intake.logs.{}", site);
-                Authority::from_str(&logs_host).unwrap_or_else(|_| new_uri_authority.clone())
-            } else {
-                new_uri_authority.clone()
-            }
-        } else {
-            new_uri_authority.clone()
-        };
-
+        info!("WELLWELLLWELL4 {:?}", path_and_query);
+        let authority = resolve_logs_authority(path_and_query.as_str(), &endpoint, &new_uri_authority);
+        info!("WELLWELLLWELL5 {:?}", authority);
+        // Build an updated URI by taking the endpoint URL and slapping the request's URI path on the end of it.
         let new_uri = Uri::builder()
             .scheme(new_uri_scheme.clone())
             .authority(authority)
