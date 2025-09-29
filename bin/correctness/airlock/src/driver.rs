@@ -386,11 +386,8 @@ impl Driver {
             debug!("Removed shared network '{}'.", isolation_group_name);
         }
 
-        // Explicitly drop the Docker client before the async function returns to avoid
-        // "Cannot drop a runtime in a context where blocking is not allowed" panic.
-        // The bollard Docker client contains tokio runtime components that must not be
-        // dropped within an async context.
-        drop(docker);
+        // Drop the Docker client in a non-async context.
+        Self::drop_docker_client_blocking(docker);
 
         Ok(())
     }
@@ -829,12 +826,25 @@ impl Driver {
         Ok(())
     }
 
+    /// Extracts and drops the Docker client in a blocking context.
+    ///
+    /// This must be called before the Driver is dropped to avoid "Cannot drop a runtime in a
+    /// context where blocking is not allowed" panic. The bollard Docker client contains
+    /// tokio runtime components that must be dropped outside of an async context.
+    fn drop_docker_client_blocking(docker: Docker) {
+        // Spawn a blocking task to drop the Docker client safely, but don't wait for it.
+        // The important thing is that the drop happens outside the async context.
+        let _ = std::thread::spawn(move || {
+            drop(docker);
+        });
+    }
+
     /// Cleans up the container, stopping and removing it from the system.
     ///
     /// # Errors
     ///
     /// If there is an error while stopping or removing the container, it will be returned.
-    pub async fn cleanup(self) -> Result<(), GenericError> {
+    pub async fn cleanup(mut self) -> Result<(), GenericError> {
         debug!(
             driver_id = self.config.driver_id,
             isolation_group = self.isolation_group_id,
@@ -844,7 +854,11 @@ impl Driver {
 
         let start = Instant::now();
 
-        self.cleanup_inner(&self.container_name).await?;
+        // Extract the Docker client before any potential errors, so it can be properly dropped
+        // even if cleanup_inner fails.
+        let docker = std::mem::replace(&mut self.docker, Docker::connect_with_defaults()?);
+
+        let cleanup_result = self.cleanup_inner(&self.container_name).await;
 
         debug!(
             driver_id = self.config.driver_id,
@@ -854,13 +868,10 @@ impl Driver {
             start.elapsed()
         );
 
-        // Explicitly drop the Docker client before the async function returns to avoid
-        // "Cannot drop a runtime in a context where blocking is not allowed" panic.
-        // The bollard Docker client contains tokio runtime components that must not be
-        // dropped within an async context.
-        drop(self.docker);
+        // Drop the Docker client in a non-async context regardless of cleanup success/failure.
+        Self::drop_docker_client_blocking(docker);
 
-        Ok(())
+        cleanup_result
     }
 
     async fn capture_container_logs(
