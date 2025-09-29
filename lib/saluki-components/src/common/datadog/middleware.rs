@@ -1,4 +1,4 @@
-use std::str::FromStr as _;
+use std::str::FromStr;
 
 use http::{
     uri::{Authority, Scheme},
