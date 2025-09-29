@@ -519,7 +519,7 @@ async fn dispatch_events(mut events: EventsBuffer, source_context: &SourceContex
                 break;
             }
         }
-        if !logs_buffer.is_empty(){
+        if !logs_buffer.is_empty() {
             if let Err(e) = source_context.dispatcher().dispatch_named("logs", logs_buffer).await {
                 error!(error = %e, "Failed to dispatch logs")
             } else {
