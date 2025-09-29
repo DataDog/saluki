@@ -188,7 +188,7 @@ where
 /// # Instrumentation
 ///
 /// Supervisors automatically create their own allocation group
-/// ([`TrackingAllocator`][memory_accounting::TrackingAllocator]), which is used to track both the memory usage of the
+/// ([`TrackingAllocator`][memory_accounting::allocator::TrackingAllocator]), which is used to track both the memory usage of the
 /// supervisor itself and its children. Additionally, individual worker processes are wrapped in a dedicated
 /// [`tracing::Span`] to allow tracing the casual relationship between arbitrary code and the worker executing it.
 ///
@@ -233,7 +233,7 @@ impl Supervisor {
 
     /// Adds a worker to the supervisor.
     ///
-    /// A worker can be anything that implements the [`Serializable`] trait. A [`Supervisor`] can also be added as a
+    /// A worker can be anything that implements the [`Supervisable`] trait. A [`Supervisor`] can also be added as a
     /// worker and managed in a nested fashion, known as a supervision tree.
     pub fn add_worker<T: Into<ChildSpecification>>(&mut self, process: T) {
         let child_spec = process.into();
