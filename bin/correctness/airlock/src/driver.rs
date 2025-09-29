@@ -386,6 +386,12 @@ impl Driver {
             debug!("Removed shared network '{}'.", isolation_group_name);
         }
 
+        // Explicitly drop the Docker client before the async function returns to avoid
+        // "Cannot drop a runtime in a context where blocking is not allowed" panic.
+        // The bollard Docker client contains tokio runtime components that must not be
+        // dropped within an async context.
+        drop(docker);
+
         Ok(())
     }
 
@@ -847,6 +853,12 @@ impl Driver {
             self.container_name,
             start.elapsed()
         );
+
+        // Explicitly drop the Docker client before the async function returns to avoid
+        // "Cannot drop a runtime in a context where blocking is not allowed" panic.
+        // The bollard Docker client contains tokio runtime components that must not be
+        // dropped within an async context.
+        drop(self.docker);
 
         Ok(())
     }
