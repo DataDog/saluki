@@ -4,7 +4,6 @@ use http::{
     uri::{Authority, Scheme},
     HeaderName, HeaderValue, Request, Uri,
 };
-use tracing::info;
 
 use super::endpoints::ResolvedEndpoint;
 
@@ -24,7 +23,6 @@ pub fn for_resolved_endpoint<B>(mut endpoint: ResolvedEndpoint) -> impl FnMut(Re
     move |mut request| {
         // Build an updated URI by taking the endpoint URL and slapping the request's URI path on the end of it.
         let path_and_query = request.uri().path_and_query().expect("request path must exist").clone();
-        info!("TEST1 path_and_query {:?}", path_and_query);
         // For logs, override to logs intake domain.
         let authority = if path_and_query.as_str().starts_with("/api/v2/logs") {
             // Attempt to derive the site from the endpoint host in the form "<version>.agent.<site>".
@@ -47,10 +45,8 @@ pub fn for_resolved_endpoint<B>(mut endpoint: ResolvedEndpoint) -> impl FnMut(Re
             .path_and_query(path_and_query)
             .build()
             .expect("should not fail to construct new URI");
-        info!("TEST2 new_uri {:?}", new_uri);
         let api_key = endpoint.api_key();
         let api_key_value = HeaderValue::from_str(api_key).expect("should not fail to construct API key header value");
-        info!("TEST3 api_key_value {:?}", api_key_value);
         *request.uri_mut() = new_uri;
 
         // Add the API key as a header.
