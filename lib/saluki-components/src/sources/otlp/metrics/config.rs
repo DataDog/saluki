@@ -1,3 +1,8 @@
+use std::time::Duration;
+
+const DEFAULT_DELTA_TTL: Duration = Duration::from_secs(3600);
+const DEFAULT_SWEEP_INTERVAL: Duration = Duration::from_secs(1800);
+
 // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/config.go#L131-L140
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[allow(dead_code)]
@@ -41,8 +46,6 @@ impl Default for InitialCumulMonoValueMode {
         Self::Auto
     }
 }
-
-use std::time::Duration;
 
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
@@ -137,8 +140,8 @@ impl Default for OtlpTranslatorConfig {
             instrumentation_library_metadata_as_tags: false,
             with_remapping: false,
             with_otel_prefix: false,
-            delta_ttl: Duration::from_secs(60),
-            sweep_interval: Duration::from_secs(30),
+            delta_ttl: DEFAULT_DELTA_TTL,
+            sweep_interval: DEFAULT_SWEEP_INTERVAL,
         }
     }
 }
