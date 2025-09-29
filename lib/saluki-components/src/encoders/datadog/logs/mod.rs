@@ -108,7 +108,7 @@ impl IncrementalEncoderBuilder for DatadogLogsConfiguration {
 impl MemoryBounds for DatadogLogsConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         // TODO: How do we properly represent the requests we can generate that may be sitting around in-flight?
-        
+
         builder.minimum().with_single_value::<DatadogLogs>("component struct");
         builder.firm().with_array::<Log>("logs buffer", MAX_LOGS_PER_PAYLOAD);
     }
