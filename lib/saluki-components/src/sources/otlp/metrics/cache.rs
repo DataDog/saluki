@@ -1,6 +1,8 @@
-use std::collections::HashMap;
 use std::time::Duration;
 
+use saluki_common::cache::{Cache, CacheBuilder};
+
+use super::config::OtlpTranslatorConfig;
 use super::dimensions::Dimensions;
 
 /// The state we store for each unique time series.
@@ -20,16 +22,30 @@ pub struct Extrema {
 }
 
 /// A cache for storing previous data points to calculate deltas for cumulative metrics.
-pub struct Cache {
-    number_points: HashMap<String, NumberCounter>,
-    extrema_points: HashMap<String, Extrema>,
+pub struct PointsCache {
+    number_points: Cache<String, NumberCounter>,
+    extrema_points: Cache<String, Extrema>,
 }
 
-impl Cache {
-    pub fn new() -> Self {
+impl PointsCache {
+    pub fn from_config(config: OtlpTranslatorConfig) -> Self {
+        let ttl = config.delta_ttl;
+        let interval = config.sweep_interval;
+
+        let number_points = CacheBuilder::from_identifier("otlp/metrics/number_points")
+            .expect("identifier cannot be invalid")
+            .with_time_to_idle(Some(ttl))
+            .with_expiration_interval(interval)
+            .build();
+        let extrema_points = CacheBuilder::from_identifier("otlp/metrics/extrema_points")
+            .expect("identifier cannot be invalid")
+            .with_time_to_idle(Some(ttl))
+            .with_expiration_interval(interval)
+            .build();
+
         Self {
-            number_points: HashMap::new(),
-            extrema_points: HashMap::new(),
+            number_points,
+            extrema_points,
         }
     }
 
@@ -163,6 +179,14 @@ impl Cache {
 
         from_last_window
     }
+
+    /// Creates a new `PointsCache` for tests.
+    pub fn for_tests() -> Self {
+        Self {
+            number_points: CacheBuilder::for_tests().build(),
+            extrema_points: CacheBuilder::for_tests().build(),
+        }
+    }
 }
 
 /// isNotFirstPoint determines if this is NOT the first point on a cumulative series:
@@ -197,8 +221,8 @@ mod tests {
         message: &'static str,
     }
 
-    #[test]
-    fn test_monotonic_diff_unknown_start() {
+    #[tokio::test]
+    async fn test_monotonic_diff_unknown_start() {
         let points = vec![
             Point {
                 start_ts: 0,
@@ -242,7 +266,7 @@ mod tests {
             },
         ];
 
-        let mut prev_pts = Cache::new();
+        let mut prev_pts = PointsCache::for_tests();
         let dims = Dimensions {
             name: "test".to_string(),
             tags: Default::default(),
@@ -263,8 +287,8 @@ mod tests {
         assert_eq!(4.0, dx, "expected diff 4.0");
     }
 
-    #[test]
-    fn test_monotonic_diff_known_start() {
+    #[tokio::test]
+    async fn test_monotonic_diff_known_start() {
         let initial_points = vec![
             Point {
                 start_ts: 1,
@@ -346,7 +370,7 @@ mod tests {
             },
         ];
 
-        let mut prev_pts = Cache::new();
+        let mut prev_pts = PointsCache::for_tests();
         let dims = Dimensions {
             name: "test".to_string(),
             tags: Default::default(),
@@ -391,10 +415,10 @@ mod tests {
         assert_eq!(9.0, dx, "expected diff 9.0");
     }
 
-    #[test]
-    fn test_diff_unknown_start() {
+    #[tokio::test]
+    async fn test_diff_unknown_start() {
         let start_ts = 0;
-        let mut prev_pts = Cache::new();
+        let mut prev_pts = PointsCache::for_tests();
         let dims = Dimensions {
             name: "test".to_string(),
             tags: Default::default(),
@@ -417,10 +441,10 @@ mod tests {
         assert_eq!(2.0, dx, "expected diff 2.0 with (0,2,2) value");
     }
 
-    #[test]
-    fn test_diff_known_start() {
+    #[tokio::test]
+    async fn test_diff_known_start() {
         let mut start_ts = 1;
-        let mut prev_pts = Cache::new();
+        let mut prev_pts = PointsCache::for_tests();
         let dims = Dimensions {
             name: "test".to_string(),
             tags: Default::default(),
