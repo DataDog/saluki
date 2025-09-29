@@ -60,7 +60,7 @@ adp_checks_start_time=$(cat adp_checks_job_start_time)
 adp_checks_end_time=$(cat adp_checks_job_end_time)
 
 # Grab the overall list of experiments.
-adp_experiments=$(find test/smp/regression/saluki/cases -mindepth 1 -maxdepth 1 -type d | sed s#test/smp/regression/saluki/cases/##g | sort | uniq)
+adp_experiments=$(find test/smp/regression/adp/cases -mindepth 1 -maxdepth 1 -type d | sed s#test/smp/regression/adp/cases/##g | sort | uniq)
 adp_checks_agent_experiments=$(find test/smp/regression/adp-checks-agent/cases -mindepth 1 -maxdepth 1 -type d | sed s#test/smp/regression/adp-checks-agent/cases/##g | sort | uniq)
 
 # Write out our table of links.
