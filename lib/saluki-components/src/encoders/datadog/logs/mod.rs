@@ -107,6 +107,8 @@ impl IncrementalEncoderBuilder for DatadogLogsConfiguration {
 
 impl MemoryBounds for DatadogLogsConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        // TODO: How do we properly represent the requests we can generate that may be sitting around in-flight?
+        
         builder.minimum().with_single_value::<DatadogLogs>("component struct");
         builder.firm().with_array::<Log>("logs buffer", MAX_LOGS_PER_PAYLOAD);
     }
@@ -130,6 +132,8 @@ impl IncrementalEncoder for DatadogLogs {
             Err(e) => {
                 if e.is_recoverable() {
                     warn!(error = %e, "Failed to encode Datadog log due to recoverable error. Continuing...");
+
+                    // TODO: Get the actual number of events dropped from the error itself.
                     self.telemetry.events_dropped_encoder().increment(1);
                     Ok(ProcessResult::Continue)
                 } else {
