@@ -272,15 +272,16 @@ where
     /// encoded input, an error will be returned.
     pub async fn encode(&mut self, input: E::Input) -> Result<Option<E::Input>, RequestBuilderError<E>> {
         // Check if the input is valid for this encoder.
-
         if !self.encoder.is_valid_input(&input) {
             return Err(RequestBuilderError::InvalidInput { input });
         }
+
         // Make sure we haven't hit the maximum number of inputs per payload.
         if self.encoded_inputs.len() >= self.max_inputs_per_payload {
             trace!("Maximum number of inputs per payload reached.");
             return Ok(Some(input));
         }
+
         // Try encoding the input.
         //
         // If the input can't fit into the current request payload based on the uncompressed size limit, or isn't likely
