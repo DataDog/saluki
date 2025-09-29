@@ -10,7 +10,7 @@ use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_core::data_model::event::log::{Log, LogStatus};
 use serde_json::Value as JsonValue;
 use stringtheory::MetaString;
-use tracing::{error, info};
+use tracing::error;
 
 pub const DDTAGS_ATTR: &str = "ddtags";
 pub const STATUS_KEYS: &[&str] = &["status", "severity", "level", "syslog.severity"];
@@ -233,16 +233,10 @@ impl LogRecordTransformer {
                 }
                 // Trace correlation from attributes
                 k if TRACE_ID_ATTR_KEYS.contains(&k) => {
-                    info!("\n HUH11 {:?}\n", kv.value);
-
                     if let Some(av) = kv.value.as_ref() {
-                        info!("huh22?");
                         if let Some(OtlpStringValue(trace_hex)) = av.value.as_ref() {
-                            info!("huh33?");
                             if !additional_properties.contains_key("dd.trace_id") {
-                                info!("huh44?");
                                 if let Some(bytes) = decode_hex_exact_to_bytes(trace_hex, 16) {
-                                    info!("huh55?");
                                     let dd = u64_from_last_8(&bytes);
                                     additional_properties
                                         .insert("dd.trace_id".to_string(), JsonValue::String(dd.to_string()));

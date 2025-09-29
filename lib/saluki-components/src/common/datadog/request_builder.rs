@@ -7,7 +7,7 @@ use saluki_common::buf::{ChunkedBytesBuffer, FrozenChunkedBytesBuffer};
 use saluki_io::compression::*;
 use snafu::{ResultExt, Snafu};
 use tokio::io::AsyncWriteExt as _;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, trace, warn};
 
 const SCRATCH_BUF_CAPACITY: usize = 8192;
 
@@ -273,17 +273,14 @@ where
     pub async fn encode(&mut self, input: E::Input) -> Result<Option<E::Input>, RequestBuilderError<E>> {
         // Check if the input is valid for this encoder.
 
-        info!("\n HUH1 \n");
         if !self.encoder.is_valid_input(&input) {
             return Err(RequestBuilderError::InvalidInput { input });
         }
-        info!("\n HUH2 \n");
         // Make sure we haven't hit the maximum number of inputs per payload.
         if self.encoded_inputs.len() >= self.max_inputs_per_payload {
             trace!("Maximum number of inputs per payload reached.");
             return Ok(Some(input));
         }
-        info!("\n HUH3 input is ? {:?} \n", input);
         // Try encoding the input.
         //
         // If the input can't fit into the current request payload based on the uncompressed size limit, or isn't likely
@@ -293,12 +290,9 @@ where
         // Otherwise, we wrote the encoded input successfully so we'll hold on to that input for now in case we need to
         // split the payload later.
         if self.encode_inner(&input).await? {
-            info!("\n HUH4 input is {:?}", input);
             self.encoded_inputs.push(input);
-            info!("\n HUH4.5 \n");
             Ok(None)
         } else {
-            info!("\n HUH5 \n");
             Ok(Some(input))
         }
     }
