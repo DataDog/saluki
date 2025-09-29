@@ -7,8 +7,6 @@ use http::{
 
 use super::endpoints::ResolvedEndpoint;
 
-use tracing::info;
-
 static DD_AGENT_VERSION_HEADER: HeaderName = HeaderName::from_static("dd-agent-version");
 static DD_API_KEY_HEADER: HeaderName = HeaderName::from_static("dd-api-key");
 
@@ -43,18 +41,13 @@ fn resolve_logs_authority(
 /// The request's URI must already container a relative path component. Any existing scheme, host, and port components
 /// will be overridden by the resolved endpoint's URI.
 pub fn for_resolved_endpoint<B>(mut endpoint: ResolvedEndpoint) -> impl FnMut(Request<B>) -> Request<B> + Clone {
-    info!("WELLWELLLWELL1 {:?}", endpoint);
     let new_uri_authority = Authority::try_from(endpoint.endpoint().authority())
         .expect("should not fail to construct new endpoint authority");
-    info!("WELLWELLLWELL2 {:?}", new_uri_authority);
     let new_uri_scheme =
         Scheme::try_from(endpoint.endpoint().scheme()).expect("should not fail to construct new endpoint scheme");
-    info!("WELLWELLLWELL3 {:?}", new_uri_scheme);
     move |mut request| {
         let path_and_query = request.uri().path_and_query().expect("request path must exist").clone();
-        info!("WELLWELLLWELL4 {:?}", path_and_query);
         let authority = resolve_logs_authority(path_and_query.as_str(), &endpoint, &new_uri_authority);
-        info!("WELLWELLLWELL5 {:?}", authority);
         // Build an updated URI by taking the endpoint URL and slapping the request's URI path on the end of it.
         let new_uri = Uri::builder()
             .scheme(new_uri_scheme.clone())
