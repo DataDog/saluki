@@ -221,8 +221,8 @@ mod tests {
         message: &'static str,
     }
 
-    #[tokio::test]
-    async fn test_monotonic_diff_unknown_start() {
+    #[test]
+    fn test_monotonic_diff_unknown_start() {
         let points = vec![
             Point {
                 start_ts: 0,
@@ -287,8 +287,8 @@ mod tests {
         assert_eq!(4.0, dx, "expected diff 4.0");
     }
 
-    #[tokio::test]
-    async fn test_monotonic_diff_known_start() {
+    #[test]
+    fn test_monotonic_diff_known_start() {
         let initial_points = vec![
             Point {
                 start_ts: 1,
@@ -415,8 +415,8 @@ mod tests {
         assert_eq!(9.0, dx, "expected diff 9.0");
     }
 
-    #[tokio::test]
-    async fn test_diff_unknown_start() {
+    #[test]
+    fn test_diff_unknown_start() {
         let start_ts = 0;
         let mut prev_pts = PointsCache::for_tests();
         let dims = Dimensions {
@@ -441,8 +441,8 @@ mod tests {
         assert_eq!(2.0, dx, "expected diff 2.0 with (0,2,2) value");
     }
 
-    #[tokio::test]
-    async fn test_diff_known_start() {
+    #[test]
+    fn test_diff_known_start() {
         let mut start_ts = 1;
         let mut prev_pts = PointsCache::for_tests();
         let dims = Dimensions {
