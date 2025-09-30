@@ -11,7 +11,7 @@ use otlp_protos::opentelemetry::proto::metrics::v1::{
     ResourceMetrics as OtlpResourceMetrics,
 };
 use saluki_context::tags::{SharedTagSet, TagSet};
-use saluki_context::ContextResolver;
+use saluki_context::{ContextResolver, ContextResolverBuilder};
 use saluki_core::data_model::event::metric::{Metric, MetricMetadata, MetricValues};
 use saluki_core::data_model::event::Event;
 use saluki_error::GenericError;
@@ -19,7 +19,7 @@ use tracing::{debug, warn};
 
 use super::super::attributes::source::{Source, SourceKind};
 use super::super::attributes::translator::AttributeTranslator;
-use super::cache::Cache;
+use super::cache::PointsCache;
 use super::config::{HistogramMode, NumberMode, OtlpTranslatorConfig};
 use super::dimensions::Dimensions;
 use super::internal::{instrumentationlibrary, instrumentationscope};
@@ -59,7 +59,7 @@ enum DataType {
 pub struct OtlpMetricsTranslator {
     config: OtlpTranslatorConfig,
     context_resolver: ContextResolver,
-    prev_pts: Cache,
+    prev_pts: PointsCache,
     process_start_time_ns: u64, // Used for initial value consumption.
     attribute_translator: AttributeTranslator,
 }
@@ -84,7 +84,7 @@ impl OtlpMetricsTranslator {
         Self {
             config,
             context_resolver,
-            prev_pts: Cache::new(),
+            prev_pts: PointsCache::from_config(config),
             process_start_time_ns,
             attribute_translator: AttributeTranslator::new(),
         }
@@ -193,6 +193,22 @@ impl OtlpMetricsTranslator {
         // }
 
         Ok(events)
+    }
+
+    /// Creates a new `OtlpMetricsTranslator` for tests.
+    pub fn for_tests() -> OtlpMetricsTranslator {
+        let process_start_time_ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("System time is before the UNIX epoch, this should not happen.")
+            .as_nanos() as u64;
+
+        OtlpMetricsTranslator {
+            config: Default::default(),
+            context_resolver: ContextResolverBuilder::for_tests().build(),
+            prev_pts: PointsCache::for_tests(),
+            process_start_time_ns,
+            attribute_translator: AttributeTranslator::new(),
+        }
     }
 
     /// Translates a single OTLP `Metric` into a collection of Saluki `Event`s.
@@ -670,7 +686,7 @@ mod tests {
     use otlp_protos::opentelemetry::proto::metrics::v1::{
         number_data_point::Value as OtlpNumberDataPointValue, NumberDataPoint as OtlpNumberDataPoint,
     };
-    use saluki_context::{tags::Tag, ContextResolverBuilder};
+    use saluki_context::tags::Tag;
 
     use super::*;
     use crate::sources::otlp::metrics::dimensions::Dimensions;
@@ -807,8 +823,7 @@ mod tests {
 
         // Test Case 1: "diff" mode (standard cumulative to delta)
         {
-            let context_resolver = ContextResolverBuilder::for_tests().build();
-            let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+            let mut translator = OtlpMetricsTranslator::for_tests();
             let slice = build_monotonic_int_points(&deltas);
             let dims = Dimensions {
                 name: "metric.example".to_string(),
@@ -830,8 +845,7 @@ mod tests {
 
         // Test Case 2: "rate" mode
         {
-            let context_resolver = ContextResolverBuilder::for_tests().build();
-            let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+            let mut translator = OtlpMetricsTranslator::for_tests();
             let slice = build_monotonic_int_points(&deltas);
             let dims = Dimensions {
                 name: "kafka.net.bytes_out.rate".to_string(),
@@ -865,8 +879,7 @@ mod tests {
         // Test Case 1: "equal" timestamp.
         // Verifies that a point is dropped if its timestamp is the same as the previous point.
         {
-            let context_resolver = ContextResolverBuilder::for_tests().build();
-            let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+            let mut translator = OtlpMetricsTranslator::for_tests();
             let start_ts = translator.process_start_time_ns + 1;
 
             let slice = vec![
@@ -914,8 +927,7 @@ mod tests {
 
         // Test Case 2: "equal-rate" timestamp.
         {
-            let context_resolver = ContextResolverBuilder::for_tests().build();
-            let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+            let mut translator = OtlpMetricsTranslator::for_tests();
             let start_ts = translator.process_start_time_ns + 1;
 
             let slice = vec![
@@ -962,8 +974,7 @@ mod tests {
         // Test Case 3: "older" timestamp.
         // Verifies that a point is dropped if its timestamp is older than the previous point.
         {
-            let context_resolver = ContextResolverBuilder::for_tests().build();
-            let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+            let mut translator = OtlpMetricsTranslator::for_tests();
             let start_ts = translator.process_start_time_ns + 1;
 
             let slice = vec![
@@ -1008,8 +1019,7 @@ mod tests {
 
         // Test Case 4: "older-rate" timestamp.
         {
-            let context_resolver = ContextResolverBuilder::for_tests().build();
-            let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+            let mut translator = OtlpMetricsTranslator::for_tests();
             let start_ts = translator.process_start_time_ns + 1;
 
             let slice = vec![
@@ -1058,8 +1068,7 @@ mod tests {
     #[test]
     fn test_map_int_monotonic_report_first_value() {
         let metrics = Metrics::for_tests();
-        let context_resolver = ContextResolverBuilder::for_tests().build();
-        let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+        let mut translator = OtlpMetricsTranslator::for_tests();
 
         let dims = Dimensions {
             name: "metric.example".to_string(),
@@ -1092,8 +1101,7 @@ mod tests {
     #[test]
     fn test_map_int_monotonic_out_of_order() {
         let metrics = Metrics::for_tests();
-        let context_resolver = ContextResolverBuilder::for_tests().build();
-        let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+        let mut translator = OtlpMetricsTranslator::for_tests();
 
         let timestamps = [1, 0, 2, 3];
         let values = [0, 1, 2, 3];
@@ -1135,8 +1143,7 @@ mod tests {
     #[test]
     fn test_map_int_monotonic_different_dimensions() {
         let metrics = Metrics::for_tests();
-        let context_resolver = ContextResolverBuilder::for_tests().build();
-        let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+        let mut translator = OtlpMetricsTranslator::for_tests();
 
         let mut slice = Vec::new();
 
@@ -1234,8 +1241,7 @@ mod tests {
 
         // Test Case 1: Gauge
         {
-            let context_resolver = ContextResolverBuilder::for_tests().build();
-            let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+            let mut translator = OtlpMetricsTranslator::for_tests();
             let dims = Dimensions {
                 name: "int64.test".to_string(),
                 ..Default::default()
@@ -1254,8 +1260,7 @@ mod tests {
 
         // Test Case 2: Count
         {
-            let context_resolver = ContextResolverBuilder::for_tests().build();
-            let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+            let mut translator = OtlpMetricsTranslator::for_tests();
             let dims = Dimensions {
                 name: "int64.delta.test".to_string(),
                 ..Default::default()
@@ -1274,8 +1279,7 @@ mod tests {
 
         // Test Case 3: Gauge with Tags
         {
-            let context_resolver = ContextResolverBuilder::for_tests().build();
-            let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+            let mut translator = OtlpMetricsTranslator::for_tests();
             let mut tags = TagSet::default();
             tags.insert_tag("attribute_tag:attribute_value");
             let dims = Dimensions {
@@ -1303,8 +1307,7 @@ mod tests {
 
         // Test Case 1: "diff" mode with reset
         {
-            let context_resolver = ContextResolverBuilder::for_tests().build();
-            let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+            let mut translator = OtlpMetricsTranslator::for_tests();
             let slice = build_monotonic_int_reboot_points();
             let dims = Dimensions {
                 name: "metric.example".to_string(),
@@ -1324,8 +1327,7 @@ mod tests {
 
         // Test Case 2: "rate" mode with reset
         {
-            let context_resolver = ContextResolverBuilder::for_tests().build();
-            let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+            let mut translator = OtlpMetricsTranslator::for_tests();
             let slice = build_monotonic_int_reboot_points();
             let dims = Dimensions {
                 name: "kafka.net.bytes_out.rate".to_string(),
@@ -1365,8 +1367,7 @@ mod tests {
 
         // Test Case 1: Gauge
         {
-            let context_resolver = ContextResolverBuilder::for_tests().build();
-            let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+            let mut translator = OtlpMetricsTranslator::for_tests();
             let dims = Dimensions {
                 name: "float64.test".to_string(),
                 ..Default::default()
@@ -1381,8 +1382,7 @@ mod tests {
 
         // Test Case 2: Count
         {
-            let context_resolver = ContextResolverBuilder::for_tests().build();
-            let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+            let mut translator = OtlpMetricsTranslator::for_tests();
             let dims = Dimensions {
                 name: "float64.delta.test".to_string(),
                 ..Default::default()
@@ -1397,8 +1397,7 @@ mod tests {
 
         // Test Case 3: Gauge with Tags
         {
-            let context_resolver = ContextResolverBuilder::for_tests().build();
-            let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+            let mut translator = OtlpMetricsTranslator::for_tests();
             let mut tags = TagSet::default();
             tags.insert_tag("attribute_tag:attribute_value");
             let dims = Dimensions {
@@ -1426,8 +1425,7 @@ mod tests {
 
         // Test Case 1: "diff" mode
         {
-            let context_resolver = ContextResolverBuilder::for_tests().build();
-            let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+            let mut translator = OtlpMetricsTranslator::for_tests();
             let slice = build_monotonic_double_points(&deltas);
             let dims = Dimensions {
                 name: "metric.example".to_string(),
@@ -1448,8 +1446,7 @@ mod tests {
 
         // Test Case 2: "rate" mode
         {
-            let context_resolver = ContextResolverBuilder::for_tests().build();
-            let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+            let mut translator = OtlpMetricsTranslator::for_tests();
             let slice = build_monotonic_double_points(&deltas);
             let dims = Dimensions {
                 name: "kafka.net.bytes_out.rate".to_string(),
@@ -1473,8 +1470,7 @@ mod tests {
     #[test]
     fn test_map_double_monotonic_different_dimensions() {
         let metrics = Metrics::for_tests();
-        let context_resolver = ContextResolverBuilder::for_tests().build();
-        let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+        let mut translator = OtlpMetricsTranslator::for_tests();
 
         let mut slice = Vec::new();
 
@@ -1562,8 +1558,7 @@ mod tests {
         let metrics = Metrics::for_tests();
 
         {
-            let context_resolver = ContextResolverBuilder::for_tests().build();
-            let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+            let mut translator = OtlpMetricsTranslator::for_tests();
             let slice = build_monotonic_double_reboot_points();
             let dims = Dimensions {
                 name: "metric.example".to_string(),
@@ -1583,8 +1578,7 @@ mod tests {
         }
 
         {
-            let context_resolver = ContextResolverBuilder::for_tests().build();
-            let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+            let mut translator = OtlpMetricsTranslator::for_tests();
             let slice = build_monotonic_double_reboot_points();
             let dims = Dimensions {
                 name: "kafka.net.bytes_out.rate".to_string(),
@@ -1611,8 +1605,7 @@ mod tests {
 
         // Test Case 1: "equal" timestamp.
         {
-            let context_resolver = ContextResolverBuilder::for_tests().build();
-            let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+            let mut translator = OtlpMetricsTranslator::for_tests();
             let start_ts = translator.process_start_time_ns + 1;
 
             let slice = vec![
@@ -1657,8 +1650,7 @@ mod tests {
 
         // Test Case 2: "older" timestamp.
         {
-            let context_resolver = ContextResolverBuilder::for_tests().build();
-            let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+            let mut translator = OtlpMetricsTranslator::for_tests();
             let start_ts = translator.process_start_time_ns + 1;
 
             let slice = vec![
@@ -1706,8 +1698,7 @@ mod tests {
     #[test]
     fn test_map_double_monotonic_out_of_order() {
         let metrics = Metrics::for_tests();
-        let context_resolver = ContextResolverBuilder::for_tests().build();
-        let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+        let mut translator = OtlpMetricsTranslator::for_tests();
 
         let timestamps = [1, 0, 2, 3];
         let values = [0.0, 1.0, 2.0, 3.0];
@@ -1745,8 +1736,7 @@ mod tests {
 
         // Test Case 1: "diff" mode
         {
-            let context_resolver = ContextResolverBuilder::for_tests().build();
-            let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+            let mut translator = OtlpMetricsTranslator::for_tests();
             let start_ts = translator.process_start_time_ns + 1;
             let dims = Dimensions {
                 name: "metric.example".to_string(),
@@ -1793,8 +1783,7 @@ mod tests {
 
         // Test Case 2: "rate" mode
         {
-            let context_resolver = ContextResolverBuilder::for_tests().build();
-            let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+            let mut translator = OtlpMetricsTranslator::for_tests();
             let start_ts = translator.process_start_time_ns + 1;
             let dims = Dimensions {
                 name: "kafka.net.bytes_out.rate".to_string(),
@@ -1836,8 +1825,7 @@ mod tests {
     #[test]
     fn test_map_int_monotonic_rate_dont_report_first_value() {
         let metrics = Metrics::for_tests();
-        let context_resolver = ContextResolverBuilder::for_tests().build();
-        let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+        let mut translator = OtlpMetricsTranslator::for_tests();
 
         let dims = Dimensions {
             name: "kafka.net.bytes_out.rate".to_string(),
@@ -1866,8 +1854,7 @@ mod tests {
     #[test]
     fn test_map_int_monotonic_not_report_first_value_if_start_ts_match_ts() {
         let metrics = Metrics::for_tests();
-        let context_resolver = ContextResolverBuilder::for_tests().build();
-        let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+        let mut translator = OtlpMetricsTranslator::for_tests();
 
         let dims = Dimensions {
             name: "metric.example".to_string(),
@@ -1888,8 +1875,7 @@ mod tests {
     #[test]
     fn test_map_int_monotonic_rate_not_report_first_value_if_start_ts_match_ts() {
         let metrics = Metrics::for_tests();
-        let context_resolver = ContextResolverBuilder::for_tests().build();
-        let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+        let mut translator = OtlpMetricsTranslator::for_tests();
 
         let dims = Dimensions {
             name: "kafka.net.bytes_out.rate".to_string(),
@@ -1910,8 +1896,7 @@ mod tests {
     #[test]
     fn test_map_int_monotonic_report_diff_for_first_value() {
         let metrics = Metrics::for_tests();
-        let context_resolver = ContextResolverBuilder::for_tests().build();
-        let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+        let mut translator = OtlpMetricsTranslator::for_tests();
 
         let dims = Dimensions {
             name: "metric.example".to_string(),
@@ -1955,8 +1940,7 @@ mod tests {
     #[test]
     fn test_map_int_monotonic_report_rate_for_first_value() {
         let metrics = Metrics::for_tests();
-        let context_resolver = ContextResolverBuilder::for_tests().build();
-        let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+        let mut translator = OtlpMetricsTranslator::for_tests();
 
         let dims = Dimensions {
             name: "kafka.net.bytes_out.rate".to_string(),
@@ -2000,8 +1984,7 @@ mod tests {
     #[test]
     fn test_map_int_monotonic_with_no_recorded_value_within_slice() {
         let metrics = Metrics::for_tests();
-        let context_resolver = ContextResolverBuilder::for_tests().build();
-        let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+        let mut translator = OtlpMetricsTranslator::for_tests();
 
         let start_ts = translator.process_start_time_ns;
 
@@ -2063,8 +2046,7 @@ mod tests {
         // Test Case 1: "diff" mode
         {
             let metrics = Metrics::for_tests();
-            let context_resolver = ContextResolverBuilder::for_tests().build();
-            let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+            let mut translator = OtlpMetricsTranslator::for_tests();
             let start_ts = translator.process_start_time_ns + 1;
             let dims = Dimensions {
                 name: "metric.example".to_string(),
@@ -2106,8 +2088,7 @@ mod tests {
         // Test Case 2: "rate" mode
         {
             let metrics = Metrics::for_tests();
-            let context_resolver = ContextResolverBuilder::for_tests().build();
-            let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+            let mut translator = OtlpMetricsTranslator::for_tests();
             let start_ts = translator.process_start_time_ns + 1;
             let dims = Dimensions {
                 name: "kafka.net.bytes_out.rate".to_string(),
@@ -2151,8 +2132,7 @@ mod tests {
         // Test Case 1: "equal"
         {
             let metrics = Metrics::for_tests();
-            let context_resolver = ContextResolverBuilder::for_tests().build();
-            let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+            let mut translator = OtlpMetricsTranslator::for_tests();
             let start_ts = translator.process_start_time_ns + 1;
             let dims = Dimensions {
                 name: "metric.example".to_string(),
@@ -2193,8 +2173,7 @@ mod tests {
         // Test Case 2: "older"
         {
             let metrics = Metrics::for_tests();
-            let context_resolver = ContextResolverBuilder::for_tests().build();
-            let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+            let mut translator = OtlpMetricsTranslator::for_tests();
             let start_ts = translator.process_start_time_ns + 1;
             let dims = Dimensions {
                 name: "metric.example".to_string(),
@@ -2237,8 +2216,7 @@ mod tests {
     #[test]
     fn test_map_double_monotonic_report_first_value() {
         let metrics = Metrics::for_tests();
-        let context_resolver = ContextResolverBuilder::for_tests().build();
-        let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+        let mut translator = OtlpMetricsTranslator::for_tests();
         let dims = Dimensions {
             name: "metric.example".to_string(),
             ..Default::default()
@@ -2259,8 +2237,7 @@ mod tests {
     #[test]
     fn test_map_double_monotonic_rate_dont_report_first_value() {
         let metrics = Metrics::for_tests();
-        let context_resolver = ContextResolverBuilder::for_tests().build();
-        let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+        let mut translator = OtlpMetricsTranslator::for_tests();
         let dims = Dimensions {
             name: "kafka.net.bytes_out.rate".to_string(),
             ..Default::default()
@@ -2279,8 +2256,7 @@ mod tests {
     #[test]
     fn test_map_double_monotonic_not_report_first_value_if_start_ts_match_ts() {
         let metrics = Metrics::for_tests();
-        let context_resolver = ContextResolverBuilder::for_tests().build();
-        let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+        let mut translator = OtlpMetricsTranslator::for_tests();
         let dims = Dimensions {
             name: "metric.example".to_string(),
             ..Default::default()
@@ -2294,8 +2270,7 @@ mod tests {
     #[test]
     fn test_map_double_monotonic_report_diff_for_first_value() {
         let metrics = Metrics::for_tests();
-        let context_resolver = ContextResolverBuilder::for_tests().build();
-        let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+        let mut translator = OtlpMetricsTranslator::for_tests();
         let dims = Dimensions {
             name: "metric.example".to_string(),
             ..Default::default()
@@ -2320,8 +2295,7 @@ mod tests {
     #[test]
     fn test_map_double_monotonic_report_rate_for_first_value() {
         let metrics = Metrics::for_tests();
-        let context_resolver = ContextResolverBuilder::for_tests().build();
-        let mut translator = OtlpMetricsTranslator::new(Default::default(), context_resolver);
+        let mut translator = OtlpMetricsTranslator::for_tests();
         let dims = Dimensions {
             name: "kafka.net.bytes_out.rate".to_string(),
             ..Default::default()
