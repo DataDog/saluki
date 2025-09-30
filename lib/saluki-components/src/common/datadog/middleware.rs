@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use http::{
     uri::{Authority, Scheme},
     HeaderName, HeaderValue, Request, Uri,
@@ -7,6 +9,32 @@ use super::endpoints::ResolvedEndpoint;
 
 static DD_AGENT_VERSION_HEADER: HeaderName = HeaderName::from_static("dd-agent-version");
 static DD_API_KEY_HEADER: HeaderName = HeaderName::from_static("dd-api-key");
+const AGENT_HOST_MARKER: &str = ".agent.";
+
+/// Resolves the authority host to use for a given request path.
+///
+/// If the path targets the logs endpoint (`/api/v2/logs`), this derives the logs intake
+/// host from the resolved endpoint's base host in the form `agent-http-intake.logs.{site}`
+/// where `{site}` is extracted from `<version>.agent.{site}`. If the pattern isn't present
+/// or parsing fails, the `default_authority` is returned. For non-logs paths, the
+/// `default_authority` is always returned.
+fn resolve_logs_authority(
+    path_and_query: &str, endpoint: &ResolvedEndpoint, default_authority: &Authority,
+) -> Authority {
+    if path_and_query.starts_with("/api/v2/logs") {
+        let base_host = endpoint.endpoint().host_str().unwrap_or("");
+        // Handle different site/region suffixes (example .eu)
+        if let Some(idx) = base_host.find(AGENT_HOST_MARKER) {
+            let site = &base_host[idx + AGENT_HOST_MARKER.len()..];
+            let logs_host = format!("agent-http-intake.logs.{}", site);
+            Authority::from_str(&logs_host).unwrap_or_else(|_| default_authority.clone())
+        } else {
+            default_authority.clone()
+        }
+    } else {
+        default_authority.clone()
+    }
+}
 
 /// Builds a middleware function that will update the request's URI to use the resolved endpoint's URI, and add the API
 /// key as a header.
@@ -19,11 +47,13 @@ pub fn for_resolved_endpoint<B>(mut endpoint: ResolvedEndpoint) -> impl FnMut(Re
     let new_uri_scheme =
         Scheme::try_from(endpoint.endpoint().scheme()).expect("should not fail to construct new endpoint scheme");
     move |mut request| {
+        let path_and_query = request.uri().path_and_query().expect("request path must exist").clone();
+        let authority = resolve_logs_authority(path_and_query.as_str(), &endpoint, &new_uri_authority);
         // Build an updated URI by taking the endpoint URL and slapping the request's URI path on the end of it.
         let new_uri = Uri::builder()
             .scheme(new_uri_scheme.clone())
-            .authority(new_uri_authority.clone())
-            .path_and_query(request.uri().path_and_query().expect("request path must exist").clone())
+            .authority(authority)
+            .path_and_query(path_and_query)
             .build()
             .expect("should not fail to construct new URI");
         let api_key = endpoint.api_key();
