@@ -24,14 +24,14 @@ use saluki_common::task::HandleExt as _;
 use saluki_config::GenericConfiguration;
 use saluki_context::{ContextResolver, ContextResolverBuilder};
 use saluki_core::observability::ComponentMetricsExt;
-use saluki_core::topology::interconnect::EventBufferManager;
+use saluki_core::topology::interconnect::{EventBufferManager, FixedSizeEventBuffer};
 use saluki_core::topology::shutdown::{DynamicShutdownCoordinator, DynamicShutdownHandle};
 use saluki_core::{
     components::{
         sources::{Source, SourceBuilder, SourceContext},
         ComponentContext,
     },
-    data_model::event::EventType,
+    data_model::event::{Event, EventType},
     topology::{EventsBuffer, OutputDefinition},
 };
 use saluki_error::{generic_error, GenericError};
@@ -500,9 +500,32 @@ impl LogsService for GrpcService {
     }
 }
 
-async fn dispatch_events(events: EventsBuffer, source_context: &SourceContext) {
+async fn dispatch_events(mut events: EventsBuffer, source_context: &SourceContext) {
     if events.is_empty() {
         return;
+    }
+
+    if events.has_event_type(EventType::Log) {
+        let mut logs_buffer = FixedSizeEventBuffer::<1024>::default();
+        for log in events.extract(Event::is_log) {
+            // If the buffer is full, dispatch current batch and start a new one
+            if let Some(overflow) = logs_buffer.try_push(log) {
+                if let Err(e) = source_context.dispatcher().dispatch_named("logs", logs_buffer).await {
+                    error!(error = %e, "Failed to dispatch logs")
+                }
+                let mut next = FixedSizeEventBuffer::<1024>::default();
+                next.try_push(overflow);
+                logs_buffer = next;
+                break;
+            }
+        }
+        if !logs_buffer.is_empty() {
+            if let Err(e) = source_context.dispatcher().dispatch_named("logs", logs_buffer).await {
+                error!(error = %e, "Failed to dispatch logs")
+            } else {
+                debug!("Dispatched log events");
+            }
+        }
     }
 
     let len = events.len();
