@@ -284,7 +284,7 @@ impl LogRecordTransformer {
                         let flattened: Vec<(String, JsonValue)> = flatten_attribute(&kv.key, av, 1);
                         for (key, val) in flattened {
                             if !val.is_null() {
-                                safe_insert(&mut additional_properties, &key, val);
+                                additional_properties.insert(key, val);
                             }
                         }
                     }
@@ -320,14 +320,14 @@ impl LogRecordTransformer {
             }
         }
 
-        if lr.trace_id.len() == 16 && !lr.trace_id.iter().all(|&b| b == 0) {
+        if !lr.trace_id.iter().all(|&b| b == 0) {
             let hex = bytes_to_hex_lowercase(&lr.trace_id);
             additional_properties.insert("otel.trace_id".to_string(), JsonValue::String(hex));
             let dd = u64_from_last_8(&lr.trace_id);
             additional_properties.insert("dd.trace_id".to_string(), JsonValue::String(dd.to_string()));
         }
 
-        if lr.span_id.len() == 8 && !lr.span_id.iter().all(|&b| b == 0) {
+        if !lr.span_id.iter().all(|&b| b == 0) {
             let hex = bytes_to_hex_lowercase(&lr.span_id);
             additional_properties.insert("otel.span_id".to_string(), JsonValue::String(hex));
             let dd = u64_from_first_8(&lr.span_id);
