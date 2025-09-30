@@ -41,7 +41,7 @@ const fn default_zstd_compressor_level() -> i32 {
 }
 
 fn default_ddsource() -> String {
-    "otel".to_string()
+    "otlp_log_ingestion".to_string()
 }
 
 /// Datadog Logs incremental encoder.
@@ -191,7 +191,7 @@ impl LogsEndpointEncoder {
             obj.insert("service".to_string(), JsonValue::String(log.service().to_string()));
         }
 
-        // ddsource (default "otel", overridden by explicit source if present)
+        // ddsource (default "otlp_log_ingestion", overridden by explicit source if present)
         let mut ddsource = self.ddsource.clone();
         if let Some(source) = log.source().clone() {
             ddsource = source.into_owned();
