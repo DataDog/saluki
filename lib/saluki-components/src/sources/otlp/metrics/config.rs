@@ -47,8 +47,6 @@ impl Default for InitialCumulMonoValueMode {
     }
 }
 
-use std::time::Duration;
-
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
 pub struct OtlpTranslatorConfig {
