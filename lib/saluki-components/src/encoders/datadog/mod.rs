@@ -6,3 +6,6 @@ pub use self::service_checks::DatadogServiceChecksConfiguration;
 
 mod metrics;
 pub use self::metrics::DatadogMetricsConfiguration;
+
+mod logs;
+pub use self::logs::DatadogLogsConfiguration;
