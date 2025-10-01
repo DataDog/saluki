@@ -86,30 +86,30 @@ help:
 
 .PHONY: build-adp
 build-adp: check-rust-build-tools
-build-adp: ## Builds the ADP binary in debug mode
-	@echo "[*] Building ADP locally..."
+build-adp: ## Build the Agent Data Plane binary (debug)
+	@echo "[*] Building ADP..."
 	@cargo build --profile dev --package agent-data-plane
 
 .PHONY: build-adp-release
 build-adp-release: check-rust-build-tools
-build-adp-release: ## Builds the ADP binary in release mode
-	@echo "[*] Building ADP locally..."
+build-adp-release: ## Build the Agent Data Plane binary (release)
+	@echo "[*] Building ADP..."
 	@cargo build --profile release --package agent-data-plane
 
-.PHONY: build-adp-and-checks
-build-adp-and-checks: check-rust-build-tools
-build-adp-and-checks: ## Builds the ADP binary with python in debug mode
-	@echo "[*] Building ADP with Checks locally..."
+.PHONY: build-adp-checks
+build-adp-checks: check-rust-build-tools
+build-adp-checks: ## Build the Agent Data Plane binary with checks support (debug)
+	@echo "[*] Building ADP (with checks)..."
 	@cargo build --profile dev --package agent-data-plane --features python-checks
 
-.PHONY: build-adp-and-checks-release
-build-adp-and-checks-release: check-rust-build-tools
-build-adp-and-checks-release: ## Builds the ADP binary with python in release mode
-	@echo "[*] Building ADP with Checks locally..."
+.PHONY: build-adp-checks-release
+build-adp-checks-release: check-rust-build-tools
+build-adp-checks-release: ## Build the Agent Data Plane binary with checks support (release)
+	@echo "[*] Building ADP (with checks)..."
 	@cargo build --profile release --package agent-data-plane --features python-checks
 
 .PHONY: build-adp-image
-build-adp-image: ## Builds the ADP container image in release mode ('latest' tag)
+build-adp-image: ## Build the Agent Data Plane container image (release)
 	@echo "[*] Building ADP image..."
 	@$(CONTAINER_TOOL) build \
 		--tag saluki-images/agent-data-plane:latest \
@@ -125,7 +125,7 @@ build-adp-image: ## Builds the ADP container image in release mode ('latest' tag
 		.
 
 .PHONY: build-adp-checks-image
-build-adp-checks-image: ## Builds the ADP + Checks container image in release mode ('latest' tag)
+build-adp-checks-image: ## Builds the Agent Data Plane container image with checks support (release)
 	@echo "[*] Building ADP image..."
 	@$(CONTAINER_TOOL) build \
 		--tag saluki-images/agent-data-plane:latest \
@@ -164,12 +164,12 @@ build-gen-statsd-image: ## Builds the gen-statsd container image ('latest' tag)
 
 .PHONY: build-ground-truth
 build-ground-truth: check-rust-build-tools
-build-ground-truth: ## Builds the ground-truth binary in debug mode
+build-ground-truth: ## Builds the ground-truth binary (debug mode)
 	@echo "[*] Building ground-truth locally..."
 	@cargo build --profile dev --package ground-truth
 
 .PHONY: build-metrics-intake-image
-build-metrics-intake-image: ## Builds the metrics-intake container image in release mode ('latest' tag)
+build-metrics-intake-image: ## Builds the metrics-intake container image (release)
 	@echo "[*] Building metrics-intake image..."
 	@$(CONTAINER_TOOL) build \
 		--tag saluki-images/metrics-intake:latest \
@@ -180,7 +180,7 @@ build-metrics-intake-image: ## Builds the metrics-intake container image in rele
 		.
 
 .PHONY: build-millstone-image
-build-millstone-image: ## Builds the millstone container image in release mode ('latest' tag)
+build-millstone-image: ## Builds the millstone container image (release)
 	@echo "[*] Building millstone image..."
 	@$(CONTAINER_TOOL) build \
 		--tag saluki-images/millstone:latest \
@@ -191,7 +191,7 @@ build-millstone-image: ## Builds the millstone container image in release mode (
 		.
 
 .PHONY: build-proxy-dumper-image
-build-proxy-dumper-image: check-proxy-dumper-tools ## Builds the proxy-dumper container image ('latest' tag)
+build-proxy-dumper-image: check-proxy-dumper-tools ## Builds the proxy-dumper container image
 ifeq ($(shell test -d test/build/dd-agent-benchmarks || echo not-found), not-found)
 	@echo "[*] Cloning Datadog Agent Benchmarks repository..."
 	@mkdir -p test/build
@@ -211,8 +211,8 @@ endif
 		test/build/dd-agent-benchmarks/docker/proxy-dumper
 
 .PHONY: build-dsd-client
-build-dsd-client: ## Builds the Dogstatsd client (used for sending DSD payloads)
-	@echo "[*] Building Dogstatsd client..."
+build-dsd-client: ## Builds the DogStatsD client (used for sending DSD payloads)
+	@echo "[*] Building DogStatsD client..."
 	@go build -C tooling/dogstatsd_client -o ../bin/dogstatsd_client .
 
 .PHONY: check-rust-build-tools
@@ -231,7 +231,7 @@ endif
 
 .PHONY: run-adp
 run-adp: build-adp
-run-adp: ## Runs ADP locally (debug, requires Datadog Agent for tagging)
+run-adp: ## Runs Agent Data Plane in non-standalone mode (debug)
 ifeq ($(shell test -f /etc/datadog-agent/auth_token || echo not-found), not-found)
 	$(error "Authentication token not found at /etc/datadog-agent/auth_token. Is the Datadog Agent running? Is the current user in the right group to access it?")
 endif
@@ -246,7 +246,7 @@ endif
 
 .PHONY: run-adp-release
 run-adp-release: build-adp-release
-run-adp-release: ## Runs ADP locally (release, requires Datadog Agent for tagging)
+run-adp-release: ## Runs Agent Data Plane in non-standalone mode (release)
 ifeq ($(shell test -f /etc/datadog-agent/auth_token || echo not-found), not-found)
 	$(error "Authentication token not found at /etc/datadog-agent/auth_token. Is the Datadog Agent running? Is the current user in the right group to access it?")
 endif
@@ -261,7 +261,7 @@ endif
 
 .PHONY: run-adp-standalone
 run-adp-standalone: build-adp
-run-adp-standalone: ## Runs ADP locally in standalone mode (debug)
+run-adp-standalone: ## Runs Agent Data Plane in standalone mode (debug)
 	@echo "[*] Running ADP..."
 	@DD_ADP_STANDALONE_MODE=true \
 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
@@ -269,21 +269,20 @@ run-adp-standalone: ## Runs ADP locally in standalone mode (debug)
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	target/debug/agent-data-plane
 
-.PHONY: run-adp-with-checks-standalone
-run-adp-with-checks-standalone: build-adp-and-checks
-run-adp-with-checks-standalone: ## Runs ADP + Checks locally in standalone mode (debug)
-	@echo "[*] Running ADP and checks..."
+.PHONY: run-adp-standalone-release
+run-adp-standalone-release: build-adp-release
+run-adp-standalone-release: ## Runs Agent Data Plane in standalone mode (release)
+	@echo "[*] Running ADP..."
 	@DD_ADP_STANDALONE_MODE=true \
-	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=check-agent-standalone \
-	DD_CHECKS_CONFIG_DIR=./dist/conf.d \
+	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
-	target/debug/agent-data-plane
+	target/release/agent-data-plane
 
-.PHONY: run-adp-with-checks
-run-adp-with-checks: build-adp-and-checks
-run-adp-with-checks: ## Runs ADP + Checks locally (debug)
-	@echo "[*] Running ADP and checks..."
+.PHONY: run-adp-checks
+run-adp-checks: build-adp-checks
+run-adp-checks: ## Runs Agent Data Plane with checks support in non-standalone mode (debug)
+	@echo "[*] Running ADP (checks)..."
 	@DD_ADP_STANDALONE_MODE=false \
 	DD_AUTH_TOKEN_FILE_PATH=../datadog-agent/bin/agent/dist/auth_token \
 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
@@ -292,15 +291,16 @@ run-adp-with-checks: ## Runs ADP + Checks locally (debug)
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	target/debug/agent-data-plane
 
-.PHONY: run-adp-standalone-release
-run-adp-standalone-release: build-adp-release
-run-adp-standalone-release: ## Runs ADP locally in standalone mode (release)
-	@echo "[*] Running ADP..."
+.PHONY: run-adp-checks-standalone
+run-adp-checks-standalone: build-adp-checks
+run-adp-checks-standalone: ## Runs Agent Data Plane with checks support in standalone mode (debug)
+	@echo "[*] Running ADP (checks)..."
 	@DD_ADP_STANDALONE_MODE=true \
-	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
+	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=check-agent-standalone \
+	DD_CHECKS_CONFIG_DIR=./dist/conf.d \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
-	target/release/agent-data-plane
+	target/debug/agent-data-plane
 
 .PHONY: run-dsd-basic-udp
 run-dsd-basic-udp: build-dsd-client ## Runs a basic set of metrics via the Dogstatsd client (UDP)
