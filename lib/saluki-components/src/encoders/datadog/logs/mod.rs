@@ -1,3 +1,5 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use async_trait::async_trait;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -178,8 +180,15 @@ impl LogsEndpointEncoder {
     fn build_agent_json(&mut self, log: &Log) -> JsonValue {
         let mut obj = JsonMap::new();
 
-        // Top-level fields first
-        obj.insert("message".to_string(), JsonValue::String(log.message().to_string()));
+        // Encode a structured message object as a JSON string in the `message` field.
+        let mut message_inner = JsonMap::new();
+        message_inner.insert("message".to_string(), JsonValue::String(log.message().to_string()));
+        if !log.service().is_empty() {
+            message_inner.insert("service".to_string(), JsonValue::String(log.service().to_string()));
+        }
+        let message_str =
+            serde_json::to_string(&JsonValue::Object(message_inner)).unwrap_or_else(|_| log.message().to_string());
+        obj.insert("message".to_string(), JsonValue::String(message_str));
 
         if let Some(status) = log.status() {
             obj.insert("status".to_string(), JsonValue::String(status.as_str().to_string()));
@@ -203,6 +212,20 @@ impl LogsEndpointEncoder {
         let tags_vec: Vec<&str> = tags_iter.map(|t| t.as_str()).collect();
         if !tags_vec.is_empty() {
             obj.insert("ddtags".to_string(), JsonValue::String(tags_vec.join(",")));
+        }
+
+        // Default timestamp (ms since epoch) unless user provided `timestamp` or `@timestamp`.
+        let user_provided_timestamp = log.additional_properties().contains_key("timestamp")
+            || log.additional_properties().contains_key("timestamp");
+        if !user_provided_timestamp {
+            let now_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            obj.insert(
+                "@timestamp".to_string(),
+                JsonValue::Number(serde_json::Number::from(now_ms)),
+            );
         }
 
         // Last-write-wins: merge AdditionalProperties last
