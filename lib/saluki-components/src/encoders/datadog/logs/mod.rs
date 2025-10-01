@@ -1,6 +1,5 @@
-use chrono::{SecondsFormat, Utc};
-
 use async_trait::async_trait;
+use chrono::{SecondsFormat, Utc};
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::iter::ReusableDeduplicator;
