@@ -4,11 +4,11 @@ use std::{collections::HashMap, net::SocketAddr};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use datadog_protos::agent::{
-    get_telemetry_response::Payload, GetFlareFilesRequest, GetFlareFilesResponse, GetStatusDetailsRequest,
-    GetStatusDetailsResponse, GetTelemetryRequest, GetTelemetryResponse, StatusSection,
-    status_provider_server::StatusProvider, status_provider_server::StatusProviderServer, 
+    flare_provider_server::FlareProvider, flare_provider_server::FlareProviderServer, get_telemetry_response::Payload,
+    status_provider_server::StatusProvider, status_provider_server::StatusProviderServer,
     telemetry_provider_server::TelemetryProvider, telemetry_provider_server::TelemetryProviderServer,
-    flare_provider_server::FlareProvider, flare_provider_server::FlareProviderServer,
+    GetFlareFilesRequest, GetFlareFilesResponse, GetStatusDetailsRequest, GetStatusDetailsResponse,
+    GetTelemetryRequest, GetTelemetryResponse, StatusSection,
 };
 use http::{Request, Uri};
 use http_body_util::BodyExt;
@@ -53,7 +53,8 @@ pub struct RemoteAgentHelperConfiguration {
 impl RemoteAgentHelperConfiguration {
     /// Creates a new `RemoteAgentHelperConfiguration` from the given configuration.
     pub async fn from_configuration(
-        config: &GenericConfiguration, local_api_listen_addr: SocketAddr, prometheus_listen_addr: Option<SocketAddr>, session_id: SessionIdHandle,
+        config: &GenericConfiguration, local_api_listen_addr: SocketAddr, prometheus_listen_addr: Option<SocketAddr>,
+        session_id: SessionIdHandle,
     ) -> Result<Self, GenericError> {
         let app_details = saluki_metadata::get_app_details();
         let formatted_full_name = app_details
@@ -78,7 +79,9 @@ impl RemoteAgentHelperConfiguration {
     ///
     /// The spawned task ensures that this process is registered as a Remote Agent with the configured Datadog Agent
     /// instance. Returns implementations of the three separate services: StatusProvider, TelemetryProvider, and FlareProvider.
-    pub async fn spawn(self) -> (
+    pub async fn spawn(
+        self,
+    ) -> (
         StatusProviderServer<RemoteAgentImpl>,
         TelemetryProviderServer<RemoteAgentImpl>,
         FlareProviderServer<RemoteAgentImpl>,
@@ -91,7 +94,13 @@ impl RemoteAgentHelperConfiguration {
 
         spawn_traced_named(
             "adp-remote-agent-task",
-            run_remote_agent_helper(self.id, self.display_name, self.local_api_listen_addr, self.client, self.session_id),
+            run_remote_agent_helper(
+                self.id,
+                self.display_name,
+                self.local_api_listen_addr,
+                self.client,
+                self.session_id,
+            ),
         );
 
         // Return three server instances of the same implementation for the three different service traits
@@ -104,7 +113,8 @@ impl RemoteAgentHelperConfiguration {
 }
 
 async fn run_remote_agent_helper(
-    id: String, display_name: String, local_api_listen_addr: SocketAddr, mut client: RemoteAgentClient, session_id: SessionIdHandle,
+    id: String, display_name: String, local_api_listen_addr: SocketAddr, mut client: RemoteAgentClient,
+    session_id: SessionIdHandle,
 ) {
     let local_api_listen_addr = local_api_listen_addr.to_string();
 
@@ -120,23 +130,26 @@ async fn run_remote_agent_helper(
         match &session_id.get() {
             Some(id) => {
                 info!("Refreshing registration with Datadog Agent (session_id: {})", id);
-                if let Err(_) = client.refresh_remote_agent_request(id).await {
+                if client.refresh_remote_agent_request(id).await.is_err() {
                     register_agent.reset_after(default_refresh_interval);
                     session_id.update(None);
                     debug!("Refresh failed, entering retry loop");
                     continue;
                 }
-                    debug!("Refresh succeeded");
+                debug!("Refresh succeeded");
             }
             None => {
                 info!("Registering with Datadog Agent");
-                match client.register_remote_agent_request(&id, &display_name, &local_api_listen_addr).await {
+                match client
+                    .register_remote_agent_request(&id, &display_name, &local_api_listen_addr)
+                    .await
+                {
                     Ok(resp) => {
-                    let resp_inner = resp.into_inner();
-                    session_id.update(Some(resp_inner.session_id.clone()));
-                    let new_refresh_interval = resp_inner.recommended_refresh_interval_secs;
-                    register_agent.reset_after(Duration::from_secs(new_refresh_interval as u64));
-                    info!("Registered with Datadog Agent (session_id: {})", resp_inner.session_id);
+                        let resp_inner = resp.into_inner();
+                        session_id.update(Some(resp_inner.session_id.clone()));
+                        let new_refresh_interval = resp_inner.recommended_refresh_interval_secs;
+                        register_agent.reset_after(Duration::from_secs(new_refresh_interval as u64));
+                        info!("Registered with Datadog Agent (session_id: {})", resp_inner.session_id);
                     }
                     Err(e) => {
                         info!("Registration failed: {}", e);
@@ -226,7 +239,6 @@ impl StatusProvider for RemoteAgentImpl {
 
         Ok(tonic::Response::new(builder.into_response()))
     }
-
 }
 
 #[async_trait]

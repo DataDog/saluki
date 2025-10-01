@@ -1,6 +1,12 @@
 //! API server.
 
-use std::{convert::Infallible, error::Error, future::Future, io::BufReader, sync::{Arc, Mutex}};
+use std::{
+    convert::Infallible,
+    error::Error,
+    future::Future,
+    io::BufReader,
+    sync::{Arc, Mutex},
+};
 
 use axum::{middleware, Router};
 use http::{header, Request, Response};
@@ -30,16 +36,17 @@ pub struct SessionIdHandle {
 }
 
 impl SessionIdHandle {
-
     /// Creates a new `SessionIdHandle` with the given session ID.
     pub fn new(session_id: String) -> Self {
-        Self { session_id: Arc::new(Mutex::new(Some(session_id))) }
+        Self {
+            session_id: Arc::new(Mutex::new(Some(session_id))),
+        }
     }
 
     /// Updates the session ID to a new value.
     ///
     /// This change will be reflected in all subsequent gRPC responses.
-    pub fn update(&self, new_session_id: Option<String> ) {
+    pub fn update(&self, new_session_id: Option<String>) {
         if let Ok(mut session_id) = self.session_id.lock() {
             *session_id = new_session_id;
         }
@@ -53,22 +60,19 @@ impl SessionIdHandle {
 
 /// Middleware that adds a session ID header to all responses.
 async fn session_id_middleware(
-    session_id: SessionIdHandle,
-    request: Request<axum::body::Body>,
-    next: axum::middleware::Next,
+    session_id: SessionIdHandle, request: Request<axum::body::Body>, next: axum::middleware::Next,
 ) -> Response<axum::body::Body> {
     let mut response = next.run(request).await;
-    
+
     // Get the current session ID from the shared state
     if let Some(id) = session_id.get() {
         if let Ok(header_value) = header::HeaderValue::from_str(&id) {
-            response.headers_mut().insert(
-                header::HeaderName::from_static("session_id"),
-                header_value,
-            );
+            response
+                .headers_mut()
+                .insert(header::HeaderName::from_static("session_id"), header_value);
         }
     }
-    
+
     response
 }
 
@@ -193,7 +197,7 @@ impl<'a> APIBuilder<'a> {
     }
 
     /// Sets the session ID that will be added as metadata to every gRPC response.
-    /// 
+    ///
     /// This is used by the RemoteAgentRegistry to make sure the response is coming from the correct remote agent.
     pub fn with_session_id(mut self, session_id: SessionIdHandle) -> Self {
         self.session_id = Some(session_id.clone());
@@ -215,9 +219,10 @@ impl<'a> APIBuilder<'a> {
         let listener = ConnectionOrientedListener::from_listen_address(listen_address).await?;
 
         // Building and adding the reflection service.
-        let reflection_service = self.reflection_builder
-                .build_v1()
-                .map_err(|e| saluki_error::generic_error!("Failed to build gRPC reflection service: {}", e))?;
+        let reflection_service = self
+            .reflection_builder
+            .build_v1()
+            .map_err(|e| saluki_error::generic_error!("Failed to build gRPC reflection service: {}", e))?;
         self.grpc_router.add_service(reflection_service);
 
         // Apply session ID middleware to gRPC services if configured
@@ -225,18 +230,13 @@ impl<'a> APIBuilder<'a> {
         if let Some(session_id) = self.session_id {
             grpc_router = grpc_router.layer(middleware::from_fn(move |request, next| {
                 let session_id = session_id.clone();
-                async move {
-                    session_id_middleware(session_id, request, next).await
-                }
+                async move { session_id_middleware(session_id, request, next).await }
             }))
         };
-        
+
         // Wrap up our HTTP and gRPC routers in a multiplexed service, allowing us to handle both types of requests on
         // the same port. Additionally, we have to wrap the service to translate from `tower::Service` to `hyper::Service`.
-        let multiplexed_service = TowerToHyperService::new(MultiplexService::new(
-            self.http_router,
-            grpc_router,
-        ));
+        let multiplexed_service = TowerToHyperService::new(MultiplexService::new(self.http_router, grpc_router));
 
         // Create and spawn the HTTP server.
         let mut http_server = HttpServer::from_listener(listener, multiplexed_service);

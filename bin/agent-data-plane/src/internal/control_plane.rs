@@ -9,7 +9,7 @@ use saluki_components::destinations::DogStatsDStatisticsConfiguration;
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
-use saluki_io::net::{ListenAddress, build_datadog_agent_server_tls_config, get_ipc_cert_file_path};
+use saluki_io::net::{build_datadog_agent_server_tls_config, get_ipc_cert_file_path, ListenAddress};
 use tracing::{error, info};
 
 use crate::internal::remote_agent::RemoteAgentHelperConfiguration;
@@ -32,7 +32,10 @@ fn get_cert_path_from_config(config: &GenericConfiguration) -> Result<PathBuf, G
         .error_context("Failed to get agent IPC cert file path.")?
         .flatten();
 
-    Ok(get_ipc_cert_file_path(ipc_cert_file_path.as_ref(), &auth_token_file_path))
+    Ok(get_ipc_cert_file_path(
+        ipc_cert_file_path.as_ref(),
+        &auth_token_file_path,
+    ))
 }
 
 /// Spawns the control plane for the ADP process.
@@ -59,7 +62,7 @@ pub fn spawn_control_plane(
     // Build the privileged API with certificate-based TLS configuration
     let cert_path = get_cert_path_from_config(&config)?;
     let tls_config = build_datadog_agent_server_tls_config(cert_path)?;
-    
+
     let privileged_api = APIBuilder::new()
         .with_tls_config(tls_config)
         .with_optional_handler(acquire_logging_api_handler())
@@ -162,7 +165,9 @@ async fn spawn_unprivileged_api(
     Ok(())
 }
 
-async fn spawn_privileged_api(api_builder: APIBuilder<'static>, api_listen_address: ListenAddress) -> Result<(), GenericError> {
+async fn spawn_privileged_api(
+    api_builder: APIBuilder<'static>, api_listen_address: ListenAddress,
+) -> Result<(), GenericError> {
     // TODO: Use something better than `pending()`... perhaps something like a more generalized
     // `ComponentShutdownCoordinator` that allows for triggering and waiting for all attached tasks to signal that
     // they've shutdown.

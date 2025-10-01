@@ -9,9 +9,10 @@ use std::{
 use backon::{BackoffBuilder, ConstantBuilder, Retryable as _};
 use datadog_protos::agent::{
     AgentClient, AgentSecureClient, AutodiscoveryStreamResponse, ConfigEvent, ConfigStreamRequest, EntityId,
-    FetchEntityRequest, HostTagReply, HostTagRequest, HostnameRequest, RegisterRemoteAgentRequest,
-    RegisterRemoteAgentResponse, RefreshRemoteAgentRequest, RefreshRemoteAgentResponse, StreamTagsRequest, StreamTagsResponse, TagCardinality, WorkloadmetaEventType,
-    WorkloadmetaFilter, WorkloadmetaKind, WorkloadmetaSource, WorkloadmetaStreamRequest, WorkloadmetaStreamResponse,
+    FetchEntityRequest, HostTagReply, HostTagRequest, HostnameRequest, RefreshRemoteAgentRequest,
+    RefreshRemoteAgentResponse, RegisterRemoteAgentRequest, RegisterRemoteAgentResponse, StreamTagsRequest,
+    StreamTagsResponse, TagCardinality, WorkloadmetaEventType, WorkloadmetaFilter, WorkloadmetaKind,
+    WorkloadmetaSource, WorkloadmetaStreamRequest, WorkloadmetaStreamResponse,
 };
 use futures::Stream;
 use pin_project_lite::pin_project;
@@ -27,7 +28,6 @@ use tonic::{
 use tracing::warn;
 
 use crate::helpers::tonic::BearerAuthInterceptor;
-
 
 fn default_agent_ipc_endpoint() -> Uri {
     Uri::from_static("https://127.0.0.1:5001")
@@ -252,9 +252,15 @@ impl RemoteAgentClient {
     /// Refreshes a Remote Agent with the Agent.
     ///
     /// If there is an error sending the request to the Agent API, an error will be returned.
-    pub async fn refresh_remote_agent_request(&mut self, session_id: &str) -> Result<Response<RefreshRemoteAgentResponse>, GenericError> {
+    pub async fn refresh_remote_agent_request(
+        &mut self, session_id: &str,
+    ) -> Result<Response<RefreshRemoteAgentResponse>, GenericError> {
         let mut client = self.secure_client.clone();
-        let response = client.refresh_remote_agent(RefreshRemoteAgentRequest { session_id: session_id.to_string() }).await?;
+        let response = client
+            .refresh_remote_agent(RefreshRemoteAgentRequest {
+                session_id: session_id.to_string(),
+            })
+            .await?;
         Ok(response)
     }
 
