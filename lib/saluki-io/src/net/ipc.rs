@@ -1,4 +1,8 @@
-use std::{io::Cursor, path::{Path, PathBuf}, sync::Arc};
+use std::{
+    io::Cursor,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::client::legacy::connect::HttpConnector;
@@ -7,7 +11,7 @@ use rustls::{
     crypto::CryptoProvider,
     pki_types::{CertificateDer, ServerName, UnixTime},
     version::TLS13,
-    CertificateError, ClientConfig, DigitallySignedStruct, SignatureScheme, ServerConfig,
+    CertificateError, ClientConfig, DigitallySignedStruct, ServerConfig, SignatureScheme,
 };
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 
@@ -101,7 +105,9 @@ impl ServerCertVerifier for DatadogAgentServerCertVerifier {
     }
 }
 
-pub async fn build_datadog_agent_client_ipc_tls_config<P: AsRef<Path>>(cert_path: P) -> Result<ClientConfig, GenericError> {
+pub async fn build_datadog_agent_client_ipc_tls_config<P: AsRef<Path>>(
+    cert_path: P,
+) -> Result<ClientConfig, GenericError> {
     // Read the certificate file, and extract the certificate and private key from it.
     let raw_cert_data = tokio::fs::read(cert_path.as_ref()).await.map_err(|e| {
         generic_error!(
@@ -184,7 +190,7 @@ pub fn build_datadog_agent_server_tls_config<P: AsRef<Path>>(cert_path: P) -> Re
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{get_ipc_cert_file_path};
+    use super::get_ipc_cert_file_path;
 
     fn default_agent_auth_token_file_path() -> PathBuf {
         PathBuf::from("/etc/datadog-agent/auth_token")
@@ -205,26 +211,17 @@ mod tests {
         // the default certificate file name.
         let result = get_ipc_cert_file_path(None, &default_auth_token_path);
         assert_eq!(result.parent(), default_auth_token_path.as_path().parent());
-        assert_eq!(
-            result.file_name().and_then(|s| s.to_str()),
-            Some("ipc_cert.pem")
-        );
+        assert_eq!(result.file_name().and_then(|s| s.to_str()), Some("ipc_cert.pem"));
 
         // This should hold when using a custom auth token file path as well.
         let result = get_ipc_cert_file_path(None, &custom_auth_token_path);
         assert_eq!(result.parent(), custom_auth_token_path.as_path().parent());
-        assert_eq!(
-            result.file_name().and_then(|s| s.to_str()),
-            Some("ipc_cert.pem")
-        );
+        assert_eq!(result.file_name().and_then(|s| s.to_str()), Some("ipc_cert.pem"));
 
         // If the auth token file path is somehow unset or invalid (e.g., no parent directory), we should use the same
         // logic but with the default Datadog Agent configuration directory.
         let result = get_ipc_cert_file_path(None, &invalid_auth_token_path);
         assert_eq!(result.parent(), Some(Path::new("/etc/datadog-agent")));
-        assert_eq!(
-            result.file_name().and_then(|s| s.to_str()),
-            Some("ipc_cert.pem")
-        );
+        assert_eq!(result.file_name().and_then(|s| s.to_str()), Some("ipc_cert.pem"));
     }
 }
