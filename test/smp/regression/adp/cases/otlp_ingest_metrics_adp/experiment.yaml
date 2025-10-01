@@ -9,6 +9,7 @@ target:
   environment:
     DD_API_KEY: a0000001
     DD_HOSTNAME: smp-regression
+    DD_DD_URL: http://127.0.0.1:9091
 
     DD_AGGREGATE_CONTEXT_LIMIT: "3100"
 
