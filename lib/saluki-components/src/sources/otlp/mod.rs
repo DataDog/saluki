@@ -24,7 +24,7 @@ use saluki_common::task::HandleExt as _;
 use saluki_config::GenericConfiguration;
 use saluki_context::{ContextResolver, ContextResolverBuilder};
 use saluki_core::observability::ComponentMetricsExt;
-use saluki_core::topology::interconnect::{EventBufferManager, FixedSizeEventBuffer};
+use saluki_core::topology::interconnect::EventBufferManager;
 use saluki_core::topology::shutdown::{DynamicShutdownCoordinator, DynamicShutdownHandle};
 use saluki_core::{
     components::{
@@ -506,25 +506,19 @@ async fn dispatch_events(mut events: EventsBuffer, source_context: &SourceContex
     }
 
     if events.has_event_type(EventType::Log) {
-        let mut logs_buffer = FixedSizeEventBuffer::<1024>::default();
-        for log in events.extract(Event::is_log) {
-            // If the buffer is full, dispatch current batch and start a new one
-            if let Some(overflow) = logs_buffer.try_push(log) {
-                if let Err(e) = source_context.dispatcher().dispatch_named("logs", logs_buffer).await {
-                    error!(error = %e, "Failed to dispatch logs")
-                }
-                let mut next = FixedSizeEventBuffer::<1024>::default();
-                next.try_push(overflow);
-                logs_buffer = next;
-                break;
+        let mut buffered_dispatcher = source_context
+            .dispatcher()
+            .buffered_named("logs")
+            .expect("logs output should exist");
+
+        for log_event in events.extract(Event::is_log) {
+            if let Err(e) = buffered_dispatcher.push(log_event).await {
+                error!(error = %e, "Failed to dispatch log(s).");
             }
         }
-        if !logs_buffer.is_empty() {
-            if let Err(e) = source_context.dispatcher().dispatch_named("logs", logs_buffer).await {
-                error!(error = %e, "Failed to dispatch logs")
-            } else {
-                debug!("Dispatched log events");
-            }
+
+        if let Err(e) = buffered_dispatcher.flush().await {
+            error!(error = %e, "Failed to flush log(s).");
         }
     }
 
