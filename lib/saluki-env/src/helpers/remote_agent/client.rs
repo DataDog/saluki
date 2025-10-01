@@ -1,6 +1,6 @@
 use std::{
     future::Future,
-    path::{Path, PathBuf},
+    path::PathBuf,
     pin::Pin,
     task::{ready, Context, Poll},
     time::Duration,
@@ -10,14 +10,14 @@ use backon::{BackoffBuilder, ConstantBuilder, Retryable as _};
 use datadog_protos::agent::{
     AgentClient, AgentSecureClient, AutodiscoveryStreamResponse, ConfigEvent, ConfigStreamRequest, EntityId,
     FetchEntityRequest, HostTagReply, HostTagRequest, HostnameRequest, RegisterRemoteAgentRequest,
-    RegisterRemoteAgentResponse, StreamTagsRequest, StreamTagsResponse, TagCardinality, WorkloadmetaEventType,
+    RegisterRemoteAgentResponse, RefreshRemoteAgentRequest, RefreshRemoteAgentResponse, StreamTagsRequest, StreamTagsResponse, TagCardinality, WorkloadmetaEventType,
     WorkloadmetaFilter, WorkloadmetaKind, WorkloadmetaSource, WorkloadmetaStreamRequest, WorkloadmetaStreamResponse,
 };
 use futures::Stream;
 use pin_project_lite::pin_project;
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use saluki_io::net::build_datadog_agent_ipc_https_connector;
+use saluki_io::net::{build_datadog_agent_ipc_https_connector, get_ipc_cert_file_path};
 use serde::Deserialize;
 use tonic::{
     service::interceptor::InterceptedService,
@@ -28,8 +28,6 @@ use tracing::warn;
 
 use crate::helpers::tonic::BearerAuthInterceptor;
 
-const DEFAULT_DATADOG_AGENT_CONFIG_DIR: &str = "/etc/datadog-agent";
-const DEFAULT_IPC_CERT_FILE_NAME: &str = "ipc_cert.pem";
 
 fn default_agent_ipc_endpoint() -> Uri {
     Uri::from_static("https://127.0.0.1:5001")
@@ -237,17 +235,26 @@ impl RemoteAgentClient {
     ///
     /// If there is an error sending the request to the Agent API, an error will be returned.
     pub async fn register_remote_agent_request(
-        &mut self, id: &str, display_name: &str, api_endpoint: &str, auth_token: &str,
+        &mut self, id: &str, display_name: &str, api_endpoint: &str,
     ) -> Result<Response<RegisterRemoteAgentResponse>, GenericError> {
         let mut client = self.secure_client.clone();
         let response = client
             .register_remote_agent(RegisterRemoteAgentRequest {
-                id: id.to_string(),
+                pid: id.to_string(),
+                flavor: "saluki".to_string(),
                 display_name: display_name.to_string(),
-                api_endpoint: api_endpoint.to_string(),
-                auth_token: auth_token.to_string(),
+                api_endpoint_uri: api_endpoint.to_string(),
             })
             .await?;
+        Ok(response)
+    }
+
+    /// Refreshes a Remote Agent with the Agent.
+    ///
+    /// If there is an error sending the request to the Agent API, an error will be returned.
+    pub async fn refresh_remote_agent_request(&mut self, session_id: &str) -> Result<Response<RefreshRemoteAgentResponse>, GenericError> {
+        let mut client = self.secure_client.clone();
+        let response = client.refresh_remote_agent(RefreshRemoteAgentRequest { session_id: session_id.to_string() }).await?;
         Ok(response)
     }
 
@@ -369,69 +376,5 @@ async fn try_query_agent_api(
             )),
             _ => Err(e.into()),
         },
-    }
-}
-
-fn get_ipc_cert_file_path(ipc_cert_file_path: Option<&PathBuf>, auth_token_file_path: &Path) -> PathBuf {
-    // If the IPC cert file path is set explicitly, we always prefer that.
-    if let Some(path) = ipc_cert_file_path {
-        return path.clone();
-    }
-
-    // Otherwise, we default to the same directory as the auth token file, with the default certificate file name.
-    let mut cert_path = auth_token_file_path
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_DATADOG_AGENT_CONFIG_DIR));
-
-    cert_path.push(DEFAULT_IPC_CERT_FILE_NAME);
-    cert_path
-}
-
-#[cfg(test)]
-mod tests {
-    use std::path::{Path, PathBuf};
-
-    use super::{
-        default_agent_auth_token_file_path, get_ipc_cert_file_path, DEFAULT_DATADOG_AGENT_CONFIG_DIR,
-        DEFAULT_IPC_CERT_FILE_NAME,
-    };
-
-    #[test]
-    fn ipc_cert_file_path_defaults() {
-        let default_auth_token_path = default_agent_auth_token_file_path();
-        let custom_auth_token_path = PathBuf::from("/secret/auth_token");
-        let invalid_auth_token_path = PathBuf::from("/");
-        let custom_ipc_cert_path = PathBuf::from("/tmp/custom_ipc_cert.pem");
-
-        // When the IPC cert file path is explicitly set, it should be used.
-        let result = get_ipc_cert_file_path(Some(&custom_ipc_cert_path), &default_auth_token_path);
-        assert_eq!(result, custom_ipc_cert_path);
-
-        // When the IPC cert file path is not set, it should default to the same directory as the auth token file using
-        // the default certificate file name.
-        let result = get_ipc_cert_file_path(None, &default_auth_token_path);
-        assert_eq!(result.parent(), default_auth_token_path.as_path().parent());
-        assert_eq!(
-            result.file_name().and_then(|s| s.to_str()),
-            Some(DEFAULT_IPC_CERT_FILE_NAME)
-        );
-
-        // This should hold when using a custom auth token file path as well.
-        let result = get_ipc_cert_file_path(None, &custom_auth_token_path);
-        assert_eq!(result.parent(), custom_auth_token_path.as_path().parent());
-        assert_eq!(
-            result.file_name().and_then(|s| s.to_str()),
-            Some(DEFAULT_IPC_CERT_FILE_NAME)
-        );
-
-        // If the auth token file path is somehow unset or invalid (e.g., no parent directory), we should use the same
-        // logic but with the default Datadog Agent configuration directory.
-        let result = get_ipc_cert_file_path(None, &invalid_auth_token_path);
-        assert_eq!(result.parent(), Some(Path::new(DEFAULT_DATADOG_AGENT_CONFIG_DIR)));
-        assert_eq!(
-            result.file_name().and_then(|s| s.to_str()),
-            Some(DEFAULT_IPC_CERT_FILE_NAME)
-        );
     }
 }
