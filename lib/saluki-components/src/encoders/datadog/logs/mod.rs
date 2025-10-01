@@ -1,4 +1,4 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use chrono::{SecondsFormat, Utc};
 
 use async_trait::async_trait;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
@@ -214,18 +214,12 @@ impl LogsEndpointEncoder {
             obj.insert("ddtags".to_string(), JsonValue::String(tags_vec.join(",")));
         }
 
-        // Default timestamp (ms since epoch) unless user provided `timestamp` or `@timestamp`.
+        // Default timestamp (RFC3339 with milliseconds, Z) unless user provided `timestamp` or `@timestamp`.
         let user_provided_timestamp = log.additional_properties().contains_key("timestamp")
-            || log.additional_properties().contains_key("timestamp");
+            || log.additional_properties().contains_key("@timestamp");
         if !user_provided_timestamp {
-            let now_ms = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0);
-            obj.insert(
-                "@timestamp".to_string(),
-                JsonValue::Number(serde_json::Number::from(now_ms)),
-            );
+            let now_rfc3339 = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+            obj.insert("@timestamp".to_string(), JsonValue::String(now_rfc3339));
         }
 
         // Last-write-wins: merge AdditionalProperties last
