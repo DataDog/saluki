@@ -51,7 +51,7 @@ pub struct OriginEnrichmentConfiguration {
     ///
     /// [1]: if an entity ID was detected via Origin Detection, it is only used if either no client-provided entity ID
     ///      was present or if `entity_id_precedence` is set to `false`.
-    #[serde(rename = "dogstatsd_origin_detection_unified", default)]
+    #[serde(rename = "origin_detection_unified", default)]
     origin_detection_unified: bool,
 
     /// Whether or not to opt out of origin detection for DogStatsD metrics.
