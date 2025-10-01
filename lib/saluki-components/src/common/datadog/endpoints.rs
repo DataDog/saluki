@@ -4,6 +4,7 @@ use std::{
     sync::LazyLock,
 };
 
+use http::uri::Authority;
 use regex::Regex;
 use saluki_config::GenericConfiguration;
 use saluki_error::{ErrorContext as _, GenericError};
@@ -73,6 +74,7 @@ impl AdditionalEndpoints {
 
         for (raw_endpoint, api_keys) in self.0.mappings() {
             let endpoint = parse_and_normalize_endpoint(raw_endpoint)?;
+            let logs_authority = compute_logs_authority(&endpoint);
 
             // With our fully parsed and versioned endpoint, we'll now create a resolved version for each associated API
             // key attached to it.
@@ -89,6 +91,7 @@ impl AdditionalEndpoints {
                     endpoint: endpoint.clone(),
                     api_key: trimmed_api_key.to_string(),
                     config: None,
+                    logs_authority: logs_authority.clone(),
                 });
             }
         }
@@ -182,6 +185,9 @@ pub struct ResolvedEndpoint {
     endpoint: Url,
     api_key: String,
     config: Option<GenericConfiguration>,
+    /// Pre-computed logs intake authority (e.g., `agent-http-intake.logs.datadoghq.com`).
+    /// This is derived from the endpoint host when it contains `.agent.` marker.
+    logs_authority: Option<Authority>,
 }
 
 impl ResolvedEndpoint {
@@ -194,10 +200,12 @@ impl ResolvedEndpoint {
     /// normalization / modifications, an error will be returned.
     fn from_raw_endpoint(raw_endpoint: &str, api_key: &str) -> Result<Self, EndpointError> {
         let endpoint = parse_and_normalize_endpoint(raw_endpoint)?;
+        let logs_authority = compute_logs_authority(&endpoint);
         Ok(Self {
             endpoint,
             api_key: api_key.to_string(),
             config: None,
+            logs_authority,
         })
     }
 
@@ -207,6 +215,7 @@ impl ResolvedEndpoint {
             endpoint: self.endpoint,
             api_key: self.api_key,
             config,
+            logs_authority: self.logs_authority,
         }
     }
 
@@ -239,6 +248,14 @@ impl ResolvedEndpoint {
     /// Returns the API key associated with the endpoint without refreshing it.
     pub fn cached_api_key(&self) -> &str {
         self.api_key.as_str()
+    }
+
+    /// Returns the pre-computed logs intake authority, if available.
+    ///
+    /// This authority is derived from the endpoint host when it contains the `.agent.` marker,
+    /// and is used for routing log payloads to the appropriate logs intake host.
+    pub fn logs_authority(&self) -> Option<&Authority> {
+        self.logs_authority.as_ref()
     }
 }
 
@@ -341,6 +358,24 @@ fn calculate_resolved_endpoint(
     };
 
     ResolvedEndpoint::from_raw_endpoint(&raw_endpoint, api_key)
+}
+
+/// Computes the logs intake authority from a resolved endpoint URL.
+///
+/// If the endpoint host contains the `.agent.` marker (e.g., `7-52-0-adp.agent.datadoghq.com`),
+/// this extracts the site suffix and constructs the logs intake host in the form
+/// `agent-http-intake.logs.{site}`.
+///
+/// Returns `None` if the host doesn't contain the marker or if the authority cannot be parsed.
+fn compute_logs_authority(endpoint: &Url) -> Option<Authority> {
+    const AGENT_HOST_MARKER: &str = ".agent.";
+
+    let host = endpoint.host_str()?;
+    let idx = host.find(AGENT_HOST_MARKER)?;
+    let site = &host[idx + AGENT_HOST_MARKER.len()..];
+    let logs_host = format!("agent-http-intake.logs.{}", site);
+
+    Authority::from_str(&logs_host).ok()
 }
 
 #[cfg(test)]
