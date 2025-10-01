@@ -1,6 +1,7 @@
-use std::future::pending;
+use std::{future::pending, path::PathBuf};
 
 use memory_accounting::ComponentRegistry;
+use saluki_app::api::SessionIdHandle;
 use saluki_app::metrics::acquire_metrics_api_handler;
 use saluki_app::{api::APIBuilder, config::ConfigAPIHandler, prelude::acquire_logging_api_handler};
 use saluki_common::task::spawn_traced_named;
@@ -8,7 +9,7 @@ use saluki_components::destinations::DogStatsDStatisticsConfiguration;
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
-use saluki_io::net::ListenAddress;
+use saluki_io::net::{ListenAddress, build_datadog_agent_server_tls_config, get_ipc_cert_file_path};
 use tracing::{error, info};
 
 use crate::internal::remote_agent::RemoteAgentHelperConfiguration;
@@ -16,6 +17,23 @@ use crate::{env_provider::ADPEnvironmentProvider, internal::initialize_and_launc
 
 const PRIMARY_UNPRIVILEGED_API_PORT: u16 = 5100;
 const PRIMARY_PRIVILEGED_API_PORT: u16 = 5101;
+
+/// Gets the IPC certificate file path from the configuration.
+fn get_cert_path_from_config(config: &GenericConfiguration) -> Result<PathBuf, GenericError> {
+    // Try to get the auth token file path first
+    let auth_token_file_path = config
+        .try_get_typed::<PathBuf>("auth_token_file_path")
+        .error_context("Failed to get agent auth token file path.")?
+        .unwrap_or_else(|| PathBuf::from("/etc/datadog-agent/auth_token"));
+
+    // Try to get the explicit IPC cert file path
+    let ipc_cert_file_path = config
+        .try_get_typed::<Option<PathBuf>>("ipc_cert_file_path")
+        .error_context("Failed to get agent IPC cert file path.")?
+        .flatten();
+
+    Ok(get_ipc_cert_file_path(ipc_cert_file_path.as_ref(), &auth_token_file_path))
+}
 
 /// Spawns the control plane for the ADP process.
 ///
@@ -38,8 +56,12 @@ pub fn spawn_control_plane(
         .with_handler(health_registry.api_handler())
         .with_handler(component_registry.api_handler());
 
+    // Build the privileged API with certificate-based TLS configuration
+    let cert_path = get_cert_path_from_config(&config)?;
+    let tls_config = build_datadog_agent_server_tls_config(cert_path)?;
+    
     let privileged_api = APIBuilder::new()
-        .with_self_signed_tls()
+        .with_tls_config(tls_config)
         .with_optional_handler(acquire_logging_api_handler())
         .with_optional_handler(acquire_metrics_api_handler())
         .with_handler(ConfigAPIHandler::new(config.clone()))
@@ -59,7 +81,7 @@ pub fn spawn_control_plane(
 }
 
 async fn configure_and_spawn_api_endpoints(
-    config: &GenericConfiguration, unprivileged_api: APIBuilder, mut privileged_api: APIBuilder,
+    config: &GenericConfiguration, unprivileged_api: APIBuilder<'static>, mut privileged_api: APIBuilder<'static>,
 ) -> Result<(), GenericError> {
     let api_listen_address = config
         .try_get_typed("api_listen_address")
@@ -93,17 +115,28 @@ async fn configure_and_spawn_api_endpoints(
             );
         }
 
+        // Create a new session ID handle.
+        // This will be set during the registration process with the Datadog Agent.
+        // It will then be add as a header to all gRPC responses.
+        let session_id = SessionIdHandle::new(String::new());
+
+        privileged_api = privileged_api.with_session_id(session_id.clone());
+
         // Build and spawn our helper task for registering ourselves with the Datadog Agent as a remote agent.
         let remote_agent_config = RemoteAgentHelperConfiguration::from_configuration(
             config,
             local_secure_api_listen_addr,
             prometheus_listen_addr,
+            session_id,
         )
         .await?;
-        let remote_agent_service = remote_agent_config.spawn().await;
+        // Spawn the remote agent helper task and get the three separate service implementations
+        let (status_service, telemetry_service, flare_service) = remote_agent_config.spawn().await;
 
-        // Register our Remote Agent gRPC service with the privileged API.
-        privileged_api = privileged_api.with_grpc_service(remote_agent_service);
+        // Register the three separate gRPC services with the privileged API
+        privileged_api = privileged_api.with_grpc_service(status_service);
+        privileged_api = privileged_api.with_grpc_service(telemetry_service);
+        privileged_api = privileged_api.with_grpc_service(flare_service);
     }
 
     spawn_unprivileged_api(unprivileged_api, api_listen_address).await?;
@@ -113,7 +146,7 @@ async fn configure_and_spawn_api_endpoints(
 }
 
 async fn spawn_unprivileged_api(
-    api_builder: APIBuilder, api_listen_address: ListenAddress,
+    api_builder: APIBuilder<'static>, api_listen_address: ListenAddress,
 ) -> Result<(), GenericError> {
     // TODO: Use something better than `pending()`... perhaps something like a more generalized
     // `ComponentShutdownCoordinator` that allows for triggering and waiting for all attached tasks to signal that
@@ -129,7 +162,7 @@ async fn spawn_unprivileged_api(
     Ok(())
 }
 
-async fn spawn_privileged_api(api_builder: APIBuilder, api_listen_address: ListenAddress) -> Result<(), GenericError> {
+async fn spawn_privileged_api(api_builder: APIBuilder<'static>, api_listen_address: ListenAddress) -> Result<(), GenericError> {
     // TODO: Use something better than `pending()`... perhaps something like a more generalized
     // `ComponentShutdownCoordinator` that allows for triggering and waiting for all attached tasks to signal that
     // they've shutdown.
