@@ -41,10 +41,6 @@ const fn default_zstd_compressor_level() -> i32 {
     3
 }
 
-fn default_ddsource() -> String {
-    "otlp_log_ingestion".to_string()
-}
-
 /// Datadog Logs incremental encoder.
 #[derive(Deserialize, Debug)]
 pub struct DatadogLogsConfiguration {
@@ -61,10 +57,6 @@ pub struct DatadogLogsConfiguration {
         default = "default_zstd_compressor_level"
     )]
     zstd_compressor_level: i32,
-
-    /// Value for the `ddsource` field in Agent JSON envelope. Defaults to "otel".
-    #[serde(default = "default_ddsource")]
-    ddsource: String,
 }
 
 impl DatadogLogsConfiguration {
@@ -91,12 +83,8 @@ impl IncrementalEncoderBuilder for DatadogLogsConfiguration {
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
 
-        let mut request_builder = RequestBuilder::new(
-            LogsEndpointEncoder::new(self.ddsource.clone()),
-            compression_scheme,
-            RB_BUFFER_CHUNK_SIZE,
-        )
-        .await?;
+        let mut request_builder =
+            RequestBuilder::new(LogsEndpointEncoder::new(), compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
         request_builder.with_max_inputs_per_payload(MAX_LOGS_PER_PAYLOAD);
 
         Ok(DatadogLogs {
@@ -164,14 +152,12 @@ impl IncrementalEncoder for DatadogLogs {
 
 #[derive(Debug)]
 struct LogsEndpointEncoder {
-    ddsource: String,
     tags_deduplicator: ReusableDeduplicator<Tag>,
 }
 
 impl LogsEndpointEncoder {
-    fn new(ddsource: String) -> Self {
+    fn new() -> Self {
         Self {
-            ddsource,
             tags_deduplicator: ReusableDeduplicator::new(),
         }
     }
@@ -199,12 +185,9 @@ impl LogsEndpointEncoder {
             obj.insert("service".to_string(), JsonValue::String(log.service().to_string()));
         }
 
-        // ddsource (default "otlp_log_ingestion", overridden by explicit source if present)
-        let mut ddsource = self.ddsource.clone();
-        if let Some(source) = log.source().clone() {
-            ddsource = source.into_owned();
+        if let Some(ddsource) = log.source().clone() {
+            obj.insert("ddsource".to_string(), JsonValue::String(ddsource.to_string()));
         }
-        obj.insert("ddsource".to_string(), JsonValue::String(ddsource));
 
         // ddtags: comma-separated, deduplicated
         let tags_iter = self.tags_deduplicator.deduplicated(log.tags().into_iter());

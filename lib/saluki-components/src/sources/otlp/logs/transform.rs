@@ -18,6 +18,10 @@ pub const MESSAGE_KEYS: &[&str] = &["msg", "message", "log"];
 pub const TRACE_ID_ATTR_KEYS: &[&str] = &["traceid", "trace_id", "contextmap.traceid", "oteltraceid"];
 pub const SPAN_ID_ATTR_KEYS: &[&str] = &["spanid", "span_id", "contextmap.spanid", "otelspanid"];
 
+fn default_ddsource() -> String {
+    "otlp_log_ingestion".to_string()
+}
+
 pub fn derive_status(status: Option<&str>, severity: &str, severity_number: i32) -> Option<LogStatus> {
     if let Some(text) = status {
         if let Some(s) = map_status_text(text) {
@@ -375,9 +379,12 @@ impl LogRecordTransformer {
             None => lr.body.as_ref().map(any_value_to_message_string).unwrap_or_default(),
         };
 
+        let source = Some(MetaString::from(default_ddsource()));
+
         // Build Log
         let log = Log::new(message)
             .with_status(status)
+            .with_source(source)
             .with_hostname(host_for_record.as_deref().map(MetaString::from))
             .with_service(service_for_record.as_deref().map(MetaString::from))
             .with_tags(tags)
