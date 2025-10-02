@@ -1,4 +1,4 @@
-ARG DD_AGENT_VERSION=7.68.3-jmx
+ARG DD_AGENT_VERSION=7.70.2-jmx
 ARG DD_AGENT_IMAGE=registry.ddbuild.io/images/datadog-agent:${DD_AGENT_VERSION}
 ARG ADP_IMAGE=saluki-images/agent-data-plane:latest
 

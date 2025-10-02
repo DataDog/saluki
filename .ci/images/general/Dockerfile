@@ -1,4 +1,4 @@
-ARG DD_AGENT_VERSION=latest-jmx
+ARG DD_AGENT_VERSION=7.70.2-jmx
 ARG DD_AGENT_IMAGE=datadog/agent:${DD_AGENT_VERSION}
 
 FROM ${DD_AGENT_IMAGE} AS agent
@@ -16,13 +16,13 @@ RUN set -x \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g @datadog/datadog-ci@3.0.1 \
     && datadog-ci version
-    
+
 # Import python bits from Agent image.
 # Do last in the pipeline to avoid polluting the builds of above protobuf/go etc from using these libs
 COPY --from=agent /opt/datadog-agent/embedded/ /opt/datadog-agent/embedded/
 ENV LD_LIBRARY_PATH="/opt/datadog-agent/embedded/lib:${LD_LIBRARY_PATH}"
 ENV PATH="/opt/datadog-agent/embedded/bin:${PATH}"
-    
+
 COPY .ci/images/general/entrypoint.sh /
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT [ "/entrypoint.sh" ]

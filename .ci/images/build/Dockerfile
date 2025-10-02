@@ -1,11 +1,11 @@
-ARG DD_AGENT_VERSION=latest-jmx
+ARG DD_AGENT_VERSION=7.70.2-jmx
 ARG DD_AGENT_IMAGE=datadog/agent:${DD_AGENT_VERSION}
 
 FROM ${DD_AGENT_IMAGE} AS agent
 
 FROM registry.ddbuild.io/images/mirror/ubuntu:14.04
 
-ARG RUST_VERSION=1.85.0
+ARG RUST_VERSION=1.88.0
 ARG TARGETARCH
 
 # Install basic utilities and an updated compiler/binutils toolchain, which is necessary for compiling.
@@ -49,7 +49,7 @@ RUN make cargo-preinstall
 COPY --from=agent /opt/datadog-agent/embedded/ /opt/datadog-agent/embedded/
 ENV LD_LIBRARY_PATH="/opt/datadog-agent/embedded/lib:${LD_LIBRARY_PATH}"
 ENV PATH="/opt/datadog-agent/embedded/bin:${PATH}"
-    
+
 COPY .ci/images/build/entrypoint.sh /
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT [ "/entrypoint.sh" ]
