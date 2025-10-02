@@ -7,7 +7,7 @@ use saluki_context::{
 use saluki_env::{workload::origin::ResolvedOrigin, WorkloadProvider};
 use saluki_io::deser::codec::dogstatsd::{EventPacket, MetricPacket, ServiceCheckPacket};
 use serde::Deserialize;
-use tracing::trace;
+use tracing::{info, trace};
 
 use super::tags::WellKnownTags;
 
@@ -88,6 +88,12 @@ impl DogStatsDOriginTagResolver {
     pub fn new(
         config: OriginEnrichmentConfiguration, workload_provider: Arc<dyn WorkloadProvider + Send + Sync>,
     ) -> Self {
+        if config.origin_detection_unified {
+            info!("Initializing origin detection for DogStatsD source in unified mode.");
+        } else {
+            info!("Initializing origin detection for DogStatsD source in legacy mode.");
+        }
+
         Self {
             config,
             workload_provider,
@@ -98,14 +104,18 @@ impl DogStatsDOriginTagResolver {
         let mut collected_tags = SharedTagSet::default();
 
         // Examine the various possible entity ID values, and based on their state, use one or more of them to grab any
-        // enriched tags attached to the entities. Below is a description of each entity ID we may have extracted:
+        // enriched tags attached to the entities. We evalulate a number of possible entity IDs:
         //
-        // - entity ID (extracted from `dd.internal.entity_id` tag; non-prefixed pod UID)
-        // - container ID (extracted from special "container ID" extension in DogStatsD protocol; non-prefixed container ID)
-        // - container ID via origin PID (extracted via UDS socket credentials)
+        // - process ID (extracted via UDS socket credentials and mapped to a container ID)
+        // - Local Data-based container ID (extracted from special "container ID" extension in DogStatsD protocol; either container ID or cgroup controller inode for the container)
+        // - Local Data-based pod UID (extracted from `dd.internal.entity_id` tag)
+        // - External Data-based container ID (derived from pod UID and container name in External Data)
+        // - External Data-based pod UID (raw pod UID from External Data)
         let maybe_process_id = origin.process_id();
-        let maybe_entity_id = origin.pod_uid();
-        let maybe_container_id = origin.container_id();
+        let maybe_local_container_id = origin.container_id();
+        let maybe_local_pod_uid = origin.pod_uid();
+        let maybe_external_container_id = origin.resolved_external_data().map(|red| red.container_entity_id());
+        let maybe_external_pod_uid = origin.resolved_external_data().map(|red| red.pod_entity_id());
 
         let tag_cardinality = origin.cardinality().unwrap_or(self.config.tag_cardinality);
 
@@ -118,7 +128,7 @@ impl DogStatsDOriginTagResolver {
             // If we discovered an entity ID via origin detection, and no client-provided entity ID was provided (or it
             // was, but entity ID precedence is disabled), then try to get tags for the detected entity ID.
             if let Some(entity_id) = maybe_process_id {
-                if maybe_entity_id.is_none() || !self.config.entity_id_precedence {
+                if maybe_local_pod_uid.is_none() || !self.config.entity_id_precedence {
                     if let Some(tags) = self.workload_provider.get_tags_for_entity(entity_id, tag_cardinality) {
                         collected_tags.extend_from_shared(&tags);
                     } else {
@@ -133,8 +143,8 @@ impl DogStatsDOriginTagResolver {
 
             // If we have a client-provided entity ID, try to get tags for the entity based on those. A client-provided
             // entity ID takes precedence over the container ID.
-            let maybe_client_entity_id = maybe_entity_id.or(maybe_container_id);
-            if let Some(entity_id) = maybe_client_entity_id {
+            let maybe_entity_id = maybe_local_pod_uid.or(maybe_local_container_id);
+            if let Some(entity_id) = maybe_entity_id {
                 if let Some(tags) = self.workload_provider.get_tags_for_entity(entity_id, tag_cardinality) {
                     collected_tags.extend_from_shared(&tags);
                 } else {
@@ -151,38 +161,22 @@ impl DogStatsDOriginTagResolver {
                 return collected_tags;
             }
 
-            // Try enriching via the detected container ID, if any. We only try subsequent container IDs if we get back
-            // no tags for the previous one.
+            // Evaluate all available entity IDs in order of priority: Local Data-based container ID, process ID,
+            // External Data-based container ID, Local Data-based pod UID, and External Data-based pod UID.
             //
-            // We go from highest precedence to lowest:
-            // - process ID-based (`maybe_process_id`)
-            // - Local Data-based (`maybe_container_id`)
-            // - External Data-based (`maybe_external_data_container_id`).
-            let maybe_external_data_container_id = origin.resolved_external_data().map(|red| red.container_entity_id());
-            let maybe_container_entity_ids = &[maybe_process_id, maybe_container_id, maybe_external_data_container_id];
-            for entity_id in maybe_container_entity_ids.iter().flatten() {
+            // As soon as the first set of tags for an entity ID is found, we skip the remaining entity IDs.
+            let maybe_entity_ids = &[
+                maybe_local_container_id,
+                maybe_process_id,
+                maybe_external_container_id,
+                maybe_local_pod_uid,
+                maybe_external_pod_uid,
+            ];
+            for entity_id in maybe_entity_ids.iter().flatten() {
                 if let Some(tags) = self.workload_provider.get_tags_for_entity(entity_id, tag_cardinality) {
                     if !tags.is_empty() {
                         collected_tags.extend_from_shared(&tags);
                         break;
-                    }
-                } else {
-                    trace!(
-                        ?entity_id,
-                        cardinality = tag_cardinality.as_str(),
-                        "No tags found for entity."
-                    );
-                }
-            }
-
-            // Try any remaining entity IDs, which at this point are just related to the Kubernetes pod that the metric
-            // may have originated from.
-            let maybe_external_data_pod_uid = origin.resolved_external_data().map(|red| red.pod_entity_id());
-            let maybe_pod_entity_ids = &[maybe_entity_id, maybe_external_data_pod_uid];
-            for entity_id in maybe_pod_entity_ids.iter().flatten() {
-                if let Some(tags) = self.workload_provider.get_tags_for_entity(entity_id, tag_cardinality) {
-                    if !tags.is_empty() {
-                        collected_tags.extend_from_shared(&tags);
                     }
                 } else {
                     trace!(
@@ -254,11 +248,91 @@ pub fn origin_from_service_check_packet<'packet>(
 
 #[cfg(test)]
 mod tests {
-    use saluki_context::tags::RawTags;
+    use std::collections::HashMap;
+
+    use saluki_context::tags::{RawTags, TagSet};
     use saluki_core::data_model::event::{metric::MetricValues, service_check::CheckStatus};
+    use saluki_env::workload::{origin::ResolvedExternalData, EntityId};
     use stringtheory::MetaString;
 
     use super::*;
+
+    static EID_PID: EntityId = EntityId::ContainerPid(12345);
+    static EID_LOCAL_CID: EntityId = EntityId::Container(MetaString::from_static("local-cid"));
+    static EID_EXTERNAL_CID_VALID: EntityId = EntityId::Container(MetaString::from_static("external-cid"));
+    static EID_EXTERNAL_CID_INVALID: EntityId = EntityId::Container(MetaString::from_static("invalid-external-cid"));
+    static EID_LOCAL_POD: EntityId = EntityId::PodUid(MetaString::from_static("local-pod-uid"));
+    static EID_EXTERNAL_POD: EntityId = EntityId::PodUid(MetaString::from_static("external-pod-uid"));
+
+    #[derive(Default)]
+    struct MockWorkloadProvider {
+        tags: HashMap<EntityId, SharedTagSet>,
+    }
+
+    impl MockWorkloadProvider {
+        fn add_tags(&mut self, entity_id: EntityId, tags: SharedTagSet) {
+            self.tags.insert(entity_id, tags);
+        }
+    }
+
+    impl WorkloadProvider for MockWorkloadProvider {
+        fn get_tags_for_entity(&self, entity_id: &EntityId, _: OriginTagCardinality) -> Option<SharedTagSet> {
+            self.tags.get(entity_id).cloned()
+        }
+
+        fn get_resolved_origin(&self, _: RawOrigin<'_>) -> Option<ResolvedOrigin> {
+            // We don't use this for our tests.
+            todo!()
+        }
+    }
+
+    fn single_tag(tag: &str) -> SharedTagSet {
+        let mut tag_set = TagSet::default();
+        tag_set.insert_tag(tag);
+        tag_set.into_shared()
+    }
+
+    fn tags_for_entity(entity_id: &EntityId) -> SharedTagSet {
+        if entity_id == &EID_PID {
+            single_tag("tag_source:pid")
+        } else if entity_id == &EID_LOCAL_CID {
+            single_tag("tag_source:local-cid")
+        } else if entity_id == &EID_EXTERNAL_CID_VALID {
+            single_tag("tag_source:external-cid")
+        } else if entity_id == &EID_LOCAL_POD {
+            single_tag("tag_source:local-pod")
+        } else if entity_id == &EID_EXTERNAL_POD {
+            single_tag("tag_source:external-pod")
+        } else {
+            SharedTagSet::default()
+        }
+    }
+
+    fn origin(
+        maybe_process_id: Option<&EntityId>, maybe_local_container_id: Option<&EntityId>,
+        maybe_local_pod_uid: Option<&EntityId>, maybe_external_data: Option<&ResolvedExternalData>,
+    ) -> ResolvedOrigin {
+        ResolvedOrigin::from_parts(
+            None,
+            maybe_process_id.cloned(),
+            maybe_local_container_id.cloned(),
+            maybe_local_pod_uid.cloned(),
+            maybe_external_data.cloned(),
+        )
+    }
+
+    fn build_tags_resolver_with_default_tags(config: OriginEnrichmentConfiguration) -> DogStatsDOriginTagResolver {
+        let mut workload_provider = MockWorkloadProvider::default();
+        workload_provider.add_tags(EID_PID.clone(), tags_for_entity(&EID_PID));
+        workload_provider.add_tags(EID_LOCAL_CID.clone(), tags_for_entity(&EID_LOCAL_CID));
+        workload_provider.add_tags(EID_EXTERNAL_CID_VALID.clone(), tags_for_entity(&EID_EXTERNAL_CID_VALID));
+        workload_provider.add_tags(EID_LOCAL_POD.clone(), tags_for_entity(&EID_LOCAL_POD));
+        workload_provider.add_tags(EID_EXTERNAL_POD.clone(), tags_for_entity(&EID_EXTERNAL_POD));
+
+        let erased_workload_provider = Arc::new(workload_provider);
+
+        DogStatsDOriginTagResolver::new(config, erased_workload_provider)
+    }
 
     #[test]
     fn metric_cardinality_precedence() {
@@ -391,5 +465,165 @@ mod tests {
         let without_card_origin = origin_from_service_check_packet(&packet_without_card, &well_known_tags);
         assert_ne!(packet_without_card.cardinality, well_known_tags.cardinality);
         assert_eq!(without_card_origin.cardinality(), well_known_tags.cardinality);
+    }
+
+    #[test]
+    fn origin_detection_legacy_precedence() {
+        let mut pid_plus_local_pod_tags = tags_for_entity(&EID_PID);
+        pid_plus_local_pod_tags.extend_from_shared(&tags_for_entity(&EID_LOCAL_POD));
+
+        let mut pid_plus_local_cid_tags = tags_for_entity(&EID_PID);
+        pid_plus_local_cid_tags.extend_from_shared(&tags_for_entity(&EID_LOCAL_CID));
+
+        let cases = [
+            // We only have the process ID, so entity ID precedence should be irrelevant.
+            (
+                false,
+                origin(Some(&EID_PID), None, None, None),
+                tags_for_entity(&EID_PID),
+            ),
+            (
+                true,
+                origin(Some(&EID_PID), None, None, None),
+                tags_for_entity(&EID_PID),
+            ),
+            // We have both the process ID and local pod UID, but entity ID precedence is disabled, so we get the
+            // process ID and local pod UID tags.
+            (
+                false,
+                origin(Some(&EID_PID), None, Some(&EID_LOCAL_POD), None),
+                pid_plus_local_pod_tags.clone(),
+            ),
+            // We have both the process ID and local pod UID, but entity ID precedence is enabled, so we should only get
+            // the local pod UID tags.
+            (
+                true,
+                origin(Some(&EID_PID), None, Some(&EID_LOCAL_POD), None),
+                tags_for_entity(&EID_LOCAL_POD),
+            ),
+            // We have the process ID, local container ID, and local pod UID, but entity ID precedence is disabled, so
+            // we should get the process ID and local pod UID tags.
+            (
+                false,
+                origin(Some(&EID_PID), Some(&EID_LOCAL_CID), Some(&EID_LOCAL_POD), None),
+                pid_plus_local_pod_tags,
+            ),
+            // We have the process ID, local container ID, and local pod UID, but entity ID precedence is enabled, so we
+            // should only get the local pod UID tags.
+            (
+                true,
+                origin(Some(&EID_PID), Some(&EID_LOCAL_CID), Some(&EID_LOCAL_POD), None),
+                tags_for_entity(&EID_LOCAL_POD),
+            ),
+            // We only have the process ID and local container ID, so entity ID precedence should be irrelevant, and so
+            // we should get the process ID and local container ID tags.
+            (
+                false,
+                origin(Some(&EID_PID), Some(&EID_LOCAL_CID), None, None),
+                pid_plus_local_cid_tags.clone(),
+            ),
+            (
+                true,
+                origin(Some(&EID_PID), Some(&EID_LOCAL_CID), None, None),
+                pid_plus_local_cid_tags,
+            ),
+        ];
+
+        for (entity_id_precedence, resolved_origin, expected_tags) in cases {
+            let tag_resolver_config = OriginEnrichmentConfiguration {
+                entity_id_precedence,
+                tag_cardinality: OriginTagCardinality::High,
+                origin_detection_unified: false,
+                origin_detection_optout: false,
+            };
+
+            let origin_tags_resolver = build_tags_resolver_with_default_tags(tag_resolver_config);
+
+            let actual_tags = origin_tags_resolver.collect_origin_tags(resolved_origin.clone());
+            assert_eq!(
+                actual_tags, expected_tags,
+                "failed to resolve the expected tags for origin {:?}",
+                resolved_origin
+            );
+        }
+    }
+
+    #[test]
+    fn origin_detection_unified_precedence() {
+        // We craft a "valid" and "invalid" variant for External Data, where the invalid one has a container ID with no tags
+        // assigned to it, which lets us exercise the tags resolver logic for when we have a pod UID through External Data,
+        // but not a container ID (or a container ID with no tags attached).
+        //
+        // We have to do it this way because we pass both External Data-based entity IDs through `ResolvedExternalData` when
+        // creating `ResolvedOrigin`, so we can't pass them separately.
+        let ext_data_valid = ResolvedExternalData::new(EID_EXTERNAL_POD.clone(), EID_EXTERNAL_CID_VALID.clone());
+        let ext_data_invalid = ResolvedExternalData::new(EID_EXTERNAL_POD.clone(), EID_EXTERNAL_CID_INVALID.clone());
+
+        let tag_resolver_config = OriginEnrichmentConfiguration {
+            entity_id_precedence: false,
+            tag_cardinality: OriginTagCardinality::High,
+            origin_detection_unified: true,
+            origin_detection_optout: false,
+        };
+
+        let origin_tags_resolver = build_tags_resolver_with_default_tags(tag_resolver_config);
+
+        // We craft our test cases to ensure that we always take the tags of the highest precedence entity ID available,
+        // and don't take any other tags.
+        let cases = [
+            // Cases where we're only setting a single entity ID. This is the happy path.
+            (origin(Some(&EID_PID), None, None, None), tags_for_entity(&EID_PID)),
+            (
+                origin(None, Some(&EID_LOCAL_CID), None, None),
+                tags_for_entity(&EID_LOCAL_CID),
+            ),
+            (
+                origin(None, None, Some(&EID_LOCAL_POD), None),
+                tags_for_entity(&EID_LOCAL_POD),
+            ),
+            (
+                origin(None, None, None, Some(&ext_data_valid)),
+                tags_for_entity(&EID_EXTERNAL_CID_VALID),
+            ),
+            (
+                origin(None, None, None, Some(&ext_data_invalid)),
+                tags_for_entity(&EID_EXTERNAL_POD),
+            ),
+            // Cases where we have multiple entity IDs to choose from. We work our way backwards here.
+            (
+                origin(
+                    Some(&EID_PID),
+                    Some(&EID_LOCAL_CID),
+                    Some(&EID_LOCAL_POD),
+                    Some(&ext_data_valid),
+                ),
+                tags_for_entity(&EID_LOCAL_CID),
+            ),
+            (
+                origin(Some(&EID_PID), None, Some(&EID_LOCAL_POD), Some(&ext_data_valid)),
+                tags_for_entity(&EID_PID),
+            ),
+            (
+                origin(None, None, Some(&EID_LOCAL_POD), Some(&ext_data_valid)),
+                tags_for_entity(&EID_EXTERNAL_CID_VALID),
+            ),
+            (
+                origin(None, None, Some(&EID_LOCAL_POD), Some(&ext_data_invalid)),
+                tags_for_entity(&EID_LOCAL_POD),
+            ),
+            (
+                origin(None, None, None, Some(&ext_data_invalid)),
+                tags_for_entity(&EID_EXTERNAL_POD),
+            ),
+        ];
+
+        for (resolved_origin, expected_tags) in cases {
+            let actual_tags = origin_tags_resolver.collect_origin_tags(resolved_origin.clone());
+            assert_eq!(
+                actual_tags, expected_tags,
+                "failed to resolve the expected tags for origin {:?}",
+                resolved_origin
+            );
+        }
     }
 }
