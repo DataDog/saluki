@@ -83,6 +83,13 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         info!("Initial configuration received.");
     }
 
+    // See if ADP is enabled, and if not, exit.
+    let data_plane_enabled = configuration.get_typed_or_default::<bool>("data_plane.enabled");
+    if !in_standalone_mode && !data_plane_enabled {
+        info!("Agent Data Plane is not enabled. Exiting.");
+        return Ok(());
+    }
+
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
     let health_registry = HealthRegistry::new();

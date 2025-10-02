@@ -1,3 +1,8 @@
+use std::time::Duration;
+
+const DEFAULT_DELTA_TTL: Duration = Duration::from_secs(3600);
+const DEFAULT_SWEEP_INTERVAL: Duration = Duration::from_secs(1800);
+
 // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/config.go#L131-L140
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[allow(dead_code)]
@@ -59,6 +64,9 @@ pub struct OtlpTranslatorConfig {
     // renamed with the `otel.` prefix. This prevents the Collector and Datadog
     // Agent from computing metrics with the same names.
     pub with_otel_prefix: bool,
+    // Points cache settings
+    pub delta_ttl: Duration,
+    pub sweep_interval: Duration,
 }
 
 #[allow(dead_code)]
@@ -109,6 +117,16 @@ impl OtlpTranslatorConfig {
         self.instrumentation_library_metadata_as_tags = instrumentation_library_metadata_as_tags;
         self
     }
+
+    pub fn with_delta_ttl(mut self, ttl: Duration) -> Self {
+        self.delta_ttl = ttl;
+        self
+    }
+
+    pub fn with_sweep_interval(mut self, interval: Duration) -> Self {
+        self.sweep_interval = interval;
+        self
+    }
 }
 
 impl Default for OtlpTranslatorConfig {
@@ -122,6 +140,8 @@ impl Default for OtlpTranslatorConfig {
             instrumentation_library_metadata_as_tags: false,
             with_remapping: false,
             with_otel_prefix: false,
+            delta_ttl: DEFAULT_DELTA_TTL,
+            sweep_interval: DEFAULT_SWEEP_INTERVAL,
         }
     }
 }
