@@ -19,11 +19,21 @@ pub fn for_resolved_endpoint<B>(mut endpoint: ResolvedEndpoint) -> impl FnMut(Re
     let new_uri_scheme =
         Scheme::try_from(endpoint.endpoint().scheme()).expect("should not fail to construct new endpoint scheme");
     move |mut request| {
+        let path_and_query = request.uri().path_and_query().expect("request path must exist").clone();
+
+        let authority = if path_and_query.as_str().starts_with("/api/v2/logs") {
+            endpoint
+                .logs_authority()
+                .cloned()
+                .unwrap_or_else(|| new_uri_authority.clone())
+        } else {
+            new_uri_authority.clone()
+        };
         // Build an updated URI by taking the endpoint URL and slapping the request's URI path on the end of it.
         let new_uri = Uri::builder()
             .scheme(new_uri_scheme.clone())
-            .authority(new_uri_authority.clone())
-            .path_and_query(request.uri().path_and_query().expect("request path must exist").clone())
+            .authority(authority)
+            .path_and_query(path_and_query)
             .build()
             .expect("should not fail to construct new URI");
         let api_key = endpoint.api_key();

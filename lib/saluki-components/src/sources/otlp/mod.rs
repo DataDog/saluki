@@ -31,7 +31,7 @@ use saluki_core::{
         sources::{Source, SourceBuilder, SourceContext},
         ComponentContext,
     },
-    data_model::event::EventType,
+    data_model::event::{Event, EventType},
     topology::{EventsBuffer, OutputDefinition},
 };
 use saluki_error::{generic_error, GenericError};
@@ -500,9 +500,26 @@ impl LogsService for GrpcService {
     }
 }
 
-async fn dispatch_events(events: EventsBuffer, source_context: &SourceContext) {
+async fn dispatch_events(mut events: EventsBuffer, source_context: &SourceContext) {
     if events.is_empty() {
         return;
+    }
+
+    if events.has_event_type(EventType::Log) {
+        let mut buffered_dispatcher = source_context
+            .dispatcher()
+            .buffered_named("logs")
+            .expect("logs output should exist");
+
+        for log_event in events.extract(Event::is_log) {
+            if let Err(e) = buffered_dispatcher.push(log_event).await {
+                error!(error = %e, "Failed to dispatch log(s).");
+            }
+        }
+
+        if let Err(e) = buffered_dispatcher.flush().await {
+            error!(error = %e, "Failed to flush log(s).");
+        }
     }
 
     let len = events.len();

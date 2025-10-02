@@ -7,8 +7,8 @@ use saluki_components::sources::ChecksConfiguration;
 use saluki_components::{
     destinations::DogStatsDStatisticsConfiguration,
     encoders::{
-        BufferedIncrementalConfiguration, DatadogEventsConfiguration, DatadogMetricsConfiguration,
-        DatadogServiceChecksConfiguration,
+        BufferedIncrementalConfiguration, DatadogEventsConfiguration, DatadogLogsConfiguration,
+        DatadogMetricsConfiguration, DatadogServiceChecksConfiguration,
     },
     forwarders::DatadogConfiguration,
     sources::{DogStatsDConfiguration, OtlpConfiguration},
@@ -264,6 +264,14 @@ async fn create_topology(
         let otlp_config = OtlpConfiguration::from_configuration(configuration)?;
         blueprint.add_source("otlp_in", otlp_config)?;
         blueprint.connect_component("dsd_agg", ["otlp_in.metrics"])?;
+
+        // Only add and connect the logs encoder when OTLP is enabled (which provides log inputs).
+        let dd_logs_config = DatadogLogsConfiguration::from_configuration(configuration)
+            .map(BufferedIncrementalConfiguration::from_encoder_builder)
+            .error_context("Failed to configure Datadog Logs encoder.")?;
+        blueprint.add_encoder("dd_logs_encode", dd_logs_config)?;
+        blueprint.connect_component("dd_logs_encode", ["otlp_in.logs"])?;
+        blueprint.connect_component("dd_out", ["dd_logs_encode"])?;
     }
 
     add_preaggregation_to_blueprint(&mut blueprint, configuration)?;
