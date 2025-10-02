@@ -203,8 +203,7 @@ debug = true
 inherits = "release"
 lto = "fat"
 codegen-units = 1
-opt-level = "s"
-debug = false
+debug = true
 
 [workspace.lints.clippy]
 new_without_default = "allow"

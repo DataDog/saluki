@@ -381,21 +381,6 @@ impl<'a> RawExternalData<'a> {
 
         Some(data)
     }
-
-    /// Returns the pod UID.
-    pub fn pod_uid(&self) -> &str {
-        &self.pod_uid
-    }
-
-    /// Returns the container name.
-    pub fn container_name(&self) -> &str {
-        &self.container_name
-    }
-
-    /// Returns `true` if the container is an init container.
-    pub fn is_init_container(&self) -> bool {
-        self.init_container
-    }
 }
 
 impl std::hash::Hash for RawExternalData<'_> {
