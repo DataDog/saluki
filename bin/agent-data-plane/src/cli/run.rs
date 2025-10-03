@@ -36,6 +36,7 @@ pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericE
         git_hash = app_details.git_hash(),
         target_arch = app_details.target_arch(),
         build_time = app_details.build_time(),
+        process_id = std::process::id(),
         "Agent Data Plane starting..."
     );
 

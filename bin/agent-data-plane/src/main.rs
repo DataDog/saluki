@@ -8,13 +8,13 @@
 use std::time::Instant;
 
 use clap::Parser as _;
-use saluki_app::prelude::*;
+use saluki_app::{bootstrap, prelude::*};
 use tracing::{error, info};
 
 mod components;
 
 mod config;
-use self::config::{Action, Cli, RunConfig};
+use self::config::{Action, Cli};
 
 mod env_provider;
 
@@ -59,28 +59,15 @@ async fn main() {
     }
 
     match cli.action {
-        Some(Action::Run(config)) => match run(started, config).await {
-            Ok(()) => info!("Agent Data Plane stopped."),
-            Err(e) => {
-                error!("{:?}", e);
-                std::process::exit(1);
+        Action::Run(config) => {
+            if let Some(pid_file) = &config.pid_file {
+                if let Err(e) = bootstrap::update_pid_file(pid_file) {
+                    error!(error = %e, path = %pid_file.display(), "Failed to update PID file. Exiting.");
+                    std::process::exit(1);
+                }
             }
-        },
-        Some(Action::Debug(debug_config)) => {
-            handle_debug_command(debug_config).await;
-        }
-        Some(Action::Config) => {
-            handle_config_command().await;
-        }
-        Some(Action::Dogstatsd(dogstatsd_config)) => {
-            handle_dogstatsd_subcommand(dogstatsd_config).await;
-        }
-        // If no subcommand is provided, the run subcommand is executed with the default configuration.
-        None => {
-            let default_config = RunConfig {
-                config: std::path::PathBuf::from("/etc/datadog-agent/datadog.yaml"),
-            };
-            match run(started, default_config).await {
+
+            match run(started, config).await {
                 Ok(()) => info!("Agent Data Plane stopped."),
                 Err(e) => {
                     error!("{:?}", e);
@@ -88,5 +75,8 @@ async fn main() {
                 }
             }
         }
+        Action::Debug(config) => handle_debug_command(config).await,
+        Action::Config => handle_config_command().await,
+        Action::Dogstatsd(config) => handle_dogstatsd_subcommand(config).await,
     }
 }
