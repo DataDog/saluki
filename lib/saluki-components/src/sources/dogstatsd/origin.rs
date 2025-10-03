@@ -88,12 +88,6 @@ impl DogStatsDOriginTagResolver {
     pub fn new(
         config: OriginEnrichmentConfiguration, workload_provider: Arc<dyn WorkloadProvider + Send + Sync>,
     ) -> Self {
-        if config.origin_detection_unified {
-            info!("Initializing origin detection for DogStatsD source in unified mode.");
-        } else {
-            info!("Initializing origin detection for DogStatsD source in legacy mode.");
-        }
-
         Self {
             config,
             workload_provider,
