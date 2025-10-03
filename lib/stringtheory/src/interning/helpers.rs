@@ -110,7 +110,7 @@ impl Eq for ReclaimedEntry {}
 
 impl PartialOrd for ReclaimedEntry {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.offset.cmp(&other.offset))
+        Some(self.cmp(other))
     }
 }
 

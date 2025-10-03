@@ -222,6 +222,13 @@ impl Source for ChecksSource {
 
                                         for builder in check_builders.iter_mut() {
                                             if let Some(check) = builder.build_check(&config.name, instance, &config.init_config, &config.source) {
+                                                debug!(
+                                                    check_id = check.id(),
+                                                    check_name = config.name.as_ref(),
+                                                    check_version = check.version(),
+                                                    check_source = check.source(),
+                                                    "Built new check instance."
+                                                );
                                                 runnable_checks.push(check);
                                                 check_ids.insert(check_id.clone());
                                                 break;
