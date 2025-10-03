@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use clap::Parser as _;
 use saluki_app::{bootstrap, prelude::*};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 mod components;
 
@@ -60,6 +60,7 @@ async fn main() {
 
     match cli.action {
         Action::Run(config) => {
+            // Populate our PID file, if configured.
             if let Some(pid_file) = &config.pid_file {
                 if let Err(e) = bootstrap::update_pid_file(pid_file) {
                     error!(error = %e, path = %pid_file.display(), "Failed to update PID file. Exiting.");
@@ -67,13 +68,25 @@ async fn main() {
                 }
             }
 
-            match run(started, config).await {
-                Ok(()) => info!("Agent Data Plane stopped."),
+            let exit_code = match run(started, &config).await {
+                Ok(()) => {
+                    info!("Agent Data Plane stopped.");
+                    0
+                }
                 Err(e) => {
                     error!("{:?}", e);
-                    std::process::exit(1);
+                    1
+                }
+            };
+
+            // Remove the PID file, if configured.
+            if let Some(pid_file) = &config.pid_file {
+                if let Err(e) = std::fs::remove_file(pid_file) {
+                    warn!(error = %e, path = %pid_file.display(), "Failed to delete PID file while exiting.");
                 }
             }
+
+            std::process::exit(exit_code);
         }
         Action::Debug(config) => handle_debug_command(config).await,
         Action::Config => handle_config_command().await,

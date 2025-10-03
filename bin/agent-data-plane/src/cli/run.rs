@@ -29,7 +29,7 @@ use crate::config::RunConfig;
 use crate::env_provider::ADPEnvironmentProvider;
 use crate::internal::{spawn_control_plane, spawn_internal_observability_topology};
 
-pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericError> {
+pub async fn run(started: Instant, run_config: &RunConfig) -> Result<(), GenericError> {
     let app_details = saluki_metadata::get_app_details();
     info!(
         version = app_details.version().raw(),
