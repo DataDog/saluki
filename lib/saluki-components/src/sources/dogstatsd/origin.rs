@@ -7,7 +7,7 @@ use saluki_context::{
 use saluki_env::{workload::origin::ResolvedOrigin, WorkloadProvider};
 use saluki_io::deser::codec::dogstatsd::{EventPacket, MetricPacket, ServiceCheckPacket};
 use serde::Deserialize;
-use tracing::{info, trace};
+use tracing::trace;
 
 use super::tags::WellKnownTags;
 
