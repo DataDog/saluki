@@ -26,7 +26,7 @@ build-adp-baseline-image:
   variables:
     AWS_NAMED_PROFILE: single-machine-performance
     # Try to limit build concurrency to avoid issues with hitting container cgroup limits.
-    CARGO_BUILD_JOBS: 16
+    CARGO_BUILD_JOBS: 12
   script:
     # Initialize our AWS credentials.
     - ./test/smp/configure-smp-aws-credentials.sh
@@ -71,7 +71,7 @@ build-adp-comparison-image:
   variables:
     AWS_NAMED_PROFILE: single-machine-performance
     # Try to limit build concurrency to avoid issues with hitting container cgroup limits.
-    CARGO_BUILD_JOBS: 16
+    CARGO_BUILD_JOBS: 12
   script:
     # Initialize our AWS credentials.
     - ./test/smp/configure-smp-aws-credentials.sh
@@ -110,7 +110,7 @@ build-adp-check-image:
   variables:
     AWS_NAMED_PROFILE: single-machine-performance
     # Try to limit build concurrency to avoid issues with hitting container cgroup limits.
-    CARGO_BUILD_JOBS: 16
+    CARGO_BUILD_JOBS: 12
   script:
     # Initialize our AWS credentials.
     - ./test/smp/configure-smp-aws-credentials.sh
@@ -150,7 +150,7 @@ build-adp-check-comparison-image:
   variables:
     AWS_NAMED_PROFILE: single-machine-performance
     # Try to limit build concurrency to avoid issues with hitting container cgroup limits.
-    CARGO_BUILD_JOBS: 16
+    CARGO_BUILD_JOBS: 12
   script:
     # Initialize our AWS credentials.
     - ./test/smp/configure-smp-aws-credentials.sh
