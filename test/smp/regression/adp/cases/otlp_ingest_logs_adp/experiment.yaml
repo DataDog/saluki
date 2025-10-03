@@ -10,6 +10,10 @@ target:
     DD_API_KEY: a0000001
     DD_HOSTNAME: smp-regression
 
+    #enable otlp
+    DD_ADP_OTLP_ENABLED: "true"
+    DD_OTLP_CONFIG: '{}'
+
   profiling_environment:
     # internal profiling
     DD_INTERNAL_PROFILING_ENABLED: true
