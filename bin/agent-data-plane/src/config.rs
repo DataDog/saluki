@@ -7,7 +7,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 pub struct Cli {
     /// Subcommand to run.
     #[command(subcommand)]
-    pub action: Option<Action>,
+    pub action: Action,
 }
 
 #[derive(Subcommand)]
@@ -35,6 +35,10 @@ pub struct RunConfig {
     /// Path to the configuration file.
     #[arg(short = 'c', long = "config", default_value = "/etc/datadog-agent/datadog.yaml")]
     pub config: PathBuf,
+
+    /// Path to the PID file.
+    #[arg(short = 'p', long = "pidfile")]
+    pub pid_file: Option<PathBuf>,
 }
 
 /// Debug subcommand configuration.

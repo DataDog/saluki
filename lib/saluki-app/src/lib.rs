@@ -8,6 +8,8 @@
 #[cfg(feature = "api")]
 pub mod api;
 
+pub mod bootstrap;
+
 #[cfg(feature = "logging")]
 pub mod logging;
 

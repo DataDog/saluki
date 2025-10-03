@@ -29,13 +29,14 @@ use crate::config::RunConfig;
 use crate::env_provider::ADPEnvironmentProvider;
 use crate::internal::{spawn_control_plane, spawn_internal_observability_topology};
 
-pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericError> {
+pub async fn run(started: Instant, run_config: &RunConfig) -> Result<(), GenericError> {
     let app_details = saluki_metadata::get_app_details();
     info!(
         version = app_details.version().raw(),
         git_hash = app_details.git_hash(),
         target_arch = app_details.target_arch(),
         build_time = app_details.build_time(),
+        process_id = std::process::id(),
         "Agent Data Plane starting..."
     );
 
