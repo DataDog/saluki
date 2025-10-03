@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["api","config","logging","memory","metrics","prelude","tls"]};
+window.SIDEBAR_ITEMS = {"mod":["api","bootstrap","config","logging","memory","metrics","prelude","tls"]};
