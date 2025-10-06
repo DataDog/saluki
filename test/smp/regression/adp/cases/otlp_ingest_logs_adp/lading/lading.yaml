@@ -33,8 +33,11 @@ blackhole:
   - http:
       binding_addr: "127.0.0.1:9091"
       body_variant: "nothing"
+  - http:
+      binding_addr: "http://127.0.0.1:4317"
+      body_variant: "nothing"
 
 target_metrics:
   - prometheus:
-      uri: "http://127.0.0.1:5000/telemetry"
+      uri: "http://127.0.0.1:5102/scrape"
 
