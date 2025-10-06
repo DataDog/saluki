@@ -15,7 +15,6 @@ use std::{
     time::Duration,
 };
 
-use bytesize::ByteSize;
 use chrono::{
     format::{DelayedFormat, Item, StrftimeItems},
     Utc,
@@ -48,51 +47,18 @@ static API_HANDLER: Mutex<Option<LoggingAPIHandler>> = Mutex::new(None);
 
 type SharedEnvFilter = Arc<dyn Filter<Registry> + Send + Sync>;
 
-const fn default_true() -> bool {
-    true
-}
-
-const fn default_false() -> bool {
-    false
-}
-
 fn default_log_level() -> LogLevel {
     LevelFilter::INFO.into()
 }
 
-fn default_log_file_max_size() -> ByteSize {
-    ByteSize::mib(10)
-}
-
-const fn default_log_file_max_rolls() -> u32 {
-    1
-}
-
 #[serde_as]
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct LoggingConfiguration {
     #[serde(default = "default_log_level")]
     log_level: LogLevel,
-    #[serde(default)]
-    log_file: Option<String>,
-    #[serde(default = "default_log_file_max_size")]
-    log_file_max_size: ByteSize,
-    #[serde(default = "default_log_file_max_rolls")]
-    log_file_max_rolls: u32,
-    #[serde(default = "default_false")]
-    disable_file_logging: bool,
-    #[serde(default = "default_true")]
-    log_to_console: bool,
-    #[serde(default = "default_false")]
-    log_format_json: bool,
     #[serde_as(as = "PermissiveBool")]
-    #[serde(default = "default_false")]
-    log_to_syslog: bool,
     #[serde(default)]
-    syslog_uri: Option<String>,
-    #[serde(default = "default_false")]
-    syslog_rfc: bool,
+    log_format_json: bool,
 }
 
 impl LoggingConfiguration {

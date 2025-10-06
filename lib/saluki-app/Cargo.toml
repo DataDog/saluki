@@ -22,7 +22,6 @@ api = [
 ]
 logging = [
   "api",
-  "dep:bytesize",
   "dep:chrono",
   "dep:chrono-tz",
   "dep:iana-time-zone",
