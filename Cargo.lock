@@ -1290,12 +1290,12 @@ dependencies = [
  "rand",
  "rand_distr",
  "reqwest",
- "saluki-app",
  "saluki-error",
  "stele",
  "tokio",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -2040,12 +2040,12 @@ dependencies = [
  "axum",
  "datadog-protos",
  "protobuf",
- "saluki-app",
  "saluki-error",
  "stele",
  "tokio",
  "tower-http",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -2074,11 +2074,11 @@ dependencies = [
  "bytesize",
  "lading-payload",
  "rand",
- "saluki-app",
  "saluki-error",
  "serde",
  "serde_yaml",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -3159,6 +3159,7 @@ dependencies = [
  "saluki-tls",
  "serde",
  "serde_json",
+ "serde_with",
  "tokio",
  "tonic",
  "tower",
@@ -3184,6 +3185,8 @@ dependencies = [
  "regex",
  "saluki-error",
  "saluki-metrics",
+ "serde",
+ "serde_with",
  "serde_yaml",
  "sha3",
  "stringtheory",

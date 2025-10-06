@@ -22,6 +22,7 @@ api = [
 ]
 logging = [
   "api",
+  "dep:bytesize",
   "dep:chrono",
   "dep:chrono-tz",
   "dep:iana-time-zone",
@@ -29,6 +30,7 @@ logging = [
   "dep:ryu",
   "dep:saluki-common",
   "dep:serde",
+  "dep:serde_with",
   "dep:tracing",
   "dep:tracing-subscriber",
 ]
@@ -37,7 +39,6 @@ memory = [
   "dep:bytesize",
   "dep:memory-accounting",
   "dep:saluki-common",
-  "dep:saluki-config",
   "dep:saluki-error",
   "dep:serde",
   "dep:tokio",
@@ -46,7 +47,7 @@ memory = [
 metrics = ["api", "dep:saluki-common", "dep:saluki-core", "dep:saluki-metrics", "dep:metrics", "dep:serde", "dep:tokio"]
 tls = ["dep:saluki-error", "dep:saluki-tls"]
 tls-fips = ["saluki-tls?/fips"]
-config = ["api", "dep:arc-swap", "dep:saluki-config", "dep:serde_json"]
+config = ["api", "dep:arc-swap", "dep:serde_json"]
 
 [dependencies]
 arc-swap = { workspace = true, optional = true }
@@ -65,7 +66,7 @@ rustls-pemfile = { workspace = true, features = ["std"] }
 ryu = { workspace = true, optional = true }
 saluki-api = { workspace = true, optional = true }
 saluki-common = { workspace = true, optional = true }
-saluki-config = { workspace = true, optional = true }
+saluki-config = { workspace = true }
 saluki-core = { workspace = true, optional = true }
 saluki-error = { workspace = true, optional = true }
 saluki-io = { workspace = true, optional = true }
@@ -74,6 +75,7 @@ saluki-metrics = { workspace = true, optional = true }
 saluki-tls = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+serde_with = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "sync"], optional = true }
 tonic = { workspace = true, features = ["router", "transport"] }
 tower = { workspace = true, features = ["util"], optional = true }

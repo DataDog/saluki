@@ -15,6 +15,7 @@ use std::{
     time::Duration,
 };
 
+use bytesize::ByteSize;
 use chrono::{
     format::{DelayedFormat, Item, StrftimeItems},
     Utc,
@@ -26,8 +27,11 @@ use saluki_api::{
     routing::{post, Router},
     APIHandler, StatusCode,
 };
-use saluki_common::task::spawn_traced_named;
+use saluki_common::{deser::PermissiveBool, task::spawn_traced_named};
+use saluki_config::{ConfigurationLoader, GenericConfiguration};
+use saluki_error::{generic_error, ErrorContext, GenericError};
 use serde::Deserialize;
+use serde_with::serde_as;
 use tokio::{select, sync::mpsc, time::sleep};
 use tracing::{error, field, info, level_filters::LevelFilter, Event, Subscriber};
 use tracing_subscriber::{
@@ -44,25 +48,109 @@ static API_HANDLER: Mutex<Option<LoggingAPIHandler>> = Mutex::new(None);
 
 type SharedEnvFilter = Arc<dyn Filter<Registry> + Send + Sync>;
 
+const fn default_true() -> bool {
+    true
+}
+
+const fn default_false() -> bool {
+    false
+}
+
+fn default_log_level() -> LogLevel {
+    LevelFilter::INFO.into()
+}
+
+fn default_log_file_max_size() -> ByteSize {
+    ByteSize::mib(10)
+}
+
+const fn default_log_file_max_rolls() -> u32 {
+    1
+}
+
+#[serde_as]
+#[derive(Deserialize)]
+#[allow(dead_code)]
+struct LoggingConfiguration {
+    #[serde(default = "default_log_level")]
+    log_level: LogLevel,
+    #[serde(default)]
+    log_file: Option<String>,
+    #[serde(default = "default_log_file_max_size")]
+    log_file_max_size: ByteSize,
+    #[serde(default = "default_log_file_max_rolls")]
+    log_file_max_rolls: u32,
+    #[serde(default = "default_false")]
+    disable_file_logging: bool,
+    #[serde(default = "default_true")]
+    log_to_console: bool,
+    #[serde(default = "default_false")]
+    log_format_json: bool,
+    #[serde_as(as = "PermissiveBool")]
+    #[serde(default = "default_false")]
+    log_to_syslog: bool,
+    #[serde(default)]
+    syslog_uri: Option<String>,
+    #[serde(default = "default_false")]
+    syslog_rfc: bool,
+}
+
+impl LoggingConfiguration {
+    pub(crate) fn from_config(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        let logging_config = config.as_typed()?;
+        Ok(logging_config)
+    }
+
+    async fn from_environment() -> Result<Self, GenericError> {
+        // TODO: For the sake of transitioning to this new bootstrapping pattern, we're just creating a configuration
+        // manually here so that we can drive everything through use of `LoggingConfiguration` instead of two different
+        // code paths. That means we want to use `GenericConfiguration` to source our environment variables instead of
+        // querying them manually... mostly to ensure that doing it that way (the way we want to do it overall) is
+        // consistent with how we're doing it by hand at the moment.
+        let config = ConfigurationLoader::default()
+            .from_environment("DD")
+            .expect("Environment variable prefix is not empty.")
+            .into_generic()
+            .await?;
+        Self::from_config(&config)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(try_from = "String")]
+struct LogLevel(EnvFilter);
+
+impl LogLevel {
+    fn into_env_filter(self) -> EnvFilter {
+        self.0
+    }
+}
+
+impl From<LevelFilter> for LogLevel {
+    fn from(level: LevelFilter) -> Self {
+        Self(EnvFilter::default().add_directive(level.into()))
+    }
+}
+
+impl TryFrom<String> for LogLevel {
+    type Error = GenericError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if value.is_empty() {
+            return Err(generic_error!("Log level cannot be empty."));
+        }
+
+        EnvFilter::builder()
+            .parse(value)
+            .map(Self)
+            .error_context("Failed to parse valid log level.")
+    }
+}
+
 /// Logs a message to standard error and exits the process with a non-zero exit code.
 pub fn fatal_and_exit(message: String) {
     eprintln!("FATAL: {}", message);
     std::process::exit(1);
-}
-
-/// Initializes the logging subsystem for `tracing`.
-///
-/// This function reads the `DD_LOG_LEVEL` environment variable to determine the log level to use. If the environment
-/// variable is not set, the default log level is `INFO`. Additionally, it reads the `DD_LOG_FORMAT_JSON` environment
-/// variable to determine which output format to use. If it is set to `json` (case insensitive), the logs will be
-/// formatted as JSON. If it is set to any other value, or not set at all, the logs will default to a rich, colored,
-/// human-readable format.
-///
-/// # Errors
-///
-/// If the logging subsystem was already initialized, an error will be returned.
-pub fn initialize_logging(default_level: Option<LevelFilter>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    initialize_logging_inner(default_level, false)
 }
 
 /// Initializes the logging subsystem for `tracing` with the ability to dynamically update the log filtering directives
@@ -80,42 +168,23 @@ pub fn initialize_logging(default_level: Option<LevelFilter>) -> Result<(), Box<
 /// # Errors
 ///
 /// If the logging subsystem was already initialized, an error will be returned.
-pub async fn initialize_dynamic_logging(
-    default_level: Option<LevelFilter>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // We go through this wrapped initialize approach so that we can mark `initialize_dynamic_logging` as `async`, which
-    // ensures we call it in an asynchronous context, thereby all but ensuring we're in a Tokio context when we try to
-    // spawn the background task that handles reloading the filtering layer.
-    initialize_logging_inner(default_level, true)
-}
+pub async fn initialize_logging() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // TODO: Support for logging to file.
+    // TODO: Support for logging to syslog.
 
-fn initialize_logging_inner(
-    default_level: Option<LevelFilter>, with_reload: bool,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let is_json = std::env::var("DD_LOG_FORMAT_JSON")
-        .map(|s| s.trim().to_lowercase())
-        .map(|s| s == "true" || s == "1")
-        .unwrap_or(false);
+    let logging_config = LoggingConfiguration::from_environment()
+        .await
+        .map_err(|e| format!("Failed to initialize logging configuration: {}", e))?;
 
-    // Load our level filtering directives from the environment, or fallback to INFO if the environment variable is not
-    // specified.
-    //
-    // We also do a little bit of a dance to get the filter into the right shape for use in the dynamic filter layer.
-    let level_filter = EnvFilter::builder()
-        .with_default_directive(default_level.unwrap_or(LevelFilter::INFO).into())
-        .with_env_var("DD_LOG_LEVEL")
-        .from_env_lossy();
+    // Set up our log level filtering and dynamic filter layer.
+    let level_filter = Arc::new(logging_config.log_level.into_env_filter());
+    let (filter_layer, reload_handle) = ReloadLayer::new(into_shared_dyn_filter(Arc::clone(&level_filter)));
+    API_HANDLER
+        .lock()
+        .unwrap()
+        .replace(LoggingAPIHandler::new(level_filter, reload_handle));
 
-    let shared_level_filter = Arc::new(level_filter);
-    let (filter_layer, reload_handle) = ReloadLayer::new(into_shared_dyn_filter(Arc::clone(&shared_level_filter)));
-    if with_reload {
-        API_HANDLER
-            .lock()
-            .unwrap()
-            .replace(LoggingAPIHandler::new(shared_level_filter.clone(), reload_handle));
-    }
-
-    if is_json {
+    if logging_config.log_format_json {
         let json_layer = initialize_tracing_json();
         tracing_subscriber::registry()
             .with(json_layer.with_filter(filter_layer))
