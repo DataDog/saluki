@@ -1,10 +1,11 @@
 use std::{collections::VecDeque, fmt};
 
+use tracing::debug;
+
 use crate::{
     data_model::event::{Event, EventType},
     topology::interconnect::{dispatcher::DispatchBuffer, Dispatchable},
 };
-use tracing::debug;
 
 /// A fixed-size event buffer.
 #[derive(Clone)]
@@ -253,7 +254,7 @@ impl<const N: usize> EventBufferManager<N> {
                     <FixedSizeEventBuffer<N>>::capacity(buffer)
                 );
                 None
-            },
+            }
         }
     }
 

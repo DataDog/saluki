@@ -115,7 +115,11 @@ impl IncrementalEncoder for DatadogLogs {
             Event::Log(log) => log,
             _ => return Ok(ProcessResult::Continue),
         };
-        debug!("WACKTEST10: dd_logs_process_event additional_props_len={} tags_len={}", log.additional_properties().len(), log.tags().len());
+        debug!(
+            "WACKTEST10: dd_logs_process_event additional_props_len={} tags_len={}",
+            log.additional_properties().len(),
+            log.tags().len()
+        );
         match self.request_builder.encode(log).await {
             Ok(None) => Ok(ProcessResult::Continue),
             Ok(Some(log)) => Ok(ProcessResult::FlushRequired(Event::Log(log))),
@@ -140,7 +144,10 @@ impl IncrementalEncoder for DatadogLogs {
                 Ok((events, request)) => {
                     let body_len = request.body().len();
                     let body_chunks = request.body().chunk_count();
-                    debug!("WACKTEST11: dd_logs_flush events={} body_len={} body_chunks={}", events, body_len, body_chunks);
+                    debug!(
+                        "WACKTEST11: dd_logs_flush events={} body_len={} body_chunks={}",
+                        events, body_len, body_chunks
+                    );
                     let payload_meta = PayloadMetadata::from_event_count(events);
                     let http_payload = HttpPayload::new(payload_meta, request);
                     let payload = Payload::Http(http_payload);

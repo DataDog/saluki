@@ -375,8 +375,7 @@ where
         );
         debug!(
             encoder = E::encoder_name(),
-            "WACKTEST7: rb_encoded encoded_len={} uncompressed_len={} est_compressed_len={} inputs_in_payload={}"
-            ,
+            "WACKTEST7: rb_encoded encoded_len={} uncompressed_len={} est_compressed_len={} inputs_in_payload={}",
             encoded_len,
             self.uncompressed_len(),
             self.compression_estimator.estimated_len(),
@@ -637,8 +636,7 @@ where
 
         debug!(
             encoder = E::encoder_name(),
-            "WACKTEST9: rb_try_split_request inputs={} uncompressed_len={} compressed_len={}"
-            ,
+            "WACKTEST9: rb_try_split_request inputs={} uncompressed_len={} compressed_len={}",
             inputs.len(),
             uncompressed_len,
             compressed_len

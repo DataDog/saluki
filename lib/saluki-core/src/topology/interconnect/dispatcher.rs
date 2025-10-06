@@ -177,8 +177,7 @@ where
             let old_cap = old_buffer.capacity();
             debug!(
                 "WACKTEST1: buffered_dispatcher_push_preflush len={} capacity={}",
-                old_len,
-                old_cap
+                old_len, old_cap
             );
             self.try_flush_buffer(old_buffer).await?;
         }
@@ -244,7 +243,10 @@ where
         // We increment the "events sent" metric here because we want to count the number of buffered items, vs doing it in
         // `DispatchTarget::send` where all it knows is that it sent one item.
         self.metrics.events_sent_total().increment(self.flushed_len as u64);
-        debug!("WACKTEST2: buffered_dispatcher_flushed total_items_sent={}", self.flushed_len);
+        debug!(
+            "WACKTEST2: buffered_dispatcher_flushed total_items_sent={}",
+            self.flushed_len
+        );
 
         Ok(self.flushed_len)
     }
