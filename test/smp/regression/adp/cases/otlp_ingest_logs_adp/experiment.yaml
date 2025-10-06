@@ -2,7 +2,8 @@ optimization_goal: memory
 erratic: false
 
 target:
-  name: datadog-agent
+  name: saluki
+  command: /usr/local/bin/agent-data-plane
   cpu_allotment: 4
   memory_allotment: 2GiB
 
