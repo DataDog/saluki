@@ -4,6 +4,7 @@ use saluki_common::collections::FastHashMap;
 use saluki_error::{generic_error, GenericError};
 use saluki_metrics::static_metrics;
 use tokio::sync::mpsc;
+use tracing::debug;
 
 use super::Dispatchable;
 use crate::{components::ComponentContext, topology::OutputName};
@@ -46,6 +47,9 @@ pub trait DispatchBuffer: Dispatchable + Default {
 
     /// Returns the number of items currently in the buffer.
     fn len(&self) -> usize;
+
+    /// Returns the maximum number of items the buffer can hold.
+    fn capacity(&self) -> usize;
 
     /// Returns `true` if the buffer is full.
     fn is_full(&self) -> bool;
@@ -169,6 +173,13 @@ where
     pub async fn push(&mut self, item: T::Item) -> Result<(), GenericError> {
         // If our current buffer is full, flush it before acquiring a new one.
         if let Some(old_buffer) = self.buffer.take_if(|b| b.is_full()) {
+            let old_len = old_buffer.len();
+            let old_cap = old_buffer.capacity();
+            debug!(
+                "WACKTEST1: buffered_dispatcher_push_preflush len={} capacity={}",
+                old_len,
+                old_cap
+            );
             self.try_flush_buffer(old_buffer).await?;
         }
 
@@ -180,6 +191,13 @@ where
         if buffer.try_push(item).is_some() {
             return Err(generic_error!("Dispatch buffer already full after acquisition."));
         }
+
+        debug!(
+            "WACKTEST1: buffered_dispatcher_push len={} capacity={} is_full={}",
+            buffer.len(),
+            buffer.capacity(),
+            buffer.is_full()
+        );
 
         self.flushed_len += 1;
 
@@ -215,12 +233,18 @@ where
     /// If there is an error sending items to the output, an error is returned.
     pub async fn flush(mut self) -> Result<usize, GenericError> {
         if let Some(old_buffer) = self.buffer.take() {
+            debug!(
+                "WACKTEST2: buffered_dispatcher_flush len={} capacity={}",
+                old_buffer.len(),
+                old_buffer.capacity()
+            );
             self.try_flush_buffer(old_buffer).await?;
         }
 
         // We increment the "events sent" metric here because we want to count the number of buffered items, vs doing it in
         // `DispatchTarget::send` where all it knows is that it sent one item.
         self.metrics.events_sent_total().increment(self.flushed_len as u64);
+        debug!("WACKTEST2: buffered_dispatcher_flushed total_items_sent={}", self.flushed_len);
 
         Ok(self.flushed_len)
     }
@@ -452,6 +476,10 @@ mod tests {
 
         fn len(&self) -> usize {
             self.len
+        }
+
+        fn capacity(&self) -> usize {
+            N
         }
 
         fn is_full(&self) -> bool {

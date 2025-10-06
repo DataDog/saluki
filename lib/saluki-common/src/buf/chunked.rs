@@ -9,6 +9,7 @@ use std::{
 use bytes::{buf::UninitSlice, Buf, BufMut, Bytes, BytesMut};
 use http_body::{Body, Frame, SizeHint};
 use tokio::io::AsyncWrite;
+use tracing::debug;
 
 /// A bytes buffer that write dynamically-sized payloads across multiple fixed-size chunks.
 ///
@@ -27,11 +28,13 @@ pub struct ChunkedBytesBuffer {
 impl ChunkedBytesBuffer {
     /// Creates a new `ChunkedBytesBuffer`, configured to use chunks of the given size.
     pub fn new(chunk_size: usize) -> Self {
-        Self {
+        let s = Self {
             chunks: VecDeque::new(),
             chunk_size,
             remaining_capacity: 0,
-        }
+        };
+        debug!("WACKTEST6: chunked_bytes_buffer_new chunk_size={}", chunk_size);
+        s
     }
 
     /// Returns `true` if the buffer has no data.
@@ -47,6 +50,12 @@ impl ChunkedBytesBuffer {
     fn register_new_chunk(&mut self) {
         self.remaining_capacity += self.chunk_size;
         self.chunks.push_back(BytesMut::with_capacity(self.chunk_size));
+        debug!(
+            "WACKTEST6: cbb_register_new_chunk chunks={} chunk_size={} remaining_capacity={}",
+            self.chunks.len(),
+            self.chunk_size,
+            self.remaining_capacity
+        );
     }
 
     fn ensure_capacity_for_write(&mut self) {
@@ -67,7 +76,17 @@ impl ChunkedBytesBuffer {
 
 impl AsyncWrite for ChunkedBytesBuffer {
     fn poll_write(mut self: Pin<&mut Self>, _: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, io::Error>> {
+        let before_len = self.len();
+        let before_chunks = self.chunks.len();
         self.put_slice(buf);
+        debug!(
+            "WACKTEST6: cbb_poll_write wrote={} len_before={} len_after={} chunks_before={} chunks_after={}",
+            buf.len(),
+            before_len,
+            self.len(),
+            before_chunks,
+            self.chunks.len()
+        );
         Poll::Ready(Ok(buf.len()))
     }
 
@@ -113,6 +132,11 @@ impl FrozenChunkedBytesBuffer {
     /// Returns the number of bytes written to the buffer.
     pub fn len(&self) -> usize {
         self.chunks.iter().map(|chunk| chunk.len()).sum()
+    }
+
+    /// Returns the number of underlying chunks.
+    pub fn chunk_count(&self) -> usize {
+        self.chunks.len()
     }
 }
 

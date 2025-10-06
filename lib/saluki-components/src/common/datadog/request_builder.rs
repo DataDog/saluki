@@ -180,6 +180,13 @@ where
         }
 
         let compressor = create_compressor(compression_scheme, buffer_chunk_size);
+        debug!(
+            encoder = E::encoder_name(),
+            "WACKTEST7: rb_new buffer_chunk_size={} uncompressed_limit={} compressed_limit={}",
+            buffer_chunk_size,
+            uncompressed_len_limit,
+            compressed_len_limit
+        );
         Ok(Self {
             encoder,
             scratch_buf: Vec::with_capacity(SCRATCH_BUF_CAPACITY),
@@ -279,6 +286,12 @@ where
         // Make sure we haven't hit the maximum number of inputs per payload.
         if self.encoded_inputs.len() >= self.max_inputs_per_payload {
             trace!("Maximum number of inputs per payload reached.");
+            debug!(
+                encoder = E::encoder_name(),
+                "WACKTEST7: rb_max_inputs_per_payload len={} max={}",
+                self.encoded_inputs.len(),
+                self.max_inputs_per_payload
+            );
             return Ok(Some(input));
         }
 
@@ -337,6 +350,15 @@ where
                 estimated_compressed_len = self.compression_estimator.estimated_len(),
                 "Input would exceed endpoint size limits."
             );
+            debug!(
+                encoder = E::encoder_name(),
+                "WACKTEST7: rb_encode_deferred encoded_len={} uncompressed_len={} est_compressed_len={} max_inputs={} encoded_inputs_len={}",
+                encoded_len,
+                self.uncompressed_len(),
+                self.compression_estimator.estimated_len(),
+                self.max_inputs_per_payload,
+                self.encoded_inputs.len()
+            );
             return Ok(false);
         }
 
@@ -350,6 +372,15 @@ where
             uncompressed_len = self.uncompressed_len(),
             estimated_compressed_len = self.compression_estimator.estimated_len(),
             "Wrote encoded input to compressor."
+        );
+        debug!(
+            encoder = E::encoder_name(),
+            "WACKTEST7: rb_encoded encoded_len={} uncompressed_len={} est_compressed_len={} inputs_in_payload={}"
+            ,
+            encoded_len,
+            self.uncompressed_len(),
+            self.compression_estimator.estimated_len(),
+            self.encoded_inputs.len() + 1
         );
 
         Ok(true)
@@ -394,7 +425,22 @@ where
         }
 
         let inputs_written = self.clear_encoded_inputs();
-        debug!(encoder = E::encoder_name(), endpoint = ?self.encoder.endpoint_uri(), uncompressed_len, compressed_len, inputs_written, "Flushing request.");
+        debug!(
+            encoder = E::encoder_name(),
+            endpoint = ?self.encoder.endpoint_uri(),
+            uncompressed_len,
+            compressed_len,
+            inputs_written,
+            "Flushing request."
+        );
+        debug!(
+            encoder = E::encoder_name(),
+            "WACKTEST8: rb_flush uncompressed_len={} compressed_len={} inputs_written={} encoded_inputs_capacity={}",
+            uncompressed_len,
+            compressed_len,
+            inputs_written,
+            self.encoded_inputs.capacity()
+        );
 
         vec![self.create_request(compressed_buf).map(|req| (inputs_written, req))]
     }
@@ -449,7 +495,15 @@ where
             return Err(e);
         }
 
-        Ok((uncompressed_len, compressor.into_inner().freeze()))
+        let frozen = compressor.into_inner().freeze();
+        debug!(
+            encoder = E::encoder_name(),
+            "WACKTEST8: rb_flush_inner uncompressed_len={} frozen_len={} frozen_chunks={}",
+            uncompressed_len,
+            frozen.len(),
+            frozen.chunk_count()
+        );
+        Ok((uncompressed_len, frozen))
     }
 
     fn clear_encoded_inputs(&mut self) -> usize {
@@ -581,6 +635,14 @@ where
             }));
         }
 
+        debug!(
+            encoder = E::encoder_name(),
+            "WACKTEST9: rb_try_split_request inputs={} uncompressed_len={} compressed_len={}"
+            ,
+            inputs.len(),
+            uncompressed_len,
+            compressed_len
+        );
         Some(
             self.create_request(compressed_buf)
                 .map(|request| (inputs.len(), request)),
