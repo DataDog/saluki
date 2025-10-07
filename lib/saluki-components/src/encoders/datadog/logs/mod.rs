@@ -19,7 +19,7 @@ use saluki_io::compression::CompressionScheme;
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use serde_json::{Map as JsonMap, Value as JsonValue};
-use tracing::{debug, error, warn};
+use tracing::{info, error, warn};
 
 use crate::common::datadog::{
     io::RB_BUFFER_CHUNK_SIZE,
@@ -115,7 +115,7 @@ impl IncrementalEncoder for DatadogLogs {
             Event::Log(log) => log,
             _ => return Ok(ProcessResult::Continue),
         };
-        debug!(
+        info!(
             "WACKTEST10: dd_logs_process_event additional_props_len={} tags_len={}",
             log.additional_properties().len(),
             log.tags().len()
@@ -144,7 +144,7 @@ impl IncrementalEncoder for DatadogLogs {
                 Ok((events, request)) => {
                     let body_len = request.body().len();
                     let body_chunks = request.body().chunk_count();
-                    debug!(
+                    info!(
                         "WACKTEST11: dd_logs_flush events={} body_len={} body_chunks={}",
                         events, body_len, body_chunks
                     );

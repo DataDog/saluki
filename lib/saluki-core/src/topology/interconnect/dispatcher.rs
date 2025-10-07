@@ -4,7 +4,7 @@ use saluki_common::collections::FastHashMap;
 use saluki_error::{generic_error, GenericError};
 use saluki_metrics::static_metrics;
 use tokio::sync::mpsc;
-use tracing::debug;
+use tracing::info;
 
 use super::Dispatchable;
 use crate::{components::ComponentContext, topology::OutputName};
@@ -175,7 +175,7 @@ where
         if let Some(old_buffer) = self.buffer.take_if(|b| b.is_full()) {
             let old_len = old_buffer.len();
             let old_cap = old_buffer.capacity();
-            debug!(
+            info!(
                 "WACKTEST1: buffered_dispatcher_push_preflush len={} capacity={}",
                 old_len, old_cap
             );
@@ -191,7 +191,7 @@ where
             return Err(generic_error!("Dispatch buffer already full after acquisition."));
         }
 
-        debug!(
+        info!(
             "WACKTEST1: buffered_dispatcher_push len={} capacity={} is_full={}",
             buffer.len(),
             buffer.capacity(),
@@ -232,7 +232,7 @@ where
     /// If there is an error sending items to the output, an error is returned.
     pub async fn flush(mut self) -> Result<usize, GenericError> {
         if let Some(old_buffer) = self.buffer.take() {
-            debug!(
+            info!(
                 "WACKTEST2: buffered_dispatcher_flush len={} capacity={}",
                 old_buffer.len(),
                 old_buffer.capacity()
@@ -243,7 +243,7 @@ where
         // We increment the "events sent" metric here because we want to count the number of buffered items, vs doing it in
         // `DispatchTarget::send` where all it knows is that it sent one item.
         self.metrics.events_sent_total().increment(self.flushed_len as u64);
-        debug!(
+        info!(
             "WACKTEST2: buffered_dispatcher_flushed total_items_sent={}",
             self.flushed_len
         );

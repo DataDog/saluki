@@ -198,7 +198,6 @@ run-benchmarks-adp:
       - outputs/report.html # for debugging, also on S3
     when: always
   variables:
-    DD_LOG_LEVEL: debug
     AWS_NAMED_PROFILE: single-machine-performance
     SMP_VERSION: 0.24.1
     RUST_LOG: info,aws_config::profile::credentials=error

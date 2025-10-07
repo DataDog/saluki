@@ -9,7 +9,7 @@ use std::{
 use bytes::{buf::UninitSlice, Buf, BufMut, Bytes, BytesMut};
 use http_body::{Body, Frame, SizeHint};
 use tokio::io::AsyncWrite;
-use tracing::debug;
+use tracing::info;
 
 /// A bytes buffer that write dynamically-sized payloads across multiple fixed-size chunks.
 ///
@@ -33,7 +33,7 @@ impl ChunkedBytesBuffer {
             chunk_size,
             remaining_capacity: 0,
         };
-        debug!("WACKTEST6: chunked_bytes_buffer_new chunk_size={}", chunk_size);
+        info!("WACKTEST6: chunked_bytes_buffer_new chunk_size={}", chunk_size);
         s
     }
 
@@ -50,7 +50,7 @@ impl ChunkedBytesBuffer {
     fn register_new_chunk(&mut self) {
         self.remaining_capacity += self.chunk_size;
         self.chunks.push_back(BytesMut::with_capacity(self.chunk_size));
-        debug!(
+        info!(
             "WACKTEST6: cbb_register_new_chunk chunks={} chunk_size={} remaining_capacity={}",
             self.chunks.len(),
             self.chunk_size,
@@ -79,7 +79,7 @@ impl AsyncWrite for ChunkedBytesBuffer {
         let before_len = self.len();
         let before_chunks = self.chunks.len();
         self.put_slice(buf);
-        debug!(
+        info!(
             "WACKTEST6: cbb_poll_write wrote={} len_before={} len_after={} chunks_before={} chunks_after={}",
             buf.len(),
             before_len,

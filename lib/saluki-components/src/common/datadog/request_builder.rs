@@ -7,7 +7,7 @@ use saluki_common::buf::{ChunkedBytesBuffer, FrozenChunkedBytesBuffer};
 use saluki_io::compression::*;
 use snafu::{ResultExt, Snafu};
 use tokio::io::AsyncWriteExt as _;
-use tracing::{debug, error, trace, warn};
+use tracing::{error, info, trace, warn};
 
 const SCRATCH_BUF_CAPACITY: usize = 8192;
 
@@ -180,7 +180,7 @@ where
         }
 
         let compressor = create_compressor(compression_scheme, buffer_chunk_size);
-        debug!(
+        info!(
             encoder = E::encoder_name(),
             "WACKTEST7: rb_new buffer_chunk_size={} uncompressed_limit={} compressed_limit={}",
             buffer_chunk_size,
@@ -286,7 +286,7 @@ where
         // Make sure we haven't hit the maximum number of inputs per payload.
         if self.encoded_inputs.len() >= self.max_inputs_per_payload {
             trace!("Maximum number of inputs per payload reached.");
-            debug!(
+            info!(
                 encoder = E::encoder_name(),
                 "WACKTEST7: rb_max_inputs_per_payload len={} max={}",
                 self.encoded_inputs.len(),
@@ -350,7 +350,7 @@ where
                 estimated_compressed_len = self.compression_estimator.estimated_len(),
                 "Input would exceed endpoint size limits."
             );
-            debug!(
+            info!(
                 encoder = E::encoder_name(),
                 "WACKTEST7: rb_encode_deferred encoded_len={} uncompressed_len={} est_compressed_len={} max_inputs={} encoded_inputs_len={}",
                 encoded_len,
@@ -373,7 +373,7 @@ where
             estimated_compressed_len = self.compression_estimator.estimated_len(),
             "Wrote encoded input to compressor."
         );
-        debug!(
+        info!(
             encoder = E::encoder_name(),
             "WACKTEST7: rb_encoded encoded_len={} uncompressed_len={} est_compressed_len={} inputs_in_payload={}",
             encoded_len,
@@ -424,7 +424,7 @@ where
         }
 
         let inputs_written = self.clear_encoded_inputs();
-        debug!(
+        info!(
             encoder = E::encoder_name(),
             endpoint = ?self.encoder.endpoint_uri(),
             uncompressed_len,
@@ -432,7 +432,7 @@ where
             inputs_written,
             "Flushing request."
         );
-        debug!(
+        info!(
             encoder = E::encoder_name(),
             "WACKTEST8: rb_flush uncompressed_len={} compressed_len={} inputs_written={} encoded_inputs_capacity={}",
             uncompressed_len,
@@ -495,7 +495,7 @@ where
         }
 
         let frozen = compressor.into_inner().freeze();
-        debug!(
+        info!(
             encoder = E::encoder_name(),
             "WACKTEST8: rb_flush_inner uncompressed_len={} frozen_len={} frozen_chunks={}",
             uncompressed_len,
@@ -634,7 +634,7 @@ where
             }));
         }
 
-        debug!(
+        info!(
             encoder = E::encoder_name(),
             "WACKTEST9: rb_try_split_request inputs={} uncompressed_len={} compressed_len={}",
             inputs.len(),
