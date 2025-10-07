@@ -81,7 +81,8 @@ tokio = { workspace = true, features = ["macros", "sync"], optional = true }
 tonic = { workspace = true, features = ["router", "transport"] }
 tower = { workspace = true, features = ["util"], optional = true }
 tracing = { workspace = true, optional = true }
-tracing-rolling-file = { workspace = true, features = ["non-blocking"], optional = true }
+tracing-appender = { workspace = true }
+tracing-rolling-file = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, features = [
   "ansi",
   "env-filter",

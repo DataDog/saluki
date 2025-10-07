@@ -3255,6 +3255,7 @@ dependencies = [
  "tonic",
  "tower",
  "tracing",
+ "tracing-appender",
  "tracing-rolling-file",
  "tracing-subscriber",
 ]
@@ -4528,7 +4529,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fd38b6b03a92e4e311682054368ef79e7cb208c2125dd96647ef6bd7833de6db"
 dependencies = [
  "chrono",
- "tracing-appender",
 ]
 
 [[package]]
