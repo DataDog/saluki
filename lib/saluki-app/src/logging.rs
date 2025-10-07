@@ -10,11 +10,13 @@
 
 use std::{
     fmt,
+    future::pending,
     str::FromStr as _,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Mutex, OnceLock},
     time::Duration,
 };
 
+use bytesize::ByteSize;
 use chrono::{
     format::{DelayedFormat, Item, StrftimeItems},
     Utc,
@@ -33,10 +35,11 @@ use serde::Deserialize;
 use serde_with::serde_as;
 use tokio::{select, sync::mpsc, time::sleep};
 use tracing::{error, field, info, level_filters::LevelFilter, Event, Subscriber};
+use tracing_rolling_file::RollingFileAppenderBase;
 use tracing_subscriber::{
     field::VisitOutput,
-    fmt::{format::Writer, FmtContext, FormatEvent, FormatFields},
-    layer::{Filter, SubscriberExt as _},
+    fmt::{format::Writer, FmtContext, FormatEvent, FormatFields, MakeWriter},
+    layer::SubscriberExt as _,
     registry::LookupSpan,
     reload::{Handle, Layer as ReloadLayer},
     util::SubscriberInitExt as _,
@@ -45,10 +48,24 @@ use tracing_subscriber::{
 
 static API_HANDLER: Mutex<Option<LoggingAPIHandler>> = Mutex::new(None);
 
-type SharedEnvFilter = Arc<dyn Filter<Registry> + Send + Sync>;
-
 fn default_log_level() -> LogLevel {
     LevelFilter::INFO.into()
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+const fn default_false() -> bool {
+    false
+}
+
+const fn default_log_file_max_size() -> ByteSize {
+    ByteSize::mib(10)
+}
+
+const fn default_log_file_max_rolls() -> usize {
+    1
 }
 
 #[serde_as]
@@ -57,8 +74,19 @@ struct LoggingConfiguration {
     #[serde(default = "default_log_level")]
     log_level: LogLevel,
     #[serde_as(as = "PermissiveBool")]
-    #[serde(default)]
+    #[serde(default = "default_false")]
     log_format_json: bool,
+
+    #[serde_as(as = "PermissiveBool")]
+    #[serde(default = "default_true")]
+    log_to_console: bool,
+
+    #[serde(default = "String::new")]
+    log_file: String,
+    #[serde(default = "default_log_file_max_size")]
+    log_file_max_size: ByteSize,
+    #[serde(default = "default_log_file_max_rolls")]
+    log_file_max_rolls: usize,
 }
 
 impl LoggingConfiguration {
@@ -87,8 +115,8 @@ impl LoggingConfiguration {
 struct LogLevel(EnvFilter);
 
 impl LogLevel {
-    fn into_env_filter(self) -> EnvFilter {
-        self.0
+    fn as_env_filter(&self) -> EnvFilter {
+        self.0.clone()
     }
 }
 
@@ -143,45 +171,70 @@ pub async fn initialize_logging() -> Result<(), Box<dyn std::error::Error + Send
         .map_err(|e| format!("Failed to initialize logging configuration: {}", e))?;
 
     // Set up our log level filtering and dynamic filter layer.
-    let level_filter = Arc::new(logging_config.log_level.into_env_filter());
-    let (filter_layer, reload_handle) = ReloadLayer::new(into_shared_dyn_filter(Arc::clone(&level_filter)));
+    let level_filter = logging_config.log_level.as_env_filter();
+    let (filter_layer, reload_handle) = ReloadLayer::new(level_filter.clone());
     API_HANDLER
         .lock()
         .unwrap()
         .replace(LoggingAPIHandler::new(level_filter, reload_handle));
 
-    if logging_config.log_format_json {
-        let json_layer = initialize_tracing_json();
-        tracing_subscriber::registry()
-            .with(json_layer.with_filter(filter_layer))
-            .try_init()?;
-    } else {
-        let pretty_layer = initialize_tracing_pretty();
-        tracing_subscriber::registry()
-            .with(pretty_layer.with_filter(filter_layer))
-            .try_init()?;
+    let mut configured_layers = Vec::new();
+
+    if logging_config.log_to_console {
+        // Whatever formatter we're using, it will write to stdout by default, so we just create a new formatter layer
+        // and use it as-is.
+        configured_layers.push(build_formatter_layer(&logging_config, std::io::stdout));
     }
+
+    if !logging_config.log_file.is_empty() {
+        let appender_builder = RollingFileAppenderBase::builder();
+        let appender = appender_builder
+            .filename(logging_config.log_file.clone())
+            .max_filecount(logging_config.log_file_max_rolls)
+            .condition_max_file_size(logging_config.log_file_max_size.as_u64())
+            .build()?;
+
+        let (non_blocking_appender, worker_guard) = appender.get_non_blocking_appender();
+
+        // TODO: Right now, we're just shoving this worker guard into an asynchronous task to keep it alive,
+        // but we really should return it so that it can be held on to and only dropped at process exit... we
+        // lack a mechanism to return it cleanly, though, so we'll tackle this once we have a proper bootstrap
+        // procedure.
+        tokio::spawn(async move {
+            let _worker_guard = worker_guard;
+            pending::<()>().await;
+        });
+
+        configured_layers.push(build_formatter_layer(&logging_config, non_blocking_appender));
+    }
+
+    tracing_subscriber::registry()
+        .with(configured_layers.with_filter(filter_layer))
+        .try_init()?;
 
     Ok(())
 }
 
-fn initialize_tracing_json<S>() -> impl Layer<S>
+fn build_formatter_layer<S, W>(config: &LoggingConfiguration, writer: W) -> Box<dyn Layer<S> + Send + Sync>
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
+    W: for<'writer> MakeWriter<'writer> + Send + Sync + 'static,
 {
-    tracing_subscriber::fmt::Layer::new()
-        .json()
-        .flatten_event(true)
-        .with_target(true)
-        .with_file(true)
-        .with_line_number(true)
-}
-
-fn initialize_tracing_pretty<S>() -> impl Layer<S>
-where
-    S: Subscriber + for<'a> LookupSpan<'a>,
-{
-    tracing_subscriber::fmt::Layer::new().event_format(AgentLikeFormatter::new())
+    if config.log_format_json {
+        tracing_subscriber::fmt::Layer::new()
+            .json()
+            .flatten_event(true)
+            .with_target(true)
+            .with_file(true)
+            .with_line_number(true)
+            .with_writer(writer)
+            .boxed()
+    } else {
+        tracing_subscriber::fmt::Layer::new()
+            .event_format(AgentLikeFormatter::new())
+            .with_writer(writer)
+            .boxed()
+    }
 }
 
 /// Acquires the logging API handler.
@@ -203,7 +256,7 @@ struct OverrideQueryParams {
 /// State used for the logging API handler.
 #[derive(Clone)]
 pub struct LoggingHandlerState {
-    override_tx: mpsc::Sender<Option<(Duration, Arc<EnvFilter>)>>,
+    override_tx: mpsc::Sender<Option<(Duration, EnvFilter)>>,
 }
 
 /// An API handler for updating log filtering directives at runtime.
@@ -222,7 +275,7 @@ pub struct LoggingAPIHandler {
 }
 
 impl LoggingAPIHandler {
-    fn new(original_filter: Arc<EnvFilter>, reload_handle: Handle<SharedEnvFilter, Registry>) -> Self {
+    fn new(original_filter: EnvFilter, reload_handle: Handle<EnvFilter, Registry>) -> Self {
         // Spawn our background task that will handle override requests.
         let (override_tx, override_rx) = mpsc::channel(1);
         spawn_traced_named(
@@ -263,7 +316,7 @@ impl LoggingAPIHandler {
         };
 
         // Instruct the override processor to apply the new log filtering directives for the given duration.
-        let _ = state.override_tx.send(Some((duration, Arc::new(new_filter)))).await;
+        let _ = state.override_tx.send(Some((duration, new_filter))).await;
 
         (StatusCode::OK, "acknowledged".to_string())
     }
@@ -289,8 +342,8 @@ impl APIHandler for LoggingAPIHandler {
 }
 
 async fn process_override_requests(
-    original_filter: Arc<EnvFilter>, reload_handle: Handle<SharedEnvFilter, Registry>,
-    mut rx: mpsc::Receiver<Option<(Duration, Arc<EnvFilter>)>>,
+    original_filter: EnvFilter, reload_handle: Handle<EnvFilter, Registry>,
+    mut rx: mpsc::Receiver<Option<(Duration, EnvFilter)>>,
 ) {
     let mut override_active = false;
     let override_timeout = sleep(Duration::from_secs(3600));
@@ -303,7 +356,7 @@ async fn process_override_requests(
                 Some(Some((duration, new_filter))) => {
                     info!(directives = %new_filter, "Overriding existing log filtering directives for {} seconds...", duration.as_secs());
 
-                    match reload_handle.reload(into_shared_dyn_filter(new_filter)) {
+                    match reload_handle.reload(new_filter) {
                         Ok(()) => {
                             // We were able to successfully reload the filter, so mark ourselves as having an active
                             // override and update the override timeout.
@@ -331,7 +384,7 @@ async fn process_override_requests(
                 if override_active {
                     override_active = false;
 
-                    if let Err(e) = reload_handle.reload(into_shared_dyn_filter(Arc::clone(&original_filter))) {
+                    if let Err(e) = reload_handle.reload(original_filter.clone()) {
                         error!(error = %e, "Failed to reset log filtering directives.");
                     }
 
@@ -344,13 +397,9 @@ async fn process_override_requests(
     }
 
     // Reset our filter to the original one before we exit.
-    if let Err(e) = reload_handle.reload(into_shared_dyn_filter(original_filter)) {
+    if let Err(e) = reload_handle.reload(original_filter) {
         error!(error = %e, "Failed to reset log filtering directives before override handler shutdown.");
     }
-}
-
-fn into_shared_dyn_filter(filter: Arc<EnvFilter>) -> SharedEnvFilter {
-    filter
 }
 
 struct AgentLikeFormatter {
