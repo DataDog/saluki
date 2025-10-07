@@ -19,7 +19,7 @@ use saluki_io::compression::CompressionScheme;
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use serde_json::{Map as JsonMap, Value as JsonValue};
-use tracing::{info, error, warn};
+use tracing::{error, info, warn};
 
 use crate::common::datadog::{
     io::RB_BUFFER_CHUNK_SIZE,
