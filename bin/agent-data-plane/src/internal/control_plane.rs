@@ -1,8 +1,10 @@
 use std::future::pending;
 
 use memory_accounting::ComponentRegistry;
-use saluki_app::metrics::acquire_metrics_api_handler;
-use saluki_app::{api::APIBuilder, config::ConfigAPIHandler, prelude::acquire_logging_api_handler};
+use saluki_app::{
+    api::APIBuilder, config::ConfigAPIHandler, logging::acquire_logging_api_handler,
+    metrics::acquire_metrics_api_handler,
+};
 use saluki_common::task::spawn_traced_named;
 use saluki_components::destinations::DogStatsDStatisticsConfiguration;
 use saluki_config::GenericConfiguration;

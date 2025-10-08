@@ -4,6 +4,7 @@ use std::{sync::Mutex, time::Duration};
 
 use metrics::gauge;
 use saluki_common::task::spawn_traced_named;
+use saluki_error::GenericError;
 use saluki_metrics::static_metrics;
 use tokio::{runtime::Handle, time::sleep};
 
@@ -17,12 +18,10 @@ pub use self::api::MetricsAPIHandler;
 /// The given prefix is used to namespace all metrics that are emitted by the application, and is prepended to all
 /// metrics, followed by a period (e.g. `<prefix>.<metric name>`).
 ///
-/// ## Errors
+/// # Errors
 ///
 /// If the metrics subsystem was already initialized, an error will be returned.
-pub async fn initialize_metrics(
-    metrics_prefix: impl Into<String>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub(crate) async fn initialize_metrics(metrics_prefix: impl Into<String>) -> Result<(), GenericError> {
     // We forward to the implementation in `saluki_core` so that we can have this crate be the collection point of all
     // helpers/types that are specific to generic application setup/initialization.
     //

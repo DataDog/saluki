@@ -9,6 +9,8 @@ pub use self::control_plane::spawn_control_plane;
 mod observability;
 pub use self::observability::spawn_internal_observability_topology;
 
+pub mod platform;
+
 mod remote_agent;
 
 /// Creates a single-threaded Tokio runtime, initializing it and driving it to completion.

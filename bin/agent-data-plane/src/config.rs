@@ -5,6 +5,10 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 #[derive(Parser)]
 #[command(about)]
 pub struct Cli {
+    /// Path to the configuration file.
+    #[arg(short = 'c', long = "config")]
+    pub config_file: Option<PathBuf>,
+
     /// Subcommand to run.
     #[command(subcommand)]
     pub action: Action,
@@ -32,10 +36,6 @@ pub enum Action {
 /// Run subcommand configuration.
 #[derive(Args, Debug)]
 pub struct RunConfig {
-    /// Path to the configuration file.
-    #[arg(short = 'c', long = "config", default_value = "/etc/datadog-agent/datadog.yaml")]
-    pub config: PathBuf,
-
     /// Path to the PID file.
     #[arg(short = 'p', long = "pidfile")]
     pub pid_file: Option<PathBuf>,
