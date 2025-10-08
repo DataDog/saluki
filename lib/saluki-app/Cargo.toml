@@ -9,80 +9,41 @@ repository = { workspace = true }
 workspace = true
 
 [features]
-default = []
-full = ["api", "logging", "memory", "metrics", "tls", "config"]
-api = [
-  "dep:axum",
-  "dep:saluki-api",
-  "dep:saluki-error",
-  "dep:saluki-io",
-  "dep:tokio",
-  "dep:tower",
-  "dep:tracing",
-]
-logging = [
-  "api",
-  "dep:bytesize",
-  "dep:chrono",
-  "dep:chrono-tz",
-  "dep:iana-time-zone",
-  "dep:itoa",
-  "dep:ryu",
-  "dep:saluki-common",
-  "dep:serde",
-  "dep:serde_with",
-  "dep:tracing",
-  "dep:tracing-subscriber",
-  "dep:tracing-rolling-file",
-]
-memory = [
-  "metrics",
-  "dep:bytesize",
-  "dep:memory-accounting",
-  "dep:saluki-common",
-  "dep:saluki-error",
-  "dep:serde",
-  "dep:tokio",
-  "dep:tracing",
-]
-metrics = ["api", "dep:saluki-common", "dep:saluki-core", "dep:saluki-metrics", "dep:metrics", "dep:serde", "dep:tokio"]
-tls = ["dep:saluki-error", "dep:saluki-tls"]
-tls-fips = ["saluki-tls?/fips"]
-config = ["api", "dep:arc-swap", "dep:serde_json"]
+tls-fips = ["saluki-tls/fips"]
 
 [dependencies]
-arc-swap = { workspace = true, optional = true }
-axum = { workspace = true, optional = true }
-bytesize = { workspace = true, optional = true }
-chrono = { workspace = true, optional = true }
-chrono-tz = { workspace = true, optional = true }
+arc-swap = { workspace = true }
+axum = { workspace = true }
+bytesize = { workspace = true }
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
 http = { workspace = true }
-iana-time-zone = { workspace = true, optional = true }
-itoa = { workspace = true, optional = true }
-memory-accounting = { workspace = true, optional = true }
-metrics = { workspace = true, optional = true }
+iana-time-zone = { workspace = true }
+itoa = { workspace = true }
+memory-accounting = { workspace = true }
+metrics = { workspace = true }
 rcgen = { workspace = true, features = ["crypto", "aws_lc_rs", "pem"] }
 rustls = { workspace = true, features = ["tls12"] }
 rustls-pemfile = { workspace = true, features = ["std"] }
-ryu = { workspace = true, optional = true }
-saluki-api = { workspace = true, optional = true }
-saluki-common = { workspace = true, optional = true }
+ryu = { workspace = true }
+saluki-api = { workspace = true }
+saluki-common = { workspace = true }
 saluki-config = { workspace = true }
-saluki-core = { workspace = true, optional = true }
-saluki-error = { workspace = true, optional = true }
-saluki-io = { workspace = true, optional = true }
+saluki-core = { workspace = true }
+saluki-error = { workspace = true }
+saluki-io = { workspace = true }
 saluki-metadata = { workspace = true }
-saluki-metrics = { workspace = true, optional = true }
-saluki-tls = { workspace = true, optional = true }
-serde = { workspace = true, optional = true }
-serde_json = { workspace = true, optional = true }
-serde_with = { workspace = true, optional = true }
-tokio = { workspace = true, features = ["macros", "sync"], optional = true }
+saluki-metrics = { workspace = true }
+saluki-tls = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_with = { workspace = true }
+tokio = { workspace = true, features = ["macros", "sync"] }
 tonic = { workspace = true, features = ["router", "transport"] }
-tower = { workspace = true, features = ["util"], optional = true }
-tracing = { workspace = true, optional = true }
+tower = { workspace = true, features = ["util"] }
+tracing = { workspace = true }
 tracing-appender = { workspace = true }
-tracing-rolling-file = { workspace = true, optional = true }
+tracing-rolling-file = { workspace = true }
 tracing-subscriber = { workspace = true, features = [
   "ansi",
   "env-filter",
@@ -92,4 +53,4 @@ tracing-subscriber = { workspace = true, features = [
   "registry",
   "std",
   "tracing-log",
-], optional = true }
+] }

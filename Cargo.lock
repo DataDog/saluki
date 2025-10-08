@@ -92,7 +92,6 @@ dependencies = [
  "bollard",
  "clap",
  "futures",
- "saluki-app",
  "saluki-error",
  "tokio",
  "tracing",

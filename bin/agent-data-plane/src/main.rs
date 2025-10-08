@@ -8,16 +8,16 @@
 use std::time::Instant;
 
 use clap::Parser as _;
-use saluki_app::{bootstrap, prelude::*};
+use saluki_app::bootstrap::AppBootstrapper;
+use saluki_config::ConfigurationLoader;
+use saluki_error::{ErrorContext as _, GenericError};
 use tracing::{error, info, warn};
 
 mod components;
-
 mod config;
 use self::config::{Action, Cli};
 
 mod env_provider;
-
 mod internal;
 
 mod cli;
@@ -38,37 +38,49 @@ static ALLOC: memory_accounting::allocator::TrackingAllocator<std::alloc::System
     memory_accounting::allocator::TrackingAllocator::new(std::alloc::System);
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), GenericError> {
     let started = Instant::now();
     let cli = Cli::parse();
 
-    if let Err(e) = initialize_logging().await {
-        fatal_and_exit(format!("failed to initialize logging: {}", e));
-    }
+    // Load our "bootstrap" configuration -- static configuration on disk or from environment variables -- so we can
+    // initialize basic subsystems before executing the given subcommand.
+    let bootstrap_config = ConfigurationLoader::default()
+        .try_from_yaml(
+            cli.config_file
+                .unwrap_or_else(|| self::internal::platform::DATADOG_AGENT_CONF_YAML.into()),
+        )
+        .from_environment(self::internal::platform::DATADOG_AGENT_ENV_VAR_PREFIX)
+        .error_context("Environment variable prefix should not be empty.")?
+        .with_default_secrets_resolution()
+        .await
+        .error_context("Failed to load secrets resolution configuration.")?
+        .bootstrap_generic();
 
-    if let Err(e) = initialize_metrics("adp").await {
-        fatal_and_exit(format!("failed to initialize metrics: {}", e));
-    }
+    // Proceed with bootstrapping.
+    //
+    // This initializes logging, metrics, allocator telemetry, TLS, and more. We get handled a guard that we need to
+    // hold until the application is about to exit, which ensures things like flushing any buffered logs, and so on.
+    let bootstrapper = AppBootstrapper::from_configuration(&bootstrap_config)
+        .error_context("Failed to parse bootstrap configuration during bootstrap phase.")?
+        .with_metrics_prefix("adp");
+    let _bootstrap_guard = bootstrapper
+        .bootstrap()
+        .await
+        .error_context("Failed to complete bootstrap phase.")?;
 
-    if let Err(e) = initialize_allocator_telemetry().await {
-        fatal_and_exit(format!("failed to initialize allocator telemetry: {}", e));
-    }
-
-    if let Err(e) = initialize_tls() {
-        fatal_and_exit(format!("failed to initialize TLS: {}", e));
-    }
-
+    // Run the given subcommand.
     match cli.action {
         Action::Run(config) => {
             // Populate our PID file, if configured.
             if let Some(pid_file) = &config.pid_file {
-                if let Err(e) = bootstrap::update_pid_file(pid_file) {
+                let pid = std::process::id();
+                if let Err(e) = std::fs::write(pid_file, pid.to_string()) {
                     error!(error = %e, path = %pid_file.display(), "Failed to update PID file. Exiting.");
                     std::process::exit(1);
                 }
             }
 
-            let exit_code = match run(started, &config).await {
+            let exit_code = match run(started, bootstrap_config).await {
                 Ok(()) => {
                     info!("Agent Data Plane stopped.");
                     0
@@ -92,4 +104,6 @@ async fn main() {
         Action::Config => handle_config_command().await,
         Action::Dogstatsd(config) => handle_dogstatsd_subcommand(config).await,
     }
+
+    Ok(())
 }

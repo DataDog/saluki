@@ -8,9 +8,10 @@
 // We might consider _something_ like a string pool in the future, but we can defer that until we have a better idea of
 // what the potential impact is in practice.
 
-use std::{future::pending, io::Write};
+use std::io::Write;
 
-use tracing_appender::non_blocking::NonBlocking;
+use saluki_error::{generic_error, GenericError};
+use tracing_appender::non_blocking::{NonBlocking, NonBlockingBuilder, WorkerGuard};
 use tracing_rolling_file::RollingFileAppenderBase;
 use tracing_subscriber::{
     layer::SubscriberExt as _, reload::Layer as ReloadLayer, util::SubscriberInitExt as _, Layer,
@@ -21,15 +22,27 @@ use self::api::set_logging_api_handler;
 pub use self::api::{acquire_logging_api_handler, LoggingAPIHandler};
 
 mod config;
-use self::config::LoggingConfiguration;
+pub(crate) use self::config::LoggingConfiguration;
 
 mod layer;
 use self::layer::build_formatting_layer;
 
-/// Logs a message to standard error and exits the process with a non-zero exit code.
-pub fn fatal_and_exit(message: String) {
-    eprintln!("FATAL: {}", message);
-    std::process::exit(1);
+// Number of buffered lines in each non-blocking log writer.
+//
+// This directly influences the idle memory usage since each logging backend (console, file, etc) will have a bounded
+// channel that can hold this many elements, and each element is roughly 32 bytes, so 1,000 elements/lines consumes a
+// minimum of ~32KB, etc.
+const NB_LOG_WRITER_BUFFER_SIZE: usize = 4096;
+
+#[derive(Default)]
+pub(crate) struct LoggingGuard {
+    worker_guards: Vec<WorkerGuard>,
+}
+
+impl LoggingGuard {
+    fn add_worker_guard(&mut self, guard: WorkerGuard) {
+        self.worker_guards.push(guard);
+    }
 }
 
 /// Initializes the logging subsystem for `tracing` with the ability to dynamically update the log filtering directives
@@ -44,39 +57,44 @@ pub fn fatal_and_exit(message: String) {
 /// An API handler can be acquired (via [`acquire_logging_api_handler`]) to install the API routes which allow for
 /// dynamically controlling the logging level filtering. See [`LoggingAPIHandler`] for more information.
 ///
+/// Returns a [`LoggingGuard`] which must be held until the application is about to shutdown, ensuring that any
+/// configured logging backends are able to completely flush any pending logs before the application exits.
+///
 /// # Errors
 ///
 /// If the logging subsystem was already initialized, an error will be returned.
-pub async fn initialize_logging() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub(crate) async fn initialize_logging(config: &LoggingConfiguration) -> Result<LoggingGuard, GenericError> {
     // TODO: Support for logging to syslog.
 
-    let logging_config = LoggingConfiguration::from_environment()
-        .await
-        .map_err(|e| format!("Failed to initialize logging configuration: {}", e))?;
-
     // Set up our log level filtering and dynamic filter layer.
-    let level_filter = logging_config.log_level.as_env_filter();
+    let level_filter = config.log_level.as_env_filter();
     let (filter_layer, reload_handle) = ReloadLayer::new(level_filter.clone());
     set_logging_api_handler(LoggingAPIHandler::new(level_filter, reload_handle));
 
     // Build all configured layers: one per output mechanism (console, file, etc).
     let mut configured_layers = Vec::new();
+    let mut logging_guard = LoggingGuard::default();
 
-    if logging_config.log_to_console {
-        let nb_stdout = convert_to_non_blocking_writer(std::io::stdout()).await;
-        configured_layers.push(build_formatting_layer(&logging_config, nb_stdout));
+    if config.log_to_console {
+        let (nb_stdout, guard) = writer_to_nonblocking("console", std::io::stdout());
+        logging_guard.add_worker_guard(guard);
+
+        configured_layers.push(build_formatting_layer(config, nb_stdout));
     }
 
-    if !logging_config.log_file.is_empty() {
+    if !config.log_file.is_empty() {
         let appender_builder = RollingFileAppenderBase::builder();
         let appender = appender_builder
-            .filename(logging_config.log_file.clone())
-            .max_filecount(logging_config.log_file_max_rolls)
-            .condition_max_file_size(logging_config.log_file_max_size.as_u64())
-            .build()?;
+            .filename(config.log_file.clone())
+            .max_filecount(config.log_file_max_rolls)
+            .condition_max_file_size(config.log_file_max_size.as_u64())
+            .build()
+            .map_err(|e| generic_error!("Failed to build log file appender: {}", e))?;
 
-        let nb_appender = convert_to_non_blocking_writer(appender).await;
-        configured_layers.push(build_formatting_layer(&logging_config, nb_appender));
+        let (nb_appender, guard) = writer_to_nonblocking("file", appender);
+        logging_guard.add_worker_guard(guard);
+
+        configured_layers.push(build_formatting_layer(config, nb_appender));
     }
 
     // `tracing` accepts a `Vec<L>` where `L` implements `Layer<S>`, which acts as a fanout.. and then we're applying
@@ -85,23 +103,17 @@ pub async fn initialize_logging() -> Result<(), Box<dyn std::error::Error + Send
         .with(configured_layers.with_filter(filter_layer))
         .try_init()?;
 
-    Ok(())
+    Ok(logging_guard)
 }
 
-async fn convert_to_non_blocking_writer<W>(writer: W) -> NonBlocking
+fn writer_to_nonblocking<W>(writer_name: &'static str, writer: W) -> (NonBlocking, WorkerGuard)
 where
     W: Write + Send + 'static,
 {
-    let (nb_writer, worker_guard) = tracing_appender::non_blocking(writer);
-
-    // TODO: Right now, we're just shoving this worker guard into an asynchronous task to keep it alive,
-    // but we really should return it so that it can be held on to and only dropped at process exit... we
-    // lack a mechanism to return it cleanly, though, so we'll tackle this once we have a proper bootstrap
-    // procedure.
-    tokio::spawn(async move {
-        let _worker_guard = worker_guard;
-        pending::<()>().await;
-    });
-
-    nb_writer
+    let thread_name = format!("log-writer-{}", writer_name);
+    NonBlockingBuilder::default()
+        .thread_name(&thread_name)
+        .buffered_lines_limit(NB_LOG_WRITER_BUFFER_SIZE)
+        .lossy(true)
+        .finish(writer)
 }

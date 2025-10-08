@@ -21,7 +21,7 @@ const DEFAULT_MAX_TLS12_RESUMPTION_SESSIONS: usize = 8;
 /// Exposes various options for configuring a client's TLS configuration that would otherwise be cumbersome to
 /// configure, and provides sane defaults for many common options.
 ///
-/// ## Missing
+/// # Missing
 ///
 /// - ability to configure client authentication
 pub struct ClientTLSConfigBuilder {
@@ -55,7 +55,7 @@ impl ClientTLSConfigBuilder {
 
     /// Builds the client TLS configuration.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// If the default root cert store (see [`load_platform_root_certificates`]) has not been initialized, and a root
     /// cert store has not been provided, or if the resulting configuration is not FIPS compliant, an error will be
@@ -98,7 +98,7 @@ impl ClientTLSConfigBuilder {
 ///
 /// This is the only supported cryptography provider in Saluki.
 ///
-/// ## Errors
+/// # Errors
 ///
 /// If the default cryptography provider has already been set, an error will be returned.
 ///

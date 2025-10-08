@@ -20,7 +20,7 @@ clap = { workspace = true, features = [
   "error-context",
   "suggestions",
 ] }
-rand = { workspace = true, features = ["std", "std_rng"] }
+rand = { workspace = true, features = ["std", "std_rng", "thread_rng"] }
 rand_distr = { workspace = true }
 reqwest = { workspace = true, features = ["json", "zstd", "rustls-tls-native-roots"] }
 saluki-error = { workspace = true }
