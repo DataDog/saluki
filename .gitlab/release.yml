@@ -38,6 +38,7 @@
     - cp -R /tmp/image/opt/datadog/agent-data-plane /tmp/tarball/opt/datadog/agent-data-plane
     - tar -C /tmp/tarball -czf /tmp/agent-data-plane-${SOURCE_IMAGE_VERSION}-${TARGET_OS}-${TARGET_ARCH}.tar.gz .
     - aws s3 cp /tmp/agent-data-plane-${SOURCE_IMAGE_VERSION}-${TARGET_OS}-${TARGET_ARCH}.tar.gz ${TARGET_BUCKET_PATH}
+    - sha256sum /tmp/agent-data-plane-${SOURCE_IMAGE_VERSION}-${TARGET_OS}-${TARGET_ARCH}.tar.gz
 
 # Publish our standalone ADP images,
 publish-standalone-adp-image-linux:
