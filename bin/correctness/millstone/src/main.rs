@@ -4,9 +4,9 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
-use saluki_app::prelude::*;
 use saluki_error::GenericError;
 use tracing::{error, info};
+use tracing_subscriber::{filter::LevelFilter, EnvFilter};
 
 mod config;
 use self::config::Config;
@@ -19,9 +19,18 @@ use self::driver::Driver;
 mod target;
 
 fn main() {
-    if let Err(e) = initialize_logging(None) {
-        fatal_and_exit(format!("failed to initialize logging: {}", e));
-    }
+    tracing_subscriber::fmt()
+        .compact()
+        .with_env_filter(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .from_env_lossy(),
+        )
+        .with_ansi(true)
+        .with_target(true)
+        .with_file(true)
+        .with_line_number(true)
+        .init();
 
     match run() {
         Ok(()) => info!("millstone stopped."),

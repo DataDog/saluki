@@ -13,8 +13,16 @@ bytes = { workspace = true }
 bytesize = { workspace = true, features = ["serde"] }
 lading-payload = { workspace = true }
 rand = { workspace = true }
-saluki-app = { workspace = true, features = ["logging"] }
 saluki-error = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = [
+  "ansi",
+  "env-filter",
+  "fmt",
+  "local-time",
+  "registry",
+  "std",
+  "tracing-log",
+] }

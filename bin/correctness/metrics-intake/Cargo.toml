@@ -12,7 +12,6 @@ workspace = true
 axum = { workspace = true, features = ["http1", "json", "tokio"] }
 datadog-protos = { workspace = true }
 protobuf = { workspace = true }
-saluki-app = { workspace = true, features = ["logging"] }
 saluki-error = { workspace = true }
 stele = { workspace = true }
 tokio = { workspace = true, features = [
@@ -27,3 +26,12 @@ tower-http = { workspace = true, features = [
   "decompression-zstd",
 ] }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = [
+  "ansi",
+  "env-filter",
+  "fmt",
+  "local-time",
+  "registry",
+  "std",
+  "tracing-log",
+] }

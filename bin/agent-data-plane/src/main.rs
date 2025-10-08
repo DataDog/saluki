@@ -42,7 +42,7 @@ async fn main() {
     let started = Instant::now();
     let cli = Cli::parse();
 
-    if let Err(e) = initialize_dynamic_logging(None).await {
+    if let Err(e) = initialize_logging().await {
         fatal_and_exit(format!("failed to initialize logging: {}", e));
     }
 

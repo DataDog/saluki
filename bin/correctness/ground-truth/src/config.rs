@@ -1,16 +1,11 @@
 use std::path::PathBuf;
 
 use airlock::config::{ADPConfig, DSDConfig, MetricsIntakeConfig, MillstoneConfig};
-use clap::{ArgAction, Parser};
-use tracing::level_filters::LevelFilter;
+use clap::Parser;
 
 #[derive(Clone, Parser)]
 #[command(about)]
 pub struct Cli {
-    /// Enable verbose output. (Specify twice for more verbosity.)
-    #[arg(global = true, short = 'v', long, action = ArgAction::Count, default_value_t = 0)]
-    verbose: u8,
-
     /// Container image to use for millstone.
     ///
     /// This must be a valid image reference -- `millstone:x.y.z`,
@@ -118,15 +113,6 @@ pub struct Cli {
 }
 
 impl Cli {
-    /// Gets the configured log level based on the user-supplied verbosity level.
-    pub fn log_level(&self) -> LevelFilter {
-        match self.verbose {
-            0 => LevelFilter::INFO,
-            1 => LevelFilter::DEBUG,
-            _ => LevelFilter::TRACE,
-        }
-    }
-
     pub fn millstone_config(&self) -> MillstoneConfig {
         MillstoneConfig {
             image: self.millstone_image.clone(),
