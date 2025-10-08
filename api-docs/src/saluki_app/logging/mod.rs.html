@@ -8,100 +8,112 @@
 <a href=#8 id=8 data-nosnippet>8</a>// We might consider _something_ like a string pool in the future, but we can defer that until we have a better idea of
 <a href=#9 id=9 data-nosnippet>9</a>// what the potential impact is in practice.
 <a href=#10 id=10 data-nosnippet>10</a>
-<a href=#11 id=11 data-nosnippet>11</a></span><span class="kw">use </span>std::{future::pending, io::Write};
+<a href=#11 id=11 data-nosnippet>11</a></span><span class="kw">use </span>std::io::Write;
 <a href=#12 id=12 data-nosnippet>12</a>
-<a href=#13 id=13 data-nosnippet>13</a><span class="kw">use </span>tracing_appender::non_blocking::NonBlocking;
-<a href=#14 id=14 data-nosnippet>14</a><span class="kw">use </span>tracing_rolling_file::RollingFileAppenderBase;
-<a href=#15 id=15 data-nosnippet>15</a><span class="kw">use </span>tracing_subscriber::{
-<a href=#16 id=16 data-nosnippet>16</a>    layer::SubscriberExt <span class="kw">as _</span>, reload::Layer <span class="kw">as </span>ReloadLayer, util::SubscriberInitExt <span class="kw">as _</span>, Layer,
-<a href=#17 id=17 data-nosnippet>17</a>};
-<a href=#18 id=18 data-nosnippet>18</a>
-<a href=#19 id=19 data-nosnippet>19</a><span class="kw">mod </span>api;
-<a href=#20 id=20 data-nosnippet>20</a><span class="kw">use </span><span class="self">self</span>::api::set_logging_api_handler;
-<a href=#21 id=21 data-nosnippet>21</a><span class="kw">pub use </span><span class="self">self</span>::api::{acquire_logging_api_handler, LoggingAPIHandler};
-<a href=#22 id=22 data-nosnippet>22</a>
-<a href=#23 id=23 data-nosnippet>23</a><span class="kw">mod </span>config;
-<a href=#24 id=24 data-nosnippet>24</a><span class="kw">use </span><span class="self">self</span>::config::LoggingConfiguration;
-<a href=#25 id=25 data-nosnippet>25</a>
-<a href=#26 id=26 data-nosnippet>26</a><span class="kw">mod </span>layer;
-<a href=#27 id=27 data-nosnippet>27</a><span class="kw">use </span><span class="self">self</span>::layer::build_formatting_layer;
-<a href=#28 id=28 data-nosnippet>28</a>
-<a href=#29 id=29 data-nosnippet>29</a><span class="doccomment">/// Logs a message to standard error and exits the process with a non-zero exit code.
-<a href=#30 id=30 data-nosnippet>30</a></span><span class="kw">pub fn </span>fatal_and_exit(message: String) {
-<a href=#31 id=31 data-nosnippet>31</a>    <span class="macro">eprintln!</span>(<span class="string">"FATAL: {}"</span>, message);
-<a href=#32 id=32 data-nosnippet>32</a>    std::process::exit(<span class="number">1</span>);
-<a href=#33 id=33 data-nosnippet>33</a>}
-<a href=#34 id=34 data-nosnippet>34</a>
-<a href=#35 id=35 data-nosnippet>35</a><span class="doccomment">/// Initializes the logging subsystem for `tracing` with the ability to dynamically update the log filtering directives
-<a href=#36 id=36 data-nosnippet>36</a>/// at runtime.
-<a href=#37 id=37 data-nosnippet>37</a>///
-<a href=#38 id=38 data-nosnippet>38</a>/// This function reads the `DD_LOG_LEVEL` environment variable to determine the log level to use. If the environment
-<a href=#39 id=39 data-nosnippet>39</a>/// variable is not set, the default log level is `INFO`. Additionally, it reads the `DD_LOG_FORMAT_JSON` environment
-<a href=#40 id=40 data-nosnippet>40</a>/// variable to determine which output format to use. If it is set to `json` (case insensitive), the logs will be
-<a href=#41 id=41 data-nosnippet>41</a>/// formatted as JSON. If it is set to any other value, or not set at all, the logs will default to a rich, colored,
-<a href=#42 id=42 data-nosnippet>42</a>/// human-readable format.
-<a href=#43 id=43 data-nosnippet>43</a>///
-<a href=#44 id=44 data-nosnippet>44</a>/// An API handler can be acquired (via [`acquire_logging_api_handler`]) to install the API routes which allow for
-<a href=#45 id=45 data-nosnippet>45</a>/// dynamically controlling the logging level filtering. See [`LoggingAPIHandler`] for more information.
-<a href=#46 id=46 data-nosnippet>46</a>///
-<a href=#47 id=47 data-nosnippet>47</a>/// # Errors
-<a href=#48 id=48 data-nosnippet>48</a>///
-<a href=#49 id=49 data-nosnippet>49</a>/// If the logging subsystem was already initialized, an error will be returned.
-<a href=#50 id=50 data-nosnippet>50</a></span><span class="kw">pub async fn </span>initialize_logging() -&gt; <span class="prelude-ty">Result</span>&lt;(), Box&lt;<span class="kw">dyn </span>std::error::Error + Send + Sync&gt;&gt; {
-<a href=#51 id=51 data-nosnippet>51</a>    <span class="comment">// TODO: Support for logging to syslog.
-<a href=#52 id=52 data-nosnippet>52</a>
-<a href=#53 id=53 data-nosnippet>53</a>    </span><span class="kw">let </span>logging_config = LoggingConfiguration::from_environment()
-<a href=#54 id=54 data-nosnippet>54</a>        .<span class="kw">await
-<a href=#55 id=55 data-nosnippet>55</a>        </span>.map_err(|e| <span class="macro">format!</span>(<span class="string">"Failed to initialize logging configuration: {}"</span>, e))<span class="question-mark">?</span>;
-<a href=#56 id=56 data-nosnippet>56</a>
-<a href=#57 id=57 data-nosnippet>57</a>    <span class="comment">// Set up our log level filtering and dynamic filter layer.
-<a href=#58 id=58 data-nosnippet>58</a>    </span><span class="kw">let </span>level_filter = logging_config.log_level.as_env_filter();
-<a href=#59 id=59 data-nosnippet>59</a>    <span class="kw">let </span>(filter_layer, reload_handle) = ReloadLayer::new(level_filter.clone());
-<a href=#60 id=60 data-nosnippet>60</a>    set_logging_api_handler(LoggingAPIHandler::new(level_filter, reload_handle));
-<a href=#61 id=61 data-nosnippet>61</a>
-<a href=#62 id=62 data-nosnippet>62</a>    <span class="comment">// Build all configured layers: one per output mechanism (console, file, etc).
-<a href=#63 id=63 data-nosnippet>63</a>    </span><span class="kw">let </span><span class="kw-2">mut </span>configured_layers = Vec::new();
-<a href=#64 id=64 data-nosnippet>64</a>
-<a href=#65 id=65 data-nosnippet>65</a>    <span class="kw">if </span>logging_config.log_to_console {
-<a href=#66 id=66 data-nosnippet>66</a>        <span class="kw">let </span>nb_stdout = convert_to_non_blocking_writer(std::io::stdout()).<span class="kw">await</span>;
-<a href=#67 id=67 data-nosnippet>67</a>        configured_layers.push(build_formatting_layer(<span class="kw-2">&amp;</span>logging_config, nb_stdout));
-<a href=#68 id=68 data-nosnippet>68</a>    }
-<a href=#69 id=69 data-nosnippet>69</a>
-<a href=#70 id=70 data-nosnippet>70</a>    <span class="kw">if </span>!logging_config.log_file.is_empty() {
-<a href=#71 id=71 data-nosnippet>71</a>        <span class="kw">let </span>appender_builder = RollingFileAppenderBase::builder();
-<a href=#72 id=72 data-nosnippet>72</a>        <span class="kw">let </span>appender = appender_builder
-<a href=#73 id=73 data-nosnippet>73</a>            .filename(logging_config.log_file.clone())
-<a href=#74 id=74 data-nosnippet>74</a>            .max_filecount(logging_config.log_file_max_rolls)
-<a href=#75 id=75 data-nosnippet>75</a>            .condition_max_file_size(logging_config.log_file_max_size.as_u64())
-<a href=#76 id=76 data-nosnippet>76</a>            .build()<span class="question-mark">?</span>;
+<a href=#13 id=13 data-nosnippet>13</a><span class="kw">use </span>saluki_error::{generic_error, GenericError};
+<a href=#14 id=14 data-nosnippet>14</a><span class="kw">use </span>tracing_appender::non_blocking::{NonBlocking, NonBlockingBuilder, WorkerGuard};
+<a href=#15 id=15 data-nosnippet>15</a><span class="kw">use </span>tracing_rolling_file::RollingFileAppenderBase;
+<a href=#16 id=16 data-nosnippet>16</a><span class="kw">use </span>tracing_subscriber::{
+<a href=#17 id=17 data-nosnippet>17</a>    layer::SubscriberExt <span class="kw">as _</span>, reload::Layer <span class="kw">as </span>ReloadLayer, util::SubscriberInitExt <span class="kw">as _</span>, Layer,
+<a href=#18 id=18 data-nosnippet>18</a>};
+<a href=#19 id=19 data-nosnippet>19</a>
+<a href=#20 id=20 data-nosnippet>20</a><span class="kw">mod </span>api;
+<a href=#21 id=21 data-nosnippet>21</a><span class="kw">use </span><span class="self">self</span>::api::set_logging_api_handler;
+<a href=#22 id=22 data-nosnippet>22</a><span class="kw">pub use </span><span class="self">self</span>::api::{acquire_logging_api_handler, LoggingAPIHandler};
+<a href=#23 id=23 data-nosnippet>23</a>
+<a href=#24 id=24 data-nosnippet>24</a><span class="kw">mod </span>config;
+<a href=#25 id=25 data-nosnippet>25</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">use </span><span class="self">self</span>::config::LoggingConfiguration;
+<a href=#26 id=26 data-nosnippet>26</a>
+<a href=#27 id=27 data-nosnippet>27</a><span class="kw">mod </span>layer;
+<a href=#28 id=28 data-nosnippet>28</a><span class="kw">use </span><span class="self">self</span>::layer::build_formatting_layer;
+<a href=#29 id=29 data-nosnippet>29</a>
+<a href=#30 id=30 data-nosnippet>30</a><span class="comment">// Number of buffered lines in each non-blocking log writer.
+<a href=#31 id=31 data-nosnippet>31</a>//
+<a href=#32 id=32 data-nosnippet>32</a>// This directly influences the idle memory usage since each logging backend (console, file, etc) will have a bounded
+<a href=#33 id=33 data-nosnippet>33</a>// channel that can hold this many elements, and each element is roughly 32 bytes, so 1,000 elements/lines consumes a
+<a href=#34 id=34 data-nosnippet>34</a>// minimum of ~32KB, etc.
+<a href=#35 id=35 data-nosnippet>35</a></span><span class="kw">const </span>NB_LOG_WRITER_BUFFER_SIZE: usize = <span class="number">4096</span>;
+<a href=#36 id=36 data-nosnippet>36</a>
+<a href=#37 id=37 data-nosnippet>37</a><span class="attr">#[derive(Default)]
+<a href=#38 id=38 data-nosnippet>38</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">struct </span>LoggingGuard {
+<a href=#39 id=39 data-nosnippet>39</a>    worker_guards: Vec&lt;WorkerGuard&gt;,
+<a href=#40 id=40 data-nosnippet>40</a>}
+<a href=#41 id=41 data-nosnippet>41</a>
+<a href=#42 id=42 data-nosnippet>42</a><span class="kw">impl </span>LoggingGuard {
+<a href=#43 id=43 data-nosnippet>43</a>    <span class="kw">fn </span>add_worker_guard(<span class="kw-2">&amp;mut </span><span class="self">self</span>, guard: WorkerGuard) {
+<a href=#44 id=44 data-nosnippet>44</a>        <span class="self">self</span>.worker_guards.push(guard);
+<a href=#45 id=45 data-nosnippet>45</a>    }
+<a href=#46 id=46 data-nosnippet>46</a>}
+<a href=#47 id=47 data-nosnippet>47</a>
+<a href=#48 id=48 data-nosnippet>48</a><span class="doccomment">/// Initializes the logging subsystem for `tracing` with the ability to dynamically update the log filtering directives
+<a href=#49 id=49 data-nosnippet>49</a>/// at runtime.
+<a href=#50 id=50 data-nosnippet>50</a>///
+<a href=#51 id=51 data-nosnippet>51</a>/// This function reads the `DD_LOG_LEVEL` environment variable to determine the log level to use. If the environment
+<a href=#52 id=52 data-nosnippet>52</a>/// variable is not set, the default log level is `INFO`. Additionally, it reads the `DD_LOG_FORMAT_JSON` environment
+<a href=#53 id=53 data-nosnippet>53</a>/// variable to determine which output format to use. If it is set to `json` (case insensitive), the logs will be
+<a href=#54 id=54 data-nosnippet>54</a>/// formatted as JSON. If it is set to any other value, or not set at all, the logs will default to a rich, colored,
+<a href=#55 id=55 data-nosnippet>55</a>/// human-readable format.
+<a href=#56 id=56 data-nosnippet>56</a>///
+<a href=#57 id=57 data-nosnippet>57</a>/// An API handler can be acquired (via [`acquire_logging_api_handler`]) to install the API routes which allow for
+<a href=#58 id=58 data-nosnippet>58</a>/// dynamically controlling the logging level filtering. See [`LoggingAPIHandler`] for more information.
+<a href=#59 id=59 data-nosnippet>59</a>///
+<a href=#60 id=60 data-nosnippet>60</a>/// Returns a [`LoggingGuard`] which must be held until the application is about to shutdown, ensuring that any
+<a href=#61 id=61 data-nosnippet>61</a>/// configured logging backends are able to completely flush any pending logs before the application exits.
+<a href=#62 id=62 data-nosnippet>62</a>///
+<a href=#63 id=63 data-nosnippet>63</a>/// # Errors
+<a href=#64 id=64 data-nosnippet>64</a>///
+<a href=#65 id=65 data-nosnippet>65</a>/// If the logging subsystem was already initialized, an error will be returned.
+<a href=#66 id=66 data-nosnippet>66</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">async fn </span>initialize_logging(config: <span class="kw-2">&amp;</span>LoggingConfiguration) -&gt; <span class="prelude-ty">Result</span>&lt;LoggingGuard, GenericError&gt; {
+<a href=#67 id=67 data-nosnippet>67</a>    <span class="comment">// TODO: Support for logging to syslog.
+<a href=#68 id=68 data-nosnippet>68</a>
+<a href=#69 id=69 data-nosnippet>69</a>    // Set up our log level filtering and dynamic filter layer.
+<a href=#70 id=70 data-nosnippet>70</a>    </span><span class="kw">let </span>level_filter = config.log_level.as_env_filter();
+<a href=#71 id=71 data-nosnippet>71</a>    <span class="kw">let </span>(filter_layer, reload_handle) = ReloadLayer::new(level_filter.clone());
+<a href=#72 id=72 data-nosnippet>72</a>    set_logging_api_handler(LoggingAPIHandler::new(level_filter, reload_handle));
+<a href=#73 id=73 data-nosnippet>73</a>
+<a href=#74 id=74 data-nosnippet>74</a>    <span class="comment">// Build all configured layers: one per output mechanism (console, file, etc).
+<a href=#75 id=75 data-nosnippet>75</a>    </span><span class="kw">let </span><span class="kw-2">mut </span>configured_layers = Vec::new();
+<a href=#76 id=76 data-nosnippet>76</a>    <span class="kw">let </span><span class="kw-2">mut </span>logging_guard = LoggingGuard::default();
 <a href=#77 id=77 data-nosnippet>77</a>
-<a href=#78 id=78 data-nosnippet>78</a>        <span class="kw">let </span>nb_appender = convert_to_non_blocking_writer(appender).<span class="kw">await</span>;
-<a href=#79 id=79 data-nosnippet>79</a>        configured_layers.push(build_formatting_layer(<span class="kw-2">&amp;</span>logging_config, nb_appender));
-<a href=#80 id=80 data-nosnippet>80</a>    }
+<a href=#78 id=78 data-nosnippet>78</a>    <span class="kw">if </span>config.log_to_console {
+<a href=#79 id=79 data-nosnippet>79</a>        <span class="kw">let </span>(nb_stdout, guard) = writer_to_nonblocking(<span class="string">"console"</span>, std::io::stdout());
+<a href=#80 id=80 data-nosnippet>80</a>        logging_guard.add_worker_guard(guard);
 <a href=#81 id=81 data-nosnippet>81</a>
-<a href=#82 id=82 data-nosnippet>82</a>    <span class="comment">// `tracing` accepts a `Vec&lt;L&gt;` where `L` implements `Layer&lt;S&gt;`, which acts as a fanout.. and then we're applying
-<a href=#83 id=83 data-nosnippet>83</a>    // our filter layer on top of that, so that we filter out events once rather than per output layer.
-<a href=#84 id=84 data-nosnippet>84</a>    </span>tracing_subscriber::registry()
-<a href=#85 id=85 data-nosnippet>85</a>        .with(configured_layers.with_filter(filter_layer))
-<a href=#86 id=86 data-nosnippet>86</a>        .try_init()<span class="question-mark">?</span>;
-<a href=#87 id=87 data-nosnippet>87</a>
-<a href=#88 id=88 data-nosnippet>88</a>    <span class="prelude-val">Ok</span>(())
-<a href=#89 id=89 data-nosnippet>89</a>}
-<a href=#90 id=90 data-nosnippet>90</a>
-<a href=#91 id=91 data-nosnippet>91</a><span class="kw">async fn </span>convert_to_non_blocking_writer&lt;W&gt;(writer: W) -&gt; NonBlocking
-<a href=#92 id=92 data-nosnippet>92</a><span class="kw">where
-<a href=#93 id=93 data-nosnippet>93</a>    </span>W: Write + Send + <span class="lifetime">'static</span>,
-<a href=#94 id=94 data-nosnippet>94</a>{
-<a href=#95 id=95 data-nosnippet>95</a>    <span class="kw">let </span>(nb_writer, worker_guard) = tracing_appender::non_blocking(writer);
+<a href=#82 id=82 data-nosnippet>82</a>        configured_layers.push(build_formatting_layer(config, nb_stdout));
+<a href=#83 id=83 data-nosnippet>83</a>    }
+<a href=#84 id=84 data-nosnippet>84</a>
+<a href=#85 id=85 data-nosnippet>85</a>    <span class="kw">if </span>!config.log_file.is_empty() {
+<a href=#86 id=86 data-nosnippet>86</a>        <span class="kw">let </span>appender_builder = RollingFileAppenderBase::builder();
+<a href=#87 id=87 data-nosnippet>87</a>        <span class="kw">let </span>appender = appender_builder
+<a href=#88 id=88 data-nosnippet>88</a>            .filename(config.log_file.clone())
+<a href=#89 id=89 data-nosnippet>89</a>            .max_filecount(config.log_file_max_rolls)
+<a href=#90 id=90 data-nosnippet>90</a>            .condition_max_file_size(config.log_file_max_size.as_u64())
+<a href=#91 id=91 data-nosnippet>91</a>            .build()
+<a href=#92 id=92 data-nosnippet>92</a>            .map_err(|e| <span class="macro">generic_error!</span>(<span class="string">"Failed to build log file appender: {}"</span>, e))<span class="question-mark">?</span>;
+<a href=#93 id=93 data-nosnippet>93</a>
+<a href=#94 id=94 data-nosnippet>94</a>        <span class="kw">let </span>(nb_appender, guard) = writer_to_nonblocking(<span class="string">"file"</span>, appender);
+<a href=#95 id=95 data-nosnippet>95</a>        logging_guard.add_worker_guard(guard);
 <a href=#96 id=96 data-nosnippet>96</a>
-<a href=#97 id=97 data-nosnippet>97</a>    <span class="comment">// TODO: Right now, we're just shoving this worker guard into an asynchronous task to keep it alive,
-<a href=#98 id=98 data-nosnippet>98</a>    // but we really should return it so that it can be held on to and only dropped at process exit... we
-<a href=#99 id=99 data-nosnippet>99</a>    // lack a mechanism to return it cleanly, though, so we'll tackle this once we have a proper bootstrap
-<a href=#100 id=100 data-nosnippet>100</a>    // procedure.
-<a href=#101 id=101 data-nosnippet>101</a>    </span>tokio::spawn(<span class="kw">async move </span>{
-<a href=#102 id=102 data-nosnippet>102</a>        <span class="kw">let </span>_worker_guard = worker_guard;
-<a href=#103 id=103 data-nosnippet>103</a>        pending::&lt;()&gt;().<span class="kw">await</span>;
-<a href=#104 id=104 data-nosnippet>104</a>    });
+<a href=#97 id=97 data-nosnippet>97</a>        configured_layers.push(build_formatting_layer(config, nb_appender));
+<a href=#98 id=98 data-nosnippet>98</a>    }
+<a href=#99 id=99 data-nosnippet>99</a>
+<a href=#100 id=100 data-nosnippet>100</a>    <span class="comment">// `tracing` accepts a `Vec&lt;L&gt;` where `L` implements `Layer&lt;S&gt;`, which acts as a fanout.. and then we're applying
+<a href=#101 id=101 data-nosnippet>101</a>    // our filter layer on top of that, so that we filter out events once rather than per output layer.
+<a href=#102 id=102 data-nosnippet>102</a>    </span>tracing_subscriber::registry()
+<a href=#103 id=103 data-nosnippet>103</a>        .with(configured_layers.with_filter(filter_layer))
+<a href=#104 id=104 data-nosnippet>104</a>        .try_init()<span class="question-mark">?</span>;
 <a href=#105 id=105 data-nosnippet>105</a>
-<a href=#106 id=106 data-nosnippet>106</a>    nb_writer
-<a href=#107 id=107 data-nosnippet>107</a>}</code></pre></div></section></main></body></html>
+<a href=#106 id=106 data-nosnippet>106</a>    <span class="prelude-val">Ok</span>(logging_guard)
+<a href=#107 id=107 data-nosnippet>107</a>}
+<a href=#108 id=108 data-nosnippet>108</a>
+<a href=#109 id=109 data-nosnippet>109</a><span class="kw">fn </span>writer_to_nonblocking&lt;W&gt;(writer_name: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, writer: W) -&gt; (NonBlocking, WorkerGuard)
+<a href=#110 id=110 data-nosnippet>110</a><span class="kw">where
+<a href=#111 id=111 data-nosnippet>111</a>    </span>W: Write + Send + <span class="lifetime">'static</span>,
+<a href=#112 id=112 data-nosnippet>112</a>{
+<a href=#113 id=113 data-nosnippet>113</a>    <span class="kw">let </span>thread_name = <span class="macro">format!</span>(<span class="string">"log-writer-{}"</span>, writer_name);
+<a href=#114 id=114 data-nosnippet>114</a>    NonBlockingBuilder::default()
+<a href=#115 id=115 data-nosnippet>115</a>        .thread_name(<span class="kw-2">&amp;</span>thread_name)
+<a href=#116 id=116 data-nosnippet>116</a>        .buffered_lines_limit(NB_LOG_WRITER_BUFFER_SIZE)
+<a href=#117 id=117 data-nosnippet>117</a>        .lossy(<span class="bool-val">true</span>)
+<a href=#118 id=118 data-nosnippet>118</a>        .finish(writer)
+<a href=#119 id=119 data-nosnippet>119</a>}</code></pre></div></section></main></body></html>

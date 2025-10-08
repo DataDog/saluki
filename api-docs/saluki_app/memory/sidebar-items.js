@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["initialize_allocator_telemetry","initialize_memory_bounds"],"struct":["MemoryBoundsConfiguration"]};
+window.SIDEBAR_ITEMS = {"fn":["initialize_memory_bounds"],"struct":["MemoryBoundsConfiguration"]};

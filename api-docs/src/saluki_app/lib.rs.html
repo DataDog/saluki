@@ -5,34 +5,10 @@
 <a href=#5 id=5 data-nosnippet>5</a></span><span class="attr">#![deny(warnings)]
 <a href=#6 id=6 data-nosnippet>6</a>#![deny(missing_docs)]
 <a href=#7 id=7 data-nosnippet>7</a>
-<a href=#8 id=8 data-nosnippet>8</a>#[cfg(feature = <span class="string">"api"</span>)]
-<a href=#9 id=9 data-nosnippet>9</a></span><span class="kw">pub mod </span>api;
-<a href=#10 id=10 data-nosnippet>10</a>
-<a href=#11 id=11 data-nosnippet>11</a><span class="kw">pub mod </span>bootstrap;
-<a href=#12 id=12 data-nosnippet>12</a>
-<a href=#13 id=13 data-nosnippet>13</a><span class="attr">#[cfg(feature = <span class="string">"logging"</span>)]
-<a href=#14 id=14 data-nosnippet>14</a></span><span class="kw">pub mod </span>logging;
-<a href=#15 id=15 data-nosnippet>15</a>
-<a href=#16 id=16 data-nosnippet>16</a><span class="attr">#[cfg(feature = <span class="string">"memory"</span>)]
-<a href=#17 id=17 data-nosnippet>17</a></span><span class="kw">pub mod </span>memory;
-<a href=#18 id=18 data-nosnippet>18</a>
-<a href=#19 id=19 data-nosnippet>19</a><span class="attr">#[cfg(feature = <span class="string">"metrics"</span>)]
-<a href=#20 id=20 data-nosnippet>20</a></span><span class="kw">pub mod </span>metrics;
-<a href=#21 id=21 data-nosnippet>21</a>
-<a href=#22 id=22 data-nosnippet>22</a><span class="attr">#[cfg(feature = <span class="string">"tls"</span>)]
-<a href=#23 id=23 data-nosnippet>23</a></span><span class="kw">pub mod </span>tls;
-<a href=#24 id=24 data-nosnippet>24</a>
-<a href=#25 id=25 data-nosnippet>25</a><span class="attr">#[cfg(feature = <span class="string">"config"</span>)]
-<a href=#26 id=26 data-nosnippet>26</a></span><span class="kw">pub mod </span>config;
-<a href=#27 id=27 data-nosnippet>27</a>
-<a href=#28 id=28 data-nosnippet>28</a><span class="doccomment">/// Common imports.
-<a href=#29 id=29 data-nosnippet>29</a></span><span class="kw">pub mod </span>prelude {
-<a href=#30 id=30 data-nosnippet>30</a>    <span class="attr">#[cfg(feature = <span class="string">"logging"</span>)]
-<a href=#31 id=31 data-nosnippet>31</a>    </span><span class="kw">pub use </span><span class="kw">super</span>::logging::{acquire_logging_api_handler, fatal_and_exit, initialize_logging};
-<a href=#32 id=32 data-nosnippet>32</a>    <span class="attr">#[cfg(feature = <span class="string">"memory"</span>)]
-<a href=#33 id=33 data-nosnippet>33</a>    </span><span class="kw">pub use </span><span class="kw">super</span>::memory::{initialize_allocator_telemetry, initialize_memory_bounds, MemoryBoundsConfiguration};
-<a href=#34 id=34 data-nosnippet>34</a>    <span class="attr">#[cfg(feature = <span class="string">"metrics"</span>)]
-<a href=#35 id=35 data-nosnippet>35</a>    </span><span class="kw">pub use </span><span class="kw">super</span>::metrics::{emit_startup_metrics, initialize_metrics};
-<a href=#36 id=36 data-nosnippet>36</a>    <span class="attr">#[cfg(feature = <span class="string">"tls"</span>)]
-<a href=#37 id=37 data-nosnippet>37</a>    </span><span class="kw">pub use </span><span class="kw">super</span>::tls::initialize_tls;
-<a href=#38 id=38 data-nosnippet>38</a>}</code></pre></div></section></main></body></html>
+<a href=#8 id=8 data-nosnippet>8</a></span><span class="kw">pub mod </span>api;
+<a href=#9 id=9 data-nosnippet>9</a><span class="kw">pub mod </span>bootstrap;
+<a href=#10 id=10 data-nosnippet>10</a><span class="kw">pub mod </span>config;
+<a href=#11 id=11 data-nosnippet>11</a><span class="kw">pub mod </span>logging;
+<a href=#12 id=12 data-nosnippet>12</a><span class="kw">pub mod </span>memory;
+<a href=#13 id=13 data-nosnippet>13</a><span class="kw">pub mod </span>metrics;
+<a href=#14 id=14 data-nosnippet>14</a><span class="kw">mod </span>tls;</code></pre></div></section></main></body></html>

@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["update_pid_file"]};
+window.SIDEBAR_ITEMS = {"struct":["AppBootstrapper","BootstrapGuard"]};
