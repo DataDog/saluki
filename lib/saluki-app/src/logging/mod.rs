@@ -36,12 +36,6 @@ impl LoggingGuard {
     }
 }
 
-/// Logs a message to standard error and exits the process with a non-zero exit code.
-pub fn fatal_and_exit(message: String) {
-    eprintln!("FATAL: {}", message);
-    std::process::exit(1);
-}
-
 /// Initializes the logging subsystem for `tracing` with the ability to dynamically update the log filtering directives
 /// at runtime.
 ///

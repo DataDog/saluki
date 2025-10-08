@@ -28,7 +28,7 @@ const fn default_log_file_max_rolls() -> usize {
 
 #[serde_as]
 #[derive(Deserialize)]
-pub(crate) struct LoggingConfiguration {
+pub struct LoggingConfiguration {
     #[serde(default = "default_log_level")]
     pub log_level: LogLevel,
     #[serde_as(as = "PermissiveBool")]
@@ -61,7 +61,7 @@ impl LoggingConfiguration {
 
 #[derive(Deserialize)]
 #[serde(try_from = "String")]
-pub(crate) struct LogLevel(EnvFilter);
+pub struct LogLevel(EnvFilter);
 
 impl LogLevel {
     pub fn as_env_filter(&self) -> EnvFilter {

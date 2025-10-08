@@ -2,7 +2,6 @@
 
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_error::{ErrorContext as _, GenericError};
-use tracing::warn;
 
 use crate::{
     logging::{initialize_logging, LoggingConfiguration, LoggingGuard},

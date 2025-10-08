@@ -7,22 +7,10 @@
 #![allow(unused_imports)]
 #![allow(dead_code)]
 
-#[cfg(feature = "api")]
 pub mod api;
-
 pub mod bootstrap;
-
-#[cfg(feature = "logging")]
-pub mod logging;
-
-#[cfg(feature = "memory")]
-pub mod memory;
-
-#[cfg(feature = "metrics")]
-pub mod metrics;
-
-#[cfg(feature = "tls")]
-mod tls;
-
-#[cfg(feature = "config")]
 pub mod config;
+pub mod logging;
+pub mod memory;
+pub mod metrics;
+mod tls;

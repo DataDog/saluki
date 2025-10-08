@@ -46,7 +46,7 @@ reqwest = { workspace = true, features = [
   "json",
 ] }
 saluki-api = { workspace = true }
-saluki-app = { workspace = true, features = ["full"] }
+saluki-app = { workspace = true }
 saluki-common = { workspace = true }
 saluki-components = { workspace = true }
 saluki-config = { workspace = true }
