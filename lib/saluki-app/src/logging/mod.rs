@@ -8,8 +8,10 @@
 // We might consider _something_ like a string pool in the future, but we can defer that until we have a better idea of
 // what the potential impact is in practice.
 
+use std::io::Write;
+
 use saluki_error::{generic_error, GenericError};
-use tracing_appender::non_blocking::WorkerGuard;
+use tracing_appender::non_blocking::{NonBlocking, NonBlockingBuilder, WorkerGuard};
 use tracing_rolling_file::RollingFileAppenderBase;
 use tracing_subscriber::{
     layer::SubscriberExt as _, reload::Layer as ReloadLayer, util::SubscriberInitExt as _, Layer,
@@ -24,6 +26,13 @@ pub(crate) use self::config::LoggingConfiguration;
 
 mod layer;
 use self::layer::build_formatting_layer;
+
+// Number of buffered lines in each non-blocking log writer.
+//
+// This directly influences the idle memory usage since each logging backend (console, file, etc) will have a bounded
+// channel that can hold this many elements, and each element is roughly 32 bytes, so 1,000 elements/lines consumes a
+// minimum of ~32KB, etc.
+const NB_LOG_WRITER_BUFFER_SIZE: usize = 4096;
 
 #[derive(Default)]
 pub(crate) struct LoggingGuard {
@@ -67,7 +76,7 @@ pub(crate) async fn initialize_logging(config: &LoggingConfiguration) -> Result<
     let mut logging_guard = LoggingGuard::default();
 
     if config.log_to_console {
-        let (nb_stdout, guard) = tracing_appender::non_blocking(std::io::stdout());
+        let (nb_stdout, guard) = writer_to_nonblocking("console", std::io::stdout());
         logging_guard.add_worker_guard(guard);
 
         configured_layers.push(build_formatting_layer(config, nb_stdout));
@@ -82,7 +91,7 @@ pub(crate) async fn initialize_logging(config: &LoggingConfiguration) -> Result<
             .build()
             .map_err(|e| generic_error!("Failed to build log file appender: {}", e))?;
 
-        let (nb_appender, guard) = tracing_appender::non_blocking(appender);
+        let (nb_appender, guard) = writer_to_nonblocking("file", appender);
         logging_guard.add_worker_guard(guard);
 
         configured_layers.push(build_formatting_layer(config, nb_appender));
@@ -95,4 +104,16 @@ pub(crate) async fn initialize_logging(config: &LoggingConfiguration) -> Result<
         .try_init()?;
 
     Ok(logging_guard)
+}
+
+fn writer_to_nonblocking<W>(writer_name: &'static str, writer: W) -> (NonBlocking, WorkerGuard)
+where
+    W: Write + Send + 'static,
+{
+    let thread_name = format!("log-writer-{}", writer_name);
+    NonBlockingBuilder::default()
+        .thread_name(&thread_name)
+        .buffered_lines_limit(NB_LOG_WRITER_BUFFER_SIZE)
+        .lossy(true)
+        .finish(writer)
 }
