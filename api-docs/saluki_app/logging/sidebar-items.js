@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["acquire_logging_api_handler","fatal_and_exit","initialize_logging"],"struct":["LoggingAPIHandler","LoggingHandlerState"]};
+window.SIDEBAR_ITEMS = {"fn":["acquire_logging_api_handler","fatal_and_exit","initialize_logging"],"struct":["LoggingAPIHandler"]};
