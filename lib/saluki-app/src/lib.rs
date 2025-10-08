@@ -4,8 +4,6 @@
 //! initializing logging, metrics, and memory management.
 #![deny(warnings)]
 #![deny(missing_docs)]
-#![allow(unused_imports)]
-#![allow(dead_code)]
 
 pub mod api;
 pub mod bootstrap;

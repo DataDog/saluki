@@ -1,6 +1,6 @@
 //! Bootstrap utilities.
 
-use saluki_config::{ConfigurationLoader, GenericConfiguration};
+use saluki_config::GenericConfiguration;
 use saluki_error::{ErrorContext as _, GenericError};
 
 use crate::{

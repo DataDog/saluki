@@ -51,6 +51,9 @@ async fn main() -> Result<(), GenericError> {
         )
         .from_environment(self::internal::platform::DATADOG_AGENT_ENV_VAR_PREFIX)
         .error_context("Environment variable prefix should not be empty.")?
+        .with_default_secrets_resolution()
+        .await
+        .error_context("Failed to load secrets resolution configuration.")?
         .bootstrap_generic();
 
     // Proceed with bootstrapping.

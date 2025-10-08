@@ -6,7 +6,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 #[command(about)]
 pub struct Cli {
     /// Path to the configuration file.
-    #[arg(short = 'c', long = "config")]
+    #[arg(short = 'c', long = "config", global = true)]
     pub config_file: Option<PathBuf>,
 
     /// Subcommand to run.
