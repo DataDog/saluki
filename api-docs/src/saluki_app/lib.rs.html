@@ -28,13 +28,11 @@
 <a href=#28 id=28 data-nosnippet>28</a><span class="doccomment">/// Common imports.
 <a href=#29 id=29 data-nosnippet>29</a></span><span class="kw">pub mod </span>prelude {
 <a href=#30 id=30 data-nosnippet>30</a>    <span class="attr">#[cfg(feature = <span class="string">"logging"</span>)]
-<a href=#31 id=31 data-nosnippet>31</a>    </span><span class="kw">pub use </span><span class="kw">super</span>::logging::{
-<a href=#32 id=32 data-nosnippet>32</a>        acquire_logging_api_handler, fatal_and_exit, initialize_dynamic_logging, initialize_logging,
-<a href=#33 id=33 data-nosnippet>33</a>    };
-<a href=#34 id=34 data-nosnippet>34</a>    <span class="attr">#[cfg(feature = <span class="string">"memory"</span>)]
-<a href=#35 id=35 data-nosnippet>35</a>    </span><span class="kw">pub use </span><span class="kw">super</span>::memory::{initialize_allocator_telemetry, initialize_memory_bounds, MemoryBoundsConfiguration};
-<a href=#36 id=36 data-nosnippet>36</a>    <span class="attr">#[cfg(feature = <span class="string">"metrics"</span>)]
-<a href=#37 id=37 data-nosnippet>37</a>    </span><span class="kw">pub use </span><span class="kw">super</span>::metrics::{emit_startup_metrics, initialize_metrics};
-<a href=#38 id=38 data-nosnippet>38</a>    <span class="attr">#[cfg(feature = <span class="string">"tls"</span>)]
-<a href=#39 id=39 data-nosnippet>39</a>    </span><span class="kw">pub use </span><span class="kw">super</span>::tls::initialize_tls;
-<a href=#40 id=40 data-nosnippet>40</a>}</code></pre></div></section></main></body></html>
+<a href=#31 id=31 data-nosnippet>31</a>    </span><span class="kw">pub use </span><span class="kw">super</span>::logging::{acquire_logging_api_handler, fatal_and_exit, initialize_logging};
+<a href=#32 id=32 data-nosnippet>32</a>    <span class="attr">#[cfg(feature = <span class="string">"memory"</span>)]
+<a href=#33 id=33 data-nosnippet>33</a>    </span><span class="kw">pub use </span><span class="kw">super</span>::memory::{initialize_allocator_telemetry, initialize_memory_bounds, MemoryBoundsConfiguration};
+<a href=#34 id=34 data-nosnippet>34</a>    <span class="attr">#[cfg(feature = <span class="string">"metrics"</span>)]
+<a href=#35 id=35 data-nosnippet>35</a>    </span><span class="kw">pub use </span><span class="kw">super</span>::metrics::{emit_startup_metrics, initialize_metrics};
+<a href=#36 id=36 data-nosnippet>36</a>    <span class="attr">#[cfg(feature = <span class="string">"tls"</span>)]
+<a href=#37 id=37 data-nosnippet>37</a>    </span><span class="kw">pub use </span><span class="kw">super</span>::tls::initialize_tls;
+<a href=#38 id=38 data-nosnippet>38</a>}</code></pre></div></section></main></body></html>
