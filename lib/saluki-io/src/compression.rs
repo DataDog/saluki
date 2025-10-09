@@ -55,6 +55,7 @@ impl CompressionScheme {
     /// Defaults to zstd with level 3.
     pub fn new(scheme: &str, level: i32) -> Self {
         match scheme {
+            "noop" => CompressionScheme::Noop,
             "zlib" => CompressionScheme::zlib_default(),
             "zstd" => Self::Zstd(Level::Precise(level)),
             _ => Self::Zstd(Level::Default),
