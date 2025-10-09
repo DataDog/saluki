@@ -28,7 +28,7 @@ use crate::common::datadog::{
     DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
 };
 
-const DEFAULT_SERIALIZER_COMPRESSOR_KIND: &str = "noop";
+const DEFAULT_SERIALIZER_COMPRESSOR_KIND: &str = "zstd";
 const MAX_LOGS_PER_PAYLOAD: usize = 1000;
 
 static CONTENT_TYPE_JSON: HeaderValue = HeaderValue::from_static("application/json");
@@ -38,7 +38,7 @@ fn default_serializer_compressor_kind() -> String {
 }
 
 const fn default_zstd_compressor_level() -> i32 {
-    1
+    3
 }
 
 /// Datadog Logs incremental encoder.
