@@ -543,7 +543,7 @@ async fn run_converter(
     buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     let mut event_buffer_manager = EventBufferManager::default();
-
+    // what?
     loop {
         select! {
             Some(otlp_resource) = receiver.recv() => {
