@@ -46,7 +46,7 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, MissedTickBehavior};
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 mod attributes;
 mod logs;
@@ -518,6 +518,7 @@ async fn dispatch_events(mut events: EventsBuffer, source_context: &SourceContex
         }
 
         if let Err(e) = buffered_dispatcher.flush().await {
+            info!("ANDREWQHUH");
             error!(error = %e, "Failed to flush log(s).");
         }
     }
