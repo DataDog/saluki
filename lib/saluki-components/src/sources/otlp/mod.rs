@@ -540,7 +540,7 @@ async fn run_converter(
     // Set a buffer flush interval of 100ms, which will ensure we always flush buffered events at least every 100ms if
     // we're otherwise idle and not receiving packets from the client.
     let mut buffer_flush = interval(Duration::from_millis(100));
-    buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Burst);
 
     let mut event_buffer_manager = EventBufferManager::default();
     // what?
