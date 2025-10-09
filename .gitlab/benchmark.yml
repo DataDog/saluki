@@ -218,6 +218,7 @@ run-benchmarks-adp:
       --comparison-sha ${COMPARISON_ADP_SHA}
       --target-config-dir ./test/smp/regression/adp/
       --submission-metadata submission_metadata
+      --tags "ci_commit_branch=${CI_COMMIT_BRANCH}"
     # Populate some data that we'll need later for generating links to experiment dashboards.
     - date +%s > adp_job_start_time
     - cat submission_metadata | jq -r '.jobId' > adp_run_id
