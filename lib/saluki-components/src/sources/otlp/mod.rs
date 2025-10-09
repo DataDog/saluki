@@ -536,7 +536,7 @@ async fn run_converter(
     mut metrics_translator: OtlpMetricsTranslator, mut logs_translator: OtlpLogsTranslator, metrics: Metrics,
 ) {
     tokio::pin!(shutdown_handle);
-    debug!("OTLP resource converter task started.");
+    debug!("OTLP resource converter task started");
 
     // Set a buffer flush interval of 100ms, which will ensure we always flush buffered events at least every 100ms if
     // we're otherwise idle and not receiving packets from the client.
