@@ -7,7 +7,7 @@ use saluki_common::buf::{ChunkedBytesBuffer, FrozenChunkedBytesBuffer};
 use saluki_io::compression::*;
 use snafu::{ResultExt, Snafu};
 use tokio::io::AsyncWriteExt as _;
-use tracing::{error, debug, trace, warn};
+use tracing::{debug, error, trace, warn};
 
 const SCRATCH_BUF_CAPACITY: usize = 8192;
 

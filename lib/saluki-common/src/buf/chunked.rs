@@ -114,7 +114,6 @@ impl FrozenChunkedBytesBuffer {
     pub fn len(&self) -> usize {
         self.chunks.iter().map(|chunk| chunk.len()).sum()
     }
-
 }
 
 impl Buf for FrozenChunkedBytesBuffer {
