@@ -1,0 +1,28 @@
+optimization_goal: memory
+erratic: false
+
+target:
+  name: agent-data-plane
+  command: /usr/local/bin/agent-data-plane run
+  cpu_allotment: 4
+  memory_allotment: 2GiB
+
+  environment:
+    DD_API_KEY: a0000001
+    DD_HOSTNAME: smp-regression
+    DD_DD_URL: http://127.0.0.1:4317
+
+    # Disables UDP and enables listening on UDS in SOCK_DGRAM mode.
+    DD_DOGSTATSD_PORT: "0"
+    DD_DOGSTATSD_SOCKET: /tmp/adp-dogstatsd-dgram.sock
+
+    # Runs ADP in standalone mode, which decouples ADP from any dependency on the Datadog Agent.
+    DD_ADP_STANDALONE_MODE: "true"
+
+    # Enable internal telemetry endpoint.
+    DD_TELEMETRY_ENABLED: "true"
+    DD_PROMETHEUS_LISTEN_ADDR: tcp://127.0.0.1:5102
+
+    #enable otlp
+    DD_ADP_OTLP_ENABLED: "true"
+    DD_OTLP_CONFIG: '{}'
