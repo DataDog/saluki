@@ -1,13 +1,14 @@
 use std::collections::{HashMap, HashSet};
 
 use comfy_table::{presets::ASCII_FULL_CONDENSED, Cell, ContentArrangement, Row, Table};
+use saluki_config::GenericConfiguration;
 use saluki_error::{ErrorContext as _, GenericError};
 use serde::Deserialize;
 use tokio::io::{self, AsyncWriteExt};
 use tracing::{error, info};
 
 use crate::{
-    cli::utils::APIClient,
+    cli::utils::ControlPlaneAPIClient,
     config::{AnalysisMode, DogstatsdConfig, DogstatsdStatsConfig, SortDirection},
 };
 
@@ -26,25 +27,34 @@ struct StatsResponse<'a> {
 }
 
 /// Entrypoint for all `dogstatsd` subcommands.
-pub async fn handle_dogstatsd_subcommand(config: DogstatsdConfig) {
+pub async fn handle_dogstatsd_subcommand(bootstrap_config: &GenericConfiguration, config: DogstatsdConfig) {
+    let api_client = match ControlPlaneAPIClient::from_config(bootstrap_config) {
+        Ok(client) => client,
+        Err(e) => {
+            error!("Failed to create control plane API client: {:#}", e);
+            std::process::exit(1);
+        }
+    };
+
     match config {
         DogstatsdConfig::Stats(config) => {
-            if let Err(e) = handle_dogstatsd_stats(config).await {
-                error!("Failed to run stats subcommand: {}", e);
+            if let Err(e) = handle_dogstatsd_stats(api_client, config).await {
+                error!("Failed to run stats subcommand: {:#}", e);
                 std::process::exit(1);
             }
         }
     }
 }
 
-async fn handle_dogstatsd_stats(config: DogstatsdStatsConfig) -> Result<(), GenericError> {
+async fn handle_dogstatsd_stats(
+    api_client: ControlPlaneAPIClient, config: DogstatsdStatsConfig,
+) -> Result<(), GenericError> {
     // Trigger a statistics collection and wait for it to complete.
     info!(
         "Triggered statistics collection over the next {} seconds. Waiting for completion...",
         config.collection_duration_secs
     );
 
-    let api_client = APIClient::new();
     let response_body = api_client.dogstatsd_stats(config.collection_duration_secs).await?;
     let mut response = serde_json::from_str::<StatsResponse>(&response_body)
         .error_context("Failed to deserialize collected statistics response.")?;

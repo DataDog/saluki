@@ -5,7 +5,7 @@ use saluki_error::{ErrorContext as _, GenericError};
 use serde::Deserialize;
 use tracing::error;
 
-use crate::{cli::utils::APIClient, config::WorkloadConfig};
+use crate::{cli::utils::ControlPlaneAPIClient, config::WorkloadConfig};
 
 #[derive(Deserialize)]
 struct TagsWithCardinality<'a> {
@@ -39,17 +39,17 @@ struct ExternalDataEntry<'a> {
 }
 
 /// Entrypoint for all `workload` subcommands.
-pub async fn handle_workload_command(config: WorkloadConfig) {
+pub async fn handle_workload_command(api_client: ControlPlaneAPIClient, config: WorkloadConfig) {
     match config {
         WorkloadConfig::Tags { json } => {
-            if let Err(e) = dump_tags(json).await {
-                error!("Failed to dump workload tags: {}", e);
+            if let Err(e) = dump_tags(api_client, json).await {
+                error!("Failed to dump workload tags: {:#}", e);
                 std::process::exit(1);
             }
         }
         WorkloadConfig::ExternalData { json } => {
-            if let Err(e) = dump_external_data(json).await {
-                error!("Failed to dump workload external data: {}", e);
+            if let Err(e) = dump_external_data(api_client, json).await {
+                error!("Failed to dump workload external data: {:#}", e);
                 std::process::exit(1);
             }
         }
@@ -57,7 +57,7 @@ pub async fn handle_workload_command(config: WorkloadConfig) {
 }
 
 /// Dumps all tags from the workload provider.
-pub async fn dump_tags(json_output: bool) -> Result<(), GenericError> {
+pub async fn dump_tags(api_client: ControlPlaneAPIClient, json_output: bool) -> Result<(), GenericError> {
     static ENTITY: LazyLock<ColoredString> = LazyLock::new(|| "Entity".bold());
     static ALIAS: LazyLock<ColoredString> = LazyLock::new(|| "Alias".bold());
     static TAGS: LazyLock<ColoredString> = LazyLock::new(|| "Tags".bold());
@@ -65,7 +65,6 @@ pub async fn dump_tags(json_output: bool) -> Result<(), GenericError> {
     static ORCH_CARD: LazyLock<ColoredString> = LazyLock::new(|| "Orchestrator".bold());
     static HIGH_CARD: LazyLock<ColoredString> = LazyLock::new(|| "High".bold());
 
-    let api_client = APIClient::new();
     let raw_entity_tags = api_client.workload_tags().await?;
 
     let entity_tags_entries = serde_json::from_str::<Vec<EntityTagsEntry>>(&raw_entity_tags)
@@ -118,13 +117,12 @@ fn print_tags<T: std::fmt::Display>(tag_set_name: &T, tags: Vec<&str>) {
 }
 
 /// Dumps all External Data entries from the workload provider.
-pub async fn dump_external_data(json_output: bool) -> Result<(), GenericError> {
+pub async fn dump_external_data(api_client: ControlPlaneAPIClient, json_output: bool) -> Result<(), GenericError> {
     static CONTAINER_ID: LazyLock<ColoredString> = LazyLock::new(|| "Container ID".bold());
     static POD_UID: LazyLock<ColoredString> = LazyLock::new(|| "Pod UID".bold());
     static CONTAINER_NAME: LazyLock<ColoredString> = LazyLock::new(|| "Container Name".bold());
     static INIT_CONTAINER: LazyLock<ColoredString> = LazyLock::new(|| "Init Container".bold());
 
-    let api_client = APIClient::new();
     let raw_external_data = api_client.workload_external_data().await?;
 
     let external_data_entries = serde_json::from_str::<Vec<ExternalDataEntry>>(&raw_external_data)

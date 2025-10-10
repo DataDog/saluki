@@ -1,7 +1,7 @@
 use std::{
     fmt,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use axum::extract::connect_info::Connected;
@@ -85,6 +85,17 @@ impl ListenAddress {
             Self::Unixgram(_) => None,
             #[cfg(unix)]
             Self::Unix(_) => None,
+        }
+    }
+
+    /// Returns the Unix domain socket path if the address is a Unix domain socket in SOCK_STREAM mode.
+    ///
+    /// Returns `None` otherwise.
+    pub fn as_unix_stream_path(&self) -> Option<&Path> {
+        match self {
+            #[cfg(unix)]
+            Self::Unix(path) => Some(path),
+            _ => None,
         }
     }
 }
@@ -238,6 +249,42 @@ impl From<ProcessCredentials> for ConnectionAddress {
 impl<'a> Connected<&'a Connection> for ConnectionAddress {
     fn connect_info(target: &'a Connection) -> Self {
         target.remote_addr()
+    }
+}
+
+/// A gRPC target address.
+///
+/// This represents the address of a gRPC server that can be connected to. `GrpcTargetAddress` exposes a `Display`
+/// implementation that emits the target address following the rules of the [gRPC Name
+/// Resolution][grpc_name_resolution_docs] documentation.
+///
+/// Only connection-oriented transports are supported: TCP and Unix domain sockets in SOCK_STREAM mode.
+///
+/// [grpc_name_resolution_docs]: https://github.com/grpc/grpc/blob/master/doc/naming.md
+pub enum GrpcTargetAddress {
+    Tcp(SocketAddr),
+    Unix(PathBuf),
+}
+
+impl GrpcTargetAddress {
+    /// Creates a new `GrpcTargetAddress` from the given `ListenAddress`.
+    ///
+    /// Returns `None` if the listen address is not a connection-oriented transport.
+    pub fn try_from_listen_addr(listen_address: &ListenAddress) -> Option<Self> {
+        match listen_address {
+            ListenAddress::Tcp(addr) => Some(GrpcTargetAddress::Tcp(*addr)),
+            ListenAddress::Unix(path) => Some(GrpcTargetAddress::Unix(path.clone())),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for GrpcTargetAddress {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            GrpcTargetAddress::Tcp(addr) => write!(f, "{}", addr),
+            GrpcTargetAddress::Unix(path) => write!(f, "unix://{}", path.display()),
+        }
     }
 }
 
