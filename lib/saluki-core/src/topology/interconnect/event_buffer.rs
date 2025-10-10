@@ -1,7 +1,5 @@
 use std::{collections::VecDeque, fmt};
 
-use tracing::info;
-
 use crate::{
     data_model::event::{Event, EventType},
     topology::interconnect::{dispatcher::DispatchBuffer, Dispatchable},
@@ -144,13 +142,6 @@ impl<const N: usize> DispatchBuffer for FixedSizeEventBuffer<N> {
     }
 
     fn try_push(&mut self, item: Self::Item) -> Option<Self::Item> {
-        if self.is_full() {
-            info!(
-                "WACKTEST5: fixed_size_event_buffer_full len={} capacity={}",
-                self.len(),
-                <FixedSizeEventBuffer<N>>::capacity(self)
-            );
-        }
         self.try_push(item)
     }
 }
@@ -211,14 +202,6 @@ impl<const N: usize> EventBufferManager<N> {
     /// If the event buffer is full, it is replaced with a new event buffer before pushing the event, and `Some(buffer)`
     /// is returned containing the old event buffer. Otherwise, `None` is returned.
     pub fn try_push(&mut self, event: Event) -> Option<FixedSizeEventBuffer<N>> {
-        if let Some(current) = self.current.as_ref() {
-            info!(
-                "WACKTEST3: ebm_try_push_pre len={} capacity={}",
-                current.len(),
-                <FixedSizeEventBuffer<N>>::capacity(current)
-            );
-        }
-
         let buffer = self.current.get_or_insert_default();
 
         match buffer.try_push(event) {
@@ -227,50 +210,21 @@ impl<const N: usize> EventBufferManager<N> {
                 // into it again, and return the old buffer to the caller.
                 let old_buffer = std::mem::take(buffer);
 
-                info!(
-                    "WACKTEST3: ebm_swap_old len={} capacity={}",
-                    old_buffer.len(),
-                    <FixedSizeEventBuffer<N>>::capacity(&old_buffer)
-                );
-
                 if buffer.try_push(event).is_some() {
                     panic!("New event buffer is unexpectedly full.")
                 }
-
-                info!(
-                    "WACKTEST3: ebm_swap_new len={} capacity={}",
-                    buffer.len(),
-                    <FixedSizeEventBuffer<N>>::capacity(buffer)
-                );
 
                 Some(old_buffer)
             }
 
             // We were able to push the event into the current buffer, so we're done.
-            None => {
-                info!(
-                    "WACKTEST3: ebm_post_push len={} capacity={}",
-                    buffer.len(),
-                    <FixedSizeEventBuffer<N>>::capacity(buffer)
-                );
-                None
-            }
+            None => None,
         }
     }
 
     /// Consumes the current event buffer, if one exists.
     pub fn consume(&mut self) -> Option<FixedSizeEventBuffer<N>> {
-        let taken = self.current.take();
-        if let Some(ref buf) = taken {
-            info!(
-                "WACKTEST4: ebm_consume len={} capacity={}",
-                buf.len(),
-                <FixedSizeEventBuffer<N>>::capacity(buf)
-            );
-        } else {
-            info!("WACKTEST4: ebm_consume none");
-        }
-        taken
+        self.current.take()
     }
 }
 

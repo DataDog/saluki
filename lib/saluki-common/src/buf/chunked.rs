@@ -9,7 +9,6 @@ use std::{
 use bytes::{buf::UninitSlice, Buf, BufMut, Bytes, BytesMut};
 use http_body::{Body, Frame, SizeHint};
 use tokio::io::AsyncWrite;
-use tracing::info;
 
 /// A bytes buffer that write dynamically-sized payloads across multiple fixed-size chunks.
 ///
@@ -28,13 +27,11 @@ pub struct ChunkedBytesBuffer {
 impl ChunkedBytesBuffer {
     /// Creates a new `ChunkedBytesBuffer`, configured to use chunks of the given size.
     pub fn new(chunk_size: usize) -> Self {
-        let s = Self {
+        Self {
             chunks: VecDeque::new(),
             chunk_size,
             remaining_capacity: 0,
-        };
-        info!("WACKTEST6: chunked_bytes_buffer_new chunk_size={}", chunk_size);
-        s
+        }
     }
 
     /// Returns `true` if the buffer has no data.
@@ -50,12 +47,6 @@ impl ChunkedBytesBuffer {
     fn register_new_chunk(&mut self) {
         self.remaining_capacity += self.chunk_size;
         self.chunks.push_back(BytesMut::with_capacity(self.chunk_size));
-        info!(
-            "WACKTEST6: cbb_register_new_chunk chunks={} chunk_size={} remaining_capacity={}",
-            self.chunks.len(),
-            self.chunk_size,
-            self.remaining_capacity
-        );
     }
 
     fn ensure_capacity_for_write(&mut self) {
@@ -76,17 +67,7 @@ impl ChunkedBytesBuffer {
 
 impl AsyncWrite for ChunkedBytesBuffer {
     fn poll_write(mut self: Pin<&mut Self>, _: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, io::Error>> {
-        let before_len = self.len();
-        let before_chunks = self.chunks.len();
         self.put_slice(buf);
-        info!(
-            "WACKTEST6: cbb_poll_write wrote={} len_before={} len_after={} chunks_before={} chunks_after={}",
-            buf.len(),
-            before_len,
-            self.len(),
-            before_chunks,
-            self.chunks.len()
-        );
         Poll::Ready(Ok(buf.len()))
     }
 
