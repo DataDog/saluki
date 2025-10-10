@@ -27,10 +27,13 @@ const fn default_secure_api_listen_address() -> ListenAddress {
 
 #[derive(Deserialize)]
 pub struct ControlPlaneConfiguration {
-    #[serde(default = "default_api_listen_address")]
+    #[serde(rename = "data_plane_api_listen_addr", default = "default_api_listen_address")]
     pub api_listen_address: ListenAddress,
 
-    #[serde(default = "default_secure_api_listen_address")]
+    #[serde(
+        rename = "data_plane_secure_api_listen_addr",
+        default = "default_secure_api_listen_address"
+    )]
     pub secure_api_listen_address: ListenAddress,
 }
 
