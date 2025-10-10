@@ -7,7 +7,7 @@ use saluki_common::buf::{ChunkedBytesBuffer, FrozenChunkedBytesBuffer};
 use saluki_io::compression::*;
 use snafu::{ResultExt, Snafu};
 use tokio::io::AsyncWriteExt as _;
-use tracing::{error, info, trace, warn};
+use tracing::{error, debug, trace, warn};
 
 const SCRATCH_BUF_CAPACITY: usize = 8192;
 
@@ -394,15 +394,7 @@ where
         }
 
         let inputs_written = self.clear_encoded_inputs();
-        info!(
-            encoder = E::encoder_name(),
-            endpoint = ?self.encoder.endpoint_uri(),
-            uncompressed_len,
-            compressed_len,
-            inputs_written,
-            "Flushing request."
-        );
-
+        debug!(encoder = E::encoder_name(), endpoint = ?self.encoder.endpoint_uri(), uncompressed_len, compressed_len, inputs_written, "Flushing request.");
         vec![self.create_request(compressed_buf).map(|req| (inputs_written, req))]
     }
 
