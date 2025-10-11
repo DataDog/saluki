@@ -206,7 +206,7 @@ impl LogsEndpointEncoder {
 
         // Last-write-wins: merge AdditionalProperties last
         for (k, v) in log.additional_properties() {
-            obj.insert(k.clone(), v.clone());
+            obj.insert(k.to_string(), v.clone());
         }
 
         JsonValue::Object(obj)

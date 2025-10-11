@@ -1,24 +1,19 @@
 //! OTLP semantic conventions for attributes.
 
-use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use opentelemetry_semantic_conventions::{resource::*, trace::*};
-use otlp_protos::opentelemetry::proto::common::v1 as otlp_common;
-use saluki_context::tags::{SharedTagSet, TagSet};
+use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common, any_value::Value};
+use saluki_common::collections::{FastHashMap, FastHashSet};
+use saluki_context::tags::TagSet;
 
-mod process;
 pub mod source;
-mod system;
 pub mod translator;
-
-use self::process::ProcessAttributes;
-use self::system::SystemAttributes;
 
 const CUSTOM_CONTAINER_TAG_PREFIX: &str = "datadog.container.tag.";
 
-static CORE_MAPPING: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
-    let mut m = HashMap::new();
+static CORE_MAPPING: LazyLock<FastHashMap<&'static str, &'static str>> = LazyLock::new(|| {
+    let mut m = FastHashMap::default();
     m.insert("deployment.environment", "env"); // For older semconv versions
     m.insert(DEPLOYMENT_ENVIRONMENT_NAME, "env");
     m.insert(SERVICE_NAME, "service");
@@ -26,8 +21,8 @@ static CORE_MAPPING: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::n
     m
 });
 
-static CONTAINER_MAPPINGS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
-    let mut m = HashMap::new();
+static CONTAINER_MAPPINGS: LazyLock<FastHashMap<&'static str, &'static str>> = LazyLock::new(|| {
+    let mut m = FastHashMap::default();
     // Containers
     m.insert(CONTAINER_ID, "container_id");
     m.insert(CONTAINER_NAME, "container_name");
@@ -68,8 +63,8 @@ static CONTAINER_MAPPINGS: LazyLock<HashMap<&'static str, &'static str>> = LazyL
 // and Datadog Agent conventions. The Datadog Agent conventions can be found at
 // https://github.com/DataDog/datadog-agent/blob/e081bed/pkg/tagger/collectors/const.go and
 // https://github.com/DataDog/datadog-agent/blob/e081bed/pkg/util/kubernetes/const.go
-static KUBERNETES_MAPPING: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
-    let mut m = HashMap::new();
+static KUBERNETES_MAPPING: LazyLock<FastHashMap<&'static str, &'static str>> = LazyLock::new(|| {
+    let mut m = FastHashMap::default();
     // Standard Datadog labels
     m.insert("tags.datadoghq.com/env", "env");
     m.insert("tags.datadoghq.com/service", "service");
@@ -89,7 +84,7 @@ static KUBERNETES_MAPPING: LazyLock<HashMap<&'static str, &'static str>> = LazyL
 // https://docs.datadoghq.com/containers/kubernetes/tag/?tab=containerizedagent#out-of-the-box-tags
 // https://github.com/DataDog/datadog-agent/blob/d33d042d6786e8b85f72bb627fbf06ad8a658031/comp/core/tagger/taggerimpl/collectors/workloadmeta_extract.go
 // Note: if any OTel semantics happen to overlap with these tag names, they will also be added as Datadog tags.
-static KUBERNETES_DD_TAGS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+static KUBERNETES_DD_TAGS: LazyLock<FastHashSet<&'static str>> = LazyLock::new(|| {
     let tags = vec![
         "architecture",
         "availability-zone",
@@ -166,8 +161,8 @@ static KUBERNETES_DD_TAGS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
 // HTTPMappings defines the mapping between OpenTelemetry semantic conventions
 // and Datadog Agent conventions for HTTP attributes.
 #[allow(dead_code)]
-static HTTP_MAPPINGS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
-    let mut m = HashMap::new();
+static HTTP_MAPPINGS: LazyLock<FastHashMap<&'static str, &'static str>> = LazyLock::new(|| {
+    let mut m = FastHashMap::default();
     m.insert(CLIENT_ADDRESS, "http.client_ip");
     m.insert(HTTP_RESPONSE_BODY_SIZE, "http.response.content_length");
     m.insert(HTTP_RESPONSE_STATUS_CODE, "http.status_code");
@@ -182,20 +177,19 @@ static HTTP_MAPPINGS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::
     m
 });
 
-fn container_tags_from_resource_attributes(attributes: &[otlp_common::KeyValue]) -> HashMap<String, String> {
-    let mut ddtags = HashMap::new();
+fn extract_container_tags_from_resource_attributes(attributes: &[otlp_common::KeyValue], tags: &mut TagSet) {
+    let mut extracted_tags = FastHashSet::default();
 
     for kv in attributes {
-        if let Some(otlp_common::any_value::Value::StringValue(s_val)) =
-            kv.value.as_ref().and_then(|v| v.value.as_ref())
-        {
+        if let Some(Value::StringValue(s_val)) = kv.value.as_ref().and_then(|v| v.value.as_ref()) {
             if s_val.is_empty() {
                 continue;
             }
 
             // Semantic Conventions
             if let Some(datadog_key) = CONTAINER_MAPPINGS.get(kv.key.as_str()) {
-                ddtags.insert((*datadog_key).to_string(), s_val.clone());
+                tags.insert_tag(format!("{}:{}", datadog_key, s_val));
+                extracted_tags.insert(*datadog_key);
             }
 
             // Custom (datadog.container.tag namespace)
@@ -203,66 +197,65 @@ fn container_tags_from_resource_attributes(attributes: &[otlp_common::KeyValue])
                 if let Some(custom_key) = kv.key.get(CUSTOM_CONTAINER_TAG_PREFIX.len()..) {
                     if !custom_key.is_empty() {
                         // Do not replace if set via semantic conventions mappings.
-                        ddtags.entry(custom_key.to_string()).or_insert_with(|| s_val.clone());
+                        if !extracted_tags.insert(custom_key) {
+                            tags.insert_tag(format!("{}:{}", custom_key, s_val));
+                        }
                     }
                 }
             }
         }
     }
-    ddtags
 }
 
-pub(super) fn tags_from_attributes(attributes: &[otlp_common::KeyValue]) -> SharedTagSet {
-    let mut tag_set = TagSet::default();
-    let mut process_attributes = ProcessAttributes::default();
-    let mut system_attributes = SystemAttributes::default();
+pub(super) fn tags_from_attributes(attributes: &[otlp_common::KeyValue]) -> TagSet {
+    let mut tags = TagSet::default();
 
     for kv in attributes {
         match (kv.key.as_str(), kv.value.as_ref().and_then(|v| v.value.as_ref())) {
             // Process attributes
-            (PROCESS_EXECUTABLE_NAME, Some(otlp_common::any_value::Value::StringValue(s_val))) => {
-                process_attributes.executable_name = s_val.clone();
+            (PROCESS_EXECUTABLE_NAME, Some(Value::StringValue(s_val))) => {
+                tags.insert_tag(format!("{}:{}", PROCESS_EXECUTABLE_NAME, s_val));
             }
-            (PROCESS_EXECUTABLE_PATH, Some(otlp_common::any_value::Value::StringValue(s_val))) => {
-                process_attributes.executable_path = s_val.clone();
+            (PROCESS_EXECUTABLE_PATH, Some(Value::StringValue(s_val))) => {
+                tags.insert_tag(format!("{}:{}", PROCESS_EXECUTABLE_PATH, s_val));
             }
-            (PROCESS_COMMAND, Some(otlp_common::any_value::Value::StringValue(s_val))) => {
-                process_attributes.command = s_val.clone();
+            (PROCESS_COMMAND, Some(Value::StringValue(s_val))) => {
+                tags.insert_tag(format!("{}:{}", PROCESS_COMMAND, s_val));
             }
-            (PROCESS_COMMAND_LINE, Some(otlp_common::any_value::Value::StringValue(s_val))) => {
-                process_attributes.command_line = s_val.clone();
+            (PROCESS_COMMAND_LINE, Some(Value::StringValue(s_val))) => {
+                tags.insert_tag(format!("{}:{}", PROCESS_COMMAND_LINE, s_val));
             }
-            (PROCESS_PID, Some(otlp_common::any_value::Value::IntValue(i_val))) => {
-                process_attributes.pid = *i_val;
+            (PROCESS_PID, Some(Value::IntValue(i_val))) => {
+                tags.insert_tag(format!("{}:{}", PROCESS_PID, i_val));
             }
-            (PROCESS_OWNER, Some(otlp_common::any_value::Value::StringValue(s_val))) => {
-                process_attributes.owner = s_val.clone();
+            (PROCESS_OWNER, Some(Value::StringValue(s_val))) => {
+                tags.insert_tag(format!("{}:{}", PROCESS_OWNER, s_val));
             }
 
             // System attributes
-            (OS_TYPE, Some(otlp_common::any_value::Value::StringValue(s_val))) => {
-                system_attributes.os_type = s_val.clone();
+            (OS_TYPE, Some(Value::StringValue(s_val))) => {
+                tags.insert_tag(format!("{}:{}", OS_TYPE, s_val));
             }
 
             // Other mappings
-            (key, Some(otlp_common::any_value::Value::StringValue(s_val))) => {
+            (key, Some(Value::StringValue(s_val))) => {
                 if s_val.is_empty() {
                     continue;
                 }
 
                 // core attributes mapping
                 if let Some(datadog_key) = CORE_MAPPING.get(key) {
-                    tag_set.insert_tag(format!("{}:{}", datadog_key, s_val));
+                    tags.insert_tag(format!("{}:{}", datadog_key, s_val));
                 }
 
                 // Kubernetes labels mapping
                 if let Some(datadog_key) = KUBERNETES_MAPPING.get(key) {
-                    tag_set.insert_tag(format!("{}:{}", datadog_key, s_val));
+                    tags.insert_tag(format!("{}:{}", datadog_key, s_val));
                 }
 
                 // Kubernetes DD tags
                 if KUBERNETES_DD_TAGS.contains(key) {
-                    tag_set.insert_tag(format!("{}:{}", key, s_val));
+                    tags.insert_tag(format!("{}:{}", key, s_val));
                 }
             }
             _ => {}
@@ -270,19 +263,9 @@ pub(super) fn tags_from_attributes(attributes: &[otlp_common::KeyValue]) -> Shar
     }
 
     // Container Tag mappings
-    let container_tags = container_tags_from_resource_attributes(attributes);
-    for (key, val) in container_tags {
-        tag_set.insert_tag(format!("{}:{}", key, val));
-    }
+    extract_container_tags_from_resource_attributes(attributes, &mut tags);
 
-    for tag in process_attributes.extract_tags() {
-        tag_set.insert_tag(tag);
-    }
-    for tag in system_attributes.extract_tags() {
-        tag_set.insert_tag(tag);
-    }
-
-    tag_set.into_shared()
+    tags
 }
 
 #[allow(dead_code)]
@@ -290,9 +273,7 @@ pub(super) fn origin_id_from_attributes(attributes: &[otlp_common::KeyValue]) ->
     let mut pod_uid = None;
 
     for kv in attributes {
-        if let Some(otlp_common::any_value::Value::StringValue(s_val)) =
-            kv.value.as_ref().and_then(|v| v.value.as_ref())
-        {
+        if let Some(Value::StringValue(s_val)) = kv.value.as_ref().and_then(|v| v.value.as_ref()) {
             match kv.key.as_str() {
                 CONTAINER_ID => {
                     // Container ID is preferred.
@@ -313,9 +294,7 @@ pub(super) fn origin_id_from_attributes(attributes: &[otlp_common::KeyValue]) ->
 pub(super) fn get_string_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<&'a str> {
     attributes.iter().find_map(|kv| {
         if kv.key == key {
-            if let Some(otlp_common::any_value::Value::StringValue(s_val)) =
-                kv.value.as_ref().and_then(|v| v.value.as_ref())
-            {
+            if let Some(Value::StringValue(s_val)) = kv.value.as_ref().and_then(|v| v.value.as_ref()) {
                 Some(s_val.as_str())
             } else {
                 None

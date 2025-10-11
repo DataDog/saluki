@@ -22,7 +22,7 @@ pub struct Log {
     /// Tags of the log.
     tags: SharedTagSet,
     /// Additional properties of the log.
-    additional_properties: HashMap<String, JsonValue>,
+    additional_properties: HashMap<MetaString, JsonValue>,
 }
 
 /// Log status.
@@ -111,7 +111,7 @@ impl Log {
 
     /// Sets the addtional properties map.
     pub fn with_additional_properties(
-        mut self, additional_properties: impl Into<Option<HashMap<String, JsonValue>>>,
+        mut self, additional_properties: impl Into<Option<HashMap<MetaString, JsonValue>>>,
     ) -> Self {
         self.additional_properties = additional_properties.into().unwrap_or_default();
         self
@@ -148,7 +148,7 @@ impl Log {
     }
 
     /// Returns the additional properties map.
-    pub fn additional_properties(&self) -> &HashMap<String, JsonValue> {
+    pub fn additional_properties(&self) -> &HashMap<MetaString, JsonValue> {
         &self.additional_properties
     }
 }
