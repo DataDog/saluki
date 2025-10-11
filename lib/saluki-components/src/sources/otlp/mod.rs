@@ -151,10 +151,6 @@ fn default_max_recv_msg_size_mib() -> u64 {
     4
 }
 
-fn otel_source_tag() -> String {
-    "datadog_agent".to_string()
-}
-
 enum OtlpResource {
     Metrics(OtlpResourceMetrics),
     Logs(OtlpResourceLogs),
@@ -332,7 +328,6 @@ impl Source for Otlp {
         let mut converter_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
         let metrics_translator = OtlpMetricsTranslator::new(self.translator_config, self.context_resolver);
-        let logs_translator = OtlpLogsTranslator::new(otel_source_tag());
 
         let thread_pool_handle = context.topology_context().global_thread_pool().clone();
 
@@ -344,7 +339,6 @@ impl Source for Otlp {
                 context.clone(),
                 converter_shutdown_coordinator.register(),
                 metrics_translator,
-                logs_translator,
                 self.metrics,
             ),
         );
@@ -532,7 +526,7 @@ async fn dispatch_events(mut events: EventsBuffer, source_context: &SourceContex
 
 async fn run_converter(
     mut receiver: mpsc::Receiver<OtlpResource>, source_context: SourceContext, shutdown_handle: DynamicShutdownHandle,
-    mut metrics_translator: OtlpMetricsTranslator, mut logs_translator: OtlpLogsTranslator, metrics: Metrics,
+    mut metrics_translator: OtlpMetricsTranslator, metrics: Metrics,
 ) {
     tokio::pin!(shutdown_handle);
     debug!("OTLP resource converter task started.");
@@ -563,16 +557,12 @@ async fn run_converter(
                         }
                     }
                     OtlpResource::Logs(resource_logs) => {
-                        match logs_translator.map_logs(resource_logs, &metrics) {
-                            Ok(events) => {
-                                for event in events {
-                                    if let Some(event_buffer) = event_buffer_manager.try_push(event) {
-                                        dispatch_events(event_buffer, &source_context).await;
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                error!(error = %e, "Failed to handle resource logs.");
+                        let translator = OtlpLogsTranslator::from_resource_logs(resource_logs);
+                        for log_event in translator {
+                            metrics.logs_received().increment(1);
+
+                            if let Some(event_buffer) = event_buffer_manager.try_push(log_event) {
+                                dispatch_events(event_buffer, &source_context).await;
                             }
                         }
                     }

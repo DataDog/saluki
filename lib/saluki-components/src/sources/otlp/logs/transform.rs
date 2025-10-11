@@ -18,9 +18,7 @@ pub const MESSAGE_KEYS: &[&str] = &["msg", "message", "log"];
 pub const TRACE_ID_ATTR_KEYS: &[&str] = &["traceid", "trace_id", "contextmap.traceid", "oteltraceid"];
 pub const SPAN_ID_ATTR_KEYS: &[&str] = &["spanid", "span_id", "contextmap.spanid", "otelspanid"];
 
-fn default_ddsource() -> String {
-    "otlp_log_ingestion".to_string()
-}
+static DEFAULT_SOURCE: MetaString = MetaString::from_static("otlp_log_ingestion");
 
 pub fn derive_status(status: Option<&str>, severity: &str, severity_number: i32) -> Option<LogStatus> {
     if let Some(text) = status {
@@ -188,118 +186,128 @@ pub fn flatten_attribute(base_key: &str, av: &otlp_common::AnyValue, depth: usiz
 }
 
 // Helper to insert safely avoid overwriting fields that are already set
-fn safe_insert(map: &mut HashMap<String, JsonValue>, key: &str, value: JsonValue) {
+fn safe_insert(map: &mut HashMap<MetaString, JsonValue>, key: &str, value: JsonValue) {
     if key == "hostname" || key == "service" {
-        map.insert(format!("otel.{}", key), value);
+        map.insert(format!("otel.{}", key).into(), value);
     } else {
-        map.insert(key.to_string(), value);
+        map.insert(key.into(), value);
     }
 }
 
-// Transformer that converts a OTLP LogRecord into a dd native log.
-pub struct LogRecordTransformer;
+pub fn transform_log_record(
+    mut lr: LogRecord, resource: &Resource, scope: Option<&otlp_common::InstrumentationScope>,
+    record_host: Option<MetaString>, record_service: Option<MetaString>, mut tags: SharedTagSet,
+) -> Log {
+    // Build additional properties map with resource, scope and record attributes
+    let mut additional_properties = HashMap::new();
 
-impl LogRecordTransformer {
-    pub fn new() -> Self {
-        Self
-    }
-
-    pub fn transform(
-        &self, lr: LogRecord, resource: &Resource, scope: Option<&otlp_common::InstrumentationScope>,
-        host_for_record: Option<String>, service_for_record: Option<String>, base_tags_for_resource: &SharedTagSet,
-    ) -> Log {
-        let mut tags = base_tags_for_resource.clone();
-
-        // Build additional properties map with resource, scope and record attributes
-        let mut additional_properties = HashMap::<String, JsonValue>::new();
-
-        // Single-pass over record attributes: handle special keys and flatten others
-        let mut status_text_from_attrs: Option<String> = None;
-        let mut msg_from_attrs: Option<String> = None;
-        for kv in &lr.attributes {
-            let k_lower = kv.key.to_ascii_lowercase();
-            match k_lower.as_str() {
-                // Message keys
-                k if MESSAGE_KEYS.contains(&k) => {
-                    if let Some(av) = kv.value.as_ref() {
-                        if let Some(OtlpStringValue(s)) = av.value.as_ref() {
-                            msg_from_attrs = Some(s.clone());
-                        }
+    // Single-pass over record attributes: handle special keys and flatten others
+    let mut status_text_from_attrs: Option<String> = None;
+    let mut msg_from_attrs: Option<String> = None;
+    for kv in lr.attributes.iter_mut() {
+        kv.key.make_ascii_lowercase();
+        match kv.key.as_str() {
+            // Message keys
+            k if MESSAGE_KEYS.contains(&k) => {
+                if let Some(av) = kv.value.as_ref() {
+                    if let Some(OtlpStringValue(s)) = av.value.as_ref() {
+                        msg_from_attrs = Some(s.clone());
                     }
                 }
-                // Status/severity text from attributes
-                k if STATUS_KEYS.contains(&k) => {
-                    if let Some(av) = kv.value.as_ref() {
-                        if let Some(OtlpStringValue(s)) = av.value.as_ref() {
-                            status_text_from_attrs = Some(s.clone());
-                        }
+            }
+            // Status/severity text from attributes
+            k if STATUS_KEYS.contains(&k) => {
+                if let Some(av) = kv.value.as_ref() {
+                    if let Some(OtlpStringValue(s)) = av.value.as_ref() {
+                        status_text_from_attrs = Some(s.clone());
                     }
                 }
-                // Trace correlation from attributes
-                k if TRACE_ID_ATTR_KEYS.contains(&k) => {
-                    if let Some(av) = kv.value.as_ref() {
-                        if let Some(OtlpStringValue(trace_hex)) = av.value.as_ref() {
-                            if !additional_properties.contains_key("dd.trace_id") {
-                                if let Some(bytes) = decode_hex_exact_to_bytes(trace_hex, 16) {
-                                    let dd = u64_from_last_8(&bytes);
-                                    additional_properties
-                                        .insert("dd.trace_id".to_string(), JsonValue::String(dd.to_string()));
-                                    additional_properties
-                                        .insert("otel.trace_id".to_string(), JsonValue::String(trace_hex.clone()));
-                                }
-                            }
-                        }
-                    }
-                }
-                // Span correlation from attributes
-                k if SPAN_ID_ATTR_KEYS.contains(&k) => {
-                    if let Some(av) = kv.value.as_ref() {
-                        if let Some(OtlpStringValue(span_hex)) = av.value.as_ref() {
-                            if !additional_properties.contains_key("dd.span_id") {
-                                if let Some(bytes) = decode_hex_exact_to_bytes(span_hex, 8) {
-                                    let dd = u64_from_first_8(&bytes);
-                                    additional_properties
-                                        .insert("dd.span_id".to_string(), JsonValue::String(dd.to_string()));
-                                    additional_properties
-                                        .insert("otel.span_id".to_string(), JsonValue::String(span_hex.clone()));
-                                }
-                            }
-                        }
-                    }
-                }
-                // ddtags aggregation
-                k if k == DDTAGS_ATTR => {
-                    if let Some(av) = kv.value.as_ref() {
-                        if let Some(OtlpStringValue(s)) = av.value.as_ref() {
-                            let mut extra = TagSet::default();
-                            for raw in s.split(',') {
-                                let t = raw.trim();
-                                if !t.is_empty() {
-                                    extra.insert_tag(t.to_string());
-                                }
-                            }
-                            tags.extend_from_shared(&extra.into_shared());
-                        }
-                    }
-                }
-                // Default: flatten map and insert safely
-                _ => {
-                    if let Some(av) = kv.value.as_ref() {
-                        let flattened: Vec<(String, JsonValue)> = flatten_attribute(&kv.key, av, 1);
-                        for (key, val) in flattened {
-                            if !val.is_null() {
-                                additional_properties.insert(key, val);
+            }
+            // Trace correlation from attributes
+            k if TRACE_ID_ATTR_KEYS.contains(&k) => {
+                if let Some(av) = kv.value.as_ref() {
+                    if let Some(OtlpStringValue(trace_hex)) = av.value.as_ref() {
+                        if !additional_properties.contains_key("dd.trace_id") {
+                            if let Some(bytes) = decode_hex_exact_to_bytes(trace_hex, 16) {
+                                let dd = u64_from_last_8(&bytes);
+                                additional_properties.insert(
+                                    MetaString::from_static("dd.trace_id"),
+                                    JsonValue::String(dd.to_string()),
+                                );
+                                additional_properties.insert(
+                                    MetaString::from_static("otel.trace_id"),
+                                    JsonValue::String(trace_hex.clone()),
+                                );
                             }
                         }
                     }
                 }
             }
+            // Span correlation from attributes
+            k if SPAN_ID_ATTR_KEYS.contains(&k) => {
+                if let Some(av) = kv.value.as_ref() {
+                    if let Some(OtlpStringValue(span_hex)) = av.value.as_ref() {
+                        if !additional_properties.contains_key("dd.span_id") {
+                            if let Some(bytes) = decode_hex_exact_to_bytes(span_hex, 8) {
+                                let dd = u64_from_first_8(&bytes);
+                                additional_properties
+                                    .insert(MetaString::from_static("dd.span_id"), JsonValue::String(dd.to_string()));
+                                additional_properties.insert(
+                                    MetaString::from_static("otel.span_id"),
+                                    JsonValue::String(span_hex.clone()),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            // ddtags aggregation
+            k if k == DDTAGS_ATTR => {
+                if let Some(av) = kv.value.as_ref() {
+                    if let Some(OtlpStringValue(s)) = av.value.as_ref() {
+                        let mut extra = TagSet::default();
+                        for raw in s.split(',') {
+                            let t = raw.trim();
+                            if !t.is_empty() {
+                                extra.insert_tag(t);
+                            }
+                        }
+                        tags.extend_from_shared(&extra.into_shared());
+                    }
+                }
+            }
+            // Default: flatten map and insert safely
+            _ => {
+                if let Some(av) = kv.value.as_ref() {
+                    let flattened: Vec<(String, JsonValue)> = flatten_attribute(&kv.key, av, 1);
+                    for (key, val) in flattened {
+                        if !val.is_null() {
+                            additional_properties.insert(key.into(), val);
+                        }
+                    }
+                }
+            }
         }
+    }
 
-        // Resource attributes
-        for kv in &resource.attributes {
+    // Resource attributes
+    for kv in &resource.attributes {
+        if let Some(av) = kv.value.as_ref() {
+            let val: JsonValue = match av.value.as_ref() {
+                Some(OtlpStringValue(s)) => JsonValue::String(s.clone()),
+                _ => any_value_to_json(av),
+            };
+            if !val.is_null() {
+                safe_insert(&mut additional_properties, &kv.key, val);
+            }
+        }
+    }
+
+    // Scope attributes
+    if let Some(scope) = scope {
+        for kv in &scope.attributes {
             if let Some(av) = kv.value.as_ref() {
-                let val: JsonValue = match av.value.as_ref() {
+                let val = match av.value.as_ref() {
                     Some(OtlpStringValue(s)) => JsonValue::String(s.clone()),
                     _ => any_value_to_json(av),
                 };
@@ -308,88 +316,72 @@ impl LogRecordTransformer {
                 }
             }
         }
+    }
 
-        // Scope attributes
-        if let Some(scope) = scope {
-            for kv in &scope.attributes {
-                if let Some(av) = kv.value.as_ref() {
-                    let val = match av.value.as_ref() {
-                        Some(OtlpStringValue(s)) => JsonValue::String(s.clone()),
-                        _ => any_value_to_json(av),
-                    };
-                    if !val.is_null() {
-                        safe_insert(&mut additional_properties, &kv.key, val);
-                    }
-                }
-            }
-        }
+    if !lr.trace_id.iter().all(|&b| b == 0) {
+        let hex = bytes_to_hex_lowercase(&lr.trace_id);
+        additional_properties.insert(MetaString::from_static("otel.trace_id"), JsonValue::String(hex));
+        let dd = u64_from_last_8(&lr.trace_id);
+        additional_properties.insert(
+            MetaString::from_static("dd.trace_id"),
+            JsonValue::String(dd.to_string()),
+        );
+    }
 
-        if !lr.trace_id.iter().all(|&b| b == 0) {
-            let hex = bytes_to_hex_lowercase(&lr.trace_id);
-            additional_properties.insert("otel.trace_id".to_string(), JsonValue::String(hex));
-            let dd = u64_from_last_8(&lr.trace_id);
-            additional_properties.insert("dd.trace_id".to_string(), JsonValue::String(dd.to_string()));
-        }
+    if !lr.span_id.iter().all(|&b| b == 0) {
+        let hex = bytes_to_hex_lowercase(&lr.span_id);
+        additional_properties.insert(MetaString::from_static("otel.span_id"), JsonValue::String(hex));
+        let dd = u64_from_first_8(&lr.span_id);
+        additional_properties.insert(MetaString::from_static("dd.span_id"), JsonValue::String(dd.to_string()));
+    }
 
-        if !lr.span_id.iter().all(|&b| b == 0) {
-            let hex = bytes_to_hex_lowercase(&lr.span_id);
-            additional_properties.insert("otel.span_id".to_string(), JsonValue::String(hex));
-            let dd = u64_from_first_8(&lr.span_id);
-            additional_properties.insert("dd.span_id".to_string(), JsonValue::String(dd.to_string()));
-        }
+    // Derive status once using attribute-provided status, severity text and number
+    let status = derive_status(
+        status_text_from_attrs.as_deref(),
+        lr.severity_text.as_str(),
+        lr.severity_number,
+    );
 
-        // Derive status once using attribute-provided status, severity text and number
-        let status = derive_status(
-            status_text_from_attrs.as_deref(),
-            lr.severity_text.as_str(),
-            lr.severity_number,
+    if !lr.severity_text.is_empty() {
+        additional_properties.insert(
+            MetaString::from_static("otel.severity_text"),
+            JsonValue::String(lr.severity_text.clone()),
+        );
+    }
+    if lr.severity_number != 0 {
+        additional_properties.insert(
+            MetaString::from_static("otel.severity_number"),
+            JsonValue::String(lr.severity_number.to_string()),
+        );
+    }
+
+    if lr.time_unix_nano != 0 {
+        additional_properties.insert(
+            MetaString::from_static("otel.timestamp"),
+            JsonValue::String(lr.time_unix_nano.to_string()),
         );
 
-        if !lr.severity_text.is_empty() {
-            additional_properties.insert(
-                "otel.severity_text".to_string(),
-                JsonValue::String(lr.severity_text.clone()),
-            );
+        let secs = (lr.time_unix_nano / 1_000_000_000) as i64;
+        let subnsec = (lr.time_unix_nano % 1_000_000_000) as u32;
+        if let Some(dt) = DateTime::from_timestamp(secs, subnsec) {
+            // Match pattern 2006-01-02T15:04:05.000Z
+            let formatted = dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+            additional_properties.insert(MetaString::from_static("@timestamp"), JsonValue::String(formatted));
         }
-        if lr.severity_number != 0 {
-            additional_properties.insert(
-                "otel.severity_number".to_string(),
-                JsonValue::String(lr.severity_number.to_string()),
-            );
-        }
-
-        if lr.time_unix_nano != 0 {
-            additional_properties.insert(
-                "otel.timestamp".to_string(),
-                JsonValue::String(lr.time_unix_nano.to_string()),
-            );
-
-            let secs = (lr.time_unix_nano / 1_000_000_000) as i64;
-            let subnsec = (lr.time_unix_nano % 1_000_000_000) as u32;
-            if let Some(dt) = DateTime::from_timestamp(secs, subnsec) {
-                // Match pattern 2006-01-02T15:04:05.000Z
-                let formatted = dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
-                additional_properties.insert("@timestamp".to_string(), JsonValue::String(formatted));
-            }
-        }
-
-        // Message: prefer attributes, else body
-        let message = match msg_from_attrs {
-            Some(m) => m,
-            None => lr.body.as_ref().map(any_value_to_message_string).unwrap_or_default(),
-        };
-
-        let source = Some(MetaString::from(default_ddsource()));
-
-        // Build Log
-        let log = Log::new(message)
-            .with_status(status)
-            .with_source(source)
-            .with_hostname(host_for_record.as_deref().map(MetaString::from))
-            .with_service(service_for_record.as_deref().map(MetaString::from))
-            .with_tags(tags)
-            .with_additional_properties(Some(additional_properties));
-
-        log
     }
+
+    // Message: prefer attributes, else body
+    let message = match msg_from_attrs {
+        Some(m) => m,
+        None => lr.body.as_ref().map(any_value_to_message_string).unwrap_or_default(),
+    };
+
+    // Build Log
+    Log::new(message)
+        .with_status(status)
+        .with_source(DEFAULT_SOURCE.clone())
+        .with_hostname(record_host)
+        .with_service(record_service)
+        .with_tags(tags)
+        .with_additional_properties(additional_properties)
 }
