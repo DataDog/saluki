@@ -327,7 +327,7 @@ impl Source for Otlp {
         let memory_limiter = context.topology_context().memory_limiter();
 
         // Create the internal channel for decoupling the servers from the converter.
-        let (tx, rx) = mpsc::channel::<OtlpResource>(1024);
+        let (tx, rx) = mpsc::channel::<OtlpResource>(256);
 
         let mut converter_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
@@ -539,7 +539,7 @@ async fn run_converter(
 
     // Set a buffer flush interval of 100ms, which will ensure we always flush buffered events at least every 100ms if
     // we're otherwise idle and not receiving packets from the client.
-    let mut buffer_flush = interval(Duration::from_millis(10));
+    let mut buffer_flush = interval(Duration::from_millis(5));
     buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     let mut event_buffer_manager = EventBufferManager::default();
