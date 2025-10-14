@@ -4,9 +4,9 @@
 #![deny(missing_docs)]
 
 use clap::Parser as _;
-use saluki_app::prelude::*;
 use saluki_error::{ErrorContext as _, GenericError};
 use tracing::{error, info};
+use tracing_subscriber::{filter::LevelFilter, EnvFilter};
 
 mod analysis;
 
@@ -20,12 +20,20 @@ mod sync;
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt()
+        .compact()
+        .with_env_filter(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .from_env_lossy(),
+        )
+        .with_ansi(true)
+        .with_target(true)
+        .with_file(true)
+        .with_line_number(true)
+        .init();
+
     let cli = Cli::parse();
-
-    if let Err(e) = initialize_logging(Some(cli.log_level())) {
-        fatal_and_exit(format!("failed to initialize logging: {}", e));
-    }
-
     match run(cli).await {
         Ok(()) => info!("ground-truth stopped."),
         Err(e) => {

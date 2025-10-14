@@ -187,7 +187,11 @@ impl ConfigurationLoader {
                     .push(ProviderSource::Static(ArcProvider(Arc::new(resolved_provider))));
             }
             Err(e) => {
-                tracing::debug!(error = %e, file_path = %path.as_ref().to_string_lossy(), "Unable to read YAML configuration file. Ignoring.");
+                println!(
+                    "Unable to read YAML configuration file '{}': {}. Ignoring.",
+                    path.as_ref().to_string_lossy(),
+                    e
+                );
             }
         }
         self
@@ -221,7 +225,11 @@ impl ConfigurationLoader {
                     .push(ProviderSource::Static(ArcProvider(Arc::new(resolved_provider))));
             }
             Err(e) => {
-                tracing::debug!(error = %e, file_path = %path.as_ref().to_string_lossy(), "Unable to read JSON configuration file. Ignoring.");
+                println!(
+                    "Unable to read JSON configuration file '{}': {}. Ignoring.",
+                    path.as_ref().to_string_lossy(),
+                    e
+                );
             }
         }
         self
@@ -373,17 +381,17 @@ impl ConfigurationLoader {
     ///
     /// This creates a static snapshot of the configuration loaded so far. As this is intended for bootstrapping
     /// before dynamic configuration is active, the dynamic provider is ignored.
-    pub fn bootstrap_generic(&self) -> Result<GenericConfiguration, ConfigurationError> {
+    pub fn bootstrap_generic(&self) -> GenericConfiguration {
         let figment = build_figment_from_sources(&self.provider_sources);
 
-        Ok(GenericConfiguration {
+        GenericConfiguration {
             inner: Arc::new(Inner {
                 figment: RwLock::new(figment),
                 lookup_sources: self.lookup_sources.clone(),
                 event_sender: None,
                 ready_signal: Mutex::new(None),
             }),
-        })
+        }
     }
 
     /// Consumes the configuration loader and wraps it in a generic wrapper.

@@ -1,6 +1,7 @@
 pub mod buf;
 pub mod cache;
 pub mod collections;
+pub mod deser;
 pub mod hash;
 pub mod iter;
 pub mod scrubber;

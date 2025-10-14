@@ -21,6 +21,7 @@ use saluki_context::{
     tags::{Tag, TagSet},
     Context, ContextResolver, ContextResolverBuilder,
 };
+use saluki_error::GenericError;
 use tokio::sync::broadcast::{self, error::RecvError, Receiver};
 use tokio_util::sync::ReusableBoxFuture;
 use tracing::debug;
@@ -336,9 +337,7 @@ impl MetricsContextResolver {
 /// ## Errors
 ///
 /// If a global recorder was already installed, an error will be returned.
-pub async fn initialize_metrics(
-    metrics_prefix: String,
-) -> Result<FilterHandle, Box<dyn std::error::Error + Send + Sync>> {
+pub async fn initialize_metrics(metrics_prefix: String) -> Result<FilterHandle, GenericError> {
     let recorder = MetricsRecorder::new(metrics_prefix);
     let filter_handle = recorder.filter_handle();
     recorder.install()?;
