@@ -21,6 +21,8 @@ impl OtlpOriginTagResolver {
         let mut collected_tags = SharedTagSet::default();
         let tag_cardinality = resolved_origin.cardinality().unwrap_or(OriginTagCardinality::Low);
 
+        // TODO: Add additional entity IDs that are specific to OTLP.
+        // https://github.com/DataDog/datadog-agent/blob/main/comp/otelcol/otlp/components/processor/infraattributesprocessor/common.go#L158
         let entity_ids = [
             resolved_origin.container_id(),
             resolved_origin.pod_uid(),

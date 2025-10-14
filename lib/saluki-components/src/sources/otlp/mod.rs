@@ -59,6 +59,7 @@ mod resolver;
 use self::logs::translator::OtlpLogsTranslator;
 use self::metrics::translator::OtlpMetricsTranslator;
 use self::origin::OtlpOriginTagResolver;
+use self::resolver::build_context_resolver;
 
 const fn default_context_string_interner_size() -> ByteSize {
     ByteSize::mib(2)
@@ -370,7 +371,7 @@ impl SourceBuilder for OtlpConfiguration {
 
         let maybe_origin_tags_resolver = self.workload_provider.clone().map(OtlpOriginTagResolver::new);
 
-        let context_resolver = resolver::new(self, &context, maybe_origin_tags_resolver)?;
+        let context_resolver = build_context_resolver(self, &context, maybe_origin_tags_resolver)?;
         let translator_config = metrics::config::OtlpTranslatorConfig::default().with_remapping(true);
         let grpc_max_recv_msg_size_bytes =
             self.otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
