@@ -5,6 +5,7 @@ use std::sync::LazyLock;
 
 use opentelemetry_semantic_conventions::{resource::*, trace::*};
 use otlp_protos::opentelemetry::proto::common::v1 as otlp_common;
+use saluki_context::origin::RawOrigin;
 use saluki_context::tags::{SharedTagSet, TagSet};
 
 mod process;
@@ -308,6 +309,50 @@ pub(super) fn origin_id_from_attributes(attributes: &[otlp_common::KeyValue]) ->
 
     // Fallback to Kubernetes pod UID.
     pod_uid.map(|uid| format!("kubernetes_pod_uid://{}", uid))
+}
+
+/// Creates a `RawOrigin` from OTLP resource attributes.
+pub fn raw_origin_from_attributes<'a>(attributes: &'a [otlp_common::KeyValue]) -> RawOrigin<'a> {
+    let mut origin = RawOrigin::default();
+
+    for kv in attributes {
+        match kv.key.as_str() {
+            CONTAINER_ID => {
+                if let Some(value) = try_get_string_from_value(kv.value.as_ref().and_then(|v| v.value.as_ref())) {
+                    origin.set_container_id(value);
+                }
+            }
+            K8S_POD_UID => {
+                if let Some(value) = try_get_string_from_value(kv.value.as_ref().and_then(|v| v.value.as_ref())) {
+                    origin.set_pod_uid(value);
+                }
+            }
+            PROCESS_PID => {
+                if let Some(pid) = try_get_int_from_value(kv.value.as_ref().and_then(|v| v.value.as_ref())) {
+                    origin.set_process_id(pid as u32);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    origin
+}
+
+fn try_get_string_from_value(value: Option<&otlp_common::any_value::Value>) -> Option<&str> {
+    if let Some(otlp_common::any_value::Value::StringValue(s)) = value {
+        Some(s.as_str())
+    } else {
+        None
+    }
+}
+
+fn try_get_int_from_value(value: Option<&otlp_common::any_value::Value>) -> Option<i64> {
+    if let Some(otlp_common::any_value::Value::IntValue(i)) = value {
+        Some(*i)
+    } else {
+        None
+    }
 }
 
 pub(super) fn get_string_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<&'a str> {
