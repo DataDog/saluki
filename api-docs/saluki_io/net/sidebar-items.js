@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["Connection","ConnectionAddress","ListenAddress"],"fn":["build_datadog_agent_ipc_https_connector","build_datadog_agent_ipc_tls_config"],"mod":["client","listener","server","unix","util"],"struct":["ProcessCredentials","Stream"]};
+window.SIDEBAR_ITEMS = {"enum":["Connection","ConnectionAddress","GrpcTargetAddress","ListenAddress"],"fn":["build_datadog_agent_ipc_https_connector","build_datadog_agent_ipc_tls_config"],"mod":["client","listener","server","unix","util"],"struct":["ProcessCredentials","Stream"]};
