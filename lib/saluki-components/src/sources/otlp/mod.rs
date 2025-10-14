@@ -566,8 +566,17 @@ async fn run_converter(
                         match logs_translator.map_logs(resource_logs, &metrics) {
                             Ok(events) => {
                                 for event in events {
-                                    if let Some(event_buffer) = event_buffer_manager.try_push(event) {
-                                        dispatch_events(event_buffer, &source_context).await;
+                                    let mut buffered_dispatcher = source_context
+                                        .dispatcher()
+                                        .buffered_named("logs")
+                                        .expect("logs output should exist");
+
+                                    if let Err(e) = buffered_dispatcher.push(event).await {
+                                        error!(error = %e, "Failed to dispatch log(s).");
+                                    }
+
+                                    if let Err(e) = buffered_dispatcher.flush().await {
+                                        error!(error = %e, "Failed to flush log(s).");
                                     }
                                 }
                             }
