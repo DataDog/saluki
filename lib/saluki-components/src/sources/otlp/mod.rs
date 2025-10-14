@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -43,7 +44,6 @@ use saluki_io::net::util::hyper::TowerToHyperService;
 use saluki_io::net::ListenAddress;
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
-use std::sync::Arc;
 use tokio::select;
 use tokio::sync::mpsc;
 use tokio::time::{interval, MissedTickBehavior};
