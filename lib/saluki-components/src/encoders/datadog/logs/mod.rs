@@ -29,7 +29,7 @@ use crate::common::datadog::{
 };
 
 const DEFAULT_SERIALIZER_COMPRESSOR_KIND: &str = "zstd";
-const MAX_LOGS_PER_PAYLOAD: usize = 1000;
+const MAX_LOGS_PER_PAYLOAD: usize = 1;
 
 static CONTENT_TYPE_JSON: HeaderValue = HeaderValue::from_static("application/json");
 
