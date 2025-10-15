@@ -1,7 +1,7 @@
 ARG DD_AGENT_VERSION=7.68.3-jmx
 ARG DD_AGENT_IMAGE=registry.ddbuild.io/images/datadog-agent:${DD_AGENT_VERSION}
 
-ARG BUILD_IMAGE=alpine:3.20.8
+ARG BUILD_IMAGE=alpine:3.20
 ARG APP_IMAGE
 ARG BUILDER_BASE=builder
 
@@ -39,7 +39,7 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 
 # If we're building with Python checks, we pull from the Datadog Agent image (builder-python) to grab
 # the same embedded Python version, and adjust our paths so that it gets used during compilation.
-FROM builder-python AS builder-python
+FROM builder AS builder-python
 
 COPY --from=agent "/opt/datadog-agent/embedded" "/opt/datadog-agent/embedded"
 ENV LD_LIBRARY_PATH="/opt/datadog-agent/embedded/lib:${LD_LIBRARY_PATH}"
