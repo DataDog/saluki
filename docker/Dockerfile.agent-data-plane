@@ -33,7 +33,7 @@ ENV APP_BUILD_TIME=${APP_BUILD_TIME}
 #
 # no-dd-sa: We don't care about pinning package versions in the build stage.
 RUN apk update && \
-    apk add --no-cache rustup musl-dev linux-headers make cmake gcc libgcc perl go protobuf && \
+    apk add --no-cache rustup musl-dev linux-headers make cmake mold gcc libgcc perl go protobuf && \
    rustup-init -y --default-toolchain ${RUST_VERSION}
 ENV PATH="/root/.cargo/bin:${PATH}"
 
@@ -50,7 +50,7 @@ FROM ${BUILDER_BASE} AS final
 
 WORKDIR /adp
 COPY . /adp
-RUN mkdir -p /adp/target/bin &&  cargo build --profile ${BUILD_PROFILE} --package agent-data-plane --features ${BUILD_FEATURES} --target-dir /adp/target && \
+RUN mkdir -p /adp/target/bin && RUSTFLAGS="--cfg tokio_unstable -C link-arg=-fuse-ld=mold" cargo build --profile ${BUILD_PROFILE} --package agent-data-plane --features ${BUILD_FEATURES} --target-dir /adp/target && \
 cp /adp/target/${BUILD_PROFILE}/agent-data-plane /adp/target/bin/
 
 # Calculate the necessary licenses that we need to include in the final image.
