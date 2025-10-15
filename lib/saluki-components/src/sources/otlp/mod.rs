@@ -561,8 +561,24 @@ async fn run_converter(
                         for log_event in translator {
                             metrics.logs_received().increment(1);
 
-                            if let Some(event_buffer) = event_buffer_manager.try_push(log_event) {
-                                dispatch_events(event_buffer, &source_context).await;
+                            // Dispatch logs immediately to minimize resident time.
+                            let mut buffered_dispatcher = match source_context
+                                .dispatcher()
+                                .buffered_named("logs")
+                            {
+                                Ok(d) => d,
+                                Err(e) => {
+                                    error!(error = %e, "Failed to create buffered dispatcher for logs.");
+                                    continue;
+                                }
+                            };
+
+                            if let Err(e) = buffered_dispatcher.push(log_event).await {
+                                error!(error = %e, "Failed to dispatch log.");
+                            }
+
+                            if let Err(e) = buffered_dispatcher.flush().await {
+                                error!(error = %e, "Failed to flush log.");
                             }
                         }
                     }
