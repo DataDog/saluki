@@ -2,7 +2,7 @@ ARG DD_AGENT_VERSION=7.68.3-jmx
 ARG DD_AGENT_IMAGE=registry.ddbuild.io/images/datadog-agent:${DD_AGENT_VERSION}
 
 ARG BUILD_IMAGE=alpine:3.20
-ARG APP_IMAGE
+ARG APP_IMAGE=ubuntu:24.04
 ARG BUILDER_BASE=builder
 
 # Build the agent image, which we need to copy the embedded Python from.
@@ -10,7 +10,6 @@ FROM ${DD_AGENT_IMAGE} AS agent
 
 FROM ${BUILD_IMAGE} AS builder
 
-ARG TARGETARCH
 ARG RUST_VERSION=stable
 ARG BUILD_PROFILE=release
 ARG BUILD_FEATURES=default
