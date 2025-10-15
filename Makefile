@@ -1,3 +1,4 @@
+# .PHONY: $(MAKECMDGOALS) all
 .DEFAULT_GOAL := help
 
 mkfile_path := $(abspath $(lastword $(MAKEFILE_LIST)))
@@ -45,7 +46,7 @@ export CARGO_TOOL_VERSION_cargo-autoinherit ?= 0.1.5
 export CARGO_TOOL_VERSION_cargo-sort ?= 1.0.9
 export CARGO_TOOL_VERSION_dummyhttp ?= 1.1.0
 export DDPROF_VERSION ?= 0.19.0
-export LADING_VERSION ?= 0.28.0
+export LADING_VERSION ?= 0.23.3
 
 # Version of source repositories (Git tag) for vendored Protocol Buffers definitions.
 export PROTOBUF_SRC_REPO_DD_AGENT ?= 7.69.4
@@ -61,7 +62,6 @@ EMPTY:=
 SPACE:= ${EMPTY} ${EMPTY}
 COMMA:= ,
 
-.PHONY: help
 help:
 	@printf -- "${FMT_SALUKI_LOGO} .----------------. .----------------. .----------------. .----------------. .----------------. .----------------.${FMT_END}\n"
 	@printf -- "${FMT_SALUKI_LOGO}| .--------------. | .--------------. | .--------------. | .--------------. | .--------------. | .--------------. |${FMT_END}\n"
@@ -549,21 +549,20 @@ endif
 	@DD_API_KEY=api-key-adp-profiling DD_HOSTNAME=adp-profiling DD_DD_URL=http://127.0.0.1:9095 \
 	DD_ADP_STANDALONE_MODE=true \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
-	DD_ADP_OTLP_ENABLED=true DD_OTLP_CONFIG="{}" \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	./test/ddprof/bin/ddprof --service adp --environment local --service-version $(GIT_COMMIT) \
 	--url unix:///var/run/datadog/apm.socket \
 	--inlined-functions true --timeline --upload-period 10 --preset cpu_live_heap \
-	target/release/agent-data-plane run
+	target/release/agent-data-plane
 
 .PHONY: profile-run-smp-experiment
 profile-run-smp-experiment: ensure-lading
 profile-run-smp-experiment: ## Runs a specific SMP experiment for Saluki
-ifeq ($(shell test -f test/smp/regression/adp/cases/$(EXPERIMENT)/lading/lading.yaml || echo not-found), not-found)
-	$(error "Lading configuration for '$(EXPERIMENT)' not found. (test/smp/regression/adp/cases/$(EXPERIMENT)/lading/lading.yaml) ")
+ifeq ($(shell test -f test/smp/regression/saluki/cases/$(EXPERIMENT)/lading/lading.yaml || echo not-found), not-found)
+	$(error "Lading configuration for '$(EXPERIMENT)' not found. (test/smp/regression/saluki/cases/$(EXPERIMENT)/lading/lading.yaml) ")
 endif
 	@echo "[*] Running '$(EXPERIMENT)' experiment (15 minutes)..."
-	@./test/lading/bin/lading --config-path test/smp/regression/adp/cases/$(EXPERIMENT)/lading/lading.yaml \
+	@./test/lading/bin/lading --config-path test/smp/regression/saluki/cases/$(EXPERIMENT)/lading/lading.yaml \
 		--no-target --warmup-duration-seconds 1 --experiment-duration-seconds 900 --prometheus-addr 127.0.0.1:9229
 
 .PHONY: ensure-ddprof
@@ -579,12 +578,10 @@ endif
 ensure-lading:
 ifeq ($(shell test -f test/lading/bin/lading || echo not-found), not-found)
 	@echo "[*] Downloading lading v$(LADING_VERSION)..."
-	@curl -q -L -o /tmp/lading.tar.gz https://github.com/DataDog/lading/archive/refs/tags/v$(LADING_VERSION).tar.gz
-	@mkdir -p /tmp/lading
-	@tar -C /tmp/lading -xf /tmp/lading.tar.gz && rm -f /tmp/lading.tar.gz
-	@cd /tmp/lading/lading-$(LADING_VERSION) && cargo build --release
+	@curl -q -L -o /tmp/lading.tar.gz https://github.com/DataDog/lading/releases/download/v$(LADING_VERSION)/lading-$(TARGET_TRIPLE).tar.gz
 	@mkdir -p test/lading/bin
-	@mv /tmp/lading/lading-$(LADING_VERSION)/target/release/lading test/lading/bin/lading
+	@tar -C test/lading/bin -xf /tmp/lading.tar.gz
+	@rm -f /tmp/lading.tar.gz
 endif
 
 ##@ Development
