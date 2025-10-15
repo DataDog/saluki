@@ -30,7 +30,7 @@ endif
 
 # Basic settings for base build images. These are varied between local development and CI.
 export RUST_VERSION ?= $(shell grep channel rust-toolchain.toml | cut -d '"' -f 2)
-export ADP_BUILD_IMAGE ?= rust:$(RUST_VERSION)-bookworm
+export ADP_BUILD_IMAGE ?= rust:$(RUST_VERSION)-alpine3.22
 export ADP_APP_IMAGE ?= ubuntu:24.04
 export GO_BUILD_IMAGE ?= golang:1.23-bullseye
 export GO_APP_IMAGE ?= ubuntu:24.04
@@ -121,6 +121,7 @@ build-adp-image: ## Builds the ADP container image in release mode ('latest' tag
 		--build-arg "APP_IDENTIFIER=$(APP_IDENTIFIER)" \
 		--build-arg "APP_VERSION=$(APP_VERSION)" \
 		--build-arg "APP_GIT_HASH=$(APP_GIT_HASH)" \
+		--build-arg "BUILD_FEATURES=fips" \
 		--file ./docker/Dockerfile.agent-data-plane \
 		.
 
