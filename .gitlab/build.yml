@@ -18,7 +18,6 @@
       --metadata-file /tmp/build.metadata
       --tag ${IMAGE_TAG}
       --build-arg CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
-      --build-arg BUILD_IMAGE=${ADP_BUILD_IMAGE}
       --build-arg APP_IMAGE=${APP_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg BUILD_FEATURES=${BUILD_FEATURES}
