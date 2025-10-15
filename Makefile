@@ -30,7 +30,8 @@ endif
 
 # Basic settings for base build images. These are varied between local development and CI.
 export RUST_VERSION ?= $(shell grep channel rust-toolchain.toml | cut -d '"' -f 2)
-export ADP_BUILD_IMAGE ?= rust:$(RUST_VERSION)-alpine3.22
+
+export ADP_BUILD_IMAGE ?= alpine:3.20
 export ADP_APP_IMAGE ?= ubuntu:24.04
 export GO_BUILD_IMAGE ?= golang:1.23-bullseye
 export GO_APP_IMAGE ?= ubuntu:24.04
@@ -116,6 +117,24 @@ build-adp-image: ## Builds the ADP container image in release mode ('latest' tag
 		--tag local.dev/saluki-images/agent-data-plane:testing \
 		--build-arg "BUILD_IMAGE=$(ADP_BUILD_IMAGE)" \
 		--build-arg "APP_IMAGE=$(ADP_APP_IMAGE)" \
+		--build-arg "RUST_VERSION=$(RUST_VERSION)" \
+		--build-arg "APP_FULL_NAME=$(APP_FULL_NAME)" \
+		--build-arg "APP_SHORT_NAME=$(APP_SHORT_NAME)" \
+		--build-arg "APP_IDENTIFIER=$(APP_IDENTIFIER)" \
+		--build-arg "APP_VERSION=$(APP_VERSION)" \
+		--build-arg "APP_GIT_HASH=$(APP_GIT_HASH)" \
+		--file ./docker/Dockerfile.agent-data-plane \
+		.
+
+.PHONY: build-adp-image-fips
+build-adp-image-fips: ## Builds the ADP container image in release mode ('latest' tag, FIPS enabled)
+	@echo "[*] Building ADP image..."
+	@$(CONTAINER_TOOL) build \
+		--tag saluki-images/agent-data-plane:latest-fips \
+		--tag local.dev/saluki-images/agent-data-plane:testing-fips \
+		--build-arg "BUILD_IMAGE=$(ADP_BUILD_IMAGE)" \
+		--build-arg "APP_IMAGE=$(ADP_APP_IMAGE)" \
+		--build-arg "RUST_VERSION=$(RUST_VERSION)" \
 		--build-arg "APP_FULL_NAME=$(APP_FULL_NAME)" \
 		--build-arg "APP_SHORT_NAME=$(APP_SHORT_NAME)" \
 		--build-arg "APP_IDENTIFIER=$(APP_IDENTIFIER)" \
@@ -133,6 +152,7 @@ build-adp-checks-image: ## Builds the ADP + Checks container image in release mo
 		--tag local.dev/saluki-images/agent-data-plane-checks:testing \
 		--build-arg "BUILD_IMAGE=$(ADP_BUILD_IMAGE)" \
 		--build-arg "APP_IMAGE=$(ADP_APP_IMAGE)" \
+		--build-arg "RUST_VERSION=$(RUST_VERSION)" \
 		--build-arg "APP_FULL_NAME=$(APP_FULL_NAME)" \
 		--build-arg "APP_SHORT_NAME=$(APP_SHORT_NAME)" \
 		--build-arg "APP_IDENTIFIER=$(APP_IDENTIFIER)" \
