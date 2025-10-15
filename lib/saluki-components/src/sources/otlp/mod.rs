@@ -1,4 +1,4 @@
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use ::metrics::Counter;
@@ -156,6 +156,9 @@ enum OtlpResource {
     Logs(OtlpResourceLogs),
 }
 
+// Default number of concurrent workers for processing OTLP logs.
+const LOG_WORKER_COUNT: usize = 10;
+
 #[derive(Deserialize, Debug)]
 pub struct LogsConfig {
     /// Whether to enable OTLP logs support.
@@ -292,7 +295,7 @@ impl SourceBuilder for OtlpConfiguration {
             http_endpoint: ListenAddress::Tcp(http_socket_addr),
             grpc_max_recv_msg_size_bytes,
             translator_config,
-            metrics,
+            metrics: Arc::new(metrics),
         }))
     }
 }
@@ -312,7 +315,7 @@ pub struct Otlp {
     http_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
     translator_config: metrics::config::OtlpTranslatorConfig,
-    metrics: Metrics, // Telemetry metrics, not DD native metrics.
+    metrics: Arc<Metrics>, // Telemetry metrics, not DD native metrics.
 }
 
 #[async_trait]
@@ -331,15 +334,44 @@ impl Source for Otlp {
 
         let thread_pool_handle = context.topology_context().global_thread_pool().clone();
 
-        // Spawn the converter task. This task is shared by both servers.
+        // Create per-type worker channels.
+        let (metrics_tx, metrics_rx) = mpsc::channel::<OtlpResourceMetrics>(1024);
+
+        let mut log_senders = Vec::with_capacity(LOG_WORKER_COUNT);
+        for _ in 0..LOG_WORKER_COUNT {
+            let (ltx, lrx) = mpsc::channel::<OtlpResourceLogs>(1024);
+            log_senders.push(ltx);
+            // Spawn log worker.
+            let logs_worker_ctx = context.clone();
+            let logs_metrics = self.metrics.clone();
+            thread_pool_handle.spawn_traced_named(
+                "otlp-logs-worker",
+                run_logs_worker(lrx, logs_worker_ctx, converter_shutdown_coordinator.register(), logs_metrics),
+            );
+        }
+
+        // Spawn the router task to split incoming resources to appropriate workers.
         thread_pool_handle.spawn_traced_named(
-            "otlp-resource-converter",
-            run_converter(
+            "otlp-resource-router",
+            run_router(
                 rx,
-                context.clone(),
+                log_senders,
+                metrics_tx,
+                converter_shutdown_coordinator.register(),
+            ),
+        );
+
+        // Spawn the metrics converter task.
+        let metrics_ctx = context.clone();
+        let metrics_metrics = self.metrics.clone();
+        thread_pool_handle.spawn_traced_named(
+            "otlp-metrics-converter",
+            run_metrics_converter(
+                metrics_rx,
+                metrics_ctx,
                 converter_shutdown_coordinator.register(),
                 metrics_translator,
-                self.metrics,
+                metrics_metrics,
             ),
         );
 
@@ -524,15 +556,102 @@ async fn dispatch_events(mut events: EventsBuffer, source_context: &SourceContex
     }
 }
 
-async fn run_converter(
-    mut receiver: mpsc::Receiver<OtlpResource>, source_context: SourceContext, shutdown_handle: DynamicShutdownHandle,
-    mut metrics_translator: OtlpMetricsTranslator, metrics: Metrics,
+async fn run_router(
+    mut receiver: mpsc::Receiver<OtlpResource>,
+    logs_senders: Vec<mpsc::Sender<OtlpResourceLogs>>,
+    metrics_sender: mpsc::Sender<OtlpResourceMetrics>,
+    shutdown_handle: DynamicShutdownHandle,
 ) {
     tokio::pin!(shutdown_handle);
-    debug!("OTLP resource converter task started.");
+    debug!("OTLP resource router task started.");
 
-    // Set a buffer flush interval of 100ms, which will ensure we always flush buffered events at least every 100ms if
-    // we're otherwise idle and not receiving packets from the client.
+    let mut rr_idx = 0usize;
+
+    loop {
+        select! {
+            Some(resource) = receiver.recv() => {
+                match resource {
+                    OtlpResource::Metrics(rm) => {
+                        if let Err(e) = metrics_sender.send(rm).await {
+                            error!(error = %e, "Failed to route metrics to converter; channel is closed.");
+                        }
+                    }
+                    OtlpResource::Logs(rl) => {
+                        if logs_senders.is_empty() {
+                            error!("No log workers available; dropping logs batch.");
+                            continue;
+                        }
+                        let idx = rr_idx % logs_senders.len();
+                        rr_idx = rr_idx.wrapping_add(1);
+                        if let Err(e) = logs_senders[idx].send(rl).await {
+                            error!(error = %e, "Failed to route logs to worker; channel is closed.");
+                        }
+                    }
+                }
+            }
+            _ = &mut shutdown_handle => {
+                debug!("Router task received shutdown signal.");
+                break;
+            }
+        }
+    }
+
+    debug!("OTLP resource router task stopped.");
+}
+
+async fn run_logs_worker(
+    mut receiver: mpsc::Receiver<OtlpResourceLogs>,
+    source_context: SourceContext,
+    shutdown_handle: DynamicShutdownHandle,
+    metrics: Arc<Metrics>,
+) {
+    tokio::pin!(shutdown_handle);
+    debug!("OTLP logs worker started.");
+
+    loop {
+        select! {
+            Some(resource_logs) = receiver.recv() => {
+                let translator = OtlpLogsTranslator::from_resource_logs(resource_logs);
+                for log_event in translator {
+                    metrics.logs_received().increment(1);
+
+                    let mut buffered_dispatcher = match source_context.dispatcher().buffered_named("logs") {
+                        Ok(d) => d,
+                        Err(e) => {
+                            error!(error = %e, "Failed to create buffered dispatcher for logs.");
+                            continue;
+                        }
+                    };
+
+                    if let Err(e) = buffered_dispatcher.push(log_event).await {
+                        error!(error = %e, "Failed to dispatch log.");
+                    }
+
+                    if let Err(e) = buffered_dispatcher.flush().await {
+                        error!(error = %e, "Failed to flush log.");
+                    }
+                }
+            }
+            _ = &mut shutdown_handle => {
+                debug!("Logs worker received shutdown signal.");
+                break;
+            }
+        }
+    }
+
+    debug!("OTLP logs worker stopped.");
+}
+
+async fn run_metrics_converter(
+    mut receiver: mpsc::Receiver<OtlpResourceMetrics>,
+    source_context: SourceContext,
+    shutdown_handle: DynamicShutdownHandle,
+    mut metrics_translator: OtlpMetricsTranslator,
+    metrics: Arc<Metrics>,
+) {
+    tokio::pin!(shutdown_handle);
+    debug!("OTLP metrics converter task started.");
+
     let mut buffer_flush = interval(Duration::from_millis(100));
     buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
@@ -540,57 +659,27 @@ async fn run_converter(
 
     loop {
         select! {
-            Some(otlp_resource) = receiver.recv() => {
-                match otlp_resource {
-                    OtlpResource::Metrics(resource_metrics) => {
-                        match metrics_translator.map_metrics(resource_metrics, &metrics) {
-                            Ok(events) => {
-                                for event in events {
-                                    if let Some(event_buffer) = event_buffer_manager.try_push(event) {
-                                        dispatch_events(event_buffer, &source_context).await;
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                error!(error = %e, "Failed to handle resource metrics.");
+            Some(resource_metrics) = receiver.recv() => {
+                match metrics_translator.map_metrics(resource_metrics, metrics.as_ref()) {
+                    Ok(events) => {
+                        for event in events {
+                            if let Some(event_buffer) = event_buffer_manager.try_push(event) {
+                                dispatch_events(event_buffer, &source_context).await;
                             }
                         }
                     }
-                    OtlpResource::Logs(resource_logs) => {
-                        let translator = OtlpLogsTranslator::from_resource_logs(resource_logs);
-                        for log_event in translator {
-                            metrics.logs_received().increment(1);
-
-                            // Dispatch logs immediately to minimize resident time.
-                            let mut buffered_dispatcher = match source_context
-                                .dispatcher()
-                                .buffered_named("logs")
-                            {
-                                Ok(d) => d,
-                                Err(e) => {
-                                    error!(error = %e, "Failed to create buffered dispatcher for logs.");
-                                    continue;
-                                }
-                            };
-
-                            if let Err(e) = buffered_dispatcher.push(log_event).await {
-                                error!(error = %e, "Failed to dispatch log.");
-                            }
-
-                            if let Err(e) = buffered_dispatcher.flush().await {
-                                error!(error = %e, "Failed to flush log.");
-                            }
-                        }
+                    Err(e) => {
+                        error!(error = %e, "Failed to handle resource metrics.");
                     }
                 }
-            },
+            }
             _ = buffer_flush.tick() => {
                 if let Some(event_buffer) = event_buffer_manager.consume() {
                     dispatch_events(event_buffer, &source_context).await;
                 }
-            },
+            }
             _ = &mut shutdown_handle => {
-                debug!("Converter task received shutdown signal.");
+                debug!("Metrics converter received shutdown signal.");
                 break;
             }
         }
@@ -600,5 +689,5 @@ async fn run_converter(
         dispatch_events(event_buffer, &source_context).await;
     }
 
-    debug!("OTLP resource converter task stopped.");
+    debug!("OTLP metrics converter task stopped.");
 }
