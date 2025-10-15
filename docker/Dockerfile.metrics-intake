@@ -1,10 +1,8 @@
-ARG BUILD_IMAGE=alpine:3.20
-ARG APP_IMAGE=ubuntu:24.04
+ARG BASE_IMAGE=alpine:3.20
 
-FROM ${BUILD_IMAGE} AS builder
+FROM ${BASE_IMAGE} AS builder
 
 ARG RUST_VERSION=stable
-ARG BUILD_PROFILE=release
 
 # Install Rust and other build dependencies.
 #
@@ -17,13 +15,11 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 # Build metrics-intake.
 WORKDIR /metrics-intake
 COPY . /metrics-intake
-RUN cargo build --profile ${BUILD_PROFILE} --bin metrics-intake
+RUN cargo build --profile release --bin metrics-intake
 
 # Now stick our resulting binary in a clean image.
-FROM ${APP_IMAGE}
+FROM ${BASE_IMAGE}
 
-ARG BUILD_PROFILE=release
-
-COPY --from=builder /metrics-intake/target/${BUILD_PROFILE}/metrics-intake /usr/local/bin/metrics-intake
+COPY --from=builder /metrics-intake/target/release/metrics-intake /usr/local/bin/metrics-intake
 
 ENTRYPOINT [ "/usr/local/bin/metrics-intake" ]

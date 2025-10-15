@@ -66,14 +66,6 @@ build-adp-image-fips:
     BUILD_FEATURES: "fips"
     FIPS_ENABLED: "true"
 
-build-adp-checks-image:
-  extends: [.build-common-variables, .build-adp-definition]
-  variables:
-    APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
-    IMAGE_TAG: ${ADP_CHECKS_FULL_IMAGE_TAG}
-    BUILD_FEATURES: "python-checks"
-    BUILDER_BASE: "builder-python"
-
 # Internal-specific build variants that use a GBI-compliant base image.
 build-adp-image-internal:
   extends: [.build-common-variables, .build-adp-definition]
@@ -142,7 +134,6 @@ display-image-tags:
   needs:
     - build-adp-image-internal
     - build-adp-image-fips-internal
-    - build-adp-checks-image
     - publish-adp-image-internal
     - publish-adp-image-internal-fips
   script:
@@ -153,7 +144,4 @@ display-image-tags:
       ## Agent Data Plane (suitable for internal deployments, GBI-based)
       Non-FIPS: ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG}
       FIPS:     ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG_FIPS}
-
-      ## Agent Data Plane w/ Checks (not GBI-based)
-      Non-FIPS: ${IMAGE_REGISTRY}/${ADP_CHECKS_TAG}
       EOF

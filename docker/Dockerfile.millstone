@@ -1,10 +1,8 @@
-ARG BUILD_IMAGE=alpine:3.20
-ARG APP_IMAGE=ubuntu:24.04
+ARG BASE_IMAGE=alpine:3.20
 
-FROM ${BUILD_IMAGE} AS builder
+FROM ${BASE_IMAGE} AS builder
 
 ARG RUST_VERSION=stable
-ARG BUILD_PROFILE=release
 
 # Install Rust and other build dependencies.
 #
@@ -17,13 +15,11 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 # Build millstone.
 WORKDIR /millstone
 COPY . /millstone
-RUN cargo build --profile ${BUILD_PROFILE} --bin millstone
+RUN cargo build --profile release --bin millstone
 
 # Now stick our resulting binary in a clean image.
-FROM ${APP_IMAGE}
+FROM ${BASE_IMAGE}
 
-ARG BUILD_PROFILE=release
-
-COPY --from=builder /millstone/target/${BUILD_PROFILE}/millstone /usr/local/bin/millstone
+COPY --from=builder /millstone/target/release/millstone /usr/local/bin/millstone
 
 ENTRYPOINT [ "/usr/local/bin/millstone" ]
