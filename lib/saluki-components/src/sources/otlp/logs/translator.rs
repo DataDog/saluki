@@ -4,13 +4,16 @@ use opentelemetry_semantic_conventions::resource::{HOST_NAME, SERVICE_NAME};
 use otlp_protos::opentelemetry::proto::common::v1::InstrumentationScope;
 use otlp_protos::opentelemetry::proto::logs::v1::{LogRecord, ResourceLogs as OtlpResourceLogs, ScopeLogs};
 use otlp_protos::opentelemetry::proto::resource::v1::Resource;
+use saluki_context::origin::OriginTagsResolver;
 use saluki_context::tags::{SharedTagSet, Tag};
 use saluki_core::data_model::event::Event;
 use stringtheory::MetaString;
 
+use super::super::attributes::raw_origin_from_attributes;
 use crate::sources::otlp::attributes::source::SourceKind;
 use crate::sources::otlp::attributes::{get_string_attribute, resource_to_source, tags_from_attributes};
 use crate::sources::otlp::logs::transform::transform_log_record;
+use crate::sources::otlp::origin::OtlpOriginTagResolver;
 
 static OTEL_SOURCE_TAG: Tag = Tag::from_static("otel_source:datadog_agent");
 
@@ -25,7 +28,9 @@ pub struct OtlpLogsTranslator {
 }
 
 impl OtlpLogsTranslator {
-    pub fn from_resource_logs(resource_logs: OtlpResourceLogs) -> Self {
+    pub fn from_resource_logs(
+        resource_logs: OtlpResourceLogs, origin_tag_resolver: Option<&OtlpOriginTagResolver>,
+    ) -> Self {
         let resource = resource_logs.resource.unwrap_or_default();
         let source = resource_to_source(&resource);
         let host = match &source {
@@ -36,15 +41,20 @@ impl OtlpLogsTranslator {
         };
 
         let service = get_string_attribute(&resource.attributes, SERVICE_NAME).map(MetaString::from);
-
         let mut attribute_tags = tags_from_attributes(&resource.attributes);
         attribute_tags.insert_tag(OTEL_SOURCE_TAG.clone());
+        let mut shared_attribute_tags = attribute_tags.into_shared();
+        let origin = raw_origin_from_attributes(&resource.attributes);
+        if let Some(resolver) = origin_tag_resolver {
+            let origin_tags = resolver.resolve_origin_tags(origin);
+            shared_attribute_tags.extend_from_shared(&origin_tags);
+        }
 
         Self {
             resource,
             host,
             service,
-            attribute_tags: attribute_tags.into_shared(),
+            attribute_tags: shared_attribute_tags,
             scope_logs: resource_logs.scope_logs.into_iter(),
             current_scope_logs: None,
         }
@@ -172,7 +182,7 @@ mod tests {
             schema_url: String::new(),
         };
 
-        let translator = OtlpLogsTranslator::from_resource_logs(resource_logs);
+        let translator = OtlpLogsTranslator::from_resource_logs(resource_logs, None);
 
         let mut events = translator.collect::<Vec<_>>();
         assert_eq!(events.len(), 1);

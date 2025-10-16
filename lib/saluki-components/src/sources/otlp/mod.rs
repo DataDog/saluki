@@ -367,7 +367,7 @@ impl SourceBuilder for OtlpConfiguration {
 
         let maybe_origin_tags_resolver = self.workload_provider.clone().map(OtlpOriginTagResolver::new);
 
-        let context_resolver = build_context_resolver(self, &context, maybe_origin_tags_resolver)?;
+        let context_resolver = build_context_resolver(self, &context, maybe_origin_tags_resolver.clone())?;
         let translator_config = metrics::config::OtlpTranslatorConfig::default().with_remapping(true);
         let grpc_max_recv_msg_size_bytes =
             self.otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
@@ -375,6 +375,7 @@ impl SourceBuilder for OtlpConfiguration {
 
         Ok(Box::new(Otlp {
             context_resolver,
+            origin_tag_resolver: maybe_origin_tags_resolver,
             grpc_endpoint,
             http_endpoint: ListenAddress::Tcp(http_socket_addr),
             grpc_max_recv_msg_size_bytes,
@@ -395,6 +396,7 @@ impl MemoryBounds for OtlpConfiguration {
 
 pub struct Otlp {
     context_resolver: ContextResolver,
+    origin_tag_resolver: Option<OtlpOriginTagResolver>,
     grpc_endpoint: ListenAddress,
     http_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
@@ -424,6 +426,7 @@ impl Source for Otlp {
             run_converter(
                 rx,
                 context.clone(),
+                self.origin_tag_resolver,
                 converter_shutdown_coordinator.register(),
                 metrics_translator,
                 self.metrics,
@@ -612,7 +615,8 @@ async fn dispatch_events(mut events: EventsBuffer, source_context: &SourceContex
 }
 
 async fn run_converter(
-    mut receiver: mpsc::Receiver<OtlpResource>, source_context: SourceContext, shutdown_handle: DynamicShutdownHandle,
+    mut receiver: mpsc::Receiver<OtlpResource>, source_context: SourceContext,
+    origin_tag_resolver: Option<OtlpOriginTagResolver>, shutdown_handle: DynamicShutdownHandle,
     mut metrics_translator: OtlpMetricsTranslator, metrics: Metrics,
 ) {
     tokio::pin!(shutdown_handle);
@@ -644,7 +648,7 @@ async fn run_converter(
                         }
                     }
                     OtlpResource::Logs(resource_logs) => {
-                        let translator = OtlpLogsTranslator::from_resource_logs(resource_logs);
+                        let translator = OtlpLogsTranslator::from_resource_logs(resource_logs, origin_tag_resolver.as_ref());
                         for log_event in translator {
                             metrics.logs_received().increment(1);
 
