@@ -558,7 +558,6 @@ endif
 	target/release/agent-data-plane run
 
 .PHONY: profile-run-smp-experiment
-profile-run-smp-experiment: ensure-lading
 profile-run-smp-experiment: ## Runs a specific SMP experiment for Saluki
 ifeq ($(shell test -f test/smp/regression/adp/cases/$(EXPERIMENT)/lading/lading.yaml || echo not-found), not-found)
 	$(error "Lading configuration for '$(EXPERIMENT)' not found. (test/smp/regression/adp/cases/$(EXPERIMENT)/lading/lading.yaml) ")
@@ -578,18 +577,6 @@ ifeq ($(shell test -f test/ddprof/bin/ddprof || echo not-found), not-found)
 	@curl -q -L -o /tmp/ddprof.tar.xz https://github.com/DataDog/ddprof/releases/download/v$(DDPROF_VERSION)/ddprof-$(DDPROF_VERSION)-$(TARGET_ARCH)-linux.tar.xz
 	@tar -C test -xf /tmp/ddprof.tar.xz
 	@rm -f /tmp/ddprof.tar.xz
-endif
-
-.PHONY: ensure-lading
-ensure-lading:
-ifeq ($(shell test -f test/lading/bin/lading || echo not-found), not-found)
-	@echo "[*] Downloading lading v$(LADING_VERSION)..."
-	@curl -q -L -o /tmp/lading.tar.gz https://github.com/DataDog/lading/archive/refs/tags/v$(LADING_VERSION).tar.gz
-	@mkdir -p /tmp/lading
-	@tar -C /tmp/lading -xf /tmp/lading.tar.gz && rm -f /tmp/lading.tar.gz
-	@cd /tmp/lading/lading-$(LADING_VERSION) && cargo build --release
-	@mkdir -p test/lading/bin
-	@mv /tmp/lading/lading-$(LADING_VERSION)/target/release/lading test/lading/bin/lading
 endif
 
 ##@ Development
