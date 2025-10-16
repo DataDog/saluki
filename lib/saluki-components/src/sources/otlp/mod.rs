@@ -375,6 +375,7 @@ impl SourceBuilder for OtlpConfiguration {
 
         Ok(Box::new(Otlp {
             context_resolver,
+            origin_tag_resolver: maybe_origin_tags_resolver,
             grpc_endpoint,
             http_endpoint: ListenAddress::Tcp(http_socket_addr),
             grpc_max_recv_msg_size_bytes,
@@ -395,6 +396,7 @@ impl MemoryBounds for OtlpConfiguration {
 
 pub struct Otlp {
     context_resolver: ContextResolver,
+    origin_tag_resolver: Option<OtlpOriginTagResolver>,
     grpc_endpoint: ListenAddress,
     http_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
