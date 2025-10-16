@@ -46,7 +46,7 @@ export CARGO_TOOL_VERSION_cargo-autoinherit ?= 0.1.5
 export CARGO_TOOL_VERSION_cargo-sort ?= 1.0.9
 export CARGO_TOOL_VERSION_dummyhttp ?= 1.1.0
 export DDPROF_VERSION ?= 0.19.0
-export LADING_VERSION ?= 0.23.3
+export LADING_VERSION ?= 0.28.0
 
 # Version of source repositories (Git tag) for vendored Protocol Buffers definitions.
 export PROTOBUF_SRC_REPO_DD_AGENT ?= 7.69.4
@@ -62,6 +62,7 @@ EMPTY:=
 SPACE:= ${EMPTY} ${EMPTY}
 COMMA:= ,
 
+.PHONY: help
 help:
 	@printf -- "${FMT_SALUKI_LOGO} .----------------. .----------------. .----------------. .----------------. .----------------. .----------------.${FMT_END}\n"
 	@printf -- "${FMT_SALUKI_LOGO}| .--------------. | .--------------. | .--------------. | .--------------. | .--------------. | .--------------. |${FMT_END}\n"
@@ -269,13 +270,12 @@ run-adp-standalone: ## Runs ADP locally in standalone mode (debug)
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	target/debug/agent-data-plane run
 
-.PHONY: run-adp-with-checks-standalone
-run-adp-with-checks-standalone: build-adp-and-checks
-run-adp-with-checks-standalone: ## Runs ADP + Checks locally in standalone mode (debug)
-	@echo "[*] Running ADP and checks..."
+.PHONY: run-adp-standalone-release
+run-adp-standalone-release: build-adp-release
+run-adp-standalone-release: ## Runs ADP locally in standalone mode (release)
+	@echo "[*] Running ADP..."
 	@DD_ADP_STANDALONE_MODE=true \
-	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=check-agent-standalone \
-	DD_CHECKS_CONFIG_DIR=./dist/conf.d \
+	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	target/debug/agent-data-plane run
@@ -292,15 +292,16 @@ run-adp-with-checks: ## Runs ADP + Checks locally (debug)
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	target/debug/agent-data-plane run
 
-.PHONY: run-adp-standalone-release
-run-adp-standalone-release: build-adp-release
-run-adp-standalone-release: ## Runs ADP locally in standalone mode (release)
-	@echo "[*] Running ADP..."
+.PHONY: run-adp-with-checks-standalone
+run-adp-with-checks-standalone: build-adp-and-checks
+run-adp-with-checks-standalone: ## Runs ADP + Checks locally in standalone mode (debug)
+	@echo "[*] Running ADP and checks..."
 	@DD_ADP_STANDALONE_MODE=true \
-	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
+	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=check-agent-standalone \
+	DD_CHECKS_CONFIG_DIR=./dist/conf.d \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
-	target/release/agent-data-plane run
+	target/debug/agent-data-plane run
 
 .PHONY: run-dsd-basic-udp
 run-dsd-basic-udp: build-dsd-client ## Runs a basic set of metrics via the Dogstatsd client (UDP)
@@ -549,21 +550,25 @@ endif
 	@DD_API_KEY=api-key-adp-profiling DD_HOSTNAME=adp-profiling DD_DD_URL=http://127.0.0.1:9095 \
 	DD_ADP_STANDALONE_MODE=true \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
+	DD_ADP_OTLP_ENABLED=true DD_OTLP_CONFIG="{}" \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	./test/ddprof/bin/ddprof --service adp --environment local --service-version $(GIT_COMMIT) \
 	--url unix:///var/run/datadog/apm.socket \
 	--inlined-functions true --timeline --upload-period 10 --preset cpu_live_heap \
-	target/release/agent-data-plane
+	target/release/agent-data-plane run
 
 .PHONY: profile-run-smp-experiment
-profile-run-smp-experiment: ensure-lading
 profile-run-smp-experiment: ## Runs a specific SMP experiment for Saluki
-ifeq ($(shell test -f test/smp/regression/saluki/cases/$(EXPERIMENT)/lading/lading.yaml || echo not-found), not-found)
-	$(error "Lading configuration for '$(EXPERIMENT)' not found. (test/smp/regression/saluki/cases/$(EXPERIMENT)/lading/lading.yaml) ")
+ifeq ($(shell test -f test/smp/regression/adp/cases/$(EXPERIMENT)/lading/lading.yaml || echo not-found), not-found)
+	$(error "Lading configuration for '$(EXPERIMENT)' not found. (test/smp/regression/adp/cases/$(EXPERIMENT)/lading/lading.yaml) ")
 endif
 	@echo "[*] Running '$(EXPERIMENT)' experiment (15 minutes)..."
-	@./test/lading/bin/lading --config-path test/smp/regression/saluki/cases/$(EXPERIMENT)/lading/lading.yaml \
-		--no-target --warmup-duration-seconds 1 --experiment-duration-seconds 900 --prometheus-addr 127.0.0.1:9229
+	@$(CONTAINER_TOOL) run --rm --network host \
+	    --mount type=bind,source=./test/smp/regression/adp/cases/$(EXPERIMENT)/lading/lading.yaml,target=/tmp/lading.yaml \
+		--mount type=bind,source=/tmp/adp-dogstatsd-dgram.sock,target=/tmp/adp-dogstatsd-dgram.sock \
+		--mount type=bind,source=/tmp/adp-dogstatsd-stream.sock,target=/tmp/adp-dogstatsd-stream.sock \
+		ghcr.io/datadog/lading:$(LADING_VERSION) \
+		--config-path /tmp/lading.yaml --no-target --warmup-duration-seconds 1 --experiment-duration-seconds 900 --prometheus-addr 127.0.0.1:9229
 
 .PHONY: ensure-ddprof
 ensure-ddprof:
@@ -572,16 +577,6 @@ ifeq ($(shell test -f test/ddprof/bin/ddprof || echo not-found), not-found)
 	@curl -q -L -o /tmp/ddprof.tar.xz https://github.com/DataDog/ddprof/releases/download/v$(DDPROF_VERSION)/ddprof-$(DDPROF_VERSION)-$(TARGET_ARCH)-linux.tar.xz
 	@tar -C test -xf /tmp/ddprof.tar.xz
 	@rm -f /tmp/ddprof.tar.xz
-endif
-
-.PHONY: ensure-lading
-ensure-lading:
-ifeq ($(shell test -f test/lading/bin/lading || echo not-found), not-found)
-	@echo "[*] Downloading lading v$(LADING_VERSION)..."
-	@curl -q -L -o /tmp/lading.tar.gz https://github.com/DataDog/lading/releases/download/v$(LADING_VERSION)/lading-$(TARGET_TRIPLE).tar.gz
-	@mkdir -p test/lading/bin
-	@tar -C test/lading/bin -xf /tmp/lading.tar.gz
-	@rm -f /tmp/lading.tar.gz
 endif
 
 ##@ Development
