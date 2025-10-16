@@ -21,6 +21,11 @@ impl Tag {
         Self(MetaString::empty())
     }
 
+    /// Creates a new tag from a static string.
+    pub const fn from_static(s: &'static str) -> Self {
+        Self(MetaString::from_static(s))
+    }
+
     /// Returns `true` if the tag is empty.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()

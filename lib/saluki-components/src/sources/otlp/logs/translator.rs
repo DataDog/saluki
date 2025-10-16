@@ -1,83 +1,108 @@
-use opentelemetry_semantic_conventions::resource::{HOST_NAME, SERVICE_NAME};
-use otlp_protos::opentelemetry::proto::logs::v1::ResourceLogs as OtlpResourceLogs;
-use saluki_context::tags::{SharedTagSet, TagSet};
-use saluki_core::data_model::event::Event;
-use saluki_error::GenericError;
+use std::vec::IntoIter;
 
-use crate::sources::otlp::attributes::get_string_attribute;
+use opentelemetry_semantic_conventions::resource::{HOST_NAME, SERVICE_NAME};
+use otlp_protos::opentelemetry::proto::common::v1::InstrumentationScope;
+use otlp_protos::opentelemetry::proto::logs::v1::{LogRecord, ResourceLogs as OtlpResourceLogs, ScopeLogs};
+use otlp_protos::opentelemetry::proto::resource::v1::Resource;
+use saluki_context::tags::{SharedTagSet, Tag};
+use saluki_core::data_model::event::Event;
+use stringtheory::MetaString;
+
 use crate::sources::otlp::attributes::source::SourceKind;
-use crate::sources::otlp::attributes::translator::AttributeTranslator;
-use crate::sources::otlp::logs::transform::LogRecordTransformer;
-use crate::sources::otlp::Metrics;
+use crate::sources::otlp::attributes::{get_string_attribute, resource_to_source, tags_from_attributes};
+use crate::sources::otlp::logs::transform::transform_log_record;
+
+static OTEL_SOURCE_TAG: Tag = Tag::from_static("otel_source:datadog_agent");
 
 /// A translator for converting OTLP logs into DD native logs.
 pub struct OtlpLogsTranslator {
-    attribute_translator: AttributeTranslator,
-    record_transformer: LogRecordTransformer,
-    otel_source: String,
+    resource: Resource,
+    host: Option<MetaString>,
+    service: Option<MetaString>,
+    attribute_tags: SharedTagSet,
+    scope_logs: IntoIter<ScopeLogs>,
+    current_scope_logs: Option<(Option<InstrumentationScope>, IntoIter<LogRecord>)>,
 }
 
 impl OtlpLogsTranslator {
-    pub fn new(otel_source: String) -> Self {
-        Self {
-            attribute_translator: AttributeTranslator::new(),
-            record_transformer: LogRecordTransformer::new(),
-            otel_source,
-        }
-    }
-
-    /// Translates a batch of OTLP ResourceLogs into DD native logs.
-    pub fn map_logs(&mut self, resource_logs: OtlpResourceLogs, metrics: &Metrics) -> Result<Vec<Event>, GenericError> {
-        let mut events = Vec::new();
-
+    pub fn from_resource_logs(resource_logs: OtlpResourceLogs) -> Self {
         let resource = resource_logs.resource.unwrap_or_default();
-        let source = self.attribute_translator.resource_to_source(&resource);
-        let host: Option<String> = match &source {
-            Some(src) if matches!(src.kind, SourceKind::HostnameKind) => Some(src.identifier.clone()),
+        let source = resource_to_source(&resource);
+        let host = match &source {
+            Some(src) if matches!(src.kind, SourceKind::HostnameKind) => {
+                Some(MetaString::from(src.identifier.as_str()))
+            }
             _ => None,
         };
 
-        let service: Option<String> = get_string_attribute(&resource.attributes, SERVICE_NAME).map(|s| s.to_string());
+        let service = get_string_attribute(&resource.attributes, SERVICE_NAME).map(MetaString::from);
 
-        let mut attribute_tags = TagSet::default();
-        attribute_tags.merge_missing_shared(&self.attribute_translator.tags_from_attributes(&resource.attributes));
-        attribute_tags.insert_tag(format!("otel_source:{}", self.otel_source));
+        let mut attribute_tags = tags_from_attributes(&resource.attributes);
+        attribute_tags.insert_tag(OTEL_SOURCE_TAG.clone());
 
-        let shared_attribute_tags: SharedTagSet = attribute_tags.into_shared();
+        Self {
+            resource,
+            host,
+            service,
+            attribute_tags: attribute_tags.into_shared(),
+            scope_logs: resource_logs.scope_logs.into_iter(),
+            current_scope_logs: None,
+        }
+    }
 
-        for mut scope_logs in resource_logs.scope_logs {
-            for lr in scope_logs.log_records.drain(..) {
-                metrics.logs_received().increment(1);
+    fn next_log(&mut self) -> Option<Event> {
+        loop {
+            let (current_scope, current_log_records) = match self.current_scope_logs.as_mut() {
+                Some(current) => current,
+                None => match self.scope_logs.next() {
+                    Some(scope_logs) => {
+                        self.current_scope_logs = Some((scope_logs.scope, scope_logs.log_records.into_iter()));
+                        continue;
+                    }
+                    None => return None,
+                },
+            };
 
-                // Host/service fallbacks from record attributes if missing
-                let mut host_for_record = host.clone();
-                if host_for_record.is_none() {
-                    host_for_record = get_string_attribute(&lr.attributes, HOST_NAME).map(|s| s.to_string());
+            match current_log_records.next() {
+                Some(log_record) => {
+                    let record_host = self
+                        .host
+                        .clone()
+                        .or_else(|| get_string_attribute(&log_record.attributes, HOST_NAME).map(MetaString::from));
+                    let record_service = self
+                        .service
+                        .clone()
+                        .or_else(|| get_string_attribute(&log_record.attributes, SERVICE_NAME).map(MetaString::from));
+
+                    let log = transform_log_record(
+                        log_record,
+                        &self.resource,
+                        current_scope.as_ref(),
+                        record_host,
+                        record_service,
+                        self.attribute_tags.clone(),
+                    );
+
+                    return Some(Event::Log(log));
                 }
-                let mut service_for_record = service.clone();
-                if service_for_record.is_none() {
-                    service_for_record = get_string_attribute(&lr.attributes, SERVICE_NAME).map(|s| s.to_string());
+                None => {
+                    self.current_scope_logs = None;
                 }
-
-                let log = self.record_transformer.transform(
-                    lr,
-                    &resource,
-                    scope_logs.scope.as_ref(),
-                    host_for_record,
-                    service_for_record,
-                    &shared_attribute_tags,
-                );
-
-                events.push(Event::Log(log));
             }
         }
-        Ok(events)
+    }
+}
+
+impl Iterator for OtlpLogsTranslator {
+    type Item = Event;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.next_log()
     }
 }
 
 #[cfg(test)]
 mod tests {
-
     use otlp_common::any_value::Value::{KvlistValue, StringValue};
     use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common};
     use otlp_protos::opentelemetry::proto::logs::v1 as otlp_logs_v1;
@@ -89,7 +114,6 @@ mod tests {
     use super::OtlpLogsTranslator;
     use super::SERVICE_NAME;
     use crate::sources::otlp::logs::transform::DDTAGS_ATTR;
-    use crate::sources::otlp::Metrics;
 
     const TRACE_ID: [u8; 16] = [
         0x08, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x00, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00,
@@ -137,9 +161,6 @@ mod tests {
         lr: otlp_logs_v1::LogRecord, resource: otlp_resource_v1::Resource,
         scope: Option<otlp_common::InstrumentationScope>,
     ) -> Log {
-        let mut translator = OtlpLogsTranslator::new("test".to_string());
-        let metrics = Metrics::for_tests();
-
         let scope_logs = otlp_logs_v1::ScopeLogs {
             scope,
             log_records: vec![lr],
@@ -151,11 +172,12 @@ mod tests {
             schema_url: String::new(),
         };
 
-        let events = translator
-            .map_logs(resource_logs, &metrics)
-            .expect("map_logs should succeed");
+        let translator = OtlpLogsTranslator::from_resource_logs(resource_logs);
+
+        let mut events = translator.collect::<Vec<_>>();
         assert_eq!(events.len(), 1);
-        match events.into_iter().next().unwrap() {
+
+        match events.remove(0) {
             Event::Log(log) => log,
             other => panic!("expected log event, got {:?}", other),
         }
@@ -268,7 +290,9 @@ mod tests {
         let log = translate_log(lr, resource, None);
         let tags = log.tags();
         assert!(
-            tags.has_tag("foo:bar") && tags.has_tag("service:test_service_name") && tags.has_tag("otel_source:test")
+            tags.has_tag("foo:bar")
+                && tags.has_tag("service:test_service_name")
+                && tags.has_tag("otel_source:datadog_agent")
         );
         assert_eq!(log.service(), "test_service_name");
     }
