@@ -100,8 +100,13 @@ impl<'a> ControlMessage<'a> {
         unsafe {
             // Calculate the size of the control message header, so we can figure out the byte offset to actually get at
             // the raw message data, and then create a slice to that data.
+
+            // The type of `cmsg_len` varies between MUSL and glibc, so we need to handle both cases, hence the
+            // unnecessary cast in some cases which is cleaner than target-specific code.
+            #[allow(clippy::unnecessary_cast)]
+            let cmsg_len = cmsg.cmsg_len as usize;
             let cmsg_len_offset = libc::CMSG_LEN(0) as usize;
-            let data_len = cmsg.cmsg_len - cmsg_len_offset;
+            let data_len = cmsg_len.saturating_sub(cmsg_len_offset) as usize;
             let data_ptr = libc::CMSG_DATA(cmsg).cast();
             let data = std::slice::from_raw_parts(data_ptr, data_len);
 

@@ -143,7 +143,6 @@ js-sys,https://github.com/rustwasm/wasm-bindgen/tree/master/crates/js-sys,MIT OR
 keccak,https://github.com/RustCrypto/sponges/tree/master/keccak,Apache-2.0 OR MIT,RustCrypto Developers
 lading-payload,https://github.com/datadog/lading,MIT,"Brian L. Troutwine <brian.troutwine@datadoghq.com>, George Hahn <george.hahn@datadoghq.com"
 lazy_static,https://github.com/rust-lang-nursery/lazy-static.rs,MIT OR Apache-2.0,Marvin Löbel <loebel.marvin@gmail.com>
-lazycell,https://github.com/indiv0/lazycell,MIT OR Apache-2.0,"Alex Crichton <alex@alexcrichton.com>, Nikita Pekin <contact@nikitapek.in>"
 libc,https://github.com/rust-lang/libc,MIT OR Apache-2.0,The Rust Project Developers
 libloading,https://github.com/nagisa/rust_libloading,ISC,Simonas Kazlauskas <libloading@kazlauskas.me>
 libm,https://github.com/rust-lang/compiler-builtins,MIT,Jorge Aparicio <jorge@japaric.io>
