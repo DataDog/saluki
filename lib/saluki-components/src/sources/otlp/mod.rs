@@ -648,7 +648,7 @@ async fn run_converter(
                         }
                     }
                     OtlpResource::Logs(resource_logs) => {
-                        let translator = OtlpLogsTranslator::from_resource_logs(resource_logs, origin_tag_resolver);
+                        let translator = OtlpLogsTranslator::from_resource_logs(resource_logs, origin_tag_resolver.clone());
                         for log_event in translator {
                             metrics.logs_received().increment(1);
 
