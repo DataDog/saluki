@@ -10,11 +10,10 @@ use saluki_core::data_model::event::Event;
 use stringtheory::MetaString;
 
 use super::super::attributes::raw_origin_from_attributes;
-use crate::sources::otlp::origin::OtlpOriginTagResolver;
-
 use crate::sources::otlp::attributes::source::SourceKind;
 use crate::sources::otlp::attributes::{get_string_attribute, resource_to_source, tags_from_attributes};
 use crate::sources::otlp::logs::transform::transform_log_record;
+use crate::sources::otlp::origin::OtlpOriginTagResolver;
 
 static OTEL_SOURCE_TAG: Tag = Tag::from_static("otel_source:datadog_agent");
 
@@ -29,7 +28,9 @@ pub struct OtlpLogsTranslator {
 }
 
 impl OtlpLogsTranslator {
-    pub fn from_resource_logs(resource_logs: OtlpResourceLogs, origin_tag_resolver: Option<OtlpOriginTagResolver>) -> Self {
+    pub fn from_resource_logs(
+        resource_logs: OtlpResourceLogs, origin_tag_resolver: Option<OtlpOriginTagResolver>,
+    ) -> Self {
         let resource = resource_logs.resource.unwrap_or_default();
         let source = resource_to_source(&resource);
         let host = match &source {
@@ -48,7 +49,6 @@ impl OtlpLogsTranslator {
             let origin_tags = resolver.resolve_origin_tags(origin);
             shared_attribute_tags.extend_from_shared(&origin_tags);
         }
-        
 
         Self {
             resource,

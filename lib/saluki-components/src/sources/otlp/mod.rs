@@ -615,7 +615,8 @@ async fn dispatch_events(mut events: EventsBuffer, source_context: &SourceContex
 }
 
 async fn run_converter(
-    mut receiver: mpsc::Receiver<OtlpResource>, source_context: SourceContext, origin_tag_resolver: Option<OtlpOriginTagResolver>, shutdown_handle: DynamicShutdownHandle,
+    mut receiver: mpsc::Receiver<OtlpResource>, source_context: SourceContext,
+    origin_tag_resolver: Option<OtlpOriginTagResolver>, shutdown_handle: DynamicShutdownHandle,
     mut metrics_translator: OtlpMetricsTranslator, metrics: Metrics,
 ) {
     tokio::pin!(shutdown_handle);
