@@ -182,7 +182,7 @@ mod tests {
             schema_url: String::new(),
         };
 
-        let translator = OtlpLogsTranslator::from_resource_logs(resource_logs);
+        let translator = OtlpLogsTranslator::from_resource_logs(resource_logs, None);
 
         let mut events = translator.collect::<Vec<_>>();
         assert_eq!(events.len(), 1);
