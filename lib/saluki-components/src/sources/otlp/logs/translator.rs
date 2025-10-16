@@ -29,7 +29,7 @@ pub struct OtlpLogsTranslator {
 
 impl OtlpLogsTranslator {
     pub fn from_resource_logs(
-        resource_logs: OtlpResourceLogs, origin_tag_resolver: Option<OtlpOriginTagResolver>,
+        resource_logs: OtlpResourceLogs, origin_tag_resolver: Option<&OtlpOriginTagResolver>,
     ) -> Self {
         let resource = resource_logs.resource.unwrap_or_default();
         let source = resource_to_source(&resource);
