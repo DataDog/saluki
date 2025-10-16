@@ -100,9 +100,9 @@ async fn main() -> Result<(), GenericError> {
 
             std::process::exit(exit_code);
         }
-        Action::Debug(config) => handle_debug_command(config).await,
-        Action::Config => handle_config_command().await,
-        Action::Dogstatsd(config) => handle_dogstatsd_subcommand(config).await,
+        Action::Debug(config) => handle_debug_command(&bootstrap_config, config).await,
+        Action::Config => handle_config_command(&bootstrap_config).await,
+        Action::Dogstatsd(config) => handle_dogstatsd_subcommand(&bootstrap_config, config).await,
     }
 
     Ok(())
