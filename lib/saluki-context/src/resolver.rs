@@ -404,12 +404,6 @@ impl ContextResolver {
         self.resolve_inner(name, tags, origin_tags)
     }
 
-    /// Uses the tag resolver to get the origin tags
-    ///
-    pub fn get_origin_tags(&mut self, origin: RawOrigin) -> SharedTagSet {
-        self.tags_resolver.resolve_origin_tags(Some(origin))
-    }
-
     /// Resolves the given context using the provided origin tags.
     ///
     /// If the context has not yet been resolved, the name and tags are interned and a new context is created and
