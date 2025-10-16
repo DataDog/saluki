@@ -206,7 +206,7 @@
 <a href=#206 id=206 data-nosnippet>206</a>
 <a href=#207 id=207 data-nosnippet>207</a>        <span class="comment">// Last-write-wins: merge AdditionalProperties last
 <a href=#208 id=208 data-nosnippet>208</a>        </span><span class="kw">for </span>(k, v) <span class="kw">in </span>log.additional_properties() {
-<a href=#209 id=209 data-nosnippet>209</a>            obj.insert(k.clone(), v.clone());
+<a href=#209 id=209 data-nosnippet>209</a>            obj.insert(k.to_string(), v.clone());
 <a href=#210 id=210 data-nosnippet>210</a>        }
 <a href=#211 id=211 data-nosnippet>211</a>
 <a href=#212 id=212 data-nosnippet>212</a>        JsonValue::Object(obj)

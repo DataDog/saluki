@@ -22,7 +22,7 @@
 <a href=#22 id=22 data-nosnippet>22</a>    <span class="doccomment">/// Tags of the log.
 <a href=#23 id=23 data-nosnippet>23</a>    </span>tags: SharedTagSet,
 <a href=#24 id=24 data-nosnippet>24</a>    <span class="doccomment">/// Additional properties of the log.
-<a href=#25 id=25 data-nosnippet>25</a>    </span>additional_properties: HashMap&lt;String, JsonValue&gt;,
+<a href=#25 id=25 data-nosnippet>25</a>    </span>additional_properties: HashMap&lt;MetaString, JsonValue&gt;,
 <a href=#26 id=26 data-nosnippet>26</a>}
 <a href=#27 id=27 data-nosnippet>27</a>
 <a href=#28 id=28 data-nosnippet>28</a><span class="doccomment">/// Log status.
@@ -111,7 +111,7 @@
 <a href=#111 id=111 data-nosnippet>111</a>
 <a href=#112 id=112 data-nosnippet>112</a>    <span class="doccomment">/// Sets the addtional properties map.
 <a href=#113 id=113 data-nosnippet>113</a>    </span><span class="kw">pub fn </span>with_additional_properties(
-<a href=#114 id=114 data-nosnippet>114</a>        <span class="kw-2">mut </span><span class="self">self</span>, additional_properties: <span class="kw">impl </span>Into&lt;<span class="prelude-ty">Option</span>&lt;HashMap&lt;String, JsonValue&gt;&gt;&gt;,
+<a href=#114 id=114 data-nosnippet>114</a>        <span class="kw-2">mut </span><span class="self">self</span>, additional_properties: <span class="kw">impl </span>Into&lt;<span class="prelude-ty">Option</span>&lt;HashMap&lt;MetaString, JsonValue&gt;&gt;&gt;,
 <a href=#115 id=115 data-nosnippet>115</a>    ) -&gt; <span class="self">Self </span>{
 <a href=#116 id=116 data-nosnippet>116</a>        <span class="self">self</span>.additional_properties = additional_properties.into().unwrap_or_default();
 <a href=#117 id=117 data-nosnippet>117</a>        <span class="self">self
@@ -148,7 +148,7 @@
 <a href=#148 id=148 data-nosnippet>148</a>    }
 <a href=#149 id=149 data-nosnippet>149</a>
 <a href=#150 id=150 data-nosnippet>150</a>    <span class="doccomment">/// Returns the additional properties map.
-<a href=#151 id=151 data-nosnippet>151</a>    </span><span class="kw">pub fn </span>additional_properties(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>HashMap&lt;String, JsonValue&gt; {
+<a href=#151 id=151 data-nosnippet>151</a>    </span><span class="kw">pub fn </span>additional_properties(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>HashMap&lt;MetaString, JsonValue&gt; {
 <a href=#152 id=152 data-nosnippet>152</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.additional_properties
 <a href=#153 id=153 data-nosnippet>153</a>    }
 <a href=#154 id=154 data-nosnippet>154</a>}</code></pre></div></section></main></body></html>
