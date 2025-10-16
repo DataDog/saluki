@@ -30,8 +30,7 @@ endif
 
 # Basic settings for base build images. These are varied between local development and CI.
 export RUST_VERSION ?= $(shell grep channel rust-toolchain.toml | cut -d '"' -f 2)
-export ADP_BUILD_IMAGE ?= rust:$(RUST_VERSION)-bookworm
-export ADP_APP_IMAGE ?= ubuntu:24.04
+
 export GO_BUILD_IMAGE ?= golang:1.23-bullseye
 export GO_APP_IMAGE ?= ubuntu:24.04
 export CARGO_BIN_DIR ?= $(shell echo "${HOME}/.cargo/bin")
@@ -46,7 +45,7 @@ export CARGO_TOOL_VERSION_cargo-autoinherit ?= 0.1.5
 export CARGO_TOOL_VERSION_cargo-sort ?= 1.0.9
 export CARGO_TOOL_VERSION_dummyhttp ?= 1.1.0
 export DDPROF_VERSION ?= 0.19.0
-export LADING_VERSION ?= 0.23.3
+export LADING_VERSION ?= 0.28.0
 
 # Version of source repositories (Git tag) for vendored Protocol Buffers definitions.
 export PROTOBUF_SRC_REPO_DD_AGENT ?= 7.69.4
@@ -62,6 +61,7 @@ EMPTY:=
 SPACE:= ${EMPTY} ${EMPTY}
 COMMA:= ,
 
+.PHONY: help
 help:
 	@printf -- "${FMT_SALUKI_LOGO} .----------------. .----------------. .----------------. .----------------. .----------------. .----------------.${FMT_END}\n"
 	@printf -- "${FMT_SALUKI_LOGO}| .--------------. | .--------------. | .--------------. | .--------------. | .--------------. | .--------------. |${FMT_END}\n"
@@ -114,13 +114,28 @@ build-adp-image: ## Builds the ADP container image in release mode ('latest' tag
 	@$(CONTAINER_TOOL) build \
 		--tag saluki-images/agent-data-plane:latest \
 		--tag local.dev/saluki-images/agent-data-plane:testing \
-		--build-arg "BUILD_IMAGE=$(ADP_BUILD_IMAGE)" \
-		--build-arg "APP_IMAGE=$(ADP_APP_IMAGE)" \
+		--build-arg "RUST_VERSION=$(RUST_VERSION)" \
 		--build-arg "APP_FULL_NAME=$(APP_FULL_NAME)" \
 		--build-arg "APP_SHORT_NAME=$(APP_SHORT_NAME)" \
 		--build-arg "APP_IDENTIFIER=$(APP_IDENTIFIER)" \
 		--build-arg "APP_VERSION=$(APP_VERSION)" \
 		--build-arg "APP_GIT_HASH=$(APP_GIT_HASH)" \
+		--file ./docker/Dockerfile.agent-data-plane \
+		.
+
+.PHONY: build-adp-image-fips
+build-adp-image-fips: ## Builds the ADP container image in release mode ('latest' tag, FIPS enabled)
+	@echo "[*] Building ADP image..."
+	@$(CONTAINER_TOOL) build \
+		--tag saluki-images/agent-data-plane:latest-fips \
+		--tag local.dev/saluki-images/agent-data-plane:testing-fips \
+		--build-arg "RUST_VERSION=$(RUST_VERSION)" \
+		--build-arg "APP_FULL_NAME=$(APP_FULL_NAME)" \
+		--build-arg "APP_SHORT_NAME=$(APP_SHORT_NAME)" \
+		--build-arg "APP_IDENTIFIER=$(APP_IDENTIFIER)" \
+		--build-arg "APP_VERSION=$(APP_VERSION)" \
+		--build-arg "APP_GIT_HASH=$(APP_GIT_HASH)" \
+		--build-arg "BUILD_FEATURES=fips" \
 		--file ./docker/Dockerfile.agent-data-plane \
 		.
 
@@ -130,15 +145,14 @@ build-adp-checks-image: ## Builds the ADP + Checks container image in release mo
 	@$(CONTAINER_TOOL) build \
 		--tag saluki-images/agent-data-plane:latest \
 		--tag local.dev/saluki-images/agent-data-plane-checks:testing \
-		--build-arg "BUILD_IMAGE=$(ADP_BUILD_IMAGE)" \
-		--build-arg "APP_IMAGE=$(ADP_APP_IMAGE)" \
+		--build-arg "RUST_VERSION=$(RUST_VERSION)" \
 		--build-arg "APP_FULL_NAME=$(APP_FULL_NAME)" \
 		--build-arg "APP_SHORT_NAME=$(APP_SHORT_NAME)" \
 		--build-arg "APP_IDENTIFIER=$(APP_IDENTIFIER)" \
 		--build-arg "APP_VERSION=$(APP_VERSION)" \
 		--build-arg "APP_GIT_HASH=$(APP_GIT_HASH)" \
-		--build-arg BUILD_FEATURES=python-checks \
-    --build-arg BUILDER_BASE=builder-python \
+		--build-arg "BUILD_FEATURES=python-checks" \
+		--build-arg "BUILDER_BASE=builder-python" \
 		--file ./docker/Dockerfile.agent-data-plane \
 		.
 
@@ -174,8 +188,6 @@ build-metrics-intake-image: ## Builds the metrics-intake container image in rele
 	@$(CONTAINER_TOOL) build \
 		--tag saluki-images/metrics-intake:latest \
 		--tag local.dev/saluki-images/metrics-intake:testing \
-		--build-arg BUILD_IMAGE=$(ADP_BUILD_IMAGE) \
-		--build-arg APP_IMAGE=$(ADP_APP_IMAGE) \
 		--file ./docker/Dockerfile.metrics-intake \
 		.
 
@@ -185,8 +197,6 @@ build-millstone-image: ## Builds the millstone container image in release mode (
 	@$(CONTAINER_TOOL) build \
 		--tag saluki-images/millstone:latest \
 		--tag local.dev/saluki-images/millstone:testing \
-		--build-arg BUILD_IMAGE=$(ADP_BUILD_IMAGE) \
-		--build-arg APP_IMAGE=$(ADP_APP_IMAGE) \
 		--file ./docker/Dockerfile.millstone \
 		.
 
@@ -242,7 +252,7 @@ endif
 	@DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	DD_AUTH_TOKEN_FILE_PATH=/etc/datadog-agent/auth_token \
-	target/debug/agent-data-plane
+	target/debug/agent-data-plane run
 
 .PHONY: run-adp-release
 run-adp-release: build-adp-release
@@ -257,7 +267,7 @@ endif
 	@DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	DD_AUTH_TOKEN_FILE_PATH=/etc/datadog-agent/auth_token \
-	target/release/agent-data-plane
+	target/release/agent-data-plane run
 
 .PHONY: run-adp-standalone
 run-adp-standalone: build-adp
@@ -267,18 +277,17 @@ run-adp-standalone: ## Runs ADP locally in standalone mode (debug)
 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
-	target/debug/agent-data-plane
+	target/debug/agent-data-plane run
 
-.PHONY: run-adp-with-checks-standalone
-run-adp-with-checks-standalone: build-adp-and-checks
-run-adp-with-checks-standalone: ## Runs ADP + Checks locally in standalone mode (debug)
-	@echo "[*] Running ADP and checks..."
+.PHONY: run-adp-standalone-release
+run-adp-standalone-release: build-adp-release
+run-adp-standalone-release: ## Runs ADP locally in standalone mode (release)
+	@echo "[*] Running ADP..."
 	@DD_ADP_STANDALONE_MODE=true \
-	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=check-agent-standalone \
-	DD_CHECKS_CONFIG_DIR=./dist/conf.d \
+	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
-	target/debug/agent-data-plane
+	target/debug/agent-data-plane run
 
 .PHONY: run-adp-with-checks
 run-adp-with-checks: build-adp-and-checks
@@ -290,17 +299,18 @@ run-adp-with-checks: ## Runs ADP + Checks locally (debug)
 	DD_CHECKS_CONFIG_DIR=./dist/conf.d \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
-	target/debug/agent-data-plane
+	target/debug/agent-data-plane run
 
-.PHONY: run-adp-standalone-release
-run-adp-standalone-release: build-adp-release
-run-adp-standalone-release: ## Runs ADP locally in standalone mode (release)
-	@echo "[*] Running ADP..."
+.PHONY: run-adp-with-checks-standalone
+run-adp-with-checks-standalone: build-adp-and-checks
+run-adp-with-checks-standalone: ## Runs ADP + Checks locally in standalone mode (debug)
+	@echo "[*] Running ADP and checks..."
 	@DD_ADP_STANDALONE_MODE=true \
-	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
+	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=check-agent-standalone \
+	DD_CHECKS_CONFIG_DIR=./dist/conf.d \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
-	target/release/agent-data-plane
+	target/debug/agent-data-plane run
 
 .PHONY: run-dsd-basic-udp
 run-dsd-basic-udp: build-dsd-client ## Runs a basic set of metrics via the Dogstatsd client (UDP)
@@ -549,21 +559,25 @@ endif
 	@DD_API_KEY=api-key-adp-profiling DD_HOSTNAME=adp-profiling DD_DD_URL=http://127.0.0.1:9095 \
 	DD_ADP_STANDALONE_MODE=true \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
+	DD_ADP_OTLP_ENABLED=true DD_OTLP_CONFIG="{}" \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	./test/ddprof/bin/ddprof --service adp --environment local --service-version $(GIT_COMMIT) \
 	--url unix:///var/run/datadog/apm.socket \
 	--inlined-functions true --timeline --upload-period 10 --preset cpu_live_heap \
-	target/release/agent-data-plane
+	target/release/agent-data-plane run
 
 .PHONY: profile-run-smp-experiment
-profile-run-smp-experiment: ensure-lading
 profile-run-smp-experiment: ## Runs a specific SMP experiment for Saluki
-ifeq ($(shell test -f test/smp/regression/saluki/cases/$(EXPERIMENT)/lading/lading.yaml || echo not-found), not-found)
-	$(error "Lading configuration for '$(EXPERIMENT)' not found. (test/smp/regression/saluki/cases/$(EXPERIMENT)/lading/lading.yaml) ")
+ifeq ($(shell test -f test/smp/regression/adp/cases/$(EXPERIMENT)/lading/lading.yaml || echo not-found), not-found)
+	$(error "Lading configuration for '$(EXPERIMENT)' not found. (test/smp/regression/adp/cases/$(EXPERIMENT)/lading/lading.yaml) ")
 endif
 	@echo "[*] Running '$(EXPERIMENT)' experiment (15 minutes)..."
-	@./test/lading/bin/lading --config-path test/smp/regression/saluki/cases/$(EXPERIMENT)/lading/lading.yaml \
-		--no-target --warmup-duration-seconds 1 --experiment-duration-seconds 900 --prometheus-addr 127.0.0.1:9229
+	@$(CONTAINER_TOOL) run --rm --network host \
+	    --mount type=bind,source=./test/smp/regression/adp/cases/$(EXPERIMENT)/lading/lading.yaml,target=/tmp/lading.yaml \
+		--mount type=bind,source=/tmp/adp-dogstatsd-dgram.sock,target=/tmp/adp-dogstatsd-dgram.sock \
+		--mount type=bind,source=/tmp/adp-dogstatsd-stream.sock,target=/tmp/adp-dogstatsd-stream.sock \
+		ghcr.io/datadog/lading:$(LADING_VERSION) \
+		--config-path /tmp/lading.yaml --no-target --warmup-duration-seconds 1 --experiment-duration-seconds 900 --prometheus-addr 127.0.0.1:9229
 
 .PHONY: ensure-ddprof
 ensure-ddprof:
@@ -572,16 +586,6 @@ ifeq ($(shell test -f test/ddprof/bin/ddprof || echo not-found), not-found)
 	@curl -q -L -o /tmp/ddprof.tar.xz https://github.com/DataDog/ddprof/releases/download/v$(DDPROF_VERSION)/ddprof-$(DDPROF_VERSION)-$(TARGET_ARCH)-linux.tar.xz
 	@tar -C test -xf /tmp/ddprof.tar.xz
 	@rm -f /tmp/ddprof.tar.xz
-endif
-
-.PHONY: ensure-lading
-ensure-lading:
-ifeq ($(shell test -f test/lading/bin/lading || echo not-found), not-found)
-	@echo "[*] Downloading lading v$(LADING_VERSION)..."
-	@curl -q -L -o /tmp/lading.tar.gz https://github.com/DataDog/lading/releases/download/v$(LADING_VERSION)/lading-$(TARGET_TRIPLE).tar.gz
-	@mkdir -p test/lading/bin
-	@tar -C test/lading/bin -xf /tmp/lading.tar.gz
-	@rm -f /tmp/lading.tar.gz
 endif
 
 ##@ Development

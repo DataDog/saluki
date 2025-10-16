@@ -9,9 +9,6 @@ build-metrics-intake-image:
       --platform linux/amd64
       --file ./docker/Dockerfile.metrics-intake
       --tag ${SALUKI_IMAGE_REPO_BASE}/metrics-intake:${CI_COMMIT_SHA}
-      --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
-      --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
-      --build-arg BUILD_PROFILE=release
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
       --label git.commit=${CI_COMMIT_SHA}
@@ -31,9 +28,6 @@ build-millstone-image:
       --platform linux/amd64
       --file ./docker/Dockerfile.millstone
       --tag ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
-      --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
-      --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
-      --build-arg BUILD_PROFILE=release
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
       --label git.commit=${CI_COMMIT_SHA}
