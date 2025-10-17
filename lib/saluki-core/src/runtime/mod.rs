@@ -22,7 +22,8 @@
 //! - every process is a future that runs as an independent asynchronous task on a Tokio runtime
 //! - every process has a unique numerical identifier and a semi-unique name
 //!
-//! Processes cannot run by themselves, however. They must be _supervised_.
+//! Unlike Erlang processes, Saluki processes do not have an inherent mailbox or message passing capabilities. As well,
+//! processes cannot run by themselves. They must be _supervised_.
 //!
 //! # Supervisors
 //!
