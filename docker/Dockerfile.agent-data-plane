@@ -1,8 +1,8 @@
 ARG DD_AGENT_VERSION=7.68.3-jmx
 ARG DD_AGENT_IMAGE=registry.ddbuild.io/images/datadog-agent:${DD_AGENT_VERSION}
 
-ARG BUILD_IMAGE
-ARG APP_IMAGE
+ARG BUILD_IMAGE=alpine:3.20
+ARG APP_IMAGE=ubuntu:24.04
 ARG BUILDER_BASE=builder
 
 # Build the agent image, which we need to copy the embedded Python from.
@@ -10,7 +10,7 @@ FROM ${DD_AGENT_IMAGE} AS agent
 
 FROM ${BUILD_IMAGE} AS builder
 
-ARG TARGETARCH
+ARG RUST_VERSION=stable
 ARG BUILD_PROFILE=release
 ARG BUILD_FEATURES=default
 ARG CARGO_BUILD_JOBS=default
@@ -28,44 +28,34 @@ ENV APP_GIT_HASH=${APP_GIT_HASH}
 ENV APP_VERSION=${APP_VERSION}
 ENV APP_BUILD_TIME=${APP_BUILD_TIME}
 
-# Install basic utilities and an updated compiler/binutils toolchain, which is necessary for compiling.
+# Install Rust and other build dependencies.
 #
-# We only install cmake if it doesn't already exists, since the package name is different between the build image for
-# local development (Debian Buster, where it's `cmake`) and the build image for CI (Ubuntu 14.04, where it's `cmake3`).
-#
-# Our CI build image already installs `cmake3`, though, so we just need to handle the local development case here.
-
 # no-dd-sa: We don't care about pinning package versions in the build stage.
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl ca-certificates unzip && \
-    (which cmake >/dev/null || apt-get install -y --no-install-recommends cmake)
+RUN apk update && \
+    apk add --no-cache rustup musl-dev linux-headers make cmake mold gcc libgcc perl go protobuf && \
+   rustup-init -y --default-toolchain ${RUST_VERSION}
+ENV PATH="/root/.cargo/bin:${PATH}"
 
-# Install Go, which we need to build AWS-LC in FIPS-compliant mode.
-ENV PATH="/usr/local/go/bin:${PATH}"
-RUN curl -s -L -o /tmp/go-1.23.0.tar.gz https://go.dev/dl/go1.23.0.linux-${TARGETARCH}.tar.gz
-RUN tar -C /usr/local -xzf /tmp/go-1.23.0.tar.gz
-
-# Install Protocol Buffers compiler by hand, since we want a specific minimum version that Debian Buster does not have.
-COPY .ci/install-protoc.sh /
-RUN chmod +x /install-protoc.sh && /install-protoc.sh
-
+# If we're building with Python checks, we pull from the Datadog Agent image (builder-python) to grab
+# the same embedded Python version, and adjust our paths so that it gets used during compilation.
 FROM builder AS builder-python
-# Docs here https://pyo3.rs/v0.14.5/building_and_distribution#configuring-the-python-version
-# If needed, ENV PYO3_PYTHON="/opt/datadog-agent/embedded/bin/python3.12" could be used, but auto-detection works in our case
+
 COPY --from=agent "/opt/datadog-agent/embedded" "/opt/datadog-agent/embedded"
 ENV LD_LIBRARY_PATH="/opt/datadog-agent/embedded/lib:${LD_LIBRARY_PATH}"
 ENV PATH="/opt/datadog-agent/embedded/bin:${PATH}"
 
+# Build Agent Data plane.
 FROM ${BUILDER_BASE} AS final
-# Build ADP.
+
 WORKDIR /adp
 COPY . /adp
-RUN mkdir -p /adp/target/bin &&  cargo build --profile ${BUILD_PROFILE} --package agent-data-plane --features ${BUILD_FEATURES} --target-dir /adp/target && \
+RUN mkdir -p /adp/target/bin && RUSTFLAGS="--cfg tokio_unstable -C link-arg=-fuse-ld=mold" cargo build --profile ${BUILD_PROFILE} --package agent-data-plane --features ${BUILD_FEATURES} --target-dir /adp/target && \
 cp /adp/target/${BUILD_PROFILE}/agent-data-plane /adp/target/bin/
-
 
 # Calculate the necessary licenses that we need to include in the final image.
 FROM ${BUILD_IMAGE} AS license-builder
+
+RUN apk update && apk add --no-cache curl
 
 # Pull down the latest SPDX licenses archive.
 RUN curl -s -L -o /tmp/spdx-license-list-data-3.25.0.tar.gz https://github.com/spdx/license-list-data/archive/refs/tags/v3.25.0.tar.gz && \
@@ -79,11 +69,8 @@ RUN tail -n +2 /tmp/LICENSE-3rdparty.csv | awk -F ',' '{print $3}' | awk -F' ' '
     grep -v -E "(OR|AND|WITH|Custom|LLVM-exception)" | sed s/[\(\)]// | sort | uniq | \
     xargs -I {} cp /tmp/spdx-licenses/text/{}.txt /licenses/THIRD-PARTY-{}
 
-
 # Now stick our resulting binary and licenses in a clean image.
 FROM ${APP_IMAGE}
-
-ARG BUILD_PROFILE=release
 
 # Only install ca-certificates if the directory doesn't exist.
 #

@@ -13,6 +13,8 @@ pub struct Log {
     message: MetaString,
     /// Log status/severity (e.g., "info", "warn", "error").
     status: Option<LogStatus>,
+    /// Log source
+    source: Option<MetaString>,
     /// Hostname associated with the log.
     hostname: MetaString,
     /// Service associated with the log.
@@ -20,7 +22,7 @@ pub struct Log {
     /// Tags of the log.
     tags: SharedTagSet,
     /// Additional properties of the log.
-    additional_properties: HashMap<String, JsonValue>,
+    additional_properties: HashMap<MetaString, JsonValue>,
 }
 
 /// Log status.
@@ -46,12 +48,30 @@ pub enum LogStatus {
     Debug,
 }
 
+impl LogStatus {
+    /// Returns the log status in string format
+    pub fn as_str(&self) -> &str {
+        match self {
+            LogStatus::Trace => "Trace",
+            LogStatus::Emergency => "Emergency",
+            LogStatus::Alert => "Alert",
+            LogStatus::Fatal => "Fatal",
+            LogStatus::Error => "Error",
+            LogStatus::Warning => "Warning",
+            LogStatus::Notice => "Notice",
+            LogStatus::Info => "Info",
+            LogStatus::Debug => "Debug",
+        }
+    }
+}
+
 impl Log {
     /// Creates a new `Log` with the given message.
     pub fn new(message: impl Into<MetaString>) -> Self {
         Self {
             message: message.into(),
             status: None,
+            source: None,
             hostname: MetaString::empty(),
             service: MetaString::empty(),
             tags: SharedTagSet::default(),
@@ -62,6 +82,12 @@ impl Log {
     /// Sets the log status.
     pub fn with_status(mut self, status: impl Into<Option<LogStatus>>) -> Self {
         self.status = status.into();
+        self
+    }
+
+    /// Sets the log source.
+    pub fn with_source(mut self, source: impl Into<Option<MetaString>>) -> Self {
+        self.source = source.into();
         self
     }
 
@@ -85,7 +111,7 @@ impl Log {
 
     /// Sets the addtional properties map.
     pub fn with_additional_properties(
-        mut self, additional_properties: impl Into<Option<HashMap<String, JsonValue>>>,
+        mut self, additional_properties: impl Into<Option<HashMap<MetaString, JsonValue>>>,
     ) -> Self {
         self.additional_properties = additional_properties.into().unwrap_or_default();
         self
@@ -99,6 +125,11 @@ impl Log {
     /// Returns the log status, if set.
     pub fn status(&self) -> Option<LogStatus> {
         self.status
+    }
+
+    /// Returns the log source, if set.
+    pub fn source(&self) -> &Option<MetaString> {
+        &self.source
     }
 
     /// Returns the hostname, if set.
@@ -117,7 +148,7 @@ impl Log {
     }
 
     /// Returns the additional properties map.
-    pub fn additional_properties(&self) -> &HashMap<String, JsonValue> {
+    pub fn additional_properties(&self) -> &HashMap<MetaString, JsonValue> {
         &self.additional_properties
     }
 }

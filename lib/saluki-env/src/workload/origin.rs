@@ -64,6 +64,22 @@ pub struct ResolvedOrigin {
 }
 
 impl ResolvedOrigin {
+    /// Creates a new `ResolvedOrigin` from the given parts.
+    pub fn from_parts(
+        cardinality: Option<OriginTagCardinality>, process_id: Option<EntityId>, container_id: Option<EntityId>,
+        pod_uid: Option<EntityId>, resolved_external_data: Option<ResolvedExternalData>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(ResolvedOriginInner {
+                cardinality,
+                process_id,
+                container_id,
+                pod_uid,
+                resolved_external_data,
+            }),
+        }
+    }
+
     /// Returns the cardinality of the origin.
     pub fn cardinality(&self) -> Option<OriginTagCardinality> {
         self.inner.cardinality
@@ -111,17 +127,15 @@ impl OriginResolver {
     }
 
     fn build_resolved_origin(&self, origin: RawOrigin<'_>) -> ResolvedOrigin {
-        ResolvedOrigin {
-            inner: Arc::new(ResolvedOriginInner {
-                cardinality: origin.cardinality(),
-                process_id: origin.process_id().map(EntityId::ContainerPid),
-                container_id: origin.container_id().and_then(EntityId::from_raw_container_id),
-                pod_uid: origin.pod_uid().and_then(EntityId::from_pod_uid),
-                resolved_external_data: origin
-                    .external_data()
-                    .and_then(|raw_ed| self.ed_resolver.resolve(raw_ed)),
-            }),
-        }
+        ResolvedOrigin::from_parts(
+            origin.cardinality(),
+            origin.process_id().map(EntityId::ContainerPid),
+            origin.container_id().and_then(EntityId::from_raw_container_id),
+            origin.pod_uid().and_then(EntityId::from_pod_uid),
+            origin
+                .external_data()
+                .and_then(|raw_ed| self.ed_resolver.resolve(raw_ed)),
+        )
     }
 
     pub(crate) fn get_resolved_origin(&self, origin: RawOrigin<'_>) -> Option<ResolvedOrigin> {

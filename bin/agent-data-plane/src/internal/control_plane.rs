@@ -1,21 +1,53 @@
 use std::future::pending;
 
 use memory_accounting::ComponentRegistry;
-use saluki_app::metrics::acquire_metrics_api_handler;
-use saluki_app::{api::APIBuilder, config::ConfigAPIHandler, prelude::acquire_logging_api_handler};
+use saluki_app::{
+    api::APIBuilder, config::ConfigAPIHandler, logging::acquire_logging_api_handler,
+    metrics::acquire_metrics_api_handler,
+};
 use saluki_common::task::spawn_traced_named;
 use saluki_components::destinations::DogStatsDStatisticsConfiguration;
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
-use saluki_io::net::ListenAddress;
+use saluki_io::net::{GrpcTargetAddress, ListenAddress};
+use serde::Deserialize;
 use tracing::{error, info};
 
 use crate::internal::remote_agent::RemoteAgentHelperConfiguration;
 use crate::{env_provider::ADPEnvironmentProvider, internal::initialize_and_launch_runtime};
 
-const PRIMARY_UNPRIVILEGED_API_PORT: u16 = 5100;
-const PRIMARY_PRIVILEGED_API_PORT: u16 = 5101;
+const fn default_api_listen_address() -> ListenAddress {
+    ListenAddress::any_tcp(5100)
+}
+
+const fn default_secure_api_listen_address() -> ListenAddress {
+    ListenAddress::any_tcp(5101)
+}
+
+#[derive(Deserialize)]
+pub struct ControlPlaneConfiguration {
+    #[serde(rename = "data_plane_api_listen_addr", default = "default_api_listen_address")]
+    pub api_listen_address: ListenAddress,
+
+    #[serde(
+        rename = "data_plane_secure_api_listen_addr",
+        default = "default_secure_api_listen_address"
+    )]
+    pub secure_api_listen_address: ListenAddress,
+}
+
+impl ControlPlaneConfiguration {
+    /// Creates a new `ControlPlaneConfiguration` from the given generic configuration.
+    ///
+    /// # Errors
+    ///
+    /// If the configuration is invalid, an error will be returned.
+    pub fn from_config(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        let config = config.as_typed()?;
+        Ok(config)
+    }
+}
 
 /// Spawns the control plane for the ADP process.
 ///
@@ -61,23 +93,16 @@ pub fn spawn_control_plane(
 async fn configure_and_spawn_api_endpoints(
     config: &GenericConfiguration, unprivileged_api: APIBuilder, mut privileged_api: APIBuilder,
 ) -> Result<(), GenericError> {
-    let api_listen_address = config
-        .try_get_typed("api_listen_address")
-        .error_context("Failed to get API listen address.")?
-        .unwrap_or_else(|| ListenAddress::any_tcp(PRIMARY_UNPRIVILEGED_API_PORT));
-
-    let secure_api_listen_address = config
-        .try_get_typed("secure_api_listen_address")
-        .error_context("Failed to get secure API listen address.")?
-        .unwrap_or_else(|| ListenAddress::any_tcp(PRIMARY_PRIVILEGED_API_PORT));
+    let control_plane_config = ControlPlaneConfiguration::from_config(config)?;
+    let api_listen_address = control_plane_config.api_listen_address;
+    let secure_api_listen_address = control_plane_config.secure_api_listen_address;
 
     // When not in standalone mode, install the necessary components for registering ourselves with the Datadog Agent as
     // a "remote agent", which wires up ADP to allow the Datadog Agent to query it for status and flare information.
     let in_standalone_mode = config.get_typed_or_default::<bool>("adp.standalone_mode");
     if !in_standalone_mode {
-        let local_secure_api_listen_addr = secure_api_listen_address
-            .as_local_connect_addr()
-            .ok_or_else(|| generic_error!("Failed to get local secure API listen address to advertise."))?;
+        let secure_api_grpc_target_addr = GrpcTargetAddress::try_from_listen_addr(&secure_api_listen_address)
+            .ok_or_else(|| generic_error!("Failed to get valid gRPC target address from secure API listen address."))?;
 
         let telemetry_enabled = config.get_typed_or_default::<bool>("telemetry_enabled");
         let mut prometheus_listen_addr = None;
@@ -96,7 +121,7 @@ async fn configure_and_spawn_api_endpoints(
         // Build and spawn our helper task for registering ourselves with the Datadog Agent as a remote agent.
         let remote_agent_config = RemoteAgentHelperConfiguration::from_configuration(
             config,
-            local_secure_api_listen_addr,
+            secure_api_grpc_target_addr,
             prometheus_listen_addr,
         )
         .await?;

@@ -4,10 +4,12 @@ use saluki_app::metrics::collect_runtime_metrics;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 
 mod control_plane;
-pub use self::control_plane::spawn_control_plane;
+pub use self::control_plane::{spawn_control_plane, ControlPlaneConfiguration};
 
 mod observability;
 pub use self::observability::spawn_internal_observability_topology;
+
+pub mod platform;
 
 mod remote_agent;
 

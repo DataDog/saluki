@@ -8,7 +8,6 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use saluki_app::prelude::*;
 use saluki_error::GenericError;
 use tokio::{
     net::TcpListener,
@@ -18,6 +17,7 @@ use tokio::{
 };
 use tower_http::{compression::CompressionLayer, decompression::RequestDecompressionLayer};
 use tracing::{error, info};
+use tracing_subscriber::{filter::LevelFilter, EnvFilter};
 
 mod handlers;
 use self::handlers::*;
@@ -27,9 +27,18 @@ use self::state::*;
 
 #[tokio::main]
 async fn main() {
-    if let Err(e) = initialize_logging(None) {
-        fatal_and_exit(format!("failed to initialize logging: {}", e));
-    }
+    tracing_subscriber::fmt()
+        .compact()
+        .with_env_filter(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .from_env_lossy(),
+        )
+        .with_ansi(true)
+        .with_target(true)
+        .with_file(true)
+        .with_line_number(true)
+        .init();
 
     match run().await {
         Ok(()) => info!("metrics-intake stopped."),

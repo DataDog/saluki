@@ -1,20 +1,23 @@
 use std::time::{Duration, Instant};
 
 use memory_accounting::{ComponentBounds, ComponentRegistry};
-use saluki_app::prelude::*;
+use saluki_app::{
+    memory::{initialize_memory_bounds, MemoryBoundsConfiguration},
+    metrics::emit_startup_metrics,
+};
 #[cfg(feature = "python-checks")]
 use saluki_components::sources::ChecksConfiguration;
 use saluki_components::{
     destinations::DogStatsDStatisticsConfiguration,
     encoders::{
-        BufferedIncrementalConfiguration, DatadogEventsConfiguration, DatadogMetricsConfiguration,
-        DatadogServiceChecksConfiguration,
+        BufferedIncrementalConfiguration, DatadogEventsConfiguration, DatadogLogsConfiguration,
+        DatadogMetricsConfiguration, DatadogServiceChecksConfiguration,
     },
     forwarders::DatadogConfiguration,
     sources::{DogStatsDConfiguration, OtlpConfiguration},
     transforms::{
         AggregateConfiguration, ChainedConfiguration, DogstatsDMapperConfiguration, DogstatsDPrefixFilterConfiguration,
-        HostEnrichmentConfiguration, HostTagsConfiguration, MetricRouterConfiguration,
+        HostEnrichmentConfiguration, HostTagsConfiguration,
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
@@ -25,63 +28,51 @@ use saluki_health::HealthRegistry;
 use tokio::{select, time::interval};
 use tracing::{error, info, warn};
 
-use crate::config::RunConfig;
 use crate::env_provider::ADPEnvironmentProvider;
 use crate::internal::{spawn_control_plane, spawn_internal_observability_topology};
 
-pub async fn run(started: Instant, run_config: RunConfig) -> Result<(), GenericError> {
+pub async fn run(started: Instant, bootstrap_config: GenericConfiguration) -> Result<(), GenericError> {
     let app_details = saluki_metadata::get_app_details();
     info!(
         version = app_details.version().raw(),
         git_hash = app_details.git_hash(),
         target_arch = app_details.target_arch(),
         build_time = app_details.build_time(),
+        process_id = std::process::id(),
         "Agent Data Plane starting..."
     );
 
-    // Create a bootstrap configuration object to determine if we need to set up a dynamic configuration stream.
-    // This initial load only contains static configuration sources.
-    let static_config = ConfigurationLoader::default()
-        .try_from_yaml(&run_config.config)
-        .from_environment("DD")?
-        .with_default_secrets_resolution()
-        .await?
-        .bootstrap_generic()?;
-
-    let in_standalone_mode = static_config.get_typed_or_default::<bool>("adp.standalone_mode");
+    // Determine if we should load our final configuration from the control plane or operate in "standalone mode" where
+    // we simply use our bootstrap configuration.
+    let in_standalone_mode = bootstrap_config.get_typed_or_default::<bool>("adp.standalone_mode");
     let use_new_config_stream_endpoint =
-        static_config.get_typed_or_default::<bool>("adp.use_new_config_stream_endpoint");
+        bootstrap_config.get_typed_or_default::<bool>("adp.use_new_config_stream_endpoint");
 
     let configuration = if !in_standalone_mode && use_new_config_stream_endpoint {
-        // If we're not in standalone mode and the config stream is enabled, we create the stream
-        // which returns a receiver for configuration updates.
-        let receiver = match create_config_stream(&static_config).await {
-            Ok(receiver) => receiver,
-            Err(e) => {
-                error!("Failed to create config stream: {}.", e);
-                return Err(e);
-            }
-        };
+        let config_updates_receiver = create_config_stream(&bootstrap_config)
+            .await
+            .error_context("Failed to create configuration updates stream from control plane.")?;
 
-        // Use the receiver to build `GenericConfiguration` with the following provider order: YAML -> Dynamic -> Environment such that environment variables have the highest priority.
-        ConfigurationLoader::default()
-            .try_from_yaml(&run_config.config)
-            .with_dynamic_configuration(receiver)
-            .from_environment("DD")?
+        // Build a new configuration that uses the configuration sent by the control plane as the authoritative
+        // configuration source, but with environment variables on top of that to allow for ADP-specific overriding: log
+        // level, etc.
+        let dynamic_config = ConfigurationLoader::default()
+            .with_dynamic_configuration(config_updates_receiver)
+            .from_environment(crate::internal::platform::DATADOG_AGENT_ENV_VAR_PREFIX)?
             .with_default_secrets_resolution()
             .await?
             .into_generic()
-            .await?
-    } else {
-        // If dynamic configuration is disabled, the static configuration is already the complete and final configuration.
-        static_config
-    };
+            .await?;
 
-    if use_new_config_stream_endpoint {
         info!("Waiting for initial configuration from Datadog Agent...");
-        configuration.ready().await;
+        dynamic_config.ready().await;
         info!("Initial configuration received.");
-    }
+
+        dynamic_config
+    } else {
+        // If dynamic configuration is disabled, the bootstrap configuration is already the complete and final configuration.
+        bootstrap_config
+    };
 
     // See if ADP is enabled, and if not, exit.
     let data_plane_enabled = configuration.get_typed_or_default::<bool>("data_plane.enabled");
@@ -246,6 +237,7 @@ async fn create_topology(
         .connect_component("dsd_agg", ["dsd_in.metrics"])?
         .connect_component("dsd_prefix_filter", ["dsd_agg"])?
         .connect_component("dsd_enrich", ["dsd_prefix_filter"])?
+        .connect_component("dd_metrics_encode", ["dsd_enrich"])?
         // Events.
         .connect_component("dd_events_encode", ["dsd_in.events"])?
         // Service checks.
@@ -261,90 +253,21 @@ async fn create_topology(
     add_checks_to_blueprint(&mut blueprint, configuration, env_provider)?;
 
     if configuration.get_typed_or_default::<bool>("adp.otlp.enabled") {
-        let otlp_config = OtlpConfiguration::from_configuration(configuration)?;
+        let otlp_config = OtlpConfiguration::from_configuration(configuration)?
+            .with_workload_provider(env_provider.workload().clone());
         blueprint.add_source("otlp_in", otlp_config)?;
         blueprint.connect_component("dsd_agg", ["otlp_in.metrics"])?;
-    }
 
-    add_preaggregation_to_blueprint(&mut blueprint, configuration)?;
+        // Only add and connect the logs encoder when OTLP is enabled (which provides log inputs).
+        let dd_logs_config = DatadogLogsConfiguration::from_configuration(configuration)
+            .map(BufferedIncrementalConfiguration::from_encoder_builder)
+            .error_context("Failed to configure Datadog Logs encoder.")?;
+        blueprint.add_encoder("dd_logs_encode", dd_logs_config)?;
+        blueprint.connect_component("dd_logs_encode", ["otlp_in.logs"])?;
+        blueprint.connect_component("dd_out", ["dd_logs_encode"])?;
+    }
 
     Ok(blueprint)
-}
-
-/// Adds preaggregation components to the blueprint if preaggregation is enabled.
-///
-/// This handles the configuration and connection of:
-/// - MetricRouter for selective metric routing (when allowlist is configured)
-/// - Preaggregation-specific metrics encoder and forwarder
-/// - Proper connection to normal metrics flow based on configuration
-fn add_preaggregation_to_blueprint(
-    blueprint: &mut TopologyBlueprint, configuration: &GenericConfiguration,
-) -> Result<(), GenericError> {
-    let preaggregation_enabled = configuration.get_typed_or_default::<bool>("preaggregation.enabled");
-
-    if !preaggregation_enabled {
-        // Simple case: no preaggregation, just connect normal metrics flow
-        blueprint.connect_component("dd_metrics_encode", ["dsd_enrich"])?;
-        return Ok(());
-    }
-
-    let preaggr_dd_url = configuration
-        .get_typed::<String>("preaggregation.dd_url")
-        .error_context("Failed to query preaggregation URL.")?;
-    let preaggr_api_key = configuration
-        .get_typed::<String>("preaggregation.api_key")
-        .error_context("Failed to query preaggregation API key.")?;
-
-    // Validate required preaggregation configuration
-    if preaggr_dd_url.is_empty() {
-        return Err(GenericError::msg(
-            "preaggregation.dd_url is required when preaggregation.enabled is true",
-        ));
-    }
-    if preaggr_api_key.is_empty() {
-        return Err(GenericError::msg(
-            "preaggregation.api_key is required when preaggregation.enabled is true",
-        ));
-    }
-
-    // Create preaggregation components
-    let preaggr_dd_metrics_config = DatadogMetricsConfiguration::from_configuration(configuration)
-        .error_context("Failed to configure preaggregation Datadog Metrics encoder.")?;
-
-    let preaggr_dd_forwarder_config = DatadogConfiguration::from_configuration(configuration)
-        .map(|config| config.with_endpoint_override(preaggr_dd_url, preaggr_api_key))
-        .error_context("Failed to configure pre-aggregation Datadog forwarder.")?;
-
-    blueprint
-        .add_encoder("preaggr_dd_metrics_encode", preaggr_dd_metrics_config)?
-        .add_forwarder("preaggr_dd_out", preaggr_dd_forwarder_config)?;
-
-    let metric_allowlist = configuration
-        .get_typed::<Vec<String>>("preaggregation.metric_allowlist")
-        .unwrap_or_default();
-
-    if metric_allowlist.is_empty() {
-        // No allowlist: all metrics flow to both normal and preaggregation destinations
-        blueprint
-            .connect_component("dd_metrics_encode", ["dsd_enrich"])?
-            .connect_component("preaggr_dd_metrics_encode", ["dsd_enrich"])?
-            .connect_component("preaggr_dd_out", ["preaggr_dd_metrics_encode"])?;
-    } else {
-        // Allowlist configured: use MetricRouter for selective routing
-        // Matched metrics → preaggregation, unmatched metrics → normal flow
-        let metric_router_config = MetricRouterConfiguration {
-            metric_names: metric_allowlist,
-        };
-
-        blueprint
-            .add_transform("preaggr_router", metric_router_config)?
-            .connect_component("preaggr_router", ["dsd_enrich"])?
-            .connect_component("preaggr_dd_metrics_encode", ["preaggr_router.matched"])?
-            .connect_component("preaggr_dd_out", ["preaggr_dd_metrics_encode"])?
-            .connect_component("dd_metrics_encode", ["preaggr_router.unmatched"])?;
-    }
-
-    Ok(())
 }
 
 fn add_checks_to_blueprint(

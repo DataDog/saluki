@@ -66,7 +66,7 @@ pub struct MemoryBoundsConfiguration {
 impl MemoryBoundsConfiguration {
     /// Attempts to read memory bounds configuration from the provided configuration.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// If an error occurs during deserialization, an error will be returned.
     pub fn try_from_config(config: &GenericConfiguration) -> Result<Self, GenericError> {
@@ -116,7 +116,7 @@ impl MemoryBoundsConfiguration {
 /// exceeds the configured limit, until it returns below the limit. The limiter uses the effective memory limit, based
 /// on the configured slop factor.
 ///
-/// ## Errors
+/// # Errors
 ///
 /// If the bounds could not be validated, an error is returned.
 pub fn initialize_memory_bounds(
@@ -244,10 +244,10 @@ impl AllocationGroupMetrics {
 /// This spawns a background task that will periodically collect memory usage statistics, such as which components are
 /// responsible for which portion of the live heap, and report them as internal telemetry.
 ///
-/// ## Errors
+/// # Errors
 ///
 /// If the memory allocator subsystem has already been initialized, an error will be returned.
-pub async fn initialize_allocator_telemetry() -> Result<(), GenericError> {
+pub(crate) async fn initialize_allocator_telemetry() -> Result<(), GenericError> {
     // Simple initialization guard to prevent multiple calls to this function.
     static INIT: AtomicBool = AtomicBool::new(false);
     if INIT.swap(true, Relaxed) {

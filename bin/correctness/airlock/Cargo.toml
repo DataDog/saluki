@@ -21,7 +21,6 @@ clap = { workspace = true, features = [
   "suggestions",
 ] }
 futures = { workspace = true }
-saluki-app = { workspace = true, features = ["logging"] }
 saluki-error = { workspace = true }
 tokio = { workspace = true, features = [
   "fs",

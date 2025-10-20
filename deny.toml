@@ -34,9 +34,6 @@ allow-git = [
   # is reasonable from our perspective... especially considering the fact that we're the ones who own the repository.
   "https://github.com/DataDog/lading",
 
-  # Git dependency for `triomphe`, due to needing unreleased support for `Arc::into_unique`.
-  "https://github.com/Manishearth/triomphe",
-
   # Git dependency for `containerd-client`, to pull in an updated version that uses more recent transitive dependencies,
   # and isn't yet released.
   "https://github.com/containerd/rust-extensions"

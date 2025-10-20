@@ -110,11 +110,6 @@
       - any-glob-to-any-file:
           - "lib/saluki-components/src/transforms/host_tags/**/*"
 
-"transform/preaggregation-filter":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "lib/saluki-components/src/transforms/preaggregation_filter/**/*"
-
 "destination/blackhole":
   - changed-files:
       - any-glob-to-any-file:
