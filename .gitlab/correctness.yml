@@ -82,7 +82,7 @@ run-ground-truth:
     - make build-ground-truth
     - target/debug/ground-truth
       --millstone-image ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
-      --millstone-config-path $(pwd)/test/correctness/millstone.yaml
+      --dsd-millstone-config-path $(pwd)/test/correctness/millstone.yaml
       --metrics-intake-image ${SALUKI_IMAGE_REPO_BASE}/metrics-intake:${CI_COMMIT_SHA}
       --metrics-intake-config-path $(pwd)/test/correctness/metrics-intake.yaml
       --dsd-image gcr.io/datadoghq/dogstatsd:${PUBLIC_DSD_VERSION}
@@ -117,7 +117,7 @@ run-ground-truth-origin-detection:
     # running the same exact version of the Agent on both sides.
     - target/debug/ground-truth
       --millstone-image ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
-      --millstone-config-path $(pwd)/test/correctness/millstone.yaml
+      --dsd-millstone-config-path $(pwd)/test/correctness/millstone.yaml
       --metrics-intake-image ${SALUKI_IMAGE_REPO_BASE}/metrics-intake:${CI_COMMIT_SHA}
       --metrics-intake-config-path $(pwd)/test/correctness/metrics-intake.yaml
       --dsd-image ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
@@ -129,3 +129,41 @@ run-ground-truth-origin-detection:
       --adp-config-path $(pwd)/test/correctness/datadog-origin-detection.yaml
       --adp-env-arg DD_ADP_ENABLED=true
       --adp-env-arg DD_AGGREGATE_CONTEXT_LIMIT=500000
+
+run-ground-truth-otlp-metrics:
+  extends: [.build-common-variables]
+  stage: correctness
+  tags: ["docker-in-docker:amd64"]
+  needs:
+    - build-adp-image
+    - build-metrics-intake-image
+    - build-millstone-image
+  retry: 2
+  timeout: 10m
+  image: "${SALUKI_BUILD_CI_IMAGE}"
+  artifacts:
+    expire_in: 1 weeks
+    paths:
+      - /tmp/ground-truth/ # for debugging
+    when: always
+  variables:
+    DD_LOG_LEVEL: "ground_truth=debug,info"
+    GROUND_TRUTH_ALPINE_IMAGE: registry.ddbuild.io/alpine:latest
+  script:
+    - make build-ground-truth
+    - target/debug/ground-truth
+      --millstone-image ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
+      --dsd-millstone-config-path $(pwd)/test/correctness/otlp-metrics-agent-millstone.yaml
+      --adp-millstone-config-path $(pwd)/test/correctness/otlp-metrics-adp-millstone.yaml
+      --metrics-intake-image ${SALUKI_IMAGE_REPO_BASE}/metrics-intake:${CI_COMMIT_SHA}
+      --metrics-intake-config-path $(pwd)/test/correctness/metrics-intake.yaml
+      --dsd-image docker.io/datadog/agent:latest
+      --dsd-entrypoint /bin/entrypoint.sh
+      --dsd-command /init
+      --dsd-config-path $(pwd)/test/correctness/otlp-metrics.yaml
+      --dsd-env-arg DD_API_KEY=dummy-api-key-correctness-testing
+      --adp-image ${ADP_FULL_IMAGE_TAG}
+      --adp-entrypoint /usr/local/bin/agent-data-plane
+      --adp-command run
+      --adp-config-path $(pwd)/test/correctness/otlp-metrics.yaml
+      --adp-env-arg DD_ADP_OTLP_ENABLED=true
