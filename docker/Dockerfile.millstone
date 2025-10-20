@@ -1,42 +1,25 @@
-ARG BUILD_IMAGE
-ARG APP_IMAGE
+ARG BASE_IMAGE=alpine:3.20
 
-FROM ${BUILD_IMAGE} AS builder
+FROM ${BASE_IMAGE} AS builder
 
-ARG TARGETARCH
-ARG BUILD_PROFILE=release
+ARG RUST_VERSION=stable
 
-# Install basic utilities and an updated compiler/binutils toolchain, which is necessary for compiling.
+# Install Rust and other build dependencies.
 #
-# We only install cmake if it doesn't already exists, since the package name is different between the build image for
-# local development (Debian Buster, where it's `cmake`) and the build image for CI (Ubuntu 14.04, where it's `cmake3`).
-#
-# Our CI build image already installs `cmake3`, though, so we just need to handle the local development case here.
-
-# no-dd-sa: We don't care abput pinning package versions in the build stage.
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl ca-certificates unzip && \
-    (which cmake >/dev/null || apt-get install -y --no-install-recommends cmake)
-
-# Install Go, which we need to build AWS-LC in FIPS-compliant mode.
-ENV PATH="/usr/local/go/bin:${PATH}"
-RUN curl -s -L -o /tmp/go-1.23.0.tar.gz https://go.dev/dl/go1.23.0.linux-${TARGETARCH}.tar.gz
-RUN tar -C /usr/local -xzf /tmp/go-1.23.0.tar.gz
-
-# Install Protocol Buffers compiler by hand, since we want a specific minimum version that Debian Buster does not have.
-COPY .ci/install-protoc.sh /
-RUN chmod +x /install-protoc.sh && /install-protoc.sh
+# no-dd-sa: We don't care about pinning package versions in the build stage.
+RUN apk update && \
+    apk add --no-cache rustup musl-dev linux-headers make cmake mold gcc libgcc perl go protobuf && \
+   rustup-init -y --default-toolchain ${RUST_VERSION}
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Build millstone.
 WORKDIR /millstone
 COPY . /millstone
-RUN cargo build --profile ${BUILD_PROFILE} --bin millstone
+RUN cargo build --profile release --bin millstone
 
 # Now stick our resulting binary in a clean image.
-FROM ${APP_IMAGE}
+FROM ${BASE_IMAGE}
 
-ARG BUILD_PROFILE=release
-
-COPY --from=builder /millstone/target/${BUILD_PROFILE}/millstone /usr/local/bin/millstone
+COPY --from=builder /millstone/target/release/millstone /usr/local/bin/millstone
 
 ENTRYPOINT [ "/usr/local/bin/millstone" ]

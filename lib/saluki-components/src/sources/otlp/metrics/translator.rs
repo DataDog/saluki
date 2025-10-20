@@ -17,6 +17,7 @@ use saluki_core::data_model::event::Event;
 use saluki_error::GenericError;
 use tracing::{debug, warn};
 
+use super::super::attributes::raw_origin_from_attributes;
 use super::super::attributes::source::{Source, SourceKind};
 use super::super::attributes::translator::AttributeTranslator;
 use super::cache::PointsCache;
@@ -53,6 +54,11 @@ static RATE_AS_GAUGE_METRICS: LazyLock<HashSet<&'static str>> = LazyLock::new(||
 enum DataType {
     Gauge,
     Count,
+}
+
+struct TranslationContext<'a> {
+    resource_attributes: &'a [OtlpKeyValue],
+    metrics: &'a Metrics,
 }
 
 /// A translator for converting OTLP metrics into Saluki `Event::Metric`s.
@@ -228,29 +234,34 @@ impl OtlpMetricsTranslator {
             origin_id,
         };
 
+        let context = TranslationContext {
+            resource_attributes,
+            metrics,
+        };
+
         if let Some(data) = metric.data {
             match data {
                 OtlpMetricData::Gauge(gauge) => {
-                    self.map_number_metrics(base_dims, gauge.data_points, DataType::Gauge, metrics)
+                    self.map_number_metrics(base_dims, gauge.data_points, DataType::Gauge, &context)
                 }
                 OtlpMetricData::Sum(sum) => match AggregationTemporality::try_from(sum.aggregation_temporality) {
                     Ok(AggregationTemporality::Cumulative) => {
                         if sum.is_monotonic {
                             match self.config.number_mode {
                                 NumberMode::CumulativeToDelta => {
-                                    self.map_number_monotonic_metrics(base_dims, sum.data_points, metrics)
+                                    self.map_number_monotonic_metrics(base_dims, sum.data_points, &context)
                                 }
                                 NumberMode::RawValue => {
-                                    self.map_number_metrics(base_dims, sum.data_points, DataType::Gauge, metrics)
+                                    self.map_number_metrics(base_dims, sum.data_points, DataType::Gauge, &context)
                                 }
                             }
                         } else {
                             // Cumulative non-monotonic sums are handled as gauges.
-                            self.map_number_metrics(base_dims, sum.data_points, DataType::Gauge, metrics)
+                            self.map_number_metrics(base_dims, sum.data_points, DataType::Gauge, &context)
                         }
                     }
                     Ok(AggregationTemporality::Delta) => {
-                        self.map_number_metrics(base_dims, sum.data_points, DataType::Count, metrics)
+                        self.map_number_metrics(base_dims, sum.data_points, DataType::Count, &context)
                     }
                     _ => {
                         warn!(
@@ -264,10 +275,10 @@ impl OtlpMetricsTranslator {
                 OtlpMetricData::Histogram(histogram) => {
                     match AggregationTemporality::try_from(histogram.aggregation_temporality) {
                         Ok(AggregationTemporality::Cumulative) => {
-                            self.map_histogram_metrics(base_dims, histogram.data_points, false, metrics)
+                            self.map_histogram_metrics(base_dims, histogram.data_points, false, &context)
                         }
                         Ok(AggregationTemporality::Delta) => {
-                            self.map_histogram_metrics(base_dims, histogram.data_points, true, metrics)
+                            self.map_histogram_metrics(base_dims, histogram.data_points, true, &context)
                         }
                         _ => {
                             warn!(
@@ -293,20 +304,20 @@ impl OtlpMetricsTranslator {
     /// TODO: how do we handle timestamp, hostname, origin?
     fn record_metric_event(
         &mut self, dims: &Dimensions, value: f64, timestamp_ns: u64, data_type: DataType, events: &mut Vec<Event>,
-        metrics: &Metrics,
+        context: &TranslationContext,
     ) {
-        metrics.metrics_received().increment(1);
+        context.metrics.metrics_received().increment(1);
 
         let ts = timestamp_ns / 1_000_000_000;
-        // TODO: Handle origin
-        match self.context_resolver.resolve(&dims.name, &dims.tags, None) {
-            Some(context) => {
+        let raw_origin = raw_origin_from_attributes(context.resource_attributes);
+        match self.context_resolver.resolve(&dims.name, &dims.tags, Some(raw_origin)) {
+            Some(resolved_context) => {
                 let values = match data_type {
                     DataType::Gauge => MetricValues::gauge((ts, value)),
                     DataType::Count => MetricValues::counter((ts, value)),
                 };
 
-                let metric = Metric::from_parts(context, values, MetricMetadata::default());
+                let metric = Metric::from_parts(resolved_context, values, MetricMetadata::default());
                 events.push(Event::Metric(metric));
             }
             None => {
@@ -317,7 +328,8 @@ impl OtlpMetricsTranslator {
 
     /// Maps a slice of OTLP numeric data points to Saluki `Event`s.
     fn map_number_metrics(
-        &mut self, base_dims: Dimensions, data_points: Vec<OtlpNumberDataPoint>, data_type: DataType, metrics: &Metrics,
+        &mut self, base_dims: Dimensions, data_points: Vec<OtlpNumberDataPoint>, data_type: DataType,
+        context: &TranslationContext,
     ) -> Vec<Event> {
         let mut events = Vec::new();
         for dp in data_points {
@@ -338,14 +350,14 @@ impl OtlpMetricsTranslator {
 
             let ts = dp.time_unix_nano;
 
-            self.record_metric_event(&point_dims, value, ts, data_type, &mut events, metrics);
+            self.record_metric_event(&point_dims, value, ts, data_type, &mut events, context);
         }
         events
     }
 
     /// Maps a slice of OTLP cumulative monotonic `Sum` data points to Saluki `Event`s.
     fn map_number_monotonic_metrics(
-        &mut self, base_dims: Dimensions, data_points: Vec<OtlpNumberDataPoint>, metrics: &Metrics,
+        &mut self, base_dims: Dimensions, data_points: Vec<OtlpNumberDataPoint>, context: &TranslationContext,
     ) -> Vec<Event> {
         let mut events = Vec::new();
         for (i, dp) in data_points.iter().enumerate() {
@@ -384,7 +396,7 @@ impl OtlpMetricsTranslator {
                         dp.time_unix_nano,
                         DataType::Gauge,
                         &mut events,
-                        metrics,
+                        context,
                     );
                 }
                 continue;
@@ -410,7 +422,7 @@ impl OtlpMetricsTranslator {
                     dp.time_unix_nano,
                     DataType::Count,
                     &mut events,
-                    metrics,
+                    context,
                 );
             } else if i == 0 && self.should_consume_initial_value(dp.start_time_unix_nano, dp.time_unix_nano) {
                 // We only compute the first point in the timeseries if it is the first value in the datapoint slice.
@@ -420,7 +432,7 @@ impl OtlpMetricsTranslator {
                     dp.time_unix_nano,
                     DataType::Count,
                     &mut events,
-                    metrics,
+                    context,
                 );
             }
         }
@@ -428,7 +440,8 @@ impl OtlpMetricsTranslator {
     }
 
     fn map_histogram_metrics(
-        &mut self, base_dims: Dimensions, data_points: Vec<OtlpHistogramDataPoint>, delta: bool, metrics: &Metrics,
+        &mut self, base_dims: Dimensions, data_points: Vec<OtlpHistogramDataPoint>, delta: bool,
+        context: &TranslationContext,
     ) -> Vec<Event> {
         let mut events = Vec::new();
 
@@ -511,17 +524,17 @@ impl OtlpMetricsTranslator {
                     ts,
                     DataType::Count,
                     &mut events,
-                    metrics,
+                    context,
                 );
 
-                self.record_metric_event(&sum_dims, hist_info.sum, ts, DataType::Count, &mut events, metrics);
+                self.record_metric_event(&sum_dims, hist_info.sum, ts, DataType::Count, &mut events, context);
 
                 if delta {
                     if let Some(min) = dp.min {
-                        self.record_metric_event(&min_dims, min, ts, DataType::Gauge, &mut events, metrics);
+                        self.record_metric_event(&min_dims, min, ts, DataType::Gauge, &mut events, context);
                     }
                     if let Some(max) = dp.max {
-                        self.record_metric_event(&max_dims, max, ts, DataType::Gauge, &mut events, metrics);
+                        self.record_metric_event(&max_dims, max, ts, DataType::Gauge, &mut events, context);
                     }
                 }
             }
@@ -833,8 +846,12 @@ mod tests {
                 name: "metric.example".to_string(),
                 ..Default::default()
             };
+            let context = TranslationContext {
+                resource_attributes: &[],
+                metrics: &metrics,
+            };
 
-            let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
 
             assert_eq!(events.len(), deltas.len(), "Expected one event for each delta");
 
@@ -855,8 +872,12 @@ mod tests {
                 name: "kafka.net.bytes_out.rate".to_string(),
                 ..Default::default()
             };
+            let context = TranslationContext {
+                resource_attributes: &[],
+                metrics: &metrics,
+            };
 
-            let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
 
             assert_eq!(
                 events.len(),
@@ -914,7 +935,11 @@ mod tests {
                 name: "metric.example".to_string(),
                 ..Default::default()
             };
-            let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+            let context = TranslationContext {
+                resource_attributes: &[],
+                metrics: &metrics,
+            };
+            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
 
             assert_eq!(events.len(), 2, "Expected two metrics after dropping a point");
 
@@ -962,7 +987,11 @@ mod tests {
                 name: "kafka.net.bytes_out.rate".to_string(),
                 ..Default::default()
             };
-            let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+            let context = TranslationContext {
+                resource_attributes: &[],
+                metrics: &metrics,
+            };
+            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
 
             // The first point is consumed but produces no metric for rates.
             // The second is dropped.
@@ -1009,7 +1038,11 @@ mod tests {
                 name: "metric.example".to_string(),
                 ..Default::default()
             };
-            let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+            let context = TranslationContext {
+                resource_attributes: &[],
+                metrics: &metrics,
+            };
+            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
             assert_eq!(events.len(), 2, "Expected two metrics after dropping an older point");
 
             let metric = events[0].try_as_metric().unwrap();
@@ -1054,7 +1087,11 @@ mod tests {
                 name: "kafka.net.bytes_out.rate".to_string(),
                 ..Default::default()
             };
-            let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+            let context = TranslationContext {
+                resource_attributes: &[],
+                metrics: &metrics,
+            };
+            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
             assert_eq!(
                 events.len(),
                 1,
@@ -1081,7 +1118,11 @@ mod tests {
         let slice = build_test_cumulative_monotonic_int_points(&translator, &[10, 15, 20], false);
         let start_ts = slice[0].start_time_unix_nano;
 
-        let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics: &metrics,
+        };
+        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
 
         assert_eq!(events.len(), 3, "Expected three metrics for a new cumulative series");
 
@@ -1123,7 +1164,11 @@ mod tests {
             name: "metric.example".to_string(),
             ..Default::default()
         };
-        let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics: &metrics,
+        };
+        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
 
         // Expected metrics:
         // 1. First valid point is (ts: 1, val: 0). The point at ts: 0 is dropped. The first point is
@@ -1208,7 +1253,11 @@ mod tests {
             name: "metric.example".to_string(),
             ..Default::default()
         };
-        let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics: &metrics,
+        };
+        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
         assert_eq!(events.len(), 3, "Expected three distinct metrics");
 
         assert_eq!(
@@ -1250,7 +1299,11 @@ mod tests {
                 name: "int64.test".to_string(),
                 ..Default::default()
             };
-            let events = translator.map_number_metrics(dims, slice.clone(), DataType::Gauge, &metrics);
+            let context = TranslationContext {
+                resource_attributes: &[],
+                metrics: &metrics,
+            };
+            let events = translator.map_number_metrics(dims, slice.clone(), DataType::Gauge, &context);
 
             assert_eq!(events.len(), 1, "Expected one event for the gauge test");
             let metric = events[0].try_as_metric().unwrap();
@@ -1269,7 +1322,11 @@ mod tests {
                 name: "int64.delta.test".to_string(),
                 ..Default::default()
             };
-            let events = translator.map_number_metrics(dims, slice.clone(), DataType::Count, &metrics);
+            let context = TranslationContext {
+                resource_attributes: &[],
+                metrics: &metrics,
+            };
+            let events = translator.map_number_metrics(dims, slice.clone(), DataType::Count, &context);
 
             assert_eq!(events.len(), 1, "Expected one event for the count test");
             let metric = events[0].try_as_metric().unwrap();
@@ -1291,7 +1348,11 @@ mod tests {
                 tags: tags.into_shared(),
                 ..Default::default()
             };
-            let events = translator.map_number_metrics(dims, slice.clone(), DataType::Gauge, &metrics);
+            let context = TranslationContext {
+                resource_attributes: &[],
+                metrics: &metrics,
+            };
+            let events = translator.map_number_metrics(dims, slice.clone(), DataType::Gauge, &context);
 
             assert_eq!(events.len(), 1, "Expected one event for the gauge with tags test");
             let metric = events[0].try_as_metric().unwrap();
@@ -1317,8 +1378,12 @@ mod tests {
                 name: "metric.example".to_string(),
                 ..Default::default()
             };
+            let context = TranslationContext {
+                resource_attributes: &[],
+                metrics: &metrics,
+            };
 
-            let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
 
             assert_eq!(events.len(), 2, "Expected two metrics after a reboot");
 
@@ -1337,8 +1402,12 @@ mod tests {
                 name: "kafka.net.bytes_out.rate".to_string(),
                 ..Default::default()
             };
+            let context = TranslationContext {
+                resource_attributes: &[],
+                metrics: &metrics,
+            };
 
-            let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
 
             assert_eq!(events.len(), 2, "Expected two metrics for rate after a reboot");
 
@@ -1376,7 +1445,11 @@ mod tests {
                 name: "float64.test".to_string(),
                 ..Default::default()
             };
-            let events = translator.map_number_metrics(dims, slice.clone(), DataType::Gauge, &metrics);
+            let context = TranslationContext {
+                resource_attributes: &[],
+                metrics: &metrics,
+            };
+            let events = translator.map_number_metrics(dims, slice.clone(), DataType::Gauge, &context);
 
             assert_eq!(events.len(), 1, "Expected one event for the gauge test");
             let metric = events[0].try_as_metric().unwrap();
@@ -1391,7 +1464,11 @@ mod tests {
                 name: "float64.delta.test".to_string(),
                 ..Default::default()
             };
-            let events = translator.map_number_metrics(dims, slice.clone(), DataType::Count, &metrics);
+            let context = TranslationContext {
+                resource_attributes: &[],
+                metrics: &metrics,
+            };
+            let events = translator.map_number_metrics(dims, slice.clone(), DataType::Count, &context);
 
             assert_eq!(events.len(), 1, "Expected one event for the count test");
             let metric = events[0].try_as_metric().unwrap();
@@ -1409,7 +1486,11 @@ mod tests {
                 tags: tags.into_shared(),
                 ..Default::default()
             };
-            let events = translator.map_number_metrics(dims, slice.clone(), DataType::Gauge, &metrics);
+            let context = TranslationContext {
+                resource_attributes: &[],
+                metrics: &metrics,
+            };
+            let events = translator.map_number_metrics(dims, slice.clone(), DataType::Gauge, &context);
 
             assert_eq!(events.len(), 1, "Expected one event for the gauge with tags test");
             let metric = events[0].try_as_metric().unwrap();
@@ -1435,8 +1516,12 @@ mod tests {
                 name: "metric.example".to_string(),
                 ..Default::default()
             };
+            let context = TranslationContext {
+                resource_attributes: &[],
+                metrics: &metrics,
+            };
 
-            let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
             assert_eq!(events.len(), deltas.len());
 
             for (i, event) in events.iter().enumerate() {
@@ -1456,8 +1541,12 @@ mod tests {
                 name: "kafka.net.bytes_out.rate".to_string(),
                 ..Default::default()
             };
+            let context = TranslationContext {
+                resource_attributes: &[],
+                metrics: &metrics,
+            };
 
-            let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
             assert_eq!(events.len(), deltas.len());
 
             for (i, event) in events.iter().enumerate() {
@@ -1535,7 +1624,11 @@ mod tests {
             name: "metric.example".to_string(),
             ..Default::default()
         };
-        let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics: &metrics,
+        };
+        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
         assert_eq!(events.len(), 3);
 
         assert_eq!(
@@ -1568,8 +1661,12 @@ mod tests {
                 name: "metric.example".to_string(),
                 ..Default::default()
             };
+            let context = TranslationContext {
+                resource_attributes: &[],
+                metrics: &metrics,
+            };
 
-            let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
             assert_eq!(events.len(), 2);
             assert_eq!(
                 events[0].try_as_metric().unwrap().values(),
@@ -1588,8 +1685,12 @@ mod tests {
                 name: "kafka.net.bytes_out.rate".to_string(),
                 ..Default::default()
             };
+            let context = TranslationContext {
+                resource_attributes: &[],
+                metrics: &metrics,
+            };
 
-            let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
             assert_eq!(events.len(), 2);
             assert_eq!(
                 events[0].try_as_metric().unwrap().values(),
@@ -1637,7 +1738,11 @@ mod tests {
                 name: "metric.example".to_string(),
                 ..Default::default()
             };
-            let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+            let context = TranslationContext {
+                resource_attributes: &[],
+                metrics: &metrics,
+            };
+            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
             assert_eq!(events.len(), 2);
 
             let expected_ts_s_1 = (start_ts + nanos_from_seconds(2)) / 1_000_000_000;
@@ -1682,7 +1787,11 @@ mod tests {
                 name: "metric.example".to_string(),
                 ..Default::default()
             };
-            let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+            let context = TranslationContext {
+                resource_attributes: &[],
+                metrics: &metrics,
+            };
+            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
             assert_eq!(events.len(), 2);
 
             let expected_ts_s_1 = (start_ts + nanos_from_seconds(3)) / 1_000_000_000;
@@ -1720,7 +1829,11 @@ mod tests {
             name: "metric.example".to_string(),
             ..Default::default()
         };
-        let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics: &metrics,
+        };
+        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
         assert_eq!(events.len(), 2);
 
         assert_eq!(
@@ -1768,7 +1881,11 @@ mod tests {
                 },
             ];
 
-            let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+            let context = TranslationContext {
+                resource_attributes: &[],
+                metrics: &metrics,
+            };
+            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
             assert_eq!(events.len(), 2, "Expected two metrics after reset");
 
             // The reset point should be emitted as a new "first value".
@@ -1815,7 +1932,11 @@ mod tests {
                 },
             ];
 
-            let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+            let context = TranslationContext {
+                resource_attributes: &[],
+                metrics: &metrics,
+            };
+            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
             assert_eq!(events.len(), 1, "Expected one metric for rate after reset");
 
             let metric = events[0].try_as_metric().unwrap();
@@ -1838,7 +1959,11 @@ mod tests {
         let slice = build_test_cumulative_monotonic_int_points(&translator, &[10, 15, 20], false);
         let start_ts_s = slice[0].start_time_unix_nano / 1_000_000_000;
 
-        let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics: &metrics,
+        };
+        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
 
         // For rates, the first value is consumed by the cache but doesn't produce a metric.
         assert_eq!(events.len(), 2, "Expected two metrics for a new rate series");
@@ -1867,7 +1992,11 @@ mod tests {
         // ts_match = true, so start_time_unix_nano will equal time_unix_nano
         let slice = build_test_cumulative_monotonic_int_points(&translator, &[10, 15, 20], true);
 
-        let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics: &metrics,
+        };
+        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
 
         assert!(
             events.is_empty(),
@@ -1888,7 +2017,11 @@ mod tests {
         // ts_match = true, so start_time_unix_nano will equal time_unix_nano
         let slice = build_test_cumulative_monotonic_int_points(&translator, &[10, 15, 20], true);
 
-        let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics: &metrics,
+        };
+        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
 
         assert!(
             events.is_empty(),
@@ -1916,7 +2049,11 @@ mod tests {
         let slice = build_test_cumulative_monotonic_int_points(&translator, &[10, 15, 20], false);
         let start_ts_s = slice[0].start_time_unix_nano / 1_000_000_000;
 
-        let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics: &metrics,
+        };
+        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
 
         assert_eq!(
             events.len(),
@@ -1960,7 +2097,11 @@ mod tests {
         let slice = build_test_cumulative_monotonic_int_points(&translator, &[10, 15, 20], false);
         let start_ts_s = slice[0].start_time_unix_nano / 1_000_000_000;
 
-        let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics: &metrics,
+        };
+        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
 
         assert_eq!(
             events.len(),
@@ -2026,7 +2167,11 @@ mod tests {
             name: "metric.example".to_string(),
             ..Default::default()
         };
-        let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics: &metrics,
+        };
+        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
 
         assert_eq!(
             events.len(),
@@ -2077,7 +2222,11 @@ mod tests {
                     ..Default::default()
                 },
             ];
-            let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+            let context = TranslationContext {
+                resource_attributes: &[],
+                metrics: &metrics,
+            };
+            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
 
             assert_eq!(events.len(), 2, "Expected two metrics for reboot diff test");
 
@@ -2119,7 +2268,11 @@ mod tests {
                     ..Default::default()
                 },
             ];
-            let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+            let context = TranslationContext {
+                resource_attributes: &[],
+                metrics: &metrics,
+            };
+            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
 
             assert_eq!(events.len(), 1, "Expected one metric for reboot rate test");
 
@@ -2163,7 +2316,11 @@ mod tests {
                     ..Default::default()
                 },
             ];
-            let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+            let context = TranslationContext {
+                resource_attributes: &[],
+                metrics: &metrics,
+            };
+            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
 
             assert_eq!(events.len(), 1, "Expected one metric for drop equal test");
             let start_ts_s = start_ts / 1_000_000_000;
@@ -2204,7 +2361,11 @@ mod tests {
                     ..Default::default()
                 },
             ];
-            let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+            let context = TranslationContext {
+                resource_attributes: &[],
+                metrics: &metrics,
+            };
+            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
 
             assert_eq!(events.len(), 1, "Expected one metric for drop older test");
             let start_ts_s = start_ts / 1_000_000_000;
@@ -2227,7 +2388,11 @@ mod tests {
         };
         let slice = build_test_cumulative_monotonic_double_points(&translator, &[10.0, 15.0, 20.0], false);
         let start_ts_s = slice[0].start_time_unix_nano / 1_000_000_000;
-        let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics: &metrics,
+        };
+        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
         assert_eq!(events.len(), 3);
         let metric1 = events[0].try_as_metric().unwrap();
         assert_eq!(metric1.values(), &MetricValues::counter((start_ts_s + 2, 10.0)));
@@ -2248,7 +2413,11 @@ mod tests {
         };
         let slice = build_test_cumulative_monotonic_double_points(&translator, &[10.0, 15.0, 20.0], false);
         let start_ts_s = slice[0].start_time_unix_nano / 1_000_000_000;
-        let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics: &metrics,
+        };
+        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
         assert_eq!(events.len(), 2);
         let metric1 = events[0].try_as_metric().unwrap();
         assert_eq!(metric1.values(), &MetricValues::gauge((start_ts_s + 3, 5.0)));
@@ -2266,7 +2435,11 @@ mod tests {
             ..Default::default()
         };
         let slice = build_test_cumulative_monotonic_double_points(&translator, &[10.0, 15.0, 20.0], true);
-        let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics: &metrics,
+        };
+        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
         assert!(events.is_empty());
     }
 
@@ -2285,7 +2458,11 @@ mod tests {
             .monotonic_diff(&dims, start_ts, start_ts + nanos_from_seconds(1), 1.0);
         let slice = build_test_cumulative_monotonic_double_points(&translator, &[10.0, 15.0, 20.0], false);
         let start_ts_s = slice[0].start_time_unix_nano / 1_000_000_000;
-        let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics: &metrics,
+        };
+        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
         assert_eq!(events.len(), 3);
         let metric1 = events[0].try_as_metric().unwrap();
         assert_eq!(metric1.values(), &MetricValues::counter((start_ts_s + 2, 9.0)));
@@ -2310,7 +2487,11 @@ mod tests {
             .monotonic_diff(&dims, start_ts, start_ts + nanos_from_seconds(1), 1.0);
         let slice = build_test_cumulative_monotonic_double_points(&translator, &[10.0, 15.0, 20.0], false);
         let start_ts_s = slice[0].start_time_unix_nano / 1_000_000_000;
-        let events = translator.map_number_monotonic_metrics(dims, slice, &metrics);
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics: &metrics,
+        };
+        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
         assert_eq!(events.len(), 3);
         let metric1 = events[0].try_as_metric().unwrap();
         assert_eq!(metric1.values(), &MetricValues::gauge((start_ts_s + 2, 9.0)));

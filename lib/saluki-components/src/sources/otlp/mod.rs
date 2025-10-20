@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -8,6 +9,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::post;
 use axum::Router;
+use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, MemoryLimiter};
 use otlp_protos::opentelemetry::proto::collector::logs::v1::logs_service_server::{LogsService, LogsServiceServer};
 use otlp_protos::opentelemetry::proto::collector::logs::v1::{ExportLogsServiceRequest, ExportLogsServiceResponse};
@@ -22,7 +24,7 @@ use otlp_protos::opentelemetry::proto::metrics::v1::ResourceMetrics as OtlpResou
 use prost::Message;
 use saluki_common::task::HandleExt as _;
 use saluki_config::GenericConfiguration;
-use saluki_context::{ContextResolver, ContextResolverBuilder};
+use saluki_context::ContextResolver;
 use saluki_core::observability::ComponentMetricsExt;
 use saluki_core::topology::interconnect::EventBufferManager;
 use saluki_core::topology::shutdown::{DynamicShutdownCoordinator, DynamicShutdownHandle};
@@ -34,6 +36,7 @@ use saluki_core::{
     data_model::event::{Event, EventType},
     topology::{EventsBuffer, OutputDefinition},
 };
+use saluki_env::WorkloadProvider;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::listener::ConnectionOrientedListener;
 use saluki_io::net::server::http::HttpServer;
@@ -51,14 +54,83 @@ use tracing::{debug, error};
 mod attributes;
 mod logs;
 mod metrics;
-
+mod origin;
+mod resolver;
 use self::logs::translator::OtlpLogsTranslator;
 use self::metrics::translator::OtlpMetricsTranslator;
+use self::origin::OtlpOriginTagResolver;
+use self::resolver::build_context_resolver;
+
+const fn default_context_string_interner_size() -> ByteSize {
+    ByteSize::mib(2)
+}
+
+const fn default_cached_contexts_limit() -> usize {
+    500_000
+}
+
+const fn default_cached_tagsets_limit() -> usize {
+    500_000
+}
+
+const fn default_allow_context_heap_allocations() -> bool {
+    true
+}
 
 /// Configuration for the OTLP source.
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Default)]
 pub struct OtlpConfiguration {
     otlp_config: OtlpConfig,
+
+    /// Total size of the string interner used for contexts.
+    ///
+    /// This controls the amount of memory that can be used to intern metric names and tags. If the interner is full,
+    /// metrics with contexts that have not already been resolved may or may not be dropped, depending on the value of
+    /// `allow_context_heap_allocations`.
+    #[serde(
+        rename = "otlp_string_interner_size",
+        default = "default_context_string_interner_size"
+    )]
+    context_string_interner_bytes: ByteSize,
+
+    /// The maximum number of cached contexts to allow.
+    ///
+    /// This is the maximum number of resolved contexts that can be cached at any given time. This limit does not affect
+    /// the total number of contexts that can be _alive_ at any given time, which is dependent on the interner capacity
+    /// and whether or not heap allocations are allowed.
+    ///
+    /// Defaults to 500,000.
+    #[serde(rename = "otlp_cached_contexts_limit", default = "default_cached_contexts_limit")]
+    cached_contexts_limit: usize,
+
+    /// The maximum number of cached tagsets to allow.
+    ///
+    /// This is the maximum number of resolved tagsets that can be cached at any given time. This limit does not affect
+    /// the total number of tagsets that can be _alive_ at any given time, which is dependent on the interner capacity
+    /// and whether or not heap allocations are allowed.
+    ///
+    /// Defaults to 500,000.
+    #[serde(rename = "otlp_cached_tagsets_limit", default = "default_cached_tagsets_limit")]
+    cached_tagsets_limit: usize,
+
+    /// Whether or not to allow heap allocations when resolving contexts.
+    ///
+    /// When resolving contexts during parsing, the metric name and tags are interned to reduce memory usage. The
+    /// interner has a fixed size, however, which means some strings can fail to be interned if the interner is full.
+    /// When set to `true`, we allow these strings to be allocated on the heap like normal, but this can lead to
+    /// increased (unbounded) memory usage. When set to `false`, if the metric name and all of its tags cannot be
+    /// interned, the metric is skipped.
+    ///
+    /// Defaults to `true`.
+    #[serde(
+        rename = "otlp_allow_context_heap_allocs",
+        default = "default_allow_context_heap_allocations"
+    )]
+    allow_context_heap_allocations: bool,
+
+    /// Workload provider to utilize for origin detection/enrichment.
+    #[serde(skip)]
+    workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -151,10 +223,6 @@ fn default_max_recv_msg_size_mib() -> u64 {
     4
 }
 
-fn otel_source_tag() -> String {
-    "datadog_agent".to_string()
-}
-
 enum OtlpResource {
     Metrics(OtlpResourceMetrics),
     Logs(OtlpResourceLogs),
@@ -206,6 +274,19 @@ impl OtlpConfiguration {
     /// Creates a new `OTLPConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(config.as_typed()?)
+    }
+
+    /// Sets the workload provider to use for configuring origin detection/enrichment.
+    ///
+    /// A workload provider must be set otherwise origin detection/enrichment will not be enabled.
+    ///
+    /// Defaults to unset.
+    pub fn with_workload_provider<W>(mut self, workload_provider: W) -> Self
+    where
+        W: WorkloadProvider + Send + Sync + 'static,
+    {
+        self.workload_provider = Some(Arc::new(workload_provider));
+        self
     }
 }
 
@@ -284,7 +365,9 @@ impl SourceBuilder for OtlpConfiguration {
             )
         })?;
 
-        let context_resolver = ContextResolverBuilder::from_name(format!("{}/otlp", context.component_id()))?.build();
+        let maybe_origin_tags_resolver = self.workload_provider.clone().map(OtlpOriginTagResolver::new);
+
+        let context_resolver = build_context_resolver(self, &context, maybe_origin_tags_resolver.clone())?;
         let translator_config = metrics::config::OtlpTranslatorConfig::default().with_remapping(true);
         let grpc_max_recv_msg_size_bytes =
             self.otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
@@ -292,6 +375,7 @@ impl SourceBuilder for OtlpConfiguration {
 
         Ok(Box::new(Otlp {
             context_resolver,
+            origin_tag_resolver: maybe_origin_tags_resolver,
             grpc_endpoint,
             http_endpoint: ListenAddress::Tcp(http_socket_addr),
             grpc_max_recv_msg_size_bytes,
@@ -312,6 +396,7 @@ impl MemoryBounds for OtlpConfiguration {
 
 pub struct Otlp {
     context_resolver: ContextResolver,
+    origin_tag_resolver: Option<OtlpOriginTagResolver>,
     grpc_endpoint: ListenAddress,
     http_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
@@ -332,7 +417,6 @@ impl Source for Otlp {
         let mut converter_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
         let metrics_translator = OtlpMetricsTranslator::new(self.translator_config, self.context_resolver);
-        let logs_translator = OtlpLogsTranslator::new(otel_source_tag());
 
         let thread_pool_handle = context.topology_context().global_thread_pool().clone();
 
@@ -342,9 +426,9 @@ impl Source for Otlp {
             run_converter(
                 rx,
                 context.clone(),
+                self.origin_tag_resolver,
                 converter_shutdown_coordinator.register(),
                 metrics_translator,
-                logs_translator,
                 self.metrics,
             ),
         );
@@ -530,8 +614,9 @@ async fn dispatch_events(mut events: EventsBuffer, source_context: &SourceContex
 }
 
 async fn run_converter(
-    mut receiver: mpsc::Receiver<OtlpResource>, source_context: SourceContext, shutdown_handle: DynamicShutdownHandle,
-    mut metrics_translator: OtlpMetricsTranslator, mut logs_translator: OtlpLogsTranslator, metrics: Metrics,
+    mut receiver: mpsc::Receiver<OtlpResource>, source_context: SourceContext,
+    origin_tag_resolver: Option<OtlpOriginTagResolver>, shutdown_handle: DynamicShutdownHandle,
+    mut metrics_translator: OtlpMetricsTranslator, metrics: Metrics,
 ) {
     tokio::pin!(shutdown_handle);
     debug!("OTLP resource converter task started.");
@@ -562,16 +647,12 @@ async fn run_converter(
                         }
                     }
                     OtlpResource::Logs(resource_logs) => {
-                        match logs_translator.map_logs(resource_logs, &metrics) {
-                            Ok(events) => {
-                                for event in events {
-                                    if let Some(event_buffer) = event_buffer_manager.try_push(event) {
-                                        dispatch_events(event_buffer, &source_context).await;
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                error!(error = %e, "Failed to handle resource logs.");
+                        let translator = OtlpLogsTranslator::from_resource_logs(resource_logs, origin_tag_resolver.as_ref());
+                        for log_event in translator {
+                            metrics.logs_received().increment(1);
+
+                            if let Some(event_buffer) = event_buffer_manager.try_push(log_event) {
+                                dispatch_events(event_buffer, &source_context).await;
                             }
                         }
                     }

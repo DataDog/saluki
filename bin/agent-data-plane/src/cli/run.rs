@@ -253,7 +253,8 @@ async fn create_topology(
     add_checks_to_blueprint(&mut blueprint, configuration, env_provider)?;
 
     if configuration.get_typed_or_default::<bool>("adp.otlp.enabled") {
-        let otlp_config = OtlpConfiguration::from_configuration(configuration)?;
+        let otlp_config = OtlpConfiguration::from_configuration(configuration)?
+            .with_workload_provider(env_provider.workload().clone());
         blueprint.add_source("otlp_in", otlp_config)?;
         // Skip aggregation so that counters are not converted to rates.
         blueprint.connect_component("dsd_prefix_filter", ["otlp_in.metrics"])?;
