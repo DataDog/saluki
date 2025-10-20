@@ -20,12 +20,21 @@ pub struct Cli {
     #[arg(long, default_value = "/usr/local/bin/millstone")]
     pub millstone_binary_path: String,
 
-    /// Path to the millstone configuration file to use.
+    /// Path to the millstone configuration file to use for the non ADP group.
     ///
-    /// This file is mapped into the millstone container and so it must exist on the system where this command is run
-    /// from.
+    /// This file is mapped into the DSD group's millstone container and so it must exist on the system where this
+    /// command is run from.
     #[arg(long)]
-    pub millstone_config_path: PathBuf,
+    pub dsd_millstone_config_path: PathBuf,
+
+    /// Optional path to the millstone configuration file to use for the ADP group.
+    ///
+    /// If not specified, uses the same config as the non ADP group.
+    ///
+    /// This file is mapped into the ADP group's millstone container and so it must exist on the system where this
+    /// command is run from.
+    #[arg(long)]
+    pub adp_millstone_config_path: Option<PathBuf>,
 
     /// Container image to use for metrics-intake.
     ///
@@ -113,11 +122,22 @@ pub struct Cli {
 }
 
 impl Cli {
-    pub fn millstone_config(&self) -> MillstoneConfig {
+    pub fn dsd_millstone_config(&self) -> MillstoneConfig {
         MillstoneConfig {
             image: self.millstone_image.clone(),
             binary_path: self.millstone_binary_path.clone(),
-            config_path: self.millstone_config_path.clone(),
+            config_path: self.dsd_millstone_config_path.clone(),
+        }
+    }
+
+    pub fn adp_millstone_config(&self) -> MillstoneConfig {
+        MillstoneConfig {
+            image: self.millstone_image.clone(),
+            binary_path: self.millstone_binary_path.clone(),
+            config_path: self
+                .adp_millstone_config_path
+                .clone()
+                .unwrap_or_else(|| self.dsd_millstone_config_path.clone()),
         }
     }
 

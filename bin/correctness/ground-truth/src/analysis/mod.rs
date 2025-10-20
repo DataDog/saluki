@@ -52,29 +52,30 @@ impl RawTestResults {
         filter_internal_telemetry_metrics(&mut dsd_metrics, &mut adp_metrics);
 
         // Make sure both DSD and ADP emitted the same unique set of metrics. We don't yet care about the _values_ of
-        // those metrics, just that both sides are emitting the same contexts.
-        let (dsd_only_contexts, adp_only_contexts) = NormalizedMetrics::context_differences(&dsd_metrics, &adp_metrics);
+        // those metrics, just that both sides are emitting the same contexts. We check both context and type,
+        // so metrics with the same name but different types (e.g., Count vs Rate) are treated as different.
+        let (dsd_only_pairs, adp_only_pairs) = NormalizedMetrics::context_differences(&dsd_metrics, &adp_metrics);
 
-        if !dsd_only_contexts.is_empty() || !adp_only_contexts.is_empty() {
-            error!("Mismatch in unique metrics between DogStatsD and Agent Data Plane!");
+        if !dsd_only_pairs.is_empty() || !adp_only_pairs.is_empty() {
+            error!("Mismatch in unique metric (context, type) pairs between DogStatsD and Agent Data Plane!");
 
             error!("Metrics in DogStatsD but not in Agent Data Plane:");
-            for context in dsd_only_contexts {
-                error!("  - {}", context);
+            for (context, metric_type) in dsd_only_pairs {
+                error!("  - {} (type: {})", context, metric_type);
             }
 
             error!("Metrics in Agent Data Plane but not in DogStatsD:");
-            for context in adp_only_contexts {
-                error!("  - {}", context);
+            for (context, metric_type) in adp_only_pairs {
+                error!("  - {} (type: {})", context, metric_type);
             }
 
             return Err(generic_error!(
-                "Mismatch in metric payloads between DogStatsD and Agent Data Plane."
+                "Mismatch in metric (context, type) pairs between DogStatsD and Agent Data Plane."
             ));
         }
 
         info!(
-            "DogStatsD and Agent Data Plane both emitted the same set of {} unique metric contexts. Continuing...",
+            "DogStatsD and Agent Data Plane both emitted the same set of {} unique metric (context, type) pairs. Continuing...",
             dsd_metrics.len()
         );
 
@@ -118,7 +119,13 @@ fn filter_internal_telemetry_metrics(dsd_metrics: &mut NormalizedMetrics, adp_me
 }
 
 fn is_internal_telemetry(metric: &NormalizedMetric) -> bool {
-    metric.context().name().starts_with("datadog.") || metric.context().name().starts_with("n_o_i_n_d_e_x")
+    let name = metric.context().name();
+    name.starts_with("datadog.")
+        || name.starts_with("n_o_i_n_d_e_x")
+        || name.starts_with("system.")
+        || name.starts_with("docker.")
+        || name.starts_with("container.")
+        || name == "ntp.offset"
 }
 
 fn get_formatted_metric_values(metric: &NormalizedMetric, value: &MetricValue) -> String {

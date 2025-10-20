@@ -358,12 +358,11 @@ impl Source for Otlp {
             .add_service(grpc_metrics_server)
             .add_service(grpc_logs_server);
 
-        let grpc_socket_addr = self
-            .grpc_endpoint
-            .as_local_connect_addr()
-            .ok_or_else(|| generic_error!("OTLP gRPC endpoint is not a local TCP address."))?;
+        let grpc_socket_addr = match self.grpc_endpoint {
+            ListenAddress::Tcp(addr) => addr,
+            _ => return Err(generic_error!("OTLP gRPC endpoint must be a TCP address.")),
+        };
         thread_pool_handle.spawn_traced_named("otlp-grpc-server", grpc_server.serve(grpc_socket_addr));
-        debug!(endpoint = %self.grpc_endpoint, "OTLP gRPC server started.");
 
         // Create and spawn the HTTP server.
         let service = TowerToHyperService::new(

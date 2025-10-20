@@ -136,7 +136,7 @@ impl Default for OtlpTranslatorConfig {
             send_histogram_aggregations: true,
             number_mode: NumberMode::default(),
             initial_cumul_mono_value_mode: InitialCumulMonoValueMode::default(),
-            instrumentation_scope_metadata_as_tags: false,
+            instrumentation_scope_metadata_as_tags: true,
             instrumentation_library_metadata_as_tags: false,
             with_remapping: false,
             with_otel_prefix: false,

@@ -493,7 +493,7 @@ test-correctness: ## Runs the metrics correctness (ground-truth) suite
 	@echo "[*] Running 'no-origin-detection' test case..."
 	@target/debug/ground-truth \
 		--millstone-image saluki-images/millstone:latest \
-		--millstone-config-path $(shell pwd)/test/correctness/millstone.yaml \
+		--dsd-millstone-config-path $(shell pwd)/test/correctness/millstone.yaml \
 		--metrics-intake-image saluki-images/metrics-intake:latest \
 		--metrics-intake-config-path $(shell pwd)/test/correctness/metrics-intake.yaml \
 		--dsd-image docker.io/datadog/dogstatsd:7.68.3 \
@@ -508,7 +508,7 @@ test-correctness-origin-detection: ## Runs the metrics correctness (ground-truth
 	@echo "[*] Running 'origin-detection' test case..."
 	@target/debug/ground-truth \
 		--millstone-image saluki-images/millstone:latest \
-		--millstone-config-path $(shell pwd)/test/correctness/millstone.yaml \
+		--dsd-millstone-config-path $(shell pwd)/test/correctness/millstone.yaml \
 		--metrics-intake-image saluki-images/metrics-intake:latest \
 		--metrics-intake-config-path $(shell pwd)/test/correctness/metrics-intake.yaml \
 		--dsd-image saluki-images/datadog-agent:latest \
@@ -520,6 +520,28 @@ test-correctness-origin-detection: ## Runs the metrics correctness (ground-truth
 		--adp-config-path $(shell pwd)/test/correctness/datadog-origin-detection.yaml \
 		--adp-env-arg DD_ADP_ENABLED=true \
 		--adp-env-arg DD_AGGREGATE_CONTEXT_LIMIT=500000
+
+.PHONY: test-correctness-otlp-metrics
+test-correctness-otlp-metrics: build-ground-truth
+test-correctness-otlp-metrics: ## Runs the OTLP metrics correctness test
+	@echo "[*] Running OTLP metrics correctness suite..."
+	@echo "[*] Running 'otlp-metrics' test case..."
+	@target/debug/ground-truth \
+		--millstone-image saluki-images/millstone:latest \
+		--dsd-millstone-config-path $(shell pwd)/test/correctness/otlp-metrics-agent-millstone.yaml \
+		--adp-millstone-config-path $(shell pwd)/test/correctness/otlp-metrics-adp-millstone.yaml \
+		--metrics-intake-image saluki-images/metrics-intake:latest \
+		--metrics-intake-config-path $(shell pwd)/test/correctness/metrics-intake.yaml \
+		--dsd-image docker.io/datadog/agent:latest \
+		--dsd-entrypoint /bin/entrypoint.sh \
+		--dsd-command /init \
+		--dsd-config-path $(shell pwd)/test/correctness/otlp-metrics.yaml \
+		--dsd-env-arg DD_API_KEY=dummy-api-key-correctness-testing \
+		--adp-image saluki-images/agent-data-plane:latest \
+		--adp-entrypoint /usr/local/bin/agent-data-plane \
+		--adp-command run \
+		--adp-config-path $(shell pwd)/test/correctness/otlp-metrics.yaml \
+		--adp-env-arg DD_ADP_OTLP_ENABLED=true \
 
 .PHONY: ensure-rust-miri
 ensure-rust-miri:
