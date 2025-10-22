@@ -57,7 +57,7 @@ impl RawTestResults {
         let (dsd_only_pairs, adp_only_pairs) = NormalizedMetrics::context_differences(&dsd_metrics, &adp_metrics);
 
         if !dsd_only_pairs.is_empty() || !adp_only_pairs.is_empty() {
-            error!("Mismatch in unique metric (context, type) pairs between DogStatsD and Agent Data Plane!");
+            error!("Mismatch in unique metrics between DogStatsD and Agent Data Plane!");
 
             error!("Metrics in DogStatsD but not in Agent Data Plane:");
             for (context, metric_type) in dsd_only_pairs {
@@ -70,12 +70,12 @@ impl RawTestResults {
             }
 
             return Err(generic_error!(
-                "Mismatch in metric (context, type) pairs between DogStatsD and Agent Data Plane."
+                "Mismatch in metrics pairs between DogStatsD and Agent Data Plane."
             ));
         }
 
         info!(
-            "DogStatsD and Agent Data Plane both emitted the same set of {} unique metric (context, type) pairs. Continuing...",
+            "DogStatsD and Agent Data Plane both emitted the same set of {} unique metrics. Continuing...",
             dsd_metrics.len()
         );
 
