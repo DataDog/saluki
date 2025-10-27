@@ -27,10 +27,12 @@ use self::cli::{
 
 pub(crate) mod state;
 
+// TODO: Consider using `malloc-best-effort` to choose between TCMalloc on Linux and Mimalloc on other platforms
+// (notably Windows) so that we can use the best supported allocator regardless of platform.
 #[cfg(target_os = "linux")]
 #[global_allocator]
-static ALLOC: memory_accounting::allocator::TrackingAllocator<tikv_jemallocator::Jemalloc> =
-    memory_accounting::allocator::TrackingAllocator::new(tikv_jemallocator::Jemalloc);
+static ALLOC: memory_accounting::allocator::TrackingAllocator<tcmalloc_better::TCMalloc> =
+    memory_accounting::allocator::TrackingAllocator::new(tcmalloc_better::TCMalloc);
 
 #[cfg(not(target_os = "linux"))]
 #[global_allocator]
@@ -39,6 +41,9 @@ static ALLOC: memory_accounting::allocator::TrackingAllocator<std::alloc::System
 
 #[tokio::main]
 async fn main() -> Result<(), GenericError> {
+    #[cfg(target_os = "linux")]
+    tcmalloc_better::TCMalloc::process_background_actions_thread();
+
     let started = Instant::now();
     let cli = Cli::parse();
 

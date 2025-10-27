@@ -35,6 +35,7 @@ futures = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true }
+tcmalloc-better = { version = "0.1.19", default-features = false, features = ["std", "extension", "8k_pages", "disable_madv_hugepage_always"]}
 memory-accounting = { workspace = true }
 otlp-protos = { workspace = true }
 papaya = { workspace = true }
@@ -70,14 +71,6 @@ tokio = { workspace = true, features = [
 tonic = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true, features = ["std", "v7"] }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-tikv-jemalloc-ctl = { workspace = true, features = ["use_std"] }
-tikv-jemallocator = { workspace = true, features = [
-  "background_threads",
-  "unprefixed_malloc_on_supported_platforms",
-  "stats",
-] }
 
 [build-dependencies]
 chrono = { workspace = true }
