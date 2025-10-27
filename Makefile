@@ -287,7 +287,7 @@ run-adp-standalone-release: ## Runs ADP locally in standalone mode (release)
 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
-	target/debug/agent-data-plane run
+	target/release/agent-data-plane run
 
 .PHONY: run-adp-with-checks
 run-adp-with-checks: build-adp-and-checks
