@@ -27,15 +27,9 @@ use self::cli::{
 
 pub(crate) mod state;
 
-#[cfg(target_os = "linux")]
 #[global_allocator]
-static ALLOC: memory_accounting::allocator::TrackingAllocator<tikv_jemallocator::Jemalloc> =
-    memory_accounting::allocator::TrackingAllocator::new(tikv_jemallocator::Jemalloc);
-
-#[cfg(not(target_os = "linux"))]
-#[global_allocator]
-static ALLOC: memory_accounting::allocator::TrackingAllocator<std::alloc::System> =
-    memory_accounting::allocator::TrackingAllocator::new(std::alloc::System);
+static ALLOC: memory_accounting::allocator::TrackingAllocator<mimalloc::MiMalloc> =
+    memory_accounting::allocator::TrackingAllocator::new(mimalloc::MiMalloc);
 
 #[tokio::main]
 async fn main() -> Result<(), GenericError> {
