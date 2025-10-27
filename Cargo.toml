@@ -197,6 +197,7 @@ ryu = { version = "1", default-features = false }
 colored = { version = "3", default-features = false }
 tracing-rolling-file = "0.1"
 tracing-appender = { version = "0.2", default-features = false }
+tcmalloc-better = { version = "0.1.19", default-features = false }
 
 [profile.release]
 debug = true

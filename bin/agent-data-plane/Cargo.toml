@@ -35,7 +35,6 @@ futures = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true }
-tcmalloc-better = { version = "0.1.19", default-features = false, features = ["std", "extension", "8k_pages", "disable_madv_hugepage_always"]}
 memory-accounting = { workspace = true }
 otlp-protos = { workspace = true }
 papaya = { workspace = true }
@@ -62,6 +61,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 stringtheory = { workspace = true }
+tcmalloc-better = { workspace = true, features = ["std", "extension", "8k_pages", "disable_madv_hugepage_always"] }
 tokio = { workspace = true, features = [
   "macros",
   "rt",
