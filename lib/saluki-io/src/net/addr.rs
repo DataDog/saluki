@@ -269,10 +269,16 @@ pub enum GrpcTargetAddress {
 impl GrpcTargetAddress {
     /// Creates a new `GrpcTargetAddress` from the given `ListenAddress`.
     ///
+    /// For TCP addresses, this method converts unspecified addresses (`0.0.0.0` or `::`) to localhost
+    /// (`127.0.0.1` or `::1`) to ensure the advertised address matches TLS certificates.
+    ///
     /// Returns `None` if the listen address is not a connection-oriented transport.
     pub fn try_from_listen_addr(listen_address: &ListenAddress) -> Option<Self> {
         match listen_address {
-            ListenAddress::Tcp(addr) => Some(GrpcTargetAddress::Tcp(*addr)),
+            ListenAddress::Tcp(_) => {
+                // For TCP, convert 0.0.0.0 to 127.0.0.1 to match TLS certificate
+                listen_address.as_local_connect_addr().map(GrpcTargetAddress::Tcp)
+            }
             ListenAddress::Unix(path) => Some(GrpcTargetAddress::Unix(path.clone())),
             _ => None,
         }
