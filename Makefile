@@ -239,6 +239,10 @@ endif
 
 ##@ Running
 
+.PHONY: create-dummy-agent-config
+create-dummy-agent-config:
+	@echo "{}" > /tmp/adp-empty-config.yaml
+
 .PHONY: run-adp
 run-adp: build-adp
 run-adp: ## Runs ADP locally (debug, requires Datadog Agent for tagging)
@@ -270,9 +274,8 @@ endif
 	target/release/agent-data-plane run
 
 .PHONY: run-adp-standalone
-run-adp-standalone: build-adp
+run-adp-standalone: build-adp create-dummy-agent-config
 run-adp-standalone: ## Runs ADP locally in standalone mode (debug)
-	@touch /tmp/adp-empty-config.yaml
 	@echo "[*] Running ADP..."
 	@DD_ADP_STANDALONE_MODE=true \
 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
@@ -281,9 +284,8 @@ run-adp-standalone: ## Runs ADP locally in standalone mode (debug)
 	target/debug/agent-data-plane run --config=/tmp/adp-empty-config.yaml
 
 .PHONY: run-adp-standalone-release
-run-adp-standalone-release: build-adp-release
+run-adp-standalone-release: build-adp-release create-dummy-agent-config
 run-adp-standalone-release: ## Runs ADP locally in standalone mode (release)
-	@touch /tmp/adp-empty-config.yaml
 	@echo "[*] Running ADP..."
 	@DD_ADP_STANDALONE_MODE=true \
 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
@@ -292,9 +294,8 @@ run-adp-standalone-release: ## Runs ADP locally in standalone mode (release)
 	target/release/agent-data-plane run --config=/tmp/adp-empty-config.yaml
 
 .PHONY: run-adp-with-checks
-run-adp-with-checks: build-adp-and-checks
+run-adp-with-checks: build-adp-and-checks create-dummy-agent-config
 run-adp-with-checks: ## Runs ADP + Checks locally (debug)
-	@touch /tmp/adp-empty-config.yaml
 	@echo "[*] Running ADP and checks..."
 	@DD_ADP_STANDALONE_MODE=false \
 	DD_AUTH_TOKEN_FILE_PATH=../datadog-agent/bin/agent/dist/auth_token \
@@ -305,9 +306,8 @@ run-adp-with-checks: ## Runs ADP + Checks locally (debug)
 	target/debug/agent-data-plane run --config=/tmp/adp-empty-config.yaml
 
 .PHONY: run-adp-with-checks-standalone
-run-adp-with-checks-standalone: build-adp-and-checks
+run-adp-with-checks-standalone: build-adp-and-checks create-dummy-agent-config
 run-adp-with-checks-standalone: ## Runs ADP + Checks locally in standalone mode (debug)
-	@touch /tmp/adp-empty-config.yaml
 	@echo "[*] Running ADP and checks..."
 	@DD_ADP_STANDALONE_MODE=true \
 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=check-agent-standalone \
