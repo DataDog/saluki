@@ -272,26 +272,29 @@ endif
 .PHONY: run-adp-standalone
 run-adp-standalone: build-adp
 run-adp-standalone: ## Runs ADP locally in standalone mode (debug)
+	@touch /tmp/adp-empty-config.yaml
 	@echo "[*] Running ADP..."
 	@DD_ADP_STANDALONE_MODE=true \
 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
-	target/debug/agent-data-plane run
+	target/debug/agent-data-plane run --config=/tmp/adp-empty-config.yaml
 
 .PHONY: run-adp-standalone-release
 run-adp-standalone-release: build-adp-release
 run-adp-standalone-release: ## Runs ADP locally in standalone mode (release)
+	@touch /tmp/adp-empty-config.yaml
 	@echo "[*] Running ADP..."
 	@DD_ADP_STANDALONE_MODE=true \
 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
-	target/release/agent-data-plane run
+	target/release/agent-data-plane run --config=/tmp/adp-empty-config.yaml
 
 .PHONY: run-adp-with-checks
 run-adp-with-checks: build-adp-and-checks
 run-adp-with-checks: ## Runs ADP + Checks locally (debug)
+	@touch /tmp/adp-empty-config.yaml
 	@echo "[*] Running ADP and checks..."
 	@DD_ADP_STANDALONE_MODE=false \
 	DD_AUTH_TOKEN_FILE_PATH=../datadog-agent/bin/agent/dist/auth_token \
@@ -299,18 +302,19 @@ run-adp-with-checks: ## Runs ADP + Checks locally (debug)
 	DD_CHECKS_CONFIG_DIR=./dist/conf.d \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
-	target/debug/agent-data-plane run
+	target/debug/agent-data-plane run --config=/tmp/adp-empty-config.yaml
 
 .PHONY: run-adp-with-checks-standalone
 run-adp-with-checks-standalone: build-adp-and-checks
 run-adp-with-checks-standalone: ## Runs ADP + Checks locally in standalone mode (debug)
+	@touch /tmp/adp-empty-config.yaml
 	@echo "[*] Running ADP and checks..."
 	@DD_ADP_STANDALONE_MODE=true \
 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=check-agent-standalone \
 	DD_CHECKS_CONFIG_DIR=./dist/conf.d \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
-	target/debug/agent-data-plane run
+	target/debug/agent-data-plane run --config=/tmp/adp-empty-config.yaml
 
 .PHONY: run-dsd-basic-udp
 run-dsd-basic-udp: build-dsd-client ## Runs a basic set of metrics via the Dogstatsd client (UDP)
