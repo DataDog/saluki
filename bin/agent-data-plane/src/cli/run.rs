@@ -256,7 +256,8 @@ async fn create_topology(
         let otlp_config = OtlpConfiguration::from_configuration(configuration)?
             .with_workload_provider(env_provider.workload().clone());
         blueprint.add_source("otlp_in", otlp_config)?;
-        blueprint.connect_component("dsd_agg", ["otlp_in.metrics"])?;
+        // Skip aggregation so that counters are not converted to rates.
+        blueprint.connect_component("dsd_prefix_filter", ["otlp_in.metrics"])?;
 
         // Only add and connect the logs encoder when OTLP is enabled (which provides log inputs).
         let dd_logs_config = DatadogLogsConfiguration::from_configuration(configuration)

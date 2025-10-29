@@ -25,7 +25,8 @@ pub struct TestRunner {
     adp_config: ADPConfig,
     dsd_config: DSDConfig,
     metrics_intake_config: MetricsIntakeConfig,
-    millstone_config: MillstoneConfig,
+    dsd_millstone_config: MillstoneConfig,
+    adp_millstone_config: MillstoneConfig,
 
     cancel_token: CancellationToken,
     dsd_coordinator: Coordinator,
@@ -39,7 +40,8 @@ impl TestRunner {
             adp_config: cli.adp_config(),
             dsd_config: cli.dsd_config(),
             metrics_intake_config: cli.metrics_intake_config(),
-            millstone_config: cli.millstone_config(),
+            dsd_millstone_config: cli.dsd_millstone_config(),
+            adp_millstone_config: cli.adp_millstone_config(),
             cancel_token: CancellationToken::new(),
             dsd_coordinator: Coordinator::new(),
             adp_coordinator: Coordinator::new(),
@@ -66,7 +68,7 @@ impl TestRunner {
         group_runner
             .with_driver(DriverConfig::metrics_intake(self.metrics_intake_config.clone()).await?)?
             .with_driver(dogstatsd_config)?
-            .with_driver(DriverConfig::millstone(self.millstone_config.clone()).await?)?;
+            .with_driver(DriverConfig::millstone(self.dsd_millstone_config.clone()).await?)?;
 
         Ok(group_runner)
     }
@@ -89,7 +91,7 @@ impl TestRunner {
         group_runner
             .with_driver(DriverConfig::metrics_intake(self.metrics_intake_config.clone()).await?)?
             .with_driver(adp_config)?
-            .with_driver(DriverConfig::millstone(self.millstone_config.clone()).await?)?;
+            .with_driver(DriverConfig::millstone(self.adp_millstone_config.clone()).await?)?;
 
         Ok(group_runner)
     }
