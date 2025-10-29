@@ -45,10 +45,11 @@ async fn main() -> Result<(), GenericError> {
     // Load our "bootstrap" configuration -- static configuration on disk or from environment variables -- so we can
     // initialize basic subsystems before executing the given subcommand.
     let bootstrap_config = ConfigurationLoader::default()
-        .try_from_yaml(
+        .from_yaml(
             cli.config_file
                 .unwrap_or_else(|| self::internal::platform::DATADOG_AGENT_CONF_YAML.into()),
         )
+        .error_context("Failed to load Datadog Agent configuration file.")?
         .from_environment(self::internal::platform::DATADOG_AGENT_ENV_VAR_PREFIX)
         .error_context("Environment variable prefix should not be empty.")?
         .with_default_secrets_resolution()
