@@ -157,7 +157,7 @@ run-ground-truth-otlp-metrics:
       --adp-millstone-config-path $(pwd)/test/correctness/otlp-metrics-adp-millstone.yaml
       --metrics-intake-image ${SALUKI_IMAGE_REPO_BASE}/metrics-intake:${CI_COMMIT_SHA}
       --metrics-intake-config-path $(pwd)/test/correctness/metrics-intake.yaml
-      --dsd-image docker.io/datadog/agent:latest
+      --dsd-image gcr.io/datadoghq/agent:${PUBLIC_DD_AGENT_VERSION}
       --dsd-entrypoint /bin/entrypoint.sh
       --dsd-command /init
       --dsd-config-path $(pwd)/test/correctness/otlp-metrics.yaml
