@@ -2,7 +2,7 @@ use std::num::NonZeroUsize;
 
 use bytes::{BufMut as _, Bytes, BytesMut};
 use bytesize::ByteSize;
-use lading_payload::DogStatsD;
+use lading_payload::{opentelemetry::metric::OpentelemetryMetrics, DogStatsD};
 use rand::{rngs::StdRng, Rng, SeedableRng as _};
 use saluki_error::{generic_error, GenericError};
 use tracing::info;
@@ -51,11 +51,13 @@ fn get_finalized_corpus_blueprint(config: &Config) -> Result<CorpusBlueprint, Ge
 
     // When generating DogStatsD payloads, we need to set the length-delimited framing mode when UDS is being used in
     // SOCK_STREAM mode.
-    {
-        let Payload::DogStatsD(dsd_config) = &mut blueprint.payload;
-        if let TargetAddress::Unix(_) = config.target {
-            dsd_config.length_prefix_framed = true;
+    match &mut blueprint.payload {
+        Payload::DogStatsD(dsd_config) => {
+            if let TargetAddress::Unix(_) = config.target {
+                dsd_config.length_prefix_framed = true;
+            }
         }
+        Payload::OpenTelemetryMetrics(_) => {}
     }
 
     // Validate that the blueprint is valid from a payload generation standpoint.
@@ -76,6 +78,10 @@ where
             // server. It _can_ be increased beyond that, but rarely is, and so that's the fixed size we're going to
             // target here.
             let mut generator = DogStatsD::new(config, &mut rng)?;
+            generate_payloads_inner(&mut generator, rng, &mut payloads, blueprint.size, 8192)?
+        }
+        Payload::OpenTelemetryMetrics(config) => {
+            let mut generator = OpentelemetryMetrics::new(config, &mut rng)?;
             generate_payloads_inner(&mut generator, rng, &mut payloads, blueprint.size, 8192)?
         }
     }

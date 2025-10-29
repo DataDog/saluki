@@ -21,6 +21,9 @@ pub enum TargetAddress {
 
     /// Unix Domain Socket in SOCK_STREAM mode.
     Unix(PathBuf),
+
+    /// gRPC endpoint with service/method path.
+    Grpc(String),
 }
 
 impl TryFrom<String> for TargetAddress {
@@ -37,9 +40,10 @@ impl TryFrom<String> for TargetAddress {
                 "udp" => addr_data
                     .parse::<SocketAddr>()
                     .map(Self::Udp)
-                    .map_err(|e| format!("invalid TCP address: {}", e)),
+                    .map_err(|e| format!("invalid UDP address: {}", e)),
                 "unixgram" => Ok(Self::UnixDatagram(PathBuf::from(addr_data))),
                 "unix" => Ok(Self::Unix(PathBuf::from(addr_data))),
+                "grpc" => Ok(Self::Grpc(addr_data.to_string())),
                 _ => Err(format!("invalid scheme '{}' for target address '{}'", scheme, value)),
             }
         } else {
@@ -53,6 +57,10 @@ pub enum Payload {
     /// DogStatsD-encoded metrics.
     #[serde(rename = "dogstatsd")]
     DogStatsD(lading_payload::dogstatsd::Config),
+
+    /// OpenTelemetry-encoded metrics.
+    #[serde(rename = "opentelemetry_metrics")]
+    OpenTelemetryMetrics(lading_payload::opentelemetry::metric::Config),
 }
 
 impl Payload {
@@ -60,6 +68,7 @@ impl Payload {
     pub fn name(&self) -> &'static str {
         match self {
             Self::DogStatsD(_) => "DogStatsD",
+            Self::OpenTelemetryMetrics(_) => "OpenTelemetry Metrics",
         }
     }
 }
@@ -80,6 +89,9 @@ impl CorpusBlueprint {
             Payload::DogStatsD(config) => config
                 .valid()
                 .map_err(|e| generic_error!("Invalid DogStatsD payload configuration: {}", e)),
+            Payload::OpenTelemetryMetrics(config) => config
+                .valid()
+                .map_err(|e| generic_error!("Invalid OpenTelemetry Metrics payload configuration: {}", e)),
         }
     }
 }
