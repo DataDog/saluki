@@ -1,7 +1,10 @@
 #![allow(dead_code)]
 #![allow(warnings)]
 
-use std::ops::{Bound, Deref, Range, RangeBounds, RangeTo};
+use std::{
+    mem::ManuallyDrop,
+    ops::{Bound, Deref, Range, RangeBounds, RangeTo},
+};
 
 use bytes::{buf::UninitSlice, Buf, BufMut};
 use tokio_util::codec::FramedParts;
@@ -13,22 +16,9 @@ trait IoBuffer: Buf {
     fn is_empty(&self) -> bool {
         self.remaining() == 0
     }
-
-    fn capacity(&self) -> usize;
 }
 
-impl<T> IoBuffer for &mut T
-where
-    T: IoBuffer,
-{
-    fn is_empty(&self) -> bool {
-        (**self).is_empty()
-    }
-
-    fn capacity(&self) -> usize {
-        (*self).capacity()
-    }
-}
+impl<T> IoBuffer for T where T: Buf {}
 
 pub struct BytesBuffer {
     data: Vec<u8>,
@@ -58,10 +48,6 @@ impl BytesBuffer {
             data: data.to_vec(),
             read_idx: 0,
         }
-    }
-
-    pub fn as_view(&self) -> BufferView<'_> {
-        BufferView::from_io_buffer(self)
     }
 }
 
@@ -95,39 +81,36 @@ unsafe impl BufMut for BytesBuffer {
     }
 }
 
-impl IoBuffer for BytesBuffer {
-    fn capacity(&self) -> usize {
-        self.data.capacity()
+impl Deref for BytesBuffer {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.chunk()
     }
+}
+
+#[derive(Default)]
+struct BufferViewRange {
+    idx: usize,
+    ridx: usize,
 }
 
 #[derive(Clone)]
 pub struct BufferView<'a> {
     buf: &'a [u8],
-    len: usize,
     idx: usize,
     ridx: usize,
 }
 
 impl<'a> BufferView<'a> {
-    #[cfg(test)]
-    pub fn from_slice(buf: &'a [u8]) -> Self {
-        Self {
-            buf,
-            len: buf.len(),
-            idx: 0,
-            ridx: 0,
-        }
+    pub const fn from_slice(buf: &'a [u8]) -> Self {
+        Self { buf, idx: 0, ridx: 0 }
     }
 
-    /// Creates a new `BufferView` from a given `IoBuffer`.
-    pub fn from_io_buffer<B: IoBuffer>(buf: &'a B) -> Self {
-        Self {
-            buf: buf.chunk(),
-            len: buf.remaining(),
-            idx: 0,
-            ridx: 0,
-        }
+    fn as_bytes(&self) -> &'a [u8] {
+        let start = self.idx;
+        let end = self.len() - self.ridx;
+        &self.buf[start..end]
     }
 
     /// Returns `true` if the view is empty.
@@ -142,42 +125,7 @@ impl<'a> BufferView<'a> {
 
     /// Returns the length of the underlying buffer, in bytes.
     pub const fn buf_len(&self) -> usize {
-        self.len
-    }
-
-    /// Returns the bytes of the view.
-    ///
-    /// This represents a constrained view of the underlying I/O buffer based on any advancing from the front or back.
-    pub fn as_bytes(&self) -> &[u8] {
-        let start = self.idx;
-        let end = self.buf.len() - self.ridx;
-        &self.buf[start..end]
-    }
-
-    /// Extracts a region of this view as a new view.
-    ///
-    /// The extracted view will contain `len` bytes from the beginning of the view.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `len` is greater than the length of the view.
-    pub fn extract(&self, len: usize) -> BufferView<'a> {
-        let view_len = self.len();
-        assert!(
-            view_len >= len,
-            "buffer too small to extract {} bytes, only {} bytes remaining",
-            len,
-            view_len
-        );
-
-        let new_ridx = self.ridx + (view_len - len);
-
-        BufferView {
-            buf: self.buf,
-            len,
-            idx: self.idx,
-            ridx: new_ridx,
-        }
+        self.buf.len()
     }
 
     pub fn skip(&mut self, len: usize) {
@@ -202,16 +150,11 @@ impl<'a> BufferView<'a> {
         self.ridx += len;
     }
 
-    pub fn take(&mut self, len: usize) {
-        assert!(
-            len <= self.len(),
-            "buffer too small to take {} bytes, only {} bytes remaining",
-            self.len(),
-            len,
-        );
-
-        let ridx_offset = self.len() - len;
-        self.ridx += ridx_offset;
+    /// Returns the bytes of the view.
+    ///
+    /// This represents a constrained view of the underlying I/O buffer based on any advancing from the front or back.
+    pub fn into_bytes(self) -> &'a [u8] {
+        self.as_bytes()
     }
 }
 
@@ -237,17 +180,10 @@ impl Buf for BufferView<'_> {
     }
 }
 
-impl IoBuffer for BufferView<'_> {
-    fn capacity(&self) -> usize {
-        self.buf.len()
-    }
-}
-
 impl std::fmt::Debug for BufferView<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BufferView")
             .field("buf", &self.buf.as_ptr())
-            .field("len", &self.len)
             .field("idx", &self.idx)
             .field("ridx", &self.ridx)
             .finish()
@@ -260,45 +196,101 @@ impl PartialEq for BufferView<'_> {
     }
 }
 
-pub trait Framer3 {
-    fn next_frame<'buf, B: IoBuffer>(
-        &self, buf: &'buf B, is_eof: bool,
-    ) -> Result<Option<BufferView<'buf>>, FramingError>;
+/// A raw input buffer used by framers.
+///
+/// `RawBuffer` is a wrapper around a byte slice that allows for creating a view over the byte slice when
+/// extracting a frame. This ensures that the resulting view represents the entire frame so that the input buffer
+/// can be properly advanced after the frame has been processed. Views can be further manipulated in order to
+/// constrain the view.
+///
+/// # Usage
+///
+/// Framers will receive a `RawBuffer`, which represents all available data in the buffer. Framers are then expected to
+/// check if a valid frame can be extracted from the buffer. If so, the framer should either extract a "partial" view or
+/// "full" view. For example, if the buffer contains two frames, then it would be expected to create two "partial"
+/// views.
+///
+/// After constructing these views, the views can be further manipulated in order to constrain the view. For example,
+/// the view might initially include the frame delimiter, such as a newline character. This can be skipped over such
+/// that the view only shows the data before the newline character. However, the view still points to the overall frame
+/// (delimiter and all), which allows the framer machinery to properly advance the underlying buffer.
+pub struct RawBuffer<'buf> {
+    buf: &'buf [u8],
 }
 
-impl<F> Framer3 for &mut F
+impl<'buf> RawBuffer<'buf> {
+    /// Creates a new `RawBuffer` from the given buffer.
+    pub const fn new(buf: &'buf [u8]) -> RawBuffer<'buf> {
+        Self { buf }
+    }
+
+    /// Creates a "partial" view from the buffer.
+    ///
+    /// The view will point to the first `cnt` bytes of the underlying buffer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `cnt` is greater than the buffer length.
+    pub fn partial(self, cnt: usize) -> BufferView<'buf> {
+        assert!(
+            cnt <= self.buf.len(),
+            "`cnt` must be less than or equal to the buffer length ({} > {})",
+            cnt,
+            self.buf.len()
+        );
+
+        BufferView::from_slice(&self.buf[..cnt])
+    }
+
+    /// Creates a "full" view from the buffer.
+    ///
+    /// The view will point to the entire buffer.
+    pub const fn full(self) -> BufferView<'buf> {
+        BufferView::from_slice(self.buf)
+    }
+}
+
+impl Deref for RawBuffer<'_> {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.buf
+    }
+}
+
+pub trait Framer {
+    fn next_frame<'buf>(&self, buf: RawBuffer<'buf>, is_eof: bool) -> Result<Option<BufferView<'buf>>, FramingError>;
+}
+
+impl<F> Framer for &F
 where
-    F: Framer3,
+    F: Framer,
 {
-    fn next_frame<'buf, B: IoBuffer>(
-        &self, buf: &'buf B, is_eof: bool,
-    ) -> Result<Option<BufferView<'buf>>, FramingError> {
+    fn next_frame<'buf>(&self, buf: RawBuffer<'buf>, is_eof: bool) -> Result<Option<BufferView<'buf>>, FramingError> {
         (**self).next_frame(buf, is_eof)
     }
 }
 
 #[derive(Default)]
-pub struct LengthDelimitedFramer3;
+pub struct LengthDelimitedFramer {
+    max_frame_size: usize,
+}
 
-impl Framer3 for LengthDelimitedFramer3 {
-    fn next_frame<'buf, B: IoBuffer>(
-        &self, buf: &'buf B, is_eof: bool,
-    ) -> Result<Option<BufferView<'buf>>, FramingError> {
+impl Framer for LengthDelimitedFramer {
+    fn next_frame<'buf>(&self, buf: RawBuffer<'buf>, is_eof: bool) -> Result<Option<BufferView<'buf>>, FramingError> {
         if buf.is_empty() {
             trace!("Buffer empty.");
             return Ok(None);
         }
 
-        let mut view = BufferView::from_io_buffer(buf);
-        let buf_len = view.len();
-        trace!(buf_len, "Processing buffer chunk.");
+        trace!(buf_len = buf.len(), "Processing buffer chunk.");
 
         // See if there's enough data to read the frame length.
-        if buf_len < 4 {
+        if buf.len() < 4 {
             return if is_eof {
                 Err(FramingError::PartialFrame {
                     needed: 4,
-                    remaining: buf_len,
+                    remaining: buf.len(),
                 })
             } else {
                 Ok(None)
@@ -306,26 +298,26 @@ impl Framer3 for LengthDelimitedFramer3 {
         }
 
         // See if we have enough data to read the full frame.
-        let frame_len = u32::from_le_bytes(view[0..4].try_into().unwrap()) as usize;
+        let frame_len = u32::from_le_bytes(buf[0..4].try_into().unwrap()) as usize;
         let frame_len_with_length = frame_len.saturating_add(4);
-        if frame_len_with_length > buf.capacity() {
+        if frame_len_with_length > self.max_frame_size {
             return Err(oversized_frame_err(frame_len));
         }
 
-        if view.len() < frame_len_with_length {
+        if buf.len() < frame_len_with_length {
             return if is_eof {
                 // If we've hit EOF and we have a partial frame here, well, then... it's invalid.
                 Err(FramingError::PartialFrame {
                     needed: frame_len_with_length,
-                    remaining: view.len(),
+                    remaining: buf.len(),
                 })
             } else {
                 Ok(None)
             };
         }
 
-        // Carve out the frame, excluding the length delimiter.
-        let mut frame = view.extract(frame_len_with_length);
+        // Carve out the entire frame, and then adjust our view to start after the delimiter.
+        let mut frame = buf.partial(frame_len_with_length);
         frame.skip(4);
 
         Ok(Some(frame))
@@ -333,29 +325,25 @@ impl Framer3 for LengthDelimitedFramer3 {
 }
 
 #[derive(Default)]
-pub struct NewlineFramer3 {
+pub struct NewlineFramer {
     required_on_eof: bool,
 }
 
-impl Framer3 for NewlineFramer3 {
-    fn next_frame<'buf, B: IoBuffer>(
-        &self, buf: &'buf B, is_eof: bool,
-    ) -> Result<Option<BufferView<'buf>>, FramingError> {
+impl Framer for NewlineFramer {
+    fn next_frame<'buf>(&self, buf: RawBuffer<'buf>, is_eof: bool) -> Result<Option<BufferView<'buf>>, FramingError> {
         if buf.is_empty() {
             trace!("Buffer empty.");
             return Ok(None);
         }
 
-        let mut view = BufferView::from_io_buffer(buf);
-        let buf_len = view.len();
-        trace!(buf_len, "Processing buffer chunk.");
+        trace!(buf_len = buf.len(), "Processing buffer chunk.");
 
         // Search through the buffer for our delimiter.
-        match find_newline(&view) {
+        match find_newline(&buf[..]) {
             Some(idx) => {
                 // If we found the delimiter, then slice out the frame from the buffer,
                 // and chop the delimiter off the end of the frame.
-                let mut frame = view.extract(idx + 1);
+                let mut frame = buf.partial(idx);
                 frame.rskip(1);
 
                 Ok(Some(frame))
@@ -368,10 +356,10 @@ impl Framer3 for NewlineFramer3 {
 
                 // If we're at EOF and we require the delimiter, then this is an invalid frame.
                 if self.required_on_eof {
-                    return Err(missing_delimiter_err(view.len()));
+                    return Err(missing_delimiter_err(buf.len()));
                 }
 
-                Ok(Some(view))
+                Ok(Some(buf.full()))
             }
         }
     }
@@ -391,7 +379,175 @@ fn find_newline(haystack: &[u8]) -> Option<usize> {
 const fn oversized_frame_err(frame_len: usize) -> FramingError {
     FramingError::InvalidFrame {
         frame_len,
-        reason: "frame length exceeds buffer capacity",
+        reason: "frame length exceeds maximum frame length",
+    }
+}
+
+struct DirectFrameIterator<'framer, 'buf> {
+    framer: &'framer dyn Framer,
+    buf: &'buf mut BytesBuffer,
+    pending_commit: Option<usize>,
+    is_eof: bool,
+}
+
+impl<'framer, 'buf> DirectFrameIterator<'framer, 'buf> {
+    fn next_frame(&mut self) -> Result<Option<&[u8]>, FramingError> {
+        if self.buf.is_empty() {
+            return Ok(None);
+        }
+
+        if let Some(advance_by) = self.pending_commit.take() {
+            self.buf.advance(advance_by);
+        }
+
+        match self.framer.next_frame(RawBuffer::new(&self.buf), self.is_eof)? {
+            Some(frame) => {
+                self.pending_commit = Some(frame.buf_len());
+                return Ok(Some(frame.into_bytes()));
+            }
+            None => return Ok(None),
+        }
+    }
+}
+
+struct BufferIndexView {
+    len: usize,
+    idx: usize,
+    ridx: usize,
+}
+
+impl BufferIndexView {
+    fn from_view(view: &BufferView<'_>) -> Self {
+        Self {
+            len: view.buf_len(),
+            idx: view.idx,
+            ridx: view.ridx,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        debug_assert!(self.idx <= self.ridx, "idx should never exceed ridx");
+        self.idx == self.ridx
+    }
+
+    fn buf_len(&self) -> usize {
+        self.len
+    }
+
+    fn materialize<'a>(&self, buf: &'a [u8]) -> &'a [u8] {
+        &buf[self.idx..self.ridx]
+    }
+
+    fn advance(&mut self, advance_by: usize) {
+        self.idx += advance_by;
+    }
+}
+
+struct NestedFrameIterator<'framer, 'buf> {
+    outer_framer: &'framer dyn Framer,
+    inner_framer: &'framer dyn Framer,
+    root_buf: &'buf mut BytesBuffer,
+    outer_frame_index_view: Option<BufferIndexView>,
+    pending_root_commit: Option<usize>,
+    is_eof: bool,
+}
+
+impl<'framer, 'buf> NestedFrameIterator<'framer, 'buf> {
+    fn next_frame(&mut self) -> Result<Option<&[u8]>, FramingError> {
+        loop {
+            // Check if we have an active outer frame, and if so, if it's empty or not.
+            //
+            // If it's empty, we need to advance our root buffer and clear the outer frame so that we try to grab a new one.
+            //
+            // TODO: This isn't necessarily as efficient as it could be, since we end up doing a sort of equivalent check below
+            if self.outer_frame_index_view.as_ref().map_or(false, |iv| iv.is_empty()) {
+                // Our outer frame has been exhausted, so set `outer_frame_index_view` to `None` to ensure we
+                // try grabbing a new one.
+                let outer_frame_index_view = self.outer_frame_index_view.take().unwrap();
+                self.root_buf.advance(outer_frame_index_view.buf_len());
+            }
+
+            // Grab the current outer frame, or try grabbing a new one.
+            let outer_frame_index_view = match self.outer_frame_index_view.as_mut() {
+                // We still have a non-empty outer frame, so rematerialize the outer frame buffer.
+                Some(index_view) => index_view,
+                None => match self
+                    .outer_framer
+                    .next_frame(RawBuffer::new(&self.root_buf), self.is_eof)?
+                {
+                    Some(frame) => {
+                        self.outer_frame_index_view = Some(BufferIndexView::from_view(&frame));
+                        self.outer_frame_index_view.as_mut().unwrap()
+                    }
+                    None => return Ok(None),
+                },
+            };
+
+            let outer_frame = outer_frame_index_view.materialize(&self.root_buf);
+            assert!(
+                !outer_frame.is_empty(),
+                "outer frame should not be empty when index view is not empty"
+            );
+
+            // Now try to extract the next inner frame.
+            match self.inner_framer.next_frame(RawBuffer::new(outer_frame), self.is_eof)? {
+                Some(frame) => {
+                    outer_frame_index_view.advance(frame.buf_len());
+                    return Ok(Some(frame.into_bytes()));
+                }
+                None => return Ok(None),
+            }
+        }
+    }
+}
+
+/*
+#[ouroboros::self_referencing]
+struct RootBufferInner<'buf> {
+    buf: &'buf mut BytesBuffer,
+    #[borrows(buf)]
+    #[covariant]
+    view: BufferView<'this>,
+}
+
+struct RootBuffer<'buf>(ManuallyDrop<RootBufferInner<'buf>>);
+
+impl<'buf> RootBuffer<'buf> {
+    fn new(buf: &'buf mut BytesBuffer) -> Self {
+        Self(ManuallyDrop::new(RootBufferInner::new(buf, |buf| {
+            BufferView::from_slice(buf)
+        })))
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0.borrow_view().is_empty()
+    }
+
+    fn advance(&mut self, cnt: usize) {
+        self.0.with_view_mut(|view| view.skip(cnt));
+    }
+}
+
+impl<'buf> Deref for RootBuffer<'buf> {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.0.borrow_view()
+    }
+}
+
+impl<'buf> Drop for RootBuffer<'buf> {
+    fn drop(&mut self) {
+        // Figure out how far to advance the underlying buffer by seeing how far we advanced the view.
+        let advance_by = self.0.borrow_buf().len() - self.0.borrow_view().len();
+
+        // Consume the inner wrapper so we can recover the underlying buffer and advance it.
+        //
+        // SAFETY: We're currently dropping, which will only be called once.
+        let inner = unsafe { ManuallyDrop::take(&mut self.0) };
+        let heads = inner.into_heads();
+
+        unsafe { heads.buf.advance(advance_by) }
     }
 }
 
@@ -475,97 +631,6 @@ where
         }
     }
 }
-
-/*
-
-struct NestedFrameIterator<'outer, F, F2, Buffer> {
-    outer: F,
-    inner: F2,
-    buf: Buffer,
-    current_outer_frame: Option<BufferView<'outer>>,
-    is_eof: bool,
-}
-
-impl<'outer, F, F2, Buffer> NestedFrameIterator<'outer, F, F2, Buffer> {
-    pub fn new(outer: F, inner: F2, buf: Buffer, is_eof: bool) -> Self {
-        Self {
-            outer,
-            inner,
-            buf,
-            current_outer_frame: None,
-            is_eof,
-        }
-    }
-}
-
-#[nougat::gat]
-impl<'buf, F, F2> FrameIterator for NestedFrameIterator<'buf, F, F2, &'buf mut BytesBuffer>
-where
-    F: Framer3,
-    F2: Framer3,
-{
-    type Item<'next>
-    where
-        Self: 'next,
-    = BufferView<'next>;
-
-    fn next<'next>(
-        self: &'next mut NestedFrameIterator<F, F2, &'buf mut BytesBuffer>,
-    ) -> Option<Result<BufferView<'next>, FramingError>> {
-        loop {
-            // Take our current outer frame, or if we have none, try to get the next one.
-            let outer_frame = match self.current_outer_frame.as_mut() {
-                Some(frame) => {
-                    trace!(frame_len = frame.len(), "Using existing outer frame.");
-
-                    frame
-                }
-                None => {
-                    trace!("No existing outer frame.");
-
-                    match self.outer_iter.next()? {
-                        Ok(frame) => {
-                            trace!(frame_len = frame.len(), ?frame, "Extracted outer frame.");
-
-                            self.current_outer_frame.get_or_insert(frame)
-                        }
-
-                        // If we can't get another outer frame, then we're done for now.
-                        Err(e) => return Some(Err(e)),
-                    }
-                }
-            };
-
-            // Try to get the next inner frame.
-            match self.inner.next_frame(outer_frame, true) {
-                Ok(Some(frame)) => {
-                    trace!(
-                        outer_frame_len = outer_frame.len(),
-                        inner_frame_len = frame.len(),
-                        "Extracted inner frame."
-                    );
-
-                    return Some(Ok(frame));
-                }
-                Ok(None) => {
-                    // We can't get anything else from our inner frame. If our outer frame is empty, and our input buffer
-                    // isn't empty, clear the current outer frame so that we can try to grab the next one.
-                    trace!(
-                        outer_frame_len = outer_frame.len(),
-                        "Couldn't extract inner frame from existing outer frame."
-                    );
-
-                    if outer_frame.is_empty() {
-                        self.current_outer_frame = None;
-                    } else {
-                        return None;
-                    }
-                }
-                Err(e) => return Some(Err(e)),
-            }
-        }
-    }
-}
 */
 
 #[cfg(test)]
@@ -590,7 +655,7 @@ mod tests {
         }
     }
 
-    impl Framer3 for TestFramer {
+    impl Framer for TestFramer {
         fn next_frame<'buf, B: IoBuffer>(
             &self, buf: &'buf B, _: bool,
         ) -> Result<Option<BufferView<'buf>>, FramingError> {
@@ -627,7 +692,7 @@ mod tests {
             let mut buf = BytesBuffer::from_slice(input);
             let expected = expected.map(|mf| mf.map(BufferView::from_slice));
 
-            let mut framer = NewlineFramer3::default();
+            let mut framer = NewlineFramer::default();
             framer.required_on_eof = required_on_eof;
 
             let maybe_frame = framer.next_frame(&mut buf, eof);
@@ -638,7 +703,7 @@ mod tests {
     #[test]
     fn newline_framer_buf_empty() {
         let mut buf = BytesBuffer::empty();
-        let mut framer = NewlineFramer3::default();
+        let mut framer = NewlineFramer::default();
 
         let maybe_frame = framer.next_frame(&mut buf, false);
         assert_eq!(maybe_frame, Ok(None));
@@ -691,7 +756,7 @@ mod tests {
             let raw_buf = vec_from_bufs(input);
             let mut buf = BytesBuffer::from_slice(&raw_buf);
 
-            let mut framer = NewlineFramer3::default();
+            let mut framer = NewlineFramer::default();
             framer.required_on_eof = required_on_eof;
 
             let mut frame_iter = DirectFrameIterator::new(framer, &mut buf, eof);
