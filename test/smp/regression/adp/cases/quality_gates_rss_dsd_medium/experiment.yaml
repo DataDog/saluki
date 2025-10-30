@@ -36,7 +36,7 @@ checks:
 
 report_links:
   - text: (metrics)
-    link: "https://app.datadoghq.com/dashboard/4br-nxz-khi?fromUser=true&refresh_mode=paused&tpl_var_adp-run-id%5B0%5D={{ job_id }}&tpl_var_experiment%5B0%5D=quality_gates_rss_dsd_ultraheavy&view=spans&from_ts={{ start_time_ms }}&to_ts={{ end_time_ms }}&live=false"
+    link: "https://app.datadoghq.com/dashboard/4br-nxz-khi?fromUser=true&refresh_mode=paused&tpl_var_adp-run-id%5B0%5D={{ job_id }}&tpl_var_experiment%5B0%5D={{ experiment }}&view=spans&from_ts={{ start_time_ms }}&to_ts={{ end_time_ms }}&live=false"
   - text: (profiles)
     link: "https://app.datadoghq.com/profiling/explorer?query=env%3Asingle-machine-performance%20service%3Aagent-data-plane%20job_id%3A{{ job_id }}%20experiment%3A{{ experiment }}&agg_m=count&agg_m_source=base&agg_t=count&fromUser=false&viz=stream&start={{ filter_start }}&end={{ filter_end }}&paused=true"
   - text: (logs)
