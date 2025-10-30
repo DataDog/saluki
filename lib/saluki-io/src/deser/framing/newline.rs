@@ -1,8 +1,7 @@
-use bytes::Bytes;
 use tracing::trace;
 
 use super::{Framer, FramingError};
-use crate::buf::ReadIoBuffer;
+use crate::deser::framing::{BufferView, RawBuffer};
 
 /// Frames incoming data by splitting on newlines.
 ///
@@ -30,24 +29,19 @@ impl NewlineFramer {
 }
 
 impl Framer for NewlineFramer {
-    fn next_frame<'a, B: ReadIoBuffer>(&mut self, buf: &mut B, is_eof: bool) -> Result<Option<Bytes>, FramingError> {
-        trace!(buf_len = buf.remaining(), "Processing buffer.");
+    fn next_frame<'buf>(&self, buf: RawBuffer<'buf>, is_eof: bool) -> Result<Option<BufferView<'buf>>, FramingError> {
+        trace!(buf_len = buf.len(), "Processing buffer.");
 
-        let chunk = buf.chunk();
-        if chunk.is_empty() {
+        if buf.is_empty() {
             return Ok(None);
         }
 
-        trace!(chunk_len = chunk.len(), "Processing chunk.");
-
         // Search through the buffer for our delimiter.
-        match find_newline(chunk) {
+        match find_newline(&buf) {
             Some(idx) => {
                 // If we found the delimiter, then we can return the frame.
-                let frame = buf.copy_to_bytes(idx);
-
-                // Advance the buffer past the delimiter.
-                buf.advance(1);
+                let mut frame = buf.partial(idx + 1);
+                frame.rskip(1);
 
                 Ok(Some(frame))
             }
@@ -59,14 +53,10 @@ impl Framer for NewlineFramer {
 
                 // If we're at EOF and we require the delimiter, then this is an invalid frame.
                 if self.required_on_eof {
-                    return Err(missing_delimiter_err(chunk.len()));
+                    return Err(missing_delimiter_err(buf.len()));
                 }
 
-                // TODO: This is a bit inefficient, as we're copying the entire frame here. We could potentially avoid
-                // this by adding some specialized trait methods to `ReadIoBuffer` that could let us, potentially,
-                // implement equivalent slicing that is object pool aware (i.e., somehow utilizing `FrozenBytesBuffer`,
-                // etc).
-                Ok(Some(buf.copy_to_bytes(chunk.len())))
+                Ok(Some(buf.full()))
             }
         }
     }
@@ -85,15 +75,13 @@ fn find_newline(haystack: &[u8]) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
-
     use super::*;
 
-    fn get_delimited_payload(inner: &[u8], with_newline: bool) -> VecDeque<u8> {
-        let mut payload = VecDeque::new();
+    fn get_delimited_payload(inner: &[u8], with_newline: bool) -> Vec<u8> {
+        let mut payload = Vec::new();
         payload.extend(inner);
         if with_newline {
-            payload.push_back(b'\n');
+            payload.push(b'\n');
         }
 
         payload
@@ -102,78 +90,69 @@ mod tests {
     #[test]
     fn newline_no_eof() {
         let payload = b"hello, world!";
-        let mut buf = get_delimited_payload(payload, true);
+        let buf = get_delimited_payload(payload, true);
 
-        let mut framer = NewlineFramer::default();
-
+        let framer = NewlineFramer::default();
         let frame = framer
-            .next_frame(&mut buf, false)
+            .next_frame(RawBuffer::new(&buf), false)
             .expect("should not fail to read from payload")
             .expect("should not fail to extract frame from payload");
 
         assert_eq!(&frame[..], payload);
-        assert!(buf.is_empty());
+        assert_eq!(buf.len(), frame.buf_len(), "frame should consume entire buffer");
     }
 
     #[test]
     fn no_newline_no_eof() {
         let payload = b"hello, world!";
-        let mut buf = get_delimited_payload(payload, false);
-        let buf_len = buf.len();
+        let buf = get_delimited_payload(payload, false);
 
-        let mut framer = NewlineFramer::default();
-
+        let framer = NewlineFramer::default();
         let maybe_frame = framer
-            .next_frame(&mut buf, false)
+            .next_frame(RawBuffer::new(&buf), false)
             .expect("should not fail to read from payload");
 
         assert_eq!(maybe_frame, None);
-        assert_eq!(buf.len(), buf_len);
     }
 
     #[test]
     fn newline_eof() {
         let payload = b"hello, world!";
-        let mut buf = get_delimited_payload(payload, true);
+        let buf = get_delimited_payload(payload, true);
 
-        let mut framer = NewlineFramer::default();
-
+        let framer = NewlineFramer::default();
         let frame = framer
-            .next_frame(&mut buf, true)
+            .next_frame(RawBuffer::new(&buf), true)
             .expect("should not fail to read from payload")
             .expect("should not fail to extract frame from payload");
 
         assert_eq!(&frame[..], payload);
-        assert!(buf.is_empty());
+        assert_eq!(buf.len(), frame.buf_len(), "frame should consume entire buffer");
     }
 
     #[test]
     fn no_newline_eof_not_required_on_eof() {
         let payload = b"hello, world!";
-        let mut buf = get_delimited_payload(payload, false);
+        let buf = get_delimited_payload(payload, false);
 
-        let mut framer = NewlineFramer::default();
-
+        let framer = NewlineFramer::default();
         let frame = framer
-            .next_frame(&mut buf, true)
+            .next_frame(RawBuffer::new(&buf), true)
             .expect("should not fail to read from payload")
             .expect("should not fail to extract frame from payload");
 
         assert_eq!(&frame[..], payload);
-        assert!(buf.is_empty());
+        assert_eq!(buf.len(), frame.buf_len(), "frame should consume entire buffer");
     }
 
     #[test]
     fn no_newline_eof_required_on_eof() {
         let payload = b"hello, world!";
-        let mut buf = get_delimited_payload(payload, false);
-        let buf_len = buf.len();
+        let buf = get_delimited_payload(payload, false);
 
-        let mut framer = NewlineFramer::default().required_on_eof(true);
+        let framer = NewlineFramer::default().required_on_eof(true);
+        let maybe_frame = framer.next_frame(RawBuffer::new(&buf), true);
 
-        let maybe_frame = framer.next_frame(&mut buf, true);
-
-        assert_eq!(maybe_frame, Err(missing_delimiter_err(buf_len)));
-        assert_eq!(buf.len(), buf_len);
+        assert_eq!(maybe_frame, Err(missing_delimiter_err(buf.len())));
     }
 }
