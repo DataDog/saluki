@@ -542,7 +542,7 @@ test-correctness-otlp-metrics: ## Runs the OTLP metrics correctness test
 		--adp-millstone-config-path $(shell pwd)/test/correctness/otlp-metrics-adp-millstone.yaml \
 		--metrics-intake-image saluki-images/metrics-intake:latest \
 		--metrics-intake-config-path $(shell pwd)/test/correctness/metrics-intake.yaml \
-		--dsd-image docker.io/datadog/agent:latest \
+		--dsd-image saluki-images/datadog-agent:latest \
 		--dsd-entrypoint /bin/entrypoint.sh \
 		--dsd-command /init \
 		--dsd-config-path $(shell pwd)/test/correctness/otlp-metrics.yaml \
