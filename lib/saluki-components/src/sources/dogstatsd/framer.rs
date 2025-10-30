@@ -1,25 +1,27 @@
-use bytes::Bytes;
 use saluki_io::{
     buf::ReadIoBuffer,
-    deser::framing::{Framer, FramingError, LengthDelimitedFramer, NestedFramer, NewlineFramer},
+    deser::framing::{Framed, LengthDelimitedFramer, NewlineFramer},
     net::ListenAddress,
 };
 
 pub enum DsdFramer {
     NonStream(NewlineFramer),
-    Stream(NestedFramer<NewlineFramer, LengthDelimitedFramer>),
+    Stream(LengthDelimitedFramer, NewlineFramer),
 }
 
-impl Framer for DsdFramer {
-    fn next_frame<B: ReadIoBuffer>(&mut self, buf: &mut B, is_eof: bool) -> Result<Option<Bytes>, FramingError> {
+impl DsdFramer {
+    pub fn framed<'buf, B>(&self, buf: &'buf mut B, is_eof: bool) -> Framed<'buf, '_, B>
+    where
+        B: ReadIoBuffer,
+    {
         match self {
-            Self::NonStream(framer) => framer.next_frame(buf, is_eof),
-            Self::Stream(framer) => framer.next_frame(buf, is_eof),
+            Self::NonStream(framer) => Framed::direct(framer, buf, is_eof),
+            Self::Stream(outer, inner) => Framed::nested(outer, inner, buf, is_eof),
         }
     }
 }
 
-pub fn get_framer(listen_address: &ListenAddress) -> DsdFramer {
+pub fn get_framer(listen_address: &ListenAddress, max_frame_size: usize) -> DsdFramer {
     let newline_framer = NewlineFramer::default().required_on_eof(false);
 
     match listen_address {
@@ -28,6 +30,9 @@ pub fn get_framer(listen_address: &ListenAddress) -> DsdFramer {
         #[cfg(unix)]
         ListenAddress::Unixgram(_) => DsdFramer::NonStream(newline_framer),
         #[cfg(unix)]
-        ListenAddress::Unix(_) => DsdFramer::Stream(NestedFramer::new(newline_framer, LengthDelimitedFramer)),
+        ListenAddress::Unix(_) => DsdFramer::Stream(
+            LengthDelimitedFramer::default().with_max_frame_size(max_frame_size),
+            newline_framer,
+        ),
     }
 }
