@@ -22,17 +22,15 @@ impl DsdFramer {
 }
 
 pub fn get_framer(listen_address: &ListenAddress, max_frame_size: usize) -> DsdFramer {
+    let length_delimited_framer = LengthDelimitedFramer::default().with_max_frame_size(max_frame_size);
     let newline_framer = NewlineFramer::default().required_on_eof(false);
 
     match listen_address {
-        ListenAddress::Tcp(_) => DsdFramer::Stream(NestedFramer::new(newline_framer, LengthDelimitedFramer)),
+        ListenAddress::Tcp(_) => DsdFramer::Stream(length_delimited_framer, newline_framer),
         ListenAddress::Udp(_) => DsdFramer::NonStream(newline_framer),
         #[cfg(unix)]
         ListenAddress::Unixgram(_) => DsdFramer::NonStream(newline_framer),
         #[cfg(unix)]
-        ListenAddress::Unix(_) => DsdFramer::Stream(
-            LengthDelimitedFramer::default().with_max_frame_size(max_frame_size),
-            newline_framer,
-        ),
+        ListenAddress::Unix(_) => DsdFramer::Stream(length_delimited_framer, newline_framer),
     }
 }

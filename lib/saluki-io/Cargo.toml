@@ -32,7 +32,6 @@ libc = { workspace = true }
 memchr = { workspace = true, features = ["std"] }
 metrics = { workspace = true }
 nom = { workspace = true, features = ["alloc"] }
-nougat = { workspace = true }
 ouroboros = { workspace = true }
 pin-project = { workspace = true }
 pin-project-lite = { workspace = true }
