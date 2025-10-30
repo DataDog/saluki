@@ -111,9 +111,6 @@ run-benchmarks-adp:
     expire_in: 1 weeks
     paths:
       - submission_metadata # for provenance, debugging
-      - adp_job_start_time # for generating PR comments
-      - adp_job_end_time # for generating PR comments
-      - adp_run_id # for generating PR comments
       - outputs/report.md # for debugging, also on S3
       - outputs/report.html # for debugging, also on S3
     when: always
@@ -138,17 +135,12 @@ run-benchmarks-adp:
       --comparison-sha ${COMPARISON_ADP_SHA}
       --target-config-dir ./test/smp/regression/adp/
       --submission-metadata submission_metadata
-    # Populate some data that we'll need later for generating links to experiment dashboards.
-    - date +%s > adp_job_start_time
-    - cat submission_metadata | jq -r '.jobId' > adp_run_id
     # Wait for job to complete.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job status
       --wait
       --wait-delay-seconds 60
       --submission-metadata submission_metadata
-    # And populate some more data that we'll need later for generating links to experiment dashboards.
-    - date +%s > adp_job_end_time
     # Pull the analysis report and output it to stdout.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job sync
@@ -164,21 +156,3 @@ run-benchmarks-adp:
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job result
       --submission-metadata submission_metadata
-
-comment-smp-result-links:
-  stage: benchmark
-  # Don't run benchmarks unless it's a PR, basically.
-  rules:
-    - if: !reference [.on_development_branch, rules, if]
-  needs:
-    - run-benchmarks-adp
-  image: "${SALUKI_SMP_CI_IMAGE}"
-  before_script:
-    - *setup-smp-env
-  variables:
-    AWS_NAMED_PROFILE: single-machine-performance
-  script:
-    # Grab the current start time of this job, which will be our end anchor for the time range in dashboards.
-    - date +%s > report_end_time
-    - .ci/templates/generate-result-links-markdown.sh > result-links.md
-    - cat result-links.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector Links"
