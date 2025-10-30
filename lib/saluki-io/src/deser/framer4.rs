@@ -89,12 +89,6 @@ impl Deref for BytesBuffer {
     }
 }
 
-#[derive(Default)]
-struct BufferViewRange {
-    idx: usize,
-    ridx: usize,
-}
-
 #[derive(Clone)]
 pub struct BufferView<'a> {
     buf: &'a [u8],
@@ -103,13 +97,13 @@ pub struct BufferView<'a> {
 }
 
 impl<'a> BufferView<'a> {
-    pub const fn from_slice(buf: &'a [u8]) -> Self {
+    const fn from_slice(buf: &'a [u8]) -> Self {
         Self { buf, idx: 0, ridx: 0 }
     }
 
     fn as_bytes(&self) -> &'a [u8] {
         let start = self.idx;
-        let end = self.len() - self.ridx;
+        let end = self.buf.len() - self.ridx;
         &self.buf[start..end]
     }
 
@@ -124,7 +118,7 @@ impl<'a> BufferView<'a> {
     }
 
     /// Returns the length of the underlying buffer, in bytes.
-    pub const fn buf_len(&self) -> usize {
+    const fn buf_len(&self) -> usize {
         self.buf.len()
     }
 
@@ -153,7 +147,7 @@ impl<'a> BufferView<'a> {
     /// Returns the bytes of the view.
     ///
     /// This represents a constrained view of the underlying I/O buffer based on any advancing from the front or back.
-    pub fn into_bytes(self) -> &'a [u8] {
+    fn into_bytes(self) -> &'a [u8] {
         self.as_bytes()
     }
 }
@@ -196,24 +190,36 @@ impl PartialEq for BufferView<'_> {
     }
 }
 
-/// A raw input buffer used by framers.
+/// A buffer abstraction for carving out frames from a byte slice.
 ///
-/// `RawBuffer` is a wrapper around a byte slice that allows for creating a view over the byte slice when
-/// extracting a frame. This ensures that the resulting view represents the entire frame so that the input buffer
-/// can be properly advanced after the frame has been processed. Views can be further manipulated in order to
-/// constrain the view.
+/// Framers take an arbitrary byte slice and attempt to extract "frames". Frames are delimited chunks of data, such as
+/// newline delimited lines, or data that is prefixed by a length header. Extracting frames thus requires handling two
+/// concerns: identifying how large the overall frame is, and removing the framing data so that only the original data
+/// is left.
+///
+/// For example, a newline delimited framer will search for newline characters, and extract all of the data up to that
+/// newline character. However, we don't want to return the newline character itself, but we still must effectively
+/// "consume" it so that it's removed from the input buffer before we try to extract any subsequent frames. This means
+/// that framers cannot simply operate on a raw byte slices: we cannot include the necessary information by returning a
+/// byte slice along.
+///
+/// `RawBuffer` provides a minimal wrapper over a raw byte slice which allows framers to interact with it as if it was a
+/// raw byte slice for the purpose for determining if a valid frame is present. Once that is determined, different
+/// methods on `RawBuffer` can be used to extract the frame in the form of `BufferView`. `BufferView` is used to hold
+/// both the full frame (delimiters included), as well as a "view" over the frame which excludes any frame delimiters.
+///
+/// By enforcing that `BufferView`s can only be created from `RawBuffer`s, we can provide a more ergonomic way of
+/// extracting frames that carry the necessary information for properly advancing the underlying input buffer while
+/// ultimately providing the trimmed data back to the caller.
 ///
 /// # Usage
 ///
-/// Framers will receive a `RawBuffer`, which represents all available data in the buffer. Framers are then expected to
-/// check if a valid frame can be extracted from the buffer. If so, the framer should either extract a "partial" view or
-/// "full" view. For example, if the buffer contains two frames, then it would be expected to create two "partial"
-/// views.
-///
-/// After constructing these views, the views can be further manipulated in order to constrain the view. For example,
-/// the view might initially include the frame delimiter, such as a newline character. This can be skipped over such
-/// that the view only shows the data before the newline character. However, the view still points to the overall frame
-/// (delimiter and all), which allows the framer machinery to properly advance the underlying buffer.
+/// `RawBuffer` implements `Deref<Target = [u8]>`, and so it can generally be interacted with as if it were a byte
+/// slice. Once the frame length has been determined, either `RawBuffer::partial` or `RawBuffer::full` can be used to
+/// extract a view over the frame. `RawBuffer::partial` is for cases when a frame delimiter has been found, and there
+/// may or may not be additional data in the buffer. `RawBuffer::full` is for cases when we know that we simply want to
+/// use all data in the buffer, such as in cases where EOF has been reached and we may opt to return all data in the
+/// buffer without requiring a delimiter.
 pub struct RawBuffer<'buf> {
     buf: &'buf [u8],
 }
@@ -343,7 +349,7 @@ impl Framer for NewlineFramer {
             Some(idx) => {
                 // If we found the delimiter, then slice out the frame from the buffer,
                 // and chop the delimiter off the end of the frame.
-                let mut frame = buf.partial(idx);
+                let mut frame = buf.partial(idx + 1);
                 frame.rskip(1);
 
                 Ok(Some(frame))
@@ -391,13 +397,22 @@ struct DirectFrameIterator<'framer, 'buf> {
 }
 
 impl<'framer, 'buf> DirectFrameIterator<'framer, 'buf> {
-    fn next_frame(&mut self) -> Result<Option<&[u8]>, FramingError> {
-        if self.buf.is_empty() {
-            return Ok(None);
+    fn new(framer: &'framer dyn Framer, buf: &'buf mut BytesBuffer, is_eof: bool) -> Self {
+        Self {
+            framer,
+            buf,
+            pending_commit: None,
+            is_eof,
         }
+    }
 
+    fn next_frame(&mut self) -> Result<Option<&[u8]>, FramingError> {
         if let Some(advance_by) = self.pending_commit.take() {
             self.buf.advance(advance_by);
+        }
+
+        if self.buf.is_empty() {
+            return Ok(None);
         }
 
         match self.framer.next_frame(RawBuffer::new(&self.buf), self.is_eof)? {
@@ -471,10 +486,7 @@ impl<'framer, 'buf> NestedFrameIterator<'framer, 'buf> {
             let outer_frame_index_view = match self.outer_frame_index_view.as_mut() {
                 // We still have a non-empty outer frame, so rematerialize the outer frame buffer.
                 Some(index_view) => index_view,
-                None => match self
-                    .outer_framer
-                    .next_frame(RawBuffer::new(&self.root_buf), self.is_eof)?
-                {
+                None => match self.outer_framer.next_frame(RawBuffer::new(&self.root_buf), true)? {
                     Some(frame) => {
                         self.outer_frame_index_view = Some(BufferIndexView::from_view(&frame));
                         self.outer_frame_index_view.as_mut().unwrap()
@@ -501,141 +513,8 @@ impl<'framer, 'buf> NestedFrameIterator<'framer, 'buf> {
     }
 }
 
-/*
-#[ouroboros::self_referencing]
-struct RootBufferInner<'buf> {
-    buf: &'buf mut BytesBuffer,
-    #[borrows(buf)]
-    #[covariant]
-    view: BufferView<'this>,
-}
-
-struct RootBuffer<'buf>(ManuallyDrop<RootBufferInner<'buf>>);
-
-impl<'buf> RootBuffer<'buf> {
-    fn new(buf: &'buf mut BytesBuffer) -> Self {
-        Self(ManuallyDrop::new(RootBufferInner::new(buf, |buf| {
-            BufferView::from_slice(buf)
-        })))
-    }
-
-    fn is_empty(&self) -> bool {
-        self.0.borrow_view().is_empty()
-    }
-
-    fn advance(&mut self, cnt: usize) {
-        self.0.with_view_mut(|view| view.skip(cnt));
-    }
-}
-
-impl<'buf> Deref for RootBuffer<'buf> {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        self.0.borrow_view()
-    }
-}
-
-impl<'buf> Drop for RootBuffer<'buf> {
-    fn drop(&mut self) {
-        // Figure out how far to advance the underlying buffer by seeing how far we advanced the view.
-        let advance_by = self.0.borrow_buf().len() - self.0.borrow_view().len();
-
-        // Consume the inner wrapper so we can recover the underlying buffer and advance it.
-        //
-        // SAFETY: We're currently dropping, which will only be called once.
-        let inner = unsafe { ManuallyDrop::take(&mut self.0) };
-        let heads = inner.into_heads();
-
-        unsafe { heads.buf.advance(advance_by) }
-    }
-}
-
-#[nougat::gat]
-trait FrameIterator {
-    type Item<'next>
-    where
-        Self: 'next;
-
-    fn next(&mut self) -> Option<Result<Self::Item<'_>, FramingError>>;
-}
-
-struct DirectFrameIterator<'buf, F, B: IoBuffer> {
-    framer: F,
-    buf: &'buf mut B,
-    last_frame_len: usize,
-    is_eof: bool,
-}
-
-impl<'buf, F, B> DirectFrameIterator<'buf, F, B>
-where
-    B: IoBuffer,
-{
-    pub fn new(framer: F, buf: &'buf mut B, is_eof: bool) -> Self {
-        Self {
-            framer,
-            buf,
-            last_frame_len: 0,
-            is_eof,
-        }
-    }
-
-    fn handle_pending_advance(&mut self) {
-        if self.last_frame_len != 0 {
-            self.buf.advance(self.last_frame_len);
-            self.last_frame_len = 0;
-        }
-    }
-}
-
-impl<'buf, F, B> Drop for DirectFrameIterator<'buf, F, B>
-where
-    B: IoBuffer,
-{
-    fn drop(&mut self) {
-        self.handle_pending_advance();
-    }
-}
-
-#[nougat::gat]
-impl<'buf, F, B> FrameIterator for DirectFrameIterator<'buf, F, B>
-where
-    F: Framer3,
-    B: IoBuffer,
-{
-    type Item<'next>
-    where
-        Self: 'next,
-    = BufferView<'next>;
-
-    fn next<'next>(
-        self: &'next mut DirectFrameIterator<'buf, F, B>,
-    ) -> Option<Result<BufferView<'next>, FramingError>> {
-        self.handle_pending_advance();
-
-        if self.buf.is_empty() {
-            return None;
-        }
-
-        match self.framer.next_frame(&self.buf, self.is_eof) {
-            Ok(Some(frame)) => {
-                // Track how large the view is, which represents the number of bytes consumed from the buffer
-                // overall -- which we need to advance past in `self.buf` -- but not necessarily how large the
-                // frame view is (e.g., we might be consuming delimiter bytes, but excluding them from the view).
-                self.last_frame_len = frame.buf_len();
-
-                Some(Ok(frame))
-            }
-            Ok(None) => None,
-            Err(e) => Some(Err(e)),
-        }
-    }
-}
-*/
-
 #[cfg(test)]
 mod tests {
-    use super::FrameIterator as _;
     use super::*;
 
     enum TestFramerMode {
@@ -656,12 +535,12 @@ mod tests {
     }
 
     impl Framer for TestFramer {
-        fn next_frame<'buf, B: IoBuffer>(
-            &self, buf: &'buf B, _: bool,
+        fn next_frame<'buf>(
+            &self, buf: RawBuffer<'buf>, is_eof: bool,
         ) -> Result<Option<BufferView<'buf>>, FramingError> {
             match self.0 {
                 TestFramerMode::Empty => Ok(None),
-                TestFramerMode::ConsumeAll => Ok(Some(BufferView::from_io_buffer(buf))),
+                TestFramerMode::ConsumeAll => Ok(Some(buf.full())),
             }
         }
     }
@@ -689,14 +568,11 @@ mod tests {
         ];
 
         for (input, expected, required_on_eof, eof) in cases {
-            let mut buf = BytesBuffer::from_slice(input);
-            let expected = expected.map(|mf| mf.map(BufferView::from_slice));
-
             let mut framer = NewlineFramer::default();
             framer.required_on_eof = required_on_eof;
 
-            let maybe_frame = framer.next_frame(&mut buf, eof);
-            assert_eq!(maybe_frame, expected);
+            let maybe_frame = framer.next_frame(RawBuffer::new(input), eof);
+            assert_eq!(maybe_frame.map(|v| v.map(|f| f.as_bytes())), expected);
         }
     }
 
@@ -705,10 +581,10 @@ mod tests {
         let mut buf = BytesBuffer::empty();
         let mut framer = NewlineFramer::default();
 
-        let maybe_frame = framer.next_frame(&mut buf, false);
+        let maybe_frame = framer.next_frame(RawBuffer::new(&[]), false);
         assert_eq!(maybe_frame, Ok(None));
 
-        let maybe_frame = framer.next_frame(&mut buf, true);
+        let maybe_frame = framer.next_frame(RawBuffer::new(&[]), true);
         assert_eq!(maybe_frame, Ok(None));
     }
 
@@ -722,50 +598,50 @@ mod tests {
 
         let cases = [
             // input, expected frames, required_on_eof, eof
-            (&[input1_with_nl][..], vec![Some(Ok(input1_no_nl)), None], false, false),
+            (
+                &[input1_with_nl][..],
+                vec![Ok(Some(input1_no_nl)), Ok(None)],
+                false,
+                false,
+            ),
             (
                 &[input1_with_nl, input2_with_nl][..],
-                vec![Some(Ok(input1_no_nl)), Some(Ok(input2_no_nl)), None],
+                vec![Ok(Some(input1_no_nl)), Ok(Some(input2_no_nl)), Ok(None)],
                 false,
                 false,
             ),
             (
                 &[input1_with_nl, input2_no_nl][..],
-                vec![Some(Ok(input1_no_nl)), None],
+                vec![Ok(Some(input1_no_nl)), Ok(None)],
                 false,
                 false,
             ),
             (
                 &[input1_with_nl, input2_no_nl][..],
-                vec![Some(Ok(input1_no_nl)), Some(Ok(input2_no_nl))],
+                vec![Ok(Some(input1_no_nl)), Ok(Some(input2_no_nl))],
                 false,
                 true,
             ),
             (
                 &[input1_with_nl, input2_no_nl][..],
-                vec![
-                    Some(Ok(input1_no_nl)),
-                    Some(Err(missing_delimiter_err(input2_no_nl.len()))),
-                ],
+                vec![Ok(Some(input1_no_nl)), Err(missing_delimiter_err(input2_no_nl.len()))],
                 true,
                 true,
             ),
         ];
 
-        for (input, expected_frames, required_on_eof, eof) in cases {
+        for (idx, (input, expected_frames, required_on_eof, eof)) in cases.into_iter().enumerate() {
             let raw_buf = vec_from_bufs(input);
             let mut buf = BytesBuffer::from_slice(&raw_buf);
 
             let mut framer = NewlineFramer::default();
             framer.required_on_eof = required_on_eof;
 
-            let mut frame_iter = DirectFrameIterator::new(framer, &mut buf, eof);
+            let mut frame_iter = DirectFrameIterator::new(&framer, &mut buf, eof);
 
             for expected in expected_frames {
-                let expected = expected.map(|mf| mf.map(BufferView::from_slice));
-
-                let maybe_frame = frame_iter.next();
-                assert_eq!(maybe_frame, expected);
+                let maybe_frame = frame_iter.next_frame();
+                assert_eq!(maybe_frame, expected, "mismatch on case {}", idx);
             }
         }
     }
@@ -774,16 +650,18 @@ mod tests {
     fn direct_frame_iter_basic() {
         // When the framer returns `Ok(None)`, the frame iterator should return `None`.
         let mut buf1 = BytesBuffer::empty();
-        let mut frame_iter1 = DirectFrameIterator::new(TestFramer::empty(), &mut buf1, false);
-        assert_eq!(frame_iter1.next(), None);
+        let framer1 = TestFramer::empty();
+        let mut frame_iter1 = DirectFrameIterator::new(&framer1, &mut buf1, false);
+        assert_eq!(frame_iter1.next_frame(), Ok(None));
 
         // When the framer consumes the entire/remainder of the buffer, and the buffer is now empty,
         // the frame iterator should return `None` after that point.
         let input = "hello, world!";
 
         let mut buf2 = BytesBuffer::from_slice(input.as_bytes());
-        let mut frame_iter2 = DirectFrameIterator::new(TestFramer::consume_all(), &mut buf2, false);
-        assert_eq!(frame_iter2.next(), Some(Ok(BufferView::from_slice(input.as_bytes()))));
-        assert_eq!(frame_iter2.next(), None);
+        let framer2 = TestFramer::consume_all();
+        let mut frame_iter2 = DirectFrameIterator::new(&framer2, &mut buf2, false);
+        assert_eq!(frame_iter2.next_frame(), Ok(Some(input.as_bytes())));
+        assert_eq!(frame_iter2.next_frame(), Ok(None));
     }
 }
