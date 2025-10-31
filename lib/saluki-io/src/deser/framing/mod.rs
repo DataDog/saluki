@@ -1,6 +1,5 @@
 use std::ops::Deref;
 
-use bytes::Buf;
 use snafu::Snafu;
 
 mod iter;
@@ -38,6 +37,14 @@ pub enum FramingError {
     PartialFrame { needed: usize, remaining: usize },
 }
 
+/// A virtual "view" over a buffer.
+///
+/// `BufferView` is a lightweight wrapper over a buffer that allows for constructing a virtual "view" -- a subset of the
+/// buffer -- that is controlled by arbitrarily offsetting the start and end indices in a user-controlled way.
+/// `BufferView` is used, in lieu of manually reslicing the buffer, in order to allow the original byte slice to be
+/// captured alongside the virtual offsets. This supports some of the more ergonomic framing helpers which need to know
+/// the full size of a frame after extraction, while the view allows delimiters to be removed so that the caller
+/// receives a clean frame.
 #[derive(Clone)]
 pub struct BufferView<'a> {
     buf: &'a [u8],
@@ -71,31 +78,39 @@ impl<'a> BufferView<'a> {
         self.buf.len()
     }
 
-    pub fn skip(&mut self, len: usize) {
+    /// Skips the specified number of bytes from the beginning of the view.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the view is too small to skip the specified number of bytes.
+    pub fn skip(&mut self, cnt: usize) {
         assert!(
-            len <= self.len(),
+            cnt <= self.len(),
             "buffer too small to skip {} bytes, only {} bytes remaining",
             self.len(),
-            len,
+            cnt,
         );
 
-        self.idx += len;
+        self.idx += cnt;
     }
 
-    pub fn rskip(&mut self, len: usize) {
+    /// Skips the specified number of bytes from the end of the view.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the view is too small to skip the specified number of bytes.
+    pub fn rskip(&mut self, cnt: usize) {
         assert!(
-            len <= self.len(),
+            cnt <= self.len(),
             "buffer too small to rskip {} bytes, only {} bytes remaining",
             self.len(),
-            len,
+            cnt,
         );
 
-        self.ridx += len;
+        self.ridx += cnt;
     }
 
-    /// Returns the bytes of the view.
-    ///
-    /// This represents a constrained view of the underlying I/O buffer based on any advancing from the front or back.
+    /// Consumes the view, returning the virtual byte slice.
     fn into_bytes(self) -> &'a [u8] {
         self.as_bytes()
     }
@@ -106,20 +121,6 @@ impl Deref for BufferView<'_> {
 
     fn deref(&self) -> &Self::Target {
         self.as_bytes()
-    }
-}
-
-impl Buf for BufferView<'_> {
-    fn remaining(&self) -> usize {
-        self.len()
-    }
-
-    fn chunk(&self) -> &[u8] {
-        self.as_bytes()
-    }
-
-    fn advance(&mut self, cnt: usize) {
-        self.skip(cnt);
     }
 }
 
