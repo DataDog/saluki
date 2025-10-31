@@ -4,37 +4,13 @@ use protobuf::Message as _;
 use stele::Metric;
 use tracing::{debug, error};
 
-use crate::state::IntakeState;
+use super::MetricsState;
 
-pub async fn handle_metrics_dump(State(state): State<IntakeState>) -> Json<Vec<Metric>> {
+pub async fn handle_metrics_dump(State(state): State<MetricsState>) -> Json<Vec<Metric>> {
     Json(state.dump_metrics())
 }
 
-pub async fn handle_validate_v1() -> StatusCode {
-    debug!("Received validate v1 payload.");
-
-    StatusCode::OK
-}
-
-pub async fn handle_metadata_v1() -> StatusCode {
-    debug!("Received metadata v1 payload.");
-
-    StatusCode::OK
-}
-
-pub async fn handle_check_run_v1() -> StatusCode {
-    debug!("Received check_run v1 payload.");
-
-    StatusCode::OK
-}
-
-pub async fn handle_intake() -> StatusCode {
-    debug!("Received intake payload.");
-
-    StatusCode::OK
-}
-
-pub async fn handle_series_v2(State(state): State<IntakeState>, body: Bytes) -> StatusCode {
+pub async fn handle_series_v2(State(state): State<MetricsState>, body: Bytes) -> StatusCode {
     debug!("Received series payload.");
 
     let payload = match MetricPayload::parse_from_bytes(&body[..]) {
@@ -57,7 +33,7 @@ pub async fn handle_series_v2(State(state): State<IntakeState>, body: Bytes) -> 
     }
 }
 
-pub async fn handle_sketch_beta(State(state): State<IntakeState>, body: Bytes) -> StatusCode {
+pub async fn handle_sketch_beta(State(state): State<MetricsState>, body: Bytes) -> StatusCode {
     debug!("Received sketch payload.");
 
     let payload = match SketchPayload::parse_from_bytes(&body[..]) {

@@ -22,7 +22,7 @@ use tokio::{
 };
 use tracing::{debug, error, trace};
 
-use crate::config::{ADPConfig, DSDConfig, MetricsIntakeConfig, MillstoneConfig};
+use crate::config::{ADPConfig, DSDConfig, DatadogIntakeConfig, MillstoneConfig};
 
 pub enum ExitStatus {
     Success,
@@ -71,20 +71,20 @@ impl DriverConfig {
         Ok(driver_config)
     }
 
-    pub async fn metrics_intake(config: MetricsIntakeConfig) -> Result<Self, GenericError> {
+    pub async fn datadog_intake(config: DatadogIntakeConfig) -> Result<Self, GenericError> {
         // Ensure the given configuration file path actually exists.
         if let Err(e) = tokio::fs::try_exists(&config.config_path).await {
             return Err(generic_error!(
-                "Failed to ensure specified metrics-intake configuration exists locally: {}",
+                "Failed to ensure specified datadog-intake configuration exists locally: {}",
                 e
             ));
         }
 
-        let entrypoint = vec![config.binary_path, "/etc/metrics-intake/config.yaml".to_string()];
+        let entrypoint = vec![config.binary_path, "/etc/datadog-intake/config.yaml".to_string()];
 
-        let driver_config = DriverConfig::from_image("metrics-intake", config.image)
+        let driver_config = DriverConfig::from_image("datadog-intake", config.image)
             .with_entrypoint(entrypoint)
-            .with_bind_mount(config.config_path, "/etc/metrics-intake/config.yaml")
+            .with_bind_mount(config.config_path, "/etc/datadog-intake/config.yaml")
             // Map our intake port to an ephemeral port on the host side, which we'll query once the container has been
             // started so that we can connect to it.
             .with_exposed_port("tcp", 2049);

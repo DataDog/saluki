@@ -1,5 +1,5 @@
 ARG DD_AGENT_VERSION=7.68.3-jmx
-ARG DD_AGENT_IMAGE=registry.ddbuild.io/images/datadog-agent:${DD_AGENT_VERSION}
+ARG DD_AGENT_IMAGE=datadog/agent:${DD_AGENT_VERSION}
 
 ARG BUILD_IMAGE=alpine:3.20
 ARG APP_IMAGE=ubuntu:24.04

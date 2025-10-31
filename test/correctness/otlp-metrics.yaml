@@ -8,8 +8,8 @@ api_key: dummy-api-key-correctness-testing
 # We have to specifically configure the health port to use.
 health_port: 5555
 
-# Point ourselves at the metrics-intake service.
-dd_url: "http://metrics-intake:2049"
+# Point ourselves at the datadog-intake service.
+dd_url: "http://datadog-intake:2049"
 
 # Disable DogStatsD since we're testing OTLP
 dogstatsd_port: 0

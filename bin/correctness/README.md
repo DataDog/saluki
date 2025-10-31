@@ -9,13 +9,13 @@ consists of the following components:
 - `ground-truth`: a test runner designed specifically to drive an identical, deterministic DogStatsD load into
   both the standalone DogStatsD server and Agent Data Plane, and compare the outputs they forward to their configured
   intake, highlighting any discrepancies
-- `metrics-intake`: a mock intake in the spirit of [`fakeintake`][fakeintake_gh] that provides a more ergonomic
-  approach to dumping the captured metrics)
+- `datadog-intake`: a mock intake in the spirit of [`fakeintake`][fakeintake_gh] that provides a more ergonomic
+  approach to dumping the captured data
 - `millstone`: a deterministic load generator, in the spirit of [Lading][lading_gh], that allow provides determinism
   around the number of payloads it sends, in addition to the basic determinism of the payloads it generates to send in
   the first place
-- `stele`: helper library that established a common, simplified represent for metrics, and their values, to be used
-  between `metrics-intake` and `ground-truth`
+- `stele`: helper library that established a common, simplified represent for telemetry data, and their values, to be used
+  between `datadog-intake` and `ground-truth`
 
 ## Building
 
@@ -30,8 +30,8 @@ Currently, the correctness tests are hardcoded: we run a single test, against a 
 DogStatsD server, a specific version of Agent Data Plane, with a fixed `millstone` configuration. Customizing this test,
 or running multiple variations, etc, is left as an exercise to the reader.
 
-To run the correctness tests, you must first build the related container images (`metrics-intake`, `millstone`, and ADP
-itself) before you can run the tests. This can be done simply by running `make build-metrics-intake-image
+To run the correctness tests, you must first build the related container images (`datadog-intake`, `millstone`, and ADP
+itself) before you can run the tests. This can be done simply by running `make build-datadog-intake-image
 build-millstone-image build-adp-image`. Once this is done, you can run the correctness test itself by running `make
 test-correctness`.
 

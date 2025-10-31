@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use airlock::config::{ADPConfig, DSDConfig, MetricsIntakeConfig, MillstoneConfig};
+use airlock::config::{ADPConfig, DSDConfig, DatadogIntakeConfig, MillstoneConfig};
 use clap::Parser;
 
 #[derive(Clone, Parser)]
@@ -36,26 +36,26 @@ pub struct Cli {
     #[arg(long)]
     pub adp_millstone_config_path: Option<PathBuf>,
 
-    /// Container image to use for metrics-intake.
+    /// Container image to use for datadog-intake.
     ///
-    /// This must be a valid image reference -- `metrics-intake:x.y.z`,
-    /// `registry.ddbuild.io/saluki/metrics-intake:x.y.z`, etc -- to an image containing the `metrics-intake` binary.
+    /// This must be a valid image reference -- `datadog-intake:x.y.z`,
+    /// `registry.ddbuild.io/saluki/datadog-intake:x.y.z`, etc -- to an image containing the `datadog-intake` binary.
     ///
-    /// The `metrics-intake` binary must exist at `/usr/local/bin/metrics-intake` in the image. Otherwise, the binary
+    /// The `datadog-intake` binary must exist at `/usr/local/bin/datadog-intake` in the image. Otherwise, the binary
     /// path can be overridden with the `binary-path` argument.
     #[arg(long)]
-    pub metrics_intake_image: String,
+    pub datadog_intake_image: String,
 
-    /// Path to the metrics-intake binary.
-    #[arg(long, default_value = "/usr/local/bin/metrics-intake")]
-    pub metrics_intake_binary_path: String,
+    /// Path to the datadog-intake binary.
+    #[arg(long, default_value = "/usr/local/bin/datadog-intake")]
+    pub datadog_intake_binary_path: String,
 
-    /// Path to the metrics-intake configuration file to use.
+    /// Path to the datadog-intake configuration file to use.
     ///
-    /// This file is mapped into the metrics-intake container and so it must exist on the system where this command is run
+    /// This file is mapped into the datadog-intake container and so it must exist on the system where this command is run
     /// from.
     #[arg(long)]
-    pub metrics_intake_config_path: PathBuf,
+    pub datadog_intake_config_path: PathBuf,
 
     /// Container image to use for DogStatsD.
     ///
@@ -141,11 +141,11 @@ impl Cli {
         }
     }
 
-    pub fn metrics_intake_config(&self) -> MetricsIntakeConfig {
-        MetricsIntakeConfig {
-            image: self.metrics_intake_image.clone(),
-            binary_path: self.metrics_intake_binary_path.clone(),
-            config_path: self.metrics_intake_config_path.clone(),
+    pub fn datadog_intake_config(&self) -> DatadogIntakeConfig {
+        DatadogIntakeConfig {
+            image: self.datadog_intake_image.clone(),
+            binary_path: self.datadog_intake_binary_path.clone(),
+            config_path: self.datadog_intake_config_path.clone(),
         }
     }
 
