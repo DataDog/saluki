@@ -1,6 +1,5 @@
 use std::{fmt, hash, sync::Arc};
 
-use metrics::Gauge;
 use stringtheory::MetaString;
 
 use crate::{
@@ -29,7 +28,6 @@ impl Context {
                 tags,
                 origin_tags,
                 key,
-                active_count: Gauge::noop(),
             }),
         }
     }
@@ -50,7 +48,6 @@ impl Context {
                 tags: tag_set.into_shared(),
                 origin_tags,
                 key,
-                active_count: Gauge::noop(),
             }),
         }
     }
@@ -66,7 +63,6 @@ impl Context {
                 tags,
                 origin_tags,
                 key,
-                active_count: Gauge::noop(),
             }),
         }
     }
@@ -85,7 +81,6 @@ impl Context {
                 tags,
                 origin_tags,
                 key,
-                active_count: Gauge::noop(),
             }),
         }
     }
@@ -178,19 +173,15 @@ pub(super) struct ContextInner {
     name: MetaString,
     tags: SharedTagSet,
     origin_tags: SharedTagSet,
-    active_count: Gauge,
 }
 
 impl ContextInner {
-    pub fn from_parts(
-        key: ContextKey, name: MetaString, tags: SharedTagSet, origin_tags: SharedTagSet, active_count: Gauge,
-    ) -> Self {
+    pub fn from_parts(key: ContextKey, name: MetaString, tags: SharedTagSet, origin_tags: SharedTagSet) -> Self {
         Self {
             key,
             name,
             tags,
             origin_tags,
-            active_count,
         }
     }
 }
@@ -202,18 +193,7 @@ impl Clone for ContextInner {
             name: self.name.clone(),
             tags: self.tags.clone(),
             origin_tags: self.origin_tags.clone(),
-
-            // We're specifically detaching this context from the statistics of the resolver from which `self`
-            // originated, as we only want to track the statistics of the contexts created _directly_ through the
-            // resolver.
-            active_count: Gauge::noop(),
         }
-    }
-}
-
-impl Drop for ContextInner {
-    fn drop(&mut self) {
-        self.active_count.decrement(1);
     }
 }
 
@@ -315,7 +295,6 @@ mod tests {
             name: MetaString::from_static(SIZE_OF_CONTEXT_NAME),
             tags: tags.clone(),
             origin_tags: origin_tags.clone(),
-            active_count: Gauge::noop(),
         });
 
         // Make sure the size of the context is correct with origin tags.

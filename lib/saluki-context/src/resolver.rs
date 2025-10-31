@@ -44,7 +44,6 @@ static_metrics! {
 
         counter(resolved_existing_context_total),
         counter(resolved_new_context_total),
-        gauge(active_contexts),
 
         counter(resolved_existing_tagset_total),
         counter(resolved_new_tagset_total),
@@ -373,14 +372,12 @@ impl ContextResolver {
         let context_name = self.intern(name)?;
 
         self.telemetry.resolved_new_context_total().increment(1);
-        self.telemetry.active_contexts().increment(1);
 
         Some(Context::from_inner(ContextInner::from_parts(
             key,
             context_name,
             context_tags,
             origin_tags,
-            self.telemetry.active_contexts().clone(),
         )))
     }
 
@@ -787,25 +784,9 @@ impl Clone for TagsResolver {
 
 #[cfg(test)]
 mod tests {
-    use metrics::{SharedString, Unit};
-    use metrics_util::{
-        debugging::{DebugValue, DebuggingRecorder},
-        CompositeKey,
-    };
     use saluki_common::hash::hash_single_fast;
 
     use super::*;
-
-    fn get_gauge_value(metrics: &[(CompositeKey, Option<Unit>, Option<SharedString>, DebugValue)], key: &str) -> f64 {
-        metrics
-            .iter()
-            .find(|(k, _, _, _)| k.key().name() == key)
-            .map(|(_, _, _, value)| match value {
-                DebugValue::Gauge(value) => value.into_inner(),
-                other => panic!("expected a gauge, got: {:?}", other),
-            })
-            .unwrap_or_else(|| panic!("no metric found with key: {}", key))
-    }
 
     struct DummyOriginTagsResolver;
 
@@ -879,31 +860,6 @@ mod tests {
         // state:
         assert_eq!(context1, context2);
         assert!(context1.ptr_eq(&context2));
-    }
-
-    #[test]
-    fn active_contexts() {
-        let recorder = DebuggingRecorder::new();
-        let snapshotter = recorder.snapshotter();
-
-        // Create our resolver and then create a context, which will have its metrics attached to our local recorder:
-        let context = metrics::with_local_recorder(&recorder, || {
-            let mut resolver = ContextResolverBuilder::for_tests().build();
-            resolver
-                .resolve("name", &["tag"][..], None)
-                .expect("should not fail to resolve")
-        });
-
-        // We should be able to see that the active context count is one, representing the context we created:
-        let metrics_before = snapshotter.snapshot().into_vec();
-        let active_contexts = get_gauge_value(&metrics_before, Telemetry::active_contexts_name());
-        assert_eq!(active_contexts, 1.0);
-
-        // Now drop the context, and observe the active context count is negative one, representing the context we dropped:
-        drop(context);
-        let metrics_after = snapshotter.snapshot().into_vec();
-        let active_contexts = get_gauge_value(&metrics_after, Telemetry::active_contexts_name());
-        assert_eq!(active_contexts, -1.0);
     }
 
     #[test]
