@@ -94,7 +94,7 @@
 <a href=#94 id=94 data-nosnippet>94</a>    },
 <a href=#95 id=95 data-nosnippet>95</a>
 <a href=#96 id=96 data-nosnippet>96</a>    <span class="doccomment">/// Generic configuration error.
-<a href=#97 id=97 data-nosnippet>97</a>    </span><span class="attr">#[snafu(display(<span class="string">"Failed to query configuration."</span>))]
+<a href=#97 id=97 data-nosnippet>97</a>    </span><span class="attr">#[snafu(transparent)]
 <a href=#98 id=98 data-nosnippet>98</a>    </span>Generic {
 <a href=#99 id=99 data-nosnippet>99</a>        <span class="doccomment">/// Error source.
 <a href=#100 id=100 data-nosnippet>100</a>        </span>source: GenericError,
@@ -168,7 +168,7 @@
 <a href=#168 id=168 data-nosnippet>168</a>    <span class="kw">where
 <a href=#169 id=169 data-nosnippet>169</a>        </span>P: AsRef&lt;std::path::Path&gt;,
 <a href=#170 id=170 data-nosnippet>170</a>    {
-<a href=#171 id=171 data-nosnippet>171</a>        <span class="kw">let </span>resolved_provider = ResolvedProvider::from_yaml(<span class="kw-2">&amp;</span>path).context(Generic)<span class="question-mark">?</span>;
+<a href=#171 id=171 data-nosnippet>171</a>        <span class="kw">let </span>resolved_provider = ResolvedProvider::from_yaml(<span class="kw-2">&amp;</span>path)<span class="question-mark">?</span>;
 <a href=#172 id=172 data-nosnippet>172</a>        <span class="self">self</span>.provider_sources
 <a href=#173 id=173 data-nosnippet>173</a>            .push(ProviderSource::Static(ArcProvider(Arc::new(resolved_provider))));
 <a href=#174 id=174 data-nosnippet>174</a>        <span class="prelude-val">Ok</span>(<span class="self">self</span>)
@@ -206,7 +206,7 @@
 <a href=#206 id=206 data-nosnippet>206</a>    <span class="kw">where
 <a href=#207 id=207 data-nosnippet>207</a>        </span>P: AsRef&lt;std::path::Path&gt;,
 <a href=#208 id=208 data-nosnippet>208</a>    {
-<a href=#209 id=209 data-nosnippet>209</a>        <span class="kw">let </span>resolved_provider = ResolvedProvider::from_json(<span class="kw-2">&amp;</span>path).context(Generic)<span class="question-mark">?</span>;
+<a href=#209 id=209 data-nosnippet>209</a>        <span class="kw">let </span>resolved_provider = ResolvedProvider::from_json(<span class="kw-2">&amp;</span>path)<span class="question-mark">?</span>;
 <a href=#210 id=210 data-nosnippet>210</a>        <span class="self">self</span>.provider_sources
 <a href=#211 id=211 data-nosnippet>211</a>            .push(ProviderSource::Static(ArcProvider(Arc::new(resolved_provider))));
 <a href=#212 id=212 data-nosnippet>212</a>        <span class="prelude-val">Ok</span>(<span class="self">self</span>)
