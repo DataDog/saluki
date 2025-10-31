@@ -94,7 +94,7 @@ pub enum ConfigurationError {
     },
 
     /// Generic configuration error.
-    #[snafu(display("Failed to query configuration."))]
+    #[snafu(transparent)]
     Generic {
         /// Error source.
         source: GenericError,
@@ -168,7 +168,7 @@ impl ConfigurationLoader {
     where
         P: AsRef<std::path::Path>,
     {
-        let resolved_provider = ResolvedProvider::from_yaml(&path).context(Generic)?;
+        let resolved_provider = ResolvedProvider::from_yaml(&path)?;
         self.provider_sources
             .push(ProviderSource::Static(ArcProvider(Arc::new(resolved_provider))));
         Ok(self)
@@ -206,7 +206,7 @@ impl ConfigurationLoader {
     where
         P: AsRef<std::path::Path>,
     {
-        let resolved_provider = ResolvedProvider::from_json(&path).context(Generic)?;
+        let resolved_provider = ResolvedProvider::from_json(&path)?;
         self.provider_sources
             .push(ProviderSource::Static(ArcProvider(Arc::new(resolved_provider))));
         Ok(self)
