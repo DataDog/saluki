@@ -26,13 +26,13 @@ impl<'framer, 'buf> DirectIter<'framer, 'buf> {
             return Ok(None);
         }
 
-        match self.framer.next_frame(RawBuffer::new(&self.buf), self.is_eof)? {
+        match self.framer.next_frame(RawBuffer::new(self.buf), self.is_eof)? {
             Some(frame) => {
                 // Advance our buffer past the frame we just extracted.
                 self.buf = &self.buf[frame.buf_len()..];
-                return Ok(Some(frame.into_bytes()));
+                Ok(Some(frame.into_bytes()))
             }
-            None => return Ok(None),
+            None => Ok(None),
         }
     }
 }
@@ -63,46 +63,42 @@ impl<'framer, 'buf> NestedIter<'framer, 'buf> {
     }
 
     fn next_frame(&mut self) -> Result<Option<&[u8]>, FramingError> {
-        loop {
-            // Check if our outer frame is empty, and try to extract the next outer frame if so.
-            if self.outer_frame_buf.is_empty() {
-                // If our root buffer is also empty, then we're done.
-                if self.buf.is_empty() {
-                    return Ok(None);
-                }
-
-                match self.outer_framer.next_frame(RawBuffer::new(&self.buf), self.is_eof)? {
-                    Some(frame) => {
-                        // Advance our root buffer past the outer frame we just extracted.
-                        self.buf = &self.buf[frame.buf_len()..];
-
-                        self.outer_frame_buf = frame.into_bytes();
-                    }
-                    None => return Ok(None),
-                }
+        // Check if our outer frame is empty, and try to extract the next outer frame if so.
+        if self.outer_frame_buf.is_empty() {
+            // If our root buffer is also empty, then we're done.
+            if self.buf.is_empty() {
+                return Ok(None);
             }
 
-            // NOTE: This should never happen, based on what we're doing above.. but it gives us an invariant that we depend on
-            // below, where if we get no inner frame, then we know the outer frame is corrupted somehow (or we have a framer bug).
-            assert!(!self.outer_frame_buf.is_empty(), "outer frame buf should not be empty");
-
-            // Try to extract an inner frame from the outer frame.
-            match self
-                .inner_framer
-                .next_frame(RawBuffer::new(&self.outer_frame_buf), true)?
-            {
+            match self.outer_framer.next_frame(RawBuffer::new(self.buf), self.is_eof)? {
                 Some(frame) => {
-                    // Advance our outer frame past the inner frame we just extracted.
-                    self.outer_frame_buf = &self.outer_frame_buf[frame.buf_len()..];
-                    return Ok(Some(frame.into_bytes()));
+                    // Advance our root buffer past the outer frame we just extracted.
+                    self.buf = &self.buf[frame.buf_len()..];
+
+                    self.outer_frame_buf = frame.into_bytes();
                 }
-                None => {
-                    return Err(FramingError::InvalidFrame {
-                        frame_len: self.outer_frame_buf.len(),
-                        reason: "outer frame non-empty but no remaining inner frames",
-                    })
-                }
+                None => return Ok(None),
             }
+        }
+
+        // NOTE: This should never happen, based on what we're doing above.. but it gives us an invariant that we depend on
+        // below, where if we get no inner frame, then we know the outer frame is corrupted somehow (or we have a framer bug).
+        assert!(!self.outer_frame_buf.is_empty(), "outer frame buf should not be empty");
+
+        // Try to extract an inner frame from the outer frame.
+        match self
+            .inner_framer
+            .next_frame(RawBuffer::new(self.outer_frame_buf), true)?
+        {
+            Some(frame) => {
+                // Advance our outer frame past the inner frame we just extracted.
+                self.outer_frame_buf = &self.outer_frame_buf[frame.buf_len()..];
+                Ok(Some(frame.into_bytes()))
+            }
+            None => Err(FramingError::InvalidFrame {
+                frame_len: self.outer_frame_buf.len(),
+                reason: "outer frame non-empty but no remaining inner frames",
+            }),
         }
     }
 }
@@ -184,18 +180,31 @@ impl<'buf, 'framer, B> Framed<'buf, 'framer, B>
 where
     B: ReadIoBuffer,
 {
+    /// Creates a new `Framed` iterator in direct mode.
     pub fn direct(framer: &'framer dyn Framer, buf: &'buf mut B, is_eof: bool) -> Self {
         Self {
             inner: FramedInner::direct(framer, buf, is_eof),
         }
     }
 
+    /// Creates a new `Framed` iterator in nested mode.
     pub fn nested(outer: &'framer dyn Framer, inner: &'framer dyn Framer, buf: &'buf mut B, is_eof: bool) -> Self {
         Self {
             inner: FramedInner::nested(outer, inner, buf, is_eof),
         }
     }
 
+    /// Attempt to extract the next frame from the buffer.
+    ///
+    /// If enough data was present to extract a frame, `Ok(Some(frame))` is returned. If not enough data was present, and
+    /// EOF has not been reached, `Ok(None)` is returned.
+    ///
+    /// Behavior when EOF is reached is framer-specific and in some cases may allow for decoding a frame even when the
+    /// inherent delimiting data is not present.
+    ///
+    /// # Errors
+    ///
+    /// If an error is detected when reading the next frame, an error is returned.
     pub fn next_frame(&mut self) -> Option<Result<&[u8], FramingError>> {
         self.inner.0.with_iter_mut(|iter| match iter {
             Iter::Direct(direct) => direct.next_frame().transpose(),
@@ -246,7 +255,7 @@ mod tests {
                 .next_frame()
                 .expect("should not fail to read from payload")
                 .expect("should not fail to extract frame from payload");
-            assert_eq!(&frame[..], &input_frame[..]);
+            assert_eq!(frame, input_frame);
         }
 
         let maybe_frame = framed.next_frame();
@@ -275,7 +284,7 @@ mod tests {
                 .next_frame()
                 .expect("should not fail to read from payload")
                 .expect("should not fail to extract frame from payload");
-            assert_eq!(&frame[..], &input_frame[..]);
+            assert_eq!(frame, &input_frame[..]);
         }
 
         let maybe_frame = framed.next_frame();
@@ -311,7 +320,7 @@ mod tests {
                 .next_frame()
                 .expect("should not fail to read from payload")
                 .expect("should not fail to extract frame from payload");
-            assert_eq!(&frame[..], &input_frame[..]);
+            assert_eq!(frame, &input_frame[..]);
         }
 
         let maybe_frame = framed.next_frame();

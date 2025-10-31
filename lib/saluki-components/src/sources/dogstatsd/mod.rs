@@ -849,7 +849,7 @@ async fn drive_stream(
                         match frames.next_frame() {
                             Some(Ok(frame)) => {
                                 trace!(%listen_addr, %peer_addr, ?frame, "Decoded frame.");
-                                match handle_frame(&frame[..], &codec, &mut context_resolvers, &metrics, &peer_addr, enabled_filter, &additional_tags) {
+                                match handle_frame(frame, &codec, &mut context_resolvers, &metrics, &peer_addr, enabled_filter, &additional_tags) {
                                     Ok(Some(event)) => {
                                         if let Some(event_buffer) = event_buffer_manager.try_push(event) {
                                             debug!(%listen_addr, %peer_addr, "Event buffer is full. Forwarding events.");
@@ -864,7 +864,7 @@ async fn drive_stream(
                                         continue
                                     },
                                     Err(e) => {
-                                        let frame_lossy_str = String::from_utf8_lossy(&frame);
+                                        let frame_lossy_str = String::from_utf8_lossy(frame);
                                         warn!(%listen_addr, %peer_addr, frame = %frame_lossy_str, error = %e, "Failed to parse frame.");
                                     },
                                 }
