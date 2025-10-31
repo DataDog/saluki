@@ -22,7 +22,10 @@ use tokio::{
 };
 use tracing::{debug, error, trace};
 
-use crate::config::{ADPConfig, DSDConfig, DatadogIntakeConfig, MillstoneConfig};
+use crate::config::{DatadogIntakeConfig, MillstoneConfig, TargetConfig};
+
+const MILLSTONE_CONFIG_PATH_INTERNAL: &str = "/etc/millstone/config.toml";
+const DATADOG_INTAKE_CONFIG_PATH_INTERNAL: &str = "/etc/datadog-intake/config.toml";
 
 pub enum ExitStatus {
     Success,
@@ -55,36 +58,61 @@ pub struct DriverConfig {
 impl DriverConfig {
     pub async fn millstone(config: MillstoneConfig) -> Result<Self, GenericError> {
         // Ensure the given configuration file path actually exists.
-        if let Err(e) = tokio::fs::try_exists(&config.config_path).await {
-            return Err(generic_error!(
-                "Failed to ensure specified millstone configuration exists locally: {}",
-                e
-            ));
+        match tokio::fs::metadata(&config.config_path).await {
+            Ok(metadata) if metadata.is_file() => {}
+            Ok(_) => {
+                return Err(generic_error!(
+                    "Specified millstone configuration path does not point to a file."
+                ))
+            }
+            Err(e) => {
+                return Err(generic_error!(
+                    "Failed to ensure specified millstone configuration exists locally: {}",
+                    e
+                ))
+            }
         }
 
-        let entrypoint = vec![config.binary_path, "/etc/millstone/config.yaml".to_string()];
+        let millstone_binary_path = config
+            .binary_path
+            .unwrap_or_else(|| "/usr/local/bin/millstone".to_string());
+        let entrypoint = vec![millstone_binary_path, MILLSTONE_CONFIG_PATH_INTERNAL.to_string()];
 
         let driver_config = Self::from_image("millstone", config.image)
             .with_entrypoint(entrypoint)
-            .with_bind_mount(config.config_path, "/etc/millstone/config.yaml");
+            .with_bind_mount(config.config_path, MILLSTONE_CONFIG_PATH_INTERNAL);
 
         Ok(driver_config)
     }
 
     pub async fn datadog_intake(config: DatadogIntakeConfig) -> Result<Self, GenericError> {
         // Ensure the given configuration file path actually exists.
-        if let Err(e) = tokio::fs::try_exists(&config.config_path).await {
-            return Err(generic_error!(
-                "Failed to ensure specified datadog-intake configuration exists locally: {}",
-                e
-            ));
+        match tokio::fs::metadata(&config.config_path).await {
+            Ok(metadata) if metadata.is_file() => {}
+            Ok(_) => {
+                return Err(generic_error!(
+                    "Specified datadog-intake configuration does not point to a file."
+                ))
+            }
+            Err(e) => {
+                return Err(generic_error!(
+                    "Failed to ensure specified datadog-intake configuration exists locally: {}",
+                    e
+                ))
+            }
         }
 
-        let entrypoint = vec![config.binary_path, "/etc/datadog-intake/config.yaml".to_string()];
+        let datadog_intake_binary_path = config
+            .binary_path
+            .unwrap_or_else(|| "/usr/local/bin/datadog-intake".to_string());
+        let entrypoint = vec![
+            datadog_intake_binary_path,
+            DATADOG_INTAKE_CONFIG_PATH_INTERNAL.to_string(),
+        ];
 
         let driver_config = DriverConfig::from_image("datadog-intake", config.image)
             .with_entrypoint(entrypoint)
-            .with_bind_mount(config.config_path, "/etc/datadog-intake/config.yaml")
+            .with_bind_mount(config.config_path, DATADOG_INTAKE_CONFIG_PATH_INTERNAL)
             // Map our intake port to an ephemeral port on the host side, which we'll query once the container has been
             // started so that we can connect to it.
             .with_exposed_port("tcp", 2049);
@@ -92,53 +120,10 @@ impl DriverConfig {
         Ok(driver_config)
     }
 
-    pub async fn dogstatsd(config: DSDConfig) -> Result<Self, GenericError> {
-        // Ensure the given configuration file path actually exists.
-        if let Err(e) = tokio::fs::try_exists(&config.config_path).await {
-            return Err(generic_error!(
-                "Failed to ensure specified DogStatsD configuration exists locally: {}",
-                e
-            ));
-        }
-
-        let driver_config = DriverConfig::from_image("dogstatsd", config.image)
+    pub async fn target(target_id: &'static str, config: TargetConfig) -> Result<Self, GenericError> {
+        let driver_config = DriverConfig::from_image(target_id, config.image)
             .with_entrypoint(config.entrypoint)
             .with_command(config.command)
-            .with_bind_mount(config.config_path.clone(), "/etc/datadog-agent/dogstatsd.yaml")
-            .with_bind_mount(config.config_path, "/etc/datadog-agent/datadog.yaml")
-            // We override the default health check baked into the image, which is egregiously long in my opinion. It
-            // has an interval of 60 seconds, with no startup allowance... which means it takes a full minute before the
-            // first healthcheck is even triggered, even if the Agent is healthy long before that. Very dumb.
-            //
-            // We're specifying a startup period here so that we rapidly check the Agent's health (once a second) during
-            // the "startup" period (20 seconds), which should lead to detecting the Agent becoming healthy almost as
-            // soon as that transition happens.
-            .with_healthcheck(
-                vec!["/probe.sh".to_string()],
-                Duration::from_secs(60),
-                Duration::from_secs(5),
-                2,
-                Duration::from_secs(20),
-                Duration::from_secs(1),
-            )
-            .with_env_vars(config.additional_env_args);
-
-        Ok(driver_config)
-    }
-
-    pub async fn agent_data_plane(config: ADPConfig) -> Result<Self, GenericError> {
-        // Ensure the given configuration file path actually exists.
-        if let Err(e) = tokio::fs::try_exists(&config.config_path).await {
-            return Err(generic_error!(
-                "Failed to ensure specified ADP configuration exists locally: {}",
-                e
-            ));
-        }
-
-        let driver_config = DriverConfig::from_image("agent-data-plane", config.image)
-            .with_entrypoint(config.entrypoint)
-            .with_command(config.command)
-            .with_bind_mount(config.config_path, "/etc/datadog-agent/datadog.yaml")
             .with_env_vars(config.additional_env_args);
 
         Ok(driver_config)

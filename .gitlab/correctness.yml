@@ -61,7 +61,7 @@ build-bundled-agent-adp-image:
       --push
       .
 
-run-ground-truth:
+test-correctness-dsd-plain:
   extends: [.build-common-variables]
   stage: correctness
   tags: ["docker-in-docker:amd64"]
@@ -84,15 +84,20 @@ run-ground-truth:
     - make build-ground-truth
     - target/debug/ground-truth
       --millstone-image ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
-      --dsd-millstone-config-path $(pwd)/test/correctness/millstone.yaml
+      --baseline-millstone-config-path $(pwd)/test/correctness/dsd-plain/millstone.yaml
+      --comparison-millstone-config-path $(pwd)/test/correctness/dsd-plain/millstone.yaml
       --datadog-intake-image ${SALUKI_IMAGE_REPO_BASE}/datadog-intake:${CI_COMMIT_SHA}
       --datadog-intake-config-path $(pwd)/test/correctness/datadog-intake.yaml
-      --dsd-image gcr.io/datadoghq/dogstatsd:${PUBLIC_DSD_VERSION}
-      --dsd-config-path $(pwd)/test/correctness/datadog-no-origin-detection.yaml
-      --adp-image ${ADP_FULL_IMAGE_TAG}
-      --adp-config-path $(pwd)/test/correctness/datadog-no-origin-detection.yaml
+      --baseline-image gcr.io/datadoghq/dogstatsd:${PUBLIC_DSD_VERSION}
+      --baseline-entrypoint /entrypoint.sh
+      --baseline-command "/dogstatsd start --cfgpath /etc/datadog-agent"
+      --baseline-config-path $(pwd)/test/correctness/dsd-plain/dogstatsd.yaml
+      --comparison-image ${ADP_FULL_IMAGE_TAG}
+      --comparison-entrypoint /entrypoint.sh
+      --comparison-command "/usr/local/bin/agent-data-plane run --config /etc/datadog-agent/datadog.yaml"
+      --comparison-config-path $(pwd)/test/correctness/dsd-plain/dogstatsd.yaml
 
-run-ground-truth-origin-detection:
+test-correctness-dsd-origin-detection:
   extends: [.build-common-variables]
   stage: correctness
   tags: ["docker-in-docker:amd64"]
@@ -119,20 +124,22 @@ run-ground-truth-origin-detection:
     # running the same exact version of the Agent on both sides.
     - target/debug/ground-truth
       --millstone-image ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
-      --dsd-millstone-config-path $(pwd)/test/correctness/millstone.yaml
+      --baseline-millstone-config-path $(pwd)/test/correctness/dsd-origin-detection/millstone.yaml
+      --comparison-millstone-config-path $(pwd)/test/correctness/dsd-origin-detection/millstone.yaml
       --datadog-intake-image ${SALUKI_IMAGE_REPO_BASE}/datadog-intake:${CI_COMMIT_SHA}
       --datadog-intake-config-path $(pwd)/test/correctness/datadog-intake.yaml
-      --dsd-image ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
-      --dsd-entrypoint /bin/entrypoint.sh
-      --dsd-command /init
-      --dsd-config-path $(pwd)/test/correctness/datadog-origin-detection.yaml
-      --adp-image ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
-      --adp-command /init
-      --adp-config-path $(pwd)/test/correctness/datadog-origin-detection.yaml
-      --adp-env-arg DD_ADP_ENABLED=true
-      --adp-env-arg DD_AGGREGATE_CONTEXT_LIMIT=500000
+      --baseline-image ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
+      --baseline-entrypoint /entrypoint.sh
+      --baseline-command /init
+      --baseline-config-path $(pwd)/test/correctness/dsd-origin-detection/datadog.yaml
+      --comparison-image ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
+      --comparison-entrypoint /entrypoint.sh
+      --comparison-command "/usr/local/bin/agent-data-plane run --config /etc/datadog-agent/datadog.yaml"
+      --comparison-config-path $(pwd)/test/correctness/dsd-origin-detection/datadog.yaml
+      --comparison-env-arg DD_ADP_ENABLED=true
+      --comparison-env-arg DD_AGGREGATE_CONTEXT_LIMIT=500000
 
-run-ground-truth-otlp-metrics:
+test-correctness-otlp-metrics:
   extends: [.build-common-variables]
   stage: correctness
   tags: ["docker-in-docker:amd64"]
@@ -155,17 +162,16 @@ run-ground-truth-otlp-metrics:
     - make build-ground-truth
     - target/debug/ground-truth
       --millstone-image ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
-      --dsd-millstone-config-path $(pwd)/test/correctness/otlp-metrics-agent-millstone.yaml
-      --adp-millstone-config-path $(pwd)/test/correctness/otlp-metrics-adp-millstone.yaml
+      --baseline-millstone-config-path $(pwd)/test/correctness/otlp-metrics/millstone-agent.yaml
+      --comparison-millstone-config-path $(pwd)/test/correctness/otlp-metrics/millstone-adp.yaml
       --datadog-intake-image ${SALUKI_IMAGE_REPO_BASE}/datadog-intake:${CI_COMMIT_SHA}
       --datadog-intake-config-path $(pwd)/test/correctness/datadog-intake.yaml
-      --dsd-image gcr.io/datadoghq/agent:${PUBLIC_DD_AGENT_VERSION}
-      --dsd-entrypoint /bin/entrypoint.sh
-      --dsd-command /init
-      --dsd-config-path $(pwd)/test/correctness/otlp-metrics.yaml
-      --dsd-env-arg DD_API_KEY=dummy-api-key-correctness-testing
-      --adp-image ${ADP_FULL_IMAGE_TAG}
-      --adp-entrypoint /usr/local/bin/agent-data-plane
-      --adp-command run
-      --adp-config-path $(pwd)/test/correctness/otlp-metrics.yaml
-      --adp-env-arg DD_ADP_OTLP_ENABLED=true
+      --baseline-image gcr.io/datadoghq/agent:${PUBLIC_DD_AGENT_VERSION}
+      --baseline-entrypoint /entrypoint.sh
+      --baseline-command /init
+      --baseline-config-path $(pwd)/test/correctness/otlp-metrics/datadog.yaml
+      --comparison-image ${ADP_FULL_IMAGE_TAG}
+      --comparison-entrypoint /entrypoint.sh
+      --comparison-command "/usr/local/bin/agent-data-plane run --config /etc/datadog-agent/datadog.yaml"
+      --comparison-config-path $(pwd)/test/correctness/otlp-metrics/datadog.yaml
+      --comparison-env-arg DD_ADP_OTLP_ENABLED=true

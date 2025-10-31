@@ -8,7 +8,7 @@ use std::{
 };
 
 use airlock::{
-    config::{ADPConfig, DSDConfig, DatadogIntakeConfig, MillstoneConfig},
+    config::{DatadogIntakeConfig, MillstoneConfig, TargetConfig},
     driver::{Driver, DriverConfig, DriverDetails, ExitStatus},
 };
 use rand::{distr::SampleString as _, rng};
@@ -22,8 +22,10 @@ use tracing::{debug, error, info, info_span, Instrument as _, Span};
 use crate::{analysis::RawTestResults, config::Cli, sync::Coordinator};
 
 pub struct TestRunner {
-    adp_config: ADPConfig,
-    dsd_config: DSDConfig,
+    adp_config: TargetConfig,
+    adp_config_path: PathBuf,
+    dsd_config: TargetConfig,
+    dsd_config_path: PathBuf,
     datadog_intake_config: DatadogIntakeConfig,
     dsd_millstone_config: MillstoneConfig,
     adp_millstone_config: MillstoneConfig,
@@ -37,11 +39,13 @@ pub struct TestRunner {
 impl TestRunner {
     pub fn from_cli(cli: &Cli) -> Self {
         Self {
-            adp_config: cli.adp_config(),
-            dsd_config: cli.dsd_config(),
+            adp_config: cli.comparison_target_config(),
+            adp_config_path: cli.comparison_config_path.clone(),
+            dsd_config: cli.baseline_target_config(),
+            dsd_config_path: cli.baseline_config_path.clone(),
             datadog_intake_config: cli.datadog_intake_config(),
-            dsd_millstone_config: cli.dsd_millstone_config(),
-            adp_millstone_config: cli.adp_millstone_config(),
+            dsd_millstone_config: cli.baseline_millstone_config(),
+            adp_millstone_config: cli.comparison_millstone_config(),
             cancel_token: CancellationToken::new(),
             dsd_coordinator: Coordinator::new(),
             adp_coordinator: Coordinator::new(),
@@ -60,10 +64,29 @@ impl TestRunner {
             self.cancel_token.child_token(),
         );
 
-        let dogstatsd_config = DriverConfig::dogstatsd(self.dsd_config.clone())
+        let dogstatsd_config = DriverConfig::target("dogstatsd", self.dsd_config.clone())
             .await?
+            // Bind mount the configuration file to both `/etc/datadog-agent/datadog.yaml` and `/opt/datadog-agent/etc/dogstatsd.yaml`
+            // to handle either the Datadog Agent _or_ the standalone DogStatsD binary.
+            .with_bind_mount(self.dsd_config_path.clone(), "/etc/datadog-agent/datadog.yaml")
+            .with_bind_mount(self.dsd_config_path.clone(), "/etc/datadog-agent/dogstatsd.yaml")
             // We _have_ to pass the API key as an environment variable, otherwise the container won't cleanly start.
-            .with_env_var("DD_API_KEY", "dummy-api-key-correctness-testing");
+            .with_env_var("DD_API_KEY", "dummy-api-key-correctness-testing")
+            // We override the default health check baked into the image, which is egregiously long in my opinion. It
+            // has an interval of 60 seconds, with no startup allowance... which means it takes a full minute before the
+            // first healthcheck is even triggered, even if the Agent is healthy long before that. Very dumb.
+            //
+            // We're specifying a startup period here so that we rapidly check the Agent's health (once a second) during
+            // the "startup" period (20 seconds), which should lead to detecting the Agent becoming healthy almost as
+            // soon as that transition happens.
+            .with_healthcheck(
+                vec!["/probe.sh".to_string()],
+                Duration::from_secs(60),
+                Duration::from_secs(5),
+                2,
+                Duration::from_secs(20),
+                Duration::from_secs(1),
+            );
 
         group_runner
             .with_driver(DriverConfig::datadog_intake(self.datadog_intake_config.clone()).await?)?
@@ -84,9 +107,12 @@ impl TestRunner {
             self.cancel_token.child_token(),
         );
 
-        let adp_config = DriverConfig::agent_data_plane(self.adp_config.clone())
+        let adp_config = DriverConfig::target("agent-data-plane", self.adp_config.clone())
             .await?
-            .with_env_var("DD_API_KEY", "dummy-api-key-correctness-testing");
+            // We _have_ to pass the API key as an environment variable, otherwise the container won't cleanly start.
+            .with_env_var("DD_API_KEY", "dummy-api-key-correctness-testing")
+            // Bind mount the configuration file to `/etc/datadog-agent/datadog.yaml`.
+            .with_bind_mount(self.adp_config_path.clone(), "/etc/datadog-agent/datadog.yaml");
 
         group_runner
             .with_driver(DriverConfig::datadog_intake(self.datadog_intake_config.clone()).await?)?
