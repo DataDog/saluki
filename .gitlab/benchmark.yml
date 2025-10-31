@@ -1,15 +1,14 @@
 .setup-smp-env: &setup-smp-env
+  - export AWS_NAMED_PROFILE=single-machine-performance
+  - export SMP_VERSION=0.24.1
+  - export RUST_LOG=info,aws_config::profile::credentials=error
   - export SMP_ACCOUNT_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-account-id --with-decryption --query "Parameter.Value" --out text)
   - export SMP_TEAM_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-team-id --with-decryption --query "Parameter.Value" --out text)
   - export SINGLE_MACHINE_PERFORMANCE_API=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-api --with-decryption --query "Parameter.Value" --out text)
   - export SMP_ECR_HOST="${SMP_ACCOUNT_ID}.dkr.ecr.us-west-2.amazonaws.com"
+  - export ADP_IMG_BASE="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-${CI_PIPELINE_ID}"
+  - export ADP_CHECKS_IMG_BASE="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-checks-${CI_PIPELINE_ID}"
   - git fetch --verbose --deepen=999 origin ${CI_COMMIT_BRANCH} main
-  - export BASELINE_ADP_SHA=$(git merge-base origin/main origin/${CI_COMMIT_BRANCH})
-  - export COMPARISON_ADP_SHA="${CI_COMMIT_SHA}"
-  - export BASELINE_ADP_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-${CI_PIPELINE_ID}-${BASELINE_ADP_SHA}"
-  - export COMPARISON_ADP_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-${CI_PIPELINE_ID}-${COMPARISON_ADP_SHA}"
-  - export BASELINE_ADP_CHECKS_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-checks-${CI_PIPELINE_ID}-${BASELINE_ADP_SHA}"
-  - export COMPARISON_ADP_CHECKS_IMG="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-checks-${CI_PIPELINE_ID}-${COMPARISON_ADP_SHA}"
 
 build-adp-baseline-image:
   extends: .build-common-variables
@@ -24,19 +23,18 @@ build-adp-baseline-image:
   before_script:
     - *setup-smp-env
   variables:
-    AWS_NAMED_PROFILE: single-machine-performance
     # Try to limit build concurrency to avoid issues with hitting container cgroup limits.
     CARGO_BUILD_JOBS: 12
   script:
     # Initialize our AWS credentials.
     - ./test/smp/configure-smp-aws-credentials.sh
-
-    # Build baseline from `main`. A more correct approach here would be to check
-    # out all but the dockerfile for saluki from the branch point and build that
-    # way but this should be Good Enough for a while.
-    - git fetch --all
-    - git switch main
-
+    # Checkout the baseline commit and define the relevant variables
+    #
+    # We use the merge base of the current branch, relative to `main`. This means that for stacked PRs, we won't be
+    # benchmarking against the mid-stack PR, but that's an acceptable tradeoff for the moment.
+    - export BASELINE_ADP_SHA=$(git merge-base origin/main origin/${CI_COMMIT_BRANCH})
+    - export BASELINE_ADP_IMG="${ADP_IMG_BASE}-${BASELINE_ADP_SHA}"
+    - git switch --detach ${BASELINE_ADP_SHA}
     # Actually build.
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
     - docker buildx build
@@ -55,6 +53,12 @@ build-adp-baseline-image:
       --label ci.job_id=${CI_JOB_ID}
       --push
       .
+    # Generate our image SHA/path for the runner job to use.
+    - echo "BASELINE_ADP_SHA=${BASELINE_ADP_SHA}" >> smp-vars.env
+    - echo "BASELINE_ADP_IMG=${BASELINE_ADP_IMG}" >> smp-vars.env
+  artifacts:
+    reports:
+      dotenv: smp-vars.env
 
 build-adp-comparison-image:
   extends: .build-common-variables
@@ -69,13 +73,15 @@ build-adp-comparison-image:
   before_script:
     - *setup-smp-env
   variables:
-    AWS_NAMED_PROFILE: single-machine-performance
     # Try to limit build concurrency to avoid issues with hitting container cgroup limits.
     CARGO_BUILD_JOBS: 12
   script:
     # Initialize our AWS credentials.
     - ./test/smp/configure-smp-aws-credentials.sh
-
+    # Checkout the comparison commit and define the relevant variables.
+    - export COMPARISON_ADP_SHA=${CI_COMMIT_SHA}
+    - export COMPARISON_ADP_IMG="${ADP_IMG_BASE}-${COMPARISON_ADP_SHA}"
+    - git switch --detach ${COMPARISON_ADP_SHA}
     # Actually build.
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
     - docker buildx build
@@ -94,6 +100,12 @@ build-adp-comparison-image:
       --label ci.job_id=${CI_JOB_ID}
       --push
       .
+    # Generate our image SHA/path for the runner job to use.
+    - echo "COMPARISON_ADP_SHA=${COMPARISON_ADP_SHA}" >> smp-vars.env
+    - echo "COMPARISON_ADP_IMG=${COMPARISON_ADP_IMG}" >> smp-vars.env
+  artifacts:
+    reports:
+      dotenv: smp-vars.env
 
 run-benchmarks-adp:
   stage: benchmark
@@ -114,18 +126,13 @@ run-benchmarks-adp:
       - outputs/report.md # for debugging, also on S3
       - outputs/report.html # for debugging, also on S3
     when: always
-  variables:
-    AWS_NAMED_PROFILE: single-machine-performance
-    SMP_VERSION: 0.24.1
-    RUST_LOG: info,aws_config::profile::credentials=error
   script:
-    # Do some pre-flight steps like creating directories, installing helper utilities, setting
-    # credentials, and so on.
+    # Do some pre-flight steps like creating directories, installing helper utilities, setting credentials, and so on.
     - mkdir outputs && touch outputs/report.md outputs/report.html
     - ./test/smp/configure-smp-aws-credentials.sh
     # Download the SMP binary.
     - aws --profile ${AWS_NAMED_PROFILE} s3 cp s3://smp-cli-releases/v${SMP_VERSION}/x86_64-unknown-linux-musl/smp smp && chmod +x smp
-    # Run SMP against our converged Agent image.
+    # Trigger the SMP job run.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job submit
       --warmup-seconds 0
