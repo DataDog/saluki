@@ -1,4 +1,4 @@
-build-metrics-intake-image:
+build-datadog-intake-image:
   stage: correctness
   image: ${DOCKER_BUILD_IMAGE}
   needs: []
@@ -7,8 +7,8 @@ build-metrics-intake-image:
   script:
     - docker buildx build
       --platform linux/amd64
-      --file ./docker/Dockerfile.metrics-intake
-      --tag ${SALUKI_IMAGE_REPO_BASE}/metrics-intake:${CI_COMMIT_SHA}
+      --file ./docker/Dockerfile.datadog-intake
+      --tag ${SALUKI_IMAGE_REPO_BASE}/datadog-intake:${CI_COMMIT_SHA}
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
       --label git.commit=${CI_COMMIT_SHA}
@@ -65,7 +65,7 @@ run-ground-truth:
   tags: ["docker-in-docker:amd64"]
   needs:
     - build-adp-image
-    - build-metrics-intake-image
+    - build-datadog-intake-image
     - build-millstone-image
   retry: 2
   timeout: 10m
@@ -83,8 +83,8 @@ run-ground-truth:
     - target/debug/ground-truth
       --millstone-image ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
       --dsd-millstone-config-path $(pwd)/test/correctness/millstone.yaml
-      --metrics-intake-image ${SALUKI_IMAGE_REPO_BASE}/metrics-intake:${CI_COMMIT_SHA}
-      --metrics-intake-config-path $(pwd)/test/correctness/metrics-intake.yaml
+      --datadog-intake-image ${SALUKI_IMAGE_REPO_BASE}/datadog-intake:${CI_COMMIT_SHA}
+      --datadog-intake-config-path $(pwd)/test/correctness/datadog-intake.yaml
       --dsd-image gcr.io/datadoghq/dogstatsd:${PUBLIC_DSD_VERSION}
       --dsd-config-path $(pwd)/test/correctness/datadog-no-origin-detection.yaml
       --adp-image ${ADP_FULL_IMAGE_TAG}
@@ -96,7 +96,7 @@ run-ground-truth-origin-detection:
   tags: ["docker-in-docker:amd64"]
   needs:
     - build-adp-image
-    - build-metrics-intake-image
+    - build-datadog-intake-image
     - build-millstone-image
     - build-bundled-agent-adp-image
   retry: 2
@@ -118,8 +118,8 @@ run-ground-truth-origin-detection:
     - target/debug/ground-truth
       --millstone-image ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
       --dsd-millstone-config-path $(pwd)/test/correctness/millstone.yaml
-      --metrics-intake-image ${SALUKI_IMAGE_REPO_BASE}/metrics-intake:${CI_COMMIT_SHA}
-      --metrics-intake-config-path $(pwd)/test/correctness/metrics-intake.yaml
+      --datadog-intake-image ${SALUKI_IMAGE_REPO_BASE}/datadog-intake:${CI_COMMIT_SHA}
+      --datadog-intake-config-path $(pwd)/test/correctness/datadog-intake.yaml
       --dsd-image ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
       --dsd-entrypoint /bin/entrypoint.sh
       --dsd-command /init
@@ -136,7 +136,7 @@ run-ground-truth-otlp-metrics:
   tags: ["docker-in-docker:amd64"]
   needs:
     - build-adp-image
-    - build-metrics-intake-image
+    - build-datadog-intake-image
     - build-millstone-image
   retry: 2
   timeout: 10m
@@ -155,8 +155,8 @@ run-ground-truth-otlp-metrics:
       --millstone-image ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
       --dsd-millstone-config-path $(pwd)/test/correctness/otlp-metrics-agent-millstone.yaml
       --adp-millstone-config-path $(pwd)/test/correctness/otlp-metrics-adp-millstone.yaml
-      --metrics-intake-image ${SALUKI_IMAGE_REPO_BASE}/metrics-intake:${CI_COMMIT_SHA}
-      --metrics-intake-config-path $(pwd)/test/correctness/metrics-intake.yaml
+      --datadog-intake-image ${SALUKI_IMAGE_REPO_BASE}/datadog-intake:${CI_COMMIT_SHA}
+      --datadog-intake-config-path $(pwd)/test/correctness/datadog-intake.yaml
       --dsd-image gcr.io/datadoghq/agent:${PUBLIC_DD_AGENT_VERSION}
       --dsd-entrypoint /bin/entrypoint.sh
       --dsd-command /init

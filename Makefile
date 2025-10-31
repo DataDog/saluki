@@ -182,13 +182,13 @@ build-ground-truth: ## Builds the ground-truth binary in debug mode
 	@echo "[*] Building ground-truth locally..."
 	@cargo build --profile dev --package ground-truth
 
-.PHONY: build-metrics-intake-image
-build-metrics-intake-image: ## Builds the metrics-intake container image in release mode ('latest' tag)
-	@echo "[*] Building metrics-intake image..."
+.PHONY: build-datadog-intake-image
+build-datadog-intake-image: ## Builds the datadog-intake container image in release mode ('latest' tag)
+	@echo "[*] Building datadog-intake image..."
 	@$(CONTAINER_TOOL) build \
-		--tag saluki-images/metrics-intake:latest \
-		--tag local.dev/saluki-images/metrics-intake:testing \
-		--file ./docker/Dockerfile.metrics-intake \
+		--tag saluki-images/datadog-intake:latest \
+		--tag local.dev/saluki-images/datadog-intake:testing \
+		--file ./docker/Dockerfile.datadog-intake \
 		.
 
 .PHONY: build-millstone-image
@@ -508,8 +508,8 @@ test-correctness: ## Runs the metrics correctness (ground-truth) suite
 	@target/debug/ground-truth \
 		--millstone-image saluki-images/millstone:latest \
 		--dsd-millstone-config-path $(shell pwd)/test/correctness/millstone.yaml \
-		--metrics-intake-image saluki-images/metrics-intake:latest \
-		--metrics-intake-config-path $(shell pwd)/test/correctness/metrics-intake.yaml \
+		--datadog-intake-image saluki-images/datadog-intake:latest \
+		--datadog-intake-config-path $(shell pwd)/test/correctness/datadog-intake.yaml \
 		--dsd-image docker.io/datadog/dogstatsd:7.68.3 \
 		--dsd-config-path $(shell pwd)/test/correctness/datadog-no-origin-detection.yaml \
 		--adp-image saluki-images/agent-data-plane:latest \
@@ -523,8 +523,8 @@ test-correctness-origin-detection: ## Runs the metrics correctness (ground-truth
 	@target/debug/ground-truth \
 		--millstone-image saluki-images/millstone:latest \
 		--dsd-millstone-config-path $(shell pwd)/test/correctness/millstone.yaml \
-		--metrics-intake-image saluki-images/metrics-intake:latest \
-		--metrics-intake-config-path $(shell pwd)/test/correctness/metrics-intake.yaml \
+		--datadog-intake-image saluki-images/datadog-intake:latest \
+		--datadog-intake-config-path $(shell pwd)/test/correctness/datadog-intake.yaml \
 		--dsd-image saluki-images/datadog-agent:latest \
 		--dsd-entrypoint /bin/entrypoint.sh \
 		--dsd-command /init \
@@ -544,8 +544,8 @@ test-correctness-otlp-metrics: ## Runs the OTLP metrics correctness test
 		--millstone-image saluki-images/millstone:latest \
 		--dsd-millstone-config-path $(shell pwd)/test/correctness/otlp-metrics-agent-millstone.yaml \
 		--adp-millstone-config-path $(shell pwd)/test/correctness/otlp-metrics-adp-millstone.yaml \
-		--metrics-intake-image saluki-images/metrics-intake:latest \
-		--metrics-intake-config-path $(shell pwd)/test/correctness/metrics-intake.yaml \
+		--datadog-intake-image saluki-images/datadog-intake:latest \
+		--datadog-intake-config-path $(shell pwd)/test/correctness/datadog-intake.yaml \
 		--dsd-image saluki-images/datadog-agent:latest \
 		--dsd-entrypoint /bin/entrypoint.sh \
 		--dsd-command /init \

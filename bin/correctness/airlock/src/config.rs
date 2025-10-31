@@ -18,7 +18,7 @@ pub struct Cli {
     #[arg(long)]
     pub isolation_group_id: String,
 
-    /// Subcommand to run.    
+    /// Subcommand to run.
     #[command(subcommand)]
     pub action: Action,
 }
@@ -40,9 +40,9 @@ pub enum Action {
     #[command(name = "run-millstone")]
     Millstone(MillstoneConfig),
 
-    /// Run a metrics-intake container to receive output metrics.
-    #[command(name = "run-metrics-intake")]
-    MetricsIntake(MetricsIntakeConfig),
+    /// Run a datadog-intake container to receive output metrics.
+    #[command(name = "run-datadog-intake")]
+    DatadogIntake(DatadogIntakeConfig),
 
     /// Run a DogStatsD container to receive input metrics.
     #[command(name = "run-dogstatsd")]
@@ -78,26 +78,26 @@ pub struct MillstoneConfig {
     pub config_path: PathBuf,
 }
 
-/// metrics-intake configuration.
+/// datadog-intake configuration.
 #[derive(Args, Clone)]
-pub struct MetricsIntakeConfig {
+pub struct DatadogIntakeConfig {
     /// Container image to use.
     ///
-    /// This must be a valid image reference -- `metrics-intake:x.y.z`,
-    /// `registry.ddbuild.io/saluki/metrics-intake:x.y.z`, etc -- to an image containing the `metrics-intake` binary.
+    /// This must be a valid image reference -- `datadog-intake:x.y.z`,
+    /// `registry.ddbuild.io/saluki/datadog-intake:x.y.z`, etc -- to an image containing the `datadog-intake` binary.
     ///
-    /// The `metrics-intake` binary must exist at `/usr/local/bin/metrics-intake` in the image. Otherwise, the binary
+    /// The `datadog-intake` binary must exist at `/usr/local/bin/datadog-intake` in the image. Otherwise, the binary
     /// path can be overridden with the `binary-path` argument.
     #[arg(short = 'i', long)]
     pub image: String,
 
-    /// Path to the metrics-intake binary.
-    #[arg(short = 'b', long, default_value = "/usr/local/bin/metrics-intake")]
+    /// Path to the datadog-intake binary.
+    #[arg(short = 'b', long, default_value = "/usr/local/bin/datadog-intake")]
     pub binary_path: String,
 
-    /// Path to the metrics-intake configuration file to use.
+    /// Path to the datadog-intake configuration file to use.
     ///
-    /// This file is mapped into the metrics-intake container and so it must exist on the system where this command is run
+    /// This file is mapped into the datadog-intake container and so it must exist on the system where this command is run
     /// from.
     #[arg(short = 'c', long)]
     pub config_path: PathBuf,
