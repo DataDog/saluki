@@ -202,6 +202,8 @@ impl OtlpMetricsTranslator {
         //     }
         // }
 
+        metrics.metrics_received().increment(events.len() as u64);
+
         Ok(events)
     }
 
