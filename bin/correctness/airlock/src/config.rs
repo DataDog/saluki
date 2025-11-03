@@ -61,5 +61,5 @@ pub struct TargetConfig {
     /// Additional environment variables to be passed into the target container.
     ///
     /// These should be in the form of `KEY=VALUE`.
-    pub additional_env_args: Vec<String>,
+    pub additional_env_vars: Vec<String>,
 }

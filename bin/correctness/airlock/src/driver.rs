@@ -11,6 +11,7 @@ use bollard::{
     image::CreateImageOptions,
     models::{HealthConfig, HealthStatusEnum, HostConfig, Ipam},
     network::CreateNetworkOptions,
+    secret::ContainerStateStatusEnum,
     volume::CreateVolumeOptions,
     Docker,
 };
@@ -62,12 +63,14 @@ impl DriverConfig {
             Ok(metadata) if metadata.is_file() => {}
             Ok(_) => {
                 return Err(generic_error!(
-                    "Specified millstone configuration path does not point to a file."
+                    "Specified millstone configuration path ({}) does not point to a file.",
+                    config.config_path.display()
                 ))
             }
             Err(e) => {
                 return Err(generic_error!(
-                    "Failed to ensure specified millstone configuration exists locally: {}",
+                    "Failed to ensure specified millstone configuration ({}) exists locally: {}",
+                    config.config_path.display(),
                     e
                 ))
             }
@@ -91,12 +94,14 @@ impl DriverConfig {
             Ok(metadata) if metadata.is_file() => {}
             Ok(_) => {
                 return Err(generic_error!(
-                    "Specified datadog-intake configuration does not point to a file."
+                    "Specified datadog-intake configuration ({}) does not point to a file.",
+                    config.config_path.display()
                 ))
             }
             Err(e) => {
                 return Err(generic_error!(
-                    "Failed to ensure specified datadog-intake configuration exists locally: {}",
+                    "Failed to ensure specified datadog-intake configuration ({}) exists locally: {}",
+                    config.config_path.display(),
                     e
                 ))
             }
@@ -124,7 +129,7 @@ impl DriverConfig {
         let driver_config = DriverConfig::from_image(target_id, config.image)
             .with_entrypoint(config.entrypoint)
             .with_command(config.command)
-            .with_env_vars(config.additional_env_args);
+            .with_env_vars(config.additional_env_vars);
 
         Ok(driver_config)
     }
@@ -144,14 +149,22 @@ impl DriverConfig {
     }
 
     /// Sets the entrypoint for the container.
+    ///
+    /// If `entrypoint` is empty, the default entrypoint will be used.
     pub fn with_entrypoint(mut self, entrypoint: Vec<String>) -> Self {
-        self.entrypoint = Some(entrypoint);
+        if !entrypoint.is_empty() {
+            self.entrypoint = Some(entrypoint);
+        }
         self
     }
 
     /// Sets the command for the container.
+    ///
+    /// If `command` is empty, the default command will be used.
     pub fn with_command(mut self, command: Vec<String>) -> Self {
-        self.command = Some(command);
+        if !command.is_empty() {
+            self.command = Some(command);
+        }
         self
     }
 
@@ -702,15 +715,25 @@ impl Driver {
         loop {
             // Inspect the container, and see if it even has any health checks defined. If not, then we can return early.
             let response = self.docker.inspect_container(&self.container_name, None).await?;
-            if let Some(health_status) = response.state.and_then(|s| s.health).and_then(|h| h.status) {
+            let state = response
+                .state
+                .ok_or_else(|| generic_error!("Container state should be present."))?;
+
+            // Make sure the container is actually running.
+            let status = state
+                .status
+                .ok_or_else(|| generic_error!("Container status should be present."))?;
+            if status != ContainerStateStatusEnum::RUNNING {
+                return Err(generic_error!("Container exited unexpectedly."));
+            }
+
+            if let Some(health_status) = state.health.and_then(|h| h.status) {
                 match health_status {
                     // No healthcheck defined, or healthy, so we're good to go.
                     HealthStatusEnum::EMPTY | HealthStatusEnum::NONE | HealthStatusEnum::HEALTHY => {
                         debug!(
                             driver_id = self.config.driver_id,
-                            isolation_group = self.isolation_group_id,
-                            "Container '{}' healthy or no healthcheck defined. Proceeding.",
-                            &self.container_name
+                            "Container '{}' healthy or no healthcheck defined. Proceeding.", &self.container_name
                         );
                         return Ok(());
                     }
@@ -719,18 +742,14 @@ impl Driver {
                     HealthStatusEnum::STARTING | HealthStatusEnum::UNHEALTHY => {
                         debug!(
                             driver_id = self.config.driver_id,
-                            isolation_group = self.isolation_group_id,
-                            "Container '{}' not yet healthy. Waiting...",
-                            &self.container_name
+                            "Container '{}' not yet healthy. Waiting...", &self.container_name
                         );
                     }
                 }
             } else {
                 debug!(
                     driver_id = self.config.driver_id,
-                    isolation_group = self.isolation_group_id,
-                    "Container '{}' has no healthcheck defined. Proceeding.",
-                    &self.container_name
+                    "Container '{}' has no healthcheck defined. Proceeding.", &self.container_name
                 );
                 return Ok(());
             }

@@ -507,62 +507,20 @@ test-correctness: test-correctness-dsd-plain test-correctness-dsd-origin-detecti
 .PHONY: test-correctness-dsd-plain
 test-correctness-dsd-plain: build-ground-truth
 test-correctness-dsd-plain: ## Runs the 'dsd-plain' correctness test case
-	@echo "[*] Running 'dsd-plain' correctness test case..."
-	@target/debug/ground-truth \
-		--millstone-image saluki-images/millstone:latest \
-		--baseline-millstone-config-path $(shell pwd)/test/correctness/dsd-plain/millstone.yaml \
-		--comparison-millstone-config-path $(shell pwd)/test/correctness/dsd-plain/millstone.yaml \
-		--datadog-intake-image saluki-images/datadog-intake:latest \
-		--datadog-intake-config-path $(shell pwd)/test/correctness/datadog-intake.yaml \
-		--baseline-image docker.io/datadog/dogstatsd:7.68.3 \
-		--baseline-entrypoint /entrypoint.sh \
-		--baseline-command "/dogstatsd start --cfgpath /etc/datadog-agent" \
-		--baseline-config-path $(shell pwd)/test/correctness/dsd-plain/dogstatsd.yaml \
-		--comparison-image saluki-images/agent-data-plane:latest \
-		--comparison-entrypoint /entrypoint.sh \
-		--comparison-command "/usr/local/bin/agent-data-plane run --config /etc/datadog-agent/datadog.yaml" \
-		--comparison-config-path $(shell pwd)/test/correctness/dsd-plain/dogstatsd.yaml
+	@echo "[*] Running 'dsd-origin-detection' correctness test case..."
+	@target/debug/ground-truth $(shell pwd)/test/correctness/dsd-plain/config.yaml
 
 .PHONY: test-correctness-dsd-origin-detection
 test-correctness-dsd-origin-detection: build-ground-truth
 test-correctness-dsd-origin-detection: ## Runs the 'dsd-origin-detection' correctness test case
 	@echo "[*] Running 'dsd-origin-detection' correctness test case..."
-	@target/debug/ground-truth \
-		--millstone-image saluki-images/millstone:latest \
-		--baseline-millstone-config-path $(shell pwd)/test/correctness/dsd-origin-detection/millstone.yaml \
-		--comparison-millstone-config-path $(shell pwd)/test/correctness/dsd-origin-detection/millstone.yaml \
-		--datadog-intake-image saluki-images/datadog-intake:latest \
-		--datadog-intake-config-path $(shell pwd)/test/correctness/datadog-intake.yaml \
-		--baseline-image saluki-images/datadog-agent:latest \
-		--baseline-entrypoint /bin/entrypoint.sh \
-		--baseline-command /init \
-		--baseline-config-path $(shell pwd)/test/correctness/dsd-origin-detection/datadog.yaml \
-		--comparison-image saluki-images/datadog-agent:latest \
-		--comparison-command /init \
-		--comparison-config-path $(shell pwd)/test/correctness/dsd-origin-detection/datadog.yaml \
-		--comparison-env-arg DD_ADP_ENABLED=true \
-		--comparison-env-arg DD_AGGREGATE_CONTEXT_LIMIT=500000
+	@target/debug/ground-truth $(shell pwd)/test/correctness/dsd-origin-detection/config.yaml
 
 .PHONY: test-correctness-otlp-metrics
 test-correctness-otlp-metrics: build-ground-truth
 test-correctness-otlp-metrics: ## Runs the 'otlp-metrics' correctness test case
 	@echo "[*] Running 'otlp-metrics' correctness test case..."
-	@target/debug/ground-truth \
-		--millstone-image saluki-images/millstone:latest \
-		--baseline-millstone-config-path $(shell pwd)/test/correctness/otlp-metrics/millstone-agent.yaml \
-		--comparison-millstone-config-path $(shell pwd)/test/correctness/otlp-metrics/millstone-adp.yaml \
-		--datadog-intake-image saluki-images/datadog-intake:latest \
-		--datadog-intake-config-path $(shell pwd)/test/correctness/datadog-intake.yaml \
-		--baseline-image saluki-images/datadog-agent:latest \
-		--baseline-entrypoint /bin/entrypoint.sh \
-		--baseline-command /init \
-		--baseline-config-path $(shell pwd)/test/correctness/otlp-metrics/datadog.yaml \
-		--baseline-env-arg DD_API_KEY=dummy-api-key-correctness-testing \
-		--comparison-image saluki-images/agent-data-plane:latest \
-		--comparison-entrypoint /usr/local/bin/agent-data-plane \
-		--comparison-command run \
-		--comparison-config-path $(shell pwd)/test/correctness/otlp-metrics/datadog.yaml \
-		--comparison-env-arg DD_ADP_OTLP_ENABLED=true
+	@target/debug/ground-truth $(shell pwd)/test/correctness/otlp-metrics/config.yaml
 
 .PHONY: ensure-rust-miri
 ensure-rust-miri:

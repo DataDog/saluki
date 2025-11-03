@@ -1,0 +1,17 @@
+millstone:
+  image: saluki-images/millstone:latest
+  baseline_config_path: millstone-agent.yaml
+  comparison_config_path: millstone-adp.yaml
+datadog_intake:
+  image: saluki-images/datadog-intake:latest
+  config_path: ../datadog-intake.yaml
+baseline:
+  image: saluki-images/datadog-agent:latest
+  config_path: datadog.yaml
+comparison:
+  image: saluki-images/datadog-agent:latest
+  config_path: datadog.yaml
+  additional_env_vars:
+    - DD_DATA_PLANE_ENABLED=true
+    - DD_ADP_ENABLED=true
+    - DD_AGGREGATE_CONTEXT_LIMIT=500000

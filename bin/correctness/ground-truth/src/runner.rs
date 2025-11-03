@@ -19,7 +19,7 @@ use tokio::{select, task::JoinHandle, time::sleep};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, info_span, Instrument as _, Span};
 
-use crate::{analysis::RawTestResults, config::Cli, sync::Coordinator};
+use crate::{analysis::RawTestResults, config::Config, sync::Coordinator};
 
 pub struct TestRunner {
     adp_config: TargetConfig,
@@ -37,15 +37,15 @@ pub struct TestRunner {
 }
 
 impl TestRunner {
-    pub fn from_cli(cli: &Cli) -> Self {
+    pub fn from_config(config: &Config) -> Self {
         Self {
-            adp_config: cli.comparison_target_config(),
-            adp_config_path: cli.comparison_config_path.clone(),
-            dsd_config: cli.baseline_target_config(),
-            dsd_config_path: cli.baseline_config_path.clone(),
-            datadog_intake_config: cli.datadog_intake_config(),
-            dsd_millstone_config: cli.baseline_millstone_config(),
-            adp_millstone_config: cli.comparison_millstone_config(),
+            adp_config: config.comparison_target_config(),
+            adp_config_path: config.comparison_target_config_path(),
+            dsd_config: config.baseline_target_config(),
+            dsd_config_path: config.baseline_target_config_path(),
+            datadog_intake_config: config.datadog_intake_config(),
+            dsd_millstone_config: config.baseline_millstone_config(),
+            adp_millstone_config: config.comparison_millstone_config(),
             cancel_token: CancellationToken::new(),
             dsd_coordinator: Coordinator::new(),
             adp_coordinator: Coordinator::new(),
