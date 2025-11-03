@@ -1,3 +1,4 @@
+use std::sync::{Arc, Mutex};
 use std::{collections::hash_map::Entry, time::Duration};
 use std::{collections::HashMap, net::SocketAddr};
 
@@ -17,7 +18,6 @@ use datadog_protos::agent::telemetry::v1::{
 };
 use http::{Request, Uri};
 use http_body_util::BodyExt;
-use saluki_app::api::SessionIdHandle;
 use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
 use saluki_core::state::reflector::Reflector;
@@ -26,6 +26,7 @@ use saluki_error::GenericError;
 use saluki_io::net::client::http::HttpClient;
 use saluki_io::net::GrpcTargetAddress;
 use tokio::time::{interval, MissedTickBehavior};
+use tonic::server::NamedService;
 use tracing::{debug, info};
 
 use crate::state::metrics::{get_shared_metrics_state, AggregatedMetricsProcessor};
@@ -43,6 +44,39 @@ const TYPE_SERVICE_CHECKS: &str = "message_type:service_checks";
 const LISTENER_UDP: &str = "listener_type:udp";
 const LISTENER_UNIX: &str = "listener_type:unix";
 const LISTENER_UNIXGRAM: &str = "listener_type:unixgram";
+const SESSION_ID_METADATA_KEY: &str = "session_id";
+
+/// A handle for updating the session ID at runtime.
+///
+/// This handle allows you to dynamically update the session ID that is added to gRPC responses
+/// even after the server has started.
+#[derive(Clone, Debug)]
+pub struct SessionIdHandle {
+    session_id: Arc<Mutex<Option<String>>>,
+}
+
+impl SessionIdHandle {
+    /// Creates a new `SessionIdHandle` with the given session ID.
+    pub fn new(session_id: String) -> Self {
+        Self {
+            session_id: Arc::new(Mutex::new(Some(session_id))),
+        }
+    }
+
+    /// Updates the session ID to a new value.
+    ///
+    /// This change will be reflected in all subsequent gRPC responses.
+    pub fn update(&self, new_session_id: Option<String>) {
+        if let Ok(mut session_id) = self.session_id.lock() {
+            *session_id = new_session_id;
+        }
+    }
+
+    /// Gets the current session ID.
+    pub fn get(&self) -> Option<String> {
+        self.session_id.lock().ok().and_then(|s| s.clone())
+    }
+}
 
 /// Remote Agent helper configuration.
 pub struct RemoteAgentHelperConfiguration {
@@ -82,38 +116,51 @@ impl RemoteAgentHelperConfiguration {
     }
 
     /// Creates a new `StatusProviderServer` for the remote agent helper.
-    pub fn create_status_service(&self) -> StatusProviderServer<RemoteAgentImpl> {
+    ///
+    /// The service name is automatically tracked for registration.
+    /// The service is wrapped with a layer that adds session_id to responses.
+    pub fn create_status_service(&mut self) -> StatusProviderServer<RemoteAgentImpl> {
+        self.service_names
+            .push(<StatusProviderServer<RemoteAgentImpl> as NamedService>::NAME.to_string());
+
         StatusProviderServer::new(RemoteAgentImpl {
             started: Utc::now(),
             internal_metrics: self.internal_metrics.clone(),
             prometheus_listen_addr: self.prometheus_listen_addr,
+            session_id: self.session_id.clone(),
         })
     }
 
     /// Creates a new `TelemetryProviderServer` for the remote agent helper.
-    pub fn create_telemetry_service(&self) -> TelemetryProviderServer<RemoteAgentImpl> {
+    ///
+    /// The service name is automatically tracked for registration.
+    /// The service is wrapped with a layer that adds session_id to responses.
+    pub fn create_telemetry_service(&mut self) -> TelemetryProviderServer<RemoteAgentImpl> {
+        self.service_names
+            .push(<TelemetryProviderServer<RemoteAgentImpl> as NamedService>::NAME.to_string());
+
         TelemetryProviderServer::new(RemoteAgentImpl {
             started: Utc::now(),
             internal_metrics: self.internal_metrics.clone(),
             prometheus_listen_addr: self.prometheus_listen_addr,
+            session_id: self.session_id.clone(),
         })
     }
 
     /// Creates a new `FlareProviderServer` for the remote agent helper.
-    pub fn create_flare_service(&self) -> FlareProviderServer<RemoteAgentImpl> {
+    ///
+    /// The service name is automatically tracked for registration.
+    /// The service is wrapped with a layer that adds session_id to responses.
+    pub fn create_flare_service(&mut self) -> FlareProviderServer<RemoteAgentImpl> {
+        self.service_names
+            .push(<FlareProviderServer<RemoteAgentImpl> as NamedService>::NAME.to_string());
+
         FlareProviderServer::new(RemoteAgentImpl {
             started: Utc::now(),
             internal_metrics: self.internal_metrics.clone(),
             prometheus_listen_addr: self.prometheus_listen_addr,
+            session_id: self.session_id.clone(),
         })
-    }
-
-    /// Sets the service names for the remote agent helper.
-    ///
-    /// This is used to register the remote agent helper with the Datadog Agent as a remote agent.
-    pub fn with_service_names(mut self, service_names: Vec<String>) -> Self {
-        self.service_names = service_names;
-        self
     }
 
     /// Spawns the remote agent helper task.
@@ -132,10 +179,6 @@ impl RemoteAgentHelperConfiguration {
                 self.service_names,
             ),
         );
-    }
-
-    pub fn get_session_id(&self) -> SessionIdHandle {
-        self.session_id.clone()
     }
 }
 
@@ -190,6 +233,7 @@ pub struct RemoteAgentImpl {
     started: DateTime<Utc>,
     internal_metrics: Reflector<AggregatedMetricsProcessor>,
     prometheus_listen_addr: Option<SocketAddr>,
+    session_id: SessionIdHandle,
 }
 
 impl RemoteAgentImpl {
@@ -241,6 +285,32 @@ impl RemoteAgentImpl {
             .set_field("Uds Packet Reading Errors", uds_errors.to_string())
             .set_field("Uds Packets", uds_packets.to_string());
     }
+
+    async fn session_id_middleware<Resp, Next>(
+        // &self, request: tonic::Request<Req>, next: Next,
+        &self,
+        next: Next,
+    ) -> Result<tonic::Response<Resp>, tonic::Status>
+    where
+        // Next: AsyncFnOnce(tonic::Request<Req>) -> Result<tonic::Response<Resp>, tonic::Status>,
+        Next: AsyncFnOnce() -> Result<tonic::Response<Resp>, tonic::Status>,
+    {
+        let metadata_session_id = self
+            .session_id
+            .get()
+            .ok_or(tonic::Status::failed_precondition(
+                "Session ID not set, ADP didn't registered to remoteAgentRegistry yet",
+            ))?
+            .parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
+            .or(Err(tonic::Status::internal(
+                "Unable to convert session ID into valid gRPC metadata",
+            )))?;
+
+        next().await.map(|mut resp| {
+            resp.metadata_mut().append(SESSION_ID_METADATA_KEY, metadata_session_id);
+            resp
+        })
+    }
 }
 
 // Implement the three separate service traits instead of the old unified RemoteAgent trait
@@ -250,19 +320,23 @@ impl StatusProvider for RemoteAgentImpl {
     async fn get_status_details(
         &self, _request: tonic::Request<GetStatusDetailsRequest>,
     ) -> Result<tonic::Response<GetStatusDetailsResponse>, tonic::Status> {
-        let app_details = saluki_metadata::get_app_details();
+        return self
+            .session_id_middleware(async || {
+                let app_details = saluki_metadata::get_app_details();
 
-        let mut builder = StatusBuilder::new();
-        builder
-            .main_section()
-            .set_field("Version", app_details.version().raw())
-            .set_field("Git Commit", app_details.git_hash())
-            .set_field("Architecture", app_details.target_arch())
-            .set_field("Started", self.started.to_rfc3339());
+                let mut builder = StatusBuilder::new();
+                builder
+                    .main_section()
+                    .set_field("Version", app_details.version().raw())
+                    .set_field("Git Commit", app_details.git_hash())
+                    .set_field("Architecture", app_details.target_arch())
+                    .set_field("Started", self.started.to_rfc3339());
 
-        self.write_dsd_metrics(&mut builder);
+                self.write_dsd_metrics(&mut builder);
 
-        Ok(tonic::Response::new(builder.into_response()))
+                Ok(tonic::Response::new(builder.into_response()))
+            })
+            .await;
     }
 }
 
@@ -271,34 +345,38 @@ impl TelemetryProvider for RemoteAgentImpl {
     async fn get_telemetry(
         &self, _request: tonic::Request<GetTelemetryRequest>,
     ) -> Result<tonic::Response<GetTelemetryResponse>, tonic::Status> {
-        // Telemetry is not enabled.
-        if self.prometheus_listen_addr.is_none() {
-            return Ok(tonic::Response::new(GetTelemetryResponse { payload: None }));
-        }
+        return self
+            .session_id_middleware(async || {
+                // Telemetry is not enabled.
+                if self.prometheus_listen_addr.is_none() {
+                    return Ok(tonic::Response::new(GetTelemetryResponse { payload: None }));
+                }
 
-        let prometheus_listen_addr = self.prometheus_listen_addr.unwrap();
-        let mut client: HttpClient<String> = HttpClient::builder().build().unwrap();
+                let prometheus_listen_addr = self.prometheus_listen_addr.unwrap();
+                let mut client: HttpClient<String> = HttpClient::builder().build().unwrap();
 
-        let uri_string = format!("http://{}", prometheus_listen_addr);
-        let uri: Uri = uri_string.parse().unwrap();
-        let request = Request::builder()
-            .uri(uri)
-            .body(String::new())
-            .map_err(|e| tonic::Status::internal(e.to_string()))?;
+                let uri_string = format!("http://{}", prometheus_listen_addr);
+                let uri: Uri = uri_string.parse().unwrap();
+                let request = Request::builder()
+                    .uri(uri)
+                    .body(String::new())
+                    .map_err(|e| tonic::Status::internal(e.to_string()))?;
 
-        let resp = client.send(request).await.unwrap();
+                let resp = client.send(request).await.unwrap();
 
-        match resp.into_body().collect().await {
-            Ok(body) => {
-                let body = body.to_bytes();
-                let body_str = String::from_utf8_lossy(&body[..]);
-                let response = GetTelemetryResponse {
-                    payload: Some(Payload::PromText(body_str.to_string())),
-                };
-                Ok(tonic::Response::new(response))
-            }
-            Err(e) => Err(tonic::Status::internal(e.to_string())),
-        }
+                match resp.into_body().collect().await {
+                    Ok(body) => {
+                        let body = body.to_bytes();
+                        let body_str = String::from_utf8_lossy(&body[..]);
+                        let response = GetTelemetryResponse {
+                            payload: Some(Payload::PromText(body_str.to_string())),
+                        };
+                        Ok(tonic::Response::new(response))
+                    }
+                    Err(e) => Err(tonic::Status::internal(e.to_string())),
+                }
+            })
+            .await;
     }
 }
 
@@ -307,10 +385,14 @@ impl FlareProvider for RemoteAgentImpl {
     async fn get_flare_files(
         &self, _request: tonic::Request<GetFlareFilesRequest>,
     ) -> Result<tonic::Response<GetFlareFilesResponse>, tonic::Status> {
-        let response = GetFlareFilesResponse {
-            files: HashMap::default(),
-        };
-        Ok(tonic::Response::new(response))
+        return self
+            .session_id_middleware(async || {
+                let response = GetFlareFilesResponse {
+                    files: HashMap::default(),
+                };
+                Ok(tonic::Response::new(response))
+            })
+            .await;
     }
 }
 

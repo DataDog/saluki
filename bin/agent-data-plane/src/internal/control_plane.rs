@@ -14,7 +14,7 @@ use saluki_io::net::{build_datadog_agent_server_tls_config, get_ipc_cert_file_pa
 use serde::Deserialize;
 use tracing::{error, info};
 
-use crate::internal::remote_agent::RemoteAgentHelperConfiguration;
+use crate::internal::{platform, remote_agent::RemoteAgentHelperConfiguration};
 use crate::{env_provider::ADPEnvironmentProvider, internal::initialize_and_launch_runtime};
 
 const fn default_api_listen_address() -> ListenAddress {
@@ -54,13 +54,13 @@ fn get_cert_path_from_config(config: &GenericConfiguration) -> Result<PathBuf, G
     // Try to get the auth token file path first
     let auth_token_file_path = config
         .try_get_typed::<PathBuf>("auth_token_file_path")
-        .error_context("Failed to get agent auth token file path.")?
-        .unwrap_or_else(|| PathBuf::from("/etc/datadog-agent/auth_token"));
+        .error_context("Failed to get Agent auth token file path.")?
+        .unwrap_or_else(|| PathBuf::from(platform::DATADOG_AGENT_AUTH_TOKEN));
 
     // Try to get the explicit IPC cert file path
     let ipc_cert_file_path = config
         .try_get_typed::<Option<PathBuf>>("ipc_cert_file_path")
-        .error_context("Failed to get agent IPC cert file path.")?
+        .error_context("Failed to get Agent IPC cert file path.")?
         .flatten();
 
     Ok(get_ipc_cert_file_path(
@@ -143,14 +143,15 @@ async fn configure_and_spawn_api_endpoints(
         }
 
         // Build our helper configuration for registering ourselves with the Datadog Agent as a remote agent.
-        let remote_agent_config = RemoteAgentHelperConfiguration::from_configuration(
+        let mut remote_agent_config = RemoteAgentHelperConfiguration::from_configuration(
             config,
             secure_api_grpc_target_addr,
             prometheus_listen_addr,
         )
         .await?;
 
-        // Register the three separate gRPC services with the privileged API
+        // Create and register the Remote Agent gRPC services with the privileged API.
+        // Each service is tracked automatically for registration with the Remote Agent Registry.
         privileged_api = privileged_api.with_grpc_service(remote_agent_config.create_status_service());
         privileged_api = privileged_api.with_grpc_service(remote_agent_config.create_flare_service());
         // Only register the telemetry service if telemetry is enabled
@@ -158,14 +159,8 @@ async fn configure_and_spawn_api_endpoints(
             privileged_api = privileged_api.with_grpc_service(remote_agent_config.create_telemetry_service());
         }
 
-        // Set the session ID for the privileged API
-        // This will be added as a header to all gRPC responses.
-        privileged_api = privileged_api.with_session_id(remote_agent_config.get_session_id());
-
-        // Spawn the remote agent helper task
-        remote_agent_config
-            .with_service_names(privileged_api.get_service_names())
-            .spawn();
+        // Spawn the remote agent helper task.
+        remote_agent_config.spawn();
     }
 
     spawn_unprivileged_api(unprivileged_api, api_listen_address).await?;
