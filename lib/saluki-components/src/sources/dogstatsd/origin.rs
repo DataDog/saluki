@@ -538,6 +538,7 @@ mod tests {
 
         for (entity_id_precedence, resolved_origin, expected_tags) in cases {
             let tag_resolver_config = OriginEnrichmentConfiguration {
+                enabled: true,
                 entity_id_precedence,
                 tag_cardinality: OriginTagCardinality::High,
                 origin_detection_unified: false,
@@ -567,6 +568,7 @@ mod tests {
         let ext_data_invalid = ResolvedExternalData::new(EID_EXTERNAL_POD.clone(), EID_EXTERNAL_CID_INVALID.clone());
 
         let tag_resolver_config = OriginEnrichmentConfiguration {
+            enabled: true,
             entity_id_precedence: false,
             tag_cardinality: OriginTagCardinality::High,
             origin_detection_unified: true,
@@ -632,5 +634,19 @@ mod tests {
                 resolved_origin
             );
         }
+    }
+
+    #[test]
+    fn origin_detection_disabled() {
+        // When origin detection is disabled, no tags should be resolved even if we do have mapped tags for the given
+        // resolved origin.
+        let tag_resolver_config = OriginEnrichmentConfiguration::default();
+        assert!(!tag_resolver_config.enabled);
+
+        let origin_tags_resolver = build_tags_resolver_with_default_tags(tag_resolver_config);
+
+        let resolved_origin = origin(Some(&EID_PID), None, None, None);
+        let actual_tags = origin_tags_resolver.collect_origin_tags(resolved_origin);
+        assert!(actual_tags.is_empty());
     }
 }
