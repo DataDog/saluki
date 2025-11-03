@@ -16,10 +16,10 @@
   variables:
     DD_LOG_LEVEL: "ground_truth=debug,info"
     GROUND_TRUTH_ALPINE_IMAGE: registry.ddbuild.io/alpine:latest
-    GROUND_TRUTH_MILLSTONE_IMAGE: ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
-    GROUND_TRUTH_DATADOG_INTAKE_IMAGE: ${SALUKI_IMAGE_REPO_BASE}/datadog-intake:${CI_COMMIT_SHA}
-    GROUND_TRUTH_BASELINE_IMAGE: ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
-    GROUND_TRUTH_COMPARISON_IMAGE: ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
+    GROUND_TRUTH_MILLSTONE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
+    GROUND_TRUTH_DATADOG_INTAKE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/datadog-intake:${CI_COMMIT_SHA}
+    GROUND_TRUTH_BASELINE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
+    GROUND_TRUTH_COMPARISON__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
   script:
     - make build-ground-truth
     - target/debug/ground-truth ./test/correctness/${CORRECTNESS_TEST_CASE}/config.yaml
