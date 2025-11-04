@@ -40,10 +40,8 @@ ENV AWS_REGION=us-east-1
 # no-dd-sa: We don't care about pinning package versions in the build stage.
 RUN apk update && \
     apk add --no-cache rustup musl-dev linux-headers make cmake mold gcc libgcc perl go protobuf sccache aws-cli
-RUN aws configure list && \
-  aws sts get-caller-identity
-RUN sccache --version
-RUN sccache --start-server && sccache --show-stats
+RUN aws configure list && aws sts get-caller-identity
+RUN sccache --start-server && sccache --version && sccache --show-stats
 RUN rustup-init -y --default-toolchain ${RUST_VERSION}
 ENV PATH="/root/.cargo/bin:${PATH}"
 
