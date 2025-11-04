@@ -33,7 +33,6 @@ ENV APP_VERSION=${APP_VERSION}
 ENV APP_BUILD_TIME=${APP_BUILD_TIME}
 ENV SCCACHE_S3_USE_SSL=true
 ENV SCCACHE_LOG=debug
-ENV SCCACHE_NO_DAEMON=1
 ENV AWS_REGION=us-east-1
 
 # Install Rust and other build dependencies.
@@ -44,7 +43,7 @@ RUN apk update && \
 RUN aws configure list && \
   aws sts get-caller-identity
 RUN sccache --version
-RUN sccache -s
+RUN sccache --start-server && sccache --show-stats
 RUN rustup-init -y --default-toolchain ${RUST_VERSION}
 ENV PATH="/root/.cargo/bin:${PATH}"
 
