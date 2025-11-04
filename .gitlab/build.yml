@@ -12,7 +12,6 @@
     CARGO_BUILD_JOBS: 12
   script:
     - 'echo "Building ADP image ${IMAGE_TAG}... (image version: ${ADP_IMAGE_VERSION}, build concurrency: ${CARGO_BUILD_JOBS})..."'
-    - eval $(aws configure export-credentials --format env)
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.agent-data-plane
@@ -22,8 +21,6 @@
       --build-arg RUSTC_WRAPPER=sccache
       --build-arg SCCACHE_BUCKET=saluki-build-cache
       --build-arg SCCACHE_REGION=us-east-1
-      --build-arg AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-      --build-arg AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
       --build-arg BUILD_IMAGE=${ALPINE_BUILD_IMAGE}
       --build-arg APP_IMAGE=${APP_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
