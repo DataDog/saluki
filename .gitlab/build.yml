@@ -13,8 +13,8 @@
   script:
     - 'echo "Building ADP image ${IMAGE_TAG}... (image version: ${ADP_IMAGE_VERSION}, build concurrency: ${CARGO_BUILD_JOBS})..."'
     - aws configure list
-    - env
-    - ls -l ~/.aws || echo "No AWS credentials directory found"
+    - aws sts get-caller-identity
+    - curl http://169.254.169.254/latest/meta-data/iam/info
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.agent-data-plane
