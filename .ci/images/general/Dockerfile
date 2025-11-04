@@ -1,9 +1,4 @@
-ARG DD_AGENT_VERSION=latest-jmx
-ARG DD_AGENT_IMAGE=datadog/agent:${DD_AGENT_VERSION}
-
-FROM ${DD_AGENT_IMAGE} AS agent
-
-FROM registry.ddbuild.io/docker:20.10-py3
+FROM registry.ddbuild.io/docker:24.0.4-jammy
 
 # Install datadog-ci.
 RUN set -x \
@@ -16,13 +11,11 @@ RUN set -x \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g @datadog/datadog-ci@3.0.1 \
     && datadog-ci version
-    
-# Import python bits from Agent image.
-# Do last in the pipeline to avoid polluting the builds of above protobuf/go etc from using these libs
-COPY --from=agent /opt/datadog-agent/embedded/ /opt/datadog-agent/embedded/
-ENV LD_LIBRARY_PATH="/opt/datadog-agent/embedded/lib:${LD_LIBRARY_PATH}"
-ENV PATH="/opt/datadog-agent/embedded/bin:${PATH}"
-    
+
+# Install the AWS CLI.
+COPY .ci/install-awscli.sh /
+RUN chmod +x /install-awscli.sh && /install-awscli.sh
+
 COPY .ci/images/general/entrypoint.sh /
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT [ "/entrypoint.sh" ]
