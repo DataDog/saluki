@@ -3,7 +3,6 @@
   image: ${DOCKER_BUILD_IMAGE}
   needs:
     - calculate-build-metadata
-    - get-aws-build-cache-bucket-credentials
   retry: 2
   timeout: 15m
   variables:
@@ -13,6 +12,7 @@
     CARGO_BUILD_JOBS: 12
   script:
     - 'echo "Building ADP image ${IMAGE_TAG}... (image version: ${ADP_IMAGE_VERSION}, build concurrency: ${CARGO_BUILD_JOBS})..."'
+    - eval $(aws configure export-credentials --format env)
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.agent-data-plane
@@ -57,16 +57,6 @@ calculate-build-metadata:
   artifacts:
     reports:
       dotenv: build.env
-
-get-aws-build-cache-bucket-credentials:
-  stage: build
-  image: ${SALUKI_BUILD_CI_IMAGE}
-  needs: []
-  script:
-    - aws configure export-credentials --format env >> credentials.env
-  artifacts:
-    reports:
-      dotenv: credentials.env
 
 build-adp-image:
   extends: [.build-common-variables, .build-adp-definition]
