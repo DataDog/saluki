@@ -14,6 +14,10 @@ ARG RUST_VERSION=stable
 ARG BUILD_PROFILE=release
 ARG BUILD_FEATURES=default
 ARG CARGO_BUILD_JOBS=default
+ARG RUSTC_WRAPPER=""
+ARG SCCACHE_BUCKET=""
+ARG SCCACHE_REGION=""
+
 ARG APP_FULL_NAME=""
 ARG APP_SHORT_NAME=""
 ARG APP_IDENTIFIER=""
@@ -27,12 +31,13 @@ ENV APP_IDENTIFIER=${APP_IDENTIFIER}
 ENV APP_GIT_HASH=${APP_GIT_HASH}
 ENV APP_VERSION=${APP_VERSION}
 ENV APP_BUILD_TIME=${APP_BUILD_TIME}
+ENV SCCACHE_S3_USE_SSL=true
 
 # Install Rust and other build dependencies.
 #
 # no-dd-sa: We don't care about pinning package versions in the build stage.
 RUN apk update && \
-    apk add --no-cache rustup musl-dev linux-headers make cmake mold gcc libgcc perl go protobuf && \
+    apk add --no-cache rustup musl-dev linux-headers make cmake mold gcc libgcc perl go protobuf sccache && \
    rustup-init -y --default-toolchain ${RUST_VERSION}
 ENV PATH="/root/.cargo/bin:${PATH}"
 
