@@ -8,7 +8,7 @@ use std::{
 };
 
 use airlock::{
-    config::{ADPConfig, DSDConfig, MetricsIntakeConfig, MillstoneConfig},
+    config::{ADPConfig, DSDConfig, DatadogIntakeConfig, MillstoneConfig},
     driver::{Driver, DriverConfig, DriverDetails, ExitStatus},
 };
 use rand::{distr::SampleString as _, rng};
@@ -24,7 +24,7 @@ use crate::{analysis::RawTestResults, config::Cli, sync::Coordinator};
 pub struct TestRunner {
     adp_config: ADPConfig,
     dsd_config: DSDConfig,
-    metrics_intake_config: MetricsIntakeConfig,
+    datadog_intake_config: DatadogIntakeConfig,
     dsd_millstone_config: MillstoneConfig,
     adp_millstone_config: MillstoneConfig,
 
@@ -39,7 +39,7 @@ impl TestRunner {
         Self {
             adp_config: cli.adp_config(),
             dsd_config: cli.dsd_config(),
-            metrics_intake_config: cli.metrics_intake_config(),
+            datadog_intake_config: cli.datadog_intake_config(),
             dsd_millstone_config: cli.dsd_millstone_config(),
             adp_millstone_config: cli.adp_millstone_config(),
             cancel_token: CancellationToken::new(),
@@ -66,7 +66,7 @@ impl TestRunner {
             .with_env_var("DD_API_KEY", "dummy-api-key-correctness-testing");
 
         group_runner
-            .with_driver(DriverConfig::metrics_intake(self.metrics_intake_config.clone()).await?)?
+            .with_driver(DriverConfig::datadog_intake(self.datadog_intake_config.clone()).await?)?
             .with_driver(dogstatsd_config)?
             .with_driver(DriverConfig::millstone(self.dsd_millstone_config.clone()).await?)?;
 
@@ -89,7 +89,7 @@ impl TestRunner {
             .with_env_var("DD_API_KEY", "dummy-api-key-correctness-testing");
 
         group_runner
-            .with_driver(DriverConfig::metrics_intake(self.metrics_intake_config.clone()).await?)?
+            .with_driver(DriverConfig::datadog_intake(self.datadog_intake_config.clone()).await?)?
             .with_driver(adp_config)?
             .with_driver(DriverConfig::millstone(self.adp_millstone_config.clone()).await?)?;
 
@@ -335,7 +335,7 @@ impl DriverResults {
 
 struct ResultCollector {
     millstone_handle: DriverHandle,
-    metrics_intake_port: u16,
+    datadog_intake_port: u16,
 }
 
 impl ResultCollector {
@@ -343,14 +343,14 @@ impl ResultCollector {
         let millstone_handle = spawned_drivers
             .take_driver_handle("millstone")
             .ok_or_else(|| generic_error!("Failed to get millstone driver handle."))?;
-        let metrics_intake_port = spawned_drivers
-            .get_driver_details("metrics-intake")
+        let datadog_intake_port = spawned_drivers
+            .get_driver_details("datadog-intake")
             .and_then(|details| details.try_get_exposed_port("tcp", 2049))
-            .ok_or_else(|| generic_error!("Failed to get exposed port details for metrics-intake container"))?;
+            .ok_or_else(|| generic_error!("Failed to get exposed port details for datadog-intake container"))?;
 
         Ok(Self {
             millstone_handle,
-            metrics_intake_port,
+            datadog_intake_port,
         })
     }
 
@@ -365,18 +365,18 @@ impl ResultCollector {
         );
 
         // Now we'll briefly wait (for the duration of an aggregation flush interval, plus a little extra) before dumping the metrics from
-        // metrics-intake, to ensure everything from the target has been flushed out.
+        // datadog-intake, to ensure everything from the target has been flushed out.
         sleep(Duration::from_secs(32)).await;
 
         let client = reqwest::Client::new();
         let metrics = client
-            .get(format!("http://localhost:{}/metrics/dump", self.metrics_intake_port))
+            .get(format!("http://localhost:{}/metrics/dump", self.datadog_intake_port))
             .send()
             .await
-            .error_context("Failed to call metrics dump endpoint on metrics-intake server.")?
+            .error_context("Failed to call metrics dump endpoint on datadog-intake server.")?
             .json::<Vec<Metric>>()
             .await
-            .error_context("Failed to decode dumped metrics from metrics-intake response.")?;
+            .error_context("Failed to decode dumped metrics from datadog-intake response.")?;
 
         debug!("Metrics dumped successfully.");
 

@@ -7,7 +7,7 @@ use self::metric::{NormalizedMetric, NormalizedMetrics};
 
 /// Raw test run results.
 ///
-/// This holds the raw metrics sent from DogStatsD and Agent Data Plane, from the perspective of the `metrics-intake``
+/// This holds the raw metrics sent from DogStatsD and Agent Data Plane, from the perspective of the `datadog-intake``
 /// collection service.
 pub struct RawTestResults {
     dsd_metrics: Vec<Metric>,
