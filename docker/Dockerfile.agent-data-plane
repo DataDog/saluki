@@ -39,8 +39,10 @@ ENV SCCACHE_NO_DAEMON=1
 #
 # no-dd-sa: We don't care about pinning package versions in the build stage.
 RUN apk update && \
-    apk add --no-cache rustup musl-dev linux-headers make cmake mold gcc libgcc perl go protobuf sccache && \
-   rustup-init -y --default-toolchain ${RUST_VERSION}
+    apk add --no-cache rustup musl-dev linux-headers make cmake mold gcc libgcc perl go protobuf sccache aws-cli
+RUN aws configure list && \
+  aws sts get-caller-identity
+RUN rustup-init -y --default-toolchain ${RUST_VERSION}
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 # If we're building with Python checks, we pull from the Datadog Agent image (builder-python) to grab
