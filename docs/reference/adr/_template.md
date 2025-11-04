@@ -5,9 +5,13 @@ title: ADR 000 - Short title, representative of solved problem and found solutio
 
 # ADR 000 - Short title, representative of solved problem and found solution
 
-## Context and Problem Statement
+## Problem Statement
 
-Describe the context and problem statement, e.g., in free form using two to three sentences or in the form of an illustrative story. You may want to articulate the problem in form of a question and add links to collaboration boards or issue management systems.
+Begin with the problem statement, e.g., in free form using two to three sentences or in the form of an illustrative story. You may want to articulate the problem in form of a question and add links to collaboration boards or issue management systems.
+
+## Context
+
+Provide context on problem, including why the current design is not sufficient for meeting requirements, or what has changed that necessitates a new approach.
 
 ## Considered Options
 
