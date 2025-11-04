@@ -257,7 +257,7 @@
 <a href=#257 id=257 data-nosnippet>257</a>        };
 <a href=#258 id=258 data-nosnippet>258</a>
 <a href=#259 id=259 data-nosnippet>259</a>        <span class="comment">// Convert to use Serialized::defaults since, Env isn't Send + Sync
-<a href=#260 id=260 data-nosnippet>260</a>        </span><span class="kw">let </span>env = Env::prefixed(<span class="kw-2">&amp;</span>prefix);
+<a href=#260 id=260 data-nosnippet>260</a>        </span><span class="kw">let </span>env = Env::prefixed(<span class="kw-2">&amp;</span>prefix).split(<span class="string">"__"</span>);
 <a href=#261 id=261 data-nosnippet>261</a>        <span class="kw">let </span>values = env.data().unwrap();
 <a href=#262 id=262 data-nosnippet>262</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(default_dict) = values.get(<span class="kw-2">&amp;</span>figment::Profile::Default) {
 <a href=#263 id=263 data-nosnippet>263</a>            <span class="self">self</span>.provider_sources
