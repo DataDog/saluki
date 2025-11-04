@@ -43,6 +43,7 @@ RUN apk update && \
     apk add --no-cache rustup musl-dev linux-headers make cmake mold gcc libgcc perl go protobuf sccache aws-cli
 RUN aws configure list && \
   aws sts get-caller-identity
+RUN sccache --version
 RUN rustup-init -y --default-toolchain ${RUST_VERSION}
 ENV PATH="/root/.cargo/bin:${PATH}"
 
