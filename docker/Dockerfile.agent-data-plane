@@ -44,6 +44,7 @@ RUN apk update && \
 RUN aws configure list && \
   aws sts get-caller-identity
 RUN sccache --version
+RUN sccache -s
 RUN rustup-init -y --default-toolchain ${RUST_VERSION}
 ENV PATH="/root/.cargo/bin:${PATH}"
 
