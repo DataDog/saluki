@@ -63,42 +63,36 @@ impl<'framer, 'buf> NestedIter<'framer, 'buf> {
     }
 
     fn next_frame(&mut self) -> Result<Option<&[u8]>, FramingError> {
-        // Check if our outer frame is empty, and try to extract the next outer frame if so.
-        if self.outer_frame_buf.is_empty() {
-            // If our root buffer is also empty, then we're done.
-            if self.buf.is_empty() {
-                return Ok(None);
-            }
-
-            match self.outer_framer.next_frame(RawBuffer::new(self.buf), self.is_eof)? {
-                Some(frame) => {
-                    // Advance our root buffer past the outer frame we just extracted.
-                    self.buf = &self.buf[frame.buf_len()..];
-
-                    self.outer_frame_buf = frame.into_bytes();
+        loop {
+            // Check if our outer frame is empty, and try to extract the next outer frame if so.
+            if self.outer_frame_buf.is_empty() {
+                // If our root buffer is also empty, then we're done.
+                if self.buf.is_empty() {
+                    return Ok(None);
                 }
-                None => return Ok(None),
-            }
-        }
 
-        // NOTE: This should never happen, based on what we're doing above.. but it gives us an invariant that we depend on
-        // below, where if we get no inner frame, then we know the outer frame is corrupted somehow (or we have a framer bug).
-        assert!(!self.outer_frame_buf.is_empty(), "outer frame buf should not be empty");
-
-        // Try to extract an inner frame from the outer frame.
-        match self
-            .inner_framer
-            .next_frame(RawBuffer::new(self.outer_frame_buf), true)?
-        {
-            Some(frame) => {
-                // Advance our outer frame past the inner frame we just extracted.
-                self.outer_frame_buf = &self.outer_frame_buf[frame.buf_len()..];
-                Ok(Some(frame.into_bytes()))
+                match self.outer_framer.next_frame(RawBuffer::new(self.buf), self.is_eof)? {
+                    Some(frame) => {
+                        // Advance our root buffer past the outer frame we just extracted.
+                        self.buf = &self.buf[frame.buf_len()..];
+                        self.outer_frame_buf = frame.into_bytes();
+                    }
+                    None => return Ok(None),
+                }
             }
-            None => Err(FramingError::InvalidFrame {
-                frame_len: self.outer_frame_buf.len(),
-                reason: "outer frame non-empty but no remaining inner frames",
-            }),
+
+            // Try to extract an inner frame from the outer frame.
+            match self
+                .inner_framer
+                .next_frame(RawBuffer::new(self.outer_frame_buf), true)?
+            {
+                Some(frame) => {
+                    // Advance our outer frame past the inner frame we just extracted.
+                    self.outer_frame_buf = &self.outer_frame_buf[frame.buf_len()..];
+                    return Ok(Some(frame.into_bytes()));
+                }
+                None => continue,
+            }
         }
     }
 }
@@ -238,6 +232,17 @@ mod tests {
         outer_frames
     }
 
+    fn nested_payload_direct(raw_outer_frames: &[&[u8]]) -> VecDeque<u8> {
+        let mut outer_frames = VecDeque::new();
+
+        for raw_outer_frame in raw_outer_frames {
+            outer_frames.extend(&(raw_outer_frame.len() as u32).to_le_bytes());
+            outer_frames.extend(raw_outer_frame.iter());
+        }
+
+        outer_frames
+    }
+
     #[test]
     fn framed_nested_single_outer_multiple_inner() {
         // We create a buffer that has a single outer (length delimited) frame with multiple inner (newline delimited) frames.
@@ -321,6 +326,41 @@ mod tests {
                 .expect("should not fail to read from payload")
                 .expect("should not fail to extract frame from payload");
             assert_eq!(frame, &input_frame[..]);
+        }
+
+        let maybe_frame = framed.next_frame();
+        assert!(maybe_frame.is_none());
+
+        drop(framed);
+
+        // We should have consumed the entire buffer.
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn framed_nested_multiple_outer_with_zero_length() {
+        // We create a buffer that has multiple outer (length delimited) frames each with multiple inner (newline
+        // delimited) frames, but one of the outer frames has an empty inner frame, such that the outer frame is just
+        // the length delimiter, with a value of 0.
+        let input_frames = &[&b"frame1\n"[..], &b""[..], &b"frame3\n"[..]];
+        let mut buf = nested_payload_direct(input_frames.as_slice());
+
+        // Create our framer: length-delimited frames on the outside, and newline-delimited frames on the inside.
+        let outer = LengthDelimitedFramer::default();
+        let inner = NewlineFramer::default();
+        let mut framed = Framed::nested(&outer, &inner, &mut buf, false);
+
+        // Now we should be able to extract our original two frames from the buffer.
+        //
+        // Specifically, this means we correctly handle skipping over the empty outer frame. We filter out the empty
+        // frame from our comparison, and we also adjust our comparison since our raw input frames include the newline
+        // delimiter.
+        for input_frame in input_frames.iter().filter(|frame| !frame.is_empty()) {
+            let frame = framed
+                .next_frame()
+                .expect("should not fail to read from payload")
+                .expect("should not fail to extract frame from payload");
+            assert_eq!(frame, &input_frame[..input_frame.len() - 1]);
         }
 
         let maybe_frame = framed.next_frame();
