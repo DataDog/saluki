@@ -10,9 +10,9 @@ RUN set -x \
     && apt-get -y clean \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g @datadog/datadog-ci@3.0.1 \
-    && curl "https://s3.amazonaws.com/aws-cli/awscli-bundle.zip" -o "awscli-bundle.zip" \
-    && unzip awscli-bundle.zip \
-    && python3 ./awscli-bundle/install -i /usr/local/aws -b /usr/local/bin/aws
+    && curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" \
+    && unzip awscliv2.zip \
+    && ./aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli --update
 
 RUN datadog-ci version
 RUN aws --version
