@@ -23,7 +23,10 @@ clap = { workspace = true, features = [
 rand = { workspace = true, features = ["std", "std_rng", "thread_rng"] }
 rand_distr = { workspace = true }
 reqwest = { workspace = true, features = ["json", "zstd", "rustls-tls-native-roots"] }
+saluki-config = { workspace = true }
 saluki-error = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
 stele = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 tokio-util = { workspace = true }

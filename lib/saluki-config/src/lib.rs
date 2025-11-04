@@ -257,7 +257,7 @@ impl ConfigurationLoader {
         };
 
         // Convert to use Serialized::defaults since, Env isn't Send + Sync
-        let env = Env::prefixed(&prefix);
+        let env = Env::prefixed(&prefix).split("__");
         let values = env.data().unwrap();
         if let Some(default_dict) = values.get(&figment::Profile::Default) {
             self.provider_sources

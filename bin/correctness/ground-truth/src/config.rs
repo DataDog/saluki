@@ -1,171 +1,220 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use airlock::config::{DatadogIntakeConfig, MillstoneConfig, TargetConfig};
-use clap::Parser;
+use airlock::config::{
+    DatadogIntakeConfig as AirlockDatadogIntakeConfig, MillstoneConfig as AirlockMillstoneConfig, TargetConfig,
+};
+use saluki_config::ConfigurationLoader;
+use saluki_error::{ErrorContext as _, GenericError};
+use serde::Deserialize;
 
-#[derive(Clone, Parser)]
-#[command(about)]
-pub struct Cli {
+fn default_millstone_binary_path() -> String {
+    "/usr/local/bin/millstone".to_string()
+}
+
+fn default_datadog_intake_binary_path() -> String {
+    "/usr/local/bin/datadog-intake".to_string()
+}
+
+#[derive(Clone, Deserialize)]
+pub struct Config {
+    /// Millstone configuration.
+    pub millstone: MillstoneConfig,
+
+    /// Datadog intake configuration.
+    pub datadog_intake: DatadogIntakeConfig,
+
+    /// Baseline target configuration.
+    pub baseline: BaselineTargetConfig,
+
+    /// Comparison target configuration.
+    pub comparison: ComparisonTargetConfig,
+
+    #[serde(skip, default = "PathBuf::new")]
+    base_config_path: PathBuf,
+}
+
+#[derive(Clone, Deserialize)]
+pub struct MillstoneConfig {
     /// Container image to use for millstone.
     ///
-    /// This must be a valid image reference -- `millstone:x.y.z`, `registry.ddbuild.io/saluki/millstone:x.y.z`, etc --
-    /// to an image containing the `millstone` binary.
-    ///
-    /// The `millstone` binary must exist at `/usr/local/bin/millstone` in the image. Otherwise, the binary path can be
-    /// overridden with the `binary-path` argument.
-    #[arg(long)]
-    pub millstone_image: String,
+    /// This must be a valid image reference: `millstone:x.y.z`, `registry.ddbuild.io/saluki/millstone:x.y.z`, etc.
+    pub image: String,
 
     /// Path to the millstone binary.
-    #[arg(long, default_value = "/usr/local/bin/millstone")]
-    pub millstone_binary_path: String,
+    ///
+    /// Defaults to `/usr/local/bin/millstone`.
+    #[serde(default = "default_millstone_binary_path")]
+    pub binary_path: String,
 
     /// Path to the millstone configuration file to use for the baseline target.
     ///
     /// This file is mapped into the baseline target's `millstone` container and so it must exist on the system where
     /// this command is run from.
-    #[arg(long)]
-    pub baseline_millstone_config_path: PathBuf,
+    pub baseline_config_path: PathBuf,
 
     /// Optional path to the millstone configuration file to use for the comparison target.
     ///
-    /// If not specified, uses the same config as the baseline target.
-    ///
     /// This file is mapped into the comparison target's `millstone` container and so it must exist on the system where
     /// this command is run from.
-    #[arg(long)]
-    pub comparison_millstone_config_path: Option<PathBuf>,
+    pub comparison_config_path: PathBuf,
+}
 
+#[derive(Clone, Deserialize)]
+pub struct DatadogIntakeConfig {
     /// Container image to use for datadog-intake.
     ///
-    /// This must be a valid image reference -- `datadog-intake:x.y.z`,
-    /// `registry.ddbuild.io/saluki/datadog-intake:x.y.z`, etc -- to an image containing the `datadog-intake` binary.
-    ///
-    /// The `datadog-intake` binary must exist at `/usr/local/bin/datadog-intake` in the image. Otherwise, the binary
-    /// path can be overridden with the `binary-path` argument.
-    #[arg(long)]
-    pub datadog_intake_image: String,
+    /// This must be a valid image reference: `datadog-intake:x.y.z`, `registry.ddbuild.io/saluki/datadog-intake:x.y.z`, etc.
+    pub image: String,
 
     /// Path to the datadog-intake binary.
-    #[arg(long, default_value = "/usr/local/bin/datadog-intake")]
-    pub datadog_intake_binary_path: String,
+    ///
+    /// Defaults to `/usr/local/bin/datadog-intake`.
+    #[serde(default = "default_datadog_intake_binary_path")]
+    pub binary_path: String,
 
     /// Path to the datadog-intake configuration file to use.
     ///
-    /// This file is mapped into the datadog-intake container and so it must exist on the system where this command is run
-    /// from.
-    #[arg(long)]
-    pub datadog_intake_config_path: PathBuf,
+    /// This must be a valid path to a file on the host system.
+    pub config_path: PathBuf,
+}
 
+#[derive(Clone, Deserialize)]
+pub struct BaselineTargetConfig {
     /// Container image to use for baseline target.
     ///
-    /// This must be a valid image reference -- `dogstatsd:x.y.z`, `docker.io/datadog/dogstatsd:x.y.z`, etc -- to an
-    /// image containing the `dogstatsd` binary.
-    #[arg(long)]
-    pub baseline_image: String,
+    /// This must be a valid image reference: `name:x.y.z`, `docker.io/datadog/name:x.y.z`, etc.
+    pub image: String,
 
     /// Entrypoint for the baseline target container.
-    #[arg(long)]
-    pub baseline_entrypoint: Vec<String>,
+    #[serde(default = "Vec::new")]
+    pub entrypoint: Vec<String>,
 
     /// Command to run in the container to start the baseline target.
-    #[arg(long)]
-    pub baseline_command: Vec<String>,
+    #[serde(default = "Vec::new")]
+    pub command: Vec<String>,
 
     /// Path to the configuration file to supply to the baseline target.
     ///
-    /// This should be a valid path to a file on the host system, which will then be mapped into the baseline target container
+    /// This must be a valid path to a file on the host system, which will then be mapped into the baseline target container
     /// at `/etc/target/<filename>`, where `<filename>` is the basename of the file on the host system.
-    #[arg(long)]
-    pub baseline_config_path: PathBuf,
+    pub config_path: PathBuf,
 
     /// Additional environment variables to be passed into the baseline target container.
     ///
     /// These should be in the form of `KEY=VALUE`.
-    #[arg(long = "baseline-env-arg")]
-    pub baseline_additional_env_args: Vec<String>,
+    #[serde(default = "Vec::new")]
+    pub additional_env_vars: Vec<String>,
+}
 
-    /// Container image to use for the comparison target.
+#[derive(Clone, Deserialize)]
+pub struct ComparisonTargetConfig {
+    /// Container image to use for comparison target.
     ///
-    /// This must be a valid image reference -- `agent-data-plane:x.y.z`,
-    /// `registry.ddbuild.io/saluki/agent-data-plane:x.y.z`, etc -- to an image containing the `agent-data-plane`
-    /// binary.
-    #[arg(long)]
-    pub comparison_image: String,
+    /// This must be a valid image reference: `name:x.y.z`, `docker.io/datadog/name:x.y.z`, etc.
+    pub image: String,
 
     /// Entrypoint for the comparison target container.
-    #[arg(long)]
-    pub comparison_entrypoint: Vec<String>,
+    #[serde(default = "Vec::new")]
+    pub entrypoint: Vec<String>,
 
     /// Command to run in the container to start the comparison target.
-    #[arg(long)]
-    pub comparison_command: Vec<String>,
+    #[serde(default = "Vec::new")]
+    pub command: Vec<String>,
 
     /// Path to the configuration file to supply to the comparison target.
     ///
-    /// This should be a valid path to a file on the host system, which will then be mapped into the comparison target container
+    /// This must be a valid path to a file on the host system, which will then be mapped into the comparison target container
     /// at `/etc/target/<filename>`, where `<filename>` is the basename of the file on the host system.
-    #[arg(long)]
-    pub comparison_config_path: PathBuf,
+    pub config_path: PathBuf,
 
     /// Additional environment variables to be passed into the comparison target container.
     ///
     /// These should be in the form of `KEY=VALUE`.
-    #[arg(long = "comparison-env-arg")]
-    pub comparison_additional_env_args: Vec<String>,
+    #[serde(default = "Vec::new")]
+    pub additional_env_vars: Vec<String>,
 }
 
-impl Cli {
-    pub fn baseline_millstone_config(&self) -> MillstoneConfig {
-        MillstoneConfig {
-            image: self.millstone_image.clone(),
-            binary_path: Some(self.millstone_binary_path.clone()),
-            config_path: self.baseline_millstone_config_path.clone(),
+impl Config {
+    pub fn from_yaml(config_path: &str) -> Result<Self, GenericError> {
+        let config_path = PathBuf::from(config_path)
+            .canonicalize()
+            .error_context("Failed to canonicalize configuration file path.")?;
+
+        // We load the configuration file from the given path, and also environment variables, and then deserialize.
+        let mut config = ConfigurationLoader::default()
+            .from_yaml(&config_path)
+            .error_context("Failed to load configuration file.")?
+            .from_environment("GROUND_TRUTH")
+            .expect("Environment variable prefix should not be empty.")
+            .into_typed::<Config>()
+            .error_context("Failed to deserialize configuration file.")?;
+
+        // Now that we've deserialized things, calculate the base path of the configuration file we loaded, which we
+        // then use as the base path for any configuration fields which also specify paths to files. We only use the
+        // base path if those paths aren't already absolute.
+        config.base_config_path = config_path
+            .parent()
+            .expect("Configuration file path must be an absolute file path.")
+            .to_path_buf();
+
+        Ok(config)
+    }
+
+    fn get_canonicalized_config_path(&self, path: &Path) -> PathBuf {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.base_config_path.join(path)
         }
     }
 
-    pub fn comparison_millstone_config(&self) -> MillstoneConfig {
-        MillstoneConfig {
-            image: self.millstone_image.clone(),
-            binary_path: Some(self.millstone_binary_path.clone()),
-            config_path: self
-                .comparison_millstone_config_path
-                .clone()
-                .unwrap_or_else(|| self.baseline_millstone_config_path.clone()),
+    pub fn baseline_millstone_config(&self) -> AirlockMillstoneConfig {
+        AirlockMillstoneConfig {
+            image: self.millstone.image.clone(),
+            binary_path: Some(self.millstone.binary_path.clone()),
+            config_path: self.get_canonicalized_config_path(&self.millstone.baseline_config_path),
         }
     }
 
-    pub fn datadog_intake_config(&self) -> DatadogIntakeConfig {
-        DatadogIntakeConfig {
-            image: self.datadog_intake_image.clone(),
-            binary_path: Some(self.datadog_intake_binary_path.clone()),
-            config_path: self.datadog_intake_config_path.clone(),
+    pub fn comparison_millstone_config(&self) -> AirlockMillstoneConfig {
+        AirlockMillstoneConfig {
+            image: self.millstone.image.clone(),
+            binary_path: Some(self.millstone.binary_path.clone()),
+            config_path: self.get_canonicalized_config_path(&self.millstone.comparison_config_path),
+        }
+    }
+
+    pub fn datadog_intake_config(&self) -> AirlockDatadogIntakeConfig {
+        AirlockDatadogIntakeConfig {
+            image: self.datadog_intake.image.clone(),
+            binary_path: Some(self.datadog_intake.binary_path.clone()),
+            config_path: self.get_canonicalized_config_path(&self.datadog_intake.config_path),
         }
     }
 
     pub fn baseline_target_config(&self) -> TargetConfig {
         TargetConfig {
-            image: self.baseline_image.clone(),
-            entrypoint: self.baseline_entrypoint.clone(),
-            command: self
-                .baseline_command
-                .iter()
-                .flat_map(|s| s.split(' ').map(String::from))
-                .collect(),
-            additional_env_args: self.baseline_additional_env_args.clone(),
+            image: self.baseline.image.clone(),
+            entrypoint: self.baseline.entrypoint.clone(),
+            command: self.baseline.command.clone(),
+            additional_env_vars: self.baseline.additional_env_vars.clone(),
         }
     }
 
     pub fn comparison_target_config(&self) -> TargetConfig {
         TargetConfig {
-            image: self.comparison_image.clone(),
-            entrypoint: self.comparison_entrypoint.clone(),
-            command: self
-                .comparison_command
-                .iter()
-                .flat_map(|s| s.split(' ').map(String::from))
-                .collect(),
-            additional_env_args: self.comparison_additional_env_args.clone(),
+            image: self.comparison.image.clone(),
+            entrypoint: self.comparison.entrypoint.clone(),
+            command: self.comparison.command.clone(),
+            additional_env_vars: self.comparison.additional_env_vars.clone(),
         }
+    }
+
+    pub fn baseline_target_config_path(&self) -> PathBuf {
+        self.get_canonicalized_config_path(&self.baseline.config_path)
+    }
+
+    pub fn comparison_target_config_path(&self) -> PathBuf {
+        self.get_canonicalized_config_path(&self.comparison.config_path)
     }
 }
