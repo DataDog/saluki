@@ -1,6 +1,6 @@
 .build-adp-definition:
   stage: build
-  image: ${DOCKER_BUILD_IMAGE}
+  image: ${SALUKI_GENERAL_CI_IMAGE}
   needs:
     - calculate-build-metadata
   retry: 2
