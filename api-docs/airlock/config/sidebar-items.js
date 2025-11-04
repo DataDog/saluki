@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["Action"],"struct":["ADPConfig","Cli","DSDConfig","MetricsIntakeConfig","MillstoneConfig"]};
+window.SIDEBAR_ITEMS = {"enum":["Action"],"struct":["ADPConfig","Cli","DSDConfig","DatadogIntakeConfig","MillstoneConfig"]};

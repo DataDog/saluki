@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `bin/correctness/airlock/src/config.rs`."><title>config.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-ca0dd0c4.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="airlock" data-themes="" data-resource-suffix="" data-rustdoc-version="1.93.0-nightly (d5419f1e9 2025-10-30)" data-channel="nightly" data-search-js="search-6acd48a0.js" data-stringdex-js="stringdex-c3e638e9.js" data-settings-js="settings-c38705f0.js" ><script src="../../static.files/storage-e2aeef58.js"></script><script defer src="../../static.files/src-script-813739b1.js"></script><script defer src="../../src-files.js"></script><script defer src="../../static.files/main-ce535bd0.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-263c88ec.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content"><div class="main-heading"><h1><div class="sub-heading">airlock/</div>config.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="kw">use </span>std::path::PathBuf;
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `bin/correctness/airlock/src/config.rs`."><title>config.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-ca0dd0c4.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="airlock" data-themes="" data-resource-suffix="" data-rustdoc-version="1.93.0-nightly (b15a874aa 2025-11-02)" data-channel="nightly" data-search-js="search-5c29b3b5.js" data-stringdex-js="stringdex-c3e638e9.js" data-settings-js="settings-c38705f0.js" ><script src="../../static.files/storage-e2aeef58.js"></script><script defer src="../../static.files/src-script-813739b1.js"></script><script defer src="../../src-files.js"></script><script defer src="../../static.files/main-ce535bd0.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-263c88ec.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content"><div class="main-heading"><h1><div class="sub-heading">airlock/</div>config.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="kw">use </span>std::path::PathBuf;
 <a href=#2 id=2 data-nosnippet>2</a>
 <a href=#3 id=3 data-nosnippet>3</a><span class="kw">use </span>clap::{ArgAction, Args, Parser, Subcommand};
 <a href=#4 id=4 data-nosnippet>4</a><span class="kw">use </span>tracing::level_filters::LevelFilter;
@@ -18,7 +18,7 @@
 <a href=#18 id=18 data-nosnippet>18</a>    </span><span class="attr">#[arg(long)]
 <a href=#19 id=19 data-nosnippet>19</a>    </span><span class="kw">pub </span>isolation_group_id: String,
 <a href=#20 id=20 data-nosnippet>20</a>
-<a href=#21 id=21 data-nosnippet>21</a>    <span class="doccomment">/// Subcommand to run.    
+<a href=#21 id=21 data-nosnippet>21</a>    <span class="doccomment">/// Subcommand to run.
 <a href=#22 id=22 data-nosnippet>22</a>    </span><span class="attr">#[command(subcommand)]
 <a href=#23 id=23 data-nosnippet>23</a>    </span><span class="kw">pub </span>action: Action,
 <a href=#24 id=24 data-nosnippet>24</a>}
@@ -40,9 +40,9 @@
 <a href=#40 id=40 data-nosnippet>40</a>    </span><span class="attr">#[command(name = <span class="string">"run-millstone"</span>)]
 <a href=#41 id=41 data-nosnippet>41</a>    </span>Millstone(MillstoneConfig),
 <a href=#42 id=42 data-nosnippet>42</a>
-<a href=#43 id=43 data-nosnippet>43</a>    <span class="doccomment">/// Run a metrics-intake container to receive output metrics.
-<a href=#44 id=44 data-nosnippet>44</a>    </span><span class="attr">#[command(name = <span class="string">"run-metrics-intake"</span>)]
-<a href=#45 id=45 data-nosnippet>45</a>    </span>MetricsIntake(MetricsIntakeConfig),
+<a href=#43 id=43 data-nosnippet>43</a>    <span class="doccomment">/// Run a datadog-intake container to receive output metrics.
+<a href=#44 id=44 data-nosnippet>44</a>    </span><span class="attr">#[command(name = <span class="string">"run-datadog-intake"</span>)]
+<a href=#45 id=45 data-nosnippet>45</a>    </span>DatadogIntake(DatadogIntakeConfig),
 <a href=#46 id=46 data-nosnippet>46</a>
 <a href=#47 id=47 data-nosnippet>47</a>    <span class="doccomment">/// Run a DogStatsD container to receive input metrics.
 <a href=#48 id=48 data-nosnippet>48</a>    </span><span class="attr">#[command(name = <span class="string">"run-dogstatsd"</span>)]
@@ -78,26 +78,26 @@
 <a href=#78 id=78 data-nosnippet>78</a>    </span><span class="kw">pub </span>config_path: PathBuf,
 <a href=#79 id=79 data-nosnippet>79</a>}
 <a href=#80 id=80 data-nosnippet>80</a>
-<a href=#81 id=81 data-nosnippet>81</a><span class="doccomment">/// metrics-intake configuration.
+<a href=#81 id=81 data-nosnippet>81</a><span class="doccomment">/// datadog-intake configuration.
 <a href=#82 id=82 data-nosnippet>82</a></span><span class="attr">#[derive(Args, Clone)]
-<a href=#83 id=83 data-nosnippet>83</a></span><span class="kw">pub struct </span>MetricsIntakeConfig {
+<a href=#83 id=83 data-nosnippet>83</a></span><span class="kw">pub struct </span>DatadogIntakeConfig {
 <a href=#84 id=84 data-nosnippet>84</a>    <span class="doccomment">/// Container image to use.
 <a href=#85 id=85 data-nosnippet>85</a>    ///
-<a href=#86 id=86 data-nosnippet>86</a>    /// This must be a valid image reference -- `metrics-intake:x.y.z`,
-<a href=#87 id=87 data-nosnippet>87</a>    /// `registry.ddbuild.io/saluki/metrics-intake:x.y.z`, etc -- to an image containing the `metrics-intake` binary.
+<a href=#86 id=86 data-nosnippet>86</a>    /// This must be a valid image reference -- `datadog-intake:x.y.z`,
+<a href=#87 id=87 data-nosnippet>87</a>    /// `registry.ddbuild.io/saluki/datadog-intake:x.y.z`, etc -- to an image containing the `datadog-intake` binary.
 <a href=#88 id=88 data-nosnippet>88</a>    ///
-<a href=#89 id=89 data-nosnippet>89</a>    /// The `metrics-intake` binary must exist at `/usr/local/bin/metrics-intake` in the image. Otherwise, the binary
+<a href=#89 id=89 data-nosnippet>89</a>    /// The `datadog-intake` binary must exist at `/usr/local/bin/datadog-intake` in the image. Otherwise, the binary
 <a href=#90 id=90 data-nosnippet>90</a>    /// path can be overridden with the `binary-path` argument.
 <a href=#91 id=91 data-nosnippet>91</a>    </span><span class="attr">#[arg(short = <span class="string">'i'</span>, long)]
 <a href=#92 id=92 data-nosnippet>92</a>    </span><span class="kw">pub </span>image: String,
 <a href=#93 id=93 data-nosnippet>93</a>
-<a href=#94 id=94 data-nosnippet>94</a>    <span class="doccomment">/// Path to the metrics-intake binary.
-<a href=#95 id=95 data-nosnippet>95</a>    </span><span class="attr">#[arg(short = <span class="string">'b'</span>, long, default_value = <span class="string">"/usr/local/bin/metrics-intake"</span>)]
+<a href=#94 id=94 data-nosnippet>94</a>    <span class="doccomment">/// Path to the datadog-intake binary.
+<a href=#95 id=95 data-nosnippet>95</a>    </span><span class="attr">#[arg(short = <span class="string">'b'</span>, long, default_value = <span class="string">"/usr/local/bin/datadog-intake"</span>)]
 <a href=#96 id=96 data-nosnippet>96</a>    </span><span class="kw">pub </span>binary_path: String,
 <a href=#97 id=97 data-nosnippet>97</a>
-<a href=#98 id=98 data-nosnippet>98</a>    <span class="doccomment">/// Path to the metrics-intake configuration file to use.
+<a href=#98 id=98 data-nosnippet>98</a>    <span class="doccomment">/// Path to the datadog-intake configuration file to use.
 <a href=#99 id=99 data-nosnippet>99</a>    ///
-<a href=#100 id=100 data-nosnippet>100</a>    /// This file is mapped into the metrics-intake container and so it must exist on the system where this command is run
+<a href=#100 id=100 data-nosnippet>100</a>    /// This file is mapped into the datadog-intake container and so it must exist on the system where this command is run
 <a href=#101 id=101 data-nosnippet>101</a>    /// from.
 <a href=#102 id=102 data-nosnippet>102</a>    </span><span class="attr">#[arg(short = <span class="string">'c'</span>, long)]
 <a href=#103 id=103 data-nosnippet>103</a>    </span><span class="kw">pub </span>config_path: PathBuf,
