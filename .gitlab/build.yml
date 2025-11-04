@@ -3,6 +3,7 @@
   image: ${DOCKER_BUILD_IMAGE}
   needs:
     - calculate-build-metadata
+    - get-aws-build-cache-bucket-credentials
   retry: 2
   timeout: 15m
   variables:
@@ -21,6 +22,8 @@
       --build-arg RUSTC_WRAPPER=sccache
       --build-arg SCCACHE_BUCKET=saluki-build-cache
       --build-arg SCCACHE_REGION=us-east-1
+      --build-arg AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      --build-arg AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
       --build-arg BUILD_IMAGE=${ALPINE_BUILD_IMAGE}
       --build-arg APP_IMAGE=${APP_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
@@ -54,6 +57,16 @@ calculate-build-metadata:
   artifacts:
     reports:
       dotenv: build.env
+
+get-aws-build-cache-bucket-credentials:
+  stage: build
+  image: ${SALUKI_BUILD_CI_IMAGE}
+  needs: []
+  script:
+    - aws configure export-credentials --format env >> credentials.env
+  artifacts:
+    reports:
+      dotenv: credentials.env
 
 build-adp-image:
   extends: [.build-common-variables, .build-adp-definition]
