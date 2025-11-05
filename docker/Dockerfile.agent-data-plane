@@ -57,8 +57,9 @@ FROM ${BUILDER_BASE} AS final
 
 WORKDIR /adp
 COPY . /adp
-RUN mkdir -p /adp/target/bin && RUSTFLAGS="--cfg tokio_unstable -C link-arg=-fuse-ld=mold" cargo build --profile ${BUILD_PROFILE} --package agent-data-plane --features ${BUILD_FEATURES} --target-dir /adp/target && \
-cp /adp/target/${BUILD_PROFILE}/agent-data-plane /adp/target/bin/
+RUN mkdir -p /adp/target/bin; RUSTFLAGS="--cfg tokio_unstable -C link-arg=-fuse-ld=mold" cargo build --profile ${BUILD_PROFILE} --package agent-data-plane --features ${BUILD_FEATURES} --target-dir /adp/target; \
+  sccache --show-stats; \
+  cp /adp/target/${BUILD_PROFILE}/agent-data-plane /adp/target/bin/
 
 # Calculate the necessary licenses that we need to include in the final image.
 FROM ${BUILD_IMAGE} AS license-builder
