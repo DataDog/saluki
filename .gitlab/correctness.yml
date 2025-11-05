@@ -14,7 +14,7 @@
       - /tmp/ground-truth/ # for debugging
     when: always
   variables:
-    DD_LOG_LEVEL: "airlock=trace,debug"
+    RUST_LOG: "airlock=trace,debug"
     GROUND_TRUTH_ALPINE_IMAGE: registry.ddbuild.io/alpine:latest
     GROUND_TRUTH_MILLSTONE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
     GROUND_TRUTH_DATADOG_INTAKE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/datadog-intake:${CI_COMMIT_SHA}
