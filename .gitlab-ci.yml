@@ -19,11 +19,15 @@ workflow:
       variables:
         BASE_ADP_IMAGE_VERSION: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"
         APP_DEV_BUILD: "true"
+        BUILD_PROFILE: "release"
+        BUILD_TIMEOUT: "10m"
 
     - if: $CI_COMMIT_TAG
       variables:
         BASE_ADP_IMAGE_VERSION: ${CI_COMMIT_TAG}
         APP_DEV_BUILD: "false"
+        BUILD_PROFILE: "optimized-release"
+        BUILD_TIMEOUT: "20m"
 
 variables:
   # High-level repository paths we build off of, and dedicated images needed for various jobs.
@@ -93,7 +97,6 @@ default:
 # Common build-specific variables that need to be shared across stages.
 .build-common-variables:
   variables:
-    BUILD_PROFILE: "optimized-release"
     BUILD_FEATURES: "default"
     BUILDER_BASE: "builder"
     FIPS_ENABLED: "false"

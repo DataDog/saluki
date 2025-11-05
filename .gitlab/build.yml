@@ -4,14 +4,14 @@
   needs:
     - calculate-build-metadata
   retry: 2
-  timeout: 15m
+  timeout: ${BUILD_TIMEOUT}
   variables:
     APP_BUILD_TIME: "${CI_PIPELINE_CREATED_AT}"
     DDCI_CONFIGURE_OTEL_EXPORTER: true
     # Try to limit build concurrency to avoid issues with hitting container cgroup limits.
     CARGO_BUILD_JOBS: 12
   script:
-    - 'echo "Building ADP image ${IMAGE_TAG}... (image version: ${ADP_IMAGE_VERSION}, build concurrency: ${CARGO_BUILD_JOBS})..."'
+    - 'echo "Building ADP image ${IMAGE_TAG}... (image version: ${ADP_IMAGE_VERSION}, build concurrency: ${CARGO_BUILD_JOBS}, profile: ${BUILD_PROFILE})..."'
     - docker buildx build
       --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.agent-data-plane
