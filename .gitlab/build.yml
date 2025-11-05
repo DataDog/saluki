@@ -6,7 +6,7 @@
   retry: 2
   timeout: ${BUILD_TIMEOUT}
   variables:
-    APP_BUILD_TIME: "${CI_PIPELINE_CREATED_AT}"
+    APP_BUILD_TIME: ${CI_PIPELINE_CREATED_AT}
     DDCI_CONFIGURE_OTEL_EXPORTER: true
     # Try to limit build concurrency to avoid issues with hitting container cgroup limits.
     CARGO_BUILD_JOBS: 12
