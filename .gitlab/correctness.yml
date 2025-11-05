@@ -21,6 +21,7 @@
     GROUND_TRUTH_BASELINE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
     GROUND_TRUTH_COMPARISON__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
   script:
+    - curl -X PUT http://$EMISSARY_BIND_ADDRESS/admin/logger -H "Content-Type: application/json" -d '{"level":"debug"}'
     - make build-ground-truth
     - target/debug/ground-truth ./test/correctness/${CORRECTNESS_TEST_CASE}/config.yaml
 
