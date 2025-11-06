@@ -1,4 +1,5 @@
-FROM registry.ddbuild.io/images/mirror/alpine:3.22.1
+# FROM registry.ddbuild.io/images/mirror/alpine:3.22.1
+FROM alpine:3.22.1
 
 ARG RUST_VERSION=1.90.0
 ARG BUILDCACHE_VERSION=0.31.5
@@ -17,7 +18,7 @@ RUN curl -s -L -o buildcache.tar.gz https://gitlab.com/bits-n-bites/buildcache/-
     && cd buildcache-v${BUILDCACHE_VERSION} \
     && mkdir build \
     && cd build \
-    && cmake -DCMAKE_BUILD_TYPE=Release ../src \
+    && cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-include cstdint" ../src \
     && cmake --build . --config Release \
     && cp buildcache /usr/local/bin \
     && rm -rf buildcache-v${BUILDCACHE_VERSION} buildcache.tar.gz
