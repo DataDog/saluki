@@ -1,28 +1,32 @@
-ARG DD_AGENT_VERSION=latest-jmx
-ARG DD_AGENT_IMAGE=datadog/agent:${DD_AGENT_VERSION}
+FROM registry.ddbuild.io/docker:24.0.4-jammy
 
-FROM ${DD_AGENT_IMAGE} AS agent
-
-FROM registry.ddbuild.io/docker:20.10-py3
-
-# Install datadog-ci.
-RUN set -x \
-    && mkdir -p /etc/apt/keyrings/ \
+# Install some basic dependencies, including some additional APT repositories.
+RUN mkdir -p /etc/apt/keyrings/ \
     && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource-repo.gpg.key \
     && echo "deb [signed-by=/etc/apt/keyrings/nodesource-repo.gpg.key] https://deb.nodesource.com/node_20.x nodistro main" > /etc/apt/sources.list.d/nodesource.list \
+    && curl -L https://s3.amazonaws.com/dd-package-public/dd-package-$(dpkg --print-architecture).deb -o dd-package.deb \
+    && dpkg -i dd-package.deb \
+    && rm dd-package.deb \
     && apt-get update \
-    && apt-get -y install --no-install-recommends binutils nodejs=20.11.1-1nodesource1 \
+    && apt-get -y install --no-install-recommends ca-certificates git lsb-release binutils nodejs=20.11.1-1nodesource1 \
+    && dd-package --bucket binaries-ddbuild-io-prod --package devtools/dd-package-dev --distribution "20.04" \
     && apt-get -y clean \
-    && rm -rf /var/lib/apt/lists/* \
-    && npm install -g @datadog/datadog-ci@3.0.1 \
-    && datadog-ci version
-    
-# Import python bits from Agent image.
-# Do last in the pipeline to avoid polluting the builds of above protobuf/go etc from using these libs
-COPY --from=agent /opt/datadog-agent/embedded/ /opt/datadog-agent/embedded/
-ENV LD_LIBRARY_PATH="/opt/datadog-agent/embedded/lib:${LD_LIBRARY_PATH}"
-ENV PATH="/opt/datadog-agent/embedded/bin:${PATH}"
-    
+    && rm -rf /var/lib/apt/lists/*
+
+# Install datadog-ci.
+RUN npm install -g @datadog/datadog-ci@3.0.1 && \
+    datadog-ci version
+
+# Install aws-cli.
+RUN curl -o awscliv2.zip https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip \
+    && unzip awscliv2.zip \
+    && rm awscliv2.zip \
+    && ./aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli \
+    aws --version
+
+# Install pr-commenter.
+RUN dd-package --bucket binaries-ddbuild-io-prod --package devtools/pr-commenter
+
 COPY .ci/images/general/entrypoint.sh /
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT [ "/entrypoint.sh" ]

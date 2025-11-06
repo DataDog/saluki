@@ -26,11 +26,10 @@
   rules:
     - if: !reference [.on_official_release, rules, if]
       when: manual
-  image: ${DOCKER_BUILD_IMAGE}
+  image: ${SALUKI_GENERAL_CI_IMAGE}
   variables:
     TARGET_BUCKET_PATH: "s3://binaries-ddbuild-io-prod/saluki/"
   script:
-    - apt-get update && DEBIAN_FRONTEND=noninteractive apt install -yy --no-install-recommends awscli >/dev/null
     - mkdir /tmp/image && mkdir /tmp/tarball
     - crane export ${SOURCE_IMAGE} - --platform ${TARGET_OS}/${TARGET_ARCH} | tar -C /tmp/image -xf -
     - mkdir -p /tmp/tarball/opt/datadog /tmp/tarball/opt/datadog-agent/embedded/bin

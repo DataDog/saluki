@@ -1,6 +1,6 @@
 .build-adp-definition:
   stage: build
-  image: ${DOCKER_BUILD_IMAGE}
+  image: ${SALUKI_GENERAL_CI_IMAGE}
   needs:
     - calculate-build-metadata
   retry: 2
@@ -18,7 +18,7 @@
       --metadata-file /tmp/build.metadata
       --tag ${IMAGE_TAG}
       --build-arg CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
-      --build-arg BUILD_IMAGE=${ALPINE_BUILD_IMAGE}
+      --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg APP_IMAGE=${APP_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg BUILD_FEATURES=${BUILD_FEATURES}

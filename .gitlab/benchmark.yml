@@ -16,7 +16,7 @@ build-adp-baseline-image:
   # Don't run benchmarks unless it's a PR, basically.
   rules:
     - if: !reference [.on_development_branch, rules, if]
-  image: "${SALUKI_SMP_CI_IMAGE}"
+  image: "${SALUKI_GENERAL_CI_IMAGE}"
   needs: []
   retry: 2
   timeout: 15m
@@ -43,7 +43,7 @@ build-adp-baseline-image:
       --tag ${BASELINE_ADP_IMG}
       --build-arg CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
-      --build-arg BUILD_IMAGE=${ALPINE_BUILD_IMAGE}
+      --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg APP_GIT_HASH=${BASELINE_ADP_SHA}
       --label git.repository=${CI_PROJECT_NAME}
@@ -66,7 +66,7 @@ build-adp-comparison-image:
   # Don't run benchmarks unless it's a PR, basically.
   rules:
     - if: !reference [.on_development_branch, rules, if]
-  image: "${SALUKI_SMP_CI_IMAGE}"
+  image: "${SALUKI_GENERAL_CI_IMAGE}"
   needs: []
   retry: 2
   timeout: 15m
@@ -90,7 +90,7 @@ build-adp-comparison-image:
       --tag ${COMPARISON_ADP_IMG}
       --build-arg CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
-      --build-arg BUILD_IMAGE=${ALPINE_BUILD_IMAGE}
+      --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg APP_GIT_HASH=${COMPARISON_ADP_SHA}
       --label git.repository=${CI_PROJECT_NAME}
@@ -116,7 +116,7 @@ run-benchmarks-adp:
   needs:
     - build-adp-baseline-image
     - build-adp-comparison-image
-  image: "${SALUKI_SMP_CI_IMAGE}"
+  image: "${SALUKI_GENERAL_CI_IMAGE}"
   before_script:
     - *setup-smp-env
   artifacts:
