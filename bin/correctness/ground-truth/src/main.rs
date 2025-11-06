@@ -1,4 +1,4 @@
-//! Test runner for comparing the outputs of DogStatsD and Agent Data Plane when fed deterministic inputs.
+//! Test runner for comparing the telemetry data outputs of two similar targets when fed by an identical, deterministic input.
 
 #![deny(warnings)]
 #![deny(missing_docs)]
@@ -48,16 +48,16 @@ async fn main() -> Result<(), GenericError> {
 }
 
 async fn run(config: Config) -> Result<(), GenericError> {
-    info!("ground-truth starting...");
+    info!("Test run starting...");
 
     let test_runner = TestRunner::from_config(&config).await?;
     let raw_results = test_runner.run().await?;
 
-    info!("Running analysis...");
+    info!("Test run complete. Analyzing results...");
 
     raw_results.run_analysis().error_context("Analysis failed.")?;
 
-    info!("Analysis complete: no difference detected between DogStatsD and Agent Data Plane.");
+    info!("Analysis complete: no difference detected between baseline and comparison.");
 
     Ok(())
 }

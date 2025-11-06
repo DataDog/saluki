@@ -240,7 +240,7 @@ impl GroupRunner {
         let runner_log_dir = log_base_dir.join(isolation_group_id.clone());
 
         info!(
-            "Creating test group runner for test type '{}'. Logs will be saved to {}",
+            "Creating test group runner for target '{}'. Logs will be saved to {}",
             test_id,
             runner_log_dir.display()
         );
