@@ -8,7 +8,7 @@ use std::{
 };
 
 use airlock::{
-    config::{DatadogIntakeConfig, MillstoneConfig, TargetConfig},
+    config::{DatadogIntakeConfig, MillstoneConfig},
     driver::{Driver, DriverConfig, DriverDetails, ExitStatus},
 };
 use rand::{distr::SampleString as _, rng};
@@ -22,133 +22,95 @@ use tracing::{debug, error, info, info_span, Instrument as _, Span};
 use crate::{analysis::RawTestResults, config::Config, sync::Coordinator};
 
 pub struct TestRunner {
-    adp_config: TargetConfig,
-    adp_config_path: PathBuf,
-    dsd_config: TargetConfig,
-    dsd_config_path: PathBuf,
     datadog_intake_config: DatadogIntakeConfig,
-    dsd_millstone_config: MillstoneConfig,
-    adp_millstone_config: MillstoneConfig,
-
+    millstone_config: MillstoneConfig,
+    baseline_target_driver_config: DriverConfig,
+    comparison_target_driver_config: DriverConfig,
     cancel_token: CancellationToken,
-    dsd_coordinator: Coordinator,
-    adp_coordinator: Coordinator,
+    baseline_coordinator: Coordinator,
+    comparison_coordinator: Coordinator,
     log_base_dir: PathBuf,
 }
 
 impl TestRunner {
-    pub fn from_config(config: &Config) -> Self {
-        Self {
-            adp_config: config.comparison_target_config(),
-            adp_config_path: config.comparison_target_config_path(),
-            dsd_config: config.baseline_target_config(),
-            dsd_config_path: config.baseline_target_config_path(),
+    pub async fn from_config(config: &Config) -> Result<Self, GenericError> {
+        Ok(Self {
             datadog_intake_config: config.datadog_intake_config(),
-            dsd_millstone_config: config.baseline_millstone_config(),
-            adp_millstone_config: config.comparison_millstone_config(),
+            millstone_config: config.millstone_config(),
+            baseline_target_driver_config: config.baseline_target_driver_config().await?,
+            comparison_target_driver_config: config.comparison_target_driver_config().await?,
             cancel_token: CancellationToken::new(),
-            dsd_coordinator: Coordinator::new(),
-            adp_coordinator: Coordinator::new(),
+            baseline_coordinator: Coordinator::new(),
+            comparison_coordinator: Coordinator::new(),
             log_base_dir: PathBuf::from("/tmp/ground-truth"),
-        }
+        })
     }
 
-    async fn build_dsd_group_runner(&self, isolation_group_id: String) -> Result<GroupRunner, GenericError> {
-        debug!("Creating DSD group runner...");
+    async fn build_baseline_group_runner(&self, isolation_group_id: String) -> Result<GroupRunner, GenericError> {
+        debug!("Creating baseline group runner...");
 
         let mut group_runner = GroupRunner::new(
             isolation_group_id,
-            "dsd",
+            "baseline",
             self.log_base_dir.clone(),
-            self.dsd_coordinator.clone(),
+            self.baseline_coordinator.clone(),
             self.cancel_token.child_token(),
         );
-
-        let dogstatsd_config = DriverConfig::target("dogstatsd", self.dsd_config.clone())
-            .await?
-            // Bind mount the configuration file to both `/etc/datadog-agent/datadog.yaml` and `/opt/datadog-agent/etc/dogstatsd.yaml`
-            // to handle either the Datadog Agent _or_ the standalone DogStatsD binary.
-            .with_bind_mount(self.dsd_config_path.clone(), "/etc/datadog-agent/datadog.yaml")
-            .with_bind_mount(self.dsd_config_path.clone(), "/etc/datadog-agent/dogstatsd.yaml")
-            // We _have_ to pass the API key as an environment variable, otherwise the container won't cleanly start.
-            .with_env_var("DD_API_KEY", "dummy-api-key-correctness-testing")
-            // We override the default health check baked into the image, which is egregiously long in my opinion. It
-            // has an interval of 60 seconds, with no startup allowance... which means it takes a full minute before the
-            // first healthcheck is even triggered, even if the Agent is healthy long before that. Very dumb.
-            //
-            // We're specifying a startup period here so that we rapidly check the Agent's health (once a second) during
-            // the "startup" period (20 seconds), which should lead to detecting the Agent becoming healthy almost as
-            // soon as that transition happens.
-            .with_healthcheck(
-                vec!["/probe.sh".to_string()],
-                Duration::from_secs(60),
-                Duration::from_secs(5),
-                2,
-                Duration::from_secs(20),
-                Duration::from_secs(1),
-            );
-
         group_runner
             .with_driver(DriverConfig::datadog_intake(self.datadog_intake_config.clone()).await?)?
-            .with_driver(dogstatsd_config)?
-            .with_driver(DriverConfig::millstone(self.dsd_millstone_config.clone()).await?)?;
+            .with_driver(self.baseline_target_driver_config.clone())?
+            .with_driver(DriverConfig::millstone(self.millstone_config.clone()).await?)?;
 
         Ok(group_runner)
     }
 
-    async fn build_adp_group_runner(&self, isolation_group_id: String) -> Result<GroupRunner, GenericError> {
-        debug!("Creating ADP group runner...");
+    async fn build_comparison_group_runner(&self, isolation_group_id: String) -> Result<GroupRunner, GenericError> {
+        debug!("Creating comparison group runner...");
 
         let mut group_runner = GroupRunner::new(
             isolation_group_id,
-            "adp",
+            "comparison",
             self.log_base_dir.clone(),
-            self.adp_coordinator.clone(),
+            self.comparison_coordinator.clone(),
             self.cancel_token.child_token(),
         );
 
-        let adp_config = DriverConfig::target("agent-data-plane", self.adp_config.clone())
-            .await?
-            // We _have_ to pass the API key as an environment variable, otherwise the container won't cleanly start.
-            .with_env_var("DD_API_KEY", "dummy-api-key-correctness-testing")
-            // Bind mount the configuration file to `/etc/datadog-agent/datadog.yaml`.
-            .with_bind_mount(self.adp_config_path.clone(), "/etc/datadog-agent/datadog.yaml");
-
         group_runner
             .with_driver(DriverConfig::datadog_intake(self.datadog_intake_config.clone()).await?)?
-            .with_driver(adp_config)?
-            .with_driver(DriverConfig::millstone(self.adp_millstone_config.clone()).await?)?;
+            .with_driver(self.comparison_target_driver_config.clone())?
+            .with_driver(DriverConfig::millstone(self.millstone_config.clone()).await?)?;
 
         Ok(group_runner)
     }
 
     async fn unwrap_or_shutdown<T>(
-        &mut self, step_id: &'static str, dsd_result: Result<T, GenericError>, adp_result: Result<T, GenericError>,
+        &mut self, step_id: &'static str, baseline_result: Result<T, GenericError>,
+        comparison_result: Result<T, GenericError>,
     ) -> Result<(T, T), GenericError> {
-        match (dsd_result, adp_result) {
-            (Ok(dsd_result), Ok(adp_result)) => Ok((dsd_result, adp_result)),
+        match (baseline_result, comparison_result) {
+            (Ok(baseline_result), Ok(comparison_result)) => Ok((baseline_result, comparison_result)),
 
             // If either side failed, we need to shutdown everything before returning the error.
-            (maybe_dsd_error, maybe_adp_error) => {
+            (maybe_baseline_error, maybe_comparison_error) => {
                 // Trigger any spawned drivers to shutdown and cleanup, and wait for that to happen.
                 self.cancel_token.cancel();
-                self.dsd_coordinator.wait().await;
-                self.adp_coordinator.wait().await;
+                self.baseline_coordinator.wait().await;
+                self.comparison_coordinator.wait().await;
 
                 // Figure out which side failed to initially spawn successfully, and return the appropriate
                 // error. If both failed, then we log both errors and return a generic error instead.
-                match (maybe_dsd_error, maybe_adp_error) {
-                    (Ok(_), Err(adp_error)) => {
-                        error!("DogStatsD group runner completed step '{}' successfully, but Agent Data Plane group runner encountered an error.", step_id);
-                        Err(adp_error)
+                match (maybe_baseline_error, maybe_comparison_error) {
+                    (Ok(_), Err(comparison_error)) => {
+                        error!("Baseline group runner completed step '{}' successfully, but comparison group runner encountered an error.", step_id);
+                        Err(comparison_error)
                     }
-                    (Err(dsd_error), Ok(_)) => {
-                        error!("Agent Data Plane group runner completed step '{}' successfully, but DogStatsD group runner encountered an error.", step_id);
-                        Err(dsd_error)
+                    (Err(baseline_error), Ok(_)) => {
+                        error!("Comparison group runner completed step '{}' successfully, but baseline group runner encountered an error.", step_id);
+                        Err(baseline_error)
                     }
-                    (Err(dsd_error), Err(adp_error)) => {
-                        error!(error = %dsd_error, "DogStatsD group runner encountered an error at step '{}'.", step_id);
-                        error!(error = %adp_error, "Agent Data Plane group runner encountered an error at step '{}'.", step_id);
+                    (Err(baseline_error), Err(comparison_error)) => {
+                        error!(error = %baseline_error, "Baseline group runner encountered an error at step '{}'.", step_id);
+                        error!(error = %comparison_error, "Comparison group runner encountered an error at step '{}'.", step_id);
                         Err(generic_error!("Failed to complete step '{}'.", step_id))
                     }
                     _ => unreachable!(),
@@ -158,63 +120,76 @@ impl TestRunner {
     }
 
     pub async fn run(mut self) -> Result<RawTestResults, GenericError> {
-        let dsd_isolation_group_id = generate_isolation_group_id();
-        let adp_isolation_group_id = generate_isolation_group_id();
+        let baseline_isolation_group_id = generate_isolation_group_id();
+        let comparison_isolation_group_id = generate_isolation_group_id();
 
-        let dsd_runner_span = info_span!(
+        let baseline_runner_span = info_span!(
             "runner",
-            isolation_group_id = dsd_isolation_group_id.clone(),
-            test_id = "dsd"
+            isolation_group_id = baseline_isolation_group_id.clone(),
+            test_id = "baseline"
         );
-        let adp_runner_span = info_span!(
+        let comparison_runner_span = info_span!(
             "runner",
-            isolation_group_id = adp_isolation_group_id.clone(),
-            test_id = "adp"
+            isolation_group_id = comparison_isolation_group_id.clone(),
+            test_id = "comparison"
         );
 
-        // Build a group runner for both DogStatsD and Agent Data Plane, which handles the complexities of spawning and
-        // monitoring the containers, as well as cleaning them up after failure and/or when we're done.
-        let dsd_group_runner = self.build_dsd_group_runner(dsd_isolation_group_id.clone()).await?;
-        let adp_group_runner = self.build_adp_group_runner(adp_isolation_group_id.clone()).await?;
+        // Build a group runner for both the baseline and comparison targets, and then spawn the groups.
+        //
+        // This spawns all the necessary containers in the correct order, and waits for them to become healthy.
+        info!("Spawning containers for baseline and comparison targets...");
+        let baseline_group_runner = self
+            .build_baseline_group_runner(baseline_isolation_group_id.clone())
+            .await?;
+        let comparison_group_runner = self
+            .build_comparison_group_runner(comparison_isolation_group_id.clone())
+            .await?;
 
-        // Do the initial spawn of both group runners, which should get all relevant containers spawned and running in
-        // the correct order, and so on.
-        info!("Spawning containers for DogStatsD and Agent Data Plane...");
-        let dsd_spawn_result = run_in_background(&dsd_runner_span, dsd_group_runner.spawn());
-        let adp_spawn_result = run_in_background(&adp_runner_span, adp_group_runner.spawn());
+        let baseline_spawn_result = run_in_background(&baseline_runner_span, baseline_group_runner.spawn());
+        let comparison_spawn_result = run_in_background(&comparison_runner_span, comparison_group_runner.spawn());
 
         // Everything is running, so just wait for the results (or an error) to come back from both group runners.
-        let (dsd_result_collector, adp_result_collector) = self
-            .unwrap_or_shutdown("spawn_containers", dsd_spawn_result.await, adp_spawn_result.await)
+        let (baseline_result_collector, comparison_result_collector) = self
+            .unwrap_or_shutdown(
+                "spawn_containers",
+                baseline_spawn_result.await,
+                comparison_spawn_result.await,
+            )
             .await?;
         info!("Containers spawned successfully. Waiting for results...");
 
-        let maybe_dsd_results = run_in_background(&dsd_runner_span, dsd_result_collector.wait_for_results());
-        let maybe_adp_results = run_in_background(&adp_runner_span, adp_result_collector.wait_for_results());
+        let maybe_baseline_results =
+            run_in_background(&baseline_runner_span, baseline_result_collector.wait_for_results());
+        let maybe_comparison_results =
+            run_in_background(&comparison_runner_span, comparison_result_collector.wait_for_results());
 
-        let (dsd_results, adp_results) = self
-            .unwrap_or_shutdown("collect_results", maybe_dsd_results.await, maybe_adp_results.await)
+        let (baseline_results, comparison_results) = self
+            .unwrap_or_shutdown(
+                "collect_results",
+                maybe_baseline_results.await,
+                maybe_comparison_results.await,
+            )
             .await?;
 
         // We've gotten our results back, so signal to any remaining containers that they can shutdown now.
         info!("Cleaning up remaining containers and resources...");
         self.cancel_token.cancel();
-        self.dsd_coordinator.wait().await;
-        self.adp_coordinator.wait().await;
+        self.baseline_coordinator.wait().await;
+        self.comparison_coordinator.wait().await;
 
-        debug!("Cleaning up DogStatsD-related resources...");
-        if let Err(e) = Driver::clean_related_resources(dsd_isolation_group_id).await {
-            error!(error = %e, "Failed to clean up DogStatsD-related resources. Manual cleanup may be required.");
+        debug!("Cleaning up resources from baseline group...");
+        if let Err(e) = Driver::clean_related_resources(baseline_isolation_group_id).await {
+            error!(error = %e, "Failed to clean up resources for baseline group. Manual cleanup may be required.");
         }
 
-        debug!("Cleaning up Agent Data Plane-related resources...");
-        if let Err(e) = Driver::clean_related_resources(adp_isolation_group_id).await {
-            error!(error = %e, "Failed to clean up Agent Data Plane-related resources. Manual cleanup may be required.");
+        debug!("Cleaning up resources from comparison group...");
+        if let Err(e) = Driver::clean_related_resources(comparison_isolation_group_id).await {
+            error!(error = %e, "Failed to clean up resources for comparison group. Manual cleanup may be required.");
         }
 
         info!("Cleanup complete.");
 
-        Ok(RawTestResults::new(dsd_results, adp_results))
+        Ok(RawTestResults::new(baseline_results, comparison_results))
     }
 }
 
@@ -265,7 +240,7 @@ impl GroupRunner {
         let runner_log_dir = log_base_dir.join(isolation_group_id.clone());
 
         info!(
-            "Creating test group runner for test type '{}'. Logs will be saved to {}.",
+            "Creating test group runner for target '{}'. Logs will be saved to {}",
             test_id,
             runner_log_dir.display()
         );
@@ -372,7 +347,7 @@ impl ResultCollector {
         let datadog_intake_port = spawned_drivers
             .get_driver_details("datadog-intake")
             .and_then(|details| details.try_get_exposed_port("tcp", 2049))
-            .ok_or_else(|| generic_error!("Failed to get exposed port details for datadog-intake container"))?;
+            .ok_or_else(|| generic_error!("Failed to get exposed port details for datadog-intake container."))?;
 
         Ok(Self {
             millstone_handle,
@@ -382,6 +357,7 @@ impl ResultCollector {
 
     async fn wait_for_results(self) -> Result<Vec<Metric>, GenericError> {
         debug!("Waiting for millstone container to complete...");
+
         // Wait for millstone to complete, since that signals that all metrics have been _sent_ to the target.
         if let ExitStatus::Failed { code, error } = self.millstone_handle.wait().await {
             return Err(generic_error!("Failed to drive millstone to completion; process exited with non-zero exit code ({}). Error message: {}", code, error));

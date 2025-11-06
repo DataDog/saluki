@@ -1,10 +1,14 @@
 use std::path::{Path, PathBuf};
 
-use airlock::config::{
-    DatadogIntakeConfig as AirlockDatadogIntakeConfig, MillstoneConfig as AirlockMillstoneConfig, TargetConfig,
+use airlock::{
+    config::{
+        DatadogIntakeConfig as AirlockDatadogIntakeConfig, MillstoneConfig as AirlockMillstoneConfig,
+        TargetConfig as AirlockTargetConfig,
+    },
+    driver::DriverConfig,
 };
 use saluki_config::ConfigurationLoader;
-use saluki_error::{ErrorContext as _, GenericError};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
 
 fn default_millstone_binary_path() -> String {
@@ -24,10 +28,10 @@ pub struct Config {
     pub datadog_intake: DatadogIntakeConfig,
 
     /// Baseline target configuration.
-    pub baseline: BaselineTargetConfig,
+    pub baseline: TargetConfig,
 
     /// Comparison target configuration.
-    pub comparison: ComparisonTargetConfig,
+    pub comparison: TargetConfig,
 
     #[serde(skip, default = "PathBuf::new")]
     base_config_path: PathBuf,
@@ -46,17 +50,11 @@ pub struct MillstoneConfig {
     #[serde(default = "default_millstone_binary_path")]
     pub binary_path: String,
 
-    /// Path to the millstone configuration file to use for the baseline target.
+    /// Path to the millstone configuration file to use.
     ///
     /// This file is mapped into the baseline target's `millstone` container and so it must exist on the system where
     /// this command is run from.
-    pub baseline_config_path: PathBuf,
-
-    /// Optional path to the millstone configuration file to use for the comparison target.
-    ///
-    /// This file is mapped into the comparison target's `millstone` container and so it must exist on the system where
-    /// this command is run from.
-    pub comparison_config_path: PathBuf,
+    pub config_path: PathBuf,
 }
 
 #[derive(Clone, Deserialize)]
@@ -79,55 +77,27 @@ pub struct DatadogIntakeConfig {
 }
 
 #[derive(Clone, Deserialize)]
-pub struct BaselineTargetConfig {
-    /// Container image to use for baseline target.
+pub struct TargetConfig {
+    /// Container image to use for target.
     ///
     /// This must be a valid image reference: `name:x.y.z`, `docker.io/datadog/name:x.y.z`, etc.
     pub image: String,
 
-    /// Entrypoint for the baseline target container.
+    /// Entrypoint for the target container.
     #[serde(default = "Vec::new")]
     pub entrypoint: Vec<String>,
 
-    /// Command to run in the container to start the baseline target.
+    /// Command to run in the container to start the target.
     #[serde(default = "Vec::new")]
     pub command: Vec<String>,
 
-    /// Path to the configuration file to supply to the baseline target.
+    /// Files to be mapped into the target container.
     ///
-    /// This must be a valid path to a file on the host system, which will then be mapped into the baseline target container
-    /// at `/etc/target/<filename>`, where `<filename>` is the basename of the file on the host system.
-    pub config_path: PathBuf,
-
-    /// Additional environment variables to be passed into the baseline target container.
-    ///
-    /// These should be in the form of `KEY=VALUE`.
+    /// Entries must be in the form of `host_path:container_path`.
     #[serde(default = "Vec::new")]
-    pub additional_env_vars: Vec<String>,
-}
+    pub files: Vec<String>,
 
-#[derive(Clone, Deserialize)]
-pub struct ComparisonTargetConfig {
-    /// Container image to use for comparison target.
-    ///
-    /// This must be a valid image reference: `name:x.y.z`, `docker.io/datadog/name:x.y.z`, etc.
-    pub image: String,
-
-    /// Entrypoint for the comparison target container.
-    #[serde(default = "Vec::new")]
-    pub entrypoint: Vec<String>,
-
-    /// Command to run in the container to start the comparison target.
-    #[serde(default = "Vec::new")]
-    pub command: Vec<String>,
-
-    /// Path to the configuration file to supply to the comparison target.
-    ///
-    /// This must be a valid path to a file on the host system, which will then be mapped into the comparison target container
-    /// at `/etc/target/<filename>`, where `<filename>` is the basename of the file on the host system.
-    pub config_path: PathBuf,
-
-    /// Additional environment variables to be passed into the comparison target container.
+    /// Additional environment variables to be passed into the target container.
     ///
     /// These should be in the form of `KEY=VALUE`.
     #[serde(default = "Vec::new")]
@@ -160,7 +130,8 @@ impl Config {
         Ok(config)
     }
 
-    fn get_canonicalized_config_path(&self, path: &Path) -> PathBuf {
+    fn get_canonicalized_config_path<P: AsRef<Path>>(&self, path: P) -> PathBuf {
+        let path = path.as_ref();
         if path.is_absolute() {
             path.to_path_buf()
         } else {
@@ -168,19 +139,11 @@ impl Config {
         }
     }
 
-    pub fn baseline_millstone_config(&self) -> AirlockMillstoneConfig {
+    pub fn millstone_config(&self) -> AirlockMillstoneConfig {
         AirlockMillstoneConfig {
             image: self.millstone.image.clone(),
             binary_path: Some(self.millstone.binary_path.clone()),
-            config_path: self.get_canonicalized_config_path(&self.millstone.baseline_config_path),
-        }
-    }
-
-    pub fn comparison_millstone_config(&self) -> AirlockMillstoneConfig {
-        AirlockMillstoneConfig {
-            image: self.millstone.image.clone(),
-            binary_path: Some(self.millstone.binary_path.clone()),
-            config_path: self.get_canonicalized_config_path(&self.millstone.comparison_config_path),
+            config_path: self.get_canonicalized_config_path(&self.millstone.config_path),
         }
     }
 
@@ -192,29 +155,49 @@ impl Config {
         }
     }
 
-    pub fn baseline_target_config(&self) -> TargetConfig {
-        TargetConfig {
-            image: self.baseline.image.clone(),
-            entrypoint: self.baseline.entrypoint.clone(),
-            command: self.baseline.command.clone(),
-            additional_env_vars: self.baseline.additional_env_vars.clone(),
+    async fn target_driver_config(&self, target_config: &TargetConfig) -> Result<DriverConfig, GenericError> {
+        let airlock_target_config = AirlockTargetConfig {
+            image: target_config.image.clone(),
+            entrypoint: target_config.entrypoint.clone(),
+            command: target_config.command.clone(),
+            additional_env_vars: target_config.additional_env_vars.clone(),
+        };
+
+        let mut driver_config = DriverConfig::target("target", airlock_target_config).await?;
+
+        for file in &target_config.files {
+            // Parse the two file paths -- host path and container path -- from the entry,
+            // and canonicalize the host path. The container path must be absolute.
+            match file.split_once(':') {
+                Some((host_path, container_path)) => {
+                    let host_path = self.get_canonicalized_config_path(host_path);
+                    let container_path = Path::new(container_path);
+                    if !container_path.is_absolute() {
+                        return Err(generic_error!(
+                            "Container path '{}' must be absolute.",
+                            container_path.display()
+                        ));
+                    }
+
+                    driver_config = driver_config.with_bind_mount(host_path, container_path)
+                }
+                None => {
+                    return Err(generic_error!(
+                        "Invalid file entry format (expected 'host_path:container_path', got '{}')",
+                        file,
+                    ))
+                }
+            };
         }
+
+        Ok(driver_config)
     }
 
-    pub fn comparison_target_config(&self) -> TargetConfig {
-        TargetConfig {
-            image: self.comparison.image.clone(),
-            entrypoint: self.comparison.entrypoint.clone(),
-            command: self.comparison.command.clone(),
-            additional_env_vars: self.comparison.additional_env_vars.clone(),
-        }
+    pub async fn baseline_target_driver_config(&self) -> Result<DriverConfig, GenericError> {
+        self.target_driver_config(&self.baseline).await
     }
 
-    pub fn baseline_target_config_path(&self) -> PathBuf {
-        self.get_canonicalized_config_path(&self.baseline.config_path)
-    }
-
-    pub fn comparison_target_config_path(&self) -> PathBuf {
-        self.get_canonicalized_config_path(&self.comparison.config_path)
+    pub async fn comparison_target_driver_config(&self) -> Result<DriverConfig, GenericError> {
+        self.target_driver_config(&self.comparison).await
     }
 }

@@ -6,8 +6,8 @@ consists of the following components:
 
 - `airlock`: helper library for running containerized applications in "isolated" groups, to allow for spawning
   supporting applications alongside a system under test (SUT) without colliding with other concurrent tests
-- `ground-truth`: a test runner designed specifically to drive an identical, deterministic DogStatsD load into
-  both the standalone DogStatsD server and Agent Data Plane, and compare the outputs they forward to their configured
+- `ground-truth`: a test runner designed specifically to drive an identical, deterministic telemetry workload into a
+  baseline and comparison target (e.g., Datadog Agent vs ADP), and compare the outputs they forward to their configured
   intake, highlighting any discrepancies
 - `datadog-intake`: a mock intake in the spirit of [`fakeintake`][fakeintake_gh] that provides a more ergonomic
   approach to dumping the captured data
@@ -26,13 +26,11 @@ following the pattern of `make build-<binary-name>-image`. For example, to build
 
 ## Running correctness tests
 
-Currently, the correctness tests are hardcoded: we run a single test, against a specific version of the standalone
-DogStatsD server, a specific version of Agent Data Plane, with a fixed `millstone` configuration. Customizing this test,
-or running multiple variations, etc, is left as an exercise to the reader.
-
 To run the correctness tests, you must first build the related container images (`datadog-intake`, `millstone`, and ADP
 itself) before you can run the tests. This can be done simply by running `make build-datadog-intake-image
-build-millstone-image build-adp-image`. Once this is done, you can run the correctness test itself by running `make
+build-millstone-image build-datadog-agent-image`. We avoid automatically building the container images when running the
+test because this can lead to unnecessary rebuilds, and it's quicker to simply run `make build-datadog-agent-image`
+after making actual changes to ADP. Once this is done, you can run the correctness test itself by running `make
 test-correctness`.
 
 If updates to any of the required components are made, you can simply rebuild the individual corresponding image
