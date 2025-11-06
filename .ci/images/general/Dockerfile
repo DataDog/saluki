@@ -22,7 +22,7 @@ RUN curl -o awscliv2.zip https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zi
     && unzip awscliv2.zip \
     && rm awscliv2.zip \
     && ./aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli \
-    aws --version
+    && aws --version
 
 # Install pr-commenter.
 RUN dd-package --bucket binaries-ddbuild-io-prod --package devtools/pr-commenter
