@@ -50,7 +50,7 @@ async fn main() -> Result<(), GenericError> {
 async fn run(config: Config) -> Result<(), GenericError> {
     info!("ground-truth starting...");
 
-    let test_runner = TestRunner::from_config(&config);
+    let test_runner = TestRunner::from_config(&config).await?;
     let raw_results = test_runner.run().await?;
 
     info!("Running analysis...");

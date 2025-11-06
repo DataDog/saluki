@@ -45,6 +45,7 @@ impl fmt::Display for ExitStatus {
 /// Driver configuration.
 ///
 /// This is the basic set of configuration options needed to spawn the container for a given driver.
+#[derive(Clone)]
 pub struct DriverConfig {
     driver_id: &'static str,
     image: String,
