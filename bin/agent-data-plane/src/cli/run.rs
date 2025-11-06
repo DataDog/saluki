@@ -13,7 +13,8 @@ use saluki_components::{
         BufferedIncrementalConfiguration, DatadogEventsConfiguration, DatadogLogsConfiguration,
         DatadogMetricsConfiguration, DatadogServiceChecksConfiguration,
     },
-    forwarders::DatadogConfiguration,
+    forwarders::{DatadogConfiguration, TraceAgentForwarderConfiguration},
+    relays::otlp::OtlpRelayConfiguration,
     sources::{DogStatsDConfiguration, OtlpConfiguration},
     transforms::{
         AggregateConfiguration, ChainedConfiguration, DogstatsDMapperConfiguration, DogstatsDPrefixFilterConfiguration,
@@ -253,13 +254,43 @@ async fn create_topology(
     add_checks_to_blueprint(&mut blueprint, configuration, env_provider)?;
 
     if configuration.get_typed_or_default::<bool>("adp.otlp.enabled") {
+        add_otlp_to_blueprint(&mut blueprint, configuration, env_provider)?;
+    }
+
+    Ok(blueprint)
+}
+
+fn add_otlp_to_blueprint(
+    blueprint: &mut TopologyBlueprint, configuration: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
+) -> Result<(), GenericError> {
+    let proxy_mode = configuration.get_typed_or_default::<bool>("adp.otlp.proxy_mode");
+    if proxy_mode {
+        let otlp_relay_config = OtlpRelayConfiguration::from_configuration(configuration)?;
+        blueprint.add_relay("otlp_relay", otlp_relay_config)?;
+
+        let otlp_destination = configuration
+            .get_typed::<String>("otlp_destination_endpoint")
+            .unwrap_or_else(|_| "http://localhost:4320".to_string());
+
+        let api_key = configuration
+            .get_typed::<String>("api_key")
+            .expect("API key is required");
+
+        let otlp_dd_forwarder_config =
+            DatadogConfiguration::from_configuration(configuration)?.with_endpoint_override(otlp_destination, api_key);
+
+        blueprint.add_forwarder("otlp_out", otlp_dd_forwarder_config)?;
+        blueprint.connect_component("otlp_out", ["otlp_relay"])?;
+
+        let trace_agent_forwarder_config = TraceAgentForwarderConfiguration::from_configuration(configuration)?;
+        blueprint.add_forwarder("trace_agent_out", trace_agent_forwarder_config)?;
+        blueprint.connect_component("trace_agent_out", ["otlp_relay"])?;
+    } else {
         let otlp_config = OtlpConfiguration::from_configuration(configuration)?
             .with_workload_provider(env_provider.workload().clone());
         blueprint.add_source("otlp_in", otlp_config)?;
         // Skip aggregation so that counters are not converted to rates.
         blueprint.connect_component("dsd_prefix_filter", ["otlp_in.metrics"])?;
-
-        // Only add and connect the logs encoder when OTLP is enabled (which provides log inputs).
         let dd_logs_config = DatadogLogsConfiguration::from_configuration(configuration)
             .map(BufferedIncrementalConfiguration::from_encoder_builder)
             .error_context("Failed to configure Datadog Logs encoder.")?;
@@ -267,8 +298,7 @@ async fn create_topology(
         blueprint.connect_component("dd_logs_encode", ["otlp_in.logs"])?;
         blueprint.connect_component("dd_out", ["dd_logs_encode"])?;
     }
-
-    Ok(blueprint)
+    Ok(())
 }
 
 fn add_checks_to_blueprint(

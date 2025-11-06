@@ -11,7 +11,7 @@ use super::{
 };
 use crate::{
     components::{
-        destinations::DestinationBuilder, encoders::EncoderBuilder, forwarders::ForwarderBuilder,
+        destinations::DestinationBuilder, encoders::EncoderBuilder, forwarders::ForwarderBuilder, relays::RelayBuilder,
         sources::SourceBuilder, transforms::TransformBuilder, ComponentContext,
     },
     data_model::event::Event,
@@ -45,6 +45,7 @@ pub struct TopologyBlueprint {
     name: String,
     graph: Graph,
     sources: HashMap<ComponentId, RegisteredComponent<Box<dyn SourceBuilder + Send>>>,
+    relays: HashMap<ComponentId, RegisteredComponent<Box<dyn RelayBuilder + Send>>>,
     transforms: HashMap<ComponentId, RegisteredComponent<Box<dyn TransformBuilder + Send>>>,
     destinations: HashMap<ComponentId, RegisteredComponent<Box<dyn DestinationBuilder + Send>>>,
     encoders: HashMap<ComponentId, RegisteredComponent<Box<dyn EncoderBuilder + Send>>>,
@@ -63,6 +64,7 @@ impl TopologyBlueprint {
             name: name.to_string(),
             graph: Graph::default(),
             sources: HashMap::new(),
+            relays: HashMap::new(),
             transforms: HashMap::new(),
             destinations: HashMap::new(),
             encoders: HashMap::new(),
@@ -159,6 +161,37 @@ impl TopologyBlueprint {
         let _ = self.sources.insert(
             component_id,
             RegisteredComponent::new(Box::new(builder), source_registry),
+        );
+
+        Ok(self)
+    }
+
+    /// Adds a relay component to the blueprint.
+    ///
+    /// # Errors
+    ///
+    /// If the component ID is invalid or the component cannot be added to the graph, an error is returned.
+    pub fn add_relay<I, B>(&mut self, component_id: I, builder: B) -> Result<&mut Self, GenericError>
+    where
+        I: AsRef<str>,
+        B: RelayBuilder + Send + 'static,
+    {
+        let component_id = self
+            .graph
+            .add_relay(component_id, &builder)
+            .error_context("Failed to add relay to topology graph.")?;
+
+        let mut relay_registry = self
+            .component_registry
+            .get_or_create(format!("components.relays.{}", component_id));
+        let mut bounds_builder = relay_registry.bounds_builder();
+        builder.specify_bounds(&mut bounds_builder);
+
+        self.recalculate_bounds();
+
+        let _ = self.relays.insert(
+            component_id,
+            RegisteredComponent::new(Box::new(builder), relay_registry),
         );
 
         Ok(self)
@@ -337,6 +370,24 @@ impl TopologyBlueprint {
             );
         }
 
+        let mut relays = HashMap::new();
+        for (id, builder) in self.relays {
+            let (builder, mut component_registry) = builder.into_parts();
+            let allocation_token = component_registry.token();
+
+            let component_context = ComponentContext::relay(id.clone());
+            let relay = builder
+                .build(component_context)
+                .track_allocations(allocation_token)
+                .await
+                .with_error_context(|| format!("Failed to build relay '{}'.", id))?;
+
+            relays.insert(
+                id,
+                RegisteredComponent::new(relay.track_allocations(allocation_token), component_registry),
+            );
+        }
+
         let mut transforms = HashMap::new();
         for (id, builder) in self.transforms {
             let (builder, mut component_registry) = builder.into_parts();
@@ -413,6 +464,7 @@ impl TopologyBlueprint {
             self.name,
             self.graph,
             sources,
+            relays,
             transforms,
             destinations,
             encoders,

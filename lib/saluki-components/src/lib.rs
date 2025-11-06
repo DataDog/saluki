@@ -9,5 +9,6 @@ mod common;
 pub mod destinations;
 pub mod encoders;
 pub mod forwarders;
+pub mod relays;
 pub mod sources;
 pub mod transforms;

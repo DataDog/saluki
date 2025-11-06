@@ -22,6 +22,7 @@ use crate::{
         destinations::{Destination, DestinationContext},
         encoders::{Encoder, EncoderContext},
         forwarders::{Forwarder, ForwarderContext},
+        relays::{Relay, RelayContext},
         sources::{Source, SourceContext},
         transforms::{Transform, TransformContext},
         ComponentContext, ComponentType,
@@ -39,6 +40,7 @@ pub struct BuiltTopology {
     name: String,
     graph: Graph,
     sources: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Source + Send>>>>,
+    relays: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Relay + Send>>>>,
     transforms: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Transform + Send>>>>,
     destinations: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Destination + Send>>>>,
     encoders: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Encoder + Send>>>>,
@@ -52,6 +54,7 @@ impl BuiltTopology {
     pub(crate) fn from_parts(
         name: String, graph: Graph,
         sources: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Source + Send>>>>,
+        relays: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Relay + Send>>>>,
         transforms: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Transform + Send>>>>,
         destinations: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Destination + Send>>>>,
         encoders: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Encoder + Send>>>>,
@@ -62,6 +65,7 @@ impl BuiltTopology {
             name,
             graph,
             sources,
+            relays,
             transforms,
             destinations,
             encoders,
@@ -133,6 +137,34 @@ impl BuiltTopology {
                 alloc_group,
                 source.run(context),
             );
+            component_task_map.insert(task_handle.id(), component_id);
+        }
+
+        // Spawn our relays.
+        for (component_id, relay) in self.relays {
+            let (relay, component_registry) = relay.into_parts();
+
+            let dispatcher = interconnects
+                .take_relay_dispatcher(&component_id)
+                .ok_or_else(|| generic_error!("No payloads dispatcher found for relay component '{}'", component_id))?;
+
+            let shutdown_handle = shutdown_coordinator.register();
+            let health_handle = health_registry
+                .register_component(format!("{}.relays.{}", root_component_name, component_id))
+                .expect("duplicate relay component ID in health registry");
+
+            let component_context = ComponentContext::relay(component_id.clone());
+            let context = RelayContext::new(
+                &topology_context,
+                &component_context,
+                component_registry,
+                shutdown_handle,
+                health_handle,
+                dispatcher,
+            );
+
+            let (alloc_group, relay) = relay.into_parts();
+            let task_handle = spawn_component(&mut component_tasks, component_context, alloc_group, relay.run(context));
             component_task_map.insert(task_handle.id(), component_id);
         }
 
@@ -282,6 +314,7 @@ impl BuiltTopology {
 struct ComponentInterconnects {
     interconnect_capacity: NonZeroUsize,
     source_dispatchers: HashMap<ComponentId, EventsDispatcher>,
+    relay_dispatchers: HashMap<ComponentId, PayloadsDispatcher>,
     transform_consumers: HashMap<ComponentId, (mpsc::Sender<EventsBuffer>, EventsConsumer)>,
     transform_dispatchers: HashMap<ComponentId, EventsDispatcher>,
     destination_consumers: HashMap<ComponentId, (mpsc::Sender<EventsBuffer>, EventsConsumer)>,
@@ -295,6 +328,7 @@ impl ComponentInterconnects {
         let mut interconnects = Self {
             interconnect_capacity,
             source_dispatchers: HashMap::new(),
+            relay_dispatchers: HashMap::new(),
             transform_consumers: HashMap::new(),
             transform_dispatchers: HashMap::new(),
             destination_consumers: HashMap::new(),
@@ -309,6 +343,10 @@ impl ComponentInterconnects {
 
     fn take_source_dispatcher(&mut self, component_id: &ComponentId) -> Option<EventsDispatcher> {
         self.source_dispatchers.remove(component_id)
+    }
+
+    fn take_relay_dispatcher(&mut self, component_id: &ComponentId) -> Option<PayloadsDispatcher> {
+        self.relay_dispatchers.remove(component_id)
     }
 
     fn take_transform_dispatcher(&mut self, component_id: &ComponentId) -> Option<EventsDispatcher> {
@@ -354,9 +392,11 @@ impl ComponentInterconnects {
                 ComponentType::Source | ComponentType::Transform => {
                     self.generate_event_interconnect(upstream_id, output_map)?;
                 }
-                ComponentType::Encoder => self.generate_payload_interconnect(upstream_id, output_map)?,
+                ComponentType::Relay | ComponentType::Encoder => {
+                    self.generate_payload_interconnect(upstream_id, output_map)?
+                }
                 _ => panic!(
-                    "Only sources, transforms, and encoders can dispatch events/payloads to downstream components."
+                    "Only sources, transforms, relays, and encoders can dispatch events/payloads to downstream components."
                 ),
             }
         }
@@ -453,12 +493,16 @@ impl ComponentInterconnects {
         let (component_id, component_type, component_context) = component_id.into_parts();
 
         match component_type {
+            ComponentType::Relay => self
+                .relay_dispatchers
+                .entry(component_id)
+                .or_insert_with(|| PayloadsDispatcher::new(component_context)),
             ComponentType::Encoder => self
                 .encoder_dispatchers
                 .entry(component_id)
                 .or_insert_with(|| PayloadsDispatcher::new(component_context)),
             _ => {
-                panic!("Only encoders can dispatch payloads to downstream components.")
+                panic!("Only relays and encoders can dispatch payloads to downstream components.")
             }
         }
     }

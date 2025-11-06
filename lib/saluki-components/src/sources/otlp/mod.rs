@@ -5,20 +5,10 @@ use std::time::Duration;
 use ::metrics::Counter;
 use async_trait::async_trait;
 use axum::body::Bytes;
-use axum::extract::State;
-use axum::http::StatusCode;
-use axum::routing::post;
-use axum::Router;
 use bytesize::ByteSize;
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, MemoryLimiter};
-use otlp_protos::opentelemetry::proto::collector::logs::v1::logs_service_server::{LogsService, LogsServiceServer};
-use otlp_protos::opentelemetry::proto::collector::logs::v1::{ExportLogsServiceRequest, ExportLogsServiceResponse};
-use otlp_protos::opentelemetry::proto::collector::metrics::v1::metrics_service_server::{
-    MetricsService, MetricsServiceServer,
-};
-use otlp_protos::opentelemetry::proto::collector::metrics::v1::{
-    ExportMetricsServiceRequest, ExportMetricsServiceResponse,
-};
+use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use otlp_protos::opentelemetry::proto::collector::logs::v1::ExportLogsServiceRequest;
+use otlp_protos::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest;
 use otlp_protos::opentelemetry::proto::logs::v1::ResourceLogs as OtlpResourceLogs;
 use otlp_protos::opentelemetry::proto::metrics::v1::ResourceMetrics as OtlpResourceMetrics;
 use prost::Message;
@@ -38,18 +28,16 @@ use saluki_core::{
 };
 use saluki_env::WorkloadProvider;
 use saluki_error::{generic_error, GenericError};
-use saluki_io::net::listener::ConnectionOrientedListener;
-use saluki_io::net::server::http::HttpServer;
-use saluki_io::net::util::hyper::TowerToHyperService;
 use saluki_io::net::ListenAddress;
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use tokio::select;
 use tokio::sync::mpsc;
 use tokio::time::{interval, MissedTickBehavior};
-use tonic::transport::Server;
-use tonic::{Request, Response, Status};
 use tracing::{debug, error};
+
+use crate::common::otlp::config::Receiver;
+use crate::common::otlp::{OtlpHandler, OtlpServerBuilder};
 
 mod attributes;
 mod logs;
@@ -143,89 +131,64 @@ pub struct OtlpConfig {
     logs: LogsConfig,
 }
 
-#[derive(Deserialize, Debug, Default)]
-pub struct Receiver {
-    #[serde(default)]
-    protocols: Protocols,
-}
-
-#[derive(Deserialize, Debug, Default)]
-struct Protocols {
-    #[serde(default)]
-    grpc: GrpcConfig,
-
-    #[serde(default)]
-    http: HttpConfig,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct GrpcConfig {
-    /// The endpoint to bind the OTLP/gRPC server to.
-    ///
-    /// Defaults to 0.0.0.0:4317.
-    #[serde(default = "default_grpc_endpoint")]
-    pub endpoint: String,
-
-    /// The transport to use for the OTLP/gRPC server.
-    ///
-    /// Defaults to "tcp".
-    #[serde(default = "default_transport")]
-    pub transport: String,
-
-    /// The maximum size (in MiB) of messages accepted by the OTLP/gRPC endpoint.
-    ///
-    /// Defaults to 4 MiB.
-    #[serde(default = "default_max_recv_msg_size_mib")]
-    #[serde(rename = "max_recv_msg_size_mib")]
-    pub max_recv_msg_size_mib: u64,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct HttpConfig {
-    /// The OTLP/HTTP listener endpoint.
-    ///
-    /// Defaults to 0.0.0.0:4318.
-    #[serde(default = "default_http_endpoint")]
-    pub endpoint: String,
-}
-
-impl Default for GrpcConfig {
-    fn default() -> Self {
-        Self {
-            endpoint: default_grpc_endpoint(),
-            transport: default_transport(),
-            max_recv_msg_size_mib: default_max_recv_msg_size_mib(),
-        }
-    }
-}
-
-impl Default for HttpConfig {
-    fn default() -> Self {
-        Self {
-            endpoint: default_http_endpoint(),
-        }
-    }
-}
-
-fn default_grpc_endpoint() -> String {
-    "0.0.0.0:4317".to_string()
-}
-
-fn default_http_endpoint() -> String {
-    "0.0.0.0:4318".to_string()
-}
-
-fn default_transport() -> String {
-    "tcp".to_string()
-}
-
-fn default_max_recv_msg_size_mib() -> u64 {
-    4
-}
-
 enum OtlpResource {
     Metrics(OtlpResourceMetrics),
     Logs(OtlpResourceLogs),
+}
+
+/// Handler that decodes OTLP bytes and sends resources to the converter.
+struct SourceHandler {
+    tx: mpsc::Sender<OtlpResource>,
+}
+
+impl SourceHandler {
+    fn new(tx: mpsc::Sender<OtlpResource>) -> Self {
+        Self { tx }
+    }
+}
+
+#[async_trait]
+impl OtlpHandler for SourceHandler {
+    async fn handle_metrics(&self, body: Bytes) -> Result<(), String> {
+        match ExportMetricsServiceRequest::decode(body) {
+            Ok(request) => {
+                for resource_metrics in request.resource_metrics {
+                    if self.tx.send(OtlpResource::Metrics(resource_metrics)).await.is_err() {
+                        error!("Failed to send resource metrics to converter; channel is closed.");
+                        return Err("Internal processing channel closed.".to_string());
+                    }
+                }
+                Ok(())
+            }
+            Err(e) => {
+                error!(error = %e, "Failed to decode OTLP protobuf request.");
+                Err("Bad Request: Invalid protobuf.".to_string())
+            }
+        }
+    }
+
+    async fn handle_logs(&self, body: Bytes) -> Result<(), String> {
+        match ExportLogsServiceRequest::decode(body) {
+            Ok(request) => {
+                for resource_logs in request.resource_logs {
+                    if self.tx.send(OtlpResource::Logs(resource_logs)).await.is_err() {
+                        error!("Failed to send resource logs to converter; channel is closed.");
+                        return Err("Internal processing channel closed.".to_string());
+                    }
+                }
+                Ok(())
+            }
+            Err(e) => {
+                error!(error = %e, "Failed to decode OTLP protobuf request.");
+                Err("Bad Request: Invalid protobuf.".to_string())
+            }
+        }
+    }
+
+    async fn handle_traces(&self, _body: Bytes) -> Result<(), String> {
+        error!("OTLP traces translation is not yet supported in source mode.");
+        Err("OTLP traces are not supported in translation mode. Use proxy mode instead.".to_string())
+    }
 }
 
 #[derive(Deserialize, Debug)]
@@ -390,7 +353,7 @@ impl MemoryBounds for OtlpConfiguration {
         builder
             .minimum()
             .with_single_value::<Otlp>("source struct")
-            .with_single_value::<GrpcService>("gRPC service");
+            .with_single_value::<SourceHandler>("source handler");
     }
 }
 
@@ -433,33 +396,16 @@ impl Source for Otlp {
             ),
         );
 
-        // Create and spawn the gRPC server.
-        let grpc_metrics_server = MetricsServiceServer::new(GrpcService::new(tx.clone(), memory_limiter.clone()))
-            .max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
-        let grpc_logs_server = LogsServiceServer::new(GrpcService::new(tx.clone(), memory_limiter.clone()))
-            .max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
-        let grpc_server = Server::builder()
-            .add_service(grpc_metrics_server)
-            .add_service(grpc_logs_server);
-
-        let grpc_socket_addr = match self.grpc_endpoint {
-            ListenAddress::Tcp(addr) => addr,
-            _ => return Err(generic_error!("OTLP gRPC endpoint must be a TCP address.")),
-        };
-        thread_pool_handle.spawn_traced_named("otlp-grpc-server", grpc_server.serve(grpc_socket_addr));
-
-        // Create and spawn the HTTP server.
-        let service = TowerToHyperService::new(
-            Router::new()
-                .route("/v1/metrics", post(http_metric_handler))
-                .route("/v1/logs", post(http_logs_handler))
-                .with_state((tx, memory_limiter.clone())),
+        let handler = SourceHandler::new(tx);
+        let server_builder = OtlpServerBuilder::new(
+            self.http_endpoint,
+            self.grpc_endpoint,
+            self.grpc_max_recv_msg_size_bytes,
         );
-        let http_listener = ConnectionOrientedListener::from_listen_address(self.http_endpoint)
-            .await
-            .map_err(|e| generic_error!("Failed to create OTLP HTTP listener: {}", e))?;
-        let http_server = HttpServer::from_listener(http_listener, service);
-        let (http_shutdown, mut http_error) = http_server.listen();
+
+        let (http_shutdown, mut http_error) = server_builder
+            .build(handler, memory_limiter.clone(), thread_pool_handle)
+            .await?;
 
         health.mark_ready();
         debug!("OTLP source started.");
@@ -489,97 +435,6 @@ impl Source for Otlp {
         debug!("OTLP source stopped.");
 
         Ok(())
-    }
-}
-
-async fn http_logs_handler(
-    State((tx, memory_limiter)): State<(mpsc::Sender<OtlpResource>, MemoryLimiter)>, body: Bytes,
-) -> (StatusCode, &'static str) {
-    memory_limiter.wait_for_capacity().await;
-    match ExportLogsServiceRequest::decode(body) {
-        Ok(request) => {
-            for resource_logs in request.resource_logs {
-                if tx.send(OtlpResource::Logs(resource_logs)).await.is_err() {
-                    error!("Failed to send resource logs to converter; channel is closed.");
-                    return (StatusCode::INTERNAL_SERVER_ERROR, "Internal processing channel closed.");
-                }
-            }
-            (StatusCode::OK, "OK")
-        }
-        Err(e) => {
-            error!(error = %e, "Failed to decode OTLP protobuf request.");
-            (StatusCode::BAD_REQUEST, "Bad Request: Invalid protobuf.")
-        }
-    }
-}
-
-async fn http_metric_handler(
-    State((tx, memory_limiter)): State<(mpsc::Sender<OtlpResource>, MemoryLimiter)>, body: Bytes,
-) -> (StatusCode, &'static str) {
-    memory_limiter.wait_for_capacity().await;
-    match ExportMetricsServiceRequest::decode(body) {
-        Ok(request) => {
-            for resource_metrics in request.resource_metrics {
-                if tx.send(OtlpResource::Metrics(resource_metrics)).await.is_err() {
-                    error!("Failed to send resource metrics to converter; channel is closed.");
-                    return (StatusCode::INTERNAL_SERVER_ERROR, "Internal processing channel closed.");
-                }
-            }
-            (StatusCode::OK, "OK")
-        }
-        Err(e) => {
-            error!(error = %e, "Failed to decode OTLP protobuf request.");
-            (StatusCode::BAD_REQUEST, "Bad Request: Invalid protobuf.")
-        }
-    }
-}
-
-struct GrpcService {
-    sender: mpsc::Sender<OtlpResource>,
-    memory_limiter: MemoryLimiter,
-}
-
-impl GrpcService {
-    fn new(sender: mpsc::Sender<OtlpResource>, memory_limiter: MemoryLimiter) -> Self {
-        Self { sender, memory_limiter }
-    }
-}
-
-#[async_trait]
-impl MetricsService for GrpcService {
-    async fn export(
-        &self, request: Request<ExportMetricsServiceRequest>,
-    ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
-        self.memory_limiter.wait_for_capacity().await;
-        let request = request.into_inner();
-
-        for resource_metrics in request.resource_metrics {
-            if self.sender.send(OtlpResource::Metrics(resource_metrics)).await.is_err() {
-                error!("Failed to send resource metrics to converter; channel is closed.");
-                return Err(Status::internal("Internal processing channel closed."));
-            }
-        }
-
-        Ok(Response::new(ExportMetricsServiceResponse { partial_success: None }))
-    }
-}
-
-#[async_trait]
-impl LogsService for GrpcService {
-    async fn export(
-        &self, request: Request<ExportLogsServiceRequest>,
-    ) -> Result<Response<ExportLogsServiceResponse>, Status> {
-        self.memory_limiter.wait_for_capacity().await;
-        let request = request.into_inner();
-
-        for resource_logs in request.resource_logs {
-            if self.sender.send(OtlpResource::Logs(resource_logs)).await.is_err() {
-                error!("Failed to send resource logs to converter; channel is closed.");
-                return Err(Status::internal("Internal processing channel closed."));
-            }
-        }
-
-        Ok(Response::new(ExportLogsServiceResponse { partial_success: None }))
     }
 }
 
