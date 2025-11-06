@@ -39,7 +39,7 @@ generate-general-ci-image:
       allow_failure: true
   script:
     - docker buildx build
-      --platform linux/amd64,linux/arm64
+      --platform linux/amd64
       --tag ${SALUKI_IMAGE_REPO_BASE}/general-ci:v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}
       --tag ${SALUKI_IMAGE_REPO_BASE}/general-ci:latest
       --label git.repository=${CI_PROJECT_NAME}

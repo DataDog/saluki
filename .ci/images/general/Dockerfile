@@ -8,7 +8,7 @@ RUN mkdir -p /etc/apt/keyrings/ \
     && dpkg -i dd-package.deb \
     && rm dd-package.deb \
     && apt-get update \
-    && apt-get -y install --no-install-recommends ca-certificates git lsb-release binutils nodejs=20.11.1-1nodesource1 \
+    && apt-get -y install --no-install-recommends ca-certificates git lsb-release binutils nodejs=20.11.1-1nodesource1 python3 python3-venv \
     && dd-package --bucket binaries-ddbuild-io-prod --package devtools/dd-package-dev --distribution "20.04" \
     && apt-get -y clean \
     && rm -rf /var/lib/apt/lists/*
