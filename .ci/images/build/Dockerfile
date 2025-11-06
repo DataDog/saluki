@@ -22,6 +22,6 @@ RUN curl -s -L -o buildcache.tar.gz https://gitlab.com/bits-n-bites/buildcache/-
     && cp buildcache /usr/local/bin \
     && rm -rf buildcache-v${BUILDCACHE_VERSION} buildcache.tar.gz
 
-COPY .ci/images/general/entrypoint.sh /
+COPY .ci/images/build/entrypoint.sh /
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT [ "/entrypoint.sh" ]
