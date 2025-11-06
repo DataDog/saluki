@@ -1,7 +1,7 @@
 ARG DD_AGENT_VERSION=7.68.3-jmx
 ARG DD_AGENT_IMAGE=datadog/agent:${DD_AGENT_VERSION}
 
-ARG BUILD_IMAGE=alpine:3.20
+ARG BUILD_IMAGE=alpine:3.22.1
 ARG APP_IMAGE=ubuntu:24.04
 ARG BUILDER_BASE=builder
 
@@ -10,10 +10,13 @@ FROM ${DD_AGENT_IMAGE} AS agent
 
 FROM ${BUILD_IMAGE} AS builder
 
+ARG CI="false"
 ARG RUST_VERSION=stable
 ARG BUILD_PROFILE=release
 ARG BUILD_FEATURES=default
 ARG CARGO_BUILD_JOBS=default
+ARG RUSTC_WRAPPER=""
+ARG BUILDCACHE_REMOTE=""
 ARG APP_FULL_NAME=""
 ARG APP_SHORT_NAME=""
 ARG APP_IDENTIFIER=""
@@ -32,7 +35,7 @@ ENV APP_BUILD_TIME=${APP_BUILD_TIME}
 #
 # no-dd-sa: We don't care about pinning package versions in the build stage.
 RUN apk update && \
-    apk add --no-cache rustup musl-dev linux-headers make cmake mold gcc libgcc perl go protobuf && \
+    apk add --no-cache rustup musl-dev linux-headers make cmake gcc libgcc perl go protobuf && \
    rustup-init -y --default-toolchain ${RUST_VERSION}
 ENV PATH="/root/.cargo/bin:${PATH}"
 
@@ -49,7 +52,11 @@ FROM ${BUILDER_BASE} AS final
 
 WORKDIR /adp
 COPY . /adp
-RUN mkdir -p /adp/target/bin && RUSTFLAGS="--cfg tokio_unstable -C link-arg=-fuse-ld=mold" cargo build --profile ${BUILD_PROFILE} --package agent-data-plane --features ${BUILD_FEATURES} --target-dir /adp/target && \
+
+# Configure Buildcache if we're in CI.
+RUN /adp/.ci/buildcache-aws-credentials.sh
+
+RUN mkdir -p /adp/target/bin && cargo build --profile ${BUILD_PROFILE} --package agent-data-plane --features ${BUILD_FEATURES} --target-dir /adp/target && \
 cp /adp/target/${BUILD_PROFILE}/agent-data-plane /adp/target/bin/
 
 # Calculate the necessary licenses that we need to include in the final image.
