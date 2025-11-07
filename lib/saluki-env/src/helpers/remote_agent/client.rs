@@ -243,7 +243,7 @@ impl RemoteAgentClient {
         let response = client
             .register_remote_agent(RegisterRemoteAgentRequest {
                 pid: pid.to_string(),
-                flavor: "saluki".to_string(),
+                flavor: "agent-data-plane".to_string(),
                 display_name: display_name.to_string(),
                 api_endpoint_uri: api_endpoint.to_string(),
                 services,
