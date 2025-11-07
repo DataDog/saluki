@@ -4,15 +4,15 @@
 mkfile_path := $(abspath $(lastword $(MAKEFILE_LIST)))
 mkfile_dir := $(dir $(mkfile_path))
 
-export TARGET_ARCH ?= $(shell uname -m | sed s/x86_64/amd64/ | sed s/aarch64/arm64/)
-export TARGET_TRIPLE ?= $(shell command -v rustc 1>/dev/null && rustc -vV | sed -n 's|host: ||p')
+export TARGET_ARCH := $(shell uname -m | sed s/x86_64/amd64/ | sed s/aarch64/arm64/)
+export TARGET_TRIPLE := $(shell command -v rustc 1>/dev/null && rustc -vV | sed -n 's|host: ||p')
 
 # High-level settings that ultimately get passed down to build-specific targets.
-export APP_FULL_NAME ?= Agent Data Plane
-export APP_SHORT_NAME ?= data-plane
-export APP_IDENTIFIER ?= adp
-export APP_GIT_HASH ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git)
-export APP_VERSION ?= $(shell cat bin/agent-data-plane/Cargo.toml | grep -E "^version = \"" | head -n 1 | cut -d '"' -f 2)
+export APP_FULL_NAME := Agent Data Plane
+export APP_SHORT_NAME := data-plane
+export APP_IDENTIFIER := adp
+export APP_GIT_HASH := $(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git)
+export APP_VERSION := $(shell cat bin/agent-data-plane/Cargo.toml | grep -E "^version = \"" | head -n 1 | cut -d '"' -f 2)
 
 # Override autoinstalling of tools. (Eg `cargo install`)
 export AUTOINSTALL ?= true
@@ -29,27 +29,26 @@ ifeq ($(CONTAINER_TOOL),auto)
 endif
 
 # Basic settings for base build images. These are varied between local development and CI.
-export RUST_VERSION ?= $(shell grep channel rust-toolchain.toml | cut -d '"' -f 2)
+export RUST_VERSION := $(shell grep channel rust-toolchain.toml | cut -d '"' -f 2)
 
-export GO_BUILD_IMAGE ?= golang:1.23-bullseye
-export GO_APP_IMAGE ?= ubuntu:24.04
-export CARGO_BIN_DIR ?= $(shell echo "${HOME}/.cargo/bin")
-export GIT_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git)
+export GO_BUILD_IMAGE := golang:1.23-bullseye
+export GO_APP_IMAGE := ubuntu:24.04
+export CARGO_BIN_DIR := $(shell echo "${HOME}/.cargo/bin")
 
 # Specific versions of various tools we use.
-export CARGO_TOOL_VERSION_dd-rust-license-tool ?= 1.0.3
-export CARGO_TOOL_VERSION_cargo-deny ?= 0.18.3
-export CARGO_TOOL_VERSION_cargo-hack ?= 0.6.30
-export CARGO_TOOL_VERSION_cargo-nextest ?= 0.9.99
-export CARGO_TOOL_VERSION_cargo-autoinherit ?= 0.1.5
-export CARGO_TOOL_VERSION_cargo-sort ?= 1.0.9
-export CARGO_TOOL_VERSION_dummyhttp ?= 1.1.0
-export DDPROF_VERSION ?= 0.20.0
-export LADING_VERSION ?= 0.28.0
+export CARGO_TOOL_VERSION_dd-rust-license-tool := 1.0.3
+export CARGO_TOOL_VERSION_cargo-deny := 0.18.3
+export CARGO_TOOL_VERSION_cargo-hack := 0.6.30
+export CARGO_TOOL_VERSION_cargo-nextest := 0.9.99
+export CARGO_TOOL_VERSION_cargo-autoinherit := 0.1.5
+export CARGO_TOOL_VERSION_cargo-sort := 1.0.9
+export CARGO_TOOL_VERSION_dummyhttp := 1.1.0
+export DDPROF_VERSION := 0.20.0
+export LADING_VERSION := 0.28.0
 
 # Version of source repositories (Git tag) for vendored Protocol Buffers definitions.
-export PROTOBUF_SRC_REPO_DD_AGENT ?= 7.69.4
-export PROTOBUF_SRC_REPO_AGENT_PAYLOAD ?= v5.0.164
+export PROTOBUF_SRC_REPO_DD_AGENT := 7.69.4
+export PROTOBUF_SRC_REPO_AGENT_PAYLOAD := v5.0.164
 
 FMT_YELLOW = \033[0;33m
 FMT_BLUE = \033[0;36m
