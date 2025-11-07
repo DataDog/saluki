@@ -17,6 +17,7 @@
       --file ./docker/Dockerfile.agent-data-plane
       --metadata-file /tmp/build.metadata
       --tag ${IMAGE_TAG}
+      --build-arg CI=true
       --build-arg CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
       --build-arg RUSTC_WRAPPER=buildcache
       --build-arg BUILDCACHE_REMOTE=s3://saluki-build-cache.s3.amazonaws.com
