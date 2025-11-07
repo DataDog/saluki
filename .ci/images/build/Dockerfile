@@ -5,7 +5,7 @@ ARG BUILDCACHE_VERSION=0.31.5
 
 # Install some basic dependencies required for building Agent Data Plane / Saluki.
 RUN apk update && \
-    apk add --no-cache rustup musl-dev linux-headers curl make cmake mold gcc g++ libgcc perl go protobuf
+    apk add --no-cache rustup musl-dev linux-headers curl make cmake jq gcc g++ libgcc perl go protobuf
 
 # Install rustup and install the pinned Rust version, setting it as our default toolchain.
 RUN rustup-init -y --default-toolchain ${RUST_VERSION}

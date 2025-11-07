@@ -35,7 +35,7 @@ ENV APP_BUILD_TIME=${APP_BUILD_TIME}
 #
 # no-dd-sa: We don't care about pinning package versions in the build stage.
 RUN apk update && \
-    apk add --no-cache rustup musl-dev linux-headers make cmake gcc libgcc perl go protobuf && \
+    apk add --no-cache rustup musl-dev linux-headers make cmake jq gcc libgcc perl go protobuf && \
    rustup-init -y --default-toolchain ${RUST_VERSION}
 ENV PATH="/root/.cargo/bin:${PATH}"
 
