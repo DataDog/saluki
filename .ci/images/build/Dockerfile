@@ -1,4 +1,4 @@
-FROM registry.ddbuild.io/images/mirror/alpine:3.22.1
+FROM registry.ddbuild.io/images/mirror/alpine:3.20
 
 ARG RUST_VERSION=1.90.0
 ARG BUILDCACHE_VERSION=0.31.5
