@@ -2,7 +2,7 @@ use std::mem::ManuallyDrop;
 
 use ouroboros::self_referencing;
 
-use super::{Framer, FramingError, RawBuffer};
+use super::{Framer, FramingError};
 use crate::buf::ReadIoBuffer;
 
 struct DirectIter<'framer, 'buf> {
@@ -12,12 +12,8 @@ struct DirectIter<'framer, 'buf> {
 }
 
 impl<'framer, 'buf> DirectIter<'framer, 'buf> {
-    fn new(framer: &'framer dyn Framer, buf: &'buf [u8], is_eof: bool) -> Self {
+    fn new(framer: &'framer dyn Framer, buf: &'buf mut [u8], is_eof: bool) -> Self {
         Self { framer, buf, is_eof }
-    }
-
-    fn buf_len(&self) -> usize {
-        self.buf.len()
     }
 
     fn next_frame(&mut self) -> Result<Option<&[u8]>, FramingError> {
@@ -26,12 +22,8 @@ impl<'framer, 'buf> DirectIter<'framer, 'buf> {
             return Ok(None);
         }
 
-        match self.framer.next_frame(RawBuffer::new(self.buf), self.is_eof)? {
-            Some(frame) => {
-                // Advance our buffer past the frame we just extracted.
-                self.buf = &self.buf[frame.buf_len()..];
-                Ok(Some(frame.into_bytes()))
-            }
+        match self.framer.next_frame(&mut self.buf, self.is_eof)? {
+            Some(frame) => Ok(Some(frame)),
             None => Ok(None),
         }
     }
@@ -71,26 +63,17 @@ impl<'framer, 'buf> NestedIter<'framer, 'buf> {
                     return Ok(None);
                 }
 
-                match self.outer_framer.next_frame(RawBuffer::new(self.buf), self.is_eof)? {
+                match self.outer_framer.next_frame(&mut self.buf, self.is_eof)? {
                     Some(frame) => {
-                        // Advance our root buffer past the outer frame we just extracted.
-                        self.buf = &self.buf[frame.buf_len()..];
-                        self.outer_frame_buf = frame.into_bytes();
+                        self.outer_frame_buf = frame;
                     }
                     None => return Ok(None),
                 }
             }
 
             // Try to extract an inner frame from the outer frame.
-            match self
-                .inner_framer
-                .next_frame(RawBuffer::new(self.outer_frame_buf), true)?
-            {
-                Some(frame) => {
-                    // Advance our outer frame past the inner frame we just extracted.
-                    self.outer_frame_buf = &self.outer_frame_buf[frame.buf_len()..];
-                    return Ok(Some(frame.into_bytes()));
-                }
+            match self.inner_framer.next_frame(&mut self.outer_frame_buf, true)? {
+                Some(frame) => return Ok(Some(frame)),
                 None => continue,
             }
         }

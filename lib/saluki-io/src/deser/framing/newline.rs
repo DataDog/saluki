@@ -1,7 +1,6 @@
 use tracing::trace;
 
 use super::{Framer, FramingError};
-use crate::deser::framing::{BufferView, RawBuffer};
 
 /// Frames incoming data by splitting on newlines.
 ///
@@ -29,7 +28,7 @@ impl NewlineFramer {
 }
 
 impl Framer for NewlineFramer {
-    fn next_frame<'buf>(&self, buf: RawBuffer<'buf>, is_eof: bool) -> Result<Option<BufferView<'buf>>, FramingError> {
+    fn next_frame<'buf>(&self, buf: &mut &'buf [u8], is_eof: bool) -> Result<Option<&'buf [u8]>, FramingError> {
         trace!(buf_len = buf.len(), "Processing buffer.");
 
         if buf.is_empty() {
@@ -40,8 +39,8 @@ impl Framer for NewlineFramer {
         match find_newline(&buf) {
             Some(idx) => {
                 // If we found the delimiter, then we can return the frame.
-                let mut frame = buf.partial(idx + 1);
-                frame.rskip(1);
+                let mut frame = buf.split_off(..idx + 1).unwrap();
+                frame = &frame[..frame.len() - 1];
 
                 Ok(Some(frame))
             }
@@ -56,7 +55,7 @@ impl Framer for NewlineFramer {
                     return Err(missing_delimiter_err(buf.len()));
                 }
 
-                Ok(Some(buf.full()))
+                Ok(Some(buf.split_off(0..).unwrap()))
             }
         }
     }
