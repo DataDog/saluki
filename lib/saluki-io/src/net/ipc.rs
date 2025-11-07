@@ -208,12 +208,12 @@ fn read_cert_file(cert_path: &Path, timeout: Duration, interval: Duration) -> Re
             }
         }
     }
-    return Err(generic_error!(
+    Err(generic_error!(
         "Failed to read certificate file '{}' after {} seconds: {}",
         cert_path.display(),
         timeout.as_secs(),
         last_error
-    ));
+    ))
 }
 
 #[cfg(test)]
