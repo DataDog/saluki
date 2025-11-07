@@ -17,6 +17,7 @@ ARG BUILD_FEATURES=default
 ARG CARGO_BUILD_JOBS=default
 ARG RUSTC_WRAPPER=""
 ARG BUILDCACHE_REMOTE=""
+ARG BUILDCACHE_LOG_FILE="/tmp/buildcache.log"
 ARG APP_FULL_NAME=""
 ARG APP_SHORT_NAME=""
 ARG APP_IDENTIFIER=""
@@ -61,6 +62,7 @@ cp /adp/target/${BUILD_PROFILE}/agent-data-plane /adp/target/bin/
 
 RUN buildcache --show-config
 RUN buildcache --show-stats
+RUN touch /tmp/buildcache.log && cat /tmp/buildcache.log
 
 # Calculate the necessary licenses that we need to include in the final image.
 FROM ${BUILD_IMAGE} AS license-builder
