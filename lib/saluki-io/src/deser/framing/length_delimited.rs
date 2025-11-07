@@ -27,7 +27,7 @@ impl LengthDelimitedFramer {
 }
 
 impl Framer for LengthDelimitedFramer {
-    fn next_frame<'buf>(&self, buf: RawBuffer<'buf>, is_eof: bool) -> Result<Option<BufferView<'buf>>, FramingError> {
+    fn next_frame<'buf>(&self, buf: &mut &'buf [u8], is_eof: bool) -> Result<Option<&'buf [u8]>, FramingError> {
         trace!(buf_len = buf.len(), "Processing buffer.");
 
         if buf.is_empty() {
@@ -48,16 +48,16 @@ impl Framer for LengthDelimitedFramer {
 
         // See if we have enough data to read the full frame.
         let frame_len = u32::from_le_bytes(buf[0..4].try_into().unwrap()) as usize;
-        let frame_len_with_length = frame_len.saturating_add(4);
-        if frame_len_with_length > self.max_frame_size {
+        let full_frame_len = frame_len.saturating_add(4);
+        if full_frame_len > self.max_frame_size {
             return Err(oversized_frame_err(frame_len));
         }
 
-        if buf.len() < frame_len_with_length {
+        if buf.len() < full_frame_len {
             return if is_eof {
                 // If we've hit EOF and we have a partial frame here, well, then... it's invalid.
                 Err(FramingError::PartialFrame {
-                    needed: frame_len_with_length,
+                    needed: full_frame_len,
                     remaining: buf.len(),
                 })
             } else {
@@ -66,8 +66,10 @@ impl Framer for LengthDelimitedFramer {
         }
 
         // Carve out the entire frame, and then adjust our view to start after the delimiter.
-        let mut frame = buf.partial(frame_len_with_length);
-        frame.skip(4);
+        let mut frame = buf
+            .split_off(..full_frame_len)
+            .expect("buf should be long enough to extract full frame");
+        frame = &frame[4..];
 
         Ok(Some(frame))
     }
