@@ -7,7 +7,7 @@ ARG SCCACHE_VERSION=0.12.0
 # Install some basic dependencies required for building Agent Data Plane / Saluki.
 RUN apk update && \
     apk add --no-cache curl jq rustup make cmake gcc g++ perl go protobuf aws-cli \
-    musl-dev linux-headers libgcc openssl openssl-dev
+    musl-dev linux-headers libgcc openssl openssl-dev openssl-libs-static
 
 # Install rustup and install the pinned Rust version, setting it as our default toolchain.
 RUN rustup-init -y --default-toolchain ${RUST_VERSION}
