@@ -59,6 +59,9 @@ RUN /adp/.ci/buildcache-aws-credentials.sh
 RUN mkdir -p /adp/target/bin && cargo build --profile ${BUILD_PROFILE} --package agent-data-plane --features ${BUILD_FEATURES} --target-dir /adp/target && \
 cp /adp/target/${BUILD_PROFILE}/agent-data-plane /adp/target/bin/
 
+RUN buildcache --show-config
+RUN buildcache --show-stats
+
 # Calculate the necessary licenses that we need to include in the final image.
 FROM ${BUILD_IMAGE} AS license-builder
 
