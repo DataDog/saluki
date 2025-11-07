@@ -38,8 +38,8 @@ variables:
   # output artifacts like ADP itself.
   SALUKI_IMAGE_REPO_PREFIX: "saluki"
   SALUKI_IMAGE_REPO_BASE: "${IMAGE_REGISTRY}/${SALUKI_IMAGE_REPO_PREFIX}"
-  SALUKI_BUILD_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/build-ci:latest"
-  SALUKI_GENERAL_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/general-ci:latest"
+  SALUKI_BUILD_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/build-ci:v81523663-765225db"
+  SALUKI_GENERAL_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/general-ci:v81518834-392278a6"
 
   # Converged Datadog Agent-specific variables, which control how we build the converged Datadog Agent image that we
   # publicly publish.
