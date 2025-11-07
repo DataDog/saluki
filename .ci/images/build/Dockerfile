@@ -2,6 +2,7 @@ FROM registry.ddbuild.io/images/mirror/alpine:3.20
 
 ARG RUST_VERSION=1.90.0
 ARG BUILDCACHE_VERSION=0.31.5
+ARG SCCACHE_VERSION=0.12.0
 
 # Install some basic dependencies required for building Agent Data Plane / Saluki.
 RUN apk update && \
@@ -13,15 +14,25 @@ RUN rustup-init -y --default-toolchain ${RUST_VERSION}
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Build and install buildcache.
-RUN curl -s -L -o buildcache.tar.gz https://gitlab.com/bits-n-bites/buildcache/-/archive/v${BUILDCACHE_VERSION}/buildcache-v${BUILDCACHE_VERSION}.tar.gz \
-    && tar -xzf buildcache.tar.gz \
-    && cd buildcache-v${BUILDCACHE_VERSION} \
+RUN curl -s -L -o /tmp/buildcache.tar.gz https://gitlab.com/bits-n-bites/buildcache/-/archive/v${BUILDCACHE_VERSION}/buildcache-v${BUILDCACHE_VERSION}.tar.gz \
+    && tar -C /tmp -xzf /tmp/buildcache.tar.gz \
+    && cd /tmp/buildcache-v${BUILDCACHE_VERSION} \
     && mkdir build \
     && cd build \
     && cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-include cstdint" ../src \
     && cmake --build . --config Release \
     && cp buildcache /usr/local/bin \
-    && rm -rf buildcache-v${BUILDCACHE_VERSION} buildcache.tar.gz
+    && cd ~ \
+    && rm -rf /tmp/buildcache-v${BUILDCACHE_VERSION} /tmp/buildcache.tar.gz
+
+# Build and install sccache.
+RUN curl -s -L -o /tmp/sccache.tar.gz https://github.com/mozilla/sccache/archive/refs/tags/v${SCCACHE_VERSION}.tar.gz \
+    && tar -C /tmp -xzf /tmp/sccache.tar.gz \
+    && cd /tmp/sccache-v${SCCACHE_VERSION} \
+    && cargo build --release \
+    && cp target/release/sccache /usr/local/bin \
+    && cd ~ \
+    && rm -rf /tmp/sccache-v${SCCACHE_VERSION} /tmp/sccache.tar.gz
 
 COPY .ci/images/build/entrypoint.sh /
 RUN chmod +x /entrypoint.sh
