@@ -28,11 +28,11 @@ RUN curl -s -L -o /tmp/buildcache.tar.gz https://gitlab.com/bits-n-bites/buildca
 # Build and install sccache.
 RUN curl -s -L -o /tmp/sccache.tar.gz https://github.com/mozilla/sccache/archive/refs/tags/v${SCCACHE_VERSION}.tar.gz \
     && tar -C /tmp -xzf /tmp/sccache.tar.gz \
-    && cd /tmp/sccache-v${SCCACHE_VERSION} \
+    && cd /tmp/sccache-${SCCACHE_VERSION} \
     && cargo build --release \
     && cp target/release/sccache /usr/local/bin \
     && cd ~ \
-    && rm -rf /tmp/sccache-v${SCCACHE_VERSION} /tmp/sccache.tar.gz
+    && rm -rf /tmp/sccache-${SCCACHE_VERSION} /tmp/sccache.tar.gz
 
 COPY .ci/images/build/entrypoint.sh /
 RUN chmod +x /entrypoint.sh

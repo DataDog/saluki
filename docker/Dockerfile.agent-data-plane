@@ -19,6 +19,10 @@ ARG RUSTC_WRAPPER=""
 ARG BUILDCACHE_REMOTE=""
 ARG BUILDCACHE_LOG_FILE="/tmp/buildcache.log"
 ARG BUILDCACHE_DEBUG=1
+ARG SCCACHE_BUCKET=""
+ARG SCCACHE_REGION=""
+ARG SCCACHE_S3_USE_SSL=true
+ARG SCCACHE_LOG=debug
 ARG APP_FULL_NAME=""
 ARG APP_SHORT_NAME=""
 ARG APP_IDENTIFIER=""
@@ -57,14 +61,11 @@ COPY . /adp
 
 RUN aws sts get-caller-identity \
     && aws s3 ls s3://saluki-build-cache --region us-east-1 --debug \
-    && source /adp/.ci/buildcache-aws-credentials.sh \
     && mkdir -p /adp/target/bin \
     && cargo build --profile ${BUILD_PROFILE} --package agent-data-plane --features ${BUILD_FEATURES} --target-dir /adp/target \
     && cp /adp/target/${BUILD_PROFILE}/agent-data-plane /adp/target/bin/
 
-RUN buildcache --show-config
-RUN buildcache --show-stats
-RUN touch /tmp/buildcache.log && cat /tmp/buildcache.log
+RUN sccache --show-stats
 
 # Calculate the necessary licenses that we need to include in the final image.
 FROM ${BUILD_IMAGE} AS license-builder
