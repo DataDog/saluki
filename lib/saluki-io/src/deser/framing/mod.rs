@@ -1,5 +1,3 @@
-use std::ops::Deref;
-
 use snafu::Snafu;
 
 mod iter;
