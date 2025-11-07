@@ -26,6 +26,14 @@ const fn default_origin_detection_optout() -> bool {
 /// metric tags that describe the origin of the metric, such as the Kubernetes pod or container.
 #[derive(Clone, Deserialize)]
 pub struct OriginEnrichmentConfiguration {
+    /// Whether or not to enable origin detection.
+    ///
+    /// If disabled, no origin tags will be added to events even if the origin information is detected.
+    ///
+    /// Defaults to `false`.
+    #[serde(rename = "dogstatsd_origin_detection", default)]
+    enabled: bool,
+
     /// Whether or not a client-provided entity ID should take precedence over automatically detected origin metadata.
     ///
     /// When a client-provided entity ID is specified, and an origin process ID has automatically been detected, setting
@@ -70,6 +78,7 @@ pub struct OriginEnrichmentConfiguration {
 impl Default for OriginEnrichmentConfiguration {
     fn default() -> Self {
         Self {
+            enabled: false,
             entity_id_precedence: false,
             tag_cardinality: default_tag_cardinality(),
             origin_detection_unified: false,
@@ -96,6 +105,10 @@ impl DogStatsDOriginTagResolver {
 
     fn collect_origin_tags(&self, origin: ResolvedOrigin) -> SharedTagSet {
         let mut collected_tags = SharedTagSet::default();
+
+        if !self.config.enabled {
+            return collected_tags;
+        }
 
         // Examine the various possible entity ID values, and based on their state, use one or more of them to grab any
         // enriched tags attached to the entities. We evalulate a number of possible entity IDs:
@@ -525,6 +538,7 @@ mod tests {
 
         for (entity_id_precedence, resolved_origin, expected_tags) in cases {
             let tag_resolver_config = OriginEnrichmentConfiguration {
+                enabled: true,
                 entity_id_precedence,
                 tag_cardinality: OriginTagCardinality::High,
                 origin_detection_unified: false,
@@ -554,6 +568,7 @@ mod tests {
         let ext_data_invalid = ResolvedExternalData::new(EID_EXTERNAL_POD.clone(), EID_EXTERNAL_CID_INVALID.clone());
 
         let tag_resolver_config = OriginEnrichmentConfiguration {
+            enabled: true,
             entity_id_precedence: false,
             tag_cardinality: OriginTagCardinality::High,
             origin_detection_unified: true,
@@ -619,5 +634,19 @@ mod tests {
                 resolved_origin
             );
         }
+    }
+
+    #[test]
+    fn origin_detection_disabled() {
+        // When origin detection is disabled, no tags should be resolved even if we do have mapped tags for the given
+        // resolved origin.
+        let tag_resolver_config = OriginEnrichmentConfiguration::default();
+        assert!(!tag_resolver_config.enabled);
+
+        let origin_tags_resolver = build_tags_resolver_with_default_tags(tag_resolver_config);
+
+        let resolved_origin = origin(Some(&EID_PID), None, None, None);
+        let actual_tags = origin_tags_resolver.collect_origin_tags(resolved_origin);
+        assert!(actual_tags.is_empty());
     }
 }

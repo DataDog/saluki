@@ -6,6 +6,26 @@ use std::{
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stele::{Metric, MetricContext, MetricValue};
 
+/// The type of a metric value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum MetricType {
+    Count,
+    Rate,
+    Gauge,
+    Sketch,
+}
+
+impl fmt::Display for MetricType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MetricType::Count => write!(f, "count"),
+            MetricType::Rate => write!(f, "rate"),
+            MetricType::Gauge => write!(f, "gauge"),
+            MetricType::Sketch => write!(f, "sketch"),
+        }
+    }
+}
+
 /// A normalized metric context.
 ///
 /// # Normalization behavior
@@ -104,6 +124,11 @@ impl NormalizedMetric {
         &self.context
     }
 
+    /// Returns the type of the metric value.
+    pub fn value_type(&self) -> MetricType {
+        metric_value_type(&self.raw_values)
+    }
+
     /// Returns the raw values of the metric.
     pub fn raw_values(&self) -> &[(u64, MetricValue)] {
         &self.raw_values
@@ -120,6 +145,9 @@ impl NormalizedMetric {
         &self.value
     }
 }
+
+/// A metric context and type pair, used for comparing metrics between different sets.
+type ContextTypePair<'a> = (&'a NormalizedMetricContext, MetricType);
 
 /// A set of normalized metrics.
 ///
@@ -148,20 +176,22 @@ impl NormalizedMetrics {
             return Err(generic_error!("Cannot normalize an empty set of metrics."));
         }
 
-        // Aggregate metric values by context, using a `BTreeMap` so that we can get sorted metrics for ~free.
+        // Aggregate metric values by (context, type), using a `BTreeMap` so that we can get sorted metrics for ~free.
+        // We group by type because metrics with the same context but different types (e.g., Count vs Rate)
+        // cannot be merged together during normalization.
         let mut aggregated_context_values = BTreeMap::new();
 
         for metric in metrics {
             let context = metric.context();
-            let context_values = aggregated_context_values
-                .entry(context.clone())
-                .or_insert_with(Vec::new);
+            let metric_type = metric_value_type(metric.values());
+            let key = (context.clone(), metric_type);
+            let context_values = aggregated_context_values.entry(key).or_insert_with(Vec::new);
             context_values.extend_from_slice(metric.values());
         }
 
         let metrics = aggregated_context_values
             .into_iter()
-            .map(|(context, values)| NormalizedMetric::try_from_values(context, values))
+            .map(|((context, _type), values)| NormalizedMetric::try_from_values(context, values))
             .try_fold(Vec::new(), |mut metrics, maybe_metric| {
                 metrics.push(maybe_metric?);
                 Ok::<_, GenericError>(metrics)
@@ -199,27 +229,42 @@ impl NormalizedMetrics {
 
     /// Returns the differences, if any, between two sets of normalized metrics.
     ///
-    /// Returns two vectors, the first containing contexts that are only present in the left set, and the second
-    /// containing contexts that are only present in the right set. If there are no differences, both vectors will be
-    /// empty.
+    /// Compares both context and type, so metrics with the same name but different types
+    /// (e.g., Count vs Rate) are treated as different metrics.
+    ///
+    /// Returns two vectors, the first containing (context, type) pairs that are only present in the left set,
+    /// and the second containing (context, type) pairs that are only present in the right set.
+    /// If there are no differences, both vectors will be empty.
     pub fn context_differences<'a>(
         left: &'a Self, right: &'a Self,
-    ) -> (Vec<&'a NormalizedMetricContext>, Vec<&'a NormalizedMetricContext>) {
-        let left_contexts = left
+    ) -> (Vec<ContextTypePair<'a>>, Vec<ContextTypePair<'a>>) {
+        let left_pairs = left
             .metrics
             .iter()
-            .map(NormalizedMetric::context)
+            .map(|m| (m.context(), m.value_type()))
             .collect::<HashSet<_>>();
-        let right_contexts = right
+        let right_pairs = right
             .metrics
             .iter()
-            .map(NormalizedMetric::context)
+            .map(|m| (m.context(), m.value_type()))
             .collect::<HashSet<_>>();
 
-        let left_only = left_contexts.difference(&right_contexts).copied().collect();
-        let right_only = right_contexts.difference(&left_contexts).copied().collect();
+        let left_only = left_pairs.difference(&right_pairs).copied().collect();
+        let right_only = right_pairs.difference(&left_pairs).copied().collect();
 
         (left_only, right_only)
+    }
+}
+
+fn metric_value_type(values: &[(u64, MetricValue)]) -> MetricType {
+    match values.first() {
+        Some((_, MetricValue::Count { .. })) => MetricType::Count,
+        Some((_, MetricValue::Rate { .. })) => MetricType::Rate,
+        Some((_, MetricValue::Gauge { .. })) => MetricType::Gauge,
+        Some((_, MetricValue::Sketch { .. })) => MetricType::Sketch,
+        // This should never happen since we validate non-empty values during normalization,
+        // but we need to handle it for completeness. Default to Count as a fallback.
+        None => MetricType::Count,
     }
 }
 

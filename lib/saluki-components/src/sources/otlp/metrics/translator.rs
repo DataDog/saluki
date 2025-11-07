@@ -126,10 +126,14 @@ impl OtlpMetricsTranslator {
                 }
 
                 if self.config.instrumentation_scope_metadata_as_tags {
-                    if let Some(scope) = &scope_metrics.scope {
-                        for tag in instrumentationscope::tags_from_instrumentation_scope_metadata(scope) {
-                            mutable_tags.insert_tag(tag);
-                        }
+                    // Always add instrumentation scope tags, even if scope is `None`
+                    // to match the datadog agent's behavior which adds "n/a" values
+                    let scope_tags = match &scope_metrics.scope {
+                        Some(scope) => instrumentationscope::tags_from_instrumentation_scope_metadata(scope),
+                        None => instrumentationscope::tags_from_empty_instrumentation_scope(),
+                    };
+                    for tag in scope_tags {
+                        mutable_tags.insert_tag(tag);
                     }
                 } else if self.config.instrumentation_library_metadata_as_tags {
                     if let Some(scope) = &scope_metrics.scope {

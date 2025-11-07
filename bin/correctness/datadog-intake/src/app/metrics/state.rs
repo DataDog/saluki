@@ -5,12 +5,12 @@ use saluki_error::GenericError;
 use stele::Metric;
 
 #[derive(Clone)]
-pub struct IntakeState {
+pub struct MetricsState {
     metrics: Arc<Mutex<Vec<Metric>>>,
 }
 
-impl IntakeState {
-    /// Creates a new `IntakeState`.
+impl MetricsState {
+    /// Creates a new `MetricsState`.
     pub fn new() -> Self {
         Self {
             metrics: Arc::new(Mutex::new(Vec::new())),

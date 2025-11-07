@@ -94,7 +94,7 @@ pub enum ConfigurationError {
     },
 
     /// Generic configuration error.
-    #[snafu(display("Failed to query configuration."))]
+    #[snafu(transparent)]
     Generic {
         /// Error source.
         source: GenericError,
@@ -168,7 +168,7 @@ impl ConfigurationLoader {
     where
         P: AsRef<std::path::Path>,
     {
-        let resolved_provider = ResolvedProvider::from_yaml(&path).context(Generic)?;
+        let resolved_provider = ResolvedProvider::from_yaml(&path)?;
         self.provider_sources
             .push(ProviderSource::Static(ArcProvider(Arc::new(resolved_provider))));
         Ok(self)
@@ -206,7 +206,7 @@ impl ConfigurationLoader {
     where
         P: AsRef<std::path::Path>,
     {
-        let resolved_provider = ResolvedProvider::from_json(&path).context(Generic)?;
+        let resolved_provider = ResolvedProvider::from_json(&path)?;
         self.provider_sources
             .push(ProviderSource::Static(ArcProvider(Arc::new(resolved_provider))));
         Ok(self)
@@ -257,7 +257,7 @@ impl ConfigurationLoader {
         };
 
         // Convert to use Serialized::defaults since, Env isn't Send + Sync
-        let env = Env::prefixed(&prefix);
+        let env = Env::prefixed(&prefix).split("__");
         let values = env.data().unwrap();
         if let Some(default_dict) = values.get(&figment::Profile::Default) {
             self.provider_sources

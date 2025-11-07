@@ -939,6 +939,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "datadog-intake"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "datadog-protos",
+ "protobuf",
+ "saluki-error",
+ "stele",
+ "tokio",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "datadog-protos"
 version = "0.1.0"
 dependencies = [
@@ -1307,7 +1322,10 @@ dependencies = [
  "rand",
  "rand_distr",
  "reqwest",
+ "saluki-config",
  "saluki-error",
+ "serde",
+ "serde_yaml",
  "stele",
  "tokio",
  "tokio-util",
@@ -2042,21 +2060,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "metrics-intake"
-version = "0.1.0"
-dependencies = [
- "axum",
- "datadog-protos",
- "protobuf",
- "saluki-error",
- "stele",
- "tokio",
- "tower-http",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "metrics-util"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2081,10 +2084,14 @@ dependencies = [
  "bytes",
  "bytesize",
  "lading-payload",
+ "otlp-protos",
+ "prost",
  "rand",
  "saluki-error",
  "serde",
  "serde_yaml",
+ "tokio",
+ "tonic",
  "tracing",
  "tracing-subscriber",
 ]

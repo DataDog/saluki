@@ -12,14 +12,14 @@ RUN apk update && \
    rustup-init -y --default-toolchain ${RUST_VERSION}
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-# Build metrics-intake.
-WORKDIR /metrics-intake
-COPY . /metrics-intake
-RUN cargo build --profile release --bin metrics-intake
+# Build datadog-intake.
+WORKDIR /datadog-intake
+COPY . /datadog-intake
+RUN cargo build --profile release --bin datadog-intake
 
 # Now stick our resulting binary in a clean image.
 FROM ${BASE_IMAGE}
 
-COPY --from=builder /metrics-intake/target/release/metrics-intake /usr/local/bin/metrics-intake
+COPY --from=builder /datadog-intake/target/release/datadog-intake /usr/local/bin/datadog-intake
 
-ENTRYPOINT [ "/usr/local/bin/metrics-intake" ]
+ENTRYPOINT [ "/usr/local/bin/datadog-intake" ]
