@@ -55,11 +55,10 @@ FROM ${BUILDER_BASE} AS final
 WORKDIR /adp
 COPY . /adp
 
-# Configure Buildcache if we're in CI.
-RUN /adp/.ci/buildcache-aws-credentials.sh
-
-RUN mkdir -p /adp/target/bin && cargo build --profile ${BUILD_PROFILE} --package agent-data-plane --features ${BUILD_FEATURES} --target-dir /adp/target && \
-cp /adp/target/${BUILD_PROFILE}/agent-data-plane /adp/target/bin/
+RUN source /adp/.ci/buildcache-aws-credentials.sh \
+    && mkdir -p /adp/target/bin \
+    && cargo build --profile ${BUILD_PROFILE} --package agent-data-plane --features ${BUILD_FEATURES} --target-dir /adp/target \
+    && cp /adp/target/${BUILD_PROFILE}/agent-data-plane /adp/target/bin/
 
 RUN buildcache --show-config
 RUN buildcache --show-stats
