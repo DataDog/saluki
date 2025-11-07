@@ -1,7 +1,6 @@
 use tracing::trace;
 
 use super::{Framer, FramingError};
-use crate::deser::framing::{BufferView, RawBuffer};
 
 /// Frames incoming data by splitting data based on a fixed-size length delimiter.
 ///
@@ -116,15 +115,16 @@ mod tests {
     fn basic() {
         let payload = b"hello, world!";
         let buf = get_delimited_payload(payload, false);
+        let mut src = &buf[..];
 
         let framer = LengthDelimitedFramer::default();
         let frame = framer
-            .next_frame(RawBuffer::new(&buf), false)
+            .next_frame(&mut src, false)
             .expect("should not fail to read from payload")
             .expect("should not fail to extract frame from payload");
 
         assert_eq!(&frame[..], payload);
-        assert_eq!(buf.len(), frame.buf_len(), "frame should consume entire buffer");
+        assert!(src.is_empty(), "frame should consume entire buffer");
     }
 
     #[test]
@@ -139,30 +139,44 @@ mod tests {
         // Try reading a frame from a buffer that doesn't have enough bytes for the length delimiter itself.
         let mut no_delimiter_buf = buf.clone();
         no_delimiter_buf.truncate(3);
+        let mut src1 = &no_delimiter_buf[..];
 
         let maybe_frame = framer
-            .next_frame(RawBuffer::new(&no_delimiter_buf), false)
+            .next_frame(&mut src1, false)
             .expect("should not fail to read from payload");
         assert!(maybe_frame.is_none());
+        assert_eq!(
+            no_delimiter_buf.len(),
+            src1.len(),
+            "should not consume from buffer if frame isn't returned"
+        );
 
         // Try reading a frame from a buffer that has enough bytes for the length delimiter, but not as many bytes as
         // the length delimiter indicates.
         let mut delimiter_but_partial_buf = buf.clone();
         delimiter_but_partial_buf.truncate(7);
+        let mut src2 = &delimiter_but_partial_buf[..];
 
         let maybe_frame = framer
-            .next_frame(RawBuffer::new(&delimiter_but_partial_buf), false)
+            .next_frame(&mut src2, false)
             .expect("should not fail to read from payload");
         assert!(maybe_frame.is_none());
+        assert_eq!(
+            delimiter_but_partial_buf.len(),
+            src2.len(),
+            "should not consume from buffer if frame isn't returned"
+        );
 
         // Now try reading a frame from the original buffer, which should succeed.
+        let mut src3 = &buf[..];
+
         let frame = framer
-            .next_frame(RawBuffer::new(&buf), false)
+            .next_frame(&mut src3, false)
             .expect("should not fail to read from payload")
             .expect("should not fail to extract frame from payload");
 
         assert_eq!(&frame[..], payload);
-        assert_eq!(buf.len(), frame.buf_len(), "frame should consume entire buffer");
+        assert!(src3.is_empty(), "frame should consume entire buffer");
     }
 
     #[test]
@@ -171,45 +185,58 @@ mod tests {
         // actually read the frame until we give the framer the entire buffer.
         let payload = b"hello, world!";
         let buf = get_delimited_payload(payload, false);
-        let frame_len = buf.len();
 
         let framer = LengthDelimitedFramer::default();
 
         // Try reading a frame from a buffer that doesn't have enough bytes for the length delimiter itself.
         let mut no_delimiter_buf = buf.clone();
         no_delimiter_buf.truncate(3);
+        let mut src1 = &no_delimiter_buf[..];
 
-        let maybe_frame = framer.next_frame(RawBuffer::new(&no_delimiter_buf), true);
+        let maybe_frame = framer.next_frame(&mut src1, true);
         assert_eq!(
             maybe_frame,
             Err(FramingError::PartialFrame {
                 needed: 4,
-                remaining: 3
+                remaining: no_delimiter_buf.len()
             })
+        );
+        assert_eq!(
+            no_delimiter_buf.len(),
+            src1.len(),
+            "should not consume from buffer if frame isn't returned"
         );
 
         // Try reading a frame from a buffer that has enough bytes for the length delimiter, but not as many bytes as
         // the length delimiter indicates.
         let mut delimiter_but_partial_buf = buf.clone();
         delimiter_but_partial_buf.truncate(7);
+        let mut src2 = &delimiter_but_partial_buf[..];
 
-        let maybe_frame = framer.next_frame(RawBuffer::new(&delimiter_but_partial_buf), true);
+        let maybe_frame = framer.next_frame(&mut src2, true);
         assert_eq!(
             maybe_frame,
             Err(FramingError::PartialFrame {
-                needed: frame_len,
-                remaining: 7
+                needed: buf.len(),
+                remaining: delimiter_but_partial_buf.len(),
             })
+        );
+        assert_eq!(
+            delimiter_but_partial_buf.len(),
+            src2.len(),
+            "should not consume from buffer if frame isn't returned"
         );
 
         // Now try reading a frame from the original buffer, which should succeed.
+        let mut src3 = &buf[..];
+
         let frame = framer
-            .next_frame(RawBuffer::new(&buf), true)
+            .next_frame(&mut src3, true)
             .expect("should not fail to read from payload")
             .expect("should not fail to extract frame from payload");
 
         assert_eq!(&frame[..], payload);
-        assert_eq!(buf.len(), frame.buf_len(), "frame should consume entire buffer");
+        assert!(src3.is_empty(), "frame should consume entire buffer");
     }
 
     #[test]
@@ -217,11 +244,17 @@ mod tests {
         // We create an invalid frame with a length that exceeds the overall length of the resulting buffer.
         let payload = b"hello, world!";
         let buf = get_delimited_payload_with_fixed_length(payload, 32, false);
+        let mut src = &buf[..];
 
         let framer = LengthDelimitedFramer::default().with_max_frame_size(24);
 
         // We should get back an error that the frame is invalid, and the original buffer should not be altered at all.
-        let maybe_frame = framer.next_frame(RawBuffer::new(&buf), false);
+        let maybe_frame = framer.next_frame(&mut src, false);
         assert_eq!(maybe_frame, Err(oversized_frame_err(32)));
+        assert_eq!(
+            buf.len(),
+            src.len(),
+            "should not consume from buffer if frame isn't returned"
+        );
     }
 }

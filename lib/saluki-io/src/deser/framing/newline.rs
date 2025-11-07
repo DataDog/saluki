@@ -90,25 +90,27 @@ mod tests {
     fn newline_no_eof() {
         let payload = b"hello, world!";
         let buf = get_delimited_payload(payload, true);
+        let mut src = &buf[..];
 
         let framer = NewlineFramer::default();
         let frame = framer
-            .next_frame(RawBuffer::new(&buf), false)
+            .next_frame(&mut src, false)
             .expect("should not fail to read from payload")
             .expect("should not fail to extract frame from payload");
 
         assert_eq!(&frame[..], payload);
-        assert_eq!(buf.len(), frame.buf_len(), "frame should consume entire buffer");
+        assert!(src.is_empty(), "frame should consume entire buffer");
     }
 
     #[test]
     fn no_newline_no_eof() {
         let payload = b"hello, world!";
         let buf = get_delimited_payload(payload, false);
+        let mut src = &buf[..];
 
         let framer = NewlineFramer::default();
         let maybe_frame = framer
-            .next_frame(RawBuffer::new(&buf), false)
+            .next_frame(&mut src, false)
             .expect("should not fail to read from payload");
 
         assert_eq!(maybe_frame, None);
@@ -118,39 +120,42 @@ mod tests {
     fn newline_eof() {
         let payload = b"hello, world!";
         let buf = get_delimited_payload(payload, true);
+        let mut src = &buf[..];
 
         let framer = NewlineFramer::default();
         let frame = framer
-            .next_frame(RawBuffer::new(&buf), true)
+            .next_frame(&mut src, true)
             .expect("should not fail to read from payload")
             .expect("should not fail to extract frame from payload");
 
         assert_eq!(&frame[..], payload);
-        assert_eq!(buf.len(), frame.buf_len(), "frame should consume entire buffer");
+        assert!(src.is_empty(), "frame should consume entire buffer");
     }
 
     #[test]
     fn no_newline_eof_not_required_on_eof() {
         let payload = b"hello, world!";
         let buf = get_delimited_payload(payload, false);
+        let mut src = &buf[..];
 
         let framer = NewlineFramer::default();
         let frame = framer
-            .next_frame(RawBuffer::new(&buf), true)
+            .next_frame(&mut src, true)
             .expect("should not fail to read from payload")
             .expect("should not fail to extract frame from payload");
 
         assert_eq!(&frame[..], payload);
-        assert_eq!(buf.len(), frame.buf_len(), "frame should consume entire buffer");
+        assert!(src.is_empty(), "frame should consume entire buffer");
     }
 
     #[test]
     fn no_newline_eof_required_on_eof() {
         let payload = b"hello, world!";
         let buf = get_delimited_payload(payload, false);
+        let mut src = &buf[..];
 
         let framer = NewlineFramer::default().required_on_eof(true);
-        let maybe_frame = framer.next_frame(RawBuffer::new(&buf), true);
+        let maybe_frame = framer.next_frame(&mut src, true);
 
         assert_eq!(maybe_frame, Err(missing_delimiter_err(buf.len())));
     }
