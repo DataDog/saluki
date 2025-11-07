@@ -6,4 +6,4 @@ if [ "${CI}" != "true" ]; then
 fi
 
 # Get our credentials from IMDS and write them out so we can source them into the environment during the build step.
-aws configure export-credentials --format env
+eval $(aws configure export-credentials --format env)
