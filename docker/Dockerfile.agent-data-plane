@@ -56,6 +56,7 @@ WORKDIR /adp
 COPY . /adp
 
 RUN aws sts get-caller-identity \
+    && aws s3 ls s3://saluki-build-cache --region us-east-1 --debug \
     && source /adp/.ci/buildcache-aws-credentials.sh \
     && mkdir -p /adp/target/bin \
     && cargo build --profile ${BUILD_PROFILE} --package agent-data-plane --features ${BUILD_FEATURES} --target-dir /adp/target \
