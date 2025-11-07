@@ -20,7 +20,6 @@
       --build-arg CI=true
       --build-arg CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
       --build-arg RUSTC_WRAPPER=sccache
-      --build-arg BUILDCACHE_REMOTE=s3://saluki-build-cache.s3.us-east-1.amazonaws.com
       --build-arg SCCACHE_BUCKET=saluki-build-cache
       --build-arg SCCACHE_REGION=us-east-1
       --build-arg BUILD_IMAGE=${SALUKI_BUILD_CI_IMAGE}
