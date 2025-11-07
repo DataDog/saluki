@@ -2,6 +2,7 @@ use std::{
     io::Cursor,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
@@ -17,6 +18,8 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 
 const DEFAULT_DATADOG_AGENT_CONFIG_DIR: &str = "/etc/datadog-agent";
 const DEFAULT_IPC_CERT_FILE_NAME: &str = "ipc_cert.pem";
+const DEFAULT_CERT_READ_TIMEOUT: Duration = Duration::from_secs(20);
+const DEFAULT_CERT_READ_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Gets the IPC certificate file path from the configuration.
 ///
@@ -109,13 +112,7 @@ pub async fn build_datadog_agent_client_ipc_tls_config<P: AsRef<Path>>(
     cert_path: P,
 ) -> Result<ClientConfig, GenericError> {
     // Read the certificate file, and extract the certificate and private key from it.
-    let raw_cert_data = tokio::fs::read(cert_path.as_ref()).await.map_err(|e| {
-        generic_error!(
-            "Failed to read certificate file '{}' ({}).",
-            cert_path.as_ref().display(),
-            e.kind()
-        )
-    })?;
+    let raw_cert_data = read_cert_file(cert_path.as_ref(), DEFAULT_CERT_READ_TIMEOUT, DEFAULT_CERT_READ_INTERVAL)?;
 
     let mut cert_reader = Cursor::new(&raw_cert_data);
     let parsed_cert = rustls_pemfile::certs(&mut cert_reader)
@@ -158,13 +155,7 @@ pub async fn build_datadog_agent_client_ipc_tls_config<P: AsRef<Path>>(
 /// PEM-encoded file containing both the certificate and private key.
 pub fn build_datadog_agent_server_tls_config<P: AsRef<Path>>(cert_path: P) -> Result<ServerConfig, GenericError> {
     // Read the certificate file, and extract the certificate and private key from it.
-    let raw_cert_data = std::fs::read(cert_path.as_ref()).map_err(|e| {
-        generic_error!(
-            "Failed to read certificate file '{}' ({}).",
-            cert_path.as_ref().display(),
-            e.kind()
-        )
-    })?;
+    let raw_cert_data = read_cert_file(cert_path.as_ref(), DEFAULT_CERT_READ_TIMEOUT, DEFAULT_CERT_READ_INTERVAL)?;
 
     let mut cert_reader = Cursor::new(&raw_cert_data);
     let parsed_cert = rustls_pemfile::certs(&mut cert_reader)
@@ -184,6 +175,29 @@ pub fn build_datadog_agent_server_tls_config<P: AsRef<Path>>(cert_path: P) -> Re
         .map_err(|e| generic_error!("Failed to configure TLS server: {}", e))?;
 
     Ok(tls_server_config)
+}
+
+/// Reads a certificate file and retries up to a certain number of times with a certain wait duration between attempts.
+fn read_cert_file(cert_path: &Path, timeout: Duration, interval: Duration) -> Result<Vec<u8>, GenericError> {
+    if timeout < interval {
+        return Err(generic_error!("Timeout is less than interval. Timeout: {}, Interval: {}", timeout.as_secs(), interval.as_secs()));
+    }
+    
+    let start_time = std::time::Instant::now();
+    let mut last_error: String = String::new();
+    while start_time.elapsed() < timeout {
+        match std::fs::read(cert_path) {
+            Ok(data) => {
+                return Ok(data);
+            }
+            Err(e) => {
+                last_error = e.to_string();
+                std::thread::sleep(interval);
+            }
+        }
+    }
+    return Err(generic_error!("Failed to read certificate file '{}' after {} seconds: {}", cert_path.display(), timeout.as_secs(), last_error));
+
 }
 
 #[cfg(test)]
