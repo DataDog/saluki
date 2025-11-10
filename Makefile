@@ -48,8 +48,9 @@ export DDPROF_VERSION ?= 0.20.0
 export LADING_VERSION ?= 0.28.0
 
 # Version of source repositories (Git tag) for vendored Protocol Buffers definitions.
-export PROTOBUF_SRC_REPO_DD_AGENT ?= 7.69.4
+export PROTOBUF_SRC_REPO_DD_AGENT ?= 7.72.1
 export PROTOBUF_SRC_REPO_AGENT_PAYLOAD ?= v5.0.164
+export PROTOBUF_SRC_REPO_CONTAINERD ?= v2.2.0
 
 FMT_YELLOW = \033[0;33m
 FMT_BLUE = \033[0;36m
@@ -616,7 +617,10 @@ run-docs: ## Runs a local development server for documentation
 
 .PHONY: update-protos
 update-protos: ## Updates all vendored Protocol Buffers definitions from their source repositories
-	@DD_AGENT_GIT_TAG=$(PROTOBUF_SRC_REPO_DD_AGENT) AGENT_PAYLOAD_GIT_TAG=$(PROTOBUF_SRC_REPO_AGENT_PAYLOAD) ./tooling/update-protos.sh
+	@DD_AGENT_GIT_TAG=$(PROTOBUF_SRC_REPO_DD_AGENT) \
+	AGENT_PAYLOAD_GIT_TAG=$(PROTOBUF_SRC_REPO_AGENT_PAYLOAD) \
+	CONTAINERD_GIT_TAG=$(PROTOBUF_SRC_REPO_CONTAINERD) \
+	./tooling/update-protos.sh
 
 .PHONY: clean
 clean: check-rust-build-tools

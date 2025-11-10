@@ -1,10 +1,10 @@
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{path::Path, time::Duration};
 
-use containerd_client::{
-    services::v1::{
-        Container, ListContainersRequest, ListNamespacesRequest, ListPidsRequest, Namespace, SubscribeRequest,
-    },
-    Client,
+use containerd_protos::services::{
+    containers::v1::{containers_client::ContainersClient, Container, ListContainersRequest},
+    events::v1::{events_client::EventsClient, SubscribeRequest},
+    namespaces::v1::{namespaces_client::NamespacesClient, ListNamespacesRequest, Namespace},
+    tasks::v1::{tasks_client::TasksClient, ListPidsRequest},
 };
 use futures::{Stream, StreamExt as _, TryStreamExt as _};
 use hyper_util::rt::TokioIo;
@@ -12,7 +12,10 @@ use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, GenericError};
 use snafu::{ResultExt as _, Snafu};
 use tokio::net::UnixStream;
-use tonic::{transport::Endpoint, IntoRequest, Request};
+use tonic::{
+    transport::{Channel, Endpoint},
+    IntoRequest, Request,
+};
 use tower::service_fn;
 
 use crate::features::ContainerdDetector;
@@ -49,7 +52,7 @@ impl ClientError {
 /// Containerd gRPC client.
 #[derive(Clone)]
 pub struct ContainerdClient {
-    client: Arc<Client>,
+    channel: Channel,
 }
 
 impl ContainerdClient {
@@ -81,9 +84,7 @@ impl ContainerdClient {
             }))
             .await?;
 
-        Ok(Self {
-            client: Arc::new(Client::from(channel)),
-        })
+        Ok(Self { channel })
     }
 
     /// Lists all namespaces.
@@ -93,13 +94,9 @@ impl ContainerdClient {
     /// If an error occurs while sending the request or receiving the response, an error will be returned.
     pub async fn list_namespaces(&self) -> Result<Vec<Namespace>, ClientError> {
         let request = ListNamespacesRequest::default();
-        let namespaces = self
-            .client
-            .namespaces()
-            .list(request)
-            .await
-            .context(Response)?
-            .into_inner();
+
+        let mut client = NamespacesClient::new(self.channel.clone());
+        let namespaces = client.list(request).await.context(Response)?.into_inner();
 
         Ok(namespaces.namespaces)
     }
@@ -113,9 +110,8 @@ impl ContainerdClient {
         let request = ListContainersRequest::default();
         let request = create_namespaced_request(request, namespace);
 
-        let response = self
-            .client
-            .containers()
+        let client = ContainersClient::new(self.channel.clone());
+        let response = client
             .max_decoding_message_size(MAX_LIST_CONTAINERS_RESPONSE_SIZE)
             .list(request)
             .await
@@ -148,13 +144,8 @@ impl ContainerdClient {
 
         let request = SubscribeRequest { filters };
 
-        let response = self
-            .client
-            .events()
-            .subscribe(request)
-            .await
-            .context(Response)?
-            .into_inner();
+        let mut client = EventsClient::new(self.channel.clone());
+        let response = client.subscribe(request).await.context(Response)?.into_inner();
 
         Ok(response
             .map_err(|source| ClientError::Response { source })
@@ -185,13 +176,8 @@ impl ContainerdClient {
         let request = ListPidsRequest { container_id };
         let request = create_namespaced_request(request, namespace);
 
-        let response = self
-            .client
-            .tasks()
-            .list_pids(request)
-            .await
-            .context(Response)?
-            .into_inner();
+        let mut client = TasksClient::new(self.channel.clone());
+        let response = client.list_pids(request).await.context(Response)?.into_inner();
 
         Ok(response.processes.into_iter().map(|p| p.pid).collect())
     }
