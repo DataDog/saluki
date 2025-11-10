@@ -6,6 +6,9 @@ use std::{
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stele::{Metric, MetricContext, MetricValue};
 
+/// A metric context and type pair, used for comparing metrics between different sets.
+type ContextTypePair<'a> = (&'a NormalizedMetricContext, MetricType);
+
 /// The type of a metric value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum MetricType {
@@ -146,9 +149,6 @@ impl NormalizedMetric {
     }
 }
 
-/// A metric context and type pair, used for comparing metrics between different sets.
-type ContextTypePair<'a> = (&'a NormalizedMetricContext, MetricType);
-
 /// A set of normalized metrics.
 ///
 /// # Normalization behavior
@@ -171,7 +171,7 @@ impl NormalizedMetrics {
     /// # Errors
     ///
     /// If the set of metrics is empty, or if any of the metrics cannot be normalized, an error is returned.
-    pub fn try_from_stele_metrics(metrics: Vec<Metric>) -> Result<Self, GenericError> {
+    pub fn try_from_stele_metrics(metrics: &[Metric]) -> Result<Self, GenericError> {
         if metrics.is_empty() {
             return Err(generic_error!("Cannot normalize an empty set of metrics."));
         }
