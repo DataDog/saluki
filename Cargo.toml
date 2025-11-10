@@ -209,9 +209,6 @@ inherits = "release"
 lto = "fat"
 codegen-units = 1
 
-[profile.bloaty]
-inherits = "release"
-debug = true
 lto = false
 strip = false
 
