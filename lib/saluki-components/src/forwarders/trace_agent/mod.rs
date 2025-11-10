@@ -49,9 +49,7 @@ impl ForwarderBuilder for TraceAgentForwarderConfiguration {
         let endpoint = format!("http://localhost:{}", self.otlp_config.traces.internal_port);
         let channel = Channel::from_shared(endpoint)
             .error_context("Invalid gRPC endpoint")?
-            .connect()
-            .await
-            .error_context("Failed to connect to gRPC endpoint")?;
+            .connect_lazy();
 
         let client = TraceServiceClient::new(channel);
 
