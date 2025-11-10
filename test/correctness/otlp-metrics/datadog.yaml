@@ -8,8 +8,8 @@ api_key: dummy-api-key-correctness-testing
 # We have to specifically configure the health port to use.
 health_port: 5555
 
-# Point ourselves at the metrics-intake service.
-dd_url: "http://metrics-intake:2049"
+# Point ourselves at the datadog-intake service.
+dd_url: "http://datadog-intake:2049"
 
 # Disable DogStatsD since we're testing OTLP
 dogstatsd_port: 0
@@ -21,7 +21,3 @@ otlp_config:
     protocols:
       grpc:
         endpoint: "0.0.0.0:4317"
-
-# We don't have an Agent available for ADP to query, so we run ADP the same way we run it in the regression tests, where
-# it just uses `hostname`/`DD_HOSTNAME` as the hostname, and doesn't do any workload provider-based enrichment.
-adp_standalone_mode: true

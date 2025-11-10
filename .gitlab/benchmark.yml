@@ -154,10 +154,7 @@ run-benchmarks-adp:
       --submission-metadata submission_metadata
       --output-path outputs
     # Post the report to the linked PR.
-    #
-    # We replace empty lines in the output with lines containing various Unicode space characters, which avoids
-    # https://gitlab.com/gitlab-org/gitlab/-/issues/217231.
-    - cat outputs/report.md | sed "s/^\$/$(echo -ne '\uFEFF\u00A0\u200B')/g" | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Agent Data Plane)"
+    - cat outputs/report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Agent Data Plane)"
     # Finally, exit 1 if the job signals a regression else 0.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job result

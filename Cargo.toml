@@ -2,8 +2,8 @@
 members = [
   "bin/agent-data-plane",
   "bin/correctness/airlock",
+  "bin/correctness/datadog-intake",
   "bin/correctness/ground-truth",
-  "bin/correctness/metrics-intake",
   "bin/correctness/millstone",
   "bin/correctness/stele",
   "lib/datadog-protos",
@@ -200,12 +200,13 @@ tracing-appender = { version = "0.2", default-features = false }
 
 [profile.release]
 debug = true
+lto = "thin"
+codegen-units = 8
 
 [profile.optimized-release]
 inherits = "release"
 lto = "fat"
 codegen-units = 1
-debug = true
 
 [workspace.lints.clippy]
 new_without_default = "allow"

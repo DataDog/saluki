@@ -182,13 +182,13 @@ build-ground-truth: ## Builds the ground-truth binary in debug mode
 	@echo "[*] Building ground-truth locally..."
 	@cargo build --profile dev --package ground-truth
 
-.PHONY: build-metrics-intake-image
-build-metrics-intake-image: ## Builds the metrics-intake container image in release mode ('latest' tag)
-	@echo "[*] Building metrics-intake image..."
+.PHONY: build-datadog-intake-image
+build-datadog-intake-image: ## Builds the datadog-intake container image in release mode ('latest' tag)
+	@echo "[*] Building datadog-intake image..."
 	@$(CONTAINER_TOOL) build \
-		--tag saluki-images/metrics-intake:latest \
-		--tag local.dev/saluki-images/metrics-intake:testing \
-		--file ./docker/Dockerfile.metrics-intake \
+		--tag saluki-images/datadog-intake:latest \
+		--tag local.dev/saluki-images/datadog-intake:testing \
+		--file ./docker/Dockerfile.datadog-intake \
 		.
 
 .PHONY: build-millstone-image
@@ -501,61 +501,26 @@ test-all: ## Test everything
 test-all: test test-property test-docs test-miri test-loom
 
 .PHONY: test-correctness
-test-correctness: build-ground-truth
-test-correctness: ## Runs the metrics correctness (ground-truth) suite
-	@echo "[*] Running correctness suite..."
-	@echo "[*] Running 'no-origin-detection' test case..."
-	@target/debug/ground-truth \
-		--millstone-image saluki-images/millstone:latest \
-		--dsd-millstone-config-path $(shell pwd)/test/correctness/millstone.yaml \
-		--metrics-intake-image saluki-images/metrics-intake:latest \
-		--metrics-intake-config-path $(shell pwd)/test/correctness/metrics-intake.yaml \
-		--dsd-image docker.io/datadog/dogstatsd:7.68.3 \
-		--dsd-config-path $(shell pwd)/test/correctness/datadog-no-origin-detection.yaml \
-		--adp-image saluki-images/agent-data-plane:latest \
-		--adp-config-path $(shell pwd)/test/correctness/datadog-no-origin-detection.yaml
+test-correctness: ## Runs the complete correctness suite
+test-correctness: test-correctness-dsd-plain test-correctness-dsd-origin-detection test-correctness-otlp-metrics
 
-.PHONY: test-correctness-origin-detection
-test-correctness-origin-detection: build-ground-truth
-test-correctness-origin-detection: ## Runs the metrics correctness (ground-truth) suite (origin detection)
-	@echo "[*] Running correctness suite..."
-	@echo "[*] Running 'origin-detection' test case..."
-	@target/debug/ground-truth \
-		--millstone-image saluki-images/millstone:latest \
-		--dsd-millstone-config-path $(shell pwd)/test/correctness/millstone.yaml \
-		--metrics-intake-image saluki-images/metrics-intake:latest \
-		--metrics-intake-config-path $(shell pwd)/test/correctness/metrics-intake.yaml \
-		--dsd-image saluki-images/datadog-agent:latest \
-		--dsd-entrypoint /bin/entrypoint.sh \
-		--dsd-command /init \
-		--dsd-config-path $(shell pwd)/test/correctness/datadog-origin-detection.yaml \
-		--adp-image saluki-images/datadog-agent:latest \
-		--adp-command /init \
-		--adp-config-path $(shell pwd)/test/correctness/datadog-origin-detection.yaml \
-		--adp-env-arg DD_ADP_ENABLED=true \
-		--adp-env-arg DD_AGGREGATE_CONTEXT_LIMIT=500000
+.PHONY: test-correctness-dsd-plain
+test-correctness-dsd-plain: build-ground-truth
+test-correctness-dsd-plain: ## Runs the 'dsd-plain' correctness test case
+	@echo "[*] Running 'dsd-origin-detection' correctness test case..."
+	@target/debug/ground-truth $(shell pwd)/test/correctness/dsd-plain/config.yaml
+
+.PHONY: test-correctness-dsd-origin-detection
+test-correctness-dsd-origin-detection: build-ground-truth
+test-correctness-dsd-origin-detection: ## Runs the 'dsd-origin-detection' correctness test case
+	@echo "[*] Running 'dsd-origin-detection' correctness test case..."
+	@target/debug/ground-truth $(shell pwd)/test/correctness/dsd-origin-detection/config.yaml
 
 .PHONY: test-correctness-otlp-metrics
 test-correctness-otlp-metrics: build-ground-truth
-test-correctness-otlp-metrics: ## Runs the OTLP metrics correctness test
-	@echo "[*] Running OTLP metrics correctness suite..."
-	@echo "[*] Running 'otlp-metrics' test case..."
-	@target/debug/ground-truth \
-		--millstone-image saluki-images/millstone:latest \
-		--dsd-millstone-config-path $(shell pwd)/test/correctness/otlp-metrics-agent-millstone.yaml \
-		--adp-millstone-config-path $(shell pwd)/test/correctness/otlp-metrics-adp-millstone.yaml \
-		--metrics-intake-image saluki-images/metrics-intake:latest \
-		--metrics-intake-config-path $(shell pwd)/test/correctness/metrics-intake.yaml \
-		--dsd-image saluki-images/datadog-agent:latest \
-		--dsd-entrypoint /bin/entrypoint.sh \
-		--dsd-command /init \
-		--dsd-config-path $(shell pwd)/test/correctness/otlp-metrics.yaml \
-		--dsd-env-arg DD_API_KEY=dummy-api-key-correctness-testing \
-		--adp-image saluki-images/agent-data-plane:latest \
-		--adp-entrypoint /usr/local/bin/agent-data-plane \
-		--adp-command run \
-		--adp-config-path $(shell pwd)/test/correctness/otlp-metrics.yaml \
-		--adp-env-arg DD_ADP_OTLP_ENABLED=true \
+test-correctness-otlp-metrics: ## Runs the 'otlp-metrics' correctness test case
+	@echo "[*] Running 'otlp-metrics' correctness test case..."
+	@target/debug/ground-truth $(shell pwd)/test/correctness/otlp-metrics/config.yaml
 
 .PHONY: ensure-rust-miri
 ensure-rust-miri:
