@@ -939,6 +939,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "datadog-intake"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "datadog-protos",
+ "protobuf",
+ "saluki-error",
+ "stele",
+ "tokio",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "datadog-protos"
 version = "0.1.0"
 dependencies = [
@@ -1307,7 +1322,10 @@ dependencies = [
  "rand",
  "rand_distr",
  "reqwest",
+ "saluki-config",
  "saluki-error",
+ "serde",
+ "serde_yaml",
  "stele",
  "tokio",
  "tokio-util",
@@ -2039,21 +2057,6 @@ checksum = "25dea7ac8057892855ec285c440160265225438c3c45072613c25a4b26e98ef5"
 dependencies = [
  "ahash",
  "portable-atomic",
-]
-
-[[package]]
-name = "metrics-intake"
-version = "0.1.0"
-dependencies = [
- "axum",
- "datadog-protos",
- "protobuf",
- "saluki-error",
- "stele",
- "tokio",
- "tower-http",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

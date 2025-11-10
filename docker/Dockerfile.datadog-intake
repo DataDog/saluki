@@ -1,0 +1,25 @@
+ARG BASE_IMAGE=alpine:3.20
+
+FROM ${BASE_IMAGE} AS builder
+
+ARG RUST_VERSION=stable
+
+# Install Rust and other build dependencies.
+#
+# no-dd-sa: We don't care about pinning package versions in the build stage.
+RUN apk update && \
+    apk add --no-cache rustup musl-dev linux-headers make cmake mold gcc libgcc perl go protobuf && \
+   rustup-init -y --default-toolchain ${RUST_VERSION}
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Build datadog-intake.
+WORKDIR /datadog-intake
+COPY . /datadog-intake
+RUN cargo build --profile release --bin datadog-intake
+
+# Now stick our resulting binary in a clean image.
+FROM ${BASE_IMAGE}
+
+COPY --from=builder /datadog-intake/target/release/datadog-intake /usr/local/bin/datadog-intake
+
+ENTRYPOINT [ "/usr/local/bin/datadog-intake" ]

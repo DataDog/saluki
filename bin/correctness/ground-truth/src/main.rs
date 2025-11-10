@@ -1,9 +1,8 @@
-//! Test runner for comparing the outputs of DogStatsD and Agent Data Plane when fed deterministic inputs.
+//! Test runner for comparing the telemetry data outputs of two similar targets when fed by an identical, deterministic input.
 
 #![deny(warnings)]
 #![deny(missing_docs)]
 
-use clap::Parser as _;
 use saluki_error::{ErrorContext as _, GenericError};
 use tracing::{error, info};
 use tracing_subscriber::{filter::LevelFilter, EnvFilter};
@@ -11,7 +10,7 @@ use tracing_subscriber::{filter::LevelFilter, EnvFilter};
 mod analysis;
 
 mod config;
-use self::config::Cli;
+use self::config::Config;
 
 mod runner;
 use self::runner::TestRunner;
@@ -19,7 +18,7 @@ use self::runner::TestRunner;
 mod sync;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), GenericError> {
     tracing_subscriber::fmt()
         .compact()
         .with_env_filter(
@@ -29,31 +28,36 @@ async fn main() {
         )
         .with_ansi(true)
         .with_target(true)
-        .with_file(true)
-        .with_line_number(true)
         .init();
 
-    let cli = Cli::parse();
-    match run(cli).await {
+    // Load our configuration.
+    //
+    // The first argument passed to `ground-truth` should be the path to the configuration file in YAML format.
+    let config_path = std::env::args().nth(1).expect("Missing configuration file path.");
+    let config = Config::from_yaml(&config_path).error_context("Failed to load configuration file.")?;
+
+    match run(config).await {
         Ok(()) => info!("ground-truth stopped."),
         Err(e) => {
             error!("{:?}", e);
             std::process::exit(1);
         }
     }
+
+    Ok(())
 }
 
-async fn run(cli: Cli) -> Result<(), GenericError> {
-    info!("ground-truth starting...");
+async fn run(config: Config) -> Result<(), GenericError> {
+    info!("Test run starting...");
 
-    let test_runner = TestRunner::from_cli(&cli);
+    let test_runner = TestRunner::from_config(&config).await?;
     let raw_results = test_runner.run().await?;
 
-    info!("Running analysis...");
+    info!("Test run complete. Analyzing results...");
 
     raw_results.run_analysis().error_context("Analysis failed.")?;
 
-    info!("Analysis complete: no difference detected between DogStatsD and Agent Data Plane.");
+    info!("Analysis complete: no difference detected between baseline and comparison.");
 
     Ok(())
 }

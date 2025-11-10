@@ -44,7 +44,7 @@ export CARGO_TOOL_VERSION_cargo-nextest ?= 0.9.99
 export CARGO_TOOL_VERSION_cargo-autoinherit ?= 0.1.5
 export CARGO_TOOL_VERSION_cargo-sort ?= 1.0.9
 export CARGO_TOOL_VERSION_dummyhttp ?= 1.1.0
-export DDPROF_VERSION ?= 0.19.0
+export DDPROF_VERSION ?= 0.20.0
 export LADING_VERSION ?= 0.28.0
 
 # Version of source repositories (Git tag) for vendored Protocol Buffers definitions.
@@ -182,13 +182,13 @@ build-ground-truth: ## Builds the ground-truth binary in debug mode
 	@echo "[*] Building ground-truth locally..."
 	@cargo build --profile dev --package ground-truth
 
-.PHONY: build-metrics-intake-image
-build-metrics-intake-image: ## Builds the metrics-intake container image in release mode ('latest' tag)
-	@echo "[*] Building metrics-intake image..."
+.PHONY: build-datadog-intake-image
+build-datadog-intake-image: ## Builds the datadog-intake container image in release mode ('latest' tag)
+	@echo "[*] Building datadog-intake image..."
 	@$(CONTAINER_TOOL) build \
-		--tag saluki-images/metrics-intake:latest \
-		--tag local.dev/saluki-images/metrics-intake:testing \
-		--file ./docker/Dockerfile.metrics-intake \
+		--tag saluki-images/datadog-intake:latest \
+		--tag local.dev/saluki-images/datadog-intake:testing \
+		--file ./docker/Dockerfile.datadog-intake \
 		.
 
 .PHONY: build-millstone-image
@@ -239,6 +239,10 @@ endif
 
 ##@ Running
 
+.PHONY: create-dummy-agent-config
+create-dummy-agent-config:
+	@echo "{}" > /tmp/adp-empty-config.yaml
+
 .PHONY: run-adp
 run-adp: build-adp
 run-adp: ## Runs ADP locally (debug, requires Datadog Agent for tagging)
@@ -270,27 +274,27 @@ endif
 	target/release/agent-data-plane run
 
 .PHONY: run-adp-standalone
-run-adp-standalone: build-adp
+run-adp-standalone: build-adp create-dummy-agent-config
 run-adp-standalone: ## Runs ADP locally in standalone mode (debug)
 	@echo "[*] Running ADP..."
 	@DD_ADP_STANDALONE_MODE=true \
 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
-	target/debug/agent-data-plane run
+	target/debug/agent-data-plane run --config=/tmp/adp-empty-config.yaml
 
 .PHONY: run-adp-standalone-release
-run-adp-standalone-release: build-adp-release
+run-adp-standalone-release: build-adp-release create-dummy-agent-config
 run-adp-standalone-release: ## Runs ADP locally in standalone mode (release)
 	@echo "[*] Running ADP..."
 	@DD_ADP_STANDALONE_MODE=true \
 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
-	target/release/agent-data-plane run
+	target/release/agent-data-plane run --config=/tmp/adp-empty-config.yaml
 
 .PHONY: run-adp-with-checks
-run-adp-with-checks: build-adp-and-checks
+run-adp-with-checks: build-adp-and-checks create-dummy-agent-config
 run-adp-with-checks: ## Runs ADP + Checks locally (debug)
 	@echo "[*] Running ADP and checks..."
 	@DD_ADP_STANDALONE_MODE=false \
@@ -299,10 +303,10 @@ run-adp-with-checks: ## Runs ADP + Checks locally (debug)
 	DD_CHECKS_CONFIG_DIR=./dist/conf.d \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
-	target/debug/agent-data-plane run
+	target/debug/agent-data-plane run --config=/tmp/adp-empty-config.yaml
 
 .PHONY: run-adp-with-checks-standalone
-run-adp-with-checks-standalone: build-adp-and-checks
+run-adp-with-checks-standalone: build-adp-and-checks create-dummy-agent-config
 run-adp-with-checks-standalone: ## Runs ADP + Checks locally in standalone mode (debug)
 	@echo "[*] Running ADP and checks..."
 	@DD_ADP_STANDALONE_MODE=true \
@@ -310,7 +314,7 @@ run-adp-with-checks-standalone: ## Runs ADP + Checks locally in standalone mode 
 	DD_CHECKS_CONFIG_DIR=./dist/conf.d \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
-	target/debug/agent-data-plane run
+	target/debug/agent-data-plane run --config=/tmp/adp-empty-config.yaml
 
 .PHONY: run-dsd-basic-udp
 run-dsd-basic-udp: build-dsd-client ## Runs a basic set of metrics via the Dogstatsd client (UDP)
@@ -497,61 +501,26 @@ test-all: ## Test everything
 test-all: test test-property test-docs test-miri test-loom
 
 .PHONY: test-correctness
-test-correctness: build-ground-truth
-test-correctness: ## Runs the metrics correctness (ground-truth) suite
-	@echo "[*] Running correctness suite..."
-	@echo "[*] Running 'no-origin-detection' test case..."
-	@target/debug/ground-truth \
-		--millstone-image saluki-images/millstone:latest \
-		--dsd-millstone-config-path $(shell pwd)/test/correctness/millstone.yaml \
-		--metrics-intake-image saluki-images/metrics-intake:latest \
-		--metrics-intake-config-path $(shell pwd)/test/correctness/metrics-intake.yaml \
-		--dsd-image docker.io/datadog/dogstatsd:7.68.3 \
-		--dsd-config-path $(shell pwd)/test/correctness/datadog-no-origin-detection.yaml \
-		--adp-image saluki-images/agent-data-plane:latest \
-		--adp-config-path $(shell pwd)/test/correctness/datadog-no-origin-detection.yaml
+test-correctness: ## Runs the complete correctness suite
+test-correctness: test-correctness-dsd-plain test-correctness-dsd-origin-detection test-correctness-otlp-metrics
 
-.PHONY: test-correctness-origin-detection
-test-correctness-origin-detection: build-ground-truth
-test-correctness-origin-detection: ## Runs the metrics correctness (ground-truth) suite (origin detection)
-	@echo "[*] Running correctness suite..."
-	@echo "[*] Running 'origin-detection' test case..."
-	@target/debug/ground-truth \
-		--millstone-image saluki-images/millstone:latest \
-		--dsd-millstone-config-path $(shell pwd)/test/correctness/millstone.yaml \
-		--metrics-intake-image saluki-images/metrics-intake:latest \
-		--metrics-intake-config-path $(shell pwd)/test/correctness/metrics-intake.yaml \
-		--dsd-image saluki-images/datadog-agent:latest \
-		--dsd-entrypoint /bin/entrypoint.sh \
-		--dsd-command /init \
-		--dsd-config-path $(shell pwd)/test/correctness/datadog-origin-detection.yaml \
-		--adp-image saluki-images/datadog-agent:latest \
-		--adp-command /init \
-		--adp-config-path $(shell pwd)/test/correctness/datadog-origin-detection.yaml \
-		--adp-env-arg DD_ADP_ENABLED=true \
-		--adp-env-arg DD_AGGREGATE_CONTEXT_LIMIT=500000
+.PHONY: test-correctness-dsd-plain
+test-correctness-dsd-plain: build-ground-truth
+test-correctness-dsd-plain: ## Runs the 'dsd-plain' correctness test case
+	@echo "[*] Running 'dsd-origin-detection' correctness test case..."
+	@target/debug/ground-truth $(shell pwd)/test/correctness/dsd-plain/config.yaml
+
+.PHONY: test-correctness-dsd-origin-detection
+test-correctness-dsd-origin-detection: build-ground-truth
+test-correctness-dsd-origin-detection: ## Runs the 'dsd-origin-detection' correctness test case
+	@echo "[*] Running 'dsd-origin-detection' correctness test case..."
+	@target/debug/ground-truth $(shell pwd)/test/correctness/dsd-origin-detection/config.yaml
 
 .PHONY: test-correctness-otlp-metrics
 test-correctness-otlp-metrics: build-ground-truth
-test-correctness-otlp-metrics: ## Runs the OTLP metrics correctness test
-	@echo "[*] Running OTLP metrics correctness suite..."
-	@echo "[*] Running 'otlp-metrics' test case..."
-	@target/debug/ground-truth \
-		--millstone-image saluki-images/millstone:latest \
-		--dsd-millstone-config-path $(shell pwd)/test/correctness/otlp-metrics-agent-millstone.yaml \
-		--adp-millstone-config-path $(shell pwd)/test/correctness/otlp-metrics-adp-millstone.yaml \
-		--metrics-intake-image saluki-images/metrics-intake:latest \
-		--metrics-intake-config-path $(shell pwd)/test/correctness/metrics-intake.yaml \
-		--dsd-image docker.io/datadog/agent:latest \
-		--dsd-entrypoint /bin/entrypoint.sh \
-		--dsd-command /init \
-		--dsd-config-path $(shell pwd)/test/correctness/otlp-metrics.yaml \
-		--dsd-env-arg DD_API_KEY=dummy-api-key-correctness-testing \
-		--adp-image saluki-images/agent-data-plane:latest \
-		--adp-entrypoint /usr/local/bin/agent-data-plane \
-		--adp-command run \
-		--adp-config-path $(shell pwd)/test/correctness/otlp-metrics.yaml \
-		--adp-env-arg DD_ADP_OTLP_ENABLED=true \
+test-correctness-otlp-metrics: ## Runs the 'otlp-metrics' correctness test case
+	@echo "[*] Running 'otlp-metrics' correctness test case..."
+	@target/debug/ground-truth $(shell pwd)/test/correctness/otlp-metrics/config.yaml
 
 .PHONY: ensure-rust-miri
 ensure-rust-miri:
