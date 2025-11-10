@@ -6,6 +6,7 @@ pub mod config;
 
 use std::sync::Arc;
 
+use ::metrics::Counter;
 use async_trait::async_trait;
 use axum::body::Bytes;
 use axum::extract::State;
@@ -25,16 +26,61 @@ use otlp_protos::opentelemetry::proto::collector::trace::v1::trace_service_serve
 use otlp_protos::opentelemetry::proto::collector::trace::v1::{ExportTraceServiceRequest, ExportTraceServiceResponse};
 use prost::Message;
 use saluki_common::task::HandleExt as _;
+use saluki_core::components::ComponentContext;
+use saluki_core::observability::ComponentMetricsExt;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::listener::ConnectionOrientedListener;
 use saluki_io::net::server::http::{ErrorHandle, HttpServer, ShutdownHandle};
 use saluki_io::net::util::hyper::TowerToHyperService;
 use saluki_io::net::ListenAddress;
+use saluki_metrics::MetricsBuilder;
 use tokio::runtime::Handle;
 use tonic::transport::Server;
 use tonic::{Request as TonicRequest, Response, Status};
 use tracing::error;
 
+pub struct Metrics {
+    metrics_received: Counter,
+    logs_received: Counter,
+    bytes_received: Counter,
+}
+
+impl Metrics {
+    pub fn metrics_received(&self) -> &Counter {
+        &self.metrics_received
+    }
+
+    pub fn logs_received(&self) -> &Counter {
+        &self.logs_received
+    }
+
+    pub fn bytes_received(&self) -> &Counter {
+        &self.bytes_received
+    }
+
+    /// Test-only helper to construct a `Metrics` instance.
+    #[cfg(test)]
+    pub fn for_tests() -> Self {
+        Metrics {
+            metrics_received: Counter::noop(),
+            logs_received: Counter::noop(),
+            bytes_received: Counter::noop(),
+        }
+    }
+}
+
+/// Builds the metrics for the OTLP server.
+pub fn build_metrics(component_context: &ComponentContext) -> Metrics {
+    let builder = MetricsBuilder::from_component_context(component_context);
+
+    Metrics {
+        metrics_received: builder
+            .register_debug_counter_with_tags("component_events_received_total", [("message_type", "otlp_metrics")]),
+        logs_received: builder
+            .register_debug_counter_with_tags("component_events_received_total", [("message_type", "otlp_logs")]),
+        bytes_received: builder.register_counter_with_tags("component_bytes_received_total", [("source", "otlp")]),
+    }
+}
 /// Handler for OTLP data.
 #[async_trait]
 pub trait OtlpHandler: Send + Sync + 'static {
@@ -68,7 +114,7 @@ impl OtlpServerBuilder {
     ///
     /// Returns the HTTP server shutdown handle and error handle.
     pub async fn build<H: OtlpHandler>(
-        self, handler: H, memory_limiter: MemoryLimiter, thread_pool_handle: Handle,
+        self, handler: H, memory_limiter: MemoryLimiter, thread_pool_handle: Handle, metrics: Arc<Metrics>,
     ) -> Result<(ShutdownHandle, ErrorHandle), GenericError> {
         let handler = Arc::new(handler);
 
@@ -101,7 +147,7 @@ impl OtlpServerBuilder {
                 .route("/v1/metrics", post(http_metrics_handler::<H>))
                 .route("/v1/logs", post(http_logs_handler::<H>))
                 .route("/v1/traces", post(http_traces_handler::<H>))
-                .with_state((http_handler, memory_limiter.clone())),
+                .with_state((http_handler, memory_limiter.clone(), metrics.clone())),
         );
 
         let http_listener = ConnectionOrientedListener::from_listen_address(self.http_endpoint)
@@ -117,9 +163,11 @@ impl OtlpServerBuilder {
 
 /// HTTP handler for OTLP metrics requests.
 async fn http_metrics_handler<H: OtlpHandler>(
-    State((handler, memory_limiter)): State<(Arc<H>, MemoryLimiter)>, body: Bytes,
+    State((handler, memory_limiter, metrics)): State<(Arc<H>, MemoryLimiter, Arc<Metrics>)>, body: Bytes,
 ) -> (StatusCode, &'static str) {
     memory_limiter.wait_for_capacity().await;
+
+    metrics.bytes_received().increment(body.len() as u64);
 
     match handler.handle_metrics(body).await {
         Ok(()) => (StatusCode::OK, "OK"),
@@ -132,9 +180,11 @@ async fn http_metrics_handler<H: OtlpHandler>(
 
 /// HTTP handler for OTLP logs requests.
 async fn http_logs_handler<H: OtlpHandler>(
-    State((handler, memory_limiter)): State<(Arc<H>, MemoryLimiter)>, body: Bytes,
+    State((handler, memory_limiter, metrics)): State<(Arc<H>, MemoryLimiter, Arc<Metrics>)>, body: Bytes,
 ) -> (StatusCode, &'static str) {
     memory_limiter.wait_for_capacity().await;
+
+    metrics.bytes_received().increment(body.len() as u64);
 
     match handler.handle_logs(body).await {
         Ok(()) => (StatusCode::OK, "OK"),
@@ -147,9 +197,11 @@ async fn http_logs_handler<H: OtlpHandler>(
 
 /// HTTP handler for OTLP traces requests.
 async fn http_traces_handler<H: OtlpHandler>(
-    State((handler, memory_limiter)): State<(Arc<H>, MemoryLimiter)>, body: Bytes,
+    State((handler, memory_limiter, metrics)): State<(Arc<H>, MemoryLimiter, Arc<Metrics>)>, body: Bytes,
 ) -> (StatusCode, &'static str) {
     memory_limiter.wait_for_capacity().await;
+
+    metrics.bytes_received().increment(body.len() as u64);
 
     match handler.handle_traces(body).await {
         Ok(()) => (StatusCode::OK, "OK"),

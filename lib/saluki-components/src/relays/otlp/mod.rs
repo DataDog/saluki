@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use axum::body::Bytes;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -14,7 +16,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error};
 
 use crate::common::otlp::config::{Receiver, Traces};
-use crate::common::otlp::{OtlpHandler, OtlpServerBuilder};
+use crate::common::otlp::{build_metrics, Metrics, OtlpHandler, OtlpServerBuilder};
 
 const OTLP_TRACE_SERVICE_PATH: MetaString =
     MetaString::from_static("/opentelemetry.proto.collector.trace.v1.TraceService/Export");
@@ -101,6 +103,7 @@ pub struct OtlpRelay {
     grpc_max_recv_msg_size_bytes: usize,
     destination_endpoint: String,
     trace_destination_endpoint: MetaString,
+    metrics: Metrics,
 }
 
 /// Handler that forwards OTLP payloads to a channel for downstream processing.
@@ -162,13 +165,14 @@ impl RelayBuilder for OtlpRelayConfiguration {
         PayloadType::Http | PayloadType::Grpc
     }
 
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Relay + Send>, GenericError> {
+    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Relay + Send>, GenericError> {
         Ok(Box::new(OtlpRelay {
             http_endpoint: self.http_endpoint(),
             grpc_endpoint: self.grpc_endpoint(),
             grpc_max_recv_msg_size_bytes: self.grpc_max_recv_msg_size_bytes(),
             destination_endpoint: self.destination_endpoint().to_string(),
             trace_destination_endpoint: self.trace_destination_endpoint(),
+            metrics: build_metrics(&context),
         }))
     }
 }
@@ -191,8 +195,15 @@ impl Relay for OtlpRelay {
             self.grpc_max_recv_msg_size_bytes,
         );
 
+        let metrics_arc = Arc::new(self.metrics);
+
         let (http_shutdown, mut http_error) = server_builder
-            .build(handler, memory_limiter.clone(), global_thread_pool.clone())
+            .build(
+                handler,
+                memory_limiter.clone(),
+                global_thread_pool.clone(),
+                metrics_arc.clone(),
+            )
             .await?;
 
         health.mark_ready();

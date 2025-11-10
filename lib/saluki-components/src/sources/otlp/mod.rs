@@ -2,7 +2,6 @@ use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use ::metrics::Counter;
 use async_trait::async_trait;
 use axum::body::Bytes;
 use bytesize::ByteSize;
@@ -15,7 +14,6 @@ use prost::Message;
 use saluki_common::task::HandleExt as _;
 use saluki_config::GenericConfiguration;
 use saluki_context::ContextResolver;
-use saluki_core::observability::ComponentMetricsExt;
 use saluki_core::topology::interconnect::EventBufferManager;
 use saluki_core::topology::shutdown::{DynamicShutdownCoordinator, DynamicShutdownHandle};
 use saluki_core::{
@@ -29,7 +27,6 @@ use saluki_core::{
 use saluki_env::WorkloadProvider;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::ListenAddress;
-use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use tokio::select;
 use tokio::sync::mpsc;
@@ -37,7 +34,7 @@ use tokio::time::{interval, MissedTickBehavior};
 use tracing::{debug, error};
 
 use crate::common::otlp::config::Receiver;
-use crate::common::otlp::{OtlpHandler, OtlpServerBuilder};
+use crate::common::otlp::{build_metrics, Metrics, OtlpHandler, OtlpServerBuilder};
 
 mod attributes;
 mod logs;
@@ -253,41 +250,6 @@ impl OtlpConfiguration {
     }
 }
 
-pub struct Metrics {
-    metrics_received: Counter,
-    logs_received: Counter,
-}
-
-impl Metrics {
-    fn metrics_received(&self) -> &Counter {
-        &self.metrics_received
-    }
-
-    fn logs_received(&self) -> &Counter {
-        &self.logs_received
-    }
-
-    /// Test-only helper to construct a `Metrics` instance.
-    #[cfg(test)]
-    pub fn for_tests() -> Self {
-        Metrics {
-            metrics_received: Counter::noop(),
-            logs_received: Counter::noop(),
-        }
-    }
-}
-
-fn build_metrics(component_context: &ComponentContext) -> Metrics {
-    let builder = MetricsBuilder::from_component_context(component_context);
-
-    Metrics {
-        metrics_received: builder
-            .register_debug_counter_with_tags("component_events_received_total", [("message_type", "otlp_metrics")]),
-        logs_received: builder
-            .register_debug_counter_with_tags("component_events_received_total", [("message_type", "otlp_logs")]),
-    }
-}
-
 #[async_trait]
 impl SourceBuilder for OtlpConfiguration {
     fn outputs(&self) -> &[OutputDefinition] {
@@ -383,6 +345,8 @@ impl Source for Otlp {
 
         let thread_pool_handle = context.topology_context().global_thread_pool().clone();
 
+        let metrics_arc = Arc::new(self.metrics);
+
         // Spawn the converter task. This task is shared by both servers.
         thread_pool_handle.spawn_traced_named(
             "otlp-resource-converter",
@@ -392,7 +356,7 @@ impl Source for Otlp {
                 self.origin_tag_resolver,
                 converter_shutdown_coordinator.register(),
                 metrics_translator,
-                self.metrics,
+                metrics_arc.clone(),
             ),
         );
 
@@ -404,7 +368,7 @@ impl Source for Otlp {
         );
 
         let (http_shutdown, mut http_error) = server_builder
-            .build(handler, memory_limiter.clone(), thread_pool_handle)
+            .build(handler, memory_limiter.clone(), thread_pool_handle, metrics_arc.clone())
             .await?;
 
         health.mark_ready();
@@ -471,7 +435,7 @@ async fn dispatch_events(mut events: EventsBuffer, source_context: &SourceContex
 async fn run_converter(
     mut receiver: mpsc::Receiver<OtlpResource>, source_context: SourceContext,
     origin_tag_resolver: Option<OtlpOriginTagResolver>, shutdown_handle: DynamicShutdownHandle,
-    mut metrics_translator: OtlpMetricsTranslator, metrics: Metrics,
+    mut metrics_translator: OtlpMetricsTranslator, metrics: Arc<Metrics>,
 ) {
     tokio::pin!(shutdown_handle);
     debug!("OTLP resource converter task started.");
