@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `lib/saluki-core/src/topology/graph.rs`."><title>graph.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../static.files/rustdoc-ca0dd0c4.css"><meta name="rustdoc-vars" data-root-path="../../../" data-static-root-path="../../../static.files/" data-current-crate="saluki_core" data-themes="" data-resource-suffix="" data-rustdoc-version="1.93.0-nightly (6647be936 2025-11-09)" data-channel="nightly" data-search-js="search-8e3fad08.js" data-stringdex-js="stringdex-c3e638e9.js" data-settings-js="settings-c38705f0.js" ><script src="../../../static.files/storage-e2aeef58.js"></script><script defer src="../../../static.files/src-script-813739b1.js"></script><script defer src="../../../src-files.js"></script><script defer src="../../../static.files/main-ce535bd0.js"></script><noscript><link rel="stylesheet" href="../../../static.files/noscript-263c88ec.css"></noscript><link rel="alternate icon" type="image/png" href="../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content"><div class="main-heading"><h1><div class="sub-heading">saluki_core/topology/</div>graph.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-4"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="attr">#![allow(dead_code)]
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `lib/saluki-core/src/topology/graph.rs`."><title>graph.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../static.files/rustdoc-ca0dd0c4.css"><meta name="rustdoc-vars" data-root-path="../../../" data-static-root-path="../../../static.files/" data-current-crate="saluki_core" data-themes="" data-resource-suffix="" data-rustdoc-version="1.93.0-nightly (29a69716f 2025-11-10)" data-channel="nightly" data-search-js="search-8e3fad08.js" data-stringdex-js="stringdex-c3e638e9.js" data-settings-js="settings-c38705f0.js" ><script src="../../../static.files/storage-e2aeef58.js"></script><script defer src="../../../static.files/src-script-813739b1.js"></script><script defer src="../../../src-files.js"></script><script defer src="../../../static.files/main-ce535bd0.js"></script><noscript><link rel="stylesheet" href="../../../static.files/noscript-263c88ec.css"></noscript><link rel="alternate icon" type="image/png" href="../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content"><div class="main-heading"><h1><div class="sub-heading">saluki_core/topology/</div>graph.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-4"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="attr">#![allow(dead_code)]
 <a href=#2 id=2 data-nosnippet>2</a></span><span class="kw">use </span>std::{
 <a href=#3 id=3 data-nosnippet>3</a>    collections::{HashMap, HashSet, VecDeque},
 <a href=#4 id=4 data-nosnippet>4</a>    fmt,
@@ -268,7 +268,7 @@
 <a href=#268 id=268 data-nosnippet>268</a>        <span class="kw">let </span>component_id = try_into_component_id(to)<span class="question-mark">?</span>;
 <a href=#269 id=269 data-nosnippet>269</a>        <span class="kw">let </span>component_output_id = try_into_component_output_id(from)<span class="question-mark">?</span>;
 <a href=#270 id=270 data-nosnippet>270</a>
-<a href=#271 id=271 data-nosnippet>271</a>        <span class="macro">if !</span><span class="self">self</span>.nodes.contains_key(<span class="kw-2">&amp;</span>component_id) {
+<a href=#271 id=271 data-nosnippet>271</a>        <span class="kw">if </span>!<span class="self">self</span>.nodes.contains_key(<span class="kw-2">&amp;</span>component_id) {
 <a href=#272 id=272 data-nosnippet>272</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(GraphError::NonexistentComponentId { component_id });
 <a href=#273 id=273 data-nosnippet>273</a>        }
 <a href=#274 id=274 data-nosnippet>274</a>
@@ -278,7 +278,7 @@
 <a href=#278 id=278 data-nosnippet>278</a>                <span class="comment">// Sources and transforms support named outputs, so we have to dig into their outputs to make sure the
 <a href=#279 id=279 data-nosnippet>279</a>                // given output ID exists.
 <a href=#280 id=280 data-nosnippet>280</a>                </span>Node::Source { outputs } | Node::Transform { outputs, .. } =&gt; {
-<a href=#281 id=281 data-nosnippet>281</a>                    <span class="macro">if !</span>outputs
+<a href=#281 id=281 data-nosnippet>281</a>                    <span class="kw">if </span>!outputs
 <a href=#282 id=282 data-nosnippet>282</a>                        .iter()
 <a href=#283 id=283 data-nosnippet>283</a>                        .any(|output| output.component_output() == <span class="kw-2">&amp;</span>component_output_id)
 <a href=#284 id=284 data-nosnippet>284</a>                    {
@@ -287,7 +287,7 @@
 <a href=#287 id=287 data-nosnippet>287</a>                }
 <a href=#288 id=288 data-nosnippet>288</a>                <span class="comment">// Encoders only have default outputs, so make sure the "from" side is referencing a default output.
 <a href=#289 id=289 data-nosnippet>289</a>                </span>Node::Encoder { .. } =&gt; {
-<a href=#290 id=290 data-nosnippet>290</a>                    <span class="macro">if !</span>component_output_id.is_default() {
+<a href=#290 id=290 data-nosnippet>290</a>                    <span class="kw">if </span>!component_output_id.is_default() {
 <a href=#291 id=291 data-nosnippet>291</a>                        <span class="kw">return </span><span class="prelude-val">Err</span>(GraphError::NonexistentComponentOutputId { component_output_id });
 <a href=#292 id=292 data-nosnippet>292</a>                    }
 <a href=#293 id=293 data-nosnippet>293</a>                }
@@ -380,7 +380,7 @@
 <a href=#380 id=380 data-nosnippet>380</a>            <span class="kw">let </span>from_ty = <span class="self">self</span>.get_output_type(<span class="kw-2">&amp;</span>edge.from);
 <a href=#381 id=381 data-nosnippet>381</a>            <span class="kw">let </span>to_ty = <span class="self">self</span>.get_input_type(<span class="kw-2">&amp;</span>edge.to);
 <a href=#382 id=382 data-nosnippet>382</a>
-<a href=#383 id=383 data-nosnippet>383</a>            <span class="macro">if !</span>from_ty.intersects(to_ty) {
+<a href=#383 id=383 data-nosnippet>383</a>            <span class="kw">if </span>!from_ty.intersects(to_ty) {
 <a href=#384 id=384 data-nosnippet>384</a>                <span class="kw">return </span><span class="prelude-val">Err</span>(GraphError::DataTypeMismatch {
 <a href=#385 id=385 data-nosnippet>385</a>                    from_component_output_id: edge.from.clone(),
 <a href=#386 id=386 data-nosnippet>386</a>                    from_ty,
@@ -406,9 +406,9 @@
 <a href=#406 id=406 data-nosnippet>406</a>            <span class="kw">let </span><span class="kw-2">mut </span>stack = IndexSet::new();
 <a href=#407 id=407 data-nosnippet>407</a>
 <a href=#408 id=408 data-nosnippet>408</a>            traversal.push_back(d);
-<a href=#409 id=409 data-nosnippet>409</a>            <span class="macro">while !</span>traversal.is_empty() {
+<a href=#409 id=409 data-nosnippet>409</a>            <span class="kw">while </span>!traversal.is_empty() {
 <a href=#410 id=410 data-nosnippet>410</a>                <span class="kw">let </span>n = traversal.back().cloned().expect(<span class="string">"can't be empty"</span>);
-<a href=#411 id=411 data-nosnippet>411</a>                <span class="macro">if !</span>visited.contains(<span class="kw-2">&amp;</span>n) {
+<a href=#411 id=411 data-nosnippet>411</a>                <span class="kw">if </span>!visited.contains(<span class="kw-2">&amp;</span>n) {
 <a href=#412 id=412 data-nosnippet>412</a>                    visited.insert(n.clone());
 <a href=#413 id=413 data-nosnippet>413</a>                    stack.insert(n.clone());
 <a href=#414 id=414 data-nosnippet>414</a>                } <span class="kw">else </span>{
@@ -420,7 +420,7 @@
 <a href=#420 id=420 data-nosnippet>420</a>                <span class="kw">let </span>inputs = <span class="self">self</span>.edges.iter().filter(|e| e.to == n).map(|e| <span class="kw-2">&amp;</span>e.from);
 <a href=#421 id=421 data-nosnippet>421</a>                <span class="kw">for </span>input <span class="kw">in </span>inputs {
 <a href=#422 id=422 data-nosnippet>422</a>                    <span class="kw">let </span>input_component_id = input.component_id();
-<a href=#423 id=423 data-nosnippet>423</a>                    <span class="macro">if !</span>visited.contains(<span class="kw-2">&amp;</span>input_component_id) {
+<a href=#423 id=423 data-nosnippet>423</a>                    <span class="kw">if </span>!visited.contains(<span class="kw-2">&amp;</span>input_component_id) {
 <a href=#424 id=424 data-nosnippet>424</a>                        traversal.push_back(input_component_id);
 <a href=#425 id=425 data-nosnippet>425</a>                    } <span class="kw">else if </span>stack.contains(<span class="kw-2">&amp;</span>input_component_id) {
 <a href=#426 id=426 data-nosnippet>426</a>                        <span class="comment">// We reached the node while it is on the current stack: it's a cycle.
