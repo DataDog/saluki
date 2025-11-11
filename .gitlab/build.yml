@@ -16,7 +16,6 @@
       --output push-by-digest=true,type=image,push=true
       --metadata-file ./build-metadata.${ARCH_TAG}
       --tag ${ADP_IMAGE_REPO_BASE}
-      --build-arg CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
       --build-arg BUILD_IMAGE=${ALPINE_BUILD_IMAGE}
       --build-arg APP_IMAGE=${APP_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
