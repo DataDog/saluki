@@ -11,7 +11,7 @@ generator:
 
 blackhole:
   - otlp:
-      http_addr: "127.0.0.1:4318"
+      http_addr: "127.0.0.1:4319"
   - http:
       binding_addr: "127.0.0.1:9091"
 

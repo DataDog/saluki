@@ -27,7 +27,7 @@ target:
     DD_ADP_OTLP_ENABLED: "true"
     DD_ADP_OTLP_PROXY_MODE: "true"
     DD_OTLP_CONFIG: "{}"
-    DD_OTLP_DESTINATION_ENDPOINT: "http://127.0.0.1:4318"
+    DD_OTLP_DESTINATION_ENDPOINT: "http://127.0.0.1:4319"
 
 report_links:
   - text: (metrics)
