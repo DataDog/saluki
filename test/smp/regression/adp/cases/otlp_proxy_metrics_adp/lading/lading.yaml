@@ -10,8 +10,8 @@ generator:
         opentelemetry_metrics: {}
 
 blackhole:
-  - http:
-      binding_addr: "127.0.0.1:4318"
+  - otlp:
+      http_addr: "127.0.0.1:4318"
   - http:
       binding_addr: "127.0.0.1:9091"
 
