@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["collector","common","logs","metrics","resource"]};
+window.SIDEBAR_ITEMS = {"mod":["collector","common","logs","metrics","resource","trace"]};
