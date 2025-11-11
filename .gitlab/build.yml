@@ -9,6 +9,7 @@
     APP_BUILD_TIME: ${CI_PIPELINE_CREATED_AT}
     DDCI_CONFIGURE_OTEL_EXPORTER: true
   script:
+    - docker buildx create --name adp-builder --driver docker-container --use
     - 'echo "Building ADP image ${IMAGE_TAG}-${ARCH_TAG}... (image version: ${ADP_IMAGE_VERSION}, build concurrency: ${CARGO_BUILD_JOBS}, profile: ${BUILD_PROFILE})..."'
     - docker buildx build
       --file ./docker/Dockerfile.agent-data-plane
