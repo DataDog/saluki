@@ -3,10 +3,12 @@ use tower_http::{compression::CompressionLayer, decompression::RequestDecompress
 
 mod metrics;
 mod misc;
+mod traces;
 
 pub fn initialize_app_router() -> Router {
     Router::new()
         .merge(metrics::build_metrics_router())
+        .merge(traces::build_traces_router())
         .merge(misc::build_misc_router())
         // Ensure we can handle compressed requests.
         .route_layer(RequestDecompressionLayer::new().deflate(true).zstd(true))
