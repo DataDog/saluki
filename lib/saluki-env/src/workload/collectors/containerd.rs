@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use async_stream::stream;
 use async_trait::async_trait;
-use containerd_client::services::v1::Namespace;
+use containerd_protos::services::namespaces::v1::Namespace;
 use futures::{stream::select_all, Stream, StreamExt as _};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;

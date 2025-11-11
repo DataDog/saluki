@@ -39,7 +39,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
 tokio = { workspace = true, features = ["macros", "sync"] }
-tonic = { workspace = true, features = ["router", "transport"] }
+tonic = { workspace = true, features = ["router"] }
 tower = { workspace = true, features = ["util"] }
 tracing = { workspace = true }
 tracing-appender = { workspace = true }

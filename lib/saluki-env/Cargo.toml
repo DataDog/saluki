@@ -14,7 +14,7 @@ async-stream = { workspace = true }
 async-trait = { workspace = true }
 backon = { workspace = true, features = ["tokio-sleep"] }
 bitmask-enum = { workspace = true }
-containerd-client = { workspace = true }
+containerd-protos = { workspace = true }
 datadog-protos = { workspace = true }
 fnv = { workspace = true }
 futures = { workspace = true }
@@ -48,7 +48,7 @@ socket2 = { workspace = true }
 stringtheory = { workspace = true }
 tokio = { workspace = true, features = ["fs", "macros", "sync"] }
 tokio-rustls = { workspace = true }
-tonic = { workspace = true, features = ["transport"] }
+tonic = { workspace = true, features = ["channel"] }
 tower = { workspace = true, features = ["util"] }
 tracing = { workspace = true }
 twox-hash = { workspace = true }
