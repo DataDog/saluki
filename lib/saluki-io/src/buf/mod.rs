@@ -28,6 +28,15 @@ impl ReadIoBuffer for VecDeque<u8> {
     }
 }
 
+impl<T> ReadIoBuffer for &mut T
+where
+    T: ReadIoBuffer,
+{
+    fn capacity(&self) -> usize {
+        (**self).capacity()
+    }
+}
+
 /// An I/O buffer that can be written to.
 pub trait WriteIoBuffer: BufMut {}
 
