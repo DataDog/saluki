@@ -40,7 +40,7 @@ impl MetricsAnalyzer {
         let mut comparison_metrics = self.comparison_metrics;
 
         info!(
-            "Received {} total metric payloads from baseline target, and {} total metric payloads from comparison target.",
+            "Analyzing {} unfiltered metrics from baseline target, and {} unfiltered metrics from comparison target.",
             baseline_metrics.len(),
             comparison_metrics.len()
         );

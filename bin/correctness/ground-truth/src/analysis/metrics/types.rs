@@ -177,8 +177,9 @@ impl NormalizedMetrics {
         }
 
         // Aggregate metric values by (context, type), using a `BTreeMap` so that we can get sorted metrics for ~free.
-        // We group by type because metrics with the same context but different types (e.g., Count vs Rate)
-        // cannot be merged together during normalization.
+        //
+        // We group by type because metrics with the same context but different types (e.g., Count vs Rate) cannot be
+        // merged together during normalization.
         let mut aggregated_context_values = BTreeMap::new();
 
         for metric in metrics {
