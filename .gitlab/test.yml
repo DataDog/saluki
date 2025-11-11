@@ -93,3 +93,10 @@ check-licenses:
   stage: test
   script:
     - make check-licenses
+
+check-protos:
+  extends: .linux-arm64-test-job
+  stage: test
+  script:
+    - make update-protos
+    - git diff --exit-code || (echo "Protocol Buffers definitions not up-to-date. Run `make update-protos` locally and commit."; exit 1)

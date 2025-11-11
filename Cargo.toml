@@ -6,11 +6,12 @@ members = [
   "bin/correctness/ground-truth",
   "bin/correctness/millstone",
   "bin/correctness/stele",
-  "lib/datadog-protos",
   "lib/ddsketch-agent",
   "lib/memory-accounting",
-  "lib/otlp-protos",
   "lib/process-memory",
+  "lib/protos/containerd",
+  "lib/protos/datadog",
+  "lib/protos/otlp",
   "lib/saluki-api",
   "lib/saluki-app",
   "lib/saluki-common",
@@ -35,7 +36,8 @@ license = "Apache-2.0"
 repository = "https://github.com/DataDog/saluki"
 
 [workspace.dependencies]
-datadog-protos = { path = "lib/datadog-protos" }
+datadog-protos = { path = "lib/protos/datadog" }
+containerd-protos = { path = "lib/protos/containerd" }
 ddsketch-agent = { path = "lib/ddsketch-agent" }
 memory-accounting = { path = "lib/memory-accounting" }
 process-memory = { path = "lib/process-memory" }
@@ -55,7 +57,7 @@ saluki-metrics = { path = "lib/saluki-metrics" }
 saluki-tls = { path = "lib/saluki-tls" }
 stele = { path = "bin/correctness/stele" }
 stringtheory = { path = "lib/stringtheory" }
-otlp-protos = { path = "lib/otlp-protos" }
+otlp-protos = { path = "lib/protos/otlp" }
 async-trait = { version = "0.1", default-features = false }
 axum = { version = "0.8", default-features = false }
 bytes = { version = "1", default-features = false }
@@ -123,7 +125,6 @@ ndarray-stats = { version = "0.6", default-features = false }
 noisy_float = { version = "0.2", default-features = false }
 libc = { version = "0.2.169", default-features = false }
 socket2 = { version = "0.6", default-features = false }
-containerd-client = { git = "https://github.com/containerd/rust-extensions", rev = "c0b92c4e96e54cf60156865a6c2e0a6fe044556f", default-features = false }
 tonic-build = { version = "0.13", default-features = false }
 tonic = { version = "0.13", default-features = false }
 arc-swap = { version = "1.7.1", default-features = false }
