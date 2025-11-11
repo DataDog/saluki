@@ -11,6 +11,8 @@ use saluki_config::ConfigurationLoader;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
 
+use crate::analysis::AnalysisMode;
+
 fn default_millstone_binary_path() -> String {
     "/usr/local/bin/millstone".to_string()
 }
@@ -21,6 +23,9 @@ fn default_datadog_intake_binary_path() -> String {
 
 #[derive(Clone, Deserialize)]
 pub struct Config {
+    /// Analysis mode to use.
+    pub analysis_mode: AnalysisMode,
+
     /// Millstone configuration.
     pub millstone: MillstoneConfig,
 
