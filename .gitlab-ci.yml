@@ -58,6 +58,7 @@ variables:
   ADP_BUILD_IMAGE: "${SALUKI_BUILD_CI_IMAGE}"
 
   ADP_IMAGE_REPO_NAME: "${SALUKI_IMAGE_REPO_PREFIX}/agent-data-plane"
+  ADP_IMAGE_REPO_BASE: "${SALUKI_IMAGE_REPO_BASE}/agent-data-plane"
 
   # The image version depending on whether this is an official release or not: v3727183-d55fef5a (not official) va
   # 0.1.10 (official), etc.

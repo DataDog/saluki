@@ -8,15 +8,13 @@
   variables:
     APP_BUILD_TIME: ${CI_PIPELINE_CREATED_AT}
     DDCI_CONFIGURE_OTEL_EXPORTER: true
-    # Try to limit build concurrency to avoid issues with hitting container cgroup limits.
-    CARGO_BUILD_JOBS: 12
   script:
-    - 'echo "Building ADP image ${IMAGE_TAG}... (image version: ${ADP_IMAGE_VERSION}, build concurrency: ${CARGO_BUILD_JOBS}, profile: ${BUILD_PROFILE})..."'
+    - 'echo "Building ADP image ${IMAGE_TAG}-${ARCH_TAG}... (image version: ${ADP_IMAGE_VERSION}, build concurrency: ${CARGO_BUILD_JOBS}, profile: ${BUILD_PROFILE})..."'
     - docker buildx build
-      --platform linux/amd64,linux/arm64
       --file ./docker/Dockerfile.agent-data-plane
-      --metadata-file /tmp/build.metadata
-      --tag ${IMAGE_TAG}
+      --output push-by-digest=true,type=image,push=true
+      --metadata-file ./build-metadata.${ARCH_TAG}
+      --tag ${ADP_IMAGE_REPO_BASE}
       --build-arg CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
       --build-arg BUILD_IMAGE=${ALPINE_BUILD_IMAGE}
       --build-arg APP_IMAGE=${APP_IMAGE}
@@ -41,6 +39,23 @@
       --label "org.opencontainers.image.version=${ADP_IMAGE_VERSION}"
       --push
       .
+  artifacts:
+    paths:
+      - build-metadata.*
+
+.build-adp-multi-arch-definition:
+  stage: build
+  image: ${DOCKER_BUILD_IMAGE}
+  id_tokens:
+    DDSIGN_ID_TOKEN:
+      aud: image-integrity
+  script:
+    # Collect the manifest list digests for our AMD64 and ARM64 images, and then build a multi-arch manifest from them.
+    - export AMD64_SHA256=$(jq -r '."containerimage.digest"' build-metadata.amd64)
+    - export ARM64_SHA256=$(jq -r '."containerimage.digest"' build-metadata.arm64)
+    - docker buildx imagetools --tag ${IMAGE_TAG}
+      --amend ${ADP_IMAGE_REPO_BASE}@${AMD64_SHA256}
+      --amend ${ADP_IMAGE_REPO_BASE}@${ARM64_SHA256}
 
 calculate-build-metadata:
   stage: build
@@ -52,34 +67,102 @@ calculate-build-metadata:
     reports:
       dotenv: build.env
 
-build-adp-image:
+build-adp-image-amd64:
   extends: [.build-common-variables, .build-adp-definition]
+  tags: ["docker-in-docker:amd64"]
   variables:
+    ARCH_TAG: amd64
     APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
+
+build-adp-image-arm64:
+  extends: [.build-common-variables, .build-adp-definition]
+  tags: ["docker-in-docker:arm64"]
+  variables:
+    ARCH_TAG: arm64
+    APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
+
+build-adp-image:
+  extends: [.build-common-variables, .build-adp-multi-arch-definition]
+  needs:
+    - build-adp-image-amd64
+    - build-adp-image-arm64
+  variables:
     IMAGE_TAG: ${ADP_FULL_IMAGE_TAG}
 
-build-adp-image-fips:
+build-adp-image-fips-amd64:
   extends: [.build-common-variables, .build-adp-definition]
+  tags: ["docker-in-docker:amd64"]
   variables:
+    ARCH_TAG: amd64
     APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
-    IMAGE_TAG: ${ADP_FULL_IMAGE_TAG_FIPS}
     BUILD_FEATURES: "fips"
     FIPS_ENABLED: "true"
+
+build-adp-image-fips-arm64:
+  extends: [.build-common-variables, .build-adp-definition]
+  tags: ["docker-in-docker:arm64"]
+  variables:
+    ARCH_TAG: arm64
+    APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
+    BUILD_FEATURES: "fips"
+    FIPS_ENABLED: "true"
+
+build-adp-image-fips:
+  extends: [.build-common-variables, .build-adp-multi-arch-definition]
+  needs:
+    - build-adp-image-fips-amd64
+    - build-adp-image-fips-arm64
+  variables:
+    IMAGE_TAG: ${ADP_FULL_IMAGE_TAG_FIPS}
 
 # Internal-specific build variants that use a GBI-compliant base image.
-build-adp-image-internal:
+build-adp-image-internal-amd64:
   extends: [.build-common-variables, .build-adp-definition]
+  tags: ["docker-in-docker:amd64"]
   variables:
+    ARCH_TAG: amd64
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
+
+build-adp-image-internal-arm64:
+  extends: [.build-common-variables, .build-adp-definition]
+  tags: ["docker-in-docker:arm64"]
+  variables:
+    ARCH_TAG: arm64
+    APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
+
+build-adp-image-internal:
+  extends: [.build-common-variables, .build-adp-multi-arch-definition]
+  needs:
+    - build-adp-image-internal-amd64
+    - build-adp-image-internal-arm64
+  variables:
     IMAGE_TAG: ${ADP_FULL_IMAGE_TAG}-internal
 
-build-adp-image-fips-internal:
+build-adp-image-fips-internal-amd64:
   extends: [.build-common-variables, .build-adp-definition]
+  tags: ["docker-in-docker:amd64"]
   variables:
+    ARCH_TAG: amd64
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
-    IMAGE_TAG: ${ADP_FULL_IMAGE_TAG_FIPS}-internal
     BUILD_FEATURES: "fips"
     FIPS_ENABLED: "true"
+
+build-adp-image-fips-internal-arm64:
+  extends: [.build-common-variables, .build-adp-definition]
+  tags: ["docker-in-docker:arm64"]
+  variables:
+    ARCH_TAG: arm64
+    APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
+    BUILD_FEATURES: "fips"
+    FIPS_ENABLED: "true"
+
+build-adp-image-fips-internal:
+  extends: [.build-common-variables, .build-adp-multi-arch-definition]
+  needs:
+    - build-adp-image-fips-internal-amd64
+    - build-adp-image-fips-internal-arm64
+  variables:
+    IMAGE_TAG: ${ADP_FULL_IMAGE_TAG_FIPS}-internal
 
 # Finally, we publish our internal images after running through a small build process to add some necessary tooling
 # required for the images to be deployed/used internally.
