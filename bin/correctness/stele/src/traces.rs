@@ -198,8 +198,8 @@ impl Span {
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_vec()))
                 .collect(),
-            span_links: value.spanLinks.iter().map(SpanLink::from).collect(),
-            span_events: value.spanEvents.iter().map(SpanEvent::from).collect(),
+            span_links,
+            span_events,
         }
     }
 }
