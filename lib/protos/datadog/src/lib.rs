@@ -35,7 +35,7 @@ pub mod events {
 /// Trace-related definitions.
 pub mod traces {
     pub use super::trace_include::agent_payload::*;
-    pub use super::trace_include::span::*;
+    pub use super::trace_include::span::{attribute_any_value::*, attribute_array_value::*, *};
     pub use super::trace_include::stats::*;
     pub use super::trace_include::tracer_payload::*;
 }

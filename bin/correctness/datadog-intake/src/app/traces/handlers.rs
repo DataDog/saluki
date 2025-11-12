@@ -1,12 +1,13 @@
 use axum::{body::Bytes, extract::State, http::StatusCode, Json};
 use datadog_protos::traces::AgentPayload;
 use protobuf::Message as _;
+use stele::Span;
 use tracing::{debug, error};
 
 use super::TracesState;
 
-pub async fn handle_traces_dump(State(state): State<TracesState>) -> Json<Vec<()>> {
-    Json(state.dump_traces())
+pub async fn handle_traces_dump(State(state): State<TracesState>) -> Json<Vec<Span>> {
+    Json(state.dump())
 }
 
 pub async fn handle_v02_traces(State(state): State<TracesState>, body: Bytes) -> StatusCode {
