@@ -10,7 +10,7 @@
     DDCI_CONFIGURE_OTEL_EXPORTER: true
   script:
     - docker buildx create --name adp-builder --driver docker-container --use
-    - 'echo "Building ADP image ${IMAGE_TAG}-${ARCH_TAG}... (image version: ${ADP_IMAGE_VERSION}, build concurrency: ${CARGO_BUILD_JOBS}, profile: ${BUILD_PROFILE})..."'
+    - 'echo "Building ADP image... (arch: ${ARCH_TAG}, image version: ${ADP_IMAGE_VERSION}, build concurrency: ${CARGO_BUILD_JOBS}, profile: ${BUILD_PROFILE})..."'
     - docker buildx build
       --file ./docker/Dockerfile.agent-data-plane
       --output push-by-digest=true,type=image,push=true
@@ -54,8 +54,8 @@
     - export AMD64_SHA256=$(jq -r '."containerimage.digest"' build-metadata.amd64)
     - export ARM64_SHA256=$(jq -r '."containerimage.digest"' build-metadata.arm64)
     - docker buildx imagetools create --tag ${IMAGE_TAG}
-      --amend ${ADP_IMAGE_REPO_BASE}@${AMD64_SHA256}
-      --amend ${ADP_IMAGE_REPO_BASE}@${ARM64_SHA256}
+      ${ADP_IMAGE_REPO_BASE}@${AMD64_SHA256}
+      ${ADP_IMAGE_REPO_BASE}@${ARM64_SHA256}
 
 calculate-build-metadata:
   stage: build
