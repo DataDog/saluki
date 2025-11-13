@@ -33,35 +33,35 @@ impl Trace {
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Span {
     /// The name of the service associated with this span.
-    pub service: MetaString,
+    service: MetaString,
     /// The operation name of this span.
-    pub name: MetaString,
+    name: MetaString,
     /// The resource associated with this span.
-    pub resource: MetaString,
+    resource: MetaString,
     /// The trace identifier this span belongs to.
-    pub trace_id: u64,
+    trace_id: u64,
     /// The unique identifier of this span.
-    pub span_id: u64,
+    span_id: u64,
     /// The identifier of this span's parent, if any.
-    pub parent_id: u64,
+    parent_id: u64,
     /// The start timestamp of this span in nanoseconds since Unix epoch.
-    pub start: i64,
+    start: i64,
     /// The duration of this span in nanoseconds.
-    pub duration: i64,
+    duration: i64,
     /// Error flag represented as 0 (no error) or 1 (error).
-    pub error: i32,
+    error: i32,
     /// String-valued tags attached to this span.
-    pub meta: FastHashMap<MetaString, MetaString>,
+    meta: FastHashMap<MetaString, MetaString>,
     /// Numeric-valued tags attached to this span.
-    pub metrics: FastHashMap<MetaString, f64>,
+    metrics: FastHashMap<MetaString, f64>,
     /// Span type classification (e.g., web, db, lambda).
-    pub span_type: MetaString,
+    span_type: MetaString,
     /// Structured metadata payloads.
-    pub meta_struct: FastHashMap<MetaString, Vec<u8>>,
+    meta_struct: FastHashMap<MetaString, Vec<u8>>,
     /// Links describing relationships to other spans.
-    pub span_links: Vec<SpanLink>,
+    span_links: Vec<SpanLink>,
     /// Events associated with this span.
-    pub span_events: Vec<SpanEvent>,
+    span_events: Vec<SpanEvent>,
 }
 
 impl Span {
@@ -250,17 +250,17 @@ impl Span {
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct SpanLink {
     /// Trace identifier for the linked span.
-    pub trace_id: u64,
+    trace_id: u64,
     /// High bits of the trace identifier when 128-bit IDs are used.
-    pub trace_id_high: u64,
+    trace_id_high: u64,
     /// Span identifier for the linked span.
-    pub span_id: u64,
+    span_id: u64,
     /// Additional attributes attached to the link.
-    pub attributes: FastHashMap<MetaString, MetaString>,
+    attributes: FastHashMap<MetaString, MetaString>,
     /// W3C tracestate value.
-    pub tracestate: MetaString,
+    tracestate: MetaString,
     /// W3C trace flags where the high bit must be set when provided.
-    pub flags: u32,
+    flags: u32,
 }
 
 impl SpanLink {
@@ -344,11 +344,11 @@ impl SpanLink {
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct SpanEvent {
     /// Event timestamp in nanoseconds since Unix epoch.
-    pub time_unix_nano: u64,
+    time_unix_nano: u64,
     /// Event name.
-    pub name: MetaString,
+    name: MetaString,
     /// Arbitrary attributes describing the event.
-    pub attributes: FastHashMap<MetaString, AttributeValue>,
+    attributes: FastHashMap<MetaString, AttributeValue>,
 }
 
 impl SpanEvent {
