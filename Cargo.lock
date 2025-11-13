@@ -3964,6 +3964,9 @@ dependencies = [
  "datadog-protos",
  "ddsketch-agent",
  "float-cmp",
+ "ordered-float",
+ "protobuf",
+ "saluki-common",
  "saluki-error",
  "serde",
 ]

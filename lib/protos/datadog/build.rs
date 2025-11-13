@@ -11,11 +11,27 @@ fn main() {
         .gen_mod_rs(true)
         .lite_runtime(true);
 
+    // We do two separate invocations here because the filename of the trace payload is identical,
+    // and `protobuf_codegen` ends up trying to generate code to the same output file name, which
+    // means that which of the two files is processed last will overwrite the other.
     protobuf_codegen::Codegen::new()
         .protoc()
-        .includes(["proto"])
+        .includes(["proto", "proto/datadog-agent"])
         .inputs(["proto/agent-payload/agent_payload.proto"])
         .cargo_out_dir("protos")
+        .customize(codegen_customize.clone())
+        .run_from_script();
+
+    protobuf_codegen::Codegen::new()
+        .protoc()
+        .includes(["proto/datadog-agent"])
+        .inputs([
+            "proto/datadog-agent/datadog/trace/stats.proto",
+            "proto/datadog-agent/datadog/trace/span.proto",
+            "proto/datadog-agent/datadog/trace/tracer_payload.proto",
+            "proto/datadog-agent/datadog/trace/agent_payload.proto",
+        ])
+        .cargo_out_dir("trace_protos")
         .customize(codegen_customize)
         .run_from_script();
 

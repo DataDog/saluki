@@ -11,6 +11,10 @@ mod include {
     include!(concat!(env!("OUT_DIR"), "/protos/mod.rs"));
 }
 
+mod trace_include {
+    include!(concat!(env!("OUT_DIR"), "/trace_protos/mod.rs"));
+}
+
 mod agent_include {
     include!(concat!(env!("OUT_DIR"), "/api.mod.rs"));
 }
@@ -26,6 +30,14 @@ pub mod metrics {
 pub mod events {
     pub use super::include::agent_payload::events_payload::*;
     pub use super::include::agent_payload::EventsPayload;
+}
+
+/// Trace-related definitions.
+pub mod traces {
+    pub use super::trace_include::agent_payload::*;
+    pub use super::trace_include::span::{attribute_any_value::*, attribute_array_value::*, *};
+    pub use super::trace_include::stats::*;
+    pub use super::trace_include::tracer_payload::*;
 }
 
 /// Agent definitions.
