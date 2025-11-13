@@ -78,7 +78,7 @@ fn get_cert_path_from_config(config: &GenericConfiguration) -> Result<PathBuf, G
 /// # Errors
 ///
 /// If the APIs cannot be spawned, or if the health registry cannot be spawned, an error will be returned.
-pub fn spawn_control_plane(
+pub async fn spawn_control_plane(
     config: GenericConfiguration, component_registry: &ComponentRegistry, health_registry: HealthRegistry,
     env_provider: ADPEnvironmentProvider, dsd_stats_config: DogStatsDStatisticsConfiguration,
 ) -> Result<(), GenericError> {
@@ -92,7 +92,7 @@ pub fn spawn_control_plane(
 
     // Build the privileged API with certificate-based TLS configuration
     let cert_path = get_cert_path_from_config(&config)?;
-    let tls_config = build_datadog_agent_server_tls_config(cert_path)?;
+    let tls_config = build_datadog_agent_server_tls_config(cert_path).await?;
 
     let privileged_api = APIBuilder::new()
         .with_tls_config(tls_config)

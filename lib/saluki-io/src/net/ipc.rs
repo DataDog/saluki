@@ -116,7 +116,7 @@ pub async fn build_datadog_agent_client_ipc_tls_config<P: AsRef<Path>>(
         cert_path.as_ref(),
         DEFAULT_CERT_READ_TIMEOUT,
         DEFAULT_CERT_READ_INTERVAL,
-    )?;
+    ).await?;
 
     let mut cert_reader = Cursor::new(&raw_cert_data);
     let parsed_cert = rustls_pemfile::certs(&mut cert_reader)
@@ -157,13 +157,13 @@ pub async fn build_datadog_agent_client_ipc_tls_config<P: AsRef<Path>>(
 /// This function reads the certificate file, parses the certificate and private key,
 /// and creates a server TLS configuration. The certificate path is expected to be a
 /// PEM-encoded file containing both the certificate and private key.
-pub fn build_datadog_agent_server_tls_config<P: AsRef<Path>>(cert_path: P) -> Result<ServerConfig, GenericError> {
+pub async fn build_datadog_agent_server_tls_config<P: AsRef<Path>>(cert_path: P) -> Result<ServerConfig, GenericError> {
     // Read the certificate file, and extract the certificate and private key from it.
     let raw_cert_data = read_cert_file(
         cert_path.as_ref(),
         DEFAULT_CERT_READ_TIMEOUT,
         DEFAULT_CERT_READ_INTERVAL,
-    )?;
+    ).await?;
 
     let mut cert_reader = Cursor::new(&raw_cert_data);
     let parsed_cert = rustls_pemfile::certs(&mut cert_reader)
@@ -186,7 +186,7 @@ pub fn build_datadog_agent_server_tls_config<P: AsRef<Path>>(cert_path: P) -> Re
 }
 
 /// Reads a certificate file and retries up to a certain number of times with a certain wait duration between attempts.
-fn read_cert_file(cert_path: &Path, timeout: Duration, interval: Duration) -> Result<Vec<u8>, GenericError> {
+async fn read_cert_file(cert_path: &Path, timeout: Duration, interval: Duration) -> Result<Vec<u8>, GenericError> {
     if timeout < interval {
         return Err(generic_error!(
             "Timeout is less than interval. Timeout: {}, Interval: {}",
@@ -198,13 +198,11 @@ fn read_cert_file(cert_path: &Path, timeout: Duration, interval: Duration) -> Re
     let start_time = std::time::Instant::now();
     let mut last_error: String = String::new();
     while start_time.elapsed() < timeout {
-        match std::fs::read(cert_path) {
-            Ok(data) => {
-                return Ok(data);
-            }
+        match tokio::fs::read(cert_path).await {
+            Ok(data) => return Ok(data),
             Err(e) => {
                 last_error = e.to_string();
-                std::thread::sleep(interval);
+                tokio::time::sleep(interval).await;
             }
         }
     }
