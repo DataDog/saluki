@@ -46,16 +46,13 @@
 .build-adp-multi-arch-definition:
   stage: build
   image: ${DOCKER_BUILD_IMAGE}
-  id_tokens:
-    DDSIGN_ID_TOKEN:
-      aud: image-integrity
   script:
     # Collect the manifest list digests for our AMD64 and ARM64 images, and then build a multi-arch manifest from them.
-    - export AMD64_SHA256=$(jq -r '."containerimage.digest"' build-metadata.amd64)
-    - export ARM64_SHA256=$(jq -r '."containerimage.digest"' build-metadata.arm64)
+    - export AMD64_DIGEST=$(jq -r '."containerimage.digest"' build-metadata.amd64)
+    - export ARM64_DIGEST=$(jq -r '."containerimage.digest"' build-metadata.arm64)
     - docker buildx imagetools create --tag ${IMAGE_TAG}
-      ${ADP_IMAGE_REPO_BASE}@${AMD64_SHA256}
-      ${ADP_IMAGE_REPO_BASE}@${ARM64_SHA256}
+      ${ADP_IMAGE_REPO_BASE}@${AMD64_DIGEST}
+      ${ADP_IMAGE_REPO_BASE}@${ARM64_DIGEST}
 
 calculate-build-metadata:
   stage: build
