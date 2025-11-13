@@ -8,10 +8,6 @@ target:
   memory_allotment: 2GiB
 
   environment:
-    # Dummy, self-signed certificate since we're not running alongside the Datadog Agent which
-    # would otherwise be providing the IPC certificate.
-    DD_IPC_CERT_FILE_PATH: /etc/agent-data-plane/cert.pem
-
     DD_API_KEY: foo00000001
     DD_HOSTNAME: smp-regression
     DD_DD_URL: http://127.0.0.1:9091
