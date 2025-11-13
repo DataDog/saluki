@@ -116,7 +116,8 @@ pub async fn build_datadog_agent_client_ipc_tls_config<P: AsRef<Path>>(
         cert_path.as_ref(),
         DEFAULT_CERT_READ_TIMEOUT,
         DEFAULT_CERT_READ_INTERVAL,
-    ).await?;
+    )
+    .await?;
 
     let mut cert_reader = Cursor::new(&raw_cert_data);
     let parsed_cert = rustls_pemfile::certs(&mut cert_reader)
@@ -163,7 +164,8 @@ pub async fn build_datadog_agent_server_tls_config<P: AsRef<Path>>(cert_path: P)
         cert_path.as_ref(),
         DEFAULT_CERT_READ_TIMEOUT,
         DEFAULT_CERT_READ_INTERVAL,
-    ).await?;
+    )
+    .await?;
 
     let mut cert_reader = Cursor::new(&raw_cert_data);
     let parsed_cert = rustls_pemfile::certs(&mut cert_reader)
