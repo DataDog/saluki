@@ -1,6 +1,6 @@
 //! Traces.
 
-use datadog_protos::trace::Span;
+use datadog_protos::traces::Span;
 
 /// A trace event.
 ///
