@@ -1,9 +1,9 @@
 (function() {
-    var implementors = Object.fromEntries([["datadog_protos",[["impl <a class=\"trait\" href=\"https://docs.rs/protobuf/3.7.2/protobuf/enums/trait.Enum.html\" title=\"trait protobuf::enums::Enum\">Enum</a> for <a class=\"enum\" href=\"datadog_protos/metrics/enum.MetricType.html\" title=\"enum datadog_protos::metrics::MetricType\">MetricType</a>"]]]]);
+    var implementors = Object.fromEntries([["datadog_protos",[["impl <a class=\"trait\" href=\"https://docs.rs/protobuf/3.7.2/protobuf/enums/trait.Enum.html\" title=\"trait protobuf::enums::Enum\">Enum</a> for <a class=\"enum\" href=\"datadog_protos/metrics/enum.MetricType.html\" title=\"enum datadog_protos::metrics::MetricType\">MetricType</a>"],["impl <a class=\"trait\" href=\"https://docs.rs/protobuf/3.7.2/protobuf/enums/trait.Enum.html\" title=\"trait protobuf::enums::Enum\">Enum</a> for <a class=\"enum\" href=\"datadog_protos/traces/enum.AttributeAnyValueType.html\" title=\"enum datadog_protos::traces::AttributeAnyValueType\">AttributeAnyValueType</a>"],["impl <a class=\"trait\" href=\"https://docs.rs/protobuf/3.7.2/protobuf/enums/trait.Enum.html\" title=\"trait protobuf::enums::Enum\">Enum</a> for <a class=\"enum\" href=\"datadog_protos/traces/enum.AttributeArrayValueType.html\" title=\"enum datadog_protos::traces::AttributeArrayValueType\">AttributeArrayValueType</a>"],["impl <a class=\"trait\" href=\"https://docs.rs/protobuf/3.7.2/protobuf/enums/trait.Enum.html\" title=\"trait protobuf::enums::Enum\">Enum</a> for <a class=\"enum\" href=\"datadog_protos/traces/enum.TraceRootFlag.html\" title=\"enum datadog_protos::traces::TraceRootFlag\">TraceRootFlag</a>"],["impl <a class=\"trait\" href=\"https://docs.rs/protobuf/3.7.2/protobuf/enums/trait.Enum.html\" title=\"trait protobuf::enums::Enum\">Enum</a> for <a class=\"enum\" href=\"datadog_protos/traces/enum.Trilean.html\" title=\"enum datadog_protos::traces::Trilean\">Trilean</a>"]]]]);
     if (window.register_implementors) {
         window.register_implementors(implementors);
     } else {
         window.pending_implementors = implementors;
     }
 })()
-//{"start":57,"fragment_lengths":[307]}
+//{"start":57,"fragment_lengths":[1519]}

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["transfer_client"],"struct":["TransferOptions","TransferRequest"]};

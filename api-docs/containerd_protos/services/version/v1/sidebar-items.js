@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["version_client"],"struct":["VersionResponse"]};

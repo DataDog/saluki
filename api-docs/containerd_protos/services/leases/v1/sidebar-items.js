@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["leases_client"],"struct":["AddResourceRequest","CreateRequest","CreateResponse","DeleteRequest","DeleteResourceRequest","Lease","ListRequest","ListResourcesRequest","ListResourcesResponse","ListResponse","Resource"]};

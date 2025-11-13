@@ -1,2 +1,2 @@
-window.ALL_CRATES = ["airlock","datadog_protos","ddsketch_agent","memory_accounting","otlp_protos","process_memory","saluki_api","saluki_app","saluki_common","saluki_components","saluki_config","saluki_context","saluki_core","saluki_env","saluki_error","saluki_health","saluki_io","saluki_metadata","saluki_metrics","saluki_tls","stele","stringtheory"];
-//{"start":21,"fragment_lengths":[9,17,17,20,14,17,13,13,16,20,16,17,14,13,15,16,12,18,17,13,8,15]}
+window.ALL_CRATES = ["airlock","containerd_protos","datadog_protos","ddsketch_agent","memory_accounting","otlp_protos","process_memory","saluki_api","saluki_app","saluki_common","saluki_components","saluki_config","saluki_context","saluki_core","saluki_env","saluki_error","saluki_health","saluki_io","saluki_metadata","saluki_metrics","saluki_tls","stele","stringtheory"];
+//{"start":21,"fragment_lengths":[9,20,17,17,20,14,17,13,13,16,20,16,17,14,13,15,16,12,18,17,13,8,15]}

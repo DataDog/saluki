@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["agent","events","metrics"]};
+window.SIDEBAR_ITEMS = {"mod":["agent","events","metrics","traces"]};

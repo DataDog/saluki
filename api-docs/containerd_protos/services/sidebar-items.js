@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["containers","content","diff","events","images","introspection","leases","namespaces","sandbox","snapshots","streaming","tasks","transfer","version"]};

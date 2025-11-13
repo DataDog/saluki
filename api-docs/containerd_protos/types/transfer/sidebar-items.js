@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["AuthType","HttpDebug"],"struct":["AuthRequest","AuthResponse","Data","ImageExportStream","ImageImportStream","ImageReference","ImageStore","OciRegistry","Progress","RegistryResolver","UnpackConfiguration","WindowUpdate"]};

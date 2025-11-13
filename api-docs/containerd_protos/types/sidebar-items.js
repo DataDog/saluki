@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["sandbox","transfer"],"struct":["ActivationInfo","ActiveMount","Descriptor","Envelope","Metric","Mount","Platform","RuntimeInfo","RuntimeRequest","RuntimeVersion","Sandbox"]};

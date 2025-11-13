@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["introspection_client"],"struct":["DeprecationWarning","Plugin","PluginInfoRequest","PluginInfoResponse","PluginsRequest","PluginsResponse","ServerResponse"]};

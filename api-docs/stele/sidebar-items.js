@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["MetricValue"],"struct":["Metric","MetricContext"]};
+window.SIDEBAR_ITEMS = {"enum":["MetricValue"],"struct":["Metric","MetricContext","Span"]};

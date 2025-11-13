@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["Event","KeepAlive","Sse"]};
+window.SIDEBAR_ITEMS = {"struct":["Event","EventDataWriter","KeepAlive","KeepAliveStream","Sse"]};

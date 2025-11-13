@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["images_client"],"struct":["CreateImageRequest","CreateImageResponse","DeleteImageRequest","GetImageRequest","GetImageResponse","Image","ImageCreate","ImageDelete","ImageUpdate","ListImagesRequest","ListImagesResponse","UpdateImageRequest","UpdateImageResponse"]};

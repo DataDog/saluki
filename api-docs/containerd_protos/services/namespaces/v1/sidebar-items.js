@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["namespaces_client"],"struct":["CreateNamespaceRequest","CreateNamespaceResponse","DeleteNamespaceRequest","GetNamespaceRequest","GetNamespaceResponse","ListNamespacesRequest","ListNamespacesResponse","Namespace","UpdateNamespaceRequest","UpdateNamespaceResponse"]};

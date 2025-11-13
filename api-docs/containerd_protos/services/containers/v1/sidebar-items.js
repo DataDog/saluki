@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["container","containers_client"],"struct":["Container","CreateContainerRequest","CreateContainerResponse","DeleteContainerRequest","GetContainerRequest","GetContainerResponse","ListContainerMessage","ListContainersRequest","ListContainersResponse","UpdateContainerRequest","UpdateContainerResponse"]};

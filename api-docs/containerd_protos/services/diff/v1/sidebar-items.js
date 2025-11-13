@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["diff_client"],"struct":["ApplyRequest","ApplyResponse","DiffRequest","DiffResponse"]};
