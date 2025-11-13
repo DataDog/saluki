@@ -7,6 +7,7 @@ use crate::topology::ComponentId;
 pub mod destinations;
 pub mod encoders;
 pub mod forwarders;
+pub mod relays;
 pub mod sources;
 pub mod transforms;
 
@@ -27,6 +28,9 @@ pub enum ComponentType {
 
     /// Encoder.
     Encoder,
+
+    /// Relay.
+    Relay,
 }
 
 impl ComponentType {
@@ -38,6 +42,7 @@ impl ComponentType {
             Self::Destination => "destination",
             Self::Forwarder => "forwarder",
             Self::Encoder => "encoder",
+            Self::Relay => "relay",
         }
     }
 }
@@ -96,6 +101,14 @@ impl ComponentContext {
         }
     }
 
+    /// Creates a new `ComponentContext` for a relay component with the given identifier.
+    pub fn relay(component_id: ComponentId) -> Self {
+        Self {
+            component_id,
+            component_type: ComponentType::Relay,
+        }
+    }
+
     /// Creates a new `ComponentContext` for a source component with the given identifier.
     #[cfg(test)]
     pub fn test_source<S: AsRef<str>>(component_id: S) -> Self {
@@ -138,6 +151,15 @@ impl ComponentContext {
         Self {
             component_id: ComponentId::try_from(component_id.as_ref()).expect("invalid component ID"),
             component_type: ComponentType::Encoder,
+        }
+    }
+
+    /// Creates a new `ComponentContext` for a relay component with the given identifier.
+    #[cfg(test)]
+    pub fn test_relay<S: AsRef<str>>(component_id: S) -> Self {
+        Self {
+            component_id: ComponentId::try_from(component_id.as_ref()).expect("invalid component ID"),
+            component_type: ComponentType::Relay,
         }
     }
 

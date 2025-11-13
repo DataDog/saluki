@@ -11,6 +11,7 @@ mod analysis;
 
 mod config;
 use self::config::Config;
+use crate::analysis::AnalysisRunner;
 
 mod runner;
 use self::runner::TestRunner;
@@ -36,6 +37,8 @@ async fn main() -> Result<(), GenericError> {
     let config_path = std::env::args().nth(1).expect("Missing configuration file path.");
     let config = Config::from_yaml(&config_path).error_context("Failed to load configuration file.")?;
 
+    info!("Loaded test case configuration from '{}'.", config_path);
+
     match run(config).await {
         Ok(()) => info!("ground-truth stopped."),
         Err(e) => {
@@ -51,11 +54,15 @@ async fn run(config: Config) -> Result<(), GenericError> {
     info!("Test run starting...");
 
     let test_runner = TestRunner::from_config(&config).await?;
-    let raw_results = test_runner.run().await?;
+    let (baseline_data, comparison_data) = test_runner
+        .run()
+        .await
+        .error_context("Failed to run test to completion.")?;
 
     info!("Test run complete. Analyzing results...");
 
-    raw_results.run_analysis().error_context("Analysis failed.")?;
+    let analysis_runner = AnalysisRunner::new(config.analysis_mode, baseline_data, comparison_data);
+    analysis_runner.run_analysis()?;
 
     info!("Analysis complete: no difference detected between baseline and comparison.");
 

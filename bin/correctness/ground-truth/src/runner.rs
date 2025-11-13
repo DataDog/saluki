@@ -14,12 +14,11 @@ use airlock::{
 use rand::{distr::SampleString as _, rng};
 use rand_distr::Alphanumeric;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use stele::Metric;
 use tokio::{select, task::JoinHandle, time::sleep};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, info_span, Instrument as _, Span};
 
-use crate::{analysis::RawTestResults, config::Config, sync::Coordinator};
+use crate::{analysis::CollectedData, config::Config, sync::Coordinator};
 
 pub struct TestRunner {
     datadog_intake_config: DatadogIntakeConfig,
@@ -119,7 +118,7 @@ impl TestRunner {
         }
     }
 
-    pub async fn run(mut self) -> Result<RawTestResults, GenericError> {
+    pub async fn run(mut self) -> Result<(CollectedData, CollectedData), GenericError> {
         let baseline_isolation_group_id = generate_isolation_group_id();
         let comparison_isolation_group_id = generate_isolation_group_id();
 
@@ -148,30 +147,24 @@ impl TestRunner {
         let baseline_spawn_result = run_in_background(&baseline_runner_span, baseline_group_runner.spawn());
         let comparison_spawn_result = run_in_background(&comparison_runner_span, comparison_group_runner.spawn());
 
-        // Everything is running, so just wait for the results (or an error) to come back from both group runners.
-        let (baseline_result_collector, comparison_result_collector) = self
+        // Everything is running, so just wait for the data (or an error) to come back from both group runners.
+        let (baseline_collector, comparison_collector) = self
             .unwrap_or_shutdown(
                 "spawn_containers",
                 baseline_spawn_result.await,
                 comparison_spawn_result.await,
             )
             .await?;
-        info!("Containers spawned successfully. Waiting for results...");
+        info!("Containers spawned successfully. Waiting for data...");
 
-        let maybe_baseline_results =
-            run_in_background(&baseline_runner_span, baseline_result_collector.wait_for_results());
-        let maybe_comparison_results =
-            run_in_background(&comparison_runner_span, comparison_result_collector.wait_for_results());
+        let maybe_baseline_data = run_in_background(&baseline_runner_span, baseline_collector.wait_for_data());
+        let maybe_comparison_data = run_in_background(&comparison_runner_span, comparison_collector.wait_for_data());
 
-        let (baseline_results, comparison_results) = self
-            .unwrap_or_shutdown(
-                "collect_results",
-                maybe_baseline_results.await,
-                maybe_comparison_results.await,
-            )
+        let (baseline_data, comparison_data) = self
+            .unwrap_or_shutdown("collect_data", maybe_baseline_data.await, maybe_comparison_data.await)
             .await?;
 
-        // We've gotten our results back, so signal to any remaining containers that they can shutdown now.
+        // We've gotten our data back, so signal to any remaining containers that they can shutdown now.
         info!("Cleaning up remaining containers and resources...");
         self.cancel_token.cancel();
         self.baseline_coordinator.wait().await;
@@ -189,7 +182,7 @@ impl TestRunner {
 
         info!("Cleanup complete.");
 
-        Ok(RawTestResults::new(baseline_results, comparison_results))
+        Ok((baseline_data, comparison_data))
     }
 }
 
@@ -261,7 +254,7 @@ impl GroupRunner {
         Ok(self)
     }
 
-    async fn spawn(mut self) -> Result<ResultCollector, GenericError> {
+    async fn spawn(mut self) -> Result<DataCollector, GenericError> {
         let mut driver_handles = Vec::new();
 
         // Spawn all of our drivers, short-circuiting if any of them fail to start.
@@ -305,7 +298,7 @@ impl GroupRunner {
 
                 Err(e)
             }
-            None => ResultCollector::new(spawned_drivers),
+            None => DataCollector::new(spawned_drivers),
         }
     }
 }
@@ -334,12 +327,12 @@ impl DriverResults {
     }
 }
 
-struct ResultCollector {
+struct DataCollector {
     millstone_handle: DriverHandle,
     datadog_intake_port: u16,
 }
 
-impl ResultCollector {
+impl DataCollector {
     fn new(mut spawned_drivers: SpawnedDrivers) -> Result<Self, GenericError> {
         let millstone_handle = spawned_drivers
             .take_driver_handle("millstone")
@@ -355,7 +348,7 @@ impl ResultCollector {
         })
     }
 
-    async fn wait_for_results(self) -> Result<Vec<Metric>, GenericError> {
+    async fn wait_for_data(self) -> Result<CollectedData, GenericError> {
         debug!("Waiting for millstone container to complete...");
 
         // Wait for millstone to complete, since that signals that all metrics have been _sent_ to the target.
@@ -368,21 +361,15 @@ impl ResultCollector {
 
         // Now we'll briefly wait (for the duration of an aggregation flush interval, plus a little extra) before dumping the metrics from
         // datadog-intake, to ensure everything from the target has been flushed out.
+        //
+        // TODO: This should maybe be configurable, or perhaps we can figure out a better way to determine when the next flush
+        // has happened... and further, we might not need to care about this for particular analysis modes if the functionality
+        // we're testing doesn't rely on flushing like metrics does.
         sleep(Duration::from_secs(32)).await;
 
-        let client = reqwest::Client::new();
-        let metrics = client
-            .get(format!("http://localhost:{}/metrics/dump", self.datadog_intake_port))
-            .send()
+        CollectedData::for_port(self.datadog_intake_port)
             .await
-            .error_context("Failed to call metrics dump endpoint on datadog-intake server.")?
-            .json::<Vec<Metric>>()
-            .await
-            .error_context("Failed to decode dumped metrics from datadog-intake response.")?;
-
-        debug!("Metrics dumped successfully.");
-
-        Ok(metrics)
+            .error_context("Failed to collect telemetry data from datadog-intake container.")
     }
 }
 

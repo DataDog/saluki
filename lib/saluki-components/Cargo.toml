@@ -70,7 +70,7 @@ tokio = { workspace = true, features = [
   "signal",
   "sync",
 ] }
-tonic = { workspace = true }
+tonic = { workspace = true, features = ["router", "server"] }
 tower = { workspace = true, features = ["limit", "retry", "timeout", "util"] }
 tracing = { workspace = true }
 url = { workspace = true }

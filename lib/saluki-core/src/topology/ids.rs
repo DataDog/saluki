@@ -248,6 +248,7 @@ impl TypedComponentId {
             ComponentType::Destination => ComponentContext::destination(self.id.clone()),
             ComponentType::Encoder => ComponentContext::encoder(self.id.clone()),
             ComponentType::Forwarder => ComponentContext::forwarder(self.id.clone()),
+            ComponentType::Relay => ComponentContext::relay(self.id.clone()),
         }
     }
 
