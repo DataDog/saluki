@@ -41,10 +41,7 @@ pub struct Span {
 impl Span {
     /// Creates a new `Span` with the required identifiers and names.
     pub fn new(
-        service: impl Into<MetaString>,
-        name: impl Into<MetaString>,
-        resource: impl Into<MetaString>,
-        trace_id: u64,
+        service: impl Into<MetaString>, name: impl Into<MetaString>, resource: impl Into<MetaString>, trace_id: u64,
         span_id: u64,
     ) -> Self {
         Self {
@@ -118,28 +115,19 @@ impl Span {
     }
 
     /// Replaces the string-valued tag map.
-    pub fn with_meta(
-        mut self,
-        meta: impl Into<Option<FastHashMap<MetaString, MetaString>>>,
-    ) -> Self {
+    pub fn with_meta(mut self, meta: impl Into<Option<FastHashMap<MetaString, MetaString>>>) -> Self {
         self.meta = meta.into().unwrap_or_default();
         self
     }
 
     /// Replaces the numeric-valued tag map.
-    pub fn with_metrics(
-        mut self,
-        metrics: impl Into<Option<FastHashMap<MetaString, f64>>>,
-    ) -> Self {
+    pub fn with_metrics(mut self, metrics: impl Into<Option<FastHashMap<MetaString, f64>>>) -> Self {
         self.metrics = metrics.into().unwrap_or_default();
         self
     }
 
     /// Replaces the structured metadata map.
-    pub fn with_meta_struct(
-        mut self,
-        meta_struct: impl Into<Option<FastHashMap<MetaString, Vec<u8>>>>,
-    ) -> Self {
+    pub fn with_meta_struct(mut self, meta_struct: impl Into<Option<FastHashMap<MetaString, Vec<u8>>>>) -> Self {
         self.meta_struct = meta_struct.into().unwrap_or_default();
         self
     }
@@ -278,10 +266,7 @@ impl SpanLink {
     }
 
     /// Replaces the attributes map.
-    pub fn with_attributes(
-        mut self,
-        attributes: impl Into<Option<FastHashMap<MetaString, MetaString>>>,
-    ) -> Self {
+    pub fn with_attributes(mut self, attributes: impl Into<Option<FastHashMap<MetaString, MetaString>>>) -> Self {
         self.attributes = attributes.into().unwrap_or_default();
         self
     }
@@ -363,10 +348,7 @@ impl SpanEvent {
     }
 
     /// Replaces the attributes map.
-    pub fn with_attributes(
-        mut self,
-        attributes: impl Into<Option<FastHashMap<MetaString, AttributeValue>>>,
-    ) -> Self {
+    pub fn with_attributes(mut self, attributes: impl Into<Option<FastHashMap<MetaString, AttributeValue>>>) -> Self {
         self.attributes = attributes.into().unwrap_or_default();
         self
     }
