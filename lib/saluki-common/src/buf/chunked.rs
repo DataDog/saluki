@@ -116,6 +116,16 @@ impl FrozenChunkedBytesBuffer {
     }
 }
 
+impl From<Bytes> for FrozenChunkedBytesBuffer {
+    fn from(bytes: Bytes) -> Self {
+        let mut chunks = VecDeque::new();
+        if !bytes.is_empty() {
+            chunks.push_back(bytes);
+        }
+        Self { chunks }
+    }
+}
+
 impl Buf for FrozenChunkedBytesBuffer {
     fn remaining(&self) -> usize {
         self.chunks.iter().map(|chunk| chunk.remaining()).sum()

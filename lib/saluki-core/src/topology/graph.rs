@@ -10,7 +10,7 @@ use snafu::Snafu;
 use super::{ComponentId, ComponentOutputId, OutputDefinition, OutputName, TypedComponentId, TypedComponentOutputId};
 use crate::{
     components::{
-        destinations::DestinationBuilder, encoders::EncoderBuilder, forwarders::ForwarderBuilder,
+        destinations::DestinationBuilder, encoders::EncoderBuilder, forwarders::ForwarderBuilder, relays::RelayBuilder,
         sources::SourceBuilder, transforms::TransformBuilder, ComponentType,
     },
     data_model::{event::EventType, payload::PayloadType},
@@ -94,6 +94,9 @@ enum Node {
     Source {
         outputs: Vec<TypedComponentOutputId>,
     },
+    Relay {
+        output_ty: PayloadType,
+    },
     Transform {
         input_ty: EventType,
         outputs: Vec<TypedComponentOutputId>,
@@ -145,6 +148,28 @@ impl Graph {
 
         let outputs = construct_typed_output_ids(&component_id, builder.outputs())?;
         self.nodes.insert(component_id.clone(), Node::Source { outputs });
+
+        Ok(component_id)
+    }
+
+    /// Adds a relay node to the graph.
+    ///
+    /// # Errors
+    ///
+    /// If the component ID already exists in the graph, or if the component ID is invalid, or if any of the component
+    /// output IDs are invalid, an error is returned.
+    pub fn add_relay<I>(&mut self, component_id: I, builder: &dyn RelayBuilder) -> Result<ComponentId, GraphError>
+    where
+        I: AsRef<str>,
+    {
+        let component_id = try_into_component_id(component_id)?;
+        if self.nodes.contains_key(&component_id) {
+            return Err(GraphError::DuplicateComponentId { component_id });
+        }
+
+        let output_ty = builder.output_payload_type();
+
+        self.nodes.insert(component_id.clone(), Node::Relay { output_ty });
 
         Ok(component_id)
     }
@@ -285,8 +310,8 @@ impl Graph {
                         return Err(GraphError::NonexistentComponentOutputId { component_output_id });
                     }
                 }
-                // Encoders only have default outputs, so make sure the "from" side is referencing a default output.
-                Node::Encoder { .. } => {
+                // Relays and encoders only have default outputs, so make sure the "from" side is referencing a default output.
+                Node::Relay { .. } | Node::Encoder { .. } => {
                     if !component_output_id.is_default() {
                         return Err(GraphError::NonexistentComponentOutputId { component_output_id });
                     }
@@ -312,7 +337,7 @@ impl Graph {
 
     fn get_input_type(&self, id: &ComponentId) -> DataType {
         match self.nodes[id] {
-            Node::Source { .. } => panic!("no inputs on sources"),
+            Node::Source { .. } | Node::Relay { .. } => panic!("no inputs on sources/relays"),
             Node::Transform { input_ty, .. } => DataType::Event(input_ty),
             Node::Destination { input_ty } => DataType::Event(input_ty),
             Node::Encoder { input_ty, .. } => DataType::Event(input_ty),
@@ -327,11 +352,11 @@ impl Graph {
                 .find(|output| output.component_output().output() == id.output())
                 .map(|output| DataType::Event(output.output_ty()))
                 .expect("output didn't exist"),
-            Node::Encoder { output_ty, .. } => {
+            Node::Relay { output_ty } | Node::Encoder { output_ty, .. } => {
                 if id.is_default() {
                     DataType::Payload(*output_ty)
                 } else {
-                    panic!("encoder should only have default output")
+                    panic!("relay/encoder should only have default output")
                 }
             }
             Node::Destination { .. } | Node::Forwarder { .. } => panic!("no outputs on destinations/forwarders"),
@@ -463,6 +488,7 @@ impl Graph {
         match self.nodes.get(id) {
             Some(node) => match node {
                 Node::Source { .. } => Some(ComponentType::Source),
+                Node::Relay { .. } => Some(ComponentType::Relay),
                 Node::Transform { .. } => Some(ComponentType::Transform),
                 Node::Destination { .. } => Some(ComponentType::Destination),
                 Node::Encoder { .. } => Some(ComponentType::Encoder),

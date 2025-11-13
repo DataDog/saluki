@@ -4,6 +4,9 @@ use std::fmt;
 
 use bitmask_enum::bitmask;
 
+mod grpc;
+pub use self::grpc::GrpcPayload;
+
 mod http;
 pub use self::http::HttpPayload;
 use crate::topology::interconnect::Dispatchable;
@@ -26,6 +29,9 @@ pub enum PayloadType {
 
     /// HTTP.
     Http,
+
+    /// gRPC.
+    Grpc,
 }
 
 impl Default for PayloadType {
@@ -46,6 +52,10 @@ impl fmt::Display for PayloadType {
             types.push("HTTP");
         }
 
+        if self.contains(Self::Grpc) {
+            types.push("gRPC");
+        }
+
         write!(f, "{}", types.join("|"))
     }
 }
@@ -63,6 +73,11 @@ pub enum Payload {
     ///
     /// Includes the relevant HTTP parameters (host, path, method, headers) and the payload body.
     Http(HttpPayload),
+
+    /// A gRPC payload.
+    ///
+    /// Includes the gRPC endpoint, service path, and protobuf-encoded request body.
+    Grpc(GrpcPayload),
 }
 
 impl Payload {
@@ -71,6 +86,7 @@ impl Payload {
         match self {
             Payload::Raw(_) => PayloadType::Raw,
             Payload::Http(_) => PayloadType::Http,
+            Payload::Grpc(_) => PayloadType::Grpc,
         }
     }
 
@@ -90,6 +106,16 @@ impl Payload {
     pub fn try_into_http_payload(self) -> Option<HttpPayload> {
         match self {
             Payload::Http(payload) => Some(payload),
+            _ => None,
+        }
+    }
+
+    /// Returns the inner payload value, if this event is a `GrpcPayload`.
+    ///
+    /// Otherwise, `None` is returned and the original payload is consumed.
+    pub fn try_into_grpc_payload(self) -> Option<GrpcPayload> {
+        match self {
+            Payload::Grpc(payload) => Some(payload),
             _ => None,
         }
     }
