@@ -16,6 +16,9 @@ use self::service_check::ServiceCheck;
 pub mod log;
 use self::log::Log;
 
+pub mod trace;
+use self::trace::Trace;
+
 /// Telemetry event type.
 ///
 /// This type is a bitmask, which means different event types can be combined together. This makes `EventType` mainly
@@ -34,6 +37,9 @@ pub enum EventType {
 
     /// Logs.
     Log,
+
+    /// Traces.
+    Trace,
 }
 
 impl Default for EventType {
@@ -62,6 +68,10 @@ impl fmt::Display for EventType {
             types.push("Log");
         }
 
+        if self.contains(Self::Trace) {
+            types.push("Trace");
+        }
+
         write!(f, "{}", types.join("|"))
     }
 }
@@ -80,6 +90,9 @@ pub enum Event {
 
     /// A log.
     Log(Log),
+
+    /// A trace.
+    Trace(Trace),
 }
 
 impl Event {
@@ -90,6 +103,7 @@ impl Event {
             Event::EventD(_) => EventType::EventD,
             Event::ServiceCheck(_) => EventType::ServiceCheck,
             Event::Log(_) => EventType::Log,
+            Event::Trace(_) => EventType::Trace,
         }
     }
 
@@ -163,6 +177,11 @@ impl Event {
     pub fn is_log(&self) -> bool {
         matches!(self, Event::Log(_))
     }
+
+    /// Returns `true` if the event is a trace.
+    pub fn is_trace(&self) -> bool {
+        matches!(self, Event::Trace(_))
+    }
 }
 
 #[cfg(test)]
@@ -186,5 +205,6 @@ mod tests {
         println!("EventD: {} bytes", std::mem::size_of::<EventD>());
         println!("ServiceCheck: {} bytes", std::mem::size_of::<ServiceCheck>());
         println!("Log: {} bytes", std::mem::size_of::<Log>());
+        println!("Trace: {} bytes", std::mem::size_of::<Trace>());
     }
 }

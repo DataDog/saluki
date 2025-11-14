@@ -8,8 +8,10 @@ use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use otlp_protos::opentelemetry::proto::collector::logs::v1::ExportLogsServiceRequest;
 use otlp_protos::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest;
+use otlp_protos::opentelemetry::proto::collector::trace::v1::ExportTraceServiceRequest;
 use otlp_protos::opentelemetry::proto::logs::v1::ResourceLogs as OtlpResourceLogs;
 use otlp_protos::opentelemetry::proto::metrics::v1::ResourceMetrics as OtlpResourceMetrics;
+use otlp_protos::opentelemetry::proto::trace::v1::ResourceSpans as OtlpResourceSpans;
 use prost::Message;
 use saluki_common::task::HandleExt as _;
 use saluki_config::GenericConfiguration;
@@ -126,11 +128,14 @@ pub struct OtlpConfig {
     metrics: MetricsConfig,
     #[serde(default)]
     logs: LogsConfig,
+    #[serde(default)]
+    traces: TracesConfig,
 }
 
 enum OtlpResource {
     Metrics(OtlpResourceMetrics),
     Logs(OtlpResourceLogs),
+    Traces(OtlpResourceSpans),
 }
 
 /// Handler that decodes OTLP bytes and sends resources to the converter.
@@ -182,9 +187,22 @@ impl OtlpHandler for SourceHandler {
         }
     }
 
-    async fn handle_traces(&self, _body: Bytes) -> Result<(), String> {
-        error!("OTLP traces translation is not yet supported in source mode.");
-        Err("OTLP traces are not supported in translation mode. Use proxy mode instead.".to_string())
+    async fn handle_traces(&self, body: Bytes) -> Result<(), String> {
+        match ExportTraceServiceRequest::decode(body) {
+            Ok(request) => {
+                for resource_spans in request.resource_spans {
+                    if self.tx.send(OtlpResource::Traces(resource_spans)).await.is_err() {
+                        error!("Failed to send resource spans to converter; channel is closed.");
+                        return Err("Internal processing channel closed.".to_string());
+                    }
+                }
+                Ok(())
+            }
+            Err(e) => {
+                error!(error = %e, "Failed to decode OTLP protobuf request.");
+                Err("Bad Request: Invalid protobuf.".to_string())
+            }
+        }
     }
 }
 
@@ -230,6 +248,26 @@ impl Default for MetricsConfig {
     }
 }
 
+#[derive(Deserialize, Debug)]
+pub struct TracesConfig {
+    /// Whether to enable OTLP traces support.
+    ///
+    /// Defaults to true.
+    #[serde(default = "default_traces_enabled")]
+    pub enabled: bool,
+}
+
+fn default_traces_enabled() -> bool {
+    true
+}
+
+impl Default for TracesConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_traces_enabled(),
+        }
+    }
+}
 impl OtlpConfiguration {
     /// Creates a new `OTLPConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
@@ -257,6 +295,7 @@ impl SourceBuilder for OtlpConfiguration {
             vec![
                 OutputDefinition::named_output("metrics", EventType::Metric),
                 OutputDefinition::named_output("logs", EventType::Log),
+                OutputDefinition::named_output("traces", EventType::Trace),
             ]
         });
 
@@ -264,9 +303,9 @@ impl SourceBuilder for OtlpConfiguration {
     }
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
-        if !self.otlp_config.metrics.enabled && !self.otlp_config.logs.enabled {
+        if !self.otlp_config.metrics.enabled && !self.otlp_config.logs.enabled && !self.otlp_config.traces.enabled {
             return Err(generic_error!(
-                "OTLP metrics and logs support is disabled. Please enable at least one of them."
+                "OTLP metrics, logs and traces support is disabled. Please enable at least one of them."
             ));
         }
 
@@ -407,6 +446,21 @@ async fn dispatch_events(mut events: EventsBuffer, source_context: &SourceContex
         return;
     }
 
+    if events.has_event_type(EventType::Trace) {
+        let mut buffered_dispatcher = source_context
+            .dispatcher()
+            .buffered_named("traces")
+            .expect("traces output should exist");
+        for trace_event in events.extract(Event::is_trace) {
+            if let Err(e) = buffered_dispatcher.push(trace_event).await {
+                error!(error = %e, "Failed to dispatch trace(s).");
+            }
+        }
+        if let Err(e) = buffered_dispatcher.flush().await {
+            error!(error = %e, "Failed to flush trace(s).");
+        }
+    }
+
     if events.has_event_type(EventType::Log) {
         let mut buffered_dispatcher = source_context
             .dispatcher()
@@ -474,6 +528,9 @@ async fn run_converter(
                                 dispatch_events(event_buffer, &source_context).await;
                             }
                         }
+                    }
+                    OtlpResource::Traces(_resource_spans) => {
+                        // TODO: Implement traces translation.
                     }
                 }
             },

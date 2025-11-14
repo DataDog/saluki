@@ -3381,6 +3381,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bitmask-enum",
+ "datadog-protos",
  "ddsketch-agent",
  "futures",
  "http",
