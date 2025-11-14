@@ -1,4 +1,4 @@
-use std::future::pending;
+use std::{future::pending, path::PathBuf};
 
 use memory_accounting::ComponentRegistry;
 use saluki_app::{
@@ -10,11 +10,11 @@ use saluki_components::destinations::DogStatsDStatisticsConfiguration;
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
-use saluki_io::net::{GrpcTargetAddress, ListenAddress};
+use saluki_io::net::{build_datadog_agent_server_tls_config, get_ipc_cert_file_path, GrpcTargetAddress, ListenAddress};
 use serde::Deserialize;
 use tracing::{error, info};
 
-use crate::internal::remote_agent::RemoteAgentHelperConfiguration;
+use crate::internal::{platform, remote_agent::RemoteAgentHelperConfiguration};
 use crate::{env_provider::ADPEnvironmentProvider, internal::initialize_and_launch_runtime};
 
 const fn default_api_listen_address() -> ListenAddress {
@@ -49,6 +49,26 @@ impl ControlPlaneConfiguration {
     }
 }
 
+/// Gets the IPC certificate file path from the configuration.
+fn get_cert_path_from_config(config: &GenericConfiguration) -> Result<PathBuf, GenericError> {
+    // Try to get the auth token file path first
+    let auth_token_file_path = config
+        .try_get_typed::<PathBuf>("auth_token_file_path")
+        .error_context("Failed to get Agent auth token file path.")?
+        .unwrap_or_else(|| PathBuf::from(platform::DATADOG_AGENT_AUTH_TOKEN));
+
+    // Try to get the explicit IPC cert file path
+    let ipc_cert_file_path = config
+        .try_get_typed::<Option<PathBuf>>("ipc_cert_file_path")
+        .error_context("Failed to get Agent IPC cert file path.")?
+        .flatten();
+
+    Ok(get_ipc_cert_file_path(
+        ipc_cert_file_path.as_ref(),
+        &auth_token_file_path,
+    ))
+}
+
 /// Spawns the control plane for the ADP process.
 ///
 /// This includes the unprivileged and privileged API servers, health registry, Remote Agent Registry integration, and
@@ -58,7 +78,7 @@ impl ControlPlaneConfiguration {
 /// # Errors
 ///
 /// If the APIs cannot be spawned, or if the health registry cannot be spawned, an error will be returned.
-pub fn spawn_control_plane(
+pub async fn spawn_control_plane(
     config: GenericConfiguration, component_registry: &ComponentRegistry, health_registry: HealthRegistry,
     env_provider: ADPEnvironmentProvider, dsd_stats_config: DogStatsDStatisticsConfiguration,
 ) -> Result<(), GenericError> {
@@ -70,8 +90,12 @@ pub fn spawn_control_plane(
         .with_handler(health_registry.api_handler())
         .with_handler(component_registry.api_handler());
 
+    // Build the privileged API with certificate-based TLS configuration
+    let cert_path = get_cert_path_from_config(&config)?;
+    let tls_config = build_datadog_agent_server_tls_config(cert_path).await?;
+
     let privileged_api = APIBuilder::new()
-        .with_self_signed_tls()
+        .with_tls_config(tls_config)
         .with_optional_handler(acquire_logging_api_handler())
         .with_optional_handler(acquire_metrics_api_handler())
         .with_handler(ConfigAPIHandler::new(config.clone()))
@@ -118,17 +142,25 @@ async fn configure_and_spawn_api_endpoints(
             );
         }
 
-        // Build and spawn our helper task for registering ourselves with the Datadog Agent as a remote agent.
-        let remote_agent_config = RemoteAgentHelperConfiguration::from_configuration(
+        // Build our helper configuration for registering ourselves with the Datadog Agent as a remote agent.
+        let mut remote_agent_config = RemoteAgentHelperConfiguration::from_configuration(
             config,
             secure_api_grpc_target_addr,
             prometheus_listen_addr,
         )
         .await?;
-        let remote_agent_service = remote_agent_config.spawn().await;
 
-        // Register our Remote Agent gRPC service with the privileged API.
-        privileged_api = privileged_api.with_grpc_service(remote_agent_service);
+        // Create and register the Remote Agent gRPC services with the privileged API.
+        // Each service is tracked automatically for registration with the Remote Agent Registry.
+        privileged_api = privileged_api.with_grpc_service(remote_agent_config.create_status_service());
+        privileged_api = privileged_api.with_grpc_service(remote_agent_config.create_flare_service());
+        // Only register the telemetry service if telemetry is enabled
+        if telemetry_enabled {
+            privileged_api = privileged_api.with_grpc_service(remote_agent_config.create_telemetry_service());
+        }
+
+        // Spawn the remote agent helper task.
+        remote_agent_config.spawn();
     }
 
     spawn_unprivileged_api(unprivileged_api, api_listen_address).await?;

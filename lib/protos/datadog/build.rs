@@ -40,7 +40,12 @@ fn main() {
         .build_server(true)
         .include_file("api.mod.rs")
         .compile_protos(
-            &["proto/datadog-agent/datadog/api/v1/api.proto"],
+            &[
+                "proto/datadog-agent/datadog/api/v1/api.proto",
+                "proto/datadog-agent/datadog/remoteagent/status.proto",
+                "proto/datadog-agent/datadog/remoteagent/telemetry.proto",
+                "proto/datadog-agent/datadog/remoteagent/flare.proto",
+            ],
             &["proto", "proto/datadog-agent"],
         )
         .expect("Failed to build gRPC service definitions for Datadog Agent.");

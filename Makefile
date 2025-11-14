@@ -48,7 +48,7 @@ export DDPROF_VERSION ?= 0.20.0
 export LADING_VERSION ?= 0.28.0
 
 # Version of source repositories (Git tag) for vendored Protocol Buffers definitions.
-export PROTOBUF_SRC_REPO_DD_AGENT ?= 7.72.1
+export PROTOBUF_SRC_REPO_DD_AGENT ?= 7.73.x
 export PROTOBUF_SRC_REPO_AGENT_PAYLOAD ?= v5.0.164
 export PROTOBUF_SRC_REPO_CONTAINERD ?= v2.2.0
 

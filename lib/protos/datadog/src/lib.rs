@@ -44,8 +44,6 @@ pub mod traces {
 pub mod agent {
     pub use super::agent_include::datadog::api::v1::agent_client::AgentClient;
     pub use super::agent_include::datadog::api::v1::agent_secure_client::AgentSecureClient;
-    pub use super::agent_include::datadog::api::v1::remote_agent_server::RemoteAgent;
-    pub use super::agent_include::datadog::api::v1::remote_agent_server::RemoteAgentServer;
     pub use super::agent_include::datadog::autodiscovery::*;
     pub use super::agent_include::datadog::model::v1::*;
     pub use super::agent_include::datadog::remoteagent::*;

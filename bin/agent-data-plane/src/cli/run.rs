@@ -110,6 +110,7 @@ pub async fn run(started: Instant, bootstrap_config: GenericConfiguration) -> Re
         env_provider,
         dsd_stats_config,
     )
+    .await
     .error_context("Failed to spawn control plane.")?;
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
