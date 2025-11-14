@@ -1,35 +1,35 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `lib/saluki-env/src/helpers/remote_agent/client.rs`."><title>client.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../../static.files/rustdoc-ca0dd0c4.css"><meta name="rustdoc-vars" data-root-path="../../../../" data-static-root-path="../../../../static.files/" data-current-crate="saluki_env" data-themes="" data-resource-suffix="" data-rustdoc-version="1.93.0-nightly (01867557c 2025-11-12)" data-channel="nightly" data-search-js="search-8e3fad08.js" data-stringdex-js="stringdex-c3e638e9.js" data-settings-js="settings-c38705f0.js" ><script src="../../../../static.files/storage-e2aeef58.js"></script><script defer src="../../../../static.files/src-script-813739b1.js"></script><script defer src="../../../../src-files.js"></script><script defer src="../../../../static.files/main-a410ff4d.js"></script><noscript><link rel="stylesheet" href="../../../../static.files/noscript-263c88ec.css"></noscript><link rel="alternate icon" type="image/png" href="../../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content"><div class="main-heading"><h1><div class="sub-heading">saluki_env/helpers/remote_agent/</div>client.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="kw">use </span>std::{
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `lib/saluki-env/src/helpers/remote_agent/client.rs`."><title>client.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../../static.files/rustdoc-ca0dd0c4.css"><meta name="rustdoc-vars" data-root-path="../../../../" data-static-root-path="../../../../static.files/" data-current-crate="saluki_env" data-themes="" data-resource-suffix="" data-rustdoc-version="1.93.0-nightly (2286e5d22 2025-11-13)" data-channel="nightly" data-search-js="search-680b2199.js" data-stringdex-js="stringdex-c3e638e9.js" data-settings-js="settings-c38705f0.js" ><script src="../../../../static.files/storage-e2aeef58.js"></script><script defer src="../../../../static.files/src-script-813739b1.js"></script><script defer src="../../../../src-files.js"></script><script defer src="../../../../static.files/main-a410ff4d.js"></script><noscript><link rel="stylesheet" href="../../../../static.files/noscript-263c88ec.css"></noscript><link rel="alternate icon" type="image/png" href="../../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content"><div class="main-heading"><h1><div class="sub-heading">saluki_env/helpers/remote_agent/</div>client.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="kw">use </span>std::{
 <a href=#2 id=2 data-nosnippet>2</a>    future::Future,
-<a href=#3 id=3 data-nosnippet>3</a>    path::{Path, PathBuf},
+<a href=#3 id=3 data-nosnippet>3</a>    path::PathBuf,
 <a href=#4 id=4 data-nosnippet>4</a>    pin::Pin,
 <a href=#5 id=5 data-nosnippet>5</a>    task::{ready, Context, Poll},
 <a href=#6 id=6 data-nosnippet>6</a>    time::Duration,
 <a href=#7 id=7 data-nosnippet>7</a>};
 <a href=#8 id=8 data-nosnippet>8</a>
 <a href=#9 id=9 data-nosnippet>9</a><span class="kw">use </span>backon::{BackoffBuilder, ConstantBuilder, Retryable <span class="kw">as _</span>};
-<a href=#10 id=10 data-nosnippet>10</a><span class="kw">use </span>datadog_protos::agent::{
-<a href=#11 id=11 data-nosnippet>11</a>    AgentClient, AgentSecureClient, AutodiscoveryStreamResponse, ConfigEvent, ConfigStreamRequest, EntityId,
-<a href=#12 id=12 data-nosnippet>12</a>    FetchEntityRequest, HostTagReply, HostTagRequest, HostnameRequest, RegisterRemoteAgentRequest,
-<a href=#13 id=13 data-nosnippet>13</a>    RegisterRemoteAgentResponse, StreamTagsRequest, StreamTagsResponse, TagCardinality, WorkloadmetaEventType,
-<a href=#14 id=14 data-nosnippet>14</a>    WorkloadmetaFilter, WorkloadmetaKind, WorkloadmetaSource, WorkloadmetaStreamRequest, WorkloadmetaStreamResponse,
-<a href=#15 id=15 data-nosnippet>15</a>};
-<a href=#16 id=16 data-nosnippet>16</a><span class="kw">use </span>futures::Stream;
-<a href=#17 id=17 data-nosnippet>17</a><span class="kw">use </span>pin_project_lite::pin_project;
-<a href=#18 id=18 data-nosnippet>18</a><span class="kw">use </span>saluki_config::GenericConfiguration;
-<a href=#19 id=19 data-nosnippet>19</a><span class="kw">use </span>saluki_error::{generic_error, ErrorContext <span class="kw">as _</span>, GenericError};
-<a href=#20 id=20 data-nosnippet>20</a><span class="kw">use </span>saluki_io::net::build_datadog_agent_ipc_https_connector;
-<a href=#21 id=21 data-nosnippet>21</a><span class="kw">use </span>serde::Deserialize;
-<a href=#22 id=22 data-nosnippet>22</a><span class="kw">use </span>tonic::{
-<a href=#23 id=23 data-nosnippet>23</a>    service::interceptor::InterceptedService,
-<a href=#24 id=24 data-nosnippet>24</a>    transport::{Channel, Endpoint, Uri},
-<a href=#25 id=25 data-nosnippet>25</a>    Code, Response, Status, Streaming,
-<a href=#26 id=26 data-nosnippet>26</a>};
-<a href=#27 id=27 data-nosnippet>27</a><span class="kw">use </span>tracing::warn;
-<a href=#28 id=28 data-nosnippet>28</a>
-<a href=#29 id=29 data-nosnippet>29</a><span class="kw">use </span><span class="kw">crate</span>::helpers::tonic::BearerAuthInterceptor;
-<a href=#30 id=30 data-nosnippet>30</a>
-<a href=#31 id=31 data-nosnippet>31</a><span class="kw">const </span>DEFAULT_DATADOG_AGENT_CONFIG_DIR: <span class="kw-2">&amp;</span>str = <span class="string">"/etc/datadog-agent"</span>;
-<a href=#32 id=32 data-nosnippet>32</a><span class="kw">const </span>DEFAULT_IPC_CERT_FILE_NAME: <span class="kw-2">&amp;</span>str = <span class="string">"ipc_cert.pem"</span>;
+<a href=#10 id=10 data-nosnippet>10</a><span class="kw">use </span>datadog_protos::agent::v1::{
+<a href=#11 id=11 data-nosnippet>11</a>    RefreshRemoteAgentRequest, RefreshRemoteAgentResponse, RegisterRemoteAgentRequest, RegisterRemoteAgentResponse,
+<a href=#12 id=12 data-nosnippet>12</a>};
+<a href=#13 id=13 data-nosnippet>13</a><span class="kw">use </span>datadog_protos::agent::{
+<a href=#14 id=14 data-nosnippet>14</a>    AgentClient, AgentSecureClient, AutodiscoveryStreamResponse, ConfigEvent, ConfigStreamRequest, EntityId,
+<a href=#15 id=15 data-nosnippet>15</a>    FetchEntityRequest, HostTagReply, HostTagRequest, HostnameRequest, StreamTagsRequest, StreamTagsResponse,
+<a href=#16 id=16 data-nosnippet>16</a>    TagCardinality, WorkloadmetaEventType, WorkloadmetaFilter, WorkloadmetaKind, WorkloadmetaSource,
+<a href=#17 id=17 data-nosnippet>17</a>    WorkloadmetaStreamRequest, WorkloadmetaStreamResponse,
+<a href=#18 id=18 data-nosnippet>18</a>};
+<a href=#19 id=19 data-nosnippet>19</a><span class="kw">use </span>futures::Stream;
+<a href=#20 id=20 data-nosnippet>20</a><span class="kw">use </span>pin_project_lite::pin_project;
+<a href=#21 id=21 data-nosnippet>21</a><span class="kw">use </span>saluki_config::GenericConfiguration;
+<a href=#22 id=22 data-nosnippet>22</a><span class="kw">use </span>saluki_error::{generic_error, ErrorContext <span class="kw">as _</span>, GenericError};
+<a href=#23 id=23 data-nosnippet>23</a><span class="kw">use </span>saluki_io::net::{build_datadog_agent_ipc_https_connector, get_ipc_cert_file_path};
+<a href=#24 id=24 data-nosnippet>24</a><span class="kw">use </span>serde::Deserialize;
+<a href=#25 id=25 data-nosnippet>25</a><span class="kw">use </span>tonic::{
+<a href=#26 id=26 data-nosnippet>26</a>    service::interceptor::InterceptedService,
+<a href=#27 id=27 data-nosnippet>27</a>    transport::{Channel, Endpoint, Uri},
+<a href=#28 id=28 data-nosnippet>28</a>    Code, Response, Status, Streaming,
+<a href=#29 id=29 data-nosnippet>29</a>};
+<a href=#30 id=30 data-nosnippet>30</a><span class="kw">use </span>tracing::warn;
+<a href=#31 id=31 data-nosnippet>31</a>
+<a href=#32 id=32 data-nosnippet>32</a><span class="kw">use </span><span class="kw">crate</span>::helpers::tonic::BearerAuthInterceptor;
 <a href=#33 id=33 data-nosnippet>33</a>
 <a href=#34 id=34 data-nosnippet>34</a><span class="kw">fn </span>default_agent_ipc_endpoint() -&gt; Uri {
 <a href=#35 id=35 data-nosnippet>35</a>    Uri::from_static(<span class="string">"https://127.0.0.1:5001"</span>)
@@ -237,202 +237,154 @@
 <a href=#237 id=237 data-nosnippet>237</a>    ///
 <a href=#238 id=238 data-nosnippet>238</a>    /// If there is an error sending the request to the Agent API, an error will be returned.
 <a href=#239 id=239 data-nosnippet>239</a>    </span><span class="kw">pub async fn </span>register_remote_agent_request(
-<a href=#240 id=240 data-nosnippet>240</a>        <span class="kw-2">&amp;mut </span><span class="self">self</span>, id: <span class="kw-2">&amp;</span>str, display_name: <span class="kw-2">&amp;</span>str, api_endpoint: <span class="kw-2">&amp;</span>str, auth_token: <span class="kw-2">&amp;</span>str,
+<a href=#240 id=240 data-nosnippet>240</a>        <span class="kw-2">&amp;mut </span><span class="self">self</span>, pid: u32, display_name: <span class="kw-2">&amp;</span>str, api_endpoint: <span class="kw-2">&amp;</span>str, services: Vec&lt;String&gt;,
 <a href=#241 id=241 data-nosnippet>241</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;Response&lt;RegisterRemoteAgentResponse&gt;, GenericError&gt; {
 <a href=#242 id=242 data-nosnippet>242</a>        <span class="kw">let </span><span class="kw-2">mut </span>client = <span class="self">self</span>.secure_client.clone();
 <a href=#243 id=243 data-nosnippet>243</a>        <span class="kw">let </span>response = client
 <a href=#244 id=244 data-nosnippet>244</a>            .register_remote_agent(RegisterRemoteAgentRequest {
-<a href=#245 id=245 data-nosnippet>245</a>                id: id.to_string(),
-<a href=#246 id=246 data-nosnippet>246</a>                display_name: display_name.to_string(),
-<a href=#247 id=247 data-nosnippet>247</a>                api_endpoint: api_endpoint.to_string(),
-<a href=#248 id=248 data-nosnippet>248</a>                auth_token: auth_token.to_string(),
-<a href=#249 id=249 data-nosnippet>249</a>            })
-<a href=#250 id=250 data-nosnippet>250</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#251 id=251 data-nosnippet>251</a>        <span class="prelude-val">Ok</span>(response)
-<a href=#252 id=252 data-nosnippet>252</a>    }
-<a href=#253 id=253 data-nosnippet>253</a>
-<a href=#254 id=254 data-nosnippet>254</a>    <span class="doccomment">/// Gets the host tags from the Agent.
-<a href=#255 id=255 data-nosnippet>255</a>    ///
-<a href=#256 id=256 data-nosnippet>256</a>    /// # Errors
-<a href=#257 id=257 data-nosnippet>257</a>    ///
-<a href=#258 id=258 data-nosnippet>258</a>    /// If there is an error querying the Agent API, an error will be returned.
-<a href=#259 id=259 data-nosnippet>259</a>    </span><span class="kw">pub async fn </span>get_host_tags(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;Response&lt;HostTagReply&gt;, GenericError&gt; {
-<a href=#260 id=260 data-nosnippet>260</a>        <span class="kw">let </span><span class="kw-2">mut </span>client = <span class="self">self</span>.secure_client.clone();
-<a href=#261 id=261 data-nosnippet>261</a>        <span class="kw">let </span>response = client.get_host_tags(HostTagRequest {}).<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#262 id=262 data-nosnippet>262</a>        <span class="prelude-val">Ok</span>(response)
-<a href=#263 id=263 data-nosnippet>263</a>    }
-<a href=#264 id=264 data-nosnippet>264</a>
-<a href=#265 id=265 data-nosnippet>265</a>    <span class="doccomment">/// Gets a stream of autodiscovery config updates.
-<a href=#266 id=266 data-nosnippet>266</a>    ///
-<a href=#267 id=267 data-nosnippet>267</a>    /// If there is an error with the initial request, or an error occurs while streaming, the next message in the
-<a href=#268 id=268 data-nosnippet>268</a>    /// stream will be `Some(Err(status))`, where the status indicates the underlying error.
-<a href=#269 id=269 data-nosnippet>269</a>    </span><span class="kw">pub fn </span>get_autodiscovery_stream(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; StreamingResponse&lt;AutodiscoveryStreamResponse&gt; {
-<a href=#270 id=270 data-nosnippet>270</a>        <span class="kw">let </span><span class="kw-2">mut </span>client = <span class="self">self</span>.secure_client.clone();
-<a href=#271 id=271 data-nosnippet>271</a>        StreamingResponse::from_response_future(<span class="kw">async move </span>{ client.autodiscovery_stream_config(()).<span class="kw">await </span>})
-<a href=#272 id=272 data-nosnippet>272</a>    }
-<a href=#273 id=273 data-nosnippet>273</a>
-<a href=#274 id=274 data-nosnippet>274</a>    <span class="doccomment">/// Gets a stream of config events.
-<a href=#275 id=275 data-nosnippet>275</a>    ///
-<a href=#276 id=276 data-nosnippet>276</a>    /// If there is an error with the initial request, or an error occurs while streaming, the next message in the
-<a href=#277 id=277 data-nosnippet>277</a>    /// stream will be `Some(Err(status))`, where the status indicates the underlying error.
-<a href=#278 id=278 data-nosnippet>278</a>    </span><span class="kw">pub fn </span>stream_config_events(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; StreamingResponse&lt;ConfigEvent&gt; {
-<a href=#279 id=279 data-nosnippet>279</a>        <span class="kw">let </span><span class="kw-2">mut </span>client = <span class="self">self</span>.secure_client.clone();
-<a href=#280 id=280 data-nosnippet>280</a>        <span class="kw">let </span>app_details = saluki_metadata::get_app_details();
-<a href=#281 id=281 data-nosnippet>281</a>        <span class="kw">let </span>formatted_full_name = app_details
-<a href=#282 id=282 data-nosnippet>282</a>            .full_name()
-<a href=#283 id=283 data-nosnippet>283</a>            .replace(<span class="string">" "</span>, <span class="string">"-"</span>)
-<a href=#284 id=284 data-nosnippet>284</a>            .replace(<span class="string">"_"</span>, <span class="string">"-"</span>)
-<a href=#285 id=285 data-nosnippet>285</a>            .to_lowercase();
-<a href=#286 id=286 data-nosnippet>286</a>        StreamingResponse::from_response_future(<span class="kw">async move </span>{
-<a href=#287 id=287 data-nosnippet>287</a>            client
-<a href=#288 id=288 data-nosnippet>288</a>                .stream_config_events(ConfigStreamRequest {
-<a href=#289 id=289 data-nosnippet>289</a>                    name: formatted_full_name,
-<a href=#290 id=290 data-nosnippet>290</a>                })
-<a href=#291 id=291 data-nosnippet>291</a>                .<span class="kw">await
-<a href=#292 id=292 data-nosnippet>292</a>        </span>})
-<a href=#293 id=293 data-nosnippet>293</a>    }
-<a href=#294 id=294 data-nosnippet>294</a>}
-<a href=#295 id=295 data-nosnippet>295</a>
-<a href=#296 id=296 data-nosnippet>296</a><span class="macro">pin_project!</span> {
-<a href=#297 id=297 data-nosnippet>297</a>    <span class="doccomment">/// A streaming gRPC response.
-<a href=#298 id=298 data-nosnippet>298</a>    ///
-<a href=#299 id=299 data-nosnippet>299</a>    /// Compared to the normal streaming response type from [`tonic`], `StreamingResponse` handles a special case where
-<a href=#300 id=300 data-nosnippet>300</a>    /// servers may not send an initial message that allows the RPC to "establish", which is required to create the
-<a href=#301 id=301 data-nosnippet>301</a>    /// `Streaming` object that can then be polled. This leads to an issue where calls can effectively appear to block
-<a href=#302 id=302 data-nosnippet>302</a>    /// until the first message is sent by the server, which is suboptimal.
-<a href=#303 id=303 data-nosnippet>303</a>    ///
-<a href=#304 id=304 data-nosnippet>304</a>    /// `StreamingResponse` exposes a unified [`Stream`] implementation that encompasses both the initial RPC
-<a href=#305 id=305 data-nosnippet>305</a>    /// establishment and subsequent messages sent by the server, to allow for a more seamless experience when working
-<a href=#306 id=306 data-nosnippet>306</a>    /// with streaming RPCs.
-<a href=#307 id=307 data-nosnippet>307</a>    </span><span class="attr">#[project = StreamingResponseProj]
-<a href=#308 id=308 data-nosnippet>308</a>    </span><span class="kw">pub enum </span>StreamingResponse&lt;T&gt; {
-<a href=#309 id=309 data-nosnippet>309</a>        <span class="doccomment">/// Waiting for the server to stream the first message.
-<a href=#310 id=310 data-nosnippet>310</a>        </span>Initial { inner: Pin&lt;Box&lt;<span class="kw">dyn </span>Future&lt;Output = <span class="prelude-ty">Result</span>&lt;Response&lt;Streaming&lt;T&gt;&gt;, Status&gt;&gt; + Send&gt;&gt; },
+<a href=#245 id=245 data-nosnippet>245</a>                pid: pid.to_string(),
+<a href=#246 id=246 data-nosnippet>246</a>                flavor: <span class="string">"agent-data-plane"</span>.to_string(),
+<a href=#247 id=247 data-nosnippet>247</a>                display_name: display_name.to_string(),
+<a href=#248 id=248 data-nosnippet>248</a>                api_endpoint_uri: api_endpoint.to_string(),
+<a href=#249 id=249 data-nosnippet>249</a>                services,
+<a href=#250 id=250 data-nosnippet>250</a>            })
+<a href=#251 id=251 data-nosnippet>251</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#252 id=252 data-nosnippet>252</a>        <span class="prelude-val">Ok</span>(response)
+<a href=#253 id=253 data-nosnippet>253</a>    }
+<a href=#254 id=254 data-nosnippet>254</a>
+<a href=#255 id=255 data-nosnippet>255</a>    <span class="doccomment">/// Refreshes a Remote Agent with the Agent.
+<a href=#256 id=256 data-nosnippet>256</a>    ///
+<a href=#257 id=257 data-nosnippet>257</a>    /// If there is an error sending the request to the Agent API, an error will be returned.
+<a href=#258 id=258 data-nosnippet>258</a>    </span><span class="kw">pub async fn </span>refresh_remote_agent_request(
+<a href=#259 id=259 data-nosnippet>259</a>        <span class="kw-2">&amp;mut </span><span class="self">self</span>, session_id: <span class="kw-2">&amp;</span>str,
+<a href=#260 id=260 data-nosnippet>260</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;Response&lt;RefreshRemoteAgentResponse&gt;, GenericError&gt; {
+<a href=#261 id=261 data-nosnippet>261</a>        <span class="kw">let </span><span class="kw-2">mut </span>client = <span class="self">self</span>.secure_client.clone();
+<a href=#262 id=262 data-nosnippet>262</a>        <span class="kw">let </span>response = client
+<a href=#263 id=263 data-nosnippet>263</a>            .refresh_remote_agent(RefreshRemoteAgentRequest {
+<a href=#264 id=264 data-nosnippet>264</a>                session_id: session_id.to_string(),
+<a href=#265 id=265 data-nosnippet>265</a>            })
+<a href=#266 id=266 data-nosnippet>266</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#267 id=267 data-nosnippet>267</a>        <span class="prelude-val">Ok</span>(response)
+<a href=#268 id=268 data-nosnippet>268</a>    }
+<a href=#269 id=269 data-nosnippet>269</a>
+<a href=#270 id=270 data-nosnippet>270</a>    <span class="doccomment">/// Gets the host tags from the Agent.
+<a href=#271 id=271 data-nosnippet>271</a>    ///
+<a href=#272 id=272 data-nosnippet>272</a>    /// # Errors
+<a href=#273 id=273 data-nosnippet>273</a>    ///
+<a href=#274 id=274 data-nosnippet>274</a>    /// If there is an error querying the Agent API, an error will be returned.
+<a href=#275 id=275 data-nosnippet>275</a>    </span><span class="kw">pub async fn </span>get_host_tags(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;Response&lt;HostTagReply&gt;, GenericError&gt; {
+<a href=#276 id=276 data-nosnippet>276</a>        <span class="kw">let </span><span class="kw-2">mut </span>client = <span class="self">self</span>.secure_client.clone();
+<a href=#277 id=277 data-nosnippet>277</a>        <span class="kw">let </span>response = client.get_host_tags(HostTagRequest {}).<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#278 id=278 data-nosnippet>278</a>        <span class="prelude-val">Ok</span>(response)
+<a href=#279 id=279 data-nosnippet>279</a>    }
+<a href=#280 id=280 data-nosnippet>280</a>
+<a href=#281 id=281 data-nosnippet>281</a>    <span class="doccomment">/// Gets a stream of autodiscovery config updates.
+<a href=#282 id=282 data-nosnippet>282</a>    ///
+<a href=#283 id=283 data-nosnippet>283</a>    /// If there is an error with the initial request, or an error occurs while streaming, the next message in the
+<a href=#284 id=284 data-nosnippet>284</a>    /// stream will be `Some(Err(status))`, where the status indicates the underlying error.
+<a href=#285 id=285 data-nosnippet>285</a>    </span><span class="kw">pub fn </span>get_autodiscovery_stream(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; StreamingResponse&lt;AutodiscoveryStreamResponse&gt; {
+<a href=#286 id=286 data-nosnippet>286</a>        <span class="kw">let </span><span class="kw-2">mut </span>client = <span class="self">self</span>.secure_client.clone();
+<a href=#287 id=287 data-nosnippet>287</a>        StreamingResponse::from_response_future(<span class="kw">async move </span>{ client.autodiscovery_stream_config(()).<span class="kw">await </span>})
+<a href=#288 id=288 data-nosnippet>288</a>    }
+<a href=#289 id=289 data-nosnippet>289</a>
+<a href=#290 id=290 data-nosnippet>290</a>    <span class="doccomment">/// Gets a stream of config events.
+<a href=#291 id=291 data-nosnippet>291</a>    ///
+<a href=#292 id=292 data-nosnippet>292</a>    /// If there is an error with the initial request, or an error occurs while streaming, the next message in the
+<a href=#293 id=293 data-nosnippet>293</a>    /// stream will be `Some(Err(status))`, where the status indicates the underlying error.
+<a href=#294 id=294 data-nosnippet>294</a>    </span><span class="kw">pub fn </span>stream_config_events(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; StreamingResponse&lt;ConfigEvent&gt; {
+<a href=#295 id=295 data-nosnippet>295</a>        <span class="kw">let </span><span class="kw-2">mut </span>client = <span class="self">self</span>.secure_client.clone();
+<a href=#296 id=296 data-nosnippet>296</a>        <span class="kw">let </span>app_details = saluki_metadata::get_app_details();
+<a href=#297 id=297 data-nosnippet>297</a>        <span class="kw">let </span>formatted_full_name = app_details
+<a href=#298 id=298 data-nosnippet>298</a>            .full_name()
+<a href=#299 id=299 data-nosnippet>299</a>            .replace(<span class="string">" "</span>, <span class="string">"-"</span>)
+<a href=#300 id=300 data-nosnippet>300</a>            .replace(<span class="string">"_"</span>, <span class="string">"-"</span>)
+<a href=#301 id=301 data-nosnippet>301</a>            .to_lowercase();
+<a href=#302 id=302 data-nosnippet>302</a>        StreamingResponse::from_response_future(<span class="kw">async move </span>{
+<a href=#303 id=303 data-nosnippet>303</a>            client
+<a href=#304 id=304 data-nosnippet>304</a>                .stream_config_events(ConfigStreamRequest {
+<a href=#305 id=305 data-nosnippet>305</a>                    name: formatted_full_name,
+<a href=#306 id=306 data-nosnippet>306</a>                })
+<a href=#307 id=307 data-nosnippet>307</a>                .<span class="kw">await
+<a href=#308 id=308 data-nosnippet>308</a>        </span>})
+<a href=#309 id=309 data-nosnippet>309</a>    }
+<a href=#310 id=310 data-nosnippet>310</a>}
 <a href=#311 id=311 data-nosnippet>311</a>
-<a href=#312 id=312 data-nosnippet>312</a>        <span class="doccomment">/// Waiting for the server to stream the next message.
-<a href=#313 id=313 data-nosnippet>313</a>        </span>Streaming { <span class="attr">#[pin] </span>stream: Streaming&lt;T&gt; },
-<a href=#314 id=314 data-nosnippet>314</a>    }
-<a href=#315 id=315 data-nosnippet>315</a>}
-<a href=#316 id=316 data-nosnippet>316</a>
-<a href=#317 id=317 data-nosnippet>317</a><span class="kw">impl</span>&lt;T&gt; StreamingResponse&lt;T&gt; {
-<a href=#318 id=318 data-nosnippet>318</a>    <span class="kw">fn </span>from_response_future&lt;F&gt;(fut: F) -&gt; <span class="self">Self
-<a href=#319 id=319 data-nosnippet>319</a>    </span><span class="kw">where
-<a href=#320 id=320 data-nosnippet>320</a>        </span>F: Future&lt;Output = <span class="prelude-ty">Result</span>&lt;Response&lt;Streaming&lt;T&gt;&gt;, Status&gt;&gt; + Send + <span class="lifetime">'static</span>,
-<a href=#321 id=321 data-nosnippet>321</a>    {
-<a href=#322 id=322 data-nosnippet>322</a>        <span class="self">Self</span>::Initial { inner: Box::pin(fut) }
-<a href=#323 id=323 data-nosnippet>323</a>    }
-<a href=#324 id=324 data-nosnippet>324</a>}
-<a href=#325 id=325 data-nosnippet>325</a>
-<a href=#326 id=326 data-nosnippet>326</a><span class="kw">impl</span>&lt;T&gt; Stream <span class="kw">for </span>StreamingResponse&lt;T&gt; {
-<a href=#327 id=327 data-nosnippet>327</a>    <span class="kw">type </span>Item = <span class="prelude-ty">Result</span>&lt;T, Status&gt;;
-<a href=#328 id=328 data-nosnippet>328</a>
-<a href=#329 id=329 data-nosnippet>329</a>    <span class="kw">fn </span>poll_next(<span class="kw-2">mut </span><span class="self">self</span>: Pin&lt;<span class="kw-2">&amp;mut </span><span class="self">Self</span>&gt;, cx: <span class="kw-2">&amp;mut </span>Context&lt;<span class="lifetime">'_</span>&gt;) -&gt; Poll&lt;<span class="prelude-ty">Option</span>&lt;<span class="self">Self</span>::Item&gt;&gt; {
-<a href=#330 id=330 data-nosnippet>330</a>        <span class="kw">loop </span>{
-<a href=#331 id=331 data-nosnippet>331</a>            <span class="kw">let </span>this = <span class="self">self</span>.as_mut().project();
-<a href=#332 id=332 data-nosnippet>332</a>            <span class="kw">let </span>new_state = <span class="kw">match </span>this {
-<a href=#333 id=333 data-nosnippet>333</a>                <span class="comment">// When we get the initial response, we either get the streaming object or an error.
-<a href=#334 id=334 data-nosnippet>334</a>                //
-<a href=#335 id=335 data-nosnippet>335</a>                // The streaming object itself has to be polled to get an actual message, so we have to do a little
-<a href=#336 id=336 data-nosnippet>336</a>                // dance here to update our state to the `Streaming` variant when that happens, and then loop so we can
-<a href=#337 id=337 data-nosnippet>337</a>                // poll the streaming object for a message... but if we got an error, we just yield it like a normal
-<a href=#338 id=338 data-nosnippet>338</a>                // item on the stream.
-<a href=#339 id=339 data-nosnippet>339</a>                </span>StreamingResponseProj::Initial { inner } =&gt; <span class="kw">match </span><span class="macro">ready!</span>(inner.as_mut().poll(cx)) {
-<a href=#340 id=340 data-nosnippet>340</a>                    <span class="prelude-val">Ok</span>(response) =&gt; {
-<a href=#341 id=341 data-nosnippet>341</a>                        <span class="kw">let </span>stream = response.into_inner();
-<a href=#342 id=342 data-nosnippet>342</a>                        StreamingResponse::Streaming { stream }
-<a href=#343 id=343 data-nosnippet>343</a>                    }
-<a href=#344 id=344 data-nosnippet>344</a>                    <span class="prelude-val">Err</span>(status) =&gt; <span class="kw">return </span>Poll::Ready(<span class="prelude-val">Some</span>(<span class="prelude-val">Err</span>(status))),
-<a href=#345 id=345 data-nosnippet>345</a>                },
-<a href=#346 id=346 data-nosnippet>346</a>                StreamingResponseProj::Streaming { stream } =&gt; <span class="kw">return </span>stream.poll_next(cx),
-<a href=#347 id=347 data-nosnippet>347</a>            };
-<a href=#348 id=348 data-nosnippet>348</a>
-<a href=#349 id=349 data-nosnippet>349</a>            <span class="self">self</span>.set(new_state);
-<a href=#350 id=350 data-nosnippet>350</a>        }
-<a href=#351 id=351 data-nosnippet>351</a>    }
-<a href=#352 id=352 data-nosnippet>352</a>}
-<a href=#353 id=353 data-nosnippet>353</a>
-<a href=#354 id=354 data-nosnippet>354</a><span class="kw">async fn </span>try_query_agent_api(
-<a href=#355 id=355 data-nosnippet>355</a>    client: <span class="kw-2">&amp;mut </span>AgentSecureClient&lt;InterceptedService&lt;Channel, BearerAuthInterceptor&gt;&gt;,
-<a href=#356 id=356 data-nosnippet>356</a>) -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt; {
-<a href=#357 id=357 data-nosnippet>357</a>    <span class="kw">let </span>noop_fetch_request = FetchEntityRequest {
-<a href=#358 id=358 data-nosnippet>358</a>        id: <span class="prelude-val">Some</span>(EntityId {
-<a href=#359 id=359 data-nosnippet>359</a>            prefix: <span class="string">"container_id"</span>.to_string(),
-<a href=#360 id=360 data-nosnippet>360</a>            uid: <span class="string">"nonexistent"</span>.to_string(),
-<a href=#361 id=361 data-nosnippet>361</a>        }),
-<a href=#362 id=362 data-nosnippet>362</a>        cardinality: TagCardinality::High.into(),
-<a href=#363 id=363 data-nosnippet>363</a>    };
-<a href=#364 id=364 data-nosnippet>364</a>    <span class="kw">match </span>client.tagger_fetch_entity(noop_fetch_request).<span class="kw">await </span>{
-<a href=#365 id=365 data-nosnippet>365</a>        <span class="prelude-val">Ok</span>(<span class="kw">_</span>) =&gt; <span class="prelude-val">Ok</span>(()),
-<a href=#366 id=366 data-nosnippet>366</a>        <span class="prelude-val">Err</span>(e) =&gt; <span class="kw">match </span>e.code() {
-<a href=#367 id=367 data-nosnippet>367</a>            Code::Unauthenticated =&gt; <span class="prelude-val">Err</span>(<span class="macro">generic_error!</span>(
-<a href=#368 id=368 data-nosnippet>368</a>                <span class="string">"Failed to authenticate to Datadog Agent API. Check that the configured authentication token is correct."
-<a href=#369 id=369 data-nosnippet>369</a>            </span>)),
-<a href=#370 id=370 data-nosnippet>370</a>            <span class="kw">_ </span>=&gt; <span class="prelude-val">Err</span>(e.into()),
-<a href=#371 id=371 data-nosnippet>371</a>        },
-<a href=#372 id=372 data-nosnippet>372</a>    }
-<a href=#373 id=373 data-nosnippet>373</a>}
-<a href=#374 id=374 data-nosnippet>374</a>
-<a href=#375 id=375 data-nosnippet>375</a><span class="kw">fn </span>get_ipc_cert_file_path(ipc_cert_file_path: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>PathBuf&gt;, auth_token_file_path: <span class="kw-2">&amp;</span>Path) -&gt; PathBuf {
-<a href=#376 id=376 data-nosnippet>376</a>    <span class="comment">// If the IPC cert file path is set explicitly, we always prefer that.
-<a href=#377 id=377 data-nosnippet>377</a>    </span><span class="kw">if let </span><span class="prelude-val">Some</span>(path) = ipc_cert_file_path {
-<a href=#378 id=378 data-nosnippet>378</a>        <span class="kw">return </span>path.clone();
-<a href=#379 id=379 data-nosnippet>379</a>    }
-<a href=#380 id=380 data-nosnippet>380</a>
-<a href=#381 id=381 data-nosnippet>381</a>    <span class="comment">// Otherwise, we default to the same directory as the auth token file, with the default certificate file name.
-<a href=#382 id=382 data-nosnippet>382</a>    </span><span class="kw">let </span><span class="kw-2">mut </span>cert_path = auth_token_file_path
-<a href=#383 id=383 data-nosnippet>383</a>        .parent()
-<a href=#384 id=384 data-nosnippet>384</a>        .map(|p| p.to_path_buf())
-<a href=#385 id=385 data-nosnippet>385</a>        .unwrap_or_else(|| PathBuf::from(DEFAULT_DATADOG_AGENT_CONFIG_DIR));
-<a href=#386 id=386 data-nosnippet>386</a>
-<a href=#387 id=387 data-nosnippet>387</a>    cert_path.push(DEFAULT_IPC_CERT_FILE_NAME);
-<a href=#388 id=388 data-nosnippet>388</a>    cert_path
+<a href=#312 id=312 data-nosnippet>312</a><span class="macro">pin_project!</span> {
+<a href=#313 id=313 data-nosnippet>313</a>    <span class="doccomment">/// A streaming gRPC response.
+<a href=#314 id=314 data-nosnippet>314</a>    ///
+<a href=#315 id=315 data-nosnippet>315</a>    /// Compared to the normal streaming response type from [`tonic`], `StreamingResponse` handles a special case where
+<a href=#316 id=316 data-nosnippet>316</a>    /// servers may not send an initial message that allows the RPC to "establish", which is required to create the
+<a href=#317 id=317 data-nosnippet>317</a>    /// `Streaming` object that can then be polled. This leads to an issue where calls can effectively appear to block
+<a href=#318 id=318 data-nosnippet>318</a>    /// until the first message is sent by the server, which is suboptimal.
+<a href=#319 id=319 data-nosnippet>319</a>    ///
+<a href=#320 id=320 data-nosnippet>320</a>    /// `StreamingResponse` exposes a unified [`Stream`] implementation that encompasses both the initial RPC
+<a href=#321 id=321 data-nosnippet>321</a>    /// establishment and subsequent messages sent by the server, to allow for a more seamless experience when working
+<a href=#322 id=322 data-nosnippet>322</a>    /// with streaming RPCs.
+<a href=#323 id=323 data-nosnippet>323</a>    </span><span class="attr">#[project = StreamingResponseProj]
+<a href=#324 id=324 data-nosnippet>324</a>    </span><span class="kw">pub enum </span>StreamingResponse&lt;T&gt; {
+<a href=#325 id=325 data-nosnippet>325</a>        <span class="doccomment">/// Waiting for the server to stream the first message.
+<a href=#326 id=326 data-nosnippet>326</a>        </span>Initial { inner: Pin&lt;Box&lt;<span class="kw">dyn </span>Future&lt;Output = <span class="prelude-ty">Result</span>&lt;Response&lt;Streaming&lt;T&gt;&gt;, Status&gt;&gt; + Send&gt;&gt; },
+<a href=#327 id=327 data-nosnippet>327</a>
+<a href=#328 id=328 data-nosnippet>328</a>        <span class="doccomment">/// Waiting for the server to stream the next message.
+<a href=#329 id=329 data-nosnippet>329</a>        </span>Streaming { <span class="attr">#[pin] </span>stream: Streaming&lt;T&gt; },
+<a href=#330 id=330 data-nosnippet>330</a>    }
+<a href=#331 id=331 data-nosnippet>331</a>}
+<a href=#332 id=332 data-nosnippet>332</a>
+<a href=#333 id=333 data-nosnippet>333</a><span class="kw">impl</span>&lt;T&gt; StreamingResponse&lt;T&gt; {
+<a href=#334 id=334 data-nosnippet>334</a>    <span class="kw">fn </span>from_response_future&lt;F&gt;(fut: F) -&gt; <span class="self">Self
+<a href=#335 id=335 data-nosnippet>335</a>    </span><span class="kw">where
+<a href=#336 id=336 data-nosnippet>336</a>        </span>F: Future&lt;Output = <span class="prelude-ty">Result</span>&lt;Response&lt;Streaming&lt;T&gt;&gt;, Status&gt;&gt; + Send + <span class="lifetime">'static</span>,
+<a href=#337 id=337 data-nosnippet>337</a>    {
+<a href=#338 id=338 data-nosnippet>338</a>        <span class="self">Self</span>::Initial { inner: Box::pin(fut) }
+<a href=#339 id=339 data-nosnippet>339</a>    }
+<a href=#340 id=340 data-nosnippet>340</a>}
+<a href=#341 id=341 data-nosnippet>341</a>
+<a href=#342 id=342 data-nosnippet>342</a><span class="kw">impl</span>&lt;T&gt; Stream <span class="kw">for </span>StreamingResponse&lt;T&gt; {
+<a href=#343 id=343 data-nosnippet>343</a>    <span class="kw">type </span>Item = <span class="prelude-ty">Result</span>&lt;T, Status&gt;;
+<a href=#344 id=344 data-nosnippet>344</a>
+<a href=#345 id=345 data-nosnippet>345</a>    <span class="kw">fn </span>poll_next(<span class="kw-2">mut </span><span class="self">self</span>: Pin&lt;<span class="kw-2">&amp;mut </span><span class="self">Self</span>&gt;, cx: <span class="kw-2">&amp;mut </span>Context&lt;<span class="lifetime">'_</span>&gt;) -&gt; Poll&lt;<span class="prelude-ty">Option</span>&lt;<span class="self">Self</span>::Item&gt;&gt; {
+<a href=#346 id=346 data-nosnippet>346</a>        <span class="kw">loop </span>{
+<a href=#347 id=347 data-nosnippet>347</a>            <span class="kw">let </span>this = <span class="self">self</span>.as_mut().project();
+<a href=#348 id=348 data-nosnippet>348</a>            <span class="kw">let </span>new_state = <span class="kw">match </span>this {
+<a href=#349 id=349 data-nosnippet>349</a>                <span class="comment">// When we get the initial response, we either get the streaming object or an error.
+<a href=#350 id=350 data-nosnippet>350</a>                //
+<a href=#351 id=351 data-nosnippet>351</a>                // The streaming object itself has to be polled to get an actual message, so we have to do a little
+<a href=#352 id=352 data-nosnippet>352</a>                // dance here to update our state to the `Streaming` variant when that happens, and then loop so we can
+<a href=#353 id=353 data-nosnippet>353</a>                // poll the streaming object for a message... but if we got an error, we just yield it like a normal
+<a href=#354 id=354 data-nosnippet>354</a>                // item on the stream.
+<a href=#355 id=355 data-nosnippet>355</a>                </span>StreamingResponseProj::Initial { inner } =&gt; <span class="kw">match </span><span class="macro">ready!</span>(inner.as_mut().poll(cx)) {
+<a href=#356 id=356 data-nosnippet>356</a>                    <span class="prelude-val">Ok</span>(response) =&gt; {
+<a href=#357 id=357 data-nosnippet>357</a>                        <span class="kw">let </span>stream = response.into_inner();
+<a href=#358 id=358 data-nosnippet>358</a>                        StreamingResponse::Streaming { stream }
+<a href=#359 id=359 data-nosnippet>359</a>                    }
+<a href=#360 id=360 data-nosnippet>360</a>                    <span class="prelude-val">Err</span>(status) =&gt; <span class="kw">return </span>Poll::Ready(<span class="prelude-val">Some</span>(<span class="prelude-val">Err</span>(status))),
+<a href=#361 id=361 data-nosnippet>361</a>                },
+<a href=#362 id=362 data-nosnippet>362</a>                StreamingResponseProj::Streaming { stream } =&gt; <span class="kw">return </span>stream.poll_next(cx),
+<a href=#363 id=363 data-nosnippet>363</a>            };
+<a href=#364 id=364 data-nosnippet>364</a>
+<a href=#365 id=365 data-nosnippet>365</a>            <span class="self">self</span>.set(new_state);
+<a href=#366 id=366 data-nosnippet>366</a>        }
+<a href=#367 id=367 data-nosnippet>367</a>    }
+<a href=#368 id=368 data-nosnippet>368</a>}
+<a href=#369 id=369 data-nosnippet>369</a>
+<a href=#370 id=370 data-nosnippet>370</a><span class="kw">async fn </span>try_query_agent_api(
+<a href=#371 id=371 data-nosnippet>371</a>    client: <span class="kw-2">&amp;mut </span>AgentSecureClient&lt;InterceptedService&lt;Channel, BearerAuthInterceptor&gt;&gt;,
+<a href=#372 id=372 data-nosnippet>372</a>) -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt; {
+<a href=#373 id=373 data-nosnippet>373</a>    <span class="kw">let </span>noop_fetch_request = FetchEntityRequest {
+<a href=#374 id=374 data-nosnippet>374</a>        id: <span class="prelude-val">Some</span>(EntityId {
+<a href=#375 id=375 data-nosnippet>375</a>            prefix: <span class="string">"container_id"</span>.to_string(),
+<a href=#376 id=376 data-nosnippet>376</a>            uid: <span class="string">"nonexistent"</span>.to_string(),
+<a href=#377 id=377 data-nosnippet>377</a>        }),
+<a href=#378 id=378 data-nosnippet>378</a>        cardinality: TagCardinality::High.into(),
+<a href=#379 id=379 data-nosnippet>379</a>    };
+<a href=#380 id=380 data-nosnippet>380</a>    <span class="kw">match </span>client.tagger_fetch_entity(noop_fetch_request).<span class="kw">await </span>{
+<a href=#381 id=381 data-nosnippet>381</a>        <span class="prelude-val">Ok</span>(<span class="kw">_</span>) =&gt; <span class="prelude-val">Ok</span>(()),
+<a href=#382 id=382 data-nosnippet>382</a>        <span class="prelude-val">Err</span>(e) =&gt; <span class="kw">match </span>e.code() {
+<a href=#383 id=383 data-nosnippet>383</a>            Code::Unauthenticated =&gt; <span class="prelude-val">Err</span>(<span class="macro">generic_error!</span>(
+<a href=#384 id=384 data-nosnippet>384</a>                <span class="string">"Failed to authenticate to Datadog Agent API. Check that the configured authentication token is correct."
+<a href=#385 id=385 data-nosnippet>385</a>            </span>)),
+<a href=#386 id=386 data-nosnippet>386</a>            <span class="kw">_ </span>=&gt; <span class="prelude-val">Err</span>(e.into()),
+<a href=#387 id=387 data-nosnippet>387</a>        },
+<a href=#388 id=388 data-nosnippet>388</a>    }
 <a href=#389 id=389 data-nosnippet>389</a>}
-<a href=#390 id=390 data-nosnippet>390</a>
-<a href=#391 id=391 data-nosnippet>391</a><span class="attr">#[cfg(test)]
-<a href=#392 id=392 data-nosnippet>392</a></span><span class="kw">mod </span>tests {
-<a href=#393 id=393 data-nosnippet>393</a>    <span class="kw">use </span>std::path::{Path, PathBuf};
-<a href=#394 id=394 data-nosnippet>394</a>
-<a href=#395 id=395 data-nosnippet>395</a>    <span class="kw">use super</span>::{
-<a href=#396 id=396 data-nosnippet>396</a>        default_agent_auth_token_file_path, get_ipc_cert_file_path, DEFAULT_DATADOG_AGENT_CONFIG_DIR,
-<a href=#397 id=397 data-nosnippet>397</a>        DEFAULT_IPC_CERT_FILE_NAME,
-<a href=#398 id=398 data-nosnippet>398</a>    };
-<a href=#399 id=399 data-nosnippet>399</a>
-<a href=#400 id=400 data-nosnippet>400</a>    <span class="attr">#[test]
-<a href=#401 id=401 data-nosnippet>401</a>    </span><span class="kw">fn </span>ipc_cert_file_path_defaults() {
-<a href=#402 id=402 data-nosnippet>402</a>        <span class="kw">let </span>default_auth_token_path = default_agent_auth_token_file_path();
-<a href=#403 id=403 data-nosnippet>403</a>        <span class="kw">let </span>custom_auth_token_path = PathBuf::from(<span class="string">"/secret/auth_token"</span>);
-<a href=#404 id=404 data-nosnippet>404</a>        <span class="kw">let </span>invalid_auth_token_path = PathBuf::from(<span class="string">"/"</span>);
-<a href=#405 id=405 data-nosnippet>405</a>        <span class="kw">let </span>custom_ipc_cert_path = PathBuf::from(<span class="string">"/tmp/custom_ipc_cert.pem"</span>);
-<a href=#406 id=406 data-nosnippet>406</a>
-<a href=#407 id=407 data-nosnippet>407</a>        <span class="comment">// When the IPC cert file path is explicitly set, it should be used.
-<a href=#408 id=408 data-nosnippet>408</a>        </span><span class="kw">let </span>result = get_ipc_cert_file_path(<span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>custom_ipc_cert_path), <span class="kw-2">&amp;</span>default_auth_token_path);
-<a href=#409 id=409 data-nosnippet>409</a>        <span class="macro">assert_eq!</span>(result, custom_ipc_cert_path);
-<a href=#410 id=410 data-nosnippet>410</a>
-<a href=#411 id=411 data-nosnippet>411</a>        <span class="comment">// When the IPC cert file path is not set, it should default to the same directory as the auth token file using
-<a href=#412 id=412 data-nosnippet>412</a>        // the default certificate file name.
-<a href=#413 id=413 data-nosnippet>413</a>        </span><span class="kw">let </span>result = get_ipc_cert_file_path(<span class="prelude-val">None</span>, <span class="kw-2">&amp;</span>default_auth_token_path);
-<a href=#414 id=414 data-nosnippet>414</a>        <span class="macro">assert_eq!</span>(result.parent(), default_auth_token_path.as_path().parent());
-<a href=#415 id=415 data-nosnippet>415</a>        <span class="macro">assert_eq!</span>(
-<a href=#416 id=416 data-nosnippet>416</a>            result.file_name().and_then(|s| s.to_str()),
-<a href=#417 id=417 data-nosnippet>417</a>            <span class="prelude-val">Some</span>(DEFAULT_IPC_CERT_FILE_NAME)
-<a href=#418 id=418 data-nosnippet>418</a>        );
-<a href=#419 id=419 data-nosnippet>419</a>
-<a href=#420 id=420 data-nosnippet>420</a>        <span class="comment">// This should hold when using a custom auth token file path as well.
-<a href=#421 id=421 data-nosnippet>421</a>        </span><span class="kw">let </span>result = get_ipc_cert_file_path(<span class="prelude-val">None</span>, <span class="kw-2">&amp;</span>custom_auth_token_path);
-<a href=#422 id=422 data-nosnippet>422</a>        <span class="macro">assert_eq!</span>(result.parent(), custom_auth_token_path.as_path().parent());
-<a href=#423 id=423 data-nosnippet>423</a>        <span class="macro">assert_eq!</span>(
-<a href=#424 id=424 data-nosnippet>424</a>            result.file_name().and_then(|s| s.to_str()),
-<a href=#425 id=425 data-nosnippet>425</a>            <span class="prelude-val">Some</span>(DEFAULT_IPC_CERT_FILE_NAME)
-<a href=#426 id=426 data-nosnippet>426</a>        );
-<a href=#427 id=427 data-nosnippet>427</a>
-<a href=#428 id=428 data-nosnippet>428</a>        <span class="comment">// If the auth token file path is somehow unset or invalid (e.g., no parent directory), we should use the same
-<a href=#429 id=429 data-nosnippet>429</a>        // logic but with the default Datadog Agent configuration directory.
-<a href=#430 id=430 data-nosnippet>430</a>        </span><span class="kw">let </span>result = get_ipc_cert_file_path(<span class="prelude-val">None</span>, <span class="kw-2">&amp;</span>invalid_auth_token_path);
-<a href=#431 id=431 data-nosnippet>431</a>        <span class="macro">assert_eq!</span>(result.parent(), <span class="prelude-val">Some</span>(Path::new(DEFAULT_DATADOG_AGENT_CONFIG_DIR)));
-<a href=#432 id=432 data-nosnippet>432</a>        <span class="macro">assert_eq!</span>(
-<a href=#433 id=433 data-nosnippet>433</a>            result.file_name().and_then(|s| s.to_str()),
-<a href=#434 id=434 data-nosnippet>434</a>            <span class="prelude-val">Some</span>(DEFAULT_IPC_CERT_FILE_NAME)
-<a href=#435 id=435 data-nosnippet>435</a>        );
-<a href=#436 id=436 data-nosnippet>436</a>    }
-<a href=#437 id=437 data-nosnippet>437</a>}
 </code></pre></div></section></main></body></html>
