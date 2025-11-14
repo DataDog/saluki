@@ -86,6 +86,7 @@ RUN test -d /usr/share/ca-certificates || ( \
     (apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
         apt-get clean && rm -rf /var/lib/apt/lists) || \
     (apk add --no-cache ca-certificates))
+RUN apk add --no-cache libgcc || echo "not on Alpine image"
 COPY --from=final /adp/target/bin/agent-data-plane /usr/local/bin/agent-data-plane
 COPY NOTICE LICENSE LICENSE-3rdparty.csv /opt/datadog/agent-data-plane/
 COPY --from=license-builder /licenses /opt/datadog/agent-data-plane/LICENSES
