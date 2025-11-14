@@ -42,7 +42,6 @@ use tracing::error;
 pub struct Metrics {
     metrics_received: Counter,
     logs_received: Counter,
-    _traces_received: Counter,
     bytes_received: Counter,
 }
 
@@ -59,16 +58,12 @@ impl Metrics {
         &self.bytes_received
     }
 
-    pub fn _traces_received(&self) -> &Counter {
-        &self._traces_received
-    }
     /// Test-only helper to construct a `Metrics` instance.
     #[cfg(test)]
     pub fn for_tests() -> Self {
         Metrics {
             metrics_received: Counter::noop(),
             logs_received: Counter::noop(),
-            _traces_received: Counter::noop(),
             bytes_received: Counter::noop(),
         }
     }
@@ -83,8 +78,6 @@ pub fn build_metrics(component_context: &ComponentContext) -> Metrics {
             .register_debug_counter_with_tags("component_events_received_total", [("message_type", "otlp_metrics")]),
         logs_received: builder
             .register_debug_counter_with_tags("component_events_received_total", [("message_type", "otlp_logs")]),
-        _traces_received: builder
-            .register_debug_counter_with_tags("component_events_received_total", [("message_type", "otlp_traces")]),
         bytes_received: builder.register_counter_with_tags("component_bytes_received_total", [("source", "otlp")]),
     }
 }
