@@ -45,7 +45,7 @@ build-adp-baseline-image:
       --build-arg EXTRA_RUSTFLAGS="-C target-feature=-crt-static"
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg BUILD_IMAGE=${ALPINE_BASE_IMAGE}
-      --build-arg APP_IMAGE=${ALPINE_BASE_IMAGE}
+      --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg APP_GIT_HASH=${BASELINE_ADP_SHA}
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
