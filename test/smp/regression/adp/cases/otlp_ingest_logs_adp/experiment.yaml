@@ -12,6 +12,9 @@ target:
     # would otherwise be providing the IPC certificate.
     DD_IPC_CERT_FILE_PATH: /etc/agent-data-plane/cert.pem
 
+    # Emit logs in JSON so we get better parsing/search over them in the SMP target logs index.
+    DD_LOG_FORMAT_JSON: "true"
+
     DD_API_KEY: a0000001
     DD_HOSTNAME: smp-regression
     DD_DD_URL: http://127.0.0.1:4317
