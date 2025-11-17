@@ -1,13 +1,18 @@
-use saluki_core::data_model::event::trace::Span as dd_span;
-use otlp_protos::opentelemetry::proto::{common::v1::InstrumentationScope, resource::v1::Resource, trace::v1::Span as otel_span};
-#[allow(unused_imports)]
-use crate::sources::otlp::attributes::{get_string_attribute, get_int_attribute, resource_to_source, tags_from_attributes};
+#![allow(dead_code)]
 #[allow(unused_imports)]
 use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common, any_value::Value as OtlpValue};
-use stringtheory::MetaString;
-use super::translator::{convert_span_id, convert_trace_id};
+use otlp_protos::opentelemetry::proto::{
+    common::v1::InstrumentationScope, resource::v1::Resource, trace::v1::Span as otel_span,
+};
 use saluki_common::collections::FastHashMap;
+use saluki_core::data_model::event::trace::Span as dd_span;
+use stringtheory::MetaString;
 
+use super::translator::{convert_span_id, convert_trace_id};
+#[allow(unused_imports)]
+use crate::sources::otlp::attributes::{
+    get_int_attribute, get_string_attribute, resource_to_source, tags_from_attributes,
+};
 
 // KEY_DATADOG_SERVICE is the key for the service name in the Datadog namespace
 const KEY_DATADOG_SERVICE: &str = "datadog.service";
@@ -40,15 +45,18 @@ const KEY_DATADOG_CONTAINER_ID: &str = "datadog.container_id";
 // KEY_DATADOG_CONTAINER_TAGS is the key for the container tags in the Datadog namespace
 const KEY_DATADOG_CONTAINER_TAGS: &str = "datadog.container_tags";
 
-
-pub fn otel_span_to_dd_span(otel_span: otel_span, otel_resource: &Resource, instrumentation_scope: Option<InstrumentationScope>) -> dd_span {
+pub fn otel_span_to_dd_span(
+    otel_span: otel_span, otel_resource: &Resource, instrumentation_scope: Option<InstrumentationScope>,
+) -> dd_span {
     // let span_kind = otel_span.kind;
     // TODO: add conf for enable_otlp_compute_top_level_by_span_kind
     let dd_span = minimal_otel_span_to_dd_span(otel_span, otel_resource, instrumentation_scope);
     return dd_span;
 }
 
-pub fn minimal_otel_span_to_dd_span(otel_span: otel_span, otel_resource: &Resource, _instrumentation_scope: Option<InstrumentationScope>) -> dd_span {
+pub fn minimal_otel_span_to_dd_span(
+    otel_span: otel_span, otel_resource: &Resource, _instrumentation_scope: Option<InstrumentationScope>,
+) -> dd_span {
     let span_attributes = otel_span.attributes;
     let resource_attributes = &otel_resource.attributes;
     let service = use_both_maps(&span_attributes, &resource_attributes, KEY_DATADOG_SERVICE);
@@ -71,7 +79,7 @@ pub fn minimal_otel_span_to_dd_span(otel_span: otel_span, otel_resource: &Resour
     // };
     let mut meta: FastHashMap<MetaString, MetaString> = FastHashMap::default();
     meta.reserve(span_attributes.len() + resource_attributes.len());
-    let mut metrics: FastHashMap<MetaString, f64> = FastHashMap::default();  
+    let mut metrics: FastHashMap<MetaString, f64> = FastHashMap::default();
     let dd_span = dd_span::new(
         service.unwrap_or(MetaString::empty()),
         name.unwrap_or(MetaString::empty()),
@@ -82,7 +90,7 @@ pub fn minimal_otel_span_to_dd_span(otel_span: otel_span, otel_resource: &Resour
     );
     let error = get_string_attribute(&span_attributes, KEY_DATADOG_ERROR)
         .and_then(|err| err.parse::<i32>().ok())
-        .unwrap_or(1); 
+        .unwrap_or(1);
     let dd_span = dd_span.with_error(error);
     let span_kind = use_both_maps(&span_attributes, &resource_attributes, KEY_DATADOG_SPAN_KIND);
     if let Some(value) = span_kind {
@@ -97,7 +105,7 @@ pub fn minimal_otel_span_to_dd_span(otel_span: otel_span, otel_resource: &Resour
     // if dd_span.service().is_empty() {
     //     dd_span.with_service()
     // }
-    
+
     return dd_span;
 }
 
@@ -108,18 +116,20 @@ fn use_both_maps(map: &[otlp_common::KeyValue], map2: &[otlp_common::KeyValue], 
     get_string_attribute(map2, key).map(MetaString::from)
 }
 
-fn get_otel_status_code<'a>(span_attributes: &'a [otlp_common::KeyValue], resource_attributes: &'a [otlp_common::KeyValue]) -> &'a i64{
+fn get_otel_status_code<'a>(
+    span_attributes: &'a [otlp_common::KeyValue], resource_attributes: &'a [otlp_common::KeyValue],
+) -> &'a i64 {
     if let Some(value) = get_int_attribute(&span_attributes, KEY_DATADOG_HTTP_STATUS_CODE) {
         return value;
     } else if let Some(value) = get_int_attribute(&resource_attributes, KEY_DATADOG_HTTP_STATUS_CODE) {
         return value;
-    } else if let Some(value) = get_int_attribute(&span_attributes, "http.status_code") { 
+    } else if let Some(value) = get_int_attribute(&span_attributes, "http.status_code") {
         return value;
     } else if let Some(value) = get_int_attribute(&resource_attributes, "http.status_code") {
         return value;
-    } else if let Some(value) = get_int_attribute(&span_attributes, "http.response.status_code"){
+    } else if let Some(value) = get_int_attribute(&span_attributes, "http.response.status_code") {
         return value;
-    } else if let Some(value) = get_int_attribute(&resource_attributes, "http.response.status_code"){
+    } else if let Some(value) = get_int_attribute(&resource_attributes, "http.response.status_code") {
         return value;
     }
     return &0;

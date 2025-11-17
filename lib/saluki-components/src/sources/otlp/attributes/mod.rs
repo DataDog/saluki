@@ -349,7 +349,7 @@ pub(super) fn get_string_attribute<'a>(attributes: &'a [otlp_common::KeyValue], 
     })
 }
 
-pub(super) fn get_int_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<&'a i64>{
+pub(super) fn get_int_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<&'a i64> {
     attributes.iter().find_map(|kv| {
         if kv.key == key {
             if let Some(Value::IntValue(i_val)) = kv.value.as_ref().and_then(|v| v.value.as_ref()) {

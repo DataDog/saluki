@@ -41,14 +41,14 @@ use crate::common::otlp::{build_metrics, Metrics, OtlpHandler, OtlpServerBuilder
 mod attributes;
 mod logs;
 mod metrics;
-mod traces;
 mod origin;
 mod resolver;
+mod traces;
 use self::logs::translator::OtlpLogsTranslator;
 use self::metrics::translator::OtlpMetricsTranslator;
-use self::traces::translator::OtlpTracesTranslator;
 use self::origin::OtlpOriginTagResolver;
 use self::resolver::build_context_resolver;
+use self::traces::translator::OtlpTracesTranslator;
 
 const fn default_context_string_interner_size() -> ByteSize {
     ByteSize::mib(2)
@@ -297,7 +297,7 @@ impl SourceBuilder for OtlpConfiguration {
             vec![
                 OutputDefinition::named_output("metrics", EventType::Metric),
                 OutputDefinition::named_output("logs", EventType::Log),
-                OutputDefinition::named_output("traces", EventType::Trace),
+                OutputDefinition::named_output("traces", EventType::TracerPayload),
             ]
         });
 
@@ -448,12 +448,12 @@ async fn dispatch_events(mut events: EventsBuffer, source_context: &SourceContex
         return;
     }
 
-    if events.has_event_type(EventType::Trace) {
+    if events.has_event_type(EventType::TracerPayload) {
         let mut buffered_dispatcher = source_context
             .dispatcher()
             .buffered_named("traces")
             .expect("traces output should exist");
-        for trace_event in events.extract(Event::is_trace) {
+        for trace_event in events.extract(Event::is_tracer_payload) {
             if let Err(e) = buffered_dispatcher.push(trace_event).await {
                 error!(error = %e, "Failed to dispatch trace(s).");
             }
