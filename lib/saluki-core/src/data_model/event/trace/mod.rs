@@ -67,13 +67,14 @@ pub struct Span {
 impl Span {
     /// Creates a new `Span` with the required identifiers and names.
     pub fn new(
-        service: impl Into<MetaString>, name: impl Into<MetaString>, resource: impl Into<MetaString>, trace_id: u64,
+        service: impl Into<MetaString>, name: impl Into<MetaString>, resource: impl Into<MetaString>, span_type: impl Into<MetaString>, trace_id: u64,
         span_id: u64,
     ) -> Self {
         Self {
             service: service.into(),
             name: name.into(),
             resource: resource.into(),
+            span_type: span_type.into(),
             trace_id,
             span_id,
             ..Self::default()
