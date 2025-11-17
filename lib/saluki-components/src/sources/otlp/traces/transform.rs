@@ -78,6 +78,15 @@ pub fn minimal_otel_span_to_dd_span(otel_span: otel_span, otel_resource: Resourc
     if let Some(value) = span_kind {
         meta.insert(MetaString::from("span.kind"), value);
     }
+
+    let code = get_otel_status_code(&span_attributes, &resource_attributes);
+    if code != &0 {
+        metrics.insert(MetaString::from("http.status_code"), code.clone() as f64);
+    }
+
+    if dd_span.service().is_empty() {
+        dd_span.with_service()
+    }
     
     return dd_span;
 }
@@ -89,7 +98,7 @@ fn use_both_maps(map: &[otlp_common::KeyValue], map2: &[otlp_common::KeyValue], 
     get_string_attribute(map2, key).map(MetaString::from)
 }
 
-fn get_otel_status_code(span_attributes: Vec<otlp_common::KeyValue>, resource_attributes: Vec<otlp_common::KeyValue>) -> i64{
+fn get_otel_status_code<'a>(span_attributes: &'a [otlp_common::KeyValue], resource_attributes: &'a [otlp_common::KeyValue]) -> &'a i64{
     if let Some(value) = get_int_attribute(&span_attributes, KEY_DATADOG_HTTP_STATUS_CODE) {
         return value;
     } else if let Some(value) = get_int_attribute(&resource_attributes, KEY_DATADOG_HTTP_STATUS_CODE) {
@@ -103,5 +112,5 @@ fn get_otel_status_code(span_attributes: Vec<otlp_common::KeyValue>, resource_at
     } else if let Some(value) = get_int_attribute(&resource_attributes, "http.response.status_code"){
         return value;
     }
-    return 0;
+    return &0;
 }

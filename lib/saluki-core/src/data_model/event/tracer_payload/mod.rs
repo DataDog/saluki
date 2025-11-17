@@ -6,7 +6,7 @@
 use saluki_common::collections::FastHashMap;
 use stringtheory::MetaString;
 
-use super::trace::Span;
+use crate::data_model::event::trace::Span;
 
 /// A list of spans with the same trace ID (a chunk of a trace).
 #[derive(Clone, Debug, Default, PartialEq)]

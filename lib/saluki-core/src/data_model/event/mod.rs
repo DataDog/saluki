@@ -16,6 +16,7 @@ use self::service_check::ServiceCheck;
 pub mod log;
 use self::log::Log;
 
+pub mod trace;
 pub mod tracer_payload;
 use self::tracer_payload::TracerPayload;
 
