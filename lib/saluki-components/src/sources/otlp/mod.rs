@@ -41,10 +41,12 @@ use crate::common::otlp::{build_metrics, Metrics, OtlpHandler, OtlpServerBuilder
 mod attributes;
 mod logs;
 mod metrics;
+mod traces;
 mod origin;
 mod resolver;
 use self::logs::translator::OtlpLogsTranslator;
 use self::metrics::translator::OtlpMetricsTranslator;
+use self::traces::translator::OtlpTracesTranslator;
 use self::origin::OtlpOriginTagResolver;
 use self::resolver::build_context_resolver;
 
@@ -529,8 +531,8 @@ async fn run_converter(
                             }
                         }
                     }
-                    OtlpResource::Traces(_resource_spans) => {
-                        // TODO: Implement traces translation.
+                    OtlpResource::Traces(resource_spans) => {
+                        let _translator = OtlpTracesTranslator::translate_resource_spans(resource_spans);
                     }
                 }
             },

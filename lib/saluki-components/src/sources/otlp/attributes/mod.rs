@@ -349,6 +349,20 @@ pub(super) fn get_string_attribute<'a>(attributes: &'a [otlp_common::KeyValue], 
     })
 }
 
+pub(super) fn get_int_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<&'a i64>{
+    attributes.iter().find_map(|kv| {
+        if kv.key == key {
+            if let Some(Value::IntValue(i_val)) = kv.value.as_ref().and_then(|v| v.value.as_ref()) {
+                Some(i_val)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    })
+}
+
 pub(super) fn resource_to_source(
     resource: &otlp_protos::opentelemetry::proto::resource::v1::Resource,
 ) -> Option<source::Source> {
