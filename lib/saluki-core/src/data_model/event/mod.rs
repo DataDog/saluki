@@ -16,12 +16,8 @@ use self::service_check::ServiceCheck;
 pub mod log;
 use self::log::Log;
 
-pub mod trace;
-use self::trace::Trace;
-
 pub mod tracer_payload;
 use self::tracer_payload::TracerPayload;
-use self::tracer_payload::TraceChunk;
 
 
 /// Telemetry event type.
@@ -42,12 +38,6 @@ pub enum EventType {
 
     /// Logs.
     Log,
-
-    /// Traces.
-    Trace,
-
-    /// TraceChunks.
-    TraceChunk,
 
     /// TracerPayloads.
     TracerPayload,
@@ -79,14 +69,6 @@ impl fmt::Display for EventType {
             types.push("Log");
         }
 
-        if self.contains(Self::Trace) {
-            types.push("Trace");
-        }
-
-        if self.contains(Self::TraceChunk) {
-            types.push("TraceChunk");
-        }
-
         if self.contains(Self::TracerPayload) {
             types.push("TracerPayload");
         }
@@ -110,12 +92,6 @@ pub enum Event {
     /// A log.
     Log(Log),
 
-    /// A trace.
-    Trace(Trace),
-
-    /// A trace chunk.
-    TraceChunk(TraceChunk),
-
     /// A tracer payload.
     TracerPayload(TracerPayload),
 }
@@ -128,8 +104,6 @@ impl Event {
             Event::EventD(_) => EventType::EventD,
             Event::ServiceCheck(_) => EventType::ServiceCheck,
             Event::Log(_) => EventType::Log,
-            Event::Trace(_) => EventType::Trace,
-            Event::TraceChunk(_) => EventType::TraceChunk,
             Event::TracerPayload(_) => EventType::TracerPayload,
         }
     }
@@ -205,16 +179,6 @@ impl Event {
         matches!(self, Event::Log(_))
     }
 
-    /// Returns `true` if the event is a trace.
-    pub fn is_trace(&self) -> bool {
-        matches!(self, Event::Trace(_))
-    }
-
-    /// Returns `true` if the event is a trace chunk.
-    pub fn is_trace_chunk(&self) -> bool {
-        matches!(self, Event::TraceChunk(_))
-    }
-
     /// Returns `true` if the event is a tracer payload.
     pub fn is_tracer_payload(&self) -> bool {
         matches!(self, Event::TracerPayload(_))
@@ -242,8 +206,6 @@ mod tests {
         println!("EventD: {} bytes", std::mem::size_of::<EventD>());
         println!("ServiceCheck: {} bytes", std::mem::size_of::<ServiceCheck>());
         println!("Log: {} bytes", std::mem::size_of::<Log>());
-        println!("Trace: {} bytes", std::mem::size_of::<Trace>());
-        println!("TraceChunk: {} bytes", std::mem::size_of::<TraceChunk>());
         println!("TracerPayload: {} bytes", std::mem::size_of::<TracerPayload>());
     }
 }
