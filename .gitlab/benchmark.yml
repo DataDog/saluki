@@ -1,6 +1,6 @@
 .setup-smp-env: &setup-smp-env
   - export AWS_NAMED_PROFILE=single-machine-performance
-  - export SMP_VERSION=0.25.0
+  - export SMP_VERSION=0.25.1
   - export RUST_LOG=info,aws_config::profile::credentials=error
   - export SMP_ACCOUNT_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-account-id --with-decryption --query "Parameter.Value" --out text)
   - export SMP_TEAM_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-team-id --with-decryption --query "Parameter.Value" --out text)
