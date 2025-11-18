@@ -101,3 +101,8 @@ test-correctness-otlp-metrics:
   extends: [.build-common-variables, .test-correctness-definition]
   variables:
     CORRECTNESS_TEST_CASE: otlp-metrics
+
+test-correctness-otlp-traces:
+  extends: [.build-common-variables, .test-correctness-definition]
+  variables:
+    CORRECTNESS_TEST_CASE: otlp-traces

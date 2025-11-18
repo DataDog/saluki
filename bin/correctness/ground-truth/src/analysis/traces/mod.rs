@@ -19,13 +19,7 @@ static IGNORED_FIELDS_DIFF: &[&str] = &[
     "meta._dd.install.type",
 ];
 
-static CUSTOM_FIELD_COMPARATORS: &[(&str, &dyn FieldComparator)] = &[
-    (
-        "metrics._sampling_priority_rate_v1",
-        &check_sampling_priority_rate_v1_diff,
-    ),
-    ("start", &check_start_diff),
-];
+static CUSTOM_FIELD_COMPARATORS: &[(&str, &dyn FieldComparator)] = &[("start", &check_start_diff)];
 
 trait FieldComparator: Sync {
     fn compare(&self, baseline: &Value, comparison: &Value) -> Result<(), String>;
@@ -317,43 +311,6 @@ impl<'a> treediff::Delegate<'a, Key, serde_json::Value> for SpanDifferenceRecord
     fn modified(&mut self, v1: &'a serde_json::Value, v2: &'a serde_json::Value) {
         // Field exists in both baseline and comparison, but differs.
         self.process_difference(Some(v1), Some(v2));
-    }
-}
-
-fn check_sampling_priority_rate_v1_diff(baseline_value: &Value, comparison_value: &Value) -> Result<(), String> {
-    // Sampling priority rate is _meant_ to come from the "tracer", which is the application that is submitting traces.
-    // It would normally do so by collaborating with the Trace Agent to understand the desired "traces per second" rate,
-    // adjusting its own sampling accordingly, and reporting the adjusted rate as part of the remaining traces.
-    //
-    // However, in the case of a "tracer" that doesn't do this, like sending OTLP traces to the Core Agent, this data
-    // will be missing, and the Trace Agent will fill it in based on the observed volume of traces and its configured
-    // target rate. This means that, effectively, the sampling priority rate will be determined by how fast `millstone`
-    // is sending traces... which will be non-deterministic.
-    //
-    // Our adjusted equality comparison here is based on the fact that `millstone` should send as fast as it possibly
-    // can to _both_ the baseline and comparison targets, and that the resulting observed rate of traces for both should
-    // be fairly close. As such, we allow for a small margin of error for the sampling priority rate.
-    //
-    // If the baseline/comparison change, such that one side starts supplying the sampling priority rate in its
-    // payloads, or one side handles these traces either faster _or_ slower, the margin of error we allow here may not
-    // be sufficient.
-    match (baseline_value, comparison_value) {
-        (Value::Number(baseline), Value::Number(comparison)) => match (baseline.as_f64(), comparison.as_f64()) {
-            (Some(_baseline), Some(_comparison)) => {
-                // no-op for now
-                Ok(())
-            }
-            _ => Err(format!(
-                "mismatched numerical types: {} vs {}",
-                get_number_type_str(baseline),
-                get_number_type_str(comparison)
-            )),
-        },
-        _ => Err(format!(
-            "mismatched types: {} vs {}",
-            get_value_type_str(baseline_value),
-            get_value_type_str(comparison_value)
-        )),
     }
 }
 
