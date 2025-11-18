@@ -6,10 +6,7 @@ mod types;
 use self::types::{NormalizedMetric, NormalizedMetrics};
 use crate::analysis::collected::CollectedData;
 
-/// Raw test run results.
-///
-/// This holds the raw metrics sent from the baseline and comparison targets, from the perspective of the
-/// `datadog-intake` collection service.
+/// Analyzes metrics for correctness.
 pub struct MetricsAnalyzer {
     baseline_metrics: NormalizedMetrics,
     comparison_metrics: NormalizedMetrics,

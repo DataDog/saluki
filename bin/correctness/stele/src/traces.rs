@@ -137,6 +137,21 @@ pub struct Span {
 }
 
 impl Span {
+    /// Returns the trace ID this span belongs to.
+    pub fn trace_id(&self) -> u64 {
+        self.trace_id
+    }
+
+    /// Returns the ID of this span.
+    pub fn span_id(&self) -> u64 {
+        self.span_id
+    }
+
+    /// Returns the value of the metadata entry of the given key, if it exists.
+    pub fn get_meta_field(&self, meta_key: &str) -> Option<&str> {
+        self.meta.get(meta_key).map(|s| s.as_str())
+    }
+
     /// Gets all spans from the given `AgentPayload`.
     pub fn get_spans_from_agent_payload(payload: &proto::AgentPayload) -> Vec<Self> {
         let agent_metadata = AgentMetadata::from(payload);

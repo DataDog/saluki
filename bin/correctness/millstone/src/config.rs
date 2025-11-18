@@ -61,6 +61,10 @@ pub enum Payload {
     /// OpenTelemetry-encoded metrics.
     #[serde(rename = "opentelemetry_metrics")]
     OpenTelemetryMetrics(lading_payload::opentelemetry::metric::Config),
+
+    /// OpenTelemetry-encoded traces.
+    #[serde(rename = "opentelemetry_traces")]
+    OpenTelemetryTraces(()),
 }
 
 impl Payload {
@@ -69,6 +73,7 @@ impl Payload {
         match self {
             Self::DogStatsD(_) => "DogStatsD",
             Self::OpenTelemetryMetrics(_) => "OpenTelemetry Metrics",
+            Self::OpenTelemetryTraces(_) => "OpenTelemetry Traces",
         }
     }
 }
@@ -92,6 +97,7 @@ impl CorpusBlueprint {
             Payload::OpenTelemetryMetrics(config) => config
                 .valid()
                 .map_err(|e| generic_error!("Invalid OpenTelemetry Metrics payload configuration: {}", e)),
+            Payload::OpenTelemetryTraces(_) => Ok(()),
         }
     }
 }

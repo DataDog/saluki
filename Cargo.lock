@@ -1323,12 +1323,14 @@ dependencies = [
  "saluki-config",
  "saluki-error",
  "serde",
+ "serde_json",
  "serde_yaml",
  "stele",
  "tokio",
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "treediff",
 ]
 
 [[package]]
@@ -4564,6 +4566,15 @@ dependencies = [
  "tracing-core",
  "tracing-log",
  "tracing-serde",
+]
+
+[[package]]
+name = "treediff"
+version = "5.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e2ce481b2b7c2534fe7b5242cccebf37f9084392665c6a3783c414a1bada5432"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]

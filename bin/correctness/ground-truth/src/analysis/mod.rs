@@ -5,6 +5,7 @@ mod collected;
 pub use self::collected::CollectedData;
 
 mod metrics;
+mod traces;
 
 /// Types of analysis to perform on collected data
 #[derive(Clone, Deserialize)]
@@ -12,6 +13,9 @@ mod metrics;
 pub enum AnalysisMode {
     /// Compares metrics between the baseline and comparison targets.
     Metrics,
+
+    /// Compares traces between the baseline and comparison targets.
+    Traces,
 }
 
 /// Analysis runner.
@@ -40,6 +44,10 @@ impl AnalysisRunner {
         match self.mode {
             AnalysisMode::Metrics => {
                 let analyzer = metrics::MetricsAnalyzer::new(&self.baseline_data, &self.comparison_data)?;
+                analyzer.run_analysis()
+            }
+            AnalysisMode::Traces => {
+                let analyzer = traces::TracesAnalyzer::new(&self.baseline_data, &self.comparison_data)?;
                 analyzer.run_analysis()
             }
         }

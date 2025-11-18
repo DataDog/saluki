@@ -1,0 +1,38 @@
+# OTLP correctness test configuration for Agent Data Plane
+# Using a fixed hostname is both required to avoid errors, and also will ensure consistent tags.
+hostname: "correctness-testing"
+
+# Dummy API key.
+api_key: dummy-api-key-correctness-testing
+
+# We have to specifically configure the health port to use.
+health_port: 5555
+
+# Disable process and container collection.
+process_config:
+  process_collection:
+    enabled: false
+  container_collection:
+    enabled: false
+
+# Point ourselves at the datadog-intake service at the global level.
+dd_url: "http://datadog-intake:2049"
+
+# Adjust our APM configuration to ensure we don't do any sampling of traces.
+#
+# We also have to set an APM-specific override here to send traces to the datadog-intake service.
+apm_config:
+  enabled: true
+  apm_dd_url: "http://datadog-intake:2049"
+  target_traces_per_second: 1000000
+
+# Disable DogStatsD since we're testing OTLP
+dogstatsd_port: 0
+dogstatsd_socket: /airlock/metrics.sock
+
+# Enable OTLP receiver on gRPC port 4317
+otlp_config:
+  receiver:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"

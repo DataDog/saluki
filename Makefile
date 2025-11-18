@@ -181,7 +181,7 @@ build-gen-statsd-image: ## Builds the gen-statsd container image ('latest' tag)
 build-ground-truth: check-rust-build-tools
 build-ground-truth: ## Builds the ground-truth binary in debug mode
 	@echo "[*] Building ground-truth locally..."
-	@cargo build --profile dev --package ground-truth
+	@cargo build --profile release --package ground-truth
 
 .PHONY: build-datadog-intake-image
 build-datadog-intake-image: ## Builds the datadog-intake container image in release mode ('latest' tag)
@@ -503,25 +503,31 @@ test-all: test test-property test-docs test-miri test-loom
 
 .PHONY: test-correctness
 test-correctness: ## Runs the complete correctness suite
-test-correctness: test-correctness-dsd-plain test-correctness-dsd-origin-detection test-correctness-otlp-metrics
+test-correctness: test-correctness-dsd-plain test-correctness-dsd-origin-detection test-correctness-otlp-metrics test-correctness-otlp-traces
 
 .PHONY: test-correctness-dsd-plain
 test-correctness-dsd-plain: build-ground-truth
 test-correctness-dsd-plain: ## Runs the 'dsd-plain' correctness test case
-	@echo "[*] Running 'dsd-origin-detection' correctness test case..."
-	@target/debug/ground-truth $(shell pwd)/test/correctness/dsd-plain/config.yaml
+	@echo "[*] Running 'dsd-plain' correctness test case..."
+	@target/release/ground-truth $(shell pwd)/test/correctness/dsd-plain/config.yaml
 
 .PHONY: test-correctness-dsd-origin-detection
 test-correctness-dsd-origin-detection: build-ground-truth
 test-correctness-dsd-origin-detection: ## Runs the 'dsd-origin-detection' correctness test case
 	@echo "[*] Running 'dsd-origin-detection' correctness test case..."
-	@target/debug/ground-truth $(shell pwd)/test/correctness/dsd-origin-detection/config.yaml
+	@target/release/ground-truth $(shell pwd)/test/correctness/dsd-origin-detection/config.yaml
 
 .PHONY: test-correctness-otlp-metrics
 test-correctness-otlp-metrics: build-ground-truth
 test-correctness-otlp-metrics: ## Runs the 'otlp-metrics' correctness test case
 	@echo "[*] Running 'otlp-metrics' correctness test case..."
-	@target/debug/ground-truth $(shell pwd)/test/correctness/otlp-metrics/config.yaml
+	@target/release/ground-truth $(shell pwd)/test/correctness/otlp-metrics/config.yaml
+
+.PHONY: test-correctness-otlp-traces
+test-correctness-otlp-traces: build-ground-truth
+test-correctness-otlp-traces: ## Runs the 'otlp-traces' correctness test case
+	@echo "[*] Running 'otlp-traces' correctness test case..."
+	@target/release/ground-truth $(shell pwd)/test/correctness/otlp-traces/config.yaml
 
 .PHONY: ensure-rust-miri
 ensure-rust-miri:

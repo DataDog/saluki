@@ -23,4 +23,8 @@ COPY --chmod=755 docker/entrypoint.sh /entrypoint.sh
 # Remove default check configuration to ensure no checks end up running by default.
 RUN rm -rf /etc/datadog-agent/conf.d/*
 
+# Use an updated healthcheck since the default healthcheck from `datadog/agent` is wildly overconservative.
+HEALTHCHECK --interval=60s --timeout=5s --retries=2 --start-period=30s --start-interval=1s \
+    CMD ["/probe.sh"]
+
 # Everything else we'll leave at the defaults of the Datadog Agent image.
