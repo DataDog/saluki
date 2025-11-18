@@ -13,6 +13,7 @@
 build-adp-baseline-image:
   extends: .build-common-variables
   stage: benchmark
+  tags: ["docker-in-docker:amd64"]
   # Don't run benchmarks unless it's a PR, basically.
   rules:
     - if: !reference [.on_development_branch, rules, if]
@@ -37,8 +38,8 @@ build-adp-baseline-image:
     - git switch --detach ${BASELINE_ADP_SHA}
     # Actually build.
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
+    - docker buildx create --name adp-builder --driver docker-container --use
     - docker buildx build
-      --platform linux/amd64
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${BASELINE_ADP_IMG}
       --build-arg CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
@@ -63,6 +64,7 @@ build-adp-baseline-image:
 build-adp-comparison-image:
   extends: .build-common-variables
   stage: benchmark
+  tags: ["docker-in-docker:amd64"]
   # Don't run benchmarks unless it's a PR, basically.
   rules:
     - if: !reference [.on_development_branch, rules, if]
@@ -84,8 +86,8 @@ build-adp-comparison-image:
     - git switch --detach ${COMPARISON_ADP_SHA}
     # Actually build.
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
+    - docker buildx create --name adp-builder --driver docker-container --use
     - docker buildx build
-      --platform linux/amd64
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${COMPARISON_ADP_IMG}
       --build-arg CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
