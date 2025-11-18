@@ -3971,6 +3971,7 @@ dependencies = [
  "saluki-common",
  "saluki-error",
  "serde",
+ "stringtheory",
 ]
 
 [[package]]

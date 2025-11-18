@@ -14,7 +14,7 @@ use std::{
     str::from_utf8_unchecked, sync::Arc,
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 mod clone;
 pub use self::clone::CheapMetaString;
@@ -814,6 +814,32 @@ impl Serialize for MetaString {
         S: serde::Serializer,
     {
         serializer.serialize_str(self.deref())
+    }
+}
+
+impl<'de> Deserialize<'de> for MetaString {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct MetaStringVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for MetaStringVisitor {
+            type Value = MetaString;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a string")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(MetaString::from(v))
+            }
+        }
+
+        deserializer.deserialize_str(MetaStringVisitor)
     }
 }
 
