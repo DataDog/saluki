@@ -115,6 +115,23 @@ impl TracesAnalyzer {
             ));
         }
 
+        // We should have the same _set_ of spans in both the baseline and comparison targets.
+        let baseline_span_ids = self.baseline_spans.keys().collect::<HashSet<_>>();
+        let comparison_span_ids = self.comparison_spans.keys().collect::<HashSet<_>>();
+        if baseline_span_ids != comparison_span_ids {
+            let mut baseline_only_span_ids = baseline_span_ids.difference(&comparison_span_ids).collect::<Vec<_>>();
+            baseline_only_span_ids.sort_unstable();
+
+            let mut comparison_only_span_ids = comparison_span_ids.difference(&baseline_span_ids).collect::<Vec<_>>();
+            comparison_only_span_ids.sort_unstable();
+
+            return Err(generic_error!(
+                "Baseline and comparison targets have non-overlapped set of spans: {} baseline-only spans and {} comparison-only spans.",
+                baseline_only_span_ids.len(),
+                comparison_only_span_ids.len()
+            ));
+        }
+
         info!(
             "Analyzing {} traces ({} spans) from baseline and comparison target.",
             self.baseline_total_traces,
