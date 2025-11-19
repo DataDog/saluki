@@ -21,13 +21,16 @@ use self::run::RunCommand;
 mod utils;
 
 #[derive(FromArgs)]
-#[argh(description = "Agent Data Plane", help_triggers("-h", "--help", "help"))]
+#[argh(
+    description = "Data plane for the Datadog Agent.",
+    help_triggers("-h", "--help", "help")
+)]
 pub struct Cli {
-    /// path to the configuration file.
+    /// path to the configuration file
     #[argh(option, short = 'c', long = "config")]
     pub config_file: Option<PathBuf>,
 
-    /// subcommand to run.
+    /// subcommand to run
     #[argh(subcommand)]
     pub action: Action,
 }
@@ -35,15 +38,8 @@ pub struct Cli {
 #[derive(FromArgs)]
 #[argh(subcommand)]
 pub enum Action {
-    /// Runs the data plane.
     Run(RunCommand),
-
-    /// Various debugging commands.
     Debug(DebugCommand),
-
-    /// Prints the current configuration.
     Config(ConfigCommand),
-
-    /// Various dogstatsd commands.
     Dogstatsd(DogstatsdCommand),
 }

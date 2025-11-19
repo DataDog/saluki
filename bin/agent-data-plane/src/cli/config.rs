@@ -5,12 +5,12 @@ use tracing::{error, info};
 
 use crate::cli::utils::ControlPlaneAPIClient;
 
-/// Config command.
+/// Prints the current configuration.
 #[derive(FromArgs, Debug)]
 #[argh(subcommand, name = "config")]
 pub struct ConfigCommand {}
 
-/// Entrypoint for the `config` subcommand.
+/// Entrypoint for the `config` command.
 pub async fn handle_config_command(bootstrap_config: &GenericConfiguration) {
     let api_client = match ControlPlaneAPIClient::from_config(bootstrap_config) {
         Ok(client) => client,
