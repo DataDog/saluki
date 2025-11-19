@@ -12,7 +12,6 @@ workspace = true
 bytes = { workspace = true }
 bytesize = { workspace = true, features = ["serde"] }
 lading-payload = { workspace = true }
-otlp-protos = { workspace = true }
 prost = { workspace = true }
 rand = { workspace = true }
 saluki-error = { workspace = true }

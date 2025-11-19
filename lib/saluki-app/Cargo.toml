@@ -12,7 +12,6 @@ workspace = true
 tls-fips = ["saluki-tls/fips"]
 
 [dependencies]
-arc-swap = { workspace = true }
 axum = { workspace = true }
 bytesize = { workspace = true }
 chrono = { workspace = true }

@@ -483,7 +483,7 @@ test-property: ## Runs all property tests
 test-docs: check-rust-build-tools
 test-docs: ## Runs all doctests
 	@echo "[*] Running doctests..."
-	cargo test --workspace --exclude datadog-protos --doc
+	cargo test --workspace --exclude containerd-protos --exclude datadog-protos --exclude otlp-protos --doc
 
 .PHONY: test-miri
 test-miri: check-rust-build-tools ensure-rust-miri
