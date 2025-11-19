@@ -10,7 +10,7 @@ use tracing::{error, info};
 
 use crate::cli::utils::ControlPlaneAPIClient;
 
-/// DogStatsD command.
+/// DogStatsD-specific debugging commands.
 #[derive(FromArgs, Debug)]
 #[argh(subcommand, name = "dogstatsd")]
 pub struct DogstatsdCommand {
@@ -18,47 +18,41 @@ pub struct DogstatsdCommand {
     subcommand: DogstatsdSubcommand,
 }
 
-/// DogStatsD subcommand.
 #[derive(FromArgs, Debug)]
 #[argh(subcommand)]
-pub enum DogstatsdSubcommand {
-    /// Prints basic statistics about the metrics received by the data plane.
+enum DogstatsdSubcommand {
     Stats(StatsCommand),
 }
 
-/// Stats command.
+/// Prints basic statistics about the metrics received by the data plane.
 #[derive(FromArgs, Debug)]
 #[argh(subcommand, name = "stats")]
-pub struct StatsCommand {
-    /// amount of time to collect statistics for, in seconds.
+struct StatsCommand {
+    /// amount of time to collect statistics for, in seconds
     #[argh(option, short = 'd', long = "duration-secs")]
-    pub collection_duration_secs: u64,
+    collection_duration_secs: u64,
 
-    /// analysis mode to use.
+    /// analysis mode ('summary' or 'cardinality')
     #[argh(option, short = 'm', long = "mode", default = "AnalysisMode::Summary")]
-    pub analysis_mode: AnalysisMode,
+    analysis_mode: AnalysisMode,
 
-    /// sort direction to use.
+    /// sort direction ('asc' or 'desc')
     #[argh(option, short = 's', long = "sort-dir")]
-    pub sort_direction: Option<SortDirection>,
+    sort_direction: Option<SortDirection>,
 
-    /// filter to apply to metric names. Any metrics which don't match the filter will be excluded.
+    /// filter to apply to metric names (any metrics which don't match the filter will be excluded)
     #[argh(option, short = 'f', long = "filter")]
-    pub filter: Option<String>,
+    filter: Option<String>,
 
-    /// limit the number of metrics to display. (applied after filtering)
+    /// maximum number of metrics to display (applied after filtering)
     #[argh(option, short = 'l', long = "limit")]
-    pub limit: Option<usize>,
+    limit: Option<usize>,
 }
 
-/// Sort direction.
 #[derive(Clone, Copy, Debug, Default)]
-pub enum SortDirection {
-    /// Sorts in ascending order.
+enum SortDirection {
     #[default]
     Ascending,
-
-    /// Sorts in descending order.
     Descending,
 }
 
@@ -73,14 +67,10 @@ impl FromArgValue for SortDirection {
     }
 }
 
-/// Analysis mode.
 #[derive(Clone, Copy, Debug, Default)]
-pub enum AnalysisMode {
-    /// Displays a high-level summary of all collected metrics, sorted by metric name.
+enum AnalysisMode {
     #[default]
     Summary,
-
-    /// Displays the cardinality of all collected metrics, sorted by cardinality.
     Cardinality,
 }
 
@@ -112,7 +102,7 @@ struct StatsResponse<'a> {
     stats: Vec<MetricSummary<'a>>,
 }
 
-/// Entrypoint for all `dogstatsd` subcommands.
+/// Entrypoint for the `dogstatsd` commands.
 pub async fn handle_dogstatsd_command(bootstrap_config: &GenericConfiguration, cmd: DogstatsdCommand) {
     let api_client = match ControlPlaneAPIClient::from_config(bootstrap_config) {
         Ok(client) => client,

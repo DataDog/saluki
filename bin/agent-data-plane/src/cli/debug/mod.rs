@@ -7,7 +7,7 @@ use crate::cli::utils::ControlPlaneAPIClient;
 mod workload;
 use self::workload::{handle_workload_command, WorkloadCommand};
 
-/// Debug command.
+/// General debugging commands.
 #[derive(FromArgs, Debug)]
 #[argh(subcommand, name = "debug")]
 pub struct DebugCommand {
@@ -15,63 +15,53 @@ pub struct DebugCommand {
     subcommand: DebugSubcommand,
 }
 
-/// Debug subcommand.
 #[derive(FromArgs, Debug)]
 #[argh(subcommand)]
-pub enum DebugSubcommand {
-    /// Resets log level.
+enum DebugSubcommand {
     ResetLogLevel(ResetLogLevelCommand),
-
-    /// Overrides the current log level.
     SetLogLevel(SetLogLevelCommand),
-
-    /// Resets metric level.
     ResetMetricLevel(ResetMetricLevelCommand),
-
-    /// Overrides the current metric level.
     SetMetricLevel(SetMetricLevelCommand),
-
-    /// Query and interact with the workload provider.
     Workload(WorkloadCommand),
 }
 
-/// Reset log level command.
+/// Resets the log level.
 #[derive(FromArgs, Debug)]
 #[argh(subcommand, name = "reset-log-level")]
 pub struct ResetLogLevelCommand {}
 
-/// Set log level command.
+/// Overrides the current log level.
 #[derive(FromArgs, Debug)]
 #[argh(subcommand, name = "set-log-level")]
 pub struct SetLogLevelCommand {
-    /// filter directives to apply (e.g. `INFO`, `DEBUG`, `TRACE`, `WARN`, `ERROR`).
+    /// filter directives to apply (e.g. `INFO`, `DEBUG`, `TRACE`, `WARN`, `ERROR`)
     #[argh(option)]
     pub filter_directives: String,
 
-    /// amount of time to apply the log level override, in seconds.
+    /// amount of time to apply the log level override, in seconds
     #[argh(option)]
     pub duration_secs: u64,
 }
 
-/// Reset metric level command.
+/// Resets the metric level.
 #[derive(FromArgs, Debug)]
 #[argh(subcommand, name = "reset-metric-level")]
 pub struct ResetMetricLevelCommand {}
 
-/// Set metric level command.
+/// Overrides the current metric level.
 #[derive(FromArgs, Debug)]
 #[argh(subcommand, name = "set-metric-level")]
 pub struct SetMetricLevelCommand {
-    /// metric level filter to apply (e.g. `INFO`, `DEBUG`, `TRACE`, `WARN`, `ERROR`).
+    /// metric level filter to apply (e.g. `INFO`, `DEBUG`, `TRACE`, `WARN`, `ERROR`)
     #[argh(option)]
     pub level: String,
 
-    /// amount of time to apply the metric level override, in seconds.
+    /// amount of time to apply the metric level override, in seconds
     #[argh(option)]
     pub duration_secs: u64,
 }
 
-/// Entrypoint for all `debug` subcommands.
+/// Entrypoint for the `debug` commands.
 pub async fn handle_debug_command(bootstrap_config: &GenericConfiguration, cmd: DebugCommand) {
     let api_client = match ControlPlaneAPIClient::from_config(bootstrap_config) {
         Ok(client) => client,

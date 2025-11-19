@@ -36,18 +36,23 @@ use tracing::{error, info, warn};
 use crate::env_provider::ADPEnvironmentProvider;
 use crate::internal::{spawn_control_plane, spawn_internal_observability_topology};
 
-/// Run command.
+/// Runs the data plane.
 #[derive(FromArgs, Debug)]
 #[argh(subcommand, name = "run")]
 pub struct RunCommand {
-    /// path to the PID file.
+    /// path to the PID file
     #[argh(option, short = 'p', long = "pidfile")]
     pub pid_file: Option<PathBuf>,
 }
 
+<<<<<<< HEAD
 pub async fn handle_run_command(
     started: Instant, bootstrap_config_path: PathBuf, bootstrap_config: GenericConfiguration,
 ) -> Result<(), GenericError> {
+=======
+/// Entrypoint for the `run` commands.
+pub async fn handle_run_command(started: Instant, bootstrap_config: GenericConfiguration) -> Result<(), GenericError> {
+>>>>>>> f29b7f522 (update CLI docs)
     let app_details = saluki_metadata::get_app_details();
     info!(
         version = app_details.version().raw(),

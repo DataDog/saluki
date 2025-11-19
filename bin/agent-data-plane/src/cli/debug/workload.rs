@@ -8,7 +8,7 @@ use tracing::error;
 
 use crate::cli::utils::ControlPlaneAPIClient;
 
-/// Workload command.
+/// Query and interact with the workload provider.
 #[derive(FromArgs, Debug)]
 #[argh(subcommand, name = "workload")]
 pub struct WorkloadCommand {
@@ -16,31 +16,27 @@ pub struct WorkloadCommand {
     subcommand: WorkloadSubcommand,
 }
 
-/// Workload subcommand.
 #[derive(FromArgs, Debug)]
 #[argh(subcommand)]
-pub enum WorkloadSubcommand {
-    /// Dump all entity tags.
+enum WorkloadSubcommand {
     Tags(TagsCommand),
-
-    /// Dump all External Data entries.
     ExternalData(ExternalDataCommand),
 }
 
-/// Tags command.
+/// Dump all entity tags.
 #[derive(FromArgs, Debug)]
 #[argh(subcommand, name = "tags")]
-pub struct TagsCommand {
-    /// output in JSON format.
+struct TagsCommand {
+    /// output in JSON format
     #[argh(switch, short = 'j', long = "json")]
     json: bool,
 }
 
-/// External Data command.
+/// Dump all External Data entries.
 #[derive(FromArgs, Debug)]
 #[argh(subcommand, name = "external-data")]
-pub struct ExternalDataCommand {
-    /// output in JSON format.
+struct ExternalDataCommand {
+    /// output in JSON format
     #[argh(switch, short = 'j', long = "json")]
     json: bool,
 }
@@ -94,8 +90,7 @@ pub async fn handle_workload_command(api_client: ControlPlaneAPIClient, cmd: Wor
     }
 }
 
-/// Dumps all tags from the workload provider.
-pub async fn dump_tags(api_client: ControlPlaneAPIClient, cmd: TagsCommand) -> Result<(), GenericError> {
+async fn dump_tags(api_client: ControlPlaneAPIClient, cmd: TagsCommand) -> Result<(), GenericError> {
     static ENTITY: LazyLock<ColoredString> = LazyLock::new(|| "Entity".bold());
     static ALIAS: LazyLock<ColoredString> = LazyLock::new(|| "Alias".bold());
     static TAGS: LazyLock<ColoredString> = LazyLock::new(|| "Tags".bold());
@@ -154,10 +149,7 @@ fn print_tags<T: std::fmt::Display>(tag_set_name: &T, tags: Vec<&str>) {
     }
 }
 
-/// Dumps all External Data entries from the workload provider.
-pub async fn dump_external_data(
-    api_client: ControlPlaneAPIClient, cmd: ExternalDataCommand,
-) -> Result<(), GenericError> {
+async fn dump_external_data(api_client: ControlPlaneAPIClient, cmd: ExternalDataCommand) -> Result<(), GenericError> {
     static CONTAINER_ID: LazyLock<ColoredString> = LazyLock::new(|| "Container ID".bold());
     static POD_UID: LazyLock<ColoredString> = LazyLock::new(|| "Pod UID".bold());
     static CONTAINER_NAME: LazyLock<ColoredString> = LazyLock::new(|| "Container Name".bold());
