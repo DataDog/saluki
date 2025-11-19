@@ -1,8 +1,14 @@
+use argh::FromArgs;
 use saluki_common::scrubber;
 use saluki_config::GenericConfiguration;
 use tracing::{error, info};
 
 use crate::cli::utils::ControlPlaneAPIClient;
+
+/// Config command.
+#[derive(FromArgs, Debug)]
+#[argh(subcommand, name = "config")]
+pub struct ConfigCommand {}
 
 /// Entrypoint for the `config` subcommand.
 pub async fn handle_config_command(bootstrap_config: &GenericConfiguration) {

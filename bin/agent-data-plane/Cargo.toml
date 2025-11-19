@@ -15,19 +15,10 @@ python-checks = ["saluki-components/python-checks"]
 
 [dependencies]
 arc-swap = { workspace = true }
+argh = { workspace = true, features = ["help"] }
 async-trait = { workspace = true }
 bytesize = { workspace = true }
 chrono = { workspace = true }
-clap = { workspace = true, features = [
-  "std",
-  "color",
-  "derive",
-  "help",
-  "wrap_help",
-  "usage",
-  "error-context",
-  "suggestions",
-] }
 colored = { workspace = true }
 comfy-table = { workspace = true }
 datadog-protos = { workspace = true }
