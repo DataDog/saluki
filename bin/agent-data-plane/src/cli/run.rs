@@ -3,6 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use argh::FromArgs;
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::{
     memory::{initialize_memory_bounds, MemoryBoundsConfiguration},
@@ -35,7 +36,16 @@ use tracing::{error, info, warn};
 use crate::env_provider::ADPEnvironmentProvider;
 use crate::internal::{spawn_control_plane, spawn_internal_observability_topology};
 
-pub async fn run(
+/// Run command.
+#[derive(FromArgs, Debug)]
+#[argh(subcommand, name = "run")]
+pub struct RunCommand {
+    /// path to the PID file.
+    #[argh(option, short = 'p', long = "pidfile")]
+    pub pid_file: Option<PathBuf>,
+}
+
+pub async fn handle_run_command(
     started: Instant, bootstrap_config_path: PathBuf, bootstrap_config: GenericConfiguration,
 ) -> Result<(), GenericError> {
     let app_details = saluki_metadata::get_app_details();
