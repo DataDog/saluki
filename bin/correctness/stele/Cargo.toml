@@ -17,3 +17,4 @@ protobuf = { workspace = true }
 saluki-common = { workspace = true }
 saluki-error = { workspace = true }
 serde = { workspace = true }
+stringtheory = { workspace = true }

@@ -2,7 +2,7 @@ use std::num::NonZeroUsize;
 
 use bytes::{BufMut as _, Bytes, BytesMut};
 use bytesize::ByteSize;
-use lading_payload::{opentelemetry::metric::OpentelemetryMetrics, DogStatsD};
+use lading_payload::{opentelemetry::metric::OpentelemetryMetrics, DogStatsD, OpentelemetryTraces};
 use rand::{rngs::StdRng, Rng, SeedableRng as _};
 use saluki_error::{generic_error, GenericError};
 use tracing::info;
@@ -57,7 +57,7 @@ fn get_finalized_corpus_blueprint(config: &Config) -> Result<CorpusBlueprint, Ge
                 dsd_config.length_prefix_framed = true;
             }
         }
-        Payload::OpenTelemetryMetrics(_) => {}
+        Payload::OpenTelemetryMetrics(_) | Payload::OpenTelemetryTraces(_) => {}
     }
 
     // Validate that the blueprint is valid from a payload generation standpoint.
@@ -82,6 +82,10 @@ where
         }
         Payload::OpenTelemetryMetrics(config) => {
             let mut generator = OpentelemetryMetrics::new(config, &mut rng)?;
+            generate_payloads_inner(&mut generator, rng, &mut payloads, blueprint.size, 8192)?
+        }
+        Payload::OpenTelemetryTraces(_) => {
+            let mut generator = OpentelemetryTraces::new(&mut rng);
             generate_payloads_inner(&mut generator, rng, &mut payloads, blueprint.size, 8192)?
         }
     }

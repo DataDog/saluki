@@ -1,8 +1,8 @@
-use std::collections::HashMap;
-
 use datadog_protos::traces as proto;
 use ordered_float::OrderedFloat;
+use saluki_common::collections::FastHashMap;
 use serde::{Deserialize, Serialize};
+use stringtheory::MetaString;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct WrappedFloat(OrderedFloat<f64>);
@@ -34,10 +34,10 @@ impl Serialize for WrappedFloat {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct AgentMetadata {
-    hostname: String,
-    env: String,
-    tags: HashMap<String, String>,
-    agent_version: String,
+    hostname: MetaString,
+    env: MetaString,
+    tags: FastHashMap<MetaString, MetaString>,
+    agent_version: MetaString,
     target_tps: WrappedFloat,
     error_tps: WrappedFloat,
     rare_sampler_enabled: bool,
@@ -46,14 +46,10 @@ struct AgentMetadata {
 impl From<&proto::AgentPayload> for AgentMetadata {
     fn from(payload: &proto::AgentPayload) -> Self {
         Self {
-            hostname: payload.hostName.to_string(),
-            env: payload.env.to_string(),
-            tags: payload
-                .tags
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect(),
-            agent_version: payload.agentVersion.to_string(),
+            hostname: (*payload.hostName).into(),
+            env: (*payload.env).into(),
+            tags: payload.tags.iter().map(|(k, v)| ((**k).into(), (**v).into())).collect(),
+            agent_version: (*payload.agentVersion).into(),
             target_tps: payload.targetTPS.into(),
             error_tps: payload.errorTPS.into(),
             rare_sampler_enabled: payload.rareSamplerEnabled,
@@ -63,33 +59,29 @@ impl From<&proto::AgentPayload> for AgentMetadata {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct TracerMetadata {
-    container_id: String,
-    language_name: String,
-    language_version: String,
-    tracer_version: String,
-    runtime_id: String,
-    tags: HashMap<String, String>,
-    env: String,
-    hostname: String,
-    app_version: String,
+    container_id: MetaString,
+    language_name: MetaString,
+    language_version: MetaString,
+    tracer_version: MetaString,
+    runtime_id: MetaString,
+    tags: FastHashMap<MetaString, MetaString>,
+    env: MetaString,
+    hostname: MetaString,
+    app_version: MetaString,
 }
 
 impl From<&proto::TracerPayload> for TracerMetadata {
     fn from(payload: &proto::TracerPayload) -> Self {
         Self {
-            container_id: payload.containerID.to_string(),
-            language_name: payload.languageName.to_string(),
-            language_version: payload.languageVersion.to_string(),
-            tracer_version: payload.tracerVersion.to_string(),
-            runtime_id: payload.runtimeID.to_string(),
-            tags: payload
-                .tags
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect(),
-            env: payload.env.to_string(),
-            hostname: payload.hostname.to_string(),
-            app_version: payload.appVersion.to_string(),
+            container_id: (*payload.containerID).into(),
+            language_name: (*payload.languageName).into(),
+            language_version: (*payload.languageVersion).into(),
+            tracer_version: (*payload.tracerVersion).into(),
+            runtime_id: (*payload.runtimeID).into(),
+            tags: payload.tags.iter().map(|(k, v)| ((**k).into(), (**v).into())).collect(),
+            env: (*payload.env).into(),
+            hostname: (*payload.hostname).into(),
+            app_version: (*payload.appVersion).into(),
         }
     }
 }
@@ -97,8 +89,8 @@ impl From<&proto::TracerPayload> for TracerMetadata {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct TraceChunkMetadata {
     priority: i32,
-    origin: String,
-    tags: HashMap<String, String>,
+    origin: MetaString,
+    tags: FastHashMap<MetaString, MetaString>,
     dropped_trace: bool,
 }
 
@@ -106,8 +98,8 @@ impl From<&proto::TraceChunk> for TraceChunkMetadata {
     fn from(value: &proto::TraceChunk) -> Self {
         Self {
             priority: value.priority,
-            origin: value.origin.to_string(),
-            tags: value.tags.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            origin: (*value.origin).into(),
+            tags: value.tags.iter().map(|(k, v)| ((**k).into(), (**v).into())).collect(),
             dropped_trace: value.droppedTrace,
         }
     }
@@ -119,24 +111,39 @@ pub struct Span {
     agent_metadata: AgentMetadata,
     tracer_metadata: TracerMetadata,
     trace_chunk_metadata: TraceChunkMetadata,
-    service: String,
-    name: String,
-    resource: String,
+    service: MetaString,
+    name: MetaString,
+    resource: MetaString,
     trace_id: u64,
     span_id: u64,
     parent_id: u64,
     start: i64,
     duration: i64,
     error: i32,
-    meta: HashMap<String, String>,
-    metrics: HashMap<String, WrappedFloat>,
-    type_: String,
-    meta_struct: HashMap<String, Vec<u8>>,
+    meta: FastHashMap<MetaString, MetaString>,
+    metrics: FastHashMap<MetaString, WrappedFloat>,
+    type_: MetaString,
+    meta_struct: FastHashMap<MetaString, Vec<u8>>,
     span_links: Vec<SpanLink>,
     span_events: Vec<SpanEvent>,
 }
 
 impl Span {
+    /// Returns the trace ID this span belongs to.
+    pub fn trace_id(&self) -> u64 {
+        self.trace_id
+    }
+
+    /// Returns the ID of this span.
+    pub fn span_id(&self) -> u64 {
+        self.span_id
+    }
+
+    /// Returns the value of the metadata entry of the given key, if it exists.
+    pub fn get_meta_field(&self, meta_key: &str) -> Option<&str> {
+        self.meta.get(meta_key).map(|s| &**s)
+    }
+
     /// Gets all spans from the given `AgentPayload`.
     pub fn get_spans_from_agent_payload(payload: &proto::AgentPayload) -> Vec<Self> {
         let agent_metadata = AgentMetadata::from(payload);
@@ -177,26 +184,22 @@ impl Span {
             agent_metadata,
             tracer_metadata,
             trace_chunk_metadata,
-            service: value.service.to_string(),
-            name: value.name.to_string(),
-            resource: value.resource.to_string(),
+            service: (*value.service).into(),
+            name: (*value.name).into(),
+            resource: (*value.resource).into(),
             trace_id: value.traceID,
             span_id: value.spanID,
             parent_id: value.parentID,
             start: value.start,
             duration: value.duration,
             error: value.error,
-            meta: value.meta.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
-            metrics: value
-                .metrics
-                .iter()
-                .map(|(k, v)| (k.to_string(), (*v).into()))
-                .collect(),
-            type_: value.type_.to_string(),
+            meta: value.meta.iter().map(|(k, v)| ((**k).into(), (**v).into())).collect(),
+            metrics: value.metrics.iter().map(|(k, v)| ((**k).into(), (*v).into())).collect(),
+            type_: (*value.type_).into(),
             meta_struct: value
                 .meta_struct
                 .iter()
-                .map(|(k, v)| (k.to_string(), v.to_vec()))
+                .map(|(k, v)| ((**k).into(), v.to_vec()))
                 .collect(),
             span_links,
             span_events,
@@ -209,8 +212,8 @@ struct SpanLink {
     trace_id: u64,
     trace_id_high: u64,
     span_id: u64,
-    attributes: HashMap<String, String>,
-    tracestate: String,
+    attributes: FastHashMap<MetaString, MetaString>,
+    tracestate: MetaString,
     flags: u32,
 }
 
@@ -223,9 +226,9 @@ impl From<&proto::SpanLink> for SpanLink {
             attributes: value
                 .attributes
                 .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .map(|(k, v)| ((**k).into(), (**v).into()))
                 .collect(),
-            tracestate: value.tracestate.to_string(),
+            tracestate: (*value.tracestate).into(),
             flags: value.flags,
         }
     }
@@ -234,19 +237,19 @@ impl From<&proto::SpanLink> for SpanLink {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct SpanEvent {
     time_unix_nano: u64,
-    name: String,
-    attributes: HashMap<String, AttributeAnyValue>,
+    name: MetaString,
+    attributes: FastHashMap<MetaString, AttributeAnyValue>,
 }
 
 impl From<&proto::SpanEvent> for SpanEvent {
     fn from(value: &proto::SpanEvent) -> Self {
         Self {
             time_unix_nano: value.time_unix_nano,
-            name: value.name.to_string(),
+            name: (*value.name).into(),
             attributes: value
                 .attributes
                 .iter()
-                .map(|(k, v)| (k.to_string(), AttributeAnyValue::from(v)))
+                .map(|(k, v)| ((**k).into(), AttributeAnyValue::from(v)))
                 .collect(),
         }
     }
@@ -254,7 +257,7 @@ impl From<&proto::SpanEvent> for SpanEvent {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 enum AttributeAnyValue {
-    String(String),
+    String(MetaString),
     Boolean(bool),
     Integer(i64),
     Double(WrappedFloat),
@@ -265,7 +268,7 @@ impl From<&proto::AttributeAnyValue> for AttributeAnyValue {
     fn from(value: &proto::AttributeAnyValue) -> Self {
         let maybe_proto_value_type = value.type_.enum_value().expect("unknown/invalid anyvalue type");
         match maybe_proto_value_type {
-            proto::AttributeAnyValueType::STRING_VALUE => AttributeAnyValue::String(value.string_value.to_string()),
+            proto::AttributeAnyValueType::STRING_VALUE => AttributeAnyValue::String((*value.string_value).into()),
             proto::AttributeAnyValueType::BOOL_VALUE => AttributeAnyValue::Boolean(value.bool_value),
             proto::AttributeAnyValueType::INT_VALUE => AttributeAnyValue::Integer(value.int_value),
             proto::AttributeAnyValueType::DOUBLE_VALUE => AttributeAnyValue::Double(value.double_value.into()),
@@ -284,7 +287,7 @@ impl From<&proto::AttributeAnyValue> for AttributeAnyValue {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 enum AttributeArrayValue {
-    String(String),
+    String(MetaString),
     Boolean(bool),
     Integer(i64),
     Double(WrappedFloat),
@@ -294,7 +297,7 @@ impl From<&proto::AttributeArrayValue> for AttributeArrayValue {
     fn from(value: &proto::AttributeArrayValue) -> Self {
         let maybe_proto_value_type = value.type_.enum_value().expect("unknown/invalid arrayvalue type");
         match maybe_proto_value_type {
-            proto::AttributeArrayValueType::STRING_VALUE => AttributeArrayValue::String(value.string_value.to_string()),
+            proto::AttributeArrayValueType::STRING_VALUE => AttributeArrayValue::String((*value.string_value).into()),
             proto::AttributeArrayValueType::BOOL_VALUE => AttributeArrayValue::Boolean(value.bool_value),
             proto::AttributeArrayValueType::INT_VALUE => AttributeArrayValue::Integer(value.int_value),
             proto::AttributeArrayValueType::DOUBLE_VALUE => AttributeArrayValue::Double(value.double_value.into()),

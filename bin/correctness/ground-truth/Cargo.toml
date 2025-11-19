@@ -26,6 +26,7 @@ reqwest = { workspace = true, features = ["json", "zstd", "rustls-tls-native-roo
 saluki-config = { workspace = true }
 saluki-error = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 stele = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
@@ -40,3 +41,4 @@ tracing-subscriber = { workspace = true, features = [
   "std",
   "tracing-log",
 ] }
+treediff = { workspace = true, features = ["with-serde-json"] }
