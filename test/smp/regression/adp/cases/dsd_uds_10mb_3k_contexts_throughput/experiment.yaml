@@ -3,7 +3,7 @@ erratic: false
 
 target:
   name: agent-data-plane
-  command: /usr/local/bin/agent-data-plane run --config=/etc/agent-data-plane/empty.yaml
+  command: /usr/local/bin/agent-data-plane --config=/etc/agent-data-plane/empty.yaml run
   cpu_allotment: 4
   memory_allotment: 2GiB
 
