@@ -14,7 +14,7 @@ COPY --from=adp /opt/datadog/agent-data-plane /opt/datadog/agent-data-plane
 
 # Add the s6 service files for Agent Data Plane.
 #
-# ADP will only run when the `DD_ADP_ENABLED` environment variable is set to `true`.
+# ADP will only run when the `DD_DATA_PLANE_ENABLED` environment variable is set to `true`.
 COPY docker/cont-init.d /etc/cont-init.d/
 COPY docker/s6-services /etc/services.d/
 

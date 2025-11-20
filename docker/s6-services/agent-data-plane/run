@@ -1,11 +1,4 @@
 #!/usr/bin/execlineb -P
 
-# Check if Agent Data Plane is enabled.
-ifelse -n
-    { s6-test -f "/etc/datadog-agent/adp/enabled" }
-    {
-        foreground { /initlog.sh "Agent Data Plane not configured, disabling" }
-        foreground { /bin/s6-svc -d /var/run/s6/services/agent-data-plane/ }
-    }
-    foreground { /initlog.sh "starting agent-data-plane" }
-    agent-data-plane run --config /etc/datadog-agent/datadog.yaml
+foreground { /initlog.sh "starting agent-data-plane" }
+agent-data-plane run --config /etc/datadog-agent/datadog.yaml
