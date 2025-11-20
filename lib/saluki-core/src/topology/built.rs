@@ -96,6 +96,10 @@ impl BuiltTopology {
             .error_context("Failed to build asynchronous thread pool runtime.")?;
         let thread_pool_handle = thread_pool.handle().clone();
 
+        std::thread::spawn(move || {
+            thread_pool.block_on(std::future::pending::<()>());
+        });
+
         let topology_context = TopologyContext::new(memory_limiter, health_registry.clone(), thread_pool_handle);
 
         let mut component_tasks = JoinSet::new();
@@ -303,7 +307,6 @@ impl BuiltTopology {
         }
 
         Ok(RunningTopology::from_parts(
-            thread_pool,
             shutdown_coordinator,
             component_tasks,
             component_task_map,

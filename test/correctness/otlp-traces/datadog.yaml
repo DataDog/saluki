@@ -26,10 +26,6 @@ apm_config:
   apm_dd_url: "http://datadog-intake:2049"
   target_traces_per_second: 1000000
 
-# Disable DogStatsD since we're testing OTLP
-dogstatsd_port: 0
-dogstatsd_socket: /airlock/metrics.sock
-
 # Enable OTLP receiver on gRPC port 4317
 otlp_config:
   receiver:
