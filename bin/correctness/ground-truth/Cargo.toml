@@ -10,16 +10,6 @@ workspace = true
 
 [dependencies]
 airlock = { path = "../airlock" }
-clap = { workspace = true, features = [
-  "std",
-  "color",
-  "derive",
-  "help",
-  "wrap_help",
-  "usage",
-  "error-context",
-  "suggestions",
-] }
 rand = { workspace = true, features = ["std", "std_rng", "thread_rng"] }
 rand_distr = { workspace = true }
 reqwest = { workspace = true, features = ["json", "zstd", "rustls-tls-native-roots"] }

@@ -40,7 +40,6 @@ otlp-protos = { workspace = true }
 papaya = { workspace = true }
 prost-types = { workspace = true }
 rand = { workspace = true }
-rand_distr = { workspace = true }
 reqwest = { workspace = true, features = [
   "rustls-tls-native-roots-no-provider",
   "json",
@@ -69,10 +68,8 @@ tokio = { workspace = true, features = [
 ] }
 tonic = { workspace = true }
 tracing = { workspace = true }
-uuid = { workspace = true, features = ["std", "v7"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-tikv-jemalloc-ctl = { workspace = true, features = ["use_std"] }
 tikv-jemallocator = { workspace = true, features = [
   "background_threads",
   "unprefixed_malloc_on_supported_platforms",

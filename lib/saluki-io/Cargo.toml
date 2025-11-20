@@ -35,7 +35,6 @@ nom = { workspace = true, features = ["alloc"] }
 pin-project = { workspace = true }
 pin-project-lite = { workspace = true }
 rand = { workspace = true, features = ["std", "std_rng", "thread_rng"] }
-rand_distr = { workspace = true }
 rustls = { workspace = true }
 rustls-pemfile = { workspace = true, features = ["std"] }
 saluki-common = { workspace = true }
@@ -72,5 +71,6 @@ url = { workspace = true, features = ["std"] }
 [dev-dependencies]
 http-body-util = { workspace = true }
 proptest = { workspace = true }
+rand_distr = { workspace = true }
 tempfile = { workspace = true }
 tokio-test = { workspace = true }
