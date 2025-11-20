@@ -224,8 +224,9 @@ ifeq ($(shell test -n "$(DD_API_KEY)" || echo not-found), not-found)
 	$(error "API key not set. Please set the DD_API_KEY environment variable.")
 endif
 	@echo "[*] Running ADP..."
-	@DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
-	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
+	@DD_DATA_PLANE__ENABLED=true DD_DATA_PLANE__DOGSTATSD__ENABLED=true \
+	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
+	DD_DATA_PLANE__TELEMETRY_ENABLED=true DD_DATA_PLANE__TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	DD_AUTH_TOKEN_FILE_PATH=/etc/datadog-agent/auth_token \
 	target/debug/agent-data-plane run
 
@@ -239,8 +240,9 @@ ifeq ($(shell test -n "$(DD_API_KEY)" || echo not-found), not-found)
 	$(error "API key not set. Please set the DD_API_KEY environment variable.")
 endif
 	@echo "[*] Running ADP..."
-	@DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
-	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
+	@DD_DATA_PLANE__ENABLED=true DD_DATA_PLANE__DOGSTATSD__ENABLED=true \
+	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
+	DD_DATA_PLANE__TELEMETRY_ENABLED=true DD_DATA_PLANE__TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	DD_AUTH_TOKEN_FILE_PATH=/etc/datadog-agent/auth_token \
 	target/release/agent-data-plane run
 
@@ -248,20 +250,20 @@ endif
 run-adp-standalone: build-adp create-dummy-agent-config
 run-adp-standalone: ## Runs ADP locally in standalone mode (debug)
 	@echo "[*] Running ADP..."
-	@DD_ADP_STANDALONE_MODE=true \
-	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
+	@DD_DATA_PLANE__ENABLED=true DD_DATA_PLANE__STANDALONE_MODE=true DD_DATA_PLANE__DOGSTATSD__ENABLED=true \
+ 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
-	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
+	DD_DATA_PLANE__TELEMETRY_ENABLED=true DD_DATA_PLANE__TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	target/debug/agent-data-plane --config /tmp/adp-empty-config.yaml run
 
 .PHONY: run-adp-standalone-release
 run-adp-standalone-release: build-adp-release create-dummy-agent-config
 run-adp-standalone-release: ## Runs ADP locally in standalone mode (release)
 	@echo "[*] Running ADP..."
-	@DD_ADP_STANDALONE_MODE=true \
+	@DD_DATA_PLANE__ENABLED=true DD_DATA_PLANE__STANDALONE_MODE=true DD_DATA_PLANE__DOGSTATSD__ENABLED=true \
 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
-	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
+	DD_DATA_PLANE__TELEMETRY_ENABLED=true DD_DATA_PLANE__TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	target/release/agent-data-plane --config /tmp/adp-empty-config.yaml run
 
 .PHONY: run-dsd-basic-udp
@@ -508,10 +510,10 @@ ifeq ($(shell test -S /var/run/datadog/apm.socket || echo not-found), not-found)
 endif
 	@echo "[*] Running ADP under ddprof (service: adp, environment: local, version: $(GIT_COMMIT))..."
 	@DD_API_KEY=api-key-adp-profiling DD_HOSTNAME=adp-profiling DD_DD_URL=http://127.0.0.1:9095 \
-	DD_ADP_STANDALONE_MODE=true \
+	DD_DATA_PLANE__STANDALONE_MODE=true \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_ADP_OTLP_ENABLED=true DD_OTLP_CONFIG="{}" \
-	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
+	DD_DATA_PLANE__TELEMETRY_ENABLED=true DD_DATA_PLANE__TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	./test/ddprof/bin/ddprof --service adp --environment local --service-version $(GIT_COMMIT) \
 	--url unix:///var/run/datadog/apm.socket \
 	--inlined-functions true --timeline --upload-period 10 --preset cpu_live_heap \

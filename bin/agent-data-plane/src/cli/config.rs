@@ -3,7 +3,7 @@ use saluki_common::scrubber;
 use saluki_config::GenericConfiguration;
 use tracing::{error, info};
 
-use crate::cli::utils::ControlPlaneAPIClient;
+use crate::cli::utils::DataPlaneAPIClient;
 
 /// Prints the current configuration.
 #[derive(FromArgs, Debug)]
@@ -12,10 +12,10 @@ pub struct ConfigCommand {}
 
 /// Entrypoint for the `config` command.
 pub async fn handle_config_command(bootstrap_config: &GenericConfiguration) {
-    let api_client = match ControlPlaneAPIClient::from_config(bootstrap_config) {
+    let api_client = match DataPlaneAPIClient::from_config(bootstrap_config) {
         Ok(client) => client,
         Err(e) => {
-            error!("Failed to create control plane API client: {:#}", e);
+            error!("Failed to create data plane API client: {:#}", e);
             std::process::exit(1);
         }
     };

@@ -21,6 +21,3 @@ dogstatsd_origin_detection: true
 # always ends up with the correct (last seen) value, while DSD might return the last seen value... or the value seen
 # four updates ago, etc etc.
 dogstatsd_workers_count: 1
-
-# When not in standalone mode, we have to specify the setting that tells ADP it should be running.
-data_plane_enabled: true

@@ -12,13 +12,13 @@ use saluki_config::ConfigurationLoader;
 use saluki_error::{ErrorContext as _, GenericError};
 use tracing::{error, info, warn};
 
-mod components;
-
-mod env_provider;
-mod internal;
-
 mod cli;
 use self::cli::*;
+
+mod components;
+mod config;
+mod env_provider;
+mod internal;
 
 pub(crate) mod state;
 
