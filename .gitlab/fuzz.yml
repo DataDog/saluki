@@ -18,5 +18,3 @@ fuzz:infra:
   script:
     - python3 ci/fuzz_infra.py
   allow_failure: true
-  variables:
-    VAULT_FUZZING_TOKEN: "${VAULT_FUZZING_TOKEN}"
