@@ -15,3 +15,7 @@ yarn.lock
 docs/.vitepress/dist
 docs/.vitepress/cache
 node_modules/
+# Fuzzing artifacts and coverage
+fuzz/artifacts/
+fuzz/coverage/
+fuzz/corpus/
