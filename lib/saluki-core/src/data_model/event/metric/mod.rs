@@ -190,11 +190,6 @@ impl SampleRate {
         Self(1.0)
     }
 
-    /// Returns the sample rate.
-    pub const fn rate(&self) -> f64 {
-        self.0
-    }
-
     /// Returns the weight of the sample rate.
     pub fn weight(&self) -> u64 {
         (1.0 / self.0) as u64

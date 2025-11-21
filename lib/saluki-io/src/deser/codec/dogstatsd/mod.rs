@@ -14,16 +14,6 @@ pub use self::service_check::ServiceCheckPacket;
 
 type NomParserError<'a> = nom::Err<nom::error::Error<&'a [u8]>>;
 
-// This is the lowest sample rate that we consider to be "safe" with typical DogStatsD default settings.
-//
-// Our logic here is:
-// - DogStatsD payloads are limited to 8KiB by default
-// - a valid distribution metric could have a multi-value payload with ~4093 values (value of `1`, when factoring for protocol overhead)
-// - to avoid overflow in resulting sketch, total count of all values must be less than or equal to 2^32
-// - 2^32 / 4093 = 1,049,344... or 1,000,000 to be safe
-// - 1 / 1,000,000 = 0.000001
-const MINIMUM_SAFE_DEFAULT_SAMPLE_RATE: f64 = 0.000001;
-
 /// Parser error.
 #[derive(Debug)]
 pub struct ParseError {
@@ -74,7 +64,6 @@ pub struct DogstatsdCodecConfiguration {
     maximum_tag_length: usize,
     maximum_tag_count: usize,
     timestamps: bool,
-    minimum_sample_rate: f64,
 }
 
 impl DogstatsdCodecConfiguration {
@@ -126,17 +115,6 @@ impl DogstatsdCodecConfiguration {
         self.timestamps = timestamps;
         self
     }
-
-    /// Sets the minimum sample rate.
-    ///
-    /// This is the minimum sample rate that is allowed for a metric payload. If the sample rate is less than this limit,
-    /// the sample rate is clamped to this value and a log message is emitted.
-    ///
-    /// Defaults to `0.000001`.
-    pub fn with_minimum_sample_rate(mut self, minimum_sample_rate: f64) -> Self {
-        self.minimum_sample_rate = minimum_sample_rate;
-        self
-    }
 }
 
 impl Default for DogstatsdCodecConfiguration {
@@ -146,7 +124,6 @@ impl Default for DogstatsdCodecConfiguration {
             maximum_tag_count: usize::MAX,
             timestamps: true,
             permissive: false,
-            minimum_sample_rate: MINIMUM_SAFE_DEFAULT_SAMPLE_RATE,
         }
     }
 }
