@@ -34,6 +34,13 @@ RUN curl -s -L -o /tmp/jq https://github.com/jqlang/jq/releases/download/jq-1.7.
     mv /tmp/jq /usr/local/bin/jq && \
     chmod +x /usr/local/bin/jq
 
+RUN VAULT_VERSION=1.21.1 && \
+curl -fsSL "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_amd64.zip" -o vault.zip && \
+unzip vault.zip && \
+mv vault /usr/local/bin/vault && \
+rm vault.zip && \
+chmod +x /usr/local/bin/vault
+
 # Install Rust and common Cargo tooling that we depend on.
 RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain ${RUST_VERSION}
 ENV PATH="/root/.cargo/bin:${PATH}"
