@@ -1,0 +1,8 @@
+# Fuzz artifacts and corpus
+artifacts/
+corpus/
+
+# Build outputs
+target/
+Cargo.lock
+
