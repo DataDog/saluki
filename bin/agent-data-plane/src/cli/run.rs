@@ -1,4 +1,7 @@
-use std::time::{Duration, Instant};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::{
@@ -32,7 +35,9 @@ use tracing::{error, info, warn};
 use crate::env_provider::ADPEnvironmentProvider;
 use crate::internal::{spawn_control_plane, spawn_internal_observability_topology};
 
-pub async fn run(started: Instant, bootstrap_config: GenericConfiguration) -> Result<(), GenericError> {
+pub async fn run(
+    started: Instant, bootstrap_config_path: PathBuf, bootstrap_config: GenericConfiguration,
+) -> Result<(), GenericError> {
     let app_details = saluki_metadata::get_app_details();
     info!(
         version = app_details.version().raw(),
@@ -58,6 +63,8 @@ pub async fn run(started: Instant, bootstrap_config: GenericConfiguration) -> Re
         // configuration source, but with environment variables on top of that to allow for ADP-specific overriding: log
         // level, etc.
         let dynamic_config = ConfigurationLoader::default()
+            .from_yaml(&bootstrap_config_path)
+            .error_context("Failed to load Datadog Agent configuration file.")?
             .with_dynamic_configuration(config_updates_receiver)
             .from_environment(crate::internal::platform::DATADOG_AGENT_ENV_VAR_PREFIX)?
             .with_default_secrets_resolution()
