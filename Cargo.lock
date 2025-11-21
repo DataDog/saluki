@@ -3955,6 +3955,7 @@ dependencies = [
  "float-cmp",
  "ordered-float",
  "protobuf",
+ "saluki-common",
  "saluki-error",
  "serde",
  "stringtheory",
