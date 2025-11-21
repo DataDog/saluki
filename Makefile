@@ -282,7 +282,7 @@ run-adp-standalone: ## Runs ADP locally in standalone mode (debug)
 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
-	target/debug/agent-data-plane --config=/tmp/adp-empty-config.yaml run
+	target/debug/agent-data-plane --config /tmp/adp-empty-config.yaml run
 
 .PHONY: run-adp-standalone-release
 run-adp-standalone-release: build-adp-release create-dummy-agent-config
@@ -292,7 +292,7 @@ run-adp-standalone-release: ## Runs ADP locally in standalone mode (release)
 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
-	target/release/agent-data-plane --config=/tmp/adp-empty-config.yaml run
+	target/release/agent-data-plane --config /tmp/adp-empty-config.yaml run
 
 .PHONY: run-adp-with-checks
 run-adp-with-checks: build-adp-and-checks create-dummy-agent-config
@@ -304,7 +304,7 @@ run-adp-with-checks: ## Runs ADP + Checks locally (debug)
 	DD_CHECKS_CONFIG_DIR=./dist/conf.d \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
-	target/debug/agent-data-plane --config=/tmp/adp-empty-config.yaml run
+	target/debug/agent-data-plane --config /tmp/adp-empty-config.yaml run
 
 .PHONY: run-adp-with-checks-standalone
 run-adp-with-checks-standalone: build-adp-and-checks create-dummy-agent-config
@@ -315,7 +315,7 @@ run-adp-with-checks-standalone: ## Runs ADP + Checks locally in standalone mode 
 	DD_CHECKS_CONFIG_DIR=./dist/conf.d \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
-	target/debug/agent-data-plane --config=/tmp/adp-empty-config.yaml run
+	target/debug/agent-data-plane --config /tmp/adp-empty-config.yaml run
 
 .PHONY: run-dsd-basic-udp
 run-dsd-basic-udp: build-dsd-client ## Runs a basic set of metrics via the Dogstatsd client (UDP)
