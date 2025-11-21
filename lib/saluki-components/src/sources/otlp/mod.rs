@@ -532,7 +532,12 @@ async fn run_converter(
                         }
                     }
                     OtlpResource::Traces(resource_spans) => {
-                        let _translator = OtlpTracesTranslator::translate_resource_spans(resource_spans);
+                        let trace_events = OtlpTracesTranslator::translate_resource_spans(resource_spans);
+                        for trace_event in trace_events {
+                            if let Some(event_buffer) = event_buffer_manager.try_push(trace_event) {
+                                dispatch_events(event_buffer, &source_context).await;
+                            }
+                        }
                     }
                 }
             },

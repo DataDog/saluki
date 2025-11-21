@@ -3,6 +3,8 @@
 /// Reference code: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/sampler/sampler.go#L47
 #[repr(i8)]
 #[allow(unused)]
+#[allow(clippy::enum_variant_names)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum SamplingPriority {
     // PriorityNone is the value for SamplingPriority when no priority sampling decision could be found.
     PriorityNone = i8::MIN,
