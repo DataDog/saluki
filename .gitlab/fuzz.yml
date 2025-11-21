@@ -1,10 +1,15 @@
 fuzz:infra:
-  stage: internal
+  stage: test
   image: ${SALUKI_BUILD_CI_IMAGE}
   tags:
     - "arch:amd64"
-  # rules:
-  #   - if: $CI_COMMIT_BRANCH == "main"
+  rules:
+    # These rules allow for: manual trigger anywhere, automatic run on push to main, and automatic run on schedule on main
+    # We allow (but monitor) for failure of these jobs because it introduce a new dependency on the internal fuzzing infrastructure otherwise and we don't want to block CI.
+    - if: '$CI_COMMIT_REF_NAME == "main" && $CI_PIPELINE_SOURCE == "schedule"'
+    - if: '$CI_COMMIT_REF_NAME == "main" && $CI_PIPELINE_SOURCE == "push"'
+    - when: manual
+      allow_failure: true
   before_script:
     - rustup toolchain install nightly
     - cargo +nightly install cargo-fuzz
