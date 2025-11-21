@@ -1,0 +1,18 @@
+fuzz:infra:
+  stage: internal
+  image: ${SALUKI_BUILD_CI_IMAGE}
+  tags:
+    - "arch:amd64"
+  # rules:
+  #   - if: $CI_COMMIT_BRANCH == "main"
+  before_script:
+    - rustup toolchain install nightly
+    - cargo +nightly install cargo-fuzz
+    # Install Python dependencies for fuzz_infra.py
+    - apt-get update && apt-get install -y python3 python3-pip
+    - pip3 install requests toml # parsing of cargo toml files
+  script:
+    - python3 ci/fuzz_infra.py
+  allow_failure: true
+  variables:
+    VAULT_FUZZING_TOKEN: "${VAULT_FUZZING_TOKEN}"
