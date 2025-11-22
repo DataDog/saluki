@@ -8,7 +8,7 @@ use tokio::io::{self, AsyncWriteExt};
 use tracing::{error, info};
 
 use crate::{
-    cli::utils::ControlPlaneAPIClient,
+    cli::utils::DataPlaneAPIClient,
     config::{AnalysisMode, DogstatsdConfig, DogstatsdStatsConfig, SortDirection},
 };
 
@@ -28,10 +28,10 @@ struct StatsResponse<'a> {
 
 /// Entrypoint for all `dogstatsd` subcommands.
 pub async fn handle_dogstatsd_subcommand(bootstrap_config: &GenericConfiguration, config: DogstatsdConfig) {
-    let api_client = match ControlPlaneAPIClient::from_config(bootstrap_config) {
+    let api_client = match DataPlaneAPIClient::from_config(bootstrap_config) {
         Ok(client) => client,
         Err(e) => {
-            error!("Failed to create control plane API client: {:#}", e);
+            error!("Failed to create data plane API client: {:#}", e);
             std::process::exit(1);
         }
     };
@@ -47,7 +47,7 @@ pub async fn handle_dogstatsd_subcommand(bootstrap_config: &GenericConfiguration
 }
 
 async fn handle_dogstatsd_stats(
-    api_client: ControlPlaneAPIClient, config: DogstatsdStatsConfig,
+    api_client: DataPlaneAPIClient, config: DogstatsdStatsConfig,
 ) -> Result<(), GenericError> {
     // Trigger a statistics collection and wait for it to complete.
     info!(
