@@ -2,7 +2,7 @@ use saluki_config::GenericConfiguration;
 use tracing::{error, info};
 
 use crate::{
-    cli::utils::ControlPlaneAPIClient,
+    cli::utils::DataPlaneAPIClient,
     config::{DebugConfig, SetLogLevelConfig, SetMetricLevelConfig},
 };
 
@@ -11,10 +11,10 @@ use self::workload::handle_workload_command;
 
 /// Entrypoint for all `debug` subcommands.
 pub async fn handle_debug_command(bootstrap_config: &GenericConfiguration, config: DebugConfig) {
-    let api_client = match ControlPlaneAPIClient::from_config(bootstrap_config) {
+    let api_client = match DataPlaneAPIClient::from_config(bootstrap_config) {
         Ok(client) => client,
         Err(e) => {
-            error!("Failed to create control plane API client: {:#}", e);
+            error!("Failed to create data plane API client: {:#}", e);
             std::process::exit(1);
         }
     };
@@ -29,7 +29,7 @@ pub async fn handle_debug_command(bootstrap_config: &GenericConfiguration, confi
 }
 
 /// Resets the log level to the default configuration.
-async fn reset_log_level(api_client: ControlPlaneAPIClient) {
+async fn reset_log_level(api_client: DataPlaneAPIClient) {
     match api_client.reset_log_level().await {
         Ok(()) => info!("Log level reset successful."),
         Err(e) => {
@@ -40,7 +40,7 @@ async fn reset_log_level(api_client: ControlPlaneAPIClient) {
 }
 
 /// Sets the log level filter directives for a specified duration in seconds.
-async fn set_log_level(api_client: ControlPlaneAPIClient, config: SetLogLevelConfig) {
+async fn set_log_level(api_client: DataPlaneAPIClient, config: SetLogLevelConfig) {
     match api_client
         .set_log_level(config.filter_directives, config.duration_secs)
         .await
@@ -54,7 +54,7 @@ async fn set_log_level(api_client: ControlPlaneAPIClient, config: SetLogLevelCon
 }
 
 /// Resets the metric level to the default configuration.
-async fn reset_metric_level(api_client: ControlPlaneAPIClient) {
+async fn reset_metric_level(api_client: DataPlaneAPIClient) {
     match api_client.reset_metric_level().await {
         Ok(()) => info!("Metric level reset successful."),
         Err(e) => {
@@ -65,7 +65,7 @@ async fn reset_metric_level(api_client: ControlPlaneAPIClient) {
 }
 
 /// Sets the metric level filter directive for a specified duration in seconds.
-async fn set_metric_level(api_client: ControlPlaneAPIClient, config: SetMetricLevelConfig) {
+async fn set_metric_level(api_client: DataPlaneAPIClient, config: SetMetricLevelConfig) {
     match api_client.set_metric_level(config.level, config.duration_secs).await {
         Ok(()) => info!("Metric level override successful."),
         Err(e) => {
