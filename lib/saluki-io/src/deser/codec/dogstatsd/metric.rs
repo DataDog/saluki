@@ -9,6 +9,7 @@ use nom::{
 };
 use saluki_context::{origin::OriginTagCardinality, tags::RawTags};
 use saluki_core::data_model::event::metric::*;
+use tracing::warn;
 
 use super::{helpers::*, DogstatsdCodecConfiguration, NomParserError};
 
@@ -72,7 +73,9 @@ pub fn parse_dogstatsd_metric<'a>(
                 // point downstream to calculate the true metric value.
                 b'@' => {
                     let (_, sample_rate) =
-                        all_consuming(preceded(tag("@"), map_res(double, SampleRate::try_from))).parse(chunk)?;
+                        all_consuming(preceded(tag("@"), map_res(double, sample_rate(metric_name, config))))
+                            .parse(chunk)?;
+
                     maybe_sample_rate = Some(sample_rate);
                 }
                 // Tags: additional tags to be added to the metric.
@@ -154,6 +157,24 @@ fn permissive_metric_name(input: &[u8]) -> IResult<&[u8], &str> {
         unsafe { std::str::from_utf8_unchecked(b) }
     })
     .parse(input)
+}
+
+#[inline]
+fn sample_rate<'a>(
+    metric_name: &'a str, config: &'a DogstatsdCodecConfiguration,
+) -> impl Fn(f64) -> Result<SampleRate, &'static str> + 'a {
+    let minimum_sample_rate = config.minimum_sample_rate;
+
+    move |mut raw_sample_rate| {
+        if raw_sample_rate < minimum_sample_rate {
+            raw_sample_rate = minimum_sample_rate;
+            warn!(
+                "Sample rate for metric '{}' is below minimum of {}. Clamping to minimum.",
+                metric_name, minimum_sample_rate
+            );
+        }
+        SampleRate::try_from(raw_sample_rate)
+    }
 }
 
 #[inline]
@@ -565,6 +586,47 @@ mod tests {
         match parse_dsd_metric_with_conf(payload, &config) {
             Ok(result) => assert!(result.is_some(), "should not fail to materialize metric after decoding"),
             Err(e) => panic!("should not have errored: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn minimum_sample_rate() {
+        // Sample rate of 0.01 should lead to a count of 100 when handling a single value.
+        let minimum_sample_rate = SampleRate::try_from(0.01).unwrap();
+        let config = DogstatsdCodecConfiguration::default().with_minimum_sample_rate(minimum_sample_rate.rate());
+
+        let cases = [
+            // Worst case scenario: sample rate of zero, or "infinitely sampled".
+            "test:1|d|@0".to_string(),
+            // Bunch of values with different sample rates all below the minimum sample rate.
+            "test:1|d|@0.001".to_string(),
+            "test:1|d|@0.0005".to_string(),
+            "test:1|d|@0.00001".to_string(),
+            // Control: use the minimum sample rate.
+            format!("test:1|d|@{}", minimum_sample_rate.rate()),
+            // Bunch of values with _greater_ sampling rates than the minimum.
+            "test:1|d|@0.1".to_string(),
+            "test:1|d|@0.5".to_string(),
+            "test:1|d".to_string(),
+        ];
+
+        for input in cases {
+            let metric = parse_dsd_metric_with_conf(input.as_bytes(), &config)
+                .expect("Should not fail to parse metric.")
+                .expect("Metric should be present.");
+
+            let sketch = match metric.values() {
+                MetricValues::Distribution(points) => {
+                    points
+                        .into_iter()
+                        .next()
+                        .expect("Should have at least one sketch point.")
+                        .1
+                }
+                _ => panic!("Unexpected metric type."),
+            };
+
+            assert!(sketch.count() as u64 <= minimum_sample_rate.weight());
         }
     }
 
