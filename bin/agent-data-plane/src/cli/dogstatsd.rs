@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use argh::{FromArgValue, FromArgs};
 use comfy_table::{presets::ASCII_FULL_CONDENSED, Cell, ContentArrangement, Row, Table};
 use saluki_config::GenericConfiguration;
 use saluki_error::{ErrorContext as _, GenericError};
@@ -7,10 +8,85 @@ use serde::Deserialize;
 use tokio::io::{self, AsyncWriteExt};
 use tracing::{error, info};
 
-use crate::{
-    cli::utils::ControlPlaneAPIClient,
-    config::{AnalysisMode, DogstatsdConfig, DogstatsdStatsConfig, SortDirection},
-};
+use crate::cli::utils::ControlPlaneAPIClient;
+
+/// DogStatsD-specific debugging commands.
+#[derive(FromArgs, Debug)]
+#[argh(subcommand, name = "dogstatsd")]
+pub struct DogstatsdCommand {
+    #[argh(subcommand)]
+    subcommand: DogstatsdSubcommand,
+}
+
+#[derive(FromArgs, Debug)]
+#[argh(subcommand)]
+enum DogstatsdSubcommand {
+    Stats(StatsCommand),
+}
+
+/// Prints basic statistics about the metrics received by the data plane.
+#[derive(FromArgs, Debug)]
+#[argh(subcommand, name = "stats")]
+struct StatsCommand {
+    /// amount of time to collect statistics for, in seconds
+    #[argh(option, short = 'd', long = "duration-secs")]
+    collection_duration_secs: u64,
+
+    /// analysis mode ('summary' or 'cardinality')
+    #[argh(option, short = 'm', long = "mode", default = "AnalysisMode::Summary")]
+    analysis_mode: AnalysisMode,
+
+    /// sort direction ('asc' or 'desc')
+    #[argh(option, short = 's', long = "sort-dir")]
+    sort_direction: Option<SortDirection>,
+
+    /// filter to apply to metric names (any metrics which don't match the filter will be excluded)
+    #[argh(option, short = 'f', long = "filter")]
+    filter: Option<String>,
+
+    /// maximum number of metrics to display (applied after filtering)
+    #[argh(option, short = 'l', long = "limit")]
+    limit: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+enum SortDirection {
+    #[default]
+    Ascending,
+    Descending,
+}
+
+impl FromArgValue for SortDirection {
+    fn from_arg_value(value: &str) -> Result<Self, String> {
+        let value_lc = value.to_lowercase();
+        match value_lc.as_str() {
+            "asc" => Ok(Self::Ascending),
+            "desc" => Ok(Self::Descending),
+            other => Err(format!("invalid sort direction '{}': expected 'asc' or 'desc'", other)),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+enum AnalysisMode {
+    #[default]
+    Summary,
+    Cardinality,
+}
+
+impl FromArgValue for AnalysisMode {
+    fn from_arg_value(value: &str) -> Result<Self, String> {
+        let value_lc = value.to_lowercase();
+        match value_lc.as_str() {
+            "summary" => Ok(Self::Summary),
+            "cardinality" => Ok(Self::Cardinality),
+            other => Err(format!(
+                "invalid analysis mode '{}': expected 'summary' or 'cardinality'",
+                other
+            )),
+        }
+    }
+}
 
 #[derive(Deserialize)]
 struct MetricSummary<'a> {
@@ -26,8 +102,8 @@ struct StatsResponse<'a> {
     stats: Vec<MetricSummary<'a>>,
 }
 
-/// Entrypoint for all `dogstatsd` subcommands.
-pub async fn handle_dogstatsd_subcommand(bootstrap_config: &GenericConfiguration, config: DogstatsdConfig) {
+/// Entrypoint for the `dogstatsd` commands.
+pub async fn handle_dogstatsd_command(bootstrap_config: &GenericConfiguration, cmd: DogstatsdCommand) {
     let api_client = match ControlPlaneAPIClient::from_config(bootstrap_config) {
         Ok(client) => client,
         Err(e) => {
@@ -36,8 +112,8 @@ pub async fn handle_dogstatsd_subcommand(bootstrap_config: &GenericConfiguration
         }
     };
 
-    match config {
-        DogstatsdConfig::Stats(config) => {
+    match cmd.subcommand {
+        DogstatsdSubcommand::Stats(config) => {
             if let Err(e) = handle_dogstatsd_stats(api_client, config).await {
                 error!("Failed to run stats subcommand: {:#}", e);
                 std::process::exit(1);
@@ -46,49 +122,45 @@ pub async fn handle_dogstatsd_subcommand(bootstrap_config: &GenericConfiguration
     }
 }
 
-async fn handle_dogstatsd_stats(
-    api_client: ControlPlaneAPIClient, config: DogstatsdStatsConfig,
-) -> Result<(), GenericError> {
+async fn handle_dogstatsd_stats(api_client: ControlPlaneAPIClient, cmd: StatsCommand) -> Result<(), GenericError> {
     // Trigger a statistics collection and wait for it to complete.
     info!(
         "Triggered statistics collection over the next {} seconds. Waiting for completion...",
-        config.collection_duration_secs
+        cmd.collection_duration_secs
     );
 
-    let response_body = api_client.dogstatsd_stats(config.collection_duration_secs).await?;
+    let response_body = api_client.dogstatsd_stats(cmd.collection_duration_secs).await?;
     let mut response = serde_json::from_str::<StatsResponse>(&response_body)
         .error_context("Failed to deserialize collected statistics response.")?;
 
     info!("Collected {} metric(s).", response.stats.len());
 
     // Filter out any non-matching metrics if a filter was given.
-    if let Some(filter) = config.filter.as_deref() {
+    if let Some(filter) = cmd.filter.as_deref() {
         response.stats.retain(|metric| metric.name.contains(filter));
         info!("{} metric(s) remain after filtering.", response.stats.len());
     }
 
-    if let Some(limit) = config.limit {
+    if let Some(limit) = cmd.limit {
         info!("Output will be limited to the top {} metric(s).", limit);
     }
 
-    match config.analysis_mode {
-        AnalysisMode::Summary => handle_stats_summary_analysis(&config, response).await?,
-        AnalysisMode::Cardinality => handle_stats_cardinality_analysis(&config, response).await?,
+    match cmd.analysis_mode {
+        AnalysisMode::Summary => handle_stats_summary_analysis(&cmd, response).await?,
+        AnalysisMode::Cardinality => handle_stats_cardinality_analysis(&cmd, response).await?,
     }
 
     Ok(())
 }
 
-async fn handle_stats_summary_analysis(
-    config: &DogstatsdStatsConfig, mut response: StatsResponse<'_>,
-) -> io::Result<()> {
+async fn handle_stats_summary_analysis(cmd: &StatsCommand, mut response: StatsResponse<'_>) -> io::Result<()> {
     let mut table = get_stylized_table();
     table.set_header(vec!["Metric", "Tags", "Count", "Last Seen"]);
 
     // Handle sorting first.
     //
     // We default to ascending order for the summary analysis.
-    let sort_direction = config.sort_direction.unwrap_or(SortDirection::Ascending);
+    let sort_direction = cmd.sort_direction.unwrap_or(SortDirection::Ascending);
     let sort_ascending = matches!(sort_direction, SortDirection::Ascending);
     response.stats.sort_by(|a, b| {
         if sort_ascending {
@@ -99,7 +171,7 @@ async fn handle_stats_summary_analysis(
     });
 
     // Add each metric summary to the table.
-    for metric_summary in response.stats.into_iter().take(config.limit.unwrap_or(usize::MAX)) {
+    for metric_summary in response.stats.into_iter().take(cmd.limit.unwrap_or(usize::MAX)) {
         let tags = metric_summary.tags.join(",");
         let last_seen = chrono::DateTime::from_timestamp(metric_summary.last_seen as i64, 0)
             .unwrap_or_default()
@@ -117,9 +189,7 @@ async fn handle_stats_summary_analysis(
     output_lines(table.lines()).await
 }
 
-async fn handle_stats_cardinality_analysis<'a>(
-    config: &DogstatsdStatsConfig, response: StatsResponse<'a>,
-) -> io::Result<()> {
+async fn handle_stats_cardinality_analysis<'a>(cmd: &StatsCommand, response: StatsResponse<'a>) -> io::Result<()> {
     let mut table = get_stylized_table();
     table.set_header(["Metric", "Unique Contexts", "Highest Cardinality Tags (top 5)"]);
 
@@ -160,7 +230,7 @@ async fn handle_stats_cardinality_analysis<'a>(
     //
     // We default to descending order for the unique contexts. We do a subsort on the metric name just to keep things
     // stable when multiple metrics have the same number of unique contexts.
-    let sort_direction = config.sort_direction.unwrap_or(SortDirection::Descending);
+    let sort_direction = cmd.sort_direction.unwrap_or(SortDirection::Descending);
     let sort_descending = matches!(sort_direction, SortDirection::Descending);
 
     flattened_cardinality_map.sort_by(|a, b| {
@@ -174,7 +244,7 @@ async fn handle_stats_cardinality_analysis<'a>(
     // Add each metric summary to the table.
     for (metric_name, unique_contexts, tag_cardinalities) in flattened_cardinality_map
         .into_iter()
-        .take(config.limit.unwrap_or(usize::MAX))
+        .take(cmd.limit.unwrap_or(usize::MAX))
     {
         let highest_cardinality_tags = if tag_cardinalities.is_empty() {
             "[no tags]".to_string()
