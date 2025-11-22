@@ -44,11 +44,11 @@ async fn main() -> Result<(), GenericError> {
 
     // Load our "bootstrap" configuration -- static configuration on disk or from environment variables -- so we can
     // initialize basic subsystems before executing the given subcommand.
+    let bootstrap_config_path = cli
+        .config_file
+        .unwrap_or_else(|| self::internal::platform::DATADOG_AGENT_CONF_YAML.into());
     let bootstrap_config = ConfigurationLoader::default()
-        .from_yaml(
-            cli.config_file
-                .unwrap_or_else(|| self::internal::platform::DATADOG_AGENT_CONF_YAML.into()),
-        )
+        .from_yaml(&bootstrap_config_path)
         .error_context("Failed to load Datadog Agent configuration file.")?
         .from_environment(self::internal::platform::DATADOG_AGENT_ENV_VAR_PREFIX)
         .error_context("Environment variable prefix should not be empty.")?
@@ -81,7 +81,7 @@ async fn main() -> Result<(), GenericError> {
                 }
             }
 
-            let exit_code = match run(started, bootstrap_config).await {
+            let exit_code = match run(started, bootstrap_config_path, bootstrap_config).await {
                 Ok(()) => {
                     info!("Agent Data Plane stopped.");
                     0
