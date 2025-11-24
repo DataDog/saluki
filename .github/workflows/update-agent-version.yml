@@ -1,0 +1,199 @@
+name: Update Datadog Agent Version
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  check-and-update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - name: Get access token from dd-octo-sts
+        uses: DataDog/dd-octo-sts-action@acaa02eee7e3bb0839e4272dacb37b8f3b58ba80 # v1.0.3
+        id: octo-sts
+        with:
+          scope: DataDog/saluki
+          policy: self.update-datadog-agent-version.create-pr
+
+      - name: Checkout repository
+        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+
+      - name: Fetch latest Datadog Agent release
+        id: fetch-latest
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            // Fetch the latest release from the Datadog Agent repository.
+            const { data: release } = await github.rest.repos.getLatestRelease({
+              owner: 'DataDog',
+              repo: 'datadog-agent'
+            });
+
+            const latestVersion = release.tag_name;
+            console.log(`Latest release tag: ${latestVersion}`);
+
+            core.setOutput('latest_version', latestVersion);
+
+      - name: Read current version
+        id: current-version
+        run: |
+          CURRENT_VERSION=$(cat .datadog-agent-version)
+          echo "Current version: $CURRENT_VERSION"
+          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Compare versions
+        id: compare
+        run: |
+          CURRENT="${{ steps.current-version.outputs.current_version }}"
+          LATEST="${{ steps.fetch-latest.outputs.latest_version }}"
+
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "No update needed. Current version ($CURRENT) is up to date."
+            echo "needs_update=false" >> $GITHUB_OUTPUT
+          else
+            echo "Update needed: $CURRENT -> $LATEST"
+            echo "needs_update=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update version references
+        if: steps.compare.outputs.needs_update == 'true'
+        run: |
+          OLD_VERSION="${{ steps.current-version.outputs.current_version }}"
+          NEW_VERSION="${{ steps.fetch-latest.outputs.latest_version }}"
+
+          echo "Updating all references from $OLD_VERSION to $NEW_VERSION"
+
+          # Find all files containing the old version and update them
+          # Exclude common directories that shouldn't be modified
+          find . -type f \
+            -not -path "./.git/*" \
+            -not -path "./node_modules/*" \
+            -not -path "./target/*" \
+            -not -path "./bun.lock" \
+            -not -path "./Cargo.lock" \
+            -not -path "./.github/workflows/update-agent-version.yml" \
+            -exec grep -l "$OLD_VERSION" {} \; 2>/dev/null | while read -r file; do
+              echo "Updating: $file"
+              sed -i "s/$OLD_VERSION/$NEW_VERSION/g" "$file"
+          done
+
+          # Update the version tracking file
+          echo "$NEW_VERSION" > .datadog-agent-version
+
+          echo "Update complete!"
+
+      - name: Create remote branch
+        if: steps.changes.outputs.needs_update == 'true'
+        run: |
+          BRANCH_NAME=ci/update-agent-version-${{ steps.fetch-latest.outputs.latest_version }}
+          git push origin HEAD:refs/heads/${BRANCH_NAME}
+
+      - name: Commit Changes
+        id: commit
+        if: steps.changes.outputs.needs_update == 'true'
+        run: |
+          git add .
+          git commit -m "chore(ci): update Datadog Agent version to ${{ steps.fetch-latest.outputs.latest_version }}"
+          echo "update_commit_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Sign Commit
+        if: steps.changes.outputs.needs_update == 'true'
+        uses: DataDog/commit-headless@5a0f3876e0fbdd3a86b3e008acf4ec562db59eee # v2.0.1
+        with:
+          branch: ci/update-agent-version-${{ steps.fetch-latest.outputs.latest_version }}
+          head-sha: ${{ github.sha }}
+          command: push
+          commits: "${{ steps.commit.outputs.update_commit_sha }}"
+
+      - name: Create Pull Request
+        if: steps.changes.outputs.has_changes == 'true'
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          github-token: "${{ steps.octo-sts.outputs.token }}"
+          script: |
+            const commitHash = '${{ steps.get_commit.outputs.update_commit_sha }}';
+            const branchName = `ci/update-agent-version-${{ steps.fetch-latest.outputs.latest_version }}`;
+            const prTitle = `chore(ci): update Datadog Agent version to ${{ steps.fetch-latest.outputs.latest_version }}`;
+            const prBody = `## Summary
+
+            This PR updates the Datadog Agent version used for builds and testing to ${{ steps.fetch-latest.outputs.latest_version }}.
+
+            ### Details of change
+
+            - **Current version:** ${{ steps.current-version.outputs.current_version }}
+            - **Updated version:** ${{ steps.fetch-latest.outputs.latest_version }}
+            - **Release:** https://github.com/DataDog/datadog-agent/releases/tag/${{ steps.fetch-latest.outputs.latest_version }}
+
+            _This PR was automatically generated by the [Update Datadog Agent Version](.github/workflows/update-agent-version.yml) workflow._
+
+            ## Change Type
+
+            - [ ] Bug fix
+            - [ ] New feature
+            - [x] Non-functional (chore, refactoring, docs)
+            - [ ] Performance`;
+            const prLabel = 'ci/update-agent-version';
+
+            // Make sure we don't have an open PR for the exact same change.
+            const { data: exactPRData } = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${context.repo.owner}/${context.repo.repo} is:pr is:open head:${branchName}`
+            });
+
+            const exactPRs = exactPRData.items;
+
+            if (exactPRs.length > 0) {
+              console.log(`Pull request for this Agent version already exists: ${exactPRs[0].html_url}`);
+              return;
+            }
+
+            // Create the new pull request.
+            const updatePR = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: prTitle,
+              head: branchName,
+              base: 'main',
+              body: prBody,
+              labels: [prLabel, 'automated']
+            });
+            console.log(`Pull request created: ${updatePR.data.html_url}`);
+
+            // Look for other open PRs for updating the Agent version, and close them out so this one takes precedence.
+            const { data: labeledPRData } = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${context.repo.owner}/${context.repo.repo} is:pr is:open label:"${prLabel}"`
+            });
+
+            const obsoleteUpdatePRs = labeledPRData.items;
+
+            // Close any existing PRs created from this workflow so that we only have the latest one.
+            for (const obsoleteUpdatePR of obsoleteUpdatePRs) {
+              // Don't close the PR we just opened.
+              if (obsoleteUpdatePR.number == updatePR.data.number) {
+                continue;
+              }
+
+              console.log(`Closing existing PR: ${obsoleteUpdatePR.html_url}`);
+              await github.rest.pulls.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: obsoleteUpdatePR.number,
+                state: 'closed'
+              });
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: obsoleteUpdatePR.number,
+                body: `Closing this pull request as a new Agent version is available: [update PR](https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${updatePR.number})`
+              });
+            }
