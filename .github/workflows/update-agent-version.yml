@@ -22,7 +22,7 @@ jobs:
         id: octo-sts
         with:
           scope: DataDog/saluki
-          policy: self.update-datadog-agent-version.create-pr
+          policy: self.update-agent-version.create-pr
 
       - name: Checkout repository
         uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
