@@ -98,7 +98,7 @@ pub fn normalize_name(name: &MetaString) -> MetaString {
 
     let mut prev_char = '\0';
 
-    while let Some(c) = chars.next() {
+    for c in chars {
         if (c as u32) < 256 && IS_ALPHA_NUM_LOOKUP[c as usize] {
             normalized.push(c);
             prev_char = c;
@@ -184,17 +184,12 @@ pub fn normalize_tag(value: &str) -> MetaString {
 }
 
 fn normalize(value: &str, remove_digit_start_char: bool) -> MetaString {
-    println!("=====================================================================");
-    println!("=====================================================================");
-    println!("=====================================================================");
-    println!("value is {}, remove_digit... is {}", value, remove_digit_start_char);
     if value.is_empty() {
         return MetaString::from_static("");
     }
 
     // Fast Path: return right away if it is valid
     if is_normalized_ascii_tag(value, remove_digit_start_char) {
-        println!("WACKTEST7 fast return");
         return MetaString::from(value);
     }
     // Trim is used to to remove invalid characters from the start of the tag
@@ -202,73 +197,57 @@ fn normalize(value: &str, remove_digit_start_char: bool) -> MetaString {
     // Chars is used to count the number of valid characters in the tag
     // Tag is the byte slice of the tag
     // End_idx is the index of the last valid character in the tag
-    // Last_jump is the length of the last valid character in the tag
     let mut trim = 0usize;
     let mut cuts: Vec<(usize, usize)> = Vec::new();
     let mut chars = 0usize;
     let mut tag = value.as_bytes().to_vec();
     let mut end_idx = value.len();
-    println!("WACKTEST8 tag := []byte(v) is equal to  {:?}", tag);
-    let mut last_jump = 0usize;
 
     for (idx, mut curr_char) in value.char_indices() {
-        let jump = curr_char.len_utf8(); // 
-        last_jump = jump;
-        println!("WACKTEST9 i and r is  {} {} {}", idx, curr_char as u32, curr_char);
-        println!("WACKTEST10 jump is  {}", jump);
-        println!(
-            "WACKTEST11 tf is curr_char error  {} {}",
-            char::REPLACEMENT_CHARACTER as u32,
-            curr_char == char::REPLACEMENT_CHARACTER
-        );
-        
+        let jump = curr_char.len_utf8(); 
         if (curr_char as u32) < 256 && IS_VALID_ASCII_START_CHAR_LOOKUP[curr_char as usize] {
             chars += 1;
-            println!("WACKTEST12.5 is a char ");
         } else if curr_char.is_ascii_uppercase() {
             tag[idx] = curr_char.to_ascii_lowercase() as u8;
             chars += 1;
-            println!("WACKTEST12.6 is a char");
         } else {
-            // converts a unicode uppercase character to a lowercase character
+            // converts a unicode uppercase character to a lowercase character when the UTF-8 width stays the same
             if curr_char.is_uppercase() {
-                println!("WACKTEST13 unicode uppercase {}", curr_char);
-                let lowered = lowercase_preserving_width(curr_char);
-                if lowered != curr_char && lowered.len_utf8() == jump {
-                    let mut buf = [0u8; 4];
-                    let encoded = lowered.encode_utf8(&mut buf);
-                    tag[idx..idx + jump].copy_from_slice(encoded.as_bytes());
-                    curr_char = lowered;
+                // we check for the number of bytes in the lowercase character to be the same as the original character
+                // this is to avoid the case where the lowercase character is a different number of bytes such as ẞ → ss
+                let mut lowercase = curr_char.to_lowercase();
+                if let Some(lower_char) = lowercase.next() {
+                    if lower_char.len_utf8() == jump {
+                        // check if the lowercase character is the same number of bytes as the original character
+                        let mut buf = [0u8; 4]; // UTF-8 is four bytes max
+                        let encoded = lower_char.encode_utf8(&mut buf);
+                        tag[idx..idx + jump].copy_from_slice(encoded.as_bytes());
+                        curr_char = lower_char;
+                    }
                 }
             }
 
             if curr_char.is_alphabetic() {
                 chars += 1;
-                println!("WACKTEST15 unicode is letter r: {}, chars: {}", curr_char, chars);
             } else if remove_digit_start_char && chars == 0 {
                 trim = idx + jump;
                 end_idx = idx + jump;
-                 println!("WACKTEST16 unicode is letter {}", curr_char);
                 if end_idx >= 2 * MAX_TAG_LEN {
                     break;
                 }
                 continue;
             } else if curr_char.is_digit(10) || matches!(curr_char, '.' | '/' | '-') {
                 chars += 1;
-                println!("WACKTEST17 unicode is digit {}, chars: {}", curr_char, chars);
             } else {
+                // illegal character
                 chars += 1;
                 if let Some(last) = cuts.last_mut() {
                     if last.1 >= idx {
-                        println!("WACKTEST18 merge prev cut {}", last.1);
                         last.1 += jump;
-                        println!("WACKTEST18.5 mew MERGED cut {} {}", last.1, jump);
                     } else {
-                        println!("WACKTEST19 new cut [{}, {}]", idx, idx + jump);
                         cuts.push((idx, idx + jump));
                     }
                 } else {
-                    println!("WACKTEST19 new cut [{}, {}]", idx, idx + jump);
                     cuts.push((idx, idx + jump));
                 }
             }
@@ -276,93 +255,46 @@ fn normalize(value: &str, remove_digit_start_char: bool) -> MetaString {
 
         end_idx = idx + jump;
         if end_idx >= 2 * MAX_TAG_LEN {
-            println!("WACKTEST20 big boi {}", end_idx);
             break;
         }
         if chars >= MAX_TAG_LEN {
-            println!("WACKTEST21 big boi {}", chars);
             break;
         }
     }
 
-    println!("WACKTEST22 tag prev trim  {:?}", tag);
-    let start = trim.min(end_idx).min(tag.len());
-    let end = end_idx.min(tag.len());
-    let mut tag = tag[start..end].to_vec();
-    println!(
-        "WACKTEST22 tag after trim  {:?}  -----  {} {}",
-        tag, trim, last_jump
-    );
+    let mut tag = tag[trim..end_idx].to_vec();
 
     if cuts.is_empty() {
-        println!("WACKTEST23 no cuts");
         return MetaString::from(String::from_utf8(tag).unwrap_or_default());
     }
 
     let mut delta = trim;
-    println!("WACKTEST24 delta is  {}", delta);
     for (cut_start, cut_end) in cuts {
         if cut_end <= delta {
             continue;
         }
 
-        let start = cut_start.saturating_sub(delta);
-        let end = cut_end.saturating_sub(delta);
-        println!("WACKTEST25 cut is  [{}, {}]", cut_start, cut_end);
-        println!("WACKTEST25 start/end is  {} {}", start, end);
-
-        if start >= tag.len() {
-            break;
-        }
+        let start = cut_start - delta;
+        let end = cut_end - delta;
 
         if end >= tag.len() {
-            println!("WACKTEST26 big boi");
             tag.truncate(start);
             break;
         }
 
         tag[start] = b'_';
         if end - start == 1 {
-            println!("WACKTEST27 huh");
             continue;
         }
 
-        println!("WACKTEST28 prev discard  {:?}", tag);
         tag.copy_within(end.., start + 1);
-        println!("WACKTEST28.11111 after discard  {:?}", tag);
         let new_len = tag.len() - (end - start) + 1;
         tag.truncate(new_len);
-        println!("WACKTEST28.22222 after shorten  {:?}", tag);
         delta += (cut_end - cut_start) - 1;
-        println!("WACKTEST29 wtf is delta  {}", delta);
     }
-
-    println!("XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXxx");
     let final_str = String::from_utf8(tag).unwrap_or_default();
-    println!("final string is  {}", final_str);
-    println!("XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXxx");
+
     MetaString::from(final_str)
-}
-
-fn lowercase_preserving_width(c: char) -> char {
-    if c.is_ascii_uppercase() {
-        return c.to_ascii_lowercase();
-    }
-
-    if c.is_uppercase() {
-        // let mut iter = c.to_lowercase();
-        // let first = iter.next().unwrap_or(c);
-        // if iter.next().is_none() && first.len_utf8() == c.len_utf8() {
-        //     return first;
-        // }
-        let lower = c.to_lowercase();
-        if lower.len_utf8() == c.len_utf8() {
-            return lower;
-        }
-        return c;
-    }
-
-    c
 }
 
 fn is_valid_metric_name(name: &str) -> bool {
@@ -415,7 +347,6 @@ fn is_normalized_ascii_tag(tag: &str, check_valid_start_char: bool) -> bool {
     if tag.len() > MAX_TAG_LEN {
         return false;
     }
-
     let bytes = tag.as_bytes();
     let mut i = 0;
     if check_valid_start_char {
@@ -429,6 +360,7 @@ fn is_normalized_ascii_tag(tag: &str, check_valid_start_char: bool) -> bool {
         let b = bytes[i];
         // TODO: Attempt to optimize this check using SIMD/vectorization.
         if (b as u32) < 256 && IS_VALID_ASCII_TAG_CHAR_LOOKUP[b as usize] {
+            i += 1;
             continue;
         }
         if b == b'_' {
@@ -437,11 +369,11 @@ fn is_normalized_ascii_tag(tag: &str, check_valid_start_char: bool) -> bool {
             if i == bytes.len() || ((bytes[i] as u32) < 256 && !IS_VALID_ASCII_TAG_CHAR_LOOKUP[bytes[i] as usize]) {
                 return false;
             }
-        } 
+        }
         return false;
     }
 
-    return true;
+    true
 }
 
 const fn is_alpha(c: char) -> bool {
@@ -472,12 +404,12 @@ fn truncate_utf8(s: &MetaString, max_len: usize) -> &str {
     &s[..end]
 }
 #[cfg(test)]
-
 mod tests {
     use std::char;
 
     use super::*;
-
+    // Test cases taken from the agent codebase
+    // https://github.com/DataDog/datadog-agent/blob/instrument-otlp-traffic/pkg/trace/traceutil/normalize/normalize_test.go#L17
     #[test]
     fn test_normalize_tag() {
         let many_dogs = {
@@ -511,10 +443,7 @@ mod tests {
             (MetaString::from("allowed:c0l0ns"), MetaString::from("allowed:c0l0ns")),
             (MetaString::from("1love"), MetaString::from("love")),
             (MetaString::from("ünicöde"), MetaString::from("ünicöde")),
-            (
-                MetaString::from("ünicöde:metäl"),
-                MetaString::from("ünicöde:metäl"),
-            ),
+            (MetaString::from("ünicöde:metäl"), MetaString::from("ünicöde:metäl")),
             (
                 MetaString::from("Data🐨dog🐶 繋がっ⛰てて"),
                 MetaString::from("data_dog_繋がっ_てて"),
@@ -553,23 +482,14 @@ mod tests {
                 MetaString::from("---fun:k####y_ta@#g/1_@@#"),
                 MetaString::from("fun:k_y_ta_g/1"),
             ),
-            (
-                MetaString::from("AlsO:œ#@ö))œk"),
-                MetaString::from("also:œ_ö_œk"),
-            ),
+            (MetaString::from("AlsO:œ#@ö))œk"), MetaString::from("also:œ_ö_œk")),
             (
                 MetaString::from("a".repeat(888)),
                 MetaString::from("a".repeat(MAX_TAG_LEN)),
             ),
             (many_dogs, MetaString::from("a")),
-            (
-                MetaString::from(format!("a{}", replacement)),
-                MetaString::from("a"),
-            ),
-            (
-                MetaString::from(format!("a{0}{0}", replacement)),
-                MetaString::from("a"),
-            ),
+            (MetaString::from(format!("a{}", replacement)), MetaString::from("a")),
+            (MetaString::from(format!("a{0}{0}", replacement)), MetaString::from("a")),
             (
                 MetaString::from(format!("a{0}{0}b", replacement)),
                 MetaString::from("a_b"),
@@ -589,9 +509,9 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_name_from_agent() {
+    fn test_normalize_name() {
         let cases: Vec<(MetaString, MetaString)> = vec![
-            (MetaString::from(""), MetaString::from("unnamed_operation")),
+            (MetaString::from(""), DEFAULT_SPAN_NAME.clone()),
             (MetaString::from("good"), MetaString::from("good")),
             (
                 MetaString::from("last.underscore_trunc_"),
@@ -632,7 +552,7 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_service_from_agent() {
+    fn test_normalize_service() {
         for (service, expected) in base_service_cases().iter() {
             let normalized = normalize_service(service);
             assert_eq!(normalized.as_ref(), expected.as_ref(), "service {}", service);
@@ -643,7 +563,7 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_peer_service_from_agent() {
+    fn test_normalize_peer_service() {
         for (service, expected) in base_service_cases().iter() {
             let normalized = normalize_peer_service(service);
             assert_eq!(normalized.as_ref(), expected.as_ref(), "service {}", service);
@@ -695,19 +615,19 @@ mod tests {
     #[test]
     fn test_truncate_utf8() {
         let e_acute = MetaString::from("é");
-        assert!("é".bytes().len() == 2);
+        assert!("é".len() == 2);
         assert_eq!(truncate_utf8(&e_acute, 1), "");
         assert_eq!(truncate_utf8(&e_acute, 2), "é");
 
         let crab = MetaString::from("🦀");
-        assert!("🦀".bytes().len() == 4);
+        assert!("🦀".len() == 4);
         assert_eq!(truncate_utf8(&crab, 1), "");
         assert_eq!(truncate_utf8(&crab, 2), "");
         assert_eq!(truncate_utf8(&crab, 3), "");
         assert_eq!(truncate_utf8(&crab, 4), "🦀");
 
         let a_crab_b = MetaString::from("a🦀b");
-        assert!("a🦀b".bytes().len() == 6);
+        assert!("a🦀b".len() == 6);
         assert_eq!(truncate_utf8(&a_crab_b, 1), "a");
         assert_eq!(truncate_utf8(&a_crab_b, 2), "a");
         assert_eq!(truncate_utf8(&a_crab_b, 3), "a");

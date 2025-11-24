@@ -453,7 +453,7 @@ fn map_db_system_to_span_type(db_system: &str) -> &'static str {
         "elasticsearch" => "elasticsearch",
         "opensearch" => "opensearch",
         "cassandra" => "cassandra",
-        system if SQL_DB_SYSTEMS.iter().any(|candidate| *candidate == system) => "sql",
+        system if SQL_DB_SYSTEMS.contains(&system) => "sql",
         _ => "db",
     }
 }
