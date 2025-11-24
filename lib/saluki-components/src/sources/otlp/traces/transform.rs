@@ -85,7 +85,7 @@ pub fn otel_span_to_dd_span(
 
     // 1) DD namespaced keys take precedence over OTLP keys, so use them first
     for (dd_key, apm_key) in DD_NAMESPACED_TO_APM_CONVENTIONS {
-        if let Some(value) = use_both_maps(span_attributes, resource_attributes, dd_key) {
+        if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, dd_key) {
             meta.entry((*apm_key).into()).or_insert(value);
         }
     }
@@ -169,7 +169,7 @@ pub fn otel_to_dd_span_minimal(
         0
     };
 
-    let incoming_span_kind = use_both_maps(span_attributes, resource_attributes, KEY_DATADOG_SPAN_KIND);
+    let incoming_span_kind = use_both_maps(span_attributes, resource_attributes, true, KEY_DATADOG_SPAN_KIND);
     if let Some(value) = incoming_span_kind {
         meta.entry(SPAN_KIND_META_KEY.into()).or_insert(value);
     } else {
@@ -181,13 +181,13 @@ pub fn otel_to_dd_span_minimal(
     }
 
     let mut service =
-        use_both_maps(span_attributes, resource_attributes, KEY_DATADOG_SERVICE).unwrap_or_else(MetaString::empty);
+        use_both_maps(span_attributes, resource_attributes, true, KEY_DATADOG_SERVICE).unwrap_or_else(MetaString::empty);
     let mut name =
-        use_both_maps(span_attributes, resource_attributes, KEY_DATADOG_NAME).unwrap_or_else(MetaString::empty);
+        use_both_maps(span_attributes, resource_attributes, true, KEY_DATADOG_NAME).unwrap_or_else(MetaString::empty);
     let mut resource =
-        use_both_maps(span_attributes, resource_attributes, KEY_DATADOG_RESOURCE).unwrap_or_else(MetaString::empty);
+        use_both_maps(span_attributes, resource_attributes, true, KEY_DATADOG_RESOURCE).unwrap_or_else(MetaString::empty);
     let mut span_type =
-        use_both_maps(span_attributes, resource_attributes, KEY_DATADOG_TYPE).unwrap_or_else(MetaString::empty);
+        use_both_maps(span_attributes, resource_attributes, true, KEY_DATADOG_TYPE).unwrap_or_else(MetaString::empty);
 
     if !ignore_missing_fields {
         if service.is_empty() {
@@ -221,7 +221,7 @@ pub fn otel_to_dd_span_minimal(
 
 /// Returns the DD service name based on OTel span and resource attributes.
 fn get_otel_service(span_attributes: &[KeyValue], resource_attributes: &[KeyValue], normalize: bool) -> MetaString {
-    let service = use_both_maps(span_attributes, resource_attributes, SERVICE_NAME).unwrap_or_else(|| {
+    let service = use_both_maps(span_attributes, resource_attributes, true, SERVICE_NAME).unwrap_or_else(|| {
         // We do not fallback to `otel_span.name` here, as that is a legacy behavior that we want to avoid.
         MetaString::from_static(DEFAULT_SERVICE_NAME)
     });
@@ -241,8 +241,8 @@ fn get_otel_service(span_attributes: &[KeyValue], resource_attributes: &[KeyValu
 fn get_otel_operation_name_v2(
     otel_span: &OtlpSpan, span_attributes: &[KeyValue], resource_attributes: &[KeyValue],
 ) -> MetaString {
-    if let Some(value) = use_both_maps(span_attributes, resource_attributes, OPERATION_NAME_KEY) {
-        return normalize_name(&value);
+    if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, OPERATION_NAME_KEY) {
+        return normalize_name(value);
     }
 
     let span_kind = SpanKind::try_from(otel_span.kind).unwrap_or(SpanKind::Unspecified);
@@ -250,7 +250,7 @@ fn get_otel_operation_name_v2(
     let is_server = matches!(span_kind, SpanKind::Server);
 
     for http_request_method_key in HTTP_REQUEST_METHOD_KEYS {
-        if use_both_maps(span_attributes, resource_attributes, http_request_method_key).is_some() {
+        if use_both_maps(span_attributes, resource_attributes, true, http_request_method_key).is_some() {
             if is_server {
                 return MetaString::from_static("http.server.request");
             }
@@ -260,15 +260,15 @@ fn get_otel_operation_name_v2(
         }
     }
     // database
-    if let Some(db_system) = use_both_maps(span_attributes, resource_attributes, DB_SYSTEM_KEY) {
+    if let Some(db_system) = use_both_maps(span_attributes, resource_attributes, true, DB_SYSTEM_KEY) {
         if is_client {
             return MetaString::from(format!("{db_system}.query"));
         }
     }
     // messaging
     if let (Some(system), Some(operation)) = (
-        use_both_maps(span_attributes, resource_attributes, MESSAGING_SYSTEM_KEY),
-        use_both_maps(span_attributes, resource_attributes, MESSAGING_OPERATION_KEY),
+        use_both_maps(span_attributes, resource_attributes, true, MESSAGING_SYSTEM_KEY),
+        use_both_maps(span_attributes, resource_attributes, true, MESSAGING_OPERATION_KEY),
     ) {
         match span_kind {
             SpanKind::Client | SpanKind::Server | SpanKind::Consumer | SpanKind::Producer => {
@@ -278,10 +278,10 @@ fn get_otel_operation_name_v2(
         }
     }
     // RPC & AWS
-    if let Some(rpc_system) = use_both_maps(span_attributes, resource_attributes, RPC_SYSTEM_KEY) {
+    if let Some(rpc_system) = use_both_maps(span_attributes, resource_attributes, true, RPC_SYSTEM_KEY) {
         let is_aws = rpc_system == "aws-api";
         if is_aws && is_client {
-            if let Some(service) = use_both_maps(span_attributes, resource_attributes, RPC_SERVICE_KEY) {
+            if let Some(service) = use_both_maps(span_attributes, resource_attributes, true, RPC_SERVICE_KEY) {
                 return MetaString::from(format!("aws.{service}.request"));
             }
             return MetaString::from("aws.client.request");
@@ -298,8 +298,8 @@ fn get_otel_operation_name_v2(
     if is_client {
         if let (Some(provider), Some(invoked)) = (
             // TODO: add normalization logic
-            use_both_maps(span_attributes, resource_attributes, FAAS_INVOKED_PROVIDER_KEY),
-            use_both_maps(span_attributes, resource_attributes, FAAS_INVOKED_NAME_KEY),
+            use_both_maps(span_attributes, resource_attributes, true, FAAS_INVOKED_PROVIDER_KEY),
+            use_both_maps(span_attributes, resource_attributes, true, FAAS_INVOKED_NAME_KEY),
         ) {
             return MetaString::from(format!("{provider}.{invoked}.invoke"));
         }
@@ -307,23 +307,27 @@ fn get_otel_operation_name_v2(
     // FAAS server
     if is_server {
         // TODO: add normalization logic
-        if let Some(trigger) = use_both_maps(span_attributes, resource_attributes, FAAS_TRIGGER_KEY) {
+        if let Some(trigger) = use_both_maps(span_attributes, resource_attributes, true, FAAS_TRIGGER_KEY) {
             return MetaString::from(format!("{trigger}.invoke"));
         }
     }
 
-    if use_both_maps(span_attributes, resource_attributes, GRAPHQL_OPERATION_TYPE_KEY).is_some() {
+    if use_both_maps(span_attributes, resource_attributes, true, GRAPHQL_OPERATION_TYPE_KEY).is_some() {
         return MetaString::from_static("graphql.server.request");
     }
 
     if is_server {
-        if let Some(protocol) = get_attr_from_both(span_attributes, resource_attributes, NETWORK_PROTOCOL_NAME_KEY) {
+        if let Some(protocol) =
+            get_attr_from_both(span_attributes, resource_attributes, true, NETWORK_PROTOCOL_NAME_KEY)
+        {
             return MetaString::from(format!("{protocol}.server.request"));
         }
         return MetaString::from_static("server.request");
     }
     if is_client {
-        if let Some(protocol) = get_attr_from_both(span_attributes, resource_attributes, NETWORK_PROTOCOL_NAME_KEY) {
+        if let Some(protocol) =
+            get_attr_from_both(span_attributes, resource_attributes, true, NETWORK_PROTOCOL_NAME_KEY)
+        {
             return MetaString::from(format!("{protocol}.client.request"));
         }
         return MetaString::from_static("client.request");
@@ -341,62 +345,64 @@ fn get_otel_resource_v2(
     otel_span: &OtlpSpan, span_attributes: &[KeyValue], resource_attributes: &[KeyValue],
 ) -> MetaString {
     let span_kind = SpanKind::try_from(otel_span.kind).unwrap_or(SpanKind::Unspecified);
-    if let Some(value) = get_attr_from_both(span_attributes, resource_attributes, RESOURCE_NAME_KEY) {
-        return value.into();
+    if let Some(value) = get_attr_from_both(span_attributes, resource_attributes, true, RESOURCE_NAME_KEY) {
+        return value;
     }
 
     if let Some(method) = get_attr_from_both_any(span_attributes, resource_attributes, HTTP_REQUEST_METHOD_KEYS) {
-        let mut resource_name = if method == "_OTHER" {
+        let mut resource_name = if method.as_ref() == "_OTHER" {
             String::from("HTTP")
         } else {
-            method.to_string()
+            method.as_ref().to_string()
         };
         if span_kind == SpanKind::Server {
-            if let Some(route) = get_attr_from_both(span_attributes, resource_attributes, HTTP_ROUTE_KEY) {
+            if let Some(route) = get_attr_from_both(span_attributes, resource_attributes, true, HTTP_ROUTE_KEY) {
                 if !route.is_empty() {
                     resource_name.push(' ');
-                    resource_name.push_str(route);
+                    resource_name.push_str(route.as_ref());
                 }
             }
         }
         return MetaString::from(resource_name);
     }
 
-    if let Some(operation) = get_attr_from_both(span_attributes, resource_attributes, MESSAGING_OPERATION_KEY) {
-        let mut resource_name = operation.to_string();
+    if let Some(operation) = get_attr_from_both(span_attributes, resource_attributes, true, MESSAGING_OPERATION_KEY) {
+        let mut resource_name = operation.as_ref().to_string();
         if let Some(dest) = get_attr_from_both_any(span_attributes, resource_attributes, MESSAGING_DESTINATION_KEYS) {
             if !dest.is_empty() {
                 resource_name.push(' ');
-                resource_name.push_str(dest);
+                resource_name.push_str(dest.as_ref());
             }
         }
         return MetaString::from(resource_name);
     }
 
-    if let Some(method) = get_attr_from_both(span_attributes, resource_attributes, RPC_METHOD_KEY) {
-        let mut resource_name = method.to_string();
-        if let Some(service) = get_attr_from_both(span_attributes, resource_attributes, RPC_SERVICE_KEY) {
+    if let Some(method) = get_attr_from_both(span_attributes, resource_attributes, true, RPC_METHOD_KEY) {
+        let mut resource_name = method.as_ref().to_string();
+        if let Some(service) = get_attr_from_both(span_attributes, resource_attributes, true, RPC_SERVICE_KEY) {
             resource_name.push(' ');
-            resource_name.push_str(service);
+            resource_name.push_str(service.as_ref());
         }
         return MetaString::from(resource_name);
     }
 
-    if let Some(op_type) = get_attr_from_both(span_attributes, resource_attributes, GRAPHQL_OPERATION_TYPE_KEY) {
-        let mut resource_name = op_type.to_string();
-        if let Some(op_name) = get_attr_from_both(span_attributes, resource_attributes, GRAPHQL_OPERATION_NAME_KEY) {
+    if let Some(op_type) = get_attr_from_both(span_attributes, resource_attributes, true, GRAPHQL_OPERATION_TYPE_KEY) {
+        let mut resource_name = op_type.as_ref().to_string();
+        if let Some(op_name) =
+            get_attr_from_both(span_attributes, resource_attributes, true, GRAPHQL_OPERATION_NAME_KEY)
+        {
             resource_name.push(' ');
-            resource_name.push_str(op_name);
+            resource_name.push_str(op_name.as_ref());
         }
         return MetaString::from(resource_name);
     }
 
-    if get_attr_from_both(span_attributes, resource_attributes, DB_SYSTEM_KEY).is_some() {
-        if let Some(statement) = get_attr_from_both(span_attributes, resource_attributes, DB_STATEMENT_KEY) {
-            return MetaString::from(statement);
+    if get_attr_from_both(span_attributes, resource_attributes, true, DB_SYSTEM_KEY).is_some() {
+        if let Some(statement) = get_attr_from_both(span_attributes, resource_attributes, true, DB_STATEMENT_KEY) {
+            return statement;
         }
-        if let Some(query) = get_attr_from_both(span_attributes, resource_attributes, DB_QUERY_TEXT_KEY) {
-            return MetaString::from(query);
+        if let Some(query) = get_attr_from_both(span_attributes, resource_attributes, true, DB_QUERY_TEXT_KEY) {
+            return query;
         }
     }
 
@@ -426,16 +432,16 @@ fn get_otel_resource_v2_truncated(
 fn get_otel_span_type(
     otel_span: &OtlpSpan, span_attributes: &[KeyValue], resource_attributes: &[KeyValue],
 ) -> MetaString {
-    if let Some(value) = get_attr_from_both(span_attributes, resource_attributes, "span.type") {
-        return value.into();
+    if let Some(value) = get_attr_from_both(span_attributes, resource_attributes, true, "span.type") {
+        return value;
     }
 
     let span_kind = SpanKind::try_from(otel_span.kind).unwrap_or(SpanKind::Unspecified);
     let span_type = match span_kind {
         SpanKind::Server => "web",
         SpanKind::Client => {
-            if let Some(db_system) = get_attr_from_both(span_attributes, resource_attributes, DB_SYSTEM_KEY) {
-                map_db_system_to_span_type(db_system)
+            if let Some(db_system) = get_attr_from_both(span_attributes, resource_attributes, true, DB_SYSTEM_KEY) {
+                map_db_system_to_span_type(db_system.as_ref())
             } else {
                 "http"
             }
@@ -497,18 +503,18 @@ const SQL_DB_SYSTEMS: &[&str] = &[
     "clickhouse",
 ];
 
-fn get_attr_from_both<'a>(map: &'a [KeyValue], map2: &'a [KeyValue], key: &str) -> Option<&'a str> {
+fn get_attr_from_both<'a>(map: &'a [KeyValue], map2: &'a [KeyValue], normalize: bool, key: &str) -> Option<MetaString> {
     if let Some(value) = get_string_attribute(map, key) {
-        return Some(value);
+        return Some(if normalize { normalize_name(MetaString::from(value)) } else { MetaString::from(value) });
     }
-    get_string_attribute(map2, key)
+    get_string_attribute(map2, key).map(|value| if normalize { normalize_name(MetaString::from(value)) } else { MetaString::from(value) })
 }
 
 fn get_attr_from_both_any<'a>(
     span_attributes: &'a [KeyValue], resource_attributes: &'a [KeyValue], keys: &[&str],
-) -> Option<&'a str> {
+) -> Option<MetaString> {
     for key in keys {
-        if let Some(value) = get_attr_from_both(span_attributes, resource_attributes, key) {
+        if let Some(value) = get_attr_from_both(span_attributes, resource_attributes, true, key) {
             return Some(value);
         }
     }
@@ -579,9 +585,10 @@ fn span_kind_name(kind: SpanKind) -> &'static str {
 
 fn use_both_maps(map: &[KeyValue], map2: &[KeyValue], normalize: bool, key: &str) -> Option<MetaString> {
     if let Some(value) = get_string_attribute(map, key) {
-        return Some(if normalize { normalize_name(&MetaString::from(value)) } else { MetaString::from(value) });
+        return Some(if normalize { normalize_name(MetaString::from(value)) } else { MetaString::from(value) });
     }
-    get_string_attribute(map2, key).map(|value| if normalize { normalize_name(&MetaString::from(value)) } else { MetaString::from(value) })
+    get_string_attribute(map2, key)
+        .map(|value| if normalize { normalize_name(MetaString::from(value)) } else { MetaString::from(value) })
 }
 // GetOTelStatusCode returns the HTTP status code based on OTel span and resource attributes, with span taking precedence.
 fn get_otel_status_code(

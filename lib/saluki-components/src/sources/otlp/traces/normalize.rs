@@ -10,7 +10,9 @@ pub const MAX_SERVICE_LEN: usize = 100;
 pub const MAX_RESOURCE_LEN: usize = 5000;
 pub const MAX_TAG_LEN: usize = 200;
 
+// default service name we assign a span if it's missing and we have no reasonable fallback
 const DEFAULT_SERVICE_NAME: MetaString = MetaString::from_static("unnamed-service");
+// default span name we assign a span if it's missing and we have no reasonable fallback
 const DEFAULT_SPAN_NAME: MetaString = MetaString::from_static("unnamed_operation");
 
 // lookup tables for fast lookups of ASCII characters
@@ -23,7 +25,6 @@ static IS_ALPHA_LOOKUP: [bool; 256] = {
     }
     lookup
 };
-
 static IS_ALPHA_NUM_LOOKUP: [bool; 256] = {
     let mut lookup = [false; 256];
     let mut i = 0;
@@ -33,7 +34,6 @@ static IS_ALPHA_NUM_LOOKUP: [bool; 256] = {
     }
     lookup
 };
-
 static IS_VALID_ASCII_START_CHAR_LOOKUP: [bool; 256] = {
     let mut lookup = [false; 256];
     let mut i = 0;
@@ -43,7 +43,6 @@ static IS_VALID_ASCII_START_CHAR_LOOKUP: [bool; 256] = {
     }
     lookup
 };
-
 static IS_VALID_ASCII_TAG_CHAR_LOOKUP: [bool; 256] = {
     let mut lookup = [false; 256];
     let mut i = 0;
@@ -58,7 +57,8 @@ static IS_VALID_ASCII_TAG_CHAR_LOOKUP: [bool; 256] = {
 ///
 /// This function truncates the name to `MAX_NAME_LEN`, replaces invalid characters with underscores,
 /// and handles consecutive underscores and underscores after periods.
-pub fn normalize_name(name: &MetaString) -> MetaString {
+#[allow(dead_code)]
+pub fn normalize_name(mut name: MetaString) -> MetaString {
     if name.is_empty() {
         debug!(
             "normalize_name: name is empty, returning default span name: {}",
@@ -66,39 +66,39 @@ pub fn normalize_name(name: &MetaString) -> MetaString {
         );
         return DEFAULT_SPAN_NAME.clone();
     }
-
-    let truncated = truncate_utf8(name, MAX_NAME_LEN);
-    debug!("normalize_name: name is too long,truncated name: {}", truncated);
-    if is_valid_metric_name(truncated) {
-        return MetaString::from(truncated);
+    if name.len() > MAX_NAME_LEN {
+        name = MetaString::from(truncate_utf8(&name, MAX_NAME_LEN));
+        debug!("normalize_name: name is too long,truncated name: {}", name);
     }
-
-    // If we are here, we need to normalize.
-    // Logic from Agent:
+    
+    // Normalize the name according to the following rules:
     // 1. Skip non-alphabetic characters at the start.
     // 2. Replace non-alphanumeric characters (except '.' and '_') with '_'.
     // 3. Avoid consecutive underscores.
     // 4. Avoid underscores after periods.
     // 5. Avoid trailing underscores.
-
-    let mut normalized = String::with_capacity(truncated.len());
-    let mut chars = truncated.chars().peekable();
-
+    let mut normalized = String::with_capacity(name.len());
     // Skip non-alphabetic characters at start
-    while let Some(&c) = chars.peek() {
-        if (c as u32) < 256 && IS_ALPHA_LOOKUP[c as usize] {
-            break;
-        }
-        chars.next();
+    let mut i = 0;
+    let name_bytes = name.as_bytes();
+    while i < name_bytes.len() && !IS_ALPHA_LOOKUP[name_bytes[i] as usize] {
+        i += 1;
     }
 
-    if chars.peek().is_none() {
+    if i >= name_bytes.len(){
         return DEFAULT_SPAN_NAME.clone();
     }
-
+    if is_valid_metric_name(&name.as_ref()[i..]){
+        if name.ends_with('_') {
+           return MetaString::from(&name.as_ref()[i..(name.len() - 1)]); 
+        }
+        return MetaString::from(&name.as_ref()[i..]);
+    }
     let mut prev_char = '\0';
 
-    for c in chars {
+    while i < name_bytes.len() {
+        let c = name_bytes[i] as char;
+        i += 1;
         if (c as u32) < 256 && IS_ALPHA_NUM_LOOKUP[c as usize] {
             normalized.push(c);
             prev_char = c;
@@ -136,6 +136,8 @@ pub fn normalize_name(name: &MetaString) -> MetaString {
 ///
 /// Truncates to `MAX_SERVICE_LEN` and ensures characters are valid for tags.
 pub fn normalize_service(service: &MetaString) -> MetaString {
+    // TODO: add fall back service for languages 
+    // e.g. https://github.com/DataDog/datadog-agent/blob/instrument-otlp-traffic/pkg/trace/traceutil/normalize/normalize.go#L124
     if service.is_empty() {
         return DEFAULT_SERVICE_NAME.clone();
     }
@@ -312,7 +314,7 @@ fn is_valid_metric_name(name: &str) -> bool {
     let mut prev_char = name.chars().next().unwrap();
 
     for c in chars {
-        if IS_ALPHA_NUM_LOOKUP[c as usize] {
+        if (c as u32) < 256 && IS_ALPHA_NUM_LOOKUP[c as usize] {
             prev_char = c;
             continue;
         }
@@ -546,7 +548,7 @@ mod tests {
         ];
 
         for (name, expected) in cases.iter() {
-            let normalized = normalize_name(name);
+            let normalized = normalize_name(name.clone());
             assert_eq!(normalized.as_ref(), expected.as_ref(), "name {}", name);
         }
     }
