@@ -93,7 +93,7 @@ jobs:
           echo "Update complete!"
 
       - name: Create remote branch
-        if: steps.changes.outputs.needs_update == 'true'
+        if: steps.compare.outputs.needs_update == 'true'
         run: |
           BRANCH_NAME=ci/update-agent-version-${{ steps.fetch-latest.outputs.latest_version }}
           git push origin HEAD:refs/heads/${BRANCH_NAME}
@@ -107,7 +107,7 @@ jobs:
           echo "update_commit_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
 
       - name: Sign Commit
-        if: steps.changes.outputs.needs_update == 'true'
+        if: steps.compare.outputs.needs_update == 'true'
         uses: DataDog/commit-headless@5a0f3876e0fbdd3a86b3e008acf4ec562db59eee # v2.0.1
         with:
           branch: ci/update-agent-version-${{ steps.fetch-latest.outputs.latest_version }}
@@ -116,7 +116,7 @@ jobs:
           commits: "${{ steps.commit.outputs.update_commit_sha }}"
 
       - name: Create Pull Request
-        if: steps.changes.outputs.has_changes == 'true'
+        if: steps.compare.outputs.needs_update == 'true'
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
           github-token: "${{ steps.octo-sts.outputs.token }}"
