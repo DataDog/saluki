@@ -204,7 +204,7 @@ fn normalize(value: &str, remove_digit_start_char: bool) -> MetaString {
     let mut end_idx = value.len();
 
     for (idx, mut curr_char) in value.char_indices() {
-        let jump = curr_char.len_utf8(); 
+        let jump = curr_char.len_utf8();
         if (curr_char as u32) < 256 && IS_VALID_ASCII_START_CHAR_LOOKUP[curr_char as usize] {
             chars += 1;
         } else if curr_char.is_ascii_uppercase() {

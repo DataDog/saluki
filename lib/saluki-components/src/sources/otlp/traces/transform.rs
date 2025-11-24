@@ -160,7 +160,7 @@ pub fn otel_to_dd_span_minimal(
     let error = if let Some(value) = get_string_attribute(span_attributes, KEY_DATADOG_ERROR) {
         value.parse::<i32>().unwrap_or(0)
     } else if let Some(status) = &otel_span.status {
-        if StatusCode::try_from(status.code).unwrap_or(StatusCode::Unset) == StatusCode::Error {
+        if status.code() == StatusCode::Error {
             1
         } else {
             0
@@ -168,6 +168,17 @@ pub fn otel_to_dd_span_minimal(
     } else {
         0
     };
+
+    let incoming_span_kind = use_both_maps(span_attributes, resource_attributes, KEY_DATADOG_SPAN_KIND);
+    if let Some(value) = incoming_span_kind {
+        meta.entry(SPAN_KIND_META_KEY.into()).or_insert(value);
+    } else {
+        meta.entry(SPAN_KIND_META_KEY.into()).or_insert_with(|| {
+            MetaString::from(span_kind_name(
+                SpanKind::try_from(otel_span.kind).unwrap_or(SpanKind::Unspecified),
+            ))
+        });
+    }
 
     let mut service =
         use_both_maps(span_attributes, resource_attributes, KEY_DATADOG_SERVICE).unwrap_or_else(MetaString::empty);
@@ -200,17 +211,7 @@ pub fn otel_to_dd_span_minimal(
         service, name, resource, span_type, trace_id, span_id, parent_id, start, duration, error,
     );
 
-    let incoming_span_kind = use_both_maps(span_attributes, resource_attributes, KEY_DATADOG_SPAN_KIND);
-    if let Some(value) = incoming_span_kind {
-        meta.entry(SPAN_KIND_META_KEY.into()).or_insert(value);
-    } else {
-        meta.entry(SPAN_KIND_META_KEY.into()).or_insert_with(|| {
-            MetaString::from(span_kind_name(
-                SpanKind::try_from(otel_span.kind).unwrap_or(SpanKind::Unspecified),
-            ))
-        });
-    }
-
+    
     if let Some(status_code) = get_otel_status_code(span_attributes, resource_attributes, ignore_missing_fields) {
         metrics.entry(HTTP_STATUS_CODE_KEY.into()).or_insert(status_code as f64);
     }
@@ -576,11 +577,11 @@ fn span_kind_name(kind: SpanKind) -> &'static str {
     }
 }
 
-fn use_both_maps(map: &[KeyValue], map2: &[KeyValue], key: &str) -> Option<MetaString> {
+fn use_both_maps(map: &[KeyValue], map2: &[KeyValue], normalize: bool, key: &str) -> Option<MetaString> {
     if let Some(value) = get_string_attribute(map, key) {
-        return Some(MetaString::from(value));
+        return Some(if normalize { normalize_name(&MetaString::from(value)) } else { MetaString::from(value) });
     }
-    get_string_attribute(map2, key).map(MetaString::from)
+    get_string_attribute(map2, key).map(|value| if normalize { normalize_name(&MetaString::from(value)) } else { MetaString::from(value) })
 }
 // GetOTelStatusCode returns the HTTP status code based on OTel span and resource attributes, with span taking precedence.
 fn get_otel_status_code(
