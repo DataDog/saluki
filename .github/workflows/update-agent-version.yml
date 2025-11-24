@@ -100,7 +100,7 @@ jobs:
 
       - name: Commit Changes
         id: commit
-        if: steps.changes.outputs.needs_update == 'true'
+        if: steps.compare.outputs.needs_update == 'true'
         run: |
           git add .
           git commit -m "chore(ci): update Datadog Agent version to ${{ steps.fetch-latest.outputs.latest_version }}"
