@@ -299,7 +299,7 @@ pub fn raw_origin_from_attributes<'a>(attributes: &'a [otlp_common::KeyValue]) -
         match kv.key.as_str() {
             CONTAINER_ID => {
                 if let Some(value) = try_get_string_from_value(kv.value.as_ref().and_then(|v| v.value.as_ref())) {
-                    origin.set_container_id(value);
+                    origin.set_local_data(value);
                 }
             }
             K8S_POD_UID => {

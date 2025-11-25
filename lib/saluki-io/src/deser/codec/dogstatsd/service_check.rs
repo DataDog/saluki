@@ -20,7 +20,7 @@ pub struct ServiceCheckPacket<'a> {
     pub hostname: Option<&'a str>,
     pub message: Option<&'a str>,
     pub tags: RawTags<'a>,
-    pub container_id: Option<&'a str>,
+    pub local_data: Option<&'a str>,
     pub external_data: Option<&'a str>,
     pub cardinality: Option<OriginTagCardinality>,
 }
@@ -41,7 +41,7 @@ pub fn parse_dogstatsd_service_check<'a>(
     let mut maybe_hostname = None;
     let mut maybe_tags = None;
     let mut maybe_message = None;
-    let mut maybe_container_id = None;
+    let mut maybe_local_data = None;
     let mut maybe_external_data = None;
     let mut maybe_cardinality = None;
 
@@ -64,11 +64,10 @@ pub fn parse_dogstatsd_service_check<'a>(
                         all_consuming(preceded(tag(HOSTNAME_PREFIX), ascii_alphanum_and_seps)).parse(chunk)?;
                     maybe_hostname = Some(hostname);
                 }
-                // Container ID: client-provided container ID for the container that this service check originated from.
-                CONTAINER_ID_PREFIX => {
-                    let (_, container_id) =
-                        all_consuming(preceded(tag(CONTAINER_ID_PREFIX), container_id)).parse(chunk)?;
-                    maybe_container_id = Some(container_id);
+                // Local Data: client-provided data used for resolving the entity ID that this service check originated from.
+                LOCAL_DATA_PREFIX => {
+                    let (_, local_data) = all_consuming(preceded(tag(LOCAL_DATA_PREFIX), local_data)).parse(chunk)?;
+                    maybe_local_data = Some(local_data);
                 }
                 // External Data: client-provided data used for resolving the entity ID that this service check originated from.
                 EXTERNAL_DATA_PREFIX => {
@@ -113,7 +112,7 @@ pub fn parse_dogstatsd_service_check<'a>(
         timestamp: maybe_timestamp,
         hostname: maybe_hostname,
         message: maybe_message,
-        container_id: maybe_container_id,
+        local_data: maybe_local_data,
         external_data: maybe_external_data,
         cardinality: maybe_cardinality,
     };
@@ -228,14 +227,14 @@ mod tests {
         let name = "testsvc";
         let sc_status = CheckStatus::Ok;
         let sc_message = MetaString::from("service running properly");
-        let sc_container_id = "ci-1234567890";
+        let sc_local_data = "ci-1234567890";
         let sc_external_data = "it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183";
         let raw = format!(
             "_sc|{}|{}|#tag1,tag2|m:{}|c:{}|e:{}",
             name,
             sc_status.as_u8(),
             sc_message,
-            sc_container_id,
+            sc_local_data,
             sc_external_data,
         );
         let result = parse_dsd_service_check(raw.as_bytes()).unwrap();
@@ -248,7 +247,7 @@ mod tests {
 
         let config = DogstatsdCodecConfiguration::default();
         let (_, packet) = parse_dogstatsd_service_check(raw.as_bytes(), &config).expect("should not fail to parse");
-        assert_eq!(packet.container_id, Some(sc_container_id));
+        assert_eq!(packet.local_data, Some(sc_local_data));
         assert_eq!(packet.external_data, Some(sc_external_data));
     }
 
@@ -258,7 +257,7 @@ mod tests {
         let sc_status = CheckStatus::Unknown;
         let sc_timestamp = 1234567890;
         let sc_hostname = MetaString::from("myhost");
-        let sc_container_id = "abcdef123456";
+        let sc_local_data = "abcdef123456";
         let sc_external_data = "it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183";
         let tags = ["tag1", "tag2"];
         let sc_message = MetaString::from("service status unknown");
@@ -269,7 +268,7 @@ mod tests {
             sc_status.as_u8(),
             sc_timestamp,
             sc_hostname,
-            sc_container_id,
+            sc_local_data,
             sc_external_data,
             sc_cardinality,
             tags.join(","),
@@ -286,7 +285,7 @@ mod tests {
 
         let config = DogstatsdCodecConfiguration::default();
         let (_, packet) = parse_dogstatsd_service_check(raw.as_bytes(), &config).expect("should not fail to parse");
-        assert_eq!(packet.container_id, Some(sc_container_id));
+        assert_eq!(packet.local_data, Some(sc_local_data));
         assert_eq!(packet.external_data, Some(sc_external_data));
         assert_eq!(packet.cardinality, Some(OriginTagCardinality::None));
     }

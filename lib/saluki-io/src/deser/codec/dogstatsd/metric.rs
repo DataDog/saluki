@@ -29,7 +29,7 @@ pub struct MetricPacket<'a> {
     pub values: MetricValues,
     pub num_points: u64,
     pub timestamp: Option<u64>,
-    pub container_id: Option<&'a str>,
+    pub local_data: Option<&'a str>,
     pub external_data: Option<&'a str>,
     pub cardinality: Option<OriginTagCardinality>,
 }
@@ -55,7 +55,7 @@ pub fn parse_dogstatsd_metric<'a>(
     // if it's any of the protocol extensions we know of.
     let mut maybe_sample_rate = None;
     let mut maybe_tags = None;
-    let mut maybe_container_id = None;
+    let mut maybe_local_data = None;
     let mut maybe_timestamp = None;
     let mut maybe_external_data = None;
     let mut maybe_cardinality = None;
@@ -83,10 +83,10 @@ pub fn parse_dogstatsd_metric<'a>(
                     let (_, tags) = all_consuming(preceded(tag("#"), tags(config))).parse(chunk)?;
                     maybe_tags = Some(tags);
                 }
-                // Container ID: client-provided container ID for the container that this metric originated from.
+                // Local Data: client-provided data used for resolving the entity ID that this metric originated from.
                 b'c' if chunk.len() > 1 && chunk[1] == b':' => {
-                    let (_, container_id) = all_consuming(preceded(tag("c:"), container_id)).parse(chunk)?;
-                    maybe_container_id = Some(container_id);
+                    let (_, local_data) = all_consuming(preceded(tag("c:"), local_data)).parse(chunk)?;
+                    maybe_local_data = Some(local_data);
                 }
                 // Timestamp: client-provided timestamp for the metric, relative to the Unix epoch, in seconds.
                 b'T' => {
@@ -140,7 +140,7 @@ pub fn parse_dogstatsd_metric<'a>(
             values: metric_values,
             num_points,
             timestamp: maybe_timestamp,
-            container_id: maybe_container_id,
+            local_data: maybe_local_data,
             external_data: maybe_external_data,
             cardinality: maybe_cardinality,
         },
@@ -378,11 +378,11 @@ mod tests {
     }
 
     #[test]
-    fn metric_container_id() {
+    fn metric_local_data() {
         let name = "my.counter";
         let value = 1.0;
-        let container_id = "abcdef123456";
-        let raw = format!("{}:{}|c|c:{}", name, value, container_id);
+        let local_data = "abcdef123456";
+        let raw = format!("{}:{}|c|c:{}", name, value, local_data);
         let expected = Metric::counter(name, value);
 
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
@@ -390,7 +390,7 @@ mod tests {
 
         let config = DogstatsdCodecConfiguration::default();
         let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
-        assert_eq!(packet.container_id, Some(container_id));
+        assert_eq!(packet.local_data, Some(local_data));
     }
 
     #[test]
@@ -444,7 +444,7 @@ mod tests {
         let value = 1.0;
         let sample_rate = 0.5;
         let tags = ["tag1", "tag2"];
-        let container_id = "abcdef123456";
+        let local_data = "abcdef123456";
         let external_data = "it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183";
         let cardinality = "orchestrator";
         let timestamp = 1234567890;
@@ -454,7 +454,7 @@ mod tests {
             value,
             tags.join(","),
             sample_rate,
-            container_id,
+            local_data,
             external_data,
             cardinality,
             timestamp
@@ -479,7 +479,7 @@ mod tests {
 
         let config = DogstatsdCodecConfiguration::default();
         let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
-        assert_eq!(packet.container_id, Some(container_id));
+        assert_eq!(packet.local_data, Some(local_data));
         assert_eq!(packet.external_data, Some(external_data));
         assert_eq!(packet.cardinality, Some(OriginTagCardinality::Orchestrator));
     }

@@ -114,12 +114,12 @@ impl DogStatsDOriginTagResolver {
         // enriched tags attached to the entities. We evalulate a number of possible entity IDs:
         //
         // - process ID (extracted via UDS socket credentials and mapped to a container ID)
-        // - Local Data-based container ID (extracted from special "container ID" extension in DogStatsD protocol; either container ID or cgroup controller inode for the container)
+        // - Local Data-based container ID (extracted from special "container ID" extension in DogStatsD protocol; also known as Local Data)
         // - Local Data-based pod UID (extracted from `dd.internal.entity_id` tag)
         // - External Data-based container ID (derived from pod UID and container name in External Data)
         // - External Data-based pod UID (raw pod UID from External Data)
         let maybe_process_id = origin.process_id();
-        let maybe_local_container_id = origin.container_id();
+        let maybe_local_container_id = origin.local_data();
         let maybe_local_pod_uid = origin.pod_uid();
         let maybe_external_container_id = origin.resolved_external_data().map(|red| red.container_entity_id());
         let maybe_external_pod_uid = origin.resolved_external_data().map(|red| red.pod_entity_id());
@@ -219,7 +219,7 @@ pub fn origin_from_metric_packet<'packet>(
 
     let mut origin = RawOrigin::default();
     origin.set_pod_uid(well_known_tags.pod_uid);
-    origin.set_container_id(packet.container_id);
+    origin.set_local_data(packet.local_data);
     origin.set_external_data(packet.external_data);
     origin.set_cardinality(cardinality);
     origin
@@ -233,7 +233,7 @@ pub fn origin_from_event_packet<'packet>(
 
     let mut origin = RawOrigin::default();
     origin.set_pod_uid(well_known_tags.pod_uid);
-    origin.set_container_id(packet.container_id);
+    origin.set_local_data(packet.local_data);
     origin.set_external_data(packet.external_data);
     origin.set_cardinality(cardinality);
     origin
@@ -247,7 +247,7 @@ pub fn origin_from_service_check_packet<'packet>(
 
     let mut origin = RawOrigin::default();
     origin.set_pod_uid(well_known_tags.pod_uid);
-    origin.set_container_id(packet.container_id);
+    origin.set_local_data(packet.local_data);
     origin.set_external_data(packet.external_data);
     origin.set_cardinality(cardinality);
     origin
@@ -357,7 +357,7 @@ mod tests {
             values: MetricValues::counter(1.0),
             num_points: 1,
             timestamp: None,
-            container_id: None,
+            local_data: None,
             external_data: None,
             cardinality: Some(OriginTagCardinality::Low),
         };
@@ -368,7 +368,7 @@ mod tests {
             values: MetricValues::counter(1.0),
             num_points: 1,
             timestamp: None,
-            container_id: None,
+            local_data: None,
             external_data: None,
             cardinality: None,
         };
@@ -402,7 +402,7 @@ mod tests {
             alert_type: None,
             source_type_name: None,
             tags: raw_tags.clone(),
-            container_id: None,
+            local_data: None,
             external_data: None,
             cardinality: Some(OriginTagCardinality::Orchestrator),
         };
@@ -417,7 +417,7 @@ mod tests {
             alert_type: None,
             source_type_name: None,
             tags: raw_tags.clone(),
-            container_id: None,
+            local_data: None,
             external_data: None,
             cardinality: None,
         };
@@ -448,7 +448,7 @@ mod tests {
             hostname: None,
             message: None,
             tags: raw_tags.clone(),
-            container_id: None,
+            local_data: None,
             external_data: None,
             cardinality: Some(OriginTagCardinality::Low),
         };
@@ -460,7 +460,7 @@ mod tests {
             hostname: None,
             message: None,
             tags: raw_tags.clone(),
-            container_id: None,
+            local_data: None,
             external_data: None,
             cardinality: None,
         };
