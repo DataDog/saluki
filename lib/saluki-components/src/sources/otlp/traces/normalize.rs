@@ -238,7 +238,7 @@ fn normalize(value: &str, remove_digit_start_char: bool) -> MetaString {
                     break;
                 }
                 continue;
-            } else if curr_char.is_digit(10) || matches!(curr_char, '.' | '/' | '-') {
+            } else if curr_char.is_ascii_digit() || matches!(curr_char, '.' | '/' | '-') {
                 chars += 1;
             } else {
                 // illegal character
