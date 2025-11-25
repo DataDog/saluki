@@ -101,7 +101,7 @@ pub struct RawOrigin<'a> {
 
     /// Local Data of the sender.
     ///
-    /// This will typicall be either the container ID, or the inode of the container's cgroups controller, or both. It
+    /// This will typically be either the container ID, or the inode of the container's cgroups controller, or both. It
     /// may or may not have a special prefix that indicates which of the two it is.
     local_data: Option<&'a str>,
 
