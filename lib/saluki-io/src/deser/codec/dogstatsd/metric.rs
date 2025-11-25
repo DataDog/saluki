@@ -640,8 +640,6 @@ mod tests {
             // As this is a property test, it is _not_ exhaustive but generally should catch simple issues that manage
             // to escape the unit tests. This is left here for the sole reason of incrementally running this every time
             // all tests are run, in the hopes of potentially catching an issue that might have been missed.
-            //
-            // TODO: True exhaustive-style testing a la afl/honggfuzz.
             let _ = parse_dsd_metric(&input);
         }
     }
