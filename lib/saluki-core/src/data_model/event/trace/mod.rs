@@ -65,17 +65,24 @@ pub struct Span {
 }
 
 impl Span {
-    /// Creates a new `Span` with the required identifiers and names.
+    /// Creates a new `Span` with all required fields.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        service: impl Into<MetaString>, name: impl Into<MetaString>, resource: impl Into<MetaString>, trace_id: u64,
-        span_id: u64,
+        service: impl Into<MetaString>, name: impl Into<MetaString>, resource: impl Into<MetaString>,
+        span_type: impl Into<MetaString>, trace_id: u64, span_id: u64, parent_id: u64, start: i64, duration: i64,
+        error: i32,
     ) -> Self {
         Self {
             service: service.into(),
             name: name.into(),
             resource: resource.into(),
+            span_type: span_type.into(),
             trace_id,
             span_id,
+            parent_id,
+            start,
+            duration,
+            error,
             ..Self::default()
         }
     }
