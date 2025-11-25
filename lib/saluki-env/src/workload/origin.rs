@@ -47,7 +47,7 @@ impl ResolvedExternalData {
 struct ResolvedOriginInner {
     cardinality: Option<OriginTagCardinality>,
     process_id: Option<EntityId>,
-    container_id: Option<EntityId>,
+    local_data: Option<EntityId>,
     pod_uid: Option<EntityId>,
     resolved_external_data: Option<ResolvedExternalData>,
 }
@@ -66,14 +66,14 @@ pub struct ResolvedOrigin {
 impl ResolvedOrigin {
     /// Creates a new `ResolvedOrigin` from the given parts.
     pub fn from_parts(
-        cardinality: Option<OriginTagCardinality>, process_id: Option<EntityId>, container_id: Option<EntityId>,
+        cardinality: Option<OriginTagCardinality>, process_id: Option<EntityId>, local_data: Option<EntityId>,
         pod_uid: Option<EntityId>, resolved_external_data: Option<ResolvedExternalData>,
     ) -> Self {
         Self {
             inner: Arc::new(ResolvedOriginInner {
                 cardinality,
                 process_id,
-                container_id,
+                local_data,
                 pod_uid,
                 resolved_external_data,
             }),
@@ -90,9 +90,9 @@ impl ResolvedOrigin {
         self.inner.process_id.as_ref()
     }
 
-    /// Returns the container ID of the origin.
-    pub fn container_id(&self) -> Option<&EntityId> {
-        self.inner.container_id.as_ref()
+    /// Returns the Local Data-based entity ID of the origin.
+    pub fn local_data(&self) -> Option<&EntityId> {
+        self.inner.local_data.as_ref()
     }
 
     /// Returns the pod UID of the origin.
@@ -100,7 +100,7 @@ impl ResolvedOrigin {
         self.inner.pod_uid.as_ref()
     }
 
-    /// Returns the resolved external data of the origin.
+    /// Returns the resolved External Data of the origin.
     pub fn resolved_external_data(&self) -> Option<&ResolvedExternalData> {
         self.inner.resolved_external_data.as_ref()
     }
@@ -130,7 +130,7 @@ impl OriginResolver {
         ResolvedOrigin::from_parts(
             origin.cardinality(),
             origin.process_id().map(EntityId::ContainerPid),
-            origin.container_id().and_then(EntityId::from_raw_container_id),
+            origin.local_data().and_then(EntityId::from_local_data),
             origin.pod_uid().and_then(EntityId::from_pod_uid),
             origin
                 .external_data()

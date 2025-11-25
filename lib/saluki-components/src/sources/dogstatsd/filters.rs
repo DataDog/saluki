@@ -81,7 +81,7 @@ mod tests {
             values,
             num_points: 1,
             timestamp: None,
-            container_id: None,
+            local_data: None,
             external_data: None,
             cardinality: None,
         }
@@ -98,7 +98,7 @@ mod tests {
             alert_type: None,
             source_type_name: None,
             tags: RawTags::empty(),
-            container_id: None,
+            local_data: None,
             external_data: None,
             cardinality: None,
         }
@@ -111,7 +111,7 @@ mod tests {
             message: "message".into(),
             tags: RawTags::empty(),
             hostname: None,
-            container_id: None,
+            local_data: None,
             external_data: None,
             cardinality: None,
             timestamp: None,

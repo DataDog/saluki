@@ -957,9 +957,9 @@ mod tests {
         let name = "metric_name";
         let tags = ["tag1"];
         let mut origin1 = RawOrigin::default();
-        origin1.set_container_id("container1");
+        origin1.set_local_data("container1");
         let mut origin2 = RawOrigin::default();
-        origin2.set_container_id("container2");
+        origin2.set_local_data("container2");
 
         let context1 = resolver
             .resolve(name, &tags[..], Some(origin1.clone()))
@@ -1003,7 +1003,7 @@ mod tests {
         let name = "metric_name";
         let tags = ["tag1"];
         let mut origin1 = RawOrigin::default();
-        origin1.set_container_id("container1");
+        origin1.set_local_data("container1");
 
         // Create a context with caching disabled, and verify that the context is not cached:
         let context1 = resolver

@@ -24,7 +24,7 @@ impl OtlpOriginTagResolver {
         // TODO: Add additional entity IDs that are specific to OTLP.
         // https://github.com/DataDog/datadog-agent/blob/main/comp/otelcol/otlp/components/processor/infraattributesprocessor/common.go#L158
         let entity_ids = [
-            resolved_origin.container_id(),
+            resolved_origin.local_data(),
             resolved_origin.pod_uid(),
             resolved_origin.process_id(),
         ];

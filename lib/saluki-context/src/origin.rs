@@ -99,11 +99,11 @@ pub struct RawOrigin<'a> {
     /// Process ID of the sender.
     process_id: Option<NonZeroU32>,
 
-    /// Container ID of the sender.
+    /// Local Data of the sender.
     ///
-    /// This will generally be the typical long hexadecimal string that is used by container runtimes like `containerd`,
-    /// but may sometimes also be a different form, such as the container's cgroups inode.
-    container_id: Option<&'a str>,
+    /// This will typicall be either the container ID, or the inode of the container's cgroups controller, or both. It
+    /// may or may not have a special prefix that indicates which of the two it is.
+    local_data: Option<&'a str>,
 
     /// Pod UID of the sender.
     ///
@@ -125,7 +125,7 @@ impl<'a> RawOrigin<'a> {
     /// Returns `true` if the origin information is empty.
     pub fn is_empty(&self) -> bool {
         self.process_id.is_none()
-            && self.container_id.is_none()
+            && self.local_data.is_none()
             && self.pod_uid.is_none()
             && self.cardinality.is_none()
             && self.external_data.is_none()
@@ -148,14 +148,14 @@ impl<'a> RawOrigin<'a> {
         self.process_id.map(NonZeroU32::get)
     }
 
-    /// Sets the container ID of the sender.
-    pub fn set_container_id(&mut self, container_id: impl Into<Option<&'a str>>) {
-        self.container_id = container_id.into();
+    /// Sets the Local Data of the sender.
+    pub fn set_local_data(&mut self, local_data: impl Into<Option<&'a str>>) {
+        self.local_data = local_data.into();
     }
 
-    /// Returns the container ID of the sender.
-    pub fn container_id(&self) -> Option<&str> {
-        self.container_id
+    /// Returns the Local Data of the sender.
+    pub fn local_data(&self) -> Option<&str> {
+        self.local_data
     }
 
     /// Sets the pod UID of the sender.
@@ -178,12 +178,12 @@ impl<'a> RawOrigin<'a> {
         self.cardinality.as_ref().copied()
     }
 
-    /// Sets the external data of the sender.
+    /// Sets the External Data of the sender.
     pub fn set_external_data(&mut self, external_data: impl Into<Option<&'a str>>) {
         self.external_data = external_data.into().and_then(RawExternalData::try_from_str);
     }
 
-    /// Returns the external data of the sender.
+    /// Returns the External Data of the sender.
     pub fn external_data(&self) -> Option<&RawExternalData<'a>> {
         self.external_data.as_ref()
     }
@@ -199,13 +199,13 @@ impl fmt::Display for RawOrigin<'_> {
             write!(f, "process_id={}", process_id)?;
         }
 
-        if let Some(container_id) = self.container_id {
+        if let Some(local_data) = self.local_data {
             if has_written {
                 write!(f, " ")?;
             } else {
                 has_written = true;
             }
-            write!(f, "container_id={}", container_id)?;
+            write!(f, "local_data={}", local_data)?;
         }
 
         if let Some(pod_uid) = self.pod_uid {
