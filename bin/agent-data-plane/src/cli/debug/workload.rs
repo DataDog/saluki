@@ -1,11 +1,45 @@
 use std::sync::LazyLock;
 
+use argh::FromArgs;
 use colored::{ColoredString, Colorize};
 use saluki_error::{ErrorContext as _, GenericError};
 use serde::Deserialize;
 use tracing::error;
 
-use crate::{cli::utils::ControlPlaneAPIClient, config::WorkloadConfig};
+use crate::cli::utils::ControlPlaneAPIClient;
+
+/// Query and interact with the workload provider.
+#[derive(FromArgs, Debug)]
+#[argh(subcommand, name = "workload")]
+pub struct WorkloadCommand {
+    #[argh(subcommand)]
+    subcommand: WorkloadSubcommand,
+}
+
+#[derive(FromArgs, Debug)]
+#[argh(subcommand)]
+enum WorkloadSubcommand {
+    Tags(TagsCommand),
+    ExternalData(ExternalDataCommand),
+}
+
+/// Dump all entity tags.
+#[derive(FromArgs, Debug)]
+#[argh(subcommand, name = "tags")]
+struct TagsCommand {
+    /// output in JSON format
+    #[argh(switch, short = 'j', long = "json")]
+    json: bool,
+}
+
+/// Dump all External Data entries.
+#[derive(FromArgs, Debug)]
+#[argh(subcommand, name = "external-data")]
+struct ExternalDataCommand {
+    /// output in JSON format
+    #[argh(switch, short = 'j', long = "json")]
+    json: bool,
+}
 
 #[derive(Deserialize)]
 struct TagsWithCardinality<'a> {
@@ -39,16 +73,16 @@ struct ExternalDataEntry<'a> {
 }
 
 /// Entrypoint for all `workload` subcommands.
-pub async fn handle_workload_command(api_client: ControlPlaneAPIClient, config: WorkloadConfig) {
-    match config {
-        WorkloadConfig::Tags { json } => {
-            if let Err(e) = dump_tags(api_client, json).await {
+pub async fn handle_workload_command(api_client: ControlPlaneAPIClient, cmd: WorkloadCommand) {
+    match cmd.subcommand {
+        WorkloadSubcommand::Tags(cmd) => {
+            if let Err(e) = dump_tags(api_client, cmd).await {
                 error!("Failed to dump workload tags: {:#}", e);
                 std::process::exit(1);
             }
         }
-        WorkloadConfig::ExternalData { json } => {
-            if let Err(e) = dump_external_data(api_client, json).await {
+        WorkloadSubcommand::ExternalData(cmd) => {
+            if let Err(e) = dump_external_data(api_client, cmd).await {
                 error!("Failed to dump workload external data: {:#}", e);
                 std::process::exit(1);
             }
@@ -56,8 +90,7 @@ pub async fn handle_workload_command(api_client: ControlPlaneAPIClient, config: 
     }
 }
 
-/// Dumps all tags from the workload provider.
-pub async fn dump_tags(api_client: ControlPlaneAPIClient, json_output: bool) -> Result<(), GenericError> {
+async fn dump_tags(api_client: ControlPlaneAPIClient, cmd: TagsCommand) -> Result<(), GenericError> {
     static ENTITY: LazyLock<ColoredString> = LazyLock::new(|| "Entity".bold());
     static ALIAS: LazyLock<ColoredString> = LazyLock::new(|| "Alias".bold());
     static TAGS: LazyLock<ColoredString> = LazyLock::new(|| "Tags".bold());
@@ -73,7 +106,7 @@ pub async fn dump_tags(api_client: ControlPlaneAPIClient, json_output: bool) -> 
     // If JSON output has been requested, print it now.
     //
     // We do this here, after deserializing, to ensure we're returning valid JSON to the caller.
-    if json_output {
+    if cmd.json {
         println!("{}", raw_entity_tags);
         return Ok(());
     }
@@ -116,8 +149,7 @@ fn print_tags<T: std::fmt::Display>(tag_set_name: &T, tags: Vec<&str>) {
     }
 }
 
-/// Dumps all External Data entries from the workload provider.
-pub async fn dump_external_data(api_client: ControlPlaneAPIClient, json_output: bool) -> Result<(), GenericError> {
+async fn dump_external_data(api_client: ControlPlaneAPIClient, cmd: ExternalDataCommand) -> Result<(), GenericError> {
     static CONTAINER_ID: LazyLock<ColoredString> = LazyLock::new(|| "Container ID".bold());
     static POD_UID: LazyLock<ColoredString> = LazyLock::new(|| "Pod UID".bold());
     static CONTAINER_NAME: LazyLock<ColoredString> = LazyLock::new(|| "Container Name".bold());
@@ -131,7 +163,7 @@ pub async fn dump_external_data(api_client: ControlPlaneAPIClient, json_output: 
     // If JSON output has been requested, print it now.
     //
     // We do this here, after deserializing, to ensure we're returning valid JSON to the caller.
-    if json_output {
+    if cmd.json {
         println!("{}", raw_external_data);
         return Ok(());
     }

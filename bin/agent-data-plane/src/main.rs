@@ -7,23 +7,18 @@
 #![deny(missing_docs)]
 use std::time::Instant;
 
-use clap::Parser as _;
 use saluki_app::bootstrap::AppBootstrapper;
 use saluki_config::ConfigurationLoader;
 use saluki_error::{ErrorContext as _, GenericError};
 use tracing::{error, info, warn};
 
 mod components;
-mod config;
-use self::config::{Action, Cli};
 
 mod env_provider;
 mod internal;
 
 mod cli;
-use self::cli::{
-    config::handle_config_command, debug::handle_debug_command, dogstatsd::handle_dogstatsd_subcommand, run::run,
-};
+use self::cli::*;
 
 pub(crate) mod state;
 
@@ -40,7 +35,7 @@ static ALLOC: memory_accounting::allocator::TrackingAllocator<std::alloc::System
 #[tokio::main]
 async fn main() -> Result<(), GenericError> {
     let started = Instant::now();
-    let cli = Cli::parse();
+    let cli: Cli = argh::from_env();
 
     // Load our "bootstrap" configuration -- static configuration on disk or from environment variables -- so we can
     // initialize basic subsystems before executing the given subcommand.
@@ -71,9 +66,9 @@ async fn main() -> Result<(), GenericError> {
 
     // Run the given subcommand.
     match cli.action {
-        Action::Run(config) => {
+        Action::Run(cmd) => {
             // Populate our PID file, if configured.
-            if let Some(pid_file) = &config.pid_file {
+            if let Some(pid_file) = &cmd.pid_file {
                 let pid = std::process::id();
                 if let Err(e) = std::fs::write(pid_file, pid.to_string()) {
                     error!(error = %e, path = %pid_file.display(), "Failed to update PID file. Exiting.");
@@ -81,7 +76,7 @@ async fn main() -> Result<(), GenericError> {
                 }
             }
 
-            let exit_code = match run(started, bootstrap_config_path, bootstrap_config).await {
+            let exit_code = match handle_run_command(started, bootstrap_config_path, bootstrap_config).await {
                 Ok(()) => {
                     info!("Agent Data Plane stopped.");
                     0
@@ -93,7 +88,7 @@ async fn main() -> Result<(), GenericError> {
             };
 
             // Remove the PID file, if configured.
-            if let Some(pid_file) = &config.pid_file {
+            if let Some(pid_file) = &cmd.pid_file {
                 if let Err(e) = std::fs::remove_file(pid_file) {
                     warn!(error = %e, path = %pid_file.display(), "Failed to delete PID file while exiting.");
                 }
@@ -101,9 +96,9 @@ async fn main() -> Result<(), GenericError> {
 
             std::process::exit(exit_code);
         }
-        Action::Debug(config) => handle_debug_command(&bootstrap_config, config).await,
-        Action::Config => handle_config_command(&bootstrap_config).await,
-        Action::Dogstatsd(config) => handle_dogstatsd_subcommand(&bootstrap_config, config).await,
+        Action::Debug(cmd) => handle_debug_command(&bootstrap_config, cmd).await,
+        Action::Config(_) => handle_config_command(&bootstrap_config).await,
+        Action::Dogstatsd(cmd) => handle_dogstatsd_command(&bootstrap_config, cmd).await,
     }
 
     Ok(())
