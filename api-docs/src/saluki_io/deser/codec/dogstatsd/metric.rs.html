@@ -29,7 +29,7 @@
 <a href=#29 id=29 data-nosnippet>29</a>    <span class="kw">pub </span>values: MetricValues,
 <a href=#30 id=30 data-nosnippet>30</a>    <span class="kw">pub </span>num_points: u64,
 <a href=#31 id=31 data-nosnippet>31</a>    <span class="kw">pub </span>timestamp: <span class="prelude-ty">Option</span>&lt;u64&gt;,
-<a href=#32 id=32 data-nosnippet>32</a>    <span class="kw">pub </span>container_id: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'a </span>str&gt;,
+<a href=#32 id=32 data-nosnippet>32</a>    <span class="kw">pub </span>local_data: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'a </span>str&gt;,
 <a href=#33 id=33 data-nosnippet>33</a>    <span class="kw">pub </span>external_data: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'a </span>str&gt;,
 <a href=#34 id=34 data-nosnippet>34</a>    <span class="kw">pub </span>cardinality: <span class="prelude-ty">Option</span>&lt;OriginTagCardinality&gt;,
 <a href=#35 id=35 data-nosnippet>35</a>}
@@ -55,7 +55,7 @@
 <a href=#55 id=55 data-nosnippet>55</a>    // if it's any of the protocol extensions we know of.
 <a href=#56 id=56 data-nosnippet>56</a>    </span><span class="kw">let </span><span class="kw-2">mut </span>maybe_sample_rate = <span class="prelude-val">None</span>;
 <a href=#57 id=57 data-nosnippet>57</a>    <span class="kw">let </span><span class="kw-2">mut </span>maybe_tags = <span class="prelude-val">None</span>;
-<a href=#58 id=58 data-nosnippet>58</a>    <span class="kw">let </span><span class="kw-2">mut </span>maybe_container_id = <span class="prelude-val">None</span>;
+<a href=#58 id=58 data-nosnippet>58</a>    <span class="kw">let </span><span class="kw-2">mut </span>maybe_local_data = <span class="prelude-val">None</span>;
 <a href=#59 id=59 data-nosnippet>59</a>    <span class="kw">let </span><span class="kw-2">mut </span>maybe_timestamp = <span class="prelude-val">None</span>;
 <a href=#60 id=60 data-nosnippet>60</a>    <span class="kw">let </span><span class="kw-2">mut </span>maybe_external_data = <span class="prelude-val">None</span>;
 <a href=#61 id=61 data-nosnippet>61</a>    <span class="kw">let </span><span class="kw-2">mut </span>maybe_cardinality = <span class="prelude-val">None</span>;
@@ -83,10 +83,10 @@
 <a href=#83 id=83 data-nosnippet>83</a>                    <span class="kw">let </span>(<span class="kw">_</span>, tags) = all_consuming(preceded(tag(<span class="string">"#"</span>), tags(config))).parse(chunk)<span class="question-mark">?</span>;
 <a href=#84 id=84 data-nosnippet>84</a>                    maybe_tags = <span class="prelude-val">Some</span>(tags);
 <a href=#85 id=85 data-nosnippet>85</a>                }
-<a href=#86 id=86 data-nosnippet>86</a>                <span class="comment">// Container ID: client-provided container ID for the container that this metric originated from.
+<a href=#86 id=86 data-nosnippet>86</a>                <span class="comment">// Local Data: client-provided data used for resolving the entity ID that this metric originated from.
 <a href=#87 id=87 data-nosnippet>87</a>                </span><span class="string">b'c' </span><span class="kw">if </span>chunk.len() &gt; <span class="number">1 </span>&amp;&amp; chunk[<span class="number">1</span>] == <span class="string">b':' </span>=&gt; {
-<a href=#88 id=88 data-nosnippet>88</a>                    <span class="kw">let </span>(<span class="kw">_</span>, container_id) = all_consuming(preceded(tag(<span class="string">"c:"</span>), container_id)).parse(chunk)<span class="question-mark">?</span>;
-<a href=#89 id=89 data-nosnippet>89</a>                    maybe_container_id = <span class="prelude-val">Some</span>(container_id);
+<a href=#88 id=88 data-nosnippet>88</a>                    <span class="kw">let </span>(<span class="kw">_</span>, local_data) = all_consuming(preceded(tag(<span class="string">"c:"</span>), local_data)).parse(chunk)<span class="question-mark">?</span>;
+<a href=#89 id=89 data-nosnippet>89</a>                    maybe_local_data = <span class="prelude-val">Some</span>(local_data);
 <a href=#90 id=90 data-nosnippet>90</a>                }
 <a href=#91 id=91 data-nosnippet>91</a>                <span class="comment">// Timestamp: client-provided timestamp for the metric, relative to the Unix epoch, in seconds.
 <a href=#92 id=92 data-nosnippet>92</a>                </span><span class="string">b'T' </span>=&gt; {
@@ -140,7 +140,7 @@
 <a href=#140 id=140 data-nosnippet>140</a>            values: metric_values,
 <a href=#141 id=141 data-nosnippet>141</a>            num_points,
 <a href=#142 id=142 data-nosnippet>142</a>            timestamp: maybe_timestamp,
-<a href=#143 id=143 data-nosnippet>143</a>            container_id: maybe_container_id,
+<a href=#143 id=143 data-nosnippet>143</a>            local_data: maybe_local_data,
 <a href=#144 id=144 data-nosnippet>144</a>            external_data: maybe_external_data,
 <a href=#145 id=145 data-nosnippet>145</a>            cardinality: maybe_cardinality,
 <a href=#146 id=146 data-nosnippet>146</a>        },
@@ -378,11 +378,11 @@
 <a href=#378 id=378 data-nosnippet>378</a>    }
 <a href=#379 id=379 data-nosnippet>379</a>
 <a href=#380 id=380 data-nosnippet>380</a>    <span class="attr">#[test]
-<a href=#381 id=381 data-nosnippet>381</a>    </span><span class="kw">fn </span>metric_container_id() {
+<a href=#381 id=381 data-nosnippet>381</a>    </span><span class="kw">fn </span>metric_local_data() {
 <a href=#382 id=382 data-nosnippet>382</a>        <span class="kw">let </span>name = <span class="string">"my.counter"</span>;
 <a href=#383 id=383 data-nosnippet>383</a>        <span class="kw">let </span>value = <span class="number">1.0</span>;
-<a href=#384 id=384 data-nosnippet>384</a>        <span class="kw">let </span>container_id = <span class="string">"abcdef123456"</span>;
-<a href=#385 id=385 data-nosnippet>385</a>        <span class="kw">let </span>raw = <span class="macro">format!</span>(<span class="string">"{}:{}|c|c:{}"</span>, name, value, container_id);
+<a href=#384 id=384 data-nosnippet>384</a>        <span class="kw">let </span>local_data = <span class="string">"abcdef123456"</span>;
+<a href=#385 id=385 data-nosnippet>385</a>        <span class="kw">let </span>raw = <span class="macro">format!</span>(<span class="string">"{}:{}|c|c:{}"</span>, name, value, local_data);
 <a href=#386 id=386 data-nosnippet>386</a>        <span class="kw">let </span>expected = Metric::counter(name, value);
 <a href=#387 id=387 data-nosnippet>387</a>
 <a href=#388 id=388 data-nosnippet>388</a>        <span class="kw">let </span>actual = parse_dsd_metric(raw.as_bytes()).expect(<span class="string">"should not fail to parse"</span>);
@@ -390,7 +390,7 @@
 <a href=#390 id=390 data-nosnippet>390</a>
 <a href=#391 id=391 data-nosnippet>391</a>        <span class="kw">let </span>config = DogstatsdCodecConfiguration::default();
 <a href=#392 id=392 data-nosnippet>392</a>        <span class="kw">let </span>(<span class="kw">_</span>, packet) = parse_dogstatsd_metric(raw.as_bytes(), <span class="kw-2">&amp;</span>config).expect(<span class="string">"should not fail to parse"</span>);
-<a href=#393 id=393 data-nosnippet>393</a>        <span class="macro">assert_eq!</span>(packet.container_id, <span class="prelude-val">Some</span>(container_id));
+<a href=#393 id=393 data-nosnippet>393</a>        <span class="macro">assert_eq!</span>(packet.local_data, <span class="prelude-val">Some</span>(local_data));
 <a href=#394 id=394 data-nosnippet>394</a>    }
 <a href=#395 id=395 data-nosnippet>395</a>
 <a href=#396 id=396 data-nosnippet>396</a>    <span class="attr">#[test]
@@ -444,7 +444,7 @@
 <a href=#444 id=444 data-nosnippet>444</a>        <span class="kw">let </span>value = <span class="number">1.0</span>;
 <a href=#445 id=445 data-nosnippet>445</a>        <span class="kw">let </span>sample_rate = <span class="number">0.5</span>;
 <a href=#446 id=446 data-nosnippet>446</a>        <span class="kw">let </span>tags = [<span class="string">"tag1"</span>, <span class="string">"tag2"</span>];
-<a href=#447 id=447 data-nosnippet>447</a>        <span class="kw">let </span>container_id = <span class="string">"abcdef123456"</span>;
+<a href=#447 id=447 data-nosnippet>447</a>        <span class="kw">let </span>local_data = <span class="string">"abcdef123456"</span>;
 <a href=#448 id=448 data-nosnippet>448</a>        <span class="kw">let </span>external_data = <span class="string">"it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183"</span>;
 <a href=#449 id=449 data-nosnippet>449</a>        <span class="kw">let </span>cardinality = <span class="string">"orchestrator"</span>;
 <a href=#450 id=450 data-nosnippet>450</a>        <span class="kw">let </span>timestamp = <span class="number">1234567890</span>;
@@ -454,7 +454,7 @@
 <a href=#454 id=454 data-nosnippet>454</a>            value,
 <a href=#455 id=455 data-nosnippet>455</a>            tags.join(<span class="string">","</span>),
 <a href=#456 id=456 data-nosnippet>456</a>            sample_rate,
-<a href=#457 id=457 data-nosnippet>457</a>            container_id,
+<a href=#457 id=457 data-nosnippet>457</a>            local_data,
 <a href=#458 id=458 data-nosnippet>458</a>            external_data,
 <a href=#459 id=459 data-nosnippet>459</a>            cardinality,
 <a href=#460 id=460 data-nosnippet>460</a>            timestamp
@@ -479,7 +479,7 @@
 <a href=#479 id=479 data-nosnippet>479</a>
 <a href=#480 id=480 data-nosnippet>480</a>        <span class="kw">let </span>config = DogstatsdCodecConfiguration::default();
 <a href=#481 id=481 data-nosnippet>481</a>        <span class="kw">let </span>(<span class="kw">_</span>, packet) = parse_dogstatsd_metric(raw.as_bytes(), <span class="kw-2">&amp;</span>config).expect(<span class="string">"should not fail to parse"</span>);
-<a href=#482 id=482 data-nosnippet>482</a>        <span class="macro">assert_eq!</span>(packet.container_id, <span class="prelude-val">Some</span>(container_id));
+<a href=#482 id=482 data-nosnippet>482</a>        <span class="macro">assert_eq!</span>(packet.local_data, <span class="prelude-val">Some</span>(local_data));
 <a href=#483 id=483 data-nosnippet>483</a>        <span class="macro">assert_eq!</span>(packet.external_data, <span class="prelude-val">Some</span>(external_data));
 <a href=#484 id=484 data-nosnippet>484</a>        <span class="macro">assert_eq!</span>(packet.cardinality, <span class="prelude-val">Some</span>(OriginTagCardinality::Orchestrator));
 <a href=#485 id=485 data-nosnippet>485</a>    }

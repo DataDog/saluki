@@ -99,11 +99,11 @@
 <a href=#99 id=99 data-nosnippet>99</a>    <span class="doccomment">/// Process ID of the sender.
 <a href=#100 id=100 data-nosnippet>100</a>    </span>process_id: <span class="prelude-ty">Option</span>&lt;NonZeroU32&gt;,
 <a href=#101 id=101 data-nosnippet>101</a>
-<a href=#102 id=102 data-nosnippet>102</a>    <span class="doccomment">/// Container ID of the sender.
+<a href=#102 id=102 data-nosnippet>102</a>    <span class="doccomment">/// Local Data of the sender.
 <a href=#103 id=103 data-nosnippet>103</a>    ///
-<a href=#104 id=104 data-nosnippet>104</a>    /// This will generally be the typical long hexadecimal string that is used by container runtimes like `containerd`,
-<a href=#105 id=105 data-nosnippet>105</a>    /// but may sometimes also be a different form, such as the container's cgroups inode.
-<a href=#106 id=106 data-nosnippet>106</a>    </span>container_id: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'a </span>str&gt;,
+<a href=#104 id=104 data-nosnippet>104</a>    /// This will typically be either the container ID, or the inode of the container's cgroups controller, or both. It
+<a href=#105 id=105 data-nosnippet>105</a>    /// may or may not have a special prefix that indicates which of the two it is.
+<a href=#106 id=106 data-nosnippet>106</a>    </span>local_data: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'a </span>str&gt;,
 <a href=#107 id=107 data-nosnippet>107</a>
 <a href=#108 id=108 data-nosnippet>108</a>    <span class="doccomment">/// Pod UID of the sender.
 <a href=#109 id=109 data-nosnippet>109</a>    ///
@@ -125,7 +125,7 @@
 <a href=#125 id=125 data-nosnippet>125</a>    <span class="doccomment">/// Returns `true` if the origin information is empty.
 <a href=#126 id=126 data-nosnippet>126</a>    </span><span class="kw">pub fn </span>is_empty(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; bool {
 <a href=#127 id=127 data-nosnippet>127</a>        <span class="self">self</span>.process_id.is_none()
-<a href=#128 id=128 data-nosnippet>128</a>            &amp;&amp; <span class="self">self</span>.container_id.is_none()
+<a href=#128 id=128 data-nosnippet>128</a>            &amp;&amp; <span class="self">self</span>.local_data.is_none()
 <a href=#129 id=129 data-nosnippet>129</a>            &amp;&amp; <span class="self">self</span>.pod_uid.is_none()
 <a href=#130 id=130 data-nosnippet>130</a>            &amp;&amp; <span class="self">self</span>.cardinality.is_none()
 <a href=#131 id=131 data-nosnippet>131</a>            &amp;&amp; <span class="self">self</span>.external_data.is_none()
@@ -148,14 +148,14 @@
 <a href=#148 id=148 data-nosnippet>148</a>        <span class="self">self</span>.process_id.map(NonZeroU32::get)
 <a href=#149 id=149 data-nosnippet>149</a>    }
 <a href=#150 id=150 data-nosnippet>150</a>
-<a href=#151 id=151 data-nosnippet>151</a>    <span class="doccomment">/// Sets the container ID of the sender.
-<a href=#152 id=152 data-nosnippet>152</a>    </span><span class="kw">pub fn </span>set_container_id(<span class="kw-2">&amp;mut </span><span class="self">self</span>, container_id: <span class="kw">impl </span>Into&lt;<span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'a </span>str&gt;&gt;) {
-<a href=#153 id=153 data-nosnippet>153</a>        <span class="self">self</span>.container_id = container_id.into();
+<a href=#151 id=151 data-nosnippet>151</a>    <span class="doccomment">/// Sets the Local Data of the sender.
+<a href=#152 id=152 data-nosnippet>152</a>    </span><span class="kw">pub fn </span>set_local_data(<span class="kw-2">&amp;mut </span><span class="self">self</span>, local_data: <span class="kw">impl </span>Into&lt;<span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'a </span>str&gt;&gt;) {
+<a href=#153 id=153 data-nosnippet>153</a>        <span class="self">self</span>.local_data = local_data.into();
 <a href=#154 id=154 data-nosnippet>154</a>    }
 <a href=#155 id=155 data-nosnippet>155</a>
-<a href=#156 id=156 data-nosnippet>156</a>    <span class="doccomment">/// Returns the container ID of the sender.
-<a href=#157 id=157 data-nosnippet>157</a>    </span><span class="kw">pub fn </span>container_id(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>str&gt; {
-<a href=#158 id=158 data-nosnippet>158</a>        <span class="self">self</span>.container_id
+<a href=#156 id=156 data-nosnippet>156</a>    <span class="doccomment">/// Returns the Local Data of the sender.
+<a href=#157 id=157 data-nosnippet>157</a>    </span><span class="kw">pub fn </span>local_data(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>str&gt; {
+<a href=#158 id=158 data-nosnippet>158</a>        <span class="self">self</span>.local_data
 <a href=#159 id=159 data-nosnippet>159</a>    }
 <a href=#160 id=160 data-nosnippet>160</a>
 <a href=#161 id=161 data-nosnippet>161</a>    <span class="doccomment">/// Sets the pod UID of the sender.
@@ -178,12 +178,12 @@
 <a href=#178 id=178 data-nosnippet>178</a>        <span class="self">self</span>.cardinality.as_ref().copied()
 <a href=#179 id=179 data-nosnippet>179</a>    }
 <a href=#180 id=180 data-nosnippet>180</a>
-<a href=#181 id=181 data-nosnippet>181</a>    <span class="doccomment">/// Sets the external data of the sender.
+<a href=#181 id=181 data-nosnippet>181</a>    <span class="doccomment">/// Sets the External Data of the sender.
 <a href=#182 id=182 data-nosnippet>182</a>    </span><span class="kw">pub fn </span>set_external_data(<span class="kw-2">&amp;mut </span><span class="self">self</span>, external_data: <span class="kw">impl </span>Into&lt;<span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'a </span>str&gt;&gt;) {
 <a href=#183 id=183 data-nosnippet>183</a>        <span class="self">self</span>.external_data = external_data.into().and_then(RawExternalData::try_from_str);
 <a href=#184 id=184 data-nosnippet>184</a>    }
 <a href=#185 id=185 data-nosnippet>185</a>
-<a href=#186 id=186 data-nosnippet>186</a>    <span class="doccomment">/// Returns the external data of the sender.
+<a href=#186 id=186 data-nosnippet>186</a>    <span class="doccomment">/// Returns the External Data of the sender.
 <a href=#187 id=187 data-nosnippet>187</a>    </span><span class="kw">pub fn </span>external_data(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>RawExternalData&lt;<span class="lifetime">'a</span>&gt;&gt; {
 <a href=#188 id=188 data-nosnippet>188</a>        <span class="self">self</span>.external_data.as_ref()
 <a href=#189 id=189 data-nosnippet>189</a>    }
@@ -199,13 +199,13 @@
 <a href=#199 id=199 data-nosnippet>199</a>            <span class="macro">write!</span>(f, <span class="string">"process_id={}"</span>, process_id)<span class="question-mark">?</span>;
 <a href=#200 id=200 data-nosnippet>200</a>        }
 <a href=#201 id=201 data-nosnippet>201</a>
-<a href=#202 id=202 data-nosnippet>202</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(container_id) = <span class="self">self</span>.container_id {
+<a href=#202 id=202 data-nosnippet>202</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(local_data) = <span class="self">self</span>.local_data {
 <a href=#203 id=203 data-nosnippet>203</a>            <span class="kw">if </span>has_written {
 <a href=#204 id=204 data-nosnippet>204</a>                <span class="macro">write!</span>(f, <span class="string">" "</span>)<span class="question-mark">?</span>;
 <a href=#205 id=205 data-nosnippet>205</a>            } <span class="kw">else </span>{
 <a href=#206 id=206 data-nosnippet>206</a>                has_written = <span class="bool-val">true</span>;
 <a href=#207 id=207 data-nosnippet>207</a>            }
-<a href=#208 id=208 data-nosnippet>208</a>            <span class="macro">write!</span>(f, <span class="string">"container_id={}"</span>, container_id)<span class="question-mark">?</span>;
+<a href=#208 id=208 data-nosnippet>208</a>            <span class="macro">write!</span>(f, <span class="string">"local_data={}"</span>, local_data)<span class="question-mark">?</span>;
 <a href=#209 id=209 data-nosnippet>209</a>        }
 <a href=#210 id=210 data-nosnippet>210</a>
 <a href=#211 id=211 data-nosnippet>211</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(pod_uid) = <span class="self">self</span>.pod_uid {

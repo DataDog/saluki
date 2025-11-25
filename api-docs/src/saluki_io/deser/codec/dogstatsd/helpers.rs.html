@@ -30,7 +30,7 @@
 <a href=#30 id=30 data-nosnippet>30</a><span class="kw">pub const </span>ALERT_TYPE_PREFIX: <span class="kw-2">&amp;</span>[u8] = <span class="string">b"t:"</span>;
 <a href=#31 id=31 data-nosnippet>31</a><span class="kw">pub const </span>TAGS_PREFIX: <span class="kw-2">&amp;</span>[u8] = <span class="string">b"#"</span>;
 <a href=#32 id=32 data-nosnippet>32</a><span class="kw">pub const </span>SERVICE_CHECK_MESSAGE_PREFIX: <span class="kw-2">&amp;</span>[u8] = <span class="string">b"m:"</span>;
-<a href=#33 id=33 data-nosnippet>33</a><span class="kw">pub const </span>CONTAINER_ID_PREFIX: <span class="kw-2">&amp;</span>[u8] = <span class="string">b"c:"</span>;
+<a href=#33 id=33 data-nosnippet>33</a><span class="kw">pub const </span>LOCAL_DATA_PREFIX: <span class="kw-2">&amp;</span>[u8] = <span class="string">b"c:"</span>;
 <a href=#34 id=34 data-nosnippet>34</a><span class="kw">pub const </span>EXTERNAL_DATA_PREFIX: <span class="kw-2">&amp;</span>[u8] = <span class="string">b"e:"</span>;
 <a href=#35 id=35 data-nosnippet>35</a><span class="kw">pub const </span>CARDINALITY_PREFIX: <span class="kw-2">&amp;</span>[u8] = <span class="string">b"card:"</span>;
 <a href=#36 id=36 data-nosnippet>36</a>
@@ -125,74 +125,76 @@
 <a href=#125 id=125 data-nosnippet>125</a>    parse_u64(input)
 <a href=#126 id=126 data-nosnippet>126</a>}
 <a href=#127 id=127 data-nosnippet>127</a>
-<a href=#128 id=128 data-nosnippet>128</a><span class="doccomment">/// Parses a container ID from the input slice.
+<a href=#128 id=128 data-nosnippet>128</a><span class="doccomment">/// Parses Local Data from the input slice.
 <a href=#129 id=129 data-nosnippet>129</a>///
 <a href=#130 id=130 data-nosnippet>130</a>/// # Errors
 <a href=#131 id=131 data-nosnippet>131</a>///
 <a href=#132 id=132 data-nosnippet>132</a>/// If the input slice does not contain at least one byte of valid characters, an error is returned.
 <a href=#133 id=133 data-nosnippet>133</a></span><span class="attr">#[inline]
-<a href=#134 id=134 data-nosnippet>134</a></span><span class="kw">pub fn </span>container_id(input: <span class="kw-2">&amp;</span>[u8]) -&gt; IResult&lt;<span class="kw-2">&amp;</span>[u8], <span class="kw-2">&amp;</span>str&gt; {
-<a href=#135 id=135 data-nosnippet>135</a>    <span class="comment">// We generally only expect container IDs to be either long hexadecimal strings (like 64 characters), or in special
+<a href=#134 id=134 data-nosnippet>134</a></span><span class="kw">pub fn </span>local_data(input: <span class="kw-2">&amp;</span>[u8]) -&gt; IResult&lt;<span class="kw-2">&amp;</span>[u8], <span class="kw-2">&amp;</span>str&gt; {
+<a href=#135 id=135 data-nosnippet>135</a>    <span class="comment">// Local Data is only meant to be able to represent container IDs (which arelong hexadecimal strings), or in special
 <a href=#136 id=136 data-nosnippet>136</a>    // cases, the inode number of the cgroup controller that contains the container sending the metrics, where the value
 <a href=#137 id=137 data-nosnippet>137</a>    // will look like `in-&lt;integer value&gt;`.
-<a href=#138 id=138 data-nosnippet>138</a>    </span><span class="kw">let </span>valid_char = |c: u8| c.is_ascii_alphanumeric() || c == <span class="string">b'-'</span>;
-<a href=#139 id=139 data-nosnippet>139</a>    map(take_while1(valid_char), |b| {
-<a href=#140 id=140 data-nosnippet>140</a>        <span class="comment">// SAFETY: We know the bytes in `b` can only be comprised of ASCII characters, which ensures that it's valid to
-<a href=#141 id=141 data-nosnippet>141</a>        // interpret the bytes directly as UTF-8.
-<a href=#142 id=142 data-nosnippet>142</a>        </span><span class="kw">unsafe </span>{ std::str::from_utf8_unchecked(b) }
-<a href=#143 id=143 data-nosnippet>143</a>    })
-<a href=#144 id=144 data-nosnippet>144</a>    .parse(input)
-<a href=#145 id=145 data-nosnippet>145</a>}
-<a href=#146 id=146 data-nosnippet>146</a>
-<a href=#147 id=147 data-nosnippet>147</a><span class="doccomment">/// Parses External Data from the input slice.
-<a href=#148 id=148 data-nosnippet>148</a>///
-<a href=#149 id=149 data-nosnippet>149</a>/// # Errors
+<a href=#138 id=138 data-nosnippet>138</a>    //
+<a href=#139 id=139 data-nosnippet>139</a>    // In some cases, it might contain _multiple_ of these values, separated by a comma.
+<a href=#140 id=140 data-nosnippet>140</a>    </span><span class="kw">let </span>valid_char = |c: u8| c.is_ascii_alphanumeric() || c == <span class="string">b'-' </span>|| c == <span class="string">b','</span>;
+<a href=#141 id=141 data-nosnippet>141</a>    map(take_while1(valid_char), |b| {
+<a href=#142 id=142 data-nosnippet>142</a>        <span class="comment">// SAFETY: We know the bytes in `b` can only be comprised of ASCII characters, which ensures that it's valid to
+<a href=#143 id=143 data-nosnippet>143</a>        // interpret the bytes directly as UTF-8.
+<a href=#144 id=144 data-nosnippet>144</a>        </span><span class="kw">unsafe </span>{ std::str::from_utf8_unchecked(b) }
+<a href=#145 id=145 data-nosnippet>145</a>    })
+<a href=#146 id=146 data-nosnippet>146</a>    .parse(input)
+<a href=#147 id=147 data-nosnippet>147</a>}
+<a href=#148 id=148 data-nosnippet>148</a>
+<a href=#149 id=149 data-nosnippet>149</a><span class="doccomment">/// Parses External Data from the input slice.
 <a href=#150 id=150 data-nosnippet>150</a>///
-<a href=#151 id=151 data-nosnippet>151</a>/// If the input slice does not contain at least one byte of valid characters, an error is returned.
-<a href=#152 id=152 data-nosnippet>152</a></span><span class="attr">#[inline]
-<a href=#153 id=153 data-nosnippet>153</a></span><span class="kw">pub fn </span>external_data(input: <span class="kw-2">&amp;</span>[u8]) -&gt; IResult&lt;<span class="kw-2">&amp;</span>[u8], <span class="kw-2">&amp;</span>str&gt; {
-<a href=#154 id=154 data-nosnippet>154</a>    <span class="comment">// External Data is only meant to be able to represent origin information, which includes container names, pod UIDs,
-<a href=#155 id=155 data-nosnippet>155</a>    // and the like... which are constrained by the RFC 1123 definition of a DNS label: lowercase ASCII letters,
-<a href=#156 id=156 data-nosnippet>156</a>    // numbers, and hyphens.
-<a href=#157 id=157 data-nosnippet>157</a>    //
-<a href=#158 id=158 data-nosnippet>158</a>    // We don't go the full nine yards with enforcing the "starts with a letter and number" bit.. but we _do_ allow
-<a href=#159 id=159 data-nosnippet>159</a>    // commas since individual items in the External Data string are comma-separated.
-<a href=#160 id=160 data-nosnippet>160</a>    </span><span class="kw">let </span>valid_char = |c: u8| c.is_ascii_lowercase() || c.is_ascii_digit() || c == <span class="string">b'-' </span>|| c == <span class="string">b','</span>;
-<a href=#161 id=161 data-nosnippet>161</a>    map(take_while1(valid_char), |b| {
-<a href=#162 id=162 data-nosnippet>162</a>        <span class="comment">// SAFETY: We know the bytes in `b` can only be comprised of ASCII characters, which ensures that it's valid to
-<a href=#163 id=163 data-nosnippet>163</a>        // interpret the bytes directly as UTF-8.
-<a href=#164 id=164 data-nosnippet>164</a>        </span><span class="kw">unsafe </span>{ std::str::from_utf8_unchecked(b) }
-<a href=#165 id=165 data-nosnippet>165</a>    })
-<a href=#166 id=166 data-nosnippet>166</a>    .parse(input)
-<a href=#167 id=167 data-nosnippet>167</a>}
-<a href=#168 id=168 data-nosnippet>168</a>
-<a href=#169 id=169 data-nosnippet>169</a><span class="doccomment">/// Parses `OriginTagCardinality` from the input slice.
-<a href=#170 id=170 data-nosnippet>170</a>///
-<a href=#171 id=171 data-nosnippet>171</a>/// # Errors
+<a href=#151 id=151 data-nosnippet>151</a>/// # Errors
+<a href=#152 id=152 data-nosnippet>152</a>///
+<a href=#153 id=153 data-nosnippet>153</a>/// If the input slice does not contain at least one byte of valid characters, an error is returned.
+<a href=#154 id=154 data-nosnippet>154</a></span><span class="attr">#[inline]
+<a href=#155 id=155 data-nosnippet>155</a></span><span class="kw">pub fn </span>external_data(input: <span class="kw-2">&amp;</span>[u8]) -&gt; IResult&lt;<span class="kw-2">&amp;</span>[u8], <span class="kw-2">&amp;</span>str&gt; {
+<a href=#156 id=156 data-nosnippet>156</a>    <span class="comment">// External Data is only meant to be able to represent origin information, which includes container names, pod UIDs,
+<a href=#157 id=157 data-nosnippet>157</a>    // and the like... which are constrained by the RFC 1123 definition of a DNS label: lowercase ASCII letters,
+<a href=#158 id=158 data-nosnippet>158</a>    // numbers, and hyphens.
+<a href=#159 id=159 data-nosnippet>159</a>    //
+<a href=#160 id=160 data-nosnippet>160</a>    // We don't go the full nine yards with enforcing the "starts with a letter and number" bit.. but we _do_ allow
+<a href=#161 id=161 data-nosnippet>161</a>    // commas since individual items in the External Data string are comma-separated.
+<a href=#162 id=162 data-nosnippet>162</a>    </span><span class="kw">let </span>valid_char = |c: u8| c.is_ascii_lowercase() || c.is_ascii_digit() || c == <span class="string">b'-' </span>|| c == <span class="string">b','</span>;
+<a href=#163 id=163 data-nosnippet>163</a>    map(take_while1(valid_char), |b| {
+<a href=#164 id=164 data-nosnippet>164</a>        <span class="comment">// SAFETY: We know the bytes in `b` can only be comprised of ASCII characters, which ensures that it's valid to
+<a href=#165 id=165 data-nosnippet>165</a>        // interpret the bytes directly as UTF-8.
+<a href=#166 id=166 data-nosnippet>166</a>        </span><span class="kw">unsafe </span>{ std::str::from_utf8_unchecked(b) }
+<a href=#167 id=167 data-nosnippet>167</a>    })
+<a href=#168 id=168 data-nosnippet>168</a>    .parse(input)
+<a href=#169 id=169 data-nosnippet>169</a>}
+<a href=#170 id=170 data-nosnippet>170</a>
+<a href=#171 id=171 data-nosnippet>171</a><span class="doccomment">/// Parses `OriginTagCardinality` from the input slice.
 <a href=#172 id=172 data-nosnippet>172</a>///
-<a href=#173 id=173 data-nosnippet>173</a>///
-<a href=#174 id=174 data-nosnippet>174</a></span><span class="attr">#[inline]
-<a href=#175 id=175 data-nosnippet>175</a></span><span class="kw">pub fn </span>cardinality(input: <span class="kw-2">&amp;</span>[u8]) -&gt; IResult&lt;<span class="kw-2">&amp;</span>[u8], <span class="prelude-ty">Option</span>&lt;OriginTagCardinality&gt;&gt; {
-<a href=#176 id=176 data-nosnippet>176</a>    <span class="comment">// Cardinality is a string that can be one of the following values:
-<a href=#177 id=177 data-nosnippet>177</a>    // - "none"
-<a href=#178 id=178 data-nosnippet>178</a>    // - "low"
-<a href=#179 id=179 data-nosnippet>179</a>    // - "orchestrator"
-<a href=#180 id=180 data-nosnippet>180</a>    // - "high"
-<a href=#181 id=181 data-nosnippet>181</a>    </span><span class="kw">let </span>(remaining, raw_cardinality) = map(
-<a href=#182 id=182 data-nosnippet>182</a>        all_consuming(preceded(
-<a href=#183 id=183 data-nosnippet>183</a>            tag(CARDINALITY_PREFIX),
-<a href=#184 id=184 data-nosnippet>184</a>            alt((tag(<span class="string">"none"</span>), tag(<span class="string">"low"</span>), tag(<span class="string">"orchestrator"</span>), tag(<span class="string">"high"</span>))),
-<a href=#185 id=185 data-nosnippet>185</a>        )),
-<a href=#186 id=186 data-nosnippet>186</a>        |b| {
-<a href=#187 id=187 data-nosnippet>187</a>            <span class="comment">// SAFETY: We know the bytes in `b` can only be comprised of UTF-8 characters, because our tags are all based on valid
-<a href=#188 id=188 data-nosnippet>188</a>            // UTF-8 strings, which ensures that it's valid to interpret the bytes directly as UTF-8.
-<a href=#189 id=189 data-nosnippet>189</a>            </span><span class="kw">unsafe </span>{ std::str::from_utf8_unchecked(b) }
-<a href=#190 id=190 data-nosnippet>190</a>        },
-<a href=#191 id=191 data-nosnippet>191</a>    )
-<a href=#192 id=192 data-nosnippet>192</a>    .parse(input)<span class="question-mark">?</span>;
-<a href=#193 id=193 data-nosnippet>193</a>
-<a href=#194 id=194 data-nosnippet>194</a>    OriginTagCardinality::try_from(raw_cardinality)
-<a href=#195 id=195 data-nosnippet>195</a>        .map(|cardinality| (remaining, <span class="prelude-val">Some</span>(cardinality)))
-<a href=#196 id=196 data-nosnippet>196</a>        .map_err(|<span class="kw">_</span>| nom::Err::Error(Error::new(input, ErrorKind::Verify)))
-<a href=#197 id=197 data-nosnippet>197</a>}
+<a href=#173 id=173 data-nosnippet>173</a>/// # Errors
+<a href=#174 id=174 data-nosnippet>174</a>///
+<a href=#175 id=175 data-nosnippet>175</a>///
+<a href=#176 id=176 data-nosnippet>176</a></span><span class="attr">#[inline]
+<a href=#177 id=177 data-nosnippet>177</a></span><span class="kw">pub fn </span>cardinality(input: <span class="kw-2">&amp;</span>[u8]) -&gt; IResult&lt;<span class="kw-2">&amp;</span>[u8], <span class="prelude-ty">Option</span>&lt;OriginTagCardinality&gt;&gt; {
+<a href=#178 id=178 data-nosnippet>178</a>    <span class="comment">// Cardinality is a string that can be one of the following values:
+<a href=#179 id=179 data-nosnippet>179</a>    // - "none"
+<a href=#180 id=180 data-nosnippet>180</a>    // - "low"
+<a href=#181 id=181 data-nosnippet>181</a>    // - "orchestrator"
+<a href=#182 id=182 data-nosnippet>182</a>    // - "high"
+<a href=#183 id=183 data-nosnippet>183</a>    </span><span class="kw">let </span>(remaining, raw_cardinality) = map(
+<a href=#184 id=184 data-nosnippet>184</a>        all_consuming(preceded(
+<a href=#185 id=185 data-nosnippet>185</a>            tag(CARDINALITY_PREFIX),
+<a href=#186 id=186 data-nosnippet>186</a>            alt((tag(<span class="string">"none"</span>), tag(<span class="string">"low"</span>), tag(<span class="string">"orchestrator"</span>), tag(<span class="string">"high"</span>))),
+<a href=#187 id=187 data-nosnippet>187</a>        )),
+<a href=#188 id=188 data-nosnippet>188</a>        |b| {
+<a href=#189 id=189 data-nosnippet>189</a>            <span class="comment">// SAFETY: We know the bytes in `b` can only be comprised of UTF-8 characters, because our tags are all based on valid
+<a href=#190 id=190 data-nosnippet>190</a>            // UTF-8 strings, which ensures that it's valid to interpret the bytes directly as UTF-8.
+<a href=#191 id=191 data-nosnippet>191</a>            </span><span class="kw">unsafe </span>{ std::str::from_utf8_unchecked(b) }
+<a href=#192 id=192 data-nosnippet>192</a>        },
+<a href=#193 id=193 data-nosnippet>193</a>    )
+<a href=#194 id=194 data-nosnippet>194</a>    .parse(input)<span class="question-mark">?</span>;
+<a href=#195 id=195 data-nosnippet>195</a>
+<a href=#196 id=196 data-nosnippet>196</a>    OriginTagCardinality::try_from(raw_cardinality)
+<a href=#197 id=197 data-nosnippet>197</a>        .map(|cardinality| (remaining, <span class="prelude-val">Some</span>(cardinality)))
+<a href=#198 id=198 data-nosnippet>198</a>        .map_err(|<span class="kw">_</span>| nom::Err::Error(Error::new(input, ErrorKind::Verify)))
+<a href=#199 id=199 data-nosnippet>199</a>}
 </code></pre></div></section></main></body></html>

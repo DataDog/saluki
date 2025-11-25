@@ -114,12 +114,12 @@
 <a href=#114 id=114 data-nosnippet>114</a>        // enriched tags attached to the entities. We evalulate a number of possible entity IDs:
 <a href=#115 id=115 data-nosnippet>115</a>        //
 <a href=#116 id=116 data-nosnippet>116</a>        // - process ID (extracted via UDS socket credentials and mapped to a container ID)
-<a href=#117 id=117 data-nosnippet>117</a>        // - Local Data-based container ID (extracted from special "container ID" extension in DogStatsD protocol; either container ID or cgroup controller inode for the container)
+<a href=#117 id=117 data-nosnippet>117</a>        // - Local Data-based container ID (extracted from special "container ID" extension in DogStatsD protocol; also known as Local Data)
 <a href=#118 id=118 data-nosnippet>118</a>        // - Local Data-based pod UID (extracted from `dd.internal.entity_id` tag)
 <a href=#119 id=119 data-nosnippet>119</a>        // - External Data-based container ID (derived from pod UID and container name in External Data)
 <a href=#120 id=120 data-nosnippet>120</a>        // - External Data-based pod UID (raw pod UID from External Data)
 <a href=#121 id=121 data-nosnippet>121</a>        </span><span class="kw">let </span>maybe_process_id = origin.process_id();
-<a href=#122 id=122 data-nosnippet>122</a>        <span class="kw">let </span>maybe_local_container_id = origin.container_id();
+<a href=#122 id=122 data-nosnippet>122</a>        <span class="kw">let </span>maybe_local_container_id = origin.local_data();
 <a href=#123 id=123 data-nosnippet>123</a>        <span class="kw">let </span>maybe_local_pod_uid = origin.pod_uid();
 <a href=#124 id=124 data-nosnippet>124</a>        <span class="kw">let </span>maybe_external_container_id = origin.resolved_external_data().map(|red| red.container_entity_id());
 <a href=#125 id=125 data-nosnippet>125</a>        <span class="kw">let </span>maybe_external_pod_uid = origin.resolved_external_data().map(|red| red.pod_entity_id());
@@ -219,7 +219,7 @@
 <a href=#219 id=219 data-nosnippet>219</a>
 <a href=#220 id=220 data-nosnippet>220</a>    <span class="kw">let </span><span class="kw-2">mut </span>origin = RawOrigin::default();
 <a href=#221 id=221 data-nosnippet>221</a>    origin.set_pod_uid(well_known_tags.pod_uid);
-<a href=#222 id=222 data-nosnippet>222</a>    origin.set_container_id(packet.container_id);
+<a href=#222 id=222 data-nosnippet>222</a>    origin.set_local_data(packet.local_data);
 <a href=#223 id=223 data-nosnippet>223</a>    origin.set_external_data(packet.external_data);
 <a href=#224 id=224 data-nosnippet>224</a>    origin.set_cardinality(cardinality);
 <a href=#225 id=225 data-nosnippet>225</a>    origin
@@ -233,7 +233,7 @@
 <a href=#233 id=233 data-nosnippet>233</a>
 <a href=#234 id=234 data-nosnippet>234</a>    <span class="kw">let </span><span class="kw-2">mut </span>origin = RawOrigin::default();
 <a href=#235 id=235 data-nosnippet>235</a>    origin.set_pod_uid(well_known_tags.pod_uid);
-<a href=#236 id=236 data-nosnippet>236</a>    origin.set_container_id(packet.container_id);
+<a href=#236 id=236 data-nosnippet>236</a>    origin.set_local_data(packet.local_data);
 <a href=#237 id=237 data-nosnippet>237</a>    origin.set_external_data(packet.external_data);
 <a href=#238 id=238 data-nosnippet>238</a>    origin.set_cardinality(cardinality);
 <a href=#239 id=239 data-nosnippet>239</a>    origin
@@ -247,7 +247,7 @@
 <a href=#247 id=247 data-nosnippet>247</a>
 <a href=#248 id=248 data-nosnippet>248</a>    <span class="kw">let </span><span class="kw-2">mut </span>origin = RawOrigin::default();
 <a href=#249 id=249 data-nosnippet>249</a>    origin.set_pod_uid(well_known_tags.pod_uid);
-<a href=#250 id=250 data-nosnippet>250</a>    origin.set_container_id(packet.container_id);
+<a href=#250 id=250 data-nosnippet>250</a>    origin.set_local_data(packet.local_data);
 <a href=#251 id=251 data-nosnippet>251</a>    origin.set_external_data(packet.external_data);
 <a href=#252 id=252 data-nosnippet>252</a>    origin.set_cardinality(cardinality);
 <a href=#253 id=253 data-nosnippet>253</a>    origin
@@ -357,7 +357,7 @@
 <a href=#357 id=357 data-nosnippet>357</a>            values: MetricValues::counter(<span class="number">1.0</span>),
 <a href=#358 id=358 data-nosnippet>358</a>            num_points: <span class="number">1</span>,
 <a href=#359 id=359 data-nosnippet>359</a>            timestamp: <span class="prelude-val">None</span>,
-<a href=#360 id=360 data-nosnippet>360</a>            container_id: <span class="prelude-val">None</span>,
+<a href=#360 id=360 data-nosnippet>360</a>            local_data: <span class="prelude-val">None</span>,
 <a href=#361 id=361 data-nosnippet>361</a>            external_data: <span class="prelude-val">None</span>,
 <a href=#362 id=362 data-nosnippet>362</a>            cardinality: <span class="prelude-val">Some</span>(OriginTagCardinality::Low),
 <a href=#363 id=363 data-nosnippet>363</a>        };
@@ -368,7 +368,7 @@
 <a href=#368 id=368 data-nosnippet>368</a>            values: MetricValues::counter(<span class="number">1.0</span>),
 <a href=#369 id=369 data-nosnippet>369</a>            num_points: <span class="number">1</span>,
 <a href=#370 id=370 data-nosnippet>370</a>            timestamp: <span class="prelude-val">None</span>,
-<a href=#371 id=371 data-nosnippet>371</a>            container_id: <span class="prelude-val">None</span>,
+<a href=#371 id=371 data-nosnippet>371</a>            local_data: <span class="prelude-val">None</span>,
 <a href=#372 id=372 data-nosnippet>372</a>            external_data: <span class="prelude-val">None</span>,
 <a href=#373 id=373 data-nosnippet>373</a>            cardinality: <span class="prelude-val">None</span>,
 <a href=#374 id=374 data-nosnippet>374</a>        };
@@ -402,7 +402,7 @@
 <a href=#402 id=402 data-nosnippet>402</a>            alert_type: <span class="prelude-val">None</span>,
 <a href=#403 id=403 data-nosnippet>403</a>            source_type_name: <span class="prelude-val">None</span>,
 <a href=#404 id=404 data-nosnippet>404</a>            tags: raw_tags.clone(),
-<a href=#405 id=405 data-nosnippet>405</a>            container_id: <span class="prelude-val">None</span>,
+<a href=#405 id=405 data-nosnippet>405</a>            local_data: <span class="prelude-val">None</span>,
 <a href=#406 id=406 data-nosnippet>406</a>            external_data: <span class="prelude-val">None</span>,
 <a href=#407 id=407 data-nosnippet>407</a>            cardinality: <span class="prelude-val">Some</span>(OriginTagCardinality::Orchestrator),
 <a href=#408 id=408 data-nosnippet>408</a>        };
@@ -417,7 +417,7 @@
 <a href=#417 id=417 data-nosnippet>417</a>            alert_type: <span class="prelude-val">None</span>,
 <a href=#418 id=418 data-nosnippet>418</a>            source_type_name: <span class="prelude-val">None</span>,
 <a href=#419 id=419 data-nosnippet>419</a>            tags: raw_tags.clone(),
-<a href=#420 id=420 data-nosnippet>420</a>            container_id: <span class="prelude-val">None</span>,
+<a href=#420 id=420 data-nosnippet>420</a>            local_data: <span class="prelude-val">None</span>,
 <a href=#421 id=421 data-nosnippet>421</a>            external_data: <span class="prelude-val">None</span>,
 <a href=#422 id=422 data-nosnippet>422</a>            cardinality: <span class="prelude-val">None</span>,
 <a href=#423 id=423 data-nosnippet>423</a>        };
@@ -448,7 +448,7 @@
 <a href=#448 id=448 data-nosnippet>448</a>            hostname: <span class="prelude-val">None</span>,
 <a href=#449 id=449 data-nosnippet>449</a>            message: <span class="prelude-val">None</span>,
 <a href=#450 id=450 data-nosnippet>450</a>            tags: raw_tags.clone(),
-<a href=#451 id=451 data-nosnippet>451</a>            container_id: <span class="prelude-val">None</span>,
+<a href=#451 id=451 data-nosnippet>451</a>            local_data: <span class="prelude-val">None</span>,
 <a href=#452 id=452 data-nosnippet>452</a>            external_data: <span class="prelude-val">None</span>,
 <a href=#453 id=453 data-nosnippet>453</a>            cardinality: <span class="prelude-val">Some</span>(OriginTagCardinality::Low),
 <a href=#454 id=454 data-nosnippet>454</a>        };
@@ -460,7 +460,7 @@
 <a href=#460 id=460 data-nosnippet>460</a>            hostname: <span class="prelude-val">None</span>,
 <a href=#461 id=461 data-nosnippet>461</a>            message: <span class="prelude-val">None</span>,
 <a href=#462 id=462 data-nosnippet>462</a>            tags: raw_tags.clone(),
-<a href=#463 id=463 data-nosnippet>463</a>            container_id: <span class="prelude-val">None</span>,
+<a href=#463 id=463 data-nosnippet>463</a>            local_data: <span class="prelude-val">None</span>,
 <a href=#464 id=464 data-nosnippet>464</a>            external_data: <span class="prelude-val">None</span>,
 <a href=#465 id=465 data-nosnippet>465</a>            cardinality: <span class="prelude-val">None</span>,
 <a href=#466 id=466 data-nosnippet>466</a>        };

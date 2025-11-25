@@ -299,7 +299,7 @@
 <a href=#299 id=299 data-nosnippet>299</a>        <span class="kw">match </span>kv.key.as_str() {
 <a href=#300 id=300 data-nosnippet>300</a>            CONTAINER_ID =&gt; {
 <a href=#301 id=301 data-nosnippet>301</a>                <span class="kw">if let </span><span class="prelude-val">Some</span>(value) = try_get_string_from_value(kv.value.as_ref().and_then(|v| v.value.as_ref())) {
-<a href=#302 id=302 data-nosnippet>302</a>                    origin.set_container_id(value);
+<a href=#302 id=302 data-nosnippet>302</a>                    origin.set_local_data(value);
 <a href=#303 id=303 data-nosnippet>303</a>                }
 <a href=#304 id=304 data-nosnippet>304</a>            }
 <a href=#305 id=305 data-nosnippet>305</a>            K8S_POD_UID =&gt; {
