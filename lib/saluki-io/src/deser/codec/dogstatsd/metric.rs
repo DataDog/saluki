@@ -83,7 +83,7 @@ pub fn parse_dogstatsd_metric<'a>(
                     let (_, tags) = all_consuming(preceded(tag("#"), tags(config))).parse(chunk)?;
                     maybe_tags = Some(tags);
                 }
-                // maybe_local_data: client-provided data used for resolving the entity ID that this metric originated from.
+                // Local Data: client-provided data used for resolving the entity ID that this metric originated from.
                 b'c' if chunk.len() > 1 && chunk[1] == b':' => {
                     let (_, local_data) = all_consuming(preceded(tag("c:"), local_data)).parse(chunk)?;
                     maybe_local_data = Some(local_data);

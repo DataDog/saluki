@@ -118,7 +118,7 @@ pub fn parse_dogstatsd_event<'a>(
                         all_consuming(preceded(tag(ALERT_TYPE_PREFIX), ascii_alphanum_and_seps)).parse(chunk)?;
                     maybe_alert_type = AlertType::try_from_string(alert_type);
                 }
-                // Container ID: client-provided container ID for the container that this event originated from.
+                // Local Data: client-provided data used for resolving the entity ID that this event originated from.
                 LOCAL_DATA_PREFIX => {
                     let (_, local_data) = all_consuming(preceded(tag(LOCAL_DATA_PREFIX), local_data)).parse(chunk)?;
                     maybe_local_data = Some(local_data);
