@@ -45,14 +45,10 @@ pub struct RunCommand {
     pub pid_file: Option<PathBuf>,
 }
 
-<<<<<<< HEAD
+/// Entrypoint for the `run` commands.
 pub async fn handle_run_command(
     started: Instant, bootstrap_config_path: PathBuf, bootstrap_config: GenericConfiguration,
 ) -> Result<(), GenericError> {
-=======
-/// Entrypoint for the `run` commands.
-pub async fn handle_run_command(started: Instant, bootstrap_config: GenericConfiguration) -> Result<(), GenericError> {
->>>>>>> f29b7f522 (update CLI docs)
     let app_details = saluki_metadata::get_app_details();
     info!(
         version = app_details.version().raw(),
