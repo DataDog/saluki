@@ -21,13 +21,13 @@ use crate::{
 #[snafu(context(suffix(false)))]
 pub enum GraphError {
     #[snafu(display("invalid component ID '{}': {}", input, reason))]
-    InvalidComponentId { input: String, reason: String },
+    InvalidComponentId { input: String, reason: &'static str },
     #[snafu(display("duplicate component ID '{}'", component_id))]
     DuplicateComponentId { component_id: ComponentId },
     #[snafu(display("nonexistent component ID '{}'", component_id))]
     NonexistentComponentId { component_id: ComponentId },
     #[snafu(display("invalid component output ID '{}': {}", input, reason))]
-    InvalidComponentOutputId { input: String, reason: String },
+    InvalidComponentOutputId { input: String, reason: &'static str },
     #[snafu(display("duplicate component output ID '{}' for component '{}'", output_id, component_id))]
     DuplicateComponentOutputId {
         component_id: ComponentId,
@@ -551,7 +551,7 @@ where
 {
     ComponentId::try_from(component_id.as_ref()).map_err(|e| GraphError::InvalidComponentId {
         input: component_id.as_ref().to_string(),
-        reason: e.into(),
+        reason: e,
     })
 }
 
@@ -561,7 +561,7 @@ where
 {
     ComponentOutputId::try_from(component_output_id.as_ref()).map_err(|e| GraphError::InvalidComponentOutputId {
         input: component_output_id.as_ref().into(),
-        reason: e.into(),
+        reason: e,
     })
 }
 

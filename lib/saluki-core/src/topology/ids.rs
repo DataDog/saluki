@@ -7,8 +7,9 @@ use crate::{
 };
 
 const INVALID_COMPONENT_ID: &str =
-    "component IDs may only contain alphanumeric characters (a-z, A-Z, or 0-9), underscores, and hyphens";
-const INVALID_COMPONENT_OUTPUT_ID: &str = "component IDs may only contain alphanumeric characters (a-z, A-Z, or 0-9), underscores, hyphens, and an optional period";
+    "component IDs may only contain alphanumerics (a-z, A-Z, or 0-9), underscores, and hyphens";
+const INVALID_COMPONENT_OUTPUT_ID: &str =
+    "component output IDs may only contain alphanumerics (a-z, A-Z, or 0-9), underscores, hyphens, and up to one period";
 
 /// A component identifier.
 #[derive(Clone, Debug, Hash, Eq, Ord, PartialEq, PartialOrd)]
@@ -47,11 +48,13 @@ pub struct ComponentOutputId(Cow<'static, str>);
 impl ComponentOutputId {
     /// Creates a new `ComponentOutputId` from an identifier and output definition.
     ///
-    /// ## Errors
+    /// # Errors
     ///
-    /// If generated component output ID is not valid, such as due the identifier or output definition containing
-    /// invalid characters, an error is returned.
-    pub fn from_definition(component_id: ComponentId, output_def: &OutputDefinition) -> Result<Self, (String, String)> {
+    /// If generated component output ID is not valid (identifier or output definition containing invalid characters,
+    /// etc), an error is returned.
+    pub fn from_definition(
+        component_id: ComponentId, output_def: &OutputDefinition,
+    ) -> Result<Self, (String, &'static str)> {
         match output_def.output_name() {
             None => Ok(Self(component_id.0)),
             Some(output_name) => {
@@ -60,8 +63,7 @@ impl ComponentOutputId {
                 if validate_component_id(&output_id, true) {
                     Ok(Self(output_id.into()))
                 } else {
-                    // TODO: make the error reason better
-                    Err((output_id, "invalid".to_string()))
+                    Err((output_id, INVALID_COMPONENT_OUTPUT_ID))
                 }
             }
         }
