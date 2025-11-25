@@ -21,13 +21,13 @@
 <a href=#21 id=21 data-nosnippet>21</a>#[snafu(context(suffix(<span class="bool-val">false</span>)))]
 <a href=#22 id=22 data-nosnippet>22</a></span><span class="kw">pub enum </span>GraphError {
 <a href=#23 id=23 data-nosnippet>23</a>    <span class="attr">#[snafu(display(<span class="string">"invalid component ID '{}': {}"</span>, input, reason))]
-<a href=#24 id=24 data-nosnippet>24</a>    </span>InvalidComponentId { input: String, reason: String },
+<a href=#24 id=24 data-nosnippet>24</a>    </span>InvalidComponentId { input: String, reason: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str },
 <a href=#25 id=25 data-nosnippet>25</a>    <span class="attr">#[snafu(display(<span class="string">"duplicate component ID '{}'"</span>, component_id))]
 <a href=#26 id=26 data-nosnippet>26</a>    </span>DuplicateComponentId { component_id: ComponentId },
 <a href=#27 id=27 data-nosnippet>27</a>    <span class="attr">#[snafu(display(<span class="string">"nonexistent component ID '{}'"</span>, component_id))]
 <a href=#28 id=28 data-nosnippet>28</a>    </span>NonexistentComponentId { component_id: ComponentId },
 <a href=#29 id=29 data-nosnippet>29</a>    <span class="attr">#[snafu(display(<span class="string">"invalid component output ID '{}': {}"</span>, input, reason))]
-<a href=#30 id=30 data-nosnippet>30</a>    </span>InvalidComponentOutputId { input: String, reason: String },
+<a href=#30 id=30 data-nosnippet>30</a>    </span>InvalidComponentOutputId { input: String, reason: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str },
 <a href=#31 id=31 data-nosnippet>31</a>    <span class="attr">#[snafu(display(<span class="string">"duplicate component output ID '{}' for component '{}'"</span>, output_id, component_id))]
 <a href=#32 id=32 data-nosnippet>32</a>    </span>DuplicateComponentOutputId {
 <a href=#33 id=33 data-nosnippet>33</a>        component_id: ComponentId,
@@ -551,7 +551,7 @@
 <a href=#551 id=551 data-nosnippet>551</a>{
 <a href=#552 id=552 data-nosnippet>552</a>    ComponentId::try_from(component_id.as_ref()).map_err(|e| GraphError::InvalidComponentId {
 <a href=#553 id=553 data-nosnippet>553</a>        input: component_id.as_ref().to_string(),
-<a href=#554 id=554 data-nosnippet>554</a>        reason: e.into(),
+<a href=#554 id=554 data-nosnippet>554</a>        reason: e,
 <a href=#555 id=555 data-nosnippet>555</a>    })
 <a href=#556 id=556 data-nosnippet>556</a>}
 <a href=#557 id=557 data-nosnippet>557</a>
@@ -561,7 +561,7 @@
 <a href=#561 id=561 data-nosnippet>561</a>{
 <a href=#562 id=562 data-nosnippet>562</a>    ComponentOutputId::try_from(component_output_id.as_ref()).map_err(|e| GraphError::InvalidComponentOutputId {
 <a href=#563 id=563 data-nosnippet>563</a>        input: component_output_id.as_ref().into(),
-<a href=#564 id=564 data-nosnippet>564</a>        reason: e.into(),
+<a href=#564 id=564 data-nosnippet>564</a>        reason: e,
 <a href=#565 id=565 data-nosnippet>565</a>    })
 <a href=#566 id=566 data-nosnippet>566</a>}
 <a href=#567 id=567 data-nosnippet>567</a>
