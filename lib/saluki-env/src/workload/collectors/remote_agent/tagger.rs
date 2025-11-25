@@ -240,7 +240,7 @@ fn remote_entity_id_to_entity_id(remote_entity_id: RemoteEntityId) -> Option<Ent
             }
         },
         // We don't care about these, so we just ignore them.
-        "container_image_metadata" => None,
+        "container_image_metadata" | "process" => None,
         prefix => {
             warn!("Unhandled entity ID prefix: {}://{}", prefix, remote_entity_id.uid);
             None
