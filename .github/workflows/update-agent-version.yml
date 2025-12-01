@@ -169,9 +169,19 @@ jobs:
               head: branchName,
               base: 'main',
               body: prBody,
-              labels: [prLabel, 'automated']
             });
             console.log(`Pull request created: ${updatePR.data.html_url}`);
+
+            // Set the right labels on the PR.
+            //
+            // Confusingly, we have to do this through the issues API, as any operation that can be done on both issues _and_ PRs
+            // must be done with the Issues API. (https://docs.github.com/en/rest/issues/labels?apiVersion=2022-11-28#about-labels)
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: updatePR.data.number,
+              labels: [prLabel, 'automated']
+            });
 
             // Look for other open PRs for updating the Agent version, and close them out so this one takes precedence.
             const { data: labeledPRData } = await github.rest.search.issuesAndPullRequests({
