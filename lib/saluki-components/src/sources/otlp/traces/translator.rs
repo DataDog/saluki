@@ -1,5 +1,5 @@
 use opentelemetry_semantic_conventions::resource::{
-    CONTAINER_ID, DEPLOYMENT_ENVIRONMENT_NAME, HOST_NAME, K8S_POD_UID, SERVICE_VERSION, TELEMETRY_SDK_LANGUAGE,
+    CONTAINER_ID, DEPLOYMENT_ENVIRONMENT_NAME, K8S_POD_UID, SERVICE_VERSION, TELEMETRY_SDK_LANGUAGE,
     TELEMETRY_SDK_VERSION,
 };
 use otlp_protos::opentelemetry::proto::resource::v1::Resource;
@@ -9,49 +9,62 @@ use saluki_core::data_model::event::trace::Span as dd_span;
 use saluki_core::data_model::event::tracer_payload::{TraceChunk, TracerPayload};
 use saluki_core::data_model::event::Event;
 use stringtheory::MetaString;
-
+use saluki_context::tags::TagSet;
+use super::config::OtlpTracesTranslatorConfig;
 use super::sampler::SamplingPriority;
-use crate::sources::otlp::attributes::source::SourceKind;
-use crate::sources::otlp::attributes::{get_string_attribute, resource_to_source, tags_from_attributes};
+use crate::sources::otlp::attributes::source::{Source, SourceKind};
+use crate::sources::otlp::attributes::{
+    extract_container_tags_from_resource_attributes, get_string_attribute, resource_to_source,
+};
 use crate::sources::otlp::traces::transform::{
     otel_span_to_dd_span, KEY_DATADOG_CONTAINER_ID, KEY_DATADOG_CONTAINER_TAGS, KEY_DATADOG_ENVIRONMENT,
     KEY_DATADOG_HOST, KEY_DATADOG_VERSION, SAMPLING_PRIORITY_METRIC_KEY,
 };
 
 const CONTAINER_TAGS_META_KEY: &str = "_dd.tags.container";
+const LEGACY_DEPLOYMENT_ENVIRONMENT_KEY: &str = "deployment.environment";
 
 pub fn convert_trace_id(trace_id: &[u8]) -> u64 {
     if trace_id.len() < 8 {
         return 0;
     }
-    u64::from_be_bytes((&trace_id[(trace_id.len() - 8)..]).try_into().unwrap())
+    u64::from_be_bytes((&trace_id[(trace_id.len() - 8)..]).try_into().unwrap_or_default())
 }
 
 pub fn convert_span_id(span_id: &[u8]) -> u64 {
     if span_id.len() != 8 {
         return 0;
     }
-    u64::from_be_bytes(span_id.try_into().unwrap())
+    u64::from_be_bytes(span_id.try_into().unwrap_or_default())
 }
 
-pub struct OtlpTracesTranslator;
+pub struct OtlpTracesTranslator {
+    config: OtlpTracesTranslatorConfig,
+}
 
 impl OtlpTracesTranslator {
-    pub fn translate_resource_spans(resource_spans: ResourceSpans) -> Vec<Event> {
+    pub fn new(config: OtlpTracesTranslatorConfig) -> Self {
+        Self { config }
+    }
+
+    pub fn translate_resource_spans(&self, resource_spans: ResourceSpans) -> Vec<Event> {
         let resource = resource_spans.resource.unwrap_or_default();
         let mut traces_by_id: FastHashMap<u64, Vec<dd_span>> = FastHashMap::default();
         let mut priorities: FastHashMap<u64, SamplingPriority> = FastHashMap::default();
+        let ignore_missing_fields = self.config.ignore_missing_datadog_fields;
 
         for scope_spans in resource_spans.scope_spans {
             let scope = scope_spans.scope;
             let scope_ref = scope.as_ref();
             for span in scope_spans.spans {
                 let trace_id = convert_trace_id(&span.trace_id);
-                if trace_id == 0 {
-                    continue;
-                }
-                // TODO: add ignore_missing_fields parameter
-                let dd_span = otel_span_to_dd_span(&span, &resource, scope_ref, false);
+                let dd_span = otel_span_to_dd_span(
+                    &span,
+                    &resource,
+                    scope_ref,
+                    ignore_missing_fields,
+                    self.config.compute_top_level_by_span_kind,
+                );
                 if let Some(priority) = sampling_priority_from_span(&dd_span) {
                     priorities.insert(trace_id, priority);
                 }
@@ -62,13 +75,14 @@ impl OtlpTracesTranslator {
         if traces_by_id.is_empty() {
             return Vec::new();
         }
-
+        // TODO: add tag stats https://github.com/DataDog/datadog-agent/blob/instrument-otlp-traffic/pkg/trace/api/otlp.go#L300
         let chunks = build_trace_chunks(traces_by_id, priorities);
         if chunks.is_empty() {
             return Vec::new();
         }
 
-        let payload = build_tracer_payload(&resource, chunks);
+        let source = resource_to_source(&resource);
+        let payload = build_tracer_payload(&resource, source.as_ref(), chunks, ignore_missing_fields);
         vec![Event::TracerPayload(payload)]
     }
 }
@@ -108,18 +122,22 @@ fn build_trace_chunks(
     chunks
 }
 
-fn build_tracer_payload(resource: &Resource, chunks: Vec<TraceChunk>) -> TracerPayload {
+fn build_tracer_payload(
+    resource: &Resource, source: Option<&Source>, chunks: Vec<TraceChunk>, ignore_missing_fields: bool,
+) -> TracerPayload {
     let mut payload = TracerPayload::new().with_chunks(chunks);
 
-    if let Some(hostname) = resolve_hostname(resource) {
+    if let Some(hostname) = resolve_hostname(resource, source, ignore_missing_fields) {
         payload = payload.with_hostname(hostname);
     }
-    if let Some(env) = resolve_env(resource) {
+    if let Some(env) = resolve_env(resource, ignore_missing_fields) {
         payload = payload.with_env(env);
     }
-    if let Some(container_id) = resolve_container_id(resource) {
+
+    if let Some(container_id) = resolve_container_id(resource, ignore_missing_fields) {
         payload = payload.with_container_id(container_id);
     }
+
     if let Some(app_version) = resolve_app_version(resource) {
         payload = payload.with_app_version(app_version);
     }
@@ -129,7 +147,7 @@ fn build_tracer_payload(resource: &Resource, chunks: Vec<TraceChunk>) -> TracerP
     if let Some(tracer_version) = resolve_tracer_version(resource) {
         payload = payload.with_tracer_version(tracer_version);
     }
-    if let Some(tags) = resolve_container_tags(resource) {
+    if let Some(tags) = resolve_container_tags(resource, source, ignore_missing_fields) {
         let mut map = FastHashMap::default();
         map.insert(MetaString::from(CONTAINER_TAGS_META_KEY), tags);
         payload = payload.with_tags(Some(map));
@@ -138,28 +156,40 @@ fn build_tracer_payload(resource: &Resource, chunks: Vec<TraceChunk>) -> TracerP
     payload
 }
 
-fn resolve_hostname(resource: &Resource) -> Option<MetaString> {
+fn resolve_hostname(resource: &Resource, source: Option<&Source>, ignore_missing_fields: bool) -> Option<MetaString> {
     if let Some(value) = get_string_attribute(&resource.attributes, KEY_DATADOG_HOST) {
         return Some(MetaString::from(value));
     }
-    if let Some(source) = resource_to_source(resource) {
-        if matches!(source.kind, SourceKind::HostnameKind) {
-            return Some(MetaString::from(source.identifier));
-        }
+
+    if ignore_missing_fields {
+        return None;
     }
-    get_string_attribute(&resource.attributes, HOST_NAME).map(MetaString::from)
+
+    match source {
+        Some(src) if matches!(src.kind, SourceKind::HostnameKind) => Some(MetaString::from(src.identifier.as_str())),
+        _ => None,
+    }
 }
 
-fn resolve_env(resource: &Resource) -> Option<MetaString> {
+fn resolve_env(resource: &Resource, ignore_missing_fields: bool) -> Option<MetaString> {
     if let Some(value) = get_string_attribute(&resource.attributes, KEY_DATADOG_ENVIRONMENT) {
         return Some(MetaString::from(value));
     }
-    get_string_attribute(&resource.attributes, DEPLOYMENT_ENVIRONMENT_NAME).map(MetaString::from)
+    if ignore_missing_fields {
+        return None;
+    }
+    if let Some(value) = get_string_attribute(&resource.attributes, DEPLOYMENT_ENVIRONMENT_NAME) {
+        return Some(MetaString::from(value));
+    }
+    get_string_attribute(&resource.attributes, LEGACY_DEPLOYMENT_ENVIRONMENT_KEY).map(MetaString::from)
 }
 
-fn resolve_container_id(resource: &Resource) -> Option<MetaString> {
+fn resolve_container_id(resource: &Resource, ignore_missing_fields: bool) -> Option<MetaString> {
     if let Some(value) = get_string_attribute(&resource.attributes, KEY_DATADOG_CONTAINER_ID) {
         return Some(MetaString::from(value));
+    }
+    if ignore_missing_fields {
+        return None;
     }
     get_string_attribute(&resource.attributes, CONTAINER_ID)
         .or_else(|| get_string_attribute(&resource.attributes, K8S_POD_UID))
@@ -182,25 +212,57 @@ fn resolve_tracer_version(resource: &Resource) -> Option<MetaString> {
         .map(|sdk_version| MetaString::from(format!("otlp-{}", sdk_version)))
 }
 
-fn resolve_container_tags(resource: &Resource) -> Option<MetaString> {
+fn resolve_container_tags(
+    resource: &Resource, source: Option<&Source>, ignore_missing_fields: bool,
+) -> Option<MetaString> {
     if let Some(tags) = get_string_attribute(&resource.attributes, KEY_DATADOG_CONTAINER_TAGS) {
         if !tags.is_empty() {
             return Some(MetaString::from(tags));
         }
     }
 
-    let tagset = tags_from_attributes(&resource.attributes);
-    if tagset.is_empty() {
+    if ignore_missing_fields {
         return None;
     }
-    let flattened = tagset
-        .into_iter()
-        .map(|tag| tag.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
+    let mut container_tags= TagSet::default();
+    extract_container_tags_from_resource_attributes(&resource.attributes, &mut container_tags);
+    let is_fargate_source =
+        matches!(source, Some(src) if matches!(src.kind, SourceKind::AwsEcsFargateKind));
+    if container_tags.is_empty() && !is_fargate_source {
+        return None;
+    }
+
+    let mut flattened = flatten_container_tag(container_tags);
+    if is_fargate_source {
+        if let Some(src) = source {
+            append_tags(&mut flattened, &src.tag());
+        }
+    }
+
     if flattened.is_empty() {
         None
     } else {
         Some(MetaString::from(flattened))
     }
+}
+
+fn flatten_container_tag(tags: TagSet) -> String {
+    let mut flattened = String::new();
+    for tag in tags {
+        if !flattened.is_empty() {
+            flattened.push(',');
+        }
+        flattened.push_str(tag.as_str());
+    }
+    flattened
+}
+
+fn append_tags(target: &mut String, tags: &str) {
+    if tags.is_empty() {
+        return;
+    }
+    if !target.is_empty() {
+        target.push(',');
+    }
+    target.push_str(tags);
 }

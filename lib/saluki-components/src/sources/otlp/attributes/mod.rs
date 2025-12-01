@@ -177,7 +177,7 @@ static HTTP_MAPPINGS: LazyLock<FastHashMap<&'static str, &'static str>> = LazyLo
     m
 });
 
-fn extract_container_tags_from_resource_attributes(attributes: &[otlp_common::KeyValue], tags: &mut TagSet) {
+pub(crate) fn extract_container_tags_from_resource_attributes(attributes: &[otlp_common::KeyValue], tags: &mut TagSet) {
     let mut extracted_tags = FastHashSet::default();
 
     for kv in attributes {

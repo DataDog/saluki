@@ -311,7 +311,7 @@ fn is_valid_metric_name(name: &str) -> bool {
         }
     }
 
-    let mut prev_char = name.chars().next().unwrap();
+    let mut prev_char = name.chars().next().unwrap_or_default();
 
     for c in chars {
         if (c as u32) < 256 && IS_ALPHA_NUM_LOOKUP[c as usize] {
@@ -395,7 +395,7 @@ const fn is_valid_ascii_tag_char(c: char) -> bool {
 }
 
 /// Truncate string to max_len bytes, respecting UTF-8 boundaries.
-fn truncate_utf8(s: &MetaString, max_len: usize) -> &str {
+pub(super) fn truncate_utf8(s: &MetaString, max_len: usize) -> &str {
     if s.len() <= max_len {
         return s;
     }
