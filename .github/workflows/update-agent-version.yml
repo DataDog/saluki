@@ -209,6 +209,6 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: obsoleteUpdatePR.number,
-                body: `Closing this pull request as a new Agent version is available: [update PR](https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${updatePR.number})`
+                body: `Closing this pull request as a new Agent version is available: [update PR](https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${updatePR.data.number})`
               });
             }
