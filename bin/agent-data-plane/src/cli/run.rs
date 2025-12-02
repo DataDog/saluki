@@ -252,7 +252,7 @@ async fn create_topology(
     }
 
     #[cfg(feature = "python-checks")]
-    add_checks_to_blueprint(&mut blueprint, configuration, env_provider)?;
+    add_checks_to_blueprint(&mut blueprint, config, env_provider)?;
 
     Ok(blueprint)
 }
