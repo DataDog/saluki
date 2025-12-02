@@ -1,5 +1,5 @@
 lading:
-  version: 0.28.0
+  version: sha-268a16aefaea2d8de193a6442cc3f33e0538f152
 
 target:
   ddprof_replicas: 2

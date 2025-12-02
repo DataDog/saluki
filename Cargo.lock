@@ -1840,7 +1840,7 @@ dependencies = [
 [[package]]
 name = "lading-payload"
 version = "0.1.0"
-source = "git+https://github.com/DataDog/lading?rev=e68256aa3f6d395a864f4ba21b71e13b88c7e4b3#e68256aa3f6d395a864f4ba21b71e13b88c7e4b3"
+source = "git+https://github.com/DataDog/lading?rev=268a16aefaea2d8de193a6442cc3f33e0538f152#268a16aefaea2d8de193a6442cc3f33e0538f152"
 dependencies = [
  "byte-unit",
  "bytes",
@@ -1848,7 +1848,6 @@ dependencies = [
  "prost",
  "rand",
  "rmp-serde",
- "rustc-hash 1.1.0",
  "serde",
  "serde_json",
  "serde_tuple",
