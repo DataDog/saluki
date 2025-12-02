@@ -145,7 +145,7 @@ impl OtlpHandler for RelayHandler {
         Ok(())
     }
 
-    async fn handle_traces(&self, body: Bytes) -> Result<(), String> {
+    async fn handle_tracer_payloads(&self, body: Bytes) -> Result<(), String> {
         let otlp_payload = OtlpPayload {
             signal_type: OtlpSignalType::Traces,
             data: body,
