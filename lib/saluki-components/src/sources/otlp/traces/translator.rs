@@ -1,3 +1,6 @@
+use std::env;
+
+use libc::{c_char, size_t};
 use opentelemetry_semantic_conventions::resource::{
     CONTAINER_ID, DEPLOYMENT_ENVIRONMENT_NAME, K8S_POD_UID, SERVICE_VERSION, TELEMETRY_SDK_LANGUAGE,
     TELEMETRY_SDK_VERSION,
@@ -5,11 +8,12 @@ use opentelemetry_semantic_conventions::resource::{
 use otlp_protos::opentelemetry::proto::resource::v1::Resource;
 use otlp_protos::opentelemetry::proto::trace::v1::ResourceSpans;
 use saluki_common::collections::FastHashMap;
+use saluki_context::tags::TagSet;
 use saluki_core::data_model::event::trace::Span as dd_span;
 use saluki_core::data_model::event::tracer_payload::{TraceChunk, TracerPayload};
 use saluki_core::data_model::event::Event;
 use stringtheory::MetaString;
-use saluki_context::tags::TagSet;
+
 use super::config::OtlpTracesTranslatorConfig;
 use super::sampler::SamplingPriority;
 use crate::sources::otlp::attributes::source::{Source, SourceKind};
@@ -22,7 +26,7 @@ use crate::sources::otlp::traces::transform::{
 };
 
 const CONTAINER_TAGS_META_KEY: &str = "_dd.tags.container";
-const LEGACY_DEPLOYMENT_ENVIRONMENT_KEY: &str = "deployment.environment";
+const DEPLOYMENT_ENVIRONMENT_KEY: &str = "deployment.environment";
 
 pub fn convert_trace_id(trace_id: &[u8]) -> u64 {
     if trace_id.len() < 8 {
@@ -40,11 +44,15 @@ pub fn convert_span_id(span_id: &[u8]) -> u64 {
 
 pub struct OtlpTracesTranslator {
     config: OtlpTracesTranslatorConfig,
+    default_hostname: Option<MetaString>,
 }
 
 impl OtlpTracesTranslator {
     pub fn new(config: OtlpTracesTranslatorConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            default_hostname: detect_default_hostname(),
+        }
     }
 
     pub fn translate_resource_spans(&self, resource_spans: ResourceSpans) -> Vec<Event> {
@@ -65,7 +73,11 @@ impl OtlpTracesTranslator {
                     ignore_missing_fields,
                     self.config.compute_top_level_by_span_kind,
                 );
-                if let Some(priority) = sampling_priority_from_span(&dd_span) {
+                if let Some(priority) = dd_span
+                    .metrics()
+                    .get(SAMPLING_PRIORITY_METRIC_KEY)
+                    .and_then(|value| sampling_priority_from_value(*value))
+                {
                     priorities.insert(trace_id, priority);
                 }
                 traces_by_id.entry(trace_id).or_default().push(dd_span);
@@ -82,16 +94,15 @@ impl OtlpTracesTranslator {
         }
 
         let source = resource_to_source(&resource);
-        let payload = build_tracer_payload(&resource, source.as_ref(), chunks, ignore_missing_fields);
+        let payload = build_tracer_payload(
+            &resource,
+            source.as_ref(),
+            self.default_hostname.as_ref(),
+            chunks,
+            ignore_missing_fields,
+        );
         vec![Event::TracerPayload(payload)]
     }
-}
-
-fn sampling_priority_from_span(span: &dd_span) -> Option<SamplingPriority> {
-    span.metrics()
-        .iter()
-        .find(|(key, _)| key.as_ref() == SAMPLING_PRIORITY_METRIC_KEY)
-        .and_then(|(_, value)| sampling_priority_from_value(*value))
 }
 
 fn sampling_priority_from_value(value: f64) -> Option<SamplingPriority> {
@@ -123,11 +134,12 @@ fn build_trace_chunks(
 }
 
 fn build_tracer_payload(
-    resource: &Resource, source: Option<&Source>, chunks: Vec<TraceChunk>, ignore_missing_fields: bool,
+    resource: &Resource, source: Option<&Source>, default_hostname: Option<&MetaString>, chunks: Vec<TraceChunk>,
+    ignore_missing_fields: bool,
 ) -> TracerPayload {
     let mut payload = TracerPayload::new().with_chunks(chunks);
 
-    if let Some(hostname) = resolve_hostname(resource, source, ignore_missing_fields) {
+    if let Some(hostname) = resolve_hostname(resource, source, default_hostname, ignore_missing_fields) {
         payload = payload.with_hostname(hostname);
     }
     if let Some(env) = resolve_env(resource, ignore_missing_fields) {
@@ -141,6 +153,7 @@ fn build_tracer_payload(
     if let Some(app_version) = resolve_app_version(resource) {
         payload = payload.with_app_version(app_version);
     }
+    // TODO: language and tracer version are calculated with tagstats so these can be removed from here once we add stats
     if let Some(language) = resolve_language(resource) {
         payload = payload.with_language_name(language);
     }
@@ -156,19 +169,29 @@ fn build_tracer_payload(
     payload
 }
 
-fn resolve_hostname(resource: &Resource, source: Option<&Source>, ignore_missing_fields: bool) -> Option<MetaString> {
-    if let Some(value) = get_string_attribute(&resource.attributes, KEY_DATADOG_HOST) {
-        return Some(MetaString::from(value));
-    }
+// Get the hostname or set to empty if source is empty.
+// logic is based off of the agent code: https://github.com/DataDog/datadog-agent/blob/instrument-otlp-traffic/pkg/trace/api/otlp.go#L317
+fn resolve_hostname(
+    resource: &Resource, source: Option<&Source>, default_hostname: Option<&MetaString>, ignore_missing_fields: bool,
+) -> Option<MetaString> {
+    let mut hostname = match source {
+        Some(src) => match src.kind {
+            SourceKind::HostnameKind => Some(MetaString::from(src.identifier.as_str())),
+            // We are not on a hostname (serverless), hence the hostname is empty
+            _ => Some(MetaString::empty()),
+        },
+        None => default_hostname.cloned(),
+    };
 
     if ignore_missing_fields {
-        return None;
+        hostname = Some(MetaString::empty());
     }
 
-    match source {
-        Some(src) if matches!(src.kind, SourceKind::HostnameKind) => Some(MetaString::from(src.identifier.as_str())),
-        _ => None,
+    if let Some(value) = get_string_attribute(&resource.attributes, KEY_DATADOG_HOST) {
+        hostname = Some(MetaString::from(value));
     }
+
+    hostname
 }
 
 fn resolve_env(resource: &Resource, ignore_missing_fields: bool) -> Option<MetaString> {
@@ -181,7 +204,7 @@ fn resolve_env(resource: &Resource, ignore_missing_fields: bool) -> Option<MetaS
     if let Some(value) = get_string_attribute(&resource.attributes, DEPLOYMENT_ENVIRONMENT_NAME) {
         return Some(MetaString::from(value));
     }
-    get_string_attribute(&resource.attributes, LEGACY_DEPLOYMENT_ENVIRONMENT_KEY).map(MetaString::from)
+    get_string_attribute(&resource.attributes, DEPLOYMENT_ENVIRONMENT_KEY).map(MetaString::from)
 }
 
 fn resolve_container_id(resource: &Resource, ignore_missing_fields: bool) -> Option<MetaString> {
@@ -224,10 +247,9 @@ fn resolve_container_tags(
     if ignore_missing_fields {
         return None;
     }
-    let mut container_tags= TagSet::default();
+    let mut container_tags = TagSet::default();
     extract_container_tags_from_resource_attributes(&resource.attributes, &mut container_tags);
-    let is_fargate_source =
-        matches!(source, Some(src) if matches!(src.kind, SourceKind::AwsEcsFargateKind));
+    let is_fargate_source = matches!(source, Some(src) if matches!(src.kind, SourceKind::AwsEcsFargateKind));
     if container_tags.is_empty() && !is_fargate_source {
         return None;
     }
@@ -265,4 +287,41 @@ fn append_tags(target: &mut String, tags: &str) {
         target.push(',');
     }
     target.push_str(tags);
+}
+
+fn detect_default_hostname() -> Option<MetaString> {
+    env::var("DD_HOSTNAME")
+        .ok()
+        .and_then(normalize_hostname)
+        .or_else(|| env::var("HOSTNAME").ok().and_then(normalize_hostname))
+        .or_else(|| system_hostname().and_then(normalize_hostname))
+}
+
+fn normalize_hostname(value: String) -> Option<MetaString> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if trimmed.len() == value.len() {
+        Some(MetaString::from(value))
+    } else {
+        Some(MetaString::from(trimmed.to_owned()))
+    }
+}
+
+fn system_hostname() -> Option<String> {
+    const HOSTNAME_BUFFER_LEN: usize = 256;
+    let mut buffer = [0u8; HOSTNAME_BUFFER_LEN];
+    let result = unsafe { libc::gethostname(buffer.as_mut_ptr() as *mut c_char, buffer.len() as size_t) };
+    if result != 0 {
+        return None;
+    }
+
+    let len = buffer.iter().position(|&b| b == 0).unwrap_or(buffer.len());
+    if len == 0 {
+        return None;
+    }
+
+    std::str::from_utf8(&buffer[..len]).ok().map(|s| s.to_string())
 }

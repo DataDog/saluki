@@ -351,9 +351,7 @@ impl SourceBuilder for OtlpConfiguration {
         let metrics_translator_config = metrics::config::OtlpMetricsTranslatorConfig::default().with_remapping(true);
         let traces_translator_config = traces::config::OtlpTracesTranslatorConfig::default()
             .with_ignore_missing_datadog_fields(self.otlp_config.traces.ignore_missing_datadog_fields)
-            .with_compute_top_level_by_span_kind(
-                self.otlp_config.traces.enable_otlp_compute_top_level_by_span_kind,
-            );
+            .with_compute_top_level_by_span_kind(self.otlp_config.traces.enable_otlp_compute_top_level_by_span_kind);
         let grpc_max_recv_msg_size_bytes =
             self.otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
         let metrics = build_metrics(&context);

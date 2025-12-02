@@ -70,7 +70,7 @@ pub fn normalize_name(mut name: MetaString) -> MetaString {
         name = MetaString::from(truncate_utf8(&name, MAX_NAME_LEN));
         debug!("normalize_name: name is too long,truncated name: {}", name);
     }
-    
+
     // Normalize the name according to the following rules:
     // 1. Skip non-alphabetic characters at the start.
     // 2. Replace non-alphanumeric characters (except '.' and '_') with '_'.
@@ -85,12 +85,12 @@ pub fn normalize_name(mut name: MetaString) -> MetaString {
         i += 1;
     }
 
-    if i >= name_bytes.len(){
+    if i >= name_bytes.len() {
         return DEFAULT_SPAN_NAME.clone();
     }
-    if is_valid_metric_name(&name.as_ref()[i..]){
+    if is_valid_metric_name(&name.as_ref()[i..]) {
         if name.ends_with('_') {
-           return MetaString::from(&name.as_ref()[i..(name.len() - 1)]); 
+            return MetaString::from(&name.as_ref()[i..(name.len() - 1)]);
         }
         return MetaString::from(&name.as_ref()[i..]);
     }
@@ -136,7 +136,7 @@ pub fn normalize_name(mut name: MetaString) -> MetaString {
 ///
 /// Truncates to `MAX_SERVICE_LEN` and ensures characters are valid for tags.
 pub fn normalize_service(service: &MetaString) -> MetaString {
-    // TODO: add fall back service for languages 
+    // TODO: add fall back service for languages
     // e.g. https://github.com/DataDog/datadog-agent/blob/instrument-otlp-traffic/pkg/trace/traceutil/normalize/normalize.go#L124
     if service.is_empty() {
         return DEFAULT_SERVICE_NAME.clone();

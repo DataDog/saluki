@@ -160,8 +160,7 @@ static KUBERNETES_DD_TAGS: LazyLock<FastHashSet<&'static str>> = LazyLock::new(|
 
 // HTTPMappings defines the mapping between OpenTelemetry semantic conventions
 // and Datadog Agent conventions for HTTP attributes.
-#[allow(dead_code)]
-static HTTP_MAPPINGS: LazyLock<FastHashMap<&'static str, &'static str>> = LazyLock::new(|| {
+pub(crate) static HTTP_MAPPINGS: LazyLock<FastHashMap<&'static str, &'static str>> = LazyLock::new(|| {
     let mut m = FastHashMap::default();
     m.insert(CLIENT_ADDRESS, "http.client_ip");
     m.insert(HTTP_RESPONSE_BODY_SIZE, "http.response.content_length");
