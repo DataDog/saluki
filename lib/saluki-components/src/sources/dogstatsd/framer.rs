@@ -10,7 +10,7 @@ pub enum DsdFramer {
 }
 
 impl DsdFramer {
-    pub fn framed<'buf, B>(&self, buf: &'buf mut B, is_eof: bool) -> Framed<'buf, '_, B>
+    pub fn framed<'buf, B>(&'buf self, buf: &'buf mut B, is_eof: bool) -> Framed<'buf, 'buf, B>
     where
         B: ReadIoBuffer,
     {
