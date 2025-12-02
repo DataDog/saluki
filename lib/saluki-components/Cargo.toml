@@ -15,6 +15,7 @@ python-checks = ["dep:pyo3"]
 [dependencies]
 async-trait = { workspace = true }
 axum = { workspace = true }
+base64 = { workspace = true, features = ["std"] }
 bytes = { workspace = true }
 bytesize = { workspace = true }
 chrono = { workspace = true }
@@ -33,6 +34,7 @@ http-serde-ext = { workspace = true }
 hyper = { workspace = true, features = ["client"] }
 hyper-http-proxy = { workspace = true }
 indexmap = { workspace = true, features = ["std"] }
+libc = { workspace = true }
 memory-accounting = { workspace = true }
 metrics = { workspace = true }
 opentelemetry-semantic-conventions = { workspace = true, features = ["semconv_experimental"] }

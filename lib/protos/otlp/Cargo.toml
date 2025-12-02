@@ -12,6 +12,7 @@ workspace = true
 bytes = { workspace = true }
 prost = { workspace = true, features = ["derive", "std"] }
 tonic = { workspace = true, features = ["codegen", "prost"] }
+serde = { workspace = true }
 
 [build-dependencies]
 tonic-build = { workspace = true, features = ["prost"] }
