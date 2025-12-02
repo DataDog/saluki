@@ -254,10 +254,12 @@ pub fn otel_to_dd_span_minimal(
         meta.insert(MetaString::from("_top_level"), MetaString::from("1"));
     }
 
-    if get_string_attribute(span_attributes, "_dd.measured").is_some_and(|v| *v == *"1") || 
-    (compute_top_level_by_span_kind && (otel_span.kind() == SpanKind::Client || otel_span.kind() == SpanKind::Producer)) {
+    if get_string_attribute(span_attributes, "_dd.measured").is_some_and(|v| *v == *"1")
+        || (compute_top_level_by_span_kind
+            && (otel_span.kind() == SpanKind::Client || otel_span.kind() == SpanKind::Producer))
+    {
         metrics.insert(MetaString::from("_dd.measured"), 1.0);
-    } 
+    }
 
     let span_kind = use_both_maps(span_attributes, resource_attributes, true, KEY_DATADOG_SPAN_KIND)
         .unwrap_or_else(|| MetaString::from(SpanKind::Unspecified.as_str_name()));
