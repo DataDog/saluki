@@ -562,7 +562,7 @@ async fn run_converter(
                             if let Some(event_buffer) = event_buffer_manager.try_push(tracer_payload_event) {
                                 dispatch_events(event_buffer, &source_context).await;
                             }
-                        }   
+                        }
                     }
                 }
             },
