@@ -64,7 +64,7 @@ pub enum Payload {
 
     /// OpenTelemetry-encoded traces.
     #[serde(rename = "opentelemetry_traces")]
-    OpenTelemetryTraces(()),
+    OpenTelemetryTraces(lading_payload::opentelemetry::trace::Config),
 }
 
 impl Payload {
