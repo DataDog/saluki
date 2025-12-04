@@ -19,22 +19,16 @@ datadog-protos = { workspace = true }
 fnv = { workspace = true }
 futures = { workspace = true }
 http-serde-ext = { workspace = true }
-hyper-rustls = { workspace = true }
 hyper-util = { workspace = true }
-indexmap = { workspace = true }
 memory-accounting = { workspace = true }
-papaya = { workspace = true }
 pin-project-lite = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
 regex = { workspace = true, features = ["std", "perf"] }
-rustls = { workspace = true }
-rustls-pemfile = { workspace = true, features = ["std"] }
 saluki-api = { workspace = true }
 saluki-common = { workspace = true }
 saluki-config = { workspace = true }
 saluki-context = { workspace = true }
-saluki-core = { workspace = true }
 saluki-error = { workspace = true }
 saluki-health = { workspace = true }
 saluki-io = { workspace = true }
@@ -47,7 +41,6 @@ snafu = { workspace = true }
 socket2 = { workspace = true }
 stringtheory = { workspace = true }
 tokio = { workspace = true, features = ["fs", "macros", "sync"] }
-tokio-rustls = { workspace = true }
 tonic = { workspace = true, features = ["channel"] }
 tower = { workspace = true, features = ["util"] }
 tracing = { workspace = true }

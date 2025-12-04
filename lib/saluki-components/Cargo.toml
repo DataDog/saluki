@@ -32,7 +32,6 @@ http-body-util = { workspace = true }
 http-serde-ext = { workspace = true }
 hyper = { workspace = true, features = ["client"] }
 hyper-http-proxy = { workspace = true }
-indexmap = { workspace = true, features = ["std"] }
 memory-accounting = { workspace = true }
 metrics = { workspace = true }
 opentelemetry-semantic-conventions = { workspace = true, features = ["semconv_experimental"] }
@@ -50,7 +49,6 @@ saluki-context = { workspace = true }
 saluki-core = { workspace = true }
 saluki-env = { workspace = true }
 saluki-error = { workspace = true }
-saluki-health = { workspace = true }
 saluki-io = { workspace = true }
 saluki-metadata = { workspace = true }
 saluki-metrics = { workspace = true }

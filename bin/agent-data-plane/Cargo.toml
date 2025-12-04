@@ -14,7 +14,6 @@ fips = ["saluki-app/tls-fips"]
 python-checks = ["saluki-components/python-checks"]
 
 [dependencies]
-arc-swap = { workspace = true }
 argh = { workspace = true, features = ["help"] }
 async-trait = { workspace = true }
 bytesize = { workspace = true }
@@ -25,17 +24,12 @@ datadog-protos = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
-hyper = { workspace = true }
 memory-accounting = { workspace = true }
-otlp-protos = { workspace = true }
 papaya = { workspace = true }
-prost-types = { workspace = true }
-rand = { workspace = true }
 reqwest = { workspace = true, features = [
   "rustls-tls-native-roots-no-provider",
   "json",
 ] }
-saluki-api = { workspace = true }
 saluki-app = { workspace = true }
 saluki-common = { workspace = true }
 saluki-components = { workspace = true }
