@@ -28,6 +28,8 @@ use serde::Deserialize;
 use tokio::{select, sync::mpsc, time::sleep};
 use tracing::{debug, error, warn};
 
+mod v3;
+
 use crate::common::datadog::{
     io::RB_BUFFER_CHUNK_SIZE,
     request_builder::{EndpointEncoder, RequestBuilder},
@@ -147,6 +149,42 @@ pub struct DatadogMetricsConfiguration {
     /// Additional tags to apply to all forwarded metrics.
     #[serde(default, skip)]
     additional_tags: Option<SharedTagSet>,
+
+    /// Enable V3 columnar format for series metrics.
+    ///
+    /// When enabled, series metrics (counters, gauges, rates, sets) are encoded using the V3
+    /// columnar format and sent to `/api/v3/series` instead of `/api/v2/series`.
+    ///
+    /// Defaults to false.
+    #[serde(rename = "serializer_experimental_use_v3_api_series_enabled", default)]
+    use_v3_series: bool,
+
+    /// Enable V3 columnar format for sketch metrics.
+    ///
+    /// When enabled, sketch metrics (histograms, distributions) are encoded using the V3
+    /// columnar format and sent to `/api/v3/sketches` instead of `/api/beta/sketches`.
+    ///
+    /// Defaults to false.
+    #[serde(rename = "serializer_experimental_use_v3_api_sketches_enabled", default)]
+    use_v3_sketches: bool,
+
+    /// Enable validation mode for V3 payloads.
+    ///
+    /// When enabled along with V3 series/sketches, both V2 and V3 payloads are generated
+    /// and sent for the same metrics, allowing backend comparison for validation.
+    ///
+    /// Defaults to false.
+    #[serde(rename = "serializer_experimental_use_v3_api_validate", default)]
+    use_v3_validate: bool,
+
+    /// Override compression level for V3 payloads.
+    ///
+    /// When set to a value > 0, this compression level is used specifically for V3 payloads
+    /// instead of the default `zstd_compressor_level`.
+    ///
+    /// Defaults to 0 (use default compression level).
+    #[serde(rename = "serializer_experimental_use_v3_api_compression_level", default)]
+    v3_compression_level: i32,
 }
 
 impl DatadogMetricsConfiguration {
@@ -178,14 +216,20 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
 
+        // V3 compression scheme - use override level if specified, otherwise use default
+        let v3_compression_scheme = if self.v3_compression_level > 0 {
+            CompressionScheme::new(&self.compressor_kind, self.v3_compression_level)
+        } else {
+            compression_scheme
+        };
+
         // Create our request builders.
         let mut series_encoder = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::Series);
         let mut sketches_encoder = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::Sketches);
 
-        if let Some(additional_tags) = self.additional_tags.as_ref() {
-            series_encoder = series_encoder.with_additional_tags(additional_tags.clone());
-            sketches_encoder = sketches_encoder.with_additional_tags(additional_tags.clone());
-        }
+        let additional_tags = self.additional_tags.clone().unwrap_or_default();
+        series_encoder = series_encoder.with_additional_tags(additional_tags.clone());
+        sketches_encoder = sketches_encoder.with_additional_tags(additional_tags.clone());
 
         let mut series_rb = RequestBuilder::new(series_encoder, compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
         series_rb.with_max_inputs_per_payload(self.max_metrics_per_payload);
@@ -200,11 +244,26 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
             secs => Duration::from_secs(secs),
         };
 
+        if self.use_v3_series {
+            debug!("V3 series encoding enabled.");
+        }
+        if self.use_v3_sketches {
+            debug!("V3 sketches encoding enabled.");
+        }
+        if self.use_v3_validate {
+            debug!("V3 validation mode enabled.");
+        }
+
         Ok(Box::new(DatadogMetrics {
             series_rb,
             sketches_rb,
             telemetry,
             flush_timeout,
+            additional_tags,
+            use_v3_series: self.use_v3_series,
+            use_v3_sketches: self.use_v3_sketches,
+            use_v3_validate: self.use_v3_validate,
+            v3_compression_scheme,
         }))
     }
 }
@@ -238,6 +297,11 @@ pub struct DatadogMetrics {
     sketches_rb: RequestBuilder<MetricsEndpointEncoder>,
     telemetry: ComponentTelemetry,
     flush_timeout: Duration,
+    additional_tags: SharedTagSet,
+    use_v3_series: bool,
+    use_v3_sketches: bool,
+    use_v3_validate: bool,
+    v3_compression_scheme: CompressionScheme,
 }
 
 #[async_trait]
@@ -248,6 +312,11 @@ impl Encoder for DatadogMetrics {
             sketches_rb,
             telemetry,
             flush_timeout,
+            additional_tags,
+            use_v3_series,
+            use_v3_sketches,
+            use_v3_validate,
+            v3_compression_scheme,
         } = *self;
 
         let mut health = context.take_health_handle();
@@ -255,8 +324,19 @@ impl Encoder for DatadogMetrics {
         // Spawn our request builder task.
         let (events_tx, events_rx) = mpsc::channel(8);
         let (payloads_tx, mut payloads_rx) = mpsc::channel(8);
-        let request_builder_fut =
-            run_request_builder(series_rb, sketches_rb, telemetry, events_rx, payloads_tx, flush_timeout);
+        let request_builder_fut = run_request_builder(
+            series_rb,
+            sketches_rb,
+            telemetry,
+            events_rx,
+            payloads_tx,
+            flush_timeout,
+            additional_tags,
+            use_v3_series,
+            use_v3_sketches,
+            use_v3_validate,
+            v3_compression_scheme,
+        );
         let request_builder_handle = context
             .topology_context()
             .global_thread_pool()
@@ -311,9 +391,20 @@ impl Encoder for DatadogMetrics {
 
 async fn run_request_builder(
     mut series_request_builder: RequestBuilder<MetricsEndpointEncoder>,
-    mut sketches_request_builder: RequestBuilder<MetricsEndpointEncoder>, telemetry: ComponentTelemetry,
-    mut events_rx: mpsc::Receiver<EventsBuffer>, payloads_tx: mpsc::Sender<PayloadsBuffer>, flush_timeout: Duration,
+    mut sketches_request_builder: RequestBuilder<MetricsEndpointEncoder>,
+    telemetry: ComponentTelemetry,
+    mut events_rx: mpsc::Receiver<EventsBuffer>,
+    payloads_tx: mpsc::Sender<PayloadsBuffer>,
+    flush_timeout: Duration,
+    additional_tags: SharedTagSet,
+    use_v3_series: bool,
+    use_v3_sketches: bool,
+    use_v3_validate: bool,
+    v3_compression_scheme: CompressionScheme,
 ) -> Result<(), GenericError> {
+    // V3 metric accumulators - used when V3 encoding is enabled
+    let mut v3_series_metrics: Vec<Metric> = Vec::new();
+    let mut v3_sketches_metrics: Vec<Metric> = Vec::new();
     let mut pending_flush = false;
     let pending_flush_timeout = sleep(flush_timeout);
     tokio::pin!(pending_flush_timeout);
@@ -327,7 +418,27 @@ async fn run_request_builder(
                         None => continue,
                     };
 
-                    let request_builder = match MetricsEndpoint::from_metric(&metric) {
+                    let endpoint = MetricsEndpoint::from_metric(&metric);
+
+                    // Accumulate metrics for V3 encoding if enabled
+                    let should_accumulate_v3 = match endpoint {
+                        MetricsEndpoint::Series => use_v3_series,
+                        MetricsEndpoint::Sketches => use_v3_sketches,
+                    };
+                    if should_accumulate_v3 {
+                        match endpoint {
+                            MetricsEndpoint::Series => v3_series_metrics.push(metric.clone()),
+                            MetricsEndpoint::Sketches => v3_sketches_metrics.push(metric.clone()),
+                        }
+                    }
+
+                    // In validation mode OR if V3 is disabled, also do V2 encoding
+                    let should_encode_v2 = use_v3_validate || !should_accumulate_v3;
+                    if !should_encode_v2 {
+                        continue;
+                    }
+
+                    let request_builder = match endpoint {
                         MetricsEndpoint::Series => &mut series_request_builder,
                         MetricsEndpoint::Sketches => &mut sketches_request_builder,
                     };
@@ -394,48 +505,118 @@ async fn run_request_builder(
 
                 pending_flush = false;
 
-                // Once we've encoded and written all metrics, we flush the request builders to generate a request with
-                // anything left over. Again, we'll enqueue those requests to be sent immediately.
-                let maybe_series_requests = series_request_builder.flush().await;
-                for maybe_request in maybe_series_requests {
-                    match maybe_request {
-                        Ok((events, request)) => {
-                            let payload_meta = PayloadMetadata::from_event_count(events);
-                            let http_payload = HttpPayload::new(payload_meta, request);
-                            let payload = Payload::Http(http_payload);
+                // Flush V2 series requests (only if validation mode or V3 series disabled)
+                if use_v3_validate || !use_v3_series {
+                    let maybe_series_requests = series_request_builder.flush().await;
+                    for maybe_request in maybe_series_requests {
+                        match maybe_request {
+                            Ok((events, request)) => {
+                                let payload_meta = PayloadMetadata::from_event_count(events);
+                                let http_payload = HttpPayload::new(payload_meta, request);
+                                let payload = Payload::Http(http_payload);
 
-                            payloads_tx.send(payload).await
-                                .map_err(|_| generic_error!("Failed to send payload to encoder."))?;
-                        },
-
-                        // TODO: Increment a counter here that metrics were dropped due to a flush failure.
-                        Err(e) => if e.is_recoverable() {
-                            // If the error is recoverable, we'll hold on to the metric to retry it later.
-                            continue;
-                        } else {
-                            return Err(GenericError::from(e).context("Failed to flush request."));
+                                payloads_tx.send(payload).await
+                                    .map_err(|_| generic_error!("Failed to send payload to encoder."))?;
+                            },
+                            Err(e) => if e.is_recoverable() {
+                                continue;
+                            } else {
+                                return Err(GenericError::from(e).context("Failed to flush request."));
+                            }
                         }
                     }
                 }
 
-                let maybe_sketches_requests = sketches_request_builder.flush().await;
-                for maybe_request in maybe_sketches_requests {
-                    match maybe_request {
-                        Ok((events, request)) => {
-                            let payload_meta = PayloadMetadata::from_event_count(events);
-                            let http_payload = HttpPayload::new(payload_meta, request);
-                            let payload = Payload::Http(http_payload);
+                // Flush V2 sketches requests (only if validation mode or V3 sketches disabled)
+                if use_v3_validate || !use_v3_sketches {
+                    let maybe_sketches_requests = sketches_request_builder.flush().await;
+                    for maybe_request in maybe_sketches_requests {
+                        match maybe_request {
+                            Ok((events, request)) => {
+                                let payload_meta = PayloadMetadata::from_event_count(events);
+                                let http_payload = HttpPayload::new(payload_meta, request);
+                                let payload = Payload::Http(http_payload);
 
-                            payloads_tx.send(payload).await
-                                .map_err(|_| generic_error!("Failed to send payload to encoder."))?;
-                        },
+                                payloads_tx.send(payload).await
+                                    .map_err(|_| generic_error!("Failed to send payload to encoder."))?;
+                            },
+                            Err(e) => if e.is_recoverable() {
+                                continue;
+                            } else {
+                                return Err(GenericError::from(e).context("Failed to flush request."));
+                            }
+                        }
+                    }
+                }
 
-                        // TODO: Increment a counter here that metrics were dropped due to a flush failure.
-                        Err(e) => if e.is_recoverable() {
-                            // If the error is recoverable, we'll hold on to the metric to retry it later.
-                            continue;
-                        } else {
-                            return Err(GenericError::from(e).context("Failed to flush request."));
+                // Flush V3 series if enabled and we have accumulated metrics
+                if use_v3_series && !v3_series_metrics.is_empty() {
+                    let metrics_to_flush = std::mem::take(&mut v3_series_metrics);
+                    let event_count = metrics_to_flush.len();
+
+                    match encode_v3_series_batch(&metrics_to_flush, &additional_tags) {
+                        Ok(encoded_payload) => {
+                            match create_v3_request(
+                                SERIES_V3_URI,
+                                encoded_payload,
+                                v3_compression_scheme,
+                                RB_BUFFER_CHUNK_SIZE,
+                            ).await {
+                                Ok(request) => {
+                                    let payload_meta = PayloadMetadata::from_event_count(event_count);
+                                    let http_payload = HttpPayload::new(payload_meta, request);
+                                    let payload = Payload::Http(http_payload);
+
+                                    payloads_tx.send(payload).await
+                                        .map_err(|_| generic_error!("Failed to send V3 series payload."))?;
+
+                                    debug!(events = event_count, "Sent V3 series payload.");
+                                }
+                                Err(e) => {
+                                    error!(error = %e, "Failed to create V3 series request.");
+                                    telemetry.events_dropped_encoder().increment(event_count as u64);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error!(error = %e, "Failed to encode V3 series batch.");
+                            telemetry.events_dropped_encoder().increment(event_count as u64);
+                        }
+                    }
+                }
+
+                // Flush V3 sketches if enabled and we have accumulated metrics
+                if use_v3_sketches && !v3_sketches_metrics.is_empty() {
+                    let metrics_to_flush = std::mem::take(&mut v3_sketches_metrics);
+                    let event_count = metrics_to_flush.len();
+
+                    match encode_v3_sketches_batch(&metrics_to_flush, &additional_tags) {
+                        Ok(encoded_payload) => {
+                            match create_v3_request(
+                                SKETCHES_V3_URI,
+                                encoded_payload,
+                                v3_compression_scheme,
+                                RB_BUFFER_CHUNK_SIZE,
+                            ).await {
+                                Ok(request) => {
+                                    let payload_meta = PayloadMetadata::from_event_count(event_count);
+                                    let http_payload = HttpPayload::new(payload_meta, request);
+                                    let payload = Payload::Http(http_payload);
+
+                                    payloads_tx.send(payload).await
+                                        .map_err(|_| generic_error!("Failed to send V3 sketches payload."))?;
+
+                                    debug!(events = event_count, "Sent V3 sketches payload.");
+                                }
+                                Err(e) => {
+                                    error!(error = %e, "Failed to create V3 sketches request.");
+                                    telemetry.events_dropped_encoder().increment(event_count as u64);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error!(error = %e, "Failed to encode V3 sketches batch.");
+                            telemetry.events_dropped_encoder().increment(event_count as u64);
                         }
                     }
                 }
@@ -969,6 +1150,226 @@ where
     output_stream.write_tag(field_number, WireType::LengthDelimited)?;
     output_stream.write_raw_varint32(data_size)?;
     output_stream.write_raw_bytes(scratch_buf)
+}
+
+// ============================================================================
+// V3 Encoding Functions
+// ============================================================================
+
+/// V3 endpoint URIs
+const SERIES_V3_URI: &str = "/api/v3/series";
+const SKETCHES_V3_URI: &str = "/api/v3/sketches";
+
+/// Encodes a batch of series metrics to V3 columnar format.
+fn encode_v3_series_batch(
+    metrics: &[Metric],
+    additional_tags: &SharedTagSet,
+) -> Result<Vec<u8>, GenericError> {
+    use v3::V3Writer;
+
+    let mut writer = V3Writer::new();
+
+    for metric in metrics {
+        write_metric_to_v3(&mut writer, metric, additional_tags);
+    }
+
+    let encoded_data = writer.close();
+    let mut output = Vec::new();
+    v3::serialize_v3_payload(&encoded_data, &mut output)
+        .map_err(|e| generic_error!("Failed to serialize V3 payload: {}", e))?;
+
+    Ok(output)
+}
+
+/// Encodes a batch of sketch metrics to V3 columnar format.
+fn encode_v3_sketches_batch(
+    metrics: &[Metric],
+    additional_tags: &SharedTagSet,
+) -> Result<Vec<u8>, GenericError> {
+    use v3::V3Writer;
+
+    let mut writer = V3Writer::new();
+
+    for metric in metrics {
+        write_metric_to_v3(&mut writer, metric, additional_tags);
+    }
+
+    let encoded_data = writer.close();
+    let mut output = Vec::new();
+    v3::serialize_v3_payload(&encoded_data, &mut output)
+        .map_err(|e| generic_error!("Failed to serialize V3 payload: {}", e))?;
+
+    Ok(output)
+}
+
+/// Writes a single metric to the V3 writer.
+fn write_metric_to_v3(
+    writer: &mut v3::V3Writer,
+    metric: &Metric,
+    additional_tags: &SharedTagSet,
+) {
+    use v3::V3MetricType;
+
+    let metric_type = match metric.values() {
+        MetricValues::Counter(..) => V3MetricType::Count,
+        MetricValues::Rate(..) => V3MetricType::Rate,
+        MetricValues::Gauge(..) | MetricValues::Set(..) => V3MetricType::Gauge,
+        MetricValues::Histogram(..) | MetricValues::Distribution(..) => V3MetricType::Sketch,
+    };
+
+    let mut builder = writer.write(metric_type, metric.context().name());
+
+    // Tags - chain instrumented + additional + origin tags
+    let all_tags: Vec<String> = metric
+        .context()
+        .tags()
+        .into_iter()
+        .chain(additional_tags.into_iter())
+        .chain(metric.context().origin_tags())
+        .filter(|t| !t.name().starts_with("dd.internal.resource"))
+        .map(|t| t.as_str().to_string())
+        .collect();
+    builder.set_tags(all_tags.iter().map(|s| s.as_str()));
+
+    // Resources - extract host and any dd.internal.resource tags
+    let mut resources: Vec<(String, String)> = Vec::new();
+    if let Some(host) = metric.metadata().hostname() {
+        resources.push(("host".to_string(), host.to_string()));
+    }
+    // Extract dd.internal.resource tags as resources
+    for tag in metric.context().tags().into_iter().chain(additional_tags.into_iter()) {
+        if tag.name() == "dd.internal.resource" {
+            if let Some(value) = tag.value() {
+                if let Some((rtype, rname)) = value.split_once(':') {
+                    resources.push((rtype.to_string(), rname.to_string()));
+                }
+            }
+        }
+    }
+    builder.set_resources(resources.into_iter());
+
+    // Origin metadata
+    if let Some(origin) = metric.metadata().origin() {
+        match origin {
+            MetricOrigin::SourceType(source_type) => {
+                builder.set_source_type(source_type.as_ref());
+            }
+            MetricOrigin::OriginMetadata {
+                product,
+                subproduct,
+                product_detail,
+            } => {
+                builder.set_origin(*product, *subproduct, *product_detail);
+            }
+        }
+    }
+
+    // Points based on metric type
+    match metric.values() {
+        MetricValues::Counter(points) | MetricValues::Gauge(points) => {
+            for (ts, val) in points {
+                let timestamp = ts.map(|t| t.get() as i64).unwrap_or(0);
+                builder.add_point(timestamp, val);
+            }
+        }
+        MetricValues::Rate(points, interval) => {
+            builder.set_interval(interval.as_secs());
+            for (ts, val) in points {
+                let timestamp = ts.map(|t| t.get() as i64).unwrap_or(0);
+                // Scale by interval as done in V2
+                let scaled = val / interval.as_secs_f64();
+                builder.add_point(timestamp, scaled);
+            }
+        }
+        MetricValues::Set(points) => {
+            // Set values are already converted to count in the iterator
+            for (ts, count) in points {
+                let timestamp = ts.map(|t| t.get() as i64).unwrap_or(0);
+                builder.add_point(timestamp, count);
+            }
+        }
+        MetricValues::Distribution(sketches) => {
+            for (ts, sketch) in sketches {
+                let timestamp = ts.map(|t| t.get() as i64).unwrap_or(0);
+                if !sketch.is_empty() {
+                    let bin_keys: Vec<i32> = sketch.bins().iter().map(|b| b.key()).collect();
+                    let bin_counts: Vec<u32> = sketch.bins().iter().map(|b| b.count()).collect();
+                    builder.add_sketch(
+                        timestamp,
+                        sketch.count() as i64,
+                        sketch.sum().unwrap_or(0.0),
+                        sketch.min().unwrap_or(0.0),
+                        sketch.max().unwrap_or(0.0),
+                        &bin_keys,
+                        &bin_counts,
+                    );
+                }
+            }
+        }
+        MetricValues::Histogram(histograms) => {
+            for (ts, histogram) in histograms {
+                let timestamp = ts.map(|t| t.get() as i64).unwrap_or(0);
+                // Convert histogram to DDSketch
+                let mut sketch = DDSketch::default();
+                for sample in histogram.samples() {
+                    sketch.insert_n(sample.value.into_inner(), sample.weight as u32);
+                }
+                if !sketch.is_empty() {
+                    let bin_keys: Vec<i32> = sketch.bins().iter().map(|b| b.key()).collect();
+                    let bin_counts: Vec<u32> = sketch.bins().iter().map(|b| b.count()).collect();
+                    builder.add_sketch(
+                        timestamp,
+                        sketch.count() as i64,
+                        sketch.sum().unwrap_or(0.0),
+                        sketch.min().unwrap_or(0.0),
+                        sketch.max().unwrap_or(0.0),
+                        &bin_keys,
+                        &bin_counts,
+                    );
+                }
+            }
+        }
+    }
+
+    builder.close();
+}
+
+/// Creates a V3 HTTP request from encoded payload data.
+async fn create_v3_request(
+    endpoint_uri: &str,
+    payload: Vec<u8>,
+    compression_scheme: CompressionScheme,
+    buffer_chunk_size: usize,
+) -> Result<http::Request<saluki_common::buf::FrozenChunkedBytesBuffer>, GenericError> {
+    use saluki_common::buf::ChunkedBytesBuffer;
+    use saluki_io::compression::Compressor;
+    use tokio::io::AsyncWriteExt;
+
+    // Compress the payload
+    let buffer = ChunkedBytesBuffer::new(buffer_chunk_size);
+    let mut compressor = Compressor::from_scheme(compression_scheme, buffer);
+    compressor.write_all(&payload).await
+        .map_err(|e| generic_error!("Failed to compress V3 payload: {}", e))?;
+    compressor.flush().await
+        .map_err(|e| generic_error!("Failed to flush V3 compressor: {}", e))?;
+    compressor.shutdown().await
+        .map_err(|e| generic_error!("Failed to shutdown V3 compressor: {}", e))?;
+
+    let content_encoding = compressor.content_encoding();
+    let compressed_buf = compressor.into_inner().freeze();
+
+    // Build the request
+    let mut builder = http::Request::builder()
+        .method(Method::POST)
+        .uri(endpoint_uri)
+        .header(http::header::CONTENT_TYPE, "application/x-protobuf");
+
+    if let Some(encoding) = content_encoding {
+        builder = builder.header(http::header::CONTENT_ENCODING, encoding);
+    }
+
+    builder.body(compressed_buf)
+        .map_err(|e| generic_error!("Failed to build V3 request: {}", e))
 }
 
 #[cfg(test)]
