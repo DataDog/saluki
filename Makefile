@@ -37,6 +37,7 @@ export CARGO_BIN_DIR ?= $(shell echo "${HOME}/.cargo/bin")
 export GIT_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git)
 
 # Specific versions of various tools we use.
+export CARGO_TOOL_VERSION_cargo-binstall ?= 1.16.2
 export CARGO_TOOL_VERSION_dd-rust-license-tool ?= 1.0.3
 export CARGO_TOOL_VERSION_cargo-deny ?= 0.18.3
 export CARGO_TOOL_VERSION_cargo-hack ?= 0.6.30
@@ -239,7 +240,8 @@ ifeq ($(shell command -v protoc >/dev/null || echo not-found), not-found)
 	$(error "Please install protoc: https://protobuf.dev/installation/")
 endif
 ifeq ($(shell command -v cargo-binstall >/dev/null || echo not-found), not-found)
-	@cargo install cargo-binstall
+	@echo "[*] Installing cargo-binstall@$(CARGO_TOOL_VERSION_cargo-binstall)..."
+	@cargo install cargo-binstall@$(CARGO_TOOL_VERSION_cargo-binstall)
 endif
 
 ##@ Running
