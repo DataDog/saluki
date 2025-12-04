@@ -916,7 +916,6 @@ dependencies = [
  "datadog-protos",
  "dhat",
  "float-cmp",
- "noisy_float",
  "ordered-float",
  "rand",
  "rand_distr",
@@ -1991,7 +1990,6 @@ dependencies = [
  "ordered-float",
  "pin-project",
  "process-memory",
- "proptest",
  "saluki-api",
  "serde",
  "serde_json",
@@ -2090,15 +2088,6 @@ name = "multimap"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
-
-[[package]]
-name = "noisy_float"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "978fe6e6ebc0bf53de533cd456ca2d9de13de13856eda1518a285d7705a213af"
-dependencies = [
- "num-traits",
-]
 
 [[package]]
 name = "nom"
@@ -3255,7 +3244,6 @@ dependencies = [
  "prost",
  "protobuf",
  "pyo3",
- "pyo3-ffi",
  "rand",
  "regex",
  "saluki-api",
@@ -3336,7 +3324,6 @@ dependencies = [
  "ordered-float",
  "paste",
  "pin-project",
- "proptest",
  "saluki-common",
  "saluki-context",
  "saluki-error",
@@ -3352,7 +3339,6 @@ dependencies = [
  "tokio-test",
  "tokio-util",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -3375,7 +3361,6 @@ dependencies = [
  "memory-accounting",
  "papaya",
  "pin-project-lite",
- "proptest",
  "prost",
  "prost-types",
  "regex",

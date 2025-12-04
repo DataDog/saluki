@@ -265,7 +265,7 @@ mod tests {
     };
 
     use tokio::time::Sleep;
-    use tokio_test::{assert_pending, assert_ready, assert_ready_ok};
+    use tokio_test::{assert_pending, assert_ready_ok};
     use tower::{retry::Policy, ServiceExt as _};
 
     use super::*;
