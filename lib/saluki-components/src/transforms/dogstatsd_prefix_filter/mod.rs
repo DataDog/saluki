@@ -32,6 +32,12 @@ pub struct DogstatsDPrefixFilterConfiguration {
     )]
     metric_prefix_blocklist: Vec<String>,
 
+    #[serde(default, rename = "metric_filterlist")]
+    metric_filterlist: Vec<String>,
+
+    #[serde(default, rename = "metric_filterlist_match_prefix")]
+    metric_filterlist_match_prefix: bool,
+
     #[serde(default, rename = "statsd_metric_blocklist")]
     metric_blocklist: Vec<String>,
 
@@ -96,10 +102,17 @@ impl TransformBuilder for DogstatsDPrefixFilterConfiguration {
             metric_prefix.push('.');
         }
 
+        // Prioritize `metric_filterlist` over `statsd_metric_blocklist`.
+        let (blocklist_metrics, blocklist_match_prefix) = if !self.metric_filterlist.is_empty() {
+            (&self.metric_filterlist, self.metric_filterlist_match_prefix)
+        } else {
+            (&self.metric_blocklist, self.metric_blocklist_match_prefix)
+        };
+
         Ok(Box::new(DogstatsDPrefixFilter {
             metric_prefix,
             metric_prefix_blocklist: self.metric_prefix_blocklist.clone(),
-            blocklist: Blocklist::new(&self.metric_blocklist, self.metric_blocklist_match_prefix),
+            blocklist: Blocklist::new(blocklist_metrics, blocklist_match_prefix),
             configuration: self.configuration.clone(),
         }))
     }
@@ -223,6 +236,7 @@ impl Transform for DogstatsDPrefixFilter {
         health.mark_ready();
 
         let config = self.configuration.as_ref().unwrap();
+        let mut filterlist_watcher = config.watch_for_updates("metric_filterlist");
         let mut blocklist_watcher = config.watch_for_updates("statsd_metric_blocklist");
 
         debug!("DogStatsD Prefix Filter transform started.");
@@ -245,10 +259,16 @@ impl Transform for DogstatsDPrefixFilter {
                     },
                     None => break,
                 },
-                (_, maybe_new_metric_blocklist) = blocklist_watcher.changed::<Vec<String>>() => {
-                    if let Some(new_metric_blocklist) = maybe_new_metric_blocklist {
-                        self.blocklist = Blocklist::new(&new_metric_blocklist, self.blocklist.match_prefix);
-                        debug!(?new_metric_blocklist, "Updated metric blocklist.");
+                (_, maybe_new_metric_filterlist) = filterlist_watcher.changed::<Vec<String>>() => {
+                    if let Some(new_filterlist) = maybe_new_metric_filterlist {
+                        self.blocklist = Blocklist::new(&new_filterlist, self.blocklist.match_prefix);
+                        debug!(?new_filterlist, "Updated metric filterlist.");
+                    }
+                },
+                (_, maybe_new_blocklist) = blocklist_watcher.changed::<Vec<String>>() => {
+                    if let Some(new_blocklist) = maybe_new_blocklist {
+                        self.blocklist = Blocklist::new(&new_blocklist, self.blocklist.match_prefix);
+                        debug!(?new_blocklist, "Updated metric blocklist.");
                     }
                 },
             }
@@ -421,6 +441,32 @@ mod tests {
 
         // "foo" is added to the blocklist
         let mut metric = Metric::gauge("foo", 1.0);
+        assert!(!filter.process_metric(&mut metric));
+
+        let mut metric_filterlist_watcher = cfg.watch_for_updates("metric_filterlist");
+        sender
+            .send(ConfigUpdate::Partial {
+                key: "metric_filterlist".to_string(),
+                value: serde_json::json!(["baz".to_string()]),
+            })
+            .await
+            .unwrap();
+
+        let (_, new) = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            metric_filterlist_watcher.changed::<Vec<String>>(),
+        )
+        .await
+        .expect("timed out waiting for metric_filterlist update");
+
+        assert_eq!(new, Some(vec!["baz".to_string()]));
+
+        // Apply the dynamic update to the filter under test.
+        let new_blocklist = new.unwrap();
+        filter.blocklist = Blocklist::new(&new_blocklist, filter.blocklist.match_prefix);
+
+        // "baz" is added to the filterlist
+        let mut metric = Metric::gauge("baz", 1.0);
         assert!(!filter.process_metric(&mut metric));
     }
 }
