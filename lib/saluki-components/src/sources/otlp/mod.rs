@@ -43,7 +43,7 @@ mod logs;
 mod metrics;
 mod origin;
 mod resolver;
-mod traces;
+pub mod traces;
 use self::logs::translator::OtlpLogsTranslator;
 use self::metrics::translator::OtlpMetricsTranslator;
 use self::origin::OtlpOriginTagResolver;
@@ -189,7 +189,7 @@ impl OtlpHandler for SourceHandler {
         }
     }
 
-    async fn handle_tracer_payloads(&self, body: Bytes) -> Result<(), String> {
+    async fn handle_traces(&self, body: Bytes) -> Result<(), String> {
         match ExportTraceServiceRequest::decode(body) {
             Ok(request) => {
                 for resource_spans in request.resource_spans {
@@ -311,7 +311,7 @@ impl SourceBuilder for OtlpConfiguration {
             vec![
                 OutputDefinition::named_output("metrics", EventType::Metric),
                 OutputDefinition::named_output("logs", EventType::Log),
-                OutputDefinition::named_output("traces", EventType::TracerPayload),
+                OutputDefinition::named_output("traces", EventType::Trace),
             ]
         });
 
@@ -468,12 +468,12 @@ async fn dispatch_events(mut events: EventsBuffer, source_context: &SourceContex
         return;
     }
 
-    if events.has_event_type(EventType::TracerPayload) {
+    if events.has_event_type(EventType::Trace) {
         let mut buffered_dispatcher = source_context
             .dispatcher()
             .buffered_named("traces")
             .expect("traces output should exist");
-        for trace_event in events.extract(Event::is_tracer_payload) {
+        for trace_event in events.extract(Event::is_trace) {
             if let Err(e) = buffered_dispatcher.push(trace_event).await {
                 error!(error = %e, "Failed to dispatch trace(s).");
             }
@@ -555,11 +555,10 @@ async fn run_converter(
                         }
                     }
                     OtlpResource::Traces(resource_spans) => {
-                        let tracer_payload_events =
-                            traces_translator.translate_resource_spans(resource_spans);
-                        for tracer_payload_event in tracer_payload_events {
-                            metrics.tracer_payloads_received().increment(1);
-                            if let Some(event_buffer) = event_buffer_manager.try_push(tracer_payload_event) {
+                        let trace_events =
+                            traces_translator.translate_resource_spans(resource_spans, &metrics);
+                        for trace_event in trace_events {
+                            if let Some(event_buffer) = event_buffer_manager.try_push(trace_event) {
                                 dispatch_events(event_buffer, &source_context).await;
                             }
                         }

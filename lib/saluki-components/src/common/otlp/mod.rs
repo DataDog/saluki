@@ -43,7 +43,7 @@ pub struct Metrics {
     metrics_received: Counter,
     logs_received: Counter,
     bytes_received: Counter,
-    tracer_payloads_received: Counter,
+    spans_received: Counter,
 }
 
 impl Metrics {
@@ -55,8 +55,8 @@ impl Metrics {
         &self.logs_received
     }
 
-    pub fn tracer_payloads_received(&self) -> &Counter {
-        &self.tracer_payloads_received
+    pub fn spans_received(&self) -> &Counter {
+        &self.spans_received
     }
 
     pub fn bytes_received(&self) -> &Counter {
@@ -70,7 +70,7 @@ impl Metrics {
             metrics_received: Counter::noop(),
             logs_received: Counter::noop(),
             bytes_received: Counter::noop(),
-            tracer_payloads_received: Counter::noop(),
+            spans_received: Counter::noop(),
         }
     }
 }
@@ -85,10 +85,8 @@ pub fn build_metrics(component_context: &ComponentContext) -> Metrics {
         logs_received: builder
             .register_debug_counter_with_tags("component_events_received_total", [("message_type", "otlp_logs")]),
         bytes_received: builder.register_counter_with_tags("component_bytes_received_total", [("source", "otlp")]),
-        tracer_payloads_received: builder.register_debug_counter_with_tags(
-            "component_events_received_total",
-            [("message_type", "otlp_tracer_payloads")],
-        ),
+        spans_received: builder
+            .register_debug_counter_with_tags("component_events_received_total", [("message_type", "otlp_spans")]),
     }
 }
 /// Handler for OTLP data.
@@ -98,7 +96,7 @@ pub trait OtlpHandler: Send + Sync + 'static {
 
     async fn handle_logs(&self, body: Bytes) -> Result<(), String>;
 
-    async fn handle_tracer_payloads(&self, body: Bytes) -> Result<(), String>;
+    async fn handle_traces(&self, body: Bytes) -> Result<(), String>;
 }
 
 /// OTLP server configuration and setup.
@@ -213,10 +211,10 @@ async fn http_traces_handler<H: OtlpHandler>(
 
     metrics.bytes_received().increment(body.len() as u64);
 
-    match handler.handle_tracer_payloads(body).await {
+    match handler.handle_traces(body).await {
         Ok(()) => (StatusCode::OK, "OK"),
         Err(msg) => {
-            error!("Failed to handle OTLP tracer payloads: {}", msg);
+            error!("Failed to handle OTLP traces: {}", msg);
             (StatusCode::INTERNAL_SERVER_ERROR, "Internal processing error")
         }
     }
@@ -284,7 +282,7 @@ impl<H: OtlpHandler> TraceService for GrpcServiceImpl<H> {
 
         let raw_bytes = request.into_inner().encode_to_vec();
 
-        match self.handler.handle_tracer_payloads(Bytes::from(raw_bytes)).await {
+        match self.handler.handle_traces(Bytes::from(raw_bytes)).await {
             Ok(()) => Ok(Response::new(ExportTraceServiceResponse { partial_success: None })),
             Err(msg) => {
                 error!("Failed to handle OTLP traces: {}", msg);
