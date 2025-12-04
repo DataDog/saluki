@@ -44,6 +44,7 @@ export CARGO_TOOL_VERSION_cargo-nextest ?= 0.9.99
 export CARGO_TOOL_VERSION_cargo-autoinherit ?= 0.1.5
 export CARGO_TOOL_VERSION_cargo-sort ?= 1.0.9
 export CARGO_TOOL_VERSION_dummyhttp ?= 1.1.0
+export CARGO_TOOL_VERSION_cargo-machete ?= 0.9.1
 export DDPROF_VERSION ?= 0.20.0
 export LADING_VERSION ?= 0.28.0
 
@@ -236,6 +237,9 @@ ifeq ($(shell command -v jq >/dev/null || echo not-found), not-found)
 endif
 ifeq ($(shell command -v protoc >/dev/null || echo not-found), not-found)
 	$(error "Please install protoc: https://protobuf.dev/installation/")
+endif
+ifeq ($(shell command -v cargo-binstall >/dev/null || echo not-found), not-found)
+	$(error "Please install cargo-binstall: https://github.com/cargo-bins/cargo-binstall?tab=readme-ov-file#installation")
 endif
 
 ##@ Running
@@ -465,6 +469,12 @@ check-features: ## Checks that all packages with feature flags can be built with
 	jq -r "select(.features | del(.default) | length > 0) | .name" | \
 	xargs -I {} -- cargo hack --feature-powerset --package {} check --tests --quiet
 
+.PHONY: check-unused-deps
+check-unused-deps: check-rust-build-tools cargo-install-cargo-machete
+check-unused-deps: ## Checks for any imported dependencies that are not used in code
+	@echo "[*] Checking for unused dependencies..."
+	@cargo machete
+
 ##@ Testing
 
 .PHONY: test
@@ -672,4 +682,4 @@ cargo-preinstall: ## Pre-installs all necessary Cargo tools (used for CI)
 cargo-install-%: override TOOL = $(@:cargo-install-%=%)
 cargo-install-%: override VERSIONED_TOOL = ${TOOL}@$(CARGO_TOOL_VERSION_$(TOOL))
 cargo-install-%: check-rust-build-tools
-	@$(if $(findstring true,$(AUTOINSTALL)),test -f ${CARGO_BIN_DIR}/${TOOL} || (echo "[*] Installing ${VERSIONED_TOOL}..." && cargo install ${VERSIONED_TOOL} --quiet),)
+	@$(if $(findstring true,$(AUTOINSTALL)),test -f ${CARGO_BIN_DIR}/${TOOL} || (echo "[*] Installing ${VERSIONED_TOOL}..." && cargo binstall ${VERSIONED_TOOL} --quiet),)
