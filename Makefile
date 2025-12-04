@@ -43,6 +43,7 @@ export CARGO_TOOL_VERSION_cargo-hack ?= 0.6.30
 export CARGO_TOOL_VERSION_cargo-nextest ?= 0.9.99
 export CARGO_TOOL_VERSION_cargo-autoinherit ?= 0.1.5
 export CARGO_TOOL_VERSION_cargo-sort ?= 1.0.9
+export CARGO_TOOL_VERSION_cargo-udeps ?= 0.1.44
 export CARGO_TOOL_VERSION_dummyhttp ?= 1.1.0
 export DDPROF_VERSION ?= 0.20.0
 export LADING_VERSION ?= 0.28.0
@@ -428,7 +429,7 @@ endif
 
 .PHONY: check-all
 check-all: ## Check everything
-check-all: check-fmt check-clippy check-features check-deny check-licenses
+check-all: check-fmt check-unused-deps check-clippy check-features check-deny check-licenses
 
 .PHONY: check-clippy
 check-clippy: check-rust-build-tools
@@ -449,6 +450,12 @@ check-fmt: ## Check that all Rust source files are formatted properly
 	@cargo +nightly fmt -- --check
 	@echo "[*] Checking Cargo.toml formatting..."
 	@cargo sort --workspace --check >/dev/null
+
+.PHONY: check-unused-deps
+check-unused-deps: check-rust-build-tools cargo-install-cargo-udeps
+check-unused-deps: ## Check for unused Cargo dependencies
+	@echo "[*] Checking for unused dependencies..."
+	@rustup run nightly cargo udeps --workspace --all-targets
 
 .PHONY: check-licenses
 check-licenses: check-rust-build-tools cargo-install-dd-rust-license-tool
