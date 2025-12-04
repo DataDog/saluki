@@ -32,10 +32,10 @@ pub struct DogstatsDPrefixFilterConfiguration {
     )]
     metric_prefix_blocklist: Vec<String>,
 
-    #[serde(default, rename = "metric_filterlist")]
+    #[serde(default)]
     metric_filterlist: Vec<String>,
 
-    #[serde(default, rename = "metric_filterlist_match_prefix")]
+    #[serde(default)]
     metric_filterlist_match_prefix: bool,
 
     #[serde(default, rename = "statsd_metric_blocklist")]
