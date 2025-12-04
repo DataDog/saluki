@@ -43,6 +43,7 @@ pub struct Metrics {
     metrics_received: Counter,
     logs_received: Counter,
     bytes_received: Counter,
+    spans_received: Counter,
 }
 
 impl Metrics {
@@ -52,6 +53,10 @@ impl Metrics {
 
     pub fn logs_received(&self) -> &Counter {
         &self.logs_received
+    }
+
+    pub fn spans_received(&self) -> &Counter {
+        &self.spans_received
     }
 
     pub fn bytes_received(&self) -> &Counter {
@@ -65,6 +70,7 @@ impl Metrics {
             metrics_received: Counter::noop(),
             logs_received: Counter::noop(),
             bytes_received: Counter::noop(),
+            spans_received: Counter::noop(),
         }
     }
 }
@@ -79,6 +85,8 @@ pub fn build_metrics(component_context: &ComponentContext) -> Metrics {
         logs_received: builder
             .register_debug_counter_with_tags("component_events_received_total", [("message_type", "otlp_logs")]),
         bytes_received: builder.register_counter_with_tags("component_bytes_received_total", [("source", "otlp")]),
+        spans_received: builder
+            .register_debug_counter_with_tags("component_events_received_total", [("message_type", "otlp_spans")]),
     }
 }
 /// Handler for OTLP data.
