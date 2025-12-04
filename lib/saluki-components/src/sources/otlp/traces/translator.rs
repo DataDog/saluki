@@ -64,6 +64,3 @@ impl OtlpTracesTranslator {
             .collect()
     }
 }
-
-
-
