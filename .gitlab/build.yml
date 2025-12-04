@@ -116,6 +116,9 @@ build-adp-image-fips:
 build-adp-image-internal-amd64:
   extends: [.build-common-variables, .build-adp-definition]
   tags: ["docker-in-docker:amd64"]
+  rules:
+    - if: !reference [.on_mq_branch, rules, if]
+      when: never
   variables:
     ARCH_TAG: amd64
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
@@ -123,12 +126,18 @@ build-adp-image-internal-amd64:
 build-adp-image-internal-arm64:
   extends: [.build-common-variables, .build-adp-definition]
   tags: ["docker-in-docker:arm64"]
+  rules:
+    - if: !reference [.on_mq_branch, rules, if]
+      when: never
   variables:
     ARCH_TAG: arm64
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
 
 build-adp-image-internal:
   extends: [.build-common-variables, .build-adp-multi-arch-definition]
+  rules:
+    - if: !reference [.on_mq_branch, rules, if]
+      when: never
   needs:
     - build-adp-image-internal-amd64
     - build-adp-image-internal-arm64
@@ -138,6 +147,9 @@ build-adp-image-internal:
 build-adp-image-fips-internal-amd64:
   extends: [.build-common-variables, .build-adp-definition]
   tags: ["docker-in-docker:amd64"]
+  rules:
+    - if: !reference [.on_mq_branch, rules, if]
+      when: never
   variables:
     ARCH_TAG: amd64
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
@@ -147,6 +159,9 @@ build-adp-image-fips-internal-amd64:
 build-adp-image-fips-internal-arm64:
   extends: [.build-common-variables, .build-adp-definition]
   tags: ["docker-in-docker:arm64"]
+  rules:
+    - if: !reference [.on_mq_branch, rules, if]
+      when: never
   variables:
     ARCH_TAG: arm64
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
@@ -155,6 +170,9 @@ build-adp-image-fips-internal-arm64:
 
 build-adp-image-fips-internal:
   extends: [.build-common-variables, .build-adp-multi-arch-definition]
+  rules:
+    - if: !reference [.on_mq_branch, rules, if]
+      when: never
   needs:
     - build-adp-image-fips-internal-amd64
     - build-adp-image-fips-internal-arm64
@@ -173,6 +191,9 @@ build-adp-image-fips-internal:
 publish-adp-image-internal:
   stage: build
   extends: [.build-common-variables]
+  rules:
+    - if: !reference [.on_mq_branch, rules, if]
+      when: never
   needs:
     - build-adp-image-internal
   trigger:
@@ -192,6 +213,9 @@ publish-adp-image-internal:
 publish-adp-image-internal-fips:
   stage: build
   extends: [.build-common-variables]
+  rules:
+    - if: !reference [.on_mq_branch, rules, if]
+      when: never
   needs:
     - build-adp-image-fips-internal
   trigger:
@@ -211,6 +235,9 @@ publish-adp-image-internal-fips:
 display-image-tags:
   extends: [.build-common-variables]
   stage: build
+  rules:
+    - if: !reference [.on_mq_branch, rules, if]
+      when: never
   needs:
     - build-adp-image-internal
     - build-adp-image-fips-internal
