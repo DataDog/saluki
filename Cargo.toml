@@ -16,7 +16,7 @@ members = [
   "lib/saluki-app",
   "lib/saluki-common",
   "lib/saluki-components",
-  "lib/saluki-config",
+  "lib/saluki-config", "lib/saluki-config2",
   "lib/saluki-context",
   "lib/saluki-core",
   "lib/saluki-env",
