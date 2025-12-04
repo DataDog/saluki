@@ -119,6 +119,7 @@ build-adp-image-internal-amd64:
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
+    - when: always
   variables:
     ARCH_TAG: amd64
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
@@ -129,6 +130,7 @@ build-adp-image-internal-arm64:
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
+    - when: always
   variables:
     ARCH_TAG: arm64
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
@@ -138,6 +140,7 @@ build-adp-image-internal:
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
+    - when: always
   needs:
     - build-adp-image-internal-amd64
     - build-adp-image-internal-arm64
@@ -150,6 +153,7 @@ build-adp-image-fips-internal-amd64:
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
+    - when: always
   variables:
     ARCH_TAG: amd64
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
@@ -162,6 +166,7 @@ build-adp-image-fips-internal-arm64:
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
+    - when: always
   variables:
     ARCH_TAG: arm64
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
@@ -173,6 +178,7 @@ build-adp-image-fips-internal:
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
+    - when: always
   needs:
     - build-adp-image-fips-internal-amd64
     - build-adp-image-fips-internal-arm64
@@ -194,6 +200,7 @@ publish-adp-image-internal:
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
+    - when: always
   needs:
     - build-adp-image-internal
   trigger:
@@ -216,6 +223,7 @@ publish-adp-image-internal-fips:
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
+    - when: always
   needs:
     - build-adp-image-fips-internal
   trigger:
@@ -238,6 +246,7 @@ display-image-tags:
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
+    - when: always
   needs:
     - build-adp-image-internal
     - build-adp-image-fips-internal
