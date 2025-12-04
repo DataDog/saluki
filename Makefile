@@ -239,7 +239,7 @@ ifeq ($(shell command -v protoc >/dev/null || echo not-found), not-found)
 	$(error "Please install protoc: https://protobuf.dev/installation/")
 endif
 ifeq ($(shell command -v cargo-binstall >/dev/null || echo not-found), not-found)
-	$(error "Please install cargo-binstall: https://github.com/cargo-bins/cargo-binstall?tab=readme-ov-file#installation")
+	@cargo install cargo-binstall
 endif
 
 ##@ Running
