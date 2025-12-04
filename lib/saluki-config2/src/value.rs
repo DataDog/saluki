@@ -51,7 +51,7 @@ impl fmt::Display for KeyPath {
 
 /// A generic, type-erased map.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct Values(VObject);
+pub struct Values(VObject);
 
 impl Values {
     /// Creates a new `Values` instance from a `Value`.
@@ -220,7 +220,7 @@ fn vnumber_type_str(number: &VNumber) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use proptest::prelude::*;
+    use proptest::{collection::vec as arb_vec, prelude::*};
 
     use super::*;
 
@@ -229,6 +229,26 @@ mod tests {
             let obj = ::facet_value::value!($rest);
             $crate::value::Values::from_value(obj).unwrap()
         }};
+    }
+
+    fn arb_value() -> impl Strategy<Value = Value> {
+        let leaf = prop_oneof![
+            Just(Value::NULL),
+            any::<bool>().prop_map(Value::from),
+            any::<i64>().prop_map(Value::from),
+            any::<f64>()
+                .prop_filter("f64 must be finite", |f| f.is_finite())
+                .prop_map(Value::from),
+            any::<String>().prop_map(Value::from),
+            arb_vec(any::<u8>(), 0..32).prop_map(Value::from),
+        ];
+
+        leaf.prop_recursive(8, 128, 8, |inner| {
+            prop_oneof![
+                arb_vec(inner.clone(), 0..10).prop_map(|values| VArray::from_iter(values).into_value()),
+                arb_vec((".*", inner), 0..10).prop_map(|pairs| VObject::from_iter(pairs).into_value()),
+            ]
+        })
     }
 
     #[test]
@@ -245,7 +265,7 @@ mod tests {
 
         let other_values = values!({
             "bool": true,
-            "number": 3.14,
+            "number": 1.2345,
             "string": "hello",
             "bytes": (b"world".to_vec()),
         });
@@ -270,7 +290,7 @@ mod tests {
         // Build our "base" and "other" objects with the same keys but differing values: same value _type_, but not the same value itself.
         let base_values = values!({
             "bool": false,
-            "number": 3.14,
+            "number": 1.2345,
             "string": "hello",
             "bytes": (b"world".to_vec()),
         });
@@ -392,10 +412,6 @@ mod tests {
         assert_eq!(merged_array[2], other_array[2]);
     }
 
-    /*
-
-    TODO: Rewrite the `arb_value` helper since after accidentally deleting it... :'(
-
     proptest! {
         #[test]
         fn property_test_merge_type_mismatch(mut base_value in arb_value(), other_value in arb_value()) {
@@ -407,8 +423,8 @@ mod tests {
 
             // We create our "base" and "other" objects with the same key, each using the respective value passed in
             // to the test function.
-            let base_values = values!({ "value" => base_value.clone() });
-            let other_values = values!({ "value" => other_value.clone() });
+            let base_values = values!({ "value": (base_value.clone()) });
+            let other_values = values!({ "value": (other_value.clone()) });
 
             // Merge the values together and assert that an error is returned due to type mismatch.
             let result = base_values.merge(other_values);
@@ -422,5 +438,4 @@ mod tests {
             assert_eq!(expected_error.to_string(), actual_error.to_string());
         }
     }
-    */
 }
