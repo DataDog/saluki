@@ -19,8 +19,6 @@ use self::log::Log;
 pub mod trace;
 use self::trace::Trace;
 
-pub mod tracer_payload;
-
 /// Telemetry event type.
 ///
 /// This type is a bitmask, which means different event types can be combined together. This makes `EventType` mainly
