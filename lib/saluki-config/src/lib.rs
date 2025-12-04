@@ -622,9 +622,11 @@ async fn run_dynamic_config_updater(
         // Update our local dynamic state based on the received message.
         match update {
             ConfigUpdate::Snapshot(new_state) => {
+                debug!("Received configuration snapshot update.");
                 dynamic_state = new_state;
             }
             ConfigUpdate::Partial { key, value } => {
+                debug!(%key, "Received partial configuration update.");
                 if dynamic_state.is_null() {
                     dynamic_state = serde_json::Value::Object(serde_json::Map::new());
                 }
