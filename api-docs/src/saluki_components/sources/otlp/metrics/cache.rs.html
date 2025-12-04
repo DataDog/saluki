@@ -2,7 +2,7 @@
 <a href=#2 id=2 data-nosnippet>2</a>
 <a href=#3 id=3 data-nosnippet>3</a><span class="kw">use </span>saluki_common::cache::{Cache, CacheBuilder};
 <a href=#4 id=4 data-nosnippet>4</a>
-<a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span><span class="kw">super</span>::config::OtlpTranslatorConfig;
+<a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span><span class="kw">super</span>::config::OtlpMetricsTranslatorConfig;
 <a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span><span class="kw">super</span>::dimensions::Dimensions;
 <a href=#7 id=7 data-nosnippet>7</a>
 <a href=#8 id=8 data-nosnippet>8</a><span class="doccomment">/// The state we store for each unique time series.
@@ -28,7 +28,7 @@
 <a href=#28 id=28 data-nosnippet>28</a>}
 <a href=#29 id=29 data-nosnippet>29</a>
 <a href=#30 id=30 data-nosnippet>30</a><span class="kw">impl </span>PointsCache {
-<a href=#31 id=31 data-nosnippet>31</a>    <span class="kw">pub fn </span>from_config(config: OtlpTranslatorConfig) -&gt; <span class="self">Self </span>{
+<a href=#31 id=31 data-nosnippet>31</a>    <span class="kw">pub fn </span>from_config(config: OtlpMetricsTranslatorConfig) -&gt; <span class="self">Self </span>{
 <a href=#32 id=32 data-nosnippet>32</a>        <span class="kw">let </span>ttl = config.delta_ttl;
 <a href=#33 id=33 data-nosnippet>33</a>        <span class="kw">let </span>interval = config.sweep_interval;
 <a href=#34 id=34 data-nosnippet>34</a>

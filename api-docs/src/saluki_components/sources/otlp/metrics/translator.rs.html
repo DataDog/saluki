@@ -21,7 +21,7 @@
 <a href=#21 id=21 data-nosnippet>21</a><span class="kw">use </span><span class="kw">super</span>::<span class="kw">super</span>::attributes::source::{Source, SourceKind};
 <a href=#22 id=22 data-nosnippet>22</a><span class="kw">use </span><span class="kw">super</span>::<span class="kw">super</span>::attributes::translator::AttributeTranslator;
 <a href=#23 id=23 data-nosnippet>23</a><span class="kw">use </span><span class="kw">super</span>::cache::PointsCache;
-<a href=#24 id=24 data-nosnippet>24</a><span class="kw">use </span><span class="kw">super</span>::config::{HistogramMode, NumberMode, OtlpTranslatorConfig};
+<a href=#24 id=24 data-nosnippet>24</a><span class="kw">use </span><span class="kw">super</span>::config::{HistogramMode, NumberMode, OtlpMetricsTranslatorConfig};
 <a href=#25 id=25 data-nosnippet>25</a><span class="kw">use </span><span class="kw">super</span>::dimensions::Dimensions;
 <a href=#26 id=26 data-nosnippet>26</a><span class="kw">use </span><span class="kw">super</span>::internal::{instrumentationlibrary, instrumentationscope};
 <a href=#27 id=27 data-nosnippet>27</a><span class="kw">use </span><span class="kw">super</span>::remap;
@@ -63,7 +63,7 @@
 <a href=#63 id=63 data-nosnippet>63</a>
 <a href=#64 id=64 data-nosnippet>64</a><span class="doccomment">/// A translator for converting OTLP metrics into Saluki `Event::Metric`s.
 <a href=#65 id=65 data-nosnippet>65</a></span><span class="kw">pub struct </span>OtlpMetricsTranslator {
-<a href=#66 id=66 data-nosnippet>66</a>    config: OtlpTranslatorConfig,
+<a href=#66 id=66 data-nosnippet>66</a>    config: OtlpMetricsTranslatorConfig,
 <a href=#67 id=67 data-nosnippet>67</a>    context_resolver: ContextResolver,
 <a href=#68 id=68 data-nosnippet>68</a>    prev_pts: PointsCache,
 <a href=#69 id=69 data-nosnippet>69</a>    process_start_time_ns: u64, <span class="comment">// Used for initial value consumption.
@@ -81,7 +81,7 @@
 <a href=#81 id=81 data-nosnippet>81</a>
 <a href=#82 id=82 data-nosnippet>82</a><span class="kw">impl </span>OtlpMetricsTranslator {
 <a href=#83 id=83 data-nosnippet>83</a>    <span class="doccomment">/// Creates a new, empty `OtlpMetricsTranslator`.
-<a href=#84 id=84 data-nosnippet>84</a>    </span><span class="kw">pub fn </span>new(config: OtlpTranslatorConfig, context_resolver: ContextResolver) -&gt; <span class="self">Self </span>{
+<a href=#84 id=84 data-nosnippet>84</a>    </span><span class="kw">pub fn </span>new(config: OtlpMetricsTranslatorConfig, context_resolver: ContextResolver) -&gt; <span class="self">Self </span>{
 <a href=#85 id=85 data-nosnippet>85</a>        <span class="kw">let </span>process_start_time_ns = SystemTime::now()
 <a href=#86 id=86 data-nosnippet>86</a>            .duration_since(UNIX_EPOCH)
 <a href=#87 id=87 data-nosnippet>87</a>            .expect(<span class="string">"System time is before the UNIX epoch, this should not happen."</span>)
