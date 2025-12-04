@@ -6,11 +6,11 @@ license = { workspace = true }
 repository = { workspace = true }
 
 [dependencies]
-facet = { git = "https://github.com/facet-rs/facet", rev = "40ab0de16221eae27b68b5234188e0142f9139b6", default-features = false }
-facet-reflect = { git = "https://github.com/facet-rs/facet", rev = "40ab0de16221eae27b68b5234188e0142f9139b6", default-features = false, features = ["alloc"] }
-facet-json = { git = "https://github.com/facet-rs/facet", rev = "40ab0de16221eae27b68b5234188e0142f9139b6", default-features = false }
-facet-yaml = { git = "https://github.com/facet-rs/facet", rev = "40ab0de16221eae27b68b5234188e0142f9139b6", default-features = false }
-facet-value = { git = "https://github.com/facet-rs/facet", rev = "40ab0de16221eae27b68b5234188e0142f9139b6", default-features = false, features = ["alloc", "std"] }
+facet = { workspace = true }
+facet-json = { workspace = true }
+facet-reflect = { workspace = true, features = ["alloc"] }
+facet-value = { workspace = true, features = ["alloc", "std"] }
+facet-yaml = { workspace = true }
 saluki-error = { workspace = true }
 snafu = { workspace = true }
 stringtheory = { workspace = true }

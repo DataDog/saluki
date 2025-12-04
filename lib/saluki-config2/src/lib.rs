@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+#![allow(unused_variables)]
+
 use std::sync::Arc;
 
 use facet::Facet;
@@ -6,7 +9,7 @@ use saluki_error::GenericError;
 mod deser;
 
 mod value;
-use self::value::Values;
+pub use self::value::Values;
 
 /// Configuration data provider.
 pub trait DataProvider {

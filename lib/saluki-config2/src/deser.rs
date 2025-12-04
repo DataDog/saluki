@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, u8};
+use std::marker::PhantomData;
 
 use facet::{
     EnumType, Facet, Field, NumericType, PointerType, PrimitiveType, SequenceType, Shape, ShapeLayout, StructType,
@@ -420,7 +420,7 @@ mod tests {
         });
 
         let output: Config = build_partial(input);
-        assert_eq!(output.enabled, true);
+        assert!(output.enabled);
         assert_eq!(output.api_key, "123456");
     }
 
@@ -447,8 +447,8 @@ mod tests {
         });
 
         let output: Config = build_partial(input);
-        assert_eq!(output.enabled, true);
-        assert_eq!(output.proxy.enabled, true);
+        assert!(output.enabled);
+        assert!(output.proxy.enabled);
         assert_eq!(output.proxy.http_proxy, "http://example.com");
     }
 }
