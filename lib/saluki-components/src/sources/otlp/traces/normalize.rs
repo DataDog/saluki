@@ -20,7 +20,7 @@ static IS_ALPHA_LOOKUP: [bool; 256] = {
     let mut lookup = [false; 256];
     let mut i = 0;
     while i < 256 {
-        lookup[i] = is_alpha(i as u8 as char);
+        lookup[i] = (i as u8 as char).is_ascii_alphabetic();
         i += 1;
     }
     lookup
@@ -29,7 +29,7 @@ static IS_ALPHA_NUM_LOOKUP: [bool; 256] = {
     let mut lookup = [false; 256];
     let mut i = 0;
     while i < 256 {
-        lookup[i] = is_alpha_num(i as u8 as char);
+        lookup[i] = (i as u8 as char).is_ascii_alphanumeric();
         i += 1;
     }
     lookup
@@ -152,25 +152,6 @@ pub fn normalize_service(service: &MetaString) -> MetaString {
     normalized
 }
 
-/// Normalizes a peer service name.
-///
-/// Returns an empty string if the input is empty or normalizes down to nothing.
-#[allow(dead_code)]
-pub fn normalize_peer_service(service: &MetaString) -> MetaString {
-    if service.is_empty() {
-        return MetaString::from_static("");
-    }
-
-    let truncated = truncate_utf8(service, MAX_SERVICE_LEN);
-    let normalized = normalize_tag_value(truncated);
-
-    if normalized.is_empty() {
-        return MetaString::from_static("");
-    }
-
-    normalized
-}
-
 /// Normalizes a tag value.
 ///
 /// Truncates to `MAX_TAG_LEN` and ensures characters are valid ASCII tag characters.
@@ -187,7 +168,7 @@ pub fn normalize_tag(value: &str) -> MetaString {
 
 fn normalize(value: &str, remove_digit_start_char: bool) -> MetaString {
     if value.is_empty() {
-        return MetaString::from_static("");
+        return MetaString::empty();
     }
 
     // Fast Path: return right away if it is valid
@@ -378,16 +359,8 @@ fn is_normalized_ascii_tag(tag: &str, check_valid_start_char: bool) -> bool {
     true
 }
 
-const fn is_alpha(c: char) -> bool {
-    (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-}
-
-const fn is_alpha_num(c: char) -> bool {
-    is_alpha(c) || (c >= '0' && c <= '9')
-}
-
 const fn is_valid_ascii_start_char(c: char) -> bool {
-    (c >= 'a' && c <= 'z') || c == ':'
+    c.is_ascii_lowercase() || c == ':'
 }
 
 const fn is_valid_ascii_tag_char(c: char) -> bool {
@@ -562,17 +535,6 @@ mod tests {
 
         let empty = normalize_service(&MetaString::from(""));
         assert_eq!(empty.as_ref(), DEFAULT_SERVICE_NAME.as_ref());
-    }
-
-    #[test]
-    fn test_normalize_peer_service() {
-        for (service, expected) in base_service_cases().iter() {
-            let normalized = normalize_peer_service(service);
-            assert_eq!(normalized.as_ref(), expected.as_ref(), "service {}", service);
-        }
-
-        let empty = normalize_peer_service(&MetaString::from(""));
-        assert_eq!(empty.as_ref(), "");
     }
 
     fn base_service_cases() -> Vec<(MetaString, MetaString)> {
