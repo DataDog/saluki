@@ -14,7 +14,7 @@ facet-yaml = { workspace = true }
 saluki-error = { workspace = true }
 snafu = { workspace = true }
 stringtheory = { workspace = true }
-tracing = { workspace = true }
+tracing = { workspace = true, features = ["attributes"] }
 
 [dev-dependencies]
 proptest = { workspace = true }
