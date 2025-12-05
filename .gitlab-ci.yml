@@ -93,6 +93,11 @@ default:
   rules:
     if: $CI_COMMIT_BRANCH != "main" && $CI_COMMIT_TAG == null
 
+# We're running on an MQ branch.
+.on_mq_branch:
+  rules:
+    if: $CI_COMMIT_BRANCH =~ /^mq-working-branch/
+
 # Common build-specific variables that need to be shared across stages.
 .build-common-variables:
   variables:

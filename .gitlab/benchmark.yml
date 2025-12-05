@@ -16,6 +16,8 @@ build-adp-baseline-image:
   tags: ["docker-in-docker:amd64"]
   # Don't run benchmarks unless it's a PR, basically.
   rules:
+    - if: !reference [.on_mq_branch, rules, if]
+      when: never
     - if: !reference [.on_development_branch, rules, if]
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
@@ -67,6 +69,8 @@ build-adp-comparison-image:
   tags: ["docker-in-docker:amd64"]
   # Don't run benchmarks unless it's a PR, basically.
   rules:
+    - if: !reference [.on_mq_branch, rules, if]
+      when: never
     - if: !reference [.on_development_branch, rules, if]
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
@@ -113,6 +117,8 @@ run-benchmarks-adp:
   stage: benchmark
   # Don't run benchmarks unless it's a PR, basically.
   rules:
+    - if: !reference [.on_mq_branch, rules, if]
+      when: never
     - if: !reference [.on_development_branch, rules, if]
   timeout: 1h
   needs:
