@@ -160,8 +160,7 @@ static KUBERNETES_DD_TAGS: LazyLock<FastHashSet<&'static str>> = LazyLock::new(|
 
 // HTTPMappings defines the mapping between OpenTelemetry semantic conventions
 // and Datadog Agent conventions for HTTP attributes.
-#[allow(dead_code)]
-static HTTP_MAPPINGS: LazyLock<FastHashMap<&'static str, &'static str>> = LazyLock::new(|| {
+pub(crate) static HTTP_MAPPINGS: LazyLock<FastHashMap<&'static str, &'static str>> = LazyLock::new(|| {
     let mut m = FastHashMap::default();
     m.insert(CLIENT_ADDRESS, "http.client_ip");
     m.insert(HTTP_RESPONSE_BODY_SIZE, "http.response.content_length");
@@ -177,7 +176,7 @@ static HTTP_MAPPINGS: LazyLock<FastHashMap<&'static str, &'static str>> = LazyLo
     m
 });
 
-fn extract_container_tags_from_resource_attributes(attributes: &[otlp_common::KeyValue], tags: &mut TagSet) {
+pub(crate) fn extract_container_tags_from_resource_attributes(attributes: &[otlp_common::KeyValue], tags: &mut TagSet) {
     let mut extracted_tags = FastHashSet::default();
 
     for kv in attributes {
@@ -340,6 +339,20 @@ pub(super) fn get_string_attribute<'a>(attributes: &'a [otlp_common::KeyValue], 
         if kv.key == key {
             if let Some(Value::StringValue(s_val)) = kv.value.as_ref().and_then(|v| v.value.as_ref()) {
                 Some(s_val.as_str())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    })
+}
+
+pub(super) fn get_int_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<&'a i64> {
+    attributes.iter().find_map(|kv| {
+        if kv.key == key {
+            if let Some(Value::IntValue(i_val)) = kv.value.as_ref().and_then(|v| v.value.as_ref()) {
+                Some(i_val)
             } else {
                 None
             }

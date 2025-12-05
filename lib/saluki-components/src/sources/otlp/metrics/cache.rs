@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use saluki_common::cache::{Cache, CacheBuilder};
 
-use super::config::OtlpTranslatorConfig;
+use super::config::OtlpMetricsTranslatorConfig;
 use super::dimensions::Dimensions;
 
 /// The state we store for each unique time series.
@@ -28,7 +28,7 @@ pub struct PointsCache {
 }
 
 impl PointsCache {
-    pub fn from_config(config: OtlpTranslatorConfig) -> Self {
+    pub fn from_config(config: OtlpMetricsTranslatorConfig) -> Self {
         let ttl = config.delta_ttl;
         let interval = config.sweep_interval;
 
