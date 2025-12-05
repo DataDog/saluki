@@ -21,7 +21,7 @@ use super::super::attributes::raw_origin_from_attributes;
 use super::super::attributes::source::{Source, SourceKind};
 use super::super::attributes::translator::AttributeTranslator;
 use super::cache::PointsCache;
-use super::config::{HistogramMode, NumberMode, OtlpTranslatorConfig};
+use super::config::{HistogramMode, NumberMode, OtlpMetricsTranslatorConfig};
 use super::dimensions::Dimensions;
 use super::internal::{instrumentationlibrary, instrumentationscope};
 use super::remap;
@@ -63,7 +63,7 @@ struct TranslationContext<'a> {
 
 /// A translator for converting OTLP metrics into Saluki `Event::Metric`s.
 pub struct OtlpMetricsTranslator {
-    config: OtlpTranslatorConfig,
+    config: OtlpMetricsTranslatorConfig,
     context_resolver: ContextResolver,
     prev_pts: PointsCache,
     process_start_time_ns: u64, // Used for initial value consumption.
@@ -81,7 +81,7 @@ struct HistogramInfo {
 
 impl OtlpMetricsTranslator {
     /// Creates a new, empty `OtlpMetricsTranslator`.
-    pub fn new(config: OtlpTranslatorConfig, context_resolver: ContextResolver) -> Self {
+    pub fn new(config: OtlpMetricsTranslatorConfig, context_resolver: ContextResolver) -> Self {
         let process_start_time_ns = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("System time is before the UNIX epoch, this should not happen.")
