@@ -3239,8 +3239,6 @@ dependencies = [
  "http-serde-ext",
  "hyper",
  "hyper-http-proxy",
- "indexmap 2.12.0",
- "libc",
  "memory-accounting",
  "metrics",
  "opentelemetry-semantic-conventions",
