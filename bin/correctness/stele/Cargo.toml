@@ -13,7 +13,6 @@ datadog-protos = { workspace = true }
 ddsketch-agent = { workspace = true, features = ["serde"] }
 float-cmp = { workspace = true, features = ["ratio"] }
 ordered-float = { workspace = true }
-protobuf = { workspace = true }
 saluki-common = { workspace = true }
 saluki-error = { workspace = true }
 serde = { workspace = true }

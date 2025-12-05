@@ -60,7 +60,6 @@ tokio = { workspace = true, features = [
   "sync",
 ] }
 tokio-rustls = { workspace = true }
-tokio-util = { workspace = true }
 tonic = { workspace = true }
 tower = { workspace = true, features = ["retry", "timeout", "util"] }
 tracing = { workspace = true }

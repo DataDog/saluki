@@ -100,3 +100,9 @@ check-protos:
   script:
     - make update-protos
     - git diff --exit-code || (echo "Protocol Buffers definitions not up-to-date. Run `make update-protos` locally and commit."; exit 1)
+
+check-unused-deps:
+  extends: .linux-arm64-test-job
+  stage: test
+  script:
+    - make check-unused-deps
