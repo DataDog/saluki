@@ -6,7 +6,7 @@ use saluki_error::{ErrorContext as _, GenericError};
 use serde::Deserialize;
 use tracing::error;
 
-use crate::cli::utils::ControlPlaneAPIClient;
+use crate::cli::utils::DataPlaneAPIClient;
 
 /// Query and interact with the workload provider.
 #[derive(FromArgs, Debug)]
@@ -73,7 +73,7 @@ struct ExternalDataEntry<'a> {
 }
 
 /// Entrypoint for all `workload` subcommands.
-pub async fn handle_workload_command(api_client: ControlPlaneAPIClient, cmd: WorkloadCommand) {
+pub async fn handle_workload_command(api_client: DataPlaneAPIClient, cmd: WorkloadCommand) {
     match cmd.subcommand {
         WorkloadSubcommand::Tags(cmd) => {
             if let Err(e) = dump_tags(api_client, cmd).await {
@@ -90,7 +90,8 @@ pub async fn handle_workload_command(api_client: ControlPlaneAPIClient, cmd: Wor
     }
 }
 
-async fn dump_tags(api_client: ControlPlaneAPIClient, cmd: TagsCommand) -> Result<(), GenericError> {
+/// Dumps all tags from the workload provider.
+async fn dump_tags(api_client: DataPlaneAPIClient, cmd: TagsCommand) -> Result<(), GenericError> {
     static ENTITY: LazyLock<ColoredString> = LazyLock::new(|| "Entity".bold());
     static ALIAS: LazyLock<ColoredString> = LazyLock::new(|| "Alias".bold());
     static TAGS: LazyLock<ColoredString> = LazyLock::new(|| "Tags".bold());
@@ -149,7 +150,8 @@ fn print_tags<T: std::fmt::Display>(tag_set_name: &T, tags: Vec<&str>) {
     }
 }
 
-async fn dump_external_data(api_client: ControlPlaneAPIClient, cmd: ExternalDataCommand) -> Result<(), GenericError> {
+/// Dumps all External Data entries from the workload provider.
+async fn dump_external_data(api_client: DataPlaneAPIClient, cmd: ExternalDataCommand) -> Result<(), GenericError> {
     static CONTAINER_ID: LazyLock<ColoredString> = LazyLock::new(|| "Container ID".bold());
     static POD_UID: LazyLock<ColoredString> = LazyLock::new(|| "Pod UID".bold());
     static CONTAINER_NAME: LazyLock<ColoredString> = LazyLock::new(|| "Container Name".bold());

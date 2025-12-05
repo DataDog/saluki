@@ -8,7 +8,7 @@ use serde::Deserialize;
 use tokio::io::{self, AsyncWriteExt};
 use tracing::{error, info};
 
-use crate::cli::utils::ControlPlaneAPIClient;
+use crate::cli::utils::DataPlaneAPIClient;
 
 /// DogStatsD-specific debugging commands.
 #[derive(FromArgs, Debug)]
@@ -104,10 +104,10 @@ struct StatsResponse<'a> {
 
 /// Entrypoint for the `dogstatsd` commands.
 pub async fn handle_dogstatsd_command(bootstrap_config: &GenericConfiguration, cmd: DogstatsdCommand) {
-    let api_client = match ControlPlaneAPIClient::from_config(bootstrap_config) {
+    let api_client = match DataPlaneAPIClient::from_config(bootstrap_config) {
         Ok(client) => client,
         Err(e) => {
-            error!("Failed to create control plane API client: {:#}", e);
+            error!("Failed to create data plane API client: {:#}", e);
             std::process::exit(1);
         }
     };
@@ -122,7 +122,7 @@ pub async fn handle_dogstatsd_command(bootstrap_config: &GenericConfiguration, c
     }
 }
 
-async fn handle_dogstatsd_stats(api_client: ControlPlaneAPIClient, cmd: StatsCommand) -> Result<(), GenericError> {
+async fn handle_dogstatsd_stats(api_client: DataPlaneAPIClient, cmd: StatsCommand) -> Result<(), GenericError> {
     // Trigger a statistics collection and wait for it to complete.
     info!(
         "Triggered statistics collection over the next {} seconds. Waiting for completion...",
