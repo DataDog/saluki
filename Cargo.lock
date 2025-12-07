@@ -1061,7 +1061,7 @@ dependencies = [
 [[package]]
 name = "facet"
 version = "0.31.8"
-source = "git+https://github.com/facet-rs/facet?rev=40ab0de16221eae27b68b5234188e0142f9139b6#40ab0de16221eae27b68b5234188e0142f9139b6"
+source = "git+https://github.com/facet-rs/facet?branch=main#45a8cb1c3cbf155480f78f746c2719b750ccd488"
 dependencies = [
  "facet-core",
  "facet-macros",
@@ -1071,8 +1071,9 @@ dependencies = [
 [[package]]
 name = "facet-core"
 version = "0.31.8"
-source = "git+https://github.com/facet-rs/facet?rev=40ab0de16221eae27b68b5234188e0142f9139b6#40ab0de16221eae27b68b5234188e0142f9139b6"
+source = "git+https://github.com/facet-rs/facet?branch=main#45a8cb1c3cbf155480f78f746c2719b750ccd488"
 dependencies = [
+ "autocfg",
  "bitflags",
  "impls",
  "paste",
@@ -1081,7 +1082,7 @@ dependencies = [
 [[package]]
 name = "facet-json"
 version = "0.31.0"
-source = "git+https://github.com/facet-rs/facet?rev=40ab0de16221eae27b68b5234188e0142f9139b6#40ab0de16221eae27b68b5234188e0142f9139b6"
+source = "git+https://github.com/facet-rs/facet?branch=main#45a8cb1c3cbf155480f78f746c2719b750ccd488"
 dependencies = [
  "facet",
  "facet-core",
@@ -1099,7 +1100,7 @@ dependencies = [
 [[package]]
 name = "facet-macros"
 version = "0.31.8"
-source = "git+https://github.com/facet-rs/facet?rev=40ab0de16221eae27b68b5234188e0142f9139b6#40ab0de16221eae27b68b5234188e0142f9139b6"
+source = "git+https://github.com/facet-rs/facet?branch=main#45a8cb1c3cbf155480f78f746c2719b750ccd488"
 dependencies = [
  "facet-core",
  "facet-macros-impl",
@@ -1108,7 +1109,7 @@ dependencies = [
 [[package]]
 name = "facet-macros-impl"
 version = "0.31.8"
-source = "git+https://github.com/facet-rs/facet?rev=40ab0de16221eae27b68b5234188e0142f9139b6#40ab0de16221eae27b68b5234188e0142f9139b6"
+source = "git+https://github.com/facet-rs/facet?branch=main#45a8cb1c3cbf155480f78f746c2719b750ccd488"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1119,7 +1120,7 @@ dependencies = [
 [[package]]
 name = "facet-reflect"
 version = "0.31.8"
-source = "git+https://github.com/facet-rs/facet?rev=40ab0de16221eae27b68b5234188e0142f9139b6#40ab0de16221eae27b68b5234188e0142f9139b6"
+source = "git+https://github.com/facet-rs/facet?branch=main#45a8cb1c3cbf155480f78f746c2719b750ccd488"
 dependencies = [
  "facet-core",
  "facet-macros",
@@ -1129,7 +1130,7 @@ dependencies = [
 [[package]]
 name = "facet-solver"
 version = "0.31.7"
-source = "git+https://github.com/facet-rs/facet?rev=40ab0de16221eae27b68b5234188e0142f9139b6#40ab0de16221eae27b68b5234188e0142f9139b6"
+source = "git+https://github.com/facet-rs/facet?branch=main#45a8cb1c3cbf155480f78f746c2719b750ccd488"
 dependencies = [
  "facet-core",
  "facet-reflect",
@@ -1139,16 +1140,18 @@ dependencies = [
 [[package]]
 name = "facet-value"
 version = "0.1.0"
-source = "git+https://github.com/facet-rs/facet?rev=40ab0de16221eae27b68b5234188e0142f9139b6#40ab0de16221eae27b68b5234188e0142f9139b6"
+source = "git+https://github.com/facet-rs/facet?branch=main#45a8cb1c3cbf155480f78f746c2719b750ccd488"
 dependencies = [
  "facet-core",
  "facet-reflect",
+ "indexmap 2.12.0",
+ "static_assertions",
 ]
 
 [[package]]
 name = "facet-yaml"
 version = "0.31.0"
-source = "git+https://github.com/facet-rs/facet?rev=40ab0de16221eae27b68b5234188e0142f9139b6#40ab0de16221eae27b68b5234188e0142f9139b6"
+source = "git+https://github.com/facet-rs/facet?branch=main#45a8cb1c3cbf155480f78f746c2719b750ccd488"
 dependencies = [
  "facet",
  "facet-core",

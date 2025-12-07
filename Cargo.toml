@@ -201,11 +201,11 @@ tracing-appender = { version = "0.2", default-features = false }
 base64 = { version = "0.22.1", default-features = false }
 treediff = { version = "5", default-features = false }
 argh = { version = "0.1", default-features = false }
-facet = { git = "https://github.com/facet-rs/facet", rev = "40ab0de16221eae27b68b5234188e0142f9139b6", default-features = false }
-facet-json = { git = "https://github.com/facet-rs/facet", rev = "40ab0de16221eae27b68b5234188e0142f9139b6", default-features = false }
-facet-reflect = { git = "https://github.com/facet-rs/facet", rev = "40ab0de16221eae27b68b5234188e0142f9139b6", default-features = false }
-facet-value = { git = "https://github.com/facet-rs/facet", rev = "40ab0de16221eae27b68b5234188e0142f9139b6", default-features = false }
-facet-yaml = { git = "https://github.com/facet-rs/facet", rev = "40ab0de16221eae27b68b5234188e0142f9139b6", default-features = false }
+facet = { git = "https://github.com/facet-rs/facet", branch = "main", default-features = false }
+facet-json = { git = "https://github.com/facet-rs/facet", branch = "main", default-features = false }
+facet-reflect = { git = "https://github.com/facet-rs/facet", branch = "main", default-features = false }
+facet-value = { git = "https://github.com/facet-rs/facet", branch = "main", default-features = false }
+facet-yaml = { git = "https://github.com/facet-rs/facet", branch = "main", default-features = false }
 
 [patch.crates-io]
 # Forked version of `hyper-http-proxy` that removes an unused dependency on `rustls-native-certs`, which transitively depends

@@ -190,6 +190,8 @@ fn type_mismatch_error(base: DestructuredMut<'_>, other: Destructured, key_path:
         DestructuredMut::Array(_) => "array",
         DestructuredMut::Object(_) => "object",
         DestructuredMut::DateTime(_) => "datetime",
+        DestructuredMut::QName(_) => "qualified-name",
+        DestructuredMut::Uuid(_) => "uuid",
     };
 
     let other_type = match other {
@@ -201,6 +203,8 @@ fn type_mismatch_error(base: DestructuredMut<'_>, other: Destructured, key_path:
         Destructured::Array(_) => "array",
         Destructured::Object(_) => "object",
         Destructured::DateTime(_) => "datetime",
+        Destructured::QName(_) => "qualified-name",
+        Destructured::Uuid(_) => "uuid",
     };
 
     GenericError::msg(format!(
@@ -220,6 +224,7 @@ fn vnumber_type_str(number: &VNumber) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use facet_value::{VQName, VUuid};
     use proptest::{collection::vec as arb_vec, prelude::*};
 
     use super::*;
@@ -241,6 +246,8 @@ mod tests {
                 .prop_map(Value::from),
             any::<String>().prop_map(Value::from),
             arb_vec(any::<u8>(), 0..32).prop_map(Value::from),
+            any::<(String, String)>().prop_map(|(ns, n)| { Value::from(VQName::new(ns, n)) }),
+            any::<u128>().prop_map(|uuid| { Value::from(VUuid::from_u128(uuid)) }),
         ];
 
         leaf.prop_recursive(8, 128, 8, |inner| {
