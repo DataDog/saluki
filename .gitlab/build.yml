@@ -216,6 +216,7 @@ publish-adp-image-internal:
     BUILD_TAG: "${ADP_IMAGE_VERSION}-build"
     RELEASE_STAGING: "true"
     RELEASE_PROD: "true"
+    ENABLE_NYDUS_PREVIEW: "true"
 
 publish-adp-image-internal-fips:
   stage: build
@@ -239,6 +240,7 @@ publish-adp-image-internal-fips:
     BUILD_TAG: "${ADP_IMAGE_VERSION_FIPS}-build"
     RELEASE_STAGING: "true"
     RELEASE_PROD: "true"
+    ENABLE_NYDUS_PREVIEW: "true"
 
 display-image-tags:
   extends: [.build-common-variables]
