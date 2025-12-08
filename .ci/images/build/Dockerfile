@@ -3,20 +3,15 @@ ARG DD_AGENT_IMAGE=datadog/agent:${DD_AGENT_VERSION}
 
 FROM ${DD_AGENT_IMAGE} AS agent
 
-FROM registry.ddbuild.io/images/mirror/ubuntu:14.04
+FROM registry.ddbuild.io/images/mirror/ubuntu:24.04
 
 ARG RUST_VERSION=1.90.0
 ARG TARGETARCH
 
-# Install basic utilities and an updated compiler/binutils toolchain, which is necessary for compiling.
+# Install the basics for building and compiling software projects.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends build-essential software-properties-common curl ca-certificates git gnupg2 cmake3 unzip && \
-    add-apt-repository ppa:ubuntu-toolchain-r/test -y && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends gcc-8 g++-8 binutils-2.26 && \
-    update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-8 60 --slave /usr/bin/g++ g++ /usr/bin/g++-8 && \
+    apt-get install -y --no-install-recommends build-essential software-properties-common curl ca-certificates git gnupg2 cmake3 unzip gcc g++ binutils jq && \
     apt-get clean
-ENV PATH="/usr/lib/binutils-2.26/bin:${PATH}"
 
 # Install Go, which we need to build AWS-LC in FIPS-compliant mode.
 ENV PATH="/usr/local/go/bin:${PATH}"
@@ -30,16 +25,12 @@ RUN chmod +x /install-protoc.sh && /install-protoc.sh
 COPY .ci/install-awscli.sh /
 RUN chmod +x /install-awscli.sh && /install-awscli.sh
 
-RUN curl -s -L -o /tmp/jq https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-${TARGETARCH} && \
-    mv /tmp/jq /usr/local/bin/jq && \
-    chmod +x /usr/local/bin/jq
-
 RUN VAULT_VERSION=1.21.1 && \
-curl -fsSL "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_amd64.zip" -o vault.zip && \
-unzip vault.zip && \
-mv vault /usr/local/bin/vault && \
-rm vault.zip && \
-chmod +x /usr/local/bin/vault
+    curl -fsSL "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_amd64.zip" -o vault.zip && \
+    unzip vault.zip && \
+    mv vault /usr/local/bin/vault && \
+    rm vault.zip && \
+    chmod +x /usr/local/bin/vault
 
 # Install Rust and common Cargo tooling that we depend on.
 RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain ${RUST_VERSION}
@@ -51,7 +42,7 @@ RUN rustup toolchain add nightly && \
 COPY ./Makefile /
 RUN make cargo-preinstall
 
-# Import python bits from Agent image.
+# Import Python bits from Agent image.
 # Do last in the pipeline to avoid polluting the builds of above protobuf/go etc from using these libs
 COPY --from=agent /opt/datadog-agent/embedded/ /opt/datadog-agent/embedded/
 ENV LD_LIBRARY_PATH="/opt/datadog-agent/embedded/lib:${LD_LIBRARY_PATH}"
