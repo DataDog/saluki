@@ -22,6 +22,12 @@ check-features-linux-amd64:
   script:
     - make check-features
 
+unit-tests-loom-linux-amd64:
+  extends: .linux-amd64-test-job-heavy
+  stage: test
+  script:
+    - make test-loom
+
 unit-tests-linux-arm64:
   extends: .linux-arm64-test-job-heavy
   stage: test
@@ -45,6 +51,12 @@ check-features-linux-arm64:
   stage: test
   script:
     - make check-features
+
+unit-tests-loom-linux-arm64:
+  extends: .linux-arm64-test-job-heavy
+  stage: test
+  script:
+    - make test-loom
 
 unit-tests-macos-amd64:
   extends: .macos-amd64-test-job
