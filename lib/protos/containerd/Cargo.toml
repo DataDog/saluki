@@ -21,4 +21,4 @@ tonic-prost-build = { workspace = true }
 # All our dependencies are used in the generated code, which `cargo-machete` can't see into, so we
 # ignore them explicitly to avoid false positives.
 [package.metadata.cargo-machete]
-ignored = ["bytes", "prost", "prost-types", "tonic"]
+ignored = ["bytes", "prost", "prost-types", "tonic", "tonic-prost"]
