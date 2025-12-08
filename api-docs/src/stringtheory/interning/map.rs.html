@@ -673,7 +673,7 @@
 <a href=#673 id=673 data-nosnippet>673</a>    <span class="kw">use super</span>::<span class="kw-2">*</span>;
 <a href=#674 id=674 data-nosnippet>674</a>    <span class="kw">use </span><span class="kw">crate</span>::interning::InternedStringState;
 <a href=#675 id=675 data-nosnippet>675</a>
-<a href=#676 id=676 data-nosnippet>676</a>    <span class="kw">fn </span>create_interner(capacity: usize) -&gt; GenericMapInterner {
+<a href=#676 id=676 data-nosnippet>676</a>    <span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>create_interner(capacity: usize) -&gt; GenericMapInterner {
 <a href=#677 id=677 data-nosnippet>677</a>        <span class="macro">assert!</span>(capacity &gt; <span class="number">0</span>, <span class="string">"capacity must be greater than zero"</span>);
 <a href=#678 id=678 data-nosnippet>678</a>        GenericMapInterner::new(NonZeroUsize::new(capacity).unwrap())
 <a href=#679 id=679 data-nosnippet>679</a>    }
@@ -694,7 +694,7 @@
 <a href=#694 id=694 data-nosnippet>694</a>        EntryHeader::len_for(s)
 <a href=#695 id=695 data-nosnippet>695</a>    }
 <a href=#696 id=696 data-nosnippet>696</a>
-<a href=#697 id=697 data-nosnippet>697</a>    <span class="kw">fn </span>get_reclaimed_entry_for_string(s: <span class="kw-2">&amp;</span>InternedString) -&gt; ReclaimedEntry {
+<a href=#697 id=697 data-nosnippet>697</a>    <span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>get_reclaimed_entry_for_string(s: <span class="kw-2">&amp;</span>InternedString) -&gt; ReclaimedEntry {
 <a href=#698 id=698 data-nosnippet>698</a>        <span class="kw">let </span>state = <span class="kw">match </span><span class="kw-2">&amp;</span>s.state {
 <a href=#699 id=699 data-nosnippet>699</a>            InternedStringState::GenericMap(state) =&gt; state,
 <a href=#700 id=700 data-nosnippet>700</a>            <span class="kw">_ </span>=&gt; <span class="macro">panic!</span>(<span class="string">"unexpected string state"</span>),
@@ -1023,90 +1023,99 @@
 <a href=#1023 id=1023 data-nosnippet>1023</a>            <span class="macro">assert_eq!</span>(unique_strs.len(), interner.len());
 <a href=#1024 id=1024 data-nosnippet>1024</a>        }
 <a href=#1025 id=1025 data-nosnippet>1025</a>    }
-<a href=#1026 id=1026 data-nosnippet>1026</a>
-<a href=#1027 id=1027 data-nosnippet>1027</a>    <span class="attr">#[cfg(feature = <span class="string">"loom"</span>)]
-<a href=#1028 id=1028 data-nosnippet>1028</a>    #[test]
-<a href=#1029 id=1029 data-nosnippet>1029</a>    </span><span class="kw">fn </span>concurrent_drop_and_intern() {
-<a href=#1030 id=1030 data-nosnippet>1030</a>        <span class="kw">fn </span>reclaimed_entries(interner: <span class="kw-2">&amp;</span>GenericMapInterner) -&gt; Vec&lt;ReclaimedEntry&gt; {
-<a href=#1031 id=1031 data-nosnippet>1031</a>            interner
-<a href=#1032 id=1032 data-nosnippet>1032</a>                .state
-<a href=#1033 id=1033 data-nosnippet>1033</a>                .lock()
-<a href=#1034 id=1034 data-nosnippet>1034</a>                .unwrap()
-<a href=#1035 id=1035 data-nosnippet>1035</a>                .storage
-<a href=#1036 id=1036 data-nosnippet>1036</a>                .reclaimed
-<a href=#1037 id=1037 data-nosnippet>1037</a>                .iter()
-<a href=#1038 id=1038 data-nosnippet>1038</a>                .copied()
-<a href=#1039 id=1039 data-nosnippet>1039</a>                .collect()
-<a href=#1040 id=1040 data-nosnippet>1040</a>        }
-<a href=#1041 id=1041 data-nosnippet>1041</a>
-<a href=#1042 id=1042 data-nosnippet>1042</a>        <span class="kw">fn </span>do_reclaimed_entries_overlap(a: ReclaimedEntry, b: ReclaimedEntry) -&gt; bool {
-<a href=#1043 id=1043 data-nosnippet>1043</a>            <span class="kw">let </span>a_start = a.offset;
-<a href=#1044 id=1044 data-nosnippet>1044</a>            <span class="kw">let </span>a_end = a.offset + a.capacity - <span class="number">1</span>;
-<a href=#1045 id=1045 data-nosnippet>1045</a>
-<a href=#1046 id=1046 data-nosnippet>1046</a>            <span class="kw">let </span>b_start = b.offset;
-<a href=#1047 id=1047 data-nosnippet>1047</a>            <span class="kw">let </span>b_end = b.offset + b.capacity - <span class="number">1</span>;
-<a href=#1048 id=1048 data-nosnippet>1048</a>
-<a href=#1049 id=1049 data-nosnippet>1049</a>            (a_start &lt;= b_start &amp;&amp; b_start &lt;= a_end) || (a_start &lt;= b_end &amp;&amp; b_end &lt;= a_end)
-<a href=#1050 id=1050 data-nosnippet>1050</a>        }
-<a href=#1051 id=1051 data-nosnippet>1051</a>
-<a href=#1052 id=1052 data-nosnippet>1052</a>        <span class="kw">const </span>STRING_TO_INTERN: <span class="kw-2">&amp;</span>str = <span class="string">"hello, world!"</span>;
-<a href=#1053 id=1053 data-nosnippet>1053</a>
-<a href=#1054 id=1054 data-nosnippet>1054</a>        <span class="comment">// This test is meant to explore the thread orderings when one thread is trying to drop (and thus reclaim) the
-<a href=#1055 id=1055 data-nosnippet>1055</a>        // last active reference to an interned string, and another thread is trying to intern that very same string.
-<a href=#1056 id=1056 data-nosnippet>1056</a>        //
-<a href=#1057 id=1057 data-nosnippet>1057</a>        // We accept, as a caveat, that a possible outcome is that we intern the "new" string again, even though an
-<a href=#1058 id=1058 data-nosnippet>1058</a>        // existing entry to that string may have existed in an alternative ordering.
-<a href=#1059 id=1059 data-nosnippet>1059</a>        </span>loom::model(|| {
-<a href=#1060 id=1060 data-nosnippet>1060</a>            <span class="kw">let </span>interner = create_interner(<span class="number">1024</span>);
-<a href=#1061 id=1061 data-nosnippet>1061</a>            <span class="kw">let </span>t2_interner = interner.clone();
+<a href=#1026 id=1026 data-nosnippet>1026</a>}
+<a href=#1027 id=1027 data-nosnippet>1027</a>
+<a href=#1028 id=1028 data-nosnippet>1028</a><span class="attr">#[cfg(all(test, feature = <span class="string">"loom"</span>))]
+<a href=#1029 id=1029 data-nosnippet>1029</a></span><span class="kw">mod </span>loom_tests {
+<a href=#1030 id=1030 data-nosnippet>1030</a>    <span class="kw">use </span>std::ops::Deref;
+<a href=#1031 id=1031 data-nosnippet>1031</a>
+<a href=#1032 id=1032 data-nosnippet>1032</a>    <span class="kw">use super</span>::{
+<a href=#1033 id=1033 data-nosnippet>1033</a>        tests::{create_interner, get_reclaimed_entry_for_string},
+<a href=#1034 id=1034 data-nosnippet>1034</a>        <span class="kw-2">*</span>,
+<a href=#1035 id=1035 data-nosnippet>1035</a>    };
+<a href=#1036 id=1036 data-nosnippet>1036</a>
+<a href=#1037 id=1037 data-nosnippet>1037</a>    <span class="attr">#[test]
+<a href=#1038 id=1038 data-nosnippet>1038</a>    </span><span class="kw">fn </span>concurrent_drop_and_intern() {
+<a href=#1039 id=1039 data-nosnippet>1039</a>        <span class="kw">fn </span>reclaimed_entries(interner: <span class="kw-2">&amp;</span>GenericMapInterner) -&gt; Vec&lt;ReclaimedEntry&gt; {
+<a href=#1040 id=1040 data-nosnippet>1040</a>            interner
+<a href=#1041 id=1041 data-nosnippet>1041</a>                .state
+<a href=#1042 id=1042 data-nosnippet>1042</a>                .lock()
+<a href=#1043 id=1043 data-nosnippet>1043</a>                .unwrap()
+<a href=#1044 id=1044 data-nosnippet>1044</a>                .storage
+<a href=#1045 id=1045 data-nosnippet>1045</a>                .reclaimed
+<a href=#1046 id=1046 data-nosnippet>1046</a>                .iter()
+<a href=#1047 id=1047 data-nosnippet>1047</a>                .copied()
+<a href=#1048 id=1048 data-nosnippet>1048</a>                .collect()
+<a href=#1049 id=1049 data-nosnippet>1049</a>        }
+<a href=#1050 id=1050 data-nosnippet>1050</a>
+<a href=#1051 id=1051 data-nosnippet>1051</a>        <span class="kw">fn </span>do_reclaimed_entries_overlap(a: ReclaimedEntry, b: ReclaimedEntry) -&gt; bool {
+<a href=#1052 id=1052 data-nosnippet>1052</a>            <span class="kw">let </span>a_start = a.offset;
+<a href=#1053 id=1053 data-nosnippet>1053</a>            <span class="kw">let </span>a_end = a.offset + a.capacity - <span class="number">1</span>;
+<a href=#1054 id=1054 data-nosnippet>1054</a>
+<a href=#1055 id=1055 data-nosnippet>1055</a>            <span class="kw">let </span>b_start = b.offset;
+<a href=#1056 id=1056 data-nosnippet>1056</a>            <span class="kw">let </span>b_end = b.offset + b.capacity - <span class="number">1</span>;
+<a href=#1057 id=1057 data-nosnippet>1057</a>
+<a href=#1058 id=1058 data-nosnippet>1058</a>            (a_start &lt;= b_start &amp;&amp; b_start &lt;= a_end) || (a_start &lt;= b_end &amp;&amp; b_end &lt;= a_end)
+<a href=#1059 id=1059 data-nosnippet>1059</a>        }
+<a href=#1060 id=1060 data-nosnippet>1060</a>
+<a href=#1061 id=1061 data-nosnippet>1061</a>        <span class="kw">const </span>STRING_TO_INTERN: <span class="kw-2">&amp;</span>str = <span class="string">"hello, world!"</span>;
 <a href=#1062 id=1062 data-nosnippet>1062</a>
-<a href=#1063 id=1063 data-nosnippet>1063</a>            <span class="comment">// Intern the string from thread T1.
-<a href=#1064 id=1064 data-nosnippet>1064</a>            </span><span class="kw">let </span>t1_interned_s = interner
-<a href=#1065 id=1065 data-nosnippet>1065</a>                .try_intern(STRING_TO_INTERN)
-<a href=#1066 id=1066 data-nosnippet>1066</a>                .expect(<span class="string">"should not fail to intern"</span>);
-<a href=#1067 id=1067 data-nosnippet>1067</a>            <span class="macro">assert_eq!</span>(t1_interned_s.deref(), STRING_TO_INTERN);
-<a href=#1068 id=1068 data-nosnippet>1068</a>            <span class="kw">let </span>t1_reclaimed_entry = get_reclaimed_entry_for_string(<span class="kw-2">&amp;</span>t1_interned_s);
-<a href=#1069 id=1069 data-nosnippet>1069</a>
-<a href=#1070 id=1070 data-nosnippet>1070</a>            <span class="comment">// Spawn thread T2, which tries to intern the same string and returns the handle to it.
-<a href=#1071 id=1071 data-nosnippet>1071</a>            </span><span class="kw">let </span>t2_result = loom::thread::spawn(<span class="kw">move </span>|| {
-<a href=#1072 id=1072 data-nosnippet>1072</a>                <span class="kw">let </span>interned_s = t2_interner
-<a href=#1073 id=1073 data-nosnippet>1073</a>                    .try_intern(STRING_TO_INTERN)
-<a href=#1074 id=1074 data-nosnippet>1074</a>                    .expect(<span class="string">"should not fail to intern"</span>);
-<a href=#1075 id=1075 data-nosnippet>1075</a>                <span class="kw">let </span>reclaimed_entry = get_reclaimed_entry_for_string(<span class="kw-2">&amp;</span>interned_s);
-<a href=#1076 id=1076 data-nosnippet>1076</a>
-<a href=#1077 id=1077 data-nosnippet>1077</a>                (interned_s, reclaimed_entry)
-<a href=#1078 id=1078 data-nosnippet>1078</a>            });
-<a href=#1079 id=1079 data-nosnippet>1079</a>
-<a href=#1080 id=1080 data-nosnippet>1080</a>            drop(t1_interned_s);
-<a href=#1081 id=1081 data-nosnippet>1081</a>
-<a href=#1082 id=1082 data-nosnippet>1082</a>            <span class="kw">let </span>(t2_interned_s, t2_reclaimed_entry) = t2_result.join().expect(<span class="string">"should not fail to join T2"</span>);
-<a href=#1083 id=1083 data-nosnippet>1083</a>            <span class="macro">assert_eq!</span>(t2_interned_s.deref(), STRING_TO_INTERN);
-<a href=#1084 id=1084 data-nosnippet>1084</a>
-<a href=#1085 id=1085 data-nosnippet>1085</a>            <span class="comment">// What we're checking for here is that either:
-<a href=#1086 id=1086 data-nosnippet>1086</a>            // - there's no reclaimed entries (T2 found the existing entry for the string before T1 dropped it)
-<a href=#1087 id=1087 data-nosnippet>1087</a>            // - there's a reclaimed entry (T2 didn't find the existing entry for the string before T1 marked it as
-<a href=#1088 id=1088 data-nosnippet>1088</a>            //   inactive) but the reclaimed entry does _not_ overlap with the interned string from T2, meaning we
-<a href=#1089 id=1089 data-nosnippet>1089</a>            //   didn't get confused and allow T2 to use an existing entry that T1 then later marked as reclaimed
-<a href=#1090 id=1090 data-nosnippet>1090</a>            </span><span class="kw">let </span>reclaimed_entries = reclaimed_entries(<span class="kw-2">&amp;</span>interner);
-<a href=#1091 id=1091 data-nosnippet>1091</a>            <span class="macro">assert!</span>(reclaimed_entries.len() &lt;= <span class="number">1</span>, <span class="string">"should have at most one reclaimed entry"</span>);
-<a href=#1092 id=1092 data-nosnippet>1092</a>
-<a href=#1093 id=1093 data-nosnippet>1093</a>            <span class="kw">if </span>!reclaimed_entries.is_empty() {
-<a href=#1094 id=1094 data-nosnippet>1094</a>                <span class="comment">// If we do have a reclaimed entry, it needs to match exactly with only one of the interned strings.
-<a href=#1095 id=1095 data-nosnippet>1095</a>                </span><span class="kw">let </span>is_t1_entry = reclaimed_entries.first().unwrap() == <span class="kw-2">&amp;</span>t1_reclaimed_entry;
-<a href=#1096 id=1096 data-nosnippet>1096</a>                <span class="kw">let </span>is_t2_entry = reclaimed_entries.first().unwrap() == <span class="kw-2">&amp;</span>t2_reclaimed_entry;
-<a href=#1097 id=1097 data-nosnippet>1097</a>
-<a href=#1098 id=1098 data-nosnippet>1098</a>                <span class="macro">assert!</span>(
-<a href=#1099 id=1099 data-nosnippet>1099</a>                    (is_t1_entry || is_t2_entry) &amp;&amp; !(is_t1_entry &amp;&amp; is_t2_entry),
-<a href=#1100 id=1100 data-nosnippet>1100</a>                    <span class="string">"should only match one interned string"
-<a href=#1101 id=1101 data-nosnippet>1101</a>                </span>);
-<a href=#1102 id=1102 data-nosnippet>1102</a>
-<a href=#1103 id=1103 data-nosnippet>1103</a>                <span class="comment">// Additionally, we ensure that the reclaimed entry does not overlap with the other interned string.
-<a href=#1104 id=1104 data-nosnippet>1104</a>                </span><span class="macro">assert!</span>(
-<a href=#1105 id=1105 data-nosnippet>1105</a>                    !do_reclaimed_entries_overlap(t1_reclaimed_entry, t2_reclaimed_entry),
-<a href=#1106 id=1106 data-nosnippet>1106</a>                    <span class="string">"reclaimed entry should not overlap with remaining interned string"
-<a href=#1107 id=1107 data-nosnippet>1107</a>                </span>);
-<a href=#1108 id=1108 data-nosnippet>1108</a>            }
-<a href=#1109 id=1109 data-nosnippet>1109</a>        });
-<a href=#1110 id=1110 data-nosnippet>1110</a>    }
-<a href=#1111 id=1111 data-nosnippet>1111</a>}
+<a href=#1063 id=1063 data-nosnippet>1063</a>        <span class="comment">// This test is meant to explore the thread orderings when one thread is trying to drop (and thus reclaim) the
+<a href=#1064 id=1064 data-nosnippet>1064</a>        // last active reference to an interned string, and another thread is trying to intern that very same string.
+<a href=#1065 id=1065 data-nosnippet>1065</a>        //
+<a href=#1066 id=1066 data-nosnippet>1066</a>        // We accept, as a caveat, that a possible outcome is that we intern the "new" string again, even though an
+<a href=#1067 id=1067 data-nosnippet>1067</a>        // existing entry to that string may have existed in an alternative ordering.
+<a href=#1068 id=1068 data-nosnippet>1068</a>        </span>loom::model(|| {
+<a href=#1069 id=1069 data-nosnippet>1069</a>            <span class="kw">let </span>interner = create_interner(<span class="number">1024</span>);
+<a href=#1070 id=1070 data-nosnippet>1070</a>            <span class="kw">let </span>t2_interner = interner.clone();
+<a href=#1071 id=1071 data-nosnippet>1071</a>
+<a href=#1072 id=1072 data-nosnippet>1072</a>            <span class="comment">// Intern the string from thread T1.
+<a href=#1073 id=1073 data-nosnippet>1073</a>            </span><span class="kw">let </span>t1_interned_s = interner
+<a href=#1074 id=1074 data-nosnippet>1074</a>                .try_intern(STRING_TO_INTERN)
+<a href=#1075 id=1075 data-nosnippet>1075</a>                .expect(<span class="string">"should not fail to intern"</span>);
+<a href=#1076 id=1076 data-nosnippet>1076</a>            <span class="macro">assert_eq!</span>(t1_interned_s.deref(), STRING_TO_INTERN);
+<a href=#1077 id=1077 data-nosnippet>1077</a>            <span class="kw">let </span>t1_reclaimed_entry = get_reclaimed_entry_for_string(<span class="kw-2">&amp;</span>t1_interned_s);
+<a href=#1078 id=1078 data-nosnippet>1078</a>
+<a href=#1079 id=1079 data-nosnippet>1079</a>            <span class="comment">// Spawn thread T2, which tries to intern the same string and returns the handle to it.
+<a href=#1080 id=1080 data-nosnippet>1080</a>            </span><span class="kw">let </span>t2_result = loom::thread::spawn(<span class="kw">move </span>|| {
+<a href=#1081 id=1081 data-nosnippet>1081</a>                <span class="kw">let </span>interned_s = t2_interner
+<a href=#1082 id=1082 data-nosnippet>1082</a>                    .try_intern(STRING_TO_INTERN)
+<a href=#1083 id=1083 data-nosnippet>1083</a>                    .expect(<span class="string">"should not fail to intern"</span>);
+<a href=#1084 id=1084 data-nosnippet>1084</a>                <span class="kw">let </span>reclaimed_entry = get_reclaimed_entry_for_string(<span class="kw-2">&amp;</span>interned_s);
+<a href=#1085 id=1085 data-nosnippet>1085</a>
+<a href=#1086 id=1086 data-nosnippet>1086</a>                (interned_s, reclaimed_entry)
+<a href=#1087 id=1087 data-nosnippet>1087</a>            });
+<a href=#1088 id=1088 data-nosnippet>1088</a>
+<a href=#1089 id=1089 data-nosnippet>1089</a>            drop(t1_interned_s);
+<a href=#1090 id=1090 data-nosnippet>1090</a>
+<a href=#1091 id=1091 data-nosnippet>1091</a>            <span class="kw">let </span>(t2_interned_s, t2_reclaimed_entry) = t2_result.join().expect(<span class="string">"should not fail to join T2"</span>);
+<a href=#1092 id=1092 data-nosnippet>1092</a>            <span class="macro">assert_eq!</span>(t2_interned_s.deref(), STRING_TO_INTERN);
+<a href=#1093 id=1093 data-nosnippet>1093</a>
+<a href=#1094 id=1094 data-nosnippet>1094</a>            <span class="comment">// What we're checking for here is that either:
+<a href=#1095 id=1095 data-nosnippet>1095</a>            // - there's no reclaimed entries (T2 found the existing entry for the string before T1 dropped it)
+<a href=#1096 id=1096 data-nosnippet>1096</a>            // - there's a reclaimed entry (T2 didn't find the existing entry for the string before T1 marked it as
+<a href=#1097 id=1097 data-nosnippet>1097</a>            //   inactive) but the reclaimed entry does _not_ overlap with the interned string from T2, meaning we
+<a href=#1098 id=1098 data-nosnippet>1098</a>            //   didn't get confused and allow T2 to use an existing entry that T1 then later marked as reclaimed
+<a href=#1099 id=1099 data-nosnippet>1099</a>            </span><span class="kw">let </span>reclaimed_entries = reclaimed_entries(<span class="kw-2">&amp;</span>interner);
+<a href=#1100 id=1100 data-nosnippet>1100</a>            <span class="macro">assert!</span>(reclaimed_entries.len() &lt;= <span class="number">1</span>, <span class="string">"should have at most one reclaimed entry"</span>);
+<a href=#1101 id=1101 data-nosnippet>1101</a>
+<a href=#1102 id=1102 data-nosnippet>1102</a>            <span class="kw">if </span>!reclaimed_entries.is_empty() {
+<a href=#1103 id=1103 data-nosnippet>1103</a>                <span class="comment">// If we do have a reclaimed entry, it needs to match exactly with only one of the interned strings.
+<a href=#1104 id=1104 data-nosnippet>1104</a>                </span><span class="kw">let </span>is_t1_entry = reclaimed_entries.first().unwrap() == <span class="kw-2">&amp;</span>t1_reclaimed_entry;
+<a href=#1105 id=1105 data-nosnippet>1105</a>                <span class="kw">let </span>is_t2_entry = reclaimed_entries.first().unwrap() == <span class="kw-2">&amp;</span>t2_reclaimed_entry;
+<a href=#1106 id=1106 data-nosnippet>1106</a>
+<a href=#1107 id=1107 data-nosnippet>1107</a>                <span class="macro">assert!</span>(
+<a href=#1108 id=1108 data-nosnippet>1108</a>                    (is_t1_entry || is_t2_entry) &amp;&amp; !(is_t1_entry &amp;&amp; is_t2_entry),
+<a href=#1109 id=1109 data-nosnippet>1109</a>                    <span class="string">"should only match one interned string"
+<a href=#1110 id=1110 data-nosnippet>1110</a>                </span>);
+<a href=#1111 id=1111 data-nosnippet>1111</a>
+<a href=#1112 id=1112 data-nosnippet>1112</a>                <span class="comment">// Additionally, we ensure that the reclaimed entry does not overlap with the other interned string.
+<a href=#1113 id=1113 data-nosnippet>1113</a>                </span><span class="macro">assert!</span>(
+<a href=#1114 id=1114 data-nosnippet>1114</a>                    !do_reclaimed_entries_overlap(t1_reclaimed_entry, t2_reclaimed_entry),
+<a href=#1115 id=1115 data-nosnippet>1115</a>                    <span class="string">"reclaimed entry should not overlap with remaining interned string"
+<a href=#1116 id=1116 data-nosnippet>1116</a>                </span>);
+<a href=#1117 id=1117 data-nosnippet>1117</a>            }
+<a href=#1118 id=1118 data-nosnippet>1118</a>        });
+<a href=#1119 id=1119 data-nosnippet>1119</a>    }
+<a href=#1120 id=1120 data-nosnippet>1120</a>}
 </code></pre></div></section></main></body></html>
