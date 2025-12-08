@@ -1,5 +1,4 @@
 use std::{
-    io::Cursor,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -14,6 +13,7 @@ use rustls::{
     version::TLS13,
     CertificateError, ClientConfig, DigitallySignedStruct, ServerConfig, SignatureScheme,
 };
+use rustls_pki_types::{pem::PemObject as _, PrivateKeyDer};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 
 const DEFAULT_DATADOG_AGENT_CONFIG_DIR: &str = "/etc/datadog-agent";
@@ -119,16 +119,11 @@ pub async fn build_datadog_agent_client_ipc_tls_config<P: AsRef<Path>>(
     )
     .await?;
 
-    let mut cert_reader = Cursor::new(&raw_cert_data);
-    let parsed_cert = rustls_pemfile::certs(&mut cert_reader)
-        .next()
-        .ok_or_else(|| generic_error!("No certificate found in file."))?
+    let parsed_cert = CertificateDer::from_pem_slice(&raw_cert_data[..])
         .with_error_context(|| format!("Failed to parse certificate file '{}'.", cert_path.as_ref().display()))?;
 
-    let mut key_reader = Cursor::new(&raw_cert_data);
-    let parsed_key = rustls_pemfile::private_key(&mut key_reader)
-        .with_error_context(|| format!("Failed to parse private key file '{}'.", cert_path.as_ref().display()))?
-        .ok_or_else(|| generic_error!("No private key found in file."))?;
+    let parsed_key = PrivateKeyDer::from_pem_slice(&raw_cert_data[..])
+        .with_error_context(|| format!("Failed to parse private key file '{}'.", cert_path.as_ref().display()))?;
 
     // Build our client TLS configuration to use the parsed certificate for server verification, and then to send it for
     // client authentication.
@@ -167,16 +162,11 @@ pub async fn build_datadog_agent_server_tls_config<P: AsRef<Path>>(cert_path: P)
     )
     .await?;
 
-    let mut cert_reader = Cursor::new(&raw_cert_data);
-    let parsed_cert = rustls_pemfile::certs(&mut cert_reader)
-        .next()
-        .ok_or_else(|| generic_error!("No certificate found in file."))?
+    let parsed_cert = CertificateDer::from_pem_slice(&raw_cert_data[..])
         .with_error_context(|| format!("Failed to parse certificate file '{}'.", cert_path.as_ref().display()))?;
 
-    let mut key_reader = Cursor::new(&raw_cert_data);
-    let parsed_key = rustls_pemfile::private_key(&mut key_reader)
-        .with_error_context(|| format!("Failed to parse private key file '{}'.", cert_path.as_ref().display()))?
-        .ok_or_else(|| generic_error!("No private key found in file."))?;
+    let parsed_key = PrivateKeyDer::from_pem_slice(&raw_cert_data[..])
+        .with_error_context(|| format!("Failed to parse private key file '{}'.", cert_path.as_ref().display()))?;
 
     // Build the server TLS configuration
     let tls_server_config = ServerConfig::builder()

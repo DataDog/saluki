@@ -33,4 +33,8 @@ allow-git = [
   # Git dependency for `lading_payload`, which isn't published on crates.io. We use a tagged version, though, so this
   # is reasonable from our perspective... especially considering the fact that we're the ones who own the repository.
   "https://github.com/DataDog/lading",
+
+  # Forked version of `hyper-http-proxy` that removes an unused dependency on `rustls-native-certs`, which transitively depends
+  # on a version of `rustls-pemfile` that is no longer maintained and triggers a hit when running `cargo deny`.
+  "https://github.com/tobz/hyper-http-proxy.git",
 ]

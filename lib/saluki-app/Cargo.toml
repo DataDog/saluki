@@ -23,7 +23,7 @@ memory-accounting = { workspace = true }
 metrics = { workspace = true }
 rcgen = { workspace = true, features = ["crypto", "aws_lc_rs", "pem"] }
 rustls = { workspace = true, features = ["tls12"] }
-rustls-pemfile = { workspace = true, features = ["std"] }
+rustls-pki-types = { workspace = true }
 ryu = { workspace = true }
 saluki-api = { workspace = true }
 saluki-common = { workspace = true }
