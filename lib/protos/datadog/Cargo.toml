@@ -13,11 +13,12 @@ bytes = { workspace = true }
 prost = { workspace = true, features = ["derive", "std"] }
 prost-types = { workspace = true }
 protobuf = { workspace = true }
-tonic = { workspace = true, features = ["codegen", "prost"] }
+tonic = { workspace = true, features = ["codegen"] }
+tonic-prost = { workspace = true }
 
 [build-dependencies]
 protobuf-codegen = { workspace = true }
-tonic-build = { workspace = true, features = ["prost"] }
+tonic-prost-build = { workspace = true }
 
 # All our dependencies are used in the generated code, which `cargo-machete` can't see into, so we
 # ignore them explicitly to avoid false positives.

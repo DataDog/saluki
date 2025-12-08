@@ -39,13 +39,13 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
     // Handle code generation for gRPC service definitions.
-    let mut config = tonic_build::Config::new();
+    let mut config = tonic_prost_build::Config::new();
     config.enable_type_names();
 
-    tonic_build::configure()
+    tonic_prost_build::configure()
         .build_server(false)
         .include_file("containerd.mod.rs")
-        .compile_protos_with_config(config, CONTAINERD_PROTO_FILES, &["proto/"])
+        .compile_with_config(config, CONTAINERD_PROTO_FILES, &["proto/"])
         .expect("failed to build gRPC service definitions for containerd");
 
     if let Err(e) = fixup_bad_doc_comments() {

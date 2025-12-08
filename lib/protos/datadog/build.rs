@@ -36,7 +36,7 @@ fn main() {
         .run_from_script();
 
     // Handle code generation for gRPC service definitions.
-    tonic_build::configure()
+    tonic_prost_build::configure()
         .build_server(true)
         .include_file("api.mod.rs")
         .compile_protos(
