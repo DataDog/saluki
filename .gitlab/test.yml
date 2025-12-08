@@ -70,6 +70,12 @@ unit-tests-miri-macos-arm64:
   script:
     - make test-miri
 
+loom-tests:
+  extends: .linux-arm64-test-job-heavy
+  stage: test
+  script:
+    - make test-loom
+
 check-clippy:
   extends: .linux-arm64-test-job-heavy
   stage: test
