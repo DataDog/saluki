@@ -45,6 +45,7 @@ clap_builder,https://github.com/clap-rs/clap,MIT OR Apache-2.0,The clap_builder 
 clap_lex,https://github.com/clap-rs/clap,MIT OR Apache-2.0,The clap_lex Authors
 colored,https://github.com/mackwic/colored,MPL-2.0,Thomas Wickham <mackwic@gmail.com>
 comfy-table,https://github.com/nukesor/comfy-table,MIT,Arne Beer <contact@arne.beer>
+const-hex,https://github.com/danipopes/const-hex,MIT OR Apache-2.0,DaniPopes <57450786+DaniPopes@users.noreply.github.com>
 core-foundation,https://github.com/servo/core-foundation-rs,MIT OR Apache-2.0,The Servo Project Developers
 cpufeatures,https://github.com/RustCrypto/utils,MIT OR Apache-2.0,RustCrypto Developers
 crc32fast,https://github.com/srijs/rust-crc32fast,MIT OR Apache-2.0,"Sam Rijs <srijs@airpost.net>, Alex Crichton <alex@alexcrichton.com>"
@@ -187,6 +188,7 @@ ppv-lite86,https://github.com/cryptocorrosion/cryptocorrosion,MIT OR Apache-2.0,
 prettyplease,https://github.com/dtolnay/prettyplease,MIT OR Apache-2.0,David Tolnay <dtolnay@gmail.com>
 proc-macro2,https://github.com/dtolnay/proc-macro2,MIT OR Apache-2.0,"David Tolnay <dtolnay@gmail.com>, Alex Crichton <alex@alexcrichton.com>"
 proc-macro2-diagnostics,https://github.com/SergioBenitez/proc-macro2-diagnostics,MIT OR Apache-2.0,Sergio Benitez <sb@sergio.bz>
+proptest,https://github.com/proptest-rs/proptest,MIT OR Apache-2.0,Jason Lingle
 prost,https://github.com/tokio-rs/prost,Apache-2.0,"Dan Burkert <dan@danburkert.com>, Lucio Franco <luciofranco14@gmail.com>, Casper Meijn <casper@meijn.net>, Tokio Contributors <team@tokio.rs>"
 protobuf,https://github.com/stepancheg/rust-protobuf,MIT,Stepan Koltsov <stepan.koltsov@gmail.com>
 protobuf-parse,https://github.com/stepancheg/rust-protobuf/tree/master/protobuf-parse,MIT,Stepan Koltsov <stepan.koltsov@gmail.com>
