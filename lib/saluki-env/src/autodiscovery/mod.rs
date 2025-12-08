@@ -107,7 +107,14 @@ pub trait RawData {
 /// Generic map of key-value pairs
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Data {
-    value: HashMap<MetaString, serde_yaml::Value>,
+    pub(crate) value: HashMap<MetaString, serde_yaml::Value>,
+}
+
+impl Data {
+    /// Creates a new `Data` from a map of key-value pairs.
+    pub fn from_map(value: HashMap<MetaString, serde_yaml::Value>) -> Self {
+        Self { value }
+    }
 }
 
 impl RawData for Data {
@@ -126,6 +133,11 @@ pub struct Instance {
 }
 
 impl Instance {
+    /// Creates a new `Instance` with the given ID and value map.
+    pub fn new(id: String, data: Data) -> Self {
+        Self { id, value: data.value }
+    }
+
     /// Get the instance ID
     pub fn id(&self) -> &String {
         &self.id

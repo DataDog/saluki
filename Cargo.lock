@@ -536,6 +536,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
+name = "check-runner"
+version = "0.1.0"
+dependencies = [
+ "argh",
+ "async-trait",
+ "fnv",
+ "memory-accounting",
+ "saluki-app",
+ "saluki-components",
+ "saluki-config",
+ "saluki-core",
+ "saluki-env",
+ "saluki-error",
+ "saluki-health",
+ "saluki-metadata",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "stringtheory",
+ "tikv-jemallocator",
+ "tokio",
+ "tracing",
+ "twox-hash",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.42"
 source = "registry+https://github.com/rust-lang/crates.io-index"
