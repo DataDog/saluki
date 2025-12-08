@@ -13,7 +13,7 @@
 <a href=#13 id=13 data-nosnippet>13</a>/// Currently, [`foldhash`][foldhash] is used as the underlying implementation.
 <a href=#14 id=14 data-nosnippet>14</a>///
 <a href=#15 id=15 data-nosnippet>15</a>/// [foldhash]: http://github.com/orlp/foldhash
-<a href=#16 id=16 data-nosnippet>16</a></span><span class="kw">pub type </span>FastHasher = foldhash::quality::FoldHasher;
+<a href=#16 id=16 data-nosnippet>16</a></span><span class="kw">pub type </span>FastHasher = foldhash::quality::FoldHasher&lt;<span class="lifetime">'static</span>&gt;;
 <a href=#17 id=17 data-nosnippet>17</a>
 <a href=#18 id=18 data-nosnippet>18</a><span class="doccomment">/// [`BuildHasher`] implementation for [`FastHasher`].
 <a href=#19 id=19 data-nosnippet>19</a></span><span class="kw">pub type </span>FastBuildHasher = foldhash::quality::RandomState;
