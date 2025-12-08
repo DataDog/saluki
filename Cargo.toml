@@ -135,7 +135,7 @@ serde_json = { version = "1.0.138", default-features = false, features = [
   "std",
 ] }
 faster-hex = { version = "0.10", default-features = false }
-rustls-pemfile = { version = "2.2", default-features = false }
+rustls-pki-types = { version = "1.13", default-features = false, features = ["alloc"] }
 tokio-rustls = { version = "0.26.0", default-features = false, features = [
   "aws_lc_rs",
 ] }
@@ -201,6 +201,11 @@ tracing-appender = { version = "0.2", default-features = false }
 base64 = { version = "0.22.1", default-features = false }
 treediff = { version = "5", default-features = false }
 argh = { version = "0.1", default-features = false }
+
+[patch.crates-io]
+# Forked version of `hyper-http-proxy` that removes an unused dependency on `rustls-native-certs`, which transitively depends
+# on a version of `rustls-pemfile` that is no longer maintained and triggers a hit when running `cargo deny`.
+hyper-http-proxy = { git = "https://github.com/tobz/hyper-http-proxy.git", branch = "main" }
 
 [profile.release]
 debug = true
