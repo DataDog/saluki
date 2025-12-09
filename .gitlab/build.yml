@@ -10,6 +10,7 @@
     DDCI_CONFIGURE_OTEL_EXPORTER: true
     KUBERNETES_CPU_REQUEST: "24"
     KUBERNETES_MEMORY_REQUEST: "48Gi"
+    KUBERNETES_MEMORY_LIMIT: "64Gi"
   script:
     - docker buildx create --name adp-builder --driver docker-container --use
     - 'echo "Building ADP image... (arch: ${ARCH_TAG}, image version: ${ADP_IMAGE_VERSION}, build concurrency: ${CARGO_BUILD_JOBS}, profile: ${BUILD_PROFILE})..."'
