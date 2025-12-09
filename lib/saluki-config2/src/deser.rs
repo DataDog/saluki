@@ -9,36 +9,19 @@ use tracing::trace;
 
 /// Extracts the effective serialization name for a field, considering rename attributes.
 fn get_serialization_name(field: &Field) -> &'static str {
-    field
-        .get_builtin_attr("rename")
-        .and_then(|attr| attr.get_as::<&'static str>().copied())
-        .unwrap_or(field.name)
+    field.rename.unwrap_or(field.name)
 }
 
 /// Gets all possible lookup names for a field, in priority order.
-/// Order: renamed name (if any) → original field name → aliases (in order)
+/// Order: field name (which may be renamed) → alias (if any)
+///
+/// Note: When `#[facet(rename = "...")]` is used, facet stores the renamed name
+/// directly in `field.name`. The original Rust field identifier is not preserved
+/// for lookup purposes.
 fn get_field_lookup_names(field: &Field) -> impl Iterator<Item = &'static str> {
-    // Start with renamed name if it exists, otherwise original field name
-    let primary_name = field
-        .get_builtin_attr("rename")
-        .and_then(|attr| attr.get_as::<&'static str>().copied())
-        .unwrap_or(field.name);
-
-    // Collect aliases in order
-    let aliases = field
-        .attributes
-        .iter()
-        .filter(|attr| attr.ns.is_none() && attr.key == "alias")
-        .filter_map(|attr| attr.get_as::<&'static str>().copied());
-
-    // Chain: primary name, then original name (if different), then aliases
-    std::iter::once(primary_name)
-        .chain(if primary_name != field.name {
-            Some(field.name)
-        } else {
-            None
-        })
-        .chain(aliases)
+    // field.name contains the effective name (renamed name if rename was used,
+    // otherwise the original field name)
+    std::iter::once(field.name).chain(field.alias)
 }
 
 /// Searches for a field value in the object using all possible field names.
@@ -1386,160 +1369,134 @@ mod tests {
     // ===================
     // Alias tests
     // ===================
-    // NOTE: The following alias tests are disabled because the facet derive macro
-    // does not yet recognize the `alias` attribute. Once the macro is updated to accept
-    // `alias` as a valid attribute, enable these tests by defining the cfg flag.
-    // To enable: add `--cfg test_with_alias` to RUSTFLAGS when running tests.
-
-    #[cfg(test_with_alias)]
-    mod alias_tests {
-        use super::*;
-
-        #[test]
-        fn test_deserialize_field_with_single_alias() {
-            #[derive(Facet, Debug, PartialEq)]
-            struct Config {
-                #[facet(alias = "key")]
-                api_key: String,
-            }
-
-            // Try with original name
-            let input = value!({"api_key": "secret"});
-            let output: Config = build_partial(input);
-            assert_eq!(output.api_key, "secret");
-
-            // Try with alias
-            let input = value!({"key": "secret2"});
-            let output: Config = build_partial(input);
-            assert_eq!(output.api_key, "secret2");
+    #[test]
+    fn test_deserialize_field_with_single_alias() {
+        #[derive(Facet, Debug, PartialEq)]
+        struct Config {
+            #[facet(alias = "key")]
+            api_key: String,
         }
 
-        #[test]
-        fn test_deserialize_field_with_multiple_aliases() {
-            #[derive(Facet, Debug, PartialEq)]
-            struct Config {
-                #[facet(alias = "key")]
-                #[facet(alias = "apiKey")]
-                #[facet(alias = "api-key")]
-                api_key: String,
-            }
+        // Try with original name
+        let input = value!({"api_key": "secret"});
+        let output: Config = build_partial(input);
+        assert_eq!(output.api_key, "secret");
 
-            // Original name has priority
-            let input = value!({"api_key": "primary", "key": "fallback"});
-            let output: Config = build_partial(input);
-            assert_eq!(output.api_key, "primary");
+        // Try with alias
+        let input = value!({"key": "secret2"});
+        let output: Config = build_partial(input);
+        assert_eq!(output.api_key, "secret2");
+    }
 
-            // First alias
-            let input = value!({"key": "first"});
-            let output: Config = build_partial(input);
-            assert_eq!(output.api_key, "first");
-
-            // Second alias
-            let input = value!({"apiKey": "second"});
-            let output: Config = build_partial(input);
-            assert_eq!(output.api_key, "second");
-
-            // Third alias
-            let input = value!({"api-key": "third"});
-            let output: Config = build_partial(input);
-            assert_eq!(output.api_key, "third");
+    #[test]
+    fn test_deserialize_field_with_alias_priority() {
+        // NOTE: Facet currently only supports a single alias per field.
+        // When multiple #[facet(alias = "...")] attributes are specified,
+        // only the last one is retained.
+        #[derive(Facet, Debug, PartialEq)]
+        struct Config {
+            #[facet(alias = "key")]
+            api_key: String,
         }
 
-        #[test]
-        fn test_deserialize_rename_with_aliases() {
-            #[derive(Facet, Debug, PartialEq)]
-            struct Config {
-                #[facet(rename = "newName")]
-                #[facet(alias = "oldName")]
-                #[facet(alias = "legacyName")]
-                field: String,
-            }
+        // Original name has priority over alias
+        let input = value!({"api_key": "primary", "key": "fallback"});
+        let output: Config = build_partial(input);
+        assert_eq!(output.api_key, "primary");
 
-            // Renamed name has highest priority
-            let input = value!({"newName": "new", "field": "orig", "oldName": "old"});
-            let output: Config = build_partial(input);
-            assert_eq!(output.field, "new");
+        // Alias works when original name is missing
+        let input = value!({"key": "aliased"});
+        let output: Config = build_partial(input);
+        assert_eq!(output.api_key, "aliased");
+    }
 
-            // Original field name is second priority
-            let input = value!({"field": "orig", "oldName": "old"});
-            let output: Config = build_partial(input);
-            assert_eq!(output.field, "orig");
-
-            // First alias is third priority
-            let input = value!({"oldName": "old", "legacyName": "legacy"});
-            let output: Config = build_partial(input);
-            assert_eq!(output.field, "old");
-
-            // Last alias
-            let input = value!({"legacyName": "legacy"});
-            let output: Config = build_partial(input);
-            assert_eq!(output.field, "legacy");
+    #[test]
+    fn test_deserialize_rename_with_alias() {
+        // NOTE: Facet currently only supports a single alias per field.
+        // NOTE: When rename is used, facet stores the renamed name in field.name.
+        //       The original Rust field name is NOT available for deserialization.
+        #[derive(Facet, Debug, PartialEq)]
+        struct Config {
+            #[facet(rename = "newName")]
+            #[facet(alias = "legacyName")]
+            field: String,
         }
 
-        #[test]
-        fn test_deserialize_nested_struct_with_aliases() {
-            #[derive(Facet, Debug, PartialEq)]
-            struct Inner {
-                #[facet(alias = "val")]
-                value: i32,
-            }
+        // Renamed name has highest priority
+        let input = value!({"newName": "new", "legacyName": "legacy"});
+        let output: Config = build_partial(input);
+        assert_eq!(output.field, "new");
 
-            #[derive(Facet, Debug, PartialEq)]
-            struct Outer {
-                #[facet(alias = "data")]
-                inner: Inner,
-            }
+        // Alias is used when renamed name is missing
+        let input = value!({"legacyName": "legacy"});
+        let output: Config = build_partial(input);
+        assert_eq!(output.field, "legacy");
+    }
 
-            let input = value!({"data": {"val": 42}});
-            let output: Outer = build_partial(input);
-            assert_eq!(output.inner.value, 42);
+    #[test]
+    fn test_deserialize_nested_struct_with_aliases() {
+        #[derive(Facet, Debug, PartialEq)]
+        struct Inner {
+            #[facet(alias = "val")]
+            value: i32,
         }
 
-        #[test]
-        fn test_deserialize_enum_variant_with_alias() {
-            #[derive(Facet, Debug, PartialEq)]
-            #[repr(u8)]
-            enum Message {
-                Data {
-                    #[facet(alias = "id")]
-                    message_id: String,
-                },
-            }
-
-            // Original name
-            let input = value!({"Data": {"message_id": "msg-1"}});
-            let output: Message = build_partial(input);
-            match output {
-                Message::Data { message_id } => assert_eq!(message_id, "msg-1"),
-            }
-
-            // Alias
-            let input = value!({"Data": {"id": "msg-2"}});
-            let output: Message = build_partial(input);
-            match output {
-                Message::Data { message_id } => assert_eq!(message_id, "msg-2"),
-            }
+        #[derive(Facet, Debug, PartialEq)]
+        struct Outer {
+            #[facet(alias = "data")]
+            inner: Inner,
         }
 
-        #[test]
-        fn test_alias_priority_order() {
-            #[derive(Facet, Debug, PartialEq)]
-            struct Config {
-                #[facet(alias = "second")]
-                #[facet(alias = "third")]
-                first: String,
-            }
+        let input = value!({"data": {"val": 42}});
+        let output: Outer = build_partial(input);
+        assert_eq!(output.inner.value, 42);
+    }
 
-            // When multiple names present, original field name wins
-            let input = value!({"first": "1", "second": "2", "third": "3"});
-            let output: Config = build_partial(input);
-            assert_eq!(output.first, "1");
-
-            // When original missing, first alias wins
-            let input = value!({"second": "2", "third": "3"});
-            let output: Config = build_partial(input);
-            assert_eq!(output.first, "2");
+    #[test]
+    fn test_deserialize_enum_variant_with_alias() {
+        #[derive(Facet, Debug, PartialEq)]
+        #[repr(u8)]
+        enum Message {
+            Data {
+                #[facet(alias = "id")]
+                message_id: String,
+            },
         }
+
+        // Original name
+        let input = value!({"Data": {"message_id": "msg-1"}});
+        let output: Message = build_partial(input);
+        match output {
+            Message::Data { message_id } => assert_eq!(message_id, "msg-1"),
+        }
+
+        // Alias
+        let input = value!({"Data": {"id": "msg-2"}});
+        let output: Message = build_partial(input);
+        match output {
+            Message::Data { message_id } => assert_eq!(message_id, "msg-2"),
+        }
+    }
+
+    #[test]
+    fn test_alias_priority_order() {
+        // NOTE: Facet currently only supports a single alias per field.
+        // The last #[facet(alias = "...")] wins.
+        #[derive(Facet, Debug, PartialEq)]
+        struct Config {
+            #[facet(alias = "alt")]
+            first: String,
+        }
+
+        // When both names present, original field name wins
+        let input = value!({"first": "1", "alt": "2"});
+        let output: Config = build_partial(input);
+        assert_eq!(output.first, "1");
+
+        // When original missing, alias is used
+        let input = value!({"alt": "2"});
+        let output: Config = build_partial(input);
+        assert_eq!(output.first, "2");
     }
 
     // ===================
