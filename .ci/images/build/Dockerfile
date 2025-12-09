@@ -10,7 +10,7 @@ ARG TARGETARCH
 
 # Install the basics for building and compiling software projects.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends build-essential software-properties-common curl ca-certificates git gnupg2 cmake unzip gcc g++ binutils jq && \
+    apt-get install -y --no-install-recommends build-essential software-properties-common curl ca-certificates git gnupg2 awscli lsb-release cmake unzip gcc g++ binutils jq bc bzip2 && \
     apt-get clean
 
 # Install Go, which we need to build AWS-LC in FIPS-compliant mode.
@@ -18,7 +18,20 @@ ENV PATH="/usr/local/go/bin:${PATH}"
 RUN curl -s -L -o /tmp/go-1.23.0.tar.gz https://go.dev/dl/go1.23.0.linux-${TARGETARCH}.tar.gz
 RUN tar -C /usr/local -xzf /tmp/go-1.23.0.tar.gz
 
-# Install a number of packages/tools by hand, because the versions in Ubuntu 14.04 are too old or not available at all.
+# Install a number of packages/tools by hand, because the versions in Ubuntu are too old, or just aren't available
+# from the normal package manager repositories.
+RUN curl -L https://s3.amazonaws.com/dd-package-public/dd-package-$(dpkg --print-architecture).deb -o dd-package.deb && \
+    dpkg -i dd-package.deb && \
+    rm dd-package.deb && \
+    apt-get update && \
+    dd-package --bucket binaries-ddbuild-io-prod --package devtools/dd-package-dev --distribution "20.04"
+
+COPY .ci/install-pr-commenter.sh /
+RUN chmod +x /install-pr-commenter.sh && /install-pr-commenter.sh
+
+COPY .ci/install-bloaty.sh /
+RUN chmod +x /install-bloaty.sh && /install-bloaty.sh
+
 COPY .ci/install-protoc.sh /
 RUN chmod +x /install-protoc.sh && /install-protoc.sh
 
