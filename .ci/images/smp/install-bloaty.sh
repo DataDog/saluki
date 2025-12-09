@@ -12,7 +12,7 @@ apt-get install -y --no-install-recommends cmake g++ ninja-build
 
 # Download and extract source.
 curl -L -o /tmp/bloaty.tar.bz2 "https://github.com/google/bloaty/releases/download/v${BLOATY_VERSION}/bloaty-${BLOATY_VERSION}.tar.bz2"
-tar -C /tmp -xf /tmp/bloaty.tar.bz2
+tar -C /tmp -xf /tmp/bloaty.tar.bz2 --no-same-owner
 
 # Build bloaty.
 cd "/tmp/bloaty-${BLOATY_VERSION}"
