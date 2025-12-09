@@ -25,6 +25,7 @@ Exit codes:
 
 import argparse
 import csv
+import json
 import os
 import subprocess
 import sys
@@ -76,6 +77,222 @@ def run_bloaty(
     return result.stdout
 
 
+def get_workspace_crates() -> set[str]:
+    """Get the set of workspace crate names from cargo metadata."""
+    result = subprocess.run(
+        ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    metadata = json.loads(result.stdout)
+
+    workspace_crates = set()
+    for package in metadata.get("packages", []):
+        # Workspace members have source == null (they're local, not from a registry)
+        if package.get("source") is None:
+            # Normalize hyphen to underscore (Cargo uses hyphens, Rust symbols use underscores)
+            crate_name = package["name"].replace("-", "_")
+            workspace_crates.add(crate_name)
+
+    return workspace_crates
+
+
+def parse_bloaty_csv(csv_output: str) -> list[dict]:
+    """Parse bloaty CSV output into a list of dicts."""
+    import io
+
+    reader = csv.DictReader(io.StringIO(csv_output))
+    parsed = []
+    for row in reader:
+        parsed.append(
+            {
+                "symbol": row["symbols"],
+                "vmsize": int(row["vmsize"]),
+                "filesize": int(row["filesize"]),
+            }
+        )
+    return parsed
+
+
+def demangle_escape_sequences(text: str) -> str:
+    """Replace Rust symbol escape sequences with their readable equivalents."""
+    import re
+
+    # Named escape sequences
+    replacements = [
+        ("$LT$", "<"),
+        ("$GT$", ">"),
+        ("$RF$", "&"),
+        ("$BP$", "*"),
+        ("$C$", ","),
+        ("..", "::"),  # Trait syntax uses .. instead of ::
+    ]
+
+    result = text
+    for old, new in replacements:
+        result = result.replace(old, new)
+
+    # Handle arbitrary Unicode escape sequences: $uXX$ where XX is hex. We only do this
+    # for values which are printable ASCII characters (0x20-0x7E).
+    def decode_unicode_escape(match: re.Match) -> str:
+        hex_val = match.group(1)
+        code_point = int(hex_val, 16)
+        if 0x20 <= code_point <= 0x7E:
+            return chr(code_point)
+        return match.group(0)  # Keep original if not printable ASCII
+
+    result = re.sub(r"\$u([0-9a-fA-F]{2,})\$", decode_unicode_escape, result)
+
+    return result
+
+
+def demangle_symbol(symbol: str) -> str:
+    """Demangle a Rust symbol name to extract the module path.
+
+    Handles trait implementation symbols like:
+    _$LT$figment..value..de..ConfiguredValueDe$LT$I$GT$$u20$as$u20$serde_core..de..Deserializer$GT$::...
+
+    Returns the normalized module path (e.g., figment::value::de::ConfiguredValueDe).
+    """
+    result = demangle_escape_sequences(symbol)
+
+    # Handle leading underscore (common in mangled names) before checking for trait impls
+    if result.startswith("_"):
+        result = result[1:]
+
+    # Handle trait implementations: <Type as Trait>::method
+    # Extract either the "from" type or the "as" trait depending on which is a real crate
+    if result.startswith("<"):
+        # Find the matching > for the outer angle bracket
+        depth = 0
+        for i, char in enumerate(result):
+            if char == "<":
+                depth += 1
+            elif char == ">":
+                depth -= 1
+                if depth == 0:
+                    # Extract content between < and >
+                    inner = result[1:i]
+
+                    if " as " in inner:
+                        from_part, as_part = inner.split(" as ", 1)
+
+                        # Remove generic parameters for checking
+                        from_clean = from_part
+                        if "<" in from_clean:
+                            from_clean = from_clean[: from_clean.index("<")]
+
+                        as_clean = as_part
+                        if "<" in as_clean:
+                            as_clean = as_clean[: as_clean.index("<")]
+
+                        # Check if "from" part is a real crate (has ::)
+                        # If not, it's a blanket impl like <&T as Trait>, use the "as" part
+                        if "::" in from_clean:
+                            inner = from_clean
+                        else:
+                            inner = as_clean
+                    else:
+                        # No " as ", just use the inner content
+                        if "<" in inner:
+                            inner = inner[: inner.index("<")]
+
+                    result = inner
+                    break
+
+    # Handle leading < from incomplete trait impl extraction
+    if result.startswith("<"):
+        result = result[1:]
+
+    return result
+
+
+def extract_module_prefix(
+    symbol: str, workspace_crates: set[str], workspace_depth: int = 3
+) -> str:
+    """Extract module prefix from a symbol name.
+
+    For workspace crates, uses workspace_depth (default 3) to provide detailed module info.
+    For third-party crates, rolls up to just the crate name (depth 1).
+    """
+    # Handle special section cases
+    if symbol.startswith("[section .debug"):
+        return "[debug sections]"
+    elif symbol.startswith("[section "):
+        return "[sections]"
+    elif symbol.startswith("[") and "Others" in symbol:
+        return symbol  # Keep [N Others] as-is
+
+    # Demangle trait implementation symbols
+    working_symbol = symbol
+    if symbol.startswith("_$LT$") or symbol.startswith("$LT$"):
+        working_symbol = demangle_symbol(symbol)
+
+    # For Rust symbols, split on :: and determine depth based on crate ownership
+    parts = working_symbol.split("::")
+    if not parts:
+        return symbol
+
+    # Extract the crate name (first component)
+    crate_name = parts[0]
+
+    # Determine depth: workspace crates get detailed view, third-party gets rolled up
+    if crate_name in workspace_crates:
+        depth = workspace_depth
+    else:
+        depth = 1  # Just the crate name for third-party
+
+    if len(parts) <= depth:
+        return working_symbol
+
+    return "::".join(parts[:depth])
+
+
+def aggregate_by_module(
+    parsed_csv: list[dict], workspace_crates: set[str], workspace_depth: int = 3
+) -> dict[str, dict]:
+    """Aggregate size changes by module prefix."""
+    aggregated = {}
+
+    for item in parsed_csv:
+        module = extract_module_prefix(
+            item["symbol"], workspace_crates, workspace_depth
+        )
+
+        if module not in aggregated:
+            aggregated[module] = {"vmsize": 0, "filesize": 0, "count": 0}
+
+        aggregated[module]["vmsize"] += item["vmsize"]
+        aggregated[module]["filesize"] += item["filesize"]
+        aggregated[module]["count"] += 1
+
+    return aggregated
+
+
+def format_module_rollup(aggregated: dict[str, dict], limit: int = 20) -> str:
+    """Format aggregated module data as a markdown table."""
+    # Sort by absolute filesize (largest changes first)
+    sorted_modules = sorted(
+        aggregated.items(), key=lambda x: abs(x[1]["filesize"]), reverse=True
+    )
+
+    # Take top N modules
+    top_modules = sorted_modules[:limit]
+
+    # Generate markdown table
+    lines = []
+    lines.append("| Module | File Size | Symbols |")
+    lines.append("|--------|-----------|---------|")
+
+    for module, data in top_modules:
+        filesize_str = format_size_change(data["filesize"])
+        count_str = str(data["count"])
+        lines.append(f"| {module} | {filesize_str} | {count_str} |")
+
+    return "\n".join(lines)
+
+
 def generate_report(
     baseline_sha: str,
     comparison_sha: str,
@@ -83,6 +300,7 @@ def generate_report(
     comparison_size: int,
     threshold_percent: float,
     bloaty_txt_output: str,
+    module_rollup: str,
 ) -> tuple[str, bool]:
     """
     Generate a Markdown report and determine pass/fail status.
@@ -126,12 +344,21 @@ def generate_report(
 <details>
 <summary>
 
-### Detailed Changes
+### Changes by Module
+
+{module_rollup}
+
+</details>
+
+<details>
+<summary>
+
+### Detailed Symbol Changes
 
 </summary>
 
 ```
-{bloaty_txt_output}
+{demangle_escape_sequences(bloaty_txt_output)}
 ```
 </details>
 """
@@ -210,6 +437,18 @@ def main() -> int:
     )
     args.output_csv.write_text(csv_output)
 
+    # Get workspace crates for module rollup differentiation
+    print("Fetching workspace crate list...")
+    workspace_crates = get_workspace_crates()
+
+    # Parse CSV and generate module-level rollup
+    print("Generating module-level rollup...")
+    parsed_csv = parse_bloaty_csv(csv_output)
+    module_aggregated = aggregate_by_module(
+        parsed_csv, workspace_crates, workspace_depth=3
+    )
+    module_rollup_table = format_module_rollup(module_aggregated, limit=20)
+
     # Run bloaty for human-readable output (top 20)
     print("Running bloaty analysis (text)...")
     txt_output = run_bloaty(
@@ -228,6 +467,7 @@ def main() -> int:
         comparison_size=comparison_size,
         threshold_percent=args.threshold,
         bloaty_txt_output=txt_output,
+        module_rollup=module_rollup_table,
     )
     args.output_report.write_text(report)
 
