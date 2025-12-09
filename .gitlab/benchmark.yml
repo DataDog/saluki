@@ -195,11 +195,6 @@ binary-size-analysis:
     - ./test/smp/configure-smp-aws-credentials.sh
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
 
-    # Download and extract bloaty.
-    - curl -L -o bloaty.tar.xz https://github.com/google/bloaty/releases/download/v1.1/bloaty-1.1-x86_64-unknown-linux-gnu.tar.xz
-    - tar xf bloaty.tar.xz
-    - export BLOATY_BIN="./bloaty-1.1-x86_64-unknown-linux-gnu/bloaty"
-
     # Extract binaries from the container images.
     - mkdir -p binaries
     - docker pull ${BASELINE_ADP_IMG}
@@ -218,7 +213,7 @@ binary-size-analysis:
       --comparison-binary binaries/comparison-adp
       --baseline-sha ${BASELINE_ADP_SHA}
       --comparison-sha ${COMPARISON_ADP_SHA}
-      --bloaty-path ${BLOATY_BIN}
+      --bloaty-path /usr/local/bin/bloaty
       --output-report size-report.md
       --output-csv size-diff.csv
       --output-txt size-diff.txt

@@ -18,6 +18,10 @@ RUN curl -L https://s3.amazonaws.com/dd-package-public/dd-package-$(dpkg --print
 COPY .ci/images/smp/install-pr-commenter.sh /
 RUN chmod +x /install-pr-commenter.sh && /install-pr-commenter.sh
 
+# Build and install bloaty for binary size analysis.
+COPY .ci/images/smp/install-bloaty.sh /
+RUN chmod +x /install-bloaty.sh && /install-bloaty.sh
+
 COPY .ci/images/smp/entrypoint.sh /
 RUN chmod +x /entrypoint.sh
 
