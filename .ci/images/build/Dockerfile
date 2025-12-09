@@ -38,12 +38,8 @@ RUN chmod +x /install-protoc.sh && /install-protoc.sh
 COPY .ci/install-awscli.sh /
 RUN chmod +x /install-awscli.sh && /install-awscli.sh
 
-RUN VAULT_VERSION=1.21.1 && \
-    curl -fsSL "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_linux_amd64.zip" -o vault.zip && \
-    unzip vault.zip && \
-    mv vault /usr/local/bin/vault && \
-    rm vault.zip && \
-    chmod +x /usr/local/bin/vault
+COPY .ci/install-vault.sh /
+RUN chmod +x /install-vault.sh && /install-vault.sh
 
 # Install Rust and common Cargo tooling that we depend on.
 RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain ${RUST_VERSION}
