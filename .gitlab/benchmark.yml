@@ -19,7 +19,7 @@ build-adp-baseline-image:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - if: !reference [.on_development_branch, rules, if]
-  image: "${SALUKI_SMP_CI_IMAGE}"
+  image: "${SALUKI_BUILD_CI_IMAGE}"
   needs: []
   retry: 2
   timeout: 15m
@@ -72,7 +72,7 @@ build-adp-comparison-image:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - if: !reference [.on_development_branch, rules, if]
-  image: "${SALUKI_SMP_CI_IMAGE}"
+  image: "${SALUKI_BUILD_CI_IMAGE}"
   needs: []
   retry: 2
   timeout: 15m
@@ -124,7 +124,7 @@ run-benchmarks-adp:
   needs:
     - build-adp-baseline-image
     - build-adp-comparison-image
-  image: "${SALUKI_SMP_CI_IMAGE}"
+  image: "${SALUKI_BUILD_CI_IMAGE}"
   before_script:
     - *setup-smp-env
   artifacts:
@@ -176,7 +176,7 @@ binary-size-analysis:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - if: !reference [.on_development_branch, rules, if]
-  image: "${SALUKI_SMP_CI_IMAGE}"
+  image: "${SALUKI_BUILD_CI_IMAGE}"
   needs:
     - build-adp-baseline-image
     - build-adp-comparison-image
