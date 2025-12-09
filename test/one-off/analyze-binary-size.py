@@ -85,7 +85,7 @@ def generate_report(
     bloaty_txt_output: str,
 ) -> tuple[str, bool]:
     """
-    Generate a markdown report and determine pass/fail status.
+    Generate a Markdown report and determine pass/fail status.
 
     Returns:
         Tuple of (markdown_report, passed)
@@ -97,7 +97,6 @@ def generate_report(
     else:
         change_percent = 0.0
 
-    # Determine pass/fail
     passed = change_percent <= threshold_percent
 
     if passed:
@@ -107,7 +106,6 @@ def generate_report(
         status = "FAILED"
         status_emoji = "❌"
 
-    # Format values for display
     baseline_size_fmt = format_size(baseline_size)
     comparison_size_fmt = format_size(comparison_size)
     size_diff_fmt = format_size_change(size_diff)
@@ -117,24 +115,24 @@ def generate_report(
     else:
         change_percent_fmt = f"{change_percent:.2f}%"
 
-    report = f"""## Binary Size Analysis {status_emoji}
-
-| Metric | Value |
-|--------|-------|
-| **Baseline SHA** | `{baseline_sha}` |
-| **Comparison SHA** | `{comparison_sha}` |
-| **Baseline Size** | {baseline_size_fmt} |
-| **Comparison Size** | {comparison_size_fmt} |
-| **Size Change** | {size_diff_fmt} ({change_percent_fmt}) |
-| **Status** | {status} (threshold: {threshold_percent:.0f}%) |
+    report = f"""
+**Target:** {baseline_sha} (baseline) vs {comparison_sha} (comparison) [diff](../../compare/{baseline_sha}..{comparison_sha})
+**Baseline Size:** {baseline_size_fmt}
+**Comparison Size:** {comparison_size_fmt}
+**Size Change:** {size_diff_fmt} ({change_percent_fmt})
+**Pass/Fail Threshold:** +{threshold_percent:.0f}%
+**Result:** {status} {status_emoji}
 
 <details>
-<summary>Top 20 Symbol Changes</summary>
+<summary>
+
+### Detailed Changes
+
+</summary>
 
 ```
 {bloaty_txt_output}
 ```
-
 </details>
 """
 
@@ -143,7 +141,7 @@ def generate_report(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Analyze binary size differences using bloaty"
+        description="Analyze binary size differences using bloaty and generate a human-friendly report."
     )
     parser.add_argument(
         "--baseline-binary", type=Path, required=True, help="Path to baseline binary"
@@ -181,7 +179,7 @@ def main() -> int:
 
     args = parser.parse_args()
 
-    # Validate inputs exist
+    # Validate our configuration.
     if not args.baseline_binary.exists():
         print(f"Error: Baseline binary not found: {args.baseline_binary}")
         return 2
@@ -194,14 +192,15 @@ def main() -> int:
         print(f"Error: Bloaty binary not found: {args.bloaty_path}")
         return 2
 
-    # Get file sizes
+    # Get the basic file sizes of each binary.
     baseline_size = get_file_size(args.baseline_binary)
     comparison_size = get_file_size(args.comparison_binary)
 
     print(f"Baseline binary size: {format_size(baseline_size)}")
     print(f"Comparison binary size: {format_size(comparison_size)}")
 
-    # Run bloaty for CSV output (full symbol list)
+    # Execute bloaty to get the analysis output of symbol size, what symbols are new, what symbols are old, the size
+    # change for identical symbols, and so on.
     print("Running bloaty analysis (CSV)...")
     csv_output = run_bloaty(
         args.bloaty_path,
@@ -222,7 +221,6 @@ def main() -> int:
     )
     args.output_txt.write_text(txt_output)
 
-    # Generate report
     report, passed = generate_report(
         baseline_sha=args.baseline_sha,
         comparison_sha=args.comparison_sha,
@@ -246,8 +244,7 @@ def main() -> int:
 
     if not passed:
         print(
-            f"\nError: Binary size increased by {change_percent:.2f}%, "
-            f"which exceeds the {args.threshold:.0f}% threshold."
+            f"\nError: Binary size increased by {change_percent:.2f}%, which exceeds the {args.threshold:.0f}% threshold."
         )
         return 1
 
