@@ -220,4 +220,4 @@ binary-size-analysis:
       --threshold 5
 
     # Post the report to the linked PR.
-    - cat size-report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Binary Size Analysis"
+    - cat size-report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Binary Size Analysis (Agent Data Plane)"

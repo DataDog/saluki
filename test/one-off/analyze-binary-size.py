@@ -201,6 +201,10 @@ def demangle_symbol(symbol: str) -> str:
                     result = inner
                     break
 
+    # Handle leading underscore (common in mangled names)
+    if result.startswith("_"):
+        result = result[1:]
+
     # Handle leading < from incomplete trait impl extraction
     if result.startswith("<"):
         result = result[1:]
@@ -358,7 +362,7 @@ def generate_report(
 </summary>
 
 ```
-{demangle_escape_sequences(bloaty_txt_output)}
+{bloaty_txt_output}
 ```
 </details>
 """
@@ -429,12 +433,29 @@ def main() -> int:
     # Execute bloaty to get the analysis output of symbol size, what symbols are new, what symbols are old, the size
     # change for identical symbols, and so on.
     print("Running bloaty analysis (CSV)...")
-    csv_output = run_bloaty(
+    csv_output_raw = run_bloaty(
         args.bloaty_path,
         args.comparison_binary,
         args.baseline_binary,
         csv_output=True,
     )
+
+    # Demangle symbols in CSV output (only the first column, preserving CSV structure)
+    csv_lines = csv_output_raw.strip().split("\n")
+    demangled_csv_lines = [csv_lines[0]]  # Keep header as-is
+    for line in csv_lines[1:]:
+        # Split on comma (only last 2 are numeric), demangle first field (symbol), rejoin
+        # The symbol is everything before the last two comma-separated values
+        parts = line.rsplit(",", 2)
+        if len(parts) == 3:
+            symbol = demangle_escape_sequences(parts[0])
+            # Quote symbol if it contains comma or quotes
+            if "," in symbol or '"' in symbol:
+                symbol = '"' + symbol.replace('"', '""') + '"'
+            demangled_csv_lines.append(f"{symbol},{parts[1]},{parts[2]}")
+        else:
+            demangled_csv_lines.append(line)
+    csv_output = "\n".join(demangled_csv_lines)
     args.output_csv.write_text(csv_output)
 
     # Get workspace crates for module rollup differentiation
@@ -458,6 +479,7 @@ def main() -> int:
         csv_output=False,
         limit=20,
     )
+    txt_output = demangle_escape_sequences(txt_output)
     args.output_txt.write_text(txt_output)
 
     report, passed = generate_report(
