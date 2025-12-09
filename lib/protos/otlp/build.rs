@@ -3,7 +3,7 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
     // Handle code generation for gRPC service definitions.
-    tonic_build::configure()
+    tonic_prost_build::configure()
         .field_attribute(".", "#[allow(clippy::all)]") // Clippy doesn't like the double spaces in the OTLP proto
         .build_server(true)
         .build_client(true)
