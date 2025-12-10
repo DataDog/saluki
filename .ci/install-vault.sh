@@ -1,43 +1,47 @@
-#!/bin/bash
+#!/usr/bin/env bash
+#
+# Installs HashiCorp Vault for CI builds.
+#
 set -euo pipefail
+set -x
 
-VAULT_VERSION="1.21.1"
+readonly VERSION="1.21.1"
+
+readonly TMP_DIR="$(mktemp -d -t "vault_XXXX")"
+trap 'rm -rf "${TMP_DIR}"' EXIT
 
 get_platform() {
-  local os
-  os=$(uname)
-  if [[ "${os}" == "Darwin" ]]; then
-    echo "darwin"
-  elif [[ "${os}" == "Linux" ]]; then
-    echo "linux"
-  else
-    >&2 echo "unsupported os: ${os}" && exit 1
-  fi
+    local os
+    os="$(uname)"
+    case "${os}" in
+        Darwin) echo "darwin" ;;
+        Linux)  echo "linux" ;;
+        *)      echo "Unsupported OS: ${os}" >&2; exit 1 ;;
+    esac
 }
 
 get_arch() {
-  local arch
-  arch=$(uname -m)
-  # On ARM Macs, uname -m returns "arm64", but in protoc releases this architecture is called "aarch_64"
-  if [[ "${arch}" == "x86_64" ]]; then
-    echo "amd64"
-  elif [[ "${arch}" == "aarch64" ]]; then
-    echo "arm64"
-  else
-    echo "${arch}"
-  fi
+    local arch
+    arch="$(uname -m)"
+    case "${arch}" in
+        x86_64)  echo "amd64" ;;
+        aarch64) echo "arm64" ;;
+        *)       echo "${arch}" ;;
+    esac
 }
 
-# Download the pre-compiled Vault binary for this platform and extract it.
-curl -fsSL "https://releases.hashicorp.com/vault/${VAULT_VERSION}/vault_${VAULT_VERSION}_$(get_platform)_$(get_arch).zip" -o /tmp/vault.zip
-mkdir /tmp/vault
-cd /tmp/vault
-unzip /tmp/vault.zip
+install_vault() {
+    local version="$1"
+    local install_path="$2"
 
-# Move the binary into place and ensure it's executable.
-mv vault /usr/local/bin/vault
-chmod +x /usr/local/bin/vault
+    local url="https://releases.hashicorp.com/vault/${version}/vault_${version}_$(get_platform)_$(get_arch).zip"
+    local download_path="${TMP_DIR}/vault.zip"
 
-# Clean up after ourselves.
-rm -f /tmp/vault.zip
-rm -rf /tmp/vault
+    curl -fsSL "${url}" -o "${download_path}"
+    unzip -qq "${download_path}" -d "${TMP_DIR}"
+
+    mv "${TMP_DIR}/vault" "${install_path}"
+    chmod +x "${install_path}"
+}
+
+install_vault "${VERSION}" "/usr/local/bin/vault"
