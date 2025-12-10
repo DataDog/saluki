@@ -20,25 +20,16 @@ use serde_json::{Map as JsonMap, Value as JsonValue};
 use stringtheory::MetaString;
 use tracing::error;
 
+use crate::common::otlp::util::{
+    DEPLOYMENT_ENVIRONMENT_KEY, KEY_DATADOG_CONTAINER_ID, KEY_DATADOG_ENVIRONMENT, KEY_DATADOG_ERROR,
+    KEY_DATADOG_ERROR_MSG, KEY_DATADOG_ERROR_STACK, KEY_DATADOG_ERROR_TYPE, KEY_DATADOG_HOST,
+    KEY_DATADOG_HTTP_STATUS_CODE, KEY_DATADOG_NAME, KEY_DATADOG_RESOURCE, KEY_DATADOG_SERVICE, KEY_DATADOG_SPAN_KIND,
+    KEY_DATADOG_TYPE, KEY_DATADOG_VERSION,
+};
 use crate::sources::otlp::attributes::{get_int_attribute, get_string_attribute, HTTP_MAPPINGS};
 use crate::sources::otlp::traces::normalize::{normalize_service, normalize_tag_value};
 use crate::sources::otlp::traces::normalize::{truncate_utf8, MAX_RESOURCE_LEN};
 use crate::sources::otlp::traces::translator::{convert_span_id, convert_trace_id};
-pub(crate) const KEY_DATADOG_SERVICE: &str = "datadog.service";
-pub(crate) const KEY_DATADOG_NAME: &str = "datadog.name";
-pub(crate) const KEY_DATADOG_RESOURCE: &str = "datadog.resource";
-pub(crate) const KEY_DATADOG_SPAN_KIND: &str = "datadog.span.kind";
-pub(crate) const KEY_DATADOG_TYPE: &str = "datadog.type";
-pub(crate) const KEY_DATADOG_ERROR: &str = "datadog.error";
-pub(crate) const KEY_DATADOG_ERROR_MSG: &str = "datadog.error.msg";
-pub(crate) const KEY_DATADOG_ERROR_TYPE: &str = "datadog.error.type";
-pub(crate) const KEY_DATADOG_ERROR_STACK: &str = "datadog.error.stack";
-pub(crate) const KEY_DATADOG_VERSION: &str = "datadog.version";
-pub(crate) const KEY_DATADOG_HTTP_STATUS_CODE: &str = "datadog.http_status_code";
-pub(crate) const KEY_DATADOG_HOST: &str = "datadog.host";
-pub(crate) const KEY_DATADOG_ENVIRONMENT: &str = "datadog.env";
-pub(crate) const KEY_DATADOG_CONTAINER_ID: &str = "datadog.container_id";
-pub(crate) const KEY_DATADOG_CONTAINER_TAGS: &str = "datadog.container_tags";
 
 pub(crate) const SAMPLING_PRIORITY_METRIC_KEY: &str = "_sampling_priority_v1";
 const EVENT_EXTRACTION_METRIC_KEY: &str = "_dd1.sr.eausr";
@@ -77,7 +68,6 @@ const OTEL_LIBRARY_VERSION_META_KEY: &str = "otel.library.version";
 const OTEL_STATUS_CODE_META_KEY: &str = "otel.status_code";
 const OTEL_STATUS_DESCRIPTION_META_KEY: &str = "otel.status_description";
 const INTERNAL_DD_HOSTNAME_KEY: &str = "_dd.hostname";
-const LEGACY_DEPLOYMENT_ENVIRONMENT_KEY: &str = "deployment.environment";
 const DATADOG_HOSTNAME_ATTR: &str = "datadog.host.name";
 const EXCEPTION_MESSAGE_KEY: &str = "exception.message";
 const EXCEPTION_TYPE_KEY: &str = "exception.type";
@@ -1010,7 +1000,7 @@ fn get_otel_env(
     if let Some(value) = use_both_maps_key_list(
         span_attributes,
         resource_attributes,
-        &[DEPLOYMENT_ENVIRONMENT_NAME, LEGACY_DEPLOYMENT_ENVIRONMENT_KEY],
+        &[DEPLOYMENT_ENVIRONMENT_NAME, DEPLOYMENT_ENVIRONMENT_KEY],
     ) {
         return value;
     }

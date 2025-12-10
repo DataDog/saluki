@@ -3,6 +3,7 @@
 //! Provides shared server setup code for both OTLP receiver (proxy mode) and OTLP source (translation mode).
 
 pub mod config;
+pub mod util;
 
 use std::sync::Arc;
 
