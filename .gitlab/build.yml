@@ -1,6 +1,6 @@
 .build-adp-definition:
   stage: build
-  image: ${SALUKI_BUILD_IMAGE}
+  image: ${SALUKI_BUILD_CI_IMAGE}
   needs:
     - calculate-build-metadata
   retry: 2
@@ -115,9 +115,9 @@ build-adp-image-internal:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - when: always
-  needs:
-    - build-adp-image-internal-amd64
-    - build-adp-image-internal-arm64
+      needs:
+        - build-adp-image-internal-amd64
+        - build-adp-image-internal-arm64
   variables:
     IMAGE_TAG: ${ADP_FULL_IMAGE_TAG}-internal
 
@@ -153,9 +153,9 @@ build-adp-image-fips-internal:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - when: always
-  needs:
-    - build-adp-image-fips-internal-amd64
-    - build-adp-image-fips-internal-arm64
+      needs:
+        - build-adp-image-fips-internal-amd64
+        - build-adp-image-fips-internal-arm64
   variables:
     IMAGE_TAG: ${ADP_FULL_IMAGE_TAG_FIPS}-internal
 
@@ -175,8 +175,8 @@ publish-adp-image-internal:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - when: always
-  needs:
-    - build-adp-image-internal
+      needs:
+        - build-adp-image-internal
   trigger:
     project: DataDog/images
     branch: master
@@ -199,8 +199,8 @@ publish-adp-image-internal-fips:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - when: always
-  needs:
-    - build-adp-image-fips-internal
+      needs:
+        - build-adp-image-fips-internal
   trigger:
     project: DataDog/images
     branch: master
