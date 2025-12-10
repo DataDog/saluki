@@ -276,29 +276,6 @@ run-adp-standalone-release: ## Runs ADP locally in standalone mode (release)
 	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	target/release/agent-data-plane --config /tmp/adp-empty-config.yaml run
 
-.PHONY: run-adp-with-checks
-run-adp-with-checks: build-adp-and-checks create-dummy-agent-config
-run-adp-with-checks: ## Runs ADP + Checks locally (debug)
-	@echo "[*] Running ADP and checks..."
-	@DD_ADP_STANDALONE_MODE=false \
-	DD_AUTH_TOKEN_FILE_PATH=../datadog-agent/bin/agent/dist/auth_token \
-	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
-	DD_CHECKS_CONFIG_DIR=./dist/conf.d \
-	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
-	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
-	target/debug/agent-data-plane --config /tmp/adp-empty-config.yaml run
-
-.PHONY: run-adp-with-checks-standalone
-run-adp-with-checks-standalone: build-adp-and-checks create-dummy-agent-config
-run-adp-with-checks-standalone: ## Runs ADP + Checks locally in standalone mode (debug)
-	@echo "[*] Running ADP and checks..."
-	@DD_ADP_STANDALONE_MODE=true \
-	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=check-agent-standalone \
-	DD_CHECKS_CONFIG_DIR=./dist/conf.d \
-	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
-	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
-	target/debug/agent-data-plane --config /tmp/adp-empty-config.yaml run
-
 .PHONY: run-dsd-basic-udp
 run-dsd-basic-udp: build-dsd-client ## Runs a basic set of metrics via the Dogstatsd client (UDP)
 	@echo "[*] Sending basic metrics via Dogstatsd (UDP, 127.0.0.1:9191)..."
@@ -459,7 +436,7 @@ check-unused-deps: ## Checks for any imported dependencies that are not used in 
 test: check-rust-build-tools cargo-install-cargo-nextest
 test: ## Runs all unit tests
 	@echo "[*] Running unit tests..."
-	cargo nextest run --features python-checks --lib -E 'not test(/property_test_*/)'
+	cargo nextest run --lib -E 'not test(/property_test_*/)'
 
 .PHONY: test-property
 test-property: check-rust-build-tools cargo-install-cargo-nextest
