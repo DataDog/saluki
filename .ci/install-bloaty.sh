@@ -6,10 +6,6 @@ set -euo pipefail
 
 BLOATY_VERSION="1.1"
 
-# Install build dependencies.
-apt-get update
-apt-get install -y --no-install-recommends cmake g++ ninja-build
-
 # Download and extract source.
 curl -L -o /tmp/bloaty.tar.bz2 "https://github.com/google/bloaty/releases/download/v${BLOATY_VERSION}/bloaty-${BLOATY_VERSION}.tar.bz2"
 tar -C /tmp -xf /tmp/bloaty.tar.bz2 --no-same-owner
@@ -24,8 +20,4 @@ cp build/bloaty /usr/local/bin/bloaty
 chmod +x /usr/local/bin/bloaty
 
 # Clean up build dependencies and source.
-cd /
 rm -rf "/tmp/bloaty-${BLOATY_VERSION}" /tmp/bloaty.tar.bz2
-apt-get purge -y cmake g++ ninja-build
-apt-get autoremove -y
-apt-get clean

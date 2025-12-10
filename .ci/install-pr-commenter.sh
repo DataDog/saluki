@@ -18,3 +18,4 @@ EOF
 # 20.04, even though we're actually running 20.10. ¯\_(ツ)_/¯
 apt-get update
 dd-package --bucket binaries-ddbuild-io-prod --package devtools/pr-commenter --version "14692290-a6440fd1" --distribution "20.04"
+apt-get clean

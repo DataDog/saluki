@@ -10,7 +10,7 @@ ARG TARGETARCH
 
 # Install the basics for building and compiling software projects.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends build-essential software-properties-common curl ca-certificates git gnupg2 lsb-release make cmake unzip gcc g++ binutils jq bc bzip2 && \
+    apt-get install -y --no-install-recommends build-essential software-properties-common curl ca-certificates git gnupg2 lsb-release make cmake unzip gcc g++ binutils jq bc bzip2 ninja-build && \
     apt-get clean
 
 # Install Go, which we need to build AWS-LC in FIPS-compliant mode.
