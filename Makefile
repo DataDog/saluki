@@ -16,6 +16,10 @@ export APP_VERSION ?= $(shell cat bin/agent-data-plane/Cargo.toml | grep -E "^ve
 
 # Override autoinstalling of tools. (Eg `cargo install`)
 export AUTOINSTALL ?= true
+export CARGO_BINSTALL_STRATEGIES ?= crate-meta-data,compile
+ifeq ($(CI),true)
+	override CARGO_BINSTALL_STRATEGIES = compile
+endif
 # Override the container tool. Tries docker first and then tries podman.
 export CONTAINER_TOOL ?= auto
 ifeq ($(CONTAINER_TOOL),auto)
@@ -685,4 +689,4 @@ cargo-preinstall: ## Pre-installs all necessary Cargo tools (used for CI)
 cargo-install-%: override TOOL = $(@:cargo-install-%=%)
 cargo-install-%: override VERSIONED_TOOL = ${TOOL}@$(CARGO_TOOL_VERSION_$(TOOL))
 cargo-install-%: check-rust-build-tools
-	@$(if $(findstring true,$(AUTOINSTALL)),test -f ${CARGO_BIN_DIR}/${TOOL} || (echo "[*] Installing ${VERSIONED_TOOL}..." && cargo binstall --install-path ${CARGO_BIN_DIR} ${VERSIONED_TOOL} --quiet -y),)
+	@$(if $(findstring true,$(AUTOINSTALL)),test -f ${CARGO_BIN_DIR}/${TOOL} || (echo "[*] Installing ${VERSIONED_TOOL}..." && cargo binstall --strategies ${CARGO_BINSTALL_STRATEGIES} --install-path ${CARGO_BIN_DIR} ${VERSIONED_TOOL} --quiet -y),)

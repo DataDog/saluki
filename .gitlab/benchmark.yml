@@ -19,7 +19,7 @@ build-adp-baseline-image:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - if: !reference [.on_development_branch, rules, if]
-  image: "${SALUKI_SMP_CI_IMAGE}"
+  image: "${SALUKI_BUILD_CI_IMAGE}"
   needs: []
   retry: 2
   timeout: 15m
@@ -72,7 +72,7 @@ build-adp-comparison-image:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - if: !reference [.on_development_branch, rules, if]
-  image: "${SALUKI_SMP_CI_IMAGE}"
+  image: "${SALUKI_BUILD_CI_IMAGE}"
   needs: []
   retry: 2
   timeout: 15m
@@ -124,7 +124,7 @@ run-benchmarks-adp:
   needs:
     - build-adp-baseline-image
     - build-adp-comparison-image
-  image: "${SALUKI_SMP_CI_IMAGE}"
+  image: "${SALUKI_BUILD_CI_IMAGE}"
   before_script:
     - *setup-smp-env
   artifacts:
@@ -167,3 +167,57 @@ run-benchmarks-adp:
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job result
       --submission-metadata submission_metadata
+
+binary-size-analysis:
+  stage: benchmark
+  tags: ["docker-in-docker:amd64"]
+  # Don't run binary size analysis unless it's a PR, basically.
+  rules:
+    - if: !reference [.on_mq_branch, rules, if]
+      when: never
+    - if: !reference [.on_development_branch, rules, if]
+  image: "${SALUKI_BUILD_CI_IMAGE}"
+  needs:
+    - build-adp-baseline-image
+    - build-adp-comparison-image
+  timeout: 10m
+  before_script:
+    - *setup-smp-env
+  artifacts:
+    expire_in: 1 week
+    paths:
+      - size-diff.csv
+      - size-diff.txt
+      - size-report.md
+    when: always
+  script:
+    # Initialize our AWS credentials and login to ECR.
+    - ./test/smp/configure-smp-aws-credentials.sh
+    - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
+
+    # Extract binaries from the container images.
+    - mkdir -p binaries
+    - docker pull ${BASELINE_ADP_IMG}
+    - docker create --name baseline-container ${BASELINE_ADP_IMG}
+    - docker cp baseline-container:/usr/local/bin/agent-data-plane binaries/baseline-adp
+    - docker rm baseline-container
+    - docker pull ${COMPARISON_ADP_IMG}
+    - docker create --name comparison-container ${COMPARISON_ADP_IMG}
+    - docker cp comparison-container:/usr/local/bin/agent-data-plane binaries/comparison-adp
+    - docker rm comparison-container
+
+    # Run the analysis script to generate bloaty output, markdown report, and check threshold.
+    # The script exits with code 1 if size increased by more than 5%.
+    - python3 ./test/one-off/analyze-binary-size.py
+      --baseline-binary binaries/baseline-adp
+      --comparison-binary binaries/comparison-adp
+      --baseline-sha ${BASELINE_ADP_SHA}
+      --comparison-sha ${COMPARISON_ADP_SHA}
+      --bloaty-path /usr/local/bin/bloaty
+      --output-report size-report.md
+      --output-csv size-diff.csv
+      --output-txt size-diff.txt
+      --threshold 5
+
+    # Post the report to the linked PR.
+    - cat size-report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Binary Size Analysis (Agent Data Plane)"
