@@ -19,6 +19,7 @@ memory-accounting = { workspace = true }
 metrics = { workspace = true }
 metrics-util = { workspace = true, features = ["recency", "registry"] }
 ordered-float = { workspace = true }
+otlp-protos = { workspace = true }
 paste = { workspace = true }
 pin-project = { workspace = true }
 saluki-common = { workspace = true }
