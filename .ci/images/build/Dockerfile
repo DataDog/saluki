@@ -5,7 +5,7 @@ ARG TARGETARCH
 
 # Install Rust and other build dependencies.
 RUN apk update && \
-    apk add --no-cache rustup musl-dev linux-headers make cmake mold gcc libgcc perl go python3 py3-pip protobuf bloaty aws-cli && \
+    apk add --no-cache rustup musl-dev linux-headers make cmake mold gcc libgcc perl go python3 py3-pip protobuf bloaty aws-cli curl && \
    rustup-init -y --default-toolchain ${RUST_VERSION}
 ENV PATH="/root/.cargo/bin:${PATH}"
 
