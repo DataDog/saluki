@@ -7,7 +7,7 @@ set -x
 
 readonly VERSION="1.21.1"
 
-readonly TMP_DIR="$(mktemp -d -t "vault_XXXX")"
+readonly TMP_DIR="$(mktemp -d -t "vault_XXXXXX")"
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
 get_platform() {

@@ -5,12 +5,13 @@ mkfile_path := $(abspath $(lastword $(MAKEFILE_LIST)))
 mkfile_dir := $(dir $(mkfile_path))
 
 # High-level settings that ultimately get passed down to build-specific targets and other spots.
-export TARGET_ARCH ?= $(shell uname -m | sed s/x86_64/amd64/ | sed s/aarch64/arm64/)
-export TARGET_TRIPLE ?= $(shell command -v rustc 1>/dev/null && rustc -vV | sed -n 's|host: ||p')
-export APP_GIT_HASH ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git)
+export TARGET_ARCH := $(shell uname -m | sed s/x86_64/amd64/ | sed s/aarch64/arm64/)
+export TARGET_TRIPLE := $(shell command -v rustc 1>/dev/null && rustc -vV | sed -n 's|host: ||p')
+export APP_GIT_HASH := $(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git)
 export APP_BUILD_TIME := $(or $(CI_PIPELINE_CREATED_AT),"0000-00-00T00:00:00-00:00")
 
 # ADP-specific settings used during builds.
+export ADP_APP_VERSION_AUTO := $(shell cat bin/agent-data-plane/Cargo.toml | grep -E "^version = \"" | head -n 1 | cut -d '"' -f 2)
 export ADP_APP_IMAGE ?= ubuntu:24.04
 export ADP_IMAGE_OUTPUT ?= type=docker
 export ADP_IMAGE_BASE ?= local.dev/saluki-images/agent-data-plane
@@ -21,7 +22,7 @@ export ADP_BUILD_PROFILE ?= release
 export ADP_APP_FULL_NAME ?= Agent Data Plane
 export ADP_APP_SHORT_NAME ?= data-plane
 export ADP_APP_IDENTIFIER ?= adp
-export ADP_APP_VERSION ?= $(shell cat bin/agent-data-plane/Cargo.toml | grep -E "^version = \"" | head -n 1 | cut -d '"' -f 2)
+export ADP_APP_VERSION := $(or $(ADP_APP_VERSION),$(ADP_APP_VERSION_AUTO))
 export ADP_APP_GIT_HASH	?= $(APP_GIT_HASH)
 export ADP_APP_BUILD_TIME ?= $(APP_BUILD_TIME)
 
@@ -31,7 +32,7 @@ export GO_APP_IMAGE ?= ubuntu:24.04
 
 # Tool configuration.
 export AUTOINSTALL ?= true
-export CARGO_BIN_DIR ?= $(shell echo "${HOME}/.cargo/bin")
+export CARGO_BIN_DIR := $(shell echo "${HOME}/.cargo/bin")
 export CARGO_BINSTALL_STRATEGIES ?= crate-meta-data,compile
 ifeq ($(CI),true)
 	override CARGO_BINSTALL_STRATEGIES = compile
