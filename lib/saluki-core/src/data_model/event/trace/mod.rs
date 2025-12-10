@@ -1,8 +1,8 @@
 //! Traces.
 
+use otlp_protos::opentelemetry::proto::resource::v1::Resource as OtlpResource;
 use saluki_common::collections::FastHashMap;
 use stringtheory::MetaString;
-
 /// A trace event.
 ///
 /// A trace is a collection of spans that represent a distributed trace.
@@ -10,22 +10,29 @@ use stringtheory::MetaString;
 pub struct Trace {
     /// The spans that make up this trace.
     spans: Vec<Span>,
+    /// The resource associated with this trace.
+    resource: OtlpResource,
 }
 
 impl Trace {
     /// Creates a new `Trace` with the given spans.
-    pub fn new(spans: Vec<Span>) -> Self {
-        Self { spans }
+    pub fn new(spans: Vec<Span>, resource: OtlpResource) -> Self {
+        Self { spans, resource }
     }
 
     /// Returns a reference to the spans in this trace.
-    pub fn spans(&self) -> &[Span] {
-        &self.spans
+    pub fn spans(&self) -> Vec<Span> {
+        self.spans.clone()
     }
 
     /// Returns a mutable reference to the spans in this trace.
     pub fn spans_mut(&mut self) -> &mut Vec<Span> {
         &mut self.spans
+    }
+
+    /// Returns the resource associated with this trace.
+    pub fn resource(&self) -> &OtlpResource {
+        &self.resource
     }
 }
 
