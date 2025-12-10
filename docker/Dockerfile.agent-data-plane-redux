@@ -1,0 +1,40 @@
+ARG APP_IMAGE=ubuntu:24.04
+
+# Calculate the necessary licenses that we need to include in the final image.
+FROM alpine:3.20 AS license-builder
+
+RUN apk update && apk add --no-cache curl
+
+# Pull down the latest SPDX licenses archive.
+RUN curl -s -L -o /tmp/spdx-license-list-data-3.25.0.tar.gz https://github.com/spdx/license-list-data/archive/refs/tags/v3.25.0.tar.gz && \
+    tar -C /tmp -xzf /tmp/spdx-license-list-data-3.25.0.tar.gz && \
+    mv /tmp/license-list-data-3.25.0 /tmp/spdx-licenses
+
+# Pull in our LICENSE-3rdparty.csv file and analyze it to figure out which licenses we need a copy of.
+COPY LICENSE-3rdparty.csv /tmp/LICENSE-3rdparty.csv
+RUN mkdir /licenses
+RUN tail -n +2 /tmp/LICENSE-3rdparty.csv | awk -F ',' '{print $3}' | awk -F' ' '{for(i=1;i<=NF;i++) print $i}' | \
+    grep -v -E "(OR|AND|WITH|Custom|LLVM-exception)" | sed s/[\(\)]// | sort | uniq | \
+    xargs -I {} cp /tmp/spdx-licenses/text/{}.txt /licenses/THIRD-PARTY-{}
+
+# Now stick our resulting binary and licenses in a clean image.
+FROM ${APP_IMAGE}
+
+# Only install ca-certificates if the directory doesn't exist.
+#
+# We do this because we don't want to set the user to `root` in the application image, but we need `root` to use
+# `apt-get`... so if we're building in CI where CA certificates are already present, and the base image doesn't use the
+# `root` user, we skip this step.
+#
+# For local builds, the regular Ubuntu application image needs to have the CA certificates installed, but it also uses
+# the `root` user, so we can install them without issue.
+USER root
+RUN test -d /usr/share/ca-certificates || (apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates=20240203 && \
+    apt-get clean && rm -rf /var/lib/apt/lists)
+COPY .build/agent-data-plane /usr/local/bin/agent-data-plane
+COPY NOTICE LICENSE LICENSE-3rdparty.csv /opt/datadog/agent-data-plane/
+COPY --from=license-builder /licenses /opt/datadog/agent-data-plane/LICENSES
+COPY --chmod=755 docker/entrypoint.sh /entrypoint.sh
+
+ENTRYPOINT [ "/usr/local/bin/agent-data-plane" ]

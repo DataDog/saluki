@@ -104,6 +104,9 @@ default:
     BUILD_FEATURES: "default"
     BUILDER_BASE: "builder"
     FIPS_ENABLED: "false"
+    KUBERNETES_CPU_REQUEST: "24"
+    KUBERNETES_MEMORY_REQUEST: "48Gi"
+    KUBERNETES_MEMORY_LIMIT: "64Gi"
 
 .linux-test-job:
   image: "${SALUKI_BUILD_CI_IMAGE}"

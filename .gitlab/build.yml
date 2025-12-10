@@ -1,44 +1,22 @@
 .build-adp-definition:
   stage: build
-  image: ${DOCKER_BUILD_IMAGE}
+  image: ${SALUKI_BUILD_IMAGE}
   needs:
     - calculate-build-metadata
   retry: 2
   timeout: 15m
   variables:
-    APP_BUILD_TIME: ${CI_PIPELINE_CREATED_AT}
     DDCI_CONFIGURE_OTEL_EXPORTER: true
+    BUILD_FEATURES: "default"
+    FIPS_ENABLED: "false"
   script:
-    - docker buildx create --name adp-builder --driver docker-container --use
-    - 'echo "Building ADP image... (arch: ${ARCH_TAG}, image version: ${ADP_IMAGE_VERSION}, build concurrency: ${CARGO_BUILD_JOBS}, profile: ${BUILD_PROFILE})..."'
-    - docker buildx build
-      --file ./docker/Dockerfile.agent-data-plane
-      --output push-by-digest=true,type=image,push=true
-      --metadata-file ./build-metadata.${ARCH_TAG}
-      --tag ${ADP_IMAGE_REPO_BASE}
-      --build-arg BUILD_IMAGE=${ALPINE_BUILD_IMAGE}
-      --build-arg APP_IMAGE=${APP_IMAGE}
-      --build-arg BUILD_PROFILE=${BUILD_PROFILE}
-      --build-arg BUILD_FEATURES=${BUILD_FEATURES}
-      --build-arg BUILDER_BASE=${BUILDER_BASE}
-      --build-arg APP_FULL_NAME="${APP_FULL_NAME}"
-      --build-arg APP_SHORT_NAME=${APP_SHORT_NAME}
-      --build-arg APP_IDENTIFIER=${APP_IDENTIFIER}
-      --build-arg APP_VERSION=${APP_VERSION}
-      --build-arg APP_GIT_HASH=${APP_GIT_HASH}
-      --build-arg APP_BUILD_TIME=${APP_BUILD_TIME}
-      --build-arg APP_DEV_BUILD=${APP_DEV_BUILD}
-      --label "org.opencontainers.image.authors=Datadog <package@datadoghq.com>"
-      --label "org.opencontainers.image.base.name=${APP_IMAGE}"
-      --label "org.opencontainers.image.created=${CI_PIPELINE_CREATED_AT}"
-      --label "org.opencontainers.image.ref.name=agent-data-plane"
-      --label "org.opencontainers.image.revision=${CI_COMMIT_SHA}"
-      --label "org.opencontainers.image.source=https://github.com/DataDog/saluki"
-      --label "org.opencontainers.image.title=Agent Data Plane"
-      --label "org.opencontainers.image.vendor=Datadog, Inc."
-      --label "org.opencontainers.image.version=${ADP_IMAGE_VERSION}"
-      --push
-      .
+    - ADP_BUILD_PROFILE=${BUILD_PROFILE}
+      ADP_BUILD_FEATURES=${BUILD_FEATURES}
+      ADP_IMAGE_OUTPUT="push-by-digest=true,type=image,push=true"
+      ADP_APP_IMAGE=${APP_IMAGE}
+      ADP_APP_VERSION=${ADP_IMAGE_VERSION}
+      ADP_APP_BUILD_TIME=${CI_PIPELINE_CREATED_AT}
+      make build-adp-image
   artifacts:
     paths:
       - build-metadata.*
@@ -66,16 +44,14 @@ calculate-build-metadata:
 
 build-adp-image-amd64:
   extends: [.build-common-variables, .build-adp-definition]
-  tags: ["docker-in-docker:amd64"]
+  tags: ["arch:amd64"]
   variables:
-    ARCH_TAG: amd64
     APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
 
 build-adp-image-arm64:
   extends: [.build-common-variables, .build-adp-definition]
-  tags: ["docker-in-docker:arm64"]
+  tags: ["arch:arm64"]
   variables:
-    ARCH_TAG: arm64
     APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
 
 build-adp-image:
@@ -88,18 +64,16 @@ build-adp-image:
 
 build-adp-image-fips-amd64:
   extends: [.build-common-variables, .build-adp-definition]
-  tags: ["docker-in-docker:amd64"]
+  tags: ["arch:amd64"]
   variables:
-    ARCH_TAG: amd64
     APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
     BUILD_FEATURES: "fips"
     FIPS_ENABLED: "true"
 
 build-adp-image-fips-arm64:
   extends: [.build-common-variables, .build-adp-definition]
-  tags: ["docker-in-docker:arm64"]
+  tags: ["arch:arm64"]
   variables:
-    ARCH_TAG: arm64
     APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
     BUILD_FEATURES: "fips"
     FIPS_ENABLED: "true"
@@ -115,7 +89,7 @@ build-adp-image-fips:
 # Internal-specific build variants that use a GBI-compliant base image.
 build-adp-image-internal-amd64:
   extends: [.build-common-variables, .build-adp-definition]
-  tags: ["docker-in-docker:amd64"]
+  tags: ["arch:amd64"]
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
@@ -126,7 +100,7 @@ build-adp-image-internal-amd64:
 
 build-adp-image-internal-arm64:
   extends: [.build-common-variables, .build-adp-definition]
-  tags: ["docker-in-docker:arm64"]
+  tags: ["arch:arm64"]
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
@@ -149,7 +123,7 @@ build-adp-image-internal:
 
 build-adp-image-fips-internal-amd64:
   extends: [.build-common-variables, .build-adp-definition]
-  tags: ["docker-in-docker:amd64"]
+  tags: ["arch:amd64"]
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
@@ -162,7 +136,7 @@ build-adp-image-fips-internal-amd64:
 
 build-adp-image-fips-internal-arm64:
   extends: [.build-common-variables, .build-adp-definition]
-  tags: ["docker-in-docker:arm64"]
+  tags: ["arch:arm64"]
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never

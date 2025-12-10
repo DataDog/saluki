@@ -1,5 +1,7 @@
 # Build image
 
-Build image used for running tests, linting, etc, as well as building Agent Data Plane.
+Alpine-based image used for building Agent Data Plane.
 
-Pre-installs Rust and common helper tools to speed up CI jobs.
+Includes Rust, build toolchain-related packages, as well as common helper tools used in things like linting and testing.
+Primarily used for providing a consistent environment for building Agent Data Plane in a statically linked fashion,
+however.

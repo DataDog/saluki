@@ -1,4 +1,5 @@
 target/
+.build/
 .vscode/
 tooling/bin/
 test/k8s/charts/

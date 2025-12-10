@@ -6,14 +6,15 @@
   - export SMP_TEAM_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-team-id --with-decryption --query "Parameter.Value" --out text)
   - export SINGLE_MACHINE_PERFORMANCE_API=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-api --with-decryption --query "Parameter.Value" --out text)
   - export SMP_ECR_HOST="${SMP_ACCOUNT_ID}.dkr.ecr.us-west-2.amazonaws.com"
-  - export ADP_IMG_BASE="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-${CI_PIPELINE_ID}"
-  - export ADP_CHECKS_IMG_BASE="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-checks-${CI_PIPELINE_ID}"
+  - export SMP_SALUKI_IMAGE_BASE="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki"
+  - export SMP_ADP_IMAGE_TAG="adp-${CI_PIPELINE_ID}"
+  - export SMP_ADP_IMAGE_BASE="${SMP_SALUKI_IMAGE_BASE}:${SMP_ADP_IMAGE_TAG}"
   - git fetch --verbose --deepen=999 origin ${CI_COMMIT_BRANCH} main
 
 build-adp-baseline-image:
   extends: .build-common-variables
   stage: benchmark
-  tags: ["docker-in-docker:amd64"]
+  tags: ["arch:amd64"]
   # Don't run benchmarks unless it's a PR, basically.
   rules:
     - if: !reference [.on_mq_branch, rules, if]
@@ -25,9 +26,6 @@ build-adp-baseline-image:
   timeout: 15m
   before_script:
     - *setup-smp-env
-  variables:
-    # Try to limit build concurrency to avoid issues with hitting container cgroup limits.
-    CARGO_BUILD_JOBS: 12
   script:
     # Initialize our AWS credentials.
     - ./test/smp/configure-smp-aws-credentials.sh
@@ -36,26 +34,17 @@ build-adp-baseline-image:
     # We use the merge base of the current branch, relative to `main`. This means that for stacked PRs, we won't be
     # benchmarking against the mid-stack PR, but that's an acceptable tradeoff for the moment.
     - export BASELINE_ADP_SHA=$(git merge-base origin/main origin/${CI_COMMIT_BRANCH})
-    - export BASELINE_ADP_IMG="${ADP_IMG_BASE}-${BASELINE_ADP_SHA}"
+    - export BASELINE_ADP_IMG="${SMP_ADP_IMAGE_BASE}-${BASELINE_ADP_SHA}"
     - git switch --detach ${BASELINE_ADP_SHA}
-    # Actually build.
+    # Actually build and push our image to the SMP ECR.
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
-    - docker buildx create --name adp-builder --driver docker-container --use
-    - docker buildx build
-      --file ./docker/Dockerfile.agent-data-plane
-      --tag ${BASELINE_ADP_IMG}
-      --build-arg CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
-      --build-arg BUILD_PROFILE=${BUILD_PROFILE}
-      --build-arg BUILD_IMAGE=${ALPINE_BUILD_IMAGE}
-      --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
-      --build-arg APP_GIT_HASH=${BASELINE_ADP_SHA}
-      --label git.repository=${CI_PROJECT_NAME}
-      --label git.branch=${CI_COMMIT_REF_NAME}
-      --label git.commit=${CI_COMMIT_SHA}
-      --label ci.pipeline_id=${CI_PIPELINE_ID}
-      --label ci.job_id=${CI_JOB_ID}
-      --push
-      .
+    - ADP_BUILD_PROFILE=optimized-release
+      ADP_IMAGE_OUTPUT="type=registry"
+      ADP_IMAGE_BASE=${SMP_ADP_IMAGE_BASE}
+      ADP_IMAGE_TAG=${SMP_ADP_IMAGE_TAG}
+      ADP_IMAGE_TAG_SUFFIX="-${BASELINE_ADP_SHA}"
+      ADP_APP_IMAGE=${APP_IMAGE}
+      make build-adp-image
     # Generate our image SHA/path for the runner job to use.
     - echo "BASELINE_ADP_SHA=${BASELINE_ADP_SHA}" >> smp-vars.env
     - echo "BASELINE_ADP_IMG=${BASELINE_ADP_IMG}" >> smp-vars.env
@@ -66,7 +55,7 @@ build-adp-baseline-image:
 build-adp-comparison-image:
   extends: .build-common-variables
   stage: benchmark
-  tags: ["docker-in-docker:amd64"]
+  tags: ["arch:amd64"]
   # Don't run benchmarks unless it's a PR, basically.
   rules:
     - if: !reference [.on_mq_branch, rules, if]
@@ -78,9 +67,6 @@ build-adp-comparison-image:
   timeout: 15m
   before_script:
     - *setup-smp-env
-  variables:
-    # Try to limit build concurrency to avoid issues with hitting container cgroup limits.
-    CARGO_BUILD_JOBS: 12
   script:
     # Initialize our AWS credentials.
     - ./test/smp/configure-smp-aws-credentials.sh
@@ -88,24 +74,15 @@ build-adp-comparison-image:
     - export COMPARISON_ADP_SHA=${CI_COMMIT_SHA}
     - export COMPARISON_ADP_IMG="${ADP_IMG_BASE}-${COMPARISON_ADP_SHA}"
     - git switch --detach ${COMPARISON_ADP_SHA}
-    # Actually build.
+    # Actually build and push our image to the SMP ECR.
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
-    - docker buildx create --name adp-builder --driver docker-container --use
-    - docker buildx build
-      --file ./docker/Dockerfile.agent-data-plane
-      --tag ${COMPARISON_ADP_IMG}
-      --build-arg CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
-      --build-arg BUILD_PROFILE=${BUILD_PROFILE}
-      --build-arg BUILD_IMAGE=${ALPINE_BUILD_IMAGE}
-      --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
-      --build-arg APP_GIT_HASH=${COMPARISON_ADP_SHA}
-      --label git.repository=${CI_PROJECT_NAME}
-      --label git.branch=${CI_COMMIT_REF_NAME}
-      --label git.commit=${CI_COMMIT_SHA}
-      --label ci.pipeline_id=${CI_PIPELINE_ID}
-      --label ci.job_id=${CI_JOB_ID}
-      --push
-      .
+    - ADP_BUILD_PROFILE=optimized-release
+      ADP_IMAGE_OUTPUT="type=registry"
+      ADP_IMAGE_BASE=${SMP_ADP_IMAGE_BASE}
+      ADP_IMAGE_TAG=${SMP_ADP_IMAGE_TAG}
+      ADP_IMAGE_TAG_SUFFIX="-${COMPARISON_ADP_SHA}"
+      ADP_APP_IMAGE=${APP_IMAGE}
+      make build-adp-image
     # Generate our image SHA/path for the runner job to use.
     - echo "COMPARISON_ADP_SHA=${COMPARISON_ADP_SHA}" >> smp-vars.env
     - echo "COMPARISON_ADP_IMG=${COMPARISON_ADP_IMG}" >> smp-vars.env
@@ -170,7 +147,7 @@ run-benchmarks-adp:
 
 binary-size-analysis:
   stage: benchmark
-  tags: ["docker-in-docker:amd64"]
+  tags: ["arch:amd64"]
   # Don't run binary size analysis unless it's a PR, basically.
   rules:
     - if: !reference [.on_mq_branch, rules, if]
@@ -197,20 +174,14 @@ binary-size-analysis:
 
     # Extract binaries from the container images.
     - mkdir -p binaries
-    - docker pull ${BASELINE_ADP_IMG}
-    - docker create --name baseline-container ${BASELINE_ADP_IMG}
-    - docker cp baseline-container:/usr/local/bin/agent-data-plane binaries/baseline-adp
-    - docker rm baseline-container
-    - docker pull ${COMPARISON_ADP_IMG}
-    - docker create --name comparison-container ${COMPARISON_ADP_IMG}
-    - docker cp comparison-container:/usr/local/bin/agent-data-plane binaries/comparison-adp
-    - docker rm comparison-container
+    - crane export ${BASELINE_ADP_IMG} - | tar -Oxf - usr/local/bin/agent-data-plane > binaries/adp-baseline
+    - crane export ${COMPARISON_ADP_IMG} - | tar -Oxf - usr/local/bin/agent-data-plane > binaries/adp-comparison
 
     # Run the analysis script to generate bloaty output, markdown report, and check threshold.
     # The script exits with code 1 if size increased by more than 5%.
     - python3 ./test/one-off/analyze-binary-size.py
-      --baseline-binary binaries/baseline-adp
-      --comparison-binary binaries/comparison-adp
+      --baseline-binary binaries/adp-baseline
+      --comparison-binary binaries/adp-comparison
       --baseline-sha ${BASELINE_ADP_SHA}
       --comparison-sha ${COMPARISON_ADP_SHA}
       --bloaty-path /usr/local/bin/bloaty

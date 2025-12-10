@@ -4,43 +4,39 @@
 mkfile_path := $(abspath $(lastword $(MAKEFILE_LIST)))
 mkfile_dir := $(dir $(mkfile_path))
 
+# High-level settings that ultimately get passed down to build-specific targets and other spots.
 export TARGET_ARCH ?= $(shell uname -m | sed s/x86_64/amd64/ | sed s/aarch64/arm64/)
 export TARGET_TRIPLE ?= $(shell command -v rustc 1>/dev/null && rustc -vV | sed -n 's|host: ||p')
-
-# High-level settings that ultimately get passed down to build-specific targets.
-export APP_FULL_NAME ?= Agent Data Plane
-export APP_SHORT_NAME ?= data-plane
-export APP_IDENTIFIER ?= adp
 export APP_GIT_HASH ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git)
-export APP_VERSION ?= $(shell cat bin/agent-data-plane/Cargo.toml | grep -E "^version = \"" | head -n 1 | cut -d '"' -f 2)
+export APP_BUILD_TIME := $(or $(CI_PIPELINE_CREATED_AT),"0000-00-00T00:00:00-00:00")
 
-# Override autoinstalling of tools. (Eg `cargo install`)
+# ADP-specific settings used during builds.
+export ADP_APP_IMAGE ?= ubuntu:24.04
+export ADP_IMAGE_OUTPUT ?= type=docker
+export ADP_IMAGE_BASE ?= local.dev/saluki-images/agent-data-plane
+export ADP_IMAGE_TAG ?= testing
+export ADP_IMAGE_TAG_SUFFIX ?= ""
+export ADP_BUILD_FEATURES ?= default
+export ADP_BUILD_PROFILE ?= release
+export ADP_APP_FULL_NAME ?= Agent Data Plane
+export ADP_APP_SHORT_NAME ?= data-plane
+export ADP_APP_IDENTIFIER ?= adp
+export ADP_APP_VERSION ?= $(shell cat bin/agent-data-plane/Cargo.toml | grep -E "^version = \"" | head -n 1 | cut -d '"' -f 2)
+export ADP_APP_GIT_HASH	?= $(APP_GIT_HASH)
+export ADP_APP_BUILD_TIME ?= $(APP_BUILD_TIME)
+
+# General build settings used for tooling, etc.
+export GO_BUILD_IMAGE ?= golang:1.23-bullseye
+export GO_APP_IMAGE ?= ubuntu:24.04
+
+# Tool configuration.
 export AUTOINSTALL ?= true
+export CARGO_BIN_DIR ?= $(shell echo "${HOME}/.cargo/bin")
 export CARGO_BINSTALL_STRATEGIES ?= crate-meta-data,compile
 ifeq ($(CI),true)
 	override CARGO_BINSTALL_STRATEGIES = compile
 endif
-# Override the container tool. Tries docker first and then tries podman.
-export CONTAINER_TOOL ?= auto
-ifeq ($(CONTAINER_TOOL),auto)
-	ifeq ($(shell docker version >/dev/null 2>&1 && echo docker), docker)
-		override CONTAINER_TOOL = docker
-	else ifeq ($(shell podman version >/dev/null 2>&1 && echo podman), podman)
-		override CONTAINER_TOOL = podman
-	else
-		override CONTAINER_TOOL = unknown
-	endif
-endif
 
-# Basic settings for base build images. These are varied between local development and CI.
-export RUST_VERSION ?= $(shell grep channel rust-toolchain.toml | cut -d '"' -f 2)
-
-export GO_BUILD_IMAGE ?= golang:1.23-bullseye
-export GO_APP_IMAGE ?= ubuntu:24.04
-export CARGO_BIN_DIR ?= $(shell echo "${HOME}/.cargo/bin")
-export GIT_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git)
-
-# Specific versions of various tools we use.
 export CARGO_TOOL_VERSION_cargo-binstall ?= 1.16.2
 export CARGO_TOOL_VERSION_dd-rust-license-tool ?= 1.0.3
 export CARGO_TOOL_VERSION_cargo-deny ?= 0.18.3
@@ -103,65 +99,40 @@ build-adp-release: ## Builds the ADP binary in release mode
 	@echo "[*] Building ADP locally..."
 	@cargo build --profile release --package agent-data-plane
 
-.PHONY: build-adp-and-checks
-build-adp-and-checks: check-rust-build-tools
-build-adp-and-checks: ## Builds the ADP binary with python in debug mode
-	@echo "[*] Building ADP with Checks locally..."
-	@cargo build --profile dev --package agent-data-plane --features python-checks
-
-.PHONY: build-adp-and-checks-release
-build-adp-and-checks-release: check-rust-build-tools
-build-adp-and-checks-release: ## Builds the ADP binary with python in release mode
-	@echo "[*] Building ADP with Checks locally..."
-	@cargo build --profile release --package agent-data-plane --features python-checks
+.PHONY: build-adp-image-base
+build-adp-image-base:
+	@echo "[*] Building ADP image (profile: ${ADP_BUILD_PROFILE}, features: ${ADP_BUILD_FEATURES})"
+	@cargo build --profile ${ADP_BUILD_PROFILE} --features ${ADP_BUILD_FEATURES} --package agent-data-plane
+	@mkdir .build
+	@cp target/${ADP_BUILD_PROFILE}/agent-data-plane .build/agent-data-plane
+	@docker buildx build \
+		--file ./docker/Dockerfile.agent-data-plane-redux \
+		--output ${ADP_IMAGE_OUTPUT} \
+		--metadata-file ./build-metadata.${TARGET_ARCH} \
+		--tag ${ADP_IMAGE_BASE}:${ADP_IMAGE_TAG}${ADP_IMAGE_TAG_SUFFIX} \
+		--build-arg APP_IMAGE=${ADP_APP_IMAGE} \
+		--label "org.opencontainers.image.authors=Datadog <package@datadoghq.com>" \
+		--label "org.opencontainers.image.base.name=${ADP_APP_IMAGE}" \
+		--label "org.opencontainers.image.created=${ADP_APP_BUILD_TIME}" \
+		--label "org.opencontainers.image.ref.name=agent-data-plane" \
+		--label "org.opencontainers.image.revision=${ADP_APP_GIT_HASH}" \
+		--label "org.opencontainers.image.source=https://github.com/DataDog/saluki" \
+		--label "org.opencontainers.image.title=${ADP_APP_FULL_NAME}" \
+		--label "org.opencontainers.image.vendor=Datadog, Inc." \
+		--label "org.opencontainers.image.version=${ADP_APP_VERSION}" \
+		.
+	@rm -rf .build
+	@echo "Built image successfully: ${ADP_IMAGE_BASE}:${ADP_IMAGE_TAG}${ADP_IMAGE_TAG_SUFFIX}"
 
 .PHONY: build-adp-image
-build-adp-image: ## Builds the ADP container image in release mode ('latest' tag)
-	@echo "[*] Building ADP image..."
-	@$(CONTAINER_TOOL) build \
-		--tag saluki-images/agent-data-plane:latest \
-		--tag local.dev/saluki-images/agent-data-plane:testing \
-		--build-arg "RUST_VERSION=$(RUST_VERSION)" \
-		--build-arg "APP_FULL_NAME=$(APP_FULL_NAME)" \
-		--build-arg "APP_SHORT_NAME=$(APP_SHORT_NAME)" \
-		--build-arg "APP_IDENTIFIER=$(APP_IDENTIFIER)" \
-		--build-arg "APP_VERSION=$(APP_VERSION)" \
-		--build-arg "APP_GIT_HASH=$(APP_GIT_HASH)" \
-		--file ./docker/Dockerfile.agent-data-plane \
-		.
+build-adp-image: build-adp-image-base
+build-adp-image: ## Builds the ADP container image
 
 .PHONY: build-adp-image-fips
-build-adp-image-fips: ## Builds the ADP container image in release mode ('latest' tag, FIPS enabled)
-	@echo "[*] Building ADP image..."
-	@$(CONTAINER_TOOL) build \
-		--tag saluki-images/agent-data-plane:latest-fips \
-		--tag local.dev/saluki-images/agent-data-plane:testing-fips \
-		--build-arg "RUST_VERSION=$(RUST_VERSION)" \
-		--build-arg "APP_FULL_NAME=$(APP_FULL_NAME)" \
-		--build-arg "APP_SHORT_NAME=$(APP_SHORT_NAME)" \
-		--build-arg "APP_IDENTIFIER=$(APP_IDENTIFIER)" \
-		--build-arg "APP_VERSION=$(APP_VERSION)" \
-		--build-arg "APP_GIT_HASH=$(APP_GIT_HASH)" \
-		--build-arg "BUILD_FEATURES=fips" \
-		--file ./docker/Dockerfile.agent-data-plane \
-		.
-
-.PHONY: build-adp-checks-image
-build-adp-checks-image: ## Builds the ADP + Checks container image in release mode ('latest' tag)
-	@echo "[*] Building ADP image..."
-	@$(CONTAINER_TOOL) build \
-		--tag saluki-images/agent-data-plane:latest \
-		--tag local.dev/saluki-images/agent-data-plane-checks:testing \
-		--build-arg "RUST_VERSION=$(RUST_VERSION)" \
-		--build-arg "APP_FULL_NAME=$(APP_FULL_NAME)" \
-		--build-arg "APP_SHORT_NAME=$(APP_SHORT_NAME)" \
-		--build-arg "APP_IDENTIFIER=$(APP_IDENTIFIER)" \
-		--build-arg "APP_VERSION=$(APP_VERSION)" \
-		--build-arg "APP_GIT_HASH=$(APP_GIT_HASH)" \
-		--build-arg "BUILD_FEATURES=python-checks" \
-		--build-arg "BUILDER_BASE=builder-python" \
-		--file ./docker/Dockerfile.agent-data-plane \
-		.
+build-adp-image-fips: override ADP_BUILD_FEATURES = fips
+build-adp-image-fips: override ADP_IMAGE_TAG_SUFFIX = "-fips"
+build-adp-image-fips: build-adp-image-base
+build-adp-image: ## Builds the ADP container image (FIPS enabled)
 
 .PHONY: build-datadog-agent-image
 build-datadog-agent-image: build-adp-image ## Builds a converged Datadog Agent container image containing ADP ('latest' tag)
@@ -610,15 +581,14 @@ fast-edit-test: ## Runs a lightweight format/lint/test pass
 
 ##@ CI
 
-.PHONY: emit-build-metadata
-emit-build-metadata: override APP_BUILD_TIME = $(shell date -u +'%Y-%m-%dT%H:%M:%SZ')
-emit-build-metadata: ## Emits build metadata shell variables suitable for use during image builds
-	@echo "APP_FULL_NAME=${APP_FULL_NAME}"
-	@echo "APP_SHORT_NAME=${APP_SHORT_NAME}"
-	@echo "APP_IDENTIFIER=${APP_IDENTIFIER}"
-	@echo "APP_GIT_HASH=${APP_GIT_HASH}"
-	@echo "APP_VERSION=${APP_VERSION}"
-	@echo "APP_BUILD_TIME=${APP_BUILD_TIME}"
+.PHONY: emit-adp-build-metadata
+emit-adp-build-metadata: ## Emits ADP build metadata shell variables suitable for use during image builds
+	@echo "APP_FULL_NAME=${ADP_APP_FULL_NAME}"
+	@echo "APP_SHORT_NAME=${ADP_APP_SHORT_NAME}"
+	@echo "APP_IDENTIFIER=${ADP_APP_IDENTIFIER}"
+	@echo "APP_GIT_HASH=${ADP_APP_GIT_HASH}"
+	@echo "APP_VERSION=${ADP_APP_VERSION}"
+	@echo "APP_BUILD_TIME=${ADP_APP_BUILD_TIME}"
 
 ##@ Docs
 
