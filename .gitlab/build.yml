@@ -1,8 +1,6 @@
 .build-adp-definition:
   stage: build
   image: ${SALUKI_BUILD_CI_IMAGE}
-  needs:
-    - calculate-build-metadata
   retry: 2
   timeout: 15m
   variables:
@@ -37,7 +35,7 @@ calculate-build-metadata:
   image: ${SALUKI_BUILD_CI_IMAGE}
   needs: []
   script:
-    - make emit-build-metadata >> build.env
+    - make emit-adp-build-metadata >> build.env
   artifacts:
     reports:
       dotenv: build.env
@@ -45,12 +43,16 @@ calculate-build-metadata:
 build-adp-image-amd64:
   extends: [.build-common-variables, .build-adp-definition]
   tags: ["arch:amd64"]
+  needs:
+    - calculate-build-metadata
   variables:
     APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
 
 build-adp-image-arm64:
   extends: [.build-common-variables, .build-adp-definition]
   tags: ["arch:arm64"]
+  needs:
+    - calculate-build-metadata
   variables:
     APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
 
@@ -65,6 +67,8 @@ build-adp-image:
 build-adp-image-fips-amd64:
   extends: [.build-common-variables, .build-adp-definition]
   tags: ["arch:amd64"]
+  needs:
+    - calculate-build-metadata
   variables:
     APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
     BUILD_FEATURES: "fips"
@@ -73,6 +77,8 @@ build-adp-image-fips-amd64:
 build-adp-image-fips-arm64:
   extends: [.build-common-variables, .build-adp-definition]
   tags: ["arch:arm64"]
+  needs:
+    - calculate-build-metadata
   variables:
     APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
     BUILD_FEATURES: "fips"
@@ -94,6 +100,8 @@ build-adp-image-internal-amd64:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - when: always
+      needs:
+        - calculate-build-metadata
   variables:
     ARCH_TAG: amd64
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
@@ -105,6 +113,8 @@ build-adp-image-internal-arm64:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - when: always
+      needs:
+        - calculate-build-metadata
   variables:
     ARCH_TAG: arm64
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
@@ -128,6 +138,8 @@ build-adp-image-fips-internal-amd64:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - when: always
+      needs:
+        - calculate-build-metadata
   variables:
     ARCH_TAG: amd64
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
@@ -141,6 +153,8 @@ build-adp-image-fips-internal-arm64:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - when: always
+      needs:
+        - calculate-build-metadata
   variables:
     ARCH_TAG: arm64
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
