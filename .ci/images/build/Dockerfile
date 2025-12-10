@@ -48,8 +48,10 @@ RUN rustup toolchain add nightly && \
     rustup component add clippy
 
 # Pre-install the relevant Cargo tools we use in the build process.
-COPY ./Makefile /
-RUN make cargo-preinstall
+WORKDIR /tmp
+COPY ./Makefile /tmp
+COPY ./bin/agent-data-plane/Cargo.toml /tmp/bin/agent-data-plane/Cargo.toml
+RUN CI=true make cargo-preinstall
 
 # Import Python bits from Agent image.
 # Do last in the pipeline to avoid polluting the builds of above protobuf/go etc from using these libs
