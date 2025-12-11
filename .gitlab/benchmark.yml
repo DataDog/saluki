@@ -46,7 +46,7 @@ build-adp-baseline-image:
       --tag ${BASELINE_ADP_IMG}
       --build-arg CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
-      --build-arg BUILD_IMAGE=${ALPINE_BUILD_IMAGE}
+      --build-arg BUILD_IMAGE=${GBI_BASE_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg APP_GIT_HASH=${BASELINE_ADP_SHA}
       --label git.repository=${CI_PROJECT_NAME}
@@ -96,7 +96,7 @@ build-adp-comparison-image:
       --tag ${COMPARISON_ADP_IMG}
       --build-arg CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
-      --build-arg BUILD_IMAGE=${ALPINE_BUILD_IMAGE}
+      --build-arg BUILD_IMAGE=${GBI_BASE_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg APP_GIT_HASH=${COMPARISON_ADP_SHA}
       --label git.repository=${CI_PROJECT_NAME}

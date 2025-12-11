@@ -1,15 +1,14 @@
-ARG BASE_IMAGE=alpine:3.20
+ARG BASE_IMAGE=ubuntu:24.04
 
 FROM ${BASE_IMAGE} AS builder
 
 ARG RUST_VERSION=stable
 
 # Install Rust and other build dependencies.
-#
-# no-dd-sa: We don't care about pinning package versions in the build stage.
-RUN apk update && \
-    apk add --no-cache rustup musl-dev linux-headers make cmake mold gcc libgcc perl go protobuf && \
-   rustup-init -y --default-toolchain ${RUST_VERSION}
+RUN apt-get update && \
+    apt-get install --no-install-recommends -y \
+    build-essential ca-certificates make cmake gcc g++ perl protobuf-compiler curl rustup
+RUN rustup default ${RUST_VERSION}
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Build datadog-intake.

@@ -35,7 +35,7 @@ build-datadog-intake-image:
       --platform linux/amd64
       --file ./docker/Dockerfile.datadog-intake
       --tag ${SALUKI_IMAGE_REPO_BASE}/datadog-intake:${CI_COMMIT_SHA}
-      --build-arg BASE_IMAGE=${ALPINE_BUILD_IMAGE}
+      --build-arg BASE_IMAGE=${GBI_BASE_IMAGE}
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
       --label git.commit=${CI_COMMIT_SHA}
@@ -55,7 +55,7 @@ build-millstone-image:
       --platform linux/amd64
       --file ./docker/Dockerfile.millstone
       --tag ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
-      --build-arg BASE_IMAGE=${ALPINE_BUILD_IMAGE}
+      --build-arg BASE_IMAGE=${GBI_BASE_IMAGE}
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
       --label git.commit=${CI_COMMIT_SHA}
