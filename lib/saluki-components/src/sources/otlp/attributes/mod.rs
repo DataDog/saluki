@@ -6,7 +6,8 @@ use opentelemetry_semantic_conventions::{resource::*, trace::*};
 use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common, any_value::Value};
 use saluki_common::collections::{FastHashMap, FastHashSet};
 use saluki_context::{origin::RawOrigin, tags::TagSet};
-use crate::common::otlp::util::{resource_to_source, extract_container_tags_from_resource_attributes};
+
+use crate::common::otlp::util::{extract_container_tags_from_resource_attributes, resource_to_source};
 
 pub mod source;
 pub mod translator;
@@ -263,20 +264,6 @@ fn try_get_int_from_value(value: Option<&otlp_common::any_value::Value>) -> Opti
     } else {
         None
     }
-}
-
-pub(super) fn get_string_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<&'a str> {
-    attributes.iter().find_map(|kv| {
-        if kv.key == key {
-            if let Some(Value::StringValue(s_val)) = kv.value.as_ref().and_then(|v| v.value.as_ref()) {
-                Some(s_val.as_str())
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    })
 }
 
 pub(super) fn get_int_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<&'a i64> {
