@@ -10,57 +10,18 @@ use saluki_common::collections::{FastHashMap, FastHashSet};
 use saluki_context::tags::TagSet;
 
 // ============================================================================
-// Datadog attribute key constants
+// Datadog attribute key constants shared across the encoder and translator 
 // ============================================================================
 
-pub const KEY_DATADOG_SERVICE: &str = "datadog.service";
-pub const KEY_DATADOG_NAME: &str = "datadog.name";
-pub const KEY_DATADOG_RESOURCE: &str = "datadog.resource";
-pub const KEY_DATADOG_SPAN_KIND: &str = "datadog.span.kind";
-pub const KEY_DATADOG_TYPE: &str = "datadog.type";
-pub const KEY_DATADOG_ERROR: &str = "datadog.error";
-pub const KEY_DATADOG_ERROR_MSG: &str = "datadog.error.msg";
-pub const KEY_DATADOG_ERROR_TYPE: &str = "datadog.error.type";
-pub const KEY_DATADOG_ERROR_STACK: &str = "datadog.error.stack";
 pub const KEY_DATADOG_VERSION: &str = "datadog.version";
-pub const KEY_DATADOG_HTTP_STATUS_CODE: &str = "datadog.http_status_code";
 pub const KEY_DATADOG_HOST: &str = "datadog.host";
 pub const KEY_DATADOG_ENVIRONMENT: &str = "datadog.env";
 pub const KEY_DATADOG_CONTAINER_ID: &str = "datadog.container_id";
 pub const KEY_DATADOG_CONTAINER_TAGS: &str = "datadog.container_tags";
 pub const DEPLOYMENT_ENVIRONMENT_KEY: &str = "deployment.environment";
 
-// ============================================================================
-// Sampling priority
-// ============================================================================
-
-/// Sampling priority
-///
-/// Reference code: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/sampler/sampler.go#L47
-#[repr(i8)]
-#[allow(unused)]
-#[allow(clippy::enum_variant_names)]
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum SamplingPriority {
-    /// PriorityNone is the value for SamplingPriority when no priority sampling decision could be found.
-    PriorityNone = i8::MIN,
-    /// PriorityUserDrop is the value set by a user to explicitly drop a trace.
-    PriorityUserDrop = -1,
-    /// PriorityAutoDrop is the value set by a tracer to suggest dropping a trace.
-    PriorityAutoDrop = 0,
-    /// PriorityAutoKeep is the value set by a tracer to suggest keeping a trace.
-    PriorityAutoKeep = 1,
-    /// PriorityUserKeep is the value set by a user to explicitly keep a trace.
-    PriorityUserKeep = 2,
-}
-
-// ============================================================================
-// Source metadata
-// ============================================================================
-
 /// The kind of source that produced telemetry data.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub enum SourceKind {
     /// Hostname-based source.
     HostnameKind,
@@ -84,7 +45,6 @@ impl Source {
     }
 }
 
-#[allow(dead_code)]
 impl SourceKind {
     fn as_str(&self) -> &'static str {
         match self {
@@ -93,10 +53,6 @@ impl SourceKind {
         }
     }
 }
-
-// ============================================================================
-// Container tag mappings
-// ============================================================================
 
 const CUSTOM_CONTAINER_TAG_PREFIX: &str = "datadog.container.tag.";
 

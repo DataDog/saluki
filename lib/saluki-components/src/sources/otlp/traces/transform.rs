@@ -4,7 +4,7 @@ use std::convert::TryFrom;
 
 use base64::{engine::general_purpose, Engine as _};
 use opentelemetry_semantic_conventions::resource::{
-    CONTAINER_ID, DEPLOYMENT_ENVIRONMENT_NAME, HOST_NAME, K8S_POD_UID, SERVICE_NAME, SERVICE_VERSION,
+    CONTAINER_ID, DEPLOYMENT_ENVIRONMENT_NAME, K8S_POD_UID, SERVICE_NAME, SERVICE_VERSION,
 };
 use otlp_protos::opentelemetry::proto::common::v1::{
     any_value::Value as OtlpValue, InstrumentationScope as OtlpInstrumentationScope, KeyValue,
@@ -20,13 +20,11 @@ use serde_json::{Map as JsonMap, Value as JsonValue};
 use stringtheory::MetaString;
 use tracing::error;
 
+use crate::common::otlp::util::get_string_attribute;
 use crate::common::otlp::util::{
-    DEPLOYMENT_ENVIRONMENT_KEY, KEY_DATADOG_CONTAINER_ID, KEY_DATADOG_ENVIRONMENT, KEY_DATADOG_ERROR,
-    KEY_DATADOG_ERROR_MSG, KEY_DATADOG_ERROR_STACK, KEY_DATADOG_ERROR_TYPE, KEY_DATADOG_HOST,
-    KEY_DATADOG_HTTP_STATUS_CODE, KEY_DATADOG_NAME, KEY_DATADOG_RESOURCE, KEY_DATADOG_SERVICE, KEY_DATADOG_SPAN_KIND,
-    KEY_DATADOG_TYPE, KEY_DATADOG_VERSION,
+    DEPLOYMENT_ENVIRONMENT_KEY, KEY_DATADOG_CONTAINER_ID, KEY_DATADOG_ENVIRONMENT, KEY_DATADOG_VERSION,
 };
-use crate::sources::otlp::attributes::{get_int_attribute, get_string_attribute, HTTP_MAPPINGS};
+use crate::sources::otlp::attributes::{get_int_attribute, HTTP_MAPPINGS};
 use crate::sources::otlp::traces::normalize::{normalize_service, normalize_tag_value};
 use crate::sources::otlp::traces::normalize::{truncate_utf8, MAX_RESOURCE_LEN};
 use crate::sources::otlp::traces::translator::{convert_span_id, convert_trace_id};
@@ -36,6 +34,18 @@ const EVENT_EXTRACTION_METRIC_KEY: &str = "_dd1.sr.eausr";
 const ANALYTICS_EVENT_KEY: &str = "analytics.event";
 const HTTP_REQUEST_HEADER_PREFIX: &str = "http.request.header.";
 const HTTP_REQUEST_HEADERS_PREFIX: &str = "http.request.headers.";
+
+// Datadog-specific attribute keys used only within this translator.
+const KEY_DATADOG_SERVICE: &str = "datadog.service";
+const KEY_DATADOG_NAME: &str = "datadog.name";
+const KEY_DATADOG_RESOURCE: &str = "datadog.resource";
+const KEY_DATADOG_SPAN_KIND: &str = "datadog.span.kind";
+const KEY_DATADOG_TYPE: &str = "datadog.type";
+const KEY_DATADOG_ERROR: &str = "datadog.error";
+const KEY_DATADOG_ERROR_MSG: &str = "datadog.error.msg";
+const KEY_DATADOG_ERROR_TYPE: &str = "datadog.error.type";
+const KEY_DATADOG_ERROR_STACK: &str = "datadog.error.stack";
+const KEY_DATADOG_HTTP_STATUS_CODE: &str = "datadog.http_status_code";
 
 const DEFAULT_SERVICE_NAME: &str = "otlpresourcenoservicename";
 const OPERATION_NAME_KEY: &str = "operation.name";
@@ -1008,36 +1018,6 @@ fn get_otel_env(
     MetaString::empty()
 }
 
-fn get_otel_hostname(
-    span_attributes: &[KeyValue], resource_attributes: &[KeyValue], fallback_host: &str, ignore_missing_fields: bool,
-) -> MetaString {
-    if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, KEY_DATADOG_HOST) {
-        return value;
-    }
-
-    if ignore_missing_fields {
-        return MetaString::empty();
-    }
-
-    if let Some(value) = use_both_maps(span_attributes, resource_attributes, false, DATADOG_HOSTNAME_ATTR) {
-        return value;
-    }
-
-    if let Some(value) = use_both_maps(span_attributes, resource_attributes, false, INTERNAL_DD_HOSTNAME_KEY) {
-        return value;
-    }
-
-    if let Some(value) = use_both_maps(span_attributes, resource_attributes, false, HOST_NAME) {
-        return value;
-    }
-
-    if fallback_host.is_empty() {
-        MetaString::empty()
-    } else {
-        MetaString::from(fallback_host)
-    }
-}
-
 // GetOTelVersion returns the version based on OTel span and resource attributes, with span taking precedence.
 fn get_otel_version(
     span_attributes: &[KeyValue], resource_attributes: &[KeyValue], ignore_missing_fields: bool,
@@ -1155,7 +1135,6 @@ mod tests {
     const SEMCONV_DEPLOYMENT_ENVIRONMENT: &str = "deployment.environment"; // semconv117
     const SEMCONV_SERVICE_VERSION: &str = "service.version";
     const SEMCONV_CONTAINER_ID: &str = "container.id";
-    const SEMCONV_HOST_NAME: &str = "host.name";
     const SEMCONV_HTTP_STATUS_CODE: &str = "http.status_code";
     const SEMCONV_HTTP_RESPONSE_STATUS_CODE: &str = "http.response.status_code";
     const SEMCONV_DB_NAMESPACE: &str = "db.namespace";
@@ -1278,78 +1257,6 @@ mod tests {
         let env_attr = kv_str("env", "prod");
         map_attribute_generic(&env_attr, &mut meta_ignore, &mut metrics_ignore, true);
         assert!(meta_ignore.is_empty());
-    }
-
-    /// TestGetOTelHostname - Tests GetOTelHostname function
-    #[test]
-    fn test_get_otel_hostname() {
-        struct TestCase {
-            name: &'static str,
-            span_attrs: Vec<KeyValue>,
-            resource_attrs: Vec<KeyValue>,
-            fallback_host: &'static str,
-            expected: &'static str,
-            ignore_missing_datadog_fields: bool,
-        }
-
-        let test_cases = vec![
-            TestCase {
-                name: "datadog.host.name",
-                span_attrs: vec![],
-                resource_attrs: vec![kv_str("datadog.host.name", "test-host")],
-                fallback_host: "",
-                expected: "test-host",
-                ignore_missing_datadog_fields: false,
-            },
-            TestCase {
-                name: "_dd.hostname",
-                span_attrs: vec![],
-                resource_attrs: vec![kv_str("_dd.hostname", "test-host")],
-                fallback_host: "",
-                expected: "test-host",
-                ignore_missing_datadog_fields: false,
-            },
-            TestCase {
-                name: "fallback hostname",
-                span_attrs: vec![],
-                resource_attrs: vec![],
-                fallback_host: "test-host",
-                expected: "test-host",
-                ignore_missing_datadog_fields: false,
-            },
-            TestCase {
-                name: "ignore missing datadog fields",
-                span_attrs: vec![],
-                resource_attrs: vec![kv_str(SEMCONV_HOST_NAME, "test-host")],
-                fallback_host: "",
-                expected: "",
-                ignore_missing_datadog_fields: true,
-            },
-            TestCase {
-                name: "read from datadog fields",
-                span_attrs: vec![
-                    kv_str(KEY_DATADOG_HOST, "test-host"),
-                    kv_str(SEMCONV_HOST_NAME, "test-host-semconv117"),
-                ],
-                resource_attrs: vec![
-                    kv_str(KEY_DATADOG_HOST, "test-host"),
-                    kv_str(SEMCONV_HOST_NAME, "test-host-semconv117"),
-                ],
-                fallback_host: "",
-                expected: "test-host",
-                ignore_missing_datadog_fields: false,
-            },
-        ];
-
-        for tc in test_cases {
-            let result = get_otel_hostname(
-                &tc.span_attrs,
-                &tc.resource_attrs,
-                tc.fallback_host,
-                tc.ignore_missing_datadog_fields,
-            );
-            assert_eq!(result.as_ref(), tc.expected, "test case: {}", tc.name);
-        }
     }
 
     /// TestGetOTelVersion - Tests GetOTelVersion function

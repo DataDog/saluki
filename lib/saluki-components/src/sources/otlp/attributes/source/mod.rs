@@ -1,31 +1,7 @@
 //! OTLP source representation.
+//!
+//! This module re-exports the shared OTLP source types defined in
+//! `common/otlp/util.rs` so callers that previously depended on this path can
+//! keep their imports unchanged.
 
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub enum SourceKind {
-    HostnameKind,
-    AwsEcsFargateKind,
-}
-
-#[derive(Debug, Clone)]
-pub struct Source {
-    pub kind: SourceKind,
-    pub identifier: String,
-}
-
-#[allow(dead_code)]
-impl Source {
-    pub fn tag(&self) -> String {
-        format!("{}:{}", self.kind.as_str(), self.identifier)
-    }
-}
-
-#[allow(dead_code)]
-impl SourceKind {
-    fn as_str(&self) -> &'static str {
-        match self {
-            SourceKind::HostnameKind => "host",
-            SourceKind::AwsEcsFargateKind => "task_arn",
-        }
-    }
-}
+pub use crate::common::otlp::util::{Source, SourceKind};
