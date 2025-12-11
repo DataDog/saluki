@@ -6,11 +6,10 @@ use opentelemetry_semantic_conventions::{resource::*, trace::*};
 use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common, any_value::Value};
 use saluki_common::collections::{FastHashMap, FastHashSet};
 use saluki_context::{origin::RawOrigin, tags::TagSet};
+use crate::common::otlp::util::{resource_to_source, extract_container_tags_from_resource_attributes};
 
 pub mod source;
 pub mod translator;
-
-const CUSTOM_CONTAINER_TAG_PREFIX: &str = "datadog.container.tag.";
 
 static CORE_MAPPING: LazyLock<FastHashMap<&'static str, &'static str>> = LazyLock::new(|| {
     let mut m = FastHashMap::default();
@@ -18,44 +17,6 @@ static CORE_MAPPING: LazyLock<FastHashMap<&'static str, &'static str>> = LazyLoc
     m.insert(DEPLOYMENT_ENVIRONMENT_NAME, "env");
     m.insert(SERVICE_NAME, "service");
     m.insert(SERVICE_VERSION, "version");
-    m
-});
-
-static CONTAINER_MAPPINGS: LazyLock<FastHashMap<&'static str, &'static str>> = LazyLock::new(|| {
-    let mut m = FastHashMap::default();
-    // Containers
-    m.insert(CONTAINER_ID, "container_id");
-    m.insert(CONTAINER_NAME, "container_name");
-    m.insert(CONTAINER_IMAGE_NAME, "image_name");
-    m.insert("container.image.tag", "image_tag"); // For older semconv versions
-    m.insert(CONTAINER_RUNTIME, "runtime");
-
-    // Cloud conventions
-    // https://www.datadoghq.com/blog/tagging-best-practices/
-    m.insert(CLOUD_PROVIDER, "cloud_provider");
-    m.insert(CLOUD_REGION, "region");
-    m.insert(CLOUD_AVAILABILITY_ZONE, "zone");
-
-    // ECS conventions
-    // https://github.com/DataDog/datadog-agent/blob/e081bed/pkg/tagger/collectors/ecs_extract.go
-    m.insert(AWS_ECS_TASK_FAMILY, "task_family");
-    m.insert(AWS_ECS_TASK_ARN, "task_arn");
-    m.insert(AWS_ECS_CLUSTER_ARN, "ecs_cluster_name");
-    m.insert(AWS_ECS_TASK_REVISION, "task_version");
-    m.insert(AWS_ECS_CONTAINER_ARN, "ecs_container_name");
-
-    // Kubernetes resource name (via semantic conventions)
-    // https://github.com/DataDog/datadog-agent/blob/e081bed/pkg/util/kubernetes/const.go
-    m.insert(K8S_CONTAINER_NAME, "kube_container_name");
-    m.insert(K8S_CLUSTER_NAME, "kube_cluster_name");
-    m.insert(K8S_DEPLOYMENT_NAME, "kube_deployment");
-    m.insert(K8S_REPLICASET_NAME, "kube_replica_set");
-    m.insert(K8S_STATEFULSET_NAME, "kube_stateful_set");
-    m.insert(K8S_DAEMONSET_NAME, "kube_daemon_set");
-    m.insert(K8S_JOB_NAME, "kube_job");
-    m.insert(K8S_CRONJOB_NAME, "kube_cronjob");
-    m.insert(K8S_NAMESPACE_NAME, "kube_namespace");
-    m.insert(K8S_POD_NAME, "pod_name");
     m
 });
 
@@ -175,36 +136,6 @@ pub(crate) static HTTP_MAPPINGS: LazyLock<FastHashMap<&'static str, &'static str
     m.insert(USER_AGENT_ORIGINAL, "http.useragent");
     m
 });
-
-pub(crate) fn extract_container_tags_from_resource_attributes(attributes: &[otlp_common::KeyValue], tags: &mut TagSet) {
-    let mut extracted_tags = FastHashSet::default();
-
-    for kv in attributes {
-        if let Some(Value::StringValue(s_val)) = kv.value.as_ref().and_then(|v| v.value.as_ref()) {
-            if s_val.is_empty() {
-                continue;
-            }
-
-            // Semantic Conventions
-            if let Some(datadog_key) = CONTAINER_MAPPINGS.get(kv.key.as_str()) {
-                tags.insert_tag(format!("{}:{}", datadog_key, s_val));
-                extracted_tags.insert(*datadog_key);
-            }
-
-            // Custom (datadog.container.tag namespace)
-            if kv.key.starts_with(CUSTOM_CONTAINER_TAG_PREFIX) {
-                if let Some(custom_key) = kv.key.get(CUSTOM_CONTAINER_TAG_PREFIX.len()..) {
-                    if !custom_key.is_empty() {
-                        // Do not replace if set via semantic conventions mappings.
-                        if !extracted_tags.insert(custom_key) {
-                            tags.insert_tag(format!("{}:{}", custom_key, s_val));
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
 
 pub(super) fn tags_from_attributes(attributes: &[otlp_common::KeyValue]) -> TagSet {
     let mut tags = TagSet::default();
@@ -360,37 +291,4 @@ pub(super) fn get_int_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key
             None
         }
     })
-}
-
-pub(super) fn resource_to_source(
-    resource: &otlp_protos::opentelemetry::proto::resource::v1::Resource,
-) -> Option<source::Source> {
-    let attributes = &resource.attributes;
-
-    // AWS ECS Fargate
-    if get_string_attribute(attributes, CLOUD_PROVIDER) == Some("aws")
-        && get_string_attribute(attributes, opentelemetry_semantic_conventions::resource::CLOUD_PLATFORM)
-            == Some("aws_ecs")
-        && get_string_attribute(
-            attributes,
-            opentelemetry_semantic_conventions::resource::AWS_ECS_LAUNCHTYPE,
-        ) == Some("fargate")
-    {
-        if let Some(task_arn) = get_string_attribute(attributes, AWS_ECS_TASK_ARN) {
-            return Some(source::Source {
-                kind: source::SourceKind::AwsEcsFargateKind,
-                identifier: task_arn.to_string(),
-            });
-        }
-    }
-
-    // Hostname from attributes
-    if let Some(host_name) = get_string_attribute(attributes, opentelemetry_semantic_conventions::resource::HOST_NAME) {
-        return Some(source::Source {
-            kind: source::SourceKind::HostnameKind,
-            identifier: host_name.to_string(),
-        });
-    }
-
-    None
 }
