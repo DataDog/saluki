@@ -33,7 +33,7 @@ RUN mkdir -p /usr/include/
 COPY ./tooling/copy-linux-headers.sh /copy-linux-headers.sh
 RUN chmod +x /copy-linux-headers.sh && /copy-linux-headers.sh
 
-# Build Agent Data plane.
+# Build Agent Data Plane.
 WORKDIR /adp
 COPY . /adp
 RUN mkdir -p /adp/target/bin && \
