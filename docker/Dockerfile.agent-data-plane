@@ -28,10 +28,9 @@ RUN apt-get update && \
     build-essential ca-certificates musl-dev musl-tools linux-headers-generic make cmake gcc g++ perl golang-go protobuf-compiler curl unzip rustup
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-# Copy the Linux headers, needed by AWS-LC in FIPS mode, to the target-specific include directory.
-RUN mkdir -p /usr/include/
-COPY ./tooling/copy-linux-headers.sh /copy-linux-headers.sh
-RUN chmod +x /copy-linux-headers.sh && /copy-linux-headers.sh
+# Copy over required build headers for AWS-LC.
+COPY ./tooling/copy-build-headers.sh /copy-build-headers.sh
+RUN chmod +x /copy-build-headers.sh && /copy-build-headers.sh
 
 # Build Agent Data Plane.
 #

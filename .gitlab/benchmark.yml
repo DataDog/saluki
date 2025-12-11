@@ -44,9 +44,9 @@ build-adp-baseline-image:
     - docker buildx build
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${BASELINE_ADP_IMG}
-      --build-arg CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
-      --build-arg BUILD_IMAGE=${GBI_BASE_IMAGE}
+      --build-arg BUILD_TARGET=x86_64-unknown-linux-musl
+      --build-arg BUILD_IMAGE=${ADP_PUBLIC_BASE_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg APP_GIT_HASH=${BASELINE_ADP_SHA}
       --label git.repository=${CI_PROJECT_NAME}
@@ -72,15 +72,12 @@ build-adp-comparison-image:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - if: !reference [.on_development_branch, rules, if]
-  image: "${SALUKI_BUILD_CI_IMAGE}"
+  image: "${DOCKER_BUILD_IMAGE}"
   needs: []
   retry: 2
   timeout: 15m
   before_script:
     - *setup-smp-env
-  variables:
-    # Try to limit build concurrency to avoid issues with hitting container cgroup limits.
-    CARGO_BUILD_JOBS: 12
   script:
     # Initialize our AWS credentials.
     - ./test/smp/configure-smp-aws-credentials.sh
@@ -94,9 +91,9 @@ build-adp-comparison-image:
     - docker buildx build
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${COMPARISON_ADP_IMG}
-      --build-arg CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
-      --build-arg BUILD_IMAGE=${GBI_BASE_IMAGE}
+      --build-arg BUILD_TARGET=x86_64-unknown-linux-musl
+      --build-arg BUILD_IMAGE=${ADP_PUBLIC_BASE_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg APP_GIT_HASH=${COMPARISON_ADP_SHA}
       --label git.repository=${CI_PROJECT_NAME}

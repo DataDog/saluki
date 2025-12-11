@@ -41,6 +41,7 @@ if ! [ -d /usr/include/linux ] || ! [ -d /usr/include/asm-generic ] || ! [ -d /u
 fi
 
 # Copy over the kernel headers to the build target-specific include directory.
+mkdir -p /usr/include/${GCC_CROSS_TARGET_TRIPLE}
 cp -R /usr/include/linux /usr/include/${GCC_CROSS_TARGET_TRIPLE}/linux
 cp -R /usr/include/asm-generic /usr/include/${GCC_CROSS_TARGET_TRIPLE}/asm-generic
 cp -R /usr/include/${GCC_TARGET_TRIPLE}/asm /usr/include/${GCC_CROSS_TARGET_TRIPLE}/asm
