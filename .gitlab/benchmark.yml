@@ -19,15 +19,12 @@ build-adp-baseline-image:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - if: !reference [.on_development_branch, rules, if]
-  image: "${SALUKI_BUILD_CI_IMAGE}"
+  image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
   timeout: 15m
   before_script:
     - *setup-smp-env
-  variables:
-    # Try to limit build concurrency to avoid issues with hitting container cgroup limits.
-    CARGO_BUILD_JOBS: 12
   script:
     # Initialize our AWS credentials.
     - ./test/smp/configure-smp-aws-credentials.sh
@@ -72,7 +69,7 @@ build-adp-comparison-image:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - if: !reference [.on_development_branch, rules, if]
-  image: "${DOCKER_BUILD_IMAGE}"
+  image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
   timeout: 15m
