@@ -1,19 +1,12 @@
-ARG DD_AGENT_VERSION=7.72.4-jmx
-ARG DD_AGENT_IMAGE=datadog/agent:${DD_AGENT_VERSION}
-
-ARG BUILD_IMAGE=alpine:3.20
+ARG BUILD_IMAGE=ubuntu:24.04
 ARG APP_IMAGE=ubuntu:24.04
-ARG BUILDER_BASE=builder
-
-# Build the agent image, which we need to copy the embedded Python from.
-FROM ${DD_AGENT_IMAGE} AS agent
 
 FROM ${BUILD_IMAGE} AS builder
 
 ARG RUST_VERSION=stable
 ARG BUILD_PROFILE=release
 ARG BUILD_FEATURES=default
-ARG CARGO_BUILD_JOBS=default
+ARG BUILD_TARGET=x86_64-unknown-linux-musl
 ARG APP_FULL_NAME=""
 ARG APP_SHORT_NAME=""
 ARG APP_IDENTIFIER=""
@@ -29,33 +22,34 @@ ENV APP_VERSION=${APP_VERSION}
 ENV APP_BUILD_TIME=${APP_BUILD_TIME}
 
 # Install Rust and other build dependencies.
-#
-# no-dd-sa: We don't care about pinning package versions in the build stage.
-RUN apk update && \
-    apk add --no-cache rustup musl-dev linux-headers make cmake mold gcc libgcc perl go protobuf && \
-   rustup-init -y --default-toolchain ${RUST_VERSION}
+RUN apt-get update && \
+    apt-get install --no-install-recommends -y \
+    build-essential ca-certificates musl-dev musl-tools linux-headers-generic make cmake mold gcc g++ perl golang-go protobuf-compiler curl unzip rustup
+RUN rustup default ${RUST_VERSION} && rustup target add ${BUILD_TARGET}
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-# If we're building with Python checks, we pull from the Datadog Agent image (builder-python) to grab
-# the same embedded Python version, and adjust our paths so that it gets used during compilation.
-FROM builder AS builder-python
-
-COPY --from=agent "/opt/datadog-agent/embedded" "/opt/datadog-agent/embedded"
-ENV LD_LIBRARY_PATH="/opt/datadog-agent/embedded/lib:${LD_LIBRARY_PATH}"
-ENV PATH="/opt/datadog-agent/embedded/bin:${PATH}"
+# Copy the Linux headers, needed by AWS-LC in FIPS mode, to the target-specific include directory.
+RUN mkdir -p /usr/include/
+COPY ./tooling/copy-linux-headers.sh /copy-linux-headers.sh
+RUN chmod +x /copy-linux-headers.sh && /copy-linux-headers.sh
 
 # Build Agent Data plane.
-FROM ${BUILDER_BASE} AS final
-
 WORKDIR /adp
 COPY . /adp
-RUN mkdir -p /adp/target/bin && RUSTFLAGS="--cfg tokio_unstable -C link-arg=-fuse-ld=mold" cargo build --profile ${BUILD_PROFILE} --package agent-data-plane --features ${BUILD_FEATURES} --target-dir /adp/target && \
-cp /adp/target/${BUILD_PROFILE}/agent-data-plane /adp/target/bin/
+RUN mkdir -p /adp/target/bin && \
+    RUSTFLAGS="--cfg tokio_unstable -C link-arg=-fuse-ld=mold" \
+    cargo build \
+    --profile ${BUILD_PROFILE} \
+    --package agent-data-plane \
+    --features ${BUILD_FEATURES} \
+    --target ${BUILD_TARGET} \
+    --target-dir /adp/target && \
+    cp /adp/target/${BUILD_TARGET}/${BUILD_PROFILE}/agent-data-plane /adp/target/bin/
 
 # Calculate the necessary licenses that we need to include in the final image.
 FROM ${BUILD_IMAGE} AS license-builder
 
-RUN apk update && apk add --no-cache curl
+RUN apt-get update && apt-get install -y curl
 
 # Pull down the latest SPDX licenses archive.
 RUN curl -s -L -o /tmp/spdx-license-list-data-3.25.0.tar.gz https://github.com/spdx/license-list-data/archive/refs/tags/v3.25.0.tar.gz && \
@@ -84,7 +78,7 @@ USER root
 RUN test -d /usr/share/ca-certificates || (apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates=20240203 && \
     apt-get clean && rm -rf /var/lib/apt/lists)
-COPY --from=final /adp/target/bin/agent-data-plane /usr/local/bin/agent-data-plane
+COPY --from=builder /adp/target/bin/agent-data-plane /usr/local/bin/agent-data-plane
 COPY NOTICE LICENSE LICENSE-3rdparty.csv /opt/datadog/agent-data-plane/
 COPY --from=license-builder /licenses /opt/datadog/agent-data-plane/LICENSES
 COPY --chmod=755 docker/entrypoint.sh /entrypoint.sh
