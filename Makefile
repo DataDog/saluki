@@ -5,9 +5,9 @@ mkfile_path := $(abspath $(lastword $(MAKEFILE_LIST)))
 mkfile_dir := $(dir $(mkfile_path))
 
 export TARGET_ARCH ?= $(shell uname -m | sed s/x86_64/amd64/ | sed s/aarch64/arm64/)
-export TARGET_TRIPLE ?= $(shell command -v rustc 1>/dev/null && rustc -vV | sed -n 's|host: ||p')
 
 # High-level settings that ultimately get passed down to build-specific targets.
+export BUILD_TARGET ?= $(shell command -v rustc 1>/dev/null && rustc -vV | sed -n 's|host: ||p')
 export APP_FULL_NAME ?= Agent Data Plane
 export APP_SHORT_NAME ?= data-plane
 export APP_IDENTIFIER ?= adp
@@ -121,6 +121,7 @@ build-adp-image: ## Builds the ADP container image in release mode ('latest' tag
 	@$(CONTAINER_TOOL) build \
 		--tag saluki-images/agent-data-plane:latest \
 		--tag local.dev/saluki-images/agent-data-plane:testing \
+		--build-arg "BUILD_TARGET=$(BUILD_TARGET)" \
 		--build-arg "RUST_VERSION=$(RUST_VERSION)" \
 		--build-arg "APP_FULL_NAME=$(APP_FULL_NAME)" \
 		--build-arg "APP_SHORT_NAME=$(APP_SHORT_NAME)" \
@@ -136,6 +137,7 @@ build-adp-image-fips: ## Builds the ADP container image in release mode ('latest
 	@$(CONTAINER_TOOL) build \
 		--tag saluki-images/agent-data-plane:latest-fips \
 		--tag local.dev/saluki-images/agent-data-plane:testing-fips \
+		--build-arg "BUILD_TARGET=$(BUILD_TARGET)" \
 		--build-arg "RUST_VERSION=$(RUST_VERSION)" \
 		--build-arg "APP_FULL_NAME=$(APP_FULL_NAME)" \
 		--build-arg "APP_SHORT_NAME=$(APP_SHORT_NAME)" \

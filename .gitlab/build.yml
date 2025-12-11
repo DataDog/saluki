@@ -14,13 +14,14 @@
     - docker buildx build
       --file ./docker/Dockerfile.agent-data-plane
       --output push-by-digest=true,type=image,push=true
-      --metadata-file ./build-metadata.${ARCH_TAG}
+      --metadata-file ./build-metadata.${BUILD_ARCH}
       --tag ${ADP_IMAGE_REPO_BASE}
       --build-arg BUILD_IMAGE=${APP_IMAGE}
       --build-arg APP_IMAGE=${APP_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg BUILD_FEATURES=${BUILD_FEATURES}
       --build-arg BUILDER_BASE=${BUILDER_BASE}
+      --build-arg BUILD_TARGET=${BUILD_TARGET}
       --build-arg APP_FULL_NAME="${APP_FULL_NAME}"
       --build-arg APP_SHORT_NAME=${APP_SHORT_NAME}
       --build-arg APP_IDENTIFIER=${APP_IDENTIFIER}
@@ -68,14 +69,16 @@ build-adp-image-amd64:
   extends: [.build-common-variables, .build-adp-definition]
   tags: ["docker-in-docker:amd64"]
   variables:
-    ARCH_TAG: amd64
+    BUILD_ARCH: amd64
+    BUILD_TARGET: x86_64-unknown-linux-musl
     APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
 
 build-adp-image-arm64:
   extends: [.build-common-variables, .build-adp-definition]
   tags: ["docker-in-docker:arm64"]
   variables:
-    ARCH_TAG: arm64
+    BUILD_ARCH: arm64
+    BUILD_TARGET: aarch64-unknown-linux-musl
     APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
 
 build-adp-image:
@@ -90,7 +93,8 @@ build-adp-image-fips-amd64:
   extends: [.build-common-variables, .build-adp-definition]
   tags: ["docker-in-docker:amd64"]
   variables:
-    ARCH_TAG: amd64
+    BUILD_ARCH: amd64
+    BUILD_TARGET: x86_64-unknown-linux-musl
     APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
     BUILD_FEATURES: "fips"
     FIPS_ENABLED: "true"
@@ -99,7 +103,8 @@ build-adp-image-fips-arm64:
   extends: [.build-common-variables, .build-adp-definition]
   tags: ["docker-in-docker:arm64"]
   variables:
-    ARCH_TAG: arm64
+    BUILD_ARCH: arm64
+    BUILD_TARGET: aarch64-unknown-linux-musl
     APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
     BUILD_FEATURES: "fips"
     FIPS_ENABLED: "true"
@@ -121,7 +126,8 @@ build-adp-image-internal-amd64:
       when: never
     - when: always
   variables:
-    ARCH_TAG: amd64
+    BUILD_ARCH: amd64
+    BUILD_TARGET: x86_64-unknown-linux-musl
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
 
 build-adp-image-internal-arm64:
@@ -132,7 +138,8 @@ build-adp-image-internal-arm64:
       when: never
     - when: always
   variables:
-    ARCH_TAG: arm64
+    BUILD_ARCH: arm64
+    BUILD_TARGET: aarch64-unknown-linux-musl
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
 
 build-adp-image-internal:
@@ -155,7 +162,8 @@ build-adp-image-fips-internal-amd64:
       when: never
     - when: always
   variables:
-    ARCH_TAG: amd64
+    BUILD_ARCH: amd64
+    BUILD_TARGET: x86_64-unknown-linux-musl
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
     BUILD_FEATURES: "fips"
     FIPS_ENABLED: "true"
@@ -168,7 +176,8 @@ build-adp-image-fips-internal-arm64:
       when: never
     - when: always
   variables:
-    ARCH_TAG: arm64
+    BUILD_ARCH: arm64
+    BUILD_TARGET: aarch64-unknown-linux-musl
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
     BUILD_FEATURES: "fips"
     FIPS_ENABLED: "true"
