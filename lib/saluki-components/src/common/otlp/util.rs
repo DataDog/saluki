@@ -10,7 +10,7 @@ use saluki_common::collections::{FastHashMap, FastHashSet};
 use saluki_context::tags::TagSet;
 
 // ============================================================================
-// Datadog attribute key constants shared across the encoder and translator 
+// Datadog attribute key constants shared across the encoder and translator
 // ============================================================================
 
 pub const KEY_DATADOG_VERSION: &str = "datadog.version";
