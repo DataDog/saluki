@@ -4,15 +4,17 @@
 mkfile_path := $(abspath $(lastword $(MAKEFILE_LIST)))
 mkfile_dir := $(dir $(mkfile_path))
 
-export TARGET_ARCH ?= $(shell uname -m | sed s/x86_64/amd64/ | sed s/aarch64/arm64/)
+export TARGET_ARCH := $(shell uname -m | sed s/x86_64/amd64/ | sed s/aarch64/arm64/)
 
 # High-level settings that ultimately get passed down to build-specific targets.
-export BUILD_TARGET ?= $(shell command -v rustc 1>/dev/null && rustc -vV | sed -n 's|host: ||p')
+export BUILD_TARGET := $(or, $(BUILD_TARGET),$(shell rustc -vV | sed -n 's|host: ||p'))
 export APP_FULL_NAME ?= Agent Data Plane
 export APP_SHORT_NAME ?= data-plane
 export APP_IDENTIFIER ?= adp
-export APP_GIT_HASH ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git)
-export APP_VERSION ?= $(shell cat bin/agent-data-plane/Cargo.toml | grep -E "^version = \"" | head -n 1 | cut -d '"' -f 2)
+export APP_GIT_HASH := $(or $(CI_COMMIT_SHA),$(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git))
+export APP_VERSION_AUTO := $(shell cat bin/agent-data-plane/Cargo.toml | grep -E "^version = \"" | head -n 1 | cut -d '"' -f 2)
+export APP_VERSION := $(or $(APP_VERSION),$(APP_VERSION_AUTO))
+export APP_BUILD_TIME := $(or $(CI_PIPELINE_CREATED_AT),"0000-00-00T00:00:00-00:00")
 
 # Override autoinstalling of tools. (Eg `cargo install`)
 export AUTOINSTALL ?= true
@@ -613,7 +615,6 @@ fast-edit-test: ## Runs a lightweight format/lint/test pass
 ##@ CI
 
 .PHONY: emit-build-metadata
-emit-build-metadata: override APP_BUILD_TIME = $(shell date -u +'%Y-%m-%dT%H:%M:%SZ')
 emit-build-metadata: ## Emits build metadata shell variables suitable for use during image builds
 	@echo "APP_FULL_NAME=${APP_FULL_NAME}"
 	@echo "APP_SHORT_NAME=${APP_SHORT_NAME}"
