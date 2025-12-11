@@ -7,6 +7,7 @@ ARG RUST_VERSION=stable
 ARG BUILD_PROFILE=release
 ARG BUILD_FEATURES=default
 ARG BUILD_TARGET
+ARG BUILD_CFLAGS=""
 ARG APP_FULL_NAME=""
 ARG APP_SHORT_NAME=""
 ARG APP_IDENTIFIER=""
@@ -24,8 +25,7 @@ ENV APP_BUILD_TIME=${APP_BUILD_TIME}
 # Install Rust and other build dependencies.
 RUN apt-get update && \
     apt-get install --no-install-recommends -y \
-    build-essential ca-certificates musl-dev musl-tools linux-headers-generic make cmake mold gcc g++ perl golang-go protobuf-compiler curl unzip rustup
-RUN rustup default ${RUST_VERSION} && rustup target add ${BUILD_TARGET}
+    build-essential ca-certificates musl-dev musl-tools linux-headers-generic make cmake gcc g++ perl golang-go protobuf-compiler curl unzip rustup
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Copy the Linux headers, needed by AWS-LC in FIPS mode, to the target-specific include directory.
@@ -34,10 +34,15 @@ COPY ./tooling/copy-linux-headers.sh /copy-linux-headers.sh
 RUN chmod +x /copy-linux-headers.sh && /copy-linux-headers.sh
 
 # Build Agent Data Plane.
+#
+# We install our build target here so that it gets installed against the pinned version
+# of the Rust toolchain defined in `rust-toolchain.toml`.
 WORKDIR /adp
 COPY . /adp
+
+RUN rustup target add ${BUILD_TARGET}
 RUN mkdir -p /adp/target/bin && \
-    RUSTFLAGS="--cfg tokio_unstable -C link-arg=-fuse-ld=mold" \
+    CFLAGS="${BUILD_CFLAGS}" \
     cargo build \
     --profile ${BUILD_PROFILE} \
     --package agent-data-plane \

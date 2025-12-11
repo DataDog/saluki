@@ -22,6 +22,7 @@
       --build-arg BUILD_FEATURES=${BUILD_FEATURES}
       --build-arg BUILDER_BASE=${BUILDER_BASE}
       --build-arg BUILD_TARGET=${BUILD_TARGET}
+      --build-arg BUILD_CFLAGS=${BUILD_CFLAGS}
       --build-arg APP_FULL_NAME="${APP_FULL_NAME}"
       --build-arg APP_SHORT_NAME=${APP_SHORT_NAME}
       --build-arg APP_IDENTIFIER=${APP_IDENTIFIER}
@@ -79,6 +80,7 @@ build-adp-image-arm64:
   variables:
     BUILD_ARCH: arm64
     BUILD_TARGET: aarch64-unknown-linux-musl
+    BUILD_CFLAGS: "-mno-outline-atomics"
     APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
 
 build-adp-image:
@@ -105,6 +107,7 @@ build-adp-image-fips-arm64:
   variables:
     BUILD_ARCH: arm64
     BUILD_TARGET: aarch64-unknown-linux-musl
+    BUILD_CFLAGS: "-mno-outline-atomics"
     APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
     BUILD_FEATURES: "fips"
     FIPS_ENABLED: "true"
@@ -140,6 +143,7 @@ build-adp-image-internal-arm64:
   variables:
     BUILD_ARCH: arm64
     BUILD_TARGET: aarch64-unknown-linux-musl
+    BUILD_CFLAGS: "-mno-outline-atomics"
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
 
 build-adp-image-internal:
@@ -178,6 +182,7 @@ build-adp-image-fips-internal-arm64:
   variables:
     BUILD_ARCH: arm64
     BUILD_TARGET: aarch64-unknown-linux-musl
+    BUILD_CFLAGS: "-mno-outline-atomics"
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
     BUILD_FEATURES: "fips"
     FIPS_ENABLED: "true"
