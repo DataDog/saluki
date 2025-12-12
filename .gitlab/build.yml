@@ -60,7 +60,7 @@ calculate-build-metadata:
   image: ${SALUKI_BUILD_CI_IMAGE}
   needs: []
   script:
-    - make emit-build-metadata >> build.env
+    - make emit-adp-build-metadata >> build.env
   artifacts:
     reports:
       dotenv: build.env
