@@ -17,6 +17,6 @@ comparison:
     - datadog.yaml:/etc/datadog-agent/datadog.yaml
   additional_env_vars:
     - DD_API_KEY=correctness-test
-    - DD_DATA_PLANE__ENABLED=true
-    - DD_DATA_PLANE__DOGSTATSD__ENABLED=true
+    - DD_DATA_PLANE_ENABLED=true
+    - DD_DATA_PLANE_DOGSTATSD__ENABLED=true
     - DD_AGGREGATE_CONTEXT_LIMIT=500000

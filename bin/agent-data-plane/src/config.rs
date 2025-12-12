@@ -1,9 +1,9 @@
+use saluki_config::GenericConfiguration;
+use saluki_error::GenericError;
 use saluki_io::net::ListenAddress;
-use serde::Deserialize;
 
 /// General data plane configuration.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(default)]
+#[derive(Clone, Debug)]
 pub struct DataPlaneConfiguration {
     enabled: bool,
     standalone_mode: bool,
@@ -17,6 +17,40 @@ pub struct DataPlaneConfiguration {
 }
 
 impl DataPlaneConfiguration {
+    /// Creates a new `DataPlaneConfiguration` instance from the given configuration.
+    ///
+    /// # Errors
+    ///
+    /// If the configuration cannot be deserialized, an error is returned.
+    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        // TODO: We're explicitly querying each individual field from the configuration because if we don't, then our
+        // environment variable overrides end up requiring double underscores to indicate nesting (i.e. we have to do
+        // `DD_DATA_PLANE__OTLP__ENABLED` instead of just `DD_DATA_PLANE_OTLP_ENABLED`). I find this personally ugly,
+        // and it would also fly in the face of environment variable naming conventions for existing Agent settings.
+        //
+        // In the future, we plan on updating `saluki-config` to allow us to support both deserializing from "native"
+        // nested data like JSON/YAML as well as with the idiomatically-named environment variables.
+        Ok(Self {
+            enabled: config.try_get_typed("data_plane.enabled")?.unwrap_or(false),
+            standalone_mode: config.try_get_typed("data_plane.standalone_mode")?.unwrap_or(false),
+            use_new_config_stream_endpoint: config
+                .try_get_typed("data_plane.use_new_config_stream_endpoint")?
+                .unwrap_or(false),
+            api_listen_address: config
+                .try_get_typed("data_plane.api_listen_address")?
+                .unwrap_or_else(|| ListenAddress::any_tcp(5100)),
+            secure_api_listen_address: config
+                .try_get_typed("data_plane.secure_api_listen_address")?
+                .unwrap_or_else(|| ListenAddress::any_tcp(5101)),
+            telemetry_enabled: config.try_get_typed("data_plane.telemetry_enabled")?.unwrap_or(false),
+            telemetry_listen_addr: config
+                .try_get_typed("data_plane.telemetry_listen_addr")?
+                .unwrap_or_else(|| ListenAddress::any_tcp(5102)),
+            dogstatsd: DataPlaneDogStatsDConfiguration::from_configuration(config)?,
+            otlp: DataPlaneOtlpConfiguration::from_configuration(config)?,
+        })
+    }
+
     /// Returns `true` if the data plane is enabled.
     pub const fn enabled(&self) -> bool {
         self.enabled
@@ -93,25 +127,8 @@ impl DataPlaneConfiguration {
     }
 }
 
-impl Default for DataPlaneConfiguration {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            standalone_mode: false,
-            use_new_config_stream_endpoint: false,
-            api_listen_address: ListenAddress::any_tcp(5100),
-            secure_api_listen_address: ListenAddress::any_tcp(5101),
-            telemetry_enabled: false,
-            telemetry_listen_addr: ListenAddress::any_tcp(5102),
-            dogstatsd: DataPlaneDogStatsDConfiguration::default(),
-            otlp: DataPlaneOtlpConfiguration::default(),
-        }
-    }
-}
-
 /// DogStatsD-specific data plane configuration.
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default)]
+#[derive(Clone, Debug)]
 pub struct DataPlaneDogStatsDConfiguration {
     /// Whether DogStatsD is enabled.
     ///
@@ -122,6 +139,12 @@ pub struct DataPlaneDogStatsDConfiguration {
 }
 
 impl DataPlaneDogStatsDConfiguration {
+    fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        Ok(Self {
+            enabled: config.try_get_typed("data_plane.dogstatsd.enabled")?.unwrap_or(false),
+        })
+    }
+
     /// Returns `true` if DogStatsD is enabled.
     pub const fn enabled(&self) -> bool {
         self.enabled
@@ -129,14 +152,20 @@ impl DataPlaneDogStatsDConfiguration {
 }
 
 /// OTLP-specific data plane configuration.
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default)]
+#[derive(Clone, Debug)]
 pub struct DataPlaneOtlpConfiguration {
     enabled: bool,
     proxy: DataPlaneOtlpProxyConfiguration,
 }
 
 impl DataPlaneOtlpConfiguration {
+    fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        Ok(Self {
+            enabled: config.try_get_typed("data_plane.otlp.enabled")?.unwrap_or(false),
+            proxy: DataPlaneOtlpProxyConfiguration::from_configuration(config)?,
+        })
+    }
+
     /// Returns `true` if the OTLP pipeline is enabled.
     pub const fn enabled(&self) -> bool {
         self.enabled
@@ -149,8 +178,7 @@ impl DataPlaneOtlpConfiguration {
 }
 
 /// OTLP proxying configuration.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(default)]
+#[derive(Clone, Debug)]
 pub struct DataPlaneOtlpProxyConfiguration {
     /// Whether or not to proxy all signals to the Agent.
     ///
@@ -171,6 +199,15 @@ pub struct DataPlaneOtlpProxyConfiguration {
 }
 
 impl DataPlaneOtlpProxyConfiguration {
+    fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        Ok(Self {
+            enabled: config.try_get_typed("data_plane.otlp.proxy.enabled")?.unwrap_or(false),
+            core_agent_otlp_endpoint: config
+                .try_get_typed("data_plane.otlp.proxy.core_agent_otlp_endpoint")?
+                .unwrap_or("http://localhost:4320".to_string()),
+        })
+    }
+
     /// Returns `true` if the OTLP proxy is enabled.
     pub const fn enabled(&self) -> bool {
         self.enabled
@@ -179,14 +216,5 @@ impl DataPlaneOtlpProxyConfiguration {
     /// Returns the OTLP endpoint on the Core Agent to proxy signals to.
     pub fn core_agent_otlp_endpoint(&self) -> &str {
         &self.core_agent_otlp_endpoint
-    }
-}
-
-impl Default for DataPlaneOtlpProxyConfiguration {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            core_agent_otlp_endpoint: "http://localhost:4320".to_string(),
-        }
     }
 }

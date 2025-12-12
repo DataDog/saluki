@@ -62,7 +62,8 @@ pub async fn handle_run_command(
     // Load our "bootstrap" configuration, and then determine if we need to actually source our configuration from the control plane.
     //
     // When we're in standalone mode, we'll use the bootstrap configuration as our final configuration.
-    let bootstrap_dp_config = bootstrap_config.get_typed_or_default::<DataPlaneConfiguration>("data_plane");
+    let bootstrap_dp_config = DataPlaneConfiguration::from_configuration(&bootstrap_config)
+        .error_context("Failed to load data plane configuration.")?;
 
     let in_standalone_mode = bootstrap_dp_config.standalone_mode();
     let use_new_config_stream_endpoint = bootstrap_dp_config.use_new_config_stream_endpoint();
@@ -89,7 +90,8 @@ pub async fn handle_run_command(
         info!("Initial configuration received.");
 
         // Reload our data plane configuration based on the dynamic configuration.
-        let dynamic_dp_config = bootstrap_config.get_typed_or_default::<DataPlaneConfiguration>("data_plane");
+        let dynamic_dp_config = DataPlaneConfiguration::from_configuration(&dynamic_config)
+            .error_context("Failed to load data plane configuration.")?;
 
         (dynamic_config, dynamic_dp_config)
     } else {

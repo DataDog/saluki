@@ -20,7 +20,7 @@ impl DataPlaneAPIClient {
     /// If the data plane configuration can't be deserialized, or the data plane API endpoints cannot be
     /// determined, an error will be returned.
     pub fn from_config(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let dp_config = config.get_typed::<DataPlaneConfiguration>("data_plane")?;
+        let dp_config = DataPlaneConfiguration::from_configuration(config)?;
 
         let (privileged_api_client, privileged_api_base_url) = {
             // Figure out if we're dealing with a TCP or Unix domain socket, which informs how we generate the base URL
