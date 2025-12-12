@@ -66,6 +66,10 @@ pub async fn handle_run_command(
         .error_context("Failed to load data plane configuration.")?;
 
     let in_standalone_mode = bootstrap_dp_config.standalone_mode();
+    if in_standalone_mode {
+        info!("Running in standalone mode. Origin detection and dynamic configuration will be disabled.");
+    }
+
     let use_new_config_stream_endpoint = bootstrap_dp_config.use_new_config_stream_endpoint();
     let (config, dp_config) = if !in_standalone_mode && use_new_config_stream_endpoint {
         let config_updates_receiver = create_config_stream(&bootstrap_config)
@@ -100,7 +104,8 @@ pub async fn handle_run_command(
     };
 
     if !in_standalone_mode && !dp_config.enabled() {
-        return Err(generic_error!("Agent Data Plane is not enabled. Exiting."));
+        info!("Agent Data Plane is not enabled. Exiting.");
+        return Ok(());
     }
 
     // Set up all of the building blocks for building our topologies and launching internal processes.

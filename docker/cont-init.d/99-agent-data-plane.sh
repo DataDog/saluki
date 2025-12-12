@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# TODO: Remove this once https://github.com/DataDog/datadog-agent/pull/43876 lands and is released,
+# since the Core Agent will handle this itself.
+
 # ADP must be baseline enabled to continue.
 if [[ "${DD_DATA_PLANE_ENABLED}" != "true" ]]; then
   exit 0

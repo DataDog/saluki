@@ -44,12 +44,12 @@ async fn main() -> Result<(), GenericError> {
         .unwrap_or_else(|| self::internal::platform::DATADOG_AGENT_CONF_YAML.into());
     let bootstrap_config = ConfigurationLoader::default()
         .from_yaml(&bootstrap_config_path)
-        .error_context("Failed to load Datadog Agent configuration file.")?
+        .error_context("Failed to load Datadog Agent configuration file during bootstrap.")?
         .from_environment(self::internal::platform::DATADOG_AGENT_ENV_VAR_PREFIX)
         .error_context("Environment variable prefix should not be empty.")?
         .with_default_secrets_resolution()
         .await
-        .error_context("Failed to load secrets resolution configuration.")?
+        .error_context("Failed to load secrets resolution configuration during bootstrap.")?
         .bootstrap_generic();
 
     // Proceed with bootstrapping.
