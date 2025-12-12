@@ -91,7 +91,6 @@ build-adp-image-fips-amd64:
   variables:
     APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
     BUILD_FEATURES: "fips"
-    FIPS_ENABLED: "true"
 
 build-adp-image-fips-arm64:
   extends: [.build-common-variables, .build-arm64-variables, .build-adp-definition]
@@ -99,7 +98,6 @@ build-adp-image-fips-arm64:
   variables:
     APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
     BUILD_FEATURES: "fips"
-    FIPS_ENABLED: "true"
 
 build-adp-image-fips:
   extends: [.build-common-variables, .build-adp-multi-arch-definition]
@@ -150,6 +148,7 @@ build-adp-image-fips-internal-amd64:
       when: never
     - when: always
   variables:
+    APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
     BUILD_FEATURES: "fips"
 
 build-adp-image-fips-internal-arm64:
