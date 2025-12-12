@@ -1,8 +1,59 @@
 //! Traces.
 
-use otlp_protos::opentelemetry::proto::resource::v1::Resource as OtlpResource;
 use saluki_common::collections::FastHashMap;
 use stringtheory::MetaString;
+
+/// A key-value pair representing an attribute.
+///
+/// Based on the protobuf definition: https://github.com/DataDog/saluki/blob/main/lib/protos/otlp/proto/opentelemetry/proto/common/v1/common.proto#L64
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeyValue {
+    /// The attribute key.
+    pub key: MetaString,
+    /// The attribute value.
+    pub value: Option<AttributeValue>,
+}
+
+/// A reference to an entity.
+///
+/// Entity represents an object of interest associated with produced telemetry: e.g spans, metrics, profiles, or logs.
+///
+/// Based on the protobuf definition: https://github.com/DataDog/saluki/blob/main/lib/protos/otlp/proto/opentelemetry/proto/common/v1/common.proto#L87
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct EntityRef {
+    /// The Schema URL, if known. This is the identifier of the Schema that the entity data
+    /// is recorded in.
+    pub schema_url: MetaString,
+    /// Defines the type of the entity. MUST not change during the lifetime of the entity.
+    /// For example: "service" or "host".
+    pub entity_type: MetaString,
+    /// Attribute Keys that identify the entity.
+    /// MUST not change during the lifetime of the entity.
+    pub id_keys: Vec<MetaString>,
+    /// Descriptive (non-identifying) attribute keys of the entity.
+    /// MAY change over the lifetime of the entity.
+    pub description_keys: Vec<MetaString>,
+}
+
+/// Resource information.
+///
+/// Based on the protobuf definition: https://github.com/DataDog/saluki/blob/main/lib/protos/otlp/proto/opentelemetry/proto/resource/v1/resource.proto#L27-L44
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Resource {
+    /// Set of attributes that describe the resource.
+    /// Attribute keys MUST be unique (it is not allowed to have more than one
+    /// attribute with the same key).
+    pub attributes: Vec<KeyValue>,
+    /// dropped_attributes_count is the number of dropped attributes. If the value is 0, then
+    /// no attributes were dropped.
+    pub dropped_attributes_count: u32,
+    /// Set of entities that participate in this Resource.
+    ///
+    /// Note: keys in the references MUST exist in attributes of this message.
+    ///
+    /// Status: [Development]
+    pub entity_refs: Vec<EntityRef>,
+}
 /// A trace event.
 ///
 /// A trace is a collection of spans that represent a distributed trace.
@@ -11,12 +62,12 @@ pub struct Trace {
     /// The spans that make up this trace.
     spans: Vec<Span>,
     /// The resource associated with this trace.
-    resource: OtlpResource,
+    resource: Resource,
 }
 
 impl Trace {
     /// Creates a new `Trace` with the given spans.
-    pub fn new(spans: Vec<Span>, resource: OtlpResource) -> Self {
+    pub fn new(spans: Vec<Span>, resource: Resource) -> Self {
         Self { spans, resource }
     }
 
@@ -31,7 +82,7 @@ impl Trace {
     }
 
     /// Returns the resource associated with this trace.
-    pub fn resource(&self) -> &OtlpResource {
+    pub fn resource(&self) -> &Resource {
         &self.resource
     }
 }

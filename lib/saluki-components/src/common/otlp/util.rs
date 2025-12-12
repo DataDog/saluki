@@ -8,6 +8,10 @@ use opentelemetry_semantic_conventions::resource::*;
 use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common, any_value::Value};
 use saluki_common::collections::{FastHashMap, FastHashSet};
 use saluki_context::tags::TagSet;
+use saluki_core::data_model::event::trace::{
+    AttributeScalarValue, AttributeValue, EntityRef as CoreEntityRef, KeyValue as CoreKeyValue,
+};
+use stringtheory::MetaString;
 
 // ============================================================================
 // Datadog attribute key constants shared across the encoder and translator
@@ -113,9 +117,24 @@ pub fn get_string_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &s
     })
 }
 
-pub fn get_string_attribute_from_list<'a>(attributes: &'a [otlp_common::KeyValue], keys: &[&str]) -> Option<&'a str> {
+/// Extracts a string attribute value from ADP KeyValue attributes by key.
+pub fn get_string_attribute_adp<'a>(attributes: &'a [CoreKeyValue], key: &str) -> Option<&'a str> {
+    attributes.iter().find_map(|kv| {
+        if kv.key.as_ref() == key {
+            match kv.value.as_ref()? {
+                AttributeValue::String(s) => Some(s.as_ref()),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    })
+}
+
+/// Extracts a string attribute value from ADP KeyValue attributes by trying multiple keys.
+pub fn get_string_attribute_from_list_adp<'a>(attributes: &'a [CoreKeyValue], keys: &[&str]) -> Option<&'a str> {
     for key in keys {
-        if let Some(value) = get_string_attribute(attributes, key) {
+        if let Some(value) = get_string_attribute_adp(attributes, key) {
             return Some(value);
         }
     }
@@ -151,15 +170,40 @@ pub fn extract_container_tags_from_resource_attributes(attributes: &[otlp_common
     }
 }
 
+/// Extracts container tags from ADP resource attributes and inserts them into the provided TagSet.
+pub fn extract_container_tags_from_adp_resource_attributes(attributes: &[CoreKeyValue], tags: &mut TagSet) {
+    let mut extracted_tags = FastHashSet::default();
+
+    for kv in attributes {
+        if let Some(AttributeValue::String(s_val)) = &kv.value {
+            // Semantic Conventions
+            if let Some(datadog_key) = CONTAINER_MAPPINGS.get(kv.key.as_ref()) {
+                tags.insert_tag(format!("{}:{}", datadog_key, s_val));
+                extracted_tags.insert(*datadog_key);
+            }
+
+            // Custom (datadog.container.tag namespace)
+            if kv.key.as_ref().starts_with(CUSTOM_CONTAINER_TAG_PREFIX) {
+                if let Some(custom_key) = kv.key.as_ref().get(CUSTOM_CONTAINER_TAG_PREFIX.len()..) {
+                    if !custom_key.is_empty() {
+                        // Do not replace if set via semantic conventions mappings.
+                        if !extracted_tags.insert(custom_key) {
+                            tags.insert_tag(format!("{}:{}", custom_key, s_val));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Resolves the source metadata from OTLP resource attributes.
 ///
 /// This determines whether the telemetry came from a hostname or serverless environment.
-pub fn resource_to_source(resource: &otlp_protos::opentelemetry::proto::resource::v1::Resource) -> Option<Source> {
-    let attributes = &resource.attributes;
-
+pub fn resource_attributes_to_source(attributes: &[otlp_common::KeyValue]) -> Option<Source> {
     // AWS ECS Fargate
     if get_string_attribute(attributes, CLOUD_PROVIDER) == Some("aws")
-        && get_string_attribute(attributes, opentelemetry_semantic_conventions::resource::CLOUD_PLATFORM)
+        && get_string_attribute(attributes, CLOUD_PLATFORM)
             == Some("aws_ecs")
         && get_string_attribute(
             attributes,
@@ -175,7 +219,7 @@ pub fn resource_to_source(resource: &otlp_protos::opentelemetry::proto::resource
     }
 
     // Hostname from attributes
-    if let Some(host_name) = get_string_attribute(attributes, opentelemetry_semantic_conventions::resource::HOST_NAME) {
+    if let Some(host_name) = get_string_attribute(attributes, HOST_NAME) {
         return Some(Source {
             kind: SourceKind::HostnameKind,
             identifier: host_name.to_string(),
@@ -183,4 +227,87 @@ pub fn resource_to_source(resource: &otlp_protos::opentelemetry::proto::resource
     }
 
     None
+}
+
+/// Resolves the source metadata from ADP resource attributes.
+pub fn resource_attributes_to_source_adp(attributes: &[CoreKeyValue]) -> Option<Source> {
+    // AWS ECS Fargate
+    if get_string_attribute_adp(attributes, CLOUD_PROVIDER) == Some("aws")
+        && get_string_attribute_adp(attributes, CLOUD_PLATFORM) == Some("aws_ecs")
+        && get_string_attribute_adp(attributes, AWS_ECS_LAUNCHTYPE) == Some("fargate")
+    {
+        if let Some(task_arn) = get_string_attribute_adp(attributes, AWS_ECS_TASK_ARN) {
+            return Some(Source {
+                kind: SourceKind::AwsEcsFargateKind,
+                identifier: task_arn.to_string(),
+            });
+        }
+    }
+
+    // Hostname from attributes
+    if let Some(host_name) = get_string_attribute_adp(attributes, HOST_NAME) {
+        return Some(Source {
+            kind: SourceKind::HostnameKind,
+            identifier: host_name.to_string(),
+        });
+    }
+
+    None
+}
+
+/// Converts an OTLP AnyValue to an ADP AttributeValue.
+///
+/// Returns `None` for unsupported types (bytes, kvlist) or if the value is unset.
+pub fn otlp_any_value_to_adp(value: &otlp_common::AnyValue) -> Option<AttributeValue> {
+    use otlp_common::any_value::Value;
+
+    match value.value.as_ref()? {
+        Value::StringValue(s) => Some(AttributeValue::String(MetaString::from(s.as_str()))),
+        Value::BoolValue(b) => Some(AttributeValue::Bool(*b)),
+        Value::IntValue(i) => Some(AttributeValue::Int(*i)),
+        Value::DoubleValue(d) => Some(AttributeValue::Double(*d)),
+        Value::ArrayValue(arr) => {
+            // Convert array elements, filtering out unsupported types (nested arrays/kvlist/bytes).
+            let scalar_values: Vec<AttributeScalarValue> = arr
+                .values
+                .iter()
+                .filter_map(|v| match v.value.as_ref()? {
+                    Value::StringValue(s) => Some(AttributeScalarValue::String(MetaString::from(s.as_str()))),
+                    Value::BoolValue(b) => Some(AttributeScalarValue::Bool(*b)),
+                    Value::IntValue(i) => Some(AttributeScalarValue::Int(*i)),
+                    Value::DoubleValue(d) => Some(AttributeScalarValue::Double(*d)),
+                    _ => None,
+                })
+                .collect();
+
+            if scalar_values.is_empty() {
+                None
+            } else {
+                Some(AttributeValue::Array(scalar_values))
+            }
+        }
+        Value::BytesValue(_) | Value::KvlistValue(_) => None,
+    }
+}
+
+/// Converts an OTLP KeyValue to an ADP KeyValue.
+pub fn otlp_key_value_to_adp(kv: &otlp_common::KeyValue) -> CoreKeyValue {
+    CoreKeyValue {
+        key: MetaString::from(kv.key.as_str()),
+        value: kv.value.as_ref().and_then(otlp_any_value_to_adp),
+    }
+}
+
+/// Converts an OTLP EntityRef to an ADP EntityRef.
+pub fn otlp_entity_ref_to_adp(er: &otlp_common::EntityRef) -> CoreEntityRef {
+    CoreEntityRef {
+        schema_url: MetaString::from(er.schema_url.as_str()),
+        entity_type: MetaString::from(er.r#type.as_str()),
+        id_keys: er.id_keys.iter().map(|k| MetaString::from(k.as_str())).collect(),
+        description_keys: er
+            .description_keys
+            .iter()
+            .map(|k| MetaString::from(k.as_str()))
+            .collect(),
+    }
 }

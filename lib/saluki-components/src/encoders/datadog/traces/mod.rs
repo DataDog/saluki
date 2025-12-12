@@ -9,15 +9,12 @@ use datadog_protos::traces::{
 };
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use opentelemetry_semantic_conventions::resource::{
-    CONTAINER_ID, DEPLOYMENT_ENVIRONMENT_NAME, K8S_POD_UID, SERVICE_VERSION,
-};
-use otlp_protos::opentelemetry::proto::resource::v1::Resource;
+use opentelemetry_semantic_conventions::resource::{CONTAINER_ID, DEPLOYMENT_ENVIRONMENT_NAME, K8S_POD_UID, SERVICE_VERSION};
 use protobuf::{rt::WireType, CodedOutputStream, Message};
 use saluki_config::GenericConfiguration;
 use saluki_context::tags::TagSet;
 use saluki_core::data_model::event::trace::{
-    AttributeScalarValue, AttributeValue, Span as DdSpan, SpanEvent as DdSpanEvent, SpanLink as DdSpanLink,
+    AttributeScalarValue, AttributeValue, Resource, Span as DdSpan, SpanEvent as DdSpanEvent, SpanLink as DdSpanLink,
 };
 use saluki_core::topology::{EventsBuffer, PayloadsBuffer};
 use saluki_core::{
@@ -43,10 +40,10 @@ use crate::common::datadog::{
     telemetry::ComponentTelemetry,
     DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
 };
-use crate::common::otlp::util::resource_to_source;
 use crate::common::otlp::util::{
-    extract_container_tags_from_resource_attributes, get_string_attribute, get_string_attribute_from_list,
-    Source as OtlpSource, SourceKind as OtlpSourceKind, DEPLOYMENT_ENVIRONMENT_KEY, KEY_DATADOG_CONTAINER_ID,
+    extract_container_tags_from_adp_resource_attributes, get_string_attribute_adp, get_string_attribute_from_list_adp,
+    resource_attributes_to_source_adp, Source as OtlpSource, SourceKind as OtlpSourceKind, DEPLOYMENT_ENVIRONMENT_KEY,
+    KEY_DATADOG_CONTAINER_ID,
     KEY_DATADOG_CONTAINER_TAGS, KEY_DATADOG_ENVIRONMENT, KEY_DATADOG_HOST, KEY_DATADOG_VERSION,
 };
 
@@ -591,7 +588,7 @@ fn encode_tracer_payload(
 ) -> Result<(), protobuf::Error> {
     let resource = trace.resource();
     let first_span = trace.spans().first().cloned();
-    let source = resource_to_source(resource);
+    let source = resource_attributes_to_source_adp(&resource.attributes);
     let mut output_stream = CodedOutputStream::vec(output_buffer);
     if let Some(container_id) = resolve_container_id(resource, first_span) {
         output_stream.write_string(
@@ -656,7 +653,7 @@ fn resolve_hostname(
         hostname = Some(MetaString::empty());
     }
 
-    if let Some(value) = get_string_attribute(&resource.attributes, KEY_DATADOG_HOST) {
+    if let Some(value) = get_string_attribute_adp(&resource.attributes, KEY_DATADOG_HOST) {
         hostname = Some(MetaString::from(value));
     }
 
@@ -664,20 +661,20 @@ fn resolve_hostname(
 }
 
 fn resolve_env(resource: &Resource, ignore_missing_fields: bool) -> Option<MetaString> {
-    if let Some(value) = get_string_attribute(&resource.attributes, KEY_DATADOG_ENVIRONMENT) {
+    if let Some(value) = get_string_attribute_adp(&resource.attributes, KEY_DATADOG_ENVIRONMENT) {
         return Some(MetaString::from(value));
     }
     if ignore_missing_fields {
         return None;
     }
-    if let Some(value) = get_string_attribute(&resource.attributes, DEPLOYMENT_ENVIRONMENT_NAME) {
+    if let Some(value) = get_string_attribute_adp(&resource.attributes, DEPLOYMENT_ENVIRONMENT_NAME) {
         return Some(MetaString::from(value));
     }
-    get_string_attribute(&resource.attributes, DEPLOYMENT_ENVIRONMENT_KEY).map(MetaString::from)
+    get_string_attribute_adp(&resource.attributes, DEPLOYMENT_ENVIRONMENT_KEY).map(MetaString::from)
 }
 
 fn resolve_container_id(resource: &Resource, first_span: Option<DdSpan>) -> Option<MetaString> {
-    if let Some(value) = get_string_attribute_from_list(
+    if let Some(value) = get_string_attribute_from_list_adp(
         &resource.attributes,
         &[KEY_DATADOG_CONTAINER_ID, CONTAINER_ID, K8S_POD_UID],
     ) {
@@ -696,10 +693,10 @@ fn resolve_container_id(resource: &Resource, first_span: Option<DdSpan>) -> Opti
 }
 
 fn resolve_app_version(resource: &Resource) -> Option<MetaString> {
-    if let Some(value) = get_string_attribute(&resource.attributes, KEY_DATADOG_VERSION) {
+    if let Some(value) = get_string_attribute_adp(&resource.attributes, KEY_DATADOG_VERSION) {
         return Some(MetaString::from(value));
     }
-    get_string_attribute(&resource.attributes, SERVICE_VERSION).map(MetaString::from)
+    get_string_attribute_adp(&resource.attributes, SERVICE_VERSION).map(MetaString::from)
 }
 
 fn resolve_container_tags(
@@ -708,7 +705,7 @@ fn resolve_container_tags(
     // TODO: some refactoring is probably needed to normalize this function, the tags should already be normalized
     // since we do so when we transform OTLP spans to DD spans however to make this class extensible for non otlp traces, we would
     // need to normalize the tags here.
-    if let Some(tags) = get_string_attribute(&resource.attributes, KEY_DATADOG_CONTAINER_TAGS) {
+    if let Some(tags) = get_string_attribute_adp(&resource.attributes, KEY_DATADOG_CONTAINER_TAGS) {
         if !tags.is_empty() {
             return Some(MetaString::from(tags));
         }
@@ -718,7 +715,7 @@ fn resolve_container_tags(
         return None;
     }
     let mut container_tags = TagSet::default();
-    extract_container_tags_from_resource_attributes(&resource.attributes, &mut container_tags);
+    extract_container_tags_from_adp_resource_attributes(&resource.attributes, &mut container_tags);
     let is_fargate_source = source.is_some_and(|src| src.kind == OtlpSourceKind::AwsEcsFargateKind);
     if container_tags.is_empty() && !is_fargate_source {
         return None;

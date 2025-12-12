@@ -1,10 +1,11 @@
 use otlp_protos::opentelemetry::proto::resource::v1::Resource as OtlpResource;
 use otlp_protos::opentelemetry::proto::trace::v1::ResourceSpans;
 use saluki_common::collections::FastHashMap;
-use saluki_core::data_model::event::trace::{Span as DdSpan, Trace};
+use saluki_core::data_model::event::trace::{Resource as CoreResource, Span as DdSpan, Trace};
 use saluki_core::data_model::event::Event;
 
 use super::config::OtlpTracesTranslatorConfig;
+use crate::common::otlp::util::{otlp_entity_ref_to_adp, otlp_key_value_to_adp};
 use crate::sources::otlp::traces::transform::otel_span_to_dd_span;
 use crate::sources::otlp::Metrics;
 
@@ -33,6 +34,11 @@ impl OtlpTracesTranslator {
 
     pub fn translate_resource_spans(&self, resource_spans: ResourceSpans, metrics: &Metrics) -> Vec<Event> {
         let resource: OtlpResource = resource_spans.resource.unwrap_or_default();
+        let core_resource = CoreResource {
+            attributes: resource.attributes.iter().map(otlp_key_value_to_adp).collect(),
+            dropped_attributes_count: resource.dropped_attributes_count,
+            entity_refs: resource.entity_refs.iter().map(otlp_entity_ref_to_adp).collect(),
+        };
         let mut traces_by_id: FastHashMap<u64, Vec<DdSpan>> = FastHashMap::default();
         let ignore_missing_fields = self.config.ignore_missing_datadog_fields;
 
@@ -59,7 +65,7 @@ impl OtlpTracesTranslator {
                 if spans.is_empty() {
                     None
                 } else {
-                    Some(Event::Trace(Trace::new(spans, resource.clone())))
+                    Some(Event::Trace(Trace::new(spans, core_resource.clone())))
                 }
             })
             .collect()

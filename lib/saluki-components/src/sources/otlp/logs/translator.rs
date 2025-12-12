@@ -10,7 +10,7 @@ use saluki_core::data_model::event::Event;
 use stringtheory::MetaString;
 
 use super::super::attributes::raw_origin_from_attributes;
-use crate::common::otlp::util::{get_string_attribute, resource_to_source};
+use crate::common::otlp::util::{get_string_attribute, resource_attributes_to_source};
 use crate::sources::otlp::attributes::source::SourceKind;
 use crate::sources::otlp::attributes::tags_from_attributes;
 use crate::sources::otlp::logs::transform::transform_log_record;
@@ -33,7 +33,7 @@ impl OtlpLogsTranslator {
         resource_logs: OtlpResourceLogs, origin_tag_resolver: Option<&OtlpOriginTagResolver>,
     ) -> Self {
         let resource = resource_logs.resource.unwrap_or_default();
-        let source = resource_to_source(&resource);
+        let source = resource_attributes_to_source(&resource.attributes);
         let host = match &source {
             Some(src) if matches!(src.kind, SourceKind::HostnameKind) => {
                 Some(MetaString::from(src.identifier.as_str()))

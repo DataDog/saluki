@@ -7,7 +7,7 @@ use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common, any_val
 use saluki_common::collections::{FastHashMap, FastHashSet};
 use saluki_context::{origin::RawOrigin, tags::TagSet};
 
-use crate::common::otlp::util::{extract_container_tags_from_resource_attributes, resource_to_source};
+use crate::common::otlp::util::{extract_container_tags_from_resource_attributes, resource_attributes_to_source};
 
 pub mod source;
 pub mod translator;
