@@ -4,45 +4,32 @@
 mkfile_path := $(abspath $(lastword $(MAKEFILE_LIST)))
 mkfile_dir := $(dir $(mkfile_path))
 
+# High-level settings that ultimately get passed down to build-specific targets and other spots.
 export TARGET_ARCH := $(shell uname -m | sed s/x86_64/amd64/ | sed s/aarch64/arm64/)
-
-# High-level settings that ultimately get passed down to build-specific targets.
-export BUILD_TARGET := $(or, $(BUILD_TARGET),$(shell rustc -vV | sed -n 's|host: ||p'))
-export APP_FULL_NAME ?= Agent Data Plane
-export APP_SHORT_NAME ?= data-plane
-export APP_IDENTIFIER ?= adp
+export BUILD_TARGET := $(or $(BUILD_TARGET),$(shell rustc -vV | sed -n 's|host: ||p'))
 export APP_GIT_HASH := $(or $(CI_COMMIT_SHA),$(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git))
-export APP_VERSION_AUTO := $(shell cat bin/agent-data-plane/Cargo.toml | grep -E "^version = \"" | head -n 1 | cut -d '"' -f 2)
-export APP_VERSION := $(or $(APP_VERSION),$(APP_VERSION_AUTO))
-export APP_BUILD_TIME := $(or $(CI_PIPELINE_CREATED_AT),"0000-00-00T00:00:00-00:00")
+export APP_BUILD_TIME := $(or $(CI_PIPELINE_CREATED_AT),0000-00-00T00:00:00-00:00)
 
-# Override autoinstalling of tools. (Eg `cargo install`)
+# ADP-specific settings used during builds.
+export ADP_APP_FULL_NAME := Agent Data Plane
+export ADP_APP_SHORT_NAME := data-plane
+export ADP_APP_IDENTIFIER := adp
+export ADP_APP_GIT_HASH := $(APP_GIT_HASH)
+export ADP_APP_VERSION_AUTO := $(shell cat bin/agent-data-plane/Cargo.toml | grep -E "^version = \"" | head -n 1 | cut -d '"' -f 2)
+export ADP_APP_VERSION := $(or $(ADP_APP_VERSION),$(ADP_APP_VERSION_AUTO))
+export ADP_APP_BUILD_TIME := $(APP_BUILD_TIME)
+
+# General build settings used for tooling, etc.
+export GO_BUILD_IMAGE ?= golang:1.23-bullseye
+export GO_APP_IMAGE ?= ubuntu:24.04
+
+# Tool configuration.
 export AUTOINSTALL ?= true
+export CARGO_BIN_DIR := $(shell echo "${HOME}/.cargo/bin")
 export CARGO_BINSTALL_STRATEGIES ?= crate-meta-data,compile
 ifeq ($(CI),true)
 	override CARGO_BINSTALL_STRATEGIES = compile
 endif
-# Override the container tool. Tries docker first and then tries podman.
-export CONTAINER_TOOL ?= auto
-ifeq ($(CONTAINER_TOOL),auto)
-	ifeq ($(shell docker version >/dev/null 2>&1 && echo docker), docker)
-		override CONTAINER_TOOL = docker
-	else ifeq ($(shell podman version >/dev/null 2>&1 && echo podman), podman)
-		override CONTAINER_TOOL = podman
-	else
-		override CONTAINER_TOOL = unknown
-	endif
-endif
-
-# Basic settings for base build images. These are varied between local development and CI.
-export RUST_VERSION ?= $(shell grep channel rust-toolchain.toml | cut -d '"' -f 2)
-
-export GO_BUILD_IMAGE ?= golang:1.23-bullseye
-export GO_APP_IMAGE ?= ubuntu:24.04
-export CARGO_BIN_DIR ?= $(shell echo "${HOME}/.cargo/bin")
-export GIT_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git)
-
-# Specific versions of various tools we use.
 export CARGO_TOOL_VERSION_cargo-binstall ?= 1.16.2
 export CARGO_TOOL_VERSION_dd-rust-license-tool ?= 1.0.3
 export CARGO_TOOL_VERSION_cargo-deny ?= 0.18.3
@@ -105,43 +92,41 @@ build-adp-release: ## Builds the ADP binary in release mode
 	@echo "[*] Building ADP locally..."
 	@cargo build --profile release --package agent-data-plane
 
-.PHONY: build-adp-image
-build-adp-image: ## Builds the ADP container image in release mode ('latest' tag)
-	@echo "[*] Building ADP image..."
-	@$(CONTAINER_TOOL) build \
+.PHONY: build-adp-image-base
+build-adp-image-base:
+	@echo "[*] Building ADP image (target: ${BUILD_TARGET}, profile: release, features: ${BUILD_FEATURES})"
+	@docker build \
 		--tag saluki-images/agent-data-plane:latest \
-		--tag local.dev/saluki-images/agent-data-plane:testing \
+		--tag local.dev/saluki-images/agent-data-plane:$(IMAGE_TAG) \
 		--build-arg "BUILD_TARGET=$(BUILD_TARGET)" \
-		--build-arg "RUST_VERSION=$(RUST_VERSION)" \
-		--build-arg "APP_FULL_NAME=$(APP_FULL_NAME)" \
-		--build-arg "APP_SHORT_NAME=$(APP_SHORT_NAME)" \
-		--build-arg "APP_IDENTIFIER=$(APP_IDENTIFIER)" \
-		--build-arg "APP_VERSION=$(APP_VERSION)" \
-		--build-arg "APP_GIT_HASH=$(APP_GIT_HASH)" \
+		--build-arg "BUILD_PROFILE=$(BUILD_PROFILE)" \
+		--build-arg "BUILD_FEATURES=$(BUILD_FEATURES)" \
+		--build-arg "APP_FULL_NAME=$(ADP_APP_FULL_NAME)" \
+		--build-arg "APP_SHORT_NAME=$(ADP_APP_SHORT_NAME)" \
+		--build-arg "APP_IDENTIFIER=$(ADP_APP_IDENTIFIER)" \
+		--build-arg "APP_VERSION=$(ADP_APP_VERSION)" \
+		--build-arg "APP_GIT_HASH=$(ADP_APP_GIT_HASH)" \
 		--file ./docker/Dockerfile.agent-data-plane \
 		.
 
+.PHONY: build-adp-image
+build-adp-image: override BUILD_PROFILE = release
+build-adp-image: override BUILD_FEATURES = default
+build-adp-image: override IMAGE_TAG = testing
+build-adp-image: build-adp-image-base
+build-adp-image: ## Builds the ADP container image in release mode
+
 .PHONY: build-adp-image-fips
-build-adp-image-fips: ## Builds the ADP container image in release mode ('latest' tag, FIPS enabled)
-	@echo "[*] Building ADP image..."
-	@$(CONTAINER_TOOL) build \
-		--tag saluki-images/agent-data-plane:latest-fips \
-		--tag local.dev/saluki-images/agent-data-plane:testing-fips \
-		--build-arg "BUILD_TARGET=$(BUILD_TARGET)" \
-		--build-arg "RUST_VERSION=$(RUST_VERSION)" \
-		--build-arg "APP_FULL_NAME=$(APP_FULL_NAME)" \
-		--build-arg "APP_SHORT_NAME=$(APP_SHORT_NAME)" \
-		--build-arg "APP_IDENTIFIER=$(APP_IDENTIFIER)" \
-		--build-arg "APP_VERSION=$(APP_VERSION)" \
-		--build-arg "APP_GIT_HASH=$(APP_GIT_HASH)" \
-		--build-arg "BUILD_FEATURES=fips" \
-		--file ./docker/Dockerfile.agent-data-plane \
-		.
+build-adp-image-fips: override BUILD_PROFILE = release
+build-adp-image-fips: override BUILD_FEATURES = fips
+build-adp-image-fips: override IMAGE_TAG = testing-fips
+build-adp-image-fips: build-adp-image-base
+build-adp-image-fips: ## Builds the ADP container image in release mode (FIPS enabled)
 
 .PHONY: build-datadog-agent-image
 build-datadog-agent-image: build-adp-image ## Builds a converged Datadog Agent container image containing ADP ('latest' tag)
 	@echo "[*] Building converged Datadog Agent image..."
-	@$(CONTAINER_TOOL) build \
+	@docker build \
 		--tag saluki-images/datadog-agent:latest \
 		--tag local.dev/saluki-images/datadog-agent:testing \
 		--file ./docker/Dockerfile.datadog-agent \
@@ -150,7 +135,7 @@ build-datadog-agent-image: build-adp-image ## Builds a converged Datadog Agent c
 .PHONY: build-gen-statsd-image
 build-gen-statsd-image: ## Builds the gen-statsd container image ('latest' tag)
 	@echo "[*] Building gen-statsd image..."
-	@$(CONTAINER_TOOL) build \
+	@docker build \
 		--tag saluki-images/gen-statsd:latest \
 		--tag local.dev/saluki-images/gen-statsd:testing \
 		--build-arg BUILD_IMAGE=$(GO_BUILD_IMAGE) \
@@ -167,7 +152,7 @@ build-ground-truth: ## Builds the ground-truth binary in debug mode
 .PHONY: build-datadog-intake-image
 build-datadog-intake-image: ## Builds the datadog-intake container image in release mode ('latest' tag)
 	@echo "[*] Building datadog-intake image..."
-	@$(CONTAINER_TOOL) build \
+	@docker build \
 		--tag saluki-images/datadog-intake:latest \
 		--tag local.dev/saluki-images/datadog-intake:testing \
 		--file ./docker/Dockerfile.datadog-intake \
@@ -176,7 +161,7 @@ build-datadog-intake-image: ## Builds the datadog-intake container image in rele
 .PHONY: build-millstone-image
 build-millstone-image: ## Builds the millstone container image in release mode ('latest' tag)
 	@echo "[*] Building millstone image..."
-	@$(CONTAINER_TOOL) build \
+	@docker build \
 		--tag saluki-images/millstone:latest \
 		--tag local.dev/saluki-images/millstone:testing \
 		--file ./docker/Dockerfile.millstone \
@@ -194,7 +179,7 @@ endif
 	@git -C test/build/dd-agent-benchmarks pull origin
 	@cd test/build/dd-agent-benchmarks/docker/proxy-dumper && go mod vendor
 	@echo "[*] Building proxy-dumper image..."
-	@$(CONTAINER_TOOL) build \
+	@docker build \
 		--tag saluki-images/proxy-dumper:latest \
 		--tag local.dev/saluki-images/proxy-dumper:testing \
 		--build-arg BUILD_IMAGE=$(GO_BUILD_IMAGE) \
@@ -538,7 +523,7 @@ ifeq ($(shell test -f test/smp/regression/adp/cases/$(EXPERIMENT)/lading/lading.
 	$(error "Lading configuration for '$(EXPERIMENT)' not found. (test/smp/regression/adp/cases/$(EXPERIMENT)/lading/lading.yaml) ")
 endif
 	@echo "[*] Running '$(EXPERIMENT)' experiment (15 minutes)..."
-	@$(CONTAINER_TOOL) run --rm --network host \
+	@docker run --rm --network host \
 	    --mount type=bind,source=./test/smp/regression/adp/cases/$(EXPERIMENT)/lading/lading.yaml,target=/tmp/lading.yaml \
 		--mount type=bind,source=/tmp/adp-dogstatsd-dgram.sock,target=/tmp/adp-dogstatsd-dgram.sock \
 		--mount type=bind,source=/tmp/adp-dogstatsd-stream.sock,target=/tmp/adp-dogstatsd-stream.sock \
@@ -562,14 +547,14 @@ fast-edit-test: ## Runs a lightweight format/lint/test pass
 
 ##@ CI
 
-.PHONY: emit-build-metadata
-emit-build-metadata: ## Emits build metadata shell variables suitable for use during image builds
-	@echo "APP_FULL_NAME=${APP_FULL_NAME}"
-	@echo "APP_SHORT_NAME=${APP_SHORT_NAME}"
-	@echo "APP_IDENTIFIER=${APP_IDENTIFIER}"
-	@echo "APP_GIT_HASH=${APP_GIT_HASH}"
-	@echo "APP_VERSION=${APP_VERSION}"
-	@echo "APP_BUILD_TIME=${APP_BUILD_TIME}"
+.PHONY: emit-adp-build-metadata
+emit-adp-build-metadata: ## Emits ADP build metadata shell variables suitable for use during image builds
+	@echo "APP_FULL_NAME=${ADP_APP_FULL_NAME}"
+	@echo "APP_SHORT_NAME=${ADP_APP_SHORT_NAME}"
+	@echo "APP_IDENTIFIER=${ADP_APP_IDENTIFIER}"
+	@echo "APP_GIT_HASH=${ADP_APP_GIT_HASH}"
+	@echo "APP_VERSION=${ADP_APP_VERSION}"
+	@echo "APP_BUILD_TIME=${ADP_APP_BUILD_TIME}"
 
 ##@ Docs
 
@@ -609,9 +594,9 @@ clean-docker: ## Cleans up Docker build cache
 .PHONY: clean-airlock
 clean-airlock: ## Cleans up Airlock-related resources in Docker (used for correctness tests)
 	@echo "[*] Cleaning Airlock-related resources..."
-	@$(CONTAINER_TOOL) container ls --filter label=created_by=airlock -q | xargs -r $(CONTAINER_TOOL) container rm -f
-	@$(CONTAINER_TOOL) volume ls --filter label=created_by=airlock -q | xargs -r $(CONTAINER_TOOL) volume rm -f
-	@$(CONTAINER_TOOL) network ls --filter label=created_by=airlock -q | xargs -r $(CONTAINER_TOOL) network rm -f
+	@docker container ls --filter label=created_by=airlock -q | xargs -r docker container rm -f
+	@docker volume ls --filter label=created_by=airlock -q | xargs -r docker volume rm -f
+	@docker network ls --filter label=created_by=airlock -q | xargs -r docker network rm -f
 
 .PHONY: fmt
 fmt: check-rust-build-tools cargo-install-cargo-autoinherit cargo-install-cargo-sort
