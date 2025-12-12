@@ -3,7 +3,7 @@ erratic: false
 
 target:
   name: agent-data-plane
-  command: /usr/local/bin/agent-data-plane --config /etc/agent-data-plane/empty.yaml run
+  command: /maybe-profile.sh /usr/local/bin/agent-data-plane --config /etc/agent-data-plane/empty.yaml run
   cpu_allotment: 4
   memory_allotment: 2GiB
 
@@ -36,6 +36,12 @@ target:
     # Enable internal telemetry endpoint.
     DD_DATA_PLANE_TELEMETRY_ENABLED: "true"
     DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR: tcp://127.0.0.1:5102
+
+  profiling_environment:
+    SMP_PROFILING_ENABLED: "true"
+    DD_TRACE_AGENT_URL: "unix:///var/run/datadog/apm.socket"
+    DD_PROFILING_NATIVE_PRESET: "cpu_live_heap"
+    DD_PROFILING_INLINED_FUNCTIONS: "true"
 
 report_links:
   - text: (metrics)
