@@ -10,17 +10,18 @@
     DDCI_CONFIGURE_OTEL_EXPORTER: true
   script:
     - docker buildx create --name adp-builder --driver docker-container --use
-    - 'echo "Building ADP image... (arch: ${ARCH_TAG}, image version: ${ADP_IMAGE_VERSION}, build concurrency: ${CARGO_BUILD_JOBS}, profile: ${BUILD_PROFILE})..."'
+    - 'echo "Building ADP image. (version: ${ADP_IMAGE_VERSION}, target: ${BUILD_TARGET}, profile: ${BUILD_PROFILE})"'
     - docker buildx build
       --file ./docker/Dockerfile.agent-data-plane
       --output push-by-digest=true,type=image,push=true
-      --metadata-file ./build-metadata.${ARCH_TAG}
+      --metadata-file ./build-metadata.${BUILD_ARCH}
       --tag ${ADP_IMAGE_REPO_BASE}
-      --build-arg BUILD_IMAGE=${ALPINE_BUILD_IMAGE}
+      --build-arg BUILD_IMAGE=${ADP_PUBLIC_BASE_IMAGE}
       --build-arg APP_IMAGE=${APP_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg BUILD_FEATURES=${BUILD_FEATURES}
-      --build-arg BUILDER_BASE=${BUILDER_BASE}
+      --build-arg BUILD_TARGET=${BUILD_TARGET}
+      --build-arg BUILD_CFLAGS=${BUILD_CFLAGS}
       --build-arg APP_FULL_NAME="${APP_FULL_NAME}"
       --build-arg APP_SHORT_NAME=${APP_SHORT_NAME}
       --build-arg APP_IDENTIFIER=${APP_IDENTIFIER}
@@ -59,23 +60,21 @@ calculate-build-metadata:
   image: ${SALUKI_BUILD_CI_IMAGE}
   needs: []
   script:
-    - make emit-build-metadata >> build.env
+    - make emit-adp-build-metadata >> build.env
   artifacts:
     reports:
       dotenv: build.env
 
 build-adp-image-amd64:
-  extends: [.build-common-variables, .build-adp-definition]
+  extends: [.build-common-variables, .build-amd64-variables, .build-adp-definition]
   tags: ["docker-in-docker:amd64"]
   variables:
-    ARCH_TAG: amd64
     APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
 
 build-adp-image-arm64:
-  extends: [.build-common-variables, .build-adp-definition]
+  extends: [.build-common-variables, .build-arm64-variables, .build-adp-definition]
   tags: ["docker-in-docker:arm64"]
   variables:
-    ARCH_TAG: arm64
     APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
 
 build-adp-image:
@@ -87,22 +86,18 @@ build-adp-image:
     IMAGE_TAG: ${ADP_FULL_IMAGE_TAG}
 
 build-adp-image-fips-amd64:
-  extends: [.build-common-variables, .build-adp-definition]
+  extends: [.build-common-variables, .build-amd64-variables, .build-adp-definition]
   tags: ["docker-in-docker:amd64"]
   variables:
-    ARCH_TAG: amd64
     APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
     BUILD_FEATURES: "fips"
-    FIPS_ENABLED: "true"
 
 build-adp-image-fips-arm64:
-  extends: [.build-common-variables, .build-adp-definition]
+  extends: [.build-common-variables, .build-arm64-variables, .build-adp-definition]
   tags: ["docker-in-docker:arm64"]
   variables:
-    ARCH_TAG: arm64
     APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
     BUILD_FEATURES: "fips"
-    FIPS_ENABLED: "true"
 
 build-adp-image-fips:
   extends: [.build-common-variables, .build-adp-multi-arch-definition]
@@ -114,25 +109,23 @@ build-adp-image-fips:
 
 # Internal-specific build variants that use a GBI-compliant base image.
 build-adp-image-internal-amd64:
-  extends: [.build-common-variables, .build-adp-definition]
+  extends: [.build-common-variables, .build-amd64-variables, .build-adp-definition]
   tags: ["docker-in-docker:amd64"]
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - when: always
   variables:
-    ARCH_TAG: amd64
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
 
 build-adp-image-internal-arm64:
-  extends: [.build-common-variables, .build-adp-definition]
+  extends: [.build-common-variables, .build-arm64-variables, .build-adp-definition]
   tags: ["docker-in-docker:arm64"]
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - when: always
   variables:
-    ARCH_TAG: arm64
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
 
 build-adp-image-internal:
@@ -141,37 +134,33 @@ build-adp-image-internal:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - when: always
-  needs:
-    - build-adp-image-internal-amd64
-    - build-adp-image-internal-arm64
+      needs:
+        - build-adp-image-internal-amd64
+        - build-adp-image-internal-arm64
   variables:
     IMAGE_TAG: ${ADP_FULL_IMAGE_TAG}-internal
 
 build-adp-image-fips-internal-amd64:
-  extends: [.build-common-variables, .build-adp-definition]
+  extends: [.build-common-variables, .build-amd64-variables, .build-adp-definition]
   tags: ["docker-in-docker:amd64"]
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - when: always
   variables:
-    ARCH_TAG: amd64
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
     BUILD_FEATURES: "fips"
-    FIPS_ENABLED: "true"
 
 build-adp-image-fips-internal-arm64:
-  extends: [.build-common-variables, .build-adp-definition]
+  extends: [.build-common-variables, .build-arm64-variables, .build-adp-definition]
   tags: ["docker-in-docker:arm64"]
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - when: always
   variables:
-    ARCH_TAG: arm64
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
     BUILD_FEATURES: "fips"
-    FIPS_ENABLED: "true"
 
 build-adp-image-fips-internal:
   extends: [.build-common-variables, .build-adp-multi-arch-definition]
@@ -179,9 +168,9 @@ build-adp-image-fips-internal:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - when: always
-  needs:
-    - build-adp-image-fips-internal-amd64
-    - build-adp-image-fips-internal-arm64
+      needs:
+        - build-adp-image-fips-internal-amd64
+        - build-adp-image-fips-internal-arm64
   variables:
     IMAGE_TAG: ${ADP_FULL_IMAGE_TAG_FIPS}-internal
 
@@ -201,8 +190,8 @@ publish-adp-image-internal:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - when: always
-  needs:
-    - build-adp-image-internal
+      needs:
+        - build-adp-image-internal
   trigger:
     project: DataDog/images
     branch: master
@@ -225,8 +214,8 @@ publish-adp-image-internal-fips:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - when: always
-  needs:
-    - build-adp-image-fips-internal
+      needs:
+        - build-adp-image-fips-internal
   trigger:
     project: DataDog/images
     branch: master
@@ -249,11 +238,11 @@ display-image-tags:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - when: always
-  needs:
-    - build-adp-image-internal
-    - build-adp-image-fips-internal
-    - publish-adp-image-internal
-    - publish-adp-image-internal-fips
+      needs:
+        - build-adp-image-internal
+        - build-adp-image-fips-internal
+        - publish-adp-image-internal
+        - publish-adp-image-internal-fips
   script:
     - |-
       cat <<EOF
@@ -262,4 +251,8 @@ display-image-tags:
       ## Agent Data Plane (suitable for internal deployments, GBI-based)
       Non-FIPS: ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG}
       FIPS:     ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG_FIPS}
+
+      ## Agent Data Plane (suitable for internal deployments, GBI-based, Nydus-compatible)
+      Non-FIPS: ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG}-nydus
+      FIPS:     ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG_FIPS}-nydus
       EOF

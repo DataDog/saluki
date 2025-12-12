@@ -5,7 +5,6 @@
 /docker/Dockerfile.*
 /target
 /test
-/tooling
 .gitignore
 .gitlab-ci.yml
 CONTRIBUTING.md
