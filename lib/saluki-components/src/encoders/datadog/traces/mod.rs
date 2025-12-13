@@ -108,10 +108,9 @@ pub struct DatadogTraceConfiguration {
 }
 
 impl DatadogTraceConfiguration {
-    // Creates a new `DatadogTraceConfiguration` from the user configuration.
-    // The user configuration is deserialized into a DatadogTraceConfiguration and fields are able to override the defaults of DatadogTraceConfiguration.
+    /// Creates a new `DatadogTraceConfiguration` from the given configuration.
     pub fn from_configuration(user_configuration: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(user_configuration.as_typed()?)
+        Ok(user_configuration.as_typed()?)  // The user configuration is deserialized into a DatadogTraceConfiguration and fields override the defaults of DatadogTraceConfiguration.
     }
 }
 
