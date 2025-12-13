@@ -103,7 +103,7 @@ impl OtlpMetricsTranslator {
     ) -> Result<Vec<Event>, GenericError> {
         let mut events = Vec::new();
         let resource = resource_metrics.resource.unwrap_or_default();
-        let source = self.attribute_translator.resource_to_source(&resource);
+        let source = self.attribute_translator.resource_attributes_to_source(&resource);
 
         let attribute_tags = self.attribute_translator.tags_from_attributes(&resource.attributes);
 
