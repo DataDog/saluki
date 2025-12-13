@@ -23,13 +23,8 @@ impl Trace {
     }
 
     /// Returns a reference to the spans in this trace.
-    pub fn spans(&self) -> Vec<Span> {
-        self.spans.clone()
-    }
-
-    /// Returns a mutable reference to the spans in this trace.
-    pub fn spans_mut(&mut self) -> &mut Vec<Span> {
-        &mut self.spans
+    pub fn spans(&self) -> &Vec<Span> {
+        &self.spans
     }
 
     /// Returns the resource-level tags associated with this trace.

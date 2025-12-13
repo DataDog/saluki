@@ -434,7 +434,7 @@ fn build_trace_chunk(trace: &Trace) -> TraceChunk {
     chunk
 }
 
-fn convert_span(span: DdSpan) -> ProtoSpan {
+fn convert_span(span: &DdSpan) -> ProtoSpan {
     let mut proto = ProtoSpan::new();
     proto.set_service(span.service().to_string().into());
     proto.set_name(span.name().to_string().into());
