@@ -65,11 +65,9 @@ pub async fn handle_run_command(
     let bootstrap_dp_config = DataPlaneConfiguration::from_configuration(&bootstrap_config)
         .error_context("Failed to load data plane configuration.")?;
 
-    let in_standalone_mode = bootstrap_dp_config.standalone_mode();
-    if in_standalone_mode {
-        info!("Running in standalone mode. Origin detection and dynamic configuration will be disabled.");
-    }
+    info!("Bootstrap DP config: {:?}", bootstrap_dp_config);
 
+    let in_standalone_mode = bootstrap_dp_config.standalone_mode();
     let use_new_config_stream_endpoint = bootstrap_dp_config.use_new_config_stream_endpoint();
     let (config, dp_config) = if !in_standalone_mode && use_new_config_stream_endpoint {
         let config_updates_receiver = create_config_stream(&bootstrap_config)
@@ -112,7 +110,7 @@ pub async fn handle_run_command(
     let component_registry = ComponentRegistry::default();
     let health_registry = HealthRegistry::new();
     let env_provider =
-        ADPEnvironmentProvider::from_configuration(&config, &component_registry, &health_registry).await?;
+        ADPEnvironmentProvider::from_configuration(&config, &dp_config, &component_registry, &health_registry).await?;
 
     let dsd_stats_config = DogStatsDStatisticsConfiguration::new();
 
