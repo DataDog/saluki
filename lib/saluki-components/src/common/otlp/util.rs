@@ -113,15 +113,6 @@ pub fn get_string_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &s
     })
 }
 
-pub fn get_string_attribute_from_list<'a>(attributes: &'a [otlp_common::KeyValue], keys: &[&str]) -> Option<&'a str> {
-    for key in keys {
-        if let Some(value) = get_string_attribute(attributes, key) {
-            return Some(value);
-        }
-    }
-    None
-}
-
 /// Extracts container tags from OTLP resource attributes and inserts them into the provided TagSet.
 /// This function is based on the agent implementation here
 /// https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/attributes/attributes.go#L277
@@ -144,6 +135,38 @@ pub fn extract_container_tags_from_resource_attributes(attributes: &[otlp_common
                         if !extracted_tags.insert(custom_key) {
                             tags.insert_tag(format!("{}:{}", custom_key, s_val));
                         }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Extracts container tags from a resource tagset and inserts them into the provided TagSet.
+///
+/// This mirrors `extract_container_tags_from_resource_attributes`, but operates on a `TagSet` representation of the
+/// resource.
+pub fn extract_container_tags_from_resource_tagset(resource_tags: &TagSet, tags: &mut TagSet) {
+    let mut extracted_tags = FastHashSet::default();
+
+    for tag in resource_tags {
+        let Some(value) = tag.value() else {
+            continue;
+        };
+
+        // Semantic Conventions
+        if let Some(datadog_key) = CONTAINER_MAPPINGS.get(tag.name()) {
+            tags.insert_tag(format!("{}:{}", datadog_key, value));
+            extracted_tags.insert(*datadog_key);
+        }
+
+        // Custom (datadog.container.tag namespace)
+        if tag.name().starts_with(CUSTOM_CONTAINER_TAG_PREFIX) {
+            if let Some(custom_key) = tag.name().get(CUSTOM_CONTAINER_TAG_PREFIX.len()..) {
+                if !custom_key.is_empty() {
+                    // Do not replace if set via semantic conventions mappings.
+                    if !extracted_tags.insert(custom_key) {
+                        tags.insert_tag(format!("{}:{}", custom_key, value));
                     }
                 }
             }
@@ -176,6 +199,36 @@ pub fn resource_to_source(resource: &otlp_protos::opentelemetry::proto::resource
 
     // Hostname from attributes
     if let Some(host_name) = get_string_attribute(attributes, opentelemetry_semantic_conventions::resource::HOST_NAME) {
+        return Some(Source {
+            kind: SourceKind::HostnameKind,
+            identifier: host_name.to_string(),
+        });
+    }
+
+    None
+}
+
+/// Resolves the source metadata from a resource `TagSet`.
+///
+/// This is equivalent to `resource_to_source`, but avoids the OTLP protobuf resource type.
+pub fn tags_to_source(resource_tags: &TagSet) -> Option<Source> {
+    let get = |key: &str| -> Option<&str> { resource_tags.get_single_tag(key).and_then(|t| t.value()) };
+
+    // AWS ECS Fargate
+    if get(CLOUD_PROVIDER) == Some("aws")
+        && get(opentelemetry_semantic_conventions::resource::CLOUD_PLATFORM) == Some("aws_ecs")
+        && get(opentelemetry_semantic_conventions::resource::AWS_ECS_LAUNCHTYPE) == Some("fargate")
+    {
+        if let Some(task_arn) = get(AWS_ECS_TASK_ARN) {
+            return Some(Source {
+                kind: SourceKind::AwsEcsFargateKind,
+                identifier: task_arn.to_string(),
+            });
+        }
+    }
+
+    // Hostname from attributes
+    if let Some(host_name) = get(opentelemetry_semantic_conventions::resource::HOST_NAME) {
         return Some(Source {
             kind: SourceKind::HostnameKind,
             identifier: host_name.to_string(),

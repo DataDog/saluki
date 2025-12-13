@@ -840,7 +840,7 @@ fn otlp_value_to_json_value(value: &OtlpValue) -> Option<JsonValue> {
     }
 }
 
-fn otlp_value_to_string(value: &OtlpValue) -> Option<String> {
+pub(super) fn otlp_value_to_string(value: &OtlpValue) -> Option<String> {
     match value {
         OtlpValue::StringValue(v) => Some(v.clone()),
         OtlpValue::BoolValue(v) => Some(if *v { "true" } else { "false" }.to_string()),

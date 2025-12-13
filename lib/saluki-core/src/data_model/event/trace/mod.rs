@@ -1,7 +1,7 @@
 //! Traces.
 
-use otlp_protos::opentelemetry::proto::resource::v1::Resource as OtlpResource;
 use saluki_common::collections::FastHashMap;
+use saluki_context::tags::TagSet;
 use stringtheory::MetaString;
 /// A trace event.
 ///
@@ -10,14 +10,16 @@ use stringtheory::MetaString;
 pub struct Trace {
     /// The spans that make up this trace.
     spans: Vec<Span>,
-    /// The resource associated with this trace.
-    resource: OtlpResource,
+    /// Resource-level tags associated with this trace.
+    ///
+    /// This is derived from the resource of the spans and used to construct the tracer payload.
+    resource_tags: TagSet,
 }
 
 impl Trace {
     /// Creates a new `Trace` with the given spans.
-    pub fn new(spans: Vec<Span>, resource: OtlpResource) -> Self {
-        Self { spans, resource }
+    pub fn new(spans: Vec<Span>, resource_tags: TagSet) -> Self {
+        Self { spans, resource_tags }
     }
 
     /// Returns a reference to the spans in this trace.
@@ -30,9 +32,9 @@ impl Trace {
         &mut self.spans
     }
 
-    /// Returns the resource associated with this trace.
-    pub fn resource(&self) -> &OtlpResource {
-        &self.resource
+    /// Returns the resource-level tags associated with this trace.
+    pub fn resource_tags(&self) -> &TagSet {
+        &self.resource_tags
     }
 }
 

@@ -12,7 +12,6 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use opentelemetry_semantic_conventions::resource::{
     CONTAINER_ID, DEPLOYMENT_ENVIRONMENT_NAME, K8S_POD_UID, SERVICE_VERSION,
 };
-use otlp_protos::opentelemetry::proto::resource::v1::Resource;
 use protobuf::{rt::WireType, CodedOutputStream, Message};
 use saluki_config::GenericConfiguration;
 use saluki_context::tags::TagSet;
@@ -43,11 +42,10 @@ use crate::common::datadog::{
     telemetry::ComponentTelemetry,
     DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
 };
-use crate::common::otlp::util::resource_to_source;
 use crate::common::otlp::util::{
-    extract_container_tags_from_resource_attributes, get_string_attribute, get_string_attribute_from_list,
-    Source as OtlpSource, SourceKind as OtlpSourceKind, DEPLOYMENT_ENVIRONMENT_KEY, KEY_DATADOG_CONTAINER_ID,
-    KEY_DATADOG_CONTAINER_TAGS, KEY_DATADOG_ENVIRONMENT, KEY_DATADOG_HOST, KEY_DATADOG_VERSION,
+    extract_container_tags_from_resource_tagset, tags_to_source, Source as OtlpSource, SourceKind as OtlpSourceKind,
+    DEPLOYMENT_ENVIRONMENT_KEY, KEY_DATADOG_CONTAINER_ID, KEY_DATADOG_CONTAINER_TAGS, KEY_DATADOG_ENVIRONMENT,
+    KEY_DATADOG_HOST, KEY_DATADOG_VERSION,
 };
 
 const CONTAINER_TAGS_META_KEY: &str = "_dd.tags.container";
@@ -589,11 +587,11 @@ fn encode_tracer_payload(
     trace: &Trace, default_hostname: &MetaString, ignore_missing_fields: bool, output_buffer: &mut Vec<u8>,
     scratch_buf: &mut Vec<u8>,
 ) -> Result<(), protobuf::Error> {
-    let resource = trace.resource();
+    let resource_tags = trace.resource_tags();
     let first_span = trace.spans().first().cloned();
-    let source = resource_to_source(resource);
+    let source = tags_to_source(resource_tags);
     let mut output_stream = CodedOutputStream::vec(output_buffer);
-    if let Some(container_id) = resolve_container_id(resource, first_span) {
+    if let Some(container_id) = resolve_container_id(resource_tags, first_span) {
         output_stream.write_string(
             TRACER_PAYLOAD_CONTAINER_ID_FIELD_NUMBER,
             container_id.to_string().as_str(),
@@ -612,7 +610,7 @@ fn encode_tracer_payload(
         scratch_buf,
     )?;
 
-    if let Some(tags) = resolve_container_tags(resource, source.as_ref(), ignore_missing_fields) {
+    if let Some(tags) = resolve_container_tags(resource_tags, source.as_ref(), ignore_missing_fields) {
         write_map_entry_string_string(
             &mut output_stream,
             TRACER_PAYLOAD_TAGS_FIELD_NUMBER,
@@ -622,15 +620,17 @@ fn encode_tracer_payload(
         )?;
     }
 
-    if let Some(env) = resolve_env(resource, ignore_missing_fields) {
+    if let Some(env) = resolve_env(resource_tags, ignore_missing_fields) {
         output_stream.write_string(TRACER_PAYLOAD_ENV_FIELD_NUMBER, env.to_string().as_str())?;
     }
 
-    if let Some(hostname) = resolve_hostname(resource, source.as_ref(), Some(default_hostname), ignore_missing_fields) {
+    if let Some(hostname) =
+        resolve_hostname(resource_tags, source.as_ref(), Some(default_hostname), ignore_missing_fields)
+    {
         output_stream.write_string(TRACER_PAYLOAD_HOSTNAME_FIELD_NUMBER, hostname.to_string().as_str())?;
     }
 
-    if let Some(app_version) = resolve_app_version(resource) {
+    if let Some(app_version) = resolve_app_version(resource_tags) {
         output_stream.write_string(
             TRACER_PAYLOAD_APP_VERSION_FIELD_NUMBER,
             app_version.to_string().as_str(),
@@ -640,8 +640,12 @@ fn encode_tracer_payload(
     Ok(())
 }
 
+fn get_resource_tag_value<'a>(resource_tags: &'a TagSet, key: &str) -> Option<&'a str> {
+    resource_tags.get_single_tag(key).and_then(|t| t.value())
+}
+
 fn resolve_hostname(
-    resource: &Resource, source: Option<&OtlpSource>, default_hostname: Option<&MetaString>,
+    resource_tags: &TagSet, source: Option<&OtlpSource>, default_hostname: Option<&MetaString>,
     ignore_missing_fields: bool,
 ) -> Option<MetaString> {
     let mut hostname = match source {
@@ -656,32 +660,31 @@ fn resolve_hostname(
         hostname = Some(MetaString::empty());
     }
 
-    if let Some(value) = get_string_attribute(&resource.attributes, KEY_DATADOG_HOST) {
+    if let Some(value) = get_resource_tag_value(resource_tags, KEY_DATADOG_HOST) {
         hostname = Some(MetaString::from(value));
     }
 
     hostname
 }
 
-fn resolve_env(resource: &Resource, ignore_missing_fields: bool) -> Option<MetaString> {
-    if let Some(value) = get_string_attribute(&resource.attributes, KEY_DATADOG_ENVIRONMENT) {
+fn resolve_env(resource_tags: &TagSet, ignore_missing_fields: bool) -> Option<MetaString> {
+    if let Some(value) = get_resource_tag_value(resource_tags, KEY_DATADOG_ENVIRONMENT) {
         return Some(MetaString::from(value));
     }
     if ignore_missing_fields {
         return None;
     }
-    if let Some(value) = get_string_attribute(&resource.attributes, DEPLOYMENT_ENVIRONMENT_NAME) {
+    if let Some(value) = get_resource_tag_value(resource_tags, DEPLOYMENT_ENVIRONMENT_NAME) {
         return Some(MetaString::from(value));
     }
-    get_string_attribute(&resource.attributes, DEPLOYMENT_ENVIRONMENT_KEY).map(MetaString::from)
+    get_resource_tag_value(resource_tags, DEPLOYMENT_ENVIRONMENT_KEY).map(MetaString::from)
 }
 
-fn resolve_container_id(resource: &Resource, first_span: Option<DdSpan>) -> Option<MetaString> {
-    if let Some(value) = get_string_attribute_from_list(
-        &resource.attributes,
-        &[KEY_DATADOG_CONTAINER_ID, CONTAINER_ID, K8S_POD_UID],
-    ) {
-        return Some(MetaString::from(value));
+fn resolve_container_id(resource_tags: &TagSet, first_span: Option<DdSpan>) -> Option<MetaString> {
+    for key in [KEY_DATADOG_CONTAINER_ID, CONTAINER_ID, K8S_POD_UID] {
+        if let Some(value) = get_resource_tag_value(resource_tags, key) {
+            return Some(MetaString::from(value));
+        }
     }
     // TODO: add container id fallback equivalent to cidProvider
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/api/otlp.go#L414
@@ -695,20 +698,20 @@ fn resolve_container_id(resource: &Resource, first_span: Option<DdSpan>) -> Opti
     None
 }
 
-fn resolve_app_version(resource: &Resource) -> Option<MetaString> {
-    if let Some(value) = get_string_attribute(&resource.attributes, KEY_DATADOG_VERSION) {
+fn resolve_app_version(resource_tags: &TagSet) -> Option<MetaString> {
+    if let Some(value) = get_resource_tag_value(resource_tags, KEY_DATADOG_VERSION) {
         return Some(MetaString::from(value));
     }
-    get_string_attribute(&resource.attributes, SERVICE_VERSION).map(MetaString::from)
+    get_resource_tag_value(resource_tags, SERVICE_VERSION).map(MetaString::from)
 }
 
 fn resolve_container_tags(
-    resource: &Resource, source: Option<&OtlpSource>, ignore_missing_fields: bool,
+    resource_tags: &TagSet, source: Option<&OtlpSource>, ignore_missing_fields: bool,
 ) -> Option<MetaString> {
     // TODO: some refactoring is probably needed to normalize this function, the tags should already be normalized
     // since we do so when we transform OTLP spans to DD spans however to make this class extensible for non otlp traces, we would
     // need to normalize the tags here.
-    if let Some(tags) = get_string_attribute(&resource.attributes, KEY_DATADOG_CONTAINER_TAGS) {
+    if let Some(tags) = get_resource_tag_value(resource_tags, KEY_DATADOG_CONTAINER_TAGS) {
         if !tags.is_empty() {
             return Some(MetaString::from(tags));
         }
@@ -718,7 +721,7 @@ fn resolve_container_tags(
         return None;
     }
     let mut container_tags = TagSet::default();
-    extract_container_tags_from_resource_attributes(&resource.attributes, &mut container_tags);
+    extract_container_tags_from_resource_tagset(resource_tags, &mut container_tags);
     let is_fargate_source = source.is_some_and(|src| src.kind == OtlpSourceKind::AwsEcsFargateKind);
     if container_tags.is_empty() && !is_fargate_source {
         return None;

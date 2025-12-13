@@ -3307,7 +3307,6 @@ dependencies = [
  "metrics",
  "metrics-util",
  "ordered-float",
- "otlp-protos",
  "paste",
  "pin-project",
  "proptest",
