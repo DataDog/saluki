@@ -11,10 +11,6 @@ health_port: 5555
 # Point ourselves at the datadog-intake service.
 dd_url: "http://datadog-intake:2049"
 
-# Disable DogStatsD since we're testing OTLP
-dogstatsd_port: 0
-dogstatsd_socket: /airlock/metrics.sock
-
 # Enable OTLP receiver on gRPC port 4317
 otlp_config:
   receiver:

@@ -15,6 +15,8 @@ use saluki_error::GenericError;
 use saluki_health::HealthRegistry;
 use tracing::{debug, warn};
 
+use crate::config::DataPlaneConfiguration;
+
 /// Agent Data Plane-specific environment provider.
 ///
 /// This environment provider is designed for ADP's normal deployment environment, which is running alongside the
@@ -38,11 +40,12 @@ pub struct ADPEnvironmentProvider {
 
 impl ADPEnvironmentProvider {
     pub async fn from_configuration(
-        config: &GenericConfiguration, component_registry: &ComponentRegistry, health_registry: &HealthRegistry,
+        config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, component_registry: &ComponentRegistry,
+        health_registry: &HealthRegistry,
     ) -> Result<Self, GenericError> {
         let mut provider_component = component_registry.get_or_create("env_provider");
 
-        let in_standalone_mode = config.get_typed_or_default::<bool>("adp.standalone_mode");
+        let in_standalone_mode = dp_config.standalone_mode();
         if in_standalone_mode {
             warn!("Running in standalone mode. Origin detection/enrichment and other features dependent upon the Datadog Agent will not be available.");
         }

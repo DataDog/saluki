@@ -4,28 +4,28 @@ use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::ListenAddress;
 
-use crate::internal::ControlPlaneConfiguration;
+use crate::config::DataPlaneConfiguration;
 
-/// Typed API client for interacting with the control plane APIs exposed by ADP.
-pub struct ControlPlaneAPIClient {
+/// Typed API client for interacting with the APIs exposed by ADP.
+pub struct DataPlaneAPIClient {
     privileged_api_client: Client,
     privileged_api_base_url: String,
 }
 
-impl ControlPlaneAPIClient {
-    /// Creates a new `ControlPlaneClient` from the given generic configuration.
+impl DataPlaneAPIClient {
+    /// Creates a new `DataPlaneAPIClient` from the given generic configuration.
     ///
     /// # Errors
     ///
-    /// If the control plane configuration can't be deserialized, or the control plane API endpoints cannot be
+    /// If the data plane configuration can't be deserialized, or the data plane API endpoints cannot be
     /// determined, an error will be returned.
     pub fn from_config(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let control_plane_config = ControlPlaneConfiguration::from_config(config)?;
+        let dp_config = DataPlaneConfiguration::from_configuration(config)?;
 
         let (privileged_api_client, privileged_api_base_url) = {
             // Figure out if we're dealing with a TCP or Unix domain socket, which informs how we generate the base URL
             // and how we configure the HTTP client.
-            let listen_address = control_plane_config.secure_api_listen_address;
+            let listen_address = dp_config.secure_api_listen_address();
             let (base_url, maybe_unix_socket_path) = match &listen_address {
                 ListenAddress::Tcp(_) => {
                     let local_address = listen_address

@@ -21,13 +21,13 @@ target:
     DD_DOGSTATSD_SOCKET: /tmp/adp-dogstatsd-dgram.sock
 
     # Runs ADP in standalone mode, which decouples ADP from any dependency on the Datadog Agent.
-    DD_ADP_STANDALONE_MODE: "true"
+    DD_DATA_PLANE_STANDALONE_MODE: "true"
     DD_CHECKS_CONFIG_DIR: "/etc/adp-checks-agent/conf.d"
     DD_ADDITIONAL_CHECKSD: "/etc/adp-checks-agent/checks.d"
 
     # Enable internal telemetry endpoint.
-    DD_TELEMETRY_ENABLED: "true"
-    DD_PROMETHEUS_LISTEN_ADDR: tcp://127.0.0.1:5102
+    DD_DATA_PLANE_TELEMETRY_ENABLED: "true"
+    DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR: tcp://127.0.0.1:5102
 
 checks:
   - name: memory_usage

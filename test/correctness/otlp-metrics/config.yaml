@@ -18,5 +18,5 @@ comparison:
   additional_env_vars:
     - DD_API_KEY=correctness-test
     - DD_DATA_PLANE_ENABLED=true
-    - DD_ADP_ENABLED=true
+    - DD_DATA_PLANE_OTLP_ENABLED=true
     - DD_AGGREGATE_CONTEXT_LIMIT=500000

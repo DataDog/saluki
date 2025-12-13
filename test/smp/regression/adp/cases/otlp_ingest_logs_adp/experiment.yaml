@@ -24,15 +24,15 @@ target:
     DD_DOGSTATSD_SOCKET: /tmp/adp-dogstatsd-dgram.sock
 
     # Runs ADP in standalone mode, which decouples ADP from any dependency on the Datadog Agent.
-    DD_ADP_STANDALONE_MODE: "true"
+    DD_DATA_PLANE_STANDALONE_MODE: "true"
+
+    # Enable the OTLP pipeline.
+    DD_DATA_PLANE_OTLP_ENABLED: "true"
+    DD_OTLP_CONFIG: "{}"
 
     # Enable internal telemetry endpoint.
-    DD_TELEMETRY_ENABLED: "true"
-    DD_PROMETHEUS_LISTEN_ADDR: tcp://127.0.0.1:5102
-
-    # Enable OTLP endpoint.
-    DD_ADP_OTLP_ENABLED: "true"
-    DD_OTLP_CONFIG: "{}"
+    DD_DATA_PLANE_TELEMETRY_ENABLED: "true"
+    DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR: tcp://127.0.0.1:5102
 
 report_links:
   - text: (metrics)

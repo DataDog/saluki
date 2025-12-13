@@ -11,7 +11,6 @@ use http::{Request, Response};
 use hyper::{body::Incoming, service::service_fn};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::{collections::FastIndexMap, iter::ReusableDeduplicator};
-use saluki_config::GenericConfiguration;
 use saluki_context::{tags::Tag, Context};
 use saluki_core::components::{destinations::*, ComponentContext};
 use saluki_core::data_model::event::{
@@ -74,14 +73,9 @@ pub struct PrometheusConfiguration {
 }
 
 impl PrometheusConfiguration {
-    /// Creates a new `PrometheusConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
-    }
-
-    /// Returns the listen address for the Prometheus scrape endpoint.
-    pub fn listen_address(&self) -> &ListenAddress {
-        &self.listen_addr
+    /// Creates a new `PrometheusConfiguration` for the given listen address.
+    pub fn from_listen_address(listen_addr: ListenAddress) -> Self {
+        Self { listen_addr }
     }
 }
 
