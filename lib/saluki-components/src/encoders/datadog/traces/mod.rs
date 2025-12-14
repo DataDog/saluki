@@ -12,6 +12,8 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use opentelemetry_semantic_conventions::resource::{
     CONTAINER_ID, DEPLOYMENT_ENVIRONMENT_NAME, K8S_POD_UID, SERVICE_VERSION,
 };
+use saluki_env::host::providers::BoxedHostProvider;
+use saluki_env::{EnvironmentProvider, HostProvider};
 use protobuf::{rt::WireType, CodedOutputStream, Message};
 use saluki_config::GenericConfiguration;
 use saluki_context::tags::TagSet;
@@ -76,7 +78,7 @@ fn default_ignore_missing_datadog_fields() -> bool {
     false
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize)]
 pub struct DatadogTraceConfiguration {
     #[serde(
         rename = "serializer_compressor_kind",  // renames the field in the user_configuration from "serializer_compressor_kind" to "compressor_kind".
@@ -115,11 +117,15 @@ impl DatadogTraceConfiguration {
 }
 
 impl DatadogTraceConfiguration {
-    /// Sets the default hostname to use when traces don't have one.
-    // TODO: call this in the function add_otlp_to_blueprint
-    pub fn with_default_hostname(mut self, hostname: String) -> Self {
+    /// Sets the default_hostname using the environment provider 
+    pub async fn with_environment_provider<E>(mut self, environment_provider: E) -> Result<Self, GenericError>
+    where
+        E: EnvironmentProvider<Host = BoxedHostProvider>,
+    {
+        let host_provider = environment_provider.host().clone();
+        let hostname = host_provider.get_hostname().await?;
         self.default_hostname = Some(hostname);
-        self
+        Ok(self)
     }
 }
 
@@ -138,7 +144,8 @@ impl EncoderBuilder for DatadogTraceConfiguration {
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
 
-        let default_hostname = MetaString::from(self.default_hostname.clone().unwrap_or_default());
+        let default_hostname = self.default_hostname.clone().unwrap_or_default();
+        let default_hostname = MetaString::from(default_hostname);
 
         // Create request builder for traces which is used to generate HTTP requests.
         let mut trace_rb = RequestBuilder::new(
