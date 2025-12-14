@@ -1,3 +1,4 @@
+use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common};
 use otlp_protos::opentelemetry::proto::resource::v1::Resource as OtlpResource;
 use otlp_protos::opentelemetry::proto::trace::v1::ResourceSpans;
 use saluki_common::collections::FastHashMap;
@@ -7,10 +8,8 @@ use saluki_core::data_model::event::Event;
 
 use super::config::OtlpTracesTranslatorConfig;
 use crate::sources::otlp::traces::transform::otel_span_to_dd_span;
-use crate::sources::otlp::Metrics;
-use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common};
 use crate::sources::otlp::traces::transform::otlp_value_to_string;
-
+use crate::sources::otlp::Metrics;
 
 pub fn convert_trace_id(trace_id: &[u8]) -> u64 {
     if trace_id.len() < 8 {
@@ -29,7 +28,7 @@ pub fn convert_span_id(span_id: &[u8]) -> u64 {
 pub fn resource_attributes_to_tagset(attributes: &[otlp_common::KeyValue]) -> TagSet {
     let mut tags = TagSet::with_capacity(attributes.len());
     for kv in attributes {
-        if let Some(key_value) = &kv.value{
+        if let Some(key_value) = &kv.value {
             if let Some(value) = &key_value.value {
                 if let Some(string_value) = otlp_value_to_string(value) {
                     tags.insert_tag(format!("{}:{}", kv.key, string_value));

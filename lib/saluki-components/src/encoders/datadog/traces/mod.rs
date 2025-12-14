@@ -12,9 +12,8 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use opentelemetry_semantic_conventions::resource::{
     CONTAINER_ID, DEPLOYMENT_ENVIRONMENT_NAME, K8S_POD_UID, SERVICE_VERSION,
 };
-use saluki_env::host::providers::BoxedHostProvider;
-use saluki_env::{EnvironmentProvider, HostProvider};
 use protobuf::{rt::WireType, CodedOutputStream, Message};
+use saluki_common::task::HandleExt as _;
 use saluki_config::GenericConfiguration;
 use saluki_context::tags::TagSet;
 use saluki_core::data_model::event::trace::{
@@ -29,13 +28,15 @@ use saluki_core::{
     },
     observability::ComponentMetricsExt as _,
 };
+use saluki_env::host::providers::BoxedHostProvider;
+use saluki_env::{EnvironmentProvider, HostProvider};
 use saluki_error::generic_error;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_io::compression::CompressionScheme;
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use stringtheory::MetaString;
-use tokio::{select, time::sleep};
+use tokio::{select, sync::mpsc, time::sleep};
 use tracing::{debug, error};
 
 use crate::common::datadog::{
@@ -112,12 +113,12 @@ pub struct DatadogTraceConfiguration {
 impl DatadogTraceConfiguration {
     /// Creates a new `DatadogTraceConfiguration` from the given configuration.
     pub fn from_configuration(user_configuration: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(user_configuration.as_typed()?)  // The user configuration is deserialized into a DatadogTraceConfiguration and fields override the defaults of DatadogTraceConfiguration.
+        Ok(user_configuration.as_typed()?) // The user configuration is deserialized into a DatadogTraceConfiguration and fields override the defaults of DatadogTraceConfiguration.
     }
 }
 
 impl DatadogTraceConfiguration {
-    /// Sets the default_hostname using the environment provider 
+    /// Sets the default_hostname using the environment provider
     pub async fn with_environment_provider<E>(mut self, environment_provider: E) -> Result<Self, GenericError>
     where
         E: EnvironmentProvider<Host = BoxedHostProvider>,
@@ -195,11 +196,7 @@ pub struct DatadogTrace {
 #[async_trait]
 impl Encoder for DatadogTrace {
     async fn run(mut self: Box<Self>, mut context: EncoderContext) -> Result<(), GenericError> {
-        use saluki_common::task::HandleExt as _;
-        use tokio::{select, sync::mpsc};
-        use tracing::debug;
-
-        let Self {
+        let DatadogTrace {
             trace_rb,
             telemetry,
             flush_timeout,
@@ -630,9 +627,12 @@ fn encode_tracer_payload(
         output_stream.write_string(TRACER_PAYLOAD_ENV_FIELD_NUMBER, env.to_string().as_str())?;
     }
 
-    if let Some(hostname) =
-        resolve_hostname(resource_tags, source.as_ref(), Some(default_hostname), ignore_missing_fields)
-    {
+    if let Some(hostname) = resolve_hostname(
+        resource_tags,
+        source.as_ref(),
+        Some(default_hostname),
+        ignore_missing_fields,
+    ) {
         output_stream.write_string(TRACER_PAYLOAD_HOSTNAME_FIELD_NUMBER, hostname.to_string().as_str())?;
     }
 
