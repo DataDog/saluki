@@ -510,6 +510,29 @@ test-correctness-otlp-traces: ## Runs the 'otlp-traces' correctness test case
 	@echo "[*] Running 'otlp-traces' correctness test case..."
 	@target/release/ground-truth $(shell pwd)/test/correctness/otlp-traces/config.yaml
 
+.PHONY: build-panoramic
+build-panoramic: check-rust-build-tools
+build-panoramic: ## Builds the panoramic binary (ADP integration test runner)
+	@echo "[*] Building panoramic..."
+	@cargo build --profile release --package panoramic
+
+.PHONY: test-integration
+test-integration: build-panoramic build-datadog-agent-image
+test-integration: ## Runs all ADP integration tests
+	@echo "[*] Running ADP integration tests..."
+	@target/release/panoramic run -d $(shell pwd)/test/integration-tests/cases
+
+.PHONY: test-integration-quick
+test-integration-quick: build-panoramic
+test-integration-quick: ## Runs ADP integration tests (assumes images already built)
+	@echo "[*] Running ADP integration tests (quick mode)..."
+	@target/release/panoramic run -d $(shell pwd)/test/integration-tests/cases
+
+.PHONY: list-integration-tests
+list-integration-tests: build-panoramic
+list-integration-tests: ## Lists available ADP integration tests
+	@target/release/panoramic list -d $(shell pwd)/test/integration-tests/cases
+
 .PHONY: ensure-rust-miri
 ensure-rust-miri:
 ifeq ($(shell command -v rustup >/dev/null || echo not-found), not-found)
