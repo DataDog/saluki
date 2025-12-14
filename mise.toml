@@ -1,0 +1,876 @@
+# =============================================================================
+# mise configuration for Saluki
+# =============================================================================
+# An experimental toolkit for building telemetry data planes in Rust.
+#
+# Run `mise tasks` to see available tasks, or `mise run <task>` to execute one.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Environment Variables
+# -----------------------------------------------------------------------------
+# These replace the `export` block at the top of the Makefile.
+
+[env]
+# Build/target configuration
+TARGET_ARCH = "{{ arch() | replace(from='x86_64', to='amd64') | replace(from='aarch64', to='arm64') }}"
+BUILD_TARGET_ = "{{ `rustc -vV | sed -n 's|host: ||p'` }}"
+APP_GIT_HASH = "{{ get_env(name='CI_COMMIT_SHA', default=`git rev-parse --short HEAD 2>/dev/null || echo not-in-git`) }}"
+APP_BUILD_TIME = "{{ get_env(name='CI_PIPELINE_CREATED_AT', default='0000-00-00T00:00:00-00:00') }}"
+
+# ADP-specific settings
+ADP_APP_FULL_NAME = "Agent Data Plane"
+ADP_APP_SHORT_NAME = "data-plane"
+ADP_APP_IDENTIFIER = "adp"
+ADP_APP_GIT_HASH = "{{ get_env(name='APP_GIT_HASH', default=`git rev-parse --short HEAD 2>/dev/null || echo not-in-git`) }}"
+ADP_APP_VERSION_ = "{{ `grep -E '^version = \"' bin/agent-data-plane/Cargo.toml | head -n 1 | cut -d '\"' -f 2` }}"
+ADP_APP_BUILD_TIME = "{{ get_env(name='APP_BUILD_TIME', default='0000-00-00T00:00:00-00:00') }}"
+
+# Docker image settings
+GO_BUILD_IMAGE = "{{ get_env(name='GO_BUILD_IMAGE', default='golang:1.23-bullseye') }}"
+GO_APP_IMAGE = "{{ get_env(name='GO_APP_IMAGE', default='ubuntu:24.04') }}"
+
+# Protocol Buffers source versions
+PROTOBUF_SRC_REPO_DD_AGENT = "{{ get_env(name='PROTOBUF_SRC_REPO_DD_AGENT', default='7.73.x') }}"
+PROTOBUF_SRC_REPO_AGENT_PAYLOAD = "{{ get_env(name='PROTOBUF_SRC_REPO_AGENT_PAYLOAD', default='v5.0.164') }}"
+PROTOBUF_SRC_REPO_CONTAINERD = "{{ get_env(name='PROTOBUF_SRC_REPO_CONTAINERD', default='v2.2.0') }}"
+
+# Profiling tool versions
+DDPROF_VERSION = "{{ get_env(name='DDPROF_VERSION', default='0.20.0') }}"
+LADING_VERSION = "{{ get_env(name='LADING_VERSION', default='0.28.0') }}"
+
+# -----------------------------------------------------------------------------
+# Tool Management
+# -----------------------------------------------------------------------------
+# Cargo tools with pinned versions. mise handles installation automatically,
+# using cargo-binstall for faster installs when available.
+
+[tools]
+"cargo:cargo-deny" = "0.18.3"
+"cargo:cargo-hack" = "0.6.30"
+"cargo:cargo-nextest" = "0.9.99"
+"cargo:cargo-sort" = "1.0.9"
+"cargo:dd-rust-license-tool" = "1.0.3"
+"cargo:cargo-autoinherit" = "0.1.5"
+"cargo:dummyhttp" = "1.1.0"
+"cargo:cargo-machete" = "0.9.1"
+
+[settings]
+cargo_binstall = true
+
+# =============================================================================
+# Tasks
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Building
+# -----------------------------------------------------------------------------
+
+[tasks."build:adp"]
+description = "Build the ADP binary in debug mode"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[*] Building ADP locally..."
+cargo build --profile dev --package agent-data-plane
+"""
+
+[tasks."build:adp-release"]
+description = "Build the ADP binary in release mode"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[*] Building ADP locally..."
+cargo build --profile release --package agent-data-plane
+"""
+
+[tasks."build:adp-image"]
+description = "Build the ADP container image in release mode"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+BUILD_PROFILE="release"
+BUILD_FEATURES="default"
+IMAGE_TAG="testing"
+BUILD_TARGET="${BUILD_TARGET:-$BUILD_TARGET_}"
+ADP_APP_VERSION="${ADP_APP_VERSION:-$ADP_APP_VERSION_}"
+
+echo "[*] Building ADP image (target: ${BUILD_TARGET}, profile: ${BUILD_PROFILE}, features: ${BUILD_FEATURES})"
+docker build \
+  --tag saluki-images/agent-data-plane:latest \
+  --tag "local.dev/saluki-images/agent-data-plane:${IMAGE_TAG}" \
+  --build-arg "BUILD_TARGET=${BUILD_TARGET}" \
+  --build-arg "BUILD_PROFILE=${BUILD_PROFILE}" \
+  --build-arg "BUILD_FEATURES=${BUILD_FEATURES}" \
+  --build-arg "APP_FULL_NAME=${ADP_APP_FULL_NAME}" \
+  --build-arg "APP_SHORT_NAME=${ADP_APP_SHORT_NAME}" \
+  --build-arg "APP_IDENTIFIER=${ADP_APP_IDENTIFIER}" \
+  --build-arg "APP_VERSION=${ADP_APP_VERSION}" \
+  --build-arg "APP_GIT_HASH=${ADP_APP_GIT_HASH}" \
+  --file ./docker/Dockerfile.agent-data-plane \
+  .
+"""
+
+[tasks."build:adp-image-fips"]
+description = "Build the ADP container image in release mode (FIPS enabled)"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+BUILD_PROFILE="release"
+BUILD_FEATURES="fips"
+IMAGE_TAG="testing-fips"
+BUILD_TARGET="${BUILD_TARGET:-$BUILD_TARGET_}"
+ADP_APP_VERSION="${ADP_APP_VERSION:-$ADP_APP_VERSION_}"
+
+echo "[*] Building ADP image (target: ${BUILD_TARGET}, profile: ${BUILD_PROFILE}, features: fips)"
+docker build \
+  --tag saluki-images/agent-data-plane:latest \
+  --tag "local.dev/saluki-images/agent-data-plane:${IMAGE_TAG}" \
+  --build-arg "BUILD_TARGET=${BUILD_TARGET}" \
+  --build-arg "BUILD_PROFILE=${BUILD_PROFILE}" \
+  --build-arg "BUILD_FEATURES=${BUILD_FEATURES}" \
+  --build-arg "APP_FULL_NAME=${ADP_APP_FULL_NAME}" \
+  --build-arg "APP_SHORT_NAME=${ADP_APP_SHORT_NAME}" \
+  --build-arg "APP_IDENTIFIER=${ADP_APP_IDENTIFIER}" \
+  --build-arg "APP_VERSION=${ADP_APP_VERSION}" \
+  --build-arg "APP_GIT_HASH=${ADP_APP_GIT_HASH}" \
+  --file ./docker/Dockerfile.agent-data-plane \
+  .
+"""
+
+[tasks."build:datadog-agent-image"]
+description = "Build a converged Datadog Agent container image containing ADP"
+depends = ["build:adp-image"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[*] Building converged Datadog Agent image..."
+docker build \
+  --tag saluki-images/datadog-agent:latest \
+  --tag local.dev/saluki-images/datadog-agent:testing \
+  --file ./docker/Dockerfile.datadog-agent \
+  .
+"""
+
+[tasks."build:gen-statsd-image"]
+description = "Build the gen-statsd container image"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[*] Building gen-statsd image..."
+docker build \
+  --tag saluki-images/gen-statsd:latest \
+  --tag local.dev/saluki-images/gen-statsd:testing \
+  --build-arg "BUILD_IMAGE=${GO_BUILD_IMAGE}" \
+  --build-arg "APP_IMAGE=${GO_APP_IMAGE}" \
+  --file ./docker/Dockerfile.gen-statsd \
+  .
+"""
+
+[tasks."build:ground-truth"]
+description = "Build the ground-truth binary in debug mode"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[*] Building ground-truth locally..."
+cargo build --profile release --package ground-truth
+"""
+
+[tasks."build:datadog-intake-image"]
+description = "Build the datadog-intake container image in release mode"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[*] Building datadog-intake image..."
+docker build \
+  --tag saluki-images/datadog-intake:latest \
+  --tag local.dev/saluki-images/datadog-intake:testing \
+  --file ./docker/Dockerfile.datadog-intake \
+  .
+"""
+
+[tasks."build:millstone-image"]
+description = "Build the millstone container image in release mode"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[*] Building millstone image..."
+docker build \
+  --tag saluki-images/millstone:latest \
+  --tag local.dev/saluki-images/millstone:testing \
+  --file ./docker/Dockerfile.millstone \
+  .
+"""
+
+[tasks."build:proxy-dumper-image"]
+description = "Build the proxy-dumper container image"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Check for Go
+command -v go >/dev/null || { echo "Please install Go."; exit 1; }
+
+# Clone or update the repository
+if [ ! -d test/build/dd-agent-benchmarks ]; then
+  echo "[*] Cloning Datadog Agent Benchmarks repository..."
+  mkdir -p test/build
+  git -C test/build clone -q --single-branch --branch=tobz/adp-proxy-dumper-improvements \
+    git@github.com:DataDog/datadog-agent-benchmarks.git dd-agent-benchmarks
+fi
+
+echo "[*] Pulling latest changes from Git and updating vendored dependencies..."
+git -C test/build/dd-agent-benchmarks pull origin
+cd test/build/dd-agent-benchmarks/docker/proxy-dumper && go mod vendor
+cd - >/dev/null
+
+echo "[*] Building proxy-dumper image..."
+docker build \
+  --tag saluki-images/proxy-dumper:latest \
+  --tag local.dev/saluki-images/proxy-dumper:testing \
+  --build-arg "BUILD_IMAGE=${GO_BUILD_IMAGE}" \
+  --build-arg "APP_IMAGE=${GO_APP_IMAGE}" \
+  --file ./docker/Dockerfile.proxy-dumper \
+  test/build/dd-agent-benchmarks/docker/proxy-dumper
+"""
+
+[tasks."build:dsd-client"]
+description = "Build the Dogstatsd client (used for sending DSD payloads)"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[*] Building Dogstatsd client..."
+go build -C tooling/dogstatsd_client -o ../bin/dogstatsd_client .
+"""
+
+# -----------------------------------------------------------------------------
+# Running
+# -----------------------------------------------------------------------------
+
+[tasks."run:adp"]
+description = "Run ADP locally (debug, requires Datadog Agent for tagging)"
+depends = ["build:adp"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+
+test -f /etc/datadog-agent/auth_token || { echo "Authentication token not found at /etc/datadog-agent/auth_token. Is the Datadog Agent running? Is the current user in the right group to access it?"; exit 1; }
+test -n "${DD_API_KEY:-}" || { echo "API key not set. Please set the DD_API_KEY environment variable."; exit 1; }
+
+echo "[*] Running ADP..."
+DD_DATA_PLANE_ENABLED=true DD_DATA_PLANE_DOGSTATSD_ENABLED=true \
+DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
+DD_DATA_PLANE_TELEMETRY_ENABLED=true DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102 \
+DD_AUTH_TOKEN_FILE_PATH=/etc/datadog-agent/auth_token \
+target/debug/agent-data-plane run
+"""
+
+[tasks."run:adp-release"]
+description = "Run ADP locally (release, requires Datadog Agent for tagging)"
+depends = ["build:adp-release"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+
+test -f /etc/datadog-agent/auth_token || { echo "Authentication token not found at /etc/datadog-agent/auth_token. Is the Datadog Agent running? Is the current user in the right group to access it?"; exit 1; }
+test -n "${DD_API_KEY:-}" || { echo "API key not set. Please set the DD_API_KEY environment variable."; exit 1; }
+
+echo "[*] Running ADP..."
+DD_DATA_PLANE_ENABLED=true DD_DATA_PLANE_DOGSTATSD_ENABLED=true \
+DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
+DD_DATA_PLANE_TELEMETRY_ENABLED=true DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102 \
+DD_AUTH_TOKEN_FILE_PATH=/etc/datadog-agent/auth_token \
+target/release/agent-data-plane run
+"""
+
+[tasks."run:adp-standalone"]
+description = "Run ADP locally in standalone mode (debug)"
+depends = ["build:adp"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Create dummy agent config
+echo "{}" > /tmp/adp-empty-config.yaml
+
+echo "[*] Running ADP..."
+DD_DATA_PLANE_STANDALONE_MODE=true DD_DATA_PLANE_DOGSTATSD_ENABLED=true \
+DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
+DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
+DD_DATA_PLANE_TELEMETRY_ENABLED=true DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102 \
+target/debug/agent-data-plane --config /tmp/adp-empty-config.yaml run
+"""
+
+[tasks."run:adp-standalone-release"]
+description = "Run ADP locally in standalone mode (release)"
+depends = ["build:adp-release"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Create dummy agent config
+echo "{}" > /tmp/adp-empty-config.yaml
+
+echo "[*] Running ADP..."
+DD_DATA_PLANE_STANDALONE_MODE=true DD_DATA_PLANE_DOGSTATSD_ENABLED=true \
+DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
+DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
+DD_DATA_PLANE_TELEMETRY_ENABLED=true DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102 \
+target/release/agent-data-plane --config /tmp/adp-empty-config.yaml run
+"""
+
+[tasks."run:dsd-basic-udp"]
+description = "Run a basic set of metrics via the Dogstatsd client (UDP)"
+depends = ["build:dsd-client"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[*] Sending basic metrics via Dogstatsd (UDP, 127.0.0.1:9191)..."
+./tooling/bin/dogstatsd_client 127.0.0.1:9191 count:1,gauge:2,histogram:3,distribution:4,set:five
+"""
+
+[tasks."run:dsd-basic-uds"]
+description = "Run a basic set of metrics via the Dogstatsd client (UDS)"
+depends = ["build:dsd-client"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[*] Sending basic metrics via Dogstatsd (unixgram:///tmp/adp-dogstatsd-dgram.sock)..."
+./tooling/bin/dogstatsd_client unixgram:///tmp/adp-dogstatsd-dgram.sock count:1,gauge:2,histogram:3,distribution:4,set:five
+"""
+
+[tasks."run:dsd-basic-uds-stream"]
+description = "Run a basic set of metrics via the Dogstatsd client (UDS Stream)"
+depends = ["build:dsd-client"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[*] Sending basic metrics via Dogstatsd (unix:///tmp/adp-dogstatsd-stream.sock)..."
+./tooling/bin/dogstatsd_client unix:///tmp/adp-dogstatsd-stream.sock count:1,gauge:2,histogram:3,distribution:4,set:five
+"""
+
+# -----------------------------------------------------------------------------
+# Kubernetes
+# -----------------------------------------------------------------------------
+
+[tasks."k8s:create-cluster"]
+description = "Create a dedicated Kubernetes cluster (minikube)"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+command -v git >/dev/null || { echo "Please install git."; exit 1; }
+command -v helm >/dev/null || { echo "Please install Helm: https://helm.sh/docs/intro/install/"; exit 1; }
+command -v minikube >/dev/null || { echo "Please install minikube: https://minikube.sigs.k8s.io/docs/start/"; exit 1; }
+
+echo "[*] Creating Kubernetes cluster via minikube..."
+minikube start --profile=adp-local --container-runtime=containerd --keep-context=true
+"""
+
+[tasks."k8s:_ensure-ns"]
+hide = true
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+NS="${1:?Namespace argument required}"
+minikube --profile=adp-local kubectl -- --context adp-local get ns "${NS}" >/dev/null 2>&1 \
+  || (echo "[*] Creating Kubernetes namespace '${NS}'..." && minikube --profile=adp-local kubectl -- --context adp-local create ns "${NS}")
+"""
+
+[tasks."k8s:install-datadog-agent"]
+description = "Install the Datadog Agent (minikube)"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+command -v git >/dev/null || { echo "Please install git."; exit 1; }
+command -v helm >/dev/null || { echo "Please install Helm: https://helm.sh/docs/intro/install/"; exit 1; }
+command -v minikube >/dev/null || { echo "Please install minikube: https://minikube.sigs.k8s.io/docs/start/"; exit 1; }
+
+# Ensure namespace exists
+mise run k8s:_ensure-ns datadog
+
+if [ ! -d test/k8s/charts ]; then
+  echo "[*] Downloading Datadog Agent Helm chart locally..."
+  git -C test/k8s clone https://github.com/DataDog/helm-charts.git charts
+  helm repo add prometheus https://prometheus-community.github.io/helm-charts
+fi
+
+git -C test/k8s/charts pull origin
+helm dependency build ./test/k8s/charts/charts/datadog
+
+if ! helm --kube-context adp-local list 2>&1 | grep -q datadog; then
+  echo "[*] Installing Datadog Agent..."
+  helm upgrade --install --kube-context adp-local datadog ./test/k8s/charts/charts/datadog \
+    --namespace datadog \
+    --values ./test/k8s/datadog-agent-values.yaml
+fi
+"""
+
+[tasks."k8s:set-dd-api-key"]
+description = "Create API key secret for ADP and Datadog Agent (minikube)"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+command -v minikube >/dev/null || { echo "Please install minikube: https://minikube.sigs.k8s.io/docs/start/"; exit 1; }
+
+# Ensure namespace exists
+mise run k8s:_ensure-ns datadog
+
+echo "[*] Creating/updating Kubernetes secret(s) for Datadog Agent..."
+minikube --profile=adp-local kubectl -- --context adp-local -n datadog delete secret datadog-secret --ignore-not-found
+echo "${DD_API_KEY}" | minikube --profile=adp-local kubectl -- --context adp-local -n datadog create secret generic datadog-secret --from-file=api-key=/dev/stdin --from-literal=app-key=fake-app-key
+"""
+
+[tasks."k8s:push-adp-image"]
+description = "Load the ADP container image (minikube)"
+depends = ["build:adp-image"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+command -v minikube >/dev/null || { echo "Please install minikube: https://minikube.sigs.k8s.io/docs/start/"; exit 1; }
+
+echo "[*] Pushing ADP image to cluster..."
+minikube --profile=adp-local image load local.dev/saluki-images/agent-data-plane:testing --overwrite=true
+"""
+
+[tasks."k8s:push-datadog-agent-image"]
+description = "Load the converged Datadog Agent container image (minikube)"
+depends = ["build:datadog-agent-image"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+command -v minikube >/dev/null || { echo "Please install minikube: https://minikube.sigs.k8s.io/docs/start/"; exit 1; }
+
+echo "[*] Pushing converged Datadog Agent image to cluster..."
+minikube --profile=adp-local image load local.dev/saluki-images/datadog-agent:testing --overwrite=true
+"""
+
+[tasks."k8s:deploy-statsd-generator"]
+description = "Create the statsd-generator deployment (minikube)"
+depends = ["build:gen-statsd-image"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+command -v minikube >/dev/null || { echo "Please install minikube: https://minikube.sigs.k8s.io/docs/start/"; exit 1; }
+
+# Ensure namespace exists
+mise run k8s:_ensure-ns adp-testing
+
+echo "[*] Deleting existing statsd-generator deployment..."
+minikube --profile=adp-local kubectl -- --context adp-local -n adp-testing delete deployment statsd-generator --ignore-not-found=true
+echo "[*] Pushing gen-statsd image to cluster..."
+minikube --profile=adp-local image load local.dev/saluki-images/gen-statsd:testing --overwrite=true
+echo "[*] Creating statsd-generator deployment..."
+minikube --profile=adp-local kubectl -- --context adp-local -n adp-testing apply -f ./test/k8s/statsd-generator.yaml
+"""
+
+[tasks."k8s:deploy-proxy-dumper"]
+description = "Create the proxy-dumper deployment (minikube)"
+depends = ["build:proxy-dumper-image"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+command -v minikube >/dev/null || { echo "Please install minikube: https://minikube.sigs.k8s.io/docs/start/"; exit 1; }
+
+# Ensure namespace exists
+mise run k8s:_ensure-ns adp-testing
+
+echo "[*] Deleting existing proxy-dumper deployment..."
+minikube --profile=adp-local kubectl -- --context adp-local -n adp-testing delete deployment proxy-dumper --ignore-not-found=true
+echo "[*] Pushing proxy-dumper image to cluster..."
+minikube --profile=adp-local image load local.dev/saluki-images/proxy-dumper:testing --overwrite=true
+echo "[*] Creating proxy-dumper deployment..."
+minikube --profile=adp-local kubectl -- --context adp-local -n adp-testing apply -f ./test/k8s/proxy-dumper.yaml
+"""
+
+[tasks."k8s:tail-adp-logs"]
+description = "Tail the container logs for ADP"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+command -v minikube >/dev/null || { echo "Please install minikube: https://minikube.sigs.k8s.io/docs/start/"; exit 1; }
+minikube --profile=adp-local kubectl -- --context adp-local -n datadog logs -f daemonset/datadog -c agent-data-plane
+"""
+
+[tasks."k8s:tail-proxy-dumper-logs"]
+description = "Tail the container logs for proxy-dumper"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+command -v minikube >/dev/null || { echo "Please install minikube: https://minikube.sigs.k8s.io/docs/start/"; exit 1; }
+minikube --profile=adp-local kubectl -- --context adp-local -n adp-testing logs -f deployment/proxy-dumper
+"""
+
+# -----------------------------------------------------------------------------
+# Checking
+# -----------------------------------------------------------------------------
+
+[tasks."check:all"]
+description = "Check everything"
+depends = [
+  "check:fmt",
+  "check:clippy",
+  "check:features",
+  "check:deny",
+  "check:licenses",
+]
+
+[tasks."check:clippy"]
+description = "Check Rust source code with Clippy"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[*] Checking Clippy lints..."
+cargo clippy --all-targets --workspace -- -D warnings
+"""
+
+[tasks."check:deny"]
+description = "Check all crate dependencies for outstanding advisories or usage restrictions"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[*] Checking for dependency advisories, license conflicts, and untrusted dependency sources..."
+cargo deny check --hide-inclusion-graph --show-stats
+"""
+
+[tasks."check:fmt"]
+description = "Check that all Rust source files are formatted properly"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[*] Checking Rust source code formatting..."
+cargo +nightly fmt -- --check
+echo "[*] Checking Cargo.toml formatting..."
+cargo sort --workspace --check >/dev/null
+"""
+
+[tasks."check:licenses"]
+description = "Check that the third-party license file is up to date"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[*] Checking if third-party license file is up-to-date..."
+dd-rust-license-tool check
+"""
+
+[tasks."check:features"]
+description = "Check that all packages with feature flags can be built with different flag combinations"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+command -v jq >/dev/null || { echo "Please install jq: https://jqlang.org/download/"; exit 1; }
+
+echo "[*] Checking feature flag compatibility matrix..."
+find . -name Cargo.toml -not -path './target/*' | grep -v '^./Cargo.toml' | \
+xargs -I {} -- cargo read-manifest --manifest-path {} | \
+jq -r "select(.features | del(.default) | length > 0) | .name" | \
+xargs -I {} -- cargo hack --feature-powerset --package {} check --tests --quiet
+"""
+
+[tasks."check:unused-deps"]
+description = "Check for any imported dependencies that are not used in code"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[*] Checking for unused dependencies..."
+cargo machete
+"""
+
+# -----------------------------------------------------------------------------
+# Testing
+# -----------------------------------------------------------------------------
+
+[tasks.test]
+description = "Run all unit tests"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[*] Running unit tests..."
+cargo nextest run --lib -E 'not test(/property_test_*/)'
+"""
+
+[tasks."test:property"]
+description = "Run all property tests"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[*] Running property tests..."
+cargo nextest run --lib --release -E 'test(/property_test_*/)'
+"""
+
+[tasks."test:docs"]
+description = "Run all doctests"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[*] Running doctests..."
+cargo test --workspace --exclude containerd-protos --exclude datadog-protos --exclude otlp-protos --doc
+"""
+
+[tasks."test:miri"]
+description = "Run all Miri-specific unit tests"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+command -v rustup >/dev/null || { echo "Rustup must be present to install nightly toolchain/Miri component: https://www.rust-lang.org/tools/install"; exit 1; }
+
+echo "[*] Installing/updating nightly Rust (2025-06-16) and Miri component..."
+rustup toolchain install nightly-2025-06-16 --component miri
+echo "[*] Ensuring Miri is setup..."
+cargo +nightly-2025-06-16 miri setup
+echo "[*] Running Miri-specific unit tests..."
+cargo +nightly-2025-06-16 miri test -p stringtheory
+"""
+
+[tasks."test:loom"]
+description = "Run all Loom-specific unit tests"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[*] Running Loom-specific unit tests..."
+cargo nextest run --release --features loom -p stringtheory loom_tests
+"""
+
+[tasks."test:all"]
+description = "Test everything"
+depends = ["test", "test:property", "test:docs", "test:miri", "test:loom"]
+
+[tasks."test:correctness"]
+description = "Run the complete correctness suite"
+depends = [
+  "test:correctness:dsd-plain",
+  "test:correctness:dsd-origin-detection",
+  "test:correctness:otlp-metrics",
+  "test:correctness:otlp-traces",
+]
+
+[tasks."test:correctness:dsd-plain"]
+description = "Run the 'dsd-plain' correctness test case"
+depends = ["build:ground-truth"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[*] Running 'dsd-plain' correctness test case..."
+target/release/ground-truth "$(pwd)/test/correctness/dsd-plain/config.yaml"
+"""
+
+[tasks."test:correctness:dsd-origin-detection"]
+description = "Run the 'dsd-origin-detection' correctness test case"
+depends = ["build:ground-truth"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[*] Running 'dsd-origin-detection' correctness test case..."
+target/release/ground-truth "$(pwd)/test/correctness/dsd-origin-detection/config.yaml"
+"""
+
+[tasks."test:correctness:otlp-metrics"]
+description = "Run the 'otlp-metrics' correctness test case"
+depends = ["build:ground-truth"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[*] Running 'otlp-metrics' correctness test case..."
+target/release/ground-truth "$(pwd)/test/correctness/otlp-metrics/config.yaml"
+"""
+
+[tasks."test:correctness:otlp-traces"]
+description = "Run the 'otlp-traces' correctness test case"
+depends = ["build:ground-truth"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[*] Running 'otlp-traces' correctness test case..."
+target/release/ground-truth "$(pwd)/test/correctness/otlp-traces/config.yaml"
+"""
+
+# -----------------------------------------------------------------------------
+# Profiling
+# -----------------------------------------------------------------------------
+
+[tasks."profile:run-blackhole"]
+description = "Run a blackhole HTTP server for use by ADP"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[*] Running blackhole HTTP server at localhost:9095..."
+dummyhttp -v -c 202 -p 9095
+"""
+
+[tasks."profile:_ensure-ddprof"]
+hide = true
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+if [ ! -f test/ddprof/bin/ddprof ]; then
+  echo "[*] Downloading ddprof v${DDPROF_VERSION}..."
+  curl -q -L -o /tmp/ddprof.tar.xz "https://github.com/DataDog/ddprof/releases/download/v${DDPROF_VERSION}/ddprof-${DDPROF_VERSION}-${TARGET_ARCH}-linux.tar.xz"
+  tar -C test -xf /tmp/ddprof.tar.xz
+  rm -f /tmp/ddprof.tar.xz
+fi
+"""
+
+[tasks."profile:run-adp"]
+description = "Run ADP locally for profiling (via ddprof)"
+depends = ["build:adp-release", "profile:_ensure-ddprof"]
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+
+test -S /var/run/datadog/apm.socket || { echo "APM socket at /var/run/datadog/apm.socket not found. Is the Datadog Agent running?"; exit 1; }
+
+GIT_COMMIT=$(git rev-parse --short HEAD)
+echo "[*] Running ADP under ddprof (service: adp, environment: local, version: ${GIT_COMMIT})..."
+DD_API_KEY=api-key-adp-profiling DD_HOSTNAME=adp-profiling DD_DD_URL=http://127.0.0.1:9095 \
+DD_DATA_PLANE_STANDALONE_MODE=true \
+DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
+DD_ADP_OTLP_ENABLED=true DD_OTLP_CONFIG="{}" \
+DD_DATA_PLANE_TELEMETRY_ENABLED=true DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102 \
+./test/ddprof/bin/ddprof --service adp --environment local --service-version "${GIT_COMMIT}" \
+--url unix:///var/run/datadog/apm.socket \
+--inlined-functions true --timeline --upload-period 10 --preset cpu_live_heap \
+target/release/agent-data-plane run
+"""
+
+[tasks."profile:run-smp-experiment"]
+description = "Run a specific SMP experiment for Saluki"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+
+EXPERIMENT="${1:?EXPERIMENT argument required. Usage: mise run profile:run-smp-experiment <experiment-name>}"
+
+test -f "test/smp/regression/adp/cases/${EXPERIMENT}/lading/lading.yaml" || { echo "Lading configuration for '${EXPERIMENT}' not found. (test/smp/regression/adp/cases/${EXPERIMENT}/lading/lading.yaml)"; exit 1; }
+
+echo "[*] Running '${EXPERIMENT}' experiment (15 minutes)..."
+docker run --rm --network host \
+  --mount "type=bind,source=$(pwd)/test/smp/regression/adp/cases/${EXPERIMENT}/lading/lading.yaml,target=/tmp/lading.yaml" \
+  --mount type=bind,source=/tmp/adp-dogstatsd-dgram.sock,target=/tmp/adp-dogstatsd-dgram.sock \
+  --mount type=bind,source=/tmp/adp-dogstatsd-stream.sock,target=/tmp/adp-dogstatsd-stream.sock \
+  "ghcr.io/datadog/lading:${LADING_VERSION}" \
+  --config-path /tmp/lading.yaml --no-target --warmup-duration-seconds 1 --experiment-duration-seconds 900 --prometheus-addr 127.0.0.1:9229
+"""
+
+# -----------------------------------------------------------------------------
+# Development
+# -----------------------------------------------------------------------------
+
+[tasks."dev:fast-edit-test"]
+description = "Run a lightweight format/lint/test pass"
+depends = [
+  "fmt",
+  "sync-licenses",
+  "check:clippy",
+  "check:deny",
+  "check:licenses",
+  "test:all",
+]
+
+# -----------------------------------------------------------------------------
+# CI
+# -----------------------------------------------------------------------------
+
+[tasks."ci:emit-adp-build-metadata"]
+description = "Emit ADP build metadata shell variables suitable for use during image builds"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+ADP_APP_VERSION="${ADP_APP_VERSION:-$ADP_APP_VERSION_}"
+echo "APP_FULL_NAME=${ADP_APP_FULL_NAME}"
+echo "APP_SHORT_NAME=${ADP_APP_SHORT_NAME}"
+echo "APP_IDENTIFIER=${ADP_APP_IDENTIFIER}"
+echo "APP_GIT_HASH=${ADP_APP_GIT_HASH}"
+echo "APP_VERSION=${ADP_APP_VERSION}"
+echo "APP_BUILD_TIME=${ADP_APP_BUILD_TIME}"
+"""
+
+[tasks."ci:cargo-preinstall"]
+description = "Pre-install all necessary Cargo tools (used for CI)"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[*] Pre-installing all necessary Cargo tools..."
+mise install
+echo "[*] Pre-installed all necessary Cargo tools!"
+"""
+
+# -----------------------------------------------------------------------------
+# Docs
+# -----------------------------------------------------------------------------
+
+[tasks."docs:run"]
+description = "Run a local development server for documentation"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+command -v bun >/dev/null || { echo "Please install Bun: https://bun.sh/docs/installation"; exit 1; }
+
+echo "[*] Running local development server for documentation..."
+bun install
+bun run docs:dev
+"""
+
+# -----------------------------------------------------------------------------
+# Utility
+# -----------------------------------------------------------------------------
+
+[tasks.fmt]
+description = "Format Rust source code"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[*] Formatting Rust source code..."
+cargo +nightly fmt
+echo "[*] Ensuring workspace dependencies are autoinherited..."
+cargo autoinherit 2>/dev/null || true
+echo "[*] Formatting Cargo.toml files..."
+cargo sort --workspace >/dev/null
+"""
+
+[tasks.clean]
+description = "Clean all build artifacts (debug/release)"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[*] Cleaning Rust build artifacts..."
+cargo clean
+"""
+
+[tasks."clean:docker"]
+description = "Clean up Docker build cache"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[*] Cleaning Docker cache..."
+docker builder prune --filter type=exec.cachemount --force
+"""
+
+[tasks."clean:airlock"]
+description = "Clean up Airlock-related resources in Docker (used for correctness tests)"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[*] Cleaning Airlock-related resources..."
+docker container ls --filter label=created_by=airlock -q | xargs -r docker container rm -f
+docker volume ls --filter label=created_by=airlock -q | xargs -r docker volume rm -f
+docker network ls --filter label=created_by=airlock -q | xargs -r docker network rm -f
+"""
+
+[tasks."sync-licenses"]
+description = "Synchronize the third-party license file with the current crate dependencies"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+echo "[*] Synchronizing third-party license file to current dependencies..."
+dd-rust-license-tool write
+"""
+
+[tasks."update-protos"]
+description = "Update all vendored Protocol Buffers definitions from their source repositories"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+DD_AGENT_GIT_TAG="${PROTOBUF_SRC_REPO_DD_AGENT}" \
+AGENT_PAYLOAD_GIT_TAG="${PROTOBUF_SRC_REPO_AGENT_PAYLOAD}" \
+CONTAINERD_GIT_TAG="${PROTOBUF_SRC_REPO_CONTAINERD}" \
+./tooling/update-protos.sh
+"""
