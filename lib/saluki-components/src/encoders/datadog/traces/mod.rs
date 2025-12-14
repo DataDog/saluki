@@ -19,6 +19,7 @@ use saluki_context::tags::TagSet;
 use saluki_core::data_model::event::trace::{
     AttributeScalarValue, AttributeValue, Span as DdSpan, SpanEvent as DdSpanEvent, SpanLink as DdSpanLink,
 };
+use saluki_core::data_model::event::Event::Trace as TraceEnum;
 use saluki_core::topology::{EventsBuffer, PayloadsBuffer};
 use saluki_core::{
     components::{encoders::*, ComponentContext},
@@ -36,7 +37,11 @@ use saluki_io::compression::CompressionScheme;
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use stringtheory::MetaString;
-use tokio::{select, sync::mpsc, time::sleep};
+use tokio::{
+    select,
+    sync::mpsc::{self, Receiver, Sender},
+    time::sleep,
+};
 use tracing::{debug, error};
 
 use crate::common::datadog::{
@@ -266,8 +271,8 @@ impl Encoder for DatadogTrace {
 
 async fn run_request_builder(
     mut trace_request_builder: RequestBuilder<TraceEndpointEncoder>, telemetry: ComponentTelemetry,
-    mut events_rx: tokio::sync::mpsc::Receiver<saluki_core::topology::EventsBuffer>,
-    payloads_tx: tokio::sync::mpsc::Sender<saluki_core::topology::PayloadsBuffer>, flush_timeout: std::time::Duration,
+    mut events_rx: Receiver<saluki_core::topology::EventsBuffer>,
+    payloads_tx: Sender<saluki_core::topology::PayloadsBuffer>, flush_timeout: std::time::Duration,
 ) -> Result<(), GenericError> {
     let mut pending_flush = false;
     let pending_flush_timeout = sleep(flush_timeout);
@@ -278,7 +283,7 @@ async fn run_request_builder(
             Some(event_buffer) = events_rx.recv() => {
                 for event in event_buffer {
                     let trace = match event {
-                        saluki_core::data_model::event::Event::Trace(trace) => trace,
+                        TraceEnum(trace) => trace,
                         _ => continue,
                     };
 
@@ -404,7 +409,6 @@ impl EndpointEncoder for TraceEndpointEncoder {
     }
 
     fn encode(&mut self, trace: &Self::Input, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError> {
-        // TODO: add stats https://github.com/DataDog/datadog-agent/blob/test-journal-payloads-to-disk/pkg/trace/api/otlp.go#L277-L294
         encode_tracer_payload(
             trace,
             &self.default_hostname,
@@ -594,11 +598,8 @@ fn encode_tracer_payload(
     let first_span = trace.spans().first().cloned();
     let source = tags_to_source(resource_tags);
     let mut output_stream = CodedOutputStream::vec(output_buffer);
-    if let Some(container_id) = resolve_container_id(resource_tags, first_span) {
-        output_stream.write_string(
-            TRACER_PAYLOAD_CONTAINER_ID_FIELD_NUMBER,
-            container_id.to_string().as_str(),
-        )?;
+    if let Some(container_id) = resolve_container_id(resource_tags, first_span.as_ref()) {
+        output_stream.write_string(TRACER_PAYLOAD_CONTAINER_ID_FIELD_NUMBER, container_id)?;
     }
     // TODO: add language name, language version and tracer version from stats
     // https://github.com/DataDog/datadog-agent/blob/redo_instrument_otlp_traffic/pkg/trace/api/otlp.go#L496-L498
@@ -624,16 +625,16 @@ fn encode_tracer_payload(
     }
 
     if let Some(env) = resolve_env(resource_tags, ignore_missing_fields) {
-        output_stream.write_string(TRACER_PAYLOAD_ENV_FIELD_NUMBER, env.to_string().as_str())?;
+        output_stream.write_string(TRACER_PAYLOAD_ENV_FIELD_NUMBER, env)?;
     }
 
     if let Some(hostname) = resolve_hostname(
         resource_tags,
         source.as_ref(),
-        Some(default_hostname),
+        Some(default_hostname.as_ref()),
         ignore_missing_fields,
     ) {
-        output_stream.write_string(TRACER_PAYLOAD_HOSTNAME_FIELD_NUMBER, hostname.to_string().as_str())?;
+        output_stream.write_string(TRACER_PAYLOAD_HOSTNAME_FIELD_NUMBER, hostname)?;
     }
 
     if let Some(app_version) = resolve_app_version(resource_tags) {
@@ -650,46 +651,46 @@ fn get_resource_tag_value<'a>(resource_tags: &'a TagSet, key: &str) -> Option<&'
     resource_tags.get_single_tag(key).and_then(|t| t.value())
 }
 
-fn resolve_hostname(
-    resource_tags: &TagSet, source: Option<&OtlpSource>, default_hostname: Option<&MetaString>,
+fn resolve_hostname<'a>(
+    resource_tags: &'a TagSet, source: Option<&'a OtlpSource>, default_hostname: Option<&'a str>,
     ignore_missing_fields: bool,
-) -> Option<MetaString> {
+) -> Option<&'a str> {
     let mut hostname = match source {
         Some(src) => match src.kind {
-            OtlpSourceKind::HostnameKind => Some(MetaString::from(src.identifier.as_str())),
-            _ => Some(MetaString::empty()),
+            OtlpSourceKind::HostnameKind => Some(src.identifier.as_str()),
+            _ => Some(""),
         },
-        None => default_hostname.cloned(),
+        None => default_hostname,
     };
 
     if ignore_missing_fields {
-        hostname = Some(MetaString::empty());
+        hostname = Some("");
     }
 
     if let Some(value) = get_resource_tag_value(resource_tags, KEY_DATADOG_HOST) {
-        hostname = Some(MetaString::from(value));
+        hostname = Some(value);
     }
 
     hostname
 }
 
-fn resolve_env(resource_tags: &TagSet, ignore_missing_fields: bool) -> Option<MetaString> {
+fn resolve_env(resource_tags: &TagSet, ignore_missing_fields: bool) -> Option<&str> {
     if let Some(value) = get_resource_tag_value(resource_tags, KEY_DATADOG_ENVIRONMENT) {
-        return Some(MetaString::from(value));
+        return Some(value);
     }
     if ignore_missing_fields {
         return None;
     }
     if let Some(value) = get_resource_tag_value(resource_tags, DEPLOYMENT_ENVIRONMENT_NAME) {
-        return Some(MetaString::from(value));
+        return Some(value);
     }
-    get_resource_tag_value(resource_tags, DEPLOYMENT_ENVIRONMENT_KEY).map(MetaString::from)
+    get_resource_tag_value(resource_tags, DEPLOYMENT_ENVIRONMENT_KEY)
 }
 
-fn resolve_container_id(resource_tags: &TagSet, first_span: Option<DdSpan>) -> Option<MetaString> {
+fn resolve_container_id<'a>(resource_tags: &'a TagSet, first_span: Option<&'a DdSpan>) -> Option<&'a str> {
     for key in [KEY_DATADOG_CONTAINER_ID, CONTAINER_ID, K8S_POD_UID] {
         if let Some(value) = get_resource_tag_value(resource_tags, key) {
-            return Some(MetaString::from(value));
+            return Some(value);
         }
     }
     // TODO: add container id fallback equivalent to cidProvider
@@ -697,18 +698,18 @@ fn resolve_container_id(resource_tags: &TagSet, first_span: Option<DdSpan>) -> O
     if let Some(span) = first_span {
         for (k, v) in span.meta() {
             if k == KEY_DATADOG_CONTAINER_ID || k == K8S_POD_UID {
-                return Some(v.clone());
+                return Some(v.as_ref());
             }
         }
     }
     None
 }
 
-fn resolve_app_version(resource_tags: &TagSet) -> Option<MetaString> {
+fn resolve_app_version(resource_tags: &TagSet) -> Option<&str> {
     if let Some(value) = get_resource_tag_value(resource_tags, KEY_DATADOG_VERSION) {
-        return Some(MetaString::from(value));
+        return Some(value);
     }
-    get_resource_tag_value(resource_tags, SERVICE_VERSION).map(MetaString::from)
+    get_resource_tag_value(resource_tags, SERVICE_VERSION)
 }
 
 fn resolve_container_tags(
