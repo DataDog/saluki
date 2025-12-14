@@ -434,7 +434,7 @@ impl EndpointEncoder for TraceEndpointEncoder {
 }
 
 fn build_trace_chunk(trace: &Trace) -> TraceChunk {
-    let spans: Vec<ProtoSpan> = trace.spans().into_iter().map(convert_span).collect();
+    let spans: Vec<ProtoSpan> = trace.spans().iter().map(convert_span).collect();
     let mut chunk = TraceChunk::new();
     chunk.set_spans(spans);
     // TODO: add sampling https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/api/otlp.go#L550
