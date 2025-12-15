@@ -271,8 +271,7 @@ impl Encoder for DatadogTrace {
 
 async fn run_request_builder(
     mut trace_request_builder: RequestBuilder<TraceEndpointEncoder>, telemetry: ComponentTelemetry,
-    mut events_rx: Receiver<EventsBuffer>,
-    payloads_tx: Sender<PayloadsBuffer>, flush_timeout: std::time::Duration,
+    mut events_rx: Receiver<EventsBuffer>, payloads_tx: Sender<PayloadsBuffer>, flush_timeout: std::time::Duration,
 ) -> Result<(), GenericError> {
     let mut pending_flush = false;
     let pending_flush_timeout = sleep(flush_timeout);
