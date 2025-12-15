@@ -65,8 +65,6 @@ pub async fn handle_run_command(
     let bootstrap_dp_config = DataPlaneConfiguration::from_configuration(&bootstrap_config)
         .error_context("Failed to load data plane configuration.")?;
 
-    info!("Bootstrap DP config: {:?}", bootstrap_dp_config);
-
     let in_standalone_mode = bootstrap_dp_config.standalone_mode();
     let use_new_config_stream_endpoint = bootstrap_dp_config.use_new_config_stream_endpoint();
     let (config, dp_config) = if !in_standalone_mode && use_new_config_stream_endpoint {
