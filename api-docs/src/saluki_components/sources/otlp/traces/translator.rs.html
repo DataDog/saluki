@@ -1,67 +1,86 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `lib/saluki-components/src/sources/otlp/traces/translator.rs`."><title>translator.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../../../static.files/rustdoc-80aa586b.css"><meta name="rustdoc-vars" data-root-path="../../../../../" data-static-root-path="../../../../../static.files/" data-current-crate="saluki_components" data-themes="" data-resource-suffix="" data-rustdoc-version="1.94.0-nightly (0208ee09b 2025-12-14)" data-channel="nightly" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-a3946164.js" data-settings-js="settings-c38705f0.js" ><script src="../../../../../static.files/storage-e2aeef58.js"></script><script defer src="../../../../../static.files/src-script-813739b1.js"></script><script defer src="../../../../../src-files.js"></script><script defer src="../../../../../static.files/main-3e30299d.js"></script><noscript><link rel="stylesheet" href="../../../../../static.files/noscript-ffcac47a.css"></noscript><link rel="alternate icon" type="image/png" href="../../../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content"><div class="main-heading"><h1><div class="sub-heading">saluki_components/sources/otlp/traces/</div>translator.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-2"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="kw">use </span>otlp_protos::opentelemetry::proto::trace::v1::ResourceSpans;
-<a href=#2 id=2 data-nosnippet>2</a><span class="kw">use </span>saluki_common::collections::FastHashMap;
-<a href=#3 id=3 data-nosnippet>3</a><span class="kw">use </span>saluki_core::data_model::event::trace::{Span <span class="kw">as </span>DdSpan, Trace};
-<a href=#4 id=4 data-nosnippet>4</a><span class="kw">use </span>saluki_core::data_model::event::Event;
-<a href=#5 id=5 data-nosnippet>5</a>
-<a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span><span class="kw">super</span>::config::OtlpTracesTranslatorConfig;
-<a href=#7 id=7 data-nosnippet>7</a><span class="kw">use </span><span class="kw">crate</span>::sources::otlp::traces::transform::otel_span_to_dd_span;
-<a href=#8 id=8 data-nosnippet>8</a><span class="kw">use </span><span class="kw">crate</span>::sources::otlp::Metrics;
-<a href=#9 id=9 data-nosnippet>9</a>
-<a href=#10 id=10 data-nosnippet>10</a><span class="kw">pub fn </span>convert_trace_id(trace_id: <span class="kw-2">&amp;</span>[u8]) -&gt; u64 {
-<a href=#11 id=11 data-nosnippet>11</a>    <span class="kw">if </span>trace_id.len() &lt; <span class="number">8 </span>{
-<a href=#12 id=12 data-nosnippet>12</a>        <span class="kw">return </span><span class="number">0</span>;
-<a href=#13 id=13 data-nosnippet>13</a>    }
-<a href=#14 id=14 data-nosnippet>14</a>    u64::from_be_bytes((<span class="kw-2">&amp;</span>trace_id[(trace_id.len() - <span class="number">8</span>)..]).try_into().unwrap_or_default())
-<a href=#15 id=15 data-nosnippet>15</a>}
-<a href=#16 id=16 data-nosnippet>16</a>
-<a href=#17 id=17 data-nosnippet>17</a><span class="kw">pub fn </span>convert_span_id(span_id: <span class="kw-2">&amp;</span>[u8]) -&gt; u64 {
-<a href=#18 id=18 data-nosnippet>18</a>    <span class="kw">if </span>span_id.len() != <span class="number">8 </span>{
-<a href=#19 id=19 data-nosnippet>19</a>        <span class="kw">return </span><span class="number">0</span>;
-<a href=#20 id=20 data-nosnippet>20</a>    }
-<a href=#21 id=21 data-nosnippet>21</a>    u64::from_be_bytes(span_id.try_into().unwrap_or_default())
-<a href=#22 id=22 data-nosnippet>22</a>}
-<a href=#23 id=23 data-nosnippet>23</a>
-<a href=#24 id=24 data-nosnippet>24</a><span class="kw">pub struct </span>OtlpTracesTranslator {
-<a href=#25 id=25 data-nosnippet>25</a>    config: OtlpTracesTranslatorConfig,
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `lib/saluki-components/src/sources/otlp/traces/translator.rs`."><title>translator.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../../../static.files/rustdoc-80aa586b.css"><meta name="rustdoc-vars" data-root-path="../../../../../" data-static-root-path="../../../../../static.files/" data-current-crate="saluki_components" data-themes="" data-resource-suffix="" data-rustdoc-version="1.94.0-nightly (0208ee09b 2025-12-14)" data-channel="nightly" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-a3946164.js" data-settings-js="settings-c38705f0.js" ><script src="../../../../../static.files/storage-e2aeef58.js"></script><script defer src="../../../../../static.files/src-script-813739b1.js"></script><script defer src="../../../../../src-files.js"></script><script defer src="../../../../../static.files/main-3e30299d.js"></script><noscript><link rel="stylesheet" href="../../../../../static.files/noscript-ffcac47a.css"></noscript><link rel="alternate icon" type="image/png" href="../../../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content"><div class="main-heading"><h1><div class="sub-heading">saluki_components/sources/otlp/traces/</div>translator.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-2"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="kw">use </span>otlp_protos::opentelemetry::proto::common::v1::{<span class="self">self </span><span class="kw">as </span>otlp_common};
+<a href=#2 id=2 data-nosnippet>2</a><span class="kw">use </span>otlp_protos::opentelemetry::proto::resource::v1::Resource <span class="kw">as </span>OtlpResource;
+<a href=#3 id=3 data-nosnippet>3</a><span class="kw">use </span>otlp_protos::opentelemetry::proto::trace::v1::ResourceSpans;
+<a href=#4 id=4 data-nosnippet>4</a><span class="kw">use </span>saluki_common::collections::FastHashMap;
+<a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>saluki_context::tags::TagSet;
+<a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span>saluki_core::data_model::event::trace::{Span <span class="kw">as </span>DdSpan, Trace};
+<a href=#7 id=7 data-nosnippet>7</a><span class="kw">use </span>saluki_core::data_model::event::Event;
+<a href=#8 id=8 data-nosnippet>8</a>
+<a href=#9 id=9 data-nosnippet>9</a><span class="kw">use </span><span class="kw">super</span>::config::OtlpTracesTranslatorConfig;
+<a href=#10 id=10 data-nosnippet>10</a><span class="kw">use </span><span class="kw">crate</span>::sources::otlp::traces::transform::otel_span_to_dd_span;
+<a href=#11 id=11 data-nosnippet>11</a><span class="kw">use </span><span class="kw">crate</span>::sources::otlp::traces::transform::otlp_value_to_string;
+<a href=#12 id=12 data-nosnippet>12</a><span class="kw">use </span><span class="kw">crate</span>::sources::otlp::Metrics;
+<a href=#13 id=13 data-nosnippet>13</a>
+<a href=#14 id=14 data-nosnippet>14</a><span class="kw">pub fn </span>convert_trace_id(trace_id: <span class="kw-2">&amp;</span>[u8]) -&gt; u64 {
+<a href=#15 id=15 data-nosnippet>15</a>    <span class="kw">if </span>trace_id.len() &lt; <span class="number">8 </span>{
+<a href=#16 id=16 data-nosnippet>16</a>        <span class="kw">return </span><span class="number">0</span>;
+<a href=#17 id=17 data-nosnippet>17</a>    }
+<a href=#18 id=18 data-nosnippet>18</a>    u64::from_be_bytes((<span class="kw-2">&amp;</span>trace_id[(trace_id.len() - <span class="number">8</span>)..]).try_into().unwrap_or_default())
+<a href=#19 id=19 data-nosnippet>19</a>}
+<a href=#20 id=20 data-nosnippet>20</a>
+<a href=#21 id=21 data-nosnippet>21</a><span class="kw">pub fn </span>convert_span_id(span_id: <span class="kw-2">&amp;</span>[u8]) -&gt; u64 {
+<a href=#22 id=22 data-nosnippet>22</a>    <span class="kw">if </span>span_id.len() != <span class="number">8 </span>{
+<a href=#23 id=23 data-nosnippet>23</a>        <span class="kw">return </span><span class="number">0</span>;
+<a href=#24 id=24 data-nosnippet>24</a>    }
+<a href=#25 id=25 data-nosnippet>25</a>    u64::from_be_bytes(span_id.try_into().unwrap_or_default())
 <a href=#26 id=26 data-nosnippet>26</a>}
 <a href=#27 id=27 data-nosnippet>27</a>
-<a href=#28 id=28 data-nosnippet>28</a><span class="kw">impl </span>OtlpTracesTranslator {
-<a href=#29 id=29 data-nosnippet>29</a>    <span class="kw">pub fn </span>new(config: OtlpTracesTranslatorConfig) -&gt; <span class="self">Self </span>{
-<a href=#30 id=30 data-nosnippet>30</a>        <span class="self">Self </span>{ config }
-<a href=#31 id=31 data-nosnippet>31</a>    }
-<a href=#32 id=32 data-nosnippet>32</a>
-<a href=#33 id=33 data-nosnippet>33</a>    <span class="kw">pub fn </span>translate_resource_spans(<span class="kw-2">&amp;</span><span class="self">self</span>, resource_spans: ResourceSpans, metrics: <span class="kw-2">&amp;</span>Metrics) -&gt; Vec&lt;Event&gt; {
-<a href=#34 id=34 data-nosnippet>34</a>        <span class="kw">let </span>resource = resource_spans.resource.unwrap_or_default();
-<a href=#35 id=35 data-nosnippet>35</a>        <span class="kw">let </span><span class="kw-2">mut </span>traces_by_id: FastHashMap&lt;u64, Vec&lt;DdSpan&gt;&gt; = FastHashMap::default();
-<a href=#36 id=36 data-nosnippet>36</a>        <span class="kw">let </span>ignore_missing_fields = <span class="self">self</span>.config.ignore_missing_datadog_fields;
-<a href=#37 id=37 data-nosnippet>37</a>
-<a href=#38 id=38 data-nosnippet>38</a>        <span class="kw">for </span>scope_spans <span class="kw">in </span>resource_spans.scope_spans {
-<a href=#39 id=39 data-nosnippet>39</a>            <span class="kw">let </span>scope = scope_spans.scope;
-<a href=#40 id=40 data-nosnippet>40</a>            <span class="kw">let </span>scope_ref = scope.as_ref();
-<a href=#41 id=41 data-nosnippet>41</a>            metrics.spans_received().increment(scope_spans.spans.len() <span class="kw">as </span>u64);
-<a href=#42 id=42 data-nosnippet>42</a>            <span class="kw">for </span>span <span class="kw">in </span>scope_spans.spans {
-<a href=#43 id=43 data-nosnippet>43</a>                <span class="kw">let </span>trace_id = convert_trace_id(<span class="kw-2">&amp;</span>span.trace_id);
-<a href=#44 id=44 data-nosnippet>44</a>                <span class="kw">let </span>dd_span = otel_span_to_dd_span(
-<a href=#45 id=45 data-nosnippet>45</a>                    <span class="kw-2">&amp;</span>span,
-<a href=#46 id=46 data-nosnippet>46</a>                    <span class="kw-2">&amp;</span>resource,
-<a href=#47 id=47 data-nosnippet>47</a>                    scope_ref,
-<a href=#48 id=48 data-nosnippet>48</a>                    ignore_missing_fields,
-<a href=#49 id=49 data-nosnippet>49</a>                    <span class="self">self</span>.config.compute_top_level_by_span_kind,
-<a href=#50 id=50 data-nosnippet>50</a>                );
-<a href=#51 id=51 data-nosnippet>51</a>                traces_by_id.entry(trace_id).or_default().push(dd_span);
-<a href=#52 id=52 data-nosnippet>52</a>            }
-<a href=#53 id=53 data-nosnippet>53</a>        }
-<a href=#54 id=54 data-nosnippet>54</a>
-<a href=#55 id=55 data-nosnippet>55</a>        traces_by_id
-<a href=#56 id=56 data-nosnippet>56</a>            .into_iter()
-<a href=#57 id=57 data-nosnippet>57</a>            .filter_map(|(<span class="kw">_</span>, spans)| {
-<a href=#58 id=58 data-nosnippet>58</a>                <span class="kw">if </span>spans.is_empty() {
-<a href=#59 id=59 data-nosnippet>59</a>                    <span class="prelude-val">None
-<a href=#60 id=60 data-nosnippet>60</a>                </span>} <span class="kw">else </span>{
-<a href=#61 id=61 data-nosnippet>61</a>                    <span class="prelude-val">Some</span>(Event::Trace(Trace::new(spans)))
-<a href=#62 id=62 data-nosnippet>62</a>                }
-<a href=#63 id=63 data-nosnippet>63</a>            })
-<a href=#64 id=64 data-nosnippet>64</a>            .collect()
-<a href=#65 id=65 data-nosnippet>65</a>    }
-<a href=#66 id=66 data-nosnippet>66</a>}
+<a href=#28 id=28 data-nosnippet>28</a><span class="kw">pub fn </span>resource_attributes_to_tagset(attributes: <span class="kw-2">&amp;</span>[otlp_common::KeyValue]) -&gt; TagSet {
+<a href=#29 id=29 data-nosnippet>29</a>    <span class="kw">let </span><span class="kw-2">mut </span>tags = TagSet::with_capacity(attributes.len());
+<a href=#30 id=30 data-nosnippet>30</a>    <span class="kw">for </span>kv <span class="kw">in </span>attributes {
+<a href=#31 id=31 data-nosnippet>31</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(key_value) = <span class="kw-2">&amp;</span>kv.value {
+<a href=#32 id=32 data-nosnippet>32</a>            <span class="kw">if let </span><span class="prelude-val">Some</span>(value) = <span class="kw-2">&amp;</span>key_value.value {
+<a href=#33 id=33 data-nosnippet>33</a>                <span class="kw">if let </span><span class="prelude-val">Some</span>(string_value) = otlp_value_to_string(value) {
+<a href=#34 id=34 data-nosnippet>34</a>                    tags.insert_tag(<span class="macro">format!</span>(<span class="string">"{}:{}"</span>, kv.key, string_value));
+<a href=#35 id=35 data-nosnippet>35</a>                }
+<a href=#36 id=36 data-nosnippet>36</a>            }
+<a href=#37 id=37 data-nosnippet>37</a>        }
+<a href=#38 id=38 data-nosnippet>38</a>    }
+<a href=#39 id=39 data-nosnippet>39</a>    tags
+<a href=#40 id=40 data-nosnippet>40</a>}
+<a href=#41 id=41 data-nosnippet>41</a>
+<a href=#42 id=42 data-nosnippet>42</a><span class="kw">pub struct </span>OtlpTracesTranslator {
+<a href=#43 id=43 data-nosnippet>43</a>    config: OtlpTracesTranslatorConfig,
+<a href=#44 id=44 data-nosnippet>44</a>}
+<a href=#45 id=45 data-nosnippet>45</a>
+<a href=#46 id=46 data-nosnippet>46</a><span class="kw">impl </span>OtlpTracesTranslator {
+<a href=#47 id=47 data-nosnippet>47</a>    <span class="kw">pub fn </span>new(config: OtlpTracesTranslatorConfig) -&gt; <span class="self">Self </span>{
+<a href=#48 id=48 data-nosnippet>48</a>        <span class="self">Self </span>{ config }
+<a href=#49 id=49 data-nosnippet>49</a>    }
+<a href=#50 id=50 data-nosnippet>50</a>
+<a href=#51 id=51 data-nosnippet>51</a>    <span class="kw">pub fn </span>translate_resource_spans(<span class="kw-2">&amp;</span><span class="self">self</span>, resource_spans: ResourceSpans, metrics: <span class="kw-2">&amp;</span>Metrics) -&gt; Vec&lt;Event&gt; {
+<a href=#52 id=52 data-nosnippet>52</a>        <span class="kw">let </span>resource: OtlpResource = resource_spans.resource.unwrap_or_default();
+<a href=#53 id=53 data-nosnippet>53</a>        <span class="kw">let </span>resource_tags: TagSet = resource_attributes_to_tagset(<span class="kw-2">&amp;</span>resource.attributes);
+<a href=#54 id=54 data-nosnippet>54</a>        <span class="kw">let </span><span class="kw-2">mut </span>traces_by_id: FastHashMap&lt;u64, Vec&lt;DdSpan&gt;&gt; = FastHashMap::default();
+<a href=#55 id=55 data-nosnippet>55</a>        <span class="kw">let </span>ignore_missing_fields = <span class="self">self</span>.config.ignore_missing_datadog_fields;
+<a href=#56 id=56 data-nosnippet>56</a>
+<a href=#57 id=57 data-nosnippet>57</a>        <span class="kw">for </span>scope_spans <span class="kw">in </span>resource_spans.scope_spans {
+<a href=#58 id=58 data-nosnippet>58</a>            <span class="kw">let </span>scope = scope_spans.scope;
+<a href=#59 id=59 data-nosnippet>59</a>            <span class="kw">let </span>scope_ref = scope.as_ref();
+<a href=#60 id=60 data-nosnippet>60</a>            metrics.spans_received().increment(scope_spans.spans.len() <span class="kw">as </span>u64);
+<a href=#61 id=61 data-nosnippet>61</a>            <span class="kw">for </span>span <span class="kw">in </span>scope_spans.spans {
+<a href=#62 id=62 data-nosnippet>62</a>                <span class="kw">let </span>trace_id = convert_trace_id(<span class="kw-2">&amp;</span>span.trace_id);
+<a href=#63 id=63 data-nosnippet>63</a>                <span class="kw">let </span>dd_span = otel_span_to_dd_span(
+<a href=#64 id=64 data-nosnippet>64</a>                    <span class="kw-2">&amp;</span>span,
+<a href=#65 id=65 data-nosnippet>65</a>                    <span class="kw-2">&amp;</span>resource,
+<a href=#66 id=66 data-nosnippet>66</a>                    scope_ref,
+<a href=#67 id=67 data-nosnippet>67</a>                    ignore_missing_fields,
+<a href=#68 id=68 data-nosnippet>68</a>                    <span class="self">self</span>.config.compute_top_level_by_span_kind,
+<a href=#69 id=69 data-nosnippet>69</a>                );
+<a href=#70 id=70 data-nosnippet>70</a>                traces_by_id.entry(trace_id).or_default().push(dd_span);
+<a href=#71 id=71 data-nosnippet>71</a>            }
+<a href=#72 id=72 data-nosnippet>72</a>        }
+<a href=#73 id=73 data-nosnippet>73</a>
+<a href=#74 id=74 data-nosnippet>74</a>        traces_by_id
+<a href=#75 id=75 data-nosnippet>75</a>            .into_iter()
+<a href=#76 id=76 data-nosnippet>76</a>            .filter_map(|(<span class="kw">_</span>, spans)| {
+<a href=#77 id=77 data-nosnippet>77</a>                <span class="kw">if </span>spans.is_empty() {
+<a href=#78 id=78 data-nosnippet>78</a>                    <span class="prelude-val">None
+<a href=#79 id=79 data-nosnippet>79</a>                </span>} <span class="kw">else </span>{
+<a href=#80 id=80 data-nosnippet>80</a>                    <span class="prelude-val">Some</span>(Event::Trace(Trace::new(spans, resource_tags.clone())))
+<a href=#81 id=81 data-nosnippet>81</a>                }
+<a href=#82 id=82 data-nosnippet>82</a>            })
+<a href=#83 id=83 data-nosnippet>83</a>            .collect()
+<a href=#84 id=84 data-nosnippet>84</a>    }
+<a href=#85 id=85 data-nosnippet>85</a>}
 </code></pre></div></section></main></body></html>
