@@ -80,17 +80,27 @@ help:
 
 ##@ Building
 
+.PHONY: build-adp-base
+build-adp-base: check-rust-build-tools
+build-adp-base:
+	@echo "[*] Building ADP locally (profile: $(ADP_BUILD_PROFILE))"
+	@APP_FULL_NAME="$(ADP_APP_FULL_NAME)" \
+	APP_SHORT_NAME="$(ADP_APP_SHORT_NAME)" \
+	APP_IDENTIFIER="$(ADP_APP_IDENTIFIER)" \
+	APP_GIT_HASH="$(ADP_APP_GIT_HASH)" \
+	APP_VERSION="$(ADP_APP_VERSION)" \
+	APP_BUILD_DATE="$(ADP_APP_BUILD_DATE)" \
+	cargo build --profile $(ADP_BUILD_PROFILE) --package agent-data-plane
+
 .PHONY: build-adp
-build-adp: check-rust-build-tools
+build-adp: override ADP_BUILD_PROFILE=dev
+build-adp: build-adp-base
 build-adp: ## Builds the ADP binary in debug mode
-	@echo "[*] Building ADP locally..."
-	@cargo build --profile dev --package agent-data-plane
 
 .PHONY: build-adp-release
-build-adp-release: check-rust-build-tools
+build-adp-release: override ADP_BUILD_PROFILE=release
+build-adp-release: build-adp-base
 build-adp-release: ## Builds the ADP binary in release mode
-	@echo "[*] Building ADP locally..."
-	@cargo build --profile release --package agent-data-plane
 
 .PHONY: build-adp-image-base
 build-adp-image-base:
