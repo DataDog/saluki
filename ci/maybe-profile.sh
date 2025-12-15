@@ -17,7 +17,7 @@ if [ "${SMP_PROFILING_ENABLED:-""}" = "true" ]; then
         --service agent-data-plane \
         --tags "${SMP_PROFILING_EXTRA_TAGS:-"smp_tags_missing:true"}" \
         --preset cpu_live_heap \
-        --inlined_functions \
+        --inlined_functions=true \
         "$@"
 else
     # Run directly.
