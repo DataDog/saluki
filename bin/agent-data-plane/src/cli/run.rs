@@ -307,7 +307,7 @@ async fn add_baseline_logs_pipeline_to_blueprint(
         // Components.
         .add_encoder("dd_logs_encode", dd_logs_config)?
         // Logs.
-        .connect_component("dd_out", ["dd_logs_encoder"])?;
+        .connect_component("dd_out", ["dd_logs_encode"])?;
 
     Ok(())
 }
@@ -413,21 +413,16 @@ fn add_otlp_pipeline_to_blueprint(
     } else {
         let otlp_config =
             OtlpConfiguration::from_configuration(config)?.with_workload_provider(env_provider.workload().clone());
-        let dd_logs_config = DatadogLogsConfiguration::from_configuration(config)
-            .map(BufferedIncrementalConfiguration::from_encoder_builder)
-            .error_context("Failed to configure Datadog Logs encoder.")?;
 
         blueprint
             // Components.
             .add_source("otlp_in", otlp_config)?
-            .add_encoder("dd_logs_encode", dd_logs_config)?
-            .connect_component("dsd_prefix_filter", ["otlp_in.metrics"])?
             // Metrics and logs.
             //
-            // We send OTLP metrics directly to the enrichment stag of the metrics pipeline, skipping aggregation,
+            // We send OTLP metrics directly to the enrichment stage of the metrics pipeline, skipping aggregation,
             // to avoid transforming counters into rates.
             .connect_component("metrics_enrich", ["otlp_in.metrics"])?
-            .connect_component("dd_out", ["dd_logs_encode"])?;
+            .connect_component("dd_logs_encode", ["otlp_in.logs"])?;
     }
     Ok(())
 }
