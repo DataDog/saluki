@@ -229,8 +229,14 @@ def extract_module_prefix(
         return symbol  # Keep [N Others] as-is
 
     # Demangle trait implementation symbols
+    # Note: symbols may already be demangled (starting with _< or <) or still mangled (_$LT$ or $LT$)
     working_symbol = symbol
-    if symbol.startswith("_$LT$") or symbol.startswith("$LT$"):
+    if (
+        symbol.startswith("_<")
+        or symbol.startswith("<")
+        or symbol.startswith("_$LT$")
+        or symbol.startswith("$LT$")
+    ):
         working_symbol = demangle_symbol(symbol)
 
     # For Rust symbols, split on :: and determine depth based on crate ownership
