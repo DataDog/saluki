@@ -76,18 +76,12 @@ impl LogBuffer {
 
         if is_regex {
             if let Ok(re) = regex::Regex::new(pattern) {
-                lines
-                    .iter()
-                    .find(|line| re.is_match(line))
-                    .map(|s| s.to_string())
+                lines.iter().find(|line| re.is_match(line)).map(|s| s.to_string())
             } else {
                 None
             }
         } else {
-            lines
-                .iter()
-                .find(|line| line.contains(pattern))
-                .map(|s| s.to_string())
+            lines.iter().find(|line| line.contains(pattern)).map(|s| s.to_string())
         }
     }
 }
@@ -118,9 +112,7 @@ pub trait Assertion: Send + Sync {
 /// Create an assertion from its configuration.
 pub fn create_assertion(config: &AssertionConfig) -> Result<Box<dyn Assertion>, GenericError> {
     match config {
-        AssertionConfig::ProcessStableFor { duration } => {
-            Ok(Box::new(ProcessStableForAssertion::new(duration.0)))
-        }
+        AssertionConfig::ProcessStableFor { duration } => Ok(Box::new(ProcessStableForAssertion::new(duration.0))),
         AssertionConfig::PortListening {
             port,
             protocol,

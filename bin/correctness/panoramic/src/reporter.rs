@@ -156,8 +156,9 @@ impl Reporter {
 
 /// Serde helper for serializing Duration as milliseconds.
 mod duration_millis {
-    use serde::{Serialize, Serializer};
     use std::time::Duration;
+
+    use serde::{Serialize, Serializer};
 
     pub fn serialize<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
     where

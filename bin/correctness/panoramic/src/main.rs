@@ -3,7 +3,7 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
-use std::{path::PathBuf, process::ExitCode, time::Instant};
+use std::{io::IsTerminal, path::PathBuf, process::ExitCode, time::Instant};
 
 use chrono::Local;
 use tokio::sync::mpsc;
@@ -35,7 +35,7 @@ async fn main() -> ExitCode {
     //
     // This influences how we configure things since some output gets redirected/rendered differently in TUI mode.
     let use_tui = match &cli.command {
-        Command::Run(cmd) => !cmd.no_tui && cmd.output == "text" && atty::is(atty::Stream::Stdout),
+        Command::Run(cmd) => !cmd.no_tui && cmd.output == "text" && std::io::stdout().is_terminal(),
         Command::List(_) => false,
     };
 
