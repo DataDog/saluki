@@ -10,7 +10,15 @@ set -eu
 # Check if internal profiling is enabled.
 if [ "${SMP_PROFILING_ENABLED:-""}" = "true" ]; then
     # Run through `ddprof`.
-    /ddprof "$@"
+    #
+    # We specifically pass in any SMP-provided profiling tags so that we get things like `experiment`, `variant`, and
+    # so on for profile tags which we need to actually be able to filter the profiles and split them apart, etc.
+    /ddprof \
+        --service agent-data-plane \
+        --tags "${SMP_PROFILING_EXTRA_TAGS:-"smp_tags_missing:true"}" \
+        --preset cpu_live_heap \
+        --inlined_functions \
+        "$@"
 else
     # Run directly.
     exec "$@"
