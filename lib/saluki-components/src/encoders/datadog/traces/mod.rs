@@ -19,7 +19,7 @@ use saluki_context::tags::TagSet;
 use saluki_core::data_model::event::trace::{
     AttributeScalarValue, AttributeValue, Span as DdSpan, SpanEvent as DdSpanEvent, SpanLink as DdSpanLink,
 };
-use saluki_core::data_model::event::Event::Trace as TraceEnum;
+use saluki_core::data_model::event::Event;
 use saluki_core::topology::{EventsBuffer, PayloadsBuffer};
 use saluki_core::{
     components::{encoders::*, ComponentContext},
@@ -128,7 +128,7 @@ impl DatadogTraceConfiguration {
     where
         E: EnvironmentProvider<Host = BoxedHostProvider>,
     {
-        let host_provider = environment_provider.host().clone();
+        let host_provider = environment_provider.host();
         let hostname = host_provider.get_hostname().await?;
         self.default_hostname = Some(hostname);
         Ok(self)
@@ -201,7 +201,7 @@ pub struct DatadogTrace {
 #[async_trait]
 impl Encoder for DatadogTrace {
     async fn run(mut self: Box<Self>, mut context: EncoderContext) -> Result<(), GenericError> {
-        let DatadogTrace {
+        let Self {
             trace_rb,
             telemetry,
             flush_timeout,
@@ -271,8 +271,8 @@ impl Encoder for DatadogTrace {
 
 async fn run_request_builder(
     mut trace_request_builder: RequestBuilder<TraceEndpointEncoder>, telemetry: ComponentTelemetry,
-    mut events_rx: Receiver<saluki_core::topology::EventsBuffer>,
-    payloads_tx: Sender<saluki_core::topology::PayloadsBuffer>, flush_timeout: std::time::Duration,
+    mut events_rx: Receiver<EventsBuffer>,
+    payloads_tx: Sender<PayloadsBuffer>, flush_timeout: std::time::Duration,
 ) -> Result<(), GenericError> {
     let mut pending_flush = false;
     let pending_flush_timeout = sleep(flush_timeout);
@@ -283,7 +283,7 @@ async fn run_request_builder(
             Some(event_buffer) = events_rx.recv() => {
                 for event in event_buffer {
                     let trace = match event {
-                        TraceEnum(trace) => trace,
+                        Event::Trace(trace) => trace,
                         _ => continue,
                     };
 
@@ -595,10 +595,10 @@ fn encode_tracer_payload(
     scratch_buf: &mut Vec<u8>,
 ) -> Result<(), protobuf::Error> {
     let resource_tags = trace.resource_tags();
-    let first_span = trace.spans().first().cloned();
+    let first_span = trace.spans().first();
     let source = tags_to_source(resource_tags);
     let mut output_stream = CodedOutputStream::vec(output_buffer);
-    if let Some(container_id) = resolve_container_id(resource_tags, first_span.as_ref()) {
+    if let Some(container_id) = resolve_container_id(resource_tags, first_span) {
         output_stream.write_string(TRACER_PAYLOAD_CONTAINER_ID_FIELD_NUMBER, container_id)?;
     }
     // TODO: add language name, language version and tracer version from stats
