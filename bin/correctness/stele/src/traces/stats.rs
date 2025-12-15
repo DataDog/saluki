@@ -1,8 +1,9 @@
 use std::hash::{Hash as _, Hasher as _};
 
-use datadog_protos::{agent, traces::{self as proto, Trilean}};
-use saluki_common::{collections::FastHashMap, hash::StableHasher}
-use serde::{de, Deserialize, Serialize};
+use datadog_protos::traces::{self as proto, Trilean};
+use saluki_common::{collections::FastHashMap, hash::StableHasher};
+use saluki_error::{generic_error, GenericError};
+use serde::{Deserialize, Serialize};
 use stringtheory::MetaString;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -67,10 +68,14 @@ impl From<&proto::ClientStatsPayload> for TracerMetadata {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Hash, Eq, PartialEq, Serialize)]
-struct BucketTimeframe {
-    start_time_ns: u64,
-    duration_ns: u64,
+/// Time frame covered by a bucket.
+#[derive(Clone, Copy, Debug, Deserialize, Hash, Eq, PartialEq, Serialize)]
+pub struct BucketTimeframe {
+    /// Start time of the bucket, in nanoseconds.
+    pub start_time_ns: u64,
+
+    /// Width of the bucket, in nanoseconds.
+    pub duration_ns: u64,
 }
 
 impl From<&proto::ClientStatsBucket> for BucketTimeframe {
@@ -82,16 +87,30 @@ impl From<&proto::ClientStatsBucket> for BucketTimeframe {
     }
 }
 
-/// A simplified span statistics representation.
+/// Client statistics grouped by time frame.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct GroupedStats {
+pub struct BucketedClientStatistics {
     agent_metadata: AgentMetadata,
     tracer_metadata: TracerMetadata,
-    buckets: FastHashMap<BucketTimeframe, Vec<Stats>>,
+    buckets: FastHashMap<BucketTimeframe, Vec<ClientStatistics>>,
 }
 
+impl BucketedClientStatistics {
+    /// Merge the given stats into the given bucket, creating the bucket if it does not already exist.
+    pub fn merge(&mut self, bucket_timeframe: BucketTimeframe, stats: ClientStatistics) {
+        let bucket = self.buckets.entry(bucket_timeframe).or_default();
+        bucket.push(stats);
+    }
+
+    /// Returns an iterator over each bucket.
+    pub fn buckets(&self) -> impl Iterator<Item = (&BucketTimeframe, &[ClientStatistics])> {
+        self.buckets.iter().map(|(key, value)| (key, value.as_slice()))
+    }
+}
+
+/// Client statistics for a given span.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-struct Stats {
+pub struct ClientStatistics {
     service: MetaString,
     name: MetaString,
     resource: MetaString,
@@ -115,7 +134,7 @@ struct Stats {
     http_endpoint: MetaString,
 }
 
-impl From<&proto::ClientGroupedStats> for Stats {
+impl From<&proto::ClientGroupedStats> for ClientStatistics {
     fn from(payload: &proto::ClientGroupedStats) -> Self {
         let is_trace_root = match payload.is_trace_root.enum_value() {
             Ok(Trilean::NOT_SET) => None,
@@ -124,7 +143,7 @@ impl From<&proto::ClientGroupedStats> for Stats {
             Err(_) => None,
         };
 
-        Stats {
+        Self {
             service: (*payload.service).into(),
             name: (*payload.name).into(),
             resource: (*payload.resource).into(),
@@ -181,14 +200,19 @@ impl From<&proto::ClientGroupedStats> for AggregationKey {
     }
 }
 
-/// Client statistics grouped by aggregation key.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub struct ClientStatistics {
-    groups: FastHashMap<AggregationKey, GroupedStats>,
+/// Aggregator for client statistics.
+///
+/// Client statistics are aggregated by a number of fields that generate correspond to a specific span: service, name,
+/// and operation. Additional fields are used to further group the statistics, such as response codes and tags. This is
+/// referred to as the "aggregation key".
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ClientStatisticsAggregator {
+    groups: FastHashMap<AggregationKey, BucketedClientStatistics>,
 }
 
-impl ClientStatistics {
-    pub fn merge_payload(&mut self, payload: &proto::StatsPayload) {
+impl ClientStatisticsAggregator {
+    /// Merges the given payload into the aggregator.
+    pub fn merge_payload(&mut self, payload: &proto::StatsPayload) -> Result<(), GenericError> {
         let agent_metadata = AgentMetadata::from(payload);
         for client_stats_payload in payload.stats() {
             let tracer_metadata = TracerMetadata::from(client_stats_payload);
@@ -198,17 +222,35 @@ impl ClientStatistics {
 
                 for grouped_stat in stats_bucket.stats() {
                     let aggregation_key = AggregationKey::from(grouped_stat);
-                    let stats_group = self.groups.entry(aggregation_key).or_insert_with(|| {
-                        GroupedStats {
+                    let stats_group = self
+                        .groups
+                        .entry(aggregation_key)
+                        .or_insert_with(|| BucketedClientStatistics {
                             agent_metadata: agent_metadata.clone(),
                             tracer_metadata: tracer_metadata.clone(),
                             buckets: FastHashMap::default(),
-                        }
-                    });
+                        });
 
-                    stats_group.merge(Stats::from(grouped_stat));
+                    if stats_group.agent_metadata != agent_metadata {
+                        return Err(generic_error!("agent metadata mismatch"));
+                    }
+                    if stats_group.tracer_metadata != tracer_metadata {
+                        return Err(generic_error!("tracer metadata mismatch"));
+                    }
+
+                    stats_group.merge(bucket_timeframe, ClientStatistics::from(grouped_stat));
                 }
             }
         }
+
+        Ok(())
+    }
+
+    /// Returns an iterator over each group of statistics.
+    ///
+    /// Groups are split by "aggregation key", which is a combination of select fields in each client stats payload,
+    /// roughly corresponding to a specific span: name, operation, kind, tags, and so on.
+    pub fn groups(&self) -> impl Iterator<Item = (&AggregationKey, &BucketedClientStatistics)> {
+        self.groups.iter()
     }
 }
