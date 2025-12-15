@@ -1,8 +1,8 @@
 //! Traces.
 
 use saluki_common::collections::FastHashMap;
+use saluki_context::tags::TagSet;
 use stringtheory::MetaString;
-
 /// A trace event.
 ///
 /// A trace is a collection of spans that represent a distributed trace.
@@ -10,22 +10,26 @@ use stringtheory::MetaString;
 pub struct Trace {
     /// The spans that make up this trace.
     spans: Vec<Span>,
+    /// Resource-level tags associated with this trace.
+    ///
+    /// This is derived from the resource of the spans and used to construct the tracer payload.
+    resource_tags: TagSet,
 }
 
 impl Trace {
     /// Creates a new `Trace` with the given spans.
-    pub fn new(spans: Vec<Span>) -> Self {
-        Self { spans }
+    pub fn new(spans: Vec<Span>, resource_tags: TagSet) -> Self {
+        Self { spans, resource_tags }
     }
 
     /// Returns a reference to the spans in this trace.
-    pub fn spans(&self) -> &[Span] {
+    pub fn spans(&self) -> &Vec<Span> {
         &self.spans
     }
 
-    /// Returns a mutable reference to the spans in this trace.
-    pub fn spans_mut(&mut self) -> &mut Vec<Span> {
-        &mut self.spans
+    /// Returns the resource-level tags associated with this trace.
+    pub fn resource_tags(&self) -> &TagSet {
+        &self.resource_tags
     }
 }
 

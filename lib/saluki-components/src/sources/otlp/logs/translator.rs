@@ -10,8 +10,9 @@ use saluki_core::data_model::event::Event;
 use stringtheory::MetaString;
 
 use super::super::attributes::raw_origin_from_attributes;
+use crate::common::otlp::util::{get_string_attribute, resource_to_source};
 use crate::sources::otlp::attributes::source::SourceKind;
-use crate::sources::otlp::attributes::{get_string_attribute, resource_to_source, tags_from_attributes};
+use crate::sources::otlp::attributes::tags_from_attributes;
 use crate::sources::otlp::logs::transform::transform_log_record;
 use crate::sources::otlp::origin::OtlpOriginTagResolver;
 
