@@ -1,3 +1,9 @@
+//! Test execution.
+//!
+//! This module provides the single entry point for running tests. The same code path
+//! is used regardless of output mode (TUI or plain). Events are emitted to a channel
+//! and consumed by either a TUI renderer or logging consumer.
+
 use std::{
     collections::HashMap,
     io::Write as _,
@@ -8,17 +14,150 @@ use std::{
 
 use airlock::driver::{Driver, DriverConfig, DriverDetails};
 use bollard::{container::LogOutput, Docker};
-use futures::StreamExt as _;
+use futures::stream::{self, StreamExt as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, RwLock, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::{
     assertions::{create_assertion, AssertionContext, AssertionResult, LogBuffer},
     config::{parse_file_spec, parse_port_spec, TestCase},
+    events::TestEvent,
     reporter::TestResult,
 };
+
+// ----------------------------------------------------------------------------
+// Public API: run_tests
+// ----------------------------------------------------------------------------
+
+/// Run all tests, emitting events to the provided channel.
+///
+/// This is the single entry point for test execution, used identically by both
+/// TUI and plain output modes. The caller is responsible for spawning an appropriate
+/// consumer to handle the emitted events.
+pub async fn run_tests(
+    test_cases: Vec<TestCase>, parallelism: usize, fail_fast: bool, log_dir: Option<PathBuf>,
+    event_tx: mpsc::UnboundedSender<TestEvent>, cancel_token: CancellationToken,
+) -> Vec<TestResult> {
+    // Emit run started event.
+    let _ = event_tx.send(TestEvent::RunStarted {
+        total_tests: test_cases.len(),
+    });
+
+    let parallelism = parallelism.max(1);
+    let semaphore = Arc::new(Semaphore::new(parallelism));
+    let event_tx = Arc::new(event_tx);
+    let log_dir = Arc::new(log_dir);
+
+    let results = if fail_fast {
+        run_fail_fast(test_cases, semaphore, event_tx.clone(), log_dir, cancel_token).await
+    } else {
+        run_parallel(
+            test_cases,
+            parallelism,
+            semaphore,
+            event_tx.clone(),
+            log_dir,
+            cancel_token,
+        )
+        .await
+    };
+
+    let _ = event_tx.send(TestEvent::AllDone);
+    results
+}
+
+/// Run tests sequentially, stopping at the first failure.
+async fn run_fail_fast(
+    test_cases: Vec<TestCase>, semaphore: Arc<Semaphore>, event_tx: Arc<mpsc::UnboundedSender<TestEvent>>,
+    log_dir: Arc<Option<PathBuf>>, cancel_token: CancellationToken,
+) -> Vec<TestResult> {
+    let mut results = Vec::new();
+
+    for test_case in test_cases {
+        // Check for cancellation before starting each test.
+        if cancel_token.is_cancelled() {
+            break;
+        }
+
+        let _permit = semaphore.acquire().await.unwrap();
+        let name = test_case.name.clone();
+
+        let _ = event_tx.send(TestEvent::TestStarted { name });
+
+        let mut runner = TestRunner::new(test_case);
+        if let Some(ref dir) = *log_dir {
+            runner = runner.with_log_dir(dir.clone());
+        }
+        let result = runner.run().await;
+
+        let failed = !result.passed;
+        let _ = event_tx.send(TestEvent::TestCompleted { result: result.clone() });
+        results.push(result);
+
+        if failed {
+            break;
+        }
+    }
+
+    results
+}
+
+/// Run tests in parallel up to the parallelism limit.
+async fn run_parallel(
+    test_cases: Vec<TestCase>, parallelism: usize, semaphore: Arc<Semaphore>,
+    event_tx: Arc<mpsc::UnboundedSender<TestEvent>>, log_dir: Arc<Option<PathBuf>>, cancel_token: CancellationToken,
+) -> Vec<TestResult> {
+    let cancel = cancel_token.clone();
+
+    stream::iter(test_cases)
+        .take_while(|_| {
+            let cancelled = cancel.is_cancelled();
+            async move { !cancelled }
+        })
+        .map(|test_case| {
+            let semaphore = semaphore.clone();
+            let event_tx = event_tx.clone();
+            let cancel = cancel_token.clone();
+            let log_dir = log_dir.clone();
+
+            async move {
+                // Check for cancellation before acquiring permit.
+                if cancel.is_cancelled() {
+                    return None;
+                }
+
+                let _permit = semaphore.acquire().await.unwrap();
+
+                // Check again after acquiring permit.
+                if cancel.is_cancelled() {
+                    return None;
+                }
+
+                let name = test_case.name.clone();
+                let _ = event_tx.send(TestEvent::TestStarted { name });
+
+                let mut runner = TestRunner::new(test_case);
+                if let Some(ref dir) = *log_dir {
+                    runner = runner.with_log_dir(dir.clone());
+                }
+                let result = runner.run().await;
+
+                let _ = event_tx.send(TestEvent::TestCompleted { result: result.clone() });
+
+                Some(result)
+            }
+        })
+        .buffer_unordered(parallelism)
+        .filter_map(|r| async { r })
+        .collect()
+        .await
+}
+
+// ----------------------------------------------------------------------------
+// TestRunner: single test case execution
+// ----------------------------------------------------------------------------
 
 /// Generates a random isolation group ID.
 fn generate_isolation_group_id() -> String {
@@ -38,7 +177,7 @@ fn generate_isolation_group_id() -> String {
 }
 
 /// Runner for a single test case.
-pub struct TestRunner {
+struct TestRunner {
     test_case: TestCase,
     isolation_group_id: String,
     cancel_token: CancellationToken,
@@ -48,7 +187,7 @@ pub struct TestRunner {
 
 impl TestRunner {
     /// Create a new test runner for the given test case.
-    pub fn new(test_case: TestCase) -> Self {
+    fn new(test_case: TestCase) -> Self {
         Self {
             test_case,
             isolation_group_id: generate_isolation_group_id(),
@@ -59,13 +198,13 @@ impl TestRunner {
     }
 
     /// Set the directory where container logs should be written.
-    pub fn with_log_dir(mut self, log_dir: PathBuf) -> Self {
+    fn with_log_dir(mut self, log_dir: PathBuf) -> Self {
         self.log_dir = Some(log_dir);
         self
     }
 
     /// Run the test case and return the result.
-    pub async fn run(&mut self) -> TestResult {
+    async fn run(&mut self) -> TestResult {
         let started = Instant::now();
         let test_name = self.test_case.name.clone();
 

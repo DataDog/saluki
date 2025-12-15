@@ -5,7 +5,7 @@
 
 use std::{
     io::{self, Write},
-    sync::Arc,
+    path::PathBuf,
     time::{Duration, Instant},
 };
 
@@ -19,20 +19,7 @@ use crossterm::{
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::reporter::TestResult;
-
-/// Events sent from test runners to the TUI.
-#[derive(Clone, Debug)]
-pub enum TuiEvent {
-    /// The test run is starting.
-    RunStarted { total_tests: usize },
-    /// A test has started running.
-    TestStarted { name: String },
-    /// A test has completed (passed or failed).
-    TestCompleted { result: TestResult },
-    /// All tests have finished.
-    AllDone,
-}
+use crate::events::TestEvent;
 
 /// Terminal UI state and rendering.
 pub struct Tui {
@@ -72,8 +59,8 @@ enum LineColor {
 }
 
 impl Tui {
-    /// Create a new TUI with the given total test count.
-    pub fn new(total_tests: usize) -> io::Result<Self> {
+    /// Create a new TUI.
+    fn new() -> io::Result<Self> {
         // Enable raw mode for input handling, but don't use alternate screen.
         terminal::enable_raw_mode()?;
 
@@ -84,7 +71,7 @@ impl Tui {
         let mut tui = Self {
             active_tests: Vec::new(),
             lines_printed: 0,
-            total_tests,
+            total_tests: 0,
             completed_tests: 0,
             passed_tests: 0,
             failed_tests: 0,
@@ -97,11 +84,6 @@ impl Tui {
         tui.add_line("Panoramic starting...");
 
         Ok(tui)
-    }
-
-    /// Create an event sender for test runners to use.
-    pub fn create_event_channel() -> (mpsc::UnboundedSender<TuiEvent>, mpsc::UnboundedReceiver<TuiEvent>) {
-        mpsc::unbounded_channel()
     }
 
     /// Add a log line to be printed.
@@ -122,17 +104,18 @@ impl Tui {
         });
     }
 
-    /// Process a TUI event.
-    pub fn handle_event(&mut self, event: TuiEvent) {
+    /// Process a test event.
+    fn handle_event(&mut self, event: TestEvent) {
         match event {
-            TuiEvent::RunStarted { total_tests } => {
+            TestEvent::RunStarted { total_tests } => {
+                self.total_tests = total_tests;
                 self.add_line(format!("Running {} test(s)...", total_tests));
             }
-            TuiEvent::TestStarted { name } => {
+            TestEvent::TestStarted { name } => {
                 self.add_line(format!("Starting test '{}'...", name));
                 self.active_tests.push(name);
             }
-            TuiEvent::TestCompleted { result } => {
+            TestEvent::TestCompleted { result } => {
                 // Remove from active tests.
                 self.active_tests.retain(|n| n != &result.name);
                 self.completed_tests += 1;
@@ -175,7 +158,7 @@ impl Tui {
                     }
                 }
             }
-            TuiEvent::AllDone => {
+            TestEvent::AllDone => {
                 // Add summary line.
                 let elapsed = self.started.elapsed();
                 let (status, color) = if self.failed_tests == 0 {
@@ -197,7 +180,7 @@ impl Tui {
     }
 
     /// Render the current state to the terminal.
-    pub fn render(&mut self) -> io::Result<()> {
+    fn render(&mut self) -> io::Result<()> {
         let mut stdout = io::stdout();
 
         // Always move to column 0 and clear the current line first.
@@ -233,7 +216,6 @@ impl Tui {
     fn draw_status_bar(&self, stdout: &mut io::Stdout) -> io::Result<()> {
         let elapsed = self.started.elapsed();
 
-        // Build status line.
         let progress = format!("[{}/{}]", self.completed_tests, self.total_tests);
 
         let active = if self.active_tests.is_empty() {
@@ -250,7 +232,6 @@ impl Tui {
 
         let elapsed_str = format!(" ({:.1}s)", elapsed.as_secs_f64());
 
-        // Print status bar without newline.
         write!(
             stdout,
             "{}{}{}",
@@ -263,7 +244,7 @@ impl Tui {
     }
 
     /// Check for user input (non-blocking).
-    pub fn poll_input(&self) -> io::Result<bool> {
+    fn poll_input(&self) -> io::Result<bool> {
         if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
                 // Allow Ctrl+C or 'q' to quit.
@@ -279,7 +260,7 @@ impl Tui {
     }
 
     /// Shut down the TUI and restore the terminal.
-    pub fn shutdown(&mut self) -> io::Result<()> {
+    fn shutdown(&mut self) -> io::Result<()> {
         if self.shutdown {
             return Ok(());
         }
@@ -309,173 +290,43 @@ impl Drop for Tui {
     }
 }
 
-/// Run tests with the TUI.
-pub async fn run_with_tui(
-    test_cases: Vec<crate::config::TestCase>, parallelism: usize, fail_fast: bool, log_dir: Option<std::path::PathBuf>,
-) -> io::Result<Vec<TestResult>> {
-    let total = test_cases.len();
-    let mut tui = Tui::new(total)?;
+/// Run the TUI event consumer.
+///
+/// This function consumes test events from the channel and renders them to the terminal.
+/// It returns when `AllDone` is received or the user cancels via Ctrl+C or 'q'.
+pub async fn run_tui_consumer(
+    mut rx: mpsc::UnboundedReceiver<TestEvent>, cancel_token: CancellationToken, log_dir: Option<PathBuf>,
+) -> io::Result<()> {
+    let mut tui = Tui::new()?;
 
     // Log the log directory location if enabled.
     if let Some(ref dir) = log_dir {
         tui.add_line(format!("Container logs will be written to '{}'.", dir.display()));
     }
 
-    let (tx, mut rx) = Tui::create_event_channel();
-
-    // Create a cancellation token to signal tests to stop.
-    let cancel_token = CancellationToken::new();
-
-    // Spawn the test runner task.
-    let runner_handle = tokio::spawn(run_tests_with_events(
-        test_cases,
-        parallelism,
-        fail_fast,
-        tx,
-        cancel_token.clone(),
-        log_dir,
-    ));
-
-    let mut results = Vec::new();
     let mut done = false;
     let mut cancelled = false;
 
-    // Main event loop.
     while !done {
-        // Check for user input (quit).
-        if tui.poll_input()? {
-            if !cancelled {
-                cancelled = true;
-                cancel_token.cancel();
-                tui.add_line("Cancelling...");
-            }
+        if tui.poll_input()? && !cancelled {
+            cancelled = true;
+            cancel_token.cancel();
+            tui.add_line("Cancelling...");
         }
 
-        // Process any pending events.
         while let Ok(event) = rx.try_recv() {
-            if let TuiEvent::TestCompleted { ref result } = event {
-                results.push(result.clone());
-            }
-            if matches!(event, TuiEvent::AllDone) {
+            if matches!(event, TestEvent::AllDone) {
                 done = true;
             }
             tui.handle_event(event);
         }
 
-        // Render.
         tui.render()?;
 
-        // Small delay to avoid busy-waiting.
         tokio::time::sleep(Duration::from_millis(16)).await;
     }
 
-    // Wait for runner to finish.
-    let _ = runner_handle.await;
-
-    // Shut down TUI and restore terminal.
     tui.shutdown()?;
 
-    Ok(results)
-}
-
-/// Run tests and send events to the TUI.
-async fn run_tests_with_events(
-    test_cases: Vec<crate::config::TestCase>, parallelism: usize, fail_fast: bool, tx: mpsc::UnboundedSender<TuiEvent>,
-    cancel_token: CancellationToken, log_dir: Option<std::path::PathBuf>,
-) -> Vec<TestResult> {
-    use futures::stream::{self, StreamExt as _};
-    use tokio::sync::Semaphore;
-
-    use crate::runner::TestRunner;
-
-    // Emit run started event.
-    let _ = tx.send(TuiEvent::RunStarted {
-        total_tests: test_cases.len(),
-    });
-
-    let semaphore = Arc::new(Semaphore::new(parallelism.max(1)));
-    let tx = Arc::new(tx);
-    let log_dir = Arc::new(log_dir);
-
-    if fail_fast {
-        // Sequential execution with fail-fast.
-        let mut results = Vec::new();
-
-        for test_case in test_cases {
-            // Check for cancellation before starting each test.
-            if cancel_token.is_cancelled() {
-                break;
-            }
-
-            let _permit = semaphore.acquire().await.unwrap();
-            let name = test_case.name.clone();
-
-            let _ = tx.send(TuiEvent::TestStarted { name });
-
-            let mut runner = TestRunner::new(test_case);
-            if let Some(ref dir) = *log_dir {
-                runner = runner.with_log_dir(dir.clone());
-            }
-            let result = runner.run().await;
-
-            let failed = !result.passed;
-            let _ = tx.send(TuiEvent::TestCompleted { result: result.clone() });
-            results.push(result);
-
-            if failed {
-                break;
-            }
-        }
-
-        let _ = tx.send(TuiEvent::AllDone);
-        results
-    } else {
-        // Parallel execution.
-        let cancel = cancel_token.clone();
-        let results: Vec<TestResult> = stream::iter(test_cases)
-            .take_while(|_| {
-                let cancelled = cancel.is_cancelled();
-                async move { !cancelled }
-            })
-            .map(|test_case| {
-                let semaphore = semaphore.clone();
-                let tx = tx.clone();
-                let cancel = cancel_token.clone();
-                let log_dir = log_dir.clone();
-
-                async move {
-                    // Check for cancellation before acquiring permit.
-                    if cancel.is_cancelled() {
-                        return None;
-                    }
-
-                    let _permit = semaphore.acquire().await.unwrap();
-
-                    // Check again after acquiring permit.
-                    if cancel.is_cancelled() {
-                        return None;
-                    }
-
-                    let name = test_case.name.clone();
-                    let _ = tx.send(TuiEvent::TestStarted { name });
-
-                    let mut runner = TestRunner::new(test_case);
-                    if let Some(ref dir) = *log_dir {
-                        runner = runner.with_log_dir(dir.clone());
-                    }
-                    let result = runner.run().await;
-
-                    let _ = tx.send(TuiEvent::TestCompleted { result: result.clone() });
-
-                    Some(result)
-                }
-            })
-            .buffer_unordered(parallelism.max(1))
-            .filter_map(|r| async { r })
-            .collect()
-            .await;
-
-        let _ = tx.send(TuiEvent::AllDone);
-        results
-    }
+    Ok(())
 }

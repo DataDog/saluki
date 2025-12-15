@@ -1,61 +1,54 @@
+//! Test runner for running integration tests.
+
+#![deny(warnings)]
+#![deny(missing_docs)]
+
 use std::{path::PathBuf, process::ExitCode, time::Instant};
 
 use chrono::Local;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt as _, util::SubscriberInitExt as _, EnvFilter};
 
 mod assertions;
 mod cli;
-mod concurrent;
+use self::cli::{Cli, Command};
+
 mod config;
+use self::config::discover_tests;
+
+mod events;
+use self::events::{create_event_channel, TestEvent};
+
 mod reporter;
+use self::reporter::{OutputFormat, Reporter, TestResult, TestSuiteResult};
+
 mod runner;
 mod tui;
 
-use cli::{Cli, Command};
-use config::discover_tests;
-use reporter::{OutputFormat, Reporter, TestSuiteResult};
-
-fn main() -> ExitCode {
-    // Parse CLI arguments first to determine if we need tracing.
+#[tokio::main]
+async fn main() -> ExitCode {
     let cli: Cli = argh::from_env();
 
-    // Determine if we'll use TUI mode (for run command).
+    // See if we should use TUI mode.
+    //
+    // This influences how we configure things since some output gets redirected/rendered differently in TUI mode.
     let use_tui = match &cli.command {
         Command::Run(cmd) => !cmd.no_tui && cmd.output == "text" && atty::is(atty::Stream::Stdout),
         Command::List(_) => false,
     };
 
-    // Only initialize tracing if not using TUI mode.
-    // TUI mode handles its own output.
     if !use_tui {
-        let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(
-                tracing_subscriber::fmt::layer()
-                    .with_target(false)
-                    .with_thread_ids(false)
-                    .compact(),
-            )
-            .init();
+        initialize_logging();
 
         info!("Panoramic starting...");
     }
 
-    // Run the appropriate command.
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("Failed to create Tokio runtime.");
-
-    let result = runtime.block_on(async {
-        match cli.command {
-            Command::Run(cmd) => run_tests(cmd, use_tui).await,
-            Command::List(cmd) => list_tests(cmd).await,
-        }
-    });
+    let result = match cli.command {
+        Command::Run(cmd) => run_tests(cmd, use_tui).await,
+        Command::List(cmd) => list_tests(cmd).await,
+    };
 
     if !use_tui {
         match result {
@@ -67,8 +60,21 @@ fn main() -> ExitCode {
     result
 }
 
+fn initialize_logging() {
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_target(false)
+                .with_thread_ids(false)
+                .compact(),
+        )
+        .init();
+}
+
 async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
-    // Discover test cases.
     let mut test_cases = match discover_tests(&cmd.test_dir) {
         Ok(tests) => tests,
         Err(e) => {
@@ -92,8 +98,8 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
 
     // Filter tests if specific ones are requested.
     if let Some(ref filter) = cmd.tests {
-        let requested: Vec<&str> = filter.split(',').map(|s| s.trim()).collect();
-        test_cases.retain(|t| requested.contains(&t.name.as_str()));
+        let requested_tests = filter.split(',').map(|s| s.trim()).collect::<Vec<_>>();
+        test_cases.retain(|t| requested_tests.contains(&t.name.as_str()));
 
         if test_cases.is_empty() {
             if use_tui {
@@ -122,10 +128,31 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         }
     };
 
-    if use_tui {
-        run_tests_with_tui(test_cases, cmd.parallelism, cmd.fail_fast, log_dir).await
+    // Create the event channel and cancellation token.
+    let (tx, rx) = create_event_channel();
+    let cancel_token = CancellationToken::new();
+
+    // Spawn the test runner task (same code path for both modes).
+    let runner_handle = tokio::spawn(runner::run_tests(
+        test_cases,
+        cmd.parallelism,
+        cmd.fail_fast,
+        log_dir.clone(),
+        tx,
+        cancel_token.clone(),
+    ));
+
+    // Spawn the appropriate consumer based on mode.
+    let all_passed = if use_tui {
+        run_with_tui_consumer(rx, cancel_token, log_dir, runner_handle).await
     } else {
-        run_tests_plain(cmd, test_cases, log_dir).await
+        run_with_logging_consumer(rx, &cmd, log_dir, runner_handle).await
+    };
+
+    if all_passed {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
     }
 }
 
@@ -138,83 +165,100 @@ fn create_log_dir() -> std::io::Result<PathBuf> {
     Ok(log_dir)
 }
 
-async fn run_tests_with_tui(
-    test_cases: Vec<config::TestCase>, parallelism: usize, fail_fast: bool, log_dir: Option<PathBuf>,
-) -> ExitCode {
-    match tui::run_with_tui(test_cases, parallelism, fail_fast, log_dir).await {
-        Ok(results) => {
-            let all_passed = results.iter().all(|r| r.passed);
-            if all_passed {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::from(1)
-            }
-        }
+/// Run with the TUI consumer.
+async fn run_with_tui_consumer(
+    rx: mpsc::UnboundedReceiver<TestEvent>, cancel_token: CancellationToken, log_dir: Option<PathBuf>,
+    runner_handle: tokio::task::JoinHandle<Vec<TestResult>>,
+) -> bool {
+    // Run the TUI consumer (blocks until AllDone or user cancels).
+    if let Err(e) = tui::run_tui_consumer(rx, cancel_token, log_dir).await {
+        eprintln!("TUI error: {}", e);
+        return false;
+    }
+
+    // Wait for the runner to finish and get results.
+    match runner_handle.await {
+        Ok(results) => results.iter().all(|r| r.passed),
         Err(e) => {
-            eprintln!("TUI error: {}", e);
-            ExitCode::from(2)
+            eprintln!("Runner task error: {}", e);
+            false
         }
     }
 }
 
-async fn run_tests_plain(
-    cmd: cli::RunCommand, test_cases: Vec<config::TestCase>, log_dir: Option<PathBuf>,
-) -> ExitCode {
-    use concurrent::ConcurrentRunner;
-
-    info!("Discovering test cases from '{}'...", cmd.test_dir.display());
-
+/// Run with the logging consumer (non-TUI mode).
+async fn run_with_logging_consumer(
+    rx: mpsc::UnboundedReceiver<TestEvent>, cmd: &cli::RunCommand, log_dir: Option<PathBuf>,
+    runner_handle: tokio::task::JoinHandle<Vec<TestResult>>,
+) -> bool {
     let output_format = match OutputFormat::from_str(&cmd.output) {
         Some(format) => format,
         None => {
             error!("Invalid output format '{}'. Use 'text' or 'json'.", cmd.output);
-            return ExitCode::from(2);
+            return false;
         }
     };
 
     let reporter = Reporter::new(output_format, cmd.verbose);
 
-    info!("Discovered {} test case(s).", test_cases.len());
+    info!("Starting test run with parallelism of {}...", cmd.parallelism);
 
     if let Some(ref dir) = log_dir {
         info!("Container logs will be written to '{}'.", dir.display());
     }
 
-    info!("Starting test run with parallelism of {}...", cmd.parallelism);
+    if cmd.fail_fast {
+        info!("Fail-fast mode enabled; will stop on first failure.");
+    }
 
     let started = Instant::now();
 
-    // Run tests.
-    let mut runner = ConcurrentRunner::new(test_cases, cmd.parallelism);
-    if let Some(dir) = log_dir {
-        runner = runner.with_log_dir(dir);
-    }
+    // Run the logging consumer (blocks until AllDone).
+    let suite_result = run_logging_consumer(rx, &reporter, started).await;
 
-    let results = if cmd.fail_fast {
-        info!("Fail-fast mode enabled; will stop on first failure.");
-        runner.run_fail_fast().await
-    } else {
-        runner.run_all().await
-    };
-
-    let suite_result = TestSuiteResult::from_results(results, started.elapsed());
+    // Wait for the runner to finish.
+    let _ = runner_handle.await;
 
     info!(
         "Test run complete. {} passed, {} failed, {} total ({:.2?}).",
         suite_result.passed, suite_result.failed, suite_result.total, suite_result.duration
     );
 
-    // Report results.
-    for result in &suite_result.results {
-        reporter.report_test_result(result);
-    }
+    // Report final suite result.
     reporter.report_suite_result(&suite_result);
 
-    if suite_result.all_passed() {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::from(1)
+    suite_result.all_passed()
+}
+
+/// Consume test events and log via Reporter.
+async fn run_logging_consumer(
+    mut rx: mpsc::UnboundedReceiver<TestEvent>, reporter: &Reporter, started: Instant,
+) -> TestSuiteResult {
+    let mut results = Vec::new();
+
+    loop {
+        match rx.recv().await {
+            Some(TestEvent::RunStarted { total_tests }) => {
+                info!("Running {} test(s)...", total_tests);
+            }
+            Some(TestEvent::TestStarted { name }) => {
+                info!("Starting test '{}'...", name);
+            }
+            Some(TestEvent::TestCompleted { result }) => {
+                reporter.report_test_result(&result);
+                results.push(result);
+            }
+            Some(TestEvent::AllDone) => {
+                break;
+            }
+            None => {
+                // Channel closed unexpectedly.
+                break;
+            }
+        }
     }
+
+    TestSuiteResult::from_results(results, started.elapsed())
 }
 
 async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
