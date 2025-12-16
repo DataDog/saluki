@@ -12,14 +12,6 @@ set -eux
 #
 # We expect BUILD_TARGET to be set to the same target triple being passed to `rustc`.
 case "${BUILD_TARGET}" in
-    x86_64-unknown-linux-gnu)
-        echo "Not cross-compiling. Nothing to do."
-        exit 0
-        ;;
-    aarch64-unknown-linux-gnu)
-        echo "Not cross-compiling. Nothing to do."
-        exit 0
-        ;;
     x86_64-unknown-linux-musl)
         GCC_TARGET_TRIPLE=x86_64-linux-gnu
         GCC_CROSS_TARGET_TRIPLE=x86_64-linux-musl
@@ -29,8 +21,8 @@ case "${BUILD_TARGET}" in
         GCC_CROSS_TARGET_TRIPLE=aarch64-linux-musl
         ;;
     *)
-        echo "Unsupported target: ${BUILD_TARGET}"
-        exit 1
+        echo "Cross-compilation not required for '${BUILD_TARGET}'. No headers will be copied."
+        exit 0
         ;;
 esac
 
