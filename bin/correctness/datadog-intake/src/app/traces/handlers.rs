@@ -1,5 +1,5 @@
 use axum::{body::Bytes, extract::State, http::StatusCode, Json};
-use datadog_protos::traces::AgentPayload;
+use datadog_protos::traces::{AgentPayload, StatsPayload};
 use protobuf::Message as _;
 use stele::Span;
 use tracing::{debug, error};
@@ -11,7 +11,7 @@ pub async fn handle_traces_dump(State(state): State<TracesState>) -> Json<Vec<Sp
 }
 
 pub async fn handle_v02_traces(State(state): State<TracesState>, body: Bytes) -> StatusCode {
-    debug!("Received v0.2 traces payload.");
+    tracing::info!("Received v0.2 traces payload.");
 
     let payload = match AgentPayload::parse_from_bytes(&body[..]) {
         Ok(payload) => payload,
@@ -28,6 +28,31 @@ pub async fn handle_v02_traces(State(state): State<TracesState>, body: Bytes) ->
         }
         Err(e) => {
             error!(error = %e, "Failed to merge trace payload.");
+            StatusCode::BAD_REQUEST
+        }
+    }
+}
+
+pub async fn handle_v02_stats(State(state): State<TracesState>, body: Bytes) -> StatusCode {
+    debug!("Received v0.2 stats payload.");
+
+    let payload = match StatsPayload::parse_from_bytes(&body[..]) {
+        Ok(payload) => payload,
+        Err(e) => {
+            error!(error = %e, "Failed to parse stats payload.");
+            return StatusCode::BAD_REQUEST;
+        }
+    };
+
+    tracing::info!("Received stats payload. ({} bytes)", body.len());
+
+    match state.merge_stats_payload(payload) {
+        Ok(()) => {
+            debug!("Processed stats payload.");
+            StatusCode::ACCEPTED
+        }
+        Err(e) => {
+            error!(error = %e, "Failed to merge stats payload.");
             StatusCode::BAD_REQUEST
         }
     }
