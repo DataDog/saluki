@@ -39,3 +39,60 @@ during development:
   
 Any and all sections that follow in this document should serve as the primary technical reference
 for agents: tooling to use, technical best practices, and so on.
+
+### Technical documentation
+
+When writing or updating documentation, follow these guidelines. For full details, see
+`docs/development/style-guide.md`.
+
+#### Voice and tone
+
+- **Perspective**: Use "you" for instructions, "we" for project-collective statements
+- **Tone**: Write as a knowledgeable colleague—direct and practical, not curt or condescending
+- **Active voice**: Make clear who performs actions ("Run the command" not "The command should be run")
+- **Present tense**: Describe what things do, not what they will do
+- **Avoid**: "please" in instructions, "simply/easy/just" (minimizes difficulty), excessive
+  exclamation marks, jargon, pop culture references
+
+#### Markdown documentation
+
+- **Headings**: Sentence case ("Configure the source", not "Configure The Source"); never skip
+  levels; H1 for page title only
+- **Code formatting**: Backticks for code, commands, file paths, config keys, type names
+- **Emphasis**: Bold for UI elements and key terms on first use; italics sparingly for introducing
+  terms
+- **Lists**: Numbered for sequential steps; bullets for non-sequential items
+- **Conditions first**: "To enable debug mode, set `debug: true`" not "Set `debug: true` to enable
+  debug mode"
+- **Admonitions**: Use `> [!WARNING]`, `> [!NOTE]`, `> [!TIP]` for callouts
+- **Links**: Descriptive text (not "click here"); relative paths for internal docs
+- **Code blocks**: Always specify language; keep examples minimal and focused
+
+#### Rustdoc (code documentation)
+
+- **First line**: Complete sentence summarizing what the item is or does
+- **Coverage**: All public items MUST be documented (enforced via `#![deny(missing_docs)]`)
+- **Structure**: Brief summary, blank line, detailed explanation, then formal sections
+- **Sections**: Use `# Errors`, `# Panics`, `# Examples`, `# Design`, `# Missing` as appropriate
+
+**Configuration fields MUST document:**
+
+- What the field controls and its impact on behavior
+- The default value (explicitly stated)
+- Edge cases and boundary values (e.g., "If set to `0`, X is disabled")
+- Guidance for who should change it (e.g., "high-throughput workloads may increase this")
+
+**Trade-offs**: Name both sides explicitly, quantify when possible, acknowledge workload dependency
+
+**Error messages**: Describe what went wrong in plain language; provide actionable guidance;
+reference specific config fields
+
+#### Requirement levels
+
+Use RFC 2119 keywords sparingly and in bold when normative:
+
+- **MUST**: Absolute requirement
+- **SHOULD**: Strongly recommended, but valid exceptions exist
+- **MAY**: Truly optional
+
+See `docs/development/common-language.md` for full definitions.
