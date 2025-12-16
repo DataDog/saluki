@@ -1,0 +1,13 @@
+extends: substitution
+message: Use '%s' instead of '%s'.
+level: error
+ignorecase: true
+swap:
+  datadog: Datadog
+  dogstatsd: DogStatsD
+  grpc: gRPC
+  yaml: YAML
+  json: JSON
+  urls: URLs
+  uris: URIs
+  markdown: Markdown

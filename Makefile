@@ -385,6 +385,12 @@ endif
 
 ##@ Checking
 
+.PHONY: check-lint-tools
+check-lint-tools:
+ifeq ($(shell command -v vale >/dev/null || echo not-found), not-found)
+	$(error "Please install Vale: https://vale.sh/docs/install")
+endif
+
 .PHONY: check-all
 check-all: ## Check everything
 check-all: check-fmt check-clippy check-features check-deny check-licenses
@@ -429,6 +435,16 @@ check-unused-deps: check-rust-build-tools cargo-install-cargo-machete
 check-unused-deps: ## Checks for any imported dependencies that are not used in code
 	@echo "[*] Checking for unused dependencies..."
 	@cargo machete
+
+.PHONY: check-docs
+check-docs: check-lint-tools
+check-docs: ## Checks prose/code documentation against our style guide
+	@vale docs lib bin
+
+.PHONY: sync-docs-config
+sync-docs-config: check-lint-tools
+sync-docs-config: ## Synchronizes the Vale configuration, updating configured style packages
+	@vale sync
 
 ##@ Testing
 
