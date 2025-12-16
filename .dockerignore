@@ -2,6 +2,7 @@
 .gitlab/
 .git/
 .vscode/
+.vale/
 docker/Dockerfile.*
 node_modules/
 target/
@@ -15,3 +16,4 @@ README.md
 rustfmt.toml
 SECURITY.md
 static-analysis.datadog.yml
+.vale.ini
