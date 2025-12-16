@@ -39,16 +39,17 @@ RUN chmod +x /copy-build-headers.sh && /copy-build-headers.sh
 WORKDIR /adp
 COPY . /adp
 
-RUN rustup target add ${BUILD_TARGET}
-RUN mkdir -p /adp/target/bin && \
+RUN mkdir -p /adp/target/bin
+RUN if [ "${BUILD_TARGET}" = "default" ]; then \
     CFLAGS="${BUILD_CFLAGS}" \
-    cargo build \
-    --profile ${BUILD_PROFILE} \
-    --package agent-data-plane \
-    --features ${BUILD_FEATURES} \
-    --target ${BUILD_TARGET} \
-    --target-dir /adp/target && \
-    cp /adp/target/${BUILD_TARGET}/${BUILD_PROFILE}/agent-data-plane /adp/target/bin/
+    cargo build --profile ${BUILD_PROFILE} --package agent-data-plane --features ${BUILD_FEATURES} --target-dir /adp/target && \
+    cp /adp/target/${BUILD_PROFILE}/agent-data-plane /adp/target/bin/agent-data-plane; \
+else \
+    rustup target add ${BUILD_TARGET} && \
+    CFLAGS="${BUILD_CFLAGS}" \
+    cargo build --profile ${BUILD_PROFILE} --package agent-data-plane --features ${BUILD_FEATURES} --target ${BUILD_TARGET} --target-dir /adp/target && \
+    cp /adp/target/${BUILD_TARGET}/${BUILD_PROFILE}/agent-data-plane /adp/target/bin/agent-data-plane; \
+fi
 
 # Calculate the necessary licenses that we need to include in the final image.
 FROM ${BUILD_IMAGE} AS license-builder
