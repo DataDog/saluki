@@ -13,10 +13,12 @@ bytes = { workspace = true }
 prost = { workspace = true, features = ["derive", "std"] }
 prost-types = { workspace = true }
 protobuf = { workspace = true }
+serde = { workspace = true }
 tonic = { workspace = true, features = ["codegen"] }
 tonic-prost = { workspace = true }
 
 [build-dependencies]
+protobuf = { workspace = true }
 protobuf-codegen = { workspace = true }
 tonic-prost-build = { workspace = true }
 

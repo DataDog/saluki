@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 
 use async_trait::async_trait;
-use bytes::Bytes;
 use datadog_protos::traces::{
     attribute_any_value::AttributeAnyValueType, attribute_array_value::AttributeArrayValueType, AttributeAnyValue,
     AttributeArray, AttributeArrayValue, Span as ProtoSpan, SpanEvent as ProtoSpanEvent, SpanLink as ProtoSpanLink,
@@ -586,7 +585,7 @@ fn convert_span(span: &DdSpan) -> ProtoSpan {
     proto.set_meta_struct(
         span.meta_struct()
             .iter()
-            .map(|(k, v)| (k.to_string().into(), Bytes::from(v.clone())))
+            .map(|(k, v)| (k.to_string().into(), v.clone()))
             .collect(),
     );
     proto.set_spanLinks(span.span_links().iter().map(convert_span_link).collect());

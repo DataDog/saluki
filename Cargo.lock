@@ -296,6 +296,7 @@ dependencies = [
  "tower",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -314,6 +315,7 @@ dependencies = [
  "sync_wrapper",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -669,6 +671,7 @@ checksum = "34a3cbbb8b6eca96f3a5c4bf6938d5b27ced3675d69f95bb51948722870bc323"
 dependencies = [
  "compression-core",
  "flate2",
+ "memchr",
  "zstd",
  "zstd-safe",
 ]
@@ -910,6 +913,7 @@ dependencies = [
  "axum",
  "datadog-protos",
  "protobuf",
+ "rmp-serde",
  "saluki-error",
  "stele",
  "tokio",
@@ -927,6 +931,7 @@ dependencies = [
  "prost-types",
  "protobuf",
  "protobuf-codegen",
+ "serde",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",

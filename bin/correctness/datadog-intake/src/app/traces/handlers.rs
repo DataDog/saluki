@@ -36,7 +36,7 @@ pub async fn handle_v02_traces(State(state): State<TracesState>, body: Bytes) ->
 pub async fn handle_v02_stats(State(state): State<TracesState>, body: Bytes) -> StatusCode {
     debug!("Received v0.2 stats payload.");
 
-    let payload = match StatsPayload::parse_from_bytes(&body[..]) {
+    let payload = match rmp_serde::from_slice::<StatsPayload>(&body[..]) {
         Ok(payload) => payload,
         Err(e) => {
             error!(error = %e, "Failed to parse stats payload.");
