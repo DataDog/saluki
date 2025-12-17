@@ -1,4 +1,5 @@
 use axum::{body::Bytes, extract::State, http::StatusCode, Json};
+use base64::Engine;
 use datadog_protos::traces::{AgentPayload, StatsPayload};
 use protobuf::Message as _;
 use stele::Span;
@@ -39,7 +40,11 @@ pub async fn handle_v02_stats(State(state): State<TracesState>, body: Bytes) -> 
     let payload = match rmp_serde::from_slice::<StatsPayload>(&body[..]) {
         Ok(payload) => payload,
         Err(e) => {
-            error!(error = %e, "Failed to parse stats payload.");
+            error!(error = ?e, "Failed to parse stats payload.");
+            error!(
+                "Raw payload: {}",
+                base64::engine::general_purpose::STANDARD.encode(body)
+            );
             return StatusCode::BAD_REQUEST;
         }
     };

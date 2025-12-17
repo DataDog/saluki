@@ -17,11 +17,39 @@ pub fn deserialize_proto_enum<'de, E: Enum, D: Deserializer<'de>>(d: D) -> Resul
             write!(formatter, "an integer")
         }
 
+        fn visit_i8<R>(self, v: i8) -> Result<Self::Value, R>
+        where
+            R: serde::de::Error,
+        {
+            Ok(EnumOrUnknown::from_i32(v as i32))
+        }
+
+        fn visit_i16<R>(self, v: i16) -> Result<Self::Value, R>
+        where
+            R: serde::de::Error,
+        {
+            Ok(EnumOrUnknown::from_i32(v as i32))
+        }
+
         fn visit_i32<R>(self, v: i32) -> Result<Self::Value, R>
         where
             R: serde::de::Error,
         {
             Ok(EnumOrUnknown::from_i32(v))
+        }
+
+        fn visit_u8<R>(self, v: u8) -> Result<Self::Value, R>
+        where
+            R: serde::de::Error,
+        {
+            Ok(EnumOrUnknown::from_i32(v as i32))
+        }
+
+        fn visit_u16<R>(self, v: u16) -> Result<Self::Value, R>
+        where
+            R: serde::de::Error,
+        {
+            Ok(EnumOrUnknown::from_i32(v as i32))
         }
     }
 

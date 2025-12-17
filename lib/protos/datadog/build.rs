@@ -22,25 +22,52 @@ impl CustomizeCallback for SerdeCapableStructs {
             field.proto().label()
         );
 
-        match field.proto().type_() {
+        let before_value = match field.proto().type_() {
             // We apply custom (de)serializers for certain `protobuf`-specific types which don't have their own implementation.
-            Type::TYPE_ENUM => Customize::default()
-                .before("#[serde(serialize_with = \"crate::serde::serialize_proto_enum\", deserialize_with = \"crate::serde::deserialize_proto_enum\")]"),
+            Type::TYPE_ENUM => get_field_serde_annotation(field, Some("enum")),
             Type::TYPE_MESSAGE => match field.runtime_field_type() {
-                RuntimeFieldType::Repeated(_) => Customize::default()
-                    .before("#[serde(serialize_with = \"crate::serde::serialize_proto_repeated\", deserialize_with = \"crate::serde::deserialize_proto_repeated\")]"),
-                RuntimeFieldType::Map(_, _) => Customize::default()
-                    .before("#[serde(serialize_with = \"crate::serde::serialize_proto_map\", deserialize_with = \"crate::serde::deserialize_proto_map\")]"),
-                _ => Customize::default()
-                    .before("#[serde(serialize_with = \"crate::serde::serialize_proto_message\", deserialize_with = \"crate::serde::deserialize_proto_message\")]"),
+                RuntimeFieldType::Repeated(_) => get_field_serde_annotation(field, Some("repeated")),
+                RuntimeFieldType::Map(_, _) => get_field_serde_annotation(field, Some("map")),
+                _ => get_field_serde_annotation(field, Some("message")),
             },
-            _ => Customize::default(),
-        }
+            _ => get_field_serde_annotation(field, None),
+        };
+
+        Customize::default().before(before_value.as_str())
     }
 
     fn special_field(&self, _message: &MessageDescriptor, _field: &str) -> Customize {
         Customize::default().before("#[serde(skip)]")
     }
+}
+
+fn get_field_serde_annotation(field: &FieldDescriptor, serde_custom_fn_suffix: Option<&str>) -> String {
+    // Adjust the case of the field name to match what will be coming from the Go/MessagePack versions of these
+    // payloads.
+    let field_name = field_name_to_go_case(field.name());
+
+    match serde_custom_fn_suffix {
+        Some(suffix) => format!(
+            "#[serde(rename = \"{}\", serialize_with = \"crate::serde::serialize_proto_{}\", deserialize_with = \"crate::serde::deserialize_proto_{}\")]",
+            field_name, suffix, suffix
+        ),
+        None => format!("#[serde(rename = \"{}\")]", field_name),
+    }
+}
+
+fn field_name_to_go_case(field_name: &str) -> String {
+    // We split the field name on underscores, capitalize each part, and then smoosh it back together without
+    // underscores.
+    field_name
+        .split('_')
+        .map(|part| {
+            part.chars()
+                .enumerate()
+                .map(|(i, c)| if i == 0 { c.to_ascii_uppercase() } else { c })
+                .collect::<String>()
+        })
+        .collect::<Vec<String>>()
+        .join("")
 }
 
 fn main() {
