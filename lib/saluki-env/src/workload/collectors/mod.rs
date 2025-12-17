@@ -13,7 +13,12 @@ mod cgroups;
 pub use self::cgroups::CgroupsMetadataCollector;
 
 mod containerd;
+
+#[cfg(target_os = "linux")]
+mod proc_events;
 pub use self::containerd::ContainerdMetadataCollector;
+#[cfg(target_os = "linux")]
+pub use self::proc_events::ProcEventsMetadataCollector;
 
 mod remote_agent;
 pub use self::remote_agent::{RemoteAgentTaggerMetadataCollector, RemoteAgentWorkloadMetadataCollector};

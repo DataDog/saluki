@@ -13,7 +13,7 @@ use saluki_health::{Health, HealthRegistry};
 use stringtheory::interning::GenericMapInterner;
 
 #[cfg(target_os = "linux")]
-use crate::workload::collectors::CgroupsMetadataCollector;
+use crate::workload::collectors::{CgroupsMetadataCollector, ProcEventsMetadataCollector};
 use crate::{
     features::{Feature, FeatureDetector},
     workload::{
@@ -121,6 +121,23 @@ impl RemoteAgentWorkloadProvider {
             .await?;
 
             aggregator.add_collector(cgroups_collector);
+        }
+
+        // Add the process events collector for PID-to-container mapping via netlink.
+        #[cfg(target_os = "linux")]
+        {
+            let proc_events_collector =
+                build_collector("proc-events", health_registry, &mut collector_bounds, |health| {
+                    ProcEventsMetadataCollector::from_configuration(
+                        config,
+                        feature_detector.clone(),
+                        health,
+                        string_interner.clone(),
+                    )
+                })
+                .await?;
+
+            aggregator.add_collector(proc_events_collector);
         }
 
         // Finally, add the Remote Agent collectors: one for the tagger, and one for workloadmeta.

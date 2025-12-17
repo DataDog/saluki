@@ -46,6 +46,9 @@ tower = { workspace = true, features = ["util"] }
 tracing = { workspace = true }
 twox-hash = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+neli = { workspace = true }
+
 [dev-dependencies]
 proptest = { workspace = true }
 tempfile = { workspace = true }
