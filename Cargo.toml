@@ -108,7 +108,6 @@ proptest = { version = "1.7", default-features = false, features = ["std"] }
 prost = { version = "0.14", default-features = false }
 quanta = { version = "0.12", default-features = false }
 crossterm = { version = "0.28", default-features = false }
-ratatui = { version = "0.29", default-features = false, features = ["crossterm"] }
 rand = { version = "0.9", default-features = false }
 rand_distr = { version = "0.5", default-features = false }
 regex = { version = "1.11", default-features = false }

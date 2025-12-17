@@ -15,10 +15,9 @@ async-trait = { workspace = true }
 bollard = { workspace = true, features = ["time"] }
 chrono = { workspace = true }
 colored = { workspace = true }
-crossterm = { workspace = true }
+crossterm = { workspace = true, features = ["events"] }
 futures = { workspace = true }
 rand = { workspace = true, features = ["std", "std_rng", "thread_rng"] }
-ratatui = { workspace = true }
 regex = { workspace = true, features = ["std"] }
 saluki-error = { workspace = true }
 serde = { workspace = true }
