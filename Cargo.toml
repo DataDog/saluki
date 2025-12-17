@@ -5,6 +5,7 @@ members = [
   "bin/correctness/datadog-intake",
   "bin/correctness/ground-truth",
   "bin/correctness/millstone",
+  "bin/correctness/panoramic",
   "bin/correctness/stele",
   "lib/ddsketch-agent",
   "lib/memory-accounting",
@@ -59,6 +60,7 @@ stele = { path = "bin/correctness/stele" }
 stringtheory = { path = "lib/stringtheory" }
 otlp-protos = { path = "lib/protos/otlp" }
 async-trait = { version = "0.1", default-features = false }
+atty = { version = "0.2", default-features = false }
 axum = { version = "0.8", default-features = false }
 bytes = { version = "1", default-features = false }
 protobuf = { version = "3.7", default-features = false, features = [
@@ -105,6 +107,7 @@ pin-project-lite = { version = "0.2", default-features = false }
 proptest = { version = "1.7", default-features = false, features = ["std"] }
 prost = { version = "0.14", default-features = false }
 quanta = { version = "0.12", default-features = false }
+crossterm = { version = "0.28", default-features = false }
 rand = { version = "0.9", default-features = false }
 rand_distr = { version = "0.5", default-features = false }
 regex = { version = "1.11", default-features = false }
