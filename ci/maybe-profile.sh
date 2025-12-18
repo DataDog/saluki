@@ -7,6 +7,8 @@
 
 set -eu
 
+env
+
 # Check if internal profiling is enabled.
 if [ "${SMP_PROFILING_ENABLED:-""}" = "true" ]; then
     # Run through `ddprof`.
