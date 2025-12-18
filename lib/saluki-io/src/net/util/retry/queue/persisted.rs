@@ -10,7 +10,7 @@ use fs4::{available_space, total_space};
 use rand::Rng;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::{de::DeserializeOwned, Serialize};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use super::{EventContainer, PushResult};
 
@@ -128,6 +128,11 @@ where
         };
 
         persisted_requests.refresh_entry_state().await?;
+
+        info!(
+            "Persisted retry queue initialized. Transactions will be stored in '{}'.",
+            root_path.display()
+        );
 
         Ok(persisted_requests)
     }

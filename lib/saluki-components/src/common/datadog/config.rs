@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use saluki_config::GenericConfiguration;
+use saluki_error::GenericError;
 use serde::Deserialize;
 
 use super::{endpoints::EndpointConfiguration, proxy::ProxyConfiguration, retry::RetryConfiguration};
@@ -67,6 +69,16 @@ pub struct ForwarderConfiguration {
 }
 
 impl ForwarderConfiguration {
+    /// Creates a new `ForwarderConfiguration` from the given configuration.
+    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        let mut forwarder_config = config.as_typed::<Self>()?;
+
+        // Handle fixing up the forwarder storage path if it's empty.
+        forwarder_config.retry.fix_empty_storage_path(config);
+
+        Ok(forwarder_config)
+    }
+
     /// Returns the maximum number of concurrent requests for an individual endpoint.
     pub const fn endpoint_concurrency(&self) -> usize {
         self.endpoint_concurrency

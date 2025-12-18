@@ -116,6 +116,12 @@ where
         mut self, root_path: PathBuf, max_disk_size_bytes: u64, storage_max_disk_ratio: f64,
         disk_usage_retriever: Arc<dyn DiskUsageRetriever + Send + Sync>,
     ) -> Result<Self, GenericError> {
+        // Make sure the root storage path is non-empty, as otherwise we can't generate a valid path
+        // for the persisted entries in this retry queue.
+        if root_path.as_os_str().is_empty() {
+            return Err(generic_error!("Storage path cannot be empty."));
+        }
+
         let queue_root_path = root_path.join(&self.queue_name);
         let persisted_pending = PersistedQueue::from_root_path(
             queue_root_path,
