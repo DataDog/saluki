@@ -251,7 +251,7 @@ pub fn otel_to_dd_span_minimal(
     }
 
     if is_top_level {
-        meta.insert(MetaString::from("_top_level"), MetaString::from("1"));
+        metrics.insert(MetaString::from("_top_level"), 1.0);
     }
 
     if get_string_attribute(span_attributes, "_dd.measured").is_some_and(|v| *v == *"1")

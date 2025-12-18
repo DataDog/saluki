@@ -74,16 +74,30 @@ const fn default_flush_timeout_secs() -> u64 {
 
 // Field numbers from lib/protos/datadog/proto/datadog-agent/datadog/trace/tracer_payload.proto. This is is used to construct the format of the tracer payload and trace chunk.
 const TRACER_PAYLOAD_CONTAINER_ID_FIELD_NUMBER: u32 = 1;
+const TRACER_PAYLOAD_LANGUAGE_NAME_FIELD_NUMBER: u32 = 2;
+const TRACER_PAYLOAD_TRACER_VERSION_FIELD_NUMBER: u32 = 4;
 const TRACER_PAYLOAD_CHUNKS_FIELD_NUMBER: u32 = 6;
 const TRACER_PAYLOAD_TAGS_FIELD_NUMBER: u32 = 7;
 const TRACER_PAYLOAD_ENV_FIELD_NUMBER: u32 = 8;
 const TRACER_PAYLOAD_HOSTNAME_FIELD_NUMBER: u32 = 9;
 const TRACER_PAYLOAD_APP_VERSION_FIELD_NUMBER: u32 = 10;
 
+const AGENT_PAYLOAD_HOSTNAME_FIELD_NUMBER: u32 = 1;
+const AGENT_PAYLOAD_ENV_FIELD_NUMBER: u32 = 2;
+const AGENT_PAYLOAD_TRACER_PAYLOADS_FIELD_NUMBER: u32 = 5;
+const AGENT_PAYLOAD_AGENT_VERSION_FIELD_NUMBER: u32 = 7;
+const AGENT_PAYLOAD_TARGET_TPS_FIELD_NUMBER: u32 = 8;
+const AGENT_PAYLOAD_ERROR_TPS_FIELD_NUMBER: u32 = 9;
+
 fn default_ignore_missing_datadog_fields() -> bool {
     false
 }
 
+/// Configuration for the Datadog Traces encoder.
+///
+/// This encoder converts trace events into Datadog's TracerPayload protobuf format and sends them
+/// to the Datadog traces intake endpoint (`/api/v0.2/traces`). It handles batching, compression,
+/// and enrichment with metadata such as hostname, environment, and container tags.
 #[derive(Deserialize)]
 pub struct DatadogTraceConfiguration {
     #[serde(
@@ -111,14 +125,25 @@ pub struct DatadogTraceConfiguration {
     #[serde(skip)]
     default_hostname: Option<String>,
 
+    #[serde(skip)]
+    agent_version: Option<String>,
+
+    #[serde(skip)]
+    agent_env: Option<String>,
+
     #[serde(default = "default_ignore_missing_datadog_fields")]
     ignore_missing_datadog_fields: bool,
 }
 
 impl DatadogTraceConfiguration {
     /// Creates a new `DatadogTraceConfiguration` from the given configuration.
-    pub fn from_configuration(user_configuration: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(user_configuration.as_typed()?) // The user configuration is deserialized into a DatadogTraceConfiguration and fields override the defaults of DatadogTraceConfiguration.
+    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        let mut trace_config: Self = config.as_typed()?;
+
+        trace_config.agent_version = config.try_get_typed("DD_VERSION")?;
+        trace_config.agent_env = config.try_get_typed("DD_ENV")?;
+
+        Ok(trace_config)
     }
 }
 
@@ -154,8 +179,16 @@ impl EncoderBuilder for DatadogTraceConfiguration {
         let default_hostname = MetaString::from(default_hostname);
 
         // Create request builder for traces which is used to generate HTTP requests.
+        let agent_version = self.agent_version.clone().unwrap_or_else(|| "unknown".to_string());
+        let agent_env = self.agent_env.clone().unwrap_or_else(|| "none".to_string());
+
         let mut trace_rb = RequestBuilder::new(
-            TraceEndpointEncoder::new(default_hostname, self.ignore_missing_datadog_fields),
+            TraceEndpointEncoder::new(
+                default_hostname,
+                self.ignore_missing_datadog_fields,
+                agent_version,
+                agent_env,
+            ),
             compression_scheme,
             RB_BUFFER_CHUNK_SIZE,
         )
@@ -376,19 +409,112 @@ async fn run_request_builder(
 
 #[derive(Debug)]
 struct TraceEndpointEncoder {
-    scratch_buf: Vec<u8>,
+    tracer_payload_scratch: Vec<u8>,
+    chunk_scratch: Vec<u8>,
+    tags_scratch: Vec<u8>,
     // TODO: do we need additional tags or tag deplicator?
     default_hostname: MetaString,
     ignore_missing_datadog_fields: bool,
+    agent_hostname: String,
+    agent_version: String,
+    agent_env: String,
 }
 
 impl TraceEndpointEncoder {
-    fn new(default_hostname: MetaString, ignore_missing_datadog_fields: bool) -> Self {
+    fn new(
+        default_hostname: MetaString, ignore_missing_datadog_fields: bool, agent_version: String, agent_env: String,
+    ) -> Self {
         Self {
-            scratch_buf: Vec::new(),
+            tracer_payload_scratch: Vec::new(),
+            chunk_scratch: Vec::new(),
+            tags_scratch: Vec::new(),
+            agent_hostname: default_hostname.as_ref().to_string(),
             default_hostname,
             ignore_missing_datadog_fields,
+            agent_version,
+            agent_env,
         }
+    }
+
+    fn encode_tracer_payload(&mut self, trace: &Trace, output_buffer: &mut Vec<u8>) -> Result<(), protobuf::Error> {
+        let resource_tags = trace.resource_tags();
+        let first_span = trace.spans().first();
+        let source = tags_to_source(resource_tags);
+
+        // Build AgentPayload (outer message) writing to output_buffer
+        let mut agent_payload_stream = CodedOutputStream::vec(output_buffer);
+
+        // Write AgentPayload fields defined in agent_payload.proto
+        agent_payload_stream.write_string(AGENT_PAYLOAD_HOSTNAME_FIELD_NUMBER, &self.agent_hostname)?;
+        agent_payload_stream.write_string(AGENT_PAYLOAD_ENV_FIELD_NUMBER, &self.agent_env)?;
+        agent_payload_stream.write_string(AGENT_PAYLOAD_AGENT_VERSION_FIELD_NUMBER, &self.agent_version)?;
+        // TODO: Remove hardcoded values for targetTPS and errorTPS when we have sampling.
+        agent_payload_stream.write_double(AGENT_PAYLOAD_TARGET_TPS_FIELD_NUMBER, 10.0)?;
+        agent_payload_stream.write_double(AGENT_PAYLOAD_ERROR_TPS_FIELD_NUMBER, 10.0)?;
+
+        // Build TracerPayload (nested message) in scratch buffer
+        self.tracer_payload_scratch.clear();
+        let mut tracer_payload_stream = CodedOutputStream::vec(&mut self.tracer_payload_scratch);
+
+        // Write TracerPayload fields
+        if let Some(container_id) = resolve_container_id(resource_tags, first_span) {
+            tracer_payload_stream.write_string(TRACER_PAYLOAD_CONTAINER_ID_FIELD_NUMBER, container_id)?;
+        }
+
+        if let Some(lang) = get_resource_tag_value(resource_tags, "telemetry.sdk.language") {
+            tracer_payload_stream.write_string(TRACER_PAYLOAD_LANGUAGE_NAME_FIELD_NUMBER, lang)?;
+        }
+
+        if let Some(sdk_version) = get_resource_tag_value(resource_tags, "telemetry.sdk.version") {
+            let tracer_version = format!("otlp-{}", sdk_version);
+            tracer_payload_stream.write_string(TRACER_PAYLOAD_TRACER_VERSION_FIELD_NUMBER, &tracer_version)?;
+        }
+
+        self.chunk_scratch.clear();
+        write_message_field(
+            &mut tracer_payload_stream,
+            TRACER_PAYLOAD_CHUNKS_FIELD_NUMBER,
+            &build_trace_chunk(trace),
+            &mut self.chunk_scratch,
+        )?;
+
+        self.tags_scratch.clear();
+        if let Some(tags) = resolve_container_tags(resource_tags, source.as_ref(), self.ignore_missing_datadog_fields) {
+            write_map_entry_string_string(
+                &mut tracer_payload_stream,
+                TRACER_PAYLOAD_TAGS_FIELD_NUMBER,
+                CONTAINER_TAGS_META_KEY,
+                tags.as_ref(),
+                &mut self.tags_scratch,
+            )?;
+        }
+
+        if let Some(env) = resolve_env(resource_tags, self.ignore_missing_datadog_fields) {
+            tracer_payload_stream.write_string(TRACER_PAYLOAD_ENV_FIELD_NUMBER, env)?;
+        }
+
+        if let Some(hostname) = resolve_hostname(
+            resource_tags,
+            source.as_ref(),
+            Some(self.default_hostname.as_ref()),
+            self.ignore_missing_datadog_fields,
+        ) {
+            tracer_payload_stream.write_string(TRACER_PAYLOAD_HOSTNAME_FIELD_NUMBER, hostname)?;
+        }
+
+        if let Some(app_version) = resolve_app_version(resource_tags) {
+            tracer_payload_stream.write_string(TRACER_PAYLOAD_APP_VERSION_FIELD_NUMBER, app_version)?;
+        }
+
+        tracer_payload_stream.flush()?;
+        // Drop tracer_payload_stream to release the mutable borrow of tracer_payload_scratch
+        drop(tracer_payload_stream);
+
+        // Write TracerPayload as a nested message in AgentPayload (repeated field)
+        agent_payload_stream.write_bytes(AGENT_PAYLOAD_TRACER_PAYLOADS_FIELD_NUMBER, &self.tracer_payload_scratch)?;
+        agent_payload_stream.flush()?;
+
+        Ok(())
     }
 }
 
@@ -408,15 +534,7 @@ impl EndpointEncoder for TraceEndpointEncoder {
     }
 
     fn encode(&mut self, trace: &Self::Input, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError> {
-        encode_tracer_payload(
-            trace,
-            &self.default_hostname,
-            self.ignore_missing_datadog_fields,
-            buffer,
-            &mut self.scratch_buf,
-        )?;
-
-        Ok(())
+        self.encode_tracer_payload(trace, buffer)
     }
 
     fn endpoint_uri(&self) -> Uri {
@@ -436,7 +554,11 @@ fn build_trace_chunk(trace: &Trace) -> TraceChunk {
     let spans: Vec<ProtoSpan> = trace.spans().iter().map(convert_span).collect();
     let mut chunk = TraceChunk::new();
     chunk.set_spans(spans);
-    // TODO: add sampling https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/api/otlp.go#L550
+
+    // TODO: Remove this once we have sampling. We have to hardcode the priority to 1 for now so that intake does not drop the trace.
+    const PRIORITY_AUTO_KEEP: i32 = 1;
+    chunk.set_priority(PRIORITY_AUTO_KEEP);
+
     chunk
 }
 
@@ -586,63 +708,6 @@ fn write_map_entry_string_string(
     output_stream.write_tag(field_number, WireType::LengthDelimited)?;
     output_stream.write_raw_varint32(scratch_buf.len() as u32)?;
     output_stream.write_raw_bytes(scratch_buf)?;
-    Ok(())
-}
-
-fn encode_tracer_payload(
-    trace: &Trace, default_hostname: &MetaString, ignore_missing_fields: bool, output_buffer: &mut Vec<u8>,
-    scratch_buf: &mut Vec<u8>,
-) -> Result<(), protobuf::Error> {
-    let resource_tags = trace.resource_tags();
-    let first_span = trace.spans().first();
-    let source = tags_to_source(resource_tags);
-    let mut output_stream = CodedOutputStream::vec(output_buffer);
-    if let Some(container_id) = resolve_container_id(resource_tags, first_span) {
-        output_stream.write_string(TRACER_PAYLOAD_CONTAINER_ID_FIELD_NUMBER, container_id)?;
-    }
-    // TODO: add language name, language version and tracer version from stats
-    // https://github.com/DataDog/datadog-agent/blob/redo_instrument_otlp_traffic/pkg/trace/api/otlp.go#L496-L498
-
-    // write a chunk of the trace, we write each trace as a chunk and multiple chunks are allowed in the tracer payload, they get appended
-    // to the payload before it flushes. The code `repeated TraceChunk chunks = 6;` in the tracer_payload.proto allows us to repeatedly write chunks that append
-    // instead of overriding the previous chunk. The TraceChunk implements ::protobuf::Message so we can pass it in as a Message type to the write_message_field function.
-    write_message_field(
-        &mut output_stream,
-        TRACER_PAYLOAD_CHUNKS_FIELD_NUMBER,
-        &build_trace_chunk(trace),
-        scratch_buf,
-    )?;
-
-    if let Some(tags) = resolve_container_tags(resource_tags, source.as_ref(), ignore_missing_fields) {
-        write_map_entry_string_string(
-            &mut output_stream,
-            TRACER_PAYLOAD_TAGS_FIELD_NUMBER,
-            CONTAINER_TAGS_META_KEY,
-            tags.to_string().as_str(),
-            scratch_buf,
-        )?;
-    }
-
-    if let Some(env) = resolve_env(resource_tags, ignore_missing_fields) {
-        output_stream.write_string(TRACER_PAYLOAD_ENV_FIELD_NUMBER, env)?;
-    }
-
-    if let Some(hostname) = resolve_hostname(
-        resource_tags,
-        source.as_ref(),
-        Some(default_hostname.as_ref()),
-        ignore_missing_fields,
-    ) {
-        output_stream.write_string(TRACER_PAYLOAD_HOSTNAME_FIELD_NUMBER, hostname)?;
-    }
-
-    if let Some(app_version) = resolve_app_version(resource_tags) {
-        output_stream.write_string(
-            TRACER_PAYLOAD_APP_VERSION_FIELD_NUMBER,
-            app_version.to_string().as_str(),
-        )?;
-    }
-
     Ok(())
 }
 
