@@ -272,8 +272,6 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
     env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
     // Create the back half of the metrics processing pipeline.
-    let metrics_agg_config =
-        AggregateConfiguration::from_configuration(config).error_context("Failed to configure aggregate transform.")?;
     let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider.clone());
     let mut metrics_enrich_config =
         ChainedConfiguration::default().with_transform_builder("host_enrichment", host_enrichment_config);
@@ -288,11 +286,9 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
 
     blueprint
         // Components.
-        .add_transform("metrics_agg", metrics_agg_config)?
         .add_transform("metrics_enrich", metrics_enrich_config)?
         .add_encoder("dd_metrics_encode", dd_metrics_config)?
         // Metrics.
-        .connect_component("metrics_enrich", ["metrics_agg"])?
         .connect_component("dd_metrics_encode", ["metrics_enrich"])?
         // Forwarding.
         .connect_component("dd_out", ["dd_metrics_encode"])?;
@@ -373,6 +369,8 @@ async fn add_dsd_pipeline_to_blueprint(
     let dsd_mapper_config = DogstatsDMapperConfiguration::from_configuration(config)?;
     let dsd_enrich_config =
         ChainedConfiguration::default().with_transform_builder("dogstatsd_mapper", dsd_mapper_config);
+    let dsd_agg_config =
+        AggregateConfiguration::from_configuration(config).error_context("Failed to configure aggregate transform.")?;
     let dd_events_config = DatadogEventsConfiguration::from_configuration(config)
         .map(BufferedIncrementalConfiguration::from_encoder_builder)
         .error_context("Failed to configure Datadog Events encoder.")?;
@@ -385,13 +383,15 @@ async fn add_dsd_pipeline_to_blueprint(
         .add_source("dsd_in", dsd_config)?
         .add_transform("dsd_prefix_filter", dsd_prefix_filter_configuration)?
         .add_transform("dsd_enrich", dsd_enrich_config)?
+        .add_transform("dsd_agg", dsd_agg_config)?
         .add_encoder("dd_events_encode", dd_events_config)?
         .add_encoder("dd_service_checks_encode", dd_service_checks_config)?
         .add_destination("dsd_stats_out", dsd_stats_config)?
         // Metrics.
         .connect_component("dsd_prefix_filter", ["dsd_in.metrics"])?
         .connect_component("dsd_enrich", ["dsd_prefix_filter"])?
-        .connect_component("metrics_agg", ["dsd_enrich"])?
+        .connect_component("dsd_agg", ["dsd_enrich"])?
+        .connect_component("metrics_enrich", ["dsd_agg"])?
         .connect_component("dd_service_checks_encode", ["dsd_in.service_checks"])?
         .connect_component("dd_events_encode", ["dsd_in.events"])?
         .connect_component("dd_out", ["dd_service_checks_encode", "dd_events_encode"])?

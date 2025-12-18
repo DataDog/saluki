@@ -6,7 +6,7 @@ mkfile_dir := $(dir $(mkfile_path))
 
 # High-level settings that ultimately get passed down to build-specific targets and other spots.
 export TARGET_ARCH := $(shell uname -m | sed s/x86_64/amd64/ | sed s/aarch64/arm64/)
-export BUILD_TARGET := $(or $(BUILD_TARGET),$(shell rustc -vV | sed -n 's|host: ||p'))
+export BUILD_TARGET := $(or $(BUILD_TARGET),default)
 export APP_GIT_HASH := $(or $(CI_COMMIT_SHA),$(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git))
 export APP_BUILD_TIME := $(or $(CI_PIPELINE_CREATED_AT),0000-00-00T00:00:00-00:00)
 
@@ -509,6 +509,29 @@ test-correctness-otlp-traces: build-ground-truth
 test-correctness-otlp-traces: ## Runs the 'otlp-traces' correctness test case
 	@echo "[*] Running 'otlp-traces' correctness test case..."
 	@target/release/ground-truth $(shell pwd)/test/correctness/otlp-traces/config.yaml
+
+.PHONY: build-panoramic
+build-panoramic: check-rust-build-tools
+build-panoramic: ## Builds the panoramic binary (ADP integration test runner)
+	@echo "[*] Building panoramic..."
+	@cargo build --profile release --package panoramic
+
+.PHONY: test-integration
+test-integration: build-panoramic build-datadog-agent-image
+test-integration: ## Runs all ADP integration tests
+	@echo "[*] Running ADP integration tests..."
+	@target/release/panoramic run -d $(shell pwd)/test/integration-tests/cases
+
+.PHONY: test-integration-quick
+test-integration-quick: build-panoramic
+test-integration-quick: ## Runs ADP integration tests (assumes images already built)
+	@echo "[*] Running ADP integration tests (quick mode)..."
+	@target/release/panoramic run -d $(shell pwd)/test/integration-tests/cases
+
+.PHONY: list-integration-tests
+list-integration-tests: build-panoramic
+list-integration-tests: ## Lists available ADP integration tests
+	@target/release/panoramic list -d $(shell pwd)/test/integration-tests/cases
 
 .PHONY: ensure-rust-miri
 ensure-rust-miri:

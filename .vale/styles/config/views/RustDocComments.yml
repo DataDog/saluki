@@ -1,0 +1,5 @@
+engine: tree-sitter
+scopes:
+  - name: doc_comment
+    expr: "(line_comment doc: (doc_comment) @line_comment)"
+    type: md

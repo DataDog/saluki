@@ -1,0 +1,38 @@
+name: "dogstatsd-enabled"
+description: "Verifies DogStatsD pipeline starts and listens on UDP port"
+timeout: 60s
+
+container:
+  image: "saluki-images/datadog-agent:latest"
+  env:
+    DD_API_KEY: "test-api-key"
+    DD_HOSTNAME: "integration-test-dsd"
+    DD_DATA_PLANE_ENABLED: "true"
+    DD_DATA_PLANE_STANDALONE_MODE: "true"
+    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+    DD_DOGSTATSD_PORT: "8125"
+    DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
+  exposed_ports:
+    - "8125/udp"
+
+assertions:
+  # Process should remain stable
+  - type: process_stable_for
+    duration: 10s
+
+  # DogStatsD port should be listening
+  - type: port_listening
+    port: 8125
+    protocol: udp
+    timeout: 30s
+
+  # Should see topology healthy message
+  - type: log_contains
+    pattern: "Topology healthy"
+    timeout: 45s
+
+  # Should not see any panics
+  - type: log_not_contains
+    pattern: "panic|PANIC"
+    regex: true
+    during: 10s

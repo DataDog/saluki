@@ -1,0 +1,38 @@
+name: "telemetry-endpoint"
+description: "Verifies the internal telemetry endpoint is accessible"
+timeout: 60s
+
+container:
+  image: "saluki-images/datadog-agent:latest"
+  env:
+    DD_API_KEY: "test-api-key"
+    DD_HOSTNAME: "integration-test-telemetry"
+    DD_DATA_PLANE_ENABLED: "true"
+    DD_DATA_PLANE_STANDALONE_MODE: "true"
+    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+    DD_DATA_PLANE_TELEMETRY_ENABLED: "true"
+    DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR: "tcp://0.0.0.0:5102"
+  exposed_ports:
+    - "5102/tcp"
+
+assertions:
+  # Process should remain stable
+  - type: process_stable_for
+    duration: 10s
+
+  # Telemetry port should be listening
+  - type: port_listening
+    port: 5102
+    protocol: tcp
+    timeout: 30s
+
+  # Should see telemetry enabled message
+  - type: log_contains
+    pattern: "Internal telemetry enabled"
+    timeout: 30s
+
+  # Health check on the telemetry endpoint (Prometheus metrics)
+  - type: health_check
+    endpoint: "http://localhost:5102/metrics"
+    expected_status: 200
+    timeout: 30s
