@@ -16,6 +16,7 @@ if [ "${SMP_PROFILING_ENABLED:-""}" = "true" ]; then
     # We specifically pass in any SMP-provided profiling tags so that we get things like `experiment`, `variant`, and
     # so on for profile tags which we need to actually be able to filter the profiles and split them apart, etc.
     /ddprof \
+        --log_level notice \
         --service agent-data-plane \
         --tags "${SMP_PROFILING_EXTRA_TAGS:-"smp_tags_missing:true"}" \
         --preset cpu_live_heap \
