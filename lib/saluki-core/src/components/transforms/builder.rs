@@ -16,7 +16,7 @@ pub trait TransformBuilder: MemoryBounds {
     fn input_event_type(&self) -> EventType;
 
     /// Event outputs exposed by this transform.
-    fn outputs(&self) -> &[OutputDefinition];
+    fn outputs(&self) -> &[OutputDefinition<EventType>];
 
     /// Builds an instance of the transform.
     ///

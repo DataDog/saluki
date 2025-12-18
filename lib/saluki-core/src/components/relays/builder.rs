@@ -3,7 +3,7 @@ use memory_accounting::MemoryBounds;
 use saluki_error::GenericError;
 
 use super::Relay;
-use crate::{components::ComponentContext, data_model::payload::PayloadType};
+use crate::{components::ComponentContext, data_model::payload::PayloadType, topology::OutputDefinition};
 
 /// A relay builder.
 ///
@@ -11,8 +11,8 @@ use crate::{components::ComponentContext, data_model::payload::PayloadType};
 /// the built relay, such as the payload types emitted.
 #[async_trait]
 pub trait RelayBuilder: MemoryBounds {
-    /// Data types emitted as output payloads by this relay.
-    fn output_payload_type(&self) -> PayloadType;
+    /// Payload outputs exposed by this source.
+    fn outputs(&self) -> &[OutputDefinition<PayloadType>];
 
     /// Builds an instance of the relay.
     ///
