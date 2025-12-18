@@ -39,7 +39,8 @@ target:
 
   profiling_environment:
     SMP_PROFILING_ENABLED: "true"
-    DD_TRACE_AGENT_URL: "unix:///var/run/datadog/apm.socket"
+    DD_SERVICE: "agent-data-plane"
+    DD_TRACE_AGENT_URL: "unix:///smp-host/apm.socket"
     DD_PROFILING_NATIVE_PRESET: "cpu_live_heap"
     DD_PROFILING_INLINED_FUNCTIONS: "true"
 
