@@ -93,6 +93,10 @@ fn default_ignore_missing_datadog_fields() -> bool {
     false
 }
 
+fn default_env() -> String {
+    "none".to_string()
+}
+
 /// Configuration for the Datadog Traces encoder.
 ///
 /// This encoder converts trace events into Datadog's TracerPayload protobuf format and sends them
@@ -126,10 +130,10 @@ pub struct DatadogTraceConfiguration {
     default_hostname: Option<String>,
 
     #[serde(skip)]
-    agent_version: Option<String>,
+    version: String,
 
-    #[serde(skip)]
-    agent_env: Option<String>,
+    #[serde(default = "default_env")]
+    env: String,
 
     #[serde(default = "default_ignore_missing_datadog_fields")]
     ignore_missing_datadog_fields: bool,
@@ -140,8 +144,8 @@ impl DatadogTraceConfiguration {
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let mut trace_config: Self = config.as_typed()?;
 
-        trace_config.agent_version = config.try_get_typed("DD_VERSION")?;
-        trace_config.agent_env = config.try_get_typed("DD_ENV")?;
+        let app_details = saluki_metadata::get_app_details();
+        trace_config.version = format!("agent-data-plane/{}", app_details.version().raw());
 
         Ok(trace_config)
     }
@@ -179,15 +183,13 @@ impl EncoderBuilder for DatadogTraceConfiguration {
         let default_hostname = MetaString::from(default_hostname);
 
         // Create request builder for traces which is used to generate HTTP requests.
-        let agent_version = self.agent_version.clone().unwrap_or_else(|| "unknown".to_string());
-        let agent_env = self.agent_env.clone().unwrap_or_else(|| "none".to_string());
 
         let mut trace_rb = RequestBuilder::new(
             TraceEndpointEncoder::new(
                 default_hostname,
                 self.ignore_missing_datadog_fields,
-                agent_version,
-                agent_env,
+                self.version.clone(),
+                self.env.clone(),
             ),
             compression_scheme,
             RB_BUFFER_CHUNK_SIZE,
@@ -416,14 +418,12 @@ struct TraceEndpointEncoder {
     default_hostname: MetaString,
     ignore_missing_datadog_fields: bool,
     agent_hostname: String,
-    agent_version: String,
-    agent_env: String,
+    version: String,
+    env: String,
 }
 
 impl TraceEndpointEncoder {
-    fn new(
-        default_hostname: MetaString, ignore_missing_datadog_fields: bool, agent_version: String, agent_env: String,
-    ) -> Self {
+    fn new(default_hostname: MetaString, ignore_missing_datadog_fields: bool, version: String, env: String) -> Self {
         Self {
             tracer_payload_scratch: Vec::new(),
             chunk_scratch: Vec::new(),
@@ -431,8 +431,8 @@ impl TraceEndpointEncoder {
             agent_hostname: default_hostname.as_ref().to_string(),
             default_hostname,
             ignore_missing_datadog_fields,
-            agent_version,
-            agent_env,
+            version,
+            env,
         }
     }
 
@@ -446,8 +446,9 @@ impl TraceEndpointEncoder {
 
         // Write AgentPayload fields defined in agent_payload.proto
         agent_payload_stream.write_string(AGENT_PAYLOAD_HOSTNAME_FIELD_NUMBER, &self.agent_hostname)?;
-        agent_payload_stream.write_string(AGENT_PAYLOAD_ENV_FIELD_NUMBER, &self.agent_env)?;
-        agent_payload_stream.write_string(AGENT_PAYLOAD_AGENT_VERSION_FIELD_NUMBER, &self.agent_version)?;
+        agent_payload_stream.write_string(AGENT_PAYLOAD_ENV_FIELD_NUMBER, &self.env)?;
+
+        agent_payload_stream.write_string(AGENT_PAYLOAD_AGENT_VERSION_FIELD_NUMBER, &self.version)?;
         // TODO: Remove hardcoded values for targetTPS and errorTPS when we have sampling.
         agent_payload_stream.write_double(AGENT_PAYLOAD_TARGET_TPS_FIELD_NUMBER, 10.0)?;
         agent_payload_stream.write_double(AGENT_PAYLOAD_ERROR_TPS_FIELD_NUMBER, 10.0)?;
