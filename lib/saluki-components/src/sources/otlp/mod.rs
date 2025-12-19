@@ -27,6 +27,7 @@ use saluki_core::{
     topology::{EventsBuffer, OutputDefinition},
 };
 use saluki_env::WorkloadProvider;
+use saluki_error::ErrorContext as _;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::ListenAddress;
 use serde::Deserialize;
@@ -134,80 +135,6 @@ pub struct OtlpConfig {
     traces: TracesConfig,
 }
 
-enum OtlpResource {
-    Metrics(OtlpResourceMetrics),
-    Logs(OtlpResourceLogs),
-    Traces(OtlpResourceSpans),
-}
-
-/// Handler that decodes OTLP bytes and sends resources to the converter.
-struct SourceHandler {
-    tx: mpsc::Sender<OtlpResource>,
-}
-
-impl SourceHandler {
-    fn new(tx: mpsc::Sender<OtlpResource>) -> Self {
-        Self { tx }
-    }
-}
-
-#[async_trait]
-impl OtlpHandler for SourceHandler {
-    async fn handle_metrics(&self, body: Bytes) -> Result<(), String> {
-        match ExportMetricsServiceRequest::decode(body) {
-            Ok(request) => {
-                for resource_metrics in request.resource_metrics {
-                    if self.tx.send(OtlpResource::Metrics(resource_metrics)).await.is_err() {
-                        error!("Failed to send resource metrics to converter; channel is closed.");
-                        return Err("Internal processing channel closed.".to_string());
-                    }
-                }
-                Ok(())
-            }
-            Err(e) => {
-                error!(error = %e, "Failed to decode OTLP protobuf request.");
-                Err("Bad Request: Invalid protobuf.".to_string())
-            }
-        }
-    }
-
-    async fn handle_logs(&self, body: Bytes) -> Result<(), String> {
-        match ExportLogsServiceRequest::decode(body) {
-            Ok(request) => {
-                for resource_logs in request.resource_logs {
-                    if self.tx.send(OtlpResource::Logs(resource_logs)).await.is_err() {
-                        error!("Failed to send resource logs to converter; channel is closed.");
-                        return Err("Internal processing channel closed.".to_string());
-                    }
-                }
-                Ok(())
-            }
-            Err(e) => {
-                error!(error = %e, "Failed to decode OTLP protobuf request.");
-                Err("Bad Request: Invalid protobuf.".to_string())
-            }
-        }
-    }
-
-    async fn handle_traces(&self, body: Bytes) -> Result<(), String> {
-        match ExportTraceServiceRequest::decode(body) {
-            Ok(request) => {
-                for resource_spans in request.resource_spans {
-                    if self.tx.send(OtlpResource::Traces(resource_spans)).await.is_err() {
-                        error!("Failed to send resource spans to converter; channel is closed.");
-                        return Err("Internal processing channel closed.".to_string());
-                    }
-                }
-                Ok(())
-            }
-            Err(e) => {
-                error!(error = %e, "Failed to decode OTLP protobuf request.");
-                Err("Bad Request: Invalid protobuf.".to_string())
-            }
-        }
-    }
-}
-
 #[derive(Deserialize, Debug)]
 pub struct LogsConfig {
     /// Whether to enable OTLP logs support.
@@ -306,8 +233,8 @@ impl OtlpConfiguration {
 
 #[async_trait]
 impl SourceBuilder for OtlpConfiguration {
-    fn outputs(&self) -> &[OutputDefinition] {
-        static OUTPUTS: LazyLock<Vec<OutputDefinition>> = LazyLock::new(|| {
+    fn outputs(&self) -> &[OutputDefinition<EventType>] {
+        static OUTPUTS: LazyLock<Vec<OutputDefinition<EventType>>> = LazyLock::new(|| {
             vec![
                 OutputDefinition::named_output("metrics", EventType::Metric),
                 OutputDefinition::named_output("logs", EventType::Log),
@@ -392,6 +319,17 @@ pub struct Otlp {
 #[async_trait]
 impl Source for Otlp {
     async fn run(self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
+        let Self {
+            context_resolver,
+            origin_tag_resolver,
+            grpc_endpoint,
+            http_endpoint,
+            grpc_max_recv_msg_size_bytes,
+            metrics_translator_config,
+            traces_translator_config,
+            metrics,
+        } = *self;
+
         let mut global_shutdown = context.take_shutdown_handle();
         let mut health = context.take_health_handle();
         let memory_limiter = context.topology_context().memory_limiter();
@@ -401,11 +339,9 @@ impl Source for Otlp {
 
         let mut converter_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
-        let metrics_translator = OtlpMetricsTranslator::new(self.metrics_translator_config, self.context_resolver);
+        let metrics_translator = OtlpMetricsTranslator::new(metrics_translator_config, context_resolver);
 
         let thread_pool_handle = context.topology_context().global_thread_pool().clone();
-
-        let metrics_arc = Arc::new(self.metrics);
 
         // Spawn the converter task. This task is shared by both servers.
         thread_pool_handle.spawn_traced_named(
@@ -413,23 +349,19 @@ impl Source for Otlp {
             run_converter(
                 rx,
                 context.clone(),
-                self.origin_tag_resolver,
+                origin_tag_resolver,
                 converter_shutdown_coordinator.register(),
                 metrics_translator,
-                metrics_arc.clone(),
-                self.traces_translator_config,
+                metrics.clone(),
+                traces_translator_config,
             ),
         );
 
         let handler = SourceHandler::new(tx);
-        let server_builder = OtlpServerBuilder::new(
-            self.http_endpoint,
-            self.grpc_endpoint,
-            self.grpc_max_recv_msg_size_bytes,
-        );
+        let server_builder = OtlpServerBuilder::new(http_endpoint, grpc_endpoint, grpc_max_recv_msg_size_bytes);
 
         let (http_shutdown, mut http_error) = server_builder
-            .build(handler, memory_limiter.clone(), thread_pool_handle, metrics_arc.clone())
+            .build(handler, memory_limiter.clone(), thread_pool_handle, metrics)
             .await?;
 
         health.mark_ready();
@@ -459,6 +391,64 @@ impl Source for Otlp {
 
         debug!("OTLP source stopped.");
 
+        Ok(())
+    }
+}
+
+enum OtlpResource {
+    Metrics(OtlpResourceMetrics),
+    Logs(OtlpResourceLogs),
+    Traces(OtlpResourceSpans),
+}
+
+/// Handler that decodes OTLP bytes and sends resources to the converter.
+struct SourceHandler {
+    tx: mpsc::Sender<OtlpResource>,
+}
+
+impl SourceHandler {
+    fn new(tx: mpsc::Sender<OtlpResource>) -> Self {
+        Self { tx }
+    }
+}
+
+#[async_trait]
+impl OtlpHandler for SourceHandler {
+    async fn handle_metrics(&self, body: Bytes) -> Result<(), GenericError> {
+        let request =
+            ExportMetricsServiceRequest::decode(body).error_context("Failed to decode metrics export request.")?;
+
+        for resource_metrics in request.resource_metrics {
+            self.tx
+                .send(OtlpResource::Metrics(resource_metrics))
+                .await
+                .error_context("Failed to send resource metrics to converter: channel is closed.")?;
+        }
+        Ok(())
+    }
+
+    async fn handle_logs(&self, body: Bytes) -> Result<(), GenericError> {
+        let request = ExportLogsServiceRequest::decode(body).error_context("Failed to decode logs export request.")?;
+
+        for resource_logs in request.resource_logs {
+            self.tx
+                .send(OtlpResource::Logs(resource_logs))
+                .await
+                .error_context("Failed to send resource logs to converter: channel is closed.")?;
+        }
+        Ok(())
+    }
+
+    async fn handle_traces(&self, body: Bytes) -> Result<(), GenericError> {
+        let request =
+            ExportTraceServiceRequest::decode(body).error_context("Failed to decode trace export request.")?;
+
+        for resource_spans in request.resource_spans {
+            self.tx
+                .send(OtlpResource::Traces(resource_spans))
+                .await
+                .error_context("Failed to send resource spans to converter: channel is closed.")?;
+        }
         Ok(())
     }
 }
@@ -511,7 +501,7 @@ async fn dispatch_events(mut events: EventsBuffer, source_context: &SourceContex
 async fn run_converter(
     mut receiver: mpsc::Receiver<OtlpResource>, source_context: SourceContext,
     origin_tag_resolver: Option<OtlpOriginTagResolver>, shutdown_handle: DynamicShutdownHandle,
-    mut metrics_translator: OtlpMetricsTranslator, metrics: Arc<Metrics>,
+    mut metrics_translator: OtlpMetricsTranslator, metrics: Metrics,
     traces_translator_config: traces::config::OtlpTracesTranslatorConfig,
 ) {
     tokio::pin!(shutdown_handle);

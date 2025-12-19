@@ -69,9 +69,8 @@ impl TransformBuilder for ChainedConfiguration {
         EventType::all_bits()
     }
 
-    fn outputs(&self) -> &[OutputDefinition] {
-        static OUTPUTS: &[OutputDefinition] = &[OutputDefinition::default_output(EventType::all_bits())];
-
+    fn outputs(&self) -> &[OutputDefinition<EventType>] {
+        static OUTPUTS: &[OutputDefinition<EventType>] = &[OutputDefinition::default_output(EventType::all_bits())];
         OUTPUTS
     }
 }

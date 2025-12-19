@@ -18,10 +18,6 @@ fn default_max_recv_msg_size_mib() -> u64 {
     4
 }
 
-fn default_traces_internal_port() -> u16 {
-    5003
-}
-
 /// Receiver configuration for OTLP endpoints.
 ///
 /// This follows the Agent's `otlp_config.receiver` structure.
@@ -30,24 +26,6 @@ pub struct Receiver {
     /// Protocol-specific receiver configuration.
     #[serde(default)]
     pub protocols: Protocols,
-}
-
-/// Traces configuration for OTLP.
-#[derive(Clone, Deserialize, Debug)]
-pub struct Traces {
-    /// The internal port where trace-agent's OTLP gRPC receiver listens.
-    ///
-    /// Defaults to 5003.
-    #[serde(default = "default_traces_internal_port")]
-    pub internal_port: u16,
-}
-
-impl Default for Traces {
-    fn default() -> Self {
-        Self {
-            internal_port: default_traces_internal_port(),
-        }
-    }
 }
 
 /// Protocol configuration for OTLP receiver.

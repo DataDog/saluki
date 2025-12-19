@@ -232,9 +232,8 @@ impl TransformBuilder for AggregateConfiguration {
         EventType::Metric
     }
 
-    fn outputs(&self) -> &[OutputDefinition] {
-        static OUTPUTS: &[OutputDefinition] = &[OutputDefinition::default_output(EventType::Metric)];
-
+    fn outputs(&self) -> &[OutputDefinition<EventType>] {
+        static OUTPUTS: &[OutputDefinition<EventType>] = &[OutputDefinition::default_output(EventType::Metric)];
         OUTPUTS
     }
 }
