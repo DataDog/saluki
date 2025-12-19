@@ -3,7 +3,7 @@
 <a href=#3 id=3 data-nosnippet>3</a><span class="kw">use </span>saluki_error::GenericError;
 <a href=#4 id=4 data-nosnippet>4</a>
 <a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span><span class="kw">super</span>::Relay;
-<a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span>crate::{components::ComponentContext, data_model::payload::PayloadType};
+<a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span>crate::{components::ComponentContext, data_model::payload::PayloadType, topology::OutputDefinition};
 <a href=#7 id=7 data-nosnippet>7</a>
 <a href=#8 id=8 data-nosnippet>8</a><span class="doccomment">/// A relay builder.
 <a href=#9 id=9 data-nosnippet>9</a>///
@@ -11,8 +11,8 @@
 <a href=#11 id=11 data-nosnippet>11</a>/// the built relay, such as the payload types emitted.
 <a href=#12 id=12 data-nosnippet>12</a></span><span class="attr">#[async_trait]
 <a href=#13 id=13 data-nosnippet>13</a></span><span class="kw">pub trait </span>RelayBuilder: MemoryBounds {
-<a href=#14 id=14 data-nosnippet>14</a>    <span class="doccomment">/// Data types emitted as output payloads by this relay.
-<a href=#15 id=15 data-nosnippet>15</a>    </span><span class="kw">fn </span>output_payload_type(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; PayloadType;
+<a href=#14 id=14 data-nosnippet>14</a>    <span class="doccomment">/// Payload outputs exposed by this source.
+<a href=#15 id=15 data-nosnippet>15</a>    </span><span class="kw">fn </span>outputs(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>[OutputDefinition&lt;PayloadType&gt;];
 <a href=#16 id=16 data-nosnippet>16</a>
 <a href=#17 id=17 data-nosnippet>17</a>    <span class="doccomment">/// Builds an instance of the relay.
 <a href=#18 id=18 data-nosnippet>18</a>    ///

@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["ComponentType"],"mod":["destinations","encoders","forwarders","relays","sources","transforms"],"struct":["ComponentContext"]};
+window.SIDEBAR_ITEMS = {"enum":["ComponentType"],"mod":["decoders","destinations","encoders","forwarders","relays","sources","transforms"],"struct":["ComponentContext"]};

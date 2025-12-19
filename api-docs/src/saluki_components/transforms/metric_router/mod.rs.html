@@ -101,8 +101,8 @@
 <a href=#101 id=101 data-nosnippet>101</a>        EventType::all_bits()
 <a href=#102 id=102 data-nosnippet>102</a>    }
 <a href=#103 id=103 data-nosnippet>103</a>
-<a href=#104 id=104 data-nosnippet>104</a>    <span class="kw">fn </span>outputs(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>[OutputDefinition] {
-<a href=#105 id=105 data-nosnippet>105</a>        <span class="kw">static </span>OUTPUTS: LazyLock&lt;Vec&lt;OutputDefinition&gt;&gt; = LazyLock::new(|| {
+<a href=#104 id=104 data-nosnippet>104</a>    <span class="kw">fn </span>outputs(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>[OutputDefinition&lt;EventType&gt;] {
+<a href=#105 id=105 data-nosnippet>105</a>        <span class="kw">static </span>OUTPUTS: LazyLock&lt;Vec&lt;OutputDefinition&lt;EventType&gt;&gt;&gt; = LazyLock::new(|| {
 <a href=#106 id=106 data-nosnippet>106</a>            <span class="macro">vec!</span>[
 <a href=#107 id=107 data-nosnippet>107</a>                OutputDefinition::named_output(<span class="string">"matched"</span>, EventType::all_bits()),
 <a href=#108 id=108 data-nosnippet>108</a>                OutputDefinition::named_output(<span class="string">"unmatched"</span>, EventType::all_bits()),

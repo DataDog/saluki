@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["DecoderContext"],"trait":["Decoder","DecoderBuilder"]};

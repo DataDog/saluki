@@ -89,8 +89,8 @@
 <a href=#89 id=89 data-nosnippet>89</a>        EventType::Metric
 <a href=#90 id=90 data-nosnippet>90</a>    }
 <a href=#91 id=91 data-nosnippet>91</a>
-<a href=#92 id=92 data-nosnippet>92</a>    <span class="kw">fn </span>outputs(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>[OutputDefinition] {
-<a href=#93 id=93 data-nosnippet>93</a>        <span class="kw">static </span>OUTPUTS: <span class="kw-2">&amp;</span>[OutputDefinition] = <span class="kw-2">&amp;</span>[OutputDefinition::default_output(EventType::Metric)];
+<a href=#92 id=92 data-nosnippet>92</a>    <span class="kw">fn </span>outputs(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>[OutputDefinition&lt;EventType&gt;] {
+<a href=#93 id=93 data-nosnippet>93</a>        <span class="kw">static </span>OUTPUTS: <span class="kw-2">&amp;</span>[OutputDefinition&lt;EventType&gt;] = <span class="kw-2">&amp;</span>[OutputDefinition::default_output(EventType::Metric)];
 <a href=#94 id=94 data-nosnippet>94</a>        OUTPUTS
 <a href=#95 id=95 data-nosnippet>95</a>    }
 <a href=#96 id=96 data-nosnippet>96</a>

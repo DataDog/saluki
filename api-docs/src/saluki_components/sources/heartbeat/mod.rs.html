@@ -78,17 +78,16 @@
 <a href=#78 id=78 data-nosnippet>78</a>        }))
 <a href=#79 id=79 data-nosnippet>79</a>    }
 <a href=#80 id=80 data-nosnippet>80</a>
-<a href=#81 id=81 data-nosnippet>81</a>    <span class="kw">fn </span>outputs(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>[OutputDefinition] {
-<a href=#82 id=82 data-nosnippet>82</a>        <span class="kw">static </span>OUTPUTS: [OutputDefinition; <span class="number">1</span>] = [OutputDefinition::default_output(EventType::Metric)];
-<a href=#83 id=83 data-nosnippet>83</a>
-<a href=#84 id=84 data-nosnippet>84</a>        <span class="kw-2">&amp;</span>OUTPUTS
-<a href=#85 id=85 data-nosnippet>85</a>    }
-<a href=#86 id=86 data-nosnippet>86</a>}
-<a href=#87 id=87 data-nosnippet>87</a>
-<a href=#88 id=88 data-nosnippet>88</a><span class="kw">impl </span>MemoryBounds <span class="kw">for </span>HeartbeatConfiguration {
-<a href=#89 id=89 data-nosnippet>89</a>    <span class="kw">fn </span>specify_bounds(<span class="kw-2">&amp;</span><span class="self">self</span>, builder: <span class="kw-2">&amp;mut </span>MemoryBoundsBuilder) {
-<a href=#90 id=90 data-nosnippet>90</a>        <span class="comment">// Minimal memory footprint when emitting heartbeat metrics
-<a href=#91 id=91 data-nosnippet>91</a>        </span>builder.minimum().with_single_value::&lt;Heartbeat&gt;(<span class="string">"component struct"</span>);
-<a href=#92 id=92 data-nosnippet>92</a>    }
-<a href=#93 id=93 data-nosnippet>93</a>}
+<a href=#81 id=81 data-nosnippet>81</a>    <span class="kw">fn </span>outputs(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>[OutputDefinition&lt;EventType&gt;] {
+<a href=#82 id=82 data-nosnippet>82</a>        <span class="kw">static </span>OUTPUTS: <span class="kw-2">&amp;</span>[OutputDefinition&lt;EventType&gt;] = <span class="kw-2">&amp;</span>[OutputDefinition::default_output(EventType::Metric)];
+<a href=#83 id=83 data-nosnippet>83</a>        OUTPUTS
+<a href=#84 id=84 data-nosnippet>84</a>    }
+<a href=#85 id=85 data-nosnippet>85</a>}
+<a href=#86 id=86 data-nosnippet>86</a>
+<a href=#87 id=87 data-nosnippet>87</a><span class="kw">impl </span>MemoryBounds <span class="kw">for </span>HeartbeatConfiguration {
+<a href=#88 id=88 data-nosnippet>88</a>    <span class="kw">fn </span>specify_bounds(<span class="kw-2">&amp;</span><span class="self">self</span>, builder: <span class="kw-2">&amp;mut </span>MemoryBoundsBuilder) {
+<a href=#89 id=89 data-nosnippet>89</a>        <span class="comment">// Minimal memory footprint when emitting heartbeat metrics
+<a href=#90 id=90 data-nosnippet>90</a>        </span>builder.minimum().with_single_value::&lt;Heartbeat&gt;(<span class="string">"component struct"</span>);
+<a href=#91 id=91 data-nosnippet>91</a>    }
+<a href=#92 id=92 data-nosnippet>92</a>}
 </code></pre></div></section></main></body></html>
