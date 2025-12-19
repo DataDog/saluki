@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["BufferedIncrementalConfiguration","DatadogEventsConfiguration","DatadogLogsConfiguration","DatadogMetricsConfiguration","DatadogServiceChecksConfiguration"]};
+window.SIDEBAR_ITEMS = {"struct":["BufferedIncrementalConfiguration","DatadogEventsConfiguration","DatadogLogsConfiguration","DatadogMetricsConfiguration","DatadogServiceChecksConfiguration","DatadogTraceConfiguration"]};
