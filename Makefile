@@ -32,7 +32,7 @@ ifeq ($(CI),true)
 endif
 export CARGO_TOOL_VERSION_cargo-binstall ?= 1.16.2
 export CARGO_TOOL_VERSION_dd-rust-license-tool ?= 1.0.3
-export CARGO_TOOL_VERSION_cargo-deny ?= 0.18.3
+export CARGO_TOOL_VERSION_cargo-deny ?= 0.18.9
 export CARGO_TOOL_VERSION_cargo-hack ?= 0.6.30
 export CARGO_TOOL_VERSION_cargo-nextest ?= 0.9.99
 export CARGO_TOOL_VERSION_cargo-autoinherit ?= 0.1.5

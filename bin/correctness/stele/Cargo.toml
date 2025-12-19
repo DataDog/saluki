@@ -16,4 +16,5 @@ ordered-float = { workspace = true }
 saluki-common = { workspace = true }
 saluki-error = { workspace = true }
 serde = { workspace = true }
+serde_with = { workspace = true }
 stringtheory = { workspace = true }

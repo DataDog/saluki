@@ -8,6 +8,8 @@ api_key: dummy-api-key-correctness-testing
 # We have to specifically configure the health port to use.
 health_port: 5555
 
+log_level: debug
+
 # Disable process and container collection.
 process_config:
   process_collection:

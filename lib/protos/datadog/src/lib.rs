@@ -7,6 +7,8 @@
 #![allow(clippy::enum_variant_names)]
 #![allow(clippy::doc_overindented_list_items)]
 
+pub(crate) mod serde;
+
 mod include {
     include!(concat!(env!("OUT_DIR"), "/protos/mod.rs"));
 }

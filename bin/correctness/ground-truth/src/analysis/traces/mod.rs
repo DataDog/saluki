@@ -3,9 +3,10 @@ use std::{
     time::Duration,
 };
 
+use saluki_common::collections::FastHashMap;
 use saluki_error::{generic_error, GenericError};
 use serde_json::{Number, Value};
-use stele::Span;
+use stele::{AggregationKey, BucketedClientStatistics, Span};
 use tracing::{error, info};
 use treediff::value::Key;
 
@@ -39,9 +40,11 @@ pub struct TracesAnalyzer {
     baseline_total_traces: usize,
     baseline_spans: HashMap<u64, Span>,
     baseline_ssi_metadata_present: bool,
+    baseline_trace_stats: FastHashMap<AggregationKey, BucketedClientStatistics>,
     comparison_total_traces: usize,
     comparison_spans: HashMap<u64, Span>,
     comparison_ssi_metadata_present: bool,
+    comparison_trace_stats: FastHashMap<AggregationKey, BucketedClientStatistics>,
 }
 
 impl TracesAnalyzer {
@@ -82,13 +85,18 @@ impl TracesAnalyzer {
             }
         }
 
+        let baseline_trace_stats = baseline_data.trace_stats().groups().clone();
+        let comparison_trace_stats = comparison_data.trace_stats().groups().clone();
+
         Ok(Self {
             baseline_total_traces: baseline_traces.len(),
             baseline_spans,
             baseline_ssi_metadata_present,
+            baseline_trace_stats,
             comparison_total_traces: comparison_traces.len(),
             comparison_spans,
             comparison_ssi_metadata_present,
+            comparison_trace_stats,
         })
     }
 
@@ -167,6 +175,37 @@ impl TracesAnalyzer {
                     error!("Failed to find matching comparison span ({}).", baseline_span_id);
                     error_count += 1;
                 }
+            }
+        }
+
+        // Compare the baseline and comparison trace statistics.
+        let baseline_stats_aggregation_keys = self.baseline_trace_stats.keys().cloned().collect::<HashSet<_>>();
+        let comparison_stats_aggregation_keys = self.comparison_trace_stats.keys().cloned().collect::<HashSet<_>>();
+
+        // We should have an identical number of aggregation keys.
+        if baseline_stats_aggregation_keys != comparison_stats_aggregation_keys {
+            return Err(generic_error!(
+                "Number of aggregation keys do not match: {} (baseline) vs {} (comparison)",
+                baseline_stats_aggregation_keys.len(),
+                comparison_stats_aggregation_keys.len()
+            ));
+        }
+
+        info!(
+            "Analyzing {} aggregated statistics groups from baseline and comparison target.",
+            baseline_stats_aggregation_keys.len()
+        );
+
+        // Compare each aggregated statistics group between baseline and comparison.
+        for (key, baseline_stats) in self.baseline_trace_stats.iter() {
+            let comparison_stats = self.comparison_trace_stats.get(key).unwrap();
+            if baseline_stats != comparison_stats {
+                return Err(generic_error!(
+                    "Aggregated statistics for key {} do not match: {:?} (baseline) vs {:?} (comparison)",
+                    key,
+                    baseline_stats,
+                    comparison_stats
+                ));
             }
         }
 
