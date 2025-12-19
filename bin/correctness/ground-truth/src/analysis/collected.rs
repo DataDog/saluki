@@ -1,5 +1,5 @@
-use saluki_error::{ErrorContext as _, GenericError};
-use stele::{Metric, Span};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use stele::{ClientStatisticsAggregator, Metric, Span};
 use tracing::debug;
 
 /// Collected data from a test target.
@@ -8,6 +8,7 @@ use tracing::debug;
 pub struct CollectedData {
     metrics: Vec<Metric>,
     spans: Vec<Span>,
+    trace_stats: ClientStatisticsAggregator,
 }
 
 impl CollectedData {
@@ -19,8 +20,13 @@ impl CollectedData {
     pub async fn for_port(datadog_intake_port: u16) -> Result<Self, GenericError> {
         let metrics = get_captured_metrics(datadog_intake_port).await?;
         let spans = get_captured_spans(datadog_intake_port).await?;
+        let trace_stats = get_captured_trace_stats(datadog_intake_port).await?;
 
-        Ok(Self { metrics, spans })
+        Ok(Self {
+            metrics,
+            spans,
+            trace_stats,
+        })
     }
 
     /// Returns a reference to the collected metrics.
@@ -31,6 +37,11 @@ impl CollectedData {
     /// Returns a reference to the collected spans.
     pub fn spans(&self) -> &[Span] {
         &self.spans
+    }
+
+    /// Returns a reference to the collected trace statistics.
+    pub fn trace_stats(&self) -> &ClientStatisticsAggregator {
+        &self.trace_stats
     }
 }
 
@@ -53,10 +64,10 @@ async fn get_captured_metrics(datadog_intake_port: u16) -> Result<Vec<Metric>, G
 async fn get_captured_spans(datadog_intake_port: u16) -> Result<Vec<Span>, GenericError> {
     let client = reqwest::Client::new();
     let spans = client
-        .get(format!("http://localhost:{}/traces/dump", datadog_intake_port))
+        .get(format!("http://localhost:{}/traces/dump_spans", datadog_intake_port))
         .send()
         .await
-        .error_context("Failed to call traces dump endpoint on datadog-intake server.")?
+        .error_context("Failed to call spans dump endpoint on datadog-intake server.")?
         .json::<Vec<Span>>()
         .await
         .error_context("Failed to decode dumped spans from datadog-intake response.")?;
@@ -64,4 +75,30 @@ async fn get_captured_spans(datadog_intake_port: u16) -> Result<Vec<Span>, Gener
     debug!("Spans dumped successfully.");
 
     Ok(spans)
+}
+
+async fn get_captured_trace_stats(datadog_intake_port: u16) -> Result<ClientStatisticsAggregator, GenericError> {
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("http://localhost:{}/traces/dump_stats", datadog_intake_port))
+        .send()
+        .await
+        .error_context("Failed to call trace stats dump endpoint on datadog-intake server.")?;
+
+    let body = response.bytes().await.error_context("Failed to read response body")?;
+
+    let stats = match serde_json::from_slice(&body) {
+        Ok(stats) => stats,
+        Err(e) => {
+            println!("raw stats json: {}", String::from_utf8_lossy(&body));
+            return Err(generic_error!(
+                "Failed to decode dumped trace stats from datadog-intake response: {}",
+                e
+            ));
+        }
+    };
+
+    debug!("Trace stats dumped successfully.");
+
+    Ok(stats)
 }

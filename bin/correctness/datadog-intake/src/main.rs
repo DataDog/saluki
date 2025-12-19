@@ -27,8 +27,6 @@ async fn main() {
         )
         .with_ansi(true)
         .with_target(true)
-        .with_file(true)
-        .with_line_number(true)
         .init();
 
     match run().await {

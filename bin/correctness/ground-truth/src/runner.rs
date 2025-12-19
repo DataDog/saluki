@@ -108,8 +108,8 @@ impl TestRunner {
                         Err(baseline_error)
                     }
                     (Err(baseline_error), Err(comparison_error)) => {
-                        error!(error = %baseline_error, "Baseline group runner encountered an error at step '{}'.", step_id);
-                        error!(error = %comparison_error, "Comparison group runner encountered an error at step '{}'.", step_id);
+                        error!(error = ?baseline_error, "Baseline group runner encountered an error at step '{}'.", step_id);
+                        error!(error = ?comparison_error, "Comparison group runner encountered an error at step '{}'.", step_id);
                         Err(generic_error!("Failed to complete step '{}'.", step_id))
                     }
                     _ => unreachable!(),

@@ -1,9 +1,16 @@
-use std::hash::{Hash as _, Hasher as _};
+use std::{
+    collections::hash_map::Entry,
+    fmt,
+    hash::{Hash as _, Hasher as _},
+    num::ParseIntError,
+    str::FromStr,
+};
 
 use datadog_protos::traces::{self as proto, Trilean};
 use saluki_common::{collections::FastHashMap, hash::StableHasher};
 use saluki_error::{generic_error, GenericError};
 use serde::{Deserialize, Serialize};
+use serde_with::{DeserializeFromStr, SerializeDisplay};
 use stringtheory::MetaString;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -69,13 +76,36 @@ impl From<&proto::ClientStatsPayload> for TracerMetadata {
 }
 
 /// Time frame covered by a bucket.
-#[derive(Clone, Copy, Debug, Deserialize, Hash, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, DeserializeFromStr, Hash, Eq, PartialEq, SerializeDisplay)]
 pub struct BucketTimeframe {
     /// Start time of the bucket, in nanoseconds.
     pub start_time_ns: u64,
 
     /// Width of the bucket, in nanoseconds.
     pub duration_ns: u64,
+}
+
+impl fmt::Display for BucketTimeframe {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[{},{}]", self.start_time_ns, self.start_time_ns + self.duration_ns)
+    }
+}
+
+impl FromStr for BucketTimeframe {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let parts: Vec<&str> = s.trim_matches(['[', ']']).split(',').collect();
+        if parts.len() != 2 {
+            return Err(format!("expected two elements, found {}", parts.len()));
+        }
+        let start_time_ns = parts[0].parse::<u64>().map_err(|e| e.to_string())?;
+        let duration_ns = parts[1].parse::<u64>().map_err(|e| e.to_string())?;
+        Ok(Self {
+            start_time_ns,
+            duration_ns,
+        })
+    }
 }
 
 impl From<&proto::ClientStatsBucket> for BucketTimeframe {
@@ -92,19 +122,27 @@ impl From<&proto::ClientStatsBucket> for BucketTimeframe {
 pub struct BucketedClientStatistics {
     agent_metadata: AgentMetadata,
     tracer_metadata: TracerMetadata,
-    buckets: FastHashMap<BucketTimeframe, Vec<ClientStatistics>>,
+    buckets: FastHashMap<BucketTimeframe, ClientStatistics>,
 }
 
 impl BucketedClientStatistics {
     /// Merge the given stats into the given bucket, creating the bucket if it does not already exist.
-    pub fn merge(&mut self, bucket_timeframe: BucketTimeframe, stats: ClientStatistics) {
-        let bucket = self.buckets.entry(bucket_timeframe).or_default();
-        bucket.push(stats);
+    pub fn merge(&mut self, bucket_timeframe: BucketTimeframe, stats: ClientStatistics) -> Result<(), GenericError> {
+        match self.buckets.entry(bucket_timeframe) {
+            Entry::Occupied(mut entry) => {
+                let existing_stats = entry.get_mut();
+                existing_stats.merge(stats)
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(stats);
+                Ok(())
+            }
+        }
     }
 
     /// Returns an iterator over each bucket.
-    pub fn buckets(&self) -> impl Iterator<Item = (&BucketTimeframe, &[ClientStatistics])> {
-        self.buckets.iter().map(|(key, value)| (key, value.as_slice()))
+    pub fn buckets(&self) -> impl Iterator<Item = (&BucketTimeframe, &ClientStatistics)> {
+        self.buckets.iter()
     }
 }
 
@@ -132,6 +170,68 @@ pub struct ClientStatistics {
     http_status_code: u32,
     http_method: MetaString,
     http_endpoint: MetaString,
+}
+
+impl ClientStatistics {
+    /// Merges `other` into `self`.
+    ///
+    /// If `other` does not have the same aggregation key as `self` (essentially: if any of the string fields differ),
+    /// an error is returned.
+    pub fn merge(&mut self, other: Self) -> Result<(), GenericError> {
+        // Check all "fixed" fields and ensure they're identical.
+        if self.service != other.service {
+            return Err(generic_error!("failed to merge client statistics: service mismatch"));
+        }
+        if self.name != other.name {
+            return Err(generic_error!("failed to merge client statistics: name mismatch"));
+        }
+        if self.resource != other.resource {
+            return Err(generic_error!("failed to merge client statistics: resource mismatch"));
+        }
+        if self.type_ != other.type_ {
+            return Err(generic_error!("failed to merge client statistics: type mismatch"));
+        }
+        if self.span_kind != other.span_kind {
+            return Err(generic_error!("failed to merge client statistics: span kind mismatch"));
+        }
+        if self.peer_tags != other.peer_tags {
+            return Err(generic_error!("failed to merge client statistics: peer tags mismatch"));
+        }
+        if self.db_type != other.db_type {
+            return Err(generic_error!("failed to merge client statistics: db type mismatch"));
+        }
+        if self.grpc_status_code != other.grpc_status_code {
+            return Err(generic_error!(
+                "failed to merge client statistics: grpc status code mismatch"
+            ));
+        }
+        if self.http_status_code != other.http_status_code {
+            return Err(generic_error!(
+                "failed to merge client statistics: http status code mismatch"
+            ));
+        }
+        if self.http_method != other.http_method {
+            return Err(generic_error!(
+                "failed to merge client statistics: http method mismatch"
+            ));
+        }
+        if self.http_endpoint != other.http_endpoint {
+            return Err(generic_error!(
+                "failed to merge client statistics: http endpoint mismatch"
+            ));
+        }
+
+        // Merge together the things we can actually merge.
+        self.hits += other.hits;
+        self.errors += other.errors;
+        self.duration_ns += other.duration_ns;
+        self.synthetics |= other.synthetics;
+        self.top_level_hits += other.top_level_hits;
+
+        // TODO: Handle decoding the DDSketch entries and merging them together logically.
+
+        Ok(())
+    }
 }
 
 impl From<&proto::ClientGroupedStats> for ClientStatistics {
@@ -168,8 +268,22 @@ impl From<&proto::ClientGroupedStats> for ClientStatistics {
 }
 
 /// Aggregation key for client statistics.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Debug, DeserializeFromStr, Eq, Hash, PartialEq, SerializeDisplay)]
 pub struct AggregationKey(u64);
+
+impl fmt::Display for AggregationKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl FromStr for AggregationKey {
+    type Err = ParseIntError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(s.parse()?))
+    }
+}
 
 impl From<&proto::ClientGroupedStats> for AggregationKey {
     fn from(payload: &proto::ClientGroupedStats) -> Self {
@@ -238,7 +352,7 @@ impl ClientStatisticsAggregator {
                         return Err(generic_error!("tracer metadata mismatch"));
                     }
 
-                    stats_group.merge(bucket_timeframe, ClientStatistics::from(grouped_stat));
+                    stats_group.merge(bucket_timeframe, ClientStatistics::from(grouped_stat))?;
                 }
             }
         }
@@ -246,11 +360,11 @@ impl ClientStatisticsAggregator {
         Ok(())
     }
 
-    /// Returns an iterator over each group of statistics.
+    /// Returns a reference to the aggregated statistics groups.
     ///
     /// Groups are split by "aggregation key", which is a combination of select fields in each client stats payload,
     /// roughly corresponding to a specific span: name, operation, kind, tags, and so on.
-    pub fn groups(&self) -> impl Iterator<Item = (&AggregationKey, &BucketedClientStatistics)> {
-        self.groups.iter()
+    pub fn groups(&self) -> &FastHashMap<AggregationKey, BucketedClientStatistics> {
+        &self.groups
     }
 }

@@ -13,6 +13,7 @@ airlock = { path = "../airlock" }
 rand = { workspace = true, features = ["std", "std_rng", "thread_rng"] }
 rand_distr = { workspace = true }
 reqwest = { workspace = true, features = ["json", "zstd", "rustls-tls-native-roots"] }
+saluki-common = { workspace = true }
 saluki-config = { workspace = true }
 saluki-error = { workspace = true }
 serde = { workspace = true }

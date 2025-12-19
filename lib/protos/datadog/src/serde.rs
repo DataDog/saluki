@@ -76,7 +76,7 @@ pub fn serialize_proto_repeated<T: Serialize, S: Serializer>(items: &Vec<T>, s: 
 }
 
 pub fn deserialize_proto_repeated<'de, T: Deserialize<'de>, D: Deserializer<'de>>(d: D) -> Result<Vec<T>, D::Error> {
-    Vec::<T>::deserialize(d).map(Vec::from)
+    Vec::<T>::deserialize(d)
 }
 
 pub fn serialize_proto_map<K: Serialize, V: Serialize, S: Serializer>(

@@ -564,28 +564,28 @@ fn build_trace_chunk(trace: &Trace) -> TraceChunk {
 
 fn convert_span(span: &DdSpan) -> ProtoSpan {
     let mut proto = ProtoSpan::new();
-    proto.set_service(span.service().to_string().into());
-    proto.set_name(span.name().to_string().into());
-    proto.set_resource(span.resource().to_string().into());
+    proto.set_service(span.service().to_string());
+    proto.set_name(span.name().to_string());
+    proto.set_resource(span.resource().to_string());
     proto.set_traceID(span.trace_id());
     proto.set_spanID(span.span_id());
     proto.set_parentID(span.parent_id());
     proto.set_start(span.start());
     proto.set_duration(span.duration());
     proto.set_error(span.error());
-    proto.set_type(span.span_type().to_string().into());
+    proto.set_type(span.span_type().to_string());
 
     proto.set_meta(
         span.meta()
             .iter()
-            .map(|(k, v)| (k.to_string().into(), v.to_string().into()))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect(),
     );
-    proto.set_metrics(span.metrics().iter().map(|(k, v)| (k.to_string().into(), *v)).collect());
+    proto.set_metrics(span.metrics().iter().map(|(k, v)| (k.to_string(), *v)).collect());
     proto.set_meta_struct(
         span.meta_struct()
             .iter()
-            .map(|(k, v)| (k.to_string().into(), v.clone()))
+            .map(|(k, v)| (k.to_string(), v.clone()))
             .collect(),
     );
     proto.set_spanLinks(span.span_links().iter().map(convert_span_link).collect());
@@ -601,10 +601,10 @@ fn convert_span_link(link: &DdSpanLink) -> ProtoSpanLink {
     proto.set_attributes(
         link.attributes()
             .iter()
-            .map(|(k, v)| (k.to_string().into(), v.to_string().into()))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect(),
     );
-    proto.set_tracestate(link.tracestate().to_string().into());
+    proto.set_tracestate(link.tracestate().to_string());
     proto.set_flags(link.flags());
     proto
 }
@@ -612,12 +612,12 @@ fn convert_span_link(link: &DdSpanLink) -> ProtoSpanLink {
 fn convert_span_event(event: &DdSpanEvent) -> ProtoSpanEvent {
     let mut proto = ProtoSpanEvent::new();
     proto.set_time_unix_nano(event.time_unix_nano());
-    proto.set_name(event.name().to_string().into());
+    proto.set_name(event.name().to_string());
     proto.set_attributes(
         event
             .attributes()
             .iter()
-            .map(|(k, v)| (k.to_string().into(), convert_attribute_value(v)))
+            .map(|(k, v)| (k.to_string(), convert_attribute_value(v)))
             .collect(),
     );
     proto
@@ -628,7 +628,7 @@ fn convert_attribute_value(value: &AttributeValue) -> AttributeAnyValue {
     match value {
         AttributeValue::String(v) => {
             proto.set_type(AttributeAnyValueType::STRING_VALUE);
-            proto.set_string_value(v.to_string().into());
+            proto.set_string_value(v.to_string());
         }
         AttributeValue::Bool(v) => {
             proto.set_type(AttributeAnyValueType::BOOL_VALUE);
@@ -657,7 +657,7 @@ fn convert_attribute_array_value(value: &AttributeScalarValue) -> AttributeArray
     match value {
         AttributeScalarValue::String(v) => {
             proto.set_type(AttributeArrayValueType::STRING_VALUE);
-            proto.set_string_value(v.to_string().into());
+            proto.set_string_value(v.to_string());
         }
         AttributeScalarValue::Bool(v) => {
             proto.set_type(AttributeArrayValueType::BOOL_VALUE);

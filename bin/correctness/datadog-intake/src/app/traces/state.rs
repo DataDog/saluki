@@ -7,7 +7,7 @@ use stele::{ClientStatisticsAggregator, Span};
 #[derive(Default)]
 struct Inner {
     spans: Vec<Span>,
-    stats_aggregator: ClientStatisticsAggregator,
+    stats: ClientStatisticsAggregator,
 }
 
 #[derive(Clone)]
@@ -23,10 +23,16 @@ impl TracesState {
         }
     }
 
-    /// Dumps the current traces state.
-    pub fn dump(&self) -> Vec<Span> {
+    /// Dumps the current set of spans.
+    pub fn dump_spans(&self) -> Vec<Span> {
         let inner = self.inner.lock().unwrap();
         inner.spans.clone()
+    }
+
+    /// Dumps the current stats.
+    pub fn dump_stats(&self) -> ClientStatisticsAggregator {
+        let inner = self.inner.lock().unwrap();
+        inner.stats.clone()
     }
 
     /// Merges the given agent payload into the current traces state.
@@ -41,6 +47,6 @@ impl TracesState {
     /// Merges the given stats payload into the current traces state.
     pub fn merge_stats_payload(&self, payload: StatsPayload) -> Result<(), GenericError> {
         let mut inner = self.inner.lock().unwrap();
-        inner.stats_aggregator.merge_payload(&payload)
+        inner.stats.merge_payload(&payload)
     }
 }
