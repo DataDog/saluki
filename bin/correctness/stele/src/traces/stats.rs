@@ -87,7 +87,7 @@ pub struct BucketTimeframe {
 
 impl fmt::Display for BucketTimeframe {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[{},{}]", self.start_time_ns, self.start_time_ns + self.duration_ns)
+        write!(f, "[{},{}]", self.start_time_ns, self.duration_ns)
     }
 }
 
