@@ -3,7 +3,7 @@ use std::{borrow::Cow, ops::Deref};
 
 use crate::{
     components::{ComponentContext, ComponentType},
-    data_model::event::EventType,
+    topology::graph::DataType,
 };
 
 const INVALID_COMPONENT_ID: &str =
@@ -52,8 +52,8 @@ impl ComponentOutputId {
     ///
     /// If generated component output ID is not valid (identifier or output definition containing invalid characters,
     /// etc), an error is returned.
-    pub fn from_definition(
-        component_id: ComponentId, output_def: &OutputDefinition,
+    pub fn from_definition<T: Copy>(
+        component_id: ComponentId, output_def: &OutputDefinition<T>,
     ) -> Result<Self, (String, &'static str)> {
         match output_def.output_name() {
             None => Ok(Self(component_id.0)),
@@ -178,28 +178,31 @@ impl fmt::Display for OutputName {
 /// Outputs are a combination of the output name and data type, which defines the data type (or types) of events that
 /// can be emitted from a particular component output.
 #[derive(Clone, Debug)]
-pub struct OutputDefinition {
+pub struct OutputDefinition<T> {
     name: OutputName,
-    event_ty: EventType,
+    data_ty: T,
 }
 
-impl OutputDefinition {
+impl<T> OutputDefinition<T>
+where
+    T: Copy,
+{
     /// Creates a default output with the given data type.
-    pub const fn default_output(event_ty: EventType) -> Self {
+    pub const fn default_output(data_ty: T) -> Self {
         Self {
             name: OutputName::Default,
-            event_ty,
+            data_ty,
         }
     }
 
     /// Creates a named output with the given name and data type.
-    pub fn named_output<S>(name: S, event_ty: EventType) -> Self
+    pub fn named_output<S>(name: S, data_ty: T) -> Self
     where
         S: Into<Cow<'static, str>>,
     {
         Self {
             name: OutputName::Given(name.into()),
-            event_ty,
+            data_ty,
         }
     }
 
@@ -213,9 +216,9 @@ impl OutputDefinition {
         }
     }
 
-    /// Returns the event type.
-    pub fn event_ty(&self) -> EventType {
-        self.event_ty
+    /// Returns the data type.
+    pub fn data_ty(&self) -> T {
+        self.data_ty
     }
 }
 
@@ -246,11 +249,12 @@ impl TypedComponentId {
     pub fn component_context(&self) -> ComponentContext {
         match self.ty {
             ComponentType::Source => ComponentContext::source(self.id.clone()),
+            ComponentType::Relay => ComponentContext::relay(self.id.clone()),
+            ComponentType::Decoder => ComponentContext::decoder(self.id.clone()),
             ComponentType::Transform => ComponentContext::transform(self.id.clone()),
-            ComponentType::Destination => ComponentContext::destination(self.id.clone()),
             ComponentType::Encoder => ComponentContext::encoder(self.id.clone()),
             ComponentType::Forwarder => ComponentContext::forwarder(self.id.clone()),
-            ComponentType::Relay => ComponentContext::relay(self.id.clone()),
+            ComponentType::Destination => ComponentContext::destination(self.id.clone()),
         }
     }
 
@@ -265,12 +269,12 @@ impl TypedComponentId {
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct TypedComponentOutputId {
     component_output: ComponentOutputId,
-    output_ty: EventType,
+    output_ty: DataType,
 }
 
 impl TypedComponentOutputId {
     /// Creates a new `TypedComponentOutputId` from the given component output ID and output data type.
-    pub fn new(component_output: ComponentOutputId, output_ty: EventType) -> Self {
+    pub fn new(component_output: ComponentOutputId, output_ty: DataType) -> Self {
         Self {
             component_output,
             output_ty,
@@ -283,7 +287,7 @@ impl TypedComponentOutputId {
     }
 
     /// Returns the output data type.
-    pub fn output_ty(&self) -> EventType {
+    pub fn output_ty(&self) -> DataType {
         self.output_ty
     }
 }

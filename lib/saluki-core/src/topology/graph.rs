@@ -10,8 +10,9 @@ use snafu::Snafu;
 use super::{ComponentId, ComponentOutputId, OutputDefinition, OutputName, TypedComponentId, TypedComponentOutputId};
 use crate::{
     components::{
-        destinations::DestinationBuilder, encoders::EncoderBuilder, forwarders::ForwarderBuilder, relays::RelayBuilder,
-        sources::SourceBuilder, transforms::TransformBuilder, ComponentType,
+        decoders::DecoderBuilder, destinations::DestinationBuilder, encoders::EncoderBuilder,
+        forwarders::ForwarderBuilder, relays::RelayBuilder, sources::SourceBuilder, transforms::TransformBuilder,
+        ComponentType,
     },
     data_model::{event::EventType, payload::PayloadType},
 };
@@ -57,7 +58,7 @@ pub enum GraphError {
 /// Component data type.
 ///
 /// This is used to determine the type of data that a component can produce and/or consume.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum DataType {
     /// Events.
     Event(EventType),
@@ -80,6 +81,18 @@ impl DataType {
     }
 }
 
+impl From<EventType> for DataType {
+    fn from(ty: EventType) -> Self {
+        DataType::Event(ty)
+    }
+}
+
+impl From<PayloadType> for DataType {
+    fn from(ty: PayloadType) -> Self {
+        DataType::Payload(ty)
+    }
+}
+
 impl fmt::Display for DataType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -95,14 +108,15 @@ enum Node {
         outputs: Vec<TypedComponentOutputId>,
     },
     Relay {
-        output_ty: PayloadType,
+        outputs: Vec<TypedComponentOutputId>,
+    },
+    Decoder {
+        input_ty: PayloadType,
+        output_ty: EventType,
     },
     Transform {
         input_ty: EventType,
         outputs: Vec<TypedComponentOutputId>,
-    },
-    Destination {
-        input_ty: EventType,
     },
     Encoder {
         input_ty: EventType,
@@ -110,6 +124,9 @@ enum Node {
     },
     Forwarder {
         input_ty: PayloadType,
+    },
+    Destination {
+        input_ty: EventType,
     },
 }
 
@@ -167,9 +184,34 @@ impl Graph {
             return Err(GraphError::DuplicateComponentId { component_id });
         }
 
-        let output_ty = builder.output_payload_type();
+        let outputs = construct_typed_output_ids(&component_id, builder.outputs())?;
+        self.nodes.insert(component_id.clone(), Node::Relay { outputs });
 
-        self.nodes.insert(component_id.clone(), Node::Relay { output_ty });
+        Ok(component_id)
+    }
+
+    /// Adds a decoder node to the graph.
+    ///
+    /// # Errors
+    ///
+    /// If the component ID already exists in the graph, or if the component ID is invalid, or if any of the component
+    /// output IDs are invalid, an error is returned.
+    pub fn add_decoder<I>(&mut self, component_id: I, builder: &dyn DecoderBuilder) -> Result<ComponentId, GraphError>
+    where
+        I: AsRef<str>,
+    {
+        let component_id = try_into_component_id(component_id)?;
+        if self.nodes.contains_key(&component_id) {
+            return Err(GraphError::DuplicateComponentId { component_id });
+        }
+
+        self.nodes.insert(
+            component_id.clone(),
+            Node::Decoder {
+                input_ty: builder.input_payload_type(),
+                output_ty: builder.output_event_type(),
+            },
+        );
 
         Ok(component_id)
     }
@@ -197,32 +239,6 @@ impl Graph {
             Node::Transform {
                 input_ty: builder.input_event_type(),
                 outputs,
-            },
-        );
-
-        Ok(component_id)
-    }
-
-    /// Adds a destination node to the graph.
-    ///
-    /// # Errors
-    ///
-    /// If the component ID already exists in the graph, or if the component ID is invalid, an error is returned.
-    pub fn add_destination<I>(
-        &mut self, component_id: I, builder: &dyn DestinationBuilder,
-    ) -> Result<ComponentId, GraphError>
-    where
-        I: AsRef<str>,
-    {
-        let component_id = try_into_component_id(component_id)?;
-        if self.nodes.contains_key(&component_id) {
-            return Err(GraphError::DuplicateComponentId { component_id });
-        }
-
-        self.nodes.insert(
-            component_id.clone(),
-            Node::Destination {
-                input_ty: builder.input_event_type(),
             },
         );
 
@@ -280,6 +296,32 @@ impl Graph {
         Ok(component_id)
     }
 
+    /// Adds a destination node to the graph.
+    ///
+    /// # Errors
+    ///
+    /// If the component ID already exists in the graph, or if the component ID is invalid, an error is returned.
+    pub fn add_destination<I>(
+        &mut self, component_id: I, builder: &dyn DestinationBuilder,
+    ) -> Result<ComponentId, GraphError>
+    where
+        I: AsRef<str>,
+    {
+        let component_id = try_into_component_id(component_id)?;
+        if self.nodes.contains_key(&component_id) {
+            return Err(GraphError::DuplicateComponentId { component_id });
+        }
+
+        self.nodes.insert(
+            component_id.clone(),
+            Node::Destination {
+                input_ty: builder.input_event_type(),
+            },
+        );
+
+        Ok(component_id)
+    }
+
     /// Adds an edge to the graph.
     ///
     /// # Errors
@@ -300,9 +342,9 @@ impl Graph {
         // Find the node that the "from" side of the edge is connected to.
         match self.nodes.get(&component_output_id.component_id()) {
             Some(node) => match node {
-                // Sources and transforms support named outputs, so we have to dig into their outputs to make sure the
-                // given output ID exists.
-                Node::Source { outputs } | Node::Transform { outputs, .. } => {
+                // Sources, relays, and transforms support named outputs, so we have to dig into their outputs to make
+                // sure the given output ID exists.
+                Node::Source { outputs } | Node::Relay { outputs } | Node::Transform { outputs, .. } => {
                     if !outputs
                         .iter()
                         .any(|output| output.component_output() == &component_output_id)
@@ -310,8 +352,9 @@ impl Graph {
                         return Err(GraphError::NonexistentComponentOutputId { component_output_id });
                     }
                 }
-                // Relays and encoders only have default outputs, so make sure the "from" side is referencing a default output.
-                Node::Relay { .. } | Node::Encoder { .. } => {
+                // Decoders and encoders only have default outputs, so make sure the "from" side is referencing a
+                // default output.
+                Node::Decoder { .. } | Node::Encoder { .. } => {
                     if !component_output_id.is_default() {
                         return Err(GraphError::NonexistentComponentOutputId { component_output_id });
                     }
@@ -338,25 +381,33 @@ impl Graph {
     fn get_input_type(&self, id: &ComponentId) -> DataType {
         match self.nodes[id] {
             Node::Source { .. } | Node::Relay { .. } => panic!("no inputs on sources/relays"),
+            Node::Decoder { input_ty, .. } => DataType::Payload(input_ty),
             Node::Transform { input_ty, .. } => DataType::Event(input_ty),
-            Node::Destination { input_ty } => DataType::Event(input_ty),
             Node::Encoder { input_ty, .. } => DataType::Event(input_ty),
             Node::Forwarder { input_ty } => DataType::Payload(input_ty),
+            Node::Destination { input_ty } => DataType::Event(input_ty),
         }
     }
 
     fn get_output_type(&self, id: &ComponentOutputId) -> DataType {
         match &self.nodes[&id.component_id()] {
-            Node::Source { outputs } | Node::Transform { outputs, .. } => outputs
+            Node::Source { outputs } | Node::Relay { outputs } | Node::Transform { outputs, .. } => outputs
                 .iter()
                 .find(|output| output.component_output().output() == id.output())
-                .map(|output| DataType::Event(output.output_ty()))
+                .map(|output| output.output_ty())
                 .expect("output didn't exist"),
-            Node::Relay { output_ty } | Node::Encoder { output_ty, .. } => {
+            Node::Decoder { output_ty, .. } => {
                 if id.is_default() {
-                    DataType::Payload(*output_ty)
+                    (*output_ty).into()
                 } else {
-                    panic!("relay/encoder should only have default output")
+                    panic!("decoder should only have default output")
+                }
+            }
+            Node::Encoder { output_ty, .. } => {
+                if id.is_default() {
+                    (*output_ty).into()
+                } else {
+                    panic!("encoder should only have default output")
                 }
             }
             Node::Destination { .. } | Node::Forwarder { .. } => panic!("no outputs on destinations/forwarders"),
@@ -489,10 +540,11 @@ impl Graph {
             Some(node) => match node {
                 Node::Source { .. } => Some(ComponentType::Source),
                 Node::Relay { .. } => Some(ComponentType::Relay),
+                Node::Decoder { .. } => Some(ComponentType::Decoder),
                 Node::Transform { .. } => Some(ComponentType::Transform),
-                Node::Destination { .. } => Some(ComponentType::Destination),
                 Node::Encoder { .. } => Some(ComponentType::Encoder),
                 Node::Forwarder { .. } => Some(ComponentType::Forwarder),
+                Node::Destination { .. } => Some(ComponentType::Destination),
             },
             None => None,
         }
@@ -511,14 +563,14 @@ impl Graph {
             let typed_component_id = TypedComponentId::new(component_id.clone(), component_type);
 
             match node {
-                Node::Source { outputs } | Node::Transform { outputs, .. } => {
+                Node::Source { outputs } | Node::Relay { outputs } | Node::Transform { outputs, .. } => {
                     let per_component = mappings.entry(typed_component_id).or_default();
                     for output in outputs {
                         per_component.insert(output.component_output().output(), Vec::new());
                     }
                 }
-                Node::Encoder { .. } => {
-                    // Encoders have a default output
+                Node::Decoder { .. } | Node::Encoder { .. } => {
+                    // Decoders and encoders have a default output
                     let per_component = mappings.entry(typed_component_id).or_default();
                     per_component.insert(OutputName::Default, Vec::new());
                 }
@@ -565,14 +617,17 @@ where
     })
 }
 
-fn construct_typed_output_ids(
-    component_id: &ComponentId, outputs: &[OutputDefinition],
-) -> Result<Vec<TypedComponentOutputId>, GraphError> {
+fn construct_typed_output_ids<T>(
+    component_id: &ComponentId, outputs: &[OutputDefinition<T>],
+) -> Result<Vec<TypedComponentOutputId>, GraphError>
+where
+    T: Into<DataType> + Copy,
+{
     let mut typed_output_ids = Vec::new();
     for output in outputs {
         let output_id = ComponentOutputId::from_definition(component_id.clone(), output)
             .map_err(|(input, reason)| GraphError::InvalidComponentOutputId { input, reason })?;
-        typed_output_ids.push(TypedComponentOutputId::new(output_id, output.event_ty()));
+        typed_output_ids.push(TypedComponentOutputId::new(output_id, output.data_ty().into()));
     }
 
     Ok(typed_output_ids)
@@ -582,7 +637,8 @@ fn construct_typed_output_ids(
 mod test {
     use super::*;
     use crate::topology::test_util::{
-        TestDestinationBuilder, TestEncoderBuilder, TestForwarderBuilder, TestSourceBuilder, TestTransformBuilder,
+        TestDecoderBuilder, TestDestinationBuilder, TestEncoderBuilder, TestForwarderBuilder, TestRelayBuilder,
+        TestSourceBuilder, TestTransformBuilder,
     };
 
     impl Graph {
@@ -596,6 +652,45 @@ mod test {
         pub fn with_source(&mut self, id: &str, output_event_ty: EventType) -> &mut Self {
             self.with_source_fallible(id, output_event_ty)
                 .expect("should not fail to add source")
+        }
+
+        pub fn with_relay_fallible(
+            &mut self, id: &str, output_payload_ty: PayloadType,
+        ) -> Result<&mut Self, GraphError> {
+            let builder = TestRelayBuilder::default_output(output_payload_ty);
+            let _ = self.add_relay(id, &builder)?;
+            Ok(self)
+        }
+
+        #[track_caller]
+        pub fn with_relay(&mut self, id: &str, output_payload_ty: PayloadType) -> &mut Self {
+            self.with_relay_fallible(id, output_payload_ty)
+                .expect("should not fail to add relay")
+        }
+
+        #[track_caller]
+        pub fn with_relay_multiple_outputs<'a>(
+            &mut self, id: &str, outputs: impl IntoIterator<Item = &'a (Option<&'a str>, PayloadType)>,
+        ) -> &mut Self {
+            let builder = TestRelayBuilder::multiple_outputs(outputs.into_iter());
+            let _ = self.add_relay(id, &builder).expect("should not fail to add relay");
+            self
+        }
+
+        pub fn with_decoder_fallible(
+            &mut self, id: &str, input_payload_ty: PayloadType, output_event_ty: EventType,
+        ) -> Result<&mut Self, GraphError> {
+            let builder = TestDecoderBuilder::with_input_and_output_type(input_payload_ty, output_event_ty);
+            let _ = self.add_decoder(id, &builder)?;
+            Ok(self)
+        }
+
+        #[track_caller]
+        pub fn with_decoder(
+            &mut self, id: &str, input_payload_ty: PayloadType, output_event_ty: EventType,
+        ) -> &mut Self {
+            self.with_decoder_fallible(id, input_payload_ty, output_event_ty)
+                .expect("should not fail to add decoder")
         }
 
         pub fn with_transform_fallible(
@@ -1063,6 +1158,190 @@ mod test {
         assert!(
             !outbound_edges.contains_key(&dest1_id),
             "destinations should not be in outbound edges"
+        );
+    }
+
+    #[test]
+    fn basic_relay_decoder_destination() {
+        // Relay → Decoder → Destination
+        // This is the basic pattern where Relay + Decoder emulates a Source
+        let mut graph = Graph::default();
+        graph
+            .with_relay("relay_in", PayloadType::Raw)
+            .with_decoder("decoder", PayloadType::Raw, EventType::EventD)
+            .with_destination("out", EventType::EventD)
+            .with_edge("relay_in", "decoder")
+            .with_edge("decoder", "out");
+
+        assert_eq!(Ok(()), graph.validate());
+    }
+
+    #[test]
+    fn basic_relay_decoder_transform_destination() {
+        // Relay → Decoder → Transform → Destination
+        // Validates that Decoder output flows correctly through transforms
+        let mut graph = Graph::default();
+        graph
+            .with_relay("relay_in", PayloadType::Raw)
+            .with_decoder("decoder", PayloadType::Raw, EventType::EventD)
+            .with_transform("transform", EventType::EventD, EventType::EventD)
+            .with_destination("out", EventType::EventD)
+            .with_edge("relay_in", "decoder")
+            .with_edge("decoder", "transform")
+            .with_edge("transform", "out");
+
+        assert_eq!(Ok(()), graph.validate());
+    }
+
+    #[test]
+    fn relay_decoder_fanout() {
+        // Relay → Decoder → [Destination, Encoder → Forwarder]
+        // Validates fanout from Decoder output
+        let mut graph = Graph::default();
+        graph
+            .with_relay("relay_in", PayloadType::Raw)
+            .with_decoder("decoder", PayloadType::Raw, EventType::EventD)
+            .with_destination("out_eventd", EventType::EventD)
+            .with_encoder("encoder", EventType::EventD, PayloadType::Http)
+            .with_forwarder("out_http", PayloadType::Http)
+            .with_edge("relay_in", "decoder")
+            .with_edge("decoder", "out_eventd")
+            .with_edge("decoder", "encoder")
+            .with_edge("encoder", "out_http");
+
+        assert_eq!(Ok(()), graph.validate());
+    }
+
+    #[test]
+    fn datatype_mismatch_relay_to_destination() {
+        // Relay → Destination (should fail - payload vs event type mismatch)
+        // Validates that Relay can't connect directly to event-consuming components
+        let mut graph = Graph::default();
+        graph
+            .with_relay("relay_in", PayloadType::Raw)
+            .with_destination("out", EventType::EventD)
+            .with_edge("relay_in", "out");
+
+        assert_eq!(
+            Err(GraphError::DataTypeMismatch {
+                from_component_output_id: try_into_component_output_id("relay_in").unwrap(),
+                from_ty: DataType::Payload(PayloadType::Raw),
+                to_component_id: try_into_component_id("out").unwrap(),
+                to_ty: DataType::Event(EventType::EventD),
+            }),
+            graph.validate()
+        );
+    }
+
+    #[test]
+    fn datatype_mismatch_relay_to_decoder() {
+        // Relay(PayloadType::Raw) → Decoder(input: PayloadType::Http)
+        // Validates payload type compatibility check between Relay and Decoder
+        let mut graph = Graph::default();
+        graph
+            .with_relay("relay_in", PayloadType::Raw)
+            .with_decoder("decoder", PayloadType::Http, EventType::EventD)
+            .with_destination("out", EventType::EventD)
+            .with_edge("relay_in", "decoder")
+            .with_edge("decoder", "out");
+
+        assert_eq!(
+            Err(GraphError::DataTypeMismatch {
+                from_component_output_id: try_into_component_output_id("relay_in").unwrap(),
+                from_ty: DataType::Payload(PayloadType::Raw),
+                to_component_id: try_into_component_id("decoder").unwrap(),
+                to_ty: DataType::Payload(PayloadType::Http),
+            }),
+            graph.validate()
+        );
+    }
+
+    #[test]
+    fn decoder_only_has_default_output() {
+        // Attempt to use named output on Decoder (e.g., "decoder.errors")
+        // Should fail with NonexistentComponentOutputId error
+        let mut graph = Graph::default();
+        graph
+            .with_relay("relay_in", PayloadType::Raw)
+            .with_decoder("decoder", PayloadType::Raw, EventType::EventD)
+            .with_destination("out", EventType::EventD)
+            .with_edge("relay_in", "decoder");
+
+        let result = graph.with_edge_fallible("decoder.errors", "out").map(|_| ());
+
+        assert_eq!(result, Err(output_id_doesnt_exist("decoder.errors")));
+    }
+
+    #[test]
+    fn relay_with_multiple_outputs() {
+        // Relay with multiple named outputs → multiple Decoders → Destinations
+        // Validates named output handling for Relays
+        let mut graph = Graph::default();
+        graph
+            .with_relay_multiple_outputs(
+                "relay_in",
+                &[(None, PayloadType::Raw), (Some("http"), PayloadType::Http)],
+            )
+            .with_decoder("decoder_raw", PayloadType::Raw, EventType::EventD)
+            .with_decoder("decoder_http", PayloadType::Http, EventType::EventD)
+            .with_destination("out_raw", EventType::EventD)
+            .with_destination("out_http", EventType::EventD)
+            .with_edge("relay_in", "decoder_raw")
+            .with_edge("relay_in.http", "decoder_http")
+            .with_edge("decoder_raw", "out_raw")
+            .with_edge("decoder_http", "out_http");
+
+        assert_eq!(Ok(()), graph.validate());
+    }
+
+    #[test]
+    fn get_outbound_directed_edges_includes_relay_and_decoder() {
+        // Verify that get_outbound_directed_edges() correctly includes Relay outputs and Decoder default output
+        let mut graph = Graph::default();
+        graph
+            .with_relay_multiple_outputs("relay1", &[(None, PayloadType::Raw), (Some("alt"), PayloadType::Http)])
+            .with_decoder("decoder1", PayloadType::Raw, EventType::EventD)
+            .with_destination("dest1", EventType::EventD)
+            .with_edge("relay1", "decoder1")
+            .with_edge("decoder1", "dest1");
+        // Note: relay1.alt is intentionally not connected
+
+        let outbound_edges = graph.get_outbound_directed_edges();
+
+        // Verify relay1 has both configured outputs (default and alt)
+        let relay1_id = TypedComponentId::new(ComponentId::try_from("relay1").unwrap(), ComponentType::Relay);
+        let relay1_outputs = outbound_edges
+            .get(&relay1_id)
+            .expect("relay1 should be in outbound edges");
+        assert!(
+            relay1_outputs.contains_key(&OutputName::Default),
+            "relay1 should have default output"
+        );
+        assert!(
+            relay1_outputs.contains_key(&OutputName::Given("alt".into())),
+            "relay1 should have alt output"
+        );
+
+        // Verify default has connection but alt is empty
+        let default_connections = relay1_outputs.get(&OutputName::Default).unwrap();
+        assert_eq!(default_connections.len(), 1, "default output should have 1 connection");
+        let alt_connections = relay1_outputs.get(&OutputName::Given("alt".into())).unwrap();
+        assert_eq!(alt_connections.len(), 0, "alt output should have 0 connections");
+
+        // Verify decoder1 has its default output
+        let decoder1_id = TypedComponentId::new(ComponentId::try_from("decoder1").unwrap(), ComponentType::Decoder);
+        let decoder1_outputs = outbound_edges
+            .get(&decoder1_id)
+            .expect("decoder1 should be in outbound edges");
+        assert!(
+            decoder1_outputs.contains_key(&OutputName::Default),
+            "decoder1 should have default output"
+        );
+        let decoder_connections = decoder1_outputs.get(&OutputName::Default).unwrap();
+        assert_eq!(
+            decoder_connections.len(),
+            1,
+            "decoder default output should have 1 connection"
         );
     }
 }

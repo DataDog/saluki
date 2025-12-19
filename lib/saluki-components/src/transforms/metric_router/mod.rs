@@ -101,8 +101,8 @@ impl TransformBuilder for MetricRouterConfiguration {
         EventType::all_bits()
     }
 
-    fn outputs(&self) -> &[OutputDefinition] {
-        static OUTPUTS: LazyLock<Vec<OutputDefinition>> = LazyLock::new(|| {
+    fn outputs(&self) -> &[OutputDefinition<EventType>] {
+        static OUTPUTS: LazyLock<Vec<OutputDefinition<EventType>>> = LazyLock::new(|| {
             vec![
                 OutputDefinition::named_output("matched", EventType::all_bits()),
                 OutputDefinition::named_output("unmatched", EventType::all_bits()),

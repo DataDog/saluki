@@ -114,6 +114,21 @@ impl FrozenChunkedBytesBuffer {
     pub fn len(&self) -> usize {
         self.chunks.iter().map(|chunk| chunk.len()).sum()
     }
+
+    /// Consumes the frozen buffer and returns a single `Bytes` value representing all chunks.
+    ///
+    /// This method provides an optimized implementation for single chunk buffers to avoid allocations.
+    pub fn into_bytes(mut self) -> Bytes {
+        if self.chunks.len() == 1 {
+            self.chunks.pop_front().unwrap()
+        } else {
+            let mut buf = BytesMut::new();
+            for chunk in self.chunks {
+                buf.extend_from_slice(&chunk);
+            }
+            buf.freeze()
+        }
+    }
 }
 
 impl From<Bytes> for FrozenChunkedBytesBuffer {
