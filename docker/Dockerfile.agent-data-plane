@@ -3,6 +3,7 @@ ARG APP_IMAGE=ubuntu:24.04
 
 FROM ${BUILD_IMAGE} AS builder
 
+ARG TARGETARCH
 ARG RUST_VERSION=stable
 ARG BUILD_PROFILE=release
 ARG BUILD_FEATURES=default
@@ -14,6 +15,7 @@ ARG APP_IDENTIFIER=""
 ARG APP_GIT_HASH=""
 ARG APP_VERSION=""
 ARG APP_BUILD_TIME=""
+ARG INTERNAL_BUILD=""
 
 ENV APP_FULL_NAME=${APP_FULL_NAME}
 ENV APP_SHORT_NAME=${APP_SHORT_NAME}
@@ -51,6 +53,17 @@ else \
     cp /adp/target/${BUILD_TARGET}/${BUILD_PROFILE}/agent-data-plane /adp/target/bin/agent-data-plane; \
 fi
 
+# Include helpers (including `ddprof` itself) if this build is for internal benchmarking.
+#
+# We do a small song-and-dance routine to place the files in a way that lets us conditionally copy them later on
+# without failing because they don't exist in this image if it _isn't_ an internal build.
+RUN mkdir -p /tmp/profiling
+COPY ./ci/maybe-profile.sh /tmp/maybe-profile.sh
+RUN if [ "${INTERNAL_BUILD}" = "true" ]; then \
+        curl -s -L -o /tmp/profiling/ddprof https://github.com/DataDog/ddprof/releases/download/v0.22.1/ddprof-${TARGETARCH}; \
+        mv /tmp/maybe-profile.sh /tmp/profiling/maybe-profile.sh; \
+    fi
+
 # Calculate the necessary licenses that we need to include in the final image.
 FROM ${BUILD_IMAGE} AS license-builder
 
@@ -87,5 +100,9 @@ COPY --from=builder /adp/target/bin/agent-data-plane /usr/local/bin/agent-data-p
 COPY NOTICE LICENSE LICENSE-3rdparty.csv /opt/datadog/agent-data-plane/
 COPY --from=license-builder /licenses /opt/datadog/agent-data-plane/LICENSES
 COPY --chmod=755 docker/entrypoint.sh /entrypoint.sh
+
+# We use a wildcard here to effectively make the copy conditional: we don't want it to fail
+# on non-internal builds when there's no files.
+COPY --from=builder --chmod=755 /tmp/profiling/* /
 
 ENTRYPOINT [ "/usr/local/bin/agent-data-plane" ]
