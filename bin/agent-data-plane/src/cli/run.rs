@@ -15,7 +15,7 @@ use saluki_components::{
     destinations::DogStatsDStatisticsConfiguration,
     encoders::{
         BufferedIncrementalConfiguration, DatadogEventsConfiguration, DatadogLogsConfiguration,
-        DatadogMetricsConfiguration, DatadogServiceChecksConfiguration,
+        DatadogMetricsConfiguration, DatadogServiceChecksConfiguration, DatadogTraceConfiguration,
     },
     forwarders::{DatadogConfiguration, TraceAgentForwarderConfiguration},
     relays::otlp::OtlpRelayConfiguration,
@@ -231,7 +231,10 @@ async fn create_topology(
     //
     // Notably, we _don't_ need either of these if all we're doing is running the OTLP pipeline in proxy mode, which
     // is the only reason we're differentiating here.
-    if dp_config.metrics_pipeline_required() || dp_config.logs_pipeline_required() {
+    if dp_config.metrics_pipeline_required()
+        || dp_config.logs_pipeline_required()
+        || dp_config.traces_pipeline_required()
+    {
         let dd_forwarder_config =
             DatadogConfiguration::from_configuration(config).error_context("Failed to configure Datadog forwarder.")?;
         blueprint.add_forwarder("dd_out", dd_forwarder_config)?;
@@ -243,6 +246,10 @@ async fn create_topology(
 
     if dp_config.logs_pipeline_required() {
         add_baseline_logs_pipeline_to_blueprint(&mut blueprint, config).await?;
+    }
+
+    if dp_config.traces_pipeline_required() {
+        add_baseline_traces_pipeline_to_blueprint(&mut blueprint, config, env_provider).await?;
     }
 
     // Now we move on to our actual data pipelines.
@@ -302,6 +309,21 @@ async fn add_baseline_logs_pipeline_to_blueprint(
         .add_encoder("dd_logs_encode", dd_logs_config)?
         // Logs.
         .connect_component("dd_out", ["dd_logs_encode"])?;
+
+    Ok(())
+}
+
+async fn add_baseline_traces_pipeline_to_blueprint(
+    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
+) -> Result<(), GenericError> {
+    let dd_traces_config = DatadogTraceConfiguration::from_configuration(config)
+        .error_context("Failed to configure Datadog Traces encoder.")?
+        .with_environment_provider(env_provider.clone())
+        .await?;
+
+    blueprint
+        .add_encoder("dd_traces_encode", dd_traces_config)?
+        .connect_component("dd_out", ["dd_traces_encode"])?;
 
     Ok(())
 }
@@ -420,7 +442,8 @@ fn add_otlp_pipeline_to_blueprint(
             // We send OTLP metrics directly to the enrichment stage of the metrics pipeline, skipping aggregation,
             // to avoid transforming counters into rates.
             .connect_component("metrics_enrich", ["otlp_in.metrics"])?
-            .connect_component("dd_logs_encode", ["otlp_in.logs"])?;
+            .connect_component("dd_logs_encode", ["otlp_in.logs"])?
+            .connect_component("dd_traces_encode", ["otlp_in.traces"])?;
     }
     Ok(())
 }

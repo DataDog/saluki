@@ -125,6 +125,16 @@ impl DataPlaneConfiguration {
         // - OTLP is enabled and not in proxy mode
         self.otlp().enabled() && !self.otlp().proxy().enabled()
     }
+
+    /// Returns `true` if the traces pipeline is required.
+    ///
+    /// This indicates that the "baseline" traces pipeline (encoding, forwarding) is required by higher-level data
+    /// pipelines, such as OTLP.
+    pub const fn traces_pipeline_required(&self) -> bool {
+        // We consider the traces pipeline to be enabled if:
+        // - OTLP is enabled and not in proxy mode
+        self.otlp().enabled() && !self.otlp().proxy().enabled()
+    }
 }
 
 /// DogStatsD-specific data plane configuration.

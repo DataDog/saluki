@@ -2,7 +2,7 @@
   stage: correctness
   tags: ["docker-in-docker:amd64"]
   needs:
-    - build-adp-image
+    - build-bundled-agent-adp-image
     - build-datadog-intake-image
     - build-millstone-image
   retry: 2

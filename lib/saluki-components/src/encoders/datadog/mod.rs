@@ -11,5 +11,4 @@ mod logs;
 pub use self::logs::DatadogLogsConfiguration;
 
 mod traces;
-#[allow(unused_imports)] // TODO: remove this after we connect the components
 pub use self::traces::DatadogTraceConfiguration;
