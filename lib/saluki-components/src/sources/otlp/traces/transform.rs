@@ -261,8 +261,11 @@ pub fn otel_to_dd_span_minimal(
         metrics.insert(MetaString::from("_dd.measured"), 1.0);
     }
 
-    let span_kind = use_both_maps(span_attributes, resource_attributes, true, KEY_DATADOG_SPAN_KIND)
-        .unwrap_or_else(|| MetaString::from(SpanKind::Unspecified.as_str_name()));
+    let span_kind =
+        use_both_maps(span_attributes, resource_attributes, true, KEY_DATADOG_SPAN_KIND).unwrap_or_else(|| {
+            let kind = SpanKind::try_from(otel_span.kind).unwrap_or(SpanKind::Unspecified);
+            MetaString::from(span_kind_name(kind))
+        });
     meta.insert(MetaString::from(SPAN_KIND_META_KEY), span_kind);
 
     let mut service =
@@ -422,7 +425,8 @@ fn get_otel_operation_name_v2(
     } else {
         span_kind
     };
-    MetaString::from(span_kind_name(fallback_kind))
+    // Use capitalized span kind name for operation  (e.g., "Internal", "Client", "Server")
+    MetaString::from(span_kind_name_capitalized(fallback_kind))
 }
 
 // GetOTelResourceV2 returns the DD resource name based on OTel span and resource attributes.
@@ -715,9 +719,9 @@ fn marshal_links(links: &[OtlpSpanLink]) -> Option<String> {
 
 fn status_code_to_string(code: StatusCode) -> &'static str {
     match code {
-        StatusCode::Ok => "StatusCodeOk",
-        StatusCode::Error => "StatusCodeError",
-        StatusCode::Unset => "StatusCodeUnset",
+        StatusCode::Ok => "Ok",
+        StatusCode::Error => "Error",
+        StatusCode::Unset => "Unset",
     }
 }
 
@@ -965,6 +969,17 @@ fn span_kind_name(kind: SpanKind) -> &'static str {
         SpanKind::Producer => "producer",
         SpanKind::Internal => "internal",
         SpanKind::Unspecified => "unspecified",
+    }
+}
+
+fn span_kind_name_capitalized(kind: SpanKind) -> &'static str {
+    match kind {
+        SpanKind::Client => "Client",
+        SpanKind::Server => "Server",
+        SpanKind::Consumer => "Consumer",
+        SpanKind::Producer => "Producer",
+        SpanKind::Internal => "Internal",
+        SpanKind::Unspecified => "Unspecified",
     }
 }
 

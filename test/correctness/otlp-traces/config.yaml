@@ -17,3 +17,5 @@ comparison:
     - datadog.yaml:/etc/datadog-agent/datadog.yaml
   additional_env_vars:
     - DD_API_KEY=correctness-test
+    - DD_DATA_PLANE_ENABLED=true
+    - DD_DATA_PLANE_OTLP_ENABLED=true
