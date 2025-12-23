@@ -236,9 +236,10 @@ pub fn otel_to_dd_span_minimal(
     let mut meta: FastHashMap<MetaString, MetaString> = FastHashMap::default();
     meta.reserve(span_attributes.len() + resource_attributes.len());
     let mut metrics: FastHashMap<MetaString, f64> = FastHashMap::default();
-    let is_top_level = compute_top_level_by_span_kind && otel_span.parent_span_id.is_empty()
-        || otel_span.kind() == SpanKind::Server
-        || otel_span.kind() == SpanKind::Consumer;
+    let is_top_level = compute_top_level_by_span_kind
+        && (otel_span.parent_span_id.is_empty()
+            || otel_span.kind() == SpanKind::Server
+            || otel_span.kind() == SpanKind::Consumer);
 
     if let Some(value) = get_int_attribute(span_attributes, KEY_DATADOG_ERROR) {
         dd_span = dd_span.with_error(*value as i32);
@@ -254,7 +255,7 @@ pub fn otel_to_dd_span_minimal(
         metrics.insert(MetaString::from("_top_level"), 1.0);
     }
 
-    if get_string_attribute(span_attributes, "_dd.measured").is_some_and(|v| *v == *"1")
+    if use_both_maps(span_attributes, resource_attributes, false, "_dd.measured").is_some_and(|v| *v == *"1")
         || (compute_top_level_by_span_kind
             && (otel_span.kind() == SpanKind::Client || otel_span.kind() == SpanKind::Producer))
     {
@@ -286,6 +287,11 @@ pub fn otel_to_dd_span_minimal(
         }
         if resource.is_empty() {
             resource = get_otel_resource_v2_truncated(otel_span, span_attributes, resource_attributes);
+            // Agent normalizer sets resource = name when resource is empty
+            // https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/normalizer.go#L245-248
+            if resource.is_empty() {
+                resource = name.clone();
+            }
         }
         if span_type.is_empty() {
             span_type = get_otel_span_type(otel_span, span_attributes, resource_attributes);
@@ -315,6 +321,7 @@ pub fn otel_to_dd_span_minimal(
 /// Returns the DD service name based on OTel span and resource attributes.
 fn get_otel_service(span_attributes: &[KeyValue], resource_attributes: &[KeyValue], normalize: bool) -> MetaString {
     let service = use_both_maps(span_attributes, resource_attributes, true, SERVICE_NAME)
+        .filter(|s| !s.is_empty())
         .unwrap_or_else(|| MetaString::from_static(DEFAULT_SERVICE_NAME));
 
     if normalize {
@@ -330,7 +337,9 @@ fn get_otel_operation_name_v2(
     otel_span: &OtlpSpan, span_attributes: &[KeyValue], resource_attributes: &[KeyValue],
 ) -> MetaString {
     if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, OPERATION_NAME_KEY) {
-        return value;
+        if !value.is_empty() {
+            return value;
+        }
     }
 
     let span_kind = SpanKind::try_from(otel_span.kind).unwrap_or(SpanKind::Unspecified);
@@ -436,22 +445,24 @@ fn get_otel_resource_v2(
 ) -> MetaString {
     let span_kind = SpanKind::try_from(otel_span.kind).unwrap_or(SpanKind::Unspecified);
     if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, RESOURCE_NAME_KEY) {
-        return value;
+        if !value.is_empty() {
+            return value;
+        }
     }
 
-    if span_kind == SpanKind::Server {
-        if let Some(method) = use_both_maps_key_list(span_attributes, resource_attributes, HTTP_REQUEST_METHOD_KEYS) {
-            let mut resource_name = if method.as_ref() == "_OTHER" {
-                String::from("HTTP")
-            } else {
-                method.as_ref().to_string()
-            };
+    if let Some(method) = use_both_maps_key_list(span_attributes, resource_attributes, HTTP_REQUEST_METHOD_KEYS) {
+        let mut resource_name = if method.as_ref() == "_OTHER" {
+            String::from("HTTP")
+        } else {
+            method.as_ref().to_string()
+        };
+        if span_kind == SpanKind::Server {
             if let Some(route) = use_both_maps(span_attributes, resource_attributes, true, HTTP_ROUTE_KEY) {
                 resource_name.push(' ');
                 resource_name.push_str(route.as_ref());
             }
-            return MetaString::from(resource_name);
         }
+        return MetaString::from(resource_name);
     }
 
     if let Some(operation) = use_both_maps(span_attributes, resource_attributes, true, MESSAGING_OPERATION_KEY) {
@@ -515,7 +526,9 @@ fn get_otel_span_type(
     otel_span: &OtlpSpan, span_attributes: &[KeyValue], resource_attributes: &[KeyValue],
 ) -> MetaString {
     if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, "span.type") {
-        return value;
+        if !value.is_empty() {
+            return value;
+        }
     }
 
     let span_kind = SpanKind::try_from(otel_span.kind).unwrap_or(SpanKind::Unspecified);
@@ -589,6 +602,10 @@ fn map_attribute_generic(
     attribute: &KeyValue, meta: &mut FastHashMap<MetaString, MetaString>, metrics: &mut FastHashMap<MetaString, f64>,
     ignore_missing_fields: bool,
 ) {
+    if attribute.key.is_empty() {
+        return;
+    }
+
     let Some(value) = attribute.value.as_ref().and_then(|wrapper| wrapper.value.as_ref()) else {
         return;
     };
@@ -861,9 +878,6 @@ fn conditionally_map_otlp_attribute_to_meta(
     key: &str, value: &str, meta: &mut FastHashMap<MetaString, MetaString>, metrics: &mut FastHashMap<MetaString, f64>,
     ignore_missing_fields: bool,
 ) {
-    if value.is_empty() {
-        return;
-    }
     if let Some(mapped_key) = get_dd_key_for_otlp_attribute(key) {
         if meta.contains_key(&mapped_key) {
             return;
@@ -985,17 +999,23 @@ fn span_kind_name_capitalized(kind: SpanKind) -> &'static str {
 
 fn use_both_maps(map: &[KeyValue], map2: &[KeyValue], normalize: bool, key: &str) -> Option<MetaString> {
     if let Some(value) = get_string_attribute(map, key) {
-        return Some(if normalize {
-            normalize_tag_value(value)
-        } else {
-            MetaString::from(value)
-        });
+        if !value.is_empty() {
+            return Some(if normalize {
+                normalize_tag_value(value)
+            } else {
+                MetaString::from(value)
+            });
+        }
     }
-    get_string_attribute(map2, key).map(|value| {
-        if normalize {
-            normalize_tag_value(value)
+    get_string_attribute(map2, key).and_then(|value| {
+        if !value.is_empty() {
+            Some(if normalize {
+                normalize_tag_value(value)
+            } else {
+                MetaString::from(value)
+            })
         } else {
-            MetaString::from(value)
+            None
         }
     })
 }
