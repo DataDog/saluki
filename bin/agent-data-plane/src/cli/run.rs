@@ -18,7 +18,7 @@ use saluki_components::{
         BufferedIncrementalConfiguration, DatadogEventsConfiguration, DatadogLogsConfiguration,
         DatadogMetricsConfiguration, DatadogServiceChecksConfiguration, DatadogTraceConfiguration,
     },
-    forwarders::{DatadogConfiguration, TraceAgentForwarderConfiguration},
+    forwarders::DatadogConfiguration,
     relays::otlp::OtlpRelayConfiguration,
     sources::{DogStatsDConfiguration, OtlpConfiguration},
     transforms::{
@@ -423,14 +423,12 @@ fn add_otlp_pipeline_to_blueprint(
         let otlp_decoder_config = OtlpDecoderConfiguration::from_configuration(config)?;
         let local_agent_otlp_forwarder_config =
             DatadogConfiguration::from_configuration(config)?.with_endpoint_override(core_agent_otlp_endpoint, api_key);
-        let local_trace_agent_otlp_forwarder_config = TraceAgentForwarderConfiguration::from_configuration(config)?;
 
         blueprint
             // Components.
             .add_relay("otlp_relay_in", otlp_relay_config)?
             .add_decoder("otlp_traces_decode", otlp_decoder_config)?
             .add_forwarder("local_agent_otlp_out", local_agent_otlp_forwarder_config)?
-            .add_forwarder("local_trace_agent_otlp_out", local_trace_agent_otlp_forwarder_config)?
             // Metrics and logs to forwarders.
             .connect_component("local_agent_otlp_out", ["otlp_relay_in.metrics", "otlp_relay_in.logs"])?
             // Traces to decoder, then to traces encoder.

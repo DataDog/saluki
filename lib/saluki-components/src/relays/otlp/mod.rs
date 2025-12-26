@@ -1,3 +1,4 @@
+use std::fmt;
 use std::sync::LazyLock;
 
 use async_trait::async_trait;
@@ -144,9 +145,10 @@ impl Relay for OtlpRelay {
                     break;
                 },
                 Some(otlp_payload) = payload_rx.recv() => {
+                    let output_name = otlp_payload.signal_type.to_string();
                     let payload = Payload::Grpc(otlp_payload.into_grpc_payload());
-                    if let Err(e) = dispatcher.dispatch(payload).await {
-                        error!(error = %e, "Failed to dispatch OTLP payload.");
+                    if let Err(e) = dispatcher.dispatch_named(&output_name, payload).await {
+                        error!(error = %e, output = output_name, "Failed to dispatch OTLP payload.");
                     }
                 },
                 _ = health.live() => continue,
@@ -167,6 +169,16 @@ enum OtlpSignalType {
     Metrics,
     Logs,
     Traces,
+}
+
+impl fmt::Display for OtlpSignalType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            OtlpSignalType::Metrics => write!(f, "metrics"),
+            OtlpSignalType::Logs => write!(f, "logs"),
+            OtlpSignalType::Traces => write!(f, "traces"),
+        }
+    }
 }
 
 struct OtlpPayload {

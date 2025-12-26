@@ -5,7 +5,7 @@ use saluki_common::buf::FrozenChunkedBytesBuffer;
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{forwarders::*, ComponentContext},
-    data_model::payload::PayloadType,
+    data_model::payload::{Payload, PayloadType},
     observability::ComponentMetricsExt as _,
 };
 use saluki_error::GenericError;
@@ -73,7 +73,7 @@ impl DatadogConfiguration {
 #[async_trait]
 impl ForwarderBuilder for DatadogConfiguration {
     fn input_payload_type(&self) -> PayloadType {
-        PayloadType::Http
+        PayloadType::Http | PayloadType::Grpc
     }
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Forwarder + Send>, GenericError> {
@@ -148,12 +148,31 @@ impl Forwarder for Datadog {
             select! {
                 _ = health.live() => continue,
                 maybe_payload = context.payloads().next() => match maybe_payload {
-                    Some(payload) => if let Some(http_payload) = payload.try_into_http_payload() {
-                        let (payload_meta, request) = http_payload.into_parts();
-                        let transaction_meta = Metadata::from_event_count(payload_meta.event_count());
-                        let transaction = Transaction::from_original(transaction_meta, request);
+                    Some(payload) => match payload {
+                        Payload::Http(http_payload) => {
+                            let (payload_meta, request) = http_payload.into_parts();
+                            let transaction_meta = Metadata::from_event_count(payload_meta.event_count());
+                            let transaction = Transaction::from_original(transaction_meta, request);
 
-                        forwarder.send_transaction(transaction).await?;
+                            forwarder.send_transaction(transaction).await?;
+                        }
+                        Payload::Grpc(grpc_payload) => {
+                            let (payload_meta, endpoint, service_path, body) = grpc_payload.into_parts();
+
+                            let uri = format!("{}{}", &*endpoint, &*service_path);
+                            let request = http::Request::builder()
+                                .method("POST")
+                                .uri(uri)
+                                .header("content-type", "application/x-protobuf")
+                                .body(body)
+                                .expect("valid HTTP request");
+
+                            let transaction_meta = Metadata::from_event_count(payload_meta.event_count());
+                            let transaction = Transaction::from_original(transaction_meta, request);
+
+                            forwarder.send_transaction(transaction).await?;
+                        }
+                        _ => {}
                     },
                     None => break,
                 },

@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use otlp_protos::opentelemetry::proto::collector::trace::v1::ExportTraceServiceRequest;
@@ -13,6 +15,10 @@ use saluki_core::{
 };
 use saluki_error::{ErrorContext as _, GenericError};
 use serde::Deserialize;
+use tokio::{
+    select,
+    time::{interval, MissedTickBehavior},
+};
 use tracing::{debug, error};
 
 use crate::common::otlp::traces::translator::OtlpTracesTranslator;
@@ -84,26 +90,32 @@ impl Decoder for OtlpTracesDecoder {
 
         debug!("OTLP traces decoder started.");
 
+        // Set a buffer flush interval of 100ms to ensure we flush buffered events periodically.
+        let mut buffer_flush = interval(Duration::from_millis(100));
+        buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
         let mut event_buffer_manager = EventBufferManager::default();
 
         loop {
-            let payload = match context.payloads().next().await {
-                Some(payload) => payload,
-                None => {
-                    debug!("Payloads stream closed, shutting down decoder.");
-                    break;
-                }
-            };
+            select! {
+                maybe_payload = context.payloads().next() => {
+                    let payload = match maybe_payload {
+                        Some(payload) => payload,
+                        None => {
+                            debug!("Payloads stream closed, shutting down decoder.");
+                            break;
+                        }
+                    };
 
-            let grpc_payload = match payload.try_into_grpc_payload() {
-                Some(grpc) => grpc,
-                None => {
-                    error!("Received non-gRPC payload in OTLP decoder.");
-                    continue;
-                }
-            };
+                    let grpc_payload = match payload.try_into_grpc_payload() {
+                        Some(grpc) => grpc,
+                        None => {
+                            error!("Received non-gRPC payload in OTLP decoder.");
+                            continue;
+                        }
+                    };
 
-            match grpc_payload.service_path() {
+                    match grpc_payload.service_path() {
                 path if path == &*OTLP_TRACES_GRPC_SERVICE_PATH => {
                     let body = grpc_payload.body().clone();
 
@@ -132,9 +144,19 @@ impl Decoder for OtlpTracesDecoder {
                 path if path == &*OTLP_LOGS_GRPC_SERVICE_PATH => {
                     error!("OTLP logs decoding not yet implemented.");
                 }
-                path => {
-                    error!(service_path = path, "Received gRPC payload with unknown service path.");
-                }
+                        path => {
+                            error!(service_path = path, "Received gRPC payload with unknown service path.");
+                        }
+                    }
+                },
+                _ = buffer_flush.tick() => {
+                    if let Some(event_buffer) = event_buffer_manager.consume() {
+                        if let Err(e) = context.dispatcher().dispatch(event_buffer).await {
+                            error!(error = %e, "Failed to dispatch buffered trace events.");
+                        }
+                    }
+                },
+                _ = health.live() => continue,
             }
         }
 
