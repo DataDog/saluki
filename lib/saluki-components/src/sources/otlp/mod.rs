@@ -40,17 +40,14 @@ use crate::common::otlp::config::OtlpConfig;
 use crate::common::otlp::config::TracesConfig;
 use crate::common::otlp::{build_metrics, Metrics, OtlpHandler, OtlpServerBuilder};
 
-mod attributes;
 mod logs;
 mod metrics;
-mod origin;
 mod resolver;
-pub mod traces;
 use self::logs::translator::OtlpLogsTranslator;
 use self::metrics::translator::OtlpMetricsTranslator;
-use self::origin::OtlpOriginTagResolver;
 use self::resolver::build_context_resolver;
-use self::traces::translator::OtlpTracesTranslator;
+use crate::common::otlp::origin::OtlpOriginTagResolver;
+use crate::common::otlp::traces::translator::OtlpTracesTranslator;
 
 const fn default_context_string_interner_size() -> ByteSize {
     ByteSize::mib(2)
