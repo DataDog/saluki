@@ -1,6 +1,4 @@
-use std::mem::ManuallyDrop;
-
-use ouroboros::self_referencing;
+use std::{mem::ManuallyDrop, ptr::NonNull};
 
 use super::{Framer, FramingError};
 use crate::buf::ReadIoBuffer;
@@ -16,10 +14,6 @@ impl<'framer, 'buf> DirectIter<'framer, 'buf> {
         Self { framer, buf, is_eof }
     }
 
-    fn buf_len(&self) -> usize {
-        self.buf.len()
-    }
-
     fn next_frame(&mut self) -> Result<Option<&[u8]>, FramingError> {
         // Our buffer is empty, so we're all done.
         if self.buf.is_empty() {
@@ -30,6 +24,10 @@ impl<'framer, 'buf> DirectIter<'framer, 'buf> {
             Some(frame) => Ok(Some(frame)),
             None => Ok(None),
         }
+    }
+
+    fn finish(self) -> usize {
+        self.buf.len()
     }
 }
 
@@ -52,10 +50,6 @@ impl<'framer, 'buf> NestedIter<'framer, 'buf> {
             outer_frame_buf: &[],
             is_eof,
         }
-    }
-
-    fn buf_len(&self) -> usize {
-        self.buf.len()
     }
 
     fn next_frame(&mut self) -> Result<Option<&[u8]>, FramingError> {
@@ -82,6 +76,10 @@ impl<'framer, 'buf> NestedIter<'framer, 'buf> {
             }
         }
     }
+
+    fn finish(self) -> usize {
+        self.buf.len()
+    }
 }
 
 enum Iter<'framer, 'buf> {
@@ -90,45 +88,52 @@ enum Iter<'framer, 'buf> {
 }
 
 impl<'framer, 'buf> Iter<'framer, 'buf> {
-    fn buf_len(&self) -> usize {
+    fn next_frame(&mut self) -> Result<Option<&[u8]>, FramingError> {
         match self {
-            Iter::Direct(iter) => iter.buf_len(),
-            Iter::Nested(iter) => iter.buf_len(),
+            Self::Direct(iter) => iter.next_frame(),
+            Self::Nested(iter) => iter.next_frame(),
+        }
+    }
+
+    fn finish(self) -> usize {
+        match self {
+            Self::Direct(iter) => iter.finish(),
+            Self::Nested(iter) => iter.finish(),
         }
     }
 }
 
-#[self_referencing]
-struct FramedInnerRef<'buf, 'framer, B>
+struct FramedInner<'buf, 'framer, B>
 where
     B: ReadIoBuffer,
 {
-    buf: &'buf mut B,
-    #[borrows(buf)]
-    #[covariant]
-    iter: Iter<'framer, 'this>,
+    buf_ptr: NonNull<B>,
+    iter: ManuallyDrop<Iter<'framer, 'buf>>,
 }
-
-struct FramedInner<'buf, 'framer, B>(ManuallyDrop<FramedInnerRef<'buf, 'framer, B>>)
-where
-    B: ReadIoBuffer;
 
 impl<'buf, 'framer, B> FramedInner<'buf, 'framer, B>
 where
     B: ReadIoBuffer,
 {
     fn direct(framer: &'framer dyn Framer, buf: &'buf mut B, is_eof: bool) -> Self {
-        Self(ManuallyDrop::new(FramedInnerRef::new(buf, |buf| {
-            Iter::Direct(DirectIter::new(framer, buf.chunk(), is_eof))
-        })))
+        Self {
+            buf_ptr: NonNull::new(buf as *mut B).expect("buffer reference cannot be invalid"),
+            iter: ManuallyDrop::new(Iter::Direct(DirectIter::new(framer, buf.chunk(), is_eof))),
+        }
     }
 
     fn nested(
         outer_framer: &'framer dyn Framer, inner_framer: &'framer dyn Framer, buf: &'buf mut B, is_eof: bool,
     ) -> Self {
-        Self(ManuallyDrop::new(FramedInnerRef::new(buf, |buf| {
-            Iter::Nested(NestedIter::new(outer_framer, inner_framer, buf.chunk(), is_eof))
-        })))
+        Self {
+            buf_ptr: NonNull::new(buf as *mut B).expect("buffer reference cannot be invalid"),
+            iter: ManuallyDrop::new(Iter::Nested(NestedIter::new(
+                outer_framer,
+                inner_framer,
+                buf.chunk(),
+                is_eof,
+            ))),
+        }
     }
 }
 
@@ -137,17 +142,32 @@ where
     B: ReadIoBuffer,
 {
     fn drop(&mut self) {
+        // Consume the inner iterator to ensure we have no outstanding references to the underlying
+        // buffer, and in doing so, get the final buffer length so we know how much to advance by.
+        //
+        // SAFETY: We only consume the iterator value here in the drop logic, so we know that this
+        // logic will only be triggered once, and the iterator can't be taken again.
+        let iter = unsafe { ManuallyDrop::take(&mut self.iter) };
+        let iter_buf_len = iter.finish();
+
+        // Reconstitute our mutable reference to the underlying buffer.
+        //
+        // SAFETY: Our iterator implementations only give out immutable references to slices of the
+        // buffer tied to the lifetime of `Framed` itself, and we've consumed and dropped the iterator
+        // right before this point, so we know that there are no other outstanding references to the
+        // buffer other than the one we were given when constructing `FramedInner` itself.
+        let buf = unsafe { self.buf_ptr.as_mut() };
+
         // Figure out how far the buffer view has been advanced and advance the underlying buffer
         // by that many bytes, which keeps things consistent.
-        let advance_by = self.0.borrow_buf().remaining() - self.0.borrow_iter().buf_len();
-
-        // SAFETY: The drop implementation will only be called once, so we know that we can safely
-        // consume the inner struct from `ManuallyDrop`.
-        let inner = unsafe { ManuallyDrop::take(&mut self.0) };
-        let heads = inner.into_heads();
-        heads.buf.advance(advance_by);
+        let advance_by = buf.remaining() - iter_buf_len;
+        buf.advance(advance_by);
     }
 }
+
+// SAFETY: `B` is `Send` as `ReadIoBuffer`, so we can safely hold a mutable pointer of `B`
+// and still be `Send` ourselves.
+unsafe impl<'buf, 'framer, B> Send for FramedInner<'buf, 'framer, B> where B: ReadIoBuffer {}
 
 /// An iterator of framed messages over a generic buffer.
 pub struct Framed<'buf, 'framer, B>
@@ -187,10 +207,7 @@ where
     ///
     /// If an error is detected when reading the next frame, an error is returned.
     pub fn next_frame(&mut self) -> Option<Result<&[u8], FramingError>> {
-        self.inner.0.with_iter_mut(|iter| match iter {
-            Iter::Direct(direct) => direct.next_frame().transpose(),
-            Iter::Nested(nested) => nested.next_frame().transpose(),
-        })
+        self.inner.iter.next_frame().transpose()
     }
 }
 
