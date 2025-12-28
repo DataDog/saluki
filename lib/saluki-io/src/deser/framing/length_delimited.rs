@@ -123,7 +123,7 @@ mod tests {
             .expect("should not fail to read from payload")
             .expect("should not fail to extract frame from payload");
 
-        assert_eq!(&frame[..], payload);
+        assert_eq!(frame, payload);
         assert!(src.is_empty(), "frame should consume entire buffer");
     }
 
@@ -175,7 +175,7 @@ mod tests {
             .expect("should not fail to read from payload")
             .expect("should not fail to extract frame from payload");
 
-        assert_eq!(&frame[..], payload);
+        assert_eq!(frame, payload);
         assert!(src3.is_empty(), "frame should consume entire buffer");
     }
 
@@ -235,7 +235,7 @@ mod tests {
             .expect("should not fail to read from payload")
             .expect("should not fail to extract frame from payload");
 
-        assert_eq!(&frame[..], payload);
+        assert_eq!(frame, payload);
         assert!(src3.is_empty(), "frame should consume entire buffer");
     }
 

@@ -12,8 +12,12 @@ struct DirectIter<'framer, 'buf> {
 }
 
 impl<'framer, 'buf> DirectIter<'framer, 'buf> {
-    fn new(framer: &'framer dyn Framer, buf: &'buf mut [u8], is_eof: bool) -> Self {
+    fn new(framer: &'framer dyn Framer, buf: &'buf [u8], is_eof: bool) -> Self {
         Self { framer, buf, is_eof }
+    }
+
+    fn buf_len(&self) -> usize {
+        self.buf.len()
     }
 
     fn next_frame(&mut self) -> Result<Option<&[u8]>, FramingError> {
