@@ -36,7 +36,7 @@ impl Framer for NewlineFramer {
         }
 
         // Search through the buffer for our delimiter.
-        match find_newline(&buf) {
+        match find_newline(buf) {
             Some(idx) => {
                 // If we found the delimiter, then we can return the frame.
                 let mut frame = buf.split_off(..idx + 1).unwrap();
@@ -98,7 +98,7 @@ mod tests {
             .expect("should not fail to read from payload")
             .expect("should not fail to extract frame from payload");
 
-        assert_eq!(&frame[..], payload);
+        assert_eq!(frame, payload);
         assert!(src.is_empty(), "frame should consume entire buffer");
     }
 
@@ -128,7 +128,7 @@ mod tests {
             .expect("should not fail to read from payload")
             .expect("should not fail to extract frame from payload");
 
-        assert_eq!(&frame[..], payload);
+        assert_eq!(frame, payload);
         assert!(src.is_empty(), "frame should consume entire buffer");
     }
 
@@ -144,7 +144,7 @@ mod tests {
             .expect("should not fail to read from payload")
             .expect("should not fail to extract frame from payload");
 
-        assert_eq!(&frame[..], payload);
+        assert_eq!(frame, payload);
         assert!(src.is_empty(), "frame should consume entire buffer");
     }
 
