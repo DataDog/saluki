@@ -19,7 +19,7 @@ use tokio::{
     select,
     time::{interval, MissedTickBehavior},
 };
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use crate::common::otlp::traces::translator::OtlpTracesTranslator;
 use crate::common::otlp::{
@@ -110,42 +110,42 @@ impl Decoder for OtlpTracesDecoder {
                     let grpc_payload = match payload.try_into_grpc_payload() {
                         Some(grpc) => grpc,
                         None => {
-                            error!("Received non-gRPC payload in OTLP decoder.");
+                            warn!("Received non-gRPC payload in OTLP decoder. Dropping payload.");
                             continue;
                         }
                     };
 
                     match grpc_payload.service_path() {
-                path if path == &*OTLP_TRACES_GRPC_SERVICE_PATH => {
-                    let body = grpc_payload.body().clone();
+                        path if path == &*OTLP_TRACES_GRPC_SERVICE_PATH => {
+                            let body = grpc_payload.body().clone();
 
-                    let request = match ExportTraceServiceRequest::decode(body) {
-                        Ok(req) => req,
-                        Err(e) => {
-                            error!(error = %e, "Failed to decode OTLP trace request.");
-                            continue;
-                        }
-                    };
+                            let request = match ExportTraceServiceRequest::decode(body) {
+                                Ok(req) => req,
+                                Err(e) => {
+                                    error!(error = %e, "Failed to decode OTLP trace request.");
+                                    continue;
+                                }
+                            };
 
-                    for resource_spans in request.resource_spans {
-                        let trace_events = self.translator.translate_resource_spans(resource_spans, &self.metrics);
-                        for trace_event in trace_events {
-                            if let Some(event_buffer) = event_buffer_manager.try_push(trace_event) {
-                                if let Err(e) = context.dispatcher().dispatch(event_buffer).await {
-                                    error!(error = %e, "Failed to dispatch trace events.");
+                            for resource_spans in request.resource_spans {
+                                let trace_events = self.translator.translate_resource_spans(resource_spans, &self.metrics);
+                                for trace_event in trace_events {
+                                    if let Some(event_buffer) = event_buffer_manager.try_push(trace_event) {
+                                        if let Err(e) = context.dispatcher().dispatch(event_buffer).await {
+                                            error!(error = %e, "Failed to dispatch trace events.");
+                                        }
+                                    }
                                 }
                             }
                         }
-                    }
-                }
-                path if path == &*OTLP_METRICS_GRPC_SERVICE_PATH => {
-                    error!("OTLP metrics decoding not yet implemented.");
-                }
-                path if path == &*OTLP_LOGS_GRPC_SERVICE_PATH => {
-                    error!("OTLP logs decoding not yet implemented.");
-                }
+                        path if path == &*OTLP_METRICS_GRPC_SERVICE_PATH => {
+                            warn!("OTLP metrics decoding not yet implemented. Dropping metrics payload.");
+                        }
+                        path if path == &*OTLP_LOGS_GRPC_SERVICE_PATH => {
+                            warn!("OTLP logs decoding not yet implemented. Dropping logs payload.");
+                        }
                         path => {
-                            error!(service_path = path, "Received gRPC payload with unknown service path.");
+                            warn!(service_path = path, "Received gRPC payload with unknown service path. Dropping payload.");
                         }
                     }
                 },
