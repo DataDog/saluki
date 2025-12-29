@@ -20,7 +20,7 @@ fn default_max_recv_msg_size_mib() -> u64 {
 
 /// Receiver configuration for OTLP endpoints.
 ///
-/// This follows the Agent's `otlp_config.receiver` structure.
+/// This follows the Datadog Agent `otlp_config.receiver` structure.
 #[derive(Deserialize, Debug, Default)]
 pub struct Receiver {
     /// Protocol-specific receiver configuration.
@@ -125,7 +125,7 @@ pub struct OtlpConfig {
 pub struct LogsConfig {
     /// Whether to enable OTLP logs support.
     ///
-    /// Defaults to true.
+    /// Defaults to `true`.
     #[serde(default = "default_logs_enabled")]
     pub enabled: bool,
 }
@@ -147,7 +147,7 @@ impl Default for LogsConfig {
 pub struct MetricsConfig {
     /// Whether to enable OTLP metrics support.
     ///
-    /// Defaults to true.
+    /// Defaults to `true`.
     #[serde(default = "default_metrics_enabled")]
     pub enabled: bool,
 }
@@ -171,7 +171,7 @@ impl Default for MetricsConfig {
 pub struct TracesConfig {
     /// Whether to enable OTLP traces support.
     ///
-    /// Defaults to true.
+    /// Defaults to `true`.
     #[serde(default = "default_traces_enabled")]
     pub enabled: bool,
 
@@ -182,7 +182,7 @@ pub struct TracesConfig {
     ///
     /// Corresponds to `otlp_config.traces.ignore_missing_datadog_fields` in the Agent.
     ///
-    /// Defaults to false.
+    /// Defaults to `false`.
     #[serde(default)]
     pub ignore_missing_datadog_fields: bool,
 
@@ -191,7 +191,7 @@ pub struct TracesConfig {
     /// Corresponds to the `enable_otlp_compute_top_level_by_span_kind` feature flag
     /// in the Agent's `apm_config.features`.
     ///
-    /// Defaults to false.
+    /// Defaults to `false`.
     #[serde(default = "default_enable_otlp_compute_top_level_by_span_kind")]
     pub enable_otlp_compute_top_level_by_span_kind: bool,
 
