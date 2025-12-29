@@ -1,4 +1,4 @@
-use std::{mem::ManuallyDrop, ptr::NonNull};
+use std::{marker::PhantomData, mem::ManuallyDrop, ptr::NonNull};
 
 use super::{Framer, FramingError};
 use crate::buf::ReadIoBuffer;
@@ -103,12 +103,39 @@ impl<'framer, 'buf> Iter<'framer, 'buf> {
     }
 }
 
+/// Core primitive for advancing the source buffer passed to `Framed` on drop.
+///
+/// Overall, our goal is to hold a mutable reference to our source buffer -- so that we can advance it when we're all
+/// done extracting any complete frames -- while also returning _immutable_ references to subslices of that same buffer,
+/// representing the complete frames, to avoid the need to allocate or copy any data. This would already be trivially
+/// doable with the usage of the `Buf` trait which `ReadIoBuffer` is a superset of, except for our other constraint:
+/// nested framing.
+///
+/// Nested framing requires holding a subslice of the buffer and then extracting frames from _that_ until exhausted. This
+/// is difficult to do with just `Buf` because if we're tying the lifetimes of the frames we emit to the caller to the frame
+/// iterator, then we can't prove that we have exclusive access to the buffer in order to advance it after an outer frame
+/// has been exhausted. This is sort of a chicken-and-egg problem, and there are some potential solutions in the vein of
+/// vector indexing -- track regions of the source buffer instead of holding slices directly -- but they end up being
+/// pretty ugly, IMO.
+///
+/// We've chosen to solve this by splitting things up into two phases: extraction and advancement. Extraction is everything
+/// from the time we create `Framed` up until the time it's dropped: we utilize immutable borrows of the source buffer internally
+/// to make writing the framers themselves, and the direct/nested wrappers, as easy as possible. Advancement occurs during drop,
+/// where we switch back to a mutable borrow of the source buffer in order to advance it. This is where the unsafety lies.
+///
+/// In order to hold on to the original mutable reference despite needing _immutable_ references for the framers, we
+/// convert the mutable reference into a mutable pointer. Creating this pointer initially, and accessing it during drop,
+/// is the entirety of the unsafety. This creates a risk of aliasing violations because of how easy it is to create a
+/// mutable reference to the buffer while there are active immutable references. We take care to ensure there are no
+/// outstanding immutable references to the buffer before recreating the mutable reference from the pointer during drop,
+/// which would otherwise represent immediate UB.
 struct FramedInner<'buf, 'framer, B>
 where
     B: ReadIoBuffer,
 {
     buf_ptr: NonNull<B>,
     iter: ManuallyDrop<Iter<'framer, 'buf>>,
+    _buf: PhantomData<&'buf mut B>,
 }
 
 impl<'buf, 'framer, B> FramedInner<'buf, 'framer, B>
@@ -119,6 +146,7 @@ where
         Self {
             buf_ptr: NonNull::new(buf as *mut B).expect("buffer reference cannot be invalid"),
             iter: ManuallyDrop::new(Iter::Direct(DirectIter::new(framer, buf.chunk(), is_eof))),
+            _buf: PhantomData,
         }
     }
 
@@ -133,6 +161,7 @@ where
                 buf.chunk(),
                 is_eof,
             ))),
+            _buf: PhantomData,
         }
     }
 }
@@ -142,34 +171,55 @@ where
     B: ReadIoBuffer,
 {
     fn drop(&mut self) {
-        // Consume the inner iterator to ensure we have no outstanding references to the underlying
-        // buffer, and in doing so, get the final buffer length so we know how much to advance by.
+        // Consume the inner iterator to ensure we have no outstanding references to the underlying buffer, and in doing
+        // so, get the final buffer length so we know how much to advance by.
         //
-        // SAFETY: We only consume the iterator value here in the drop logic, so we know that this
-        // logic will only be triggered once, and the iterator can't be taken again.
+        // SAFETY: We only consume the iterator value here in the drop logic, so we know that this logic will only be
+        // triggered once, and the iterator can't be taken again.
         let iter = unsafe { ManuallyDrop::take(&mut self.iter) };
         let iter_buf_len = iter.finish();
 
         // Reconstitute our mutable reference to the underlying buffer.
         //
-        // SAFETY: Our iterator implementations only give out immutable references to slices of the
-        // buffer tied to the lifetime of `Framed` itself, and we've consumed and dropped the iterator
-        // right before this point, so we know that there are no other outstanding references to the
-        // buffer other than the one we were given when constructing `FramedInner` itself.
+        // SAFETY: Our iterator implementations only give out immutable references to slices of the buffer tied to the
+        // lifetime of the iterator itself, and we've consumed and dropped the iterator right before this point, so we
+        // know that there are no other outstanding references to the buffer other than the one we were given when
+        // constructing `FramedInner` itself.
         let buf = unsafe { self.buf_ptr.as_mut() };
 
-        // Figure out how far the buffer view has been advanced and advance the underlying buffer
-        // by that many bytes, which keeps things consistent.
+        // Figure out how far the buffer view from the iterator has been advanced and advance the underlying buffer by
+        // that many bytes, which keeps things consistent.
         let advance_by = buf.remaining() - iter_buf_len;
         buf.advance(advance_by);
     }
 }
 
-// SAFETY: `B` is `Send` as `ReadIoBuffer`, so we can safely hold a mutable pointer of `B`
-// and still be `Send` ourselves.
+// SAFETY: `ReadIoBuffer` is `Send`, so we can safely hold a mutable pointer of `B` and still be `Send` ourselves.
 unsafe impl<'buf, 'framer, B> Send for FramedInner<'buf, 'framer, B> where B: ReadIoBuffer {}
 
 /// An iterator of framed messages over a generic buffer.
+///
+/// When reading messages from a network socket, it is typical to use a single buffer that is read into and then checked
+/// for complete messages: read some data from the socket, extract as many complete messages as possible, over and over
+/// again until the connection is closed. Framers help abstract the process of finding these messages in a buffer, but
+/// it can still be cumbersome to ensure that the buffer is advanced once a message has been extracted. Advancing the buffer
+/// is the final step that ensures we track the progress made, free up the space in the buffer, and allow the buffer to be
+/// reused for the next read.
+///
+/// `Framed` provides a safe abstraction over the process of using an arbitrary `Framer` implementation (or nested
+/// implementation, see "Direct vs Nested" section) over an arbitrary buffer implementation. It does this while avoiding
+/// unnecessary allocations and copies.
+///
+/// # Direct vs Nested
+///
+/// `Framed` is constructed in either "direct" or "nested" mode. In direct mode, a single `Framer` is provided and used
+/// for all messages. This is the most common mode: messages are framed individually.
+///
+/// In nested mode, two `Framer`s are provided: an "outer" framer and an "inner" framer. The outer framer is used to
+/// extract top-level frames from the buffer, and when a top-level frame is extracted, the inner framer is used to
+/// extract messages from the top-level frame itself, which are ultimately returned to the caller. This allows for more
+/// complex framing scenarios where we only care about the "inner" frames, but still want the convenience of using a
+/// `Framer` implementation for extracting the outer frames.
 pub struct Framed<'buf, 'framer, B>
 where
     B: ReadIoBuffer,
@@ -197,8 +247,9 @@ where
 
     /// Attempt to extract the next frame from the buffer.
     ///
-    /// If enough data was present to extract a frame, `Ok(Some(frame))` is returned. If not enough data was present, and
-    /// EOF has not been reached, `Ok(None)` is returned.
+    /// If there was insufficient data to extract a frame, and it may be possible in the future to do so, `None` is
+    /// returned. Otherwise, `Some` is returned with either an extracted frame or an error indicating why a frame could
+    /// not be extracted.
     ///
     /// Behavior when EOF is reached is framer-specific and in some cases may allow for decoding a frame even when the
     /// inherent delimiting data is not present.
