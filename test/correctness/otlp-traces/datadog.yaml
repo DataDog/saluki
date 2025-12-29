@@ -27,6 +27,7 @@ apm_config:
   enabled: true
   apm_dd_url: "http://datadog-intake:2049"
   target_traces_per_second: 1000000
+  features: ["enable_otlp_compute_top_level_by_span_kind"]
 
 # Enable OTLP receiver on gRPC port 4317
 otlp_config:
@@ -34,3 +35,5 @@ otlp_config:
     protocols:
       grpc:
         endpoint: "0.0.0.0:4317"
+  traces:
+    enable_otlp_compute_top_level_by_span_kind: true

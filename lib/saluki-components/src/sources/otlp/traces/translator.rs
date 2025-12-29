@@ -6,7 +6,7 @@ use saluki_context::tags::TagSet;
 use saluki_core::data_model::event::trace::{Span as DdSpan, Trace};
 use saluki_core::data_model::event::Event;
 
-use super::config::OtlpTracesTranslatorConfig;
+use crate::common::otlp::config::TracesConfig;
 use crate::sources::otlp::traces::transform::otel_span_to_dd_span;
 use crate::sources::otlp::traces::transform::otlp_value_to_string;
 use crate::sources::otlp::Metrics;
@@ -40,11 +40,11 @@ pub fn resource_attributes_to_tagset(attributes: &[otlp_common::KeyValue]) -> Ta
 }
 
 pub struct OtlpTracesTranslator {
-    config: OtlpTracesTranslatorConfig,
+    config: TracesConfig,
 }
 
 impl OtlpTracesTranslator {
-    pub fn new(config: OtlpTracesTranslatorConfig) -> Self {
+    pub fn new(config: TracesConfig) -> Self {
         Self { config }
     }
 
@@ -65,7 +65,7 @@ impl OtlpTracesTranslator {
                     &resource,
                     scope_ref,
                     ignore_missing_fields,
-                    self.config.compute_top_level_by_span_kind,
+                    self.config.enable_otlp_compute_top_level_by_span_kind,
                 );
                 traces_by_id.entry(trace_id).or_default().push(dd_span);
             }

@@ -11,7 +11,7 @@ pub const MAX_RESOURCE_LEN: usize = 5000;
 pub const MAX_TAG_LEN: usize = 200;
 
 // default service name we assign a span if it's missing and we have no reasonable fallback
-const DEFAULT_SERVICE_NAME: MetaString = MetaString::from_static("unnamed-service");
+const DEFAULT_SERVICE_NAME: MetaString = MetaString::from_static("otlpresourcenoservicename");
 // default span name we assign a span if it's missing and we have no reasonable fallback
 const DEFAULT_SPAN_NAME: MetaString = MetaString::from_static("unnamed_operation");
 
