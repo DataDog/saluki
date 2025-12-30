@@ -117,9 +117,8 @@ impl Decoder for OtlpTracesDecoder {
 
                     match grpc_payload.service_path() {
                         path if path == &*OTLP_TRACES_GRPC_SERVICE_PATH => {
-                            let body = grpc_payload.body().clone();
-
-                            let request = match ExportTraceServiceRequest::decode(body) {
+                            let (_, _, _, body) = grpc_payload.into_parts();
+                            let request = match ExportTraceServiceRequest::decode(body.into_bytes()) {
                                 Ok(req) => req,
                                 Err(e) => {
                                     error!(error = %e, "Failed to decode OTLP trace request.");
