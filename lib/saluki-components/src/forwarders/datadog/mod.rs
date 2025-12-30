@@ -73,7 +73,7 @@ impl DatadogConfiguration {
 #[async_trait]
 impl ForwarderBuilder for DatadogConfiguration {
     fn input_payload_type(&self) -> PayloadType {
-        PayloadType::Http | PayloadType::Grpc
+        PayloadType::Http
     }
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Forwarder + Send>, GenericError> {
@@ -151,22 +151,6 @@ impl Forwarder for Datadog {
                     Some(payload) => match payload {
                         Payload::Http(http_payload) => {
                             let (payload_meta, request) = http_payload.into_parts();
-                            let transaction_meta = Metadata::from_event_count(payload_meta.event_count());
-                            let transaction = Transaction::from_original(transaction_meta, request);
-
-                            forwarder.send_transaction(transaction).await?;
-                        }
-                        Payload::Grpc(grpc_payload) => {
-                            let (payload_meta, endpoint, service_path, body) = grpc_payload.into_parts();
-
-                            let uri = format!("{}{}", &*endpoint, &*service_path);
-                            let request = http::Request::builder()
-                                .method("POST")
-                                .uri(uri)
-                                .header("content-type", "application/x-protobuf")
-                                .body(body)
-                                .expect("valid HTTP request");
-
                             let transaction_meta = Metadata::from_event_count(payload_meta.event_count());
                             let transaction = Transaction::from_original(transaction_meta, request);
 
