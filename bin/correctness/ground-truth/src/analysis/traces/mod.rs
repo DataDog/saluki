@@ -18,6 +18,9 @@ static IGNORED_FIELDS_DIFF: &[&str] = &[
     "meta._dd.install.id",
     "meta._dd.install.time",
     "meta._dd.install.type",
+    "agent_metadata.agent_version",
+    // Deprecated
+    "metrics._sampling_priority_rate_v1",
 ];
 
 static CUSTOM_FIELD_COMPARATORS: &[(&str, &dyn FieldComparator)] = &[("start", &check_start_diff)];
