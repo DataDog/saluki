@@ -9,9 +9,10 @@ repository = { workspace = true }
 workspace = true
 
 [features]
-default = []
+default = ["checks"]
 fips = ["saluki-app/tls-fips"]
-python-checks = ["saluki-components/python-checks"]
+checks = []
+python-checks = ["checks", "saluki-components/python-checks"]
 
 [dependencies]
 argh = { workspace = true, features = ["help"] }

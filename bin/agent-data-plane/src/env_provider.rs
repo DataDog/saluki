@@ -6,7 +6,7 @@ use saluki_env::{
     workload::providers::{RemoteAgentWorkloadAPIHandler, RemoteAgentWorkloadProvider},
     EnvironmentProvider,
 };
-#[cfg(feature = "python-checks")]
+#[cfg(feature = "checks")]
 use saluki_env::{
     autodiscovery::providers::{LocalAutodiscoveryProvider, RemoteAgentAutodiscoveryProvider},
     helpers::remote_agent::RemoteAgentClient,
@@ -93,7 +93,7 @@ impl ADPEnvironmentProvider {
 async fn configure_autodiscovery_provider(
     in_standalone_mode: bool, config: &GenericConfiguration,
 ) -> Result<Option<BoxedAutodiscoveryProvider>, GenericError> {
-    #[cfg(feature = "python-checks")]
+    #[cfg(feature = "checks")]
     {
         if in_standalone_mode {
             debug!("Using local autodiscovery provider due to standalone mode.");
@@ -113,7 +113,7 @@ async fn configure_autodiscovery_provider(
             )))
         }
     }
-    #[cfg(not(feature = "python-checks"))]
+    #[cfg(not(feature = "checks"))]
     {
         // Suppress unused variable warning
         let _ = in_standalone_mode;

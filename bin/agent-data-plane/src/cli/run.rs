@@ -9,7 +9,7 @@ use saluki_app::{
     memory::{initialize_memory_bounds, MemoryBoundsConfiguration},
     metrics::emit_startup_metrics,
 };
-#[cfg(feature = "python-checks")]
+#[cfg(feature = "checks")]
 use saluki_components::sources::ChecksConfiguration;
 use saluki_components::{
     destinations::DogStatsDStatisticsConfiguration,
@@ -261,7 +261,7 @@ async fn create_topology(
         add_otlp_pipeline_to_blueprint(&mut blueprint, config, dp_config, env_provider)?;
     }
 
-    #[cfg(feature = "python-checks")]
+    #[cfg(feature = "checks")]
     add_checks_to_blueprint(&mut blueprint, config, env_provider)?;
 
     Ok(blueprint)
@@ -448,7 +448,7 @@ fn add_otlp_pipeline_to_blueprint(
     Ok(())
 }
 
-#[cfg(feature = "python-checks")]
+#[cfg(feature = "checks")]
 fn add_checks_to_blueprint(
     blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
