@@ -5,7 +5,7 @@ use saluki_common::buf::FrozenChunkedBytesBuffer;
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{forwarders::*, ComponentContext},
-    data_model::payload::{Payload, PayloadType},
+    data_model::payload::PayloadType,
     observability::ComponentMetricsExt as _,
 };
 use saluki_error::GenericError;
@@ -148,16 +148,13 @@ impl Forwarder for Datadog {
             select! {
                 _ = health.live() => continue,
                 maybe_payload = context.payloads().next() => match maybe_payload {
-                    Some(payload) => match payload {
-                        Payload::Http(http_payload) => {
+                    Some(payload) => if let Some(http_payload) = payload.try_into_http_payload() {
                             let (payload_meta, request) = http_payload.into_parts();
                             let transaction_meta = Metadata::from_event_count(payload_meta.event_count());
                             let transaction = Transaction::from_original(transaction_meta, request);
 
                             forwarder.send_transaction(transaction).await?;
-                        }
-                        _ => {}
-                    },
+                    }
                     None => break,
                 },
             }
