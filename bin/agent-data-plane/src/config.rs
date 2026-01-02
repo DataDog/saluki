@@ -231,10 +231,10 @@ impl DataPlaneOtlpProxyConfiguration {
     fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let enabled = config.try_get_typed("data_plane.otlp.proxy.enabled")?.unwrap_or(false);
         let core_agent_otlp_grpc_endpoint = config
-            .try_get_typed("data_plane.otlp.proxy.core_agent_otlp_grpc_endpoint")?
+            .try_get_typed("data_plane.otlp.proxy.receiver.protocols.grpc.endpoint")?
             .unwrap_or("http://localhost:4319".to_string());
         let core_agent_otlp_http_endpoint = config
-            .try_get_typed("data_plane.otlp.proxy.core_agent_otlp_http_endpoint")?
+            .try_get_typed("data_plane.otlp.proxy.receiver.protocols.http.endpoint")?
             .unwrap_or("http://localhost:4320".to_string());
         let proxy_traces = config
             .try_get_typed("data_plane.otlp.proxy.traces.enabled")?
