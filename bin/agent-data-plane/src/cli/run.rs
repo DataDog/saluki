@@ -429,7 +429,7 @@ fn add_otlp_pipeline_to_blueprint(
             )?;
 
         if dp_config.otlp().proxy().proxy_traces() {
-            blueprint.connect_component("logal_agent_otlp_out", ["otlp_relay_in.traces"])?;
+            blueprint.connect_component("local_agent_otlp_out", ["otlp_relay_in.traces"])?;
         } else {
             blueprint
                 .add_decoder("otlp_traces_decode", otlp_decoder_config)?

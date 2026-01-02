@@ -131,7 +131,9 @@ impl DataPlaneConfiguration {
     /// This indicates that the "baseline" traces pipeline (encoding, forwarding) is required by higher-level data
     /// pipelines, such as OTLP.
     pub const fn traces_pipeline_required(&self) -> bool {
-        self.otlp().enabled()
+        // We consider the traces pipeline to be enabled if:
+        // - OTLP is enabled and not in proxy mode
+        self.otlp().enabled() && !self.otlp().proxy().enabled()
     }
 }
 
@@ -234,12 +236,24 @@ impl DataPlaneOtlpProxyConfiguration {
         let core_agent_otlp_http_endpoint = config
             .try_get_typed("data_plane.otlp.proxy.core_agent_otlp_http_endpoint")?
             .unwrap_or("http://localhost:4320".to_string());
+        let proxy_traces = config
+            .try_get_typed("data_plane.otlp.proxy.traces.enabled")?
+            .unwrap_or(true);
+        let proxy_metrics = config
+            .try_get_typed("data_plane.otlp.proxy.metrics.enabled")?
+            .unwrap_or(true);
+        let proxy_logs = config
+            .try_get_typed("data_plane.otlp.proxy.logs.enabled")?
+            .unwrap_or(true);
 
         if enabled {
             tracing::info!(
                 proxy_enabled = enabled,
                 core_agent_otlp_grpc_endpoint = %core_agent_otlp_grpc_endpoint,
                 core_agent_otlp_http_endpoint = %core_agent_otlp_http_endpoint,
+                proxy_traces = proxy_traces,
+                proxy_metrics = proxy_metrics,
+                proxy_logs = proxy_logs,
                 "OTLP proxy mode configuration loaded"
             );
         } else {
@@ -250,15 +264,9 @@ impl DataPlaneOtlpProxyConfiguration {
             enabled,
             core_agent_otlp_grpc_endpoint,
             core_agent_otlp_http_endpoint,
-            proxy_traces: config
-                .try_get_typed("data_plane.otlp.proxy.traces.enabled")?
-                .unwrap_or(true),
-            proxy_metrics: config
-                .try_get_typed("data_plane.otlp.proxy.metrics.enabled")?
-                .unwrap_or(true),
-            proxy_logs: config
-                .try_get_typed("data_plane.otlp.proxy.logs.enabled")?
-                .unwrap_or(true),
+            proxy_traces,
+            proxy_metrics,
+            proxy_logs,
         })
     }
 
