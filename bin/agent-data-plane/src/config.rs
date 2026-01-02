@@ -132,8 +132,8 @@ impl DataPlaneConfiguration {
     /// pipelines, such as OTLP.
     pub const fn traces_pipeline_required(&self) -> bool {
         // We consider the traces pipeline to be enabled if:
-        // - OTLP is enabled and not in proxy mode
-        self.otlp().enabled() && !self.otlp().proxy().enabled()
+        // - OTLP is enabled and not in proxy mode or proxy mode is enabled and proxy traces are disabled
+        self.otlp().enabled() && (!self.otlp().proxy().enabled() || !self.otlp().proxy().proxy_traces())
     }
 }
 
@@ -286,19 +286,19 @@ impl DataPlaneOtlpProxyConfiguration {
     }
 
     /// Returns `true` if the OTLP traces should be proxied to the Core Agent.
-    pub fn proxy_traces(&self) -> bool {
+    pub const fn proxy_traces(&self) -> bool {
         self.proxy_traces
     }
 
     /// Returns `true` if the OTLP metrics should be proxied to the Core Agent.
     #[allow(dead_code)]
-    pub fn proxy_metrics(&self) -> bool {
+    pub const fn proxy_metrics(&self) -> bool {
         self.proxy_metrics
     }
 
     /// Returns `true` if the OTLP logs should be proxied to the Core Agent.
     #[allow(dead_code)]
-    pub fn proxy_logs(&self) -> bool {
+    pub const fn proxy_logs(&self) -> bool {
         self.proxy_logs
     }
 }

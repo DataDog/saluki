@@ -321,7 +321,6 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         .error_context("Failed to configure Datadog Traces encoder.")?
         .with_environment_provider(env_provider.clone())
         .await?;
-
     blueprint
         .add_encoder("dd_traces_encode", dd_traces_config)?
         .connect_component("dd_out", ["dd_traces_encode"])?;
@@ -423,10 +422,7 @@ fn add_otlp_pipeline_to_blueprint(
             .add_relay("otlp_relay_in", otlp_relay_config)?
             .add_forwarder("local_agent_otlp_out", local_agent_otlp_forwarder_config)?
             // Metrics and logs to forwarders.
-            .connect_component(
-                "local_agent_otlp_out",
-                ["otlp_relay_in.metrics", "otlp_relay_in.logs", "otlp_relay_in.traces"],
-            )?;
+            .connect_component("local_agent_otlp_out", ["otlp_relay_in.metrics", "otlp_relay_in.logs"])?;
 
         if dp_config.otlp().proxy().proxy_traces() {
             blueprint.connect_component("local_agent_otlp_out", ["otlp_relay_in.traces"])?;

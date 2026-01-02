@@ -96,7 +96,8 @@ impl ForwarderBuilder for OtlpForwarderConfiguration {
             .connect_lazy();
         let trace_agent_client = TraceServiceClient::new(trace_agent_channel);
 
-        let core_agent_grpc_channel = Channel::from_shared(self.core_agent_otlp_grpc_endpoint.clone())
+        let normalized_endpoint = normalize_endpoint(&self.core_agent_otlp_grpc_endpoint);
+        let core_agent_grpc_channel = Channel::from_shared(normalized_endpoint)
             .error_context("Failed to construct gRPC channel due to an invalid endpoint.")?
             .connect_lazy();
         let core_agent_metrics_client = MetricsServiceClient::new(core_agent_grpc_channel.clone());
@@ -323,5 +324,13 @@ fn get_dd_endpoint_name(uri: &Uri) -> Option<MetaString> {
         "/v1/metrics" => Some(MetaString::from_static("metrics_v1")),
         "/v1/logs" => Some(MetaString::from_static("logs_v1")),
         _ => None,
+    }
+}
+
+fn normalize_endpoint(endpoint: &str) -> String {
+    if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
+        endpoint.to_string()
+    } else {
+        format!("https://{}", endpoint)
     }
 }
