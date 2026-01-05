@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use pyo3::types::{PyDict, PyList, PyNone, PyTuple, PyType};
 use pyo3::PyObject;
 use pyo3::{prelude::*, IntoPyObjectExt};
@@ -13,7 +14,7 @@ use saluki_core::data_model::event::Event;
 use saluki_env::autodiscovery::{Data, Instance, RawData};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stringtheory::MetaString;
-use tokio::sync::mpsc::Sender;
+use tokio::sync::{mpsc::Sender, Mutex};
 use tracing::{debug, error, info, warn};
 
 use super::python_modules::aggregator as pyagg;
@@ -30,8 +31,9 @@ struct PythonCheck {
     id: String,
 }
 
+#[async_trait]
 impl Check for PythonCheck {
-    fn run(&self) -> Result<(), GenericError> {
+    async fn run(&mut self) -> Result<(), GenericError> {
         let result = pyo3::Python::with_gil(|py| self.instance.call_method(py, "run", (), None));
         match result {
             Ok(_) => Ok(()),
@@ -138,7 +140,7 @@ impl PythonCheckBuilder {
 impl CheckBuilder for PythonCheckBuilder {
     fn build_check(
         &self, name: &str, instance: &Instance, init_config: &Data, source: &MetaString,
-    ) -> Option<Arc<dyn Check + Send + Sync>> {
+    ) -> Option<Arc<Mutex<dyn Check + Send + Sync>>> {
         if !self.interpreter_initialized_and_ready() {
             return None;
         }
@@ -146,7 +148,7 @@ impl CheckBuilder for PythonCheckBuilder {
         let mut load_errors = vec![];
         for import_path in [name.to_string(), format!("datadog_checks.{}", name)].iter() {
             match register_check_from_imports(name, import_path, instance, init_config, source) {
-                Ok(handle) => return Some(handle),
+                Ok(handle) => return Some(Arc::new(Mutex::new(handle))),
                 Err(e) => {
                     load_errors.push(e.root_cause().to_string());
                 }
@@ -159,7 +161,7 @@ impl CheckBuilder for PythonCheckBuilder {
 
 fn register_check_from_imports(
     name: &str, import_path: &str, instance: &Instance, init_config: &Data, source: &MetaString,
-) -> Result<Arc<dyn Check + Send + Sync>, GenericError> {
+) -> Result<PythonCheck, GenericError> {
     pyo3::Python::with_gil(|py| {
         let dd_checks_module = py.import("datadog_checks.checks")?;
         let check_class = dd_checks_module.getattr("AgentCheck")?;
@@ -217,13 +219,13 @@ fn register_check_from_imports(
 
         check_instance.setattr("check_id", instance.id())?;
 
-        let check = Arc::new(PythonCheck {
+        let check = PythonCheck {
             version,
             interval: Duration::from_secs(min_interval),
             instance: check_instance.clone().unbind(),
             source: source.to_string(),
             id: instance.id().clone(),
-        }) as Arc<dyn Check + Send + Sync>;
+        };
         Ok(check)
     })
 }

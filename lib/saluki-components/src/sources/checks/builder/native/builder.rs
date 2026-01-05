@@ -1,0 +1,56 @@
+use std::sync::Arc;
+
+use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_core::data_model::event::Event;
+use saluki_env::autodiscovery::{Data, Instance};
+
+use stringtheory::MetaString;
+use tokio::sync::{mpsc::Sender, Mutex};
+use tracing::trace;
+
+use crate::sources::checks::builder::CheckBuilder;
+use crate::sources::checks::check::Check;
+use crate::sources::checks::execution_context::ExecutionContext;
+use crate::sources::checks::builder::native::native_check::NativeCheck;
+
+use http_check::check::HttpCheck;
+
+pub struct NativeCheckBuilder {
+    check_events_tx: Sender<Event>,
+    execution_context: ExecutionContext,
+}
+
+impl NativeCheckBuilder {
+    pub fn new(check_events_tx: Sender<Event>, _: Option<Vec<String>>, execution_context: ExecutionContext) -> Self {
+        trace!("NativeCheckBuilder::new()");
+
+        Self {
+            check_events_tx,
+            execution_context,
+        }
+    }
+}
+
+impl MemoryBounds for NativeCheckBuilder {
+    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
+        builder
+            .minimum()
+            .with_single_value::<NativeCheckBuilder>("source struct");
+    }
+}
+
+impl CheckBuilder for NativeCheckBuilder {
+    fn build_check(
+        &self, name: &str, instance: &Instance, init_config: &Data, source: &MetaString,
+    ) -> Option<Arc<Mutex<dyn Check + Send + Sync>>> {
+        let native = NativeCheck::<HttpCheck>::new(
+            self.check_events_tx.clone(),
+
+            MetaString::from(name),
+            init_config.clone(),
+            instance.clone(),
+            source.clone(),
+        );
+        Some(Arc::new(Mutex::new(native)))
+    }
+}

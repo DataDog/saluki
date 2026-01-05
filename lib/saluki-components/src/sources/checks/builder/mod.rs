@@ -1,10 +1,16 @@
 use std::sync::Arc;
-#[cfg(feature = "python-checks")]
-pub mod python;
+
 use saluki_env::autodiscovery::{Data, Instance};
 use stringtheory::MetaString;
 
+use tokio::sync::Mutex;
+
+pub mod native;
+#[cfg(feature = "python-checks")]
+pub mod python;
+
 use crate::sources::checks::check::Check;
+
 /// Check builder trait
 ///
 /// We use this trait to build checks.
@@ -17,5 +23,5 @@ pub trait CheckBuilder {
     /// Build a check
     fn build_check(
         &self, name: &str, instance: &Instance, init_config: &Data, source: &MetaString,
-    ) -> Option<Arc<dyn Check + Send + Sync>>;
+    ) -> Option<Arc<Mutex<dyn Check + Send + Sync>>>;
 }

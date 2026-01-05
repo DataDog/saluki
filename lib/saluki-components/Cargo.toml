@@ -9,10 +9,12 @@ repository = { workspace = true }
 workspace = true
 
 [features]
-default = []
+default = ["checks"]
+checks = []
 python-checks = ["dep:pyo3"]
 
 [dependencies]
+anyhow.workspace = true
 async-trait = { workspace = true }
 axum = { workspace = true }
 base64 = { workspace = true, features = ["std"] }
@@ -33,6 +35,7 @@ http-body-util = { workspace = true }
 http-serde-ext = { workspace = true }
 hyper = { workspace = true, features = ["client"] }
 hyper-http-proxy = { workspace = true }
+libloading = "0.9.0"
 memory-accounting = { workspace = true }
 metrics = { workspace = true }
 opentelemetry-semantic-conventions = { workspace = true, features = ["semconv_experimental"] }
@@ -73,6 +76,8 @@ tonic = { workspace = true, features = ["router", "server"] }
 tower = { workspace = true, features = ["limit", "retry", "timeout", "util"] }
 tracing = { workspace = true }
 url = { workspace = true }
+dd-rs-checks = { path = "../../../dd-rs-checks" }
+http_check = { path = "../../../http-check-rs/http_check" }
 
 [dev-dependencies]
 proptest = { workspace = true }

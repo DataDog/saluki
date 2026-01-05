@@ -1,18 +1,19 @@
 use std::time::Duration;
 
+use async_trait::async_trait;
 use saluki_error::GenericError;
 
 /// A check.
 ///
 /// Checks run some arbitrary chunk of logic on a configured interval, potentially producing outputs
 /// such as service checks, events, metrics, and logs.
-#[allow(dead_code)]
+#[async_trait]
 pub trait Check {
     /// Run the check.
     /// # Errors
     ///
     /// If a problem occurs while running the check, an error is returned.
-    fn run(&self) -> Result<(), GenericError>;
+    async fn run(&mut self) -> Result<(), GenericError>;
     /// Get the interval of the check.
     fn interval(&self) -> Duration;
     /// Gets the identifier of the check.

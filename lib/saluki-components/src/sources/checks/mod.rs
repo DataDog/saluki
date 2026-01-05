@@ -22,10 +22,11 @@ use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
 use tokio::select;
 use tokio::sync::broadcast::Receiver;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, trace, warn};
 
 mod scheduler;
+
 use self::scheduler::Scheduler;
 
 mod check_metric;
@@ -36,6 +37,8 @@ use self::check::Check;
 mod builder;
 
 mod execution_context;
+
+use self::builder::native::builder::NativeCheckBuilder;
 #[cfg(feature = "python-checks")]
 use self::builder::python::builder::PythonCheckBuilder;
 use self::builder::CheckBuilder;
@@ -154,21 +157,21 @@ impl ChecksSource {
     fn builders(
         &self, check_events_tx: mpsc::Sender<Event>, execution_context: ExecutionContext,
     ) -> Vec<Arc<dyn CheckBuilder + Send + Sync>> {
+        let mut builders = Vec::<Arc<dyn CheckBuilder + Send + Sync>>::new();
+        builders.push(Arc::new(NativeCheckBuilder::new(
+            check_events_tx,
+            self.custom_checks_dirs.clone(),
+            execution_context,
+        )));
         #[cfg(feature = "python-checks")]
         {
-            vec![Arc::new(PythonCheckBuilder::new(
+            builders.push(rc::new(PythonCheckBuilder::new(
                 check_events_tx,
                 self.custom_checks_dirs.clone(),
                 execution_context,
-            ))]
+            )));
         }
-        #[cfg(not(feature = "python-checks"))]
-        {
-            let _ = check_events_tx; // Suppress unused variable warning
-            let _ = &self.custom_checks_dirs; // Suppress unused field warning
-            let _ = execution_context; // Suppress unused field warning
-            vec![]
-        }
+        builders
     }
 }
 
@@ -187,7 +190,7 @@ impl Source for ChecksSource {
             self.builders(check_events_tx, self.execution_context.clone());
 
         let mut check_ids = HashSet::new();
-        let scheduler = Scheduler::new(self.check_runners);
+        let scheduler = Scheduler::new(self.check_runners).await;
 
         let mut listener_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
@@ -212,7 +215,7 @@ impl Source for ChecksSource {
                         Ok(event) => {
                             match event {
                                 AutodiscoveryEvent::CheckSchedule { config } => {
-                                    let mut runnable_checks: Vec<Arc<dyn Check + Send + Sync>> = vec![];
+                                    let mut runnable_checks: Vec<Arc<Mutex<dyn Check + Send + Sync>>> = vec![];
                                     for instance in &config.instances {
                                         let check_id = instance.id();
                                         if check_ids.contains(check_id) {
@@ -221,22 +224,33 @@ impl Source for ChecksSource {
 
                                         for builder in check_builders.iter_mut() {
                                             if let Some(check) = builder.build_check(&config.name, instance, &config.init_config, &config.source) {
+                                                let check_id: String;
+                                                let check_version: String;
+                                                let check_source: String;
+
+                                                {
+                                                    let check = check.lock().await;
+                                                    check_id = check.id().to_string();
+                                                    check_version = check.version().to_string();
+                                                    check_source = check.source().to_string();
+                                                }
+
                                                 debug!(
-                                                    check_id = check.id(),
+                                                    check_id = check_id,
                                                     check_name = config.name.as_ref(),
-                                                    check_version = check.version(),
-                                                    check_source = check.source(),
+                                                    check_version = check_version,
+                                                    check_source = check_source,
                                                     "Built new check instance."
                                                 );
                                                 runnable_checks.push(check);
-                                                check_ids.insert(check_id.clone());
+                                                check_ids.insert(check_id);
                                                 break;
                                             }
                                         }
                                     }
 
                                     for check in runnable_checks {
-                                        scheduler.schedule(check);
+                                        scheduler.schedule(check).await;
                                     }
                                 }
                                 AutodiscoveryEvent::CheckUnscheduled { config } => {
@@ -247,7 +261,7 @@ impl Source for ChecksSource {
                                             continue;
                                         }
 
-                                        scheduler.unschedule(check_id);
+                                        scheduler.unschedule(check_id).await;
                                     }
                                 }
                                 // We only care about CheckSchedule and CheckUnscheduled events
