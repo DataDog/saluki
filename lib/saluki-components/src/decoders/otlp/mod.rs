@@ -62,33 +62,34 @@ impl DecoderBuilder for OtlpDecoderConfiguration {
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Decoder + Send>, GenericError> {
         let metrics = build_metrics(&context);
-        let translator = OtlpTracesTranslator::new(self.otlp_config.traces.clone());
+        let traces_translator = OtlpTracesTranslator::new(self.otlp_config.traces.clone());
 
-        Ok(Box::new(OtlpTracesDecoder { translator, metrics }))
+        Ok(Box::new(OtlpDecoder {
+            traces_translator,
+            metrics,
+        }))
     }
 }
 
 impl MemoryBounds for OtlpDecoderConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
-        builder
-            .minimum()
-            .with_single_value::<OtlpTracesDecoder>("decoder struct");
+        builder.minimum().with_single_value::<OtlpDecoder>("decoder struct");
     }
 }
 
-/// OTLP traces decoder.
-pub struct OtlpTracesDecoder {
-    translator: OtlpTracesTranslator,
+/// OTLP decoder.
+pub struct OtlpDecoder {
+    traces_translator: OtlpTracesTranslator,
     metrics: Metrics,
 }
 
 #[async_trait]
-impl Decoder for OtlpTracesDecoder {
+impl Decoder for OtlpDecoder {
     async fn run(self: Box<Self>, mut context: DecoderContext) -> Result<(), GenericError> {
         let mut health = context.take_health_handle();
         health.mark_ready();
 
-        debug!("OTLP traces decoder started.");
+        debug!("OTLP decoder started.");
 
         // Set a buffer flush interval of 100ms to ensure we flush buffered events periodically.
         let mut buffer_flush = interval(Duration::from_millis(100));
@@ -127,7 +128,7 @@ impl Decoder for OtlpTracesDecoder {
                             };
 
                             for resource_spans in request.resource_spans {
-                                let trace_events = self.translator.translate_resource_spans(resource_spans, &self.metrics);
+                                let trace_events = self.traces_translator.translate_resource_spans(resource_spans, &self.metrics);
                                 for trace_event in trace_events {
                                     if let Some(event_buffer) = event_buffer_manager.try_push(trace_event) {
                                         if let Err(e) = context.dispatcher().dispatch(event_buffer).await {
@@ -165,7 +166,7 @@ impl Decoder for OtlpTracesDecoder {
             }
         }
 
-        debug!("OTLP traces decoder stopped.");
+        debug!("OTLP decoder stopped.");
 
         Ok(())
     }

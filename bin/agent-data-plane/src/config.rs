@@ -1,6 +1,7 @@
 use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
 use saluki_io::net::ListenAddress;
+use tracing::info;
 
 /// General data plane configuration.
 #[derive(Clone, Debug)]
@@ -188,6 +189,10 @@ impl DataPlaneOtlpConfiguration {
 }
 
 /// OTLP proxying configuration.
+///
+/// In proxy mode, ADP takes over the normal "OTLP Ingest" endpoints that the Core Agent would typically listen on,
+/// so the Core Agent must be configured to listen on a different, separate port than it usually would so that ADP
+/// can proxy to it.
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub struct DataPlaneOtlpProxyConfiguration {
@@ -199,9 +204,7 @@ pub struct DataPlaneOtlpProxyConfiguration {
     /// Defaults to `true`.
     enabled: bool,
 
-    /// In proxy mode, ADP takes over the normal "OTLP Ingest" endpoints that the Core Agent would typically listen on,
-    /// so the Core Agent must be configured to listen on a different, separate port than it usually would so that ADP
-    /// can proxy to it.
+    /// OTLP gRPC endpoint on the Core Agent to proxy signals to.
     ///
     /// Defaults to `http://localhost:4319`.
     core_agent_otlp_grpc_endpoint: String,
@@ -247,17 +250,17 @@ impl DataPlaneOtlpProxyConfiguration {
             .unwrap_or(true);
 
         if enabled {
-            tracing::info!(
+            info!(
                 proxy_enabled = enabled,
                 core_agent_otlp_grpc_endpoint = %core_agent_otlp_grpc_endpoint,
                 core_agent_otlp_http_endpoint = %core_agent_otlp_http_endpoint,
                 proxy_traces = proxy_traces,
                 proxy_metrics = proxy_metrics,
                 proxy_logs = proxy_logs,
-                "OTLP proxy mode configuration loaded"
+                "OTLP proxy mode enabled. Select OTLP payloads will be proxied to the Core Agent."
             );
         } else {
-            tracing::info!("OTLP proxy mode disabled - using standard OTLP source");
+            info!("OTLP proxy mode disabled. OTLP signals will be handled natively.");
         }
 
         Ok(Self {

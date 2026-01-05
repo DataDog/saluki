@@ -45,6 +45,8 @@ pub struct OtlpForwarderConfiguration {
     configuration: Option<GenericConfiguration>,
 
     core_agent_otlp_grpc_endpoint: String,
+
+    core_agent_traces_internal_port: u16,
 }
 
 impl OtlpForwarderConfiguration {
@@ -53,10 +55,14 @@ impl OtlpForwarderConfiguration {
         config: &GenericConfiguration, core_agent_otlp_grpc_endpoint: String,
     ) -> Result<Self, GenericError> {
         let forwarder_config = ForwarderConfiguration::from_configuration(config)?;
+        let core_agent_traces_internal_port = config
+            .try_get_typed("otlp_config.traces.internal_port")?
+            .unwrap_or(5003);
         Ok(Self {
             forwarder_config,
             configuration: Some(config.clone()),
             core_agent_otlp_grpc_endpoint,
+            core_agent_traces_internal_port,
         })
     }
     /// Overrides the default endpoint that payloads are sent to.
@@ -90,7 +96,7 @@ impl ForwarderBuilder for OtlpForwarderConfiguration {
     }
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Forwarder + Send>, GenericError> {
-        let trace_agent_endpoint = format!("http://localhost:{}", 5003);
+        let trace_agent_endpoint = format!("http://localhost:{}", self.core_agent_traces_internal_port);
         let trace_agent_channel = Channel::from_shared(trace_agent_endpoint.clone())
             .error_context("Failed to construct gRPC channel due to an invalid endpoint.")?
             .connect_lazy();
