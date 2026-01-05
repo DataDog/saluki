@@ -200,6 +200,17 @@ pub struct TracesConfig {
     /// Corresponds to `otlp_config.traces.probabilistic_sampler` in the Agent.
     #[serde(default)]
     pub probabilistic_sampler: ProbabilisticSampler,
+
+    /// The internal port on the Core Agent to forward traces to.
+    ///
+    /// Defaults to 5003.
+    #[serde(default = "default_internal_port")]
+    #[allow(unused)]
+    pub internal_port: u16,
+}
+
+const fn default_internal_port() -> u16 {
+    5003
 }
 
 /// Configuration for OTLP traces probabilistic sampling.
@@ -243,6 +254,7 @@ impl Default for TracesConfig {
             ignore_missing_datadog_fields: false,
             enable_otlp_compute_top_level_by_span_kind: default_enable_otlp_compute_top_level_by_span_kind(),
             probabilistic_sampler: ProbabilisticSampler::default(),
+            internal_port: default_internal_port(),
         }
     }
 }
