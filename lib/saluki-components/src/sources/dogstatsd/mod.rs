@@ -126,7 +126,7 @@ const fn default_dogstatsd_permissive_decoding() -> bool {
 }
 
 const fn default_dogstatsd_minimum_sample_rate() -> f64 {
-    0.00000025
+    0.000000003845
 }
 
 const fn default_enable_payloads_series() -> bool {
@@ -291,7 +291,7 @@ pub struct DogStatsDConfiguration {
     ///
     /// A warning log will be emitted when clamping occurs, as this represents an effective loss of metric samples.
     ///
-    /// Defaults to `0.00000025`. (4,000,000 samples)
+    /// Defaults to `0.000000003845`. (~260M samples)
     #[serde(
         rename = "dogstatsd_minimum_sample_rate",
         default = "default_dogstatsd_minimum_sample_rate"
