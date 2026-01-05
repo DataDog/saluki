@@ -305,16 +305,11 @@ impl MetricValues {
         I: Iterator<Item = Result<f64, E>>,
     {
         let sample_rate = sample_rate.unwrap_or(SampleRate::unsampled());
-        let capped_sample_rate = u32::try_from(sample_rate.weight()).unwrap_or(u32::MAX);
 
         let mut sketch = DDSketch::default();
         for value in iter {
             let value = value?;
-            if capped_sample_rate == 1 {
-                sketch.insert(value);
-            } else {
-                sketch.insert_n(value, capped_sample_rate);
-            }
+            sketch.insert_n(value, sample_rate.weight());
         }
         Ok(Self::Distribution(sketch.into()))
     }
