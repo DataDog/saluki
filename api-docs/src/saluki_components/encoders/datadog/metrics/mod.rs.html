@@ -751,7 +751,7 @@
 <a href=#751 id=751 data-nosnippet>751</a>                <span class="comment">// We convert histograms to sketches to be able to write them out in the payload.
 <a href=#752 id=752 data-nosnippet>752</a>                </span><span class="kw">let </span><span class="kw-2">mut </span>ddsketch = DDSketch::default();
 <a href=#753 id=753 data-nosnippet>753</a>                <span class="kw">for </span>sample <span class="kw">in </span>histogram.samples() {
-<a href=#754 id=754 data-nosnippet>754</a>                    ddsketch.insert_n(sample.value.into_inner(), sample.weight <span class="kw">as </span>u32);
+<a href=#754 id=754 data-nosnippet>754</a>                    ddsketch.insert_n(sample.value.into_inner(), sample.weight);
 <a href=#755 id=755 data-nosnippet>755</a>                }
 <a href=#756 id=756 data-nosnippet>756</a>
 <a href=#757 id=757 data-nosnippet>757</a>                write_dogsketch(output_stream, scratch_buf, packed_scratch_buf, timestamp, <span class="kw-2">&amp;</span>ddsketch)<span class="question-mark">?</span>;

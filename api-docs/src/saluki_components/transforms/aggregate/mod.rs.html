@@ -709,7 +709,7 @@
 <a href=#709 id=709 data-nosnippet>709</a>                    .map(|(ts, hist)| {
 <a href=#710 id=710 data-nosnippet>710</a>                        <span class="kw">let </span><span class="kw-2">mut </span>sketch = DDSketch::default();
 <a href=#711 id=711 data-nosnippet>711</a>                        <span class="kw">for </span>sample <span class="kw">in </span>hist.samples() {
-<a href=#712 id=712 data-nosnippet>712</a>                            sketch.insert_n(sample.value.into_inner(), sample.weight <span class="kw">as </span>u32);
+<a href=#712 id=712 data-nosnippet>712</a>                            sketch.insert_n(sample.value.into_inner(), sample.weight);
 <a href=#713 id=713 data-nosnippet>713</a>                        }
 <a href=#714 id=714 data-nosnippet>714</a>                        (ts, sketch)
 <a href=#715 id=715 data-nosnippet>715</a>                    })
