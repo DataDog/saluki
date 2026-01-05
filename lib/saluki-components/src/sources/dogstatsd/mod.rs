@@ -125,6 +125,10 @@ const fn default_dogstatsd_permissive_decoding() -> bool {
     true
 }
 
+const fn default_dogstatsd_minimum_sample_rate() -> f64 {
+    0.00000025
+}
+
 const fn default_enable_payloads_series() -> bool {
     true
 }
@@ -279,6 +283,21 @@ pub struct DogStatsDConfiguration {
     )]
     permissive_decoding: bool,
 
+    /// The minimum sample rate allowed for metrics.
+    ///
+    /// When metrics are sent with a sample rate _lower_ than this value then it will be clamped to this value. This is
+    /// done in order to ensure an upper bound on how many equivalent samples are tracked for the metric, as high sample
+    /// rates (very small numbers, such as `0.00000001`) can lead to large memory growth.
+    ///
+    /// A warning log will be emitted when clamping occurs, as this represents an effective loss of metric samples.
+    ///
+    /// Defaults to `0.00000025`. (4,000,000 samples)
+    #[serde(
+        rename = "dogstatsd_minimum_sample_rate",
+        default = "default_dogstatsd_minimum_sample_rate"
+    )]
+    minimum_sample_rate: f64,
+
     /// Whether or not to enable sending serie payloads.
     ///
     /// Defaults to `true`.
@@ -414,7 +433,8 @@ impl SourceBuilder for DogStatsDConfiguration {
 
         let codec_config = DogstatsdCodecConfiguration::default()
             .with_timestamps(self.no_aggregation_pipeline_support)
-            .with_permissive_mode(self.permissive_decoding);
+            .with_permissive_mode(self.permissive_decoding)
+            .with_minimum_sample_rate(self.minimum_sample_rate);
 
         let codec = DogstatsdCodec::from_configuration(codec_config);
 
