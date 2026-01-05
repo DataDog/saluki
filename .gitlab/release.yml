@@ -26,6 +26,14 @@
   rules:
     - if: !reference [.on_official_release, rules, if]
       when: manual
+  needs:
+    - unit-tests-linux-amd64
+    - unit-tests-miri-linux-amd64
+    - unit-tests-linux-arm64
+    - unit-tests-miri-linux-arm64
+    - check-deny
+    - check-licenses
+    - run-ground-truth
   image: ${DOCKER_BUILD_IMAGE}
   variables:
     TARGET_BUCKET_PATH: "s3://binaries-ddbuild-io-prod/saluki/"
@@ -80,7 +88,7 @@ push-release-tarball-linux-arm64:
 push-release-tarball-linux-amd64-fips:
   extends: [.build-common-variables, .push-release-tarball-definition]
   needs:
-    - build-adp-image
+    - build-adp-image-fips
   variables:
     TARGET_OS: "linux"
     TARGET_ARCH: "amd64"
@@ -90,7 +98,7 @@ push-release-tarball-linux-amd64-fips:
 push-release-tarball-linux-arm64-fips:
   extends: [.build-common-variables, .push-release-tarball-definition]
   needs:
-    - build-adp-image
+    - build-adp-image-fips
   variables:
     TARGET_OS: "linux"
     TARGET_ARCH: "arm64"
