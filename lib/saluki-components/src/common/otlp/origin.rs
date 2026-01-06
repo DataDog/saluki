@@ -8,7 +8,7 @@ use saluki_env::WorkloadProvider;
 use tracing::trace;
 
 #[derive(Clone)]
-pub(super) struct OtlpOriginTagResolver {
+pub struct OtlpOriginTagResolver {
     workload_provider: Arc<dyn WorkloadProvider + Send + Sync>,
 }
 

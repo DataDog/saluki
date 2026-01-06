@@ -20,7 +20,7 @@ fn default_max_recv_msg_size_mib() -> u64 {
 
 /// Receiver configuration for OTLP endpoints.
 ///
-/// This follows the Agent's `otlp_config.receiver` structure.
+/// This follows the Datadog Agent `otlp_config.receiver` structure.
 #[derive(Deserialize, Debug, Default)]
 pub struct Receiver {
     /// Protocol-specific receiver configuration.
@@ -99,7 +99,7 @@ impl Default for HttpConfig {
 
 /// OTLP configuration.
 ///
-/// This mirrors the Datadog Agent `otlp_config` and contains configuration for
+/// This mirrors the Agent's `otlp_config` and contains configuration for
 /// the OTLP receiver as well as signal-specific settings (metrics, logs, traces).
 #[derive(Deserialize, Debug, Default)]
 pub struct OtlpConfig {
@@ -147,7 +147,7 @@ impl Default for LogsConfig {
 pub struct MetricsConfig {
     /// Whether to enable OTLP metrics support.
     ///
-    /// Defaults to `true``.
+    /// Defaults to `true`.
     #[serde(default = "default_metrics_enabled")]
     pub enabled: bool,
 }
@@ -200,6 +200,17 @@ pub struct TracesConfig {
     /// Corresponds to `otlp_config.traces.probabilistic_sampler` in the Agent.
     #[serde(default)]
     pub probabilistic_sampler: ProbabilisticSampler,
+
+    /// The internal port on the Core Agent to forward traces to.
+    ///
+    /// Defaults to 5003.
+    #[serde(default = "default_internal_port")]
+    #[allow(unused)]
+    pub internal_port: u16,
+}
+
+const fn default_internal_port() -> u16 {
+    5003
 }
 
 /// Configuration for OTLP traces probabilistic sampling.
@@ -243,6 +254,7 @@ impl Default for TracesConfig {
             ignore_missing_datadog_fields: false,
             enable_otlp_compute_top_level_by_span_kind: default_enable_otlp_compute_top_level_by_span_kind(),
             probabilistic_sampler: ProbabilisticSampler::default(),
+            internal_port: default_internal_port(),
         }
     }
 }

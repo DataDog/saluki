@@ -17,15 +17,15 @@ use saluki_core::data_model::event::Event;
 use saluki_error::GenericError;
 use tracing::{debug, warn};
 
-use super::super::attributes::raw_origin_from_attributes;
-use super::super::attributes::source::{Source, SourceKind};
-use super::super::attributes::translator::AttributeTranslator;
 use super::cache::PointsCache;
 use super::config::{HistogramMode, NumberMode, OtlpMetricsTranslatorConfig};
 use super::dimensions::Dimensions;
 use super::internal::{instrumentationlibrary, instrumentationscope};
 use super::remap;
 use super::runtime_metrics::{RuntimeMetricMapping, RUNTIME_METRICS_MAPPINGS};
+use crate::common::otlp::attributes::raw_origin_from_attributes;
+use crate::common::otlp::attributes::translator::AttributeTranslator;
+use crate::common::otlp::util::{Source, SourceKind};
 use crate::sources::otlp::metrics::config::InitialCumulMonoValueMode;
 use crate::sources::otlp::Metrics;
 

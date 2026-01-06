@@ -154,7 +154,7 @@ impl Forwarder for Datadog {
                         let transaction = Transaction::from_original(transaction_meta, request);
 
                         forwarder.send_transaction(transaction).await?;
-                    },
+                    }
                     None => break,
                 },
             }

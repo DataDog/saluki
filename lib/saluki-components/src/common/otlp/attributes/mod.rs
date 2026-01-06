@@ -7,9 +7,8 @@ use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common, any_val
 use saluki_common::collections::{FastHashMap, FastHashSet};
 use saluki_context::{origin::RawOrigin, tags::TagSet};
 
-use crate::common::otlp::util::{extract_container_tags_from_resource_attributes, resource_to_source};
+use crate::common::otlp::util::extract_container_tags_from_resource_attributes;
 
-pub mod source;
 pub mod translator;
 
 static CORE_MAPPING: LazyLock<FastHashMap<&'static str, &'static str>> = LazyLock::new(|| {
@@ -122,7 +121,7 @@ static KUBERNETES_DD_TAGS: LazyLock<FastHashSet<&'static str>> = LazyLock::new(|
 
 // HTTPMappings defines the mapping between OpenTelemetry semantic conventions
 // and Datadog Agent conventions for HTTP attributes.
-pub(crate) static HTTP_MAPPINGS: LazyLock<FastHashMap<&'static str, &'static str>> = LazyLock::new(|| {
+pub static HTTP_MAPPINGS: LazyLock<FastHashMap<&'static str, &'static str>> = LazyLock::new(|| {
     let mut m = FastHashMap::default();
     m.insert(CLIENT_ADDRESS, "http.client_ip");
     m.insert(HTTP_RESPONSE_BODY_SIZE, "http.response.content_length");
@@ -138,7 +137,7 @@ pub(crate) static HTTP_MAPPINGS: LazyLock<FastHashMap<&'static str, &'static str
     m
 });
 
-pub(super) fn tags_from_attributes(attributes: &[otlp_common::KeyValue]) -> TagSet {
+pub fn tags_from_attributes(attributes: &[otlp_common::KeyValue]) -> TagSet {
     let mut tags = TagSet::default();
 
     for kv in attributes {
@@ -266,7 +265,7 @@ fn try_get_int_from_value(value: Option<&otlp_common::any_value::Value>) -> Opti
     }
 }
 
-pub(super) fn get_int_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<&'a i64> {
+pub fn get_int_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<&'a i64> {
     attributes.iter().find_map(|kv| {
         if kv.key == key {
             if let Some(Value::IntValue(i_val)) = kv.value.as_ref().and_then(|v| v.value.as_ref()) {

@@ -7,9 +7,9 @@ use saluki_core::data_model::event::trace::{Span as DdSpan, Trace};
 use saluki_core::data_model::event::Event;
 
 use crate::common::otlp::config::TracesConfig;
-use crate::sources::otlp::traces::transform::otel_span_to_dd_span;
-use crate::sources::otlp::traces::transform::otlp_value_to_string;
-use crate::sources::otlp::Metrics;
+use crate::common::otlp::traces::transform::otel_span_to_dd_span;
+use crate::common::otlp::traces::transform::otlp_value_to_string;
+use crate::common::otlp::Metrics;
 
 pub fn convert_trace_id(trace_id: &[u8]) -> u64 {
     if trace_id.len() < 8 {

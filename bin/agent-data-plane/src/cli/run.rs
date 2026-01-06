@@ -12,12 +12,13 @@ use saluki_app::{
 #[cfg(feature = "python-checks")]
 use saluki_components::sources::ChecksConfiguration;
 use saluki_components::{
+    decoders::otlp::OtlpDecoderConfiguration,
     destinations::DogStatsDStatisticsConfiguration,
     encoders::{
         BufferedIncrementalConfiguration, DatadogEventsConfiguration, DatadogLogsConfiguration,
         DatadogMetricsConfiguration, DatadogServiceChecksConfiguration, DatadogTraceConfiguration,
     },
-    forwarders::{DatadogConfiguration, TraceAgentForwarderConfiguration},
+    forwarders::{DatadogConfiguration, OtlpForwarderConfiguration},
     relays::otlp::OtlpRelayConfiguration,
     sources::{DogStatsDConfiguration, OtlpConfiguration},
     transforms::{
@@ -320,7 +321,6 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         .error_context("Failed to configure Datadog Traces encoder.")?
         .with_environment_provider(env_provider.clone())
         .await?;
-
     blueprint
         .add_encoder("dd_traces_encode", dd_traces_config)?
         .connect_component("dd_out", ["dd_traces_encode"])?;
@@ -406,30 +406,33 @@ fn add_otlp_pipeline_to_blueprint(
     env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
     if dp_config.otlp().proxy().enabled() {
-        // In proxy mode, we forward OTLP payloads from either the Core Agent or Trace agent, depending on the signal type.
-        //
-        // This means that ADP is taking over the typical OTLP Ingest configuration (otlp_config.receiver) while we instruct
-        // the Core Agent to listen on a _different_ port for receiving OTLP payloads -- the Trace Agent continues to listen
-        // as it normally would -- and we forward the payloads.
-        //
-        // This is why we use a specific override destination for the OTLP payloads that we forward to the Core Agent.
-        let core_agent_otlp_endpoint = dp_config.otlp().proxy().core_agent_otlp_endpoint().to_string();
-
+        let core_agent_otlp_grpc_endpoint = dp_config.otlp().proxy().core_agent_otlp_grpc_endpoint().to_string();
+        let core_agent_otlp_http_endpoint = dp_config.otlp().proxy().core_agent_otlp_http_endpoint().to_string();
         let api_key = config.get_typed::<String>("api_key").expect("API key is required");
 
         let otlp_relay_config = OtlpRelayConfiguration::from_configuration(config)?;
+        let otlp_decoder_config = OtlpDecoderConfiguration::from_configuration(config)?;
+
         let local_agent_otlp_forwarder_config =
-            DatadogConfiguration::from_configuration(config)?.with_endpoint_override(core_agent_otlp_endpoint, api_key);
-        let local_trace_agent_otlp_forwarder_config = TraceAgentForwarderConfiguration::from_configuration(config)?;
+            OtlpForwarderConfiguration::from_configuration(config, core_agent_otlp_grpc_endpoint)?
+                .with_endpoint_override(core_agent_otlp_http_endpoint, api_key);
 
         blueprint
             // Components.
             .add_relay("otlp_relay_in", otlp_relay_config)?
             .add_forwarder("local_agent_otlp_out", local_agent_otlp_forwarder_config)?
-            .add_forwarder("local_trace_agent_otlp_out", local_trace_agent_otlp_forwarder_config)?
-            // Metrics and logs.
-            .connect_component("local_agent_otlp_out", ["otlp_relay_in"])?
-            .connect_component("local_trace_agent_otlp_out", ["otlp_relay_in"])?;
+            // Metrics and logs to forwarders.
+            .connect_component("local_agent_otlp_out", ["otlp_relay_in.metrics", "otlp_relay_in.logs"])?;
+
+        if dp_config.otlp().proxy().proxy_traces() {
+            blueprint.connect_component("local_agent_otlp_out", ["otlp_relay_in.traces"])?;
+        } else {
+            blueprint
+                .add_decoder("otlp_traces_decode", otlp_decoder_config)?
+                // Traces to decoder, then to traces encoder.
+                .connect_component("otlp_traces_decode", ["otlp_relay_in.traces"])?
+                .connect_component("dd_traces_encode", ["otlp_traces_decode"])?;
+        }
     } else {
         let otlp_config =
             OtlpConfiguration::from_configuration(config)?.with_workload_provider(env_provider.workload().clone());
