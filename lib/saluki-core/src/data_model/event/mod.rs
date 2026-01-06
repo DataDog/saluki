@@ -19,6 +19,9 @@ use self::log::Log;
 pub mod trace;
 use self::trace::Trace;
 
+pub mod trace_stats;
+use self::trace_stats::TraceStats;
+
 /// Telemetry event type.
 ///
 /// This type is a bitmask, which means different event types can be combined together. This makes `EventType` mainly
@@ -40,6 +43,9 @@ pub enum EventType {
 
     /// Traces.
     Trace,
+
+    /// Trace stats.
+    TraceStats,
 }
 
 impl Default for EventType {
@@ -72,6 +78,10 @@ impl fmt::Display for EventType {
             types.push("Trace");
         }
 
+        if self.contains(Self::TraceStats) {
+            types.push("TraceStats");
+        }
+
         write!(f, "{}", types.join("|"))
     }
 }
@@ -93,6 +103,9 @@ pub enum Event {
 
     /// A trace.
     Trace(Trace),
+
+    /// Trace stats.
+    TraceStats(TraceStats),
 }
 
 impl Event {
@@ -104,6 +117,7 @@ impl Event {
             Event::ServiceCheck(_) => EventType::ServiceCheck,
             Event::Log(_) => EventType::Log,
             Event::Trace(_) => EventType::Trace,
+            Event::TraceStats(_) => EventType::TraceStats,
         }
     }
 
