@@ -23,7 +23,7 @@ generate-build-ci-image:
       --label ci.job_id=${CI_JOB_ID}
       --build-arg CI=true
       --build-arg RUST_VERSION=${RUST_VERSION}
-      --build-arg DD_AGENT_IMAGE=gcr.io/datadoghq/agent:latest-jmx
+      --build-arg DD_AGENT_IMAGE=registry.datadoghq.com/agent:latest-jmx
       --squash
       --push
       --file .ci/images/build/Dockerfile
