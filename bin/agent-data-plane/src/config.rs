@@ -9,6 +9,7 @@ pub struct DataPlaneConfiguration {
     enabled: bool,
     standalone_mode: bool,
     use_new_config_stream_endpoint: bool,
+    remote_agent_enabled: bool,
     api_listen_address: ListenAddress,
     secure_api_listen_address: ListenAddress,
     telemetry_enabled: bool,
@@ -36,6 +37,9 @@ impl DataPlaneConfiguration {
             standalone_mode: config.try_get_typed("data_plane.standalone_mode")?.unwrap_or(false),
             use_new_config_stream_endpoint: config
                 .try_get_typed("data_plane.use_new_config_stream_endpoint")?
+                .unwrap_or(false),
+            remote_agent_enabled: config
+                .try_get_typed("data_plane.remote_agent_enabled")?
                 .unwrap_or(false),
             api_listen_address: config
                 .try_get_typed("data_plane.api_listen_address")?
@@ -65,6 +69,11 @@ impl DataPlaneConfiguration {
     /// Returns `true` if the new config stream endpoint should be used.
     pub const fn use_new_config_stream_endpoint(&self) -> bool {
         self.use_new_config_stream_endpoint
+    }
+
+    /// Returns `true` if the data plane should register as a remote agent.
+    pub const fn remote_agent_enabled(&self) -> bool {
+        self.remote_agent_enabled
     }
 
     /// Returns a reference to the API listen address

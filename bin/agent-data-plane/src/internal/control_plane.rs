@@ -91,7 +91,7 @@ async fn configure_and_spawn_api_endpoints(
 ) -> Result<(), GenericError> {
     // When not in standalone mode, install the necessary components for registering ourselves with the Datadog Agent as
     // a "remote agent", which wires up ADP to allow the Datadog Agent to query it for status and flare information.
-    if !dp_config.standalone_mode() {
+    if !dp_config.standalone_mode() && dp_config.remote_agent_enabled() {
         let secure_api_grpc_target_addr =
             GrpcTargetAddress::try_from_listen_addr(dp_config.secure_api_listen_address()).ok_or_else(|| {
                 generic_error!("Failed to get valid gRPC target address from secure API listen address.")
@@ -118,6 +118,7 @@ async fn configure_and_spawn_api_endpoints(
         // Each service is tracked automatically for registration with the Remote Agent Registry.
         privileged_api = privileged_api.with_grpc_service(remote_agent_config.create_status_service());
         privileged_api = privileged_api.with_grpc_service(remote_agent_config.create_flare_service());
+
         // Only register the telemetry service if telemetry is enabled
         if dp_config.telemetry_enabled() {
             privileged_api = privileged_api.with_grpc_service(remote_agent_config.create_telemetry_service());
