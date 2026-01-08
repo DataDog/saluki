@@ -7,7 +7,6 @@ use std::{
 };
 
 use http::{Extensions, Uri};
-use hyper_hickory::{TokioHickoryHttpConnector, TokioHickoryResolver};
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder, MaybeHttpsStream};
 use hyper_util::{
     client::legacy::connect::{CaptureConnection, Connected, Connection, HttpConnector},
@@ -16,7 +15,6 @@ use hyper_util::{
 use metrics::Counter;
 use pin_project_lite::pin_project;
 use rustls::ClientConfig;
-use saluki_error::{ErrorContext as _, GenericError};
 use tokio::net::TcpStream;
 use tower::{BoxError, Service};
 use tracing::debug;
@@ -128,7 +126,7 @@ impl hyper::rt::Write for HttpsCapableConnection {
 /// A connector that supports HTTP or HTTPS.
 #[derive(Clone)]
 pub struct HttpsCapableConnector {
-    inner: HttpsConnector<TokioHickoryHttpConnector>,
+    inner: HttpsConnector<HttpConnector>,
     bytes_sent: Option<Counter>,
     conn_age_limit: Option<Duration>,
 }
@@ -199,15 +197,12 @@ impl HttpsCapableConnectorBuilder {
     }
 
     /// Builds the `HttpsCapableConnector` from the given TLS configuration.
-    pub fn build(self, tls_config: ClientConfig) -> Result<HttpsCapableConnector, GenericError> {
+    pub fn build(self, tls_config: ClientConfig) -> HttpsCapableConnector {
         let connect_timeout = self.connect_timeout.unwrap_or(Duration::from_secs(30));
-
-        let hickory_resolver = TokioHickoryResolver::from_system_conf()
-            .error_context("Failed to load system DNS configuration when creating DNS resolver for HTTP client.")?;
 
         // Create the HTTP connector, and ensure that we don't enforce _only_ HTTP, since that will break being able to
         // wrap this in an HTTPS connector.
-        let mut http_connector = HttpConnector::new_with_resolver(hickory_resolver);
+        let mut http_connector = HttpConnector::new();
         http_connector.set_connect_timeout(Some(connect_timeout));
         http_connector.enforce_http(false);
 
@@ -218,11 +213,11 @@ impl HttpsCapableConnectorBuilder {
             .enable_all_versions()
             .wrap_connector(http_connector);
 
-        Ok(HttpsCapableConnector {
+        HttpsCapableConnector {
             inner: https_connector,
             bytes_sent: self.bytes_sent,
             conn_age_limit: self.conn_age_limit,
-        })
+        }
     }
 }
 

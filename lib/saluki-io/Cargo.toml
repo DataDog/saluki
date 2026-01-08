@@ -18,7 +18,6 @@ futures = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }
 hyper = { workspace = true, features = ["client", "server"] }
-hyper-hickory = { workspace = true }
 hyper-http-proxy = { workspace = true }
 hyper-rustls = { workspace = true }
 hyper-util = { workspace = true, features = [
