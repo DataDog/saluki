@@ -6,7 +6,7 @@ use saluki_common::buf::FrozenChunkedBytesBuffer;
 pub use self::client::HttpClient;
 
 mod conn;
-pub use self::conn::HttpsCapableConnector;
+pub use self::conn::{HttpsCapableConnector, HttpsCapableConnectorBuilder};
 
 mod telemetry;
 pub use self::telemetry::{EndpointTelemetry, EndpointTelemetryLayer};

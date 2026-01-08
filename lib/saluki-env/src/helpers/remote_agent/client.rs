@@ -20,7 +20,9 @@ use futures::Stream;
 use pin_project_lite::pin_project;
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use saluki_io::net::{build_datadog_agent_ipc_https_connector, get_ipc_cert_file_path};
+use saluki_io::net::{
+    build_datadog_agent_client_ipc_tls_config, client::http::HttpsCapableConnectorBuilder, get_ipc_cert_file_path,
+};
 use serde::Deserialize;
 use tonic::{
     service::interceptor::InterceptedService,
@@ -148,7 +150,8 @@ impl RemoteAgentClient {
             let auth_interceptor = BearerAuthInterceptor::from_file(&config.auth_token_file_path).await?;
             let ipc_cert_file_path =
                 get_ipc_cert_file_path(config.ipc_cert_file_path.as_ref(), &config.auth_token_file_path);
-            let https_connector = build_datadog_agent_ipc_https_connector(ipc_cert_file_path).await?;
+            let client_tls_config = build_datadog_agent_client_ipc_tls_config(ipc_cert_file_path).await?;
+            let https_connector = HttpsCapableConnectorBuilder::default().build(client_tls_config)?;
             let channel = Endpoint::from(config.ipc_endpoint.clone())
                 .connect_timeout(Duration::from_secs(2))
                 .connect_with_connector(https_connector)
