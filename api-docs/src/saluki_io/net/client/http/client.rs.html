@@ -267,7 +267,7 @@
 <a href=#267 id=267 data-nosnippet>267</a>        P::Future: Send,
 <a href=#268 id=268 data-nosnippet>268</a>    {
 <a href=#269 id=269 data-nosnippet>269</a>        <span class="kw">let </span>tls_config = <span class="self">self</span>.tls_builder.build()<span class="question-mark">?</span>;
-<a href=#270 id=270 data-nosnippet>270</a>        <span class="kw">let </span>connector = <span class="self">self</span>.connector_builder.build(tls_config)<span class="question-mark">?</span>;
+<a href=#270 id=270 data-nosnippet>270</a>        <span class="kw">let </span>connector = <span class="self">self</span>.connector_builder.build(tls_config);
 <a href=#271 id=271 data-nosnippet>271</a>        <span class="comment">// TODO(fips): Look into updating `hyper-http-proxy` to use the provided connector for establishing the
 <a href=#272 id=272 data-nosnippet>272</a>        // connection to the proxy itself, even when the proxy is at an HTTPS URL, to ensure our desired TLS stack is
 <a href=#273 id=273 data-nosnippet>273</a>        // being used.
