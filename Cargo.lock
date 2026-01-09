@@ -3414,6 +3414,7 @@ dependencies = [
  "metrics",
  "opentelemetry-semantic-conventions",
  "otlp-protos",
+ "piecemeal",
  "pin-project",
  "proptest",
  "prost",

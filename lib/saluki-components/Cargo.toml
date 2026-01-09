@@ -37,6 +37,7 @@ memory-accounting = { workspace = true }
 metrics = { workspace = true }
 opentelemetry-semantic-conventions = { workspace = true, features = ["semconv_experimental"] }
 otlp-protos = { workspace = true }
+piecemeal = { workspace = true }
 pin-project = { workspace = true }
 prost = { workspace = true }
 protobuf = { workspace = true }
