@@ -9,6 +9,7 @@ repository = { workspace = true }
 workspace = true
 
 [dependencies]
+base64 = { workspace = true }
 datadog-protos = { workspace = true }
 ddsketch-agent = { workspace = true, features = ["serde"] }
 float-cmp = { workspace = true, features = ["ratio"] }

@@ -6,12 +6,52 @@ use std::{
     str::FromStr,
 };
 
+use base64::Engine as _;
 use datadog_protos::traces::{self as proto, Trilean};
 use saluki_common::{collections::FastHashMap, hash::StableHasher};
 use saluki_error::{generic_error, GenericError};
 use serde::{Deserialize, Serialize};
 use serde_with::{DeserializeFromStr, SerializeDisplay};
 use stringtheory::MetaString;
+
+/// A base64-encoded DDSketch.
+///
+/// In order to handle the raw DDSketch values sent in the tracer payloads, we need a representation that can be
+/// displayed more sanely when demonstrating differences between baseline and comparison statistics. Further, we need a
+/// way to easily map this encoded form to a real, decoded DDSketch data structure.
+///
+/// `EncodedDDSketch` provides a way to manage DDSketch values through their encoded form so that they can be compared
+/// in a way doesn't generate extremely noisy output (even though it will still not be useful to humans), while also
+/// allowing for interacting with the DDSketch value in a native way.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "String", into = "String")]
+struct EncodedDDSketch(String);
+
+impl From<Vec<u8>> for EncodedDDSketch {
+    fn from(value: Vec<u8>) -> Self {
+        Self(base64::engine::general_purpose::STANDARD.encode(value))
+    }
+}
+
+impl TryFrom<String> for EncodedDDSketch {
+    type Error = GenericError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        // Make sure the value is valid base64.
+        if base64::engine::general_purpose::STANDARD.decode(&value).is_err() {
+            Err(generic_error!("Invalid base64 string"))
+        } else {
+            // TODO: Eventually make sure it's actually a valid DDSketch itself.
+            Ok(Self(value))
+        }
+    }
+}
+
+impl From<EncodedDDSketch> for String {
+    fn from(value: EncodedDDSketch) -> Self {
+        value.0
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct AgentMetadata {
@@ -156,10 +196,8 @@ pub struct ClientStatistics {
     hits: u64,
     errors: u64,
     duration_ns: u64,
-    // TODO: decode these to native DDSketch
-    ok_summary: Vec<u8>,
-    // TODO: decode these to native DDSketch
-    error_summary: Vec<u8>,
+    ok_summary: EncodedDDSketch,
+    error_summary: EncodedDDSketch,
     synthetics: bool,
     top_level_hits: u64,
     span_kind: MetaString,
@@ -251,8 +289,8 @@ impl From<&proto::ClientGroupedStats> for ClientStatistics {
             hits: payload.hits,
             errors: payload.errors,
             duration_ns: payload.duration,
-            ok_summary: payload.okSummary.to_vec(),
-            error_summary: payload.errorSummary.to_vec(),
+            ok_summary: payload.okSummary.to_vec().into(),
+            error_summary: payload.errorSummary.to_vec().into(),
             synthetics: payload.synthetics,
             top_level_hits: payload.topLevelHits,
             span_kind: (*payload.span_kind).into(),
