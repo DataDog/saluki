@@ -15,15 +15,16 @@ use saluki_components::{
     decoders::otlp::OtlpDecoderConfiguration,
     destinations::DogStatsDStatisticsConfiguration,
     encoders::{
-        BufferedIncrementalConfiguration, DatadogEventsConfiguration, DatadogLogsConfiguration,
-        DatadogMetricsConfiguration, DatadogServiceChecksConfiguration, DatadogTraceConfiguration,
+        BufferedIncrementalConfiguration, DatadogApmStatsConfiguration, DatadogEventsConfiguration,
+        DatadogLogsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration,
+        DatadogTraceConfiguration,
     },
     forwarders::{DatadogConfiguration, OtlpForwarderConfiguration},
     relays::otlp::OtlpRelayConfiguration,
     sources::{DogStatsDConfiguration, OtlpConfiguration},
     transforms::{
-        AggregateConfiguration, ChainedConfiguration, DogstatsDMapperConfiguration, DogstatsDPrefixFilterConfiguration,
-        HostEnrichmentConfiguration, HostTagsConfiguration,
+        AggregateConfiguration, ApmStatsConfiguration, ChainedConfiguration, DogstatsDMapperConfiguration,
+        DogstatsDPrefixFilterConfiguration, HostEnrichmentConfiguration, HostTagsConfiguration,
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
@@ -325,6 +326,18 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         .add_encoder("dd_traces_encode", dd_traces_config)?
         .connect_component("dd_out", ["dd_traces_encode"])?;
 
+    let apm_stats_config =
+        ApmStatsConfiguration::from_configuration(config).error_context("Failed to configure APM Stats transform.")?;
+    let dd_stats_config = DatadogApmStatsConfiguration::from_configuration(config)
+        .error_context("Failed to configure Datadog APM Stats encoder.")?
+        .with_environment_provider(env_provider.clone())
+        .await?;
+    blueprint
+        .add_transform("apm_stats", apm_stats_config)?
+        .add_encoder("dd_stats_encode", dd_stats_config)?
+        .connect_component("dd_stats_encode", ["apm_stats"])?
+        .connect_component("dd_out", ["dd_stats_encode"])?;
+
     Ok(())
 }
 
@@ -443,9 +456,10 @@ fn add_otlp_pipeline_to_blueprint(
         } else {
             blueprint
                 .add_decoder("otlp_traces_decode", otlp_decoder_config)?
-                // Traces to decoder, then to traces encoder.
+                // Traces to decoder, then to traces encoder and APM stats.
                 .connect_component("otlp_traces_decode", ["otlp_relay_in.traces"])?
-                .connect_component("dd_traces_encode", ["otlp_traces_decode"])?;
+                .connect_component("dd_traces_encode", ["otlp_traces_decode"])?
+                .connect_component("apm_stats", ["otlp_traces_decode"])?;
         }
     } else {
         info!("OTLP proxy mode disabled. OTLP signals will be handled natively.");
@@ -462,7 +476,8 @@ fn add_otlp_pipeline_to_blueprint(
             // to avoid transforming counters into rates.
             .connect_component("metrics_enrich", ["otlp_in.metrics"])?
             .connect_component("dd_logs_encode", ["otlp_in.logs"])?
-            .connect_component("dd_traces_encode", ["otlp_in.traces"])?;
+            .connect_component("dd_traces_encode", ["otlp_in.traces"])?
+            .connect_component("apm_stats", ["otlp_in.traces"])?;
     }
     Ok(())
 }

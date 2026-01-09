@@ -26,7 +26,9 @@ pub fn for_resolved_endpoint<B>(mut endpoint: ResolvedEndpoint) -> impl FnMut(Re
                 .logs_authority()
                 .cloned()
                 .unwrap_or_else(|| new_uri_authority.clone())
-        } else if path_and_query.as_str().starts_with("/api/v0.2/traces") {
+        } else if path_and_query.as_str().starts_with("/api/v0.2/traces")
+            || path_and_query.as_str().starts_with("/api/v0.2/stats")
+        {
             endpoint
                 .traces_authority()
                 .cloned()
