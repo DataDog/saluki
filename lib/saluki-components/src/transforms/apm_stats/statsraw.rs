@@ -185,10 +185,15 @@ pub(super) fn new_aggregation_from_span(
         },
     }
 }
-
+// Convert a nanosec timestamp into a float nanosecond timestamp truncated to a fixed precision.
 fn ns_timestamp_to_float(ns: u64) -> f64 {
     let f = ns as f64;
     let bits = f.to_bits();
+    // IEEE-754
+    // the mask include 1 bit sign 11 bits exponent (0xfff)
+    // then we filter the mantissa to 10bits (0xff8) (9 bits as it has implicit value of 1)
+    // 10 bits precision (any value will be +/- 1/1024)
+    // https://en.wikipedia.org/wiki/Double-precision_floating-point_format
     let truncated_bits = bits & 0xffff_f800_0000_0000;
     f64::from_bits(truncated_bits)
 }
