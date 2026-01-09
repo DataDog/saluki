@@ -9,7 +9,7 @@ repository = { workspace = true }
 workspace = true
 
 [dependencies]
-async-compression = { workspace = true, features = ["tokio", "zlib"] }
+async-compression = { workspace = true, features = ["gzip", "tokio", "zlib"] }
 axum = { workspace = true, features = ["tokio"] }
 bytes = { workspace = true }
 chrono = { workspace = true }
