@@ -156,10 +156,11 @@ pub struct ClientStatistics {
     hits: u64,
     errors: u64,
     duration_ns: u64,
-    // TODO: decode these to native DDSketch
-    ok_summary: Vec<u8>,
-    // TODO: decode these to native DDSketch
-    error_summary: Vec<u8>,
+    // Add support for these fields once we have a full-
+    /*
+    ok_summary: DDSketch,
+    error_summary: DDSketch,
+    */
     synthetics: bool,
     top_level_hits: u64,
     span_kind: MetaString,
@@ -251,8 +252,6 @@ impl From<&proto::ClientGroupedStats> for ClientStatistics {
             hits: payload.hits,
             errors: payload.errors,
             duration_ns: payload.duration,
-            ok_summary: payload.okSummary.to_vec(),
-            error_summary: payload.errorSummary.to_vec(),
             synthetics: payload.synthetics,
             top_level_hits: payload.topLevelHits,
             span_kind: (*payload.span_kind).into(),
