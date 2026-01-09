@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use std::time::Duration;
+
 use async_trait::async_trait;
 use datadog_protos::traces::{
     attribute_any_value::AttributeAnyValueType, attribute_array_value::AttributeArrayValueType, AttributeAnyValue,
@@ -18,7 +20,6 @@ use saluki_context::tags::TagSet;
 use saluki_core::data_model::event::trace::{
     AttributeScalarValue, AttributeValue, Span as DdSpan, SpanEvent as DdSpanEvent, SpanLink as DdSpanLink,
 };
-use saluki_core::data_model::event::Event;
 use saluki_core::topology::{EventsBuffer, PayloadsBuffer};
 use saluki_core::{
     components::{encoders::*, ComponentContext},
@@ -202,9 +203,10 @@ impl EncoderBuilder for DatadogTraceConfiguration {
         trace_rb.with_max_inputs_per_payload(MAX_TRACES_PER_PAYLOAD);
 
         let flush_timeout = match self.flush_timeout_secs {
-            // Give ourselves a minimum flush timeout of 10ms to allow for minimal batching
-            0 => std::time::Duration::from_millis(10),
-            secs => std::time::Duration::from_secs(secs),
+            // We always give ourselves a minimum flush timeout of 10ms to allow for some very minimal amount of
+            // batching, while still practically flushing things almost immediately.
+            0 => Duration::from_millis(10),
+            secs => Duration::from_secs(secs),
         };
 
         Ok(Box::new(DatadogTrace {
@@ -233,7 +235,7 @@ impl MemoryBounds for DatadogTraceConfiguration {
 pub struct DatadogTrace {
     trace_rb: RequestBuilder<TraceEndpointEncoder>,
     telemetry: ComponentTelemetry,
-    flush_timeout: std::time::Duration,
+    flush_timeout: Duration,
 }
 
 // Encodes Trace events to TracerPayloads.
@@ -320,11 +322,10 @@ async fn run_request_builder(
         select! {
             Some(event_buffer) = events_rx.recv() => {
                 for event in event_buffer {
-                    let trace = match event {
-                        Event::Trace(trace) => trace,
-                        _ => continue,
+                    let trace = match event.try_into_trace() {
+                        Some(trace) => trace,
+                        None => continue,
                     };
-
                     // Encode the trace. If we get it back, that means the current request is full, and we need to
                     // flush it before we can try to encode the trace again.
                     let trace_to_retry = match trace_request_builder.encode(trace).await {
