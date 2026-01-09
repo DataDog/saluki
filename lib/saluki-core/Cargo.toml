@@ -46,4 +46,5 @@ tracing = { workspace = true, features = ["std"] }
 metrics-util = { workspace = true, features = ["debugging"] }
 proptest = { workspace = true }
 tokio-test = { workspace = true }
-tracing-subscriber = { workspace = true, features = ["fmt"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["ansi", "fmt"] }
