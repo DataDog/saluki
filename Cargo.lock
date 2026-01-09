@@ -3404,6 +3404,7 @@ dependencies = [
  "pyo3-ffi",
  "rand",
  "regex",
+ "rmp-serde",
  "saluki-api",
  "saluki-common",
  "saluki-config",

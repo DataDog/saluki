@@ -109,6 +109,9 @@ impl TracesAnalyzer {
     ///
     /// If analysis fails, an error will be returned with specific details.
     pub fn run_analysis(self) -> Result<(), GenericError> {
+        let mut error_count = 0;
+        let mut diff_recorder = DifferenceRecorder::new();
+
         // We should have an identical number of traces and spans.
         if self.baseline_total_traces != self.comparison_total_traces {
             return Err(generic_error!(
@@ -152,8 +155,6 @@ impl TracesAnalyzer {
         // Go through each baseline span, and look for a matching span (by ID) on the comparison target side.
         //
         // If found, compare the spans.
-        let mut span_diff_recorder = SpanDifferenceRecorder::new();
-        let mut error_count = 0;
         for (baseline_span_id, baseline_span) in self.baseline_spans.iter() {
             match self.comparison_spans.get(baseline_span_id) {
                 Some(comparison_span) => {
@@ -161,12 +162,12 @@ impl TracesAnalyzer {
                     let baseline_span_json = serde_json::to_value(baseline_span).unwrap();
                     let comparison_span_json = serde_json::to_value(comparison_span).unwrap();
 
-                    span_diff_recorder.clear();
-                    treediff::diff(&baseline_span_json, &comparison_span_json, &mut span_diff_recorder);
+                    diff_recorder.clear();
+                    treediff::diff(&baseline_span_json, &comparison_span_json, &mut diff_recorder);
 
-                    if !span_diff_recorder.is_empty() {
+                    if !diff_recorder.is_empty() {
                         error!("Detected mismatched span ({}):", baseline_span_id);
-                        for span_diff in span_diff_recorder.diffs() {
+                        for span_diff in diff_recorder.diffs() {
                             error!("- {}", span_diff);
                         }
                         error!("");
@@ -186,11 +187,31 @@ impl TracesAnalyzer {
         let comparison_stats_aggregation_keys = self.comparison_trace_stats.keys().cloned().collect::<HashSet<_>>();
 
         // We should have an identical number of aggregation keys.
-        if baseline_stats_aggregation_keys != comparison_stats_aggregation_keys {
+        if baseline_stats_aggregation_keys.len() != comparison_stats_aggregation_keys.len() {
             return Err(generic_error!(
                 "Number of aggregation keys do not match: {} (baseline) vs {} (comparison)",
                 baseline_stats_aggregation_keys.len(),
                 comparison_stats_aggregation_keys.len()
+            ));
+        }
+
+        let baseline_aggregation_keys = self.baseline_spans.keys().collect::<HashSet<_>>();
+        let comparison_aggregation_keys = self.comparison_spans.keys().collect::<HashSet<_>>();
+        if baseline_aggregation_keys != comparison_aggregation_keys {
+            let mut baseline_only_aggregation_keys = baseline_aggregation_keys
+                .difference(&comparison_aggregation_keys)
+                .collect::<Vec<_>>();
+            baseline_only_aggregation_keys.sort_unstable();
+
+            let mut comparison_only_aggregation_keys = comparison_aggregation_keys
+                .difference(&baseline_aggregation_keys)
+                .collect::<Vec<_>>();
+            comparison_only_aggregation_keys.sort_unstable();
+
+            return Err(generic_error!(
+                "Baseline and comparison targets have non-overlapped set of statistic aggregation keys: {} baseline-only keys and {} comparison-only keys.",
+                baseline_only_aggregation_keys.len(),
+                comparison_only_aggregation_keys.len()
             ));
         }
 
@@ -199,16 +220,40 @@ impl TracesAnalyzer {
             baseline_stats_aggregation_keys.len()
         );
 
-        // Compare each aggregated statistics group between baseline and comparison.
-        for (key, baseline_stats) in self.baseline_trace_stats.iter() {
-            let comparison_stats = self.comparison_trace_stats.get(key).unwrap();
-            if baseline_stats != comparison_stats {
-                return Err(generic_error!(
-                    "Aggregated statistics for key {} do not match: {:?} (baseline) vs {:?} (comparison)",
-                    key,
-                    baseline_stats,
-                    comparison_stats
-                ));
+        // Go through each baseline aggregated stats group, and look for a matching group (by ID) on the comparison target side.
+        //
+        // If found, compare the groups.
+        for (baseline_aggegation_key, baseline_grouped_stats) in self.baseline_trace_stats.iter() {
+            match self.comparison_trace_stats.get(baseline_aggegation_key) {
+                Some(comparison_grouped_stats) => {
+                    // We serialize both spans to JSON for deep comparison.
+                    let baseline_grouped_stats_json = serde_json::to_value(baseline_grouped_stats).unwrap();
+                    let comparison_grouped_stats_json = serde_json::to_value(comparison_grouped_stats).unwrap();
+
+                    diff_recorder.clear();
+                    treediff::diff(
+                        &baseline_grouped_stats_json,
+                        &comparison_grouped_stats_json,
+                        &mut diff_recorder,
+                    );
+
+                    if !diff_recorder.is_empty() {
+                        error!("Detected mismatched stats group ({}):", baseline_aggegation_key);
+                        for stats_diff in diff_recorder.diffs() {
+                            error!("- {}", stats_diff);
+                        }
+                        error!("");
+
+                        error_count += 1;
+                    }
+                }
+                None => {
+                    error!(
+                        "Failed to find matching comparison aggregation key ({}).",
+                        baseline_aggegation_key
+                    );
+                    error_count += 1;
+                }
             }
         }
 
@@ -233,19 +278,19 @@ impl TracesAnalyzer {
     }
 }
 
-struct SpanDifferenceRecorder {
+struct DifferenceRecorder {
     key_stack: Vec<Key>,
     detected_diffs: Vec<String>,
     ignored_fields: HashSet<&'static str>,
     custom_field_comparators: HashMap<&'static str, &'static dyn FieldComparator>,
 }
 
-impl SpanDifferenceRecorder {
+impl DifferenceRecorder {
     fn new() -> Self {
         let ignored_fields = IGNORED_FIELDS_DIFF.iter().copied().collect::<HashSet<_>>();
         let custom_field_comparators = CUSTOM_FIELD_COMPARATORS.iter().copied().collect::<HashMap<_, _>>();
 
-        SpanDifferenceRecorder {
+        Self {
             key_stack: Vec::new(),
             detected_diffs: Vec::new(),
             ignored_fields,
@@ -344,7 +389,7 @@ impl SpanDifferenceRecorder {
     }
 }
 
-impl<'a> treediff::Delegate<'a, Key, serde_json::Value> for SpanDifferenceRecorder {
+impl<'a> treediff::Delegate<'a, Key, serde_json::Value> for DifferenceRecorder {
     fn push(&mut self, k: &Key) {
         self.key_stack.push(k.clone())
     }

@@ -5,7 +5,7 @@ use std::{
 };
 
 use async_compression::{
-    tokio::write::{ZlibEncoder, ZstdEncoder},
+    tokio::write::{GzipEncoder, ZlibEncoder, ZstdEncoder},
     Level,
 };
 use http::HeaderValue;
@@ -19,6 +19,7 @@ use tracing::trace;
 const THRESHOLD_RED_ZONE: f64 = 0.99;
 
 static CONTENT_ENCODING_DEFLATE: HeaderValue = HeaderValue::from_static("deflate");
+static CONTENT_ENCODING_GZIP: HeaderValue = HeaderValue::from_static("gzip");
 static CONTENT_ENCODING_ZSTD: HeaderValue = HeaderValue::from_static("zstd");
 
 /// Compression schemes supported by `Compressor`.
@@ -26,6 +27,8 @@ static CONTENT_ENCODING_ZSTD: HeaderValue = HeaderValue::from_static("zstd");
 pub enum CompressionScheme {
     /// No compression.
     Noop,
+    /// Gzip.
+    Gzip(Level),
     /// Zlib.
     Zlib(Level),
     /// Zstd.
@@ -36,6 +39,11 @@ impl CompressionScheme {
     /// No compression.
     pub const fn noop() -> Self {
         Self::Noop
+    }
+
+    /// Gzip compression, using the default compression level (6).
+    pub const fn gzip_default() -> Self {
+        Self::Gzip(Level::Default)
     }
 
     /// Zlib compression, using the default compression level (6).
@@ -50,11 +58,12 @@ impl CompressionScheme {
 
     /// Create a new compression scheme from a string and level.
     ///
-    /// Level is only used if the scheme is `zstd`.
+    /// Level is only used if the scheme is `gzip` or `zstd`.
     ///
     /// Defaults to zstd with level 3.
     pub fn new(scheme: &str, level: i32) -> Self {
         match scheme {
+            "gzip" => Self::Gzip(Level::Precise(level)),
             "zlib" => CompressionScheme::zlib_default(),
             "zstd" => Self::Zstd(Level::Precise(level)),
             _ => Self::Zstd(Level::Default),
@@ -121,6 +130,8 @@ impl<W: AsyncWrite> AsyncWrite for CountingWriter<W> {
 pub enum Compressor<W: AsyncWrite> {
     /// No-op compressor.
     Noop(#[pin] CountingWriter<W>),
+    /// Gzip compressor.
+    Gzip(#[pin] GzipEncoder<CountingWriter<W>>),
     /// Zlib compressor.
     Zlib(#[pin] ZlibEncoder<W>),
     /// Zstd compressor.
@@ -132,6 +143,7 @@ impl<W: AsyncWrite> Compressor<W> {
     pub fn from_scheme(scheme: CompressionScheme, writer: W) -> Self {
         match scheme {
             CompressionScheme::Noop => Self::Noop(CountingWriter::new(writer)),
+            CompressionScheme::Gzip(level) => Self::Gzip(GzipEncoder::with_quality(CountingWriter::new(writer), level)),
             CompressionScheme::Zlib(level) => Self::Zlib(ZlibEncoder::with_quality(writer, level)),
             CompressionScheme::Zstd(level) => Self::Zstd(ZstdEncoder::with_quality(CountingWriter::new(writer), level)),
         }
@@ -141,6 +153,7 @@ impl<W: AsyncWrite> Compressor<W> {
     pub fn into_inner(self) -> W {
         match self {
             Self::Noop(encoder) => encoder.into_inner(),
+            Self::Gzip(encoder) => encoder.into_inner().into_inner(),
             Self::Zlib(encoder) => encoder.into_inner(),
             Self::Zstd(encoder) => encoder.into_inner().into_inner(),
         }
@@ -150,6 +163,7 @@ impl<W: AsyncWrite> Compressor<W> {
     pub fn content_encoding(&self) -> Option<HeaderValue> {
         match self {
             Self::Noop(_) => None,
+            Self::Gzip(_) => Some(CONTENT_ENCODING_GZIP.clone()),
             Self::Zlib(_) => Some(CONTENT_ENCODING_DEFLATE.clone()),
             Self::Zstd(_) => Some(CONTENT_ENCODING_ZSTD.clone()),
         }
@@ -160,6 +174,7 @@ impl<W: AsyncWrite> AsyncWrite for Compressor<W> {
     fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, io::Error>> {
         match self.project() {
             CompressorProjected::Noop(encoder) => encoder.poll_write(cx, buf),
+            CompressorProjected::Gzip(encoder) => encoder.poll_write(cx, buf),
             CompressorProjected::Zlib(encoder) => encoder.poll_write(cx, buf),
             CompressorProjected::Zstd(encoder) => encoder.poll_write(cx, buf),
         }
@@ -168,6 +183,7 @@ impl<W: AsyncWrite> AsyncWrite for Compressor<W> {
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
         match self.project() {
             CompressorProjected::Noop(encoder) => encoder.poll_flush(cx),
+            CompressorProjected::Gzip(encoder) => encoder.poll_flush(cx),
             CompressorProjected::Zlib(encoder) => encoder.poll_flush(cx),
             CompressorProjected::Zstd(encoder) => encoder.poll_flush(cx),
         }
@@ -176,6 +192,7 @@ impl<W: AsyncWrite> AsyncWrite for Compressor<W> {
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
         match self.project() {
             CompressorProjected::Noop(encoder) => encoder.poll_shutdown(cx),
+            CompressorProjected::Gzip(encoder) => encoder.poll_shutdown(cx),
             CompressorProjected::Zlib(encoder) => encoder.poll_shutdown(cx),
             CompressorProjected::Zstd(encoder) => encoder.poll_shutdown(cx),
         }
@@ -186,6 +203,7 @@ impl<W: AsyncWrite> WriteStatistics for Compressor<W> {
     fn total_written(&self) -> u64 {
         match self {
             Compressor::Noop(encoder) => encoder.total_written(),
+            Compressor::Gzip(encoder) => encoder.get_ref().total_written(),
             Compressor::Zlib(encoder) => encoder.total_out(),
             Compressor::Zstd(encoder) => encoder.get_ref().total_written(),
         }

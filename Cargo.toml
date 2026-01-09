@@ -75,6 +75,7 @@ snafu = { version = "0.8", default-features = false, features = ["std"] }
 tokio = { version = "1", default-features = false }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 async-compression = { version = "0.4.13", default-features = false, features = [
+  "gzip",
   "zlib",
   "zstd",
 ] }
