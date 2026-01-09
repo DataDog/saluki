@@ -191,7 +191,7 @@ pub struct TracesConfig {
     /// Corresponds to the `enable_otlp_compute_top_level_by_span_kind` feature flag
     /// in the Agent's `apm_config.features`.
     ///
-    /// Defaults to `false`.
+    /// Defaults to `true`.
     #[serde(default = "default_enable_otlp_compute_top_level_by_span_kind")]
     pub enable_otlp_compute_top_level_by_span_kind: bool,
 
@@ -240,7 +240,7 @@ impl Default for ProbabilisticSampler {
 }
 
 const fn default_enable_otlp_compute_top_level_by_span_kind() -> bool {
-    false
+    true
 }
 
 fn default_traces_enabled() -> bool {

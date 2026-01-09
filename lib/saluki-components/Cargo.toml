@@ -23,6 +23,7 @@ datadog-protos = { workspace = true }
 ddsketch-agent = { workspace = true }
 faster-hex = { workspace = true }
 float-cmp = { workspace = true, features = ["ratio"] }
+fnv = { workspace = true }
 foldhash = { workspace = true }
 futures = { workspace = true }
 hashbrown = { workspace = true }

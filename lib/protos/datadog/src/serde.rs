@@ -90,3 +90,11 @@ pub fn deserialize_proto_map<'de, K: Deserialize<'de> + Eq + Hash, V: Deserializ
 ) -> Result<HashMap<K, V>, D::Error> {
     HashMap::<K, V>::deserialize(d)
 }
+
+pub fn serialize_proto_bytes<S: Serializer>(bytes: &Vec<u8>, s: S) -> Result<S::Ok, S::Error> {
+    serde_bytes::serialize(bytes.as_slice(), s)
+}
+
+pub fn deserialize_proto_bytes<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+    serde_bytes::ByteBuf::deserialize(d).map(|bb| bb.into_vec())
+}

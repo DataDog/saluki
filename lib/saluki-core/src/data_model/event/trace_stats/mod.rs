@@ -270,6 +270,11 @@ impl ClientStatsBucket {
         &self.stats
     }
 
+    /// Returns a mutable reference to the grouped stats within this bucket.
+    pub fn stats_mut(&mut self) -> &mut Vec<ClientGroupedStats> {
+        &mut self.stats
+    }
+
     /// Returns the agent time shift.
     pub fn agent_time_shift(&self) -> i64 {
         self.agent_time_shift
