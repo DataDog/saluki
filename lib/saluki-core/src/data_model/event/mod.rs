@@ -171,6 +171,26 @@ impl Event {
         }
     }
 
+    /// Returns a reference inner event value, if this event is a `Trace`.
+    ///
+    /// Otherwise, `None` is returned.
+    pub fn try_into_trace(self) -> Option<Trace> {
+        match self {
+            Event::Trace(trace) => Some(trace),
+            _ => None,
+        }
+    }
+
+    /// Returns the inner event value, if this event is a `TraceStats`.
+    ///
+    /// Otherwise, `None` is returned and the original event is consumed.
+    pub fn try_into_trace_stats(self) -> Option<TraceStats> {
+        match self {
+            Event::TraceStats(stats) => Some(stats),
+            _ => None,
+        }
+    }
+
     #[allow(unused)]
     /// Returns `true` if the event is a metric.
     pub fn is_metric(&self) -> bool {
