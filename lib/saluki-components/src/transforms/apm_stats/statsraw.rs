@@ -205,7 +205,13 @@ fn round(f: f64) -> u64 {
 
 fn convert_to_ddsketch_proto_bytes(sketch: &DDSketch) -> Vec<u8> {
     let proto = sketch.to_proto();
-    proto.write_to_bytes().unwrap_or_default()
+    match proto.write_to_bytes() {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            error!(error = ?e, "Failed to serialize DDSketch to protobuf bytes.");
+            Vec::new()
+        }
+    }
 }
 
 #[cfg(test)]

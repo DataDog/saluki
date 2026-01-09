@@ -45,7 +45,7 @@ pub struct ApmConfig {
     #[serde(default = "default_errors_per_second")]
     errors_per_second: f64,
 
-    /// Enables an additional stats computation check on spans to see they have an eligible `span.kind` (server, consumer, client, producer).
+    /// Enables an additional stats computation check on spans to see if they have an eligible `span.kind` (server, consumer, client, producer).
     /// If enabled, a span with an eligible `span.kind` will have stats computed. If disabled, only top-level and measured spans will have stats computed.
     ///
     /// Defaults to `true`.
