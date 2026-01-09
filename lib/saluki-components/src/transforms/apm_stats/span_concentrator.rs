@@ -1,7 +1,5 @@
 //! Span concentrator for APM stats computation.
 
-#![allow(dead_code)]
-
 use saluki_common::collections::FastHashMap;
 use saluki_core::data_model::event::trace::Span;
 use saluki_core::data_model::event::trace_stats::{ClientStatsBucket, ClientStatsPayload};
@@ -14,7 +12,7 @@ use super::aggregation::{
 use super::statsraw::RawBucket;
 
 const KINDS_COMPUTED: &[&str] = &["server", "consumer", "client", "producer"];
-const DEFAULT_BUFFER_LEN: usize = 2;
+const DEFAULT_BUFFER_LEN: u64 = 2;
 const METRIC_TOP_LEVEL: &str = "_top_level";
 const METRIC_MEASURED: &str = "_dd.measured";
 pub const METRIC_PARTIAL_VERSION: &str = "_dd.partial_version";
@@ -102,8 +100,8 @@ pub(super) struct StatSpan {
     pub(super) status_code: u32,
     pub(super) error: i32,
     pub(super) parent_id: u64,
-    pub(super) start: i64,
-    pub(super) duration: i64,
+    pub(super) start: u64,
+    pub(super) duration: u64,
     pub(super) is_top_level: bool,
     pub(super) matching_peer_tags: Vec<MetaString>,
     pub(super) grpc_status_code: MetaString,
@@ -122,21 +120,21 @@ pub struct SpanConcentrator {
     peer_tag_keys: Vec<MetaString>,
 
     /// Bucket duration in nanoseconds (10s)
-    bsize: i64,
+    bsize: u64,
 
     /// Timestamp of oldest allowed bucket (prevents stats for already-flushed buckets)
-    oldest_ts: i64,
+    oldest_ts: u64,
 
     /// Number of buckets to buffer before flushing
-    buffer_len: i64,
+    buffer_len: u64,
 
     /// Time-bucketed raw stats: bucket_timestamp -> RawBucket
-    buckets: FastHashMap<i64, RawBucket>,
+    buckets: FastHashMap<u64, RawBucket>,
 }
 
 impl SpanConcentrator {
     pub fn new(
-        compute_stats_by_span_kind: bool, peer_tags_aggregation: bool, custom_peer_tags: &[MetaString], now: i64,
+        compute_stats_by_span_kind: bool, peer_tags_aggregation: bool, custom_peer_tags: &[MetaString], now: u64,
     ) -> Self {
         let mut peer_tag_keys: Vec<MetaString> = BASE_PEER_TAGS.iter().map(|&s| MetaString::from(s)).collect();
         for tag in custom_peer_tags {
@@ -149,9 +147,9 @@ impl SpanConcentrator {
             compute_stats_by_span_kind,
             peer_tags_aggregation,
             peer_tag_keys,
-            bsize: BUCKET_DURATION_NS as i64,
-            oldest_ts: align_ts(now, BUCKET_DURATION_NS as i64),
-            buffer_len: DEFAULT_BUFFER_LEN as i64,
+            bsize: BUCKET_DURATION_NS,
+            oldest_ts: align_ts(now, BUCKET_DURATION_NS),
+            buffer_len: DEFAULT_BUFFER_LEN,
             buckets: FastHashMap::default(),
         }
     }
@@ -167,12 +165,12 @@ impl SpanConcentrator {
         self.add_span_internal(stat_span, weight, payload_key, infra_tags, origin);
     }
 
-    pub fn flush(&mut self, now: i64, force: bool) -> Vec<ClientStatsPayload> {
+    pub fn flush(&mut self, now: u64, force: bool) -> Vec<ClientStatsPayload> {
         let mut m = FastHashMap::<PayloadAggregationKey, Vec<ClientStatsBucket>>::default();
         let mut container_tags_by_id = FastHashMap::<MetaString, Vec<MetaString>>::default();
         let mut process_tags_by_hash = FastHashMap::<u64, MetaString>::default();
 
-        let timestamps: Vec<i64> = self.buckets.keys().copied().collect();
+        let timestamps: Vec<u64> = self.buckets.keys().copied().collect();
 
         for ts in timestamps {
             if !force && ts > now - self.buffer_len * self.bsize {
@@ -319,7 +317,7 @@ impl SpanConcentrator {
         let b = self
             .buckets
             .entry(btime)
-            .or_insert_with(|| RawBucket::new(btime as u64, self.bsize as u64));
+            .or_insert_with(|| RawBucket::new(btime, self.bsize));
 
         if tags.process_tags_hash != 0 && !tags.process_tags.is_empty() {
             b.set_process_tags(tags.process_tags_hash, tags.process_tags.clone());
@@ -334,7 +332,7 @@ impl SpanConcentrator {
 
 /// Align timestamp to bucket boundary.
 #[inline]
-fn align_ts(ts: i64, bsize: i64) -> i64 {
+fn align_ts(ts: u64, bsize: u64) -> u64 {
     ts - ts % bsize
 }
 
