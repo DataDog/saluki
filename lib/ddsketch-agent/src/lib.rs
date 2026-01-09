@@ -1,9 +1,11 @@
 //! A DDSketch implementation based on the Datadog Agent's DDSketch implementation.
 #![deny(warnings)]
 #![deny(missing_docs)]
+use std::collections::HashMap;
 use std::{cmp::Ordering, mem};
 
 use datadog_protos::metrics::Dogsketch;
+use datadog_protos::sketches::{DDSketch as ProtoDDSketch, IndexMapping, Interpolation, Store};
 use float_cmp::ApproxEqRatio as _;
 use ordered_float::OrderedFloat;
 use smallvec::SmallVec;
@@ -693,6 +695,51 @@ impl DDSketch {
 
         dogsketch.set_k(k);
         dogsketch.set_n(n);
+    }
+
+    /// Converts this sketch to the `sketches-go` DDSketch Protocol Buffers representation.
+    pub fn to_proto(&self) -> ProtoDDSketch {
+        let mut proto = ProtoDDSketch::new();
+        let mut mapping = IndexMapping::new();
+        mapping.set_gamma(SKETCH_CONFIG.gamma_v);
+        mapping.set_indexOffset(f64::from(SKETCH_CONFIG.norm_bias));
+        mapping.set_interpolation(Interpolation::NONE);
+        proto.set_mapping(mapping);
+
+        let mut positive_counts = HashMap::new();
+        let mut negative_counts = HashMap::new();
+        let mut zero_count: f64 = 0.0;
+
+        for bin in &self.bins {
+            let count = f64::from(bin.n);
+            match bin.k.cmp(&0) {
+                Ordering::Greater => {
+                    *positive_counts.entry(i32::from(bin.k)).or_insert(0.0) += count;
+                }
+                Ordering::Less => {
+                    *negative_counts.entry(i32::from(-bin.k)).or_insert(0.0) += count;
+                }
+                Ordering::Equal => {
+                    zero_count += count;
+                }
+            }
+        }
+
+        if !positive_counts.is_empty() {
+            let mut pos_store = Store::new();
+            pos_store.set_binCounts(positive_counts);
+            proto.set_positiveValues(pos_store);
+        }
+
+        if !negative_counts.is_empty() {
+            let mut neg_store = Store::new();
+            neg_store.set_binCounts(negative_counts);
+            proto.set_negativeValues(neg_store);
+        }
+
+        proto.set_zeroCount(zero_count);
+
+        proto
     }
 }
 
