@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["EndpointTelemetry","EndpointTelemetryLayer","HttpClient","HttpsCapableConnector"],"type":["ChunkedHttpsClient"]};
+window.SIDEBAR_ITEMS = {"struct":["EndpointTelemetry","EndpointTelemetryLayer","HttpClient","HttpsCapableConnector","HttpsCapableConnectorBuilder"],"type":["ChunkedHttpsClient"]};
