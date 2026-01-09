@@ -123,7 +123,7 @@ where
             } else {
                 None
             },
-            execution_context,
+            execution_context: Arc::new(execution_context),
         }))
     }
 
@@ -149,26 +149,26 @@ struct ChecksSource {
     autodiscovery_rx: Receiver<AutodiscoveryEvent>,
     check_runners: usize,
     custom_checks_dirs: Option<Vec<String>>,
-    execution_context: ExecutionContext,
+    execution_context: Arc<ExecutionContext>,
 }
 
 impl ChecksSource {
     /// Builds the check builders for the source.
     fn builders(
-        &self, check_events_tx: mpsc::Sender<Event>, execution_context: ExecutionContext,
+        &self, check_events_tx: mpsc::Sender<Event>, execution_context: Arc<ExecutionContext>,
     ) -> Vec<Arc<dyn CheckBuilder + Send + Sync>> {
         let mut builders = Vec::<Arc<dyn CheckBuilder + Send + Sync>>::new();
         builders.push(Arc::new(NativeCheckBuilder::new(
             check_events_tx,
             self.custom_checks_dirs.clone(),
-            execution_context,
+            execution_context.clone(),
         )));
         #[cfg(feature = "python-checks")]
         {
             builders.push(rc::new(PythonCheckBuilder::new(
                 check_events_tx,
                 self.custom_checks_dirs.clone(),
-                execution_context,
+                execution_context.clone(),
             )));
         }
         builders
@@ -223,7 +223,7 @@ impl Source for ChecksSource {
                                         }
 
                                         for builder in check_builders.iter_mut() {
-                                            if let Some(check) = builder.build_check(&config.name, instance, &config.init_config, &config.source) {
+                                            if let Some(check) = builder.build_check(&config.name, instance, &config.init_config, &config.source).await {
                                                 let check_id: String;
                                                 let check_version: String;
                                                 let check_source: String;

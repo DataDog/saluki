@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use saluki_core::data_model::event::Event;
@@ -6,62 +7,71 @@ use saluki_error::GenericError;
 use stringtheory::MetaString;
 
 use async_trait::async_trait;
-use tokio::sync::mpsc::Sender;
+use tokio::sync::{mpsc::Sender, Mutex};
 use tracing::{debug, error, info, trace, warn};
-
-use serde_yaml::Mapping;
 
 use dd_rs_checks::check::Check as RustCheck;
 use dd_rs_checks::sink::{event, event_platform, histogram, log, metric, service_check, Sink};
 
+use crate::sources::checks::builder::native::metric::{
+    event_to_eventd, histogram_to_event, service_check_to_event, metric_to_event,
+};
 use crate::sources::checks::check::Check;
+use crate::sources::checks::execution_context::{ExecutionContext};
+
+use serde_yaml::Mapping;
+
+pub struct NativeSink {
+    events: Sender<Event>,
+    execution_context: Arc<ExecutionContext>,
+}
 
 // TODO MemoryBound
-pub struct NativeCheck<'a, C>
-where
-    C: RustCheck<'a> + 'a + Send + Sync,
-{
-    events: Sender<Event>,
-    check: Option<C>,
+pub struct NativeCheck {
+    check: Arc<Mutex<dyn RustCheck<Snk = NativeSink> + Send + Sync>>,
     instance: Instance,
     init_config: Data,
     name: MetaString,
     source: MetaString,
 }
 
-impl<'a, C> NativeCheck<'a, C>
-where
-    C: RustCheck<'a> + 'a + Send + Sync {
-    pub fn new(
+impl NativeCheck {
+    pub async fn build<C>(
         events: Sender<Event>, name: MetaString, init_config: Data, instance: Instance, source: MetaString,
-    ) -> Self {
-        let check_init_config = Mapping::new(); // FIXME
-        let check_instance = Mapping::new(); // FIXME
-        let check = None;
-
-        let mut native = NativeCheck::<'a, C> {
+        execution_context: Arc<ExecutionContext>,
+    ) -> Option<Arc<Mutex<dyn Check + Send + Sync>>>
+    where
+        C: RustCheck<Snk = NativeSink> + Send + Sync + 'static,
+    {
+        let sink = NativeSink {
             events,
+            execution_context,
+        };
+
+        let check_init_config = data_to_mapping(init_config.get_value());
+        let check_instance = data_to_mapping(instance.get_value());
+        let check = C::build(sink, check_init_config, check_instance);
+        let check = Arc::new(Mutex::new(check));
+
+        let native = NativeCheck {
             check,
             init_config,
             instance,
             name,
             source,
         };
-
-        let check = C::build(&native, &check_init_config, &check_instance);
-        native.check = Some(check);
-
-        native
+        let native = Arc::new(Mutex::new(native));
+        Some(native)
     }
 }
 
 #[async_trait]
-impl<'a, C> Check for NativeCheck<'a, C>
-where
-C: RustCheck<'a> + 'a + Send + Sync {
+impl Check for NativeCheck {
     async fn run(&mut self) -> Result<(), GenericError> {
+        let _ = self.init_config; // FIXME
+
         trace!("NativeCheck::run of {} for {}", self.name, self.id());
-        self.check.as_mut().unwrap().run().await
+        self.check.lock().await.run().await
     }
 
     fn interval(&self) -> Duration {
@@ -88,30 +98,43 @@ C: RustCheck<'a> + 'a + Send + Sync {
     }
 }
 
-impl<'a, C> Sink for NativeCheck<'a, C> 
-where
-C: RustCheck<'a> + 'a + Send + Sync {
-    fn submit_metric(&self, metric: metric::Metric, _flush_first: bool) {
-        println!("submit_metric: {:#?}", metric);
+#[async_trait]
+impl Sink for NativeSink {
+    async fn submit_metric(&self, metric: metric::Metric, _flush_first: bool) {
+        let event = metric_to_event(metric, &self.execution_context);
+        if let Err(err) = self.events.send(event).await {
+            error!("unable to send metric: {err}")
+        }
     }
 
-    fn submit_service_check(&self, service_check: service_check::ServiceCheck) {
-        println!("submit_service_check: {:#?}", service_check);
+    async fn submit_service_check(&self, service_check: service_check::ServiceCheck) {
+        let event = service_check_to_event(service_check, &self.execution_context);
+        if let Err(err) = self.events.send(event).await {
+            error!("unable to send service check: {err}")
+        }
     }
 
-    fn submit_event(&self, event: event::Event) {
-        println!("submit_event: {:#?}", event);
+    async fn submit_event(&self, event: event::Event) {
+        let eventd = event_to_eventd(event, &self.execution_context);
+        if let Err(err) = self.events.send(eventd).await {
+            error!("unable to send event: {err}")
+        }
     }
 
-    fn submit_histogram(&self, histogram: histogram::Histrogram, _flush_first: bool) {
-        println!("submit_histogram: {:#?}", histogram);
+    async fn submit_histogram(&self, histogram: histogram::Histrogram, _flush_first: bool) {
+        let event = histogram_to_event(histogram, &self.execution_context);
+        if let Err(err) = self.events.send(event).await {
+            error!("unable to send histogram: {err}")
+        }
     }
 
-    fn submit_event_platform_event(&self, event: event_platform::Event) {
-        println!("submit_event_platform_event: {:#?}", event);
+    async fn submit_event_platform_event(&self, event: event_platform::Event) {
+        // TODO: Implement event platform events conversion
+        // For now, log that this is not yet implemented
+        error!("event platform events are not yet implemented: {:#?}", event);
     }
 
-    fn log(&self, level: log::Level, message: String) {
+    async fn log(&self, level: log::Level, message: String) {
         let id = "fixme_check_id"; // FIXME
                                    // FIXME use tracing::event!
         match level {
@@ -123,4 +146,13 @@ C: RustCheck<'a> + 'a + Send + Sync {
             log::Level::Trace => trace!("[check: {}] {message}", id),
         }
     }
+}
+
+fn data_to_mapping(data: &std::collections::HashMap<stringtheory::MetaString, serde_yaml::Value>) -> Mapping {
+    let mut mapping = Mapping::new();
+    for (key, value) in data.iter() {
+        let key_value = serde_yaml::Value::String(key.to_string());
+        mapping.insert(key_value, value.clone());
+    }
+    mapping
 }

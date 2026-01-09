@@ -426,17 +426,16 @@ mod tests {
 
         let failing_check = Arc::new(Mutex::new(MockCheck::with_failure("failing-check", 1)));
 
-        scheduler.schedule(Arc::clone(&failing_check) as Arc<Mutex<dyn Check + Send + Sync>>).await;
+        scheduler
+            .schedule(Arc::clone(&failing_check) as Arc<Mutex<dyn Check + Send + Sync>>)
+            .await;
 
         time::sleep(Duration::from_secs(2)).await;
 
         let failing_check_count = failing_check.lock().await.get_run_count();
         let failing_check_id = failing_check.lock().await.id().to_string();
 
-        assert!(
-            failing_check_count > 0,
-            "Failing check should still be executed"
-        );
+        assert!(failing_check_count > 0, "Failing check should still be executed");
 
         scheduler.unschedule(&failing_check_id).await;
         scheduler.shutdown().await;
@@ -451,7 +450,9 @@ mod tests {
             .collect::<Vec<_>>();
 
         for check in &checks {
-            scheduler.schedule(Arc::clone(check) as Arc<Mutex<dyn Check + Send + Sync>>).await;
+            scheduler
+                .schedule(Arc::clone(check) as Arc<Mutex<dyn Check + Send + Sync>>)
+                .await;
         }
 
         scheduler.shutdown().await;

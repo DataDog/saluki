@@ -4,24 +4,27 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::data_model::event::Event;
 use saluki_env::autodiscovery::{Data, Instance};
 
+use async_trait::async_trait;
 use stringtheory::MetaString;
 use tokio::sync::{mpsc::Sender, Mutex};
-use tracing::trace;
+use tracing::{trace, info};
 
+use crate::sources::checks::builder::native::native_check::{NativeCheck, NativeSink};
 use crate::sources::checks::builder::CheckBuilder;
 use crate::sources::checks::check::Check;
-use crate::sources::checks::execution_context::ExecutionContext;
-use crate::sources::checks::builder::native::native_check::NativeCheck;
+use crate::sources::checks::execution_context::{ExecutionContext};
 
 use http_check::check::HttpCheck;
 
 pub struct NativeCheckBuilder {
     check_events_tx: Sender<Event>,
-    execution_context: ExecutionContext,
+    execution_context: Arc<ExecutionContext>,
 }
 
 impl NativeCheckBuilder {
-    pub fn new(check_events_tx: Sender<Event>, _: Option<Vec<String>>, execution_context: ExecutionContext) -> Self {
+    pub fn new(
+        check_events_tx: Sender<Event>, _: Option<Vec<String>>, execution_context: Arc<ExecutionContext>,
+    ) -> Self {
         trace!("NativeCheckBuilder::new()");
 
         Self {
@@ -39,18 +42,27 @@ impl MemoryBounds for NativeCheckBuilder {
     }
 }
 
+#[async_trait]
 impl CheckBuilder for NativeCheckBuilder {
-    fn build_check(
+    async fn build_check(
         &self, name: &str, instance: &Instance, init_config: &Data, source: &MetaString,
     ) -> Option<Arc<Mutex<dyn Check + Send + Sync>>> {
-        let native = NativeCheck::<HttpCheck>::new(
-            self.check_events_tx.clone(),
+        let build_fn = match name {
+            "http-check" => NativeCheck::build::<HttpCheck<NativeSink>>,
+            _ => {
+                info!("unknown check: {name}");
+                return None;
+            }
+        };
 
+        build_fn(
+            self.check_events_tx.clone(),
             MetaString::from(name),
             init_config.clone(),
             instance.clone(),
             source.clone(),
-        );
-        Some(Arc::new(Mutex::new(native)))
+            self.execution_context.clone(),
+        )
+        .await
     }
 }

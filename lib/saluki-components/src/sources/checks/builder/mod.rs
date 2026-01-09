@@ -3,6 +3,7 @@ use std::sync::Arc;
 use saluki_env::autodiscovery::{Data, Instance};
 use stringtheory::MetaString;
 
+use async_trait::async_trait;
 use tokio::sync::Mutex;
 
 pub mod native;
@@ -19,9 +20,10 @@ use crate::sources::checks::check::Check;
 ///
 /// This trait allow us to have a unified way to build checks, and have different implementations
 /// for different runtimes.
+#[async_trait]
 pub trait CheckBuilder {
     /// Build a check
-    fn build_check(
+    async fn build_check(
         &self, name: &str, instance: &Instance, init_config: &Data, source: &MetaString,
     ) -> Option<Arc<Mutex<dyn Check + Send + Sync>>>;
 }
