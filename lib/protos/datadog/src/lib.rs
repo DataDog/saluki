@@ -56,7 +56,7 @@ pub mod agent {
     pub use super::agent_include::datadog::workloadmeta::*;
 }
 
-/// DDSketch definitions from sketches-go).
+/// DDSketch definitions from (sketches-go).
 pub mod sketches {
     pub use super::sketch_include::ddsketch::*;
 }

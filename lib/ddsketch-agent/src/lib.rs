@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::{cmp::Ordering, mem};
 
 use datadog_protos::metrics::Dogsketch;
-use datadog_protos::sketches::{DDSketch as ProtoDDSketch, IndexMapping, Interpolation, Store};
+use datadog_protos::sketches::{index_mapping::Interpolation, DDSketch as ProtoDDSketch, IndexMapping, Store};
 use float_cmp::ApproxEqRatio as _;
 use ordered_float::OrderedFloat;
 use smallvec::SmallVec;

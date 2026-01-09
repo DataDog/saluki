@@ -50,14 +50,12 @@ pub struct ApmConfig {
     ///
     /// Defaults to `true`.
     #[serde(default = "default_compute_stats_by_span_kind")]
-    #[allow(dead_code)]
     compute_stats_by_span_kind: bool,
 
     /// Enables aggregation of peer related tags (e.g., `peer.service`, `db.instance`, etc.) in the Agent.
     ///
     /// Defaults to `true`.
     #[serde(default = "default_peer_tags_aggregation")]
-    #[allow(dead_code)]
     peer_tags_aggregation: bool,
 
     /// Optional list of supplementary peer tags that go beyond the defaults. The Datadog backend validates all tags
@@ -65,7 +63,6 @@ pub struct ApmConfig {
     ///
     /// Defaults to an empty list.
     #[serde(default)]
-    #[allow(dead_code)]
     peer_tags: Vec<MetaString>,
 
     /// Default environment to use when traces don't provide one.
@@ -84,14 +81,7 @@ pub struct ApmConfig {
 impl ApmConfig {
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let wrapper = config.as_typed::<ApmConfiguration>()?;
-        let mut apm_config = wrapper.apm_config.clone();
-
-        // Get hostname from global config if not set in apm_config
-        if apm_config.hostname.is_empty() {
-            apm_config.hostname = config.get_typed_or_default::<String>("hostname").into();
-        }
-
-        Ok(apm_config)
+        Ok(wrapper.apm_config)
     }
 
     /// Returns the target traces per second for priority sampling.
@@ -105,19 +95,16 @@ impl ApmConfig {
     }
 
     /// Returns if stats computation by span kind is enabled.
-    #[allow(dead_code)]
     pub const fn compute_stats_by_span_kind(&self) -> bool {
         self.compute_stats_by_span_kind
     }
 
     /// Returns if peer tags aggregation is enabled.
-    #[allow(dead_code)]
     pub const fn peer_tags_aggregation(&self) -> bool {
         self.peer_tags_aggregation
     }
 
     /// Returns the supplementary peer tags.
-    #[allow(dead_code)]
     pub fn peer_tags(&self) -> &[MetaString] {
         &self.peer_tags
     }
@@ -130,6 +117,13 @@ impl ApmConfig {
     /// Returns the default hostname to use when traces don't provide one.
     pub fn hostname(&self) -> &MetaString {
         &self.hostname
+    }
+
+    /// Sets the hostname if it is currently empty.
+    pub fn set_hostname_if_empty(&mut self, hostname: impl Into<MetaString>) {
+        if self.hostname.is_empty() {
+            self.hostname = hostname.into();
+        }
     }
 }
 

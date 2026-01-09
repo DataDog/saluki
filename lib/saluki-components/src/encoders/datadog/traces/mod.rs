@@ -616,8 +616,8 @@ fn convert_span(span: &DdSpan) -> ProtoSpan {
     proto.set_traceID(span.trace_id());
     proto.set_spanID(span.span_id());
     proto.set_parentID(span.parent_id());
-    proto.set_start(span.start());
-    proto.set_duration(span.duration());
+    proto.set_start(span.start() as i64);
+    proto.set_duration(span.duration() as i64);
     proto.set_error(span.error());
     proto.set_type(span.span_type().to_string());
 

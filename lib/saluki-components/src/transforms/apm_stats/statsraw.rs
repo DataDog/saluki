@@ -186,7 +186,7 @@ pub(super) fn new_aggregation_from_span(
     }
 }
 
-fn ns_timestamp_to_float(ns: i64) -> f64 {
+fn ns_timestamp_to_float(ns: u64) -> f64 {
     let f = ns as f64;
     let bits = f.to_bits();
     let truncated_bits = bits & 0xffff_f800_0000_0000;
@@ -214,14 +214,14 @@ mod tests {
 
     #[test]
     fn test_ns_timestamp_to_float() {
-        let ns: i64 = 1_000_000_000;
+        let ns: u64 = 1_000_000_000;
         let truncated = ns_timestamp_to_float(ns);
         let relative_error = ((truncated - ns as f64) / (ns as f64)).abs();
         assert!(relative_error < 0.001, "relative error too large: {}", relative_error);
 
         assert_eq!(ns_timestamp_to_float(0), 0.0);
 
-        let small: i64 = 1000;
+        let small: u64 = 1000;
         let truncated_small = ns_timestamp_to_float(small);
         assert!(truncated_small > 0.0);
     }

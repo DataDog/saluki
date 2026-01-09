@@ -2,15 +2,23 @@
 //!
 //! Aggregates traces into time-bucketed statistics, producing `TraceStats` events.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use opentelemetry_semantic_conventions::resource::{CONTAINER_ID, K8S_POD_UID};
 use saluki_config::GenericConfiguration;
+use saluki_context::{origin::OriginTagCardinality, tags::TagSet};
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     data_model::event::{trace::Trace, trace_stats::TraceStats, Event, EventType},
     topology::{EventsBuffer, OutputDefinition},
+};
+use saluki_env::{
+    host::providers::BoxedHostProvider, workload::EntityId, EnvironmentProvider, HostProvider, WorkloadProvider,
 };
 use saluki_error::GenericError;
 use stringtheory::MetaString;
@@ -18,8 +26,11 @@ use tokio::{select, time::interval};
 use tracing::{debug, error};
 
 use crate::common::datadog::apm::ApmConfig;
+use crate::common::otlp::util::{extract_container_tags_from_resource_tagset, KEY_DATADOG_CONTAINER_ID};
 
 mod aggregation;
+
+use self::aggregation::process_tags_hash;
 mod span_concentrator;
 mod statsraw;
 mod weight;
@@ -31,37 +42,74 @@ use self::weight::weight;
 /// Default flush interval for the APM stats transform.
 const DEFAULT_FLUSH_INTERVAL: Duration = Duration::from_secs(10);
 
+/// Tag key for process tags in span meta.
+const TAG_PROCESS_TAGS: &str = "_dd.tags.process";
+
 /// APM Stats transform configuration.
 ///
 /// Aggregates incoming `Trace` events into time-bucketed statistics, emitting
 /// `TraceStats` events.
 pub struct ApmStatsConfiguration {
     apm_config: ApmConfig,
+    default_hostname: Option<String>,
+    workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 }
 
 impl ApmStatsConfiguration {
     /// Creates a new `ApmStatsConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let apm_config = ApmConfig::from_configuration(config)?;
-        Ok(Self { apm_config })
+        Ok(Self {
+            apm_config,
+            default_hostname: None,
+            workload_provider: None,
+        })
+    }
+
+    /// Sets the default hostname using the environment provider.
+    pub async fn with_environment_provider<E>(mut self, env_provider: E) -> Result<Self, GenericError>
+    where
+        E: EnvironmentProvider<Host = BoxedHostProvider>,
+    {
+        let hostname = env_provider.host().get_hostname().await?;
+        self.default_hostname = Some(hostname);
+        Ok(self)
+    }
+
+    /// Sets the workload provider.
+    ///
+    /// Defaults to unset.
+    pub fn with_workload_provider<W>(mut self, workload_provider: W) -> Self
+    where
+        W: WorkloadProvider + Send + Sync + 'static,
+    {
+        self.workload_provider = Some(Arc::new(workload_provider));
+        self
     }
 }
 
 #[async_trait]
 impl TransformBuilder for ApmStatsConfiguration {
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+        let mut apm_config = self.apm_config.clone();
+
+        if let Some(hostname) = &self.default_hostname {
+            apm_config.set_hostname_if_empty(hostname.as_str());
+        }
+
         let concentrator = SpanConcentrator::new(
-            self.apm_config.compute_stats_by_span_kind(),
-            self.apm_config.peer_tags_aggregation(),
-            self.apm_config.peer_tags(),
+            apm_config.compute_stats_by_span_kind(),
+            apm_config.peer_tags_aggregation(),
+            apm_config.peer_tags(),
             now_nanos(),
         );
 
         Ok(Box::new(ApmStats {
             concentrator,
             flush_interval: DEFAULT_FLUSH_INTERVAL,
-            agent_env: self.apm_config.default_env().clone(),
-            agent_hostname: self.apm_config.hostname().clone(),
+            agent_env: apm_config.default_env().clone(),
+            agent_hostname: apm_config.hostname().clone(),
+            workload_provider: self.workload_provider.clone(),
         }))
     }
 
@@ -87,6 +135,7 @@ struct ApmStats {
     flush_interval: Duration,
     agent_env: MetaString,
     agent_hostname: MetaString,
+    workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 }
 
 impl ApmStats {
@@ -99,8 +148,10 @@ impl ApmStats {
 
         let trace_weight = root_span.map(weight).unwrap_or(1.0);
 
-        let payload_key = self.build_payload_key(trace);
-        let infra_tags = InfraTags::default();
+        let process_tags = extract_process_tags(trace);
+
+        let payload_key = self.build_payload_key(trace, &process_tags);
+        let infra_tags = self.build_infra_tags(trace, &process_tags);
 
         let origin = trace
             .spans()
@@ -117,7 +168,31 @@ impl ApmStats {
         }
     }
 
-    fn build_payload_key(&self, trace: &Trace) -> PayloadAggregationKey {
+    fn build_infra_tags(&self, trace: &Trace, process_tags: &str) -> InfraTags {
+        let resource_tags = trace.resource_tags();
+        let container_id = resolve_container_id(resource_tags);
+        let mut container_tags = if container_id.is_empty() {
+            vec![]
+        } else {
+            extract_container_tags(resource_tags)
+        };
+
+        // Query the workload provider for additional container tags.
+        if !container_id.is_empty() {
+            if let Some(workload_provider) = &self.workload_provider {
+                let entity_id = EntityId::Container(container_id.clone());
+                if let Some(tags) = workload_provider.get_tags_for_entity(&entity_id, OriginTagCardinality::Low) {
+                    container_tags.extend((&tags).into_iter().map(|tag| MetaString::from(tag.as_str())));
+                }
+            }
+        }
+
+        container_tags.sort();
+
+        InfraTags::new(container_id, container_tags, process_tags)
+    }
+
+    fn build_payload_key(&self, trace: &Trace, process_tags: &str) -> PayloadAggregationKey {
         let root_span = trace
             .spans()
             .iter()
@@ -166,7 +241,7 @@ impl ApmStats {
             git_commit_sha,
             image_tag,
             lang,
-            process_tags_hash: 0,
+            process_tags_hash: process_tags_hash(process_tags),
         }
     }
 }
@@ -236,11 +311,50 @@ impl Transform for ApmStats {
 }
 
 /// Returns the current time as nanoseconds since Unix epoch.
-fn now_nanos() -> i64 {
+fn now_nanos() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_nanos() as i64
+        .as_nanos() as u64
+}
+
+/// Resolves container ID from OTLP resource tags.
+fn resolve_container_id(resource_tags: &TagSet) -> MetaString {
+    for key in [KEY_DATADOG_CONTAINER_ID, CONTAINER_ID, K8S_POD_UID] {
+        if let Some(tag) = resource_tags.get_single_tag(key) {
+            if let Some(value) = tag.value() {
+                if !value.is_empty() {
+                    return MetaString::from(value);
+                }
+            }
+        }
+    }
+    MetaString::default()
+}
+
+/// Extracts container tags from OTLP resource tags.
+fn extract_container_tags(resource_tags: &TagSet) -> Vec<MetaString> {
+    let mut container_tags_set = TagSet::default();
+    extract_container_tags_from_resource_tagset(resource_tags, &mut container_tags_set);
+
+    container_tags_set
+        .into_iter()
+        .map(|tag| MetaString::from(tag.as_str()))
+        .collect()
+}
+
+/// Extracts process tags from trace.
+fn extract_process_tags(trace: &Trace) -> String {
+    if let Some(first_span) = trace.spans().first() {
+        if let Some(process_tags) = first_span.meta().get(TAG_PROCESS_TAGS) {
+            let tags = process_tags.as_ref();
+            if !tags.is_empty() {
+                return tags.to_string();
+            }
+        }
+    }
+
+    String::new()
 }
 
 #[cfg(test)]
@@ -254,21 +368,21 @@ mod tests {
     use super::*;
 
     /// Helper to align timestamp to bucket boundary
-    fn align_ts(ts: i64, bsize: i64) -> i64 {
+    fn align_ts(ts: u64, bsize: u64) -> u64 {
         ts - ts % bsize
     }
 
     /// Creates a test span with the given parameters.
     #[allow(clippy::too_many_arguments)]
     fn test_span(
-        aligned_now: i64, span_id: u64, parent_id: u64, duration: i64, bucket_offset: i64, service: &str,
+        aligned_now: u64, span_id: u64, parent_id: u64, duration: u64, bucket_offset: u64, service: &str,
         resource: &str, error: i32, meta: Option<FastHashMap<MetaString, MetaString>>,
         metrics: Option<FastHashMap<MetaString, f64>>,
     ) -> Span {
         // Calculate start time so that span ends in the correct bucket
         // End time = start + duration, and we want end time to be in bucket (aligned_now - offset * bsize)
         // Use BUCKET_DURATION_NS as the bucket size (matches the concentrator)
-        let bucket_start = aligned_now - bucket_offset * BUCKET_DURATION_NS as i64;
+        let bucket_start = aligned_now - bucket_offset * BUCKET_DURATION_NS;
         let start = bucket_start - duration;
 
         Span::new(
@@ -288,7 +402,7 @@ mod tests {
 
     /// Creates a top-level span (parent_id = 0, has _top_level metric)
     fn make_top_level_span(
-        aligned_now: i64, span_id: u64, duration: i64, bucket_offset: i64, service: &str, resource: &str, error: i32,
+        aligned_now: u64, span_id: u64, duration: u64, bucket_offset: u64, service: &str, resource: &str, error: i32,
         meta: Option<FastHashMap<MetaString, MetaString>>,
     ) -> Span {
         let mut metrics = FastHashMap::default();
@@ -317,6 +431,7 @@ mod tests {
             flush_interval: DEFAULT_FLUSH_INTERVAL,
             agent_env: MetaString::from("none"),
             agent_hostname: MetaString::default(),
+            workload_provider: None,
         };
 
         let span = make_test_span("test-service", "test-operation", "test-resource");
@@ -325,7 +440,7 @@ mod tests {
         transform.process_trace(&trace);
 
         // Flush and verify we got stats
-        let stats = transform.concentrator.flush(now + BUCKET_DURATION_NS as i64 * 2, true);
+        let stats = transform.concentrator.flush(now + BUCKET_DURATION_NS * 2, true);
         assert!(!stats.is_empty(), "Expected stats to be produced");
     }
 
@@ -339,6 +454,7 @@ mod tests {
             flush_interval: DEFAULT_FLUSH_INTERVAL,
             agent_env: MetaString::from("none"),
             agent_hostname: MetaString::default(),
+            workload_provider: None,
         };
 
         // Create a span with 0.5 sample rate (weight = 2.0)
@@ -363,7 +479,7 @@ mod tests {
         let trace = Trace::new(vec![span], TagSet::default());
         transform.process_trace(&trace);
 
-        let stats = transform.concentrator.flush(now + BUCKET_DURATION_NS as i64 * 2, true);
+        let stats = transform.concentrator.flush(now + BUCKET_DURATION_NS * 2, true);
         assert!(!stats.is_empty());
 
         // The hits should be weighted (approximately 2 due to 0.5 sample rate)
@@ -376,7 +492,7 @@ mod tests {
     #[test]
     fn test_force_flush() {
         let now = now_nanos();
-        let aligned_now = align_ts(now, BUCKET_DURATION_NS as i64);
+        let aligned_now = align_ts(now, BUCKET_DURATION_NS);
 
         let mut concentrator = SpanConcentrator::new(true, true, &[], now);
 
@@ -398,7 +514,7 @@ mod tests {
         }
 
         // ts=0 so that flush always considers buckets not old enough
-        let ts: i64 = 0;
+        let ts: u64 = 0;
 
         // Without force flush, should skip the bucket
         let stats = concentrator.flush(ts, false);
@@ -413,7 +529,7 @@ mod tests {
     #[test]
     fn test_ignores_partial_spans() {
         let now = now_nanos();
-        let aligned_now = align_ts(now, BUCKET_DURATION_NS as i64);
+        let aligned_now = align_ts(now, BUCKET_DURATION_NS);
 
         let mut concentrator = SpanConcentrator::new(true, true, &[], now);
 
@@ -439,17 +555,17 @@ mod tests {
         }
 
         // Partial spans should be ignored
-        let stats = concentrator.flush(now + BUCKET_DURATION_NS as i64 * 3, true);
+        let stats = concentrator.flush(now + BUCKET_DURATION_NS * 3, true);
         assert!(stats.is_empty(), "Partial spans should be ignored");
     }
 
     #[test]
     fn test_concentrator_stats_totals() {
         let now = now_nanos();
-        let aligned_now = align_ts(now, BUCKET_DURATION_NS as i64);
+        let aligned_now = align_ts(now, BUCKET_DURATION_NS);
 
         // Set oldestTs to allow old buckets
-        let oldest_ts = aligned_now - 2 * BUCKET_DURATION_NS as i64;
+        let oldest_ts = aligned_now - 2 * BUCKET_DURATION_NS;
         let mut concentrator = SpanConcentrator::new(true, true, &[], oldest_ts);
 
         // Build spans spread over time windows
@@ -475,7 +591,7 @@ mod tests {
         }
 
         // Flush all and collect totals
-        let all_stats = concentrator.flush(now + BUCKET_DURATION_NS as i64 * 10, true);
+        let all_stats = concentrator.flush(now + BUCKET_DURATION_NS * 10, true);
 
         let mut total_duration: u64 = 0;
         let mut total_hits: u64 = 0;
@@ -502,7 +618,7 @@ mod tests {
     #[test]
     fn test_root_tag() {
         let now = now_nanos();
-        let aligned_now = align_ts(now, BUCKET_DURATION_NS as i64);
+        let aligned_now = align_ts(now, BUCKET_DURATION_NS);
 
         let mut concentrator = SpanConcentrator::new(true, true, &[], now);
 
@@ -557,7 +673,7 @@ mod tests {
             }
         }
 
-        let stats = concentrator.flush(now + BUCKET_DURATION_NS as i64 * 20, true);
+        let stats = concentrator.flush(now + BUCKET_DURATION_NS * 20, true);
         assert!(!stats.is_empty(), "Should have stats");
 
         // Count grouped stats - should be split by IsTraceRoot
@@ -621,7 +737,7 @@ mod tests {
                 concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
             }
 
-            let stats = concentrator.flush(now + BUCKET_DURATION_NS as i64 * 3, true);
+            let stats = concentrator.flush(now + BUCKET_DURATION_NS * 3, true);
 
             let mut count = 0;
             for payload in &stats {
@@ -664,7 +780,7 @@ mod tests {
                 concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
             }
 
-            let stats = concentrator.flush(now + BUCKET_DURATION_NS as i64 * 3, true);
+            let stats = concentrator.flush(now + BUCKET_DURATION_NS * 3, true);
 
             let mut count = 0;
             for payload in &stats {
@@ -707,7 +823,7 @@ mod tests {
                 concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
             }
 
-            let stats = concentrator.flush(now + BUCKET_DURATION_NS as i64 * 3, true);
+            let stats = concentrator.flush(now + BUCKET_DURATION_NS * 3, true);
 
             // Without peer tags aggregation, peer_tags should be empty
             for payload in &stats {
@@ -748,7 +864,7 @@ mod tests {
                 concentrator.add_span(&stat_span, 1.0, &payload_key, &infra_tags, "");
             }
 
-            let stats = concentrator.flush(now + BUCKET_DURATION_NS as i64 * 3, true);
+            let stats = concentrator.flush(now + BUCKET_DURATION_NS * 3, true);
 
             // With peer tags aggregation, client span should have peer_tags
             let mut found_client_with_peer_tags = false;
@@ -782,7 +898,7 @@ mod tests {
     #[test]
     fn test_concentrator_oldest_ts() {
         let now = now_nanos();
-        let aligned_now = align_ts(now, BUCKET_DURATION_NS as i64);
+        let aligned_now = align_ts(now, BUCKET_DURATION_NS);
 
         // Test "cold" scenario - all spans in the past should end up in current bucket
         {
@@ -818,7 +934,7 @@ mod tests {
             for _ in 0..buffer_len {
                 let stats = concentrator.flush(flush_time, false);
                 assert!(stats.is_empty(), "Should not flush before buffer fills");
-                flush_time += BUCKET_DURATION_NS as i64;
+                flush_time += BUCKET_DURATION_NS;
             }
 
             // After buffer_len flushes, should get aggregated stats
@@ -873,5 +989,63 @@ mod tests {
         assert!(!compute_stats_for_span_kind("INTERNAL"));
         assert!(!compute_stats_for_span_kind("INtERNAL"));
         assert!(!compute_stats_for_span_kind(""));
+    }
+
+    #[test]
+    fn test_extract_process_tags() {
+        // Test with no process tags
+        {
+            let span = Span::default();
+            let trace = Trace::new(vec![span], TagSet::default());
+            let process_tags = extract_process_tags(&trace);
+            assert!(process_tags.is_empty(), "Should be empty when no _dd.tags.process");
+        }
+
+        // Test with process tags in first span meta
+        {
+            let mut meta = FastHashMap::default();
+            meta.insert(MetaString::from(TAG_PROCESS_TAGS), MetaString::from("a:1,b:2,c:3"));
+            let span = Span::default().with_meta(meta);
+            let trace = Trace::new(vec![span], TagSet::default());
+            let process_tags = extract_process_tags(&trace);
+            assert_eq!(process_tags, "a:1,b:2,c:3");
+        }
+
+        // Test with empty process tags
+        {
+            let mut meta = FastHashMap::default();
+            meta.insert(MetaString::from(TAG_PROCESS_TAGS), MetaString::from(""));
+            let span = Span::default().with_meta(meta);
+            let trace = Trace::new(vec![span], TagSet::default());
+            let process_tags = extract_process_tags(&trace);
+            assert!(
+                process_tags.is_empty(),
+                "Should be empty when _dd.tags.process is empty string"
+            );
+        }
+
+        // Test with empty trace
+        {
+            let trace = Trace::new(vec![], TagSet::default());
+            let process_tags = extract_process_tags(&trace);
+            assert!(process_tags.is_empty(), "Should be empty when trace has no spans");
+        }
+    }
+
+    #[test]
+    fn test_process_tags_hash_computation() {
+        use super::aggregation::process_tags_hash;
+
+        // Empty string should return 0
+        assert_eq!(process_tags_hash(""), 0);
+
+        // Same tags should produce same hash
+        let hash1 = process_tags_hash("a:1,b:2,c:3");
+        let hash2 = process_tags_hash("a:1,b:2,c:3");
+        assert_eq!(hash1, hash2);
+
+        // Different tags should produce different hash
+        let hash3 = process_tags_hash("a:1,b:2");
+        assert_ne!(hash1, hash3);
     }
 }

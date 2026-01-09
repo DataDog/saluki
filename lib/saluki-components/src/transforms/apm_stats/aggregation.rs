@@ -1,7 +1,5 @@
 //! Aggregation keys and helper functions for APM stats.
 
-#![allow(dead_code)]
-
 use std::hash::{Hash, Hasher};
 
 use fnv::FnvHasher;
@@ -105,15 +103,15 @@ pub fn get_grpc_status_code(
                 continue;
             }
 
-            if let Ok(code) = str_value.parse::<u64>() {
-                return MetaString::from(code.to_string());
+            if str_value.parse::<u64>().is_ok() {
+                return MetaString::from(str_value);
             }
 
             let normalized = str_value.strip_prefix("StatusCode.").unwrap_or(str_value);
             let upper = normalized.to_uppercase();
 
             if let Some(code) = grpc_status_name_to_code(&upper) {
-                return MetaString::from(code);
+                return MetaString::from_static(code);
             }
 
             return MetaString::default();
