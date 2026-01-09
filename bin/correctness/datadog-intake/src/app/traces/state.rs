@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use datadog_protos::traces::{AgentPayload, StatsPayload};
+use datadog_protos::traces::definitions::{AgentPayload, StatsPayload};
 use saluki_error::GenericError;
 use stele::{ClientStatisticsAggregator, Span};
 

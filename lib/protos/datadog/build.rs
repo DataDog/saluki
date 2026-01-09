@@ -70,28 +70,34 @@ fn field_name_to_go_case(field_name: &str) -> String {
         .join("")
 }
 
-fn main() {
-    // Always rerun if the build script itself changes.
-    println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=proto");
+fn generate_payload_builder_definitions() {
+    piecemeal_build::ConfigBuilder::new()
+        .input_files(&["proto/agent-payload/agent_payload.proto"])
+        .include_paths(&["proto", "proto/agent-payload"])
+        .cargo_output_dir("payload_builder")
+        .expect("Failed to configure output directory.")
+        .compile()
+        .expect("Failed to compile .proto files.");
+}
 
-    // Handle code generation for pure Protocol Buffers message types.
-    let codegen_customize = protobuf_codegen::Customize::default()
+fn get_protobuf_codegen_customize_config() -> protobuf_codegen::Customize {
+    protobuf_codegen::Customize::default()
         .generate_accessors(true)
         .gen_mod_rs(true)
-        .lite_runtime(true);
+        .lite_runtime(true)
+}
 
-    // Two separate invocations are required here because the filename of the trace payload is identical,
-    // and `protobuf_codegen` ends up trying to generate code to the same output filename, which
-    // means that whichever of the two files that gets processed last overwrites the other.
+fn generate_payload_protobuf_definitions() {
     protobuf_codegen::Codegen::new()
         .protoc()
-        .includes(["proto", "proto/datadog-agent"])
+        .includes(["proto", "proto/agent-payload"])
         .inputs(["proto/agent-payload/agent_payload.proto"])
-        .cargo_out_dir("protos")
-        .customize(codegen_customize.clone())
+        .cargo_out_dir("payload_protos")
+        .customize(get_protobuf_codegen_customize_config())
         .run_from_script();
+}
 
+fn generate_trace_protobuf_definitions() {
     protobuf_codegen::Codegen::new()
         .protoc()
         .includes(["proto/datadog-agent"])
@@ -102,11 +108,12 @@ fn main() {
             "proto/datadog-agent/datadog/trace/agent_payload.proto",
         ])
         .cargo_out_dir("trace_protos")
-        .customize(codegen_customize)
+        .customize(get_protobuf_codegen_customize_config())
         .customize_callback(SerdeCapableStructs)
         .run_from_script();
+}
 
-    // Handle code generation for gRPC service definitions.
+fn generate_remote_agent_grpc_bindings() {
     tonic_prost_build::configure()
         .build_server(true)
         .include_file("api.mod.rs")
@@ -120,4 +127,23 @@ fn main() {
             &["proto", "proto/datadog-agent"],
         )
         .expect("Failed to build gRPC service definitions for Datadog Agent.");
+}
+
+fn main() {
+    // Always rerun if the build script itself changes.
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=proto");
+
+    // Handle builder code generate for the payload-specific definitions.
+    generate_payload_builder_definitions();
+
+    // Handle code generation for payload and trace-specific definitions.
+    //
+    // This has to happen separately because the underlying library for generating the bindings can't write to the same
+    // output directory without overwriting relevant files.
+    generate_payload_protobuf_definitions();
+    generate_trace_protobuf_definitions();
+
+    // Handle code generation for gRPC service definitions.
+    generate_remote_agent_grpc_bindings();
 }

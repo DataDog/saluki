@@ -3,7 +3,7 @@
 #![deny(missing_docs)]
 use std::{cmp::Ordering, mem};
 
-use datadog_protos::metrics::Dogsketch;
+use datadog_protos::payload::definitions::Dogsketch;
 use float_cmp::ApproxEqRatio as _;
 use ordered_float::OrderedFloat;
 use smallvec::SmallVec;

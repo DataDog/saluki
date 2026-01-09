@@ -1,4 +1,4 @@
-use datadog_protos::traces as proto;
+use datadog_protos::traces::definitions as proto;
 use ordered_float::OrderedFloat;
 use saluki_common::collections::FastHashMap;
 use serde::{Deserialize, Serialize};

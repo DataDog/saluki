@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use datadog_protos::metrics::{MetricPayload, SketchPayload};
+use datadog_protos::payload::definitions::{MetricPayload, SketchPayload};
 use saluki_error::GenericError;
 use stele::Metric;
 

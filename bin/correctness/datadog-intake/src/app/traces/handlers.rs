@@ -1,5 +1,5 @@
 use axum::{body::Bytes, extract::State, http::StatusCode, Json};
-use datadog_protos::traces::{AgentPayload, StatsPayload};
+use datadog_protos::traces::definitions::{AgentPayload, StatsPayload};
 use protobuf::Message as _;
 use stele::{ClientStatisticsAggregator, Span};
 use tracing::{error, info};

@@ -6,7 +6,7 @@ use std::{
     str::FromStr,
 };
 
-use datadog_protos::traces::{self as proto, Trilean};
+use datadog_protos::traces::definitions::{self as proto, Trilean};
 use saluki_common::{collections::FastHashMap, hash::StableHasher};
 use saluki_error::{generic_error, GenericError};
 use serde::{Deserialize, Serialize};

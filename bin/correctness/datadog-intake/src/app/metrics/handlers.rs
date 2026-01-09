@@ -1,5 +1,5 @@
 use axum::{body::Bytes, extract::State, http::StatusCode, Json};
-use datadog_protos::metrics::{MetricPayload, SketchPayload};
+use datadog_protos::payload::definitions::{MetricPayload, SketchPayload};
 use protobuf::Message as _;
 use stele::Metric;
 use tracing::{error, info};

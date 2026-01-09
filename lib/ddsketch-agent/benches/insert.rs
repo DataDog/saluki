@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use datadog_protos::metrics::Dogsketch;
+use datadog_protos::payload::definitions::Dogsketch;
 use ddsketch_agent::DDSketch;
 use rand::SeedableRng;
 use rand_distr::{Distribution, Pareto};

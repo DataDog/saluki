@@ -939,6 +939,8 @@ name = "datadog-protos"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "piecemeal",
+ "piecemeal-build",
  "prost",
  "prost-types",
  "protobuf",
@@ -2517,6 +2519,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06005508882fb681fd97892ecff4b7fd0fee13ef1aa569f8695dae7ab9099981"
 dependencies = [
  "siphasher",
+]
+
+[[package]]
+name = "piecemeal"
+version = "0.1.0"
+source = "git+https://github.com/tobz/piecemeal.git?branch=main#3405b20f5d8ca06cb72896fcc68b7fa457cec39c"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
+name = "piecemeal-build"
+version = "0.1.0"
+source = "git+https://github.com/tobz/piecemeal.git?branch=main#3405b20f5d8ca06cb72896fcc68b7fa457cec39c"
+dependencies = [
+ "nom 7.1.3",
+ "piecemeal",
+ "tracing",
 ]
 
 [[package]]

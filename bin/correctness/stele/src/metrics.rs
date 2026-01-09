@@ -1,6 +1,6 @@
 use std::fmt;
 
-use datadog_protos::metrics::{MetricPayload, MetricType, SketchPayload};
+use datadog_protos::payload::definitions::{MetricPayload, MetricType, SketchPayload};
 use ddsketch_agent::DDSketch;
 use float_cmp::ApproxEqRatio as _;
 use saluki_error::{generic_error, GenericError};

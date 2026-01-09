@@ -1,7 +1,7 @@
 use std::{num::NonZeroU64, time::Duration};
 
 use async_trait::async_trait;
-use datadog_protos::metrics as proto;
+use datadog_protos::payload::definitions as proto;
 use ddsketch_agent::DDSketch;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};

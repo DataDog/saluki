@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use datadog_protos::events as proto;
+use datadog_protos::payload::definitions as proto;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use protobuf::{rt::WireType, CodedOutputStream};
