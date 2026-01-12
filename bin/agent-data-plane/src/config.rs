@@ -1,7 +1,6 @@
 use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
 use saluki_io::net::ListenAddress;
-use tracing::info;
 
 /// General data plane configuration.
 #[derive(Clone, Debug)]
@@ -257,20 +256,6 @@ impl DataPlaneOtlpProxyConfiguration {
         let proxy_logs = config
             .try_get_typed("data_plane.otlp.proxy.logs.enabled")?
             .unwrap_or(true);
-
-        if enabled {
-            info!(
-                proxy_enabled = enabled,
-                core_agent_otlp_grpc_endpoint = %core_agent_otlp_grpc_endpoint,
-                core_agent_otlp_http_endpoint = %core_agent_otlp_http_endpoint,
-                proxy_traces = proxy_traces,
-                proxy_metrics = proxy_metrics,
-                proxy_logs = proxy_logs,
-                "OTLP proxy mode enabled. Select OTLP payloads will be proxied to the Core Agent."
-            );
-        } else {
-            info!("OTLP proxy mode disabled. OTLP signals will be handled natively.");
-        }
 
         Ok(Self {
             enabled,

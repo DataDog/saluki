@@ -408,7 +408,21 @@ fn add_otlp_pipeline_to_blueprint(
     if dp_config.otlp().proxy().enabled() {
         let core_agent_otlp_grpc_endpoint = dp_config.otlp().proxy().core_agent_otlp_grpc_endpoint().to_string();
         let core_agent_otlp_http_endpoint = dp_config.otlp().proxy().core_agent_otlp_http_endpoint().to_string();
-        let api_key = config.get_typed::<String>("api_key").expect("API key is required");
+        let proxy_metrics = dp_config.otlp().proxy().proxy_metrics();
+        let proxy_logs = dp_config.otlp().proxy().proxy_logs();
+        let proxy_traces = dp_config.otlp().proxy().proxy_traces();
+        let api_key = config
+            .get_typed::<String>("api_key")
+            .error_context("API key must be set.")?;
+
+        info!(
+            proxy_grpc_endpoint = %core_agent_otlp_grpc_endpoint,
+            proxy_http_endpoint = %core_agent_otlp_http_endpoint,
+            proxy_metrics,
+            proxy_logs,
+            proxy_traces,
+            "OTLP proxy mode enabled. Select OTLP payloads will be proxied to the Core Agent."
+        );
 
         let otlp_relay_config = OtlpRelayConfiguration::from_configuration(config)?;
         let otlp_decoder_config = OtlpDecoderConfiguration::from_configuration(config)?;
@@ -434,13 +448,15 @@ fn add_otlp_pipeline_to_blueprint(
                 .connect_component("dd_traces_encode", ["otlp_traces_decode"])?;
         }
     } else {
+        info!("OTLP proxy mode disabled. OTLP signals will be handled natively.");
+
         let otlp_config =
             OtlpConfiguration::from_configuration(config)?.with_workload_provider(env_provider.workload().clone());
 
         blueprint
             // Components.
             .add_source("otlp_in", otlp_config)?
-            // Metrics and logs.
+            // Metrics, logs, and traces.
             //
             // We send OTLP metrics directly to the enrichment stage of the metrics pipeline, skipping aggregation,
             // to avoid transforming counters into rates.
