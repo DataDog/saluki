@@ -173,7 +173,7 @@ impl SpanConcentrator {
         let timestamps: Vec<u64> = self.buckets.keys().copied().collect();
 
         for ts in timestamps {
-            if !force && ts > now - self.buffer_len * self.bsize {
+            if !force && ts + self.buffer_len * self.bsize > now {
                 continue;
             }
 
@@ -194,7 +194,7 @@ impl SpanConcentrator {
             }
         }
 
-        let new_oldest_ts = align_ts(now, self.bsize) - (self.buffer_len - 1) * self.bsize;
+        let new_oldest_ts = align_ts(now, self.bsize).saturating_sub((self.buffer_len - 1) * self.bsize);
         if new_oldest_ts > self.oldest_ts {
             self.oldest_ts = new_oldest_ts;
         }
