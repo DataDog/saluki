@@ -6,7 +6,7 @@ use bytes::{Buf, BufMut};
 use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use metrics::{Counter, Gauge, Histogram};
-use saluki_common::{deser::EmptyStringAsNone, task::spawn_traced_named};
+use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
 use saluki_context::{
     tags::{RawTags, RawTagsFilter},
@@ -41,7 +41,7 @@ use saluki_io::{
 };
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
-use serde_with::serde_as;
+use serde_with::{serde_as, NoneAsEmptyString};
 use snafu::{ResultExt as _, Snafu};
 use tokio::{
     select,
@@ -189,7 +189,7 @@ pub struct DogStatsDConfiguration {
     ///
     /// Defaults to unset.
     #[serde(rename = "dogstatsd_socket", default)]
-    #[serde_as(as = "EmptyStringAsNone")]
+    #[serde_as(as = "NoneAsEmptyString")]
     socket_path: Option<String>,
 
     /// The Unix domain socket path to listen on, in stream mode.
@@ -198,7 +198,7 @@ pub struct DogStatsDConfiguration {
     ///
     /// Defaults to unset.
     #[serde(rename = "dogstatsd_stream_socket", default)]
-    #[serde_as(as = "EmptyStringAsNone")]
+    #[serde_as(as = "NoneAsEmptyString")]
     socket_stream_path: Option<String>,
 
     /// Whether or not to listen for non-local traffic in UDP mode.
