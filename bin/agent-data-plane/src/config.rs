@@ -278,6 +278,7 @@ impl DataPlaneOtlpProxyConfiguration {
     }
 
     /// Returns the OTLP HTTP endpoint on the Core Agent to proxy signals to.
+    #[allow(dead_code)]
     pub fn core_agent_otlp_http_endpoint(&self) -> &str {
         &self.core_agent_otlp_http_endpoint
     }
