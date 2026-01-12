@@ -2524,7 +2524,7 @@ dependencies = [
 [[package]]
 name = "piecemeal"
 version = "0.1.0"
-source = "git+https://github.com/tobz/piecemeal.git?branch=main#3405b20f5d8ca06cb72896fcc68b7fa457cec39c"
+source = "git+https://github.com/tobz/piecemeal.git?branch=main#1de2b5c0a8ac4a5d5ebeee608ebadb59c4f2d41a"
 dependencies = [
  "byteorder",
 ]
@@ -2532,7 +2532,7 @@ dependencies = [
 [[package]]
 name = "piecemeal-build"
 version = "0.1.0"
-source = "git+https://github.com/tobz/piecemeal.git?branch=main#3405b20f5d8ca06cb72896fcc68b7fa457cec39c"
+source = "git+https://github.com/tobz/piecemeal.git?branch=main#1de2b5c0a8ac4a5d5ebeee608ebadb59c4f2d41a"
 dependencies = [
  "nom 7.1.3",
  "piecemeal",
