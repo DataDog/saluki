@@ -10,139 +10,50 @@ use float_cmp::ApproxEqRatio as _;
 use ordered_float::OrderedFloat;
 use smallvec::SmallVec;
 
-#[allow(dead_code)]
-mod config {
-    include!(concat!(env!("OUT_DIR"), "/config.rs"));
-}
-
-static SKETCH_CONFIG: Config = Config::new(
-    config::DDSKETCH_CONF_BIN_LIMIT,
-    config::DDSKETCH_CONF_GAMMA_V,
-    config::DDSKETCH_CONF_GAMMA_LN,
-    config::DDSKETCH_CONF_NORM_MIN,
-    config::DDSKETCH_CONF_NORM_BIAS,
-);
-const UV_INF: i16 = i16::MAX;
-const MAX_KEY: i16 = UV_INF;
-const MAX_BIN_WIDTH: u16 = u16::MAX;
-
-#[derive(Copy, Clone, Debug, PartialEq)]
-struct Config {
-    // Maximum number of bins per sketch.
-    bin_limit: u16,
-
-    // gamma_ln is the natural log of gamma_v, used to speed up calculating log base gamma.
-    gamma_v: f64,
-    gamma_ln: f64,
-
-    // Minimum and maximum values representable by a sketch with these params.
-    //
-    // key(x) =
-    //    0 : -min > x < min
-    //    1 : x == min
-    //   -1 : x == -min
-    // +Inf : x > max
-    // -Inf : x < -max.
-    norm_min: f64,
-
-    // Bias of the exponent, used to ensure key(x) >= 1.
-    norm_bias: i32,
-}
-
-impl Config {
-    const fn new(bin_limit: u16, gamma_v: f64, gamma_ln: f64, norm_min: f64, norm_bias: i32) -> Self {
-        Self {
-            bin_limit,
-            gamma_v,
-            gamma_ln,
-            norm_min,
-            norm_bias,
-        }
-    }
-
-    /// Gets the value lower bound of the bin at the given key.
-    #[inline]
-    pub fn bin_lower_bound(&self, k: i16) -> f64 {
-        if k < 0 {
-            return -self.bin_lower_bound(-k);
-        }
-
-        if k == MAX_KEY {
-            return f64::INFINITY;
-        }
-
-        if k == 0 {
-            return 0.0;
-        }
-
-        self.gamma_v.powf(f64::from(i32::from(k) - self.norm_bias))
-    }
-
-    /// Gets the key for the given value.
-    ///
-    /// The key corresponds to the bin where this value would be represented. The value returned here is such that: γ^k
-    /// <= v < γ^(k+1).
-    #[allow(clippy::cast_possible_truncation)]
-    #[inline]
-    pub fn key(&self, v: f64) -> i16 {
-        if v < 0.0 {
-            return -self.key(-v);
-        }
-
-        if v == 0.0 || (v > 0.0 && v < self.norm_min) || (v < 0.0 && v > -self.norm_min) {
-            return 0;
-        }
-
-        // SAFETY: `rounded` is intentionally meant to be a whole integer, and additionally, based on our target gamma
-        // ln, we expect `log_gamma` to return a value between -2^16 and 2^16, so it will always fit in an i32.
-        let rounded = self.log_gamma(v).round_ties_even() as i32;
-        let key = rounded.wrapping_add(self.norm_bias);
-
-        // SAFETY: Our upper bound of POS_INF_KEY is i16, and our lower bound is simply one, so there is no risk of
-        // truncation via conversion.
-        key.clamp(1, i32::from(MAX_KEY)) as i16
-    }
-
-    #[inline]
-    pub fn log_gamma(&self, v: f64) -> f64 {
-        v.ln() / self.gamma_ln
-    }
-}
+use crate::{AgentSketchParameters, AsBinCount as _, AsBinKey as _, SketchParameters};
 
 /// A sketch bin.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
-pub struct Bin {
+#[cfg_attr(
+    feature = "serde",
+    serde(bound(
+        serialize = "P::BinKey: serde::Serialize, P::BinCount: serde::Serialize",
+        deserialize = "P::BinKey: serde::Deserialize<'de>, P::BinCount: serde::Deserialize<'de>"
+    ))
+)]
+pub struct Bin<P: SketchParameters> {
     /// The bin index.
-    k: i16,
+    k: P::BinKey,
 
     /// The number of observations within the bin.
-    n: u16,
+    n: P::BinCount,
 }
 
-impl Bin {
+impl<P: SketchParameters> Bin<P> {
+    /// Creates a bin for the given key with a count of one.
+    pub fn single(key: P::BinKey) -> Self {
+        Bin {
+            k: key,
+            n: P::BinCount::ONE,
+        }
+    }
+
     /// Returns the key of the bin.
-    pub fn key(&self) -> i32 {
-        self.k as i32
+    pub fn key(&self) -> P::BinKey {
+        self.k
     }
 
     /// Returns the number of observations within the bin.
-    pub fn count(&self) -> u32 {
-        self.n as u32
+    pub fn count(&self) -> P::BinCount {
+        self.n
     }
 
-    #[allow(clippy::cast_possible_truncation)]
     fn increment(&mut self, n: u64) -> u64 {
-        let next = n + u64::from(self.n);
-        if next > u64::from(MAX_BIN_WIDTH) {
-            self.n = MAX_BIN_WIDTH;
-            return next - u64::from(MAX_BIN_WIDTH);
-        }
-
-        // SAFETY: We already know `next` is less than or equal to `MAX_BIN_WIDTH` if we got here, and `MAX_BIN_WIDTH`
-        // is u16, so next can't possibly be larger than a u16.
-        self.n = next as u16;
-        0
+        // This adds `n` to `self.n` while handling any overflow of the numerical type backing `self.n`.
+        let (next, overflow) = self.n.add_with_overflow(n);
+        self.n = next;
+        overflow
     }
 }
 
@@ -188,9 +99,19 @@ pub struct Bucket {
 /// [ddagent]: https://github.com/DataDog/datadog-agent
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
-pub struct DDSketch {
+#[cfg_attr(
+    feature = "serde",
+    serde(bound(
+        serialize = "P::BinKey: serde::Serialize, P::BinCount: serde::Serialize",
+        deserialize = "P::BinKey: serde::Deserialize<'de>, P::BinCount: serde::Deserialize<'de>"
+    ))
+)]
+pub struct DDSketch<P = AgentSketchParameters>
+where
+    P: SketchParameters,
+{
     /// The bins within the sketch.
-    bins: SmallVec<[Bin; 4]>,
+    bins: SmallVec<[Bin<P>; 4]>,
 
     /// The number of observations within the sketch.
     count: u64,
@@ -208,7 +129,7 @@ pub struct DDSketch {
     avg: f64,
 }
 
-impl DDSketch {
+impl<P: SketchParameters> DDSketch<P> {
     /// Returns the number of bins in the sketch.
     pub fn bin_count(&self) -> usize {
         self.bins.len()
@@ -269,7 +190,7 @@ impl DDSketch {
     }
 
     /// Returns the current bins of this sketch.
-    pub fn bins(&self) -> &[Bin] {
+    pub fn bins(&self) -> &[Bin<P>] {
         &self.bins
     }
 
@@ -304,8 +225,8 @@ impl DDSketch {
         }
     }
 
-    fn insert_key_counts(&mut self, counts: &[(i16, u64)]) {
-        let mut temp = SmallVec::<[Bin; 4]>::new();
+    fn insert_key_counts(&mut self, counts: &[(P::BinKey, u64)]) {
+        let mut temp = SmallVec::<[Bin<P>; 4]>::new();
 
         let mut bins_idx = 0;
         let mut key_idx = 0;
@@ -334,7 +255,7 @@ impl DDSketch {
                     bins_idx += 1;
                 }
                 Ordering::Equal => {
-                    generate_bins(&mut temp, bin.k, u64::from(bin.n) + kn);
+                    generate_bins(&mut temp, bin.k, bin.n.to_u64() + kn);
                     bins_idx += 1;
                     key_idx += 1;
                 }
@@ -350,14 +271,14 @@ impl DDSketch {
             key_idx += 1;
         }
 
-        trim_left(&mut temp, SKETCH_CONFIG.bin_limit);
+        trim_left(&mut temp, P::BIN_LIMIT);
 
         // PERF TODO: This is where we might do a mem::swap instead so that we could shove the bin vector into an object
         // pool but I'm not sure this actually matters at the moment.
         self.bins = temp;
     }
 
-    fn insert_keys(&mut self, mut keys: Vec<i16>) {
+    fn insert_keys(&mut self, mut keys: Vec<P::BinKey>) {
         // Updating more than 4 billion keys would be very very weird and likely indicative of something horribly
         // broken.
         //
@@ -368,20 +289,14 @@ impl DDSketch {
 
         keys.sort_unstable();
 
-        let mut temp = SmallVec::<[Bin; 4]>::new();
+        let mut temp = SmallVec::<[Bin<P>; 4]>::new();
 
         let mut bins_idx = 0;
         let mut key_idx = 0;
         let bins_len = self.bins.len();
         let keys_len = keys.len();
 
-        // PERF TODO: there's probably a fast path to be had where could check if all if the counts have existing bins
-        // that aren't yet full, and we just update them directly, although we'd still be doing a linear scan to find
-        // them since keys aren't 1:1 with their position in `self.bins` but using this method just to update one or two
-        // bins is clearly suboptimal and we wouldn't really want to scan them all just to have to back out and actually
-        // do the non-fast path.. maybe a first pass could be checking if the first/last key falls within our known
-        // min/max key, and if it doesn't, then we know we have to go through the non-fast path, and if it passes, we do
-        // the scan to see if we can just update bins directly?
+        // PERF TODO: See `insert_key_counts` for ideas on fast path optimization.
         while bins_idx < bins_len && key_idx < keys_len {
             let bin = self.bins[bins_idx];
             let vk = keys[key_idx];
@@ -398,7 +313,7 @@ impl DDSketch {
                 }
                 Ordering::Equal => {
                     let kn = buf_count_leading_equal(&keys, key_idx);
-                    generate_bins(&mut temp, bin.k, u64::from(bin.n) + kn);
+                    generate_bins(&mut temp, bin.k, bin.n.to_u64() + kn);
                     bins_idx += 1;
                     key_idx += kn as usize;
                 }
@@ -414,10 +329,9 @@ impl DDSketch {
             key_idx += kn as usize;
         }
 
-        trim_left(&mut temp, SKETCH_CONFIG.bin_limit);
+        trim_left(&mut temp, P::BIN_LIMIT);
 
-        // PERF TODO: This is where we might do a mem::swap instead so that we could shove the bin vector into an object
-        // pool but I'm not sure this actually matters at the moment.
+        // PERF TODO: See `insert_key_counts` for ideas on buffer reuse.
         self.bins = temp;
     }
 
@@ -427,15 +341,15 @@ impl DDSketch {
         // hitting `self.config.max_count()`
         self.adjust_basic_stats(v, 1);
 
-        let key = SKETCH_CONFIG.key(v);
+        let key = P::key(v);
 
         let mut insert_at = None;
 
         for (bin_idx, b) in self.bins.iter_mut().enumerate() {
             if b.k == key {
-                if b.n < MAX_BIN_WIDTH {
+                if b.n < P::MAX_BIN_COUNT {
                     // Fast path for adding to an existing bin without overflow.
-                    b.n += 1;
+                    b.n = b.n + P::BinCount::ONE;
                     return;
                 } else {
                     insert_at = Some(bin_idx);
@@ -448,12 +362,13 @@ impl DDSketch {
             }
         }
 
+        let bin = Bin::single(key);
         if let Some(bin_idx) = insert_at {
-            self.bins.insert(bin_idx, Bin { k: key, n: 1 });
+            self.bins.insert(bin_idx, bin);
         } else {
-            self.bins.push(Bin { k: key, n: 1 });
+            self.bins.push(bin);
         }
-        trim_left(&mut self.bins, SKETCH_CONFIG.bin_limit);
+        trim_left(&mut self.bins, P::BIN_LIMIT);
     }
 
     /// Inserts many values into the sketch.
@@ -463,7 +378,7 @@ impl DDSketch {
         let mut keys = Vec::with_capacity(vs.len());
         for v in vs {
             self.adjust_basic_stats(*v, 1);
-            keys.push(SKETCH_CONFIG.key(*v));
+            keys.push(P::key(*v));
         }
         self.insert_keys(keys);
     }
@@ -477,7 +392,7 @@ impl DDSketch {
         } else {
             self.adjust_basic_stats(v, n);
 
-            let key = SKETCH_CONFIG.key(v);
+            let key = P::key(v);
             self.insert_key_counts(&[(key, n)]);
         }
     }
@@ -485,23 +400,23 @@ impl DDSketch {
     fn insert_interpolate_bucket(&mut self, lower: f64, upper: f64, count: u64) {
         // Find the keys for the bins where the lower bound and upper bound would end up, and collect all of the keys in
         // between, inclusive.
-        let lower_key = SKETCH_CONFIG.key(lower);
-        let upper_key = SKETCH_CONFIG.key(upper);
-        let keys = (lower_key..=upper_key).collect::<Vec<_>>();
+        let lower_key = P::key(lower);
+        let upper_key = P::key(upper);
+        let keys = lower_key.keys_between(upper_key);
 
         let mut key_counts = Vec::new();
         let mut remaining_count = count;
         let distance = upper - lower;
         let mut start_idx = 0;
         let mut end_idx = 1;
-        let mut lower_bound = SKETCH_CONFIG.bin_lower_bound(keys[start_idx]);
+        let mut lower_bound = P::bin_lower_bound(keys[start_idx]);
         let mut remainder = 0.0;
 
         while end_idx < keys.len() && remaining_count > 0 {
             // For each key, map the total distance between the input lower/upper bound against the sketch lower/upper
             // bound for the current sketch bin, which tells us how much of the input count to apply to the current
             // sketch bin.
-            let upper_bound = SKETCH_CONFIG.bin_lower_bound(keys[end_idx]);
+            let upper_bound = P::bin_lower_bound(keys[end_idx]);
             let fkn = ((upper_bound - lower_bound) / distance) * count as f64;
             if fkn > 1.0 {
                 remainder += fkn - fkn.trunc();
@@ -534,7 +449,7 @@ impl DDSketch {
 
         if remaining_count > 0 {
             let last_key = keys[start_idx];
-            lower_bound = SKETCH_CONFIG.bin_lower_bound(last_key);
+            lower_bound = P::bin_lower_bound(last_key);
             self.adjust_basic_stats(lower_bound, remaining_count);
             key_counts.push((last_key, remaining_count));
         }
@@ -583,10 +498,10 @@ impl DDSketch {
     ///
     /// Used only for unit testing so that we can create a sketch with an exact layout, which allows testing around the
     /// resulting bins when feeding in specific values, as well as generating explicitly bad layouts for testing.
-    #[allow(dead_code)]
-    pub(crate) fn insert_raw_bin(&mut self, k: i16, n: u16) {
-        let v = SKETCH_CONFIG.bin_lower_bound(k);
-        self.adjust_basic_stats(v, u64::from(n));
+    #[cfg(test)]
+    pub(crate) fn insert_raw_bin(&mut self, k: P::BinKey, n: P::BinCount) {
+        let v = P::bin_lower_bound(k);
+        self.adjust_basic_stats(v, n.to_u64());
         self.bins.push(Bin { k, n });
     }
 
@@ -609,14 +524,15 @@ impl DDSketch {
         let wanted_rank = rank(self.count, q);
 
         for (i, bin) in self.bins.iter().enumerate() {
-            n += f64::from(bin.n);
+            let nf = bin.n.to_f64();
+            n += nf;
             if n <= wanted_rank {
                 continue;
             }
 
-            let weight = (n - wanted_rank) / f64::from(bin.n);
-            let mut v_low = SKETCH_CONFIG.bin_lower_bound(bin.k);
-            let mut v_high = v_low * SKETCH_CONFIG.gamma_v;
+            let weight = (n - wanted_rank) / nf;
+            let mut v_low = P::bin_lower_bound(bin.k);
+            let mut v_high = v_low * P::GAMMA_V;
 
             if i == self.bins.len() {
                 v_high = self.max;
@@ -635,7 +551,7 @@ impl DDSketch {
     ///
     /// All samples present in the other sketch will be correctly represented in this sketch, and summary statistics
     /// such as the sum, average, count, min, and max, will represent the sum of samples from both sketches.
-    pub fn merge(&mut self, other: &DDSketch) {
+    pub fn merge(&mut self, other: &DDSketch<P>) {
         // Merge the basic statistics together.
         self.count += other.count;
         if other.max > self.max {
@@ -648,7 +564,7 @@ impl DDSketch {
         self.avg = self.avg + (other.avg - self.avg) * other.count as f64 / self.count as f64;
 
         // Now merge the bins.
-        let mut temp = SmallVec::<[Bin; 4]>::new();
+        let mut temp = SmallVec::<[Bin<P>; 4]>::new();
 
         let mut bins_idx = 0;
         for other_bin in &other.bins {
@@ -665,18 +581,20 @@ impl DDSketch {
                 generate_bins(
                     &mut temp,
                     other_bin.k,
-                    u64::from(other_bin.n) + u64::from(self.bins[bins_idx].n),
+                    other_bin.n.to_u64() + self.bins[bins_idx].n.to_u64(),
                 );
                 bins_idx += 1;
             }
         }
 
         temp.extend_from_slice(&self.bins[bins_idx..]);
-        trim_left(&mut temp, SKETCH_CONFIG.bin_limit);
+        trim_left(&mut temp, P::BIN_LIMIT);
 
         self.bins = temp;
     }
+}
 
+impl DDSketch<AgentSketchParameters> {
     /// Merges this sketch into the `Dogsketch` Protocol Buffers representation.
     pub fn merge_to_dogsketch(&self, dogsketch: &mut Dogsketch) {
         dogsketch.set_cnt(i64::try_from(self.count).unwrap_or(i64::MAX));
@@ -743,15 +661,11 @@ impl DDSketch {
     }
 }
 
-impl PartialEq for DDSketch {
+impl<P: SketchParameters + PartialEq> PartialEq for DDSketch<P> {
     fn eq(&self, other: &Self) -> bool {
-        // We skip checking the configuration because we don't allow creating configurations by hand, and it's always
-        // locked to the constants used by the Datadog Agent.  We only check the configuration equality manually in
-        // `DDSketch::merge`, to protect ourselves in the future if different configurations become allowed.
-        //
-        // Additionally, we also use floating-point-specific relative comparisons for sum/avg because they can be
-        // minimally different between sketches purely due to floating-point behavior, despite being fed the same exact
-        // data in terms of recorded samples.
+        // We also use floating-point-specific relative comparisons for sum/avg because they can be minimally different
+        // between sketches purely due to floating-point behavior, despite being fed the same exact data in terms of
+        // recorded samples.
         self.count == other.count
             && float_eq(self.min, other.min)
             && float_eq(self.max, other.max)
@@ -761,7 +675,7 @@ impl PartialEq for DDSketch {
     }
 }
 
-impl Default for DDSketch {
+impl<P: SketchParameters> Default for DDSketch<P> {
     fn default() -> Self {
         Self {
             bins: SmallVec::new(),
@@ -774,9 +688,9 @@ impl Default for DDSketch {
     }
 }
 
-impl Eq for DDSketch {}
+impl<P: SketchParameters + Eq> Eq for DDSketch<P> {}
 
-impl TryFrom<Dogsketch> for DDSketch {
+impl TryFrom<Dogsketch> for DDSketch<AgentSketchParameters> {
     type Error = &'static str;
 
     fn try_from(value: Dogsketch) -> Result<Self, Self::Error> {
@@ -820,7 +734,7 @@ fn rank(count: u64, q: f64) -> f64 {
 }
 
 #[allow(clippy::cast_possible_truncation)]
-fn buf_count_leading_equal(keys: &[i16], start_idx: usize) -> u64 {
+fn buf_count_leading_equal<K: Eq>(keys: &[K], start_idx: usize) -> u64 {
     if start_idx == keys.len() - 1 {
         return 1;
     }
@@ -835,85 +749,95 @@ fn buf_count_leading_equal(keys: &[i16], start_idx: usize) -> u64 {
     (idx - start_idx) as u64
 }
 
-fn trim_left(bins: &mut SmallVec<[Bin; 4]>, bin_limit: u16) {
-    // We won't ever support Vector running on anything other than a 32-bit platform and above, I imagine, so this
-    // should always be safe.
-    let bin_limit = bin_limit as usize;
+fn trim_left<P: SketchParameters>(bins: &mut SmallVec<[Bin<P>; 4]>, bin_limit: usize) {
     if bin_limit == 0 || bins.len() < bin_limit {
         return;
     }
 
+    // Figure out how many bins we need to remove by seeing how far past the configured bin limit we are.
     let num_to_remove = bins.len() - bin_limit;
-    let mut missing = 0;
-    let mut overflow = SmallVec::<[Bin; 4]>::new();
+    let mut remainder = 0;
+    let mut overflow_bins = SmallVec::<[Bin<P>; 4]>::new();
 
+    // Working from the left (or "low collapsing"), go through the number of bins we need to remove and aggregate
+    // their count together. When our aggregated count exceeds the width of a bin, we create an "overflow" bin (based
+    // on the key of the bin we're currently iterating over) with the count set to the max bin width, and then we
+    // remove that amount from our aggregated count.
+    //
+    // This ends up looking something like this:
+    //
+    //  Original bins, with a bin width of 100 and `num_to_remove` as `5`:
+    // ┌───────────┐ ┌───────────┐ ┌───────────┐ ┌───────────┐ ┌───────────┐ ┌───────────┐
+    // │  (0, 50)  │ │  (1, 25)  │ │  (2, 50)  │ │  (3, 40)  │ │  (4, 40)  │ │  (5, 50)  │
+    // └───────────┘ └───────────┘ └───────────┘ └───────────┘ └───────────┘ └───────────┘
+    //
+    // We collapse the first two bins, which don't overflow the bin width, but as soon as we hit the third bin, we
+    // overflow (125 > 100), so we capture an overflow bin (key 2, width: 100) and hold on to the remainder (25). We
+    // continue iterating over the next two bins which leads to us overflowing again when hitting the fifth bin (105 >
+    // 100). We capture a second overflow bin (key: 4, width: 100) and then exit the loop. Finally, our cleanup logic
+    // notices we still have a non-zero remainder (5), which we need to add to next bin that comes after the last bin
+    // that we iterated over:
+    // ┌──────────────────┐ ┌───────────────────┐ ┌──────────────────┐ ┌─────────────────┐
+    // │     (2, 100)     │ │      (4, 100)     │ │      (4, 5)      │ │     (5, 55)     │
+    // └──────────────────┘ └───────────────────┘ └──────────────────┘ └─────────────────┘
     for bin in bins.iter().take(num_to_remove) {
-        missing += u64::from(bin.n);
+        let (n, overflow) = bin.n.add_with_overflow(remainder);
+        remainder = if overflow > 0 {
+            // We overflowed, so we capture an overflow bin with a count of `n`.
+            overflow_bins.push(Bin { k: bin.k, n });
+            overflow
+        } else {
+            // We didn't overflow, so keep carrying our sum forward as our "remainder".
+            n.to_u64()
+        };
+    }
 
-        if missing > u64::from(MAX_BIN_WIDTH) {
-            overflow.push(Bin {
-                k: bin.k,
-                n: MAX_BIN_WIDTH,
-            });
-
-            missing -= u64::from(MAX_BIN_WIDTH);
+    // If we have a non-zero remainder, we add it to the first bin that comes after the bins we iterated over.
+    //
+    // Similarly, if we would overflow _that_ bin by incrementing it with the remainder, then we have to split it into
+    // multiple bins of the same key.
+    if remainder > 0 {
+        let bin_remove = &mut bins[num_to_remove];
+        let final_remainder = bin_remove.increment(remainder);
+        if final_remainder > 0 {
+            generate_bins(&mut overflow_bins, bin_remove.k, final_remainder);
         }
     }
 
-    let bin_remove = &mut bins[num_to_remove];
-    missing = bin_remove.increment(missing);
-    if missing > 0 {
-        generate_bins(&mut overflow, bin_remove.k, missing);
-    }
-
-    let overflow_len = overflow.len();
+    let overflow_bins_len = overflow_bins.len();
     let (_, bins_end) = bins.split_at(num_to_remove);
-    overflow.extend_from_slice(bins_end);
+    overflow_bins.extend_from_slice(bins_end);
 
     // I still don't yet understand how this works, since you'd think bin limit should be the overall limit of the
     // number of bins, but we're allowing more than that.. :thinkies:
-    overflow.truncate(bin_limit + overflow_len);
+    overflow_bins.truncate(bin_limit + overflow_bins_len);
 
-    mem::swap(bins, &mut overflow);
+    mem::swap(bins, &mut overflow_bins);
 }
 
-#[allow(clippy::cast_possible_truncation)]
-fn generate_bins(bins: &mut SmallVec<[Bin; 4]>, k: i16, n: u64) {
-    if n < u64::from(MAX_BIN_WIDTH) {
-        // SAFETY: Cannot truncate `n`, as it's less than a u16 value.
-        bins.push(Bin { k, n: n as u16 });
-    } else {
-        let overflow = n % u64::from(MAX_BIN_WIDTH);
-        if overflow != 0 {
-            bins.push(Bin {
-                k,
-                // SAFETY: Cannot truncate `overflow`, as it's modulo'd by a u16 value.
-                n: overflow as u16,
-            });
-        }
+fn generate_bins<P: SketchParameters>(bins: &mut SmallVec<[Bin<P>; 4]>, k: P::BinKey, n: u64) {
+    // We split `n` into chunks of `P::MAX_BIN_COUNT`, with the remainder bin (the one that is not full) coming first.
+    let (full_bins, remainder) = P::BinCount::div_rem_overflow(n);
+    if !remainder.is_zero() {
+        bins.push(Bin { k, n: remainder });
+    }
 
-        for _ in 0..(n / u64::from(MAX_BIN_WIDTH)) {
-            bins.push(Bin { k, n: MAX_BIN_WIDTH });
-        }
+    for _ in 0..full_bins {
+        bins.push(Bin { k, n: P::MAX_BIN_COUNT });
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{config::AGENT_DEFAULT_EPS, Bucket, Config, DDSketch, MAX_KEY, SKETCH_CONFIG};
+    use pretty_assertions::assert_eq;
+
+    use super::*;
 
     const FLOATING_POINT_ACCEPTABLE_ERROR: f64 = 1.0e-10;
 
     #[test]
-    fn test_ddsketch_config_key_lower_bound_identity() {
-        for k in (-MAX_KEY + 1)..MAX_KEY {
-            assert_eq!(k, SKETCH_CONFIG.key(SKETCH_CONFIG.bin_lower_bound(k)));
-        }
-    }
-
-    #[test]
     fn test_ddsketch_basic() {
-        let mut sketch = DDSketch::default();
+        let mut sketch: DDSketch = DDSketch::default();
         assert!(sketch.is_empty());
         assert_eq!(sketch.count(), 0);
         assert_eq!(sketch.min(), None);
@@ -940,7 +864,7 @@ mod tests {
 
     #[test]
     fn test_ddsketch_clear() {
-        let sketch1 = DDSketch::default();
+        let sketch1: DDSketch = DDSketch::default();
         let mut sketch2 = DDSketch::default();
 
         assert_eq!(sketch1, sketch2);
@@ -963,7 +887,7 @@ mod tests {
         let end = 1.0;
         let delta = 0.0002;
 
-        let mut sketch = DDSketch::default();
+        let mut sketch: DDSketch = DDSketch::default();
 
         let mut v = start;
         while v <= end {
@@ -983,7 +907,8 @@ mod tests {
 
     #[test]
     fn test_out_of_range_buckets_error() {
-        let mut sketch = DDSketch::default();
+        let empty_sketch: DDSketch = DDSketch::default();
+        let mut sketch: DDSketch = DDSketch::default();
 
         let buckets = vec![
             Bucket {
@@ -1006,15 +931,15 @@ mod tests {
         );
 
         // Assert the sketch remains unchanged.
-        assert_eq!(sketch, DDSketch::default());
+        assert_eq!(empty_sketch, sketch);
     }
 
     #[test]
     fn test_merge() {
-        let mut all_values = DDSketch::default();
-        let mut odd_values = DDSketch::default();
-        let mut even_values = DDSketch::default();
-        let mut all_values_many = DDSketch::default();
+        let mut all_values: DDSketch = DDSketch::default();
+        let mut odd_values: DDSketch = DDSketch::default();
+        let mut even_values: DDSketch = DDSketch::default();
+        let mut all_values_many: DDSketch = DDSketch::default();
 
         let mut values = Vec::new();
         for i in -50..=50 {
@@ -1067,27 +992,28 @@ mod tests {
 
     #[test]
     fn test_relative_accuracy_fast() {
-        // These values are based on the agent's unit tests for asserting relative accuracy of the DDSketch
-        // implementation.  Notably, it does not seem to test the full extent of values that the open-source
-        // implementations do, but then again... all we care about is parity with the agent version so we can pass them
+        // These values are based on the Agent's unit tests for asserting relative accuracy of the DDSketch
+        // implementation. Notably, it does not seem to test the full extent of values that the open-source
+        // implementations do, but then again... all we care about is parity with the Agent version so we can pass them
         // through.
         //
         // Another noteworthy thing: it seems that they don't test from the actual targeted minimum value, which is
         // 1.0e-9, which would give nanosecond granularity vs just microsecond granularity.
         let min_value = 1.0;
+
         // We don't care about precision loss, just consistency.
         #[allow(clippy::cast_possible_truncation)]
-        let max_value = SKETCH_CONFIG.gamma_v.powf(5.0) as f32;
+        let max_value = AgentSketchParameters::GAMMA_V.powf(5.0) as f32;
 
-        test_relative_accuracy(&SKETCH_CONFIG, AGENT_DEFAULT_EPS, min_value, max_value);
+        test_relative_accuracy::<AgentSketchParameters>(min_value, max_value);
     }
 
     #[test]
     #[cfg(feature = "ddsketch_extended")]
     fn test_relative_accuracy_slow() {
-        // These values are based on the agent's unit tests for asserting relative accuracy of the DDSketch
-        // implementation.  Notably, it does not seem to test the full extent of values that the open-source
-        // implementations do, but then again... all we care about is parity with the agent version so we can pass them
+        // These values are based on the Agent's unit tests for asserting relative accuracy of the DDSketch
+        // implementation. Notably, it does not seem to test the full extent of values that the open-source
+        // implementations do, but then again... all we care about is parity with the Agent version so we can pass them
         // through.
         //
         // Another noteworthy thing: it seems that they don't test from the actual targeted minimum value, which is
@@ -1098,7 +1024,7 @@ mod tests {
         let min_value = 1.0e-6;
         let max_value = i64::MAX as f32;
 
-        test_relative_accuracy(&SKETCH_CONFIG, AGENT_DEFAULT_EPS, min_value, max_value)
+        test_relative_accuracy::<AgentSketchParameters>(min_value, max_value);
     }
 
     fn parse_sketch_from_string_bins(layout: &str) -> DDSketch {
@@ -1292,17 +1218,23 @@ mod tests {
             Case { lower: 1_000.0, upper: 10_000.0, count: 10_000_000 - 1, allowed_err: 0.0002, expected: "1784:34970 1785:35516 1786:36070 1787:36636 1788:37208 1789:37788 1790:38380 1791:38978 1792:39588 1793:40206 1794:40836 1795:41472 1796:42122 1797:42778 1798:43448 1799:44126 1800:44816 1801:45516 1802:46226 1803:46950 1804:47682 1805:48430 1806:49184 1807:49954 1808:50732 1809:51528 1810:52330 1811:53150 1812:53980 1813:54824 1814:55678 1815:56550 1816:57434 1817:58330 1818:59244 1819:60166 1820:61108 1821:62064 1822:63032 1823:64018 1824:65018 1825:497 1825:65535 1826:1531 1826:65535 1827:2579 1827:65535 1828:3643 1828:65535 1829:4723 1829:65535 1830:5821 1830:65535 1831:6935 1831:65535 1832:8069 1832:65535 1833:9219 1833:65535 1834:10387 1834:65535 1835:11573 1835:65535 1836:12777 1836:65535 1837:14001 1837:65535 1838:15245 1838:65535 1839:16505 1839:65535 1840:17789 1840:65535 1841:19089 1841:65535 1842:20413 1842:65535 1843:21755 1843:65535 1844:23119 1844:65535 1845:24505 1845:65535 1846:25911 1846:65535 1847:27341 1847:65535 1848:28791 1848:65535 1849:30265 1849:65535 1850:31761 1850:65535 1851:33283 1851:65535 1852:34827 1852:65535 1853:36393 1853:65535 1854:37987 1854:65535 1855:39605 1855:65535 1856:41247 1856:65535 1857:42917 1857:65535 1858:44609 1858:65535 1859:46333 1859:65535 1860:48079 1860:65535 1861:49855 1861:65535 1862:51657 1862:65535 1863:53489 1863:65535 1864:55347 1864:65535 1865:57239 1865:65535 1866:59155 1866:65535 1867:61103 1867:65535 1868:63083 1868:65535 1869:65093 1869:65535 1870:1598 1870:65535 1870:65535 1871:3670 1871:65535 1871:65535 1872:5778 1872:65535 1872:65535 1873:7914 1873:65535 1873:65535 1874:10086 1874:65535 1874:65535 1875:12292 1875:65535 1875:65535 1876:14532 1876:65535 1876:65535 1877:16808 1877:65535 1877:65535 1878:19118 1878:65535 1878:65535 1879:21464 1879:65535 1879:65535 1880:23846 1880:65535 1880:65535 1881:26270 1881:65535 1881:65535 1882:28726 1882:65535 1882:65535 1883:31224 1883:65535 1883:65535 1884:33758 1884:65535 1884:65535 1885:36336 1885:65535 1885:65535 1886:38950 1886:65535 1886:65535 1887:41606 1887:65535 1887:65535 1888:44306 1888:65535 1888:65535 1889:47046 1889:65535 1889:65535 1890:49828 1890:65535 1890:65535 1891:52654 1891:65535 1891:65535 1892:55526 1892:65535 1892:65535 1893:58442 1893:65535 1893:65535 1894:61402 1894:65535 1894:65535 1895:64410 1895:65535 1895:65535 1896:1929 1896:65535 1896:65535 1896:65535 1897:5031 1897:65535 1897:65535 1897:65535 1898:8181 1898:65535 1898:65535 1898:65535 1899:11381 1899:65535 1899:65535 1899:65535 1900:14633 1900:65535 1900:65535 1900:65535 1901:17931 1901:65535 1901:65535 1901:65535 1902:21283 1902:65535 1902:65535 1902:65535 1903:24689 1903:65535 1903:65535 1903:65535 1904:28147 1904:65535 1904:65535 1904:65535 1905:31657 1905:65535 1905:65535 1905:65535 1906:35225 1906:65535 1906:65535 1906:65535 1907:38847 1907:65535 1907:65535 1907:65535 1908:42525 1908:65535 1908:65535 1908:65535 1909:46263 1909:65535 1909:65535 1909:65535 1910:50057 1910:65535 1910:65535 1910:65535 1911:53911 1911:65535 1911:65535 1911:65535 1912:57825 1912:65535 1912:65535 1912:65535 1913:61801 1913:65535 1913:65535 1913:65535 1914:304 1914:65535 1914:65535 1914:65535 1914:65535 1915:4404 1915:65535 1915:65535 1915:65535 1915:65535 1916:8570 1916:65535 1916:65535 1916:65535 1916:65535 1917:12798 1917:65535 1917:65535 1917:65535 1917:65535 1918:17094 1918:65535 1918:65535 1918:65535 1918:65535 1919:21458 1919:65535 1919:65535 1919:65535 1919:65535 1920:25890 1920:65535 1920:65535 1920:65535 1920:65535 1921:30390 1921:65535 1921:65535 1921:65535 1921:65535 1922:34960 1922:65535 1922:65535 1922:65535 1922:65535 1923:39602 1923:65535 1923:65535 1923:65535 1923:65535 1924:44316 1924:65535 1924:65535 1924:65535 1924:65535 1925:49106 1925:65535 1925:65535 1925:65535 1925:65535 1926:53970 1926:65535 1926:65535 1926:65535 1926:65535 1927:58906 1927:65535 1927:65535 1927:65535 1927:65535 1928:63926 1928:65535 1928:65535 1928:65535 1928:65535 1929:3483 1929:65535 1929:65535 1929:65535 1929:65535 1929:65535 1930:8659 1930:65535 1930:65535 1930:65535 1930:65535 1930:65535 1931:13913 1931:65535 1931:65535 1931:65535 1931:65535 1931:65535 1932:34822" },
         ];
 
-        for case in cases {
+        for (idx, case) in cases.iter().enumerate() {
             let mut sketch = DDSketch::default();
             assert!(sketch.is_empty());
+
+            println!("running single insert case #{}...", idx);
 
             sketch.insert_interpolate_bucket(case.lower, case.upper, case.count);
             check_result(&sketch, case);
+
+            println!("finished single insert case #{}.", idx);
         }
 
-        for case in double_insert_cases {
+        for (idx, case) in double_insert_cases.iter().enumerate() {
             let mut sketch = DDSketch::default();
             assert!(sketch.is_empty());
+
+            println!("running double insert case #{}...", idx);
 
             sketch.insert_interpolate_bucket(case.lower, case.upper, case.count);
             sketch.insert_interpolate_bucket(case.lower, case.upper, case.count);
@@ -1310,14 +1242,17 @@ mod tests {
             let mut case = case.clone();
             case.count *= 2;
             check_result(&sketch, &case);
+
+            println!("finished double insert case #{}.", idx);
         }
     }
 
-    fn test_relative_accuracy(config: &Config, rel_acc: f64, min_value: f32, max_value: f32) {
-        let max_observed_rel_acc = check_max_relative_accuracy(config, min_value, max_value);
+    fn test_relative_accuracy<P: SketchParameters>(min_value: f32, max_value: f32) {
+        let max_observed_rel_acc = check_max_relative_accuracy::<P>(min_value, max_value);
         assert!(
-            max_observed_rel_acc <= rel_acc + FLOATING_POINT_ACCEPTABLE_ERROR,
-            "observed out of bound max relative acc: {max_observed_rel_acc}, target rel acc={rel_acc}",
+            max_observed_rel_acc <= P::RELATIVE_ACCURACY + FLOATING_POINT_ACCEPTABLE_ERROR,
+            "observed out of bound max relative acc: {max_observed_rel_acc}, target rel acc={}",
+            P::RELATIVE_ACCURACY
         );
     }
 
@@ -1342,14 +1277,14 @@ mod tests {
         }
     }
 
-    fn check_max_relative_accuracy(config: &Config, min_value: f32, max_value: f32) -> f64 {
+    fn check_max_relative_accuracy<P: SketchParameters>(min_value: f32, max_value: f32) -> f64 {
         assert!(min_value < max_value, "min_value must be less than max_value");
 
         let mut v = min_value;
         let mut max_relative_acc = 0.0;
         while v < max_value {
             let target = f64::from(v);
-            let actual = config.bin_lower_bound(config.key(target));
+            let actual = P::bin_lower_bound(P::key(target));
 
             let relative_acc = compute_relative_accuracy(target, actual);
             if relative_acc > max_relative_acc {
@@ -1360,12 +1295,187 @@ mod tests {
         }
 
         // Final iteration to make sure we hit the highest value.
-        let actual = config.bin_lower_bound(config.key(f64::from(max_value)));
+        let actual = P::bin_lower_bound(P::key(f64::from(max_value)));
         let relative_acc = compute_relative_accuracy(f64::from(max_value), actual);
         if relative_acc > max_relative_acc {
             max_relative_acc = relative_acc;
         }
 
         max_relative_acc
+    }
+
+    // Merge edge case tests
+
+    #[test]
+    fn test_merge_empty_sketches() {
+        let mut s1: DDSketch = DDSketch::default();
+        let s2: DDSketch = DDSketch::default();
+        s1.merge(&s2);
+        assert!(s1.is_empty());
+        assert_eq!(s1.count(), 0);
+    }
+
+    #[test]
+    fn test_merge_into_empty() {
+        let mut s1: DDSketch = DDSketch::default();
+        let mut s2: DDSketch = DDSketch::default();
+        s2.insert(1.0);
+        s2.insert(2.0);
+        s1.merge(&s2);
+        assert_eq!(s1.count(), 2);
+        assert_eq!(s1.min(), Some(1.0));
+        assert_eq!(s1.max(), Some(2.0));
+    }
+
+    #[test]
+    fn test_merge_from_empty() {
+        let mut s1: DDSketch = DDSketch::default();
+        s1.insert(1.0);
+        s1.insert(2.0);
+        let s2: DDSketch = DDSketch::default();
+        let original_count = s1.count();
+        let original_min = s1.min();
+        let original_max = s1.max();
+        s1.merge(&s2);
+        assert_eq!(s1.count(), original_count);
+        assert_eq!(s1.min(), original_min);
+        assert_eq!(s1.max(), original_max);
+    }
+
+    #[test]
+    fn test_merge_no_bin_overlap() {
+        let mut s1: DDSketch = DDSketch::default();
+        let mut s2: DDSketch = DDSketch::default();
+        // Insert values in very different ranges to ensure no bin overlap
+        s1.insert(0.001);
+        s2.insert(1_000_000.0);
+        let bins_before = s1.bin_count() + s2.bin_count();
+        s1.merge(&s2);
+        // After merge, should have all bins from both sketches since they don't overlap
+        assert_eq!(s1.bin_count(), bins_before);
+        assert_eq!(s1.count(), 2);
+    }
+
+    // Quantile boundary tests
+
+    #[test]
+    fn test_quantile_empty_sketch() {
+        let sketch: DDSketch = DDSketch::default();
+        assert_eq!(sketch.quantile(0.0), None);
+        assert_eq!(sketch.quantile(0.5), None);
+        assert_eq!(sketch.quantile(1.0), None);
+    }
+
+    #[test]
+    fn test_quantile_exact_boundaries() {
+        let mut sketch: DDSketch = DDSketch::default();
+        for i in 1..=100 {
+            sketch.insert(f64::from(i));
+        }
+
+        // q=0.0 should return min
+        assert_eq!(sketch.quantile(0.0), Some(1.0));
+
+        // q=1.0 should return max
+        assert_eq!(sketch.quantile(1.0), Some(100.0));
+
+        // q=0.5 should be close to median (within relative accuracy)
+        let median = sketch.quantile(0.5).unwrap();
+        assert!((median - 50.5).abs() < 2.0, "median {median} should be close to 50.5");
+    }
+
+    #[test]
+    fn test_quantile_out_of_range_clamps() {
+        let mut sketch: DDSketch = DDSketch::default();
+        sketch.insert(10.0);
+        sketch.insert(20.0);
+        sketch.insert(30.0);
+
+        // Negative quantile should clamp to min
+        assert_eq!(sketch.quantile(-0.5), Some(10.0));
+
+        // Quantile > 1.0 should clamp to max
+        assert_eq!(sketch.quantile(1.5), Some(30.0));
+    }
+
+    // Large count tests
+
+    #[test]
+    fn test_insert_n_exceeds_bin_count_max() {
+        let mut sketch: DDSketch = DDSketch::default();
+        // Insert more than u16::MAX (65535) into a single value, which should create multiple bins
+        let large_count = u64::from(u16::MAX) + 100;
+        sketch.insert_n(1.0, large_count);
+
+        // Should have created multiple bins for the same key
+        assert!(sketch.bin_count() >= 2, "should have multiple bins for overflow");
+        assert_eq!(sketch.count(), large_count);
+    }
+
+    #[test]
+    fn test_insert_n_exactly_max() {
+        let mut sketch: DDSketch = DDSketch::default();
+        // Insert exactly u16::MAX
+        sketch.insert_n(1.0, u64::from(u16::MAX));
+        assert_eq!(sketch.count(), u64::from(u16::MAX));
+        // Should fit in one bin
+        assert_eq!(sketch.bin_count(), 1);
+    }
+
+    #[test]
+    fn test_insert_many_large_batch() {
+        let mut sketch: DDSketch = DDSketch::default();
+        // Insert a large batch of values
+        let values: Vec<f64> = (0..10_000).map(|i| f64::from(i) * 0.1).collect();
+        sketch.insert_many(&values);
+        assert_eq!(sketch.count(), 10_000);
+    }
+
+    // Special float value tests
+    // These tests document current behavior with special float values.
+
+    #[test]
+    fn test_insert_zero() {
+        let mut sketch: DDSketch = DDSketch::default();
+        sketch.insert(0.0);
+        assert_eq!(sketch.count(), 1);
+        assert_eq!(sketch.min(), Some(0.0));
+        assert_eq!(sketch.max(), Some(0.0));
+        // Zero should map to key 0
+        assert_eq!(sketch.bin_count(), 1);
+    }
+
+    #[test]
+    fn test_insert_negative_zero() {
+        let mut sketch: DDSketch = DDSketch::default();
+        sketch.insert(-0.0);
+        assert_eq!(sketch.count(), 1);
+        // Negative zero should be treated the same as zero
+        assert_eq!(sketch.bin_count(), 1);
+    }
+
+    #[test]
+    fn test_insert_very_small_positive() {
+        let mut sketch: DDSketch = DDSketch::default();
+        // Insert a value smaller than NORM_MIN (should map to key 0)
+        sketch.insert(1.0e-15);
+        assert_eq!(sketch.count(), 1);
+        // Very small values below NORM_MIN map to key 0 (the zero band)
+        let key = AgentSketchParameters::key(1.0e-15);
+        assert_eq!(key, 0);
+    }
+
+    #[test]
+    fn test_insert_negative_values() {
+        let mut sketch: DDSketch = DDSketch::default();
+        sketch.insert(-5.0);
+        sketch.insert(-10.0);
+        sketch.insert(-1.0);
+        assert_eq!(sketch.count(), 3);
+        assert_eq!(sketch.min(), Some(-10.0));
+        assert_eq!(sketch.max(), Some(-1.0));
+        // Negative values should have negative keys
+        let key = AgentSketchParameters::key(-5.0);
+        assert!(key < 0);
     }
 }

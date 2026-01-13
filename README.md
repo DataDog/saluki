@@ -22,8 +22,8 @@ application-specific binaries.
 ### Shared libraries
 
 - `lib/datadog-protos`: Rust bindings generated from Protocol Buffers definitions for metrics/trace intake APIs
-- `lib/ddsketch-agent`: Rust implementation of the [DDSketch][ddsketch] algorithm matched to the implementation
-  [used][ddsketch-agent] in the Datadog Agent
+- `lib/ddsketch`: Rust implementation of the [DDSketch][ddsketch] algorithm matched to the implementation
+  [used][ddsketch] in the Datadog Agent
 - `lib/memory-accounting`: foundational traits and helpers for declaring memory bounds on components, and partitioning
   memory grants based on those components
 - `lib/process-memory`: cross-platform library for querying the RSS of the current process with few to no allocations
@@ -73,6 +73,6 @@ Please refer to our [Security Policy][security-policy] if you believe you have f
 
 [standalone-dsd]: https://github.com/DataDog/datadog-agent/tree/main/cmd/dogstatsd
 [ddsketch]: https://www.vldb.org/pvldb/vol12/p2195-masson.pdf
-[ddsketch-agent]: https://github.com/DataDog/opentelemetry-mapping-go/blob/main/pkg/quantile/sparse.go
+[ddsketch]: https://github.com/DataDog/opentelemetry-mapping-go/blob/main/pkg/quantile/sparse.go
 [contributing]: docs/CONTRIBUTING.md
 [security-policy]: SECURITY.md

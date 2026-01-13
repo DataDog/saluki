@@ -1,5 +1,5 @@
 [package]
-name = "ddsketch-agent"
+name = "ddsketch"
 version = "0.1.0"
 edition = { workspace = true }
 license = { workspace = true }
@@ -15,6 +15,7 @@ serde = ["dep:serde", "smallvec/serde"]
 [dependencies]
 datadog-protos = { workspace = true }
 float-cmp = { workspace = true, features = ["ratio"] }
+num-traits = { workspace = true }
 ordered-float = { workspace = true }
 serde = { workspace = true, optional = true }
 smallvec = { workspace = true, features = ["union"] }
@@ -23,6 +24,7 @@ smallvec = { workspace = true, features = ["union"] }
 criterion = { workspace = true }
 dhat = { workspace = true }
 noisy_float = { workspace = true }
+pretty_assertions = { workspace = true, features = ["std"] }
 rand = { workspace = true, features = ["small_rng", "thread_rng"] }
 rand_distr = { workspace = true }
 

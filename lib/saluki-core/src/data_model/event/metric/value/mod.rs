@@ -2,7 +2,7 @@ mod iter;
 
 use std::{collections::HashSet, fmt, num::NonZeroU64, time::Duration};
 
-use ddsketch_agent::DDSketch;
+use ddsketch::DDSketch;
 use ordered_float::OrderedFloat;
 use smallvec::SmallVec;
 

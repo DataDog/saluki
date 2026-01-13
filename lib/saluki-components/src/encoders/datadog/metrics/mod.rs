@@ -2,7 +2,7 @@ use std::{num::NonZeroU64, time::Duration};
 
 use async_trait::async_trait;
 use datadog_protos::metrics as proto;
-use ddsketch_agent::DDSketch;
+use ddsketch::DDSketch;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use protobuf::{rt::WireType, CodedOutputStream, Enum as _};
@@ -844,7 +844,7 @@ fn write_dogsketch(
             packed_scratch_buf,
             DOGSKETCH_K_FIELD_NUMBER,
             bin_keys,
-            |inner_os, value| inner_os.write_sint32_no_tag(value),
+            |inner_os, value| inner_os.write_sint32_no_tag(value as i32),
         )?;
 
         let bin_counts = sketch.bins().iter().map(|bin| bin.count());
@@ -853,7 +853,7 @@ fn write_dogsketch(
             packed_scratch_buf,
             DOGSKETCH_N_FIELD_NUMBER,
             bin_counts,
-            |inner_os, value| inner_os.write_uint32_no_tag(value),
+            |inner_os, value| inner_os.write_uint32_no_tag(value as u32),
         )
     })
 }
