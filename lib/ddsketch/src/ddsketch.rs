@@ -592,35 +592,13 @@ impl<P: SketchParameters> DDSketch<P> {
 
         self.bins = temp;
     }
-}
 
-impl DDSketch<AgentSketchParameters> {
-    /// Merges this sketch into the `Dogsketch` Protocol Buffers representation.
-    pub fn merge_to_dogsketch(&self, dogsketch: &mut Dogsketch) {
-        dogsketch.set_cnt(i64::try_from(self.count).unwrap_or(i64::MAX));
-        dogsketch.set_min(self.min);
-        dogsketch.set_max(self.max);
-        dogsketch.set_avg(self.avg);
-        dogsketch.set_sum(self.sum);
-
-        let mut k = Vec::new();
-        let mut n = Vec::new();
-
-        for bin in &self.bins {
-            k.push(i32::from(bin.k));
-            n.push(u32::from(bin.n));
-        }
-
-        dogsketch.set_k(k);
-        dogsketch.set_n(n);
-    }
-
-    /// Converts this sketch to the `sketches-go` DDSketch Protocol Buffers representation.
+    /// Converts this sketch to canonical Protocol Buffers representation.
     pub fn to_proto(&self) -> ProtoDDSketch {
         let mut proto = ProtoDDSketch::new();
         let mut mapping = IndexMapping::new();
-        mapping.set_gamma(SKETCH_CONFIG.gamma_v);
-        mapping.set_indexOffset(f64::from(SKETCH_CONFIG.norm_bias));
+        mapping.set_gamma(P::GAMMA_V);
+        mapping.set_indexOffset(f64::from(P::NORM_BIAS));
         mapping.set_interpolation(Interpolation::NONE);
         proto.set_mapping(mapping);
 
@@ -629,13 +607,13 @@ impl DDSketch<AgentSketchParameters> {
         let mut zero_count: f64 = 0.0;
 
         for bin in &self.bins {
-            let count = f64::from(bin.n);
-            match bin.k.cmp(&0) {
+            let count = bin.n.to_f64();
+            match bin.k.cmp(&P::BinKey::ZERO) {
                 Ordering::Greater => {
-                    *positive_counts.entry(i32::from(bin.k)).or_insert(0.0) += count;
+                    *positive_counts.entry(bin.k.into_i32()).or_insert(0.0) += count;
                 }
                 Ordering::Less => {
-                    *negative_counts.entry(i32::from(-bin.k)).or_insert(0.0) += count;
+                    *negative_counts.entry(-bin.k.into_i32()).or_insert(0.0) += count;
                 }
                 Ordering::Equal => {
                     zero_count += count;
@@ -658,6 +636,28 @@ impl DDSketch<AgentSketchParameters> {
         proto.set_zeroCount(zero_count);
 
         proto
+    }
+}
+
+impl DDSketch<AgentSketchParameters> {
+    /// Merges this sketch into the `Dogsketch` Protocol Buffers representation.
+    pub fn merge_to_dogsketch(&self, dogsketch: &mut Dogsketch) {
+        dogsketch.set_cnt(i64::try_from(self.count).unwrap_or(i64::MAX));
+        dogsketch.set_min(self.min);
+        dogsketch.set_max(self.max);
+        dogsketch.set_avg(self.avg);
+        dogsketch.set_sum(self.sum);
+
+        let mut k = Vec::new();
+        let mut n = Vec::new();
+
+        for bin in &self.bins {
+            k.push(i32::from(bin.k));
+            n.push(u32::from(bin.n));
+        }
+
+        dogsketch.set_k(k);
+        dogsketch.set_n(n);
     }
 }
 

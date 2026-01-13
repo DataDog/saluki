@@ -1,4 +1,4 @@
-use ddsketch_agent::DDSketch;
+use ddsketch::DDSketch;
 use protobuf::Message;
 use rand::Rng as _;
 use saluki_common::collections::FastHashMap;
