@@ -1,14 +1,14 @@
-//! Sparse store implementation using a hash map.
-
 use std::collections::BTreeMap;
 
-use super::Store;
+use datadog_protos::sketches::Store as ProtoStore;
+
+use super::{validate_proto_count, Store};
+use crate::canonical::error::ProtoConversionError;
 
 /// A sparse store using a sorted map for bin storage.
 ///
-/// This store only keeps track of non-empty bins, making it memory-efficient for
-/// data with widely scattered indices. However, it does not support collapsing,
-/// so memory usage can grow unbounded.
+/// This store only keeps track of non-empty bins, making it memory-efficient for data with widely scattered indices.
+/// However, it does not support collapsing, so memory usage can grow unbounded.
 ///
 /// Use this store when:
 /// - Input values span a wide range with gaps
@@ -18,12 +18,13 @@ use super::Store;
 pub struct SparseStore {
     /// The bin counts, keyed by index.
     bins: BTreeMap<i32, u64>,
+
     /// Total count across all bins.
     count: u64,
 }
 
 impl SparseStore {
-    /// Creates a new empty sparse store.
+    /// Creates an empty `SparseStore`.
     pub fn new() -> Self {
         Self {
             bins: BTreeMap::new(),
@@ -85,6 +86,41 @@ impl Store for SparseStore {
     fn clear(&mut self) {
         self.bins.clear();
         self.count = 0;
+    }
+
+    fn merge_from_proto(&mut self, proto: &ProtoStore) -> Result<(), ProtoConversionError> {
+        // Process sparse binCounts
+        for (&index, &count) in &proto.binCounts {
+            let count = validate_proto_count(index, count)?;
+            if count > 0 {
+                self.add(index, count);
+            }
+        }
+
+        // Process contiguous bins
+        let offset = proto.contiguousBinIndexOffset;
+        for (i, &count) in proto.contiguousBinCounts.iter().enumerate() {
+            let index = offset + i as i32;
+            let count = validate_proto_count(index, count)?;
+            if count > 0 {
+                self.add(index, count);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn to_proto(&self) -> ProtoStore {
+        let mut proto = ProtoStore::new();
+
+        // Use sparse encoding for sparse store
+        for (&index, &count) in &self.bins {
+            if count > 0 {
+                proto.binCounts.insert(index, count as f64);
+            }
+        }
+
+        proto
     }
 }
 

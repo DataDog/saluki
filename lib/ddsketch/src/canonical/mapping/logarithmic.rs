@@ -1,42 +1,44 @@
-//! Logarithmic index mapping implementation.
+use datadog_protos::sketches::{index_mapping::Interpolation, IndexMapping as ProtoIndexMapping};
 
 use super::IndexMapping;
+use crate::canonical::error::ProtoConversionError;
+use crate::common::float_eq;
 
-/// Logarithmic index mapping for DDSketch.
+/// Logarithmic index mapping.
 ///
-/// Maps values to indices using: `index = ceil(log(value) / log(gamma))`
-/// where `gamma = (1 + alpha) / (1 - alpha)` and `alpha` is the relative accuracy.
-///
-/// This mapping provides the guaranteed relative error bound for quantile queries.
+/// Maps values to indices using: `index = ceil(log(value) / log(gamma))` where `gamma = (1 + alpha) / (1 - alpha)` and
+/// `alpha` is the relative accuracy.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LogarithmicMapping {
     /// The base of the logarithm, determines bin widths.
     gamma: f64,
+
     /// Precomputed 1/ln(gamma) for performance.
     multiplier: f64,
+
     /// The relative accuracy guarantee.
     relative_accuracy: f64,
+
     /// Minimum value that can be indexed.
     min_indexable_value: f64,
+
     /// Maximum value that can be indexed.
     max_indexable_value: f64,
 }
 
 impl LogarithmicMapping {
-    /// Creates a new logarithmic mapping with the given relative accuracy.
+    /// Creates a new `LogarithmicMapping` with the given relative accuracy.
     ///
-    /// # Arguments
-    ///
-    /// * `relative_accuracy` - The relative accuracy guarantee, must be in (0, 1).
+    /// The relative accuracy must be between `0` and `1` (inclusive).
     ///
     /// # Errors
     ///
-    /// Returns an error if the relative accuracy is not in the valid range (0, 1).
+    /// If the relative accuracy is out of bounds, an error is returned.
     ///
     /// # Example
     ///
     /// ```
-    /// use ddsketch::canonical::LogarithmicMapping;
+    /// use ddsketch::canonical::mapping::LogarithmicMapping;
     ///
     /// // Create a mapping with 1% relative accuracy
     /// let mapping = LogarithmicMapping::new(0.01).unwrap();
@@ -46,22 +48,7 @@ impl LogarithmicMapping {
             return Err("relative accuracy must be between 0 and 1 (exclusive)");
         }
 
-        // gamma = (1 + alpha) / (1 - alpha)
         let gamma = (1.0 + relative_accuracy) / (1.0 - relative_accuracy);
-        Self::with_gamma(gamma, relative_accuracy)
-    }
-
-    /// Creates a new logarithmic mapping with the given gamma value.
-    ///
-    /// # Arguments
-    ///
-    /// * `gamma` - The base of the logarithm, must be > 1.
-    /// * `relative_accuracy` - The relative accuracy this gamma provides.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if gamma is not greater than 1.
-    pub fn with_gamma(gamma: f64, relative_accuracy: f64) -> Result<Self, &'static str> {
         if gamma <= 1.0 {
             return Err("gamma must be greater than 1");
         }
@@ -70,8 +57,9 @@ impl LogarithmicMapping {
         let multiplier = 1.0 / gamma_ln;
 
         // Calculate the indexable range.
-        // The minimum indexable value is constrained by the smallest positive f64.
-        // The maximum indexable value is constrained by i32 index overflow.
+        //
+        // The minimum indexable value is constrained by the smallest positive `f64`. The maximum indexable value is
+        // constrained by `i32` index overflow.
         let min_indexable_value = f64::MIN_POSITIVE.max(gamma.powf(i32::MIN as f64 + 1.0));
         let max_indexable_value = gamma.powf(i32::MAX as f64 - 1.0).min(f64::MAX / gamma);
 
@@ -83,32 +71,24 @@ impl LogarithmicMapping {
             max_indexable_value,
         })
     }
-
-    /// Returns the gamma value used for this mapping.
-    pub fn get_gamma(&self) -> f64 {
-        self.gamma
-    }
 }
 
 impl IndexMapping for LogarithmicMapping {
     fn index(&self, value: f64) -> i32 {
-        // index = ceil(log_gamma(value)) = ceil(ln(value) / ln(gamma))
-        (value.ln() * self.multiplier).ceil() as i32
+        let index = value.ln() * self.multiplier;
+        if index >= 0.0 {
+            index as i32
+        } else {
+            (index as i32) - 1
+        }
     }
 
     fn value(&self, index: i32) -> f64 {
-        // Return the geometric mean of the bin's bounds: gamma^(index - 0.5)
-        self.gamma.powf(index as f64 - 0.5)
+        self.lower_bound(index) * (1.0 + self.relative_accuracy)
     }
 
     fn lower_bound(&self, index: i32) -> f64 {
-        // lower_bound = gamma^(index - 1)
-        self.gamma.powf((index - 1) as f64)
-    }
-
-    fn upper_bound(&self, index: i32) -> f64 {
-        // upper_bound = gamma^index
-        self.gamma.powf(index as f64)
+        (index as f64 / self.multiplier).exp()
     }
 
     fn relative_accuracy(&self) -> f64 {
@@ -125,6 +105,49 @@ impl IndexMapping for LogarithmicMapping {
 
     fn gamma(&self) -> f64 {
         self.gamma
+    }
+
+    fn index_offset(&self) -> f64 {
+        0.0
+    }
+
+    fn interpolation(&self) -> Interpolation {
+        Interpolation::NONE
+    }
+
+    fn validate_proto_mapping(&self, proto: &ProtoIndexMapping) -> Result<(), ProtoConversionError> {
+        // Check gamma matches (with floating-point tolerance)
+        if !float_eq(proto.gamma, self.gamma) {
+            return Err(ProtoConversionError::GammaMismatch {
+                expected: self.gamma,
+                actual: proto.gamma,
+            });
+        }
+
+        // Check indexOffset is 0.0 (LogarithmicMapping doesn't use offset)
+        if proto.indexOffset != 0.0 {
+            return Err(ProtoConversionError::NonZeroIndexOffset {
+                actual: proto.indexOffset,
+            });
+        }
+
+        // Check interpolation is NONE (LogarithmicMapping uses exact log)
+        let interpolation = proto.interpolation.enum_value_or_default();
+        if interpolation != Interpolation::NONE {
+            return Err(ProtoConversionError::UnsupportedInterpolation {
+                actual: interpolation as i32,
+            });
+        }
+
+        Ok(())
+    }
+
+    fn to_proto(&self) -> ProtoIndexMapping {
+        let mut proto = ProtoIndexMapping::new();
+        proto.gamma = self.gamma;
+        proto.indexOffset = 0.0;
+        proto.interpolation = protobuf::EnumOrUnknown::new(Interpolation::NONE);
+        proto
     }
 }
 
@@ -185,7 +208,6 @@ mod tests {
 
         for i in -100..100 {
             let lower = mapping.lower_bound(i);
-            let upper = mapping.upper_bound(i);
             let value = mapping.value(i);
 
             assert!(
@@ -193,13 +215,6 @@ mod tests {
                 "lower {} should be < value {} for index {}",
                 lower,
                 value,
-                i
-            );
-            assert!(
-                value < upper,
-                "value {} should be < upper {} for index {}",
-                value,
-                upper,
                 i
             );
         }

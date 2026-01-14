@@ -1,13 +1,13 @@
-//! Collapsing lowest dense store implementation.
+use datadog_protos::sketches::Store as ProtoStore;
 
-use super::Store;
+use super::{validate_proto_count, Store};
+use crate::canonical::error::ProtoConversionError;
 
 /// A dense store that collapses lowest-indexed bins when capacity is exceeded.
 ///
-/// This store maintains a maximum number of bins. When adding a new index would
-/// exceed this limit, the lowest-indexed bins are collapsed (merged into the next
-/// lowest bin), sacrificing accuracy for lower quantiles to preserve accuracy for
-/// higher quantiles.
+/// This store maintains a maximum number of bins. When adding a new index would exceed this limit, the lowest-indexed
+/// bins are collapsed (merged into the next lowest bin), sacrificing accuracy for lower quantiles to preserve accuracy
+/// for higher quantiles.
 ///
 /// Use this store when:
 /// - You need bounded memory usage
@@ -17,22 +17,22 @@ use super::Store;
 pub struct CollapsingLowestDenseStore {
     /// The bin counts, stored contiguously.
     bins: Vec<u64>,
+
     /// The count stored in bins[0] corresponds to this index.
     offset: i32,
+
     /// Maximum number of bins to maintain.
     max_num_bins: usize,
+
     /// Total count across all bins.
     count: u64,
+
     /// Whether collapsing has occurred (accuracy may be compromised for low quantiles).
     is_collapsed: bool,
 }
 
 impl CollapsingLowestDenseStore {
-    /// Creates a new collapsing lowest dense store with the given maximum number of bins.
-    ///
-    /// # Arguments
-    ///
-    /// * `max_num_bins` - The maximum number of bins to maintain. Must be at least 1.
+    /// Creates an empty `CollapsingLowestDenseStore` with the given maximum number of bins.
     pub fn new(max_num_bins: usize) -> Self {
         assert!(max_num_bins >= 1, "max_num_bins must be at least 1");
         Self {
@@ -44,7 +44,7 @@ impl CollapsingLowestDenseStore {
         }
     }
 
-    /// Returns whether this store has collapsed bins.
+    /// Returns `true` if this store has collapsed bins.
     ///
     /// If true, accuracy guarantees may not hold for lower quantiles.
     pub fn is_collapsed(&self) -> bool {
@@ -120,6 +120,9 @@ impl CollapsingLowestDenseStore {
     }
 
     /// Returns the index into the bins array for the given logical index.
+    ///
+    /// If the index is below our range, it is mapped to the lowest bin. If the index is above our range, `None` is
+    /// returned.
     #[inline]
     fn bin_index(&self, index: i32) -> Option<usize> {
         if index < self.offset {
@@ -226,6 +229,42 @@ impl Store for CollapsingLowestDenseStore {
         self.offset = 0;
         self.count = 0;
         self.is_collapsed = false;
+    }
+
+    fn merge_from_proto(&mut self, proto: &ProtoStore) -> Result<(), ProtoConversionError> {
+        // Process sparse binCounts
+        for (&index, &count) in &proto.binCounts {
+            let count = validate_proto_count(index, count)?;
+            if count > 0 {
+                self.add(index, count);
+            }
+        }
+
+        // Process contiguous bins
+        let offset = proto.contiguousBinIndexOffset;
+        for (i, &count) in proto.contiguousBinCounts.iter().enumerate() {
+            let index = offset + i as i32;
+            let count = validate_proto_count(index, count)?;
+            if count > 0 {
+                self.add(index, count);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn to_proto(&self) -> ProtoStore {
+        let mut proto = ProtoStore::new();
+
+        if self.bins.is_empty() {
+            return proto;
+        }
+
+        // Use contiguous encoding for dense store
+        proto.contiguousBinIndexOffset = self.offset;
+        proto.contiguousBinCounts = self.bins.iter().map(|&c| c as f64).collect();
+
+        proto
     }
 }
 

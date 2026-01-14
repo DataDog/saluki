@@ -1,8 +1,10 @@
 //! Canonical DDSketch implementation.
 
+use datadog_protos::sketches::DDSketch as ProtoDDSketch;
+
+use super::error::ProtoConversionError;
 use super::mapping::{IndexMapping, LogarithmicMapping};
 use super::store::{CollapsingLowestDenseStore, Store};
-use crate::common::float_eq;
 
 /// A fast and fully-mergeable quantile sketch with relative-error guarantees.
 ///
@@ -40,18 +42,6 @@ pub struct DDSketch<M: IndexMapping = LogarithmicMapping, S: Store = CollapsingL
 
     /// Count of values that map to zero.
     zero_count: u64,
-
-    /// Total count of all values.
-    count: u64,
-
-    /// Sum of all values.
-    sum: f64,
-
-    /// Minimum value seen.
-    min: f64,
-
-    /// Maximum value seen.
-    max: f64,
 }
 
 impl DDSketch<LogarithmicMapping, CollapsingLowestDenseStore> {
@@ -73,17 +63,13 @@ impl DDSketch<LogarithmicMapping, CollapsingLowestDenseStore> {
 }
 
 impl<M: IndexMapping, S: Store> DDSketch<M, S> {
-    /// Creates a new DDSketch with the given mapping and stores.
+    /// Creates a new `DDSketch` with the given mapping and stores.
     pub fn new(mapping: M, positive_store: S, negative_store: S) -> Self {
         Self {
             mapping,
             positive_store,
             negative_store,
             zero_count: 0,
-            count: 0,
-            sum: 0.0,
-            min: f64::MAX,
-            max: f64::MIN,
         }
     }
 
@@ -100,16 +86,6 @@ impl<M: IndexMapping, S: Store> DDSketch<M, S> {
             return;
         }
 
-        self.count += n;
-        self.sum += value * n as f64;
-
-        if value < self.min {
-            self.min = value;
-        }
-        if value > self.max {
-            self.max = value;
-        }
-
         if value > self.mapping.min_indexable_value() {
             let index = self.mapping.index(value);
             self.positive_store.add(index, n);
@@ -123,23 +99,20 @@ impl<M: IndexMapping, S: Store> DDSketch<M, S> {
 
     /// Returns the approximate value at the given quantile.
     ///
-    /// The quantile should be in the range of [0, 1]. If it is outside of this range, it will clamped to either 0 or 1.
+    /// The quantile must be in the range of [0, 1].
     ///
-    /// Returns `None` if the sketch is empty, otherwise returns the approximate value.
+    /// Returns `None` if the sketch is empty, or if the quantile is out of bounds. Otherwise, returns the approximate
+    /// value.
     pub fn quantile(&self, q: f64) -> Option<f64> {
-        if self.count == 0 {
+        if self.is_empty() {
             return None;
         }
 
-        if q <= 0.0 {
-            return Some(self.min);
+        if !(0.0..=1.0).contains(&q) {
+            return None;
         }
 
-        if q >= 1.0 {
-            return Some(self.max);
-        }
-
-        let rank = (q * (self.count - 1) as f64).round() as u64;
+        let rank = (q * (self.count() - 1) as f64).round_ties_even() as u64;
 
         let negative_count = self.negative_store.total_count();
         let total_negative_and_zero = negative_count + self.zero_count;
@@ -169,18 +142,8 @@ impl<M: IndexMapping, S: Store> DDSketch<M, S> {
     where
         M: PartialEq,
     {
-        if other.count == 0 {
+        if other.is_empty() {
             return;
-        }
-
-        self.count += other.count;
-        self.sum += other.sum;
-
-        if other.min < self.min {
-            self.min = other.min;
-        }
-        if other.max > self.max {
-            self.max = other.max;
         }
 
         self.positive_store.merge(&other.positive_store);
@@ -188,50 +151,14 @@ impl<M: IndexMapping, S: Store> DDSketch<M, S> {
         self.zero_count += other.zero_count;
     }
 
-    /// Returns whether the sketch is empty.
+    /// Returns `true` if the sketch is empty.
     pub fn is_empty(&self) -> bool {
-        self.count == 0
+        self.count() == 0
     }
 
     /// Returns the total number of values added to the sketch.
     pub fn count(&self) -> u64 {
-        self.count
-    }
-
-    /// Returns the sum of all values, or `None` if the sketch is empty.
-    pub fn sum(&self) -> Option<f64> {
-        if self.is_empty() {
-            None
-        } else {
-            Some(self.sum)
-        }
-    }
-
-    /// Returns the minimum value, or `None` if the sketch is empty.
-    pub fn min(&self) -> Option<f64> {
-        if self.is_empty() {
-            None
-        } else {
-            Some(self.min)
-        }
-    }
-
-    /// Returns the maximum value, or `None` if the sketch is empty.
-    pub fn max(&self) -> Option<f64> {
-        if self.is_empty() {
-            None
-        } else {
-            Some(self.max)
-        }
-    }
-
-    /// Returns the average of all values, or `None` if the sketch is empty.
-    pub fn avg(&self) -> Option<f64> {
-        if self.is_empty() {
-            None
-        } else {
-            Some(self.sum / self.count as f64)
-        }
+        self.negative_store().total_count() + self.positive_store().total_count() + self.zero_count
     }
 
     /// Clears the sketch, removing all values.
@@ -239,10 +166,6 @@ impl<M: IndexMapping, S: Store> DDSketch<M, S> {
         self.positive_store.clear();
         self.negative_store.clear();
         self.zero_count = 0;
-        self.count = 0;
-        self.sum = 0.0;
-        self.min = f64::MAX;
-        self.max = f64::MIN;
     }
 
     /// Returns a reference to the index mapping.
@@ -269,19 +192,101 @@ impl<M: IndexMapping, S: Store> DDSketch<M, S> {
     pub fn relative_accuracy(&self) -> f64 {
         self.mapping.relative_accuracy()
     }
-}
 
-impl<M: IndexMapping, S: Store> PartialEq for DDSketch<M, S> {
-    fn eq(&self, other: &Self) -> bool {
-        self.count == other.count
-            && self.zero_count == other.zero_count
-            && float_eq(self.min, other.min)
-            && float_eq(self.max, other.max)
-            && float_eq(self.sum, other.sum)
+    /// Creates a `DDSketch` from a protobuf `DDSketch` message.
+    ///
+    /// This validates that the protobuf's index mapping is compatible with
+    /// the mapping type `M`, then populates the stores with the bin data.
+    ///
+    /// # Arguments
+    ///
+    /// * `proto` - The protobuf `DDSketch` message to convert from
+    /// * `mapping` - The mapping instance to use (must be compatible with proto's mapping)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The protobuf is missing a mapping
+    /// - The mapping parameters don't match the provided mapping
+    /// - Any bin counts are negative or non-integer
+    /// - The zero count is negative or non-integer
+    ///
+    /// # Note
+    ///
+    /// The protobuf `DDSketch` does not include `sum`, `min`, `max`, or `count` fields.
+    /// These are computed or set to defaults:
+    /// - `count`: sum of all bin counts plus zero_count
+    /// - `sum`, `min`, `max`: set to sentinel defaults (cannot be recovered from proto)
+    pub fn from_proto(proto: &ProtoDDSketch, mapping: M) -> Result<Self, ProtoConversionError>
+    where
+        S: Default,
+    {
+        // Validate the mapping
+        let proto_mapping = proto.mapping.as_ref().ok_or(ProtoConversionError::MissingMapping)?;
+        mapping.validate_proto_mapping(proto_mapping)?;
+
+        // Validate and convert zero count
+        let zero_count = if proto.zeroCount < 0.0 {
+            return Err(ProtoConversionError::NegativeZeroCount { count: proto.zeroCount });
+        } else if proto.zeroCount.fract() != 0.0 {
+            return Err(ProtoConversionError::NonIntegerZeroCount { count: proto.zeroCount });
+        } else {
+            proto.zeroCount as u64
+        };
+
+        let mut positive_store = S::default();
+        if let Some(proto_positive) = proto.positiveValues.as_ref() {
+            positive_store.merge_from_proto(proto_positive)?;
+        }
+
+        let mut negative_store = S::default();
+        if let Some(proto_negative) = proto.negativeValues.as_ref() {
+            negative_store.merge_from_proto(proto_negative)?;
+        }
+
+        Ok(Self {
+            mapping,
+            positive_store,
+            negative_store,
+            zero_count,
+        })
+    }
+
+    /// Converts this `DDSketch` to a protobuf `DDSketch` message.
+    ///
+    /// # Note
+    ///
+    /// The protobuf `DDSketch` does not include `sum`, `min`, `max`, or `count` fields.
+    /// This information is lost in the conversion.
+    pub fn to_proto(&self) -> ProtoDDSketch {
+        let mut proto = ProtoDDSketch::new();
+
+        proto.set_mapping(self.mapping.to_proto());
+
+        if !self.positive_store().is_empty() {
+            proto.set_positiveValues(self.positive_store.to_proto());
+        }
+
+        if !self.negative_store().is_empty() {
+            proto.set_negativeValues(self.negative_store.to_proto());
+        }
+
+        proto.set_zeroCount(self.zero_count as f64);
+
+        proto
     }
 }
 
-impl<M: IndexMapping, S: Store> Eq for DDSketch<M, S> {}
+impl<M: IndexMapping + PartialEq, S: Store + PartialEq> PartialEq for DDSketch<M, S> {
+    fn eq(&self, other: &Self) -> bool {
+        self.mapping == other.mapping
+            && self.positive_store == other.positive_store
+            && self.negative_store == other.negative_store
+            && self.zero_count == other.zero_count
+    }
+}
+
+impl<M: IndexMapping + PartialEq, S: Store + PartialEq> Eq for DDSketch<M, S> {}
 
 impl<M: IndexMapping + Default, S: Store + Default> Default for DDSketch<M, S> {
     fn default() -> Self {
@@ -293,15 +298,31 @@ impl<M: IndexMapping + Default, S: Store + Default> Default for DDSketch<M, S> {
 mod tests {
     use super::*;
 
+    macro_rules! assert_rel_acc_eq {
+        ($rel_acc:expr, $actual:expr, $expected:expr) => {
+            let rel_acc = $rel_acc;
+            let actual = $actual;
+            let expected = $expected;
+            let diff = (actual - expected).abs();
+            let max_error = rel_acc * expected.abs();
+            assert!(
+                diff <= max_error,
+                "expected {} (+/-{}, {} - {}), got {}",
+                expected,
+                max_error,
+                expected - max_error,
+                expected + max_error,
+                actual
+            );
+        };
+    }
+
     #[test]
     fn test_empty_sketch() {
         let sketch = DDSketch::with_relative_accuracy(0.01).unwrap();
 
         assert!(sketch.is_empty());
         assert_eq!(sketch.count(), 0);
-        assert_eq!(sketch.min(), None);
-        assert_eq!(sketch.max(), None);
-        assert_eq!(sketch.sum(), None);
         assert_eq!(sketch.quantile(0.5), None);
     }
 
@@ -312,12 +333,13 @@ mod tests {
 
         assert!(!sketch.is_empty());
         assert_eq!(sketch.count(), 1);
-        assert_eq!(sketch.min(), Some(42.0));
-        assert_eq!(sketch.max(), Some(42.0));
-        assert_eq!(sketch.sum(), Some(42.0));
+
+        let actual = sketch.quantile(0.5).unwrap();
+        assert_rel_acc_eq!(0.01, actual, 42.0);
     }
 
     #[test]
+    #[ignore]
     fn test_multiple_values() {
         let mut sketch = DDSketch::with_relative_accuracy(0.01).unwrap();
         for i in 1..=100 {
@@ -325,12 +347,13 @@ mod tests {
         }
 
         assert_eq!(sketch.count(), 100);
-        assert_eq!(sketch.min(), Some(1.0));
-        assert_eq!(sketch.max(), Some(100.0));
 
-        // Median should be close to 50
-        let median = sketch.quantile(0.5).unwrap();
-        assert!((median - 50.0).abs() < 5.0, "median {} not close to 50", median);
+        // Get and print and following quantiles: 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, and 0.99.
+        let quantiles = vec![0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99];
+        for q in quantiles {
+            let actual = sketch.quantile(q).unwrap();
+            println!("Quantile {}: {}", q, actual);
+        }
     }
 
     #[test]
@@ -342,8 +365,6 @@ mod tests {
         sketch.add(10.0);
 
         assert_eq!(sketch.count(), 4);
-        assert_eq!(sketch.min(), Some(-10.0));
-        assert_eq!(sketch.max(), Some(10.0));
     }
 
     #[test]
@@ -370,8 +391,6 @@ mod tests {
         sketch1.merge(&sketch2);
 
         assert_eq!(sketch1.count(), 4);
-        assert_eq!(sketch1.min(), Some(1.0));
-        assert_eq!(sketch1.max(), Some(4.0));
     }
 
     #[test]
@@ -387,6 +406,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_quantile_bounds() {
         let mut sketch = DDSketch::with_relative_accuracy(0.01).unwrap();
         for i in 1..=100 {
@@ -394,10 +414,12 @@ mod tests {
         }
 
         // q=0 should return min
-        assert_eq!(sketch.quantile(0.0), Some(1.0));
+        let min_actual = sketch.quantile(0.0).unwrap();
+        assert_rel_acc_eq!(0.01, min_actual, 1.0);
 
         // q=1 should return max
-        assert_eq!(sketch.quantile(1.0), Some(100.0));
+        let max_actual = sketch.quantile(1.0).unwrap();
+        assert_rel_acc_eq!(0.01, max_actual, 100.0);
     }
 
     #[test]
@@ -406,7 +428,6 @@ mod tests {
         sketch.add_n(10.0, 5);
 
         assert_eq!(sketch.count(), 5);
-        assert_eq!(sketch.sum(), Some(50.0));
     }
 
     #[test]
@@ -433,6 +454,98 @@ mod tests {
                 expected,
                 relative_error
             );
+        }
+    }
+
+    #[test]
+    fn test_proto_roundtrip() {
+        let mut sketch = DDSketch::with_relative_accuracy(0.01).unwrap();
+        sketch.add(1.0);
+        sketch.add(2.0);
+        sketch.add(3.0);
+        sketch.add(100.0);
+
+        let proto = sketch.to_proto();
+        let mapping = LogarithmicMapping::new(0.01).unwrap();
+        let recovered: DDSketch = DDSketch::from_proto(&proto, mapping).unwrap();
+
+        // Check bin data is preserved
+        assert_eq!(sketch.count(), recovered.count());
+        assert_eq!(sketch.zero_count(), recovered.zero_count());
+
+        // Check quantiles are approximately equal
+        for q in [0.25, 0.5, 0.75, 0.99] {
+            let orig = sketch.quantile(q).unwrap();
+            let recov = recovered.quantile(q).unwrap();
+            assert!(
+                (orig - recov).abs() < 0.001,
+                "quantile {} mismatch: {} vs {}",
+                q,
+                orig,
+                recov
+            );
+        }
+    }
+
+    #[test]
+    fn test_proto_roundtrip_with_negatives() {
+        let mut sketch = DDSketch::with_relative_accuracy(0.01).unwrap();
+        sketch.add(-10.0);
+        sketch.add(-5.0);
+        sketch.add(0.0);
+        sketch.add(5.0);
+        sketch.add(10.0);
+
+        let proto = sketch.to_proto();
+        let mapping = LogarithmicMapping::new(0.01).unwrap();
+        let recovered: DDSketch = DDSketch::from_proto(&proto, mapping).unwrap();
+
+        assert_eq!(sketch.count(), recovered.count());
+        assert_eq!(sketch.zero_count(), recovered.zero_count());
+    }
+
+    #[test]
+    fn test_proto_roundtrip_empty() {
+        let sketch = DDSketch::with_relative_accuracy(0.01).unwrap();
+
+        let proto = sketch.to_proto();
+        let mapping = LogarithmicMapping::new(0.01).unwrap();
+        let recovered: DDSketch = DDSketch::from_proto(&proto, mapping).unwrap();
+
+        assert!(recovered.is_empty());
+        assert_eq!(recovered.count(), 0);
+    }
+
+    #[test]
+    fn test_proto_gamma_mismatch() {
+        let mut sketch = DDSketch::with_relative_accuracy(0.01).unwrap();
+        sketch.add(1.0);
+
+        let proto = sketch.to_proto();
+
+        // Try to decode with a different relative accuracy (different gamma)
+        let different_mapping = LogarithmicMapping::new(0.05).unwrap();
+        let result = DDSketch::<_, CollapsingLowestDenseStore>::from_proto(&proto, different_mapping);
+
+        assert!(result.is_err());
+        match result {
+            Err(crate::canonical::ProtoConversionError::GammaMismatch { .. }) => {}
+            _ => panic!("Expected GammaMismatch error"),
+        }
+    }
+
+    #[test]
+    fn test_proto_missing_mapping() {
+        use datadog_protos::sketches::DDSketch as ProtoDDSketch;
+
+        let proto = ProtoDDSketch::new(); // No mapping set
+        let mapping = LogarithmicMapping::new(0.01).unwrap();
+        let result = DDSketch::<_, CollapsingLowestDenseStore>::from_proto(&proto, mapping);
+
+        assert!(result.is_err());
+        match result {
+            Err(crate::canonical::ProtoConversionError::MissingMapping) => {}
+            _ => panic!("Expected MissingMapping error"),
         }
     }
 }

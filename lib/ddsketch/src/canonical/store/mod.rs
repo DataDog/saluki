@@ -1,32 +1,25 @@
-//! Store implementations for DDSketch bins.
-//!
-//! A store manages the bin counts for either positive or negative values.
-//! Different implementations provide different memory/accuracy trade-offs.
+//! Sketch storage.
+
+use datadog_protos::sketches::Store as ProtoStore;
+
+use super::error::ProtoConversionError;
 
 mod collapsing_highest;
+pub use self::collapsing_highest::CollapsingHighestDenseStore;
+
 mod collapsing_lowest;
+pub use self::collapsing_lowest::CollapsingLowestDenseStore;
+
 mod dense;
+pub use self::dense::DenseStore;
+
 mod sparse;
+pub use self::sparse::SparseStore;
 
-pub use collapsing_highest::CollapsingHighestDenseStore;
-pub use collapsing_lowest::CollapsingLowestDenseStore;
-pub use dense::DenseStore;
-pub use sparse::SparseStore;
-
-/// A store for DDSketch bins.
+/// Storage for sketch observations.
 ///
-/// Stores manage the bin counts for either positive or negative values.
-/// Different implementations provide different memory/accuracy trade-offs:
-///
-/// - [`DenseStore`]: Contiguous array storage, grows unbounded. Best for data with
-///   a bounded range of values.
-/// - [`SparseStore`]: Hash map storage, efficient for scattered indices but no collapsing.
-/// - [`CollapsingLowestDenseStore`]: Dense storage with a maximum bin limit. When the limit
-///   is exceeded, lowest-indexed bins are collapsed. Best when higher quantiles (e.g., p99)
-///   are more important.
-/// - [`CollapsingHighestDenseStore`]: Dense storage with a maximum bin limit. When the limit
-///   is exceeded, highest-indexed bins are collapsed. Best when lower quantiles (e.g., p1)
-///   are more important.
+/// Stores manage holding the counts of mapped values, such that they contain a list of bins and the number of
+/// observations currently counted in each bin.
 pub trait Store: Clone + Send + Sync {
     /// Adds a count to the bin at the given index.
     fn add(&mut self, index: i32, count: u64);
@@ -48,39 +41,30 @@ pub trait Store: Clone + Send + Sync {
     /// Merges another store into this one.
     fn merge(&mut self, other: &Self);
 
-    /// Returns whether the store is empty.
+    /// Returns `true` if the store is empty.
     fn is_empty(&self) -> bool;
 
     /// Clears all bins from the store.
     fn clear(&mut self);
+
+    /// Populates this store from a protobuf `Store`.
+    fn merge_from_proto(&mut self, proto: &ProtoStore) -> Result<(), ProtoConversionError>;
+
+    /// Converts this store to a protobuf `Store`.
+    fn to_proto(&self) -> ProtoStore;
 }
 
-/// A provider for creating new store instances.
+/// Validates and converts a protobuf `f64` count to `u64`.
 ///
-/// This trait allows the DDSketch to create stores without knowing the concrete type.
-pub trait StoreProvider: Clone + Send + Sync {
-    /// The type of store this provider creates.
-    type Store: Store;
-
-    /// Creates a new empty store.
-    fn new_store(&self) -> Self::Store;
-}
-
-/// A provider that creates stores using their `Default` implementation.
-#[derive(Clone, Debug, Default)]
-pub struct DefaultStoreProvider<S>(std::marker::PhantomData<S>);
-
-impl<S> DefaultStoreProvider<S> {
-    /// Creates a new default store provider.
-    pub fn new() -> Self {
-        Self(std::marker::PhantomData)
+/// # Errors
+///
+/// If the count is negative, or has a fractional part, an error is returned.
+pub(crate) fn validate_proto_count(index: i32, count: f64) -> Result<u64, ProtoConversionError> {
+    if count < 0.0 {
+        return Err(ProtoConversionError::NegativeBinCount { index, count });
     }
-}
-
-impl<S: Store + Default> StoreProvider for DefaultStoreProvider<S> {
-    type Store = S;
-
-    fn new_store(&self) -> Self::Store {
-        S::default()
+    if count.fract() != 0.0 {
+        return Err(ProtoConversionError::NonIntegerBinCount { index, count });
     }
+    Ok(count as u64)
 }

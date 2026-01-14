@@ -1,12 +1,12 @@
-//! Unbounded dense store implementation.
+use datadog_protos::sketches::Store as ProtoStore;
 
-use super::Store;
+use super::{validate_proto_count, Store};
+use crate::canonical::error::ProtoConversionError;
 
 /// A dense store using contiguous array storage.
 ///
-/// This store grows unbounded to accommodate any range of indices. It's memory-efficient
-/// when the indices are clustered together, but can use significant memory if indices
-/// are widely scattered.
+/// This store grows unbounded to accommodate any range of indices. It's memory-efficient when the indices are clustered
+/// together, but can use significant memory if indices are widely scattered.
 ///
 /// Use this store when:
 /// - You have a bounded range of input values
@@ -16,14 +16,16 @@ use super::Store;
 pub struct DenseStore {
     /// The bin counts, stored contiguously.
     bins: Vec<u64>,
+
     /// The count stored in bins[0] corresponds to this index.
     offset: i32,
+
     /// Total count across all bins.
     count: u64,
 }
 
 impl DenseStore {
-    /// Creates a new empty dense store.
+    /// Creates an empty `DenseStore`.
     pub fn new() -> Self {
         Self {
             bins: Vec::new(),
@@ -149,6 +151,42 @@ impl Store for DenseStore {
         self.bins.clear();
         self.offset = 0;
         self.count = 0;
+    }
+
+    fn merge_from_proto(&mut self, proto: &ProtoStore) -> Result<(), ProtoConversionError> {
+        // Process sparse binCounts
+        for (&index, &count) in &proto.binCounts {
+            let count = validate_proto_count(index, count)?;
+            if count > 0 {
+                self.add(index, count);
+            }
+        }
+
+        // Process contiguous bins
+        let offset = proto.contiguousBinIndexOffset;
+        for (i, &count) in proto.contiguousBinCounts.iter().enumerate() {
+            let index = offset + i as i32;
+            let count = validate_proto_count(index, count)?;
+            if count > 0 {
+                self.add(index, count);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn to_proto(&self) -> ProtoStore {
+        let mut proto = ProtoStore::new();
+
+        if self.bins.is_empty() {
+            return proto;
+        }
+
+        // Use contiguous encoding for dense store
+        proto.contiguousBinIndexOffset = self.offset;
+        proto.contiguousBinCounts = self.bins.iter().map(|&c| c as f64).collect();
+
+        proto
     }
 }
 

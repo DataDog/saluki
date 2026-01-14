@@ -1,13 +1,13 @@
-//! Collapsing highest dense store implementation.
+use datadog_protos::sketches::Store as ProtoStore;
 
-use super::Store;
+use super::{validate_proto_count, Store};
+use crate::canonical::error::ProtoConversionError;
 
 /// A dense store that collapses highest-indexed bins when capacity is exceeded.
 ///
-/// This store maintains a maximum number of bins. When adding a new index would
-/// exceed this limit, the highest-indexed bins are collapsed (merged into the next
-/// highest bin), sacrificing accuracy for higher quantiles to preserve accuracy for
-/// lower quantiles.
+/// This store maintains a maximum number of bins. When adding a new index would exceed this limit, the highest-indexed
+/// bins are collapsed (merged into the next highest bin), sacrificing accuracy for higher quantiles to preserve
+/// accuracy for lower quantiles.
 ///
 /// Use this store when:
 /// - You need bounded memory usage
@@ -17,22 +17,22 @@ use super::Store;
 pub struct CollapsingHighestDenseStore {
     /// The bin counts, stored contiguously.
     bins: Vec<u64>,
+
     /// The count stored in bins[0] corresponds to this index.
     offset: i32,
+
     /// Maximum number of bins to maintain.
     max_num_bins: usize,
+
     /// Total count across all bins.
     count: u64,
+
     /// Whether collapsing has occurred (accuracy may be compromised for high quantiles).
     is_collapsed: bool,
 }
 
 impl CollapsingHighestDenseStore {
-    /// Creates a new collapsing highest dense store with the given maximum number of bins.
-    ///
-    /// # Arguments
-    ///
-    /// * `max_num_bins` - The maximum number of bins to maintain. Must be at least 1.
+    /// Creates an empty `CollapsingHighestDenseStore` with the given maximum number of bins.
     pub fn new(max_num_bins: usize) -> Self {
         assert!(max_num_bins >= 1, "max_num_bins must be at least 1");
         Self {
@@ -44,9 +44,9 @@ impl CollapsingHighestDenseStore {
         }
     }
 
-    /// Returns whether this store has collapsed bins.
+    /// Returns `true` if this store has collapsed bins.
     ///
-    /// If true, accuracy guarantees may not hold for higher quantiles.
+    /// If true, accuracy guarantees may not hold for lower quantiles.
     pub fn is_collapsed(&self) -> bool {
         self.is_collapsed
     }
@@ -225,6 +225,40 @@ impl Store for CollapsingHighestDenseStore {
         self.offset = 0;
         self.count = 0;
         self.is_collapsed = false;
+    }
+
+    fn merge_from_proto(&mut self, proto: &ProtoStore) -> Result<(), ProtoConversionError> {
+        for (&index, &count) in &proto.binCounts {
+            let count = validate_proto_count(index, count)?;
+            if count > 0 {
+                self.add(index, count);
+            }
+        }
+
+        let offset = proto.contiguousBinIndexOffset;
+        for (i, &count) in proto.contiguousBinCounts.iter().enumerate() {
+            let index = offset + i as i32;
+            let count = validate_proto_count(index, count)?;
+            if count > 0 {
+                self.add(index, count);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn to_proto(&self) -> ProtoStore {
+        let mut proto = ProtoStore::new();
+
+        if self.bins.is_empty() {
+            return proto;
+        }
+
+        // Use contiguous encoding for dense store
+        proto.contiguousBinIndexOffset = self.offset;
+        proto.contiguousBinCounts = self.bins.iter().map(|&c| c as f64).collect();
+
+        proto
     }
 }
 
