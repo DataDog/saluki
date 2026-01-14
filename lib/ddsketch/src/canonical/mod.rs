@@ -25,12 +25,12 @@
 //!
 //! The canonical implementation supports multiple store types:
 //!
-//! - [`CollapsingLowestDenseStore`]: Collapses lowest bins when limit is reached. Best for when higher quantiles (p95,
-//!   p99) matter most.
-//! - [`CollapsingHighestDenseStore`]: Collapses highest bins when limit is reached. Best for when lower quantiles (p1,
-//!   p5) matter most.
-//! - [`DenseStore`]: Unbounded dense storage. Best when memory is not a concern.
-//! - [`SparseStore`]: Hash-based storage. Best for widely scattered values.
+//! - [`CollapsingLowestDenseStore`][store::CollapsingLowestDenseStore]: Collapses lowest bins when limit is
+//!   reached. Best for when higher quantiles (p95, p99) matter most.
+//! - [`CollapsingHighestDenseStore`][store::CollapsingHighestDenseStore]: Collapses highest bins when limit is
+//!   reached. Best for when lower quantiles (p1, p5) matter most.
+//! - [`DenseStore`][store::DenseStore]: Unbounded dense storage. Best when memory is not a concern.
+//! - [`SparseStore`][store::SparseStore]: Hash-based storage. Best for widely scattered values.
 
 mod error;
 pub use self::error::ProtoConversionError;
