@@ -13,8 +13,8 @@ base64 = { workspace = true }
 datadog-protos = { workspace = true }
 ddsketch = { workspace = true, features = ["serde"] }
 float-cmp = { workspace = true, features = ["ratio"] }
-protobuf = { workspace = true }
 ordered-float = { workspace = true }
+protobuf = { workspace = true }
 saluki-common = { workspace = true }
 saluki-error = { workspace = true }
 serde = { workspace = true }
