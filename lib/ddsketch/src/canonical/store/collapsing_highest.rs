@@ -46,7 +46,7 @@ impl CollapsingHighestDenseStore {
 
     /// Returns `true` if this store has collapsed bins.
     ///
-    /// If true, accuracy guarantees may not hold for lower quantiles.
+    /// If true, accuracy guarantees may not hold for higher quantiles.
     pub fn is_collapsed(&self) -> bool {
         self.is_collapsed
     }
