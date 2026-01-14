@@ -4,7 +4,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use ddsketch_agent::DDSketch;
+use ddsketch::DDSketch;
 use hashbrown::{hash_map::Entry, HashMap};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::time::get_unix_timestamp;

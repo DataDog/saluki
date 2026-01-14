@@ -44,7 +44,7 @@ fn main() {
     // the given file, which gets imported in lib.rs.
     let config = calculate_configuration_params(AGENT_DEFAULT_BIN_LIMIT, AGENT_DEFAULT_EPS, AGENT_DEFAULT_MIN_VALUE);
 
-    let config_file = std::env::var("OUT_DIR").unwrap() + "/config.rs";
+    let config_file = std::env::var("OUT_DIR").unwrap() + "/agent_config.rs";
     std::fs::write(
         config_file,
         format!(

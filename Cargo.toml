@@ -7,7 +7,7 @@ members = [
   "bin/correctness/millstone",
   "bin/correctness/panoramic",
   "bin/correctness/stele",
-  "lib/ddsketch-agent",
+  "lib/ddsketch",
   "lib/memory-accounting",
   "lib/process-memory",
   "lib/protos/containerd",
@@ -39,7 +39,7 @@ repository = "https://github.com/DataDog/saluki"
 [workspace.dependencies]
 datadog-protos = { path = "lib/protos/datadog" }
 containerd-protos = { path = "lib/protos/containerd" }
-ddsketch-agent = { path = "lib/ddsketch-agent" }
+ddsketch = { path = "lib/ddsketch" }
 memory-accounting = { path = "lib/memory-accounting" }
 process-memory = { path = "lib/process-memory" }
 saluki-api = { path = "lib/saluki-api" }
