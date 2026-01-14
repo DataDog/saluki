@@ -14,7 +14,7 @@ use crate::canonical::error::ProtoConversionError;
 /// - Input values span a wide range with gaps
 /// - You don't need bounded memory usage
 /// - You want to avoid the overhead of dense array allocation
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SparseStore {
     /// The bin counts, keyed by index.
     bins: BTreeMap<i32, u64>,
