@@ -1,0 +1,40 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="DDSketch implementations for quantile estimation."><title>ddsketch - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-77263533.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="ddsketch" data-themes="" data-resource-suffix="" data-rustdoc-version="1.94.0-nightly (86a49fd71 2026-01-14)" data-channel="nightly" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-c38705f0.js" ><script src="../static.files/storage-e2aeef58.js"></script><script defer src="../crates.js"></script><script defer src="../static.files/main-7bab91a1.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-ffcac47a.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc mod crate"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Crate ddsketch</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../ddsketch/index.html">ddsketch</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><ul class="block"><li><a id="all-types" href="all.html">All Items</a></li></ul><section id="rustdoc-toc"><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#quick-start" title="Quick Start">Quick Start</a></li><li><a href="#feature-flags" title="Feature Flags">Feature Flags</a></li></ul><h3><a href="#reexports">Crate Items</a></h3><ul class="block"><li><a href="#reexports" title="Re-exports">Re-exports</a></li><li><a href="#modules" title="Modules">Modules</a></li></ul></section><div id="rustdoc-modnav"></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content"><div class="main-heading"><h1>Crate <span>ddsketch</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/ddsketch/lib.rs.html#1-56">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>DDSketch implementations for quantile estimation.</p>
+<p>This crate provides two DDSketch implementations:</p>
+<ul>
+<li>
+<p><a href="agent/index.html" title="mod ddsketch::agent"><code>agent</code></a>: Optimized for the Datadog Agent, with fixed compile-time configuration.
+Use this when you need wire compatibility with the Datadog Agent or maximum
+insertion performance.</p>
+</li>
+<li>
+<p><a href="canonical/index.html" title="mod ddsketch::canonical"><code>canonical</code></a>: Full implementation mirroring the official <code>sketches-go</code> library.
+Use this when you need runtime-configurable accuracy or different store types.</p>
+</li>
+</ul>
+<h2 id="quick-start"><a class="doc-anchor" href="#quick-start">§</a>Quick Start</h2>
+<p>For most use cases, the agent implementation (re-exported at the crate root) is
+sufficient:</p>
+
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>ddsketch::DDSketch;
+
+<span class="kw">let </span><span class="kw-2">mut </span>sketch = DDSketch::default();
+sketch.insert(<span class="number">1.0</span>);
+sketch.insert(<span class="number">2.0</span>);
+sketch.insert(<span class="number">3.0</span>);
+
+<span class="kw">let </span>median = sketch.quantile(<span class="number">0.5</span>);</code></pre></div>
+<p>For the canonical implementation with configurable accuracy:</p>
+
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>ddsketch::canonical::DDSketch;
+
+<span class="kw">let </span><span class="kw-2">mut </span>sketch = DDSketch::with_relative_accuracy(<span class="number">0.01</span>).unwrap();
+sketch.add(<span class="number">1.0</span>);
+sketch.add(<span class="number">2.0</span>);
+sketch.add(<span class="number">3.0</span>);
+
+<span class="kw">let </span>median = sketch.quantile(<span class="number">0.5</span>);</code></pre></div><h2 id="feature-flags"><a class="doc-anchor" href="#feature-flags">§</a>Feature Flags</h2>
+<ul>
+<li><code>serde</code>: Enables serialization/deserialization for the agent implementation.
+<strong>Warning</strong>: The serialization format is not guaranteed to be stable.</li>
+</ul>
+</div></details><h2 id="reexports" class="section-header">Re-exports<a href="#reexports" class="anchor">§</a></h2><dl class="item-table reexports"><dt id="reexport.Bin"><code>pub use agent::<a class="struct" href="agent/struct.Bin.html" title="struct ddsketch::agent::Bin">Bin</a>;</code></dt><dt id="reexport.Bucket"><code>pub use agent::<a class="struct" href="agent/struct.Bucket.html" title="struct ddsketch::agent::Bucket">Bucket</a>;</code></dt><dt id="reexport.DDSketch"><code>pub use agent::<a class="struct" href="agent/struct.DDSketch.html" title="struct ddsketch::agent::DDSketch">DDSketch</a>;</code></dt></dl><h2 id="modules" class="section-header">Modules<a href="#modules" class="anchor">§</a></h2><dl class="item-table"><dt><a class="mod" href="agent/index.html" title="mod ddsketch::agent">agent</a></dt><dd>Agent-specific DDSketch implementation.</dd><dt><a class="mod" href="canonical/index.html" title="mod ddsketch::canonical">canonical</a></dt><dd>Canonical implementation of DDSketch.</dd></dl></section></div></main></body></html>
