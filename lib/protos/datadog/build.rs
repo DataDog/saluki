@@ -25,6 +25,7 @@ impl CustomizeCallback for SerdeCapableStructs {
         let before_value = match field.proto().type_() {
             // We apply custom (de)serializers for certain `protobuf`-specific types which don't have their own implementation.
             Type::TYPE_ENUM => get_field_serde_annotation(field, Some("enum")),
+            Type::TYPE_BYTES => get_field_serde_annotation(field, Some("bytes")),
             Type::TYPE_MESSAGE => match field.runtime_field_type() {
                 RuntimeFieldType::Repeated(_) => get_field_serde_annotation(field, Some("repeated")),
                 RuntimeFieldType::Map(_, _) => get_field_serde_annotation(field, Some("map")),
@@ -102,8 +103,16 @@ fn main() {
             "proto/datadog-agent/datadog/trace/agent_payload.proto",
         ])
         .cargo_out_dir("trace_protos")
-        .customize(codegen_customize)
+        .customize(codegen_customize.clone())
         .customize_callback(SerdeCapableStructs)
+        .run_from_script();
+
+    protobuf_codegen::Codegen::new()
+        .protoc()
+        .includes(["proto/sketches-go"])
+        .inputs(["proto/sketches-go/ddsketch/pb/ddsketch.proto"])
+        .cargo_out_dir("sketch_protos")
+        .customize(codegen_customize)
         .run_from_script();
 
     // Handle code generation for gRPC service definitions.

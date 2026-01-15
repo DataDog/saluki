@@ -220,5 +220,6 @@ mod tests {
         println!("ServiceCheck: {} bytes", std::mem::size_of::<ServiceCheck>());
         println!("Log: {} bytes", std::mem::size_of::<Log>());
         println!("Trace: {} bytes", std::mem::size_of::<Trace>());
+        println!("TraceStats: {} bytes", std::mem::size_of::<TraceStats>());
     }
 }

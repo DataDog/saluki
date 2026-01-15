@@ -231,8 +231,8 @@ pub fn otel_to_dd_span_minimal(
     let trace_id = convert_trace_id(&otel_span.trace_id);
     let span_id = convert_span_id(&otel_span.span_id);
     let parent_id = convert_span_id(&otel_span.parent_span_id);
-    let start = otel_span.start_time_unix_nano as i64;
-    let duration = (otel_span.end_time_unix_nano - otel_span.start_time_unix_nano) as i64;
+    let start = otel_span.start_time_unix_nano;
+    let duration = otel_span.end_time_unix_nano - otel_span.start_time_unix_nano;
     let mut meta: FastHashMap<MetaString, MetaString> = FastHashMap::default();
     meta.reserve(span_attributes.len() + resource_attributes.len());
     let mut metrics: FastHashMap<MetaString, f64> = FastHashMap::default();

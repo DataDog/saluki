@@ -21,6 +21,10 @@ mod agent_include {
     include!(concat!(env!("OUT_DIR"), "/api.mod.rs"));
 }
 
+mod sketch_include {
+    include!(concat!(env!("OUT_DIR"), "/sketch_protos/mod.rs"));
+}
+
 /// Metrics-related definitions.
 pub mod metrics {
     pub use super::include::agent_payload::metric_payload::*;
@@ -50,4 +54,9 @@ pub mod agent {
     pub use super::agent_include::datadog::model::v1::*;
     pub use super::agent_include::datadog::remoteagent::*;
     pub use super::agent_include::datadog::workloadmeta::*;
+}
+
+/// DDSketch definitions from (sketches-go).
+pub mod sketches {
+    pub use super::sketch_include::ddsketch::*;
 }
