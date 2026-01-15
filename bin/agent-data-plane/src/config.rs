@@ -217,11 +217,6 @@ pub struct DataPlaneOtlpProxyConfiguration {
     /// Defaults to `http://localhost:4319`.
     core_agent_otlp_grpc_endpoint: String,
 
-    /// OTLP HTTP endpoint on the Core Agent to proxy signals to.
-    ///
-    /// Defaults to `http://localhost:4320`.
-    core_agent_otlp_http_endpoint: String,
-
     /// Whether or not to proxy traces to the Core Agent.
     ///
     /// Defaults to `true`.
@@ -244,9 +239,6 @@ impl DataPlaneOtlpProxyConfiguration {
         let core_agent_otlp_grpc_endpoint = config
             .try_get_typed("data_plane.otlp.proxy.receiver.protocols.grpc.endpoint")?
             .unwrap_or("http://localhost:4319".to_string());
-        let core_agent_otlp_http_endpoint = config
-            .try_get_typed("data_plane.otlp.proxy.receiver.protocols.http.endpoint")?
-            .unwrap_or("http://localhost:4320".to_string());
         let proxy_traces = config
             .try_get_typed("data_plane.otlp.proxy.traces.enabled")?
             .unwrap_or(true);
@@ -260,7 +252,6 @@ impl DataPlaneOtlpProxyConfiguration {
         Ok(Self {
             enabled,
             core_agent_otlp_grpc_endpoint,
-            core_agent_otlp_http_endpoint,
             proxy_traces,
             proxy_metrics,
             proxy_logs,
@@ -277,24 +268,17 @@ impl DataPlaneOtlpProxyConfiguration {
         &self.core_agent_otlp_grpc_endpoint
     }
 
-    /// Returns the OTLP HTTP endpoint on the Core Agent to proxy signals to.
-    pub fn core_agent_otlp_http_endpoint(&self) -> &str {
-        &self.core_agent_otlp_http_endpoint
-    }
-
     /// Returns `true` if the OTLP traces should be proxied to the Core Agent.
     pub const fn proxy_traces(&self) -> bool {
         self.proxy_traces
     }
 
     /// Returns `true` if the OTLP metrics should be proxied to the Core Agent.
-    #[allow(dead_code)]
     pub const fn proxy_metrics(&self) -> bool {
         self.proxy_metrics
     }
 
     /// Returns `true` if the OTLP logs should be proxied to the Core Agent.
-    #[allow(dead_code)]
     pub const fn proxy_logs(&self) -> bool {
         self.proxy_logs
     }

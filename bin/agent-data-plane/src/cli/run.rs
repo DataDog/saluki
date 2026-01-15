@@ -407,17 +407,12 @@ fn add_otlp_pipeline_to_blueprint(
 ) -> Result<(), GenericError> {
     if dp_config.otlp().proxy().enabled() {
         let core_agent_otlp_grpc_endpoint = dp_config.otlp().proxy().core_agent_otlp_grpc_endpoint().to_string();
-        let core_agent_otlp_http_endpoint = dp_config.otlp().proxy().core_agent_otlp_http_endpoint().to_string();
         let proxy_metrics = dp_config.otlp().proxy().proxy_metrics();
         let proxy_logs = dp_config.otlp().proxy().proxy_logs();
         let proxy_traces = dp_config.otlp().proxy().proxy_traces();
-        let api_key = config
-            .get_typed::<String>("api_key")
-            .error_context("API key must be set.")?;
 
         info!(
             proxy_grpc_endpoint = %core_agent_otlp_grpc_endpoint,
-            proxy_http_endpoint = %core_agent_otlp_http_endpoint,
             proxy_metrics,
             proxy_logs,
             proxy_traces,
@@ -428,8 +423,7 @@ fn add_otlp_pipeline_to_blueprint(
         let otlp_decoder_config = OtlpDecoderConfiguration::from_configuration(config)?;
 
         let local_agent_otlp_forwarder_config =
-            OtlpForwarderConfiguration::from_configuration(config, core_agent_otlp_grpc_endpoint)?
-                .with_endpoint_override(core_agent_otlp_http_endpoint, api_key);
+            OtlpForwarderConfiguration::from_configuration(config, core_agent_otlp_grpc_endpoint)?;
 
         blueprint
             // Components.
