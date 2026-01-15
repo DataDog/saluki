@@ -49,14 +49,14 @@ const TAG_PROCESS_TAGS: &str = "_dd.tags.process";
 ///
 /// Aggregates incoming `Trace` events into time-bucketed statistics, emitting
 /// `TraceStats` events.
-pub struct ApmStatsConfiguration {
+pub struct ApmStatsTransformConfiguration {
     apm_config: ApmConfig,
     default_hostname: Option<String>,
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 }
 
-impl ApmStatsConfiguration {
-    /// Creates a new `ApmStatsConfiguration` from the given configuration.
+impl ApmStatsTransformConfiguration {
+    /// Creates a new `ApmStatsTransformConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let apm_config = ApmConfig::from_configuration(config)?;
         Ok(Self {
@@ -89,7 +89,7 @@ impl ApmStatsConfiguration {
 }
 
 #[async_trait]
-impl TransformBuilder for ApmStatsConfiguration {
+impl TransformBuilder for ApmStatsTransformConfiguration {
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         let mut apm_config = self.apm_config.clone();
 
@@ -123,7 +123,7 @@ impl TransformBuilder for ApmStatsConfiguration {
     }
 }
 
-impl MemoryBounds for ApmStatsConfiguration {
+impl MemoryBounds for ApmStatsTransformConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         builder.minimum().with_single_value::<ApmStats>("component struct");
         // TODO: Think about everything we need to account for here.

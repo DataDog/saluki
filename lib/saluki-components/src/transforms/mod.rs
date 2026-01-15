@@ -22,4 +22,4 @@ mod metric_router;
 pub use self::metric_router::MetricRouterConfiguration;
 
 mod apm_stats;
-pub use self::apm_stats::ApmStatsConfiguration;
+pub use self::apm_stats::ApmStatsTransformConfiguration;

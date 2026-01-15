@@ -56,7 +56,7 @@ fn default_env() -> String {
 
 /// Configuration for the Datadog APM Stats encoder.
 #[derive(Deserialize)]
-pub struct DatadogApmStatsConfiguration {
+pub struct DatadogApmStatsEncoderConfiguration {
     /// Flush timeout for pending requests, in seconds.
     ///
     /// When the encoder has written traces to the in-flight request payload, but it has not yet reached the
@@ -77,8 +77,8 @@ pub struct DatadogApmStatsConfiguration {
     env: String,
 }
 
-impl DatadogApmStatsConfiguration {
-    /// Creates a new `DatadogStatsConfiguration` from the given configuration.
+impl DatadogApmStatsEncoderConfiguration {
+    /// Creates a new `DatadogApmStatsEncoderConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let mut stats_config: Self = config.as_typed()?;
         let app_details = saluki_metadata::get_app_details();
@@ -100,7 +100,7 @@ impl DatadogApmStatsConfiguration {
 }
 
 #[async_trait]
-impl EncoderBuilder for DatadogApmStatsConfiguration {
+impl EncoderBuilder for DatadogApmStatsEncoderConfiguration {
     fn input_event_type(&self) -> EventType {
         EventType::TraceStats
     }
@@ -141,7 +141,7 @@ impl EncoderBuilder for DatadogApmStatsConfiguration {
     }
 }
 
-impl MemoryBounds for DatadogApmStatsConfiguration {
+impl MemoryBounds for DatadogApmStatsEncoderConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         builder
             .minimum()

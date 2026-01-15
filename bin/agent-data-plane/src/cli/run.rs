@@ -15,7 +15,7 @@ use saluki_components::{
     decoders::otlp::OtlpDecoderConfiguration,
     destinations::DogStatsDStatisticsConfiguration,
     encoders::{
-        BufferedIncrementalConfiguration, DatadogApmStatsConfiguration, DatadogEventsConfiguration,
+        BufferedIncrementalConfiguration, DatadogApmStatsEncoderConfiguration, DatadogEventsConfiguration,
         DatadogLogsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration,
         DatadogTraceConfiguration,
     },
@@ -23,7 +23,7 @@ use saluki_components::{
     relays::otlp::OtlpRelayConfiguration,
     sources::{DogStatsDConfiguration, OtlpConfiguration},
     transforms::{
-        AggregateConfiguration, ApmStatsConfiguration, ChainedConfiguration, DogstatsDMapperConfiguration,
+        AggregateConfiguration, ApmStatsTransformConfiguration, ChainedConfiguration, DogstatsDMapperConfiguration,
         DogstatsDPrefixFilterConfiguration, HostEnrichmentConfiguration, HostTagsConfiguration,
     },
 };
@@ -326,15 +326,17 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         .add_encoder("dd_traces_encode", dd_traces_config)?
         .connect_component("dd_out", ["dd_traces_encode"])?;
 
-    let apm_stats_config =
-        ApmStatsConfiguration::from_configuration(config).error_context("Failed to configure APM Stats transform.")?;
-    let dd_stats_config = DatadogApmStatsConfiguration::from_configuration(config)
+    let apm_stats_transform_config = ApmStatsTransformConfiguration::from_configuration(config)
+        .error_context("Failed to configure APM Stats transform.")?
+        .with_environment_provider(env_provider.clone())
+        .await?;
+    let dd_apm_stats_encoder = DatadogApmStatsEncoderConfiguration::from_configuration(config)
         .error_context("Failed to configure Datadog APM Stats encoder.")?
         .with_environment_provider(env_provider.clone())
         .await?;
     blueprint
-        .add_transform("apm_stats", apm_stats_config)?
-        .add_encoder("dd_stats_encode", dd_stats_config)?
+        .add_transform("apm_stats", apm_stats_transform_config)?
+        .add_encoder("dd_stats_encode", dd_apm_stats_encoder)?
         .connect_component("dd_stats_encode", ["apm_stats"])?
         .connect_component("dd_out", ["dd_stats_encode"])?;
 
