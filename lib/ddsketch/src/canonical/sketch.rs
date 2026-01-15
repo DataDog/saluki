@@ -296,25 +296,133 @@ impl<M: IndexMapping + Default, S: Store + Default> Default for DDSketch<M, S> {
 
 #[cfg(test)]
 mod tests {
+    use ndarray::{Array, Axis};
+    use ndarray_stats::{
+        interpolate::{Higher, Lower},
+        QuantileExt,
+    };
+    use noisy_float::types::N64;
+    use num_traits::ToPrimitive as _;
+
     use super::*;
 
-    macro_rules! assert_rel_acc_eq {
-        ($rel_acc:expr, $actual:expr, $expected:expr) => {
-            let rel_acc = $rel_acc;
-            let actual = $actual;
-            let expected = $expected;
-            let diff = (actual - expected).abs();
-            let max_error = rel_acc * expected.abs();
-            assert!(
-                diff <= max_error,
-                "expected {} (+/-{}, {} - {}), got {}",
-                expected,
-                max_error,
-                expected - max_error,
-                expected + max_error,
+    macro_rules! assert_rel_acc_range_eq {
+        ($quantile:expr, $rel_acc:expr, $expected_lower:expr, $expected_upper:expr, $actual:expr) => {{
+            let expected_lower_f64 = $expected_lower.to_f64().unwrap();
+            let expected_lower_adj = if expected_lower_f64 > 0.0 {
+                expected_lower_f64 * (1.0 - $rel_acc)
+            } else {
+                expected_lower_f64 * (1.0 + $rel_acc)
+            };
+            let expected_upper_f64 = $expected_upper.to_f64().unwrap();
+            let expected_upper_adj = if expected_upper_f64 > 0.0 {
+                expected_upper_f64 * (1.0 + $rel_acc)
+            } else {
+                expected_upper_f64 * (1.0 - $rel_acc)
+            };
+            let actual = $actual.to_f64().unwrap();
+
+            /*
+            For debugging purposes:
+
+            println!(
+                "asserting range equality for q={}, expected_lower={} (adj: {}), expected_upper={} (adj: {}), actual={}",
+                $quantile,
+                $expected_lower,
+                expected_lower_adj,
+                $expected_upper,
+                expected_upper_adj,
                 actual
             );
-        };
+            */
+
+            assert!(
+                actual >= expected_lower_adj && actual <= expected_upper_adj,
+                "mismatch at q={}: expected {} - {} ({}% relative accuracy), got {}",
+                $quantile,
+                expected_lower_adj,
+                expected_upper_adj,
+                $rel_acc * 100.0,
+                actual
+            );
+        }};
+    }
+
+    macro_rules! assert_rel_acc_eq {
+        ($quantile:expr, $rel_acc:expr, $expected:expr, $actual:expr) => {{
+            assert_rel_acc_range_eq!($quantile, $rel_acc, $expected, $expected, $actual);
+        }};
+    }
+
+    struct Dataset<M: IndexMapping, S: Store> {
+        raw_data: Vec<N64>,
+        sketch: DDSketch<M, S>,
+    }
+
+    impl<M: IndexMapping, S: Store + Default> Dataset<M, S> {
+        fn new<V>(index_mapping: M, values: V) -> Self
+        where
+            V: Iterator<Item = f64>,
+        {
+            let mut raw_data = Vec::new();
+            let mut sketch = DDSketch::new(index_mapping, S::default(), S::default());
+            for value in values {
+                raw_data.push(N64::new(value));
+                sketch.add(value);
+            }
+
+            Self { raw_data, sketch }
+        }
+
+        #[track_caller]
+        fn validate(self, quantiles: &[f64]) {
+            let Self { mut raw_data, sketch } = self;
+
+            // Make sure the total counts match.
+            assert_eq!(raw_data.len() as u64, sketch.count());
+
+            // Sort our raw data before comparing quantiles.
+            raw_data.sort();
+
+            let mut data = Array::from_vec(raw_data);
+            let rel_acc = sketch.relative_accuracy();
+
+            // Compare quantiles.
+            for q in quantiles {
+                let expected_lower = data
+                    .quantile_axis_mut(Axis(0), N64::new(*q), &Lower)
+                    .map(|v| v.into_scalar())
+                    .ok();
+                let expected_upper = data
+                    .quantile_axis_mut(Axis(0), N64::new(*q), &Higher)
+                    .map(|v| v.into_scalar())
+                    .ok();
+                let actual = sketch.quantile(*q).map(N64::new);
+
+                match (expected_lower, expected_upper, actual) {
+                    (Some(expected_lower), Some(expected_upper), Some(actual)) => {
+                        // DDSketch does not do linear interpolation between the two closest values, so for example,
+                        // if we have 10 values (1-5 and 10-15, let's say), with an alpha of 0.01, and we ask for
+                        // q=5, you might expect to get back 7.5 -- (5 + 10) / 2 -- but DDSketch can return anywhere
+                        // from 5*0.99 to 10*1.01, or 4.95 to 10.1.
+                        //
+                        // We capture the quantile from the raw data with different interpolation methods to
+                        // calculate those wider bounds so we can validate against the actual guarantees provided by
+                        // DDSketch.
+                        assert_rel_acc_range_eq!(q, rel_acc, expected_lower, expected_upper, actual);
+                    }
+                    (None, None, None) => (),
+                    _ => panic!(
+                        "mismatched quantiles: expected_lower={:?}, expected_upper={:?}, actual {:?}",
+                        expected_lower, expected_upper, actual
+                    ),
+                }
+            }
+        }
+    }
+
+    fn integers(start: i64, end: i64) -> impl Iterator<Item = f64> {
+        (start..=end).map(|x| x as f64)
     }
 
     #[test]
@@ -327,44 +435,87 @@ mod tests {
     }
 
     #[test]
-    fn test_single_value() {
-        let mut sketch = DDSketch::with_relative_accuracy(0.01).unwrap();
-        sketch.add(42.0);
-
-        assert!(!sketch.is_empty());
-        assert_eq!(sketch.count(), 1);
-
-        let actual = sketch.quantile(0.5).unwrap();
-        assert_rel_acc_eq!(0.01, actual, 42.0);
+    fn test_accuracy_integers_positive_only_even_small() {
+        let index_mapping = LogarithmicMapping::new(0.01).unwrap();
+        let dataset = Dataset::<_, CollapsingLowestDenseStore>::new(index_mapping, integers(1, 10));
+        dataset.validate(&[0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]);
     }
 
     #[test]
-    #[ignore]
-    fn test_multiple_values() {
-        let mut sketch = DDSketch::with_relative_accuracy(0.01).unwrap();
-        for i in 1..=100 {
-            sketch.add(i as f64);
-        }
-
-        assert_eq!(sketch.count(), 100);
-
-        // Get and print and following quantiles: 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, and 0.99.
-        let quantiles = vec![0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99];
-        for q in quantiles {
-            let actual = sketch.quantile(q).unwrap();
-            println!("Quantile {}: {}", q, actual);
-        }
+    fn test_accuracy_integers_positive_only_even_medium() {
+        let index_mapping = LogarithmicMapping::new(0.01).unwrap();
+        let dataset = Dataset::<_, CollapsingLowestDenseStore>::new(index_mapping, integers(1, 250));
+        dataset.validate(&[0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]);
     }
 
     #[test]
-    fn test_negative_values() {
-        let mut sketch = DDSketch::with_relative_accuracy(0.01).unwrap();
-        sketch.add(-10.0);
-        sketch.add(-5.0);
-        sketch.add(5.0);
-        sketch.add(10.0);
+    fn test_accuracy_integers_positive_only_even_large() {
+        let index_mapping = LogarithmicMapping::new(0.01).unwrap();
+        let dataset = Dataset::<_, CollapsingLowestDenseStore>::new(index_mapping, integers(1, 1000));
+        dataset.validate(&[0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]);
+    }
 
-        assert_eq!(sketch.count(), 4);
+    #[test]
+    fn test_accuracy_integers_positive_only_odd_small() {
+        let index_mapping = LogarithmicMapping::new(0.01).unwrap();
+        let dataset = Dataset::<_, CollapsingLowestDenseStore>::new(index_mapping, integers(1, 11));
+        dataset.validate(&[0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]);
+    }
+
+    #[test]
+    fn test_accuracy_integers_positive_only_odd_medium() {
+        let index_mapping = LogarithmicMapping::new(0.01).unwrap();
+        let dataset = Dataset::<_, CollapsingLowestDenseStore>::new(index_mapping, integers(1, 293));
+        dataset.validate(&[0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]);
+    }
+
+    #[test]
+    fn test_accuracy_integers_positive_only_odd_large() {
+        let index_mapping = LogarithmicMapping::new(0.01).unwrap();
+        let dataset = Dataset::<_, CollapsingLowestDenseStore>::new(index_mapping, integers(1, 1023));
+        dataset.validate(&[0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]);
+    }
+
+    #[test]
+    fn test_accuracy_integers_negative_only_even_small() {
+        let index_mapping = LogarithmicMapping::new(0.01).unwrap();
+        let dataset = Dataset::<_, CollapsingLowestDenseStore>::new(index_mapping, integers(-10, -1));
+        dataset.validate(&[0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]);
+    }
+
+    #[test]
+    fn test_accuracy_integers_negative_only_even_medium() {
+        let index_mapping = LogarithmicMapping::new(0.01).unwrap();
+        let dataset = Dataset::<_, CollapsingLowestDenseStore>::new(index_mapping, integers(-250, -1));
+        dataset.validate(&[0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]);
+    }
+
+    #[test]
+    fn test_accuracy_integers_negative_only_even_large() {
+        let index_mapping = LogarithmicMapping::new(0.01).unwrap();
+        let dataset = Dataset::<_, CollapsingLowestDenseStore>::new(index_mapping, integers(-1000, -1));
+        dataset.validate(&[0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]);
+    }
+
+    #[test]
+    fn test_accuracy_integers_negative_only_odd_small() {
+        let index_mapping = LogarithmicMapping::new(0.01).unwrap();
+        let dataset = Dataset::<_, CollapsingLowestDenseStore>::new(index_mapping, integers(-11, -1));
+        dataset.validate(&[0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]);
+    }
+
+    #[test]
+    fn test_accuracy_integers_negative_only_odd_medium() {
+        let index_mapping = LogarithmicMapping::new(0.01).unwrap();
+        let dataset = Dataset::<_, CollapsingLowestDenseStore>::new(index_mapping, integers(-293, -1));
+        dataset.validate(&[0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]);
+    }
+
+    #[test]
+    fn test_accuracy_integers_negative_only_odd_large() {
+        let index_mapping = LogarithmicMapping::new(0.01).unwrap();
+        let dataset = Dataset::<_, CollapsingLowestDenseStore>::new(index_mapping, integers(-1023, -1));
+        dataset.validate(&[0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]);
     }
 
     #[test]
@@ -415,11 +566,11 @@ mod tests {
 
         // q=0 should return min
         let min_actual = sketch.quantile(0.0).unwrap();
-        assert_rel_acc_eq!(0.01, min_actual, 1.0);
+        assert_rel_acc_eq!(0.0, 0.01, 1.0, min_actual);
 
         // q=1 should return max
         let max_actual = sketch.quantile(1.0).unwrap();
-        assert_rel_acc_eq!(0.01, max_actual, 100.0);
+        assert_rel_acc_eq!(1.0, 0.01, 100.0, max_actual);
     }
 
     #[test]
@@ -428,33 +579,6 @@ mod tests {
         sketch.add_n(10.0, 5);
 
         assert_eq!(sketch.count(), 5);
-    }
-
-    #[test]
-    fn test_relative_accuracy_guarantee() {
-        let accuracy = 0.01; // 1%
-        let mut sketch = DDSketch::with_relative_accuracy(accuracy).unwrap();
-
-        // Add values from 1 to 1000
-        for i in 1..=1000 {
-            sketch.add(i as f64);
-        }
-
-        // Check various quantiles
-        for q in [0.5, 0.9, 0.95, 0.99] {
-            let estimated = sketch.quantile(q).unwrap();
-            let expected = q * 1000.0;
-
-            let relative_error = (estimated - expected).abs() / expected;
-            assert!(
-                relative_error <= accuracy * 2.0, // Allow some slack due to discrete bins
-                "quantile {} estimated {} expected {} error {}",
-                q,
-                estimated,
-                expected,
-                relative_error
-            );
-        }
     }
 
     #[test]

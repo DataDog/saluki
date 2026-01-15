@@ -23,7 +23,11 @@ smallvec = { workspace = true, features = ["union"] }
 [dev-dependencies]
 criterion = { workspace = true }
 dhat = { workspace = true }
+ndarray = { version = "0.17", default-features = false }
+ndarray-stats = { version = "0.7", default-features = false }
 noisy_float = { workspace = true }
+num-traits = { workspace = true }
+ordered-float = { workspace = true }
 rand = { workspace = true, features = ["small_rng", "thread_rng"] }
 rand_distr = { workspace = true }
 
