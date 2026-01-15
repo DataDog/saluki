@@ -2,7 +2,7 @@ use std::{num::NonZeroU64, time::Duration};
 
 use async_trait::async_trait;
 use datadog_protos::metrics as proto;
-use ddsketch_agent::DDSketch;
+use ddsketch::DDSketch;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use protobuf::{rt::WireType, CodedOutputStream, Enum as _};

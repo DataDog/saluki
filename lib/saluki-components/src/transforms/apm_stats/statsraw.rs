@@ -1,4 +1,4 @@
-use ddsketch_agent::DDSketch;
+use ddsketch::canonical::DDSketch;
 use protobuf::Message;
 use rand::Rng as _;
 use saluki_common::collections::FastHashMap;
@@ -27,8 +27,10 @@ impl GroupedStats {
             top_level_hits: 0.0,
             errors: 0.0,
             duration: 0.0,
-            ok_distribution: DDSketch::default(),
-            err_distribution: DDSketch::default(),
+            ok_distribution: DDSketch::with_relative_accuracy(0.01)
+                .expect("Relative accuracy should be valid (0 <= 0.01 <= 1)"),
+            err_distribution: DDSketch::with_relative_accuracy(0.01)
+                .expect("Relative accuracy should be valid (0 <= 0.01 <= 1)"),
             peer_tags: Vec::new(),
         }
     }
@@ -139,9 +141,9 @@ impl RawBucket {
 
         let trunc_dur = ns_timestamp_to_float(span.duration);
         if span.error != 0 {
-            gs.err_distribution.insert(trunc_dur);
+            gs.err_distribution.add(trunc_dur);
         } else {
-            gs.ok_distribution.insert(trunc_dur);
+            gs.ok_distribution.add(trunc_dur);
         }
     }
 
@@ -213,7 +215,7 @@ fn convert_to_ddsketch_proto_bytes(sketch: &DDSketch) -> Vec<u8> {
     match proto.write_to_bytes() {
         Ok(bytes) => bytes,
         Err(e) => {
-            error!(error = ?e, "Failed to serialize DDSketch to protobuf bytes.");
+            error!(error = ?e, "Failed to serialize DDSketch to canonical Protocol Buffers representation.");
             Vec::new()
         }
     }

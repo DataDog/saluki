@@ -6,7 +6,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use ddsketch_agent::DDSketch;
+use ddsketch::DDSketch;
 use http::{Request, Response};
 use hyper::{body::Incoming, service::service_fn};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};

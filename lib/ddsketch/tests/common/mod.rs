@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use datadog_protos::metrics::Dogsketch;
-use ddsketch_agent::DDSketch;
+use ddsketch::DDSketch;
 use rand::SeedableRng;
 use rand_distr::{Distribution, Pareto};
 
