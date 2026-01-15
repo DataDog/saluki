@@ -1256,10 +1256,10 @@
 <a href=#1256 id=1256 data-nosnippet>1256</a>    <span class="attr">#[serde(rename = <span class="string">"Duration"</span>)]
 <a href=#1257 id=1257 data-nosnippet>1257</a>    </span><span class="comment">// @@protoc_insertion_point(field:datadog.trace.ClientGroupedStats.duration)
 <a href=#1258 id=1258 data-nosnippet>1258</a>    </span><span class="kw">pub </span>duration: u64,
-<a href=#1259 id=1259 data-nosnippet>1259</a>    <span class="attr">#[serde(rename = <span class="string">"OkSummary"</span>)]
+<a href=#1259 id=1259 data-nosnippet>1259</a>    <span class="attr">#[serde(rename = <span class="string">"OkSummary"</span>, serialize_with = <span class="string">"crate::serde::serialize_proto_bytes"</span>, deserialize_with = <span class="string">"crate::serde::deserialize_proto_bytes"</span>)]
 <a href=#1260 id=1260 data-nosnippet>1260</a>    </span><span class="comment">// @@protoc_insertion_point(field:datadog.trace.ClientGroupedStats.okSummary)
 <a href=#1261 id=1261 data-nosnippet>1261</a>    </span><span class="kw">pub </span>okSummary: ::std::vec::Vec&lt;u8&gt;,
-<a href=#1262 id=1262 data-nosnippet>1262</a>    <span class="attr">#[serde(rename = <span class="string">"ErrorSummary"</span>)]
+<a href=#1262 id=1262 data-nosnippet>1262</a>    <span class="attr">#[serde(rename = <span class="string">"ErrorSummary"</span>, serialize_with = <span class="string">"crate::serde::serialize_proto_bytes"</span>, deserialize_with = <span class="string">"crate::serde::deserialize_proto_bytes"</span>)]
 <a href=#1263 id=1263 data-nosnippet>1263</a>    </span><span class="comment">// @@protoc_insertion_point(field:datadog.trace.ClientGroupedStats.errorSummary)
 <a href=#1264 id=1264 data-nosnippet>1264</a>    </span><span class="kw">pub </span>errorSummary: ::std::vec::Vec&lt;u8&gt;,
 <a href=#1265 id=1265 data-nosnippet>1265</a>    <span class="attr">#[serde(rename = <span class="string">"Synthetics"</span>)]

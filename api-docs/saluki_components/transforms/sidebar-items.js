@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["AggregateConfiguration","ChainedConfiguration","DogstatsDMapperConfiguration","DogstatsDPrefixFilterConfiguration","HostEnrichmentConfiguration","HostTagsConfiguration","MetricRouterConfiguration"]};
+window.SIDEBAR_ITEMS = {"struct":["AggregateConfiguration","ApmStatsConfiguration","ChainedConfiguration","DogstatsDMapperConfiguration","DogstatsDPrefixFilterConfiguration","HostEnrichmentConfiguration","HostTagsConfiguration","MetricRouterConfiguration"]};
