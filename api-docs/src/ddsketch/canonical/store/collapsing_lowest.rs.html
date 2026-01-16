@@ -13,7 +13,7 @@
 <a href=#13 id=13 data-nosnippet>13</a>/// - You need bounded memory usage
 <a href=#14 id=14 data-nosnippet>14</a>/// - Higher quantiles (e.g., p95, p99) are more important than lower quantiles
 <a href=#15 id=15 data-nosnippet>15</a>/// - You're tracking latencies or other metrics where the tail matters most
-<a href=#16 id=16 data-nosnippet>16</a></span><span class="attr">#[derive(Clone, Debug)]
+<a href=#16 id=16 data-nosnippet>16</a></span><span class="attr">#[derive(Clone, Debug, Eq, PartialEq)]
 <a href=#17 id=17 data-nosnippet>17</a></span><span class="kw">pub struct </span>CollapsingLowestDenseStore {
 <a href=#18 id=18 data-nosnippet>18</a>    <span class="doccomment">/// The bin counts, stored contiguously.
 <a href=#19 id=19 data-nosnippet>19</a>    </span>bins: Vec&lt;u64&gt;,

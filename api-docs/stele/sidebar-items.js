@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["MetricValue"],"struct":["AggregationKey","BucketTimeframe","BucketedClientStatistics","ClientStatistics","ClientStatisticsAggregator","Metric","MetricContext","Span"]};
+window.SIDEBAR_ITEMS = {"enum":["MetricValue"],"struct":["AggregationKey","BucketTimeframe","BucketedClientStatistics","ClientStatistics","ClientStatisticsAggregator","EncodedApmStatsDDSketch","Metric","MetricContext","Span"]};

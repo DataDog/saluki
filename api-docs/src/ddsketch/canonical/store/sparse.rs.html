@@ -14,7 +14,7 @@
 <a href=#14 id=14 data-nosnippet>14</a>/// - Input values span a wide range with gaps
 <a href=#15 id=15 data-nosnippet>15</a>/// - You don't need bounded memory usage
 <a href=#16 id=16 data-nosnippet>16</a>/// - You want to avoid the overhead of dense array allocation
-<a href=#17 id=17 data-nosnippet>17</a></span><span class="attr">#[derive(Clone, Debug)]
+<a href=#17 id=17 data-nosnippet>17</a></span><span class="attr">#[derive(Clone, Debug, Eq, PartialEq)]
 <a href=#18 id=18 data-nosnippet>18</a></span><span class="kw">pub struct </span>SparseStore {
 <a href=#19 id=19 data-nosnippet>19</a>    <span class="doccomment">/// The bin counts, keyed by index.
 <a href=#20 id=20 data-nosnippet>20</a>    </span>bins: BTreeMap&lt;i32, u64&gt;,
