@@ -23,8 +23,13 @@ impl Trace {
     }
 
     /// Returns a reference to the spans in this trace.
-    pub fn spans(&self) -> &Vec<Span> {
+    pub fn spans(&self) -> &[Span] {
         &self.spans
+    }
+
+    /// Returns a mutable reference to the spans in this trace.
+    pub fn spans_mut(&mut self) -> &mut [Span] {
+        &mut self.spans
     }
 
     /// Returns the resource-level tags associated with this trace.
@@ -234,6 +239,11 @@ impl Span {
     /// Returns the string-valued tag map.
     pub fn meta(&self) -> &FastHashMap<MetaString, MetaString> {
         &self.meta
+    }
+
+    /// Returns a mutable reference to the string-valued tag map.
+    pub fn meta_mut(&mut self) -> &mut FastHashMap<MetaString, MetaString> {
+        &mut self.meta
     }
 
     /// Returns the numeric-valued tag map.

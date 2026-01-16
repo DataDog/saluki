@@ -181,6 +181,16 @@ impl Event {
         }
     }
 
+    /// Returns a mutable reference inner event value, if this event is a `Trace`.
+    ///
+    /// Otherwise, `None` is returned.
+    pub fn try_as_trace_mut(&mut self) -> Option<&mut Trace> {
+        match self {
+            Event::Trace(trace) => Some(trace),
+            _ => None,
+        }
+    }
+
     /// Returns the inner event value, if this event is a `TraceStats`.
     ///
     /// Otherwise, `None` is returned and the original event is consumed.

@@ -13,9 +13,13 @@ use saluki_health::HealthRegistry;
 use saluki_io::net::{build_datadog_agent_server_tls_config, get_ipc_cert_file_path, GrpcTargetAddress, ListenAddress};
 use tracing::{error, info};
 
-use crate::config::DataPlaneConfiguration;
-use crate::internal::{platform, remote_agent::RemoteAgentHelperConfiguration};
-use crate::{env_provider::ADPEnvironmentProvider, internal::initialize_and_launch_runtime};
+use crate::{
+    config::DataPlaneConfiguration,
+    env_provider::ADPEnvironmentProvider,
+    internal::{
+        initialize_and_launch_runtime, platform::PlatformSettings, remote_agent::RemoteAgentHelperConfiguration,
+    },
+};
 
 /// Gets the IPC certificate file path from the configuration.
 fn get_cert_path_from_config(config: &GenericConfiguration) -> Result<PathBuf, GenericError> {
@@ -23,7 +27,7 @@ fn get_cert_path_from_config(config: &GenericConfiguration) -> Result<PathBuf, G
     let auth_token_file_path = config
         .try_get_typed::<PathBuf>("auth_token_file_path")
         .error_context("Failed to get Agent auth token file path.")?
-        .unwrap_or_else(|| PathBuf::from(platform::DATADOG_AGENT_AUTH_TOKEN));
+        .unwrap_or_else(PlatformSettings::get_auth_token_path);
 
     // Try to get the explicit IPC cert file path
     let ipc_cert_file_path = config
