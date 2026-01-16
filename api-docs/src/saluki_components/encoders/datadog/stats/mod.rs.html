@@ -56,7 +56,7 @@
 <a href=#56 id=56 data-nosnippet>56</a>
 <a href=#57 id=57 data-nosnippet>57</a><span class="doccomment">/// Configuration for the Datadog APM Stats encoder.
 <a href=#58 id=58 data-nosnippet>58</a></span><span class="attr">#[derive(Deserialize)]
-<a href=#59 id=59 data-nosnippet>59</a></span><span class="kw">pub struct </span>DatadogApmStatsConfiguration {
+<a href=#59 id=59 data-nosnippet>59</a></span><span class="kw">pub struct </span>DatadogApmStatsEncoderConfiguration {
 <a href=#60 id=60 data-nosnippet>60</a>    <span class="doccomment">/// Flush timeout for pending requests, in seconds.
 <a href=#61 id=61 data-nosnippet>61</a>    ///
 <a href=#62 id=62 data-nosnippet>62</a>    /// When the encoder has written traces to the in-flight request payload, but it has not yet reached the
@@ -77,8 +77,8 @@
 <a href=#77 id=77 data-nosnippet>77</a>    </span>env: String,
 <a href=#78 id=78 data-nosnippet>78</a>}
 <a href=#79 id=79 data-nosnippet>79</a>
-<a href=#80 id=80 data-nosnippet>80</a><span class="kw">impl </span>DatadogApmStatsConfiguration {
-<a href=#81 id=81 data-nosnippet>81</a>    <span class="doccomment">/// Creates a new `DatadogStatsConfiguration` from the given configuration.
+<a href=#80 id=80 data-nosnippet>80</a><span class="kw">impl </span>DatadogApmStatsEncoderConfiguration {
+<a href=#81 id=81 data-nosnippet>81</a>    <span class="doccomment">/// Creates a new `DatadogApmStatsEncoderConfiguration` from the given configuration.
 <a href=#82 id=82 data-nosnippet>82</a>    </span><span class="kw">pub fn </span>from_configuration(config: <span class="kw-2">&amp;</span>GenericConfiguration) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, GenericError&gt; {
 <a href=#83 id=83 data-nosnippet>83</a>        <span class="kw">let </span><span class="kw-2">mut </span>stats_config: <span class="self">Self </span>= config.as_typed()<span class="question-mark">?</span>;
 <a href=#84 id=84 data-nosnippet>84</a>        <span class="kw">let </span>app_details = saluki_metadata::get_app_details();
@@ -100,7 +100,7 @@
 <a href=#100 id=100 data-nosnippet>100</a>}
 <a href=#101 id=101 data-nosnippet>101</a>
 <a href=#102 id=102 data-nosnippet>102</a><span class="attr">#[async_trait]
-<a href=#103 id=103 data-nosnippet>103</a></span><span class="kw">impl </span>EncoderBuilder <span class="kw">for </span>DatadogApmStatsConfiguration {
+<a href=#103 id=103 data-nosnippet>103</a></span><span class="kw">impl </span>EncoderBuilder <span class="kw">for </span>DatadogApmStatsEncoderConfiguration {
 <a href=#104 id=104 data-nosnippet>104</a>    <span class="kw">fn </span>input_event_type(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; EventType {
 <a href=#105 id=105 data-nosnippet>105</a>        EventType::TraceStats
 <a href=#106 id=106 data-nosnippet>106</a>    }
@@ -141,7 +141,7 @@
 <a href=#141 id=141 data-nosnippet>141</a>    }
 <a href=#142 id=142 data-nosnippet>142</a>}
 <a href=#143 id=143 data-nosnippet>143</a>
-<a href=#144 id=144 data-nosnippet>144</a><span class="kw">impl </span>MemoryBounds <span class="kw">for </span>DatadogApmStatsConfiguration {
+<a href=#144 id=144 data-nosnippet>144</a><span class="kw">impl </span>MemoryBounds <span class="kw">for </span>DatadogApmStatsEncoderConfiguration {
 <a href=#145 id=145 data-nosnippet>145</a>    <span class="kw">fn </span>specify_bounds(<span class="kw-2">&amp;</span><span class="self">self</span>, builder: <span class="kw-2">&amp;mut </span>MemoryBoundsBuilder) {
 <a href=#146 id=146 data-nosnippet>146</a>        builder
 <a href=#147 id=147 data-nosnippet>147</a>            .minimum()

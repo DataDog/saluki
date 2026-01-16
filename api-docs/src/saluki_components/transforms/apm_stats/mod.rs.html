@@ -49,14 +49,14 @@
 <a href=#49 id=49 data-nosnippet>49</a>///
 <a href=#50 id=50 data-nosnippet>50</a>/// Aggregates incoming `Trace` events into time-bucketed statistics, emitting
 <a href=#51 id=51 data-nosnippet>51</a>/// `TraceStats` events.
-<a href=#52 id=52 data-nosnippet>52</a></span><span class="kw">pub struct </span>ApmStatsConfiguration {
+<a href=#52 id=52 data-nosnippet>52</a></span><span class="kw">pub struct </span>ApmStatsTransformConfiguration {
 <a href=#53 id=53 data-nosnippet>53</a>    apm_config: ApmConfig,
 <a href=#54 id=54 data-nosnippet>54</a>    default_hostname: <span class="prelude-ty">Option</span>&lt;String&gt;,
 <a href=#55 id=55 data-nosnippet>55</a>    workload_provider: <span class="prelude-ty">Option</span>&lt;Arc&lt;<span class="kw">dyn </span>WorkloadProvider + Send + Sync&gt;&gt;,
 <a href=#56 id=56 data-nosnippet>56</a>}
 <a href=#57 id=57 data-nosnippet>57</a>
-<a href=#58 id=58 data-nosnippet>58</a><span class="kw">impl </span>ApmStatsConfiguration {
-<a href=#59 id=59 data-nosnippet>59</a>    <span class="doccomment">/// Creates a new `ApmStatsConfiguration` from the given configuration.
+<a href=#58 id=58 data-nosnippet>58</a><span class="kw">impl </span>ApmStatsTransformConfiguration {
+<a href=#59 id=59 data-nosnippet>59</a>    <span class="doccomment">/// Creates a new `ApmStatsTransformConfiguration` from the given configuration.
 <a href=#60 id=60 data-nosnippet>60</a>    </span><span class="kw">pub fn </span>from_configuration(config: <span class="kw-2">&amp;</span>GenericConfiguration) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, GenericError&gt; {
 <a href=#61 id=61 data-nosnippet>61</a>        <span class="kw">let </span>apm_config = ApmConfig::from_configuration(config)<span class="question-mark">?</span>;
 <a href=#62 id=62 data-nosnippet>62</a>        <span class="prelude-val">Ok</span>(<span class="self">Self </span>{
@@ -89,7 +89,7 @@
 <a href=#89 id=89 data-nosnippet>89</a>}
 <a href=#90 id=90 data-nosnippet>90</a>
 <a href=#91 id=91 data-nosnippet>91</a><span class="attr">#[async_trait]
-<a href=#92 id=92 data-nosnippet>92</a></span><span class="kw">impl </span>TransformBuilder <span class="kw">for </span>ApmStatsConfiguration {
+<a href=#92 id=92 data-nosnippet>92</a></span><span class="kw">impl </span>TransformBuilder <span class="kw">for </span>ApmStatsTransformConfiguration {
 <a href=#93 id=93 data-nosnippet>93</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, _context: ComponentContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Transform + Send&gt;, GenericError&gt; {
 <a href=#94 id=94 data-nosnippet>94</a>        <span class="kw">let </span><span class="kw-2">mut </span>apm_config = <span class="self">self</span>.apm_config.clone();
 <a href=#95 id=95 data-nosnippet>95</a>
@@ -123,7 +123,7 @@
 <a href=#123 id=123 data-nosnippet>123</a>    }
 <a href=#124 id=124 data-nosnippet>124</a>}
 <a href=#125 id=125 data-nosnippet>125</a>
-<a href=#126 id=126 data-nosnippet>126</a><span class="kw">impl </span>MemoryBounds <span class="kw">for </span>ApmStatsConfiguration {
+<a href=#126 id=126 data-nosnippet>126</a><span class="kw">impl </span>MemoryBounds <span class="kw">for </span>ApmStatsTransformConfiguration {
 <a href=#127 id=127 data-nosnippet>127</a>    <span class="kw">fn </span>specify_bounds(<span class="kw-2">&amp;</span><span class="self">self</span>, builder: <span class="kw-2">&amp;mut </span>MemoryBoundsBuilder) {
 <a href=#128 id=128 data-nosnippet>128</a>        builder.minimum().with_single_value::&lt;ApmStats&gt;(<span class="string">"component struct"</span>);
 <a href=#129 id=129 data-nosnippet>129</a>        <span class="comment">// TODO: Think about everything we need to account for here.
