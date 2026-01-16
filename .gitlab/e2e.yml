@@ -115,11 +115,6 @@ test-integration:
   retry: 2
   timeout: 10m
   image: "${SALUKI_BUILD_CI_IMAGE}"
-  artifacts:
-    expire_in: 1 weeks
-    paths:
-      - /tmp/ground-truth/ # for debugging
-    when: always
   script:
     # Copy the bundled Agent/ADP image we built to the local Docker instance so we can share the integration
     # test configurations between CI and local test runs.
