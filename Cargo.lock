@@ -53,6 +53,7 @@ dependencies = [
  "tokio",
  "tonic",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -3457,6 +3458,7 @@ dependencies = [
  "http-body",
  "http-body-util",
  "indexmap 2.12.1",
+ "itoa",
  "memory-accounting",
  "papaya",
  "pin-project",

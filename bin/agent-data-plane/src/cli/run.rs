@@ -35,7 +35,10 @@ use saluki_health::HealthRegistry;
 use tokio::{select, time::interval};
 use tracing::{error, info, warn};
 
-use crate::internal::{spawn_control_plane, spawn_internal_observability_topology};
+use crate::{
+    components::apm_onboarding::ApmOnboardingConfiguration,
+    internal::{spawn_control_plane, spawn_internal_observability_topology},
+};
 use crate::{config::DataPlaneConfiguration, env_provider::ADPEnvironmentProvider};
 
 /// Runs the data plane.
@@ -322,10 +325,8 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         .error_context("Failed to configure Datadog Traces encoder.")?
         .with_environment_provider(env_provider.clone())
         .await?;
-    blueprint
-        .add_encoder("dd_traces_encode", dd_traces_config)?
-        .connect_component("dd_out", ["dd_traces_encode"])?;
-
+    let dd_traces_enrich_config =
+        ChainedConfiguration::default().with_transform_builder("apm_onboarding", ApmOnboardingConfiguration);
     let apm_stats_transform_config = ApmStatsTransformConfiguration::from_configuration(config)
         .error_context("Failed to configure APM Stats transform.")?
         .with_environment_provider(env_provider.clone())
@@ -334,11 +335,16 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         .error_context("Failed to configure Datadog APM Stats encoder.")?
         .with_environment_provider(env_provider.clone())
         .await?;
+
     blueprint
-        .add_transform("apm_stats", apm_stats_transform_config)?
+        .add_transform("traces_enrich", dd_traces_enrich_config)?
+        .add_transform("dd_apm_stats", apm_stats_transform_config)?
         .add_encoder("dd_stats_encode", dd_apm_stats_encoder)?
-        .connect_component("dd_stats_encode", ["apm_stats"])?
-        .connect_component("dd_out", ["dd_stats_encode"])?;
+        .add_encoder("dd_traces_encode", dd_traces_config)?
+        .connect_component("dd_apm_stats", ["traces_enrich"])?
+        .connect_component("dd_traces_encode", ["traces_enrich"])?
+        .connect_component("dd_stats_encode", ["dd_apm_stats"])?
+        .connect_component("dd_out", ["dd_traces_encode", "dd_stats_encode"])?;
 
     Ok(())
 }
@@ -350,32 +356,32 @@ async fn add_dsd_pipeline_to_blueprint(
     // We're creating the "front half" of the DogStatsD pipeline, which deals solely with accepting DogStatsD payloads,
     // and enriching/processing them in DSD-specific ways, relevant to how the Datadog Agent is expected to behave.
     //
-    //                                         ┌─────────────────────┐
-    //                                         │      DogStatsD      │
-    //                          ┌──────────────│       (source)      │──────────────┐
-    //                          │              └─────────────────────┘              │
-    //                          │                         │                         │
-    //                          │ metrics                 │ service checks          │ events
-    //                          ▼                         ▼                         ▼
-    //               ┌─────────────────────┐   ┌─────────────────────┐   ┌─────────────────────┐
-    //               │  DSD Prefix/Filter  │   │ DSD Service Checks  │   │     DSD Events      │
-    //               │     (transform)     │   │      (encoder)      │   │      (encoder)      │
-    //               └──────────┬──────────┘   └─────────┬───────────┘   └─────────────────────┘
-    //                          │                        │                          │
-    //                          ▼                        │                          └──────┐
-    //               ┌─────────────────────┐             └──────────────────────────────┐  │
-    //               │     DSD Enrich      │                                            │  │
-    //               │ (chained transform) │       ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐    │  │
-    //               │┌───────────────────┐│       │        Metrics Pipeline       │    │  │
-    //               ││    DSD Mapper     ││──────▶│  (aggregate, enrich, encode)  │    │  │
-    //               │└───────────────────┘│       └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘    │  │
-    //               └─────────────────────┘                        │                   │  │
-    //                                                              │                   │  │
-    //                                                              ▼                   ▼  ▼
-    //               ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐
-    //               │                               Forwarder                                 │
-    //               │                           (Datadog Platform)                            │
-    //               └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
+    //                                                 ┌─────────────────────┐
+    //                              metrics            │      DogStatsD      │
+    //               ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ │       (source)      │ ─ ─ ─ ─ ─ ─ ─ ┐
+    //               │                 │               └─────────────────────┘               │
+    //               │                 │                          │                          │
+    //               │                 │                          │ service checks           │ events
+    //               │                 ▼                          ▼                          ▼
+    //               │      ┌─────────────────────┐    ┌─────────────────────┐    ┌─────────────────────┐
+    //               │      │  DSD Prefix/Filter  │    │ DSD Service Checks  │    │     DSD Events      │
+    //               │      │     (transform)     │    │      (encoder)      │    │      (encoder)      │
+    //               │      └─────────────────────┘    └─────────────────────┘    └─────────────────────┘
+    //               │                 │                          │                          │
+    //               │                 ▼                          │                          └─ ─ ─ ┐
+    //               │      ┌─────────────────────┐               └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐   │
+    //               │      │     DSD Enrich      │                                             │   │
+    //               │      │ (chained transform) │        ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐    │   │
+    //               │      │┌───────────────────┐│        │        Metrics Pipeline       │    │   │
+    //               │      ││    DSD Mapper     ││ ─ ─ ─▶ │  (aggregate, enrich, encode)  │    │   │
+    //               │      │└───────────────────┘│        └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘    │   │
+    //               │      └─────────────────────┘                       │                     │   │
+    //               │                                                    │                     │   │
+    //               ▼                                                    ▼                     ▼   ▼
+    //    ┌─────────────────────┐    ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐
+    //    │      DSD Stats      │    │                           Forwarder                             │
+    //    │    (destination)    │    │                       (Datadog Platform)                        │
+    //    └─────────────────────┘    └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
 
     let dsd_config = DogStatsDConfiguration::from_configuration(config)
         .error_context("Failed to configure DogStatsD source.")?
@@ -444,7 +450,7 @@ fn add_otlp_pipeline_to_blueprint(
             // Components.
             .add_relay("otlp_relay_in", otlp_relay_config)?
             .add_forwarder("local_agent_otlp_out", local_agent_otlp_forwarder_config)?
-            // Metrics and logs to forwarders.
+            // Metrics and logs directly to the forwarders.
             .connect_component("local_agent_otlp_out", ["otlp_relay_in.metrics", "otlp_relay_in.logs"])?;
 
         if dp_config.otlp().proxy().proxy_traces() {
@@ -452,10 +458,9 @@ fn add_otlp_pipeline_to_blueprint(
         } else {
             blueprint
                 .add_decoder("otlp_traces_decode", otlp_decoder_config)?
-                // Traces to decoder, then to traces encoder and APM stats.
+                // Traces to decoder, then to the trace pipeline: enrichment, encoding, stats, forwarding.
                 .connect_component("otlp_traces_decode", ["otlp_relay_in.traces"])?
-                .connect_component("dd_traces_encode", ["otlp_traces_decode"])?
-                .connect_component("apm_stats", ["otlp_traces_decode"])?;
+                .connect_component("traces_enrich", ["otlp_traces_decode"])?;
         }
     } else {
         info!("OTLP proxy mode disabled. OTLP signals will be handled natively.");
@@ -472,8 +477,7 @@ fn add_otlp_pipeline_to_blueprint(
             // to avoid transforming counters into rates.
             .connect_component("metrics_enrich", ["otlp_in.metrics"])?
             .connect_component("dd_logs_encode", ["otlp_in.logs"])?
-            .connect_component("dd_traces_encode", ["otlp_in.traces"])?
-            .connect_component("apm_stats", ["otlp_in.traces"])?;
+            .connect_component("traces_enrich", ["otlp_in.traces"])?;
     }
     Ok(())
 }

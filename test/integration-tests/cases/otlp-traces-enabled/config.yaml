@@ -1,0 +1,44 @@
+name: "otlp-traces-enabled"
+description: "Verifies OTLP pipeline starts with native trace handling and proxying for metrics/logs"
+timeout: 60s
+
+container:
+  image: "saluki-images/datadog-agent:latest"
+  env:
+    DD_API_KEY: "test-api-key"
+    DD_HOSTNAME: "integration-test-dsd"
+    DD_DATA_PLANE_ENABLED: "true"
+    DD_DATA_PLANE_STANDALONE_MODE: "true"
+    DD_DATA_PLANE_OTLP_ENABLED: "true"
+    DD_DATA_PLANE_OTLP_PROXY_ENABLED: "true"
+    DD_DATA_PLANE_OTLP_PROXY_TRACES_ENABLED: "false"
+  exposed_ports:
+    - "4317/tcp"
+    - "4318/tcp"
+
+assertions:
+  # Process should remain stable
+  - type: process_stable_for
+    duration: 10s
+
+  # OTLP gRPC/HTTP ports should be listening
+  - type: port_listening
+    port: 4317
+    protocol: tcp
+    timeout: 30s
+
+  - type: port_listening
+    port: 4318
+    protocol: tcp
+    timeout: 30s
+
+  # Should see topology healthy message
+  - type: log_contains
+    pattern: "Topology healthy"
+    timeout: 45s
+
+  # Should not see any panics
+  - type: log_not_contains
+    pattern: "panic|PANIC"
+    regex: true
+    during: 10s
