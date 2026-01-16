@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["lower_alphanumeric"],"struct":["StringBuilder"]};
+window.SIDEBAR_ITEMS = {"fn":["lower_alphanumeric","unsigned_integer_to_string"],"struct":["StringBuilder"]};
