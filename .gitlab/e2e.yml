@@ -106,3 +106,23 @@ test-correctness-otlp-traces:
   extends: [.build-common-variables, .test-correctness-definition]
   variables:
     CORRECTNESS_TEST_CASE: otlp-traces
+
+test-integration:
+  stage: correctness
+  tags: ["docker-in-docker:amd64"]
+  needs:
+    - build-bundled-agent-adp-image
+  retry: 2
+  timeout: 10m
+  image: "${SALUKI_BUILD_CI_IMAGE}"
+  artifacts:
+    expire_in: 1 weeks
+    paths:
+      - /tmp/ground-truth/ # for debugging
+    when: always
+  script:
+    # Copy the bundled Agent/ADP image we built to the local Docker instance so we can share the integration
+    # test configurations between CI and local test runs.
+    - docker pull ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
+    - docker tag ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA} saluki-images/datadog-agent:latest
+    - make test-integration-quick
