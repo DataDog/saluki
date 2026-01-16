@@ -1,5 +1,5 @@
 .test-correctness-definition:
-  stage: correctness
+  stage: e2e
   tags: ["docker-in-docker:amd64"]
   needs:
     - build-bundled-agent-adp-image
@@ -25,7 +25,7 @@
     - target/release/ground-truth ./test/correctness/${CORRECTNESS_TEST_CASE}/config.yaml
 
 build-datadog-intake-image:
-  stage: correctness
+  stage: e2e
   image: ${DOCKER_BUILD_IMAGE}
   needs: []
   retry: 2
@@ -45,7 +45,7 @@ build-datadog-intake-image:
       .
 
 build-millstone-image:
-  stage: correctness
+  stage: e2e
   image: ${DOCKER_BUILD_IMAGE}
   needs: []
   retry: 2
@@ -65,7 +65,7 @@ build-millstone-image:
       .
 
 build-bundled-agent-adp-image:
-  stage: correctness
+  stage: e2e
   image: ${DOCKER_BUILD_IMAGE}
   needs:
     - build-adp-image
@@ -108,7 +108,7 @@ test-correctness-otlp-traces:
     CORRECTNESS_TEST_CASE: otlp-traces
 
 test-integration:
-  stage: correctness
+  stage: e2e
   tags: ["docker-in-docker:amd64"]
   needs:
     - build-bundled-agent-adp-image
