@@ -13,7 +13,7 @@ use crate::canonical::error::ProtoConversionError;
 /// - You need bounded memory usage
 /// - Lower quantiles (e.g., p1, p5) are more important than higher quantiles
 /// - You're tracking metrics where the minimum values matter most
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CollapsingHighestDenseStore {
     /// The bin counts, stored contiguously.
     bins: Vec<u64>,

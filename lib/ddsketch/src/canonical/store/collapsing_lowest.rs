@@ -13,7 +13,7 @@ use crate::canonical::error::ProtoConversionError;
 /// - You need bounded memory usage
 /// - Higher quantiles (e.g., p95, p99) are more important than lower quantiles
 /// - You're tracking latencies or other metrics where the tail matters most
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CollapsingLowestDenseStore {
     /// The bin counts, stored contiguously.
     bins: Vec<u64>,

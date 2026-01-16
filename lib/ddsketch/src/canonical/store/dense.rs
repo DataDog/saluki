@@ -12,7 +12,7 @@ use crate::canonical::error::ProtoConversionError;
 /// - You have a bounded range of input values
 /// - Memory usage is not a concern
 /// - You need the fastest possible insertion performance
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DenseStore {
     /// The bin counts, stored contiguously.
     bins: Vec<u64>,
