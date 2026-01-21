@@ -3,7 +3,7 @@ use otlp_protos::opentelemetry::proto::resource::v1::Resource as OtlpResource;
 use otlp_protos::opentelemetry::proto::trace::v1::ResourceSpans;
 use saluki_common::collections::FastHashMap;
 use saluki_context::tags::TagSet;
-use saluki_core::data_model::event::trace::{Span as DdSpan, Trace};
+use saluki_core::data_model::event::trace::{Span as DdSpan, Trace, TraceSampling};
 use saluki_core::data_model::event::Event;
 
 use crate::common::otlp::config::TracesConfig;
@@ -52,6 +52,7 @@ impl OtlpTracesTranslator {
         let resource: OtlpResource = resource_spans.resource.unwrap_or_default();
         let resource_tags: TagSet = resource_attributes_to_tagset(&resource.attributes);
         let mut traces_by_id: FastHashMap<u64, Vec<DdSpan>> = FastHashMap::default();
+        let mut priorities_by_id: FastHashMap<u64, i32> = FastHashMap::default();
         let ignore_missing_fields = self.config.ignore_missing_datadog_fields;
 
         for scope_spans in resource_spans.scope_spans {
@@ -67,17 +68,30 @@ impl OtlpTracesTranslator {
                     ignore_missing_fields,
                     self.config.enable_otlp_compute_top_level_by_span_kind,
                 );
+
+                // Track last-seen priority for this trace (overwrites previous values)
+                if let Some(&priority) = dd_span.metrics().get("_sampling_priority_v1") {
+                    priorities_by_id.insert(trace_id, priority as i32);
+                }
+
                 traces_by_id.entry(trace_id).or_default().push(dd_span);
             }
         }
 
         traces_by_id
             .into_iter()
-            .filter_map(|(_, spans)| {
+            .filter_map(|(trace_id, spans)| {
                 if spans.is_empty() {
                     None
                 } else {
-                    Some(Event::Trace(Trace::new(spans, resource_tags.clone())))
+                    let mut trace = Trace::new(spans, resource_tags.clone());
+
+                    // Set the trace-level sampling priority if one was found
+                    if let Some(&priority) = priorities_by_id.get(&trace_id) {
+                        trace.set_sampling(Some(TraceSampling::new(false, Some(priority), None, None)));
+                    }
+
+                    Some(Event::Trace(trace))
                 }
             })
             .collect()
