@@ -56,7 +56,15 @@ jobs:
     needs:
       - generate-docs-site
       - generate-api-docs
+    permissions:
+      id-token: write
     steps:
+      - name: Get access token from dd-octo-sts
+        uses: DataDog/dd-octo-sts-action@acaa02eee7e3bb0839e4272dacb37b8f3b58ba80 # v1.0.3
+        id: octo-sts
+        with:
+          scope: DataDog/saluki
+          policy: self.docs
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: docs
@@ -74,7 +82,7 @@ jobs:
       - name: Publish to Github Pages
         uses: peaceiris/actions-gh-pages@4f9cc6602d3f66b9c108549d475ec49e8ef4d45e # v4.0.0
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: "${{ steps.octo-sts.outputs.token }}"
           publish_dir: /tmp/docs
           commit_message: ${{ github.event.head_commit.message }}
           enable_jekyll: false
