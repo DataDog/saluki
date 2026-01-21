@@ -9,12 +9,11 @@ use saluki_context::tags::{SharedTagSet, Tag};
 use saluki_core::data_model::event::Event;
 use stringtheory::MetaString;
 
-use super::super::attributes::raw_origin_from_attributes;
-use crate::common::otlp::util::{get_string_attribute, resource_to_source};
-use crate::sources::otlp::attributes::source::SourceKind;
-use crate::sources::otlp::attributes::tags_from_attributes;
+use crate::common::otlp::attributes::raw_origin_from_attributes;
+use crate::common::otlp::attributes::tags_from_attributes;
+use crate::common::otlp::origin::OtlpOriginTagResolver;
+use crate::common::otlp::util::{get_string_attribute, resource_to_source, SourceKind};
 use crate::sources::otlp::logs::transform::transform_log_record;
-use crate::sources::otlp::origin::OtlpOriginTagResolver;
 
 static OTEL_SOURCE_TAG: Tag = Tag::from_static("otel_source:datadog_agent");
 

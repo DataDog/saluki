@@ -36,20 +36,18 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, MissedTickBehavior};
 use tracing::{debug, error};
 
-use crate::common::otlp::config::Receiver;
+use crate::common::otlp::config::OtlpConfig;
+use crate::common::otlp::config::TracesConfig;
 use crate::common::otlp::{build_metrics, Metrics, OtlpHandler, OtlpServerBuilder};
 
-mod attributes;
 mod logs;
 mod metrics;
-mod origin;
 mod resolver;
-pub mod traces;
 use self::logs::translator::OtlpLogsTranslator;
 use self::metrics::translator::OtlpMetricsTranslator;
-use self::origin::OtlpOriginTagResolver;
 use self::resolver::build_context_resolver;
-use self::traces::translator::OtlpTracesTranslator;
+use crate::common::otlp::origin::OtlpOriginTagResolver;
+use crate::common::otlp::traces::translator::OtlpTracesTranslator;
 
 const fn default_context_string_interner_size() -> ByteSize {
     ByteSize::mib(2)
@@ -123,94 +121,6 @@ pub struct OtlpConfiguration {
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 }
 
-#[derive(Deserialize, Debug, Default)]
-pub struct OtlpConfig {
-    #[serde(default)]
-    receiver: Receiver,
-    #[serde(default)]
-    metrics: MetricsConfig,
-    #[serde(default)]
-    logs: LogsConfig,
-    #[serde(default)]
-    traces: TracesConfig,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct LogsConfig {
-    /// Whether to enable OTLP logs support.
-    ///
-    /// Defaults to true.
-    #[serde(default = "default_logs_enabled")]
-    pub enabled: bool,
-}
-
-fn default_logs_enabled() -> bool {
-    true
-}
-
-impl Default for LogsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_logs_enabled(),
-        }
-    }
-}
-
-#[derive(Deserialize, Debug)]
-pub struct MetricsConfig {
-    /// Whether to enable OTLP metrics support.
-    ///
-    /// Defaults to true.
-    #[serde(default = "default_metrics_enabled")]
-    pub enabled: bool,
-}
-
-fn default_metrics_enabled() -> bool {
-    true
-}
-
-impl Default for MetricsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_metrics_enabled(),
-        }
-    }
-}
-
-#[derive(Deserialize, Debug)]
-pub struct TracesConfig {
-    /// Whether to enable OTLP traces support.
-    ///
-    /// Defaults to true.
-    #[serde(default = "default_traces_enabled")]
-    pub enabled: bool,
-    /// Whether to skip deriving Datadog fields from standard OTLP attributes.
-    ///
-    /// Mirrors the agent's `otlp_config.traces.ignore_missing_datadog_fields`.
-    #[serde(default)]
-    pub ignore_missing_datadog_fields: bool,
-    /// When true, `_top_level` and `_dd.measured` are derived using the OTLP span kind,
-    #[serde(default = "default_enable_otlp_compute_top_level_by_span_kind")]
-    pub enable_otlp_compute_top_level_by_span_kind: bool,
-}
-
-const fn default_enable_otlp_compute_top_level_by_span_kind() -> bool {
-    true
-}
-
-fn default_traces_enabled() -> bool {
-    true
-}
-
-impl Default for TracesConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_traces_enabled(),
-            ignore_missing_datadog_fields: false,
-            enable_otlp_compute_top_level_by_span_kind: default_enable_otlp_compute_top_level_by_span_kind(),
-        }
-    }
-}
 impl OtlpConfiguration {
     /// Creates a new `OTLPConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
@@ -276,9 +186,7 @@ impl SourceBuilder for OtlpConfiguration {
 
         let context_resolver = build_context_resolver(self, &context, maybe_origin_tags_resolver.clone())?;
         let metrics_translator_config = metrics::config::OtlpMetricsTranslatorConfig::default().with_remapping(true);
-        let traces_translator_config = traces::config::OtlpTracesTranslatorConfig::default()
-            .with_ignore_missing_datadog_fields(self.otlp_config.traces.ignore_missing_datadog_fields)
-            .with_compute_top_level_by_span_kind(self.otlp_config.traces.enable_otlp_compute_top_level_by_span_kind);
+        let traces_config = self.otlp_config.traces.clone();
         let grpc_max_recv_msg_size_bytes =
             self.otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
         let metrics = build_metrics(&context);
@@ -290,7 +198,7 @@ impl SourceBuilder for OtlpConfiguration {
             http_endpoint: ListenAddress::Tcp(http_socket_addr),
             grpc_max_recv_msg_size_bytes,
             metrics_translator_config,
-            traces_translator_config,
+            traces_config,
             metrics,
         }))
     }
@@ -312,7 +220,7 @@ pub struct Otlp {
     http_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
     metrics_translator_config: metrics::config::OtlpMetricsTranslatorConfig,
-    traces_translator_config: traces::config::OtlpTracesTranslatorConfig,
+    traces_config: TracesConfig,
     metrics: Metrics, // Telemetry metrics, not DD native metrics.
 }
 
@@ -326,7 +234,7 @@ impl Source for Otlp {
             http_endpoint,
             grpc_max_recv_msg_size_bytes,
             metrics_translator_config,
-            traces_translator_config,
+            traces_config,
             metrics,
         } = *self;
 
@@ -353,7 +261,7 @@ impl Source for Otlp {
                 converter_shutdown_coordinator.register(),
                 metrics_translator,
                 metrics.clone(),
-                traces_translator_config,
+                traces_config,
             ),
         );
 
@@ -501,8 +409,7 @@ async fn dispatch_events(mut events: EventsBuffer, source_context: &SourceContex
 async fn run_converter(
     mut receiver: mpsc::Receiver<OtlpResource>, source_context: SourceContext,
     origin_tag_resolver: Option<OtlpOriginTagResolver>, shutdown_handle: DynamicShutdownHandle,
-    mut metrics_translator: OtlpMetricsTranslator, metrics: Metrics,
-    traces_translator_config: traces::config::OtlpTracesTranslatorConfig,
+    mut metrics_translator: OtlpMetricsTranslator, metrics: Metrics, traces_config: TracesConfig,
 ) {
     tokio::pin!(shutdown_handle);
     debug!("OTLP resource converter task started.");
@@ -514,7 +421,7 @@ async fn run_converter(
 
     let mut event_buffer_manager = EventBufferManager::default();
 
-    let traces_translator = OtlpTracesTranslator::new(traces_translator_config);
+    let traces_translator = OtlpTracesTranslator::new(traces_config);
 
     loop {
         select! {

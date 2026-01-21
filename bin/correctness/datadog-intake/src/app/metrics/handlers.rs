@@ -2,16 +2,17 @@ use axum::{body::Bytes, extract::State, http::StatusCode, Json};
 use datadog_protos::metrics::{MetricPayload, SketchPayload};
 use protobuf::Message as _;
 use stele::Metric;
-use tracing::{debug, error};
+use tracing::{error, info};
 
 use super::MetricsState;
 
 pub async fn handle_metrics_dump(State(state): State<MetricsState>) -> Json<Vec<Metric>> {
+    info!("Got request to dump metrics.");
     Json(state.dump_metrics())
 }
 
 pub async fn handle_series_v2(State(state): State<MetricsState>, body: Bytes) -> StatusCode {
-    debug!("Received series payload.");
+    info!("Received series payload.");
 
     let payload = match MetricPayload::parse_from_bytes(&body[..]) {
         Ok(payload) => payload,
@@ -23,7 +24,7 @@ pub async fn handle_series_v2(State(state): State<MetricsState>, body: Bytes) ->
 
     match state.merge_series_payload(payload) {
         Ok(()) => {
-            debug!("Processed series payload.");
+            info!("Processed series payload.");
             StatusCode::ACCEPTED
         }
         Err(e) => {
@@ -34,7 +35,7 @@ pub async fn handle_series_v2(State(state): State<MetricsState>, body: Bytes) ->
 }
 
 pub async fn handle_sketch_beta(State(state): State<MetricsState>, body: Bytes) -> StatusCode {
-    debug!("Received sketch payload.");
+    info!("Received sketch payload.");
 
     let payload = match SketchPayload::parse_from_bytes(&body[..]) {
         Ok(payload) => payload,
@@ -46,7 +47,7 @@ pub async fn handle_sketch_beta(State(state): State<MetricsState>, body: Bytes) 
 
     match state.merge_sketch_payload(payload) {
         Ok(()) => {
-            debug!("Processed sketch payload.");
+            info!("Processed sketch payload.");
             StatusCode::ACCEPTED
         }
         Err(e) => {

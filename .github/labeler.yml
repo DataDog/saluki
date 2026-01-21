@@ -10,7 +10,7 @@
           - "lib/saluki-health/**/*"
           - "lib/saluki-metadata/**/*"
           - "lib/saluki-tls/**/*"
-          - "lib/ddsketch-agent/**/*"
+          - "lib/ddsketch/**/*"
 
 "area/config":
   - changed-files:

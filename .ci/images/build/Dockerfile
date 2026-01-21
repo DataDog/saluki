@@ -53,12 +53,6 @@ COPY ./Makefile /tmp
 COPY ./bin/agent-data-plane/Cargo.toml /tmp/bin/agent-data-plane/Cargo.toml
 RUN CI=true make cargo-preinstall
 
-# Import Python bits from Agent image.
-# Do last in the pipeline to avoid polluting the builds of above protobuf/go etc from using these libs
-COPY --from=agent /opt/datadog-agent/embedded/ /opt/datadog-agent/embedded/
-ENV LD_LIBRARY_PATH="/opt/datadog-agent/embedded/lib:${LD_LIBRARY_PATH}"
-ENV PATH="/opt/datadog-agent/embedded/bin:${PATH}"
-
 COPY .ci/images/build/entrypoint.sh /
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT [ "/entrypoint.sh" ]

@@ -6,7 +6,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use ddsketch_agent::DDSketch;
+use ddsketch::DDSketch;
 use http::{Request, Response};
 use hyper::{body::Incoming, service::service_fn};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -288,6 +288,11 @@ fn get_help_text(metric_name: &str) -> Option<&'static str> {
         "dogstatsd__packet_pool_get" => Some("Count of get done in the packet pool"),
         "dogstatsd__packet_pool_put" => Some("Count of put done in the packet pool"),
         "dogstatsd__packet_pool" => Some("Usage of the packet pool in dogstatsd"),
+        "transactions__errors" => Some("Count of transactions errored grouped by type of error"),
+        "transactions__http_errors" => Some("Count of transactions http errors per http code"),
+        "transactions__dropped" => Some("Transaction drop count"),
+        "transactions__success" => Some("Successful transaction count"),
+        "transactions__success_bytes" => Some("Successful transaction sizes in bytes"),
         _ => None,
     }
 }

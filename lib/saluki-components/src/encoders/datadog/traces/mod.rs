@@ -1,7 +1,8 @@
 #![allow(dead_code)]
 
+use std::time::Duration;
+
 use async_trait::async_trait;
-use bytes::Bytes;
 use datadog_protos::traces::{
     attribute_any_value::AttributeAnyValueType, attribute_array_value::AttributeArrayValueType, AttributeAnyValue,
     AttributeArray, AttributeArrayValue, Span as ProtoSpan, SpanEvent as ProtoSpanEvent, SpanLink as ProtoSpanLink,
@@ -19,7 +20,6 @@ use saluki_context::tags::TagSet;
 use saluki_core::data_model::event::trace::{
     AttributeScalarValue, AttributeValue, Span as DdSpan, SpanEvent as DdSpanEvent, SpanLink as DdSpanLink,
 };
-use saluki_core::data_model::event::Event;
 use saluki_core::topology::{EventsBuffer, PayloadsBuffer};
 use saluki_core::{
     components::{encoders::*, ComponentContext},
@@ -45,11 +45,13 @@ use tokio::{
 use tracing::{debug, error};
 
 use crate::common::datadog::{
+    apm::ApmConfig,
     io::RB_BUFFER_CHUNK_SIZE,
     request_builder::{EndpointEncoder, RequestBuilder},
     telemetry::ComponentTelemetry,
     DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
 };
+use crate::common::otlp::config::TracesConfig;
 use crate::common::otlp::util::{
     extract_container_tags_from_resource_tagset, tags_to_source, Source as OtlpSource, SourceKind as OtlpSourceKind,
     DEPLOYMENT_ENVIRONMENT_KEY, KEY_DATADOG_CONTAINER_ID, KEY_DATADOG_CONTAINER_TAGS, KEY_DATADOG_ENVIRONMENT,
@@ -88,10 +90,6 @@ const AGENT_PAYLOAD_TRACER_PAYLOADS_FIELD_NUMBER: u32 = 5;
 const AGENT_PAYLOAD_AGENT_VERSION_FIELD_NUMBER: u32 = 7;
 const AGENT_PAYLOAD_TARGET_TPS_FIELD_NUMBER: u32 = 8;
 const AGENT_PAYLOAD_ERROR_TPS_FIELD_NUMBER: u32 = 9;
-
-fn default_ignore_missing_datadog_fields() -> bool {
-    false
-}
 
 fn default_env() -> String {
     "none".to_string()
@@ -132,11 +130,14 @@ pub struct DatadogTraceConfiguration {
     #[serde(skip)]
     version: String,
 
+    #[serde(skip)]
+    apm_config: ApmConfig,
+
+    #[serde(skip)]
+    otlp_traces: TracesConfig,
+
     #[serde(default = "default_env")]
     env: String,
-
-    #[serde(default = "default_ignore_missing_datadog_fields")]
-    ignore_missing_datadog_fields: bool,
 }
 
 impl DatadogTraceConfiguration {
@@ -146,6 +147,9 @@ impl DatadogTraceConfiguration {
 
         let app_details = saluki_metadata::get_app_details();
         trace_config.version = format!("agent-data-plane/{}", app_details.version().raw());
+
+        trace_config.apm_config = ApmConfig::from_configuration(config)?;
+        trace_config.otlp_traces = config.try_get_typed("otlp_config.traces")?.unwrap_or_default();
 
         Ok(trace_config)
     }
@@ -187,9 +191,10 @@ impl EncoderBuilder for DatadogTraceConfiguration {
         let mut trace_rb = RequestBuilder::new(
             TraceEndpointEncoder::new(
                 default_hostname,
-                self.ignore_missing_datadog_fields,
                 self.version.clone(),
                 self.env.clone(),
+                self.apm_config.clone(),
+                self.otlp_traces.clone(),
             ),
             compression_scheme,
             RB_BUFFER_CHUNK_SIZE,
@@ -198,9 +203,10 @@ impl EncoderBuilder for DatadogTraceConfiguration {
         trace_rb.with_max_inputs_per_payload(MAX_TRACES_PER_PAYLOAD);
 
         let flush_timeout = match self.flush_timeout_secs {
-            // Give ourselves a minimum flush timeout of 10ms to allow for minimal batching
-            0 => std::time::Duration::from_millis(10),
-            secs => std::time::Duration::from_secs(secs),
+            // We always give ourselves a minimum flush timeout of 10ms to allow for some very minimal amount of
+            // batching, while still practically flushing things almost immediately.
+            0 => Duration::from_millis(10),
+            secs => Duration::from_secs(secs),
         };
 
         Ok(Box::new(DatadogTrace {
@@ -229,7 +235,7 @@ impl MemoryBounds for DatadogTraceConfiguration {
 pub struct DatadogTrace {
     trace_rb: RequestBuilder<TraceEndpointEncoder>,
     telemetry: ComponentTelemetry,
-    flush_timeout: std::time::Duration,
+    flush_timeout: Duration,
 }
 
 // Encodes Trace events to TracerPayloads.
@@ -316,11 +322,10 @@ async fn run_request_builder(
         select! {
             Some(event_buffer) = events_rx.recv() => {
                 for event in event_buffer {
-                    let trace = match event {
-                        Event::Trace(trace) => trace,
-                        _ => continue,
+                    let trace = match event.try_into_trace() {
+                        Some(trace) => trace,
+                        None => continue,
                     };
-
                     // Encode the trace. If we get it back, that means the current request is full, and we need to
                     // flush it before we can try to encode the trace again.
                     let trace_to_retry = match trace_request_builder.encode(trace).await {
@@ -416,23 +421,27 @@ struct TraceEndpointEncoder {
     tags_scratch: Vec<u8>,
     // TODO: do we need additional tags or tag deplicator?
     default_hostname: MetaString,
-    ignore_missing_datadog_fields: bool,
     agent_hostname: String,
     version: String,
     env: String,
+    apm_config: ApmConfig,
+    otlp_traces: TracesConfig,
 }
 
 impl TraceEndpointEncoder {
-    fn new(default_hostname: MetaString, ignore_missing_datadog_fields: bool, version: String, env: String) -> Self {
+    fn new(
+        default_hostname: MetaString, version: String, env: String, apm_config: ApmConfig, otlp_traces: TracesConfig,
+    ) -> Self {
         Self {
             tracer_payload_scratch: Vec::new(),
             chunk_scratch: Vec::new(),
             tags_scratch: Vec::new(),
             agent_hostname: default_hostname.as_ref().to_string(),
             default_hostname,
-            ignore_missing_datadog_fields,
             version,
             env,
+            apm_config,
+            otlp_traces,
         }
     }
 
@@ -440,6 +449,8 @@ impl TraceEndpointEncoder {
         let resource_tags = trace.resource_tags();
         let first_span = trace.spans().first();
         let source = tags_to_source(resource_tags);
+
+        let trace_chunk = self.build_trace_chunk(trace);
 
         // Build AgentPayload (outer message) writing to output_buffer
         let mut agent_payload_stream = CodedOutputStream::vec(output_buffer);
@@ -449,9 +460,14 @@ impl TraceEndpointEncoder {
         agent_payload_stream.write_string(AGENT_PAYLOAD_ENV_FIELD_NUMBER, &self.env)?;
 
         agent_payload_stream.write_string(AGENT_PAYLOAD_AGENT_VERSION_FIELD_NUMBER, &self.version)?;
-        // TODO: Remove hardcoded values for targetTPS and errorTPS when we have sampling.
-        agent_payload_stream.write_double(AGENT_PAYLOAD_TARGET_TPS_FIELD_NUMBER, 10.0)?;
-        agent_payload_stream.write_double(AGENT_PAYLOAD_ERROR_TPS_FIELD_NUMBER, 10.0)?;
+        agent_payload_stream.write_double(
+            AGENT_PAYLOAD_TARGET_TPS_FIELD_NUMBER,
+            self.apm_config.target_traces_per_second(),
+        )?;
+        agent_payload_stream.write_double(
+            AGENT_PAYLOAD_ERROR_TPS_FIELD_NUMBER,
+            self.apm_config.errors_per_second(),
+        )?;
 
         // Build TracerPayload (nested message) in scratch buffer
         self.tracer_payload_scratch.clear();
@@ -466,21 +482,25 @@ impl TraceEndpointEncoder {
             tracer_payload_stream.write_string(TRACER_PAYLOAD_LANGUAGE_NAME_FIELD_NUMBER, lang)?;
         }
 
-        if let Some(sdk_version) = get_resource_tag_value(resource_tags, "telemetry.sdk.version") {
-            let tracer_version = format!("otlp-{}", sdk_version);
-            tracer_payload_stream.write_string(TRACER_PAYLOAD_TRACER_VERSION_FIELD_NUMBER, &tracer_version)?;
-        }
+        // Write tracer_version for OTLP traces, even if telemetry.sdk.version is missing.
+        let sdk_version = get_resource_tag_value(resource_tags, "telemetry.sdk.version").unwrap_or("");
+        let tracer_version = format!("otlp-{}", sdk_version);
+        tracer_payload_stream.write_string(TRACER_PAYLOAD_TRACER_VERSION_FIELD_NUMBER, &tracer_version)?;
 
         self.chunk_scratch.clear();
         write_message_field(
             &mut tracer_payload_stream,
             TRACER_PAYLOAD_CHUNKS_FIELD_NUMBER,
-            &build_trace_chunk(trace),
+            &trace_chunk,
             &mut self.chunk_scratch,
         )?;
 
         self.tags_scratch.clear();
-        if let Some(tags) = resolve_container_tags(resource_tags, source.as_ref(), self.ignore_missing_datadog_fields) {
+        if let Some(tags) = resolve_container_tags(
+            resource_tags,
+            source.as_ref(),
+            self.otlp_traces.ignore_missing_datadog_fields,
+        ) {
             write_map_entry_string_string(
                 &mut tracer_payload_stream,
                 TRACER_PAYLOAD_TAGS_FIELD_NUMBER,
@@ -490,7 +510,7 @@ impl TraceEndpointEncoder {
             )?;
         }
 
-        if let Some(env) = resolve_env(resource_tags, self.ignore_missing_datadog_fields) {
+        if let Some(env) = resolve_env(resource_tags, self.otlp_traces.ignore_missing_datadog_fields) {
             tracer_payload_stream.write_string(TRACER_PAYLOAD_ENV_FIELD_NUMBER, env)?;
         }
 
@@ -498,7 +518,7 @@ impl TraceEndpointEncoder {
             resource_tags,
             source.as_ref(),
             Some(self.default_hostname.as_ref()),
-            self.ignore_missing_datadog_fields,
+            self.otlp_traces.ignore_missing_datadog_fields,
         ) {
             tracer_payload_stream.write_string(TRACER_PAYLOAD_HOSTNAME_FIELD_NUMBER, hostname)?;
         }
@@ -516,6 +536,44 @@ impl TraceEndpointEncoder {
         agent_payload_stream.flush()?;
 
         Ok(())
+    }
+
+    fn sampling_rate(&self) -> f64 {
+        let rate = self.otlp_traces.probabilistic_sampler.sampling_percentage / 100.0;
+        if rate <= 0.0 || rate >= 1.0 {
+            return 1.0;
+        }
+        rate
+    }
+
+    fn build_trace_chunk(&self, trace: &Trace) -> TraceChunk {
+        let mut spans: Vec<ProtoSpan> = trace.spans().iter().map(convert_span).collect();
+        let mut chunk = TraceChunk::new();
+
+        let rate = self.sampling_rate();
+        let mut tags = std::collections::HashMap::new();
+        tags.insert("_dd.otlp_sr".to_string(), format!("{:.2}", rate));
+
+        // TODO: Remove this once we have sampling. We have to hardcode the priority to 1 for now so that intake does not drop the trace.
+        const PRIORITY_AUTO_KEEP: i32 = 1;
+        chunk.set_priority(PRIORITY_AUTO_KEEP);
+
+        // Set _dd.p.dm (decision maker)
+        // Only set if sampling priority is "keep" (which it is, since we set PRIORITY_AUTO_KEEP)
+        // Decision maker "-9" indicates probabilistic sampler made the decision
+        const DECISION_MAKER: &str = "-9";
+        if let Some(first_span) = spans.first_mut() {
+            let mut meta = first_span.take_meta();
+            meta.insert("_dd.p.dm".to_string(), DECISION_MAKER.to_string());
+            first_span.set_meta(meta);
+        }
+
+        tags.insert("_dd.p.dm".to_string(), DECISION_MAKER.to_string());
+        chunk.set_tags(tags);
+
+        chunk.set_spans(spans);
+
+        chunk
     }
 }
 
@@ -551,42 +609,30 @@ impl EndpointEncoder for TraceEndpointEncoder {
     }
 }
 
-fn build_trace_chunk(trace: &Trace) -> TraceChunk {
-    let spans: Vec<ProtoSpan> = trace.spans().iter().map(convert_span).collect();
-    let mut chunk = TraceChunk::new();
-    chunk.set_spans(spans);
-
-    // TODO: Remove this once we have sampling. We have to hardcode the priority to 1 for now so that intake does not drop the trace.
-    const PRIORITY_AUTO_KEEP: i32 = 1;
-    chunk.set_priority(PRIORITY_AUTO_KEEP);
-
-    chunk
-}
-
 fn convert_span(span: &DdSpan) -> ProtoSpan {
     let mut proto = ProtoSpan::new();
-    proto.set_service(span.service().to_string().into());
-    proto.set_name(span.name().to_string().into());
-    proto.set_resource(span.resource().to_string().into());
+    proto.set_service(span.service().to_string());
+    proto.set_name(span.name().to_string());
+    proto.set_resource(span.resource().to_string());
     proto.set_traceID(span.trace_id());
     proto.set_spanID(span.span_id());
     proto.set_parentID(span.parent_id());
-    proto.set_start(span.start());
-    proto.set_duration(span.duration());
+    proto.set_start(span.start() as i64);
+    proto.set_duration(span.duration() as i64);
     proto.set_error(span.error());
-    proto.set_type(span.span_type().to_string().into());
+    proto.set_type(span.span_type().to_string());
 
     proto.set_meta(
         span.meta()
             .iter()
-            .map(|(k, v)| (k.to_string().into(), v.to_string().into()))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect(),
     );
-    proto.set_metrics(span.metrics().iter().map(|(k, v)| (k.to_string().into(), *v)).collect());
+    proto.set_metrics(span.metrics().iter().map(|(k, v)| (k.to_string(), *v)).collect());
     proto.set_meta_struct(
         span.meta_struct()
             .iter()
-            .map(|(k, v)| (k.to_string().into(), Bytes::from(v.clone())))
+            .map(|(k, v)| (k.to_string(), v.clone()))
             .collect(),
     );
     proto.set_spanLinks(span.span_links().iter().map(convert_span_link).collect());
@@ -602,10 +648,10 @@ fn convert_span_link(link: &DdSpanLink) -> ProtoSpanLink {
     proto.set_attributes(
         link.attributes()
             .iter()
-            .map(|(k, v)| (k.to_string().into(), v.to_string().into()))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect(),
     );
-    proto.set_tracestate(link.tracestate().to_string().into());
+    proto.set_tracestate(link.tracestate().to_string());
     proto.set_flags(link.flags());
     proto
 }
@@ -613,12 +659,12 @@ fn convert_span_link(link: &DdSpanLink) -> ProtoSpanLink {
 fn convert_span_event(event: &DdSpanEvent) -> ProtoSpanEvent {
     let mut proto = ProtoSpanEvent::new();
     proto.set_time_unix_nano(event.time_unix_nano());
-    proto.set_name(event.name().to_string().into());
+    proto.set_name(event.name().to_string());
     proto.set_attributes(
         event
             .attributes()
             .iter()
-            .map(|(k, v)| (k.to_string().into(), convert_attribute_value(v)))
+            .map(|(k, v)| (k.to_string(), convert_attribute_value(v)))
             .collect(),
     );
     proto
@@ -629,7 +675,7 @@ fn convert_attribute_value(value: &AttributeValue) -> AttributeAnyValue {
     match value {
         AttributeValue::String(v) => {
             proto.set_type(AttributeAnyValueType::STRING_VALUE);
-            proto.set_string_value(v.to_string().into());
+            proto.set_string_value(v.to_string());
         }
         AttributeValue::Bool(v) => {
             proto.set_type(AttributeAnyValueType::BOOL_VALUE);
@@ -658,7 +704,7 @@ fn convert_attribute_array_value(value: &AttributeScalarValue) -> AttributeArray
     match value {
         AttributeScalarValue::String(v) => {
             proto.set_type(AttributeArrayValueType::STRING_VALUE);
-            proto.set_string_value(v.to_string().into());
+            proto.set_string_value(v.to_string());
         }
         AttributeScalarValue::Bool(v) => {
             proto.set_type(AttributeArrayValueType::BOOL_VALUE);

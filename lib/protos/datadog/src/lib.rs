@@ -7,6 +7,8 @@
 #![allow(clippy::enum_variant_names)]
 #![allow(clippy::doc_overindented_list_items)]
 
+pub(crate) mod serde;
+
 mod include {
     include!(concat!(env!("OUT_DIR"), "/protos/mod.rs"));
 }
@@ -17,6 +19,10 @@ mod trace_include {
 
 mod agent_include {
     include!(concat!(env!("OUT_DIR"), "/api.mod.rs"));
+}
+
+mod sketch_include {
+    include!(concat!(env!("OUT_DIR"), "/sketch_protos/mod.rs"));
 }
 
 /// Metrics-related definitions.
@@ -48,4 +54,9 @@ pub mod agent {
     pub use super::agent_include::datadog::model::v1::*;
     pub use super::agent_include::datadog::remoteagent::*;
     pub use super::agent_include::datadog::workloadmeta::*;
+}
+
+/// DDSketch definitions from (sketches-go).
+pub mod sketches {
+    pub use super::sketch_include::ddsketch::*;
 }

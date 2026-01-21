@@ -11,8 +11,9 @@ use super::{
 };
 use crate::{
     components::{
-        destinations::DestinationBuilder, encoders::EncoderBuilder, forwarders::ForwarderBuilder, relays::RelayBuilder,
-        sources::SourceBuilder, transforms::TransformBuilder, ComponentContext,
+        decoders::DecoderBuilder, destinations::DestinationBuilder, encoders::EncoderBuilder,
+        forwarders::ForwarderBuilder, relays::RelayBuilder, sources::SourceBuilder, transforms::TransformBuilder,
+        ComponentContext,
     },
     data_model::event::Event,
     topology::{EventsBuffer, DEFAULT_EVENTS_BUFFER_CAPACITY},
@@ -46,6 +47,7 @@ pub struct TopologyBlueprint {
     graph: Graph,
     sources: HashMap<ComponentId, RegisteredComponent<Box<dyn SourceBuilder + Send>>>,
     relays: HashMap<ComponentId, RegisteredComponent<Box<dyn RelayBuilder + Send>>>,
+    decoders: HashMap<ComponentId, RegisteredComponent<Box<dyn DecoderBuilder + Send>>>,
     transforms: HashMap<ComponentId, RegisteredComponent<Box<dyn TransformBuilder + Send>>>,
     destinations: HashMap<ComponentId, RegisteredComponent<Box<dyn DestinationBuilder + Send>>>,
     encoders: HashMap<ComponentId, RegisteredComponent<Box<dyn EncoderBuilder + Send>>>,
@@ -65,6 +67,7 @@ impl TopologyBlueprint {
             graph: Graph::default(),
             sources: HashMap::new(),
             relays: HashMap::new(),
+            decoders: HashMap::new(),
             transforms: HashMap::new(),
             destinations: HashMap::new(),
             encoders: HashMap::new(),
@@ -115,6 +118,7 @@ impl TopologyBlueprint {
         // TODO: Add a firm subitem for payloads when we have payload interconnects.
         let max_in_flight_event_buffers = ((self.transforms.len() + self.destinations.len()) * interconnect_capacity)
             + self.sources.len()
+            + self.decoders.len()
             + self.transforms.len();
 
         bounds_builder
@@ -192,6 +196,37 @@ impl TopologyBlueprint {
         let _ = self.relays.insert(
             component_id,
             RegisteredComponent::new(Box::new(builder), relay_registry),
+        );
+
+        Ok(self)
+    }
+
+    /// Adds a decoder component to the blueprint.
+    ///
+    /// # Errors
+    ///
+    /// If the component ID is invalid or the component cannot be added to the graph, an error is returned.
+    pub fn add_decoder<I, B>(&mut self, component_id: I, builder: B) -> Result<&mut Self, GenericError>
+    where
+        I: AsRef<str>,
+        B: DecoderBuilder + Send + 'static,
+    {
+        let component_id = self
+            .graph
+            .add_decoder(component_id, &builder)
+            .error_context("Failed to add decoder to topology graph.")?;
+
+        let mut decoder_registry = self
+            .component_registry
+            .get_or_create(format!("components.decoders.{}", component_id));
+        let mut bounds_builder = decoder_registry.bounds_builder();
+        builder.specify_bounds(&mut bounds_builder);
+
+        self.recalculate_bounds();
+
+        let _ = self.decoders.insert(
+            component_id,
+            RegisteredComponent::new(Box::new(builder), decoder_registry),
         );
 
         Ok(self)
@@ -388,6 +423,24 @@ impl TopologyBlueprint {
             );
         }
 
+        let mut decoders = HashMap::new();
+        for (id, builder) in self.decoders {
+            let (builder, mut component_registry) = builder.into_parts();
+            let allocation_token = component_registry.token();
+
+            let component_context = ComponentContext::decoder(id.clone());
+            let decoder = builder
+                .build(component_context)
+                .track_allocations(allocation_token)
+                .await
+                .with_error_context(|| format!("Failed to build decoder '{}'.", id))?;
+
+            decoders.insert(
+                id,
+                RegisteredComponent::new(decoder.track_allocations(allocation_token), component_registry),
+            );
+        }
+
         let mut transforms = HashMap::new();
         for (id, builder) in self.transforms {
             let (builder, mut component_registry) = builder.into_parts();
@@ -465,6 +518,7 @@ impl TopologyBlueprint {
             self.graph,
             sources,
             relays,
+            decoders,
             transforms,
             destinations,
             encoders,

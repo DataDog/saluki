@@ -1,0 +1,128 @@
+.test-correctness-definition:
+  stage: e2e
+  tags: ["docker-in-docker:amd64"]
+  needs:
+    - build-bundled-agent-adp-image
+    - build-datadog-intake-image
+    - build-millstone-image
+  retry: 2
+  timeout: 10m
+  image: "${SALUKI_BUILD_CI_IMAGE}"
+  artifacts:
+    expire_in: 1 weeks
+    paths:
+      - /tmp/ground-truth/ # for debugging
+    when: always
+  variables:
+    DD_LOG_LEVEL: "ground_truth=debug,info"
+    GROUND_TRUTH_ALPINE_IMAGE: registry.ddbuild.io/alpine:latest
+    GROUND_TRUTH_MILLSTONE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
+    GROUND_TRUTH_DATADOG_INTAKE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/datadog-intake:${CI_COMMIT_SHA}
+    GROUND_TRUTH_BASELINE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
+    GROUND_TRUTH_COMPARISON__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
+  script:
+    - make build-ground-truth
+    - target/release/ground-truth ./test/correctness/${CORRECTNESS_TEST_CASE}/config.yaml
+
+build-datadog-intake-image:
+  stage: e2e
+  image: ${DOCKER_BUILD_IMAGE}
+  needs: []
+  retry: 2
+  timeout: 10m
+  script:
+    - docker buildx build
+      --platform linux/amd64
+      --file ./docker/Dockerfile.datadog-intake
+      --tag ${SALUKI_IMAGE_REPO_BASE}/datadog-intake:${CI_COMMIT_SHA}
+      --build-arg BASE_IMAGE=${PUBLIC_BASE_IMAGE}
+      --label git.repository=${CI_PROJECT_NAME}
+      --label git.branch=${CI_COMMIT_REF_NAME}
+      --label git.commit=${CI_COMMIT_SHA}
+      --label ci.pipeline_id=${CI_PIPELINE_ID}
+      --label ci.job_id=${CI_JOB_ID}
+      --push
+      .
+
+build-millstone-image:
+  stage: e2e
+  image: ${DOCKER_BUILD_IMAGE}
+  needs: []
+  retry: 2
+  timeout: 10m
+  script:
+    - docker buildx build
+      --platform linux/amd64
+      --file ./docker/Dockerfile.millstone
+      --tag ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
+      --build-arg BASE_IMAGE=${PUBLIC_BASE_IMAGE}
+      --label git.repository=${CI_PROJECT_NAME}
+      --label git.branch=${CI_COMMIT_REF_NAME}
+      --label git.commit=${CI_COMMIT_SHA}
+      --label ci.pipeline_id=${CI_PIPELINE_ID}
+      --label ci.job_id=${CI_JOB_ID}
+      --push
+      .
+
+build-bundled-agent-adp-image:
+  stage: e2e
+  image: ${DOCKER_BUILD_IMAGE}
+  needs:
+    - build-adp-image
+  retry: 2
+  timeout: 10m
+  script:
+    - docker buildx build
+      --platform linux/amd64
+      --file ./docker/Dockerfile.datadog-agent
+      --tag ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
+      --build-arg DD_AGENT_VERSION=${PUBLIC_DD_AGENT_VERSION}
+      --build-arg ADP_IMAGE=${ADP_FULL_IMAGE_TAG}
+      --build-arg BUILD_PROFILE=release
+      --label git.repository=${CI_PROJECT_NAME}
+      --label git.branch=${CI_COMMIT_REF_NAME}
+      --label git.commit=${CI_COMMIT_SHA}
+      --label ci.pipeline_id=${CI_PIPELINE_ID}
+      --label ci.job_id=${CI_JOB_ID}
+      --push
+      .
+
+test-correctness-dsd-plain:
+  extends: [.build-common-variables, .test-correctness-definition]
+  variables:
+    CORRECTNESS_TEST_CASE: dsd-plain
+
+test-correctness-dsd-origin-detection:
+  extends: [.build-common-variables, .test-correctness-definition]
+  variables:
+    CORRECTNESS_TEST_CASE: dsd-origin-detection
+
+test-correctness-otlp-metrics:
+  extends: [.build-common-variables, .test-correctness-definition]
+  variables:
+    CORRECTNESS_TEST_CASE: otlp-metrics
+
+test-correctness-otlp-traces:
+  extends: [.build-common-variables, .test-correctness-definition]
+  variables:
+    CORRECTNESS_TEST_CASE: otlp-traces
+
+test-integration:
+  stage: e2e
+  tags: ["docker-in-docker:amd64"]
+  needs:
+    - build-bundled-agent-adp-image
+  retry: 2
+  timeout: 10m
+  image: "${SALUKI_BUILD_CI_IMAGE}"
+  variables:
+    # Looks weird but we need to set this so that the test runner knows the right image path to pull the `alpine` image, which is required by
+    # `airlock` to properly configure some permissions on the shared volume before the target container is started. We don't have access to
+    # Docker Hub so the default of `alpine:latest` is insufficient.
+    GROUND_TRUTH_ALPINE_IMAGE: registry.ddbuild.io/alpine:latest
+  script:
+    # Copy the bundled Agent/ADP image we built to the local Docker instance so we can share the integration
+    # test configurations between CI and local test runs.
+    - docker pull ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
+    - docker tag ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA} saluki-images/datadog-agent:latest
+    - make test-integration-quick

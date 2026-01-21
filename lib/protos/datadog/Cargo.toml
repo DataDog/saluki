@@ -13,14 +13,17 @@ bytes = { workspace = true }
 prost = { workspace = true, features = ["derive", "std"] }
 prost-types = { workspace = true }
 protobuf = { workspace = true }
+serde = { workspace = true }
+serde_bytes = { workspace = true, features = ["std"] }
 tonic = { workspace = true, features = ["codegen"] }
 tonic-prost = { workspace = true }
 
 [build-dependencies]
+protobuf = { workspace = true }
 protobuf-codegen = { workspace = true }
 tonic-prost-build = { workspace = true }
 
 # All our dependencies are used in the generated code, which `cargo-machete` can't see into, so we
 # ignore them explicitly to avoid false positives.
 [package.metadata.cargo-machete]
-ignored = ["bytes", "prost", "prost-types", "protobuf", "tonic", "tonic-prost"]
+ignored = ["bytes", "prost", "prost-types", "protobuf", "serde_bytes", "tonic", "tonic-prost"]

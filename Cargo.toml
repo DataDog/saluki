@@ -7,7 +7,7 @@ members = [
   "bin/correctness/millstone",
   "bin/correctness/panoramic",
   "bin/correctness/stele",
-  "lib/ddsketch-agent",
+  "lib/ddsketch",
   "lib/memory-accounting",
   "lib/process-memory",
   "lib/protos/containerd",
@@ -39,7 +39,7 @@ repository = "https://github.com/DataDog/saluki"
 [workspace.dependencies]
 datadog-protos = { path = "lib/protos/datadog" }
 containerd-protos = { path = "lib/protos/containerd" }
-ddsketch-agent = { path = "lib/ddsketch-agent" }
+ddsketch = { path = "lib/ddsketch" }
 memory-accounting = { path = "lib/memory-accounting" }
 process-memory = { path = "lib/process-memory" }
 saluki-api = { path = "lib/saluki-api" }
@@ -75,6 +75,7 @@ snafu = { version = "0.8", default-features = false, features = ["std"] }
 tokio = { version = "1", default-features = false }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 async-compression = { version = "0.4.13", default-features = false, features = [
+  "gzip",
   "zlib",
   "zstd",
 ] }
@@ -86,6 +87,7 @@ http = { version = "1", default-features = false }
 http-body = { version = "1", default-features = false }
 http-body-util = { version = "0.1.0", default-features = false }
 hyper = { version = "1", default-features = false }
+hyper-hickory = { version = "0.8.0", default-features = false, features = ["tokio", "system-config"] }
 hyper-http-proxy = { version = "1.1", default-features = false, features = [
   "rustls-tls-native-roots",
 ] }
@@ -204,6 +206,9 @@ tracing-appender = { version = "0.2", default-features = false }
 base64 = { version = "0.22.1", default-features = false }
 treediff = { version = "5", default-features = false }
 argh = { version = "0.1", default-features = false }
+rmp-serde = { version = "1.3", default-features = false }
+serde_bytes = { version = "0.11.19", default-features = false }
+num-traits = { version = "0.2", default-features = false }
 
 [patch.crates-io]
 # Forked version of `hyper-http-proxy` that removes an unused dependency on `rustls-native-certs`, which transitively depends

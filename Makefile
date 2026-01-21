@@ -32,7 +32,7 @@ ifeq ($(CI),true)
 endif
 export CARGO_TOOL_VERSION_cargo-binstall ?= 1.16.2
 export CARGO_TOOL_VERSION_dd-rust-license-tool ?= 1.0.3
-export CARGO_TOOL_VERSION_cargo-deny ?= 0.18.3
+export CARGO_TOOL_VERSION_cargo-deny ?= 0.18.9
 export CARGO_TOOL_VERSION_cargo-hack ?= 0.6.30
 export CARGO_TOOL_VERSION_cargo-nextest ?= 0.9.99
 export CARGO_TOOL_VERSION_cargo-autoinherit ?= 0.1.5
@@ -46,6 +46,7 @@ export LADING_VERSION ?= 0.28.0
 export PROTOBUF_SRC_REPO_DD_AGENT ?= 7.73.x
 export PROTOBUF_SRC_REPO_AGENT_PAYLOAD ?= v5.0.164
 export PROTOBUF_SRC_REPO_CONTAINERD ?= v2.2.0
+export PROTOBUF_SRC_REPO_SKETCHES_GO ?= v1.4.7
 
 FMT_YELLOW = \033[0;33m
 FMT_BLUE = \033[0;36m
@@ -629,6 +630,7 @@ update-protos: ## Updates all vendored Protocol Buffers definitions from their s
 	@DD_AGENT_GIT_TAG=$(PROTOBUF_SRC_REPO_DD_AGENT) \
 	AGENT_PAYLOAD_GIT_TAG=$(PROTOBUF_SRC_REPO_AGENT_PAYLOAD) \
 	CONTAINERD_GIT_TAG=$(PROTOBUF_SRC_REPO_CONTAINERD) \
+	SKETCHES_GO_GIT_TAG=$(PROTOBUF_SRC_REPO_SKETCHES_GO) \
 	./tooling/update-protos.sh
 
 .PHONY: clean

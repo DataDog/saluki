@@ -10,5 +10,9 @@ pub use self::metrics::DatadogMetricsConfiguration;
 mod logs;
 pub use self::logs::DatadogLogsConfiguration;
 
+mod stats;
+#[allow(unused)]
+pub use self::stats::DatadogApmStatsEncoderConfiguration;
+
 mod traces;
 pub use self::traces::DatadogTraceConfiguration;

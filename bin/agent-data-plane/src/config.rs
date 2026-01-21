@@ -8,6 +8,7 @@ pub struct DataPlaneConfiguration {
     enabled: bool,
     standalone_mode: bool,
     use_new_config_stream_endpoint: bool,
+    remote_agent_enabled: bool,
     api_listen_address: ListenAddress,
     secure_api_listen_address: ListenAddress,
     telemetry_enabled: bool,
@@ -35,6 +36,9 @@ impl DataPlaneConfiguration {
             standalone_mode: config.try_get_typed("data_plane.standalone_mode")?.unwrap_or(false),
             use_new_config_stream_endpoint: config
                 .try_get_typed("data_plane.use_new_config_stream_endpoint")?
+                .unwrap_or(false),
+            remote_agent_enabled: config
+                .try_get_typed("data_plane.remote_agent_enabled")?
                 .unwrap_or(false),
             api_listen_address: config
                 .try_get_typed("data_plane.api_listen_address")?
@@ -64,6 +68,11 @@ impl DataPlaneConfiguration {
     /// Returns `true` if the new config stream endpoint should be used.
     pub const fn use_new_config_stream_endpoint(&self) -> bool {
         self.use_new_config_stream_endpoint
+    }
+
+    /// Returns `true` if the data plane should register as a remote agent.
+    pub const fn remote_agent_enabled(&self) -> bool {
+        self.remote_agent_enabled
     }
 
     /// Returns a reference to the API listen address
@@ -132,8 +141,8 @@ impl DataPlaneConfiguration {
     /// pipelines, such as OTLP.
     pub const fn traces_pipeline_required(&self) -> bool {
         // We consider the traces pipeline to be enabled if:
-        // - OTLP is enabled and not in proxy mode
-        self.otlp().enabled() && !self.otlp().proxy().enabled()
+        // - OTLP is enabled and not in proxy mode or proxy mode is enabled and proxy traces are disabled
+        self.otlp().enabled() && (!self.otlp().proxy().enabled() || !self.otlp().proxy().proxy_traces())
     }
 }
 
@@ -188,7 +197,12 @@ impl DataPlaneOtlpConfiguration {
 }
 
 /// OTLP proxying configuration.
+///
+/// In proxy mode, ADP takes over the normal "OTLP Ingest" endpoints that the Core Agent would typically listen on,
+/// so the Core Agent must be configured to listen on a different, separate port than it usually would so that ADP
+/// can proxy to it.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct DataPlaneOtlpProxyConfiguration {
     /// Whether or not to proxy all signals to the Agent.
     ///
@@ -198,23 +212,49 @@ pub struct DataPlaneOtlpProxyConfiguration {
     /// Defaults to `true`.
     enabled: bool,
 
-    /// OTLP-specific endpoint on the Core Agent to proxy signals to.
+    /// OTLP gRPC endpoint on the Core Agent to proxy signals to.
     ///
-    /// In proxy mode, ADP takes over the normal "OTLP Ingest" endpoints that the Core Agent would typically listen on,
-    /// so the Core Agent must be configured to listen on a different, separate port than it usually would so that ADP
-    /// can proxy to it.
+    /// Defaults to `http://localhost:4319`.
+    core_agent_otlp_grpc_endpoint: String,
+
+    /// Whether or not to proxy traces to the Core Agent.
     ///
-    /// Defaults to `http://localhost:4320`.
-    core_agent_otlp_endpoint: String,
+    /// Defaults to `true`.
+    proxy_traces: bool,
+
+    /// Whether or not to proxy metrics to the Core Agent.
+    ///
+    /// Defaults to `true`.
+    proxy_metrics: bool,
+
+    /// Whether or not to proxy logs to the Core Agent.
+    ///
+    /// Defaults to `true`.
+    proxy_logs: bool,
 }
 
 impl DataPlaneOtlpProxyConfiguration {
     fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        let enabled = config.try_get_typed("data_plane.otlp.proxy.enabled")?.unwrap_or(false);
+        let core_agent_otlp_grpc_endpoint = config
+            .try_get_typed("data_plane.otlp.proxy.receiver.protocols.grpc.endpoint")?
+            .unwrap_or("http://localhost:4319".to_string());
+        let proxy_traces = config
+            .try_get_typed("data_plane.otlp.proxy.traces.enabled")?
+            .unwrap_or(true);
+        let proxy_metrics = config
+            .try_get_typed("data_plane.otlp.proxy.metrics.enabled")?
+            .unwrap_or(true);
+        let proxy_logs = config
+            .try_get_typed("data_plane.otlp.proxy.logs.enabled")?
+            .unwrap_or(true);
+
         Ok(Self {
-            enabled: config.try_get_typed("data_plane.otlp.proxy.enabled")?.unwrap_or(false),
-            core_agent_otlp_endpoint: config
-                .try_get_typed("data_plane.otlp.proxy.core_agent_otlp_endpoint")?
-                .unwrap_or("http://localhost:4320".to_string()),
+            enabled,
+            core_agent_otlp_grpc_endpoint,
+            proxy_traces,
+            proxy_metrics,
+            proxy_logs,
         })
     }
 
@@ -223,8 +263,23 @@ impl DataPlaneOtlpProxyConfiguration {
         self.enabled
     }
 
-    /// Returns the OTLP endpoint on the Core Agent to proxy signals to.
-    pub fn core_agent_otlp_endpoint(&self) -> &str {
-        &self.core_agent_otlp_endpoint
+    /// Returns the OTLP gRPC endpoint on the Core Agent to proxy signals to.
+    pub fn core_agent_otlp_grpc_endpoint(&self) -> &str {
+        &self.core_agent_otlp_grpc_endpoint
+    }
+
+    /// Returns `true` if the OTLP traces should be proxied to the Core Agent.
+    pub const fn proxy_traces(&self) -> bool {
+        self.proxy_traces
+    }
+
+    /// Returns `true` if the OTLP metrics should be proxied to the Core Agent.
+    pub const fn proxy_metrics(&self) -> bool {
+        self.proxy_metrics
+    }
+
+    /// Returns `true` if the OTLP logs should be proxied to the Core Agent.
+    pub const fn proxy_logs(&self) -> bool {
+        self.proxy_logs
     }
 }

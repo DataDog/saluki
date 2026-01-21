@@ -20,9 +20,10 @@ bytes = { workspace = true }
 bytesize = { workspace = true }
 chrono = { workspace = true }
 datadog-protos = { workspace = true }
-ddsketch-agent = { workspace = true }
+ddsketch = { workspace = true }
 faster-hex = { workspace = true }
 float-cmp = { workspace = true, features = ["ratio"] }
+fnv = { workspace = true }
 foldhash = { workspace = true }
 futures = { workspace = true }
 hashbrown = { workspace = true }
@@ -43,6 +44,7 @@ protobuf = { workspace = true }
 pyo3 = { workspace = true, features = ["macros"], optional = true }
 rand = { workspace = true, features = ["std", "std_rng"] }
 regex = { workspace = true, features = ["unicode-perl"] }
+rmp-serde = { workspace = true }
 saluki-api = { workspace = true }
 saluki-common = { workspace = true }
 saluki-config = { workspace = true }

@@ -2,5 +2,5 @@
 mod datadog;
 pub use self::datadog::DatadogConfiguration;
 
-mod trace_agent;
-pub use self::trace_agent::TraceAgentForwarderConfiguration;
+mod otlp;
+pub use self::otlp::OtlpForwarderConfiguration;

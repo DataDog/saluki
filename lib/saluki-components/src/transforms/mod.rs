@@ -20,3 +20,6 @@ pub use self::dogstatsd_mapper::DogstatsDMapperConfiguration;
 
 mod metric_router;
 pub use self::metric_router::MetricRouterConfiguration;
+
+mod apm_stats;
+pub use self::apm_stats::ApmStatsTransformConfiguration;

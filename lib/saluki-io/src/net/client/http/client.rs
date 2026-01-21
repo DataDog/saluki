@@ -267,7 +267,7 @@ impl<P> HttpClientBuilder<P> {
         P::Future: Send,
     {
         let tls_config = self.tls_builder.build()?;
-        let connector = self.connector_builder.build(tls_config);
+        let connector = self.connector_builder.build(tls_config)?;
         // TODO(fips): Look into updating `hyper-http-proxy` to use the provided connector for establishing the
         // connection to the proxy itself, even when the proxy is at an HTTPS URL, to ensure our desired TLS stack is
         // being used.

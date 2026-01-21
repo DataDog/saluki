@@ -1,6 +1,6 @@
 use std::{fmt, num::NonZeroU64};
 
-use ddsketch_agent::DDSketch;
+use ddsketch::DDSketch;
 
 use super::{TimestampedValue, TimestampedValues};
 

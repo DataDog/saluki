@@ -17,7 +17,7 @@ pub fn initialize_app_router() -> Router {
         .merge(misc::build_misc_router())
         .fallback(debug_fallback_handler)
         // Ensure we can handle compressed requests.
-        .route_layer(RequestDecompressionLayer::new().deflate(true).zstd(true))
+        .route_layer(RequestDecompressionLayer::new().deflate(true).gzip(true).zstd(true))
         .route_layer(CompressionLayer::new().zstd(true))
         // Decompressed metrics payloads can be large (~62MB for sketches).
         .route_layer(DefaultBodyLimit::max(64 * 1024 * 1024))

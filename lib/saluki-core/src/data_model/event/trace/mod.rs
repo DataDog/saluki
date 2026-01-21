@@ -23,8 +23,13 @@ impl Trace {
     }
 
     /// Returns a reference to the spans in this trace.
-    pub fn spans(&self) -> &Vec<Span> {
+    pub fn spans(&self) -> &[Span] {
         &self.spans
+    }
+
+    /// Returns a mutable reference to the spans in this trace.
+    pub fn spans_mut(&mut self) -> &mut [Span] {
+        &mut self.spans
     }
 
     /// Returns the resource-level tags associated with this trace.
@@ -49,9 +54,9 @@ pub struct Span {
     /// The identifier of this span's parent, if any.
     parent_id: u64,
     /// The start timestamp of this span in nanoseconds since Unix epoch.
-    start: i64,
+    start: u64,
     /// The duration of this span in nanoseconds.
-    duration: i64,
+    duration: u64,
     /// Error flag represented as 0 (no error) or 1 (error).
     error: i32,
     /// String-valued tags attached to this span.
@@ -73,7 +78,7 @@ impl Span {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         service: impl Into<MetaString>, name: impl Into<MetaString>, resource: impl Into<MetaString>,
-        span_type: impl Into<MetaString>, trace_id: u64, span_id: u64, parent_id: u64, start: i64, duration: i64,
+        span_type: impl Into<MetaString>, trace_id: u64, span_id: u64, parent_id: u64, start: u64, duration: u64,
         error: i32,
     ) -> Self {
         Self {
@@ -128,13 +133,13 @@ impl Span {
     }
 
     /// Sets the start timestamp.
-    pub fn with_start(mut self, start: i64) -> Self {
+    pub fn with_start(mut self, start: u64) -> Self {
         self.start = start;
         self
     }
 
     /// Sets the span duration.
-    pub fn with_duration(mut self, duration: i64) -> Self {
+    pub fn with_duration(mut self, duration: u64) -> Self {
         self.duration = duration;
         self
     }
@@ -212,12 +217,12 @@ impl Span {
     }
 
     /// Returns the start timestamp.
-    pub fn start(&self) -> i64 {
+    pub fn start(&self) -> u64 {
         self.start
     }
 
     /// Returns the span duration.
-    pub fn duration(&self) -> i64 {
+    pub fn duration(&self) -> u64 {
         self.duration
     }
 
@@ -234,6 +239,11 @@ impl Span {
     /// Returns the string-valued tag map.
     pub fn meta(&self) -> &FastHashMap<MetaString, MetaString> {
         &self.meta
+    }
+
+    /// Returns a mutable reference to the string-valued tag map.
+    pub fn meta_mut(&mut self) -> &mut FastHashMap<MetaString, MetaString> {
+        &mut self.meta
     }
 
     /// Returns the numeric-valued tag map.
