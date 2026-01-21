@@ -10,7 +10,7 @@ use stringtheory::MetaString;
 /// typically set by the trace sampler and consumed by the encoder.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TraceSampling {
-	/// Whether or not the trace was dropped during sampling.
+    /// Whether or not the trace was dropped during sampling.
     pub dropped_trace: bool,
     /// The sampling priority assigned to this trace.
     ///
@@ -39,7 +39,8 @@ pub struct TraceSampling {
 impl TraceSampling {
     /// Creates a new `TraceSampling` instance.
     pub fn new(
-        dropped_trace:bool, priority: Option<i32>, decision_maker: Option<MetaString>, otlp_sampling_rate: Option<MetaString>,
+        dropped_trace: bool, priority: Option<i32>, decision_maker: Option<MetaString>,
+        otlp_sampling_rate: Option<MetaString>,
     ) -> Self {
         Self {
             dropped_trace,

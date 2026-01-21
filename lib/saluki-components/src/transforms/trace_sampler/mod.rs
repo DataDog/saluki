@@ -227,7 +227,7 @@ impl TraceSampler {
             .find_map(|span| span.metrics().get(SAMPLING_PRIORITY_METRIC_KEY).map(|&p| p as i32))
     }
 
-    /// Returns `true` if the given trace ID should be probabilistically sampled. 
+    /// Returns `true` if the given trace ID should be probabilistically sampled.
     fn sample_probabilistic(&self, trace_id: u64) -> bool {
         probabilistic::ProbabilisticSampler::sample(trace_id, self.sampling_rate)
     }
@@ -247,7 +247,7 @@ impl TraceSampler {
             return has_exception == "true";
         }
         false
-    } 
+    }
 
     /// Check if trace contains spans with Single Span Sampling tags
     fn get_single_span_sampled_spans(&self, trace: &Trace) -> Vec<Span> {
@@ -303,7 +303,7 @@ impl TraceSampler {
 
     /// Main sampling pipeline - mirrors datadog-agent's runSamplers flow
     /// Returns (keep_decision, priority, decision_maker_tag, should_add_prob_rate, root_span_index)
-    fn run_samplers<'a>(&mut self, trace: &'a mut Trace) -> (bool, i32, &'static str, bool, Option<usize>) {
+    fn run_samplers(&mut self, trace: &mut Trace) -> (bool, i32, &'static str, bool, Option<usize>) {
         // logic taken from: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/agent.go#L1066
         let now = std::time::SystemTime::now();
         // Empty trace check
@@ -315,7 +315,7 @@ impl TraceSampler {
             return (false, PRIORITY_AUTO_DROP, "", false, None);
         };
 
-        let mut _sampler_name = SamplerName::Unknown;  // TODO: add trace metrics: datadog-agent/pkg/trace/sampler/metrics.go
+        let mut _sampler_name = SamplerName::Unknown; // TODO: add trace metrics: datadog-agent/pkg/trace/sampler/metrics.go
 
         // TODO: Error Tracking Standalone mode (ETS)
 
@@ -389,7 +389,8 @@ impl TraceSampler {
     /// The `root_span_id` parameter identifies which span should receive the sampling metadata.
     /// This avoids recalculating the root span since it was already found in `run_samplers`.
     fn apply_sampling_metadata(
-        &self, trace: &mut Trace, keep: bool, priority: i32, decision_maker: &str, add_prob_rate: bool, root_span_idx: usize,
+        &self, trace: &mut Trace, keep: bool, priority: i32, decision_maker: &str, add_prob_rate: bool,
+        root_span_idx: usize,
     ) {
         let root_span_value = match trace.spans_mut().get_mut(root_span_idx) {
             Some(span) => span,
@@ -435,7 +436,7 @@ impl TraceSampler {
 #[async_trait]
 impl Transform for TraceSampler {
     // run takes `self: Box<Self>`, and not &self, so it consumes the `TraceSampler` instance, after run starts there is a single owner of the sampler for the lifetime of the task. This means
-    // that no internal locking is necessary unlike the agent code referenced. 
+    // that no internal locking is necessary unlike the agent code referenced.
     async fn run(mut self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
         let mut health = context.take_health_handle();
         health.mark_ready();
@@ -656,8 +657,7 @@ mod tests {
 
         let mut metrics_later = HashMap::new();
         metrics_later.insert("_sampling_priority_v1".to_string(), 1.0);
-        let later_span = create_test_span_with_metrics(12345, 2, metrics_later)
-            .with_parent_id(1);
+        let later_span = create_test_span_with_metrics(12345, 2, metrics_later).with_parent_id(1);
 
         let mut trace = create_test_trace(vec![root_span, later_span]);
         let root_idx = sampler.get_root_span_index(&trace).unwrap();
@@ -701,7 +701,7 @@ mod tests {
         trace.set_sampling(Some(TraceSampling::new(false, Some(PRIORITY_USER_DROP), None, None)));
 
         let (keep, priority, _, _, _) = sampler.run_samplers(&mut trace);
-        assert!(!keep);  // Should not keep when user drops
+        assert!(!keep); // Should not keep when user drops
         assert_eq!(priority, PRIORITY_AUTO_DROP); // Fallthrough to auto-drop
 
         // Test that priority = 1 (auto keep) via trace-level is also respected

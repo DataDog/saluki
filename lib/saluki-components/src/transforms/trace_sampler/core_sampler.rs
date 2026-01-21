@@ -64,7 +64,7 @@ fn zero_and_get_max(buckets: &mut [f32; NUM_BUCKETS], previous_bucket: u64, new_
 // is low volume and does not use all of its TPS, the remaining is spread uniformly
 // on all other signatures. The returned sig_target is the final per_signature TPS target
 // logic taken from here: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/sampler/coresampler.go#L167
-fn compute_tps_per_sig(target_tps: f64, seen_tps: &Vec<f64>) -> f64 {
+fn compute_tps_per_sig(target_tps: f64, seen_tps: &[f64]) -> f64 {
     // Example: target_tps = 30, seen_tps = [5, 10, 100] → sorted stays [5, 10, 100], Initial sig_target = 30 / 3 = 10
     // Loop:
     // 1) c = 5 (< 10), so subtract: target_tps = 30 - 5 = 25
@@ -74,7 +74,7 @@ fn compute_tps_per_sig(target_tps: f64, seen_tps: &Vec<f64>) -> f64 {
     // 3) Next is last element, break.
     // Return sig_target = 15.
     // Interpretation: the low‑volume signatures "use up" 5 and 10 TPS, and the remaining budget (15) is the per‑signature target for the higher‑volume signature(s).
-    let mut sorted: Vec<f64> = seen_tps.clone();
+    let mut sorted: Vec<f64> = seen_tps.to_vec();
     sorted.sort_by(|a, b| a.total_cmp(b));
     // compute the initial per_signature TPS budget by splitting target_tps across all signatures.
     let mut remaining_tps = target_tps;
@@ -112,7 +112,7 @@ impl Sampler {
         let buckets = self.seen.entry(*signature).or_insert([0 as f32; NUM_BUCKETS]);
         self.all_sigs_seen[(bucket_id % (NUM_BUCKETS as u64)) as usize] += n;
         buckets[(bucket_id % (NUM_BUCKETS as u64)) as usize] += n;
-        return update_rate;
+        update_rate
     }
 
     // update_rates distributes TPS on each signature and apply it to the moving

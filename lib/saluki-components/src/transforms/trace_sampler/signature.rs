@@ -33,19 +33,18 @@ pub(super) struct Signature(pub(super) u64);
 const KEY_HTTP_STATUS_CODE: &str = "http.status_code";
 const KEY_ERROR_TYPE: &str = "error.type";
 
-fn get_trace_env<'a>(trace: &'a Trace, root_span_idx: usize) -> Option<&'a MetaString> {
+fn get_trace_env(trace: &Trace, root_span_idx: usize) -> Option<&MetaString> {
     // logic taken from here: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/traceutil/trace.go#L19-L20
     let env = trace.spans().get(root_span_idx).and_then(|span| span.meta().get("env"));
     match env {
-        Some(env) => return Some(env),
+        Some(env) => Some(env),
         None => {
             for span in trace.spans().iter() {
-                if let Some(env) = span.meta().get("env"){
-                    return Some(env)
+                if let Some(env) = span.meta().get("env") {
+                    return Some(env);
                 }
-
             }
-            return None; 
+            None
         }
     }
 }
