@@ -111,6 +111,7 @@ jobs:
         if: steps.compare.outputs.needs_update == 'true'
         uses: DataDog/commit-headless@5a0f3876e0fbdd3a86b3e008acf4ec562db59eee # v2.0.1
         with:
+          token: "${{ steps.octo-sts.outputs.token }}"
           branch: ci/update-agent-version-${{ steps.fetch-latest.outputs.latest_version }}
           head-sha: ${{ github.sha }}
           command: push
