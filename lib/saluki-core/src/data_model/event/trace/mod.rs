@@ -89,6 +89,11 @@ impl Trace {
         &mut self.spans
     }
 
+    /// Replaces the spans in this trace with the given spans.
+    pub fn set_spans(&mut self, spans: Vec<Span>) {
+        self.spans = spans;
+    }
+
     /// Returns the resource-level tags associated with this trace.
     pub fn resource_tags(&self) -> &TagSet {
         &self.resource_tags
