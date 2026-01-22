@@ -32,7 +32,7 @@ use tracing::{debug, info, warn};
 
 use crate::state::metrics::{get_shared_metrics_state, AggregatedMetricsProcessor};
 
-const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const REFRESH_FAILED_RETRY_INTERVAL: Duration = Duration::from_secs(5);
 
 const EVENTS_RECEIVED: &str = "adp.component_events_received_total";
@@ -192,20 +192,20 @@ async fn run_remote_agent_helper(
 ) {
     let api_listen_addr = api_listen_addr.to_string();
 
-    let mut register_agent = interval(DEFAULT_REFRESH_INTERVAL);
-    register_agent.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut loop_timer = interval(DEFAULT_REFRESH_INTERVAL);
+    loop_timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     debug!("Remote Agent helper started.");
 
     loop {
-        register_agent.tick().await;
+        loop_timer.tick().await;
 
         match session_id.get() {
             Some(id) => {
                 debug!(session_id = %id, "Refreshing registration with Datadog Agent.");
 
                 if client.refresh_remote_agent_request(&id).await.is_err() {
-                    register_agent.reset_after(REFRESH_FAILED_RETRY_INTERVAL);
+                    loop_timer.reset_after(REFRESH_FAILED_RETRY_INTERVAL);
                     session_id.update(None);
 
                     warn!("Failed to refresh registration with the Datadog Agent. Resetting session ID and attempting to re-register shortly.");
@@ -224,10 +224,11 @@ async fn run_remote_agent_helper(
                         info!(session_id = %resp.session_id, "Successfully registered with the Datadog Agent. Refreshing every {} seconds.", new_refresh_interval);
 
                         session_id.update(Some(resp.session_id));
-                        register_agent.reset_after(Duration::from_secs(new_refresh_interval as u64));
+                        loop_timer.reset_after(Duration::from_secs(new_refresh_interval as u64));
                     }
                     Err(e) => {
                         warn!(error = %e, "Failed to register with the Datadog Agent. Registration will be retried periodically in the background.");
+                        loop_timer.reset_after(DEFAULT_REFRESH_INTERVAL);
                     }
                 }
             }
