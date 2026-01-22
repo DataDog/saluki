@@ -1,0 +1,17 @@
+# Test config for OTLP with obfuscation enabled
+apm_config:
+  obfuscation:
+    http:
+      remove_query_string: true
+      remove_path_digits: true
+    memcached:
+      enabled: true
+      keep_command: true
+    redis:
+      enabled: true
+    mongo:
+      enabled: true
+    elasticsearch:
+      enabled: true
+    credit_cards:
+      enabled: true
