@@ -81,7 +81,7 @@ fn default_probabilistic_sampling_enabled() -> bool {
 }
 
 /// Configuration for the trace sampler transform.
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize)]
 pub struct TraceSamplerConfiguration {
     /// Sampling percentage (0-100).
     ///
@@ -112,6 +112,17 @@ pub struct TraceSamplerConfiguration {
     /// Defaults to `true`.
     #[serde(default = "default_probabilistic_sampling_enabled")]
     probabilistic_sampling_enabled: bool,
+}
+
+impl Default for TraceSamplerConfiguration {
+    fn default() -> Self {
+        Self {
+            sampling_percentage: default_sampling_percentage(),
+            error_sampling_enabled: default_error_sampling_enabled(),
+            error_tracking_standalone: default_error_tracking_standalone(),
+            probabilistic_sampling_enabled: default_probabilistic_sampling_enabled(),
+        }
+    }
 }
 
 #[async_trait]
