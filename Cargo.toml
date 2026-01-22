@@ -215,6 +215,9 @@ num-traits = { version = "0.2", default-features = false }
 # on a version of `rustls-pemfile` that is no longer maintained and triggers a hit when running `cargo deny`.
 hyper-http-proxy = { git = "https://github.com/tobz/hyper-http-proxy.git", branch = "main" }
 
+[profile.devel]
+inherits = "dev"
+
 [profile.release]
 debug = true
 lto = "thin"

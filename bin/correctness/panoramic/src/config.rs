@@ -144,6 +144,14 @@ pub enum AssertionConfig {
         duration: HumanDuration,
     },
 
+    /// Check that the process exits with a specific exit code.
+    ProcessExitsWith {
+        /// The expected exit code.
+        expected_code: i64,
+        /// Timeout for waiting for the process to exit.
+        timeout: HumanDuration,
+    },
+
     /// Check that a port is listening.
     PortListening {
         /// The port number to check.

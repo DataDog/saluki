@@ -9,11 +9,13 @@ use crate::config::{AssertionConfig, LogStream};
 mod health_check;
 mod log_contains;
 mod port_listening;
+mod process_exits;
 mod process_stable;
 
 pub use health_check::HealthCheckAssertion;
 pub use log_contains::{LogContainsAssertion, LogNotContainsAssertion};
 pub use port_listening::PortListeningAssertion;
+pub use process_exits::ProcessExitsWithAssertion;
 pub use process_stable::ProcessStableForAssertion;
 
 /// Result of running an assertion.
@@ -94,6 +96,8 @@ pub struct AssertionContext {
     pub cancel_token: CancellationToken,
     /// Port mappings from internal port to host port.
     pub port_mappings: std::collections::HashMap<String, u16>,
+    /// Name of the container being tested.
+    pub container_name: String,
 }
 
 /// Trait for assertion implementations.
@@ -113,6 +117,9 @@ pub trait Assertion: Send + Sync {
 pub fn create_assertion(config: &AssertionConfig) -> Result<Box<dyn Assertion>, GenericError> {
     match config {
         AssertionConfig::ProcessStableFor { duration } => Ok(Box::new(ProcessStableForAssertion::new(duration.0))),
+        AssertionConfig::ProcessExitsWith { expected_code, timeout } => {
+            Ok(Box::new(ProcessExitsWithAssertion::new(*expected_code, timeout.0)))
+        }
         AssertionConfig::PortListening {
             port,
             protocol,

@@ -1,0 +1,27 @@
+name: "adp-no-pipelines-exit"
+description: "Verify ADP exits with error when no data pipelines enabled"
+timeout: 45s
+
+container:
+  image: "saluki-images/datadog-agent:testing-devel"
+  env:
+    DD_API_KEY: "test-api-key"
+    DD_HOSTNAME: "integration-test"
+    DD_DATA_PLANE_ENABLED: "true"
+    DD_DATA_PLANE_STANDALONE_MODE: "true"
+    DD_DATA_PLANE_DOGSTATSD_ENABLED: "false"
+    DD_DATA_PLANE_OTLP_ENABLED: "false"
+
+assertions:
+  # ADP should log that no pipelines are enabled and exit with error
+  - type: log_contains
+    pattern: "No data pipelines are enabled. Exiting."
+    timeout: 30s
+  # Container should remain stable (s6 supervisor keeps running)
+  - type: process_stable_for
+    duration: 5s
+  # No panics should occur
+  - type: log_not_contains
+    pattern: "panic|PANIC"
+    regex: true
+    during: 5s

@@ -3,7 +3,7 @@ description: "Verifies OTLP pipeline starts with native trace handling and proxy
 timeout: 60s
 
 container:
-  image: "saluki-images/datadog-agent:latest"
+  image: "saluki-images/datadog-agent:testing-devel"
   env:
     DD_API_KEY: "test-api-key"
     DD_HOSTNAME: "integration-test-dsd"
