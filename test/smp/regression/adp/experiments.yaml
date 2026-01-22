@@ -336,9 +336,12 @@ experiments:
   # OTLP Experiments
   # ============================================================================
 
-  - name: otlp_ingest_metrics_adp
+  - name: otlp_ingest_metrics_5mb
     extends: otlp_base
-    optimization_goal: memory
+    optimization_goals:
+      - cpu
+      - memory
+      - throughput
 
     target:
       environment:
@@ -356,9 +359,12 @@ experiments:
             variant:
               opentelemetry_metrics: {}
 
-  - name: otlp_ingest_logs_adp
+  - name: otlp_ingest_logs_5mb
     extends: otlp_base
-    optimization_goal: memory
+    optimization_goals:
+      - cpu
+      - memory
+      - throughput
 
     erratic: true
 
@@ -393,9 +399,12 @@ experiments:
                       error: 10
                       fatal: 10
 
-  - name: otlp_ingest_traces_adp
+  - name: otlp_ingest_traces_5mb
     extends: otlp_base
-    optimization_goal: memory
+    optimization_goals:
+      - cpu
+      - memory
+      - throughput
 
     target:
       environment:
