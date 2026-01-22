@@ -1,5 +1,5 @@
-optimization_goal: memory
-erratic: false
+optimization_goal: ingress_throughput
+erratic: true
 
 target:
   name: agent-data-plane
@@ -18,10 +18,6 @@ target:
     DD_API_KEY: a0000001
     DD_HOSTNAME: smp-regression
     DD_DD_URL: http://127.0.0.1:4317
-
-    # Disables UDP and enables listening on UDS in SOCK_DGRAM mode.
-    DD_DOGSTATSD_PORT: "0"
-    DD_DOGSTATSD_SOCKET: /tmp/adp-dogstatsd-dgram.sock
 
     # Runs ADP in standalone mode, which decouples ADP from any dependency on the Datadog Agent.
     DD_DATA_PLANE_STANDALONE_MODE: "true"

@@ -1,4 +1,4 @@
-optimization_goal: memory
+optimization_goal: ingress_throughput
 erratic: false
 
 target:
@@ -21,10 +21,6 @@ target:
 
     DD_AGGREGATE_CONTEXT_LIMIT: "3100"
     DD_OTLP_CACHED_CONTEXT_LIMIT: "3100"
-
-    # Disables UDP and enables listening on UDS in SOCK_DGRAM mode.
-    DD_DOGSTATSD_PORT: "0"
-    DD_DOGSTATSD_SOCKET: /tmp/adp-dogstatsd-dgram.sock
 
     # Runs ADP in standalone mode, which decouples ADP from any dependency on the Datadog Agent.
     DD_DATA_PLANE_STANDALONE_MODE: "true"
