@@ -3439,6 +3439,7 @@ dependencies = [
  "serde_yaml",
  "smallvec",
  "snafu",
+ "sqlparser",
  "stringtheory",
  "test-strategy",
  "tokio",
@@ -4066,6 +4067,15 @@ checksum = "17129e116933cf371d018bb80ae557e889637989d8638274fb25622827b03881"
 dependencies = [
  "libc",
  "windows-sys 0.60.2",
+]
+
+[[package]]
+name = "sqlparser"
+version = "0.52.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a875d8cd437cc8a97e9aeaeea352ec9a19aea99c23e9effb17757291de80b08"
+dependencies = [
+ "log",
 ]
 
 [[package]]

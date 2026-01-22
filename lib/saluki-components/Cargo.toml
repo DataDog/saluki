@@ -61,6 +61,7 @@ serde_with = { workspace = true, features = ["alloc"] }
 serde_yaml = { workspace = true }
 smallvec = { workspace = true }
 snafu = { workspace = true }
+sqlparser = { workspace = true }
 stringtheory = { workspace = true }
 tokio = { workspace = true, features = [
   "io-util",

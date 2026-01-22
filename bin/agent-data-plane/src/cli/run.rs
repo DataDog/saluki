@@ -25,6 +25,7 @@ use saluki_components::{
     transforms::{
         AggregateConfiguration, ApmStatsConfiguration, ChainedConfiguration, DogstatsDMapperConfiguration,
         DogstatsDPrefixFilterConfiguration, HostEnrichmentConfiguration, HostTagsConfiguration,
+        TraceObfuscationConfiguration,
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
@@ -322,8 +323,12 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         .error_context("Failed to configure Datadog Traces encoder.")?
         .with_environment_provider(env_provider.clone())
         .await?;
+    let trace_obfuscation_config = TraceObfuscationConfiguration::from_apm_configuration(config)?;
+
     blueprint
+        .add_transform("trace_obfuscation", trace_obfuscation_config)?
         .add_encoder("dd_traces_encode", dd_traces_config)?
+        .connect_component("dd_traces_encode", ["trace_obfuscation"])?
         .connect_component("dd_out", ["dd_traces_encode"])?;
 
     let apm_stats_config =
@@ -456,10 +461,10 @@ fn add_otlp_pipeline_to_blueprint(
         } else {
             blueprint
                 .add_decoder("otlp_traces_decode", otlp_decoder_config)?
-                // Traces to decoder, then to traces encoder and APM stats.
+                // Traces: decoder -> obfuscation -> traces encoder / APM stats.
                 .connect_component("otlp_traces_decode", ["otlp_relay_in.traces"])?
-                .connect_component("dd_traces_encode", ["otlp_traces_decode"])?
-                .connect_component("apm_stats", ["otlp_traces_decode"])?;
+                .connect_component("trace_obfuscation", ["otlp_traces_decode"])?
+                .connect_component("apm_stats", ["trace_obfuscation"])?;
         }
     } else {
         info!("OTLP proxy mode disabled. OTLP signals will be handled natively.");
@@ -476,8 +481,8 @@ fn add_otlp_pipeline_to_blueprint(
             // to avoid transforming counters into rates.
             .connect_component("metrics_enrich", ["otlp_in.metrics"])?
             .connect_component("dd_logs_encode", ["otlp_in.logs"])?
-            .connect_component("dd_traces_encode", ["otlp_in.traces"])?
-            .connect_component("apm_stats", ["otlp_in.traces"])?;
+            .connect_component("trace_obfuscation", ["otlp_in.traces"])?
+            .connect_component("apm_stats", ["trace_obfuscation"])?;
     }
     Ok(())
 }

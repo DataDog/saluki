@@ -3,6 +3,9 @@
 mod aggregate;
 pub use self::aggregate::AggregateConfiguration;
 
+mod trace_obfuscation;
+pub use self::trace_obfuscation::TraceObfuscationConfiguration;
+
 mod chained;
 pub use self::chained::ChainedConfiguration;
 

@@ -176,6 +176,7 @@ fn get_dd_endpoint_name(uri: &Uri) -> Option<MetaString> {
         "/api/beta/sketches" => Some(MetaString::from_static("sketches_v2")),
         "/api/v1/check_run" => Some(MetaString::from_static("check_run_v1")),
         "/api/v1/events_batch" => Some(MetaString::from_static("events_batch_v1")),
+        "/api/v0.2/traces" => Some(MetaString::from_static("traces_v0.2")),
         _ => None,
     }
 }
