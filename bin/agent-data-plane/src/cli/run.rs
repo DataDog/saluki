@@ -464,8 +464,7 @@ fn add_otlp_pipeline_to_blueprint(
                 .add_decoder("otlp_traces_decode", otlp_decoder_config)?
                 // Traces to decoder, then to the trace pipeline: obfuscation, enrichment, encoding, stats, forwarding.
                 .connect_component("otlp_traces_decode", ["otlp_relay_in.traces"])?
-                .connect_component("trace_obfuscation", ["otlp_traces_decode"])?
-                .connect_component("traces_enrich", ["trace_obfuscation"])?;
+                .connect_component("trace_obfuscation", ["otlp_traces_decode"])?;
         }
     } else {
         info!("OTLP proxy mode disabled. OTLP signals will be handled natively.");
@@ -482,8 +481,7 @@ fn add_otlp_pipeline_to_blueprint(
             // to avoid transforming counters into rates.
             .connect_component("metrics_enrich", ["otlp_in.metrics"])?
             .connect_component("dd_logs_encode", ["otlp_in.logs"])?
-            .connect_component("trace_obfuscation", ["otlp_in.traces"])?
-            .connect_component("traces_enrich", ["trace_obfuscation"])?;
+            .connect_component("trace_obfuscation", ["otlp_in.traces"])?;
     }
     Ok(())
 }
