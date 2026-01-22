@@ -4,6 +4,7 @@ generator:
              59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
       target_uri: "http://127.0.0.1:4317/opentelemetry.proto.collector.trace.v1.TraceService/Export"
       bytes_per_second: "5 MiB"
+      parallel_connections: 1
       maximum_prebuild_cache_size_bytes: "512 MiB"
       variant:
         opentelemetry_traces: {}
