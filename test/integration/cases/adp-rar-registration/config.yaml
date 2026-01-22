@@ -19,7 +19,7 @@ assertions:
   - type: process_stable_for
     duration: 15s
   - type: log_contains
-    pattern: "Registered with Datadog Agent \\(session_id:"
+    pattern: "Successfully registered with the Datadog Agent."
     regex: true
     timeout: 60s
   - type: log_not_contains
