@@ -1,16 +1,8 @@
 //! Obfuscation configuration types.
-//!
-//! These configuration types mirror the Datadog Agent's obfuscation configuration
-//! from `pkg/trace/config/config.go` and `pkg/obfuscate/obfuscate.go`.
 
 use serde::Deserialize;
 
 /// Configuration for the obfuscator.
-///
-/// This is nested under `apm_config.obfuscation` in the configuration file,
-/// mirroring the Agent's `ObfuscationConfig` in `pkg/trace/config/config.go:98-139`.
-///
-/// Reference: datadog-agent/pkg/obfuscate/obfuscate.go:98-147 (Config struct)
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct ObfuscationConfig {
@@ -46,8 +38,6 @@ pub struct ObfuscationConfig {
 }
 
 /// HTTP URL obfuscation configuration.
-///
-/// Reference: datadog-agent/pkg/obfuscate/obfuscate.go:259-265 (HTTPConfig struct)
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct HttpObfuscationConfig {
@@ -60,8 +50,6 @@ pub struct HttpObfuscationConfig {
 }
 
 /// Memcached obfuscation configuration.
-///
-/// Reference: datadog-agent/pkg/obfuscate/obfuscate.go:288-295 (MemcachedConfig struct)
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct MemcachedObfuscationConfig {
@@ -73,8 +61,6 @@ pub struct MemcachedObfuscationConfig {
 }
 
 /// Credit card obfuscation configuration.
-///
-/// Reference: datadog-agent/pkg/obfuscate/obfuscate.go:314-325 (CreditCardsConfig struct)
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct CreditCardObfuscationConfig {
@@ -90,8 +76,6 @@ pub struct CreditCardObfuscationConfig {
 }
 
 /// Redis obfuscation configuration.
-///
-/// Reference: datadog-agent/pkg/obfuscate/obfuscate.go:267-275 (RedisConfig struct)
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct RedisObfuscationConfig {
@@ -103,8 +87,6 @@ pub struct RedisObfuscationConfig {
 }
 
 /// Valkey obfuscation configuration.
-///
-/// Reference: datadog-agent/pkg/obfuscate/obfuscate.go:277-285 (ValkeyConfig struct)
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct ValkeyObfuscationConfig {
@@ -116,8 +98,6 @@ pub struct ValkeyObfuscationConfig {
 }
 
 /// SQL obfuscation configuration.
-///
-/// Reference: datadog-agent/pkg/obfuscate/obfuscate.go:166-240 (SQLConfig struct)
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct SqlObfuscationConfig {
@@ -139,8 +119,6 @@ pub struct SqlObfuscationConfig {
 }
 
 /// JSON obfuscation configuration for MongoDB, Elasticsearch, and OpenSearch.
-///
-/// Reference: datadog-agent/pkg/obfuscate/obfuscate.go:297-310 (JSONConfig struct)
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct JsonObfuscationConfig {
@@ -155,10 +133,6 @@ pub struct JsonObfuscationConfig {
     #[serde(default)]
     pub(crate) obfuscate_sql_values: Vec<String>,
 }
-
-// =============================================================================
-// Getters for config structs
-// =============================================================================
 
 impl ObfuscationConfig {
     pub fn http(&self) -> &HttpObfuscationConfig {

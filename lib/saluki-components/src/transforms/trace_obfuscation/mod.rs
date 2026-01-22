@@ -93,7 +93,7 @@ pub struct TraceObfuscation {
 }
 
 impl TraceObfuscation {
-    fn obfuscate_span(&mut self, span: &mut saluki_core::data_model::event::trace::Span) {
+    fn obfuscate_span(&mut self, span: &mut Span) {
         let span_type = span.span_type().to_string();
 
         if self.obfuscator.config.credit_cards().enabled() {
@@ -111,7 +111,7 @@ impl TraceObfuscation {
         }
     }
 
-    fn obfuscate_credit_cards_in_span(&mut self, span: &mut saluki_core::data_model::event::trace::Span) {
+    fn obfuscate_credit_cards_in_span(&mut self, span: &mut Span) {
         let keys_to_update: Vec<_> = span.meta().keys().map(|k| k.to_string()).collect();
 
         for key in keys_to_update {
@@ -126,7 +126,7 @@ impl TraceObfuscation {
         }
     }
 
-    fn obfuscate_http_span(&mut self, span: &mut saluki_core::data_model::event::trace::Span) {
+    fn obfuscate_http_span(&mut self, span: &mut Span) {
         let url_value = match span.meta_mut().get(tags::HTTP_URL) {
             Some(v) => v.to_string(),
             None => return,
@@ -140,7 +140,7 @@ impl TraceObfuscation {
         span.meta_mut().insert(tags::HTTP_URL.into(), obfuscated.into());
     }
 
-    fn obfuscate_sql_span(&mut self, span: &mut saluki_core::data_model::event::trace::Span) {
+    fn obfuscate_sql_span(&mut self, span: &mut Span) {
         let sql_query = span
             .meta()
             .get(tags::DB_STATEMENT)
@@ -212,7 +212,7 @@ impl TraceObfuscation {
         }
     }
 
-    fn obfuscate_memcached_span(&mut self, span: &mut saluki_core::data_model::event::trace::Span) {
+    fn obfuscate_memcached_span(&mut self, span: &mut Span) {
         if !self.obfuscator.config.memcached().enabled() {
             return;
         }
@@ -236,7 +236,7 @@ impl TraceObfuscation {
         }
     }
 
-    fn obfuscate_mongodb_span(&mut self, span: &mut saluki_core::data_model::event::trace::Span) {
+    fn obfuscate_mongodb_span(&mut self, span: &mut Span) {
         let query_value = match span.meta().get(tags::MONGODB_QUERY) {
             Some(v) => v.to_string(),
             None => return,
@@ -246,7 +246,7 @@ impl TraceObfuscation {
         span.meta_mut().insert(tags::MONGODB_QUERY.into(), obfuscated.into());
     }
 
-    fn obfuscate_elasticsearch_span(&mut self, span: &mut saluki_core::data_model::event::trace::Span) {
+    fn obfuscate_elasticsearch_span(&mut self, span: &mut Span) {
         if let Some(body_value) = span.meta().get(tags::ELASTIC_BODY) {
             let body_str = body_value.to_string();
             let obfuscated = self.obfuscator.obfuscate_elasticsearch_string(&body_str);
