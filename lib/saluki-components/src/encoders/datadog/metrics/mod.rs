@@ -844,7 +844,7 @@ fn write_dogsketch(
             packed_scratch_buf,
             DOGSKETCH_K_FIELD_NUMBER,
             bin_keys,
-            |inner_os, value| inner_os.write_sint32_no_tag(value as i32),
+            |inner_os, value| inner_os.write_sint32_no_tag(value),
         )?;
 
         let bin_counts = sketch.bins().iter().map(|bin| bin.count());
@@ -853,7 +853,7 @@ fn write_dogsketch(
             packed_scratch_buf,
             DOGSKETCH_N_FIELD_NUMBER,
             bin_counts,
-            |inner_os, value| inner_os.write_uint32_no_tag(value as u32),
+            |inner_os, value| inner_os.write_uint32_no_tag(value),
         )
     })
 }

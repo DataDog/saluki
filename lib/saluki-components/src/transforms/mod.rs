@@ -3,9 +3,6 @@
 mod aggregate;
 pub use self::aggregate::AggregateConfiguration;
 
-mod trace_obfuscation;
-pub use self::trace_obfuscation::TraceObfuscationConfiguration;
-
 mod chained;
 pub use self::chained::ChainedConfiguration;
 
@@ -25,4 +22,7 @@ mod metric_router;
 pub use self::metric_router::MetricRouterConfiguration;
 
 mod apm_stats;
-pub use self::apm_stats::ApmStatsConfiguration;
+pub use self::apm_stats::ApmStatsTransformConfiguration;
+
+mod trace_obfuscation;
+pub use self::trace_obfuscation::TraceObfuscationConfiguration;

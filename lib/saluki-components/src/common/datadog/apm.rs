@@ -79,11 +79,8 @@ pub struct ApmConfig {
     #[serde(skip)]
     hostname: MetaString,
 
-    /// Obfuscation configuration for sensitive data.
-    ///
-    /// Reference: datadog-agent/pkg/trace/config/config.go:462
+    /// Obfuscation configuration for trace data.
     #[serde(default)]
-    #[allow(dead_code)]
     obfuscation: ObfuscationConfig,
 }
 
@@ -136,7 +133,6 @@ impl ApmConfig {
     }
 
     /// Returns the obfuscation configuration.
-    #[allow(dead_code)]
     pub fn obfuscation(&self) -> &ObfuscationConfig {
         &self.obfuscation
     }

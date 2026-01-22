@@ -5,7 +5,6 @@ use super::http::obfuscate_url;
 use super::json::JsonObfuscator;
 use super::memcached::obfuscate_memcached_command;
 use super::redis::{obfuscate_redis_string, obfuscate_valkey_string, quantize_redis_string, remove_all_redis_args};
-
 pub use crate::common::datadog::obfuscation::{
     CreditCardObfuscationConfig, HttpObfuscationConfig, JsonObfuscationConfig, MemcachedObfuscationConfig,
     ObfuscationConfig, RedisObfuscationConfig, SqlObfuscationConfig, ValkeyObfuscationConfig,

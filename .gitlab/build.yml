@@ -73,7 +73,7 @@ build-adp-image-amd64:
 
 build-adp-image-arm64:
   extends: [.build-common-variables, .build-arm64-variables, .build-adp-definition]
-  tags: ["docker-in-docker:arm64"]
+  tags: ["docker-in-docker:microvm-arm64"]
   variables:
     APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
 
@@ -94,7 +94,7 @@ build-adp-image-fips-amd64:
 
 build-adp-image-fips-arm64:
   extends: [.build-common-variables, .build-arm64-variables, .build-adp-definition]
-  tags: ["docker-in-docker:arm64"]
+  tags: ["docker-in-docker:microvm-arm64"]
   variables:
     APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
     BUILD_FEATURES: "fips"
@@ -120,7 +120,7 @@ build-adp-image-internal-amd64:
 
 build-adp-image-internal-arm64:
   extends: [.build-common-variables, .build-arm64-variables, .build-adp-definition]
-  tags: ["docker-in-docker:arm64"]
+  tags: ["docker-in-docker:microvm-arm64"]
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
@@ -153,7 +153,7 @@ build-adp-image-fips-internal-amd64:
 
 build-adp-image-fips-internal-arm64:
   extends: [.build-common-variables, .build-arm64-variables, .build-adp-definition]
-  tags: ["docker-in-docker:arm64"]
+  tags: ["docker-in-docker:microvm-arm64"]
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never

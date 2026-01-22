@@ -15,19 +15,22 @@ serde = ["dep:serde", "smallvec/serde"]
 [dependencies]
 datadog-protos = { workspace = true }
 float-cmp = { workspace = true, features = ["ratio"] }
-num-traits = { workspace = true }
 ordered-float = { workspace = true }
+protobuf = { workspace = true }
 serde = { workspace = true, optional = true }
 smallvec = { workspace = true, features = ["union"] }
 
 [dev-dependencies]
 criterion = { workspace = true }
 dhat = { workspace = true }
+ndarray = { version = "0.17", default-features = false }
+ndarray-stats = { version = "0.7", default-features = false }
 noisy_float = { workspace = true }
-pretty_assertions = { workspace = true, features = ["std"] }
+num-traits = { workspace = true }
+ordered-float = { workspace = true }
 rand = { workspace = true, features = ["small_rng", "thread_rng"] }
 rand_distr = { workspace = true }
 
 [[bench]]
-name = "insert"
+name = "agent_insert"
 harness = false

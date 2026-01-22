@@ -5,6 +5,6 @@ pub use self::buffered_incremental::BufferedIncrementalConfiguration;
 
 mod datadog;
 pub use self::datadog::{
-    DatadogApmStatsConfiguration, DatadogEventsConfiguration, DatadogLogsConfiguration, DatadogMetricsConfiguration,
-    DatadogServiceChecksConfiguration, DatadogTraceConfiguration,
+    DatadogApmStatsEncoderConfiguration, DatadogEventsConfiguration, DatadogLogsConfiguration,
+    DatadogMetricsConfiguration, DatadogServiceChecksConfiguration, DatadogTraceConfiguration,
 };

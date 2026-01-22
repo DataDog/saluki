@@ -6,12 +6,91 @@ use std::{
     str::FromStr,
 };
 
-use datadog_protos::traces::{self as proto, Trilean};
+use base64::Engine as _;
+use datadog_protos::{
+    sketches::DDSketch as ProtoDDSketch,
+    traces::{self as proto, Trilean},
+};
+use ddsketch::canonical::{mapping::LogarithmicMapping, DDSketch};
+use protobuf::Message as _;
 use saluki_common::{collections::FastHashMap, hash::StableHasher};
-use saluki_error::{generic_error, GenericError};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::{Deserialize, Serialize};
 use serde_with::{DeserializeFromStr, SerializeDisplay};
 use stringtheory::MetaString;
+
+/// An ergonomic wrapper around `DDSketch` for APM stats.
+///
+/// This wrapper holds an APM stats-specific `DDSketch`, which ensures the relevant DDSketch parameters (relative
+/// accuracy, max bins, etc) are matched to that of the DDSketch configuration used in the Trace Agent. Further, this
+/// wrapper provides ergonomic conversions to/from a string representation based on a base64-encoded wrapper around the
+/// canonical Protobuf representation.
+///
+/// This makes it safe to transport over JSON for use in `datadog-intake` and `ground-truth`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct EncodedApmStatsDDSketch {
+    inner: DDSketch,
+}
+
+impl EncodedApmStatsDDSketch {
+    /// Returns a reference to the inner `DDSketch`.
+    pub fn inner(&self) -> &DDSketch {
+        &self.inner
+    }
+
+    /// Returns a mutable reference to the inner `DDSketch`.
+    pub fn inner_mut(&mut self) -> &mut DDSketch {
+        &mut self.inner
+    }
+}
+
+impl TryFrom<ProtoDDSketch> for EncodedApmStatsDDSketch {
+    type Error = GenericError;
+
+    fn try_from(value: ProtoDDSketch) -> Result<Self, Self::Error> {
+        // TODO: It'd be good to avoid having to reconstitute the mapping manually, somehow.
+        let mapping = LogarithmicMapping::new(0.01).expect("Relative accuracy should be valid (0 <= 0.01 <= 1)");
+        let inner = DDSketch::from_proto(&value, mapping)
+            .error_context("Failed to convert DDSketch from canonical Protocol Buffers representation.")?;
+
+        Ok(Self { inner })
+    }
+}
+
+impl TryFrom<String> for EncodedApmStatsDDSketch {
+    type Error = GenericError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        // We expect the sketch to be encoded in its canonical Protocol Buffers form, additionally wrapped
+        // in a base64 encoding to make it safe for JSON transport.
+        let sketch_raw_proto = base64::engine::general_purpose::STANDARD
+            .decode(value)
+            .error_context("Failed to decode base64-encoded DDSketch.")?;
+
+        let sketch_proto = ProtoDDSketch::parse_from_bytes(&sketch_raw_proto[..])
+            .error_context("Failed to decode DDSketch from canonical Protocol Buffers representation.")?;
+
+        Self::try_from(sketch_proto)
+    }
+}
+
+impl From<EncodedApmStatsDDSketch> for ProtoDDSketch {
+    fn from(value: EncodedApmStatsDDSketch) -> Self {
+        value.inner.to_proto()
+    }
+}
+
+impl From<EncodedApmStatsDDSketch> for String {
+    fn from(value: EncodedApmStatsDDSketch) -> Self {
+        let sketch_proto = ProtoDDSketch::from(value);
+        let sketch_raw_proto = sketch_proto
+            .write_to_bytes()
+            .expect("Should not fail to encode DDSketch to serialized Protocol Buffers representation.");
+
+        base64::engine::general_purpose::STANDARD.encode(sketch_raw_proto)
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct AgentMetadata {
@@ -156,11 +235,8 @@ pub struct ClientStatistics {
     hits: u64,
     errors: u64,
     duration_ns: u64,
-    // Add support for these fields once we have a full-
-    /*
-    ok_summary: DDSketch,
-    error_summary: DDSketch,
-    */
+    ok_summary: EncodedApmStatsDDSketch,
+    error_summary: EncodedApmStatsDDSketch,
     synthetics: bool,
     top_level_hits: u64,
     span_kind: MetaString,
@@ -229,7 +305,8 @@ impl ClientStatistics {
         self.synthetics |= other.synthetics;
         self.top_level_hits += other.top_level_hits;
 
-        // TODO: Handle decoding the DDSketch entries and merging them together logically.
+        self.ok_summary.inner_mut().merge(other.ok_summary.inner());
+        self.error_summary.inner_mut().merge(other.error_summary.inner());
 
         Ok(())
     }
@@ -244,6 +321,16 @@ impl From<&proto::ClientGroupedStats> for ClientStatistics {
             Err(_) => None,
         };
 
+        // Decode the DDSketch entries from their canonial Protocol Buffers representation.
+        let ok_summary_proto = ProtoDDSketch::parse_from_bytes(payload.okSummary())
+            .expect("Should not fail to decode DDSketch from serialized Protocol Buffers representation.");
+        let ok_summary = EncodedApmStatsDDSketch::try_from(ok_summary_proto)
+            .expect("Should not fail to convert DDSketch from canonical Protocol Buffers representation.");
+        let error_summary_proto = ProtoDDSketch::parse_from_bytes(payload.errorSummary())
+            .expect("Should not fail to decode DDSketch from serialized Protocol Buffers representation.");
+        let error_summary = EncodedApmStatsDDSketch::try_from(error_summary_proto)
+            .expect("Should not fail to convert DDSketch from canonical Protocol Buffers representation.");
+
         Self {
             service: (*payload.service).into(),
             name: (*payload.name).into(),
@@ -252,6 +339,8 @@ impl From<&proto::ClientGroupedStats> for ClientStatistics {
             hits: payload.hits,
             errors: payload.errors,
             duration_ns: payload.duration,
+            ok_summary,
+            error_summary,
             synthetics: payload.synthetics,
             top_level_hits: payload.topLevelHits,
             span_kind: (*payload.span_kind).into(),

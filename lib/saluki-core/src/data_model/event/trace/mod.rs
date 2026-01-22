@@ -23,12 +23,12 @@ impl Trace {
     }
 
     /// Returns a reference to the spans in this trace.
-    pub fn spans(&self) -> &Vec<Span> {
+    pub fn spans(&self) -> &[Span] {
         &self.spans
     }
 
     /// Returns a mutable reference to the spans in this trace.
-    pub fn spans_mut(&mut self) -> &mut Vec<Span> {
+    pub fn spans_mut(&mut self) -> &mut [Span] {
         &mut self.spans
     }
 
@@ -201,6 +201,11 @@ impl Span {
         &self.resource
     }
 
+    /// Sets the resource name.
+    pub fn set_resource(&mut self, resource: impl Into<MetaString>) {
+        self.resource = resource.into();
+    }
+
     /// Returns the trace identifier.
     pub fn trace_id(&self) -> u64 {
         self.trace_id
@@ -241,6 +246,11 @@ impl Span {
         &self.meta
     }
 
+    /// Returns a mutable reference to the string-valued tag map.
+    pub fn meta_mut(&mut self) -> &mut FastHashMap<MetaString, MetaString> {
+        &mut self.meta
+    }
+
     /// Returns the numeric-valued tag map.
     pub fn metrics(&self) -> &FastHashMap<MetaString, f64> {
         &self.metrics
@@ -259,36 +269,6 @@ impl Span {
     /// Returns the span events collection.
     pub fn span_events(&self) -> &[SpanEvent] {
         &self.span_events
-    }
-
-    /// Returns a mutable reference to the string-valued tag map.
-    pub fn meta_mut(&mut self) -> &mut FastHashMap<MetaString, MetaString> {
-        &mut self.meta
-    }
-
-    /// Returns a mutable reference to the numeric-valued tag map.
-    pub fn metrics_mut(&mut self) -> &mut FastHashMap<MetaString, f64> {
-        &mut self.metrics
-    }
-
-    /// Returns a mutable reference to the structured metadata map.
-    pub fn meta_struct_mut(&mut self) -> &mut FastHashMap<MetaString, Vec<u8>> {
-        &mut self.meta_struct
-    }
-
-    /// Sets the resource name.
-    pub fn set_resource(&mut self, resource: impl Into<MetaString>) {
-        self.resource = resource.into();
-    }
-
-    /// Sets the service name.
-    pub fn set_service(&mut self, service: impl Into<MetaString>) {
-        self.service = service.into();
-    }
-
-    /// Sets the operation name.
-    pub fn set_name(&mut self, name: impl Into<MetaString>) {
-        self.name = name.into();
     }
 }
 

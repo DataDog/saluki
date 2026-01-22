@@ -144,6 +144,15 @@ pub fn lower_alphanumeric(s: &str) -> String {
         .collect()
 }
 
+/// Converts an unsigned integer to a string representation.
+///
+/// No allocations are required.
+pub fn unsigned_integer_to_string(value: u64) -> MetaString {
+    let mut writer = itoa::Buffer::new();
+    let s = writer.format(value);
+    MetaString::from(s)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{fmt::Write, num::NonZeroUsize};

@@ -14,6 +14,7 @@ use tracing::{error, info, warn};
 
 mod cli;
 use self::cli::*;
+use crate::internal::platform::PlatformSettings;
 
 mod components;
 mod config;
@@ -39,13 +40,11 @@ async fn main() -> Result<(), GenericError> {
 
     // Load our "bootstrap" configuration -- static configuration on disk or from environment variables -- so we can
     // initialize basic subsystems before executing the given subcommand.
-    let bootstrap_config_path = cli
-        .config_file
-        .unwrap_or_else(|| self::internal::platform::DATADOG_AGENT_CONF_YAML.into());
+    let bootstrap_config_path = cli.config_file.unwrap_or_else(PlatformSettings::get_config_file_path);
     let bootstrap_config = ConfigurationLoader::default()
         .from_yaml(&bootstrap_config_path)
         .error_context("Failed to load Datadog Agent configuration file during bootstrap.")?
-        .from_environment(self::internal::platform::DATADOG_AGENT_ENV_VAR_PREFIX)
+        .from_environment(PlatformSettings::get_env_var_prefix())
         .error_context("Environment variable prefix should not be empty.")?
         .with_default_secrets_resolution()
         .await

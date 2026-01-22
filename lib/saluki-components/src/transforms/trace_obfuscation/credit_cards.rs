@@ -572,9 +572,18 @@ mod tests {
     fn test_obfuscate_credit_card_number() {
         let obfuscator = CreditCardObfuscator::new(&default_config());
 
-        assert_eq!(obfuscator.obfuscate_credit_card_number("payment.card", "4532123456789010"), "?");
-        assert_eq!(obfuscator.obfuscate_credit_card_number("http.status_code", "4532123456789010"), "4532123456789010");
-        assert_eq!(obfuscator.obfuscate_credit_card_number("_internal", "4532123456789010"), "4532123456789010");
+        assert_eq!(
+            obfuscator.obfuscate_credit_card_number("payment.card", "4532123456789010"),
+            "?"
+        );
+        assert_eq!(
+            obfuscator.obfuscate_credit_card_number("http.status_code", "4532123456789010"),
+            "4532123456789010"
+        );
+        assert_eq!(
+            obfuscator.obfuscate_credit_card_number("_internal", "4532123456789010"),
+            "4532123456789010"
+        );
         assert_eq!(obfuscator.obfuscate_credit_card_number("user.id", "12345"), "12345");
     }
 
@@ -587,7 +596,13 @@ mod tests {
         };
         let obfuscator = CreditCardObfuscator::new(&config);
 
-        assert_eq!(obfuscator.obfuscate_credit_card_number("payment.card", "4111111111111111"), "?");
-        assert_eq!(obfuscator.obfuscate_credit_card_number("payment.card", "4111111111111112"), "4111111111111112");
+        assert_eq!(
+            obfuscator.obfuscate_credit_card_number("payment.card", "4111111111111111"),
+            "?"
+        );
+        assert_eq!(
+            obfuscator.obfuscate_credit_card_number("payment.card", "4111111111111112"),
+            "4111111111111112"
+        );
     }
 }
