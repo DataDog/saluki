@@ -136,6 +136,7 @@ run-benchmarks-adp:
     - ./test/smp/configure-smp-aws-credentials.sh
     # Download the SMP binary.
     - aws --profile ${AWS_NAMED_PROFILE} s3 cp s3://smp-cli-releases/v${SMP_VERSION}/x86_64-unknown-linux-musl/smp smp && chmod +x smp
+    - find test/smp/regression/adp
     # Trigger the SMP job run.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job submit
