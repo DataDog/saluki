@@ -188,8 +188,18 @@ experiments:
   # ============================================================================
 
   - name: quality_gates_rss_idle
-    extends: dsd_base
     optimization_goal: memory
+
+    # We manually configure the DogStatsD pipeline so that ADP starts up and stays running,
+    # but we don't actually send anything, which is why we don't extend from `dsd_base` here.
+    target:
+      environment:
+        # Enable the DogStatsD pipeline.
+        DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+
+        # Disables UDP and enables listening on UDS in SOCK_DGRAM mode.
+        DD_DOGSTATSD_PORT: "0"
+        DD_DOGSTATSD_SOCKET: /tmp/adp-dogstatsd-dgram.sock
 
     checks:
       - name: memory_usage
@@ -281,7 +291,7 @@ experiments:
 
   - name: quality_gates_rss_dsd_ultraheavy
     extends: dsd_base
-    optimization_goal: ingress_throughput
+    optimization_goal: memory
 
     target:
       environment:

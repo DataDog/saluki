@@ -22,6 +22,13 @@ SCRIPT_DIR = Path(__file__).parent
 EXPERIMENTS_FILE = SCRIPT_DIR / "experiments.yaml"
 CASES_DIR = SCRIPT_DIR / "cases"
 
+# Mapping from optimization goal to directory name suffix
+GOAL_SUFFIXES = {
+    "ingress_throughput": "throughput",
+    "memory": "memory",
+    "cpu": "cpu",
+}
+
 
 def get_generator_type(generator_item: dict) -> str | None:
     """
@@ -153,13 +160,48 @@ def resolve_experiment(experiment: dict, global_config: dict, templates: dict) -
         template = resolve_template_chain(templates, template_name)
         result = deep_merge(result, template)
 
-    # Apply experiment-specific config (excluding 'name' and 'extends')
+    # Apply experiment-specific config (excluding 'name', 'extends', and 'optimization_goals')
     experiment_config = {
-        k: v for k, v in experiment.items() if k not in ("name", "extends")
+        k: v
+        for k, v in experiment.items()
+        if k not in ("name", "extends", "optimization_goals")
     }
     result = deep_merge(result, experiment_config)
 
     return result
+
+
+def expand_optimization_goals(experiment: dict) -> list[tuple[str, str]]:
+    """
+    Expand an experiment's optimization goals into (name, goal) pairs.
+
+    If 'optimization_goals' (plural) is specified, generates multiple variants
+    with suffixed names. Otherwise, uses the single 'optimization_goal'.
+
+    Returns a list of (experiment_name, optimization_goal) tuples.
+    """
+    base_name = experiment["name"]
+
+    # Check for plural 'optimization_goals' first
+    if "optimization_goals" in experiment:
+        goals = experiment["optimization_goals"]
+        if not isinstance(goals, list) or not goals:
+            raise ValueError(
+                f"optimization_goals must be a non-empty list in experiment '{base_name}'"
+            )
+
+        expanded = []
+        for goal in goals:
+            suffix = GOAL_SUFFIXES.get(goal, goal)
+            expanded.append((f"{base_name}_{suffix}", goal))
+        return expanded
+
+    # Fall back to singular 'optimization_goal'
+    if "optimization_goal" in experiment:
+        return [(base_name, experiment["optimization_goal"])]
+
+    # No optimization goal specified - will inherit from template/global
+    return [(base_name, None)]
 
 
 def build_experiment_yaml(config: dict) -> dict:
@@ -202,11 +244,75 @@ class YamlDumper(yaml.SafeDumper):
     pass
 
 
+def needs_double_quotes(data: str) -> bool:
+    """
+    Determine if a string value needs double quotes to avoid YAML ambiguity.
+
+    Returns True for strings that would be parsed as non-strings without quotes:
+    - Empty strings
+    - Boolean-like values (true, false, yes, no, etc.)
+    - Numeric-like values (integers, floats, hex, octal)
+    - Strings starting with special YAML characters
+    """
+    import re
+
+    if not data:
+        return True  # Empty string needs quotes
+
+    # Strings that look like YAML booleans or null
+    if data.lower() in ("true", "false", "yes", "no", "on", "off", "null", "~", "none"):
+        return True
+
+    # Strings that could be parsed as numbers (int or float)
+    try:
+        float(data)
+        return True
+    except ValueError:
+        pass
+
+    # Strings that could be parsed as octal/hex
+    if re.match(r"^0[xXoO]?[0-9a-fA-F]+$", data):
+        return True
+
+    # Strings that start with special YAML characters
+    if data[0] in (
+        "!",
+        "&",
+        "*",
+        "{",
+        "}",
+        "[",
+        "]",
+        "|",
+        ">",
+        "%",
+        "@",
+        "`",
+        '"',
+        "'",
+    ):
+        return True
+
+    # Single special characters that have YAML meaning
+    if data in (":", "-", "?"):
+        return True
+
+    return False
+
+
 def str_representer(dumper, data):
-    """Use literal style for multi-line strings, otherwise default."""
+    """
+    Represent strings with appropriate quoting style.
+
+    - Multi-line strings use literal block style (|)
+    - Strings needing quotes use double quotes
+    - Unambiguous strings are left unquoted
+    """
     if "\n" in data:
         return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
-    return dumper.represent_scalar("tag:yaml.org,2002:str", data)
+
+    style = '"' if needs_double_quotes(data) else None
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data, style=style)
 
 
 def list_representer(dumper, data):
@@ -263,10 +369,16 @@ def generate_experiments(config: dict, output_dir: Path) -> list[str]:
     generated = []
 
     for experiment in experiments:
-        name = experiment["name"]
-        resolved = resolve_experiment(experiment, global_config, templates)
-        write_experiment(name, resolved, output_dir)
-        generated.append(name)
+        # Resolve the base experiment config (without optimization goal)
+        resolved_base = resolve_experiment(experiment, global_config, templates)
+
+        # Expand optimization goals into variants
+        for name, goal in expand_optimization_goals(experiment):
+            resolved = copy.deepcopy(resolved_base)
+            if goal is not None:
+                resolved["optimization_goal"] = goal
+            write_experiment(name, resolved, output_dir)
+            generated.append(name)
 
     return generated
 
