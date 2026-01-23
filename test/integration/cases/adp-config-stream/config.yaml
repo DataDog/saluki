@@ -1,0 +1,30 @@
+name: "adp-config-stream"
+description: "Verify ADP receives configuration from Core Agent via config stream"
+timeout: 90s
+
+container:
+  image: "saluki-images/datadog-agent:testing-devel"
+  env:
+    DD_API_KEY: "test-api-key"
+    DD_HOSTNAME: "integration-test-configstream"
+    DD_DATA_PLANE_ENABLED: "true"
+    DD_DATA_PLANE_STANDALONE_MODE: "false"
+    DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
+    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+    DD_DOGSTATSD_PORT: "8125"
+  exposed_ports:
+    - "8125/udp"
+
+assertions:
+  - type: process_stable_for
+    duration: 15s
+  - type: log_contains
+    pattern: "Initial configuration received."
+    timeout: 60s
+  - type: log_contains
+    pattern: "Topology healthy"
+    timeout: 60s
+  - type: log_not_contains
+    pattern: "panic|PANIC"
+    regex: true
+    during: 10s

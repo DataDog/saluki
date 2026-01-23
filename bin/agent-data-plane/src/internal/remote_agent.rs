@@ -27,9 +27,13 @@ use saluki_io::net::client::http::HttpClient;
 use saluki_io::net::GrpcTargetAddress;
 use tokio::time::{interval, MissedTickBehavior};
 use tonic::server::NamedService;
-use tracing::{debug, info};
+use tonic::Status;
+use tracing::{debug, info, warn};
 
 use crate::state::metrics::{get_shared_metrics_state, AggregatedMetricsProcessor};
+
+const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+const REFRESH_FAILED_RETRY_INTERVAL: Duration = Duration::from_secs(5);
 
 const EVENTS_RECEIVED: &str = "adp.component_events_received_total";
 const PACKETS_RECEIVED: &str = "adp.component_packets_received_total";
@@ -50,16 +54,16 @@ const SESSION_ID_METADATA_KEY: &str = "session_id";
 ///
 /// This handle allows you to dynamically update the session ID that is added to gRPC responses
 /// even after the server has started.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct SessionIdHandle {
     session_id: Arc<Mutex<Option<String>>>,
 }
 
 impl SessionIdHandle {
-    /// Creates a new `SessionIdHandle` with the given session ID.
-    pub fn new(session_id: String) -> Self {
+    /// Creates a new `SessionIdHandle` with no session ID.
+    pub fn new() -> Self {
         Self {
-            session_id: Arc::new(Mutex::new(Some(session_id))),
+            session_id: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -110,7 +114,7 @@ impl RemoteAgentHelperConfiguration {
             client,
             internal_metrics: get_shared_metrics_state().await,
             prometheus_listen_addr,
-            session_id: SessionIdHandle::new(String::new()),
+            session_id: SessionIdHandle::new(),
             service_names: Vec::new(),
         })
     }
@@ -188,40 +192,43 @@ async fn run_remote_agent_helper(
 ) {
     let api_listen_addr = api_listen_addr.to_string();
 
-    let default_refresh_interval = Duration::from_secs(5);
-
-    let mut register_agent = interval(default_refresh_interval);
-    register_agent.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut loop_timer = interval(DEFAULT_REFRESH_INTERVAL);
+    loop_timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     debug!("Remote Agent helper started.");
 
     loop {
-        register_agent.tick().await;
-        match &session_id.get() {
+        loop_timer.tick().await;
+
+        match session_id.get() {
             Some(id) => {
-                debug!("Refreshing registration with Datadog Agent (session_id: {})", id);
-                if client.refresh_remote_agent_request(id).await.is_err() {
-                    register_agent.reset_after(default_refresh_interval);
+                debug!(session_id = %id, "Refreshing registration with Datadog Agent.");
+
+                if client.refresh_remote_agent_request(&id).await.is_err() {
+                    loop_timer.reset_after(REFRESH_FAILED_RETRY_INTERVAL);
                     session_id.update(None);
-                    debug!("Refresh failed, entering retry loop");
+
+                    warn!("Failed to refresh registration with the Datadog Agent. Resetting session ID and attempting to re-register shortly.");
+
                     continue;
                 }
             }
             None => {
-                info!("Registering with Datadog Agent");
                 match client
                     .register_remote_agent_request(pid, &display_name, &api_listen_addr, service_names.clone())
                     .await
                 {
                     Ok(resp) => {
-                        let resp_inner = resp.into_inner();
-                        session_id.update(Some(resp_inner.session_id.clone()));
-                        let new_refresh_interval = resp_inner.recommended_refresh_interval_secs;
-                        register_agent.reset_after(Duration::from_secs(new_refresh_interval as u64));
-                        info!("Registered with Datadog Agent (session_id: {})", resp_inner.session_id);
+                        let resp = resp.into_inner();
+                        let new_refresh_interval = resp.recommended_refresh_interval_secs;
+                        info!(session_id = %resp.session_id, "Successfully registered with the Datadog Agent. Refreshing every {} seconds.", new_refresh_interval);
+
+                        session_id.update(Some(resp.session_id));
+                        loop_timer.reset_after(Duration::from_secs(new_refresh_interval as u64));
                     }
                     Err(e) => {
-                        info!("Registration failed: {}", e);
+                        warn!(error = %e, "Failed to register with the Datadog Agent. Registration will be retried periodically in the background.");
+                        loop_timer.reset_after(DEFAULT_REFRESH_INTERVAL);
                     }
                 }
             }
@@ -286,24 +293,19 @@ impl RemoteAgentImpl {
             .set_field("Uds Packets", uds_packets.to_string());
     }
 
-    async fn session_id_middleware<Resp, Next>(
-        // &self, request: tonic::Request<Req>, next: Next,
-        &self,
-        next: Next,
-    ) -> Result<tonic::Response<Resp>, tonic::Status>
+    async fn session_id_middleware<Resp, Next>(&self, next: Next) -> Result<tonic::Response<Resp>, Status>
     where
-        // Next: AsyncFnOnce(tonic::Request<Req>) -> Result<tonic::Response<Resp>, tonic::Status>,
-        Next: AsyncFnOnce() -> Result<tonic::Response<Resp>, tonic::Status>,
+        Next: AsyncFnOnce() -> Result<tonic::Response<Resp>, Status>,
     {
         let metadata_session_id = self
             .session_id
             .get()
-            .ok_or(tonic::Status::failed_precondition(
-                "Session ID not set, ADP didn't registered to remoteAgentRegistry yet",
+            .ok_or(Status::failed_precondition(
+                "session ID not set; must be registered with Core Agent",
             ))?
             .parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
-            .or(Err(tonic::Status::internal(
-                "Unable to convert session ID into valid gRPC metadata",
+            .or(Err(Status::internal(
+                "unable to convert session ID into valid gRPC metadata",
             )))?;
 
         next().await.map(|mut resp| {
@@ -313,13 +315,11 @@ impl RemoteAgentImpl {
     }
 }
 
-// Implement the three separate service traits instead of the old unified RemoteAgent trait
-
 #[async_trait]
 impl StatusProvider for RemoteAgentImpl {
     async fn get_status_details(
         &self, _request: tonic::Request<GetStatusDetailsRequest>,
-    ) -> Result<tonic::Response<GetStatusDetailsResponse>, tonic::Status> {
+    ) -> Result<tonic::Response<GetStatusDetailsResponse>, Status> {
         return self
             .session_id_middleware(async || {
                 let app_details = saluki_metadata::get_app_details();
@@ -344,7 +344,7 @@ impl StatusProvider for RemoteAgentImpl {
 impl TelemetryProvider for RemoteAgentImpl {
     async fn get_telemetry(
         &self, _request: tonic::Request<GetTelemetryRequest>,
-    ) -> Result<tonic::Response<GetTelemetryResponse>, tonic::Status> {
+    ) -> Result<tonic::Response<GetTelemetryResponse>, Status> {
         return self
             .session_id_middleware(async || {
                 // Telemetry is not enabled.
@@ -360,7 +360,7 @@ impl TelemetryProvider for RemoteAgentImpl {
                 let request = Request::builder()
                     .uri(uri)
                     .body(String::new())
-                    .map_err(|e| tonic::Status::internal(e.to_string()))?;
+                    .map_err(|e| Status::internal(e.to_string()))?;
 
                 let resp = client.send(request).await.unwrap();
 
@@ -373,7 +373,7 @@ impl TelemetryProvider for RemoteAgentImpl {
                         };
                         Ok(tonic::Response::new(response))
                     }
-                    Err(e) => Err(tonic::Status::internal(e.to_string())),
+                    Err(e) => Err(Status::internal(e.to_string())),
                 }
             })
             .await;
@@ -384,7 +384,7 @@ impl TelemetryProvider for RemoteAgentImpl {
 impl FlareProvider for RemoteAgentImpl {
     async fn get_flare_files(
         &self, _request: tonic::Request<GetFlareFilesRequest>,
-    ) -> Result<tonic::Response<GetFlareFilesResponse>, tonic::Status> {
+    ) -> Result<tonic::Response<GetFlareFilesResponse>, Status> {
         return self
             .session_id_middleware(async || {
                 let response = GetFlareFilesResponse {

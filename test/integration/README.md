@@ -75,7 +75,7 @@ Or directly:
 Each test case lives in its own directory under `cases/`:
 
 ```
-test/integration-tests/
+test/integration/
   cases/
     my-new-test/
       config.yaml           # Test configuration (required)
@@ -100,7 +100,7 @@ timeout: 60s
 # Required: container configuration
 container:
   # Docker image to use
-  image: "saluki-images/datadog-agent:latest"
+  image: "saluki-images/datadog-agent:testing-devel"
 
   # Optional: override entrypoint
   entrypoint: []

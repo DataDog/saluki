@@ -64,5 +64,5 @@ pub struct ListCommand {
 }
 
 fn default_test_dir() -> PathBuf {
-    PathBuf::from("test/integration-tests/cases")
+    PathBuf::from("test/integration/cases")
 }

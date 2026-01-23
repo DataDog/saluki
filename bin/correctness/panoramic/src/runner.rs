@@ -277,13 +277,14 @@ impl TestRunner {
         // Monitor container exit in the background.
         let exit_cancel = self.cancel_token.clone();
         let container_name = details.container_name().to_string();
+        let container_name_for_exit = container_name.clone();
         let exit_handle = tokio::spawn(async move {
             let docker = match Docker::connect_with_defaults() {
                 Ok(d) => d,
                 Err(_) => return,
             };
 
-            let mut wait_stream = docker.wait_container::<String>(&container_name, None);
+            let mut wait_stream = docker.wait_container::<String>(&container_name_for_exit, None);
             if wait_stream.next().await.is_some() {
                 exit_cancel.cancel();
             }
@@ -300,7 +301,7 @@ impl TestRunner {
         );
 
         let assertion_results = tokio::select! {
-            results = self.run_assertions(&port_mappings) => results,
+            results = self.run_assertions(&port_mappings, &container_name) => results,
             _ = tokio::time::sleep(self.test_case.timeout.0) => {
                 error!(test = %test_name, timeout = ?self.test_case.timeout.0, "Test timed out.");
                 vec![AssertionResult {
@@ -472,13 +473,14 @@ impl TestRunner {
         Ok(())
     }
 
-    async fn run_assertions(&self, port_mappings: &HashMap<String, u16>) -> Vec<AssertionResult> {
+    async fn run_assertions(&self, port_mappings: &HashMap<String, u16>, container_name: &str) -> Vec<AssertionResult> {
         let mut results = Vec::new();
 
         let ctx = AssertionContext {
             log_buffer: self.log_buffer.clone(),
             cancel_token: self.cancel_token.clone(),
             port_mappings: port_mappings.clone(),
+            container_name: container_name.to_string(),
         };
 
         for (index, assertion_config) in self.test_case.assertions.iter().enumerate() {
