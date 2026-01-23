@@ -31,6 +31,7 @@ variables:
   # High-level repository paths we build off of, and dedicated images needed for various jobs.
   IMAGE_REGISTRY: "registry.ddbuild.io"
   DOCKER_BUILD_IMAGE: "${IMAGE_REGISTRY}/docker:27.3.1"
+  PYTHON_BUILD_IMAGE: "${IMAGE_REGISTRY}/python:3.12.8"
   GBI_BASE_IMAGE: "${IMAGE_REGISTRY}/images/base/gbi-ubuntu_2404:release"
   PUBLIC_BASE_IMAGE: "${IMAGE_REGISTRY}/images/mirror/ubuntu:24.04"
 
