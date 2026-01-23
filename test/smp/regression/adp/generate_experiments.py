@@ -353,14 +353,12 @@ def write_target_files(target_dir: Path, files_config: dict, base_path: Path) ->
         file_path = target_dir / filename
 
         if "source" in file_spec:
-            # Create symlink to source file
+            # Copy source file
             source_path = base_path / file_spec["source"]
             if not source_path.exists():
                 raise ValueError(f"Source file not found: {source_path}")
 
-            # Calculate relative path from target_dir to source
-            rel_source = os.path.relpath(source_path, target_dir)
-            file_path.symlink_to(rel_source)
+            shutil.copy2(source_path, file_path)
 
         elif "content" in file_spec:
             # Write content directly
@@ -445,26 +443,14 @@ def compare_experiment_files(generated_dir: Path, existing_dir: Path) -> list[st
     differences = []
 
     for file_path in generated_dir.rglob("*"):
-        if not (file_path.is_symlink() or file_path.is_file()):
+        if not file_path.is_file():
             continue
 
         rel_path = file_path.relative_to(generated_dir)
         existing_file = existing_dir / rel_path
 
-        if not existing_file.exists() and not existing_file.is_symlink():
+        if not existing_file.exists():
             differences.append(f"Missing file: {existing_file}")
-        elif file_path.is_symlink():
-            # Compare symlink targets by resolving to absolute paths
-            if not existing_file.is_symlink():
-                differences.append(
-                    f"Expected symlink but got regular file: {existing_file}"
-                )
-            elif file_path.resolve() != existing_file.resolve():
-                differences.append(f"Symlink target differs: {existing_file}")
-        elif existing_file.is_symlink():
-            differences.append(
-                f"Expected regular file but got symlink: {existing_file}"
-            )
         elif existing_file.read_text() != file_path.read_text():
             differences.append(f"Content differs: {existing_file}")
 
