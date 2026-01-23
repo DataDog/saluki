@@ -29,8 +29,8 @@ mod probabilistic;
 mod score_sampler;
 mod signature;
 
-use crate::common::datadog::apm::ApmConfig;
 use self::probabilistic::PROB_RATE_KEY;
+use crate::common::datadog::apm::ApmConfig;
 
 // Sampling priority constants (matching datadog-agent)
 #[allow(dead_code)]
@@ -75,14 +75,6 @@ impl TraceSamplerConfiguration {
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let apm_config = ApmConfig::from_configuration(config)?;
         Ok(Self { apm_config })
-    }
-}
-
-impl Default for TraceSamplerConfiguration {
-    fn default() -> Self {
-        Self {
-            apm_config: ApmConfig::default(),
-        }
     }
 }
 
