@@ -77,7 +77,7 @@ fn compute_tps_per_sig(target_tps: f64, seen_tps: &[f64]) -> f64 {
     // Return sig_target = 15.
     // Interpretation: the low‑volume signatures "use up" 5 and 10 TPS, and the remaining budget (15) is the per‑signature target for the higher‑volume signature(s).
 
-    if seen_tps.len() == 0 {
+    if seen_tps.is_empty() {
         return 0.0;
     }
     let mut sorted: Vec<f64> = seen_tps.to_vec();

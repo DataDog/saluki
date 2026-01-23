@@ -264,33 +264,37 @@ impl TraceSampler {
         }
     }
 
-    /// Main sampling pipeline - mirrors datadog-agent's runSamplers flow
-    /// Returns (keep_decision, priority, decision_maker_tag, should_add_prob_rate, root_span_index)
-    fn run_samplers(&mut self, trace: &mut Trace) -> (bool, i32, &'static str, bool, Option<usize>) {
+    /// Evaluates the given trace against all configured samplers.
+    ///
+    /// Return a tuple containing whether or not the trace should be kept, the decision maker tag (which sampler is responsible),
+    /// and the index of the root span used for evaluation.
+    fn run_samplers(&mut self, trace: &mut Trace) -> (bool, i32, &'static str, Option<usize>) {
         // logic taken from: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/agent.go#L1066
         let now = std::time::SystemTime::now();
         // Empty trace check
         if trace.spans().is_empty() {
-            return (false, PRIORITY_AUTO_DROP, "", false, None);
+            return (false, PRIORITY_AUTO_DROP, "", None);
         }
         let contains_error = self.trace_contains_error(trace, false);
         let Some(root_span_idx) = self.get_root_span_index(trace) else {
-            return (false, PRIORITY_AUTO_DROP, "", false, None);
+            return (false, PRIORITY_AUTO_DROP, "", None);
         };
 
         // Modern path: ProbabilisticSamplerEnabled = true
         if self.probabilistic_sampler_enabled {
             let mut prob_keep = false;
             let mut decision_maker = "";
-            let mut should_add_prob_rate = false;
 
             // Run probabilistic sampler - use root span's trace ID
-
             let root_trace_id = trace.spans()[root_span_idx].trace_id();
             if self.sample_probabilistic(root_trace_id) {
                 decision_maker = DECISION_MAKER_PROBABILISTIC; // probabilistic sampling
-                should_add_prob_rate = true;
                 prob_keep = true;
+
+                if let Some(root_span) = trace.spans_mut().get_mut(root_span_idx) {
+                    let metrics = root_span.metrics_mut();
+                    metrics.insert(MetaString::from(PROB_RATE_KEY), self.sampling_rate);
+                }
             } else if self.error_sampling_enabled && contains_error {
                 prob_keep = self.error_sampler.sample_error(now, trace, root_span_idx);
             }
@@ -301,37 +305,25 @@ impl TraceSampler {
                 PRIORITY_AUTO_DROP
             };
 
-            return (
-                prob_keep,
-                priority,
-                decision_maker,
-                should_add_prob_rate,
-                Some(root_span_idx),
-            );
+            return (prob_keep, priority, decision_maker, Some(root_span_idx));
         }
 
         if let Some(user_priority) = self.get_user_priority(trace, root_span_idx) {
             if user_priority > 0 {
                 // User wants to keep this trace
-                return (
-                    true,
-                    user_priority,
-                    DECISION_MAKER_MANUAL_PRIORITY,
-                    false,
-                    Some(root_span_idx),
-                );
+                return (true, user_priority, DECISION_MAKER_MANUAL_PRIORITY, Some(root_span_idx));
             }
         }
 
         if self.error_sampling_enabled && self.trace_contains_error(trace, false) {
             let keep = self.error_sampler.sample_error(now, trace, root_span_idx);
             if keep {
-                return (true, PRIORITY_AUTO_KEEP, "", false, Some(root_span_idx));
+                return (true, PRIORITY_AUTO_KEEP, "", Some(root_span_idx));
             }
         }
 
         // Default: drop the trace
-        (false, PRIORITY_AUTO_DROP, "", false, Some(root_span_idx))
+        (false, PRIORITY_AUTO_DROP, "", Some(root_span_idx))
     }
 
     /// Apply sampling metadata to the trace in-place.
@@ -339,19 +331,12 @@ impl TraceSampler {
     /// The `root_span_id` parameter identifies which span should receive the sampling metadata.
     /// This avoids recalculating the root span since it was already found in `run_samplers`.
     fn apply_sampling_metadata(
-        &self, trace: &mut Trace, keep: bool, priority: i32, decision_maker: &str, add_prob_rate: bool,
-        root_span_idx: usize,
+        &self, trace: &mut Trace, keep: bool, priority: i32, decision_maker: &str, root_span_idx: usize,
     ) {
         let root_span_value = match trace.spans_mut().get_mut(root_span_idx) {
             Some(span) => span,
             None => return,
         };
-
-        // Add the probabilistic sampling rate if requested
-        if add_prob_rate {
-            let metrics = root_span_value.metrics_mut();
-            metrics.insert(MetaString::from(PROB_RATE_KEY), self.sampling_rate);
-        }
 
         // Add tag for the decision maker
         let meta = root_span_value.meta_mut();
@@ -393,10 +378,8 @@ impl Transform for TraceSampler {
                                     // keep is a boolean that indicates if the trace should be kept or dropped
                                     // priority is the sampling priority
                                     // decision_maker is the tag that indicates the decision maker (probabilistic, error, etc.)
-                                    // add_prob_rate is a boolean that indicates if the PROB_RATE_KEY should be added to the the root span
                                     // root_span_idx is the index of the root span of the trace
-                                    let (keep, priority, decision_maker, add_prob_rate, root_span_idx) =
-                                        self.run_samplers(&mut trace);
+                                    let (keep, priority, decision_maker, root_span_idx) = self.run_samplers(&mut trace);
                                     if keep {
                                         if let Some(root_idx) = root_span_idx {
                                             self.apply_sampling_metadata(
@@ -404,7 +387,6 @@ impl Transform for TraceSampler {
                                                 keep,
                                                 priority,
                                                 decision_maker,
-                                                add_prob_rate,
                                                 root_idx,
                                             );
                                         }
@@ -629,7 +611,7 @@ mod tests {
         let mut trace = create_test_trace(vec![span]);
         trace.set_sampling(Some(TraceSampling::new(false, Some(PRIORITY_USER_KEEP), None, None)));
 
-        let (keep, priority, decision_maker, _, _) = sampler.run_samplers(&mut trace);
+        let (keep, priority, decision_maker, _) = sampler.run_samplers(&mut trace);
         assert!(keep);
         assert_eq!(priority, PRIORITY_USER_KEEP);
         assert_eq!(decision_maker, DECISION_MAKER_MANUAL_PRIORITY);
@@ -639,7 +621,7 @@ mod tests {
         let mut trace = create_test_trace(vec![span]);
         trace.set_sampling(Some(TraceSampling::new(false, Some(PRIORITY_USER_DROP), None, None)));
 
-        let (keep, priority, _, _, _) = sampler.run_samplers(&mut trace);
+        let (keep, priority, _, _) = sampler.run_samplers(&mut trace);
         assert!(!keep); // Should not keep when user drops
         assert_eq!(priority, PRIORITY_AUTO_DROP); // Fallthrough to auto-drop
 
@@ -648,7 +630,7 @@ mod tests {
         let mut trace = create_test_trace(vec![span]);
         trace.set_sampling(Some(TraceSampling::new(false, Some(PRIORITY_AUTO_KEEP), None, None)));
 
-        let (keep, priority, decision_maker, _, _) = sampler.run_samplers(&mut trace);
+        let (keep, priority, decision_maker, _) = sampler.run_samplers(&mut trace);
         assert!(keep);
         assert_eq!(priority, PRIORITY_AUTO_KEEP);
         assert_eq!(decision_maker, DECISION_MAKER_MANUAL_PRIORITY);
@@ -692,7 +674,7 @@ mod tests {
         let span_with_error = create_test_span(u64::MAX - 1, 1, 1);
         let mut trace = create_test_trace(vec![span_with_error]);
 
-        let (keep, priority, decision_maker, _, _) = sampler.run_samplers(&mut trace);
+        let (keep, priority, decision_maker, _) = sampler.run_samplers(&mut trace);
         assert!(keep);
         assert_eq!(priority, PRIORITY_AUTO_KEEP);
         assert_eq!(decision_maker, ""); // Error sampler doesn't set decision_maker
@@ -706,7 +688,7 @@ mod tests {
         let span = create_test_span_with_metrics(12345, 1, metrics);
         let mut trace = create_test_trace(vec![span]);
 
-        let (keep, priority, decision_maker, _, _) = sampler.run_samplers(&mut trace);
+        let (keep, priority, decision_maker, _) = sampler.run_samplers(&mut trace);
         assert!(keep);
         assert_eq!(priority, 2); // UserKeep
         assert_eq!(decision_maker, DECISION_MAKER_MANUAL_PRIORITY); // manual decision
@@ -717,7 +699,7 @@ mod tests {
         let mut sampler = create_test_sampler();
         let mut trace = create_test_trace(vec![]);
 
-        let (keep, priority, _, _, _) = sampler.run_samplers(&mut trace);
+        let (keep, priority, _, _) = sampler.run_samplers(&mut trace);
         assert!(!keep);
         assert_eq!(priority, PRIORITY_AUTO_DROP);
     }
@@ -865,32 +847,36 @@ mod tests {
         );
         let mut trace = create_test_trace(vec![root_span]);
 
-        let (keep, priority, decision_maker, add_prob_rate, root_span_idx) = sampler.run_samplers(&mut trace);
+        let (keep, priority, decision_maker, root_span_idx) = sampler.run_samplers(&mut trace);
 
         if keep && decision_maker == DECISION_MAKER_PROBABILISTIC {
-            // If sampled probabilistically, check probRateKey should be added
+            // If sampled probabilistically, check that probRateKey was already added
             assert_eq!(priority, PRIORITY_AUTO_KEEP);
             assert_eq!(decision_maker, DECISION_MAKER_PROBABILISTIC); // probabilistic sampling marker
-            assert!(add_prob_rate); // Should add prob_rate_key
 
-            // Use root span index directly
+            // Check that the root span already has the probRateKey (it should have been added in run_samplers)
             let root_idx = root_span_idx.unwrap_or(0);
+            let root_span = &trace.spans()[root_idx];
+            assert!(root_span.metrics().contains_key(PROB_RATE_KEY));
+            assert_eq!(*root_span.metrics().get(PROB_RATE_KEY).unwrap(), 0.75);
 
-            // Test that metadata is applied correctly
+            // Test that apply_sampling_metadata still works correctly for other metadata
             let mut trace_with_metadata = trace.clone();
             sampler.apply_sampling_metadata(
                 &mut trace_with_metadata,
                 keep,
                 priority,
                 decision_maker,
-                add_prob_rate,
                 root_idx,
             );
 
-            // Check that the root span has the probRateKey
-            let modified_root = &trace_with_metadata.spans()[0];
-            assert!(modified_root.metrics().contains_key(PROB_RATE_KEY));
-            assert_eq!(*modified_root.metrics().get(PROB_RATE_KEY).unwrap(), 0.75);
+            // Check that decision maker tag was added
+            let modified_root = &trace_with_metadata.spans()[root_idx];
+            assert!(modified_root.meta().contains_key(TAG_DECISION_MAKER));
+            assert_eq!(
+                modified_root.meta().get(TAG_DECISION_MAKER).unwrap(),
+                &MetaString::from(DECISION_MAKER_PROBABILISTIC)
+            );
         }
     }
 }
