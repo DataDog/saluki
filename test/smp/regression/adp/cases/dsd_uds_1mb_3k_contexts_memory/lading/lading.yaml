@@ -1,3 +1,9 @@
+blackhole:
+- http:
+    binding_addr: 127.0.0.1:9091
+target_metrics:
+- prometheus:
+    uri: http://127.0.0.1:5102/scrape
 generator:
 - unix_datagram:
     seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107,
@@ -40,9 +46,3 @@ generator:
           histogram: 1
     maximum_prebuild_cache_size_bytes: 500 Mb
     bytes_per_second: 1 MiB
-blackhole:
-- http:
-    binding_addr: 127.0.0.1:9091
-target_metrics:
-- prometheus:
-    uri: http://127.0.0.1:5102/scrape

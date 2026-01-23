@@ -13,8 +13,10 @@ Usage:
 import argparse
 import copy
 import os
+import re
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import yaml
@@ -29,6 +31,11 @@ GOAL_SUFFIXES = {
     "memory": "memory",
     "cpu": "cpu",
 }
+
+# Strings that YAML parsers interpret as booleans or null
+YAML_BOOLEAN_LIKE = frozenset(
+    ("true", "false", "yes", "no", "on", "off", "null", "~", "none")
+)
 
 
 def get_generator_type(generator_item: dict) -> str | None:
@@ -227,19 +234,11 @@ def build_experiment_yaml(config: dict) -> dict:
 def build_lading_yaml(config: dict) -> dict:
     """Build the lading.yaml content from resolved config."""
     lading_config = config.get("lading", {})
-
-    lading = {}
-
-    if "generator" in lading_config:
-        lading["generator"] = lading_config["generator"]
-
-    if "blackhole" in lading_config:
-        lading["blackhole"] = lading_config["blackhole"]
-
-    if "target_metrics" in lading_config:
-        lading["target_metrics"] = lading_config["target_metrics"]
-
-    return lading
+    return {
+        k: v
+        for k, v in lading_config.items()
+        if k in ("generator", "blackhole", "target_metrics")
+    }
 
 
 class YamlDumper(yaml.SafeDumper):
@@ -258,13 +257,11 @@ def needs_double_quotes(data: str) -> bool:
     - Numeric-like values (integers, floats, hex, octal)
     - Strings starting with special YAML characters
     """
-    import re
-
     if not data:
         return True  # Empty string needs quotes
 
     # Strings that look like YAML booleans or null
-    if data.lower() in ("true", "false", "yes", "no", "on", "off", "null", "~", "none"):
+    if data.lower() in YAML_BOOLEAN_LIKE:
         return True
 
     # Strings that could be parsed as numbers (int or float)
@@ -304,7 +301,7 @@ def needs_double_quotes(data: str) -> bool:
     return False
 
 
-def str_representer(dumper, data):
+def str_representer(dumper: yaml.Dumper, data: str) -> yaml.ScalarNode:
     """
     Represent strings with appropriate quoting style.
 
@@ -319,7 +316,7 @@ def str_representer(dumper, data):
     return dumper.represent_scalar("tag:yaml.org,2002:str", data, style=style)
 
 
-def list_representer(dumper, data):
+def list_representer(dumper: yaml.Dumper, data: list) -> yaml.SequenceNode:
     """Use flow style for short lists of primitives (like seeds)."""
     # Use flow style for lists of numbers (like seed arrays)
     if data and all(isinstance(item, (int, float)) for item in data):
@@ -440,6 +437,83 @@ def load_config(config_path: Path) -> dict:
         return yaml.safe_load(f)
 
 
+def compare_experiment_files(generated_dir: Path, existing_dir: Path) -> list[str]:
+    """Compare generated experiment files against existing ones.
+
+    Returns a list of difference descriptions, empty if files match.
+    """
+    differences = []
+
+    for file_path in generated_dir.rglob("*"):
+        if not (file_path.is_symlink() or file_path.is_file()):
+            continue
+
+        rel_path = file_path.relative_to(generated_dir)
+        existing_file = existing_dir / rel_path
+
+        if not existing_file.exists() and not existing_file.is_symlink():
+            differences.append(f"Missing file: {existing_file}")
+        elif file_path.is_symlink():
+            # Compare symlink targets by resolving to absolute paths
+            if not existing_file.is_symlink():
+                differences.append(
+                    f"Expected symlink but got regular file: {existing_file}"
+                )
+            elif file_path.resolve() != existing_file.resolve():
+                differences.append(f"Symlink target differs: {existing_file}")
+        elif existing_file.is_symlink():
+            differences.append(
+                f"Expected regular file but got symlink: {existing_file}"
+            )
+        elif existing_file.read_text() != file_path.read_text():
+            differences.append(f"Content differs: {existing_file}")
+
+    return differences
+
+
+def check_experiments(config: dict) -> bool:
+    """Check if generated experiments match existing files.
+
+    Returns True if all files are up-to-date, False otherwise.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        generated = generate_experiments(config, tmp_path, SCRIPT_DIR)
+
+        differences = []
+        for name in generated:
+            exp_dir = CASES_DIR / name
+            tmp_exp_dir = tmp_path / name
+
+            if not exp_dir.exists():
+                differences.append(f"Missing directory: {exp_dir}")
+                continue
+
+            differences.extend(compare_experiment_files(tmp_exp_dir, exp_dir))
+
+        # Check for extra directories in cases/
+        if CASES_DIR.exists():
+            existing_dirs = {d.name for d in CASES_DIR.iterdir() if d.is_dir()}
+            extra_dirs = existing_dirs - set(generated)
+            for extra in extra_dirs:
+                differences.append(
+                    f"Extra directory not in config: {CASES_DIR / extra}"
+                )
+
+        if differences:
+            print("SMP experiment files are out of date:", file=sys.stderr)
+            for diff in differences:
+                print(f"  - {diff}", file=sys.stderr)
+            print(
+                "\nRun 'make generate-smp-experiments' to regenerate.",
+                file=sys.stderr,
+            )
+            return False
+
+        print(f"All {len(generated)} experiment configurations are up-to-date.")
+        return True
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Generate SMP experiment configuration files from experiments.yaml"
@@ -458,71 +532,8 @@ def main():
     config = load_config(EXPERIMENTS_FILE)
 
     if args.check:
-        # Generate to a temporary directory and compare
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_path = Path(tmpdir)
-            generated = generate_experiments(config, tmp_path, SCRIPT_DIR)
-
-            # Compare each generated experiment
-            differences = []
-            for name in generated:
-                exp_dir = CASES_DIR / name
-                tmp_exp_dir = tmp_path / name
-
-                if not exp_dir.exists():
-                    differences.append(f"Missing directory: {exp_dir}")
-                    continue
-
-                for file_path in tmp_exp_dir.rglob("*"):
-                    if file_path.is_symlink() or file_path.is_file():
-                        rel_path = file_path.relative_to(tmp_exp_dir)
-                        existing_file = exp_dir / rel_path
-
-                        if (
-                            not existing_file.exists()
-                            and not existing_file.is_symlink()
-                        ):
-                            differences.append(f"Missing file: {existing_file}")
-                        elif file_path.is_symlink():
-                            # Compare symlink targets by resolving to absolute paths
-                            if not existing_file.is_symlink():
-                                differences.append(
-                                    f"Expected symlink but got regular file: {existing_file}"
-                                )
-                            elif file_path.resolve() != existing_file.resolve():
-                                differences.append(
-                                    f"Symlink target differs: {existing_file}"
-                                )
-                        elif existing_file.is_symlink():
-                            differences.append(
-                                f"Expected regular file but got symlink: {existing_file}"
-                            )
-                        elif existing_file.read_text() != file_path.read_text():
-                            differences.append(f"Content differs: {existing_file}")
-
-            # Check for extra directories in cases/
-            if CASES_DIR.exists():
-                existing_dirs = {d.name for d in CASES_DIR.iterdir() if d.is_dir()}
-                generated_set = set(generated)
-                extra_dirs = existing_dirs - generated_set
-                for extra in extra_dirs:
-                    differences.append(
-                        f"Extra directory not in config: {CASES_DIR / extra}"
-                    )
-
-            if differences:
-                print("SMP experiment files are out of date:", file=sys.stderr)
-                for diff in differences:
-                    print(f"  - {diff}", file=sys.stderr)
-                print(
-                    "\nRun 'make generate-smp-experiments' to regenerate.",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-
-            print(f"All {len(generated)} experiment configurations are up-to-date.")
+        if not check_experiments(config):
+            sys.exit(1)
     else:
         # Clear existing cases directory and regenerate
         if CASES_DIR.exists():
