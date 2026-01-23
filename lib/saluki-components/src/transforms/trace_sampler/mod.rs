@@ -422,7 +422,6 @@ impl TraceSampler {
             meta.insert(MetaString::from(TAG_DECISION_MAKER), MetaString::from(decision_maker));
         }
 
-
         // Now we can use trace again to set sampling metadata
         let sampling = TraceSampling::new(
             !keep,
