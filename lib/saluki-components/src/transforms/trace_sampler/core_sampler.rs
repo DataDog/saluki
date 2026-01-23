@@ -14,22 +14,22 @@ pub struct Sampler {
     /// maps each Signature to a circular buffer of per-bucket (bucket_id) counts covering the last NUM_BUCKETS * BUCKET_DURATION window.
     seen: FastHashMap<Signature, [f32; NUM_BUCKETS]>,
 
-    /// allSigSeen counts all signatures in a circular buffer of NUM_BUCKETS of BUCKET_DURATION
+    /// all_sigs_seen counts all signatures in a circular buffer of NUM_BUCKETS of BUCKET_DURATION
     all_sigs_seen: [f32; NUM_BUCKETS],
 
-	/// lastBucketID is the index of the last bucket on which traces were counted
+	///  last_bucket_id is the index of the last bucket on which traces were counted
     last_bucket_id: u64,
 
 	/// rates maps sampling rate in %
     rates: FastHashMap<Signature, f64>,
 
-	/// lowestRate is the lowest rate of all signatures
+	/// lowest_rate is the lowest rate of all signatures
     lowest_rate: f64,
 
 	/// Maximum limit to the total number of traces per second to sample
     target_tps: f64,
 
-	/// extraRate is an extra raw sampling rate to apply on top of the sampler rate
+	/// extra_rate is an extra raw sampling rate to apply on top of the sampler rate
     extra_rate: f64,
 }
 
@@ -38,8 +38,8 @@ pub struct Sampler {
 fn zero_and_get_max(buckets: &mut [f32; NUM_BUCKETS], previous_bucket: u64, new_bucket: u64) -> f32 {
     // A bucket is a BUCKET_DURATION slice (5s) that stores the count of traces that fell in the interval.
     // An intuitive understanding of the function is that we start just after previous_buckets and iterate for a full window of buckets (NUM_BUCKETS)
-    // and zero out any buckets older then new_buckets (expired), then we compute the max_count amoung the buckets that are in the current window
-    let mut max_bucket = 0 as f32;
+    // and zero out any buckets older then new_buckets (expired), then we compute the max_count among the buckets that are in the current window
+    let mut max_bucket = 0.0;
     for i in (previous_bucket + 1)..=previous_bucket + NUM_BUCKETS as u64 {
         let index = i as usize % NUM_BUCKETS;
         // if a complete rotation (time between previous_bucket and new_bucket is more then NUM_BUCKETS * BUCKET_DURATION) happened between previous_bucket and new_bucket
@@ -76,6 +76,10 @@ fn compute_tps_per_sig(target_tps: f64, seen_tps: &[f64]) -> f64 {
     // 3) Next is last element, break.
     // Return sig_target = 15.
     // Interpretation: the low‑volume signatures "use up" 5 and 10 TPS, and the remaining budget (15) is the per‑signature target for the higher‑volume signature(s).
+
+    if seen_tps.len() == 0 {
+        return 0.0;
+    }
     let mut sorted: Vec<f64> = seen_tps.to_vec();
     sorted.sort_by(|a, b| a.total_cmp(b));
     // compute the initial per_signature TPS budget by splitting target_tps across all signatures.
@@ -105,6 +109,7 @@ impl Sampler {
         // All traces within the same `BUCKET_DURATION` interval share the same bucket_id
         let bucket_id = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() / BUCKET_DURATION.as_secs();
         let prev_bucket_id = self.last_bucket_id;
+        self.last_bucket_id = bucket_id;
         // If the bucket_id changed then the sliding window advanced and we need to recompute rates
         let update_rate = prev_bucket_id != bucket_id;
         if update_rate {
