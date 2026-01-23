@@ -1,0 +1,360 @@
+#!/usr/bin/env python3
+"""
+Generate SMP experiment configuration files from experiments.yaml.
+
+This script reads the experiment definitions from experiments.yaml and generates
+the corresponding directory structure under cases/.
+
+Usage:
+    python generate_experiments.py          # Generate experiment files
+    python generate_experiments.py --check  # Verify files are up-to-date (for CI)
+"""
+
+import argparse
+import copy
+import shutil
+import sys
+from pathlib import Path
+
+import yaml
+
+SCRIPT_DIR = Path(__file__).parent
+EXPERIMENTS_FILE = SCRIPT_DIR / "experiments.yaml"
+CASES_DIR = SCRIPT_DIR / "cases"
+
+
+def get_generator_type(generator_item: dict) -> str | None:
+    """
+    Get the type key from a generator item.
+
+    Generator items are dicts with a single key indicating the type,
+    e.g., {"unix_datagram": {...}}, {"grpc": {...}}, {"http": {...}}
+    """
+    if isinstance(generator_item, dict) and len(generator_item) == 1:
+        return next(iter(generator_item.keys()))
+    return None
+
+
+def merge_generator_lists(base_generators: list, overlay_generators: list) -> list:
+    """
+    Merge two generator lists by matching on generator type.
+
+    If an overlay generator has the same type as a base generator, the configs
+    are deep-merged. Otherwise, generators are appended.
+    """
+    if not base_generators:
+        return copy.deepcopy(overlay_generators)
+    if not overlay_generators:
+        return copy.deepcopy(base_generators)
+
+    # Build a map of base generators by type
+    result = []
+    base_by_type = {}
+    for i, gen in enumerate(base_generators):
+        gen_type = get_generator_type(gen)
+        if gen_type:
+            base_by_type[gen_type] = i
+        result.append(copy.deepcopy(gen))
+
+    # Process overlay generators
+    for overlay_gen in overlay_generators:
+        overlay_type = get_generator_type(overlay_gen)
+        if overlay_type and overlay_type in base_by_type:
+            # Merge with existing generator of same type
+            idx = base_by_type[overlay_type]
+            result[idx] = {
+                overlay_type: deep_merge(
+                    result[idx][overlay_type], overlay_gen[overlay_type]
+                )
+            }
+        else:
+            # Append new generator
+            result.append(copy.deepcopy(overlay_gen))
+
+    return result
+
+
+def deep_merge(base: dict, overlay: dict, path: tuple = ()) -> dict:
+    """
+    Recursively merge overlay into base.
+
+    - For dicts: merge recursively
+    - For lists: replace entirely (no merge), except for lading.generator
+      which uses type-aware merging
+    - None values in overlay remove keys from base
+    """
+    result = copy.deepcopy(base)
+
+    for key, value in overlay.items():
+        current_path = path + (key,)
+
+        if value is None:
+            # None removes the key
+            result.pop(key, None)
+        elif (
+            key in result and isinstance(result[key], dict) and isinstance(value, dict)
+        ):
+            # Recursively merge dicts
+            result[key] = deep_merge(result[key], value, current_path)
+        elif (
+            current_path == ("lading", "generator")
+            and isinstance(result.get(key), list)
+            and isinstance(value, list)
+        ):
+            # Special case: merge generator lists by type
+            result[key] = merge_generator_lists(result[key], value)
+        else:
+            # Replace value (including lists)
+            result[key] = copy.deepcopy(value)
+
+    return result
+
+
+def resolve_template_chain(
+    templates: dict, template_name: str, seen: set = None
+) -> dict:
+    """Resolve a template and its inheritance chain."""
+    if seen is None:
+        seen = set()
+
+    if template_name in seen:
+        raise ValueError(f"Circular template inheritance detected: {template_name}")
+
+    seen.add(template_name)
+
+    if template_name not in templates:
+        raise ValueError(f"Unknown template: {template_name}")
+
+    template = templates[template_name]
+
+    # If this template extends another, resolve that first
+    if "extends" in template:
+        parent_name = template["extends"]
+        parent = resolve_template_chain(templates, parent_name, seen)
+        # Remove extends from template before merging
+        template_copy = {k: v for k, v in template.items() if k != "extends"}
+        return deep_merge(parent, template_copy)
+
+    return copy.deepcopy(template)
+
+
+def resolve_experiment(experiment: dict, global_config: dict, templates: dict) -> dict:
+    """
+    Resolve an experiment's full configuration by applying inheritance.
+
+    Order: global -> template (if extends) -> experiment
+    """
+    # Start with global config
+    result = copy.deepcopy(global_config)
+
+    # Apply template if specified
+    if "extends" in experiment:
+        template_name = experiment["extends"]
+        template = resolve_template_chain(templates, template_name)
+        result = deep_merge(result, template)
+
+    # Apply experiment-specific config (excluding 'name' and 'extends')
+    experiment_config = {
+        k: v for k, v in experiment.items() if k not in ("name", "extends")
+    }
+    result = deep_merge(result, experiment_config)
+
+    return result
+
+
+def build_experiment_yaml(config: dict) -> dict:
+    """Build the experiment.yaml content from resolved config."""
+    experiment = {
+        "optimization_goal": config["optimization_goal"],
+        "erratic": config.get("erratic", False),
+        "target": config["target"],
+    }
+
+    if "checks" in config:
+        experiment["checks"] = config["checks"]
+
+    experiment["report_links"] = config["report_links"]
+
+    return experiment
+
+
+def build_lading_yaml(config: dict) -> dict:
+    """Build the lading.yaml content from resolved config."""
+    lading_config = config.get("lading", {})
+
+    lading = {}
+
+    if "generator" in lading_config:
+        lading["generator"] = lading_config["generator"]
+
+    if "blackhole" in lading_config:
+        lading["blackhole"] = lading_config["blackhole"]
+
+    if "target_metrics" in lading_config:
+        lading["target_metrics"] = lading_config["target_metrics"]
+
+    return lading
+
+
+class YamlDumper(yaml.SafeDumper):
+    """Custom YAML dumper for consistent output formatting."""
+
+    pass
+
+
+def str_representer(dumper, data):
+    """Use literal style for multi-line strings, otherwise default."""
+    if "\n" in data:
+        return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data)
+
+
+def list_representer(dumper, data):
+    """Use flow style for short lists of primitives (like seeds)."""
+    # Use flow style for lists of numbers (like seed arrays)
+    if data and all(isinstance(item, (int, float)) for item in data):
+        return dumper.represent_sequence("tag:yaml.org,2002:seq", data, flow_style=True)
+    return dumper.represent_sequence("tag:yaml.org,2002:seq", data, flow_style=False)
+
+
+YamlDumper.add_representer(str, str_representer)
+YamlDumper.add_representer(list, list_representer)
+
+
+def dump_yaml(data: dict) -> str:
+    """Dump dict to YAML string with consistent formatting."""
+    return yaml.dump(
+        data,
+        Dumper=YamlDumper,
+        default_flow_style=False,
+        sort_keys=False,
+        allow_unicode=True,
+        width=120,
+    )
+
+
+def write_experiment(name: str, config: dict, output_dir: Path) -> None:
+    """Write the experiment files to the output directory."""
+    experiment_dir = output_dir / name
+    experiment_dir.mkdir(parents=True, exist_ok=True)
+
+    # Write experiment.yaml
+    experiment_yaml = build_experiment_yaml(config)
+    (experiment_dir / "experiment.yaml").write_text(dump_yaml(experiment_yaml))
+
+    # Write lading/lading.yaml
+    lading_dir = experiment_dir / "lading"
+    lading_dir.mkdir(exist_ok=True)
+    lading_yaml = build_lading_yaml(config)
+    (lading_dir / "lading.yaml").write_text(dump_yaml(lading_yaml))
+
+    # Write agent-data-plane/empty.yaml
+    adp_dir = experiment_dir / "agent-data-plane"
+    adp_dir.mkdir(exist_ok=True)
+    (adp_dir / "empty.yaml").write_text("{}\n")
+
+
+def generate_experiments(config: dict, output_dir: Path) -> list[str]:
+    """Generate all experiment files and return list of experiment names."""
+    global_config = config.get("global", {})
+    templates = config.get("templates", {})
+    experiments = config.get("experiments", [])
+
+    generated = []
+
+    for experiment in experiments:
+        name = experiment["name"]
+        resolved = resolve_experiment(experiment, global_config, templates)
+        write_experiment(name, resolved, output_dir)
+        generated.append(name)
+
+    return generated
+
+
+def load_config(config_path: Path) -> dict:
+    """Load and parse the experiments.yaml file."""
+    with open(config_path) as f:
+        return yaml.safe_load(f)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Generate SMP experiment configuration files from experiments.yaml"
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Check if generated files match existing files (for CI)",
+    )
+    args = parser.parse_args()
+
+    if not EXPERIMENTS_FILE.exists():
+        print(f"Error: {EXPERIMENTS_FILE} not found", file=sys.stderr)
+        sys.exit(1)
+
+    config = load_config(EXPERIMENTS_FILE)
+
+    if args.check:
+        # Generate to a temporary directory and compare
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            generated = generate_experiments(config, tmp_path)
+
+            # Compare each generated experiment
+            differences = []
+            for name in generated:
+                exp_dir = CASES_DIR / name
+                tmp_exp_dir = tmp_path / name
+
+                if not exp_dir.exists():
+                    differences.append(f"Missing directory: {exp_dir}")
+                    continue
+
+                for file_path in tmp_exp_dir.rglob("*"):
+                    if file_path.is_file():
+                        rel_path = file_path.relative_to(tmp_exp_dir)
+                        existing_file = exp_dir / rel_path
+
+                        if not existing_file.exists():
+                            differences.append(f"Missing file: {existing_file}")
+                        elif existing_file.read_text() != file_path.read_text():
+                            differences.append(f"Content differs: {existing_file}")
+
+            # Check for extra directories in cases/
+            if CASES_DIR.exists():
+                existing_dirs = {d.name for d in CASES_DIR.iterdir() if d.is_dir()}
+                generated_set = set(generated)
+                extra_dirs = existing_dirs - generated_set
+                for extra in extra_dirs:
+                    differences.append(
+                        f"Extra directory not in config: {CASES_DIR / extra}"
+                    )
+
+            if differences:
+                print("SMP experiment files are out of date:", file=sys.stderr)
+                for diff in differences:
+                    print(f"  - {diff}", file=sys.stderr)
+                print(
+                    "\nRun 'make generate-smp-experiments' to regenerate.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+            print(f"All {len(generated)} experiment configurations are up-to-date.")
+    else:
+        # Clear existing cases directory and regenerate
+        if CASES_DIR.exists():
+            shutil.rmtree(CASES_DIR)
+
+        CASES_DIR.mkdir(parents=True, exist_ok=True)
+
+        generated = generate_experiments(config, CASES_DIR)
+        print(f"Generated {len(generated)} experiment configurations:")
+        for name in sorted(generated):
+            print(f"  - {name}")
+
+
+if __name__ == "__main__":
+    main()

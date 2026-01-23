@@ -594,6 +594,16 @@ endif
 	--inlined-functions true --timeline --upload-period 10 --preset cpu_live_heap \
 	target/release/agent-data-plane run
 
+.PHONY: generate-smp-experiments
+generate-smp-experiments: ## Generates SMP experiment configs from experiments.yaml
+	@echo "[*] Generating SMP experiment configurations..."
+	@python3 test/smp/regression/adp/generate_experiments.py
+
+.PHONY: check-smp-experiments
+check-smp-experiments: ## Verifies SMP experiment configs are up-to-date (CI)
+	@echo "[*] Checking SMP experiment configurations..."
+	@python3 test/smp/regression/adp/generate_experiments.py --check
+
 .PHONY: profile-run-smp-experiment
 profile-run-smp-experiment: ## Runs a specific SMP experiment for Saluki
 ifeq ($(shell test -f test/smp/regression/adp/cases/$(EXPERIMENT)/lading/lading.yaml || echo not-found), not-found)

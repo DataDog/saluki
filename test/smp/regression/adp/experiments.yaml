@@ -1,0 +1,373 @@
+# SMP Experiment Definitions
+#
+# This file defines all SMP experiments for ADP. Run `make generate-smp-experiments` to generate
+# the experiment configuration files in `cases/`.
+#
+# Structure:
+# - global: Base configuration inherited by ALL experiments
+# - templates: Reusable partial configurations that experiments can extend
+# - experiments: Individual experiment definitions
+
+global:
+  erratic: false
+
+  target:
+    name: agent-data-plane
+    command: /maybe-profile.sh /usr/local/bin/agent-data-plane --config /etc/agent-data-plane/empty.yaml run
+    cpu_allotment: 4
+    memory_allotment: 2GiB
+
+    environment:
+      # Basic configuration for any ADP instance.
+      DD_HOSTNAME: smp-regression
+      DD_API_KEY: foo00000001
+      DD_DD_URL: http://127.0.0.1:9091
+
+      # Dummy, self-signed certificate since we're not running alongside the Datadog Agent which
+      # would otherwise be providing the IPC certificate.
+      DD_IPC_CERT_FILE_PATH: /etc/agent-data-plane/cert.pem
+
+      # Emit logs in JSON so we get better parsing/search over them in the SMP target logs index.
+      DD_LOG_FORMAT_JSON: "true"
+
+      # Runs ADP in standalone mode, which decouples ADP from any dependency on the Datadog Agent.
+      DD_DATA_PLANE_STANDALONE_MODE: "true"
+
+      # Enable internal telemetry endpoint.
+      DD_DATA_PLANE_TELEMETRY_ENABLED: "true"
+      DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR: tcp://127.0.0.1:5102
+
+    profiling_environment:
+      SMP_PROFILING_ENABLED: "true"
+      DD_SERVICE: "agent-data-plane"
+      DD_TRACE_AGENT_URL: "unix:///smp-host/apm.socket"
+      DD_PROFILING_NATIVE_PRESET: "cpu_live_heap"
+      DD_PROFILING_INLINED_FUNCTIONS: "true"
+
+  report_links:
+    - text: (metrics)
+      link: "https://app.datadoghq.com/dashboard/4br-nxz-khi?fromUser=true&refresh_mode=paused&tpl_var_adp-run-id%5B0%5D={{ job_id }}&tpl_var_experiment%5B0%5D={{ experiment }}&view=spans&from_ts={{ start_time_ms }}&to_ts={{ end_time_ms }}&live=false"
+    - text: (profiles)
+      link: "https://app.datadoghq.com/profiling/explorer?query=env%3Asingle-machine-performance%20service%3Aagent-data-plane%20job_id%3A{{ job_id }}%20experiment%3A{{ experiment }}&agg_m=count&agg_m_source=base&agg_t=count&fromUser=false&viz=stream&start={{ filter_start }}&end={{ filter_end }}&paused=true"
+    - text: (logs)
+      link: "https://app.datadoghq.com/logs?query=experiment%3A{{ experiment }}%20run_id%3A{{ job_id }}&agg_m=count&agg_m_source=base&agg_q=%40span.url&agg_q_source=base&agg_t=count&fromUser=true&index=single-machine-performance-target-logs&messageDisplay=inline&refresh_mode=paused&storage=hot&stream_sort=time%2Cdesc&top_n=100&top_o=top&viz=stream&x_missing=true&from_ts={{ filter_start }}&to_ts={{ filter_end }}&live=false"
+
+  lading:
+    blackhole:
+      - http:
+          binding_addr: "127.0.0.1:9091"
+
+    target_metrics:
+      - prometheus:
+          uri: "http://127.0.0.1:5102/scrape"
+
+templates:
+  # Base template for DogStatsD experiments
+  dsd_base:
+    target:
+      environment:
+        # Enable the DogStatsD pipeline.
+        DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+
+        # Disables UDP and enables listening on UDS in SOCK_DGRAM mode.
+        DD_DOGSTATSD_PORT: "0"
+        DD_DOGSTATSD_SOCKET: /tmp/adp-dogstatsd-dgram.sock
+
+    lading:
+      generator:
+        - unix_datagram:
+            seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
+            path: "/tmp/adp-dogstatsd-dgram.sock"
+            block_cache_method: Fixed
+            variant:
+              dogstatsd:
+                contexts:
+                  inclusive:
+                    min: 3000
+                    max: 3001
+                name_length:
+                  inclusive:
+                    min: 1
+                    max: 200
+                tag_length:
+                  inclusive:
+                    min: 3
+                    max: 150
+                tags_per_msg:
+                  inclusive:
+                    min: 2
+                    max: 50
+                multivalue_count:
+                  inclusive:
+                    min: 2
+                    max: 32
+                multivalue_pack_probability: 0.08
+                kind_weights:
+                  metric: 100
+                  event: 0
+                  service_check: 0
+                metric_weights:
+                  count: 208
+                  gauge: 66
+                  timer: 0
+                  distribution: 72
+                  set: 9
+                  histogram: 1
+            maximum_prebuild_cache_size_bytes: "500 Mb"
+
+  # Base template for OTLP experiments
+  otlp_base:
+    target:
+      environment:
+        # Enable the OTLP pipeline.
+        DD_DATA_PLANE_OTLP_ENABLED: "true"
+        DD_OTLP_CONFIG: "{}"
+
+experiments:
+  # ============================================================================
+  # DogStatsD: basic regression (CPU, memory, throughput)
+  # ============================================================================
+
+  - name: dsd_uds_512kb_3k_contexts
+    extends: dsd_base
+    optimization_goals:
+      - cpu
+      - memory
+      - ingress_throughput
+    lading:
+      generator:
+        - unix_datagram:
+            bytes_per_second: "512 KiB"
+
+  - name: dsd_uds_1mb_3k_contexts
+    extends: dsd_base
+    optimization_goals:
+      - cpu
+      - memory
+      - ingress_throughput
+    lading:
+      generator:
+        - unix_datagram:
+            bytes_per_second: "1 MiB"
+
+  - name: dsd_uds_10mb_3k_contexts
+    extends: dsd_base
+    optimization_goals:
+      - cpu
+      - memory
+      - ingress_throughput
+    lading:
+      generator:
+        - unix_datagram:
+            bytes_per_second: "10 MiB"
+
+  - name: dsd_uds_100mb_3k_contexts
+    extends: dsd_base
+    optimization_goals:
+      - cpu
+      - memory
+      - ingress_throughput
+    lading:
+      generator:
+        - unix_datagram:
+            bytes_per_second: "100 MiB"
+
+  - name: dsd_uds_500mb_3k_contexts
+    extends: dsd_base
+    optimization_goals:
+      - cpu
+      - memory
+      - ingress_throughput
+    lading:
+      generator:
+        - unix_datagram:
+            bytes_per_second: "500 MiB"
+
+  # ============================================================================
+  # DogStatsD: quality gates (memory)
+  # ============================================================================
+
+  - name: quality_gates_rss_idle
+    extends: dsd_base
+    optimization_goal: memory
+
+    checks:
+      - name: memory_usage
+        description: "Acceptable upper bound on the memory used by ADP when idle."
+        bounds:
+          series: total_rss_bytes
+          upper_bound: "40.0 MiB"
+
+    lading:
+      generator: []
+
+  - name: quality_gates_rss_dsd_low
+    extends: dsd_base
+    optimization_goal: memory
+
+    checks:
+      - name: memory_usage
+        description: "Acceptable upper bound on the memory used by ADP when handling 'low' DSD traffic."
+        bounds:
+          series: total_rss_bytes
+          upper_bound: "50.0 MiB"
+
+    lading:
+      generator:
+        - unix_datagram:
+            bytes_per_second: "1 MiB"
+            maximum_prebuild_cache_size_bytes: "100 Mb"
+
+  - name: quality_gates_rss_dsd_medium
+    extends: dsd_base
+    optimization_goal: memory
+
+    target:
+      environment:
+        # Set the context limit in the aggregator to right above 10K, which matches the maximum number of contexts we expect
+        # to generate. We essentially don't want the aggregator to be a limiting factor.
+        DD_AGGREGATE_CONTEXT_LIMIT: "10100"
+
+    checks:
+      - name: memory_usage
+        description: "Acceptable upper bound on the memory used by ADP when handling 'medium' DSD traffic."
+        bounds:
+          series: total_rss_bytes
+          upper_bound: "75.0 MiB"
+
+    lading:
+      generator:
+        - unix_datagram:
+            variant:
+              dogstatsd:
+                contexts:
+                  inclusive:
+                    min: 10000
+                    max: 10001
+            bytes_per_second: "10 MiB"
+            maximum_prebuild_cache_size_bytes: "500 Mb"
+
+  - name: quality_gates_rss_dsd_heavy
+    extends: dsd_base
+    optimization_goal: memory
+
+    target:
+      environment:
+        # Sets the context resolver's string interner size.
+        DD_DOGSTATSD_STRING_INTERNER_SIZE: "32MiB"
+
+        # Set the context limit in the aggregator to right above 100K, which matches the maximum number of contexts we expect
+        # to generate. We essentially don't want the aggregator to be a limiting factor.
+        DD_AGGREGATE_CONTEXT_LIMIT: "100100"
+
+    checks:
+      - name: memory_usage
+        description: "Acceptable upper bound on the memory used by ADP when handling 'heavy' DSD traffic."
+        bounds:
+          series: total_rss_bytes
+          upper_bound: "140.0 MiB"
+
+    lading:
+      generator:
+        - unix_datagram:
+            variant:
+              dogstatsd:
+                contexts:
+                  inclusive:
+                    min: 99000
+                    max: 101000
+            bytes_per_second: "50 MiB"
+            maximum_prebuild_cache_size_bytes: "512 Mb"
+
+  - name: quality_gates_rss_dsd_ultraheavy
+    extends: dsd_base
+    optimization_goal: ingress_throughput
+
+    target:
+      environment:
+        # Sets the context resolver's string interner size.
+        DD_DOGSTATSD_STRING_INTERNER_SIZE: "64MiB"
+
+        # Set the context limit in the aggregator to right above 250K, which matches the maximum number of contexts we
+        # expect to generate. We essentially don't want the aggregator to be a limiting factor.
+        DD_AGGREGATE_CONTEXT_LIMIT: "250100"
+
+    checks:
+      - name: memory_usage
+        description: "Acceptable upper bound on the memory used by ADP when handling 'ultraheavy' DSD traffic."
+        bounds:
+          series: total_rss_bytes
+          upper_bound: "200.0 MiB"
+
+    lading:
+      generator:
+        - unix_datagram:
+            variant:
+              dogstatsd:
+                contexts:
+                  inclusive:
+                    min: 249000
+                    max: 251000
+            bytes_per_second: "100 MiB"
+            maximum_prebuild_cache_size_bytes: "768 Mb"
+
+  # ============================================================================
+  # OTLP Experiments (2)
+  # ============================================================================
+
+  - name: otlp_ingest_metrics_adp
+    extends: otlp_base
+    optimization_goal: memory
+
+    target:
+      environment:
+        DD_AGGREGATE_CONTEXT_LIMIT: "3100"
+        DD_OTLP_CACHED_CONTEXT_LIMIT: "3100"
+
+    lading:
+      generator:
+        - grpc:
+            seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
+            target_uri: "http://127.0.0.1:4317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export"
+            bytes_per_second: "5 MiB"
+            parallel_connections: 1
+            maximum_prebuild_cache_size_bytes: "512 MiB"
+            variant:
+              opentelemetry_metrics: {}
+
+  - name: otlp_ingest_logs_adp
+    extends: otlp_base
+    optimization_goal: memory
+
+    erratic: true
+
+    lading:
+      generator:
+        - http:
+            seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
+            headers:
+              content-type: "application/x-protobuf"
+            target_uri: "http://127.0.0.1:4318/v1/logs"
+            bytes_per_second: "5 MiB"
+            parallel_connections: 1
+            method:
+              post:
+                maximum_prebuild_cache_size_bytes: "512 MiB"
+                variant:
+                  opentelemetry_logs:
+                    contexts:
+                      total_contexts:
+                        constant: 1000
+                    trace_cardinality:
+                      constant: 10
+                    body_size:
+                      inclusive:
+                        min: 128
+                        max: 512
+                    severity_weights:
+                      trace: 10
+                      debug: 10
+                      info: 10
+                      warn: 10
+                      error: 10
+                      fatal: 10
