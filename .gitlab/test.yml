@@ -117,5 +117,5 @@ check-smp-experiments:
   extends: .linux-arm64-test-job
   stage: test
   script:
-    - pip install pyyaml
+    - pip3 install pyyaml
     - make check-smp-experiments
