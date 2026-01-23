@@ -154,7 +154,7 @@ Use `optimization_goal` (singular) for a single goal, or `optimization_goals` (p
 
 ## Custom Target Files
 
-Experiments can specify custom files to place in the target directory (named after `target.name`, e.g., `agent-data-plane/`). Files can be specified with inline content or as symlinks to shared files.
+Experiments can specify custom files to place in the target directory (named after `target.name`, e.g., `agent-data-plane/`). Files can be specified with inline content or copied from shared files.
 
 ### Inline Content
 
@@ -174,9 +174,9 @@ target:
           key: value
 ```
 
-### Symlinks to Shared Files
+### Copying Shared Files
 
-Create symlinks to files relative to `experiments.yaml`:
+Copy files from a source path relative to `experiments.yaml`:
 
 ```yaml
 target:
