@@ -17,6 +17,13 @@ global:
     cpu_allotment: 4
     memory_allotment: 2GiB
 
+    # Default files placed in the target directory (agent-data-plane/)
+    files:
+      empty.yaml:
+        content: "{}"
+      cert.pem:
+        source: shared/cert.pem
+
     environment:
       # Basic configuration for any ADP instance.
       DD_HOSTNAME: smp-regression

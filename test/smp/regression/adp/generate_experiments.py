@@ -12,6 +12,7 @@ Usage:
 
 import argparse
 import copy
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -206,10 +207,13 @@ def expand_optimization_goals(experiment: dict) -> list[tuple[str, str]]:
 
 def build_experiment_yaml(config: dict) -> dict:
     """Build the experiment.yaml content from resolved config."""
+    # Copy target config but exclude 'files' which is only used for file generation
+    target = {k: v for k, v in config["target"].items() if k != "files"}
+
     experiment = {
         "optimization_goal": config["optimization_goal"],
         "erratic": config.get("erratic", False),
-        "target": config["target"],
+        "target": target,
     }
 
     if "checks" in config:
@@ -339,7 +343,48 @@ def dump_yaml(data: dict) -> str:
     )
 
 
-def write_experiment(name: str, config: dict, output_dir: Path) -> None:
+def write_target_files(target_dir: Path, files_config: dict, base_path: Path) -> None:
+    """
+    Write target configuration files.
+
+    Args:
+        target_dir: Directory to write files to (e.g., cases/exp/agent-data-plane/)
+        files_config: Dict mapping filename to file spec (content or source)
+        base_path: Base path for resolving relative source paths (directory containing experiments.yaml)
+    """
+    for filename, file_spec in files_config.items():
+        file_path = target_dir / filename
+
+        if "source" in file_spec:
+            # Create symlink to source file
+            source_path = base_path / file_spec["source"]
+            if not source_path.exists():
+                raise ValueError(f"Source file not found: {source_path}")
+
+            # Calculate relative path from target_dir to source
+            rel_source = os.path.relpath(source_path, target_dir)
+            file_path.symlink_to(rel_source)
+
+        elif "content" in file_spec:
+            # Write content directly
+            content = file_spec["content"]
+            if isinstance(content, str):
+                # String content - write as-is, ensure trailing newline
+                if not content.endswith("\n"):
+                    content += "\n"
+                file_path.write_text(content)
+            else:
+                # Dict/list content - serialize as YAML
+                file_path.write_text(dump_yaml(content))
+        else:
+            raise ValueError(
+                f"File spec for '{filename}' must have 'content' or 'source'"
+            )
+
+
+def write_experiment(
+    name: str, config: dict, output_dir: Path, base_path: Path
+) -> None:
     """Write the experiment files to the output directory."""
     experiment_dir = output_dir / name
     experiment_dir.mkdir(parents=True, exist_ok=True)
@@ -354,13 +399,19 @@ def write_experiment(name: str, config: dict, output_dir: Path) -> None:
     lading_yaml = build_lading_yaml(config)
     (lading_dir / "lading.yaml").write_text(dump_yaml(lading_yaml))
 
-    # Write agent-data-plane/empty.yaml
-    adp_dir = experiment_dir / "agent-data-plane"
-    adp_dir.mkdir(exist_ok=True)
-    (adp_dir / "empty.yaml").write_text("{}\n")
+    # Write target directory files (e.g., agent-data-plane/)
+    target_name = config["target"]["name"]
+    target_dir = experiment_dir / target_name
+    target_dir.mkdir(exist_ok=True)
+
+    # Get files config, defaulting to empty.yaml with "{}" content
+    files_config = config.get("target", {}).get(
+        "files", {"empty.yaml": {"content": "{}"}}
+    )
+    write_target_files(target_dir, files_config, base_path)
 
 
-def generate_experiments(config: dict, output_dir: Path) -> list[str]:
+def generate_experiments(config: dict, output_dir: Path, base_path: Path) -> list[str]:
     """Generate all experiment files and return list of experiment names."""
     global_config = config.get("global", {})
     templates = config.get("templates", {})
@@ -377,7 +428,7 @@ def generate_experiments(config: dict, output_dir: Path) -> list[str]:
             resolved = copy.deepcopy(resolved_base)
             if goal is not None:
                 resolved["optimization_goal"] = goal
-            write_experiment(name, resolved, output_dir)
+            write_experiment(name, resolved, output_dir, base_path)
             generated.append(name)
 
     return generated
@@ -412,7 +463,7 @@ def main():
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
-            generated = generate_experiments(config, tmp_path)
+            generated = generate_experiments(config, tmp_path, SCRIPT_DIR)
 
             # Compare each generated experiment
             differences = []
@@ -425,12 +476,29 @@ def main():
                     continue
 
                 for file_path in tmp_exp_dir.rglob("*"):
-                    if file_path.is_file():
+                    if file_path.is_symlink() or file_path.is_file():
                         rel_path = file_path.relative_to(tmp_exp_dir)
                         existing_file = exp_dir / rel_path
 
-                        if not existing_file.exists():
+                        if (
+                            not existing_file.exists()
+                            and not existing_file.is_symlink()
+                        ):
                             differences.append(f"Missing file: {existing_file}")
+                        elif file_path.is_symlink():
+                            # Compare symlink targets by resolving to absolute paths
+                            if not existing_file.is_symlink():
+                                differences.append(
+                                    f"Expected symlink but got regular file: {existing_file}"
+                                )
+                            elif file_path.resolve() != existing_file.resolve():
+                                differences.append(
+                                    f"Symlink target differs: {existing_file}"
+                                )
+                        elif existing_file.is_symlink():
+                            differences.append(
+                                f"Expected regular file but got symlink: {existing_file}"
+                            )
                         elif existing_file.read_text() != file_path.read_text():
                             differences.append(f"Content differs: {existing_file}")
 
@@ -462,7 +530,7 @@ def main():
 
         CASES_DIR.mkdir(parents=True, exist_ok=True)
 
-        generated = generate_experiments(config, CASES_DIR)
+        generated = generate_experiments(config, CASES_DIR, SCRIPT_DIR)
         print(f"Generated {len(generated)} experiment configurations:")
         for name in sorted(generated):
             print(f"  - {name}")

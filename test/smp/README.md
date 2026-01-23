@@ -152,6 +152,43 @@ Use `optimization_goal` (singular) for a single goal, or `optimization_goals` (p
   optimization_goals: [cpu, memory, ingress_throughput]
 ```
 
+## Custom Target Files
+
+Experiments can specify custom files to place in the target directory (named after `target.name`, e.g., `agent-data-plane/`). Files can be specified with inline content or as symlinks to shared files.
+
+### Inline Content
+
+Write content directly to a file:
+
+```yaml
+target:
+  files:
+    empty.yaml:
+      content: "{}"
+    
+    # YAML content is automatically serialized
+    config.yaml:
+      content:
+        some_key: some_value
+        nested:
+          key: value
+```
+
+### Symlinks to Shared Files
+
+Create symlinks to files relative to `experiments.yaml`:
+
+```yaml
+target:
+  files:
+    cert.pem:
+      source: shared/cert.pem    # Relative to experiments.yaml
+```
+
+### Default Behavior
+
+If no `files` are specified, a default `empty.yaml` with `{}` content is created. Files are inherited from global/templates and merged with experiment-specific files (experiment values take precedence on conflict).
+
 ## Regenerating Experiments
 
 After modifying `experiments.yaml`, regenerate the case directories:
