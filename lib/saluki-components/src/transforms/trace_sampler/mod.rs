@@ -39,11 +39,8 @@ use self::probabilistic::PROB_RATE_KEY;
 use crate::common::datadog::apm::ApmConfig;
 
 // Sampling priority constants (matching datadog-agent)
-#[allow(dead_code)]
-const PRIORITY_USER_DROP: i32 = -1;
 const PRIORITY_AUTO_DROP: i32 = 0;
 const PRIORITY_AUTO_KEEP: i32 = 1;
-#[allow(dead_code)]
 const PRIORITY_USER_KEEP: i32 = 2;
 
 // TODO: Make error_tps and extra_sample_rate configurable
@@ -488,6 +485,7 @@ mod tests {
     use saluki_core::data_model::event::trace::{Span as DdSpan, Trace};
 
     use super::*;
+    const PRIORITY_USER_DROP: i32 = -1;
 
     fn create_test_sampler() -> TraceSampler {
         TraceSampler {
