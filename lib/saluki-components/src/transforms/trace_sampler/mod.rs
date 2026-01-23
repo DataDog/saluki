@@ -46,7 +46,6 @@ const ERROR_SAMPLE_RATE: f64 = 1.0; // Default extra sample rate
 // Sampling metadata keys / values (matching datadog-agent where applicable).
 const SAMPLING_PRIORITY_METRIC_KEY: &str = "_sampling_priority_v1";
 const TAG_DECISION_MAKER: &str = "_dd.p.dm";
-const TAG_OTLP_SAMPLING_RATE: &str = "_dd.otlp_sr";
 
 // Single Span Sampling and Analytics Events keys
 const KEY_SPAN_SAMPLING_MECHANISM: &str = "_dd.span_sampling.mechanism";
@@ -423,11 +422,6 @@ impl TraceSampler {
             meta.insert(MetaString::from(TAG_DECISION_MAKER), MetaString::from(decision_maker));
         }
 
-        // Add the sampling rate tag for observability
-        meta.insert(
-            MetaString::from(TAG_OTLP_SAMPLING_RATE),
-            MetaString::from(format!("{:.2}", self.sampling_rate)),
-        );
 
         // Now we can use trace again to set sampling metadata
         let sampling = TraceSampling::new(
