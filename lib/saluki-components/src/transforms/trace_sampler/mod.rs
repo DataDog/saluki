@@ -57,7 +57,6 @@ const KEY_ANALYZED_SPANS: &str = "_dd.analyzed";
 
 // Decision maker values for `_dd.p.dm` (matching datadog-agent).
 const DECISION_MAKER_PROBABILISTIC: &str = "-9";
-#[allow(dead_code)]
 const DECISION_MAKER_MANUAL_PRIORITY: &str = "-4";
 
 /// Configuration for the trace sampler transform.
