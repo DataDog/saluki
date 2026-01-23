@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use saluki_common::collections::FastHashMap;
@@ -19,15 +17,19 @@ pub struct Sampler {
     /// allSigSeen counts all signatures in a circular buffer of NUM_BUCKETS of BUCKET_DURATION
     all_sigs_seen: [f32; NUM_BUCKETS],
 
+	/// lastBucketID is the index of the last bucket on which traces were counted
     last_bucket_id: u64,
 
+	/// rates maps sampling rate in %
     rates: FastHashMap<Signature, f64>,
 
+	/// lowestRate is the lowest rate of all signatures
     lowest_rate: f64,
 
-    // TODO: add comments for the source code, etc.
+	/// Maximum limit to the total number of traces per second to sample
     target_tps: f64,
 
+	/// extraRate is an extra raw sampling rate to apply on top of the sampler rate
     extra_rate: f64,
 }
 
@@ -228,26 +230,6 @@ impl Sampler {
         }
 
         rate
-    }
-
-    /// Updates the target TPS and adjusts all existing rates proportionally.
-    pub fn update_target_tps(&mut self, new_target_tps: f64) {
-        let previous_target_tps = self.target_tps;
-        self.target_tps = new_target_tps;
-
-        if previous_target_tps == 0.0 {
-            return;
-        }
-
-        let ratio = new_target_tps / previous_target_tps;
-        for rate in self.rates.values_mut() {
-            *rate = (*rate * ratio).min(1.0);
-        }
-    }
-
-    /// Get the current target TPS.
-    pub fn get_target_tps(&self) -> f64 {
-        self.target_tps
     }
 
     /// Returns the number of signatures being tracked.

@@ -13,8 +13,6 @@ const KEY_SAMPLING_RATE_PRE_SAMPLER: &str = "_dd1.sr.rapre";
 
 // ScoreSampler-specific rate keys
 pub(super) const ERRORS_RATE_KEY: &str = "_dd.errors_sr";
-#[allow(dead_code)]
-const NO_PRIORITY_RATE_KEY: &str = "_dd.no_p_sr";
 
 // shrinkCardinality is the max Signature cardinality before shrinking
 const SHRINK_CARDINALITY: usize = 200;
@@ -31,6 +29,11 @@ const SAMPLER_HASHER: u64 = 1111111111111111111;
 /// scoring it and applying a rate.
 /// The rates are applied on the TraceID to maximize the number of chunks with errors caught for the same traceID.
 /// For a set traceID: P(chunk1 kept and chunk2 kept) = min(P(chunk1 kept), P(chunk2 kept))
+///
+/// # Missing
+///
+/// TODO: Add SampleV1 method for legacy trace format support
+/// TODO: Add NoPrioritySampler implementation
 pub struct ScoreSampler {
     sampler: Sampler,
     sampling_rate_key: &'static str,
@@ -50,9 +53,7 @@ impl ScoreSampler {
         }
     }
 
-    /// Sample a trace chunk when you only have a root span index.
-    ///
-    /// This avoids borrowing the full trace while holding a mutable root span reference.
+    /// Sample counts an incoming trace and tells if it is a sample which has to be kept
     pub fn sample(&mut self, now: SystemTime, trace: &mut Trace, root_idx: usize) -> bool {
         // logic taken from here: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/sampler/scoresampler.go#L71
         if self.disabled {
@@ -127,16 +128,6 @@ impl ScoreSampler {
         Signature(sig.0 % (SHRINK_CARDINALITY as u64 / 2))
     }
 
-    /// Get the target TPS for this sampler.
-    pub fn get_target_tps(&self) -> f64 {
-        self.sampler.get_target_tps()
-    }
-
-    /// Update the target TPS for this sampler.
-    pub fn update_target_tps(&mut self, target_tps: f64) {
-        self.sampler.update_target_tps(target_tps);
-    }
-
     /// Set the sampling rate metric on a span.
     pub fn set_sampling_rate_metric(&self, span: &mut Span, rate: f64) {
         span.metrics_mut()
@@ -178,10 +169,3 @@ fn sample_by_rate(trace_id: u64, rate: f64) -> bool {
         true
     }
 }
-
-// TODO: Add SampleV1 method for legacy trace format support
-// This would handle the V1 trace format used for backwards compatibility
-
-// TODO: Add NoPrioritySampler implementation
-// NoPrioritySampler is dedicated to catching traces with no priority set.
-// It would wrap ScoreSampler similar to ErrorsSampler

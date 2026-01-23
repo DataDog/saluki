@@ -4,13 +4,13 @@
 //! - a small FNV-1a 32-bit helper (used by probabilistic sampling)
 //! - a signature newtype + compute helper (for score/TPS samplers)
 
-#![allow(dead_code)]
-
 use saluki_core::data_model::event::trace::{Span, Trace};
 use stringtheory::MetaString;
 
 const OFFSET_32: u32 = 2166136261;
 const PRIME_32: u32 = 16777619;
+const KEY_HTTP_STATUS_CODE: &str = "http.status_code";
+const KEY_ERROR_TYPE: &str = "error.type";
 
 fn write_hash(mut hash: u32, bytes: &[u8]) -> u32 {
     for &b in bytes {
@@ -21,17 +21,12 @@ fn write_hash(mut hash: u32, bytes: &[u8]) -> u32 {
 }
 
 pub(super) fn fnv1a_32(seed: &[u8], bytes: &[u8]) -> u32 {
-    const OFFSET_32: u32 = 0x811c_9dc5;
     let hash = write_hash(OFFSET_32, seed);
     write_hash(hash, bytes)
 }
 
-#[allow(dead_code)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub(super) struct Signature(pub(super) u64);
-
-const KEY_HTTP_STATUS_CODE: &str = "http.status_code";
-const KEY_ERROR_TYPE: &str = "error.type";
 
 fn get_trace_env(trace: &Trace, root_span_idx: usize) -> Option<&MetaString> {
     // logic taken from here: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/traceutil/trace.go#L19-L20

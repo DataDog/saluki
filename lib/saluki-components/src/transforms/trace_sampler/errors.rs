@@ -3,11 +3,9 @@
 //! The error sampler catches traces containing spans with errors, ensuring
 //! error visibility even at low sampling rates.
 
-#![allow(dead_code)]
-
 use std::time::SystemTime;
 
-use saluki_core::data_model::event::trace::{Span, Trace};
+use saluki_core::data_model::event::trace::Trace;
 
 use super::score_sampler::{ScoreSampler, ERRORS_RATE_KEY};
 
@@ -29,26 +27,10 @@ impl ErrorsSampler {
         }
     }
 
-    ///
     /// This method should be called when a trace contains errors and needs to be
     /// evaluated by the error sampler.
     pub(super) fn sample_error(&mut self, now: SystemTime, trace: &mut Trace, root_idx: usize) -> bool {
         // Use the score sampler to make the sampling decision
         self.score_sampler.sample(now, trace, root_idx)
-    }
-
-    /// Set the error sampling rate metric on a span.
-    pub(super) fn set_sampling_rate_metric(&self, span: &mut Span, rate: f64) {
-        self.score_sampler.set_sampling_rate_metric(span, rate);
-    }
-
-    /// Get the target TPS for error sampling.
-    pub(super) fn get_target_tps(&self) -> f64 {
-        self.score_sampler.get_target_tps()
-    }
-
-    /// Update the target TPS for error sampling.
-    pub(super) fn update_target_tps(&mut self, target_tps: f64) {
-        self.score_sampler.update_target_tps(target_tps);
     }
 }

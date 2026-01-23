@@ -5,6 +5,12 @@
 //! - User-set priority preservation
 //! - Error-based sampling as a safety net
 //! - OTLP trace ingestion with proper sampling decision handling
+//! 
+//! # Missing
+//! 
+//! add trace metrics: datadog-agent/pkg/trace/sampler/metrics.go
+//! adding missing samplers (priority, nopriority, rare) 
+//! add error tracking standalone mode
 
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -56,13 +62,6 @@ const KEY_ANALYZED_SPANS: &str = "_dd.analyzed";
 const DECISION_MAKER_PROBABILISTIC: &str = "-9";
 #[allow(dead_code)]
 const DECISION_MAKER_MANUAL_PRIORITY: &str = "-4";
-
-enum SamplerName {
-    Probabilistic,
-    Error,
-    Unknown,
-    // TODO: add NoPriority,Priority,Rare
-}
 
 /// Configuration for the trace sampler transform.
 #[derive(Debug)]
@@ -213,7 +212,7 @@ impl TraceSampler {
         false
     }
 
-    /// Check if trace contains spans with Single Span Sampling tags
+    /// Returns all spans from the given trace that have Single Span Sampling tags present.
     fn get_single_span_sampled_spans(&self, trace: &Trace) -> Vec<Span> {
         let mut sampled_spans = Vec::new();
         for span in trace.spans().iter() {
@@ -224,7 +223,7 @@ impl TraceSampler {
         sampled_spans
     }
 
-    /// Get spans marked as analyzed (analytics events)
+    /// Returns all spans from the given trace that have Single Span Sampling tags present.
     fn get_analyzed_spans(&self, trace: &Trace) -> Vec<Span> {
         let mut analyzed_spans = Vec::new();
         for span in trace.spans().iter() {
@@ -279,20 +278,11 @@ impl TraceSampler {
             return (false, PRIORITY_AUTO_DROP, "", false, None);
         };
 
-        let mut _sampler_name = SamplerName::Unknown; // TODO: add trace metrics: datadog-agent/pkg/trace/sampler/metrics.go
-
-        // TODO: Error Tracking Standalone mode (ETS)
-
-        // TODO: Run RareSampler early to count signatures
-
         // Modern path: ProbabilisticSamplerEnabled = true
         if self.probabilistic_sampler_enabled {
-            _sampler_name = SamplerName::Probabilistic;
             let mut prob_keep = false;
             let mut decision_maker = "";
             let mut should_add_prob_rate = false;
-
-            // TODO: Check if rare sampler kept it
 
             // Run probabilistic sampler - use root span's trace ID
 
@@ -302,7 +292,6 @@ impl TraceSampler {
                 should_add_prob_rate = true;
                 prob_keep = true;
             } else if self.error_sampling_enabled && contains_error {
-                _sampler_name = SamplerName::Error;
                 prob_keep = self.error_sampler.sample_error(now, trace, root_span_idx);
             }
 
@@ -334,10 +323,7 @@ impl TraceSampler {
             }
         }
 
-        // TODO: add missing samplers (priority, no_priority)
-
         if self.error_sampling_enabled && self.trace_contains_error(trace, false) {
-            _sampler_name = SamplerName::Error;
             let keep = self.error_sampler.sample_error(now, trace, root_span_idx);
             if keep {
                 return (true, PRIORITY_AUTO_KEEP, "", false, Some(root_span_idx));
@@ -390,8 +376,6 @@ impl TraceSampler {
 
 #[async_trait]
 impl Transform for TraceSampler {
-    // run takes `self: Box<Self>`, and not &self, so it consumes the `TraceSampler` instance, after run starts there is a single owner of the sampler for the lifetime of the task. This means
-    // that no internal locking is necessary unlike the agent code referenced.
     async fn run(mut self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
         let mut health = context.take_health_handle();
         health.mark_ready();
