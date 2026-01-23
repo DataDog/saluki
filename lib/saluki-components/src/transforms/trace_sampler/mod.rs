@@ -407,12 +407,9 @@ impl TraceSampler {
             None => return,
         };
 
-        // Add metrics
-        let metrics = root_span_value.metrics_mut();
-        metrics.insert(MetaString::from(SAMPLING_PRIORITY_METRIC_KEY), priority as f64);
-
         // Add the probabilistic sampling rate if requested
         if add_prob_rate {
+            let metrics = root_span_value.metrics_mut();
             metrics.insert(MetaString::from(PROB_RATE_KEY), self.sampling_rate);
         }
 
