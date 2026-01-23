@@ -17,6 +17,7 @@ target:
     DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
     DD_DOGSTATSD_PORT: "0"
     DD_DOGSTATSD_SOCKET: /tmp/adp-dogstatsd-dgram.sock
+    DD_AGGREGATE_CONTEXT_LIMIT: "3100"
   profiling_environment:
     SMP_PROFILING_ENABLED: "true"
     DD_SERVICE: agent-data-plane

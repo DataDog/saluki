@@ -80,6 +80,10 @@ templates:
         DD_DOGSTATSD_PORT: "0"
         DD_DOGSTATSD_SOCKET: /tmp/adp-dogstatsd-dgram.sock
 
+        # Set the baseline aggregator context limit just above 3K, which matches the default number
+        # of contexts generated. Experiments with higher context counts override this value.
+        DD_AGGREGATE_CONTEXT_LIMIT: "3100"
+
     lading:
       generator:
         - unix_datagram:
