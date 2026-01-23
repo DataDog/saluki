@@ -17,19 +17,19 @@ pub struct Sampler {
     /// all_sigs_seen counts all signatures in a circular buffer of NUM_BUCKETS of BUCKET_DURATION
     all_sigs_seen: [f32; NUM_BUCKETS],
 
-	///  last_bucket_id is the index of the last bucket on which traces were counted
+    ///  last_bucket_id is the index of the last bucket on which traces were counted
     last_bucket_id: u64,
 
-	/// rates maps sampling rate in %
+    /// rates maps sampling rate in %
     rates: FastHashMap<Signature, f64>,
 
-	/// lowest_rate is the lowest rate of all signatures
+    /// lowest_rate is the lowest rate of all signatures
     lowest_rate: f64,
 
-	/// Maximum limit to the total number of traces per second to sample
+    /// Maximum limit to the total number of traces per second to sample
     target_tps: f64,
 
-	/// extra_rate is an extra raw sampling rate to apply on top of the sampler rate
+    /// extra_rate is an extra raw sampling rate to apply on top of the sampler rate
     extra_rate: f64,
 }
 

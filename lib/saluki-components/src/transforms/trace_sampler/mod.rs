@@ -5,11 +5,11 @@
 //! - User-set priority preservation
 //! - Error-based sampling as a safety net
 //! - OTLP trace ingestion with proper sampling decision handling
-//! 
+//!
 //! # Missing
-//! 
+//!
 //! add trace metrics: datadog-agent/pkg/trace/sampler/metrics.go
-//! adding missing samplers (priority, nopriority, rare) 
+//! adding missing samplers (priority, nopriority, rare)
 //! add error tracking standalone mode
 
 use async_trait::async_trait;
@@ -859,13 +859,7 @@ mod tests {
 
             // Test that apply_sampling_metadata still works correctly for other metadata
             let mut trace_with_metadata = trace.clone();
-            sampler.apply_sampling_metadata(
-                &mut trace_with_metadata,
-                keep,
-                priority,
-                decision_maker,
-                root_idx,
-            );
+            sampler.apply_sampling_metadata(&mut trace_with_metadata, keep, priority, decision_maker, root_idx);
 
             // Check that decision maker tag was added
             let modified_root = &trace_with_metadata.spans()[root_idx];
