@@ -328,7 +328,8 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         .await?;
     let dd_traces_enrich_config =
         ChainedConfiguration::default().with_transform_builder("apm_onboarding", ApmOnboardingConfiguration);
-    let trace_sampler_config = TraceSamplerConfiguration::default();
+    let trace_sampler_config = TraceSamplerConfiguration::from_configuration(config)
+        .error_context("Failed to configure Trace Sampler transform.")?;
     let apm_stats_transform_config = ApmStatsTransformConfiguration::from_configuration(config)
         .error_context("Failed to configure APM Stats transform.")?
         .with_environment_provider(env_provider.clone())

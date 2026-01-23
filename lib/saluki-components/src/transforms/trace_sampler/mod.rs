@@ -9,6 +9,7 @@
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::collections::FastHashMap;
+use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     data_model::event::{
@@ -18,7 +19,6 @@ use saluki_core::{
     topology::OutputDefinition,
 };
 use saluki_error::GenericError;
-use serde::Deserialize;
 use stringtheory::MetaString;
 use tokio::select;
 use tracing::debug;
@@ -29,6 +29,7 @@ mod probabilistic;
 mod score_sampler;
 mod signature;
 
+use crate::common::datadog::apm::ApmConfig;
 use self::probabilistic::PROB_RATE_KEY;
 
 // Sampling priority constants (matching datadog-agent)
@@ -63,63 +64,24 @@ enum SamplerName {
     // TODO: add NoPriority,Priority,Rare
 }
 
-fn default_sampling_percentage() -> f64 {
-    100.0
-}
-
-fn default_error_sampling_enabled() -> bool {
-    true
-}
-
-fn default_error_tracking_standalone() -> bool {
-    false
-}
-
-fn default_probabilistic_sampling_enabled() -> bool {
-    true
-}
-
 /// Configuration for the trace sampler transform.
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct TraceSamplerConfiguration {
-    /// Sampling percentage (0-100).
-    ///
-    /// Determines the percentage of traces to keep. A value of 100 keeps all traces,
-    /// while 50 keeps approximately half. Values outside 0-100 are treated as 100.
-    ///
-    /// Defaults to 100.0 (keep all traces).
-    #[serde(default = "default_sampling_percentage")]
-    sampling_percentage: f64,
+    apm_config: ApmConfig,
+}
 
-    /// Enable error sampling.
-    ///
-    /// When enabled, traces containing errors will be kept even if they would be
-    /// dropped by probabilistic sampling. This ensures error visibility at low sampling rates.
-    ///
-    /// Defaults to `true`.
-    #[serde(default = "default_error_sampling_enabled")]
-    error_sampling_enabled: bool,
-
-    /// TODO: implement full functionality, this is just used in an if statement currently. https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/agent.go#L1073-L1080
-    #[serde(default = "default_error_tracking_standalone")]
-    error_tracking_standalone: bool,
-
-    /// Enable probabilistic sampling.
-    ///
-    /// When enabled, traces will be sampled probabilistically based on the sampling percentage.
-    ///
-    /// Defaults to `true`.
-    #[serde(default = "default_probabilistic_sampling_enabled")]
-    probabilistic_sampling_enabled: bool,
+impl TraceSamplerConfiguration {
+    /// Creates a new `TraceSamplerConfiguration` from the given configuration.
+    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        let apm_config = ApmConfig::from_configuration(config)?;
+        Ok(Self { apm_config })
+    }
 }
 
 impl Default for TraceSamplerConfiguration {
     fn default() -> Self {
         Self {
-            sampling_percentage: default_sampling_percentage(),
-            error_sampling_enabled: default_error_sampling_enabled(),
-            error_tracking_standalone: default_error_tracking_standalone(),
-            probabilistic_sampling_enabled: default_probabilistic_sampling_enabled(),
+            apm_config: ApmConfig::default(),
         }
     }
 }
@@ -137,10 +99,10 @@ impl TransformBuilder for TraceSamplerConfiguration {
 
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         let sampler = TraceSampler {
-            sampling_rate: self.sampling_percentage / 100.0,
-            error_sampling_enabled: self.error_sampling_enabled,
-            error_tracking_standalone: self.error_tracking_standalone,
-            probabilistic_sampler_enabled: self.probabilistic_sampling_enabled,
+            sampling_rate: self.apm_config.probabilistic_sampler_sampling_percentage() / 100.0,
+            error_sampling_enabled: self.apm_config.error_sampling_enabled(),
+            error_tracking_standalone: self.apm_config.error_tracking_standalone_enabled(),
+            probabilistic_sampler_enabled: self.apm_config.probabilistic_sampler_enabled(),
             error_sampler: errors::ErrorsSampler::new(ERROR_TPS, ERROR_SAMPLE_RATE),
         };
 
