@@ -371,7 +371,7 @@ impl TraceSampler {
             if user_priority > 0 {
                 // User wants to keep this trace
                 return (
-                    false,
+                    true,
                     user_priority,
                     DECISION_MAKER_MANUAL_PRIORITY,
                     false,
@@ -386,7 +386,7 @@ impl TraceSampler {
             _sampler_name = SamplerName::Error;
             let keep = self.error_sampler.sample_error(now, trace, root_span_idx);
             if keep {
-                return (false, PRIORITY_AUTO_KEEP, "", false, Some(root_span_idx));
+                return (true, PRIORITY_AUTO_KEEP, "", false, Some(root_span_idx));
             }
         }
 
