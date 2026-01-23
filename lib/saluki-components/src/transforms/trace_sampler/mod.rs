@@ -11,6 +11,7 @@
 //! add trace metrics: datadog-agent/pkg/trace/sampler/metrics.go
 //! adding missing samplers (priority, nopriority, rare)
 //! add error tracking standalone mode
+//! Make error_tps and extra_sample_rate configurable
 
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -43,7 +44,6 @@ const PRIORITY_AUTO_DROP: i32 = 0;
 const PRIORITY_AUTO_KEEP: i32 = 1;
 const PRIORITY_USER_KEEP: i32 = 2;
 
-// TODO: Make error_tps and extra_sample_rate configurable
 const ERROR_TPS: f64 = 10.0; // Default error TPS target
 const ERROR_SAMPLE_RATE: f64 = 1.0; // Default extra sample rate
 
