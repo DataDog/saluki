@@ -30,7 +30,7 @@ export CARGO_BINSTALL_STRATEGIES ?= crate-meta-data,compile
 ifeq ($(CI),true)
 	override CARGO_BINSTALL_STRATEGIES = compile
 endif
-export CARGO_TOOL_VERSION_cargo-binstall ?= 1.16.2
+export CARGO_TOOL_VERSION_cargo-binstall ?= 1.16.7
 export CARGO_TOOL_VERSION_dd-rust-license-tool ?= 1.0.3
 export CARGO_TOOL_VERSION_cargo-deny ?= 0.18.9
 export CARGO_TOOL_VERSION_cargo-hack ?= 0.6.30
@@ -594,6 +594,16 @@ endif
 	--inlined-functions true --timeline --upload-period 10 --preset cpu_live_heap \
 	target/release/agent-data-plane run
 
+.PHONY: generate-smp-experiments
+generate-smp-experiments: ## Generates SMP experiment configs from experiments.yaml
+	@echo "[*] Generating SMP experiment configurations..."
+	@python3 test/smp/regression/adp/generate_experiments.py
+
+.PHONY: check-smp-experiments
+check-smp-experiments: ## Verifies SMP experiment configs are up-to-date (CI)
+	@echo "[*] Checking SMP experiment configurations..."
+	@python3 test/smp/regression/adp/generate_experiments.py --check
+
 .PHONY: profile-run-smp-experiment
 profile-run-smp-experiment: ## Runs a specific SMP experiment for Saluki
 ifeq ($(shell test -f test/smp/regression/adp/cases/$(EXPERIMENT)/lading/lading.yaml || echo not-found), not-found)
@@ -703,4 +713,4 @@ cargo-preinstall: ## Pre-installs all necessary Cargo tools (used for CI)
 cargo-install-%: override TOOL = $(@:cargo-install-%=%)
 cargo-install-%: override VERSIONED_TOOL = ${TOOL}@$(CARGO_TOOL_VERSION_$(TOOL))
 cargo-install-%: check-rust-build-tools
-	@$(if $(findstring true,$(AUTOINSTALL)),test -f ${CARGO_BIN_DIR}/${TOOL} || (echo "[*] Installing ${VERSIONED_TOOL}..." && cargo binstall --strategies ${CARGO_BINSTALL_STRATEGIES} --install-path ${CARGO_BIN_DIR} ${VERSIONED_TOOL} --quiet -y),)
+	@$(if $(findstring true,$(AUTOINSTALL)),test -f ${CARGO_BIN_DIR}/${TOOL} || (echo "[*] Installing ${VERSIONED_TOOL}..." && cargo binstall --strategies ${CARGO_BINSTALL_STRATEGIES} ${VERSIONED_TOOL} --quiet -y),)

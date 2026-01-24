@@ -235,7 +235,7 @@ impl BucketedClientStatistics {
             None => return Ok(None),
         };
 
-        while let Some(other) = bucket_stats.next() {
+        for other in bucket_stats {
             merged_stats.merge(other)?;
         }
 
