@@ -219,6 +219,29 @@ impl BucketedClientStatistics {
         }
     }
 
+    /// Returns a merged `ClientStatistics` representing all buckets.
+    ///
+    /// If no buckets are present, `Ok(None)` is returned. Otherwise, `Ok(Some)` is returned containing the merged
+    /// client statistics.
+    ///
+    /// # Errors
+    ///
+    /// If the buckets cannot be merged for any reason, an error is returned.
+    pub fn merged(&self) -> Result<Option<ClientStatistics>, GenericError> {
+        let mut bucket_stats = self.buckets.values().cloned();
+
+        let mut merged_stats = match bucket_stats.next() {
+            Some(bucket) => bucket,
+            None => return Ok(None),
+        };
+
+        while let Some(other) = bucket_stats.next() {
+            merged_stats.merge(other)?;
+        }
+
+        Ok(Some(merged_stats))
+    }
+
     /// Returns an iterator over each bucket.
     pub fn buckets(&self) -> impl Iterator<Item = (&BucketTimeframe, &ClientStatistics)> {
         self.buckets.iter()

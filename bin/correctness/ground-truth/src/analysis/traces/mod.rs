@@ -4,9 +4,9 @@ use std::{
 };
 
 use saluki_common::collections::FastHashMap;
-use saluki_error::{generic_error, GenericError};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde_json::{Number, Value};
-use stele::{AggregationKey, BucketedClientStatistics, Span};
+use stele::{AggregationKey, BucketedClientStatistics, ClientStatistics, Span};
 use tracing::{error, info};
 use treediff::value::Key;
 
@@ -43,11 +43,11 @@ pub struct TracesAnalyzer {
     baseline_total_traces: usize,
     baseline_spans: HashMap<u64, Span>,
     baseline_ssi_metadata_present: bool,
-    baseline_trace_stats: FastHashMap<AggregationKey, BucketedClientStatistics>,
+    baseline_trace_stats: FastHashMap<AggregationKey, ClientStatistics>,
     comparison_total_traces: usize,
     comparison_spans: HashMap<u64, Span>,
     comparison_ssi_metadata_present: bool,
-    comparison_trace_stats: FastHashMap<AggregationKey, BucketedClientStatistics>,
+    comparison_trace_stats: FastHashMap<AggregationKey, ClientStatistics>,
 }
 
 impl TracesAnalyzer {
@@ -88,8 +88,11 @@ impl TracesAnalyzer {
             }
         }
 
-        let baseline_trace_stats = baseline_data.trace_stats().groups().clone();
-        let comparison_trace_stats = comparison_data.trace_stats().groups().clone();
+        let baseline_trace_stats = get_merged_trace_stats(baseline_data.trace_stats().groups())
+            .error_context("Failed to get merged trace statistics from baseline.")?;
+
+        let comparison_trace_stats = get_merged_trace_stats(comparison_data.trace_stats().groups())
+            .error_context("Failed to get merged trace statistics from comparison.")?;
 
         Ok(Self {
             baseline_total_traces: baseline_traces.len(),
@@ -223,19 +226,15 @@ impl TracesAnalyzer {
         // Go through each baseline aggregated stats group, and look for a matching group (by ID) on the comparison target side.
         //
         // If found, compare the groups.
-        for (baseline_aggegation_key, baseline_grouped_stats) in self.baseline_trace_stats.iter() {
+        for (baseline_aggegation_key, baseline_stats) in self.baseline_trace_stats.iter() {
             match self.comparison_trace_stats.get(baseline_aggegation_key) {
-                Some(comparison_grouped_stats) => {
+                Some(comparison_stats) => {
                     // We serialize both spans to JSON for deep comparison.
-                    let baseline_grouped_stats_json = serde_json::to_value(baseline_grouped_stats).unwrap();
-                    let comparison_grouped_stats_json = serde_json::to_value(comparison_grouped_stats).unwrap();
+                    let baseline_stats_json = serde_json::to_value(baseline_stats).unwrap();
+                    let comparison_stats_json = serde_json::to_value(comparison_stats).unwrap();
 
                     diff_recorder.clear();
-                    treediff::diff(
-                        &baseline_grouped_stats_json,
-                        &comparison_grouped_stats_json,
-                        &mut diff_recorder,
-                    );
+                    treediff::diff(&baseline_stats_json, &comparison_stats_json, &mut diff_recorder);
 
                     if !diff_recorder.is_empty() {
                         error!("Detected mismatched stats group ({}):", baseline_aggegation_key);
@@ -479,4 +478,26 @@ fn get_number_type_str(number: &Number) -> &'static str {
     } else {
         "unsigned-int"
     }
+}
+
+fn get_merged_trace_stats(
+    groups: &FastHashMap<AggregationKey, BucketedClientStatistics>,
+) -> Result<FastHashMap<AggregationKey, ClientStatistics>, GenericError> {
+    let mut merged_trace_stats = FastHashMap::default();
+    for (k, v) in groups {
+        let merged_stats = match v.merged() {
+            Ok(None) => {
+                return Err(generic_error!(
+                    "Aggregation key '{}' had no associated client statistics.",
+                    k
+                ))
+            }
+            Ok(Some(stats)) => stats,
+            Err(e) => return Err(e).error_context("Failed to merge client statstics."),
+        };
+
+        merged_trace_stats.insert(k.clone(), merged_stats);
+    }
+
+    Ok(merged_trace_stats)
 }
