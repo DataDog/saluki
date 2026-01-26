@@ -522,7 +522,7 @@ fn build_figment_from_sources(sources: &[ProviderSource]) -> Figment {
 /// Inserts or updates a value for a key.
 ///
 /// Intermediate objects are created if they don't exist.
-fn upsert(root: &mut serde_json::Value, key: &str, value: serde_json::Value) {
+pub fn upsert(root: &mut serde_json::Value, key: &str, value: serde_json::Value) {
     if !root.is_object() {
         *root = serde_json::Value::Object(serde_json::Map::new());
     }
