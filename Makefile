@@ -264,7 +264,7 @@ endif
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_DATA_PLANE_TELEMETRY_ENABLED=true DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	DD_AUTH_TOKEN_FILE_PATH=/etc/datadog-agent/auth_token \
-	target/debug/agent-data-plane run
+	target/devel/agent-data-plane run
 
 .PHONY: run-adp-release
 run-adp-release: build-adp-release

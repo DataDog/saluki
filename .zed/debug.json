@@ -12,7 +12,7 @@
       "command": "make",
       "args": ["build-adp"]
     },
-    "program": "$ZED_WORKTREE_ROOT/target/debug/agent-data-plane",
+    "program": "$ZED_WORKTREE_ROOT/target/devel/agent-data-plane",
     "env": {
       "DD_DATA_PLANE_STANDALONE_MODE": "true",
       "DD_API_KEY": "api-key-adp-standalone",
