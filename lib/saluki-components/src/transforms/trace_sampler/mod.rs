@@ -89,10 +89,7 @@ impl TransformBuilder for TraceSamplerConfiguration {
             error_sampling_enabled: self.apm_config.error_sampling_enabled(),
             error_tracking_standalone: self.apm_config.error_tracking_standalone_enabled(),
             probabilistic_sampler_enabled: self.apm_config.probabilistic_sampler_enabled(),
-            error_sampler: errors::ErrorsSampler::new(
-                self.apm_config.errors_per_second(),
-                ERROR_SAMPLE_RATE,
-            ),
+            error_sampler: errors::ErrorsSampler::new(self.apm_config.errors_per_second(), ERROR_SAMPLE_RATE),
         };
 
         Ok(Box::new(sampler))
@@ -395,7 +392,7 @@ impl Transform for TraceSampler {
                                             .dispatcher()
                                             .buffered()
                                             .expect("default output should always exist");
-                                        
+
                                         dispatcher.push(Event::Trace(trace)).await?;
                                         dispatcher.flush().await?;
                                     } else if !self.error_tracking_standalone {
