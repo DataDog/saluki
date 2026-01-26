@@ -15,7 +15,7 @@ const fn default_sampling_percentage() -> f64 {
 }
 
 const fn default_error_sampling_enabled() -> bool {
-    true 
+    true
 }
 
 const fn default_error_tracking_standalone_enabled() -> bool {

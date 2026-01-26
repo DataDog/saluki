@@ -20,6 +20,7 @@ use serde_json::{Map as JsonMap, Value as JsonValue};
 use stringtheory::MetaString;
 use tracing::error;
 
+use crate::common::datadog::SAMPLING_PRIORITY_METRIC_KEY;
 use crate::common::otlp::attributes::{get_int_attribute, HTTP_MAPPINGS};
 use crate::common::otlp::traces::normalize::{normalize_service, normalize_tag_value};
 use crate::common::otlp::traces::normalize::{truncate_utf8, MAX_RESOURCE_LEN};
@@ -29,7 +30,6 @@ use crate::common::otlp::util::{
     DEPLOYMENT_ENVIRONMENT_KEY, KEY_DATADOG_CONTAINER_ID, KEY_DATADOG_ENVIRONMENT, KEY_DATADOG_VERSION,
 };
 
-pub(crate) const SAMPLING_PRIORITY_METRIC_KEY: &str = "_sampling_priority_v1";
 const EVENT_EXTRACTION_METRIC_KEY: &str = "_dd1.sr.eausr";
 const ANALYTICS_EVENT_KEY: &str = "analytics.event";
 const HTTP_REQUEST_HEADER_PREFIX: &str = "http.request.header.";

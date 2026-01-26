@@ -65,7 +65,6 @@ static CONTENT_TYPE_PROTOBUF: HeaderValue = HeaderValue::from_static("applicatio
 // Sampling metadata keys / values.
 const TAG_OTLP_SAMPLING_RATE: &str = "_dd.otlp_sr";
 const TAG_DECISION_MAKER: &str = "_dd.p.dm";
-const SAMPLING_PRIORITY_METRIC_KEY: &str = "_sampling_priority_v1";
 const DEFAULT_CHUNK_PRIORITY: i32 = 1; // PRIORITY_AUTO_KEEP
 
 fn default_serializer_compressor_kind() -> String {

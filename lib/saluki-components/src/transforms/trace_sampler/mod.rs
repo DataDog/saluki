@@ -36,7 +36,7 @@ mod score_sampler;
 mod signature;
 
 use self::probabilistic::PROB_RATE_KEY;
-use crate::common::datadog::apm::ApmConfig;
+use crate::common::datadog::{apm::ApmConfig, SAMPLING_PRIORITY_METRIC_KEY};
 
 // Sampling priority constants (matching datadog-agent)
 const PRIORITY_AUTO_DROP: i32 = 0;
@@ -46,7 +46,6 @@ const PRIORITY_USER_KEEP: i32 = 2;
 const ERROR_SAMPLE_RATE: f64 = 1.0; // Default extra sample rate (matches agent's ExtraSampleRate)
 
 // Sampling metadata keys / values (matching datadog-agent where applicable).
-const SAMPLING_PRIORITY_METRIC_KEY: &str = "_sampling_priority_v1";
 const TAG_DECISION_MAKER: &str = "_dd.p.dm";
 
 // Single Span Sampling and Analytics Events keys
@@ -538,7 +537,7 @@ mod tests {
 
         // Test trace with user-set priority = 2 (UserKeep)
         let mut metrics = HashMap::new();
-        metrics.insert("_sampling_priority_v1".to_string(), 2.0);
+        metrics.insert(SAMPLING_PRIORITY_METRIC_KEY.to_string(), 2.0);
         let span = create_test_span_with_metrics(12345, 1, metrics);
         let trace = create_test_trace(vec![span]);
         let root_idx = sampler.get_root_span_index(&trace).unwrap();
@@ -547,7 +546,7 @@ mod tests {
 
         // Test trace with user-set priority = -1 (UserDrop)
         let mut metrics = HashMap::new();
-        metrics.insert("_sampling_priority_v1".to_string(), -1.0);
+        metrics.insert(SAMPLING_PRIORITY_METRIC_KEY.to_string(), -1.0);
         let span = create_test_span_with_metrics(12345, 1, metrics);
         let trace = create_test_trace(vec![span]);
         let root_idx = sampler.get_root_span_index(&trace).unwrap();
@@ -569,11 +568,11 @@ mod tests {
         // Test trace-level priority overrides span priorities (last-seen priority)
         // Create spans with different priorities - root has 0, later span has 2
         let mut metrics_root = HashMap::new();
-        metrics_root.insert("_sampling_priority_v1".to_string(), 0.0);
+        metrics_root.insert(SAMPLING_PRIORITY_METRIC_KEY.to_string(), 0.0);
         let root_span = create_test_span_with_metrics(12345, 1, metrics_root);
 
         let mut metrics_later = HashMap::new();
-        metrics_later.insert("_sampling_priority_v1".to_string(), 1.0);
+        metrics_later.insert(SAMPLING_PRIORITY_METRIC_KEY.to_string(), 1.0);
         let later_span = create_test_span_with_metrics(12345, 2, metrics_later).with_parent_id(1);
 
         let mut trace = create_test_trace(vec![root_span, later_span]);
@@ -680,7 +679,7 @@ mod tests {
         sampler.probabilistic_sampler_enabled = false; // Use legacy path
 
         let mut metrics = HashMap::new();
-        metrics.insert("_sampling_priority_v1".to_string(), 2.0);
+        metrics.insert(SAMPLING_PRIORITY_METRIC_KEY.to_string(), 2.0);
         let span = create_test_span_with_metrics(12345, 1, metrics);
         let mut trace = create_test_trace(vec![span]);
 

@@ -9,6 +9,9 @@ mod retry;
 pub mod telemetry;
 pub mod transaction;
 
+/// Metric key used to store Datadog sampling priority (`_sampling_priority_v1`).
+pub const SAMPLING_PRIORITY_METRIC_KEY: &str = "_sampling_priority_v1";
+
 /// Default compressed size limit for intake requests.
 pub const DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT: usize = 3_200_000; // 3 MiB
 

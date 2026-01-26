@@ -6,6 +6,7 @@ use saluki_context::tags::TagSet;
 use saluki_core::data_model::event::trace::{Span as DdSpan, Trace, TraceSampling};
 use saluki_core::data_model::event::Event;
 
+use crate::common::datadog::SAMPLING_PRIORITY_METRIC_KEY;
 use crate::common::otlp::config::TracesConfig;
 use crate::common::otlp::traces::transform::otel_span_to_dd_span;
 use crate::common::otlp::traces::transform::otlp_value_to_string;
@@ -70,7 +71,7 @@ impl OtlpTracesTranslator {
                 );
 
                 // Track last-seen priority for this trace (overwrites previous values)
-                if let Some(&priority) = dd_span.metrics().get("_sampling_priority_v1") {
+                if let Some(&priority) = dd_span.metrics().get(SAMPLING_PRIORITY_METRIC_KEY) {
                     priorities_by_id.insert(trace_id, priority as i32);
                 }
 
