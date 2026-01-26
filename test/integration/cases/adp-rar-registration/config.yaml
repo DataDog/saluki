@@ -1,0 +1,28 @@
+name: "adp-rar-registration"
+description: "Verify ADP successfully registers with Remote Agent Registry"
+timeout: 90s
+
+container:
+  image: "saluki-images/datadog-agent:testing-devel"
+  env:
+    DD_API_KEY: "test-api-key"
+    DD_HOSTNAME: "integration-test-rar"
+    DD_DATA_PLANE_ENABLED: "true"
+    DD_DATA_PLANE_STANDALONE_MODE: "false"
+    DD_DATA_PLANE_REMOTE_AGENT_ENABLED: "true"
+    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+    DD_DOGSTATSD_PORT: "8125"
+  exposed_ports:
+    - "8125/udp"
+
+assertions:
+  - type: process_stable_for
+    duration: 15s
+  - type: log_contains
+    pattern: "Successfully registered with the Datadog Agent."
+    regex: true
+    timeout: 60s
+  - type: log_not_contains
+    pattern: "panic|PANIC"
+    regex: true
+    during: 10s

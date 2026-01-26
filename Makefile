@@ -30,7 +30,7 @@ export CARGO_BINSTALL_STRATEGIES ?= crate-meta-data,compile
 ifeq ($(CI),true)
 	override CARGO_BINSTALL_STRATEGIES = compile
 endif
-export CARGO_TOOL_VERSION_cargo-binstall ?= 1.16.2
+export CARGO_TOOL_VERSION_cargo-binstall ?= 1.16.7
 export CARGO_TOOL_VERSION_dd-rust-license-tool ?= 1.0.3
 export CARGO_TOOL_VERSION_cargo-deny ?= 0.18.9
 export CARGO_TOOL_VERSION_cargo-hack ?= 0.6.30
@@ -84,31 +84,31 @@ help:
 .PHONY: build-adp-base
 build-adp-base: check-rust-build-tools
 build-adp-base:
-	@echo "[*] Building ADP locally (profile: $(ADP_BUILD_PROFILE))"
+	@echo "[*] Building ADP locally (profile: $(BUILD_PROFILE))"
 	@APP_FULL_NAME="$(ADP_APP_FULL_NAME)" \
 	APP_SHORT_NAME="$(ADP_APP_SHORT_NAME)" \
 	APP_IDENTIFIER="$(ADP_APP_IDENTIFIER)" \
 	APP_GIT_HASH="$(ADP_APP_GIT_HASH)" \
 	APP_VERSION="$(ADP_APP_VERSION)" \
 	APP_BUILD_DATE="$(ADP_APP_BUILD_DATE)" \
-	cargo build --profile $(ADP_BUILD_PROFILE) --package agent-data-plane
+	cargo build --profile $(BUILD_PROFILE) --package agent-data-plane
 
 .PHONY: build-adp
-build-adp: override ADP_BUILD_PROFILE=dev
+build-adp: override BUILD_PROFILE=devel
 build-adp: build-adp-base
 build-adp: ## Builds the ADP binary in debug mode
 
 .PHONY: build-adp-release
-build-adp-release: override ADP_BUILD_PROFILE=release
+build-adp-release: override BUILD_PROFILE=release
 build-adp-release: build-adp-base
 build-adp-release: ## Builds the ADP binary in release mode
 
 .PHONY: build-adp-image-base
 build-adp-image-base:
-	@echo "[*] Building ADP image (target: ${BUILD_TARGET}, profile: release, features: ${BUILD_FEATURES})"
+	@echo "[*] Building ADP image... (target: ${BUILD_TARGET}, profile: ${BUILD_PROFILE}, features: ${BUILD_FEATURES})"
 	@docker build \
-		--tag saluki-images/agent-data-plane:latest \
-		--tag local.dev/saluki-images/agent-data-plane:$(IMAGE_TAG) \
+		--tag saluki-images/agent-data-plane:$(IMAGE_TAG)-$(BUILD_PROFILE) \
+		--tag local.dev/saluki-images/agent-data-plane:$(IMAGE_TAG)-$(BUILD_PROFILE) \
 		--build-arg "BUILD_TARGET=$(BUILD_TARGET)" \
 		--build-arg "BUILD_PROFILE=$(BUILD_PROFILE)" \
 		--build-arg "BUILD_FEATURES=$(BUILD_FEATURES)" \
@@ -121,25 +121,50 @@ build-adp-image-base:
 		.
 
 .PHONY: build-adp-image
-build-adp-image: override BUILD_PROFILE = release
+build-adp-image: override BUILD_PROFILE = devel
 build-adp-image: override BUILD_FEATURES = default
 build-adp-image: override IMAGE_TAG = testing
 build-adp-image: build-adp-image-base
-build-adp-image: ## Builds the ADP container image in release mode
+build-adp-image: ## Builds the ADP container image in debug mode
+
+.PHONY: build-adp-image-release
+build-adp-image-release: override BUILD_PROFILE = release
+build-adp-image-release: override BUILD_FEATURES = default
+build-adp-image-release: override IMAGE_TAG = testing
+build-adp-image-release: build-adp-image-base
+build-adp-image-release: ## Builds the ADP container image in release mode
 
 .PHONY: build-adp-image-fips
-build-adp-image-fips: override BUILD_PROFILE = release
+build-adp-image-fips: override BUILD_PROFILE = devel
 build-adp-image-fips: override BUILD_FEATURES = fips
 build-adp-image-fips: override IMAGE_TAG = testing-fips
 build-adp-image-fips: build-adp-image-base
-build-adp-image-fips: ## Builds the ADP container image in release mode (FIPS enabled)
+build-adp-image-fips: ## Builds the ADP container image in debug mode (FIPS enabled)
+
+.PHONY: build-adp-image-fips-release
+build-adp-image-fips-release: override BUILD_PROFILE = release
+build-adp-image-fips-release: override BUILD_FEATURES = fips
+build-adp-image-fips-release: override IMAGE_TAG = testing-fips
+build-adp-image-fips-release: build-adp-image-base
+build-adp-image-fips-release: ## Builds the ADP container image in release mode (FIPS enabled)
 
 .PHONY: build-datadog-agent-image
-build-datadog-agent-image: build-adp-image ## Builds a converged Datadog Agent container image containing ADP ('latest' tag)
-	@echo "[*] Building converged Datadog Agent image..."
+build-datadog-agent-image: build-adp-image ## Builds the converged Datadog Agent/ADP container image (debug mode)
+	@echo "[*] Building converged Datadog Agent image... (debug mode)"
 	@docker build \
-		--tag saluki-images/datadog-agent:latest \
-		--tag local.dev/saluki-images/datadog-agent:testing \
+		--tag saluki-images/datadog-agent:testing-devel \
+		--tag local.dev/saluki-images/datadog-agent:testing-devel \
+		--build-arg ADP_IMAGE=saluki-images/agent-data-plane:testing-devel \
+		--file ./docker/Dockerfile.datadog-agent \
+		.
+
+.PHONY: build-datadog-agent-image-release
+build-datadog-agent-image-release: build-adp-image-release ## Builds the converged Datadog Agent/ADP container image (release mode)
+	@echo "[*] Building converged Datadog Agent image... (release mode)"
+	@docker build \
+		--tag saluki-images/datadog-agent:testing-release \
+		--tag local.dev/saluki-images/datadog-agent:testing-release \
+		--build-arg ADP_IMAGE=saluki-images/agent-data-plane:testing-release \
 		--file ./docker/Dockerfile.datadog-agent \
 		.
 
@@ -147,7 +172,7 @@ build-datadog-agent-image: build-adp-image ## Builds a converged Datadog Agent c
 build-gen-statsd-image: ## Builds the gen-statsd container image ('latest' tag)
 	@echo "[*] Building gen-statsd image..."
 	@docker build \
-		--tag saluki-images/gen-statsd:latest \
+		--tag saluki-images/gen-statsd:latest-release \
 		--tag local.dev/saluki-images/gen-statsd:testing \
 		--build-arg BUILD_IMAGE=$(GO_BUILD_IMAGE) \
 		--build-arg APP_IMAGE=$(GO_APP_IMAGE) \
@@ -265,7 +290,7 @@ run-adp-standalone: ## Runs ADP locally in standalone mode (debug)
  	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_DATA_PLANE_TELEMETRY_ENABLED=true DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102 \
-	target/debug/agent-data-plane --config /tmp/adp-empty-config.yaml run
+	target/devel/agent-data-plane --config /tmp/adp-empty-config.yaml run
 
 .PHONY: run-adp-standalone-release
 run-adp-standalone-release: build-adp-release create-dummy-agent-config
@@ -521,18 +546,18 @@ build-panoramic: ## Builds the panoramic binary (ADP integration test runner)
 test-integration: build-panoramic build-datadog-agent-image
 test-integration: ## Runs all ADP integration tests
 	@echo "[*] Running ADP integration tests..."
-	@target/release/panoramic run -d $(shell pwd)/test/integration-tests/cases
+	@target/release/panoramic run -d $(shell pwd)/test/integration/cases
 
 .PHONY: test-integration-quick
 test-integration-quick: build-panoramic
 test-integration-quick: ## Runs ADP integration tests (assumes images already built)
 	@echo "[*] Running ADP integration tests (quick mode)..."
-	@target/release/panoramic run -d $(shell pwd)/test/integration-tests/cases
+	@target/release/panoramic run -d $(shell pwd)/test/integration/cases
 
 .PHONY: list-integration-tests
 list-integration-tests: build-panoramic
 list-integration-tests: ## Lists available ADP integration tests
-	@target/release/panoramic list -d $(shell pwd)/test/integration-tests/cases
+	@target/release/panoramic list -d $(shell pwd)/test/integration/cases
 
 .PHONY: ensure-rust-miri
 ensure-rust-miri:
@@ -568,6 +593,16 @@ endif
 	--url unix:///var/run/datadog/apm.socket \
 	--inlined-functions true --timeline --upload-period 10 --preset cpu_live_heap \
 	target/release/agent-data-plane run
+
+.PHONY: generate-smp-experiments
+generate-smp-experiments: ## Generates SMP experiment configs from experiments.yaml
+	@echo "[*] Generating SMP experiment configurations..."
+	@python3 test/smp/regression/adp/generate_experiments.py
+
+.PHONY: check-smp-experiments
+check-smp-experiments: ## Verifies SMP experiment configs are up-to-date (CI)
+	@echo "[*] Checking SMP experiment configurations..."
+	@python3 test/smp/regression/adp/generate_experiments.py --check
 
 .PHONY: profile-run-smp-experiment
 profile-run-smp-experiment: ## Runs a specific SMP experiment for Saluki
@@ -678,4 +713,4 @@ cargo-preinstall: ## Pre-installs all necessary Cargo tools (used for CI)
 cargo-install-%: override TOOL = $(@:cargo-install-%=%)
 cargo-install-%: override VERSIONED_TOOL = ${TOOL}@$(CARGO_TOOL_VERSION_$(TOOL))
 cargo-install-%: check-rust-build-tools
-	@$(if $(findstring true,$(AUTOINSTALL)),test -f ${CARGO_BIN_DIR}/${TOOL} || (echo "[*] Installing ${VERSIONED_TOOL}..." && cargo binstall --strategies ${CARGO_BINSTALL_STRATEGIES} --install-path ${CARGO_BIN_DIR} ${VERSIONED_TOOL} --quiet -y),)
+	@$(if $(findstring true,$(AUTOINSTALL)),test -f ${CARGO_BIN_DIR}/${TOOL} || (echo "[*] Installing ${VERSIONED_TOOL}..." && cargo binstall --strategies ${CARGO_BINSTALL_STRATEGIES} ${VERSIONED_TOOL} --quiet -y),)
