@@ -28,7 +28,6 @@ use saluki_error::GenericError;
 use stringtheory::MetaString;
 use tokio::select;
 use tracing::debug;
-use tracing::info;
 
 mod core_sampler;
 mod errors;
@@ -375,7 +374,6 @@ impl Transform for TraceSampler {
                                     // decision_maker is the tag that indicates the decision maker (probabilistic, error, etc.)
                                     // root_span_idx is the index of the root span of the trace
                                     let (keep, priority, decision_maker, root_span_idx) = self.run_samplers(&mut trace);
-                                    info!("WACKTEST keep is {}", keep);
                                     if keep {
                                         if let Some(root_idx) = root_span_idx {
                                             self.apply_sampling_metadata(
