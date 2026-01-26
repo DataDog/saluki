@@ -53,7 +53,7 @@ struct ProbabilisticSamplerConfig {
     /// When enabled, the trace sampler keeps approximately `sampling_percentage` of traces using a
     /// deterministic hash of the trace ID.
     ///
-    /// Defaults to `true`.
+    /// Defaults to `false`.
     #[serde(default = "default_probabilistic_sampling_enabled")]
     enabled: bool,
 

@@ -11,7 +11,6 @@
 //! add trace metrics: datadog-agent/pkg/trace/sampler/metrics.go
 //! adding missing samplers (priority, nopriority, rare)
 //! add error tracking standalone mode
-//! Make error_tps and extra_sample_rate configurable
 
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -29,6 +28,7 @@ use saluki_error::GenericError;
 use stringtheory::MetaString;
 use tokio::select;
 use tracing::debug;
+use tracing::info;
 
 mod core_sampler;
 mod errors;
@@ -44,8 +44,7 @@ const PRIORITY_AUTO_DROP: i32 = 0;
 const PRIORITY_AUTO_KEEP: i32 = 1;
 const PRIORITY_USER_KEEP: i32 = 2;
 
-const ERROR_TPS: f64 = 10.0; // Default error TPS target
-const ERROR_SAMPLE_RATE: f64 = 1.0; // Default extra sample rate
+const ERROR_SAMPLE_RATE: f64 = 1.0; // Default extra sample rate (matches agent's ExtraSampleRate)
 
 // Sampling metadata keys / values (matching datadog-agent where applicable).
 const SAMPLING_PRIORITY_METRIC_KEY: &str = "_sampling_priority_v1";
@@ -90,7 +89,10 @@ impl TransformBuilder for TraceSamplerConfiguration {
             error_sampling_enabled: self.apm_config.error_sampling_enabled(),
             error_tracking_standalone: self.apm_config.error_tracking_standalone_enabled(),
             probabilistic_sampler_enabled: self.apm_config.probabilistic_sampler_enabled(),
-            error_sampler: errors::ErrorsSampler::new(ERROR_TPS, ERROR_SAMPLE_RATE),
+            error_sampler: errors::ErrorsSampler::new(
+                self.apm_config.errors_per_second(),
+                ERROR_SAMPLE_RATE,
+            ),
         };
 
         Ok(Box::new(sampler))
@@ -376,6 +378,7 @@ impl Transform for TraceSampler {
                                     // decision_maker is the tag that indicates the decision maker (probabilistic, error, etc.)
                                     // root_span_idx is the index of the root span of the trace
                                     let (keep, priority, decision_maker, root_span_idx) = self.run_samplers(&mut trace);
+                                    info!("WACKTEST keep is {}", keep);
                                     if keep {
                                         if let Some(root_idx) = root_span_idx {
                                             self.apply_sampling_metadata(
@@ -392,6 +395,7 @@ impl Transform for TraceSampler {
                                             .dispatcher()
                                             .buffered()
                                             .expect("default output should always exist");
+                                        
                                         dispatcher.push(Event::Trace(trace)).await?;
                                         dispatcher.flush().await?;
                                     } else if !self.error_tracking_standalone {
