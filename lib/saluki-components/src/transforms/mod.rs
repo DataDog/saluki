@@ -23,3 +23,6 @@ pub use self::metric_router::MetricRouterConfiguration;
 
 mod apm_stats;
 pub use self::apm_stats::ApmStatsTransformConfiguration;
+
+mod trace_obfuscation;
+pub use self::trace_obfuscation::TraceObfuscationConfiguration;

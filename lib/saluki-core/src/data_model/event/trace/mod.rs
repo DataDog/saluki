@@ -201,6 +201,11 @@ impl Span {
         &self.resource
     }
 
+    /// Sets the resource name.
+    pub fn set_resource(&mut self, resource: impl Into<MetaString>) {
+        self.resource = resource.into();
+    }
+
     /// Returns the trace identifier.
     pub fn trace_id(&self) -> u64 {
         self.trace_id
