@@ -1,16 +1,16 @@
 //! JSON obfuscation for MongoDB, Elasticsearch, and OpenSearch queries.
 
-use std::collections::HashSet;
-
+use saluki_common::collections::FastHashSet;
 use serde_json::{Map, Value};
+use stringtheory::MetaString;
 
 use super::obfuscator::{JsonObfuscationConfig, SqlObfuscationConfig};
 use super::sql::obfuscate_sql_string;
 
 /// Pre-initialized JSON obfuscator with computed sets.
 pub struct JsonObfuscator {
-    keep_keys: HashSet<String>,
-    sql_keys: HashSet<String>,
+    keep_keys: FastHashSet<MetaString>,
+    sql_keys: FastHashSet<MetaString>,
     sql_config: SqlObfuscationConfig,
 }
 
@@ -18,8 +18,16 @@ impl JsonObfuscator {
     /// Creates a new JSON obfuscator with pre-computed sets.
     pub fn new(config: &JsonObfuscationConfig, sql_config: &SqlObfuscationConfig) -> Self {
         Self {
-            keep_keys: config.keep_values().iter().cloned().collect(),
-            sql_keys: config.obfuscate_sql_values().iter().cloned().collect(),
+            keep_keys: config
+                .keep_values()
+                .iter()
+                .map(|s| MetaString::from(s.as_str()))
+                .collect(),
+            sql_keys: config
+                .obfuscate_sql_values()
+                .iter()
+                .map(|s| MetaString::from(s.as_str()))
+                .collect(),
             sql_config: sql_config.clone(),
         }
     }

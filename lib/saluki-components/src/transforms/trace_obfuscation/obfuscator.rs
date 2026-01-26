@@ -1,10 +1,12 @@
 //! Core obfuscator implementation.
 
+use stringtheory::MetaString;
+
 use super::credit_cards::CreditCardObfuscator;
 use super::http::obfuscate_url;
 use super::json::JsonObfuscator;
 use super::memcached::obfuscate_memcached_command;
-use super::redis::{obfuscate_redis_string, obfuscate_valkey_string, quantize_redis_string, remove_all_redis_args};
+use super::redis::{obfuscate_redis_string, obfuscate_valkey_string, quantize_redis_string};
 pub use crate::common::datadog::obfuscation::{
     CreditCardObfuscationConfig, HttpObfuscationConfig, JsonObfuscationConfig, MemcachedObfuscationConfig,
     ObfuscationConfig, RedisObfuscationConfig, SqlObfuscationConfig, ValkeyObfuscationConfig,
@@ -70,67 +72,56 @@ impl Obfuscator {
     }
 
     /// Obfuscates a URL string.
-    pub fn obfuscate_url(&self, url: &str) -> String {
+    /// Returns `Some(obfuscated)` if any changes were made, `None` if unchanged.
+    pub fn obfuscate_url(&self, url: &str) -> Option<MetaString> {
         obfuscate_url(url, self.config.http())
     }
 
     /// Obfuscates a Memcached command.
-    pub fn obfuscate_memcached_command(&self, cmd: &str) -> String {
+    /// Returns `Some("")` to signal tag removal, `Some(value)` to replace, `None` if unchanged.
+    pub fn obfuscate_memcached_command(&self, cmd: &str) -> Option<MetaString> {
         obfuscate_memcached_command(cmd, self.config.memcached())
     }
 
     /// Obfuscates potential credit card numbers in a tag value.
-    pub fn obfuscate_credit_card_number(&self, key: &str, val: &str) -> String {
-        match &self.cc_obfuscator {
-            Some(cc) => cc.obfuscate_credit_card_number(key, val),
-            None => val.to_string(),
-        }
+    /// Returns `Some(replacement)` if a credit card number is detected, `None` if unchanged.
+    pub fn obfuscate_credit_card_number(&self, key: &str, val: &str) -> Option<MetaString> {
+        self.cc_obfuscator.as_ref()?.obfuscate_credit_card_number(key, val)
     }
 
     /// Quantizes a Redis command string (extracts command names only).
-    pub fn quantize_redis_string(&self, query: &str) -> String {
+    /// Returns `Some(quantized)` if any changes were made, `None` if unchanged.
+    pub fn quantize_redis_string(&self, query: &str) -> Option<MetaString> {
         quantize_redis_string(query)
     }
 
     /// Obfuscates a Redis command string using command-specific rules.
-    pub fn obfuscate_redis_string(&self, rediscmd: &str) -> String {
-        if self.config.redis().remove_all_args() {
-            remove_all_redis_args(rediscmd)
-        } else {
-            obfuscate_redis_string(rediscmd, self.config.redis())
-        }
+    /// Returns `Some(obfuscated)` if any changes were made, `None` if unchanged.
+    pub fn obfuscate_redis_string(&self, rediscmd: &str) -> Option<MetaString> {
+        obfuscate_redis_string(rediscmd, self.config.redis())
     }
 
     /// Obfuscates a Valkey command string using command-specific rules.
-    pub fn obfuscate_valkey_string(&self, valkeycmd: &str) -> String {
-        if self.config.valkey().remove_all_args() {
-            remove_all_redis_args(valkeycmd)
-        } else {
-            obfuscate_valkey_string(valkeycmd, self.config.valkey())
-        }
+    /// Returns `Some(obfuscated)` if any changes were made, `None` if unchanged.
+    pub fn obfuscate_valkey_string(&self, valkeycmd: &str) -> Option<MetaString> {
+        obfuscate_valkey_string(valkeycmd, self.config.valkey())
     }
 
     /// Obfuscates a MongoDB JSON query string.
-    pub fn obfuscate_mongodb_string(&self, query: &str) -> String {
-        match &self.mongo_obfuscator {
-            Some(obf) => obf.obfuscate(query),
-            None => query.to_string(),
-        }
+    /// Returns `Some(obfuscated)` if obfuscation was performed, `None` if disabled.
+    pub fn obfuscate_mongodb_string(&self, query: &str) -> Option<MetaString> {
+        Some(self.mongo_obfuscator.as_ref()?.obfuscate(query).into())
     }
 
     /// Obfuscates an Elasticsearch JSON query string.
-    pub fn obfuscate_elasticsearch_string(&self, query: &str) -> String {
-        match &self.es_obfuscator {
-            Some(obf) => obf.obfuscate(query),
-            None => query.to_string(),
-        }
+    /// Returns `Some(obfuscated)` if obfuscation was performed, `None` if disabled.
+    pub fn obfuscate_elasticsearch_string(&self, query: &str) -> Option<MetaString> {
+        Some(self.es_obfuscator.as_ref()?.obfuscate(query).into())
     }
 
     /// Obfuscates an OpenSearch JSON query string.
-    pub fn obfuscate_opensearch_string(&self, query: &str) -> String {
-        match &self.open_search_obfuscator {
-            Some(obf) => obf.obfuscate(query),
-            None => query.to_string(),
-        }
+    /// Returns `Some(obfuscated)` if obfuscation was performed, `None` if disabled.
+    pub fn obfuscate_opensearch_string(&self, query: &str) -> Option<MetaString> {
+        Some(self.open_search_obfuscator.as_ref()?.obfuscate(query).into())
     }
 }

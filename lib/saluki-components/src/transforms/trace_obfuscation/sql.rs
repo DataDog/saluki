@@ -22,9 +22,9 @@ pub fn obfuscate_sql_string(query: &str, config: &SqlObfuscationConfig) -> Resul
     let mut replace_filter = ReplaceFilter::new(config);
     let mut grouping_filter = GroupingFilter::new();
 
-    let mut output = Vec::new();
+    let mut output = Vec::with_capacity(query.len());
     let mut last_token = TokenKind::LexError;
-    let mut last_buffer: Vec<u8> = Vec::new();
+    let mut last_buffer: Vec<u8> = Vec::with_capacity(32);
     let mut quoted_before_dot = false;
 
     loop {
@@ -107,8 +107,10 @@ pub fn obfuscate_sql_string(query: &str, config: &SqlObfuscationConfig) -> Resul
 
     let metadata = metadata_filter.results();
 
+    let query = String::from_utf8(output).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+
     Ok(ObfuscatedSQL {
-        query: String::from_utf8_lossy(&output).to_string(),
+        query,
         table_names: metadata.tables_csv,
     })
 }

@@ -1,15 +1,24 @@
 //! Memcached command obfuscation.
 
+use stringtheory::MetaString;
+
 use super::obfuscator::MemcachedObfuscationConfig;
 
 /// Obfuscates a Memcached command by removing key values.
-pub fn obfuscate_memcached_command(cmd: &str, config: &MemcachedObfuscationConfig) -> String {
+/// Returns `Some("")` to signal tag removal, `Some(value)` to replace, `None` if unchanged.
+pub fn obfuscate_memcached_command(cmd: &str, config: &MemcachedObfuscationConfig) -> Option<MetaString> {
     if !config.keep_command() {
-        return String::new();
+        return Some("".into());
     }
 
     let truncated = cmd.split("\r\n").next().unwrap_or("");
-    truncated.trim().to_string()
+    let trimmed = truncated.trim();
+
+    if trimmed == cmd {
+        None
+    } else {
+        Some(trimmed.into())
+    }
 }
 
 #[cfg(test)]
@@ -27,28 +36,30 @@ mod tests {
     fn test_set_with_value_keep_true() {
         let config = default_config();
         let result = obfuscate_memcached_command("set mykey 0 60 5\r\nvalue", &config);
-        assert_eq!(result, "set mykey 0 60 5");
+        assert_eq!(result.unwrap().as_ref(), "set mykey 0 60 5");
     }
 
     #[test]
     fn test_get_keep_true() {
         let config = default_config();
         let result = obfuscate_memcached_command("get mykey", &config);
-        assert_eq!(result, "get mykey");
+        // Already clean, no change needed
+        assert!(result.is_none());
     }
 
     #[test]
     fn test_add_with_value_keep_true() {
         let config = default_config();
         let result = obfuscate_memcached_command("add newkey 0 60 5\r\nvalue", &config);
-        assert_eq!(result, "add newkey 0 60 5");
+        assert_eq!(result.unwrap().as_ref(), "add newkey 0 60 5");
     }
 
     #[test]
     fn test_decr_keep_true() {
         let config = default_config();
         let result = obfuscate_memcached_command("decr mykey 5", &config);
-        assert_eq!(result, "decr mykey 5");
+        // Already clean, no change needed
+        assert!(result.is_none());
     }
 
     #[test]
@@ -58,7 +69,7 @@ mod tests {
             keep_command: false,
         };
         let result = obfuscate_memcached_command("set mykey 0 60 5\r\nvalue", &config);
-        assert_eq!(result, "");
+        assert_eq!(result.unwrap().as_ref(), "");
     }
 
     #[test]
@@ -68,7 +79,7 @@ mod tests {
             keep_command: false,
         };
         let result = obfuscate_memcached_command("get mykey", &config);
-        assert_eq!(result, "");
+        assert_eq!(result.unwrap().as_ref(), "");
     }
 
     #[test]
@@ -78,7 +89,7 @@ mod tests {
             keep_command: false,
         };
         let result = obfuscate_memcached_command("get", &config);
-        assert_eq!(result, "");
+        assert_eq!(result.unwrap().as_ref(), "");
     }
 
     #[test]
@@ -88,6 +99,6 @@ mod tests {
             keep_command: false,
         };
         let result = obfuscate_memcached_command("get\r\nvalue", &config);
-        assert_eq!(result, "");
+        assert_eq!(result.unwrap().as_ref(), "");
     }
 }

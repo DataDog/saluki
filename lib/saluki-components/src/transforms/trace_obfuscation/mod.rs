@@ -19,11 +19,14 @@ use saluki_core::{
     topology::OutputDefinition,
 };
 use saluki_error::GenericError;
+use stringtheory::MetaString;
 use tokio::select;
 use tracing::error;
 
 pub use self::obfuscator::{tags, ObfuscationConfig, Obfuscator};
 use crate::common::datadog::apm::ApmConfig;
+
+const TEXT_NON_PARSABLE_SQL: &str = "Non-parsable SQL query";
 
 /// Trace obfuscation configuration.
 #[derive(serde::Deserialize)]
@@ -94,13 +97,11 @@ pub struct TraceObfuscation {
 
 impl TraceObfuscation {
     fn obfuscate_span(&mut self, span: &mut Span) {
-        let span_type = span.span_type().to_string();
-
         if self.obfuscator.config.credit_cards().enabled() {
             self.obfuscate_credit_cards_in_span(span);
         }
 
-        match span_type.as_str() {
+        match span.span_type() {
             "http" | "web" => self.obfuscate_http_span(span),
             "sql" | "cassandra" => self.obfuscate_sql_span(span),
             "redis" | "valkey" => self.obfuscate_redis_span(span),
@@ -112,63 +113,55 @@ impl TraceObfuscation {
     }
 
     fn obfuscate_credit_cards_in_span(&mut self, span: &mut Span) {
-        let keys_to_update: Vec<_> = span.meta().keys().map(|k| k.to_string()).collect();
-
-        for key in keys_to_update {
-            if let Some(value) = span.meta().get(key.as_str()) {
-                let value_str = value.to_string();
-                let obfuscated = self.obfuscator.obfuscate_credit_card_number(&key, &value_str);
-
-                if obfuscated != value_str {
-                    span.meta_mut().insert(key.into(), obfuscated.into());
-                }
+        for (key, value) in span.meta_mut().iter_mut() {
+            if let Some(replacement) = self
+                .obfuscator
+                .obfuscate_credit_card_number(key.as_ref(), value.as_ref())
+            {
+                *value = replacement;
             }
         }
     }
 
     fn obfuscate_http_span(&mut self, span: &mut Span) {
-        let url_value = match span.meta_mut().get(tags::HTTP_URL) {
-            Some(v) => v.to_string(),
-            None => return,
+        let url_value = match span.meta().get(tags::HTTP_URL) {
+            Some(v) if !v.is_empty() => v.as_ref(),
+            _ => return,
         };
 
-        if url_value.is_empty() {
-            return;
+        if let Some(obfuscated) = self.obfuscator.obfuscate_url(url_value) {
+            span.meta_mut().insert(tags::HTTP_URL.into(), obfuscated);
         }
-
-        let obfuscated = self.obfuscator.obfuscate_url(&url_value);
-        span.meta_mut().insert(tags::HTTP_URL.into(), obfuscated.into());
     }
 
     fn obfuscate_sql_span(&mut self, span: &mut Span) {
-        let sql_query = span
+        let sql_query: &str = span
             .meta()
             .get(tags::DB_STATEMENT)
-            .map(|v| v.to_string())
+            .map(|v| v.as_ref())
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| span.resource().to_string());
+            .unwrap_or_else(|| span.resource());
 
         if sql_query.is_empty() {
             return;
         }
 
-        let dbms = span.meta().get(tags::DBMS).map(|v| v.to_string()).unwrap_or_default();
+        let dbms = span.meta().get(tags::DBMS);
 
-        let config = if !dbms.is_empty() {
-            self.obfuscator.config.sql().with_dbms(dbms.clone())
-        } else {
-            self.obfuscator.config.sql().clone()
+        let config = match dbms {
+            Some(d) if !d.is_empty() => self.obfuscator.config.sql().with_dbms(d.to_string()),
+            _ => self.obfuscator.config.sql().clone(),
         };
 
-        match sql::obfuscate_sql_string(&sql_query, &config) {
+        match sql::obfuscate_sql_string(sql_query, &config) {
             Ok(obfuscated) => {
-                span.set_resource(obfuscated.query.clone());
-                span.meta_mut()
-                    .insert(tags::SQL_QUERY.into(), obfuscated.query.clone().into());
+                let query: MetaString = obfuscated.query.into();
+
+                span.set_resource(query.clone());
+                span.meta_mut().insert(tags::SQL_QUERY.into(), query.clone());
 
                 if span.meta().contains_key(tags::DB_STATEMENT) {
-                    span.meta_mut()
-                        .insert(tags::DB_STATEMENT.into(), obfuscated.query.into());
+                    span.meta_mut().insert(tags::DB_STATEMENT.into(), query);
                 }
 
                 if !obfuscated.table_names.is_empty() {
@@ -177,37 +170,36 @@ impl TraceObfuscation {
                 }
             }
             Err(_) => {
-                const TEXT_NON_PARSABLE: &str = "Non-parsable SQL query";
-                span.set_resource(TEXT_NON_PARSABLE.to_string());
-                span.meta_mut().insert(tags::SQL_QUERY.into(), TEXT_NON_PARSABLE.into());
+                let non_parsable: MetaString = TEXT_NON_PARSABLE_SQL.into();
+                span.set_resource(non_parsable.clone());
+                span.meta_mut().insert(tags::SQL_QUERY.into(), non_parsable);
             }
         }
     }
 
     fn obfuscate_redis_span(&mut self, span: &mut Span) {
-        let resource = span.resource().to_string();
+        let resource = span.resource();
         if resource.is_empty() {
             return;
         }
 
-        let quantized = self.obfuscator.quantize_redis_string(&resource);
-        span.set_resource(quantized);
+        if let Some(quantized) = self.obfuscator.quantize_redis_string(resource) {
+            span.set_resource(quantized.to_string());
+        }
 
         if span.span_type() == "redis" && self.obfuscator.config.redis().enabled() {
-            if let Some(cmd_value) = span.meta_mut().get(tags::REDIS_RAW_COMMAND) {
-                let cmd_str = cmd_value.to_string();
-                let obfuscated = self.obfuscator.obfuscate_redis_string(&cmd_str);
-                span.meta_mut()
-                    .insert(tags::REDIS_RAW_COMMAND.into(), obfuscated.into());
+            if let Some(cmd_value) = span.meta().get(tags::REDIS_RAW_COMMAND) {
+                if let Some(obfuscated) = self.obfuscator.obfuscate_redis_string(cmd_value.as_ref()) {
+                    span.meta_mut().insert(tags::REDIS_RAW_COMMAND.into(), obfuscated);
+                }
             }
         }
 
         if span.span_type() == "valkey" && self.obfuscator.config.valkey().enabled() {
-            if let Some(cmd_value) = span.meta_mut().get(tags::VALKEY_RAW_COMMAND) {
-                let cmd_str = cmd_value.to_string();
-                let obfuscated = self.obfuscator.obfuscate_valkey_string(&cmd_str);
-                span.meta_mut()
-                    .insert(tags::VALKEY_RAW_COMMAND.into(), obfuscated.into());
+            if let Some(cmd_value) = span.meta().get(tags::VALKEY_RAW_COMMAND) {
+                if let Some(obfuscated) = self.obfuscator.obfuscate_valkey_string(cmd_value.as_ref()) {
+                    span.meta_mut().insert(tags::VALKEY_RAW_COMMAND.into(), obfuscated);
+                }
             }
         }
     }
@@ -217,46 +209,42 @@ impl TraceObfuscation {
             return;
         }
 
-        let cmd_value = match span.meta_mut().get(tags::MEMCACHED_COMMAND) {
-            Some(v) => v.to_string(),
-            None => return,
+        let cmd_value = match span.meta().get(tags::MEMCACHED_COMMAND) {
+            Some(v) if !v.is_empty() => v.as_ref(),
+            _ => return,
         };
 
-        if cmd_value.is_empty() {
-            return;
-        }
-
-        let obfuscated = self.obfuscator.obfuscate_memcached_command(&cmd_value);
-
-        if obfuscated.is_empty() {
-            span.meta_mut().remove(tags::MEMCACHED_COMMAND);
-        } else {
-            span.meta_mut()
-                .insert(tags::MEMCACHED_COMMAND.into(), obfuscated.into());
+        if let Some(obfuscated) = self.obfuscator.obfuscate_memcached_command(cmd_value) {
+            if obfuscated.is_empty() {
+                span.meta_mut().remove(tags::MEMCACHED_COMMAND);
+            } else {
+                span.meta_mut().insert(tags::MEMCACHED_COMMAND.into(), obfuscated);
+            }
         }
     }
 
     fn obfuscate_mongodb_span(&mut self, span: &mut Span) {
         let query_value = match span.meta().get(tags::MONGODB_QUERY) {
-            Some(v) => v.to_string(),
+            Some(v) => v.as_ref(),
             None => return,
         };
 
-        let obfuscated = self.obfuscator.obfuscate_mongodb_string(&query_value);
-        span.meta_mut().insert(tags::MONGODB_QUERY.into(), obfuscated.into());
+        if let Some(obfuscated) = self.obfuscator.obfuscate_mongodb_string(query_value) {
+            span.meta_mut().insert(tags::MONGODB_QUERY.into(), obfuscated);
+        }
     }
 
     fn obfuscate_elasticsearch_span(&mut self, span: &mut Span) {
         if let Some(body_value) = span.meta().get(tags::ELASTIC_BODY) {
-            let body_str = body_value.to_string();
-            let obfuscated = self.obfuscator.obfuscate_elasticsearch_string(&body_str);
-            span.meta_mut().insert(tags::ELASTIC_BODY.into(), obfuscated.into());
+            if let Some(obfuscated) = self.obfuscator.obfuscate_elasticsearch_string(body_value.as_ref()) {
+                span.meta_mut().insert(tags::ELASTIC_BODY.into(), obfuscated);
+            }
         }
 
         if let Some(body_value) = span.meta().get(tags::OPENSEARCH_BODY) {
-            let body_str = body_value.to_string();
-            let obfuscated = self.obfuscator.obfuscate_opensearch_string(&body_str);
-            span.meta_mut().insert(tags::OPENSEARCH_BODY.into(), obfuscated.into());
+            if let Some(obfuscated) = self.obfuscator.obfuscate_opensearch_string(body_value.as_ref()) {
+                span.meta_mut().insert(tags::OPENSEARCH_BODY.into(), obfuscated);
+            }
         }
     }
 }

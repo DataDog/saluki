@@ -1,5 +1,7 @@
 //! Redis command obfuscation.
 
+use stringtheory::MetaString;
+
 use super::obfuscator::{RedisObfuscationConfig, ValkeyObfuscationConfig};
 
 const REDIS_COMPOUND_COMMANDS: &[&str] = &["CLIENT", "CLUSTER", "COMMAND", "CONFIG", "DEBUG", "SCRIPT"];
@@ -7,13 +9,14 @@ const REDIS_TRUNCATION_MARK: &str = "...";
 const MAX_REDIS_NB_COMMANDS: usize = 3;
 
 /// Quantizes a Redis command string by extracting just the command names.
-pub fn quantize_redis_string(query: &str) -> String {
-    let query = compact_whitespaces(query);
+/// Returns `Some(quantized)` if any changes were made, `None` if unchanged.
+pub fn quantize_redis_string(query: &str) -> Option<MetaString> {
+    let compacted = compact_whitespaces(query);
     let mut resource = String::new();
     let mut truncated = false;
     let mut nb_cmds = 0;
 
-    let mut remaining = query.as_str();
+    let mut remaining = compacted.as_str();
     while !remaining.is_empty() && nb_cmds < MAX_REDIS_NB_COMMANDS {
         let (raw_line, rest) = match remaining.split_once('\n') {
             Some((line, rest)) => (line, rest),
@@ -60,17 +63,23 @@ pub fn quantize_redis_string(query: &str) -> String {
         resource.push_str("...");
     }
 
-    resource
+    if resource == query {
+        None
+    } else {
+        Some(resource.into())
+    }
 }
 
 /// Obfuscates a Redis command string by removing sensitive arguments.
-pub fn obfuscate_redis_string(rediscmd: &str, config: &RedisObfuscationConfig) -> String {
+/// Returns `Some(obfuscated)` if any changes were made, `None` if unchanged.
+pub fn obfuscate_redis_string(rediscmd: &str, config: &RedisObfuscationConfig) -> Option<MetaString> {
     if config.remove_all_args() {
-        return rediscmd
+        let result = rediscmd
             .lines()
             .map(remove_all_redis_args)
             .collect::<Vec<_>>()
             .join("\n");
+        return if result == rediscmd { None } else { Some(result.into()) };
     }
 
     let mut tokenizer = RedisTokenizer::new(rediscmd.as_bytes());
@@ -85,9 +94,8 @@ pub fn obfuscate_redis_string(rediscmd: &str, config: &RedisObfuscationConfig) -
             TokenType::Command => {
                 if !cmd.is_empty() {
                     obfuscate_redis_cmd(&mut result, &cmd, &args);
-                    let trimmed = result.trim_end().to_string();
-                    result.clear();
-                    result.push_str(&trimmed);
+                    let trimmed_len = result.trim_end().len();
+                    result.truncate(trimmed_len);
                     result.push('\n');
                 }
                 cmd = tok;
@@ -106,17 +114,26 @@ pub fn obfuscate_redis_string(rediscmd: &str, config: &RedisObfuscationConfig) -
         }
     }
 
-    result.trim_end().to_string()
+    let trimmed_len = result.trim_end().len();
+    result.truncate(trimmed_len);
+
+    if result == rediscmd {
+        None
+    } else {
+        Some(result.into())
+    }
 }
 
 /// Obfuscates a Valkey command string by removing sensitive arguments.
-pub fn obfuscate_valkey_string(valkeycmd: &str, config: &ValkeyObfuscationConfig) -> String {
+/// Returns `Some(obfuscated)` if any changes were made, `None` if unchanged.
+pub fn obfuscate_valkey_string(valkeycmd: &str, config: &ValkeyObfuscationConfig) -> Option<MetaString> {
     if config.remove_all_args() {
-        return valkeycmd
+        let result = valkeycmd
             .lines()
             .map(remove_all_redis_args)
             .collect::<Vec<_>>()
             .join("\n");
+        return if result == valkeycmd { None } else { Some(result.into()) };
     }
 
     let mut tokenizer = RedisTokenizer::new(valkeycmd.as_bytes());
@@ -131,9 +148,8 @@ pub fn obfuscate_valkey_string(valkeycmd: &str, config: &ValkeyObfuscationConfig
             TokenType::Command => {
                 if !cmd.is_empty() {
                     obfuscate_redis_cmd(&mut result, &cmd, &args);
-                    let trimmed = result.trim_end().to_string();
-                    result.clear();
-                    result.push_str(&trimmed);
+                    let trimmed_len = result.trim_end().len();
+                    result.truncate(trimmed_len);
                     result.push('\n');
                 }
                 cmd = tok;
@@ -152,7 +168,14 @@ pub fn obfuscate_valkey_string(valkeycmd: &str, config: &ValkeyObfuscationConfig
         }
     }
 
-    result.trim_end().to_string()
+    let trimmed_len = result.trim_end().len();
+    result.truncate(trimmed_len);
+
+    if result == valkeycmd {
+        None
+    } else {
+        Some(result.into())
+    }
 }
 
 /// Removes all arguments from a Redis command.
@@ -204,8 +227,14 @@ fn obfuscate_redis_cmd(out: &mut String, cmd: &str, args: &[String]) {
 
     out.push(' ');
 
-    let mut args = args.to_vec();
     let cmd_upper = cmd.to_uppercase();
+
+    if !needs_obfuscation(&cmd_upper, args) {
+        out.push_str(&args.join(" "));
+        return;
+    }
+
+    let mut args = args.to_vec();
 
     match cmd_upper.as_str() {
         "AUTH" => {
@@ -283,6 +312,18 @@ fn obfuscate_redis_cmd(out: &mut String, cmd: &str, args: &[String]) {
     }
 
     out.push_str(&args.join(" "));
+}
+
+fn needs_obfuscation(cmd_upper: &str, args: &[String]) -> bool {
+    match cmd_upper {
+        "AUTH" | "APPEND" | "GETSET" | "LPUSHX" | "GEORADIUSBYMEMBER" | "RPUSHX" | "SET" | "SETNX" | "SISMEMBER"
+        | "ZRANK" | "ZREVRANK" | "ZSCORE" | "HSETNX" | "LREM" | "LSET" | "SETBIT" | "SETEX" | "PSETEX" | "SETRANGE"
+        | "ZINCRBY" | "SMOVE" | "RESTORE" | "LINSERT" | "GEOHASH" | "GEOPOS" | "GEODIST" | "LPUSH" | "RPUSH"
+        | "SREM" | "ZREM" | "SADD" | "GEOADD" | "HSET" | "HMSET" | "MSET" | "MSETNX" | "ZADD" => true,
+        "CONFIG" => !args.is_empty() && args[0].to_uppercase() == "SET",
+        "BITFIELD" => args.iter().any(|a| a.to_uppercase() == "SET"),
+        _ => false,
+    }
 }
 
 fn obfuscate_arg_n(args: &mut [String], n: usize) {
@@ -476,7 +517,8 @@ mod tests {
 
         for (query, expected) in cases {
             let result = quantize_redis_string(query);
-            assert_eq!(result, expected, "Failed for query: {}", query);
+            let final_value = result.as_ref().map(|m| m.as_ref()).unwrap_or(query);
+            assert_eq!(final_value, expected, "Failed for query: {}", query);
         }
     }
 
@@ -571,7 +613,8 @@ mod tests {
 
         for (input, expected) in cases {
             let result = obfuscate_redis_string(input, &config);
-            assert_eq!(result, expected, "Failed for input: {}", input);
+            let final_value = result.as_ref().map(|m| m.as_ref()).unwrap_or(input);
+            assert_eq!(final_value, expected, "Failed for input: {}", input);
         }
     }
 
@@ -607,7 +650,8 @@ mod tests {
 
         for (input, expected) in cases {
             let result = obfuscate_redis_string(input, &config);
-            assert_eq!(result, expected, "Failed for input: {}", input);
+            let final_value = result.as_ref().map(|m| m.as_ref()).unwrap_or(input);
+            assert_eq!(final_value, expected, "Failed for input: {}", input);
         }
     }
 

@@ -1,6 +1,7 @@
 //! Credit card number obfuscation.
 
-use std::collections::HashSet;
+use saluki_common::collections::FastHashSet;
+use stringtheory::MetaString;
 
 use super::obfuscator::CreditCardObfuscationConfig;
 
@@ -39,18 +40,19 @@ const ALLOWLISTED_TAGS: &[&str] = &[
 /// Credit card obfuscator with configuration.
 pub struct CreditCardObfuscator {
     luhn: bool,
-    keep_values: HashSet<String>,
+    keep_values: FastHashSet<MetaString>,
 }
 
 impl CreditCardObfuscator {
     /// Creates a new credit card obfuscator from configuration.
     pub fn new(config: &CreditCardObfuscationConfig) -> Self {
-        let mut keep_values: HashSet<String> = ALLOWLISTED_TAGS.iter().map(|s| s.to_string()).collect();
-
-        // Add user-configured keep_values
-        for key in config.keep_values() {
-            keep_values.insert(key.clone());
-        }
+        // Only store user-provided keep_values.
+        // Static allowlist is checked separately via `ALLOWLISTED_TAGS.contains()`.
+        let keep_values: FastHashSet<MetaString> = config
+            .keep_values()
+            .iter()
+            .map(|s| MetaString::from(s.as_str()))
+            .collect();
 
         Self {
             luhn: config.luhn(),
@@ -59,21 +61,27 @@ impl CreditCardObfuscator {
     }
 
     /// Obfuscates credit card numbers in a value for the given key.
-    /// Returns "?" if a credit card number is detected, otherwise returns the original value.
-    pub fn obfuscate_credit_card_number(&self, key: &str, val: &str) -> String {
+    /// Returns `Some(replacement)` if a credit card number is detected, `None` if unchanged.
+    pub fn obfuscate_credit_card_number(&self, key: &str, val: &str) -> Option<MetaString> {
         if key.starts_with('_') {
-            return val.to_string();
+            return None;
         }
 
+        // Check static allowlist first.
+        if ALLOWLISTED_TAGS.contains(&key) {
+            return None;
+        }
+
+        // Check user-provided `keep_values`.
         if self.keep_values.contains(key) {
-            return val.to_string();
+            return None;
         }
 
         if self.is_card_number(val) {
-            return "?".to_string();
+            return Some("?".into());
         }
 
-        val.to_string()
+        None
     }
 
     fn is_card_number(&self, b: &str) -> bool {
@@ -546,14 +554,13 @@ mod tests {
 
         let possible_card = "378282246310005";
 
-        assert_eq!(
-            obfuscator.obfuscate_credit_card_number("skip_me", possible_card),
-            possible_card
-        );
+        // skip_me is in keep_values, so no obfuscation (returns None)
+        assert_eq!(obfuscator.obfuscate_credit_card_number("skip_me", possible_card), None);
 
+        // obfuscate_me is not in keep_values, so obfuscation happens (returns Some("?"))
         assert_eq!(
             obfuscator.obfuscate_credit_card_number("obfuscate_me", possible_card),
-            "?"
+            Some("?".into())
         );
     }
 
@@ -572,19 +579,23 @@ mod tests {
     fn test_obfuscate_credit_card_number() {
         let obfuscator = CreditCardObfuscator::new(&default_config());
 
+        // Credit card detected -> Some("?")
         assert_eq!(
             obfuscator.obfuscate_credit_card_number("payment.card", "4532123456789010"),
-            "?"
+            Some("?".into())
         );
+        // Allowlisted tag -> None (unchanged)
         assert_eq!(
             obfuscator.obfuscate_credit_card_number("http.status_code", "4532123456789010"),
-            "4532123456789010"
+            None
         );
+        // Starts with underscore -> None (unchanged)
         assert_eq!(
             obfuscator.obfuscate_credit_card_number("_internal", "4532123456789010"),
-            "4532123456789010"
+            None
         );
-        assert_eq!(obfuscator.obfuscate_credit_card_number("user.id", "12345"), "12345");
+        // Not a credit card -> None (unchanged)
+        assert_eq!(obfuscator.obfuscate_credit_card_number("user.id", "12345"), None);
     }
 
     #[test]
@@ -596,13 +607,15 @@ mod tests {
         };
         let obfuscator = CreditCardObfuscator::new(&config);
 
+        // Valid Luhn checksum -> obfuscated
         assert_eq!(
             obfuscator.obfuscate_credit_card_number("payment.card", "4111111111111111"),
-            "?"
+            Some("?".into())
         );
+        // Invalid Luhn checksum -> not a card, unchanged
         assert_eq!(
             obfuscator.obfuscate_credit_card_number("payment.card", "4111111111111112"),
-            "4111111111111112"
+            None
         );
     }
 }

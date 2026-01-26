@@ -1,6 +1,7 @@
 //! SQL obfuscation filters.
 
-use std::collections::HashSet;
+use saluki_common::collections::FastHashSet;
+use stringtheory::MetaString;
 
 use super::obfuscator::SqlObfuscationConfig;
 use super::sql_tokenizer::TokenKind;
@@ -27,7 +28,7 @@ pub struct SQLMetadata {
 pub struct MetadataFinderFilter {
     collect_table_names: bool,
     replace_digits: bool,
-    tables_seen: HashSet<String>,
+    tables_seen: FastHashSet<MetaString>,
     tables_csv: String,
 }
 
@@ -36,7 +37,7 @@ impl MetadataFinderFilter {
         Self {
             collect_table_names: config.table_names(),
             replace_digits: config.replace_digits(),
-            tables_seen: HashSet::new(),
+            tables_seen: FastHashSet::default(),
             tables_csv: String::new(),
         }
     }
@@ -48,14 +49,14 @@ impl MetadataFinderFilter {
     }
 
     fn store_table_name(&mut self, name: String) {
-        if self.tables_seen.contains(&name) {
+        if self.tables_seen.contains(name.as_str()) {
             return;
         }
-        self.tables_seen.insert(name.clone());
         if !self.tables_csv.is_empty() {
             self.tables_csv.push(',');
         }
         self.tables_csv.push_str(&name);
+        self.tables_seen.insert(MetaString::from(name));
     }
 }
 
