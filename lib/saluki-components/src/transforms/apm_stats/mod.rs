@@ -19,12 +19,12 @@ use saluki_core::{
         trace_stats::{ClientStatsPayload, TraceStats},
         Event, EventType,
     },
-    topology::{EventsBuffer, OutputDefinition},
+    topology::OutputDefinition,
 };
 use saluki_env::{
     host::providers::BoxedHostProvider, workload::EntityId, EnvironmentProvider, HostProvider, WorkloadProvider,
 };
-use saluki_error::GenericError;
+use saluki_error::{ErrorContext as _, GenericError};
 use stringtheory::MetaString;
 use tokio::{select, time::interval};
 use tracing::{debug, error};
@@ -50,7 +50,7 @@ const DEFAULT_FLUSH_INTERVAL: Duration = Duration::from_secs(10);
 const TAG_PROCESS_TAGS: &str = "_dd.tags.process";
 
 /// Maximum number of `ClientGroupedStats` entries per `TraceStats` event.
-const MAX_STATS_PER_TRACE_STATS: usize = 4000;
+const MAX_STATS_GROUPS_PER_EVENT: usize = 4000;
 
 /// APM Stats transform configuration.
 ///
@@ -316,9 +316,7 @@ fn split_into_trace_stats(client_payloads: Vec<ClientStatsPayload>, max_entries_
                 // Create a new "split" bucket based on the current bucket (`client_stats_bucket`) but containing only
                 // the split-off entries. This will feed into the current client payload (`client_payload`) which we'll
                 // finalize and add to the current event before starting a new event.
-                let mut split_bucket = client_stats_bucket.clone();
-                split_bucket.stats_mut().extend(split_entries);
-
+                let split_bucket = client_stats_bucket.clone().with_stats(split_entries);
                 current_client_stats_buckets.push(split_bucket);
 
                 let split_client_payload = client_payload
@@ -371,19 +369,15 @@ impl Transform for ApmStats {
 
                 _ = flush_ticker.tick() => {
                     let stats_payloads = self.concentrator.flush(now_nanos(), final_flush);
-
                     if !stats_payloads.is_empty() {
-                        let trace_stats_list = split_into_trace_stats(stats_payloads, MAX_STATS_PER_TRACE_STATS);
+                        debug!(stats_payloads = stats_payloads.len(), "Flushing APM stats.");
 
-                        for trace_stats in trace_stats_list {
-                            debug!(payloads = trace_stats.stats().len(), "Flushing APM stats.");
+                        let events = split_into_trace_stats(stats_payloads, MAX_STATS_GROUPS_PER_EVENT);
+                        let dispatcher = context.dispatcher().buffered()
+                            .error_context("Default output should be available.")?;
 
-                            let mut event_buffer = EventsBuffer::default();
-                            if event_buffer.try_push(Event::TraceStats(trace_stats)).is_some() {
-                                error!("Failed to push TraceStats event to buffer.");
-                            } else if let Err(e) = context.dispatcher().dispatch(event_buffer).await {
-                                error!(error = %e, "Failed to dispatch TraceStats event.");
-                            }
+                        if let Err(e) = dispatcher.send_all(events.into_iter().map(Event::TraceStats)).await {
+                            error!(error = %e, "Failed to dispatch events.");
                         }
                     }
 
