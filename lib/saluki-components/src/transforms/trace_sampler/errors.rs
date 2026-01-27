@@ -64,11 +64,11 @@ mod tests {
             MetaString::from("resource"),
             MetaString::from("web"),
             trace_id,
-            1, // span_id
-            0, // parent_id
-            42, // start
+            1,       // span_id
+            0,       // parent_id
+            42,      // start
             1000000, // duration
-            0, // error
+            0,       // error
         );
 
         // Child span
@@ -78,11 +78,11 @@ mod tests {
             MetaString::from("resource"),
             MetaString::from("sql"),
             trace_id,
-            2, // span_id
-            1, // parent_id
-            100, // start
+            2,      // span_id
+            1,      // parent_id
+            100,    // start
             200000, // duration
-            0, // error
+            0,      // error
         );
 
         let trace = Trace::new(vec![root, child], TagSet::default());
@@ -98,11 +98,11 @@ mod tests {
             MetaString::from("resource"),
             MetaString::from("web"),
             trace_id,
-            1, // span_id
-            0, // parent_id
-            42, // start
+            1,       // span_id
+            0,       // parent_id
+            42,      // start
             1000000, // duration
-            1, // error = 1
+            1,       // error = 1
         );
 
         // Child span
@@ -112,11 +112,11 @@ mod tests {
             MetaString::from("resource"),
             MetaString::from("sql"),
             trace_id,
-            2, // span_id
-            1, // parent_id
-            100, // start
+            2,      // span_id
+            1,      // parent_id
+            100,    // start
             200000, // duration
-            0, // error
+            0,      // error
         );
 
         let trace = Trace::new(vec![root, child], TagSet::default());
@@ -125,7 +125,7 @@ mod tests {
 
     #[test]
     fn test_shrink() {
-        // Test that shrink preserves first signatures and collapses later ones.         
+        // Test that shrink preserves first signatures and collapses later ones.
         // The shrink logic activates when size() >= SHRINK_CARDINALITY/2 (100).
         // When it activates, it builds an allow-list from the current `rates` map.
         // Since `shrink` runs before `count_weighted_sig` in the sample flow, we must
@@ -142,7 +142,9 @@ mod tests {
             let (mut trace, root_idx) = get_test_trace(3);
             let spans = trace.spans_mut();
             // modify the non root span to create unique signatures
-            spans[1] = spans[1].clone().with_service(MetaString::from(format!("service_{}", i + 1000)));
+            spans[1] = spans[1]
+                .clone()
+                .with_service(MetaString::from(format!("service_{}", i + 1000)));
 
             let signature = compute_signature_with_root_and_env(&trace, root_idx);
             sigs.push(signature);
@@ -159,21 +161,26 @@ mod tests {
 
         // Verify first (threshold-1) signatures are preserved (they're in the allow-list)
         let threshold = shrink_cardinality / 2;
-        for i in 0..(threshold - 1) {
+        for (i, sig) in sigs.iter().enumerate().take(threshold - 1) {
             assert_eq!(
-                sigs[i],
-                sampler.score_sampler.test_shrink(sigs[i]),
+                *sig,
+                sampler.score_sampler.test_shrink(*sig),
                 "Signature at index {} should be preserved",
                 i
             );
         }
 
         // Verify signatures from 2*shrinkCardinality onwards are shrunk
-        for i in (2 * shrink_cardinality)..(3 * shrink_cardinality - 1) {
-            let expected = Signature(sigs[i].0 % (threshold as u64));
+        for (i, sig) in sigs
+            .iter()
+            .enumerate()
+            .skip(2 * shrink_cardinality)
+            .take(shrink_cardinality - 1)
+        {
+            let expected = Signature(sig.0 % (threshold as u64));
             assert_eq!(
                 expected,
-                sampler.score_sampler.test_shrink(sigs[i]),
+                sampler.score_sampler.test_shrink(*sig),
                 "Signature at index {} should be shrunk",
                 i
             );
@@ -220,12 +227,10 @@ mod tests {
         let mut test_time = SystemTime::now();
 
         for period in 0..(init_periods + periods) {
-            test_time = test_time + BUCKET_DURATION;
+            test_time += BUCKET_DURATION;
 
             for i in 0..traces_per_period {
-                let (mut trace, root_idx) = get_test_trace_with_error(
-                    (period * traces_per_period + i) as u64
-                );
+                let (mut trace, root_idx) = get_test_trace_with_error((period * traces_per_period + i) as u64);
                 let sampled = sampler.sample_error(test_time, &mut trace, root_idx);
 
                 // Once we got into the stable regime, count the samples
@@ -242,7 +247,10 @@ mod tests {
         assert!(
             (actual_ratio - expected_ratio).abs() / expected_ratio < 0.2,
             "Expected ratio {:.4}, got {:.4} (sampled {} out of {})",
-            expected_ratio, actual_ratio, sampled_count, traces_per_period * periods
+            expected_ratio,
+            actual_ratio,
+            sampled_count,
+            traces_per_period * periods
         );
 
         // We should have a throughput of sampled traces around targetTPS
@@ -250,7 +258,8 @@ mod tests {
         assert!(
             (actual_tps - target_tps).abs() / target_tps < 0.2,
             "Expected TPS {:.2}, got {:.2}",
-            target_tps, actual_tps
+            target_tps,
+            actual_tps
         );
     }
 }
