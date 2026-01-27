@@ -25,8 +25,7 @@ use saluki_components::{
     transforms::{
         AggregateConfiguration, ApmStatsTransformConfiguration, ChainedConfiguration, DogstatsDMapperConfiguration,
         DogstatsDPrefixFilterConfiguration, HostEnrichmentConfiguration, HostTagsConfiguration,
-        TraceSamplerConfiguration,
-        TraceObfuscationConfiguration,
+        TraceObfuscationConfiguration, TraceSamplerConfiguration,
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
