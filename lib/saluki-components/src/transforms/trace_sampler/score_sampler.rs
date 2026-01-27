@@ -135,6 +135,21 @@ impl ScoreSampler {
     }
 }
 
+#[cfg(test)]
+impl ScoreSampler {
+    pub(crate) fn test_shrink(&mut self, sig: Signature) -> Signature {
+        self.shrink(sig)
+    }
+
+    pub(crate) fn test_size(&self) -> i64 {
+        self.sampler.size()
+    }
+
+    pub(crate) fn test_shrink_cardinality() -> usize {
+        SHRINK_CARDINALITY
+    }
+}
+
 /// Calculate the weight from the span's global rate and presampler rate.
 fn weight_root(span: &Span) -> f32 {
     let client_rate = span
