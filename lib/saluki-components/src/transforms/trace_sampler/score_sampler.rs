@@ -13,6 +13,7 @@ const KEY_SAMPLING_RATE_PRE_SAMPLER: &str = "_dd1.sr.rapre";
 
 // ScoreSampler-specific rate keys
 pub(super) const ERRORS_RATE_KEY: &str = "_dd.errors_sr";
+pub(super) const NO_PRIORITY_RATE_KEY: &str = "_dd.no_p_sr";
 
 // shrinkCardinality is the max Signature cardinality before shrinking
 const SHRINK_CARDINALITY: usize = 200;
@@ -33,13 +34,33 @@ const SAMPLER_HASHER: u64 = 1111111111111111111;
 /// # Missing
 ///
 /// TODO: Add SampleV1 method for legacy trace format support
-/// TODO: Add NoPrioritySampler implementation
 pub struct ScoreSampler {
     sampler: Sampler,
     sampling_rate_key: &'static str,
     disabled: bool,
     // When shrinking, the shrink allowlist represents the currently active signatures while new ones get collapsed
     shrink_allow_list: Option<FastHashMap<Signature, f64>>,
+}
+
+/// NoPrioritySampler for traces without a sampling priority.
+///
+/// Wraps a ScoreSampler configured specifically for no-priority sampling.
+pub(super) struct NoPrioritySampler {
+    score_sampler: ScoreSampler,
+}
+
+impl NoPrioritySampler {
+    /// Create a new NoPrioritySampler with the given configuration.
+    pub(super) fn new(target_tps: f64, extra_sample_rate: f64) -> Self {
+        Self {
+            score_sampler: ScoreSampler::new(NO_PRIORITY_RATE_KEY, false, target_tps, extra_sample_rate),
+        }
+    }
+
+    /// Evaluate a trace that has no sampling priority.
+    pub(super) fn sample(&mut self, now: SystemTime, trace: &mut Trace, root_idx: usize) -> bool {
+        self.score_sampler.sample(now, trace, root_idx)
+    }
 }
 
 impl ScoreSampler {

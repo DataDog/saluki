@@ -88,6 +88,10 @@ impl TransformBuilder for TraceSamplerConfiguration {
             error_tracking_standalone: self.apm_config.error_tracking_standalone_enabled(),
             probabilistic_sampler_enabled: self.apm_config.probabilistic_sampler_enabled(),
             error_sampler: errors::ErrorsSampler::new(self.apm_config.errors_per_second(), ERROR_SAMPLE_RATE),
+            no_priority_sampler: score_sampler::NoPrioritySampler::new(
+                self.apm_config.target_traces_per_second(),
+                ERROR_SAMPLE_RATE,
+            ),
         };
 
         Ok(Box::new(sampler))
@@ -106,6 +110,7 @@ pub struct TraceSampler {
     error_sampling_enabled: bool,
     probabilistic_sampler_enabled: bool,
     error_sampler: errors::ErrorsSampler,
+    no_priority_sampler: score_sampler::NoPrioritySampler,
 }
 
 impl TraceSampler {
@@ -301,11 +306,14 @@ impl TraceSampler {
             return (prob_keep, priority, decision_maker, Some(root_span_idx));
         }
 
-        if let Some(user_priority) = self.get_user_priority(trace, root_span_idx) {
-            if user_priority > 0 {
+        let user_priority = self.get_user_priority(trace, root_span_idx);
+        if let Some(priority) = user_priority {
+            if priority > 0 {
                 // User wants to keep this trace
-                return (true, user_priority, DECISION_MAKER_MANUAL_PRIORITY, Some(root_span_idx));
+                return (true, priority, DECISION_MAKER_MANUAL_PRIORITY, Some(root_span_idx));
             }
+        } else if self.no_priority_sampler.sample(now, trace, root_span_idx) {
+            return (true, PRIORITY_AUTO_KEEP, "", Some(root_span_idx));
         }
 
         if self.error_sampling_enabled && self.trace_contains_error(trace, false) {
@@ -491,6 +499,7 @@ mod tests {
             error_tracking_standalone: false,
             probabilistic_sampler_enabled: true,
             error_sampler: errors::ErrorsSampler::new(10.0, 1.0),
+            no_priority_sampler: score_sampler::NoPrioritySampler::new(10.0, 1.0),
         }
     }
 
