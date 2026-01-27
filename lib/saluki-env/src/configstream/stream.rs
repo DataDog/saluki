@@ -2,7 +2,7 @@ use datadog_protos::agent::{config_event, ConfigSnapshot};
 use futures::StreamExt;
 use prost_types::value::Kind;
 use saluki_config::dynamic::ConfigUpdate;
-use saluki_config::GenericConfiguration;
+use saluki_config::{upsert, GenericConfiguration};
 use saluki_error::GenericError;
 use serde_json::{Map, Value};
 use tokio::sync::mpsc;
@@ -75,16 +75,16 @@ async fn run_config_stream_event_loop(mut client: RemoteAgentClient, sender: mps
     }
 }
 
-/// Converts a `ConfigSnapshot` into a single flat `serde_json::Value::Object` (a map).
+/// Converts a `ConfigSnapshot` into a nested `serde_json::Value::Object`.
 fn snapshot_to_map(snapshot: &ConfigSnapshot) -> Value {
-    let mut map = Map::new();
+    let mut root = Value::Object(Map::new());
 
     for setting in &snapshot.settings {
         let value = proto_value_to_serde_value(&setting.value);
-        map.insert(setting.key.clone(), value);
+        upsert(&mut root, &setting.key, value);
     }
 
-    Value::Object(map)
+    root
 }
 
 /// Recursively converts a `google::protobuf::Value` into a `serde_json::Value`.
