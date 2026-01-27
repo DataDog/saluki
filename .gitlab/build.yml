@@ -198,7 +198,7 @@ publish-adp-image-internal:
     strategy: depend
   variables:
     IMAGE_NAME: agent-data-plane
-    IMAGE_VERSION: tmpl-v3
+    IMAGE_VERSION: tmpl-v4
     TMPL_SRC_REPO: ${ADP_IMAGE_REPO_NAME}
     TMPL_SRC_IMAGE: ${ADP_IMAGE_VERSION}-internal
     RELEASE_TAG: ${ADP_IMAGE_VERSION}
@@ -222,7 +222,7 @@ publish-adp-image-internal-fips:
     strategy: depend
   variables:
     IMAGE_NAME: agent-data-plane
-    IMAGE_VERSION: tmpl-v3
+    IMAGE_VERSION: tmpl-v4
     TMPL_SRC_REPO: ${ADP_IMAGE_REPO_NAME}
     TMPL_SRC_IMAGE: ${ADP_IMAGE_VERSION_FIPS}-internal
     RELEASE_TAG: ${ADP_IMAGE_VERSION_FIPS}
