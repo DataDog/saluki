@@ -25,7 +25,7 @@ const fn default_error_tracking_standalone_enabled() -> bool {
 }
 
 const fn default_probabilistic_sampling_enabled() -> bool {
-    true
+    false
 }
 const fn default_peer_tags_aggregation() -> bool {
     true
@@ -55,7 +55,7 @@ struct ProbabilisticSamplerConfig {
     /// When enabled, the trace sampler keeps approximately `sampling_percentage` of traces using a
     /// deterministic hash of the trace ID.
     ///
-    /// Defaults to `true`.
+    /// Defaults to `false`.
     #[serde(default = "default_probabilistic_sampling_enabled")]
     enabled: bool,
 
