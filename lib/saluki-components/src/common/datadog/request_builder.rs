@@ -95,6 +95,15 @@ where
         prefix_len: usize,
         suffix_len: usize,
     },
+    #[snafu(display(
+        "input would exceed uncompressed size limit ({} bytes > {} bytes)",
+        encoded_len,
+        uncompressed_len_limit
+    ))]
+    InputExceedsUncompressedLimit {
+        encoded_len: usize,
+        uncompressed_len_limit: usize,
+    },
     #[snafu(display("input was invalid for request builder: {:?}'", input))]
     InvalidInput { input: E::Input },
     #[snafu(display("failed to encode/write payload: {}", source))]
@@ -315,6 +324,14 @@ where
         self.encoder
             .encode(input, &mut self.scratch_buf)
             .context(FailedToEncode)?;
+
+        // If the input would exceed the uncompressed size limit by itself, let the caller know.
+        if self.scratch_buf.len() > self.uncompressed_len_limit {
+            return Err(RequestBuilderError::InputExceedsUncompressedLimit {
+                encoded_len: self.scratch_buf.len(),
+                uncompressed_len_limit: self.uncompressed_len_limit,
+            });
+        }
 
         // If the input can't fit into the current request payload based on the uncompressed size limit, or isn't likely
         // to fit into the current request payload based on the estimated compressed size limit, then return it to the

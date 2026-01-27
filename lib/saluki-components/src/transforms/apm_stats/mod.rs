@@ -14,7 +14,11 @@ use saluki_config::GenericConfiguration;
 use saluki_context::{origin::OriginTagCardinality, tags::TagSet};
 use saluki_core::{
     components::{transforms::*, ComponentContext},
-    data_model::event::{trace::Trace, trace_stats::TraceStats, Event, EventType},
+    data_model::event::{
+        trace::Trace,
+        trace_stats::{ClientStatsPayload, TraceStats},
+        Event, EventType,
+    },
     topology::{EventsBuffer, OutputDefinition},
 };
 use saluki_env::{
@@ -44,6 +48,9 @@ const DEFAULT_FLUSH_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Tag key for process tags in span meta.
 const TAG_PROCESS_TAGS: &str = "_dd.tags.process";
+
+/// Maximum number of `ClientGroupedStats` entries per `TraceStats` event.
+const MAX_STATS_PER_TRACE_STATS: usize = 4000;
 
 /// APM Stats transform configuration.
 ///
@@ -246,6 +253,105 @@ impl ApmStats {
     }
 }
 
+/// Splits stats payloads into multiple `TraceStats` events, each containing at most `max_entries_per_event` grouped
+/// entries.
+///
+/// This function will not attempt to collapse/pack payloads to optimize the number of events generated: there will always
+/// be at least as many output client payloads as there are input client payloads.
+fn split_into_trace_stats(client_payloads: Vec<ClientStatsPayload>, max_entries_per_event: usize) -> Vec<TraceStats> {
+    if client_payloads.is_empty() {
+        return Vec::new();
+    }
+
+    // If the total number of grouped stats entries is below the specified threshold, then we don't do any splitting or
+    // collapsing or anything.
+    let total_grouped_entries = client_payloads
+        .iter()
+        .map(|p| p.stats().iter().map(|b| b.stats().len()).sum::<usize>())
+        .sum::<usize>();
+    if total_grouped_entries <= max_entries_per_event {
+        return vec![TraceStats::new(client_payloads)];
+    }
+
+    let mut events = Vec::new();
+    let mut current_client_payloads = Vec::new();
+    let mut current_event_len = 0;
+
+    for mut client_payload in client_payloads {
+        // If the current payload can fit entirely in the current event, then collect it as-is.
+        let client_payload_len = client_payload.stats().iter().map(|b| b.stats().len()).sum::<usize>();
+        if current_event_len + client_payload_len <= max_entries_per_event {
+            current_client_payloads.push(client_payload);
+            current_event_len += client_payload_len;
+            continue;
+        }
+
+        // Consume all the stats buckets from the current client payload, and set ourselves up to go through each
+        // bucket, splitting them as necessary.
+        //
+        // We basically iterate until we find a bucket where adding its entries would cause us to exceed our threshold,
+        // and then we split that bucket, creating a new client payload in the process, and keep repeating that until
+        // we've exhausted all buckets for our starting client payload.
+        let mut current_client_stats_buckets = Vec::new();
+        for mut client_stats_bucket in client_payload.take_stats() {
+            let bucket_len = client_stats_bucket.stats().len();
+            // If this bucket can fit in the current event, then collect it as-is.
+            if current_event_len + bucket_len <= max_entries_per_event {
+                current_client_stats_buckets.push(client_stats_bucket);
+                current_event_len += bucket_len;
+                continue;
+            }
+
+            // We have to split this bucket. We take the grouped entries it has, and we subdivide those into a new
+            // client bucket, or buckets in order to ensure we don't exceed our threshold.
+            let mut bucket_entries = client_stats_bucket.take_stats();
+            while current_event_len + bucket_entries.len() > max_entries_per_event {
+                // We calculate the split point this way because the returned vector from `split_off` is referenced
+                // against the end of the vector, so if we have 100 items, and we only want 20, we need to split at
+                // index 80 (100 - 20 == 80).
+                let split_amount = max_entries_per_event - current_event_len;
+                let split_point = bucket_entries.len() - split_amount;
+                let split_entries = bucket_entries.split_off(split_point);
+
+                // Create a new "split" bucket based on the current bucket (`client_stats_bucket`) but containing only
+                // the split-off entries. This will feed into the current client payload (`client_payload`) which we'll
+                // finalize and add to the current event before starting a new event.
+                let mut split_bucket = client_stats_bucket.clone();
+                split_bucket.stats_mut().extend(split_entries);
+
+                current_client_stats_buckets.push(split_bucket);
+
+                let split_client_payload = client_payload
+                    .clone()
+                    .with_stats(std::mem::take(&mut current_client_stats_buckets));
+                current_client_payloads.push(split_client_payload);
+
+                events.push(TraceStats::new(std::mem::take(&mut current_client_payloads)));
+                current_event_len = 0;
+            }
+
+            // If we have any leftover entries from the bucket after splitting it up, put them back in the current bucket
+            // and add that bucket to the current client payload.
+            if !bucket_entries.is_empty() {
+                current_event_len += bucket_entries.len();
+                current_client_stats_buckets.push(client_stats_bucket.with_stats(bucket_entries));
+            }
+        }
+
+        // If we have buckets for this client payload (whether we split or not), add them back to the current client payload.
+        if !current_client_stats_buckets.is_empty() {
+            current_client_payloads.push(client_payload.with_stats(current_client_stats_buckets));
+        }
+    }
+
+    // Stick the remaining entries into a final `TraceStats` event, if any.
+    if !current_client_payloads.is_empty() {
+        events.push(TraceStats::new(current_client_payloads));
+    }
+
+    events
+}
+
 #[async_trait]
 impl Transform for ApmStats {
     async fn run(mut self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
@@ -267,14 +373,17 @@ impl Transform for ApmStats {
                     let stats_payloads = self.concentrator.flush(now_nanos(), final_flush);
 
                     if !stats_payloads.is_empty() {
-                        let trace_stats = TraceStats::new(stats_payloads);
-                        debug!(buckets = trace_stats.stats().len(), "Flushing APM stats.");
+                        let trace_stats_list = split_into_trace_stats(stats_payloads, MAX_STATS_PER_TRACE_STATS);
 
-                        let mut event_buffer = EventsBuffer::default();
-                        if event_buffer.try_push(Event::TraceStats(trace_stats)).is_some() {
-                            error!("Failed to push TraceStats event to buffer.");
-                        } else if let Err(e) = context.dispatcher().dispatch(event_buffer).await {
-                            error!(error = %e, "Failed to dispatch TraceStats event.");
+                        for trace_stats in trace_stats_list {
+                            debug!(payloads = trace_stats.stats().len(), "Flushing APM stats.");
+
+                            let mut event_buffer = EventsBuffer::default();
+                            if event_buffer.try_push(Event::TraceStats(trace_stats)).is_some() {
+                                error!("Failed to push TraceStats event to buffer.");
+                            } else if let Err(e) = context.dispatcher().dispatch(event_buffer).await {
+                                error!(error = %e, "Failed to dispatch TraceStats event.");
+                            }
                         }
                     }
 
@@ -359,9 +468,11 @@ fn extract_process_tags(trace: &Trace) -> String {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
     use saluki_common::collections::FastHashMap;
     use saluki_context::tags::TagSet;
-    use saluki_core::data_model::event::trace::Span;
+    use saluki_core::data_model::event::trace_stats::ClientStatsBucket;
+    use saluki_core::data_model::event::{trace::Span, trace_stats::ClientGroupedStats};
 
     use super::aggregation::BUCKET_DURATION_NS;
     use super::span_concentrator::METRIC_PARTIAL_VERSION;
@@ -1047,5 +1158,257 @@ mod tests {
         // Different tags should produce different hash
         let hash3 = process_tags_hash("a:1,b:2");
         assert_ne!(hash1, hash3);
+    }
+
+    // Helper to create a ClientGroupedStats for testing
+    fn make_grouped_stats(service: &str, resource: &str) -> ClientGroupedStats {
+        ClientGroupedStats::new(service, "operation", resource)
+            .with_hits(1)
+            .with_duration(100)
+    }
+
+    // Helper to create a ClientStatsBucket with N stats
+    fn make_bucket_with_stats(n: usize) -> ClientStatsBucket {
+        let stats: Vec<ClientGroupedStats> = (0..n)
+            .map(|i| make_grouped_stats("service", &format!("resource-{}", i)))
+            .collect();
+        ClientStatsBucket::new(1000, 10_000_000_000, stats)
+    }
+
+    // Helper to create a ClientStatsPayload with specified buckets
+    fn make_payload_with_buckets(hostname: &str, buckets: Vec<ClientStatsBucket>) -> ClientStatsPayload {
+        ClientStatsPayload::new(hostname, "test-env", "1.0.0")
+            .with_stats(buckets)
+            .with_container_id("container-123")
+            .with_lang("rust")
+    }
+
+    // Helper to count total ClientGroupedStats across all payloads in a TraceStats
+    fn count_grouped_stats(trace_stats: &TraceStats) -> usize {
+        trace_stats
+            .stats()
+            .iter()
+            .flat_map(|p| p.stats())
+            .map(|b| b.stats().len())
+            .sum()
+    }
+
+    #[test]
+    fn test_split_into_trace_stats_empty_input() {
+        let result = split_into_trace_stats(vec![], 100);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_split_into_trace_stats_no_split_needed() {
+        // 50 stats with max 100 - no split needed
+        let bucket = make_bucket_with_stats(50);
+        let payload = make_payload_with_buckets("host1", vec![bucket]);
+
+        let result = split_into_trace_stats(vec![payload], 100);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(count_grouped_stats(&result[0]), 50);
+    }
+
+    #[test]
+    fn test_split_into_trace_stats_exact_threshold() {
+        // Exactly 100 stats with max 100 - no split needed
+        let bucket = make_bucket_with_stats(100);
+        let payload = make_payload_with_buckets("host1", vec![bucket]);
+
+        let result = split_into_trace_stats(vec![payload], 100);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(count_grouped_stats(&result[0]), 100);
+    }
+
+    #[test]
+    fn test_split_into_trace_stats_splits_single_bucket() {
+        // 250 stats in one bucket with max 100 - should split into 3 TraceStats
+        let bucket = make_bucket_with_stats(250);
+        let payload = make_payload_with_buckets("host1", vec![bucket]);
+
+        let result = split_into_trace_stats(vec![payload], 100);
+
+        assert_eq!(result.len(), 3);
+        assert_eq!(count_grouped_stats(&result[0]), 100);
+        assert_eq!(count_grouped_stats(&result[1]), 100);
+        assert_eq!(count_grouped_stats(&result[2]), 50);
+
+        // Total should be preserved
+        let total: usize = result.iter().map(count_grouped_stats).sum();
+        assert_eq!(total, 250);
+    }
+
+    #[test]
+    fn test_split_into_trace_stats_splits_across_payloads() {
+        // Two payloads with 60 stats each, max 100 - should combine into 2 TraceStats
+        let payload1 = make_payload_with_buckets("host1", vec![make_bucket_with_stats(60)]);
+        let payload2 = make_payload_with_buckets("host2", vec![make_bucket_with_stats(60)]);
+
+        let result = split_into_trace_stats(vec![payload1, payload2], 100);
+
+        assert_eq!(result.len(), 2);
+        // First TraceStats: 60 from payload1 + 40 from payload2 = 100
+        assert_eq!(count_grouped_stats(&result[0]), 100);
+        // Second TraceStats: remaining 20 from payload2
+        assert_eq!(count_grouped_stats(&result[1]), 20);
+    }
+
+    #[test]
+    fn test_split_into_trace_stats_splits_single_payload_multiple_buckets() {
+        // One payload with two buckets (70 + 80 = 150 stats), max 100
+        let bucket1 = make_bucket_with_stats(70);
+        let bucket2 = make_bucket_with_stats(80);
+        let payload = make_payload_with_buckets("host1", vec![bucket1, bucket2]);
+
+        let result = split_into_trace_stats(vec![payload], 100);
+
+        assert_eq!(result.len(), 2);
+        let total: usize = result.iter().map(count_grouped_stats).sum();
+        assert_eq!(total, 150);
+    }
+
+    #[test]
+    fn test_split_into_trace_stats_preserves_metadata() {
+        let bucket = make_bucket_with_stats(250);
+        let payload = ClientStatsPayload::new("test-host", "prod", "2.0.0")
+            .with_stats(vec![bucket])
+            .with_container_id("container-abc")
+            .with_lang("go")
+            .with_git_commit_sha("abc123")
+            .with_image_tag("v1.2.3")
+            .with_process_tags_hash(12345)
+            .with_process_tags("tag1,tag2");
+
+        let result = split_into_trace_stats(vec![payload], 100);
+
+        // All split payloads should have the same metadata
+        for trace_stats in &result {
+            for p in trace_stats.stats() {
+                assert_eq!(p.hostname(), "test-host");
+                assert_eq!(p.env(), "prod");
+                assert_eq!(p.version(), "2.0.0");
+                assert_eq!(p.container_id(), "container-abc");
+                assert_eq!(p.lang(), "go");
+                assert_eq!(p.git_commit_sha(), "abc123");
+                assert_eq!(p.image_tag(), "v1.2.3");
+                assert_eq!(p.process_tags_hash(), 12345);
+                assert_eq!(p.process_tags(), "tag1,tag2");
+            }
+        }
+    }
+
+    #[test]
+    fn test_split_into_trace_stats_preserves_bucket_metadata() {
+        // Create a bucket with specific start/duration/time_shift
+        let stats: Vec<ClientGroupedStats> = (0..150)
+            .map(|i| make_grouped_stats("svc", &format!("res-{}", i)))
+            .collect();
+        let bucket = ClientStatsBucket::new(999_000_000, 10_000_000_000, stats).with_agent_time_shift(42);
+        let payload = make_payload_with_buckets("host1", vec![bucket]);
+
+        let result = split_into_trace_stats(vec![payload], 100);
+
+        // All split buckets should have the same start/duration/time_shift
+        for trace_stats in &result {
+            for p in trace_stats.stats() {
+                for b in p.stats() {
+                    assert_eq!(b.start(), 999_000_000);
+                    assert_eq!(b.duration(), 10_000_000_000);
+                    assert_eq!(b.agent_time_shift(), 42);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_split_into_trace_stats_handles_empty_bucket() {
+        let empty_bucket = ClientStatsBucket::new(1000, 10_000_000_000, vec![]);
+        let payload = make_payload_with_buckets("host1", vec![empty_bucket]);
+
+        let result = split_into_trace_stats(vec![payload], 100);
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(count_grouped_stats(&result[0]), 0);
+    }
+
+    #[test]
+    fn test_split_into_trace_stats_large_split() {
+        // 10,000 stats with max 4000 - should produce 3 TraceStats
+        let bucket = make_bucket_with_stats(10_000);
+        let payload = make_payload_with_buckets("host1", vec![bucket]);
+
+        let result = split_into_trace_stats(vec![payload], 4000);
+
+        assert_eq!(result.len(), 3);
+        assert_eq!(count_grouped_stats(&result[0]), 4000);
+        assert_eq!(count_grouped_stats(&result[1]), 4000);
+        assert_eq!(count_grouped_stats(&result[2]), 2000);
+    }
+
+    // Property test strategies
+
+    /// Strategy to generate arbitrary ClientGroupedStats.
+    fn arb_grouped_stats() -> impl Strategy<Value = ClientGroupedStats> {
+        (0..100u64, 0..1000u64).prop_map(|(hits, duration)| {
+            ClientGroupedStats::new("service", "operation", "resource")
+                .with_hits(hits)
+                .with_duration(duration)
+        })
+    }
+
+    /// Strategy to generate a bucket with 0..=max_stats_per_bucket grouped stats.
+    fn arb_bucket(max_stats_per_bucket: usize) -> impl Strategy<Value = ClientStatsBucket> {
+        proptest::collection::vec(arb_grouped_stats(), 0..=max_stats_per_bucket)
+            .prop_map(|stats| ClientStatsBucket::new(1000, 10_000_000_000, stats))
+    }
+
+    /// Strategy to generate a payload with 1..=max_buckets buckets.
+    fn arb_payload(max_buckets: usize, max_stats_per_bucket: usize) -> impl Strategy<Value = ClientStatsPayload> {
+        proptest::collection::vec(arb_bucket(max_stats_per_bucket), 1..=max_buckets)
+            .prop_map(|buckets| ClientStatsPayload::new("host", "env", "1.0.0").with_stats(buckets))
+    }
+
+    /// Strategy to generate test inputs for the split function.
+    ///
+    /// Parameters:
+    /// - num_payloads: 1..=10
+    /// - num_buckets_per_payload: 1..=5
+    /// - num_stats_per_bucket: 0..=500
+    /// - max_entries_per_event: 1..=1000 (never zero)
+    fn arb_split_inputs() -> impl Strategy<Value = (Vec<ClientStatsPayload>, usize)> {
+        let payloads_strategy = proptest::collection::vec(arb_payload(5, 500), 1..=10);
+        let max_entries_strategy = 1..=1000usize;
+
+        (payloads_strategy, max_entries_strategy)
+    }
+
+    #[test_strategy::proptest]
+    #[cfg_attr(miri, ignore)]
+    fn property_test_split_respects_max_entries(
+        #[strategy(arb_split_inputs())] inputs: (Vec<ClientStatsPayload>, usize),
+    ) {
+        let (payloads, max_entries_per_event) = inputs;
+
+        let input_total: usize = payloads.iter().flat_map(|p| p.stats()).map(|b| b.stats().len()).sum();
+
+        let result = split_into_trace_stats(payloads, max_entries_per_event);
+
+        // Property 1: No TraceStats should exceed max_entries_per_event
+        for trace_stats in &result {
+            let count = count_grouped_stats(trace_stats);
+            prop_assert!(
+                count <= max_entries_per_event,
+                "TraceStats has {} grouped stats, exceeds max of {}",
+                count,
+                max_entries_per_event
+            );
+        }
+
+        // Property 2: Total stats should be preserved
+        let output_total: usize = result.iter().map(count_grouped_stats).sum();
+        prop_assert_eq!(input_total, output_total, "Total stats count should be preserved");
     }
 }

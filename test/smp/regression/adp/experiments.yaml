@@ -397,6 +397,10 @@ experiments:
     extends: otlp_base
     optimization_goal: memory
 
+    target:
+      environment:
+        DD_LOG_LEVEL: saluki_components::common::datadog::request_builder=trace,saluki_components::encoders::datadog::stats=trace,info
+
     lading:
       generator:
         - grpc:
