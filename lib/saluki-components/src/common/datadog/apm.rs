@@ -23,7 +23,7 @@ const fn default_error_tracking_standalone_enabled() -> bool {
 }
 
 const fn default_probabilistic_sampling_enabled() -> bool {
-    true 
+    true
 }
 const fn default_peer_tags_aggregation() -> bool {
     true
