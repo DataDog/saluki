@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["ConfigurationError"],"mod":["dynamic","value"],"struct":["ConfigurationLoader","GenericConfiguration"]};
+window.SIDEBAR_ITEMS = {"enum":["ConfigurationError"],"fn":["upsert"],"mod":["dynamic","value"],"struct":["ConfigurationLoader","GenericConfiguration"]};
