@@ -3,6 +3,8 @@ use saluki_error::GenericError;
 use serde::Deserialize;
 use stringtheory::MetaString;
 
+use super::obfuscation::ObfuscationConfig;
+
 const fn default_target_traces_per_second() -> f64 {
     10.0
 }
@@ -162,6 +164,10 @@ pub struct ApmConfig {
     /// Defaults to empty string (no fallback).
     #[serde(skip)]
     hostname: MetaString,
+
+    /// Obfuscation configuration for trace data.
+    #[serde(default)]
+    obfuscation: ObfuscationConfig,
 }
 
 impl ApmConfig {
@@ -231,6 +237,11 @@ impl ApmConfig {
             self.hostname = hostname.into();
         }
     }
+
+    /// Returns the obfuscation configuration.
+    pub fn obfuscation(&self) -> &ObfuscationConfig {
+        &self.obfuscation
+    }
 }
 
 impl Default for ApmConfig {
@@ -246,6 +257,7 @@ impl Default for ApmConfig {
             peer_tags: Vec::new(),
             default_env: default_env(),
             hostname: MetaString::default(),
+            obfuscation: ObfuscationConfig::default(),
         }
     }
 }
