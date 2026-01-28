@@ -295,12 +295,16 @@ impl SpanConcentrator {
             return &EMPTY_PEER_TAGS;
         }
 
-        let kind_lower = span_kind.to_lowercase();
-        if (kind_lower.is_empty() || kind_lower == "internal") && base_service.map(|s| !s.is_empty()).unwrap_or(false) {
+        if (span_kind.is_empty() || span_kind.eq_ignore_ascii_case("internal"))
+            && base_service.map(|s| !s.is_empty()).unwrap_or(false)
+        {
             return &BASE_SERVICE_PEER_TAGS;
         }
 
-        if kind_lower == "client" || kind_lower == "producer" || kind_lower == "consumer" {
+        if span_kind.eq_ignore_ascii_case("client")
+            || span_kind.eq_ignore_ascii_case("producer")
+            || span_kind.eq_ignore_ascii_case("consumer")
+        {
             return &self.peer_tag_keys;
         }
 
