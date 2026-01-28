@@ -49,10 +49,10 @@ use crate::common::datadog::{
     apm::ApmConfig,
     io::RB_BUFFER_CHUNK_SIZE,
     request_builder::{EndpointEncoder, RequestBuilder},
+    sample_by_rate,
     telemetry::ComponentTelemetry,
     DECISION_MAKER_PROBABILISTIC, DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
     OTEL_TRACE_ID_META_KEY, TAG_DECISION_MAKER,
-    sample_by_rate,
 };
 use crate::common::otlp::config::TracesConfig;
 use crate::common::otlp::util::{

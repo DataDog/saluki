@@ -37,8 +37,8 @@ mod signature;
 
 use self::probabilistic::PROB_RATE_KEY;
 use crate::common::datadog::{
-    apm::ApmConfig, sample_by_rate, DECISION_MAKER_PROBABILISTIC, OTEL_TRACE_ID_META_KEY,
-    SAMPLING_PRIORITY_METRIC_KEY, TAG_DECISION_MAKER,
+    apm::ApmConfig, sample_by_rate, DECISION_MAKER_PROBABILISTIC, OTEL_TRACE_ID_META_KEY, SAMPLING_PRIORITY_METRIC_KEY,
+    TAG_DECISION_MAKER,
 };
 use crate::common::otlp::config::TracesConfig;
 

@@ -189,4 +189,3 @@ fn weight_root(span: &Span) -> f32 {
 fn get_global_rate(span: &Span) -> f64 {
     span.metrics().get(KEY_SAMPLING_RATE_GLOBAL).copied().unwrap_or(1.0)
 }
-
