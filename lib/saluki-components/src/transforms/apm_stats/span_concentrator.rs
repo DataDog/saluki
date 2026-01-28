@@ -11,7 +11,6 @@ use super::aggregation::{
 };
 use super::statsraw::RawBucket;
 
-const KINDS_COMPUTED: &[&str] = &["server", "consumer", "client", "producer"];
 const DEFAULT_BUFFER_LEN: u64 = 2;
 const METRIC_TOP_LEVEL: &str = "_top_level";
 const METRIC_MEASURED: &str = "_dd.measured";
@@ -136,7 +135,7 @@ impl SpanConcentrator {
     pub fn new(
         compute_stats_by_span_kind: bool, peer_tags_aggregation: bool, custom_peer_tags: &[MetaString], now: u64,
     ) -> Self {
-        let mut peer_tag_keys: Vec<MetaString> = BASE_PEER_TAGS.iter().map(|&s| MetaString::from(s)).collect();
+        let mut peer_tag_keys: Vec<MetaString> = BASE_PEER_TAGS.iter().map(|s| MetaString::from_static(*s)).collect();
         for tag in custom_peer_tags {
             if !peer_tag_keys.iter().any(|t| t == tag) {
                 peer_tag_keys.push(tag.clone());
@@ -233,7 +232,7 @@ impl SpanConcentrator {
         }
         if self.compute_stats_by_span_kind {
             if let Some(kind) = span.meta().get(TAG_SPAN_KIND) {
-                return compute_stats_for_span_kind(kind.as_ref());
+                return compute_stats_for_span_kind(kind);
             }
         }
         false
@@ -273,12 +272,11 @@ impl SpanConcentrator {
         })
     }
 
-    fn matching_peer_tags(&self, span: &Span, span_kind: &MetaString) -> Vec<MetaString> {
+    fn matching_peer_tags(&self, span: &Span, span_kind: &str) -> Vec<MetaString> {
         let mut peer_tags = Vec::new();
 
         let keys_to_check = self.peer_tag_keys_to_aggregate_for_span(span_kind, span.meta().get(TAG_BASE_SERVICE));
-
-        for key in &keys_to_check {
+        for key in keys_to_check {
             if let Some(value) = span.meta().get(key) {
                 if !value.is_empty() {
                     peer_tags.push(MetaString::from(format!("{}:{}", key, value)));
@@ -289,23 +287,24 @@ impl SpanConcentrator {
         peer_tags
     }
 
-    fn peer_tag_keys_to_aggregate_for_span(
-        &self, span_kind: &MetaString, base_service: Option<&MetaString>,
-    ) -> Vec<MetaString> {
+    fn peer_tag_keys_to_aggregate_for_span(&self, span_kind: &str, base_service: Option<&MetaString>) -> &[MetaString] {
+        static EMPTY_PEER_TAGS: &[MetaString] = &[];
+        static BASE_SERVICE_PEER_TAGS: &[MetaString] = &[MetaString::from_static(TAG_BASE_SERVICE)];
+
         if !self.peer_tags_aggregation || self.peer_tag_keys.is_empty() {
-            return Vec::new();
+            return &EMPTY_PEER_TAGS;
         }
 
-        let kind_lower = span_kind.as_ref().to_lowercase();
+        let kind_lower = span_kind.to_lowercase();
         if (kind_lower.is_empty() || kind_lower == "internal") && base_service.map(|s| !s.is_empty()).unwrap_or(false) {
-            return vec![MetaString::from(TAG_BASE_SERVICE)];
+            return &BASE_SERVICE_PEER_TAGS;
         }
 
         if kind_lower == "client" || kind_lower == "producer" || kind_lower == "consumer" {
-            return self.peer_tag_keys.clone();
+            return &self.peer_tag_keys;
         }
 
-        Vec::new()
+        &EMPTY_PEER_TAGS
     }
 
     fn add_span_internal(
@@ -336,9 +335,11 @@ fn align_ts(ts: u64, bsize: u64) -> u64 {
     ts - ts % bsize
 }
 
-pub fn compute_stats_for_span_kind(kind: &str) -> bool {
-    let k = kind.to_lowercase();
-    KINDS_COMPUTED.contains(&k.as_str())
+pub const fn compute_stats_for_span_kind(kind: &str) -> bool {
+    kind.eq_ignore_ascii_case("server")
+        || kind.eq_ignore_ascii_case("client")
+        || kind.eq_ignore_ascii_case("producer")
+        || kind.eq_ignore_ascii_case("consumer")
 }
 
 fn is_partial_snapshot(span: &Span) -> bool {

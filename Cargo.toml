@@ -233,3 +233,8 @@ new_without_default = "allow"
 uninlined_format_args = "allow"
 map_entry = "allow"
 mutable_key_type = "allow"
+
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+  'cfg(system_allocator)',
+] }

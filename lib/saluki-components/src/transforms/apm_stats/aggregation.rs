@@ -46,30 +46,37 @@ pub struct PayloadAggregationKey {
     pub process_tags_hash: u64,
 }
 
-pub fn tags_fnv_hash(tags: &[MetaString]) -> u64 {
-    if tags.is_empty() {
-        return 0;
-    }
-
-    let mut sorted_tags: Vec<&MetaString> = tags.iter().collect();
+pub fn tags_fnv_hash<I, T>(tags: I) -> u64
+where
+    I: IntoIterator<Item = T>,
+    T: AsRef<str>,
+{
+    let mut sorted_tags: Vec<T> = tags.into_iter().collect();
     sorted_tags.sort_by(|a, b| a.as_ref().cmp(b.as_ref()));
 
+    let mut count = 0;
     let mut hasher = FnvHasher::default();
     for (i, tag) in sorted_tags.iter().enumerate() {
         if i > 0 {
             hasher.write_u8(0);
         }
-        hasher.write(tag.as_bytes());
+        hasher.write(tag.as_ref().as_bytes());
+        count += 1;
     }
-    hasher.finish()
+
+    if count > 0 {
+        hasher.finish()
+    } else {
+        0
+    }
 }
 
 pub fn process_tags_hash(process_tags: &str) -> u64 {
     if process_tags.is_empty() {
         return 0;
     }
-    let tags: Vec<MetaString> = process_tags.split(',').map(MetaString::from).collect();
-    tags_fnv_hash(&tags)
+
+    tags_fnv_hash(process_tags.split(','))
 }
 
 pub fn get_status_code(meta: &FastHashMap<MetaString, MetaString>, metrics: &FastHashMap<MetaString, f64>) -> u32 {
@@ -98,23 +105,22 @@ pub fn get_grpc_status_code(
 
     for key in STATUS_CODE_FIELDS {
         if let Some(value) = meta.get(*key) {
-            let str_value = value.as_ref();
-            if str_value.is_empty() {
+            if value.is_empty() {
                 continue;
             }
 
-            if str_value.parse::<u64>().is_ok() {
-                return MetaString::from(str_value);
+            if value.parse::<u64>().is_ok() {
+                return value.clone();
             }
 
-            let normalized = str_value.strip_prefix("StatusCode.").unwrap_or(str_value);
+            let normalized = value.strip_prefix("StatusCode.").unwrap_or(value);
             let upper = normalized.to_uppercase();
 
             if let Some(code) = grpc_status_name_to_code(&upper) {
                 return MetaString::from_static(code);
             }
 
-            return MetaString::default();
+            return MetaString::empty();
         }
     }
 
