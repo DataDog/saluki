@@ -19,7 +19,6 @@ use saluki_config::GenericConfiguration;
 use saluki_context::tags::TagSet;
 use saluki_core::data_model::event::trace::{
     AttributeScalarValue, AttributeValue, Span as DdSpan, SpanEvent as DdSpanEvent, SpanLink as DdSpanLink,
-    TraceSampling,
 };
 use saluki_core::topology::{EventsBuffer, PayloadsBuffer};
 use saluki_core::{
@@ -49,10 +48,8 @@ use crate::common::datadog::{
     apm::ApmConfig,
     io::RB_BUFFER_CHUNK_SIZE,
     request_builder::{EndpointEncoder, RequestBuilder},
-    sample_by_rate,
     telemetry::ComponentTelemetry,
-    DECISION_MAKER_PROBABILISTIC, DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
-    OTEL_TRACE_ID_META_KEY, TAG_DECISION_MAKER,
+    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT, TAG_DECISION_MAKER,
 };
 use crate::common::otlp::config::TracesConfig;
 use crate::common::otlp::util::{
@@ -553,29 +550,6 @@ impl TraceEndpointEncoder {
         rate
     }
 
-    // helper function for adding tag
-    fn should_add_otlp_decision_maker(&self, trace: &Trace, sampling: &TraceSampling) -> bool {
-        // logic taken from here: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/api/otlp.go#L556-L579
-        if self.apm_config.probabilistic_sampler_enabled() {
-            return false;
-        }
-        if sampling.decision_maker.is_some() {
-            return false;
-        }
-        let priority = sampling.priority.unwrap_or(DEFAULT_CHUNK_PRIORITY);
-        if sampling.dropped_trace || priority <= 0 {
-            return false;
-        }
-        if !trace_has_otel_trace_id(trace) {
-            return false;
-        }
-        let trace_id = match trace.spans().first() {
-            Some(span) => span.trace_id(),
-            None => return false,
-        };
-        sample_by_rate(trace_id, self.sampling_rate())
-    }
-
     fn build_trace_chunk(&self, trace: &Trace) -> TraceChunk {
         let spans: Vec<ProtoSpan> = trace.spans().iter().map(convert_span).collect();
         let mut chunk = TraceChunk::new();
@@ -589,12 +563,9 @@ impl TraceEndpointEncoder {
             chunk.set_priority(sampling.priority.unwrap_or(DEFAULT_CHUNK_PRIORITY));
             chunk.set_droppedTrace(sampling.dropped_trace);
 
-            // Set decision maker tag if present, otherwise align OTLP behavior with trace-agent's
-            // OTLPReceiver when probabilistic sampling is disabled.
+            // Set decision maker tag if present.
             if let Some(dm) = &sampling.decision_maker {
                 tags.insert(TAG_DECISION_MAKER.to_string(), dm.to_string());
-            } else if self.should_add_otlp_decision_maker(trace, sampling) {
-                tags.insert(TAG_DECISION_MAKER.to_string(), DECISION_MAKER_PROBABILISTIC.to_string());
             }
 
             // Set OTLP sampling rate tag if present (from sampler)
@@ -652,14 +623,6 @@ impl EndpointEncoder for TraceEndpointEncoder {
     fn content_type(&self) -> HeaderValue {
         CONTENT_TYPE_PROTOBUF.clone()
     }
-}
-
-fn trace_has_otel_trace_id(trace: &Trace) -> bool {
-    let Some(span) = trace.spans().first() else {
-        return false;
-    };
-    span.meta()
-        .contains_key(&MetaString::from_static(OTEL_TRACE_ID_META_KEY))
 }
 
 fn convert_span(span: &DdSpan) -> ProtoSpan {
