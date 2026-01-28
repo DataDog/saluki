@@ -19,3 +19,4 @@ node_modules/
 fuzz/artifacts/
 fuzz/coverage/
 fuzz/corpus/
+heaptrack.*
