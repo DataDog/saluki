@@ -27,7 +27,7 @@ use saluki_core::{
 use saluki_error::GenericError;
 use stringtheory::MetaString;
 use tokio::select;
-use tracing::debug;
+use tracing::{debug, info};
 
 mod core_sampler;
 mod errors;
@@ -37,6 +37,7 @@ mod signature;
 
 use self::probabilistic::PROB_RATE_KEY;
 use crate::common::datadog::{apm::ApmConfig, SAMPLING_PRIORITY_METRIC_KEY};
+use crate::common::otlp::config::TracesConfig;
 
 // Sampling priority constants (matching datadog-agent)
 const PRIORITY_AUTO_DROP: i32 = 0;
@@ -47,6 +48,7 @@ const ERROR_SAMPLE_RATE: f64 = 1.0; // Default extra sample rate (matches agent'
 
 // Sampling metadata keys / values (matching datadog-agent where applicable).
 const TAG_DECISION_MAKER: &str = "_dd.p.dm";
+const OTEL_TRACE_ID_META_KEY: &str = "otel.trace_id";
 
 // Single Span Sampling and Analytics Events keys
 const KEY_SPAN_SAMPLING_MECHANISM: &str = "_dd.span_sampling.mechanism";
@@ -56,17 +58,46 @@ const KEY_ANALYZED_SPANS: &str = "_dd.analyzed";
 const DECISION_MAKER_PROBABILISTIC: &str = "-9";
 const DECISION_MAKER_MANUAL_PRIORITY: &str = "-4";
 
+// Debug tag to identify which sampler path made the decision.
+const WACKTEST_SAMPLER_PATH_KEY: &str = "wacktest.sampler_path";
+
+const MAX_TRACE_ID: u64 = u64::MAX;
+const MAX_TRACE_ID_FLOAT: f64 = MAX_TRACE_ID as f64;
+const SAMPLER_HASHER: u64 = 1111111111111111111;
+
+fn normalize_sampling_rate(rate: f64) -> f64 {
+    if rate <= 0.0 || rate >= 1.0 {
+        1.0
+    } else {
+        rate
+    }
+}
+
+fn sample_by_rate(trace_id: u64, rate: f64) -> bool {
+    if rate < 1.0 {
+        trace_id.wrapping_mul(SAMPLER_HASHER) < (rate * MAX_TRACE_ID_FLOAT) as u64
+    } else {
+        true
+    }
+}
+
 /// Configuration for the trace sampler transform.
 #[derive(Debug)]
 pub struct TraceSamplerConfiguration {
     apm_config: ApmConfig,
+    otlp_sampling_rate: f64,
 }
 
 impl TraceSamplerConfiguration {
     /// Creates a new `TraceSamplerConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let apm_config = ApmConfig::from_configuration(config)?;
-        Ok(Self { apm_config })
+        let otlp_traces: TracesConfig = config.try_get_typed("otlp_config.traces")?.unwrap_or_default();
+        let otlp_sampling_rate = normalize_sampling_rate(otlp_traces.probabilistic_sampler.sampling_percentage / 100.0);
+        Ok(Self {
+            apm_config,
+            otlp_sampling_rate,
+        })
     }
 }
 
@@ -87,6 +118,7 @@ impl TransformBuilder for TraceSamplerConfiguration {
             error_sampling_enabled: self.apm_config.error_sampling_enabled(),
             error_tracking_standalone: self.apm_config.error_tracking_standalone_enabled(),
             probabilistic_sampler_enabled: self.apm_config.probabilistic_sampler_enabled(),
+            otlp_sampling_rate: self.otlp_sampling_rate,
             error_sampler: errors::ErrorsSampler::new(self.apm_config.errors_per_second(), ERROR_SAMPLE_RATE),
             no_priority_sampler: score_sampler::NoPrioritySampler::new(
                 self.apm_config.target_traces_per_second(),
@@ -109,6 +141,7 @@ pub struct TraceSampler {
     error_tracking_standalone: bool,
     error_sampling_enabled: bool,
     probabilistic_sampler_enabled: bool,
+    otlp_sampling_rate: f64,
     error_sampler: errors::ErrorsSampler,
     no_priority_sampler: score_sampler::NoPrioritySampler,
 }
@@ -193,6 +226,18 @@ impl TraceSampler {
         probabilistic::ProbabilisticSampler::sample(trace_id, self.sampling_rate)
     }
 
+    fn is_otlp_trace(&self, trace: &Trace, root_span_idx: usize) -> bool {
+        trace
+            .spans()
+            .get(root_span_idx)
+            .map(|span| span.meta().contains_key(&MetaString::from_static(OTEL_TRACE_ID_META_KEY)))
+            .unwrap_or(false)
+    }
+
+    fn sample_otlp(&self, trace_id: u64) -> bool {
+        sample_by_rate(trace_id, self.otlp_sampling_rate)
+    }
+
     /// Returns `true` if the trace contains a span with an error.
     fn trace_contains_error(&self, trace: &Trace, consider_exception_span_events: bool) -> bool {
         trace.spans().iter().any(|span| {
@@ -269,6 +314,16 @@ impl TraceSampler {
     fn run_samplers(&mut self, trace: &mut Trace) -> (bool, i32, &'static str, Option<usize>) {
         // logic taken from: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/agent.go#L1066
         let now = std::time::SystemTime::now();
+        println!(
+            "trace sampler config: probabilistic_sampler_enabled={} sampling_rate={} error_sampling_enabled={}",
+            self.probabilistic_sampler_enabled, self.sampling_rate, self.error_sampling_enabled
+        );
+        info!(
+            probabilistic_sampler_enabled = self.probabilistic_sampler_enabled,
+            sampling_rate = self.sampling_rate,
+            error_sampling_enabled = self.error_sampling_enabled,
+            "trace sampler config"
+        );
         // Empty trace check
         if trace.spans().is_empty() {
             return (false, PRIORITY_AUTO_DROP, "", None);
@@ -288,6 +343,7 @@ impl TraceSampler {
             if self.sample_probabilistic(root_trace_id) {
                 decision_maker = DECISION_MAKER_PROBABILISTIC; // probabilistic sampling
                 prob_keep = true;
+                self.set_wacktest_sampler_path(trace, root_span_idx, "probabilistic");
 
                 if let Some(root_span) = trace.spans_mut().get_mut(root_span_idx) {
                     let metrics = root_span.metrics_mut();
@@ -295,6 +351,9 @@ impl TraceSampler {
                 }
             } else if self.error_sampling_enabled && contains_error {
                 prob_keep = self.error_sampler.sample_error(now, trace, root_span_idx);
+                self.set_wacktest_sampler_path(trace, root_span_idx, "error");
+            } else {
+                self.set_wacktest_sampler_path(trace, root_span_idx, "probabilistic_drop");
             }
 
             let priority = if prob_keep {
@@ -310,21 +369,43 @@ impl TraceSampler {
         if let Some(priority) = user_priority {
             if priority > 0 {
                 // User wants to keep this trace
+                self.set_wacktest_sampler_path(trace, root_span_idx, "manual_priority");
                 return (true, priority, DECISION_MAKER_MANUAL_PRIORITY, Some(root_span_idx));
             }
+        } else if self.is_otlp_trace(trace, root_span_idx) {
+            let root_trace_id = trace.spans()[root_span_idx].trace_id();
+            if self.sample_otlp(root_trace_id) {
+                if let Some(root_span) = trace.spans_mut().get_mut(root_span_idx) {
+                    root_span.metrics_mut().remove(PROB_RATE_KEY);
+                }
+                self.set_wacktest_sampler_path(trace, root_span_idx, "probabilistic");
+                return (true, PRIORITY_AUTO_KEEP, DECISION_MAKER_PROBABILISTIC, Some(root_span_idx));
+            }
+            self.set_wacktest_sampler_path(trace, root_span_idx, "probabilistic_drop");
         } else if self.no_priority_sampler.sample(now, trace, root_span_idx) {
+            self.set_wacktest_sampler_path(trace, root_span_idx, "no_priority");
             return (true, PRIORITY_AUTO_KEEP, "", Some(root_span_idx));
         }
 
         if self.error_sampling_enabled && self.trace_contains_error(trace, false) {
             let keep = self.error_sampler.sample_error(now, trace, root_span_idx);
             if keep {
+                self.set_wacktest_sampler_path(trace, root_span_idx, "error");
                 return (true, PRIORITY_AUTO_KEEP, "", Some(root_span_idx));
             }
         }
 
         // Default: drop the trace
+        self.set_wacktest_sampler_path(trace, root_span_idx, "drop");
         (false, PRIORITY_AUTO_DROP, "", Some(root_span_idx))
+    }
+
+    fn set_wacktest_sampler_path(&self, trace: &mut Trace, root_span_idx: usize, value: &'static str) {
+        if let Some(root_span) = trace.spans_mut().get_mut(root_span_idx) {
+            root_span
+                .meta_mut()
+                .insert(MetaString::from_static(WACKTEST_SAMPLER_PATH_KEY), MetaString::from_static(value));
+        }
     }
 
     /// Apply sampling metadata to the trace in-place.
@@ -334,6 +415,7 @@ impl TraceSampler {
     fn apply_sampling_metadata(
         &self, trace: &mut Trace, keep: bool, priority: i32, decision_maker: &str, root_span_idx: usize,
     ) {
+        let is_otlp = self.is_otlp_trace(trace, root_span_idx);
         let root_span_value = match trace.spans_mut().get_mut(root_span_idx) {
             Some(span) => span,
             None => return,
@@ -346,6 +428,11 @@ impl TraceSampler {
         }
 
         // Now we can use trace again to set sampling metadata
+        let sampling_rate = if is_otlp {
+            self.otlp_sampling_rate
+        } else {
+            self.sampling_rate
+        };
         let sampling = TraceSampling::new(
             !keep,
             Some(priority),
@@ -354,7 +441,7 @@ impl TraceSampler {
             } else {
                 None
             },
-            Some(MetaString::from(format!("{:.2}", self.sampling_rate))),
+            Some(MetaString::from(format!("{:.2}", sampling_rate))),
         );
         trace.set_sampling(Some(sampling));
     }
@@ -498,6 +585,7 @@ mod tests {
             error_sampling_enabled: true,
             error_tracking_standalone: false,
             probabilistic_sampler_enabled: true,
+            otlp_sampling_rate: 1.0,
             error_sampler: errors::ErrorsSampler::new(10.0, 1.0),
             no_priority_sampler: score_sampler::NoPrioritySampler::new(10.0, 1.0),
         }
@@ -876,5 +964,32 @@ mod tests {
                 &MetaString::from(DECISION_MAKER_PROBABILISTIC)
             );
         }
+    }
+
+    #[test]
+    fn test_otlp_legacy_sampling_skips_prob_rate_metric() {
+        let mut sampler = create_test_sampler();
+        sampler.probabilistic_sampler_enabled = false;
+        sampler.otlp_sampling_rate = 1.0;
+
+        let mut meta = HashMap::new();
+        meta.insert(OTEL_TRACE_ID_META_KEY.to_string(), "otel-trace-id".to_string());
+        let span = create_test_span_with_meta(12345, 1, meta);
+        let mut trace = create_test_trace(vec![span]);
+
+        let (keep, priority, decision_maker, root_span_idx) = sampler.run_samplers(&mut trace);
+        assert!(keep);
+        assert_eq!(priority, PRIORITY_AUTO_KEEP);
+        assert_eq!(decision_maker, DECISION_MAKER_PROBABILISTIC);
+
+        let root_span_idx = root_span_idx.expect("root span index should be present");
+        sampler.apply_sampling_metadata(&mut trace, keep, priority, decision_maker, root_span_idx);
+
+        let root_span = &trace.spans()[root_span_idx];
+        assert_eq!(
+            root_span.meta().get(TAG_DECISION_MAKER).unwrap(),
+            &MetaString::from(DECISION_MAKER_PROBABILISTIC)
+        );
+        assert!(!root_span.metrics().contains_key(PROB_RATE_KEY));
     }
 }
