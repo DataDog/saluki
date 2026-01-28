@@ -18,6 +18,12 @@ pub struct Aggregation {
     pub payload_key: PayloadAggregationKey,
 }
 
+impl Aggregation {
+    pub fn into_parts(self) -> (BucketsAggregationKey, PayloadAggregationKey) {
+        (self.bucket_key, self.payload_key)
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct BucketsAggregationKey {
     pub service: MetaString,
