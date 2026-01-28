@@ -109,7 +109,7 @@ pub fn otel_span_to_dd_span(
 
     for (dd_key, apm_key) in DD_NAMESPACED_TO_APM_CONVENTIONS {
         if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, dd_key) {
-            meta.insert((*apm_key).into(), value);
+            meta.insert(MetaString::from_static(apm_key), value);
         }
     }
 
@@ -119,7 +119,7 @@ pub fn otel_span_to_dd_span(
 
     if !otel_span.trace_id.is_empty() {
         meta.insert(
-            OTEL_TRACE_ID_META_KEY.into(),
+            MetaString::from_static(OTEL_TRACE_ID_META_KEY),
             bytes_to_hex_lowercase(&otel_span.trace_id).into(),
         );
     }
@@ -127,30 +127,42 @@ pub fn otel_span_to_dd_span(
     if !meta.contains_key("version") {
         let version = get_otel_version(span_attributes, resource_attributes, ignore_missing_fields);
         if !version.is_empty() {
-            meta.insert("version".into(), version);
+            meta.insert(MetaString::from_static("version"), version);
         }
     }
 
     if let Some(events_json) = marshal_events(&otel_span.events) {
-        meta.insert("events".into(), events_json.into());
+        meta.insert(MetaString::from_static("events"), events_json.into());
     }
     if span_contains_exception_event(&otel_span.events) {
-        meta.insert("_dd.span_events.has_exception".into(), MetaString::from_static("true"));
+        meta.insert(
+            MetaString::from_static("_dd.span_events.has_exception"),
+            MetaString::from_static("true"),
+        );
     }
     if let Some(links_json) = marshal_links(&otel_span.links) {
-        meta.insert("_dd.span_links".into(), links_json.into());
+        meta.insert(MetaString::from_static("_dd.span_links"), links_json.into());
     }
 
     if !otel_span.trace_state.is_empty() {
-        meta.insert(W3C_TRACESTATE_META_KEY.into(), otel_span.trace_state.as_str().into());
+        meta.insert(
+            MetaString::from_static(W3C_TRACESTATE_META_KEY),
+            otel_span.trace_state.as_str().into(),
+        );
     }
 
     if let Some(scope) = instrumentation_scope {
         if !scope.name.is_empty() {
-            meta.insert(OTEL_LIBRARY_NAME_META_KEY.into(), scope.name.as_str().into());
+            meta.insert(
+                MetaString::from_static(OTEL_LIBRARY_NAME_META_KEY),
+                scope.name.as_str().into(),
+            );
         }
         if !scope.version.is_empty() {
-            meta.insert(OTEL_LIBRARY_VERSION_META_KEY.into(), scope.version.as_str().into());
+            meta.insert(
+                MetaString::from_static(OTEL_LIBRARY_VERSION_META_KEY),
+                scope.version.as_str().into(),
+            );
         }
     }
 
@@ -159,12 +171,15 @@ pub fn otel_span_to_dd_span(
         .and_then(|s| StatusCode::try_from(s.code).ok())
         .unwrap_or(StatusCode::Unset);
     meta.insert(
-        OTEL_STATUS_CODE_META_KEY.into(),
-        MetaString::from(status_code_to_string(status_code)),
+        MetaString::from_static(OTEL_STATUS_CODE_META_KEY),
+        MetaString::from_static(status_code_to_string(status_code)),
     );
     if let Some(status) = status {
         if !status.message.is_empty() {
-            meta.insert(OTEL_STATUS_DESCRIPTION_META_KEY.into(), status.message.as_str().into());
+            meta.insert(
+                MetaString::from_static(OTEL_STATUS_DESCRIPTION_META_KEY),
+                status.message.as_str().into(),
+            );
         }
     }
 
@@ -179,7 +194,7 @@ pub fn otel_span_to_dd_span(
         if !meta.contains_key("env") {
             let env = get_otel_env(span_attributes, resource_attributes, ignore_missing_fields);
             if !env.is_empty() {
-                meta.insert("env".into(), env);
+                meta.insert(MetaString::from_static("env"), env);
             }
         }
     }
@@ -205,7 +220,7 @@ pub fn otel_span_to_dd_span(
 
     if !meta.contains_key("db.name") {
         if let Some(db_namespace) = use_both_maps(resource_attributes, span_attributes, false, DB_NAMESPACE_KEY) {
-            meta.insert("db.name".into(), db_namespace);
+            meta.insert(MetaString::from_static("db.name"), db_namespace);
         }
     }
 
@@ -251,22 +266,22 @@ pub fn otel_to_dd_span_minimal(
     }
 
     if is_top_level {
-        metrics.insert(MetaString::from("_top_level"), 1.0);
+        metrics.insert(MetaString::from_static("_top_level"), 1.0);
     }
 
     if use_both_maps(span_attributes, resource_attributes, false, "_dd.measured").is_some_and(|v| *v == *"1")
         || (compute_top_level_by_span_kind
             && (otel_span.kind() == SpanKind::Client || otel_span.kind() == SpanKind::Producer))
     {
-        metrics.insert(MetaString::from("_dd.measured"), 1.0);
+        metrics.insert(MetaString::from_static("_dd.measured"), 1.0);
     }
 
     let span_kind =
         use_both_maps(span_attributes, resource_attributes, true, KEY_DATADOG_SPAN_KIND).unwrap_or_else(|| {
             let kind = SpanKind::try_from(otel_span.kind).unwrap_or(SpanKind::Unspecified);
-            MetaString::from(span_kind_name(kind))
+            MetaString::from_static(span_kind_name(kind))
         });
-    meta.insert(MetaString::from(SPAN_KIND_META_KEY), span_kind);
+    meta.insert(MetaString::from_static(SPAN_KIND_META_KEY), span_kind);
 
     let mut service =
         use_both_maps(span_attributes, resource_attributes, true, KEY_DATADOG_SERVICE).unwrap_or_default();
@@ -309,7 +324,7 @@ pub fn otel_to_dd_span_minimal(
         .with_duration(duration);
 
     if let Some(status_code) = get_otel_status_code(span_attributes, resource_attributes, ignore_missing_fields) {
-        metrics.insert(HTTP_STATUS_CODE_KEY.into(), status_code as f64);
+        metrics.insert(MetaString::from_static(HTTP_STATUS_CODE_KEY), status_code as f64);
     }
 
     // TODO: add peer key tags (unfinished in the agent as well)
@@ -384,7 +399,7 @@ fn get_otel_operation_name_v2(
             if let Some(service) = use_both_maps(span_attributes, resource_attributes, true, RPC_SERVICE_KEY) {
                 return MetaString::from(format!("aws.{service}.request"));
             }
-            return MetaString::from("aws.client.request");
+            return MetaString::from_static("aws.client.request");
         }
 
         if is_client {
@@ -434,7 +449,7 @@ fn get_otel_operation_name_v2(
         span_kind
     };
     // Use capitalized span kind name for operation  (e.g., "Internal", "Client", "Server")
-    MetaString::from(span_kind_name_capitalized(fallback_kind))
+    MetaString::from_static(span_kind_name_capitalized(fallback_kind))
 }
 
 // GetOTelResourceV2 returns the DD resource name based on OTel span and resource attributes.
@@ -543,7 +558,7 @@ fn get_otel_span_type(
         _ => "custom",
     };
 
-    MetaString::from(span_type)
+    MetaString::from_static(span_type)
 }
 
 fn map_db_system_to_span_type(db_system: &str) -> &'static str {
@@ -765,13 +780,13 @@ fn status_to_error(
                 let meta_value: MetaString = serialized.clone().into();
                 match attribute.key.as_str() {
                     EXCEPTION_MESSAGE_KEY => {
-                        meta.insert("error.msg".into(), meta_value);
+                        meta.insert(MetaString::from_static("error.msg"), meta_value);
                     }
                     EXCEPTION_TYPE_KEY => {
-                        meta.insert("error.type".into(), serialized.into());
+                        meta.insert(MetaString::from_static("error.type"), serialized.into());
                     }
                     EXCEPTION_STACKTRACE_KEY => {
-                        meta.insert("error.stack".into(), serialized.into());
+                        meta.insert(MetaString::from_static("error.stack"), serialized.into());
                     }
                     _ => {}
                 }
@@ -780,7 +795,7 @@ fn status_to_error(
     }
     if !meta.contains_key("error.msg") {
         if !status.message.is_empty() {
-            meta.insert("error.msg".into(), status.message.as_str().into());
+            meta.insert(MetaString::from_static("error.msg"), status.message.as_str().into());
         } else if let Some(http_code) =
             get_first_from_meta(meta, &[HTTP_RESPONSE_STATUS_CODE_KEY, HTTP_STATUS_CODE_KEY])
         {
@@ -789,7 +804,7 @@ fn status_to_error(
                 message.push(' ');
                 message.push_str(http_text.as_ref());
             }
-            meta.insert("error.msg".into(), message.into());
+            meta.insert(MetaString::from_static("error.msg"), message.into());
         }
     }
     1
@@ -918,7 +933,7 @@ fn set_meta_field_otlp_if_empty(
             }
             if let Some(parsed) = parse_bool(value) {
                 metrics
-                    .entry(EVENT_EXTRACTION_METRIC_KEY.into())
+                    .entry(MetaString::from_static(EVENT_EXTRACTION_METRIC_KEY))
                     .or_insert(if parsed { 1.0 } else { 0.0 });
             }
         }
