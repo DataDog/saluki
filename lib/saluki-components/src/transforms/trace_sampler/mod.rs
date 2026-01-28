@@ -344,6 +344,7 @@ impl TraceSampler {
                 return (true, priority, DECISION_MAKER_MANUAL_PRIORITY, Some(root_span_idx));
             }
         } else if self.is_otlp_trace(trace, root_span_idx) {
+            // some sampling happens upstream in the otlp receiver in the agent: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/api/otlp.go#L572
             let root_trace_id = trace.spans()[root_span_idx].trace_id();
             if self.sample_otlp(root_trace_id) {
                 if let Some(root_span) = trace.spans_mut().get_mut(root_span_idx) {
