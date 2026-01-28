@@ -60,11 +60,20 @@ def run_bloaty(
     bloaty_path: Path,
     comparison_binary: Path,
     baseline_binary: Path,
+    comparison_debug: Path | None = None,
+    baseline_debug: Path | None = None,
     csv_output: bool = False,
     limit: int = 20,
 ) -> str:
     """Run bloaty and return its output."""
     cmd = [str(bloaty_path), "-d", "symbols"]
+
+    # Add debug files if provided (for stripped binary analysis).
+    # Bloaty matches debug files to binaries via build ID.
+    if comparison_debug and comparison_debug.exists():
+        cmd.append(f"--debug-file={comparison_debug}")
+    if baseline_debug and baseline_debug.exists():
+        cmd.append(f"--debug-file={baseline_debug}")
 
     if csv_output:
         cmd.extend(["--csv", "-n", "0", "-w"])
@@ -311,6 +320,7 @@ def generate_report(
     threshold_percent: float,
     bloaty_txt_output: str,
     module_rollup: str,
+    using_stripped_binaries: bool = False,
 ) -> tuple[str, bool]:
     """
     Generate a Markdown report and determine pass/fail status.
@@ -343,8 +353,15 @@ def generate_report(
     else:
         change_percent_fmt = f"{change_percent:.2f}%"
 
+    analysis_type = (
+        "Stripped binaries (debug symbols excluded)"
+        if using_stripped_binaries
+        else "Full binaries (includes debug symbols)"
+    )
+
     report = f"""
 **Target:** {baseline_sha} (baseline) vs {comparison_sha} (comparison) [diff](../../compare/{baseline_sha}..{comparison_sha})
+**Analysis Type:** {analysis_type}
 **Baseline Size:** {baseline_size_fmt}
 **Comparison Size:** {comparison_size_fmt}
 **Size Change:** {size_diff_fmt} ({change_percent_fmt})
@@ -388,6 +405,18 @@ def main() -> int:
         type=Path,
         required=True,
         help="Path to comparison binary",
+    )
+    parser.add_argument(
+        "--baseline-debug",
+        type=Path,
+        required=False,
+        help="Path to baseline debug file (for stripped binary analysis)",
+    )
+    parser.add_argument(
+        "--comparison-debug",
+        type=Path,
+        required=False,
+        help="Path to comparison debug file (for stripped binary analysis)",
     )
     parser.add_argument(
         "--baseline-sha", type=str, required=True, help="Git SHA of baseline"
@@ -436,6 +465,13 @@ def main() -> int:
     print(f"Baseline binary size: {format_size(baseline_size)}")
     print(f"Comparison binary size: {format_size(comparison_size)}")
 
+    # Determine if we're doing stripped binary analysis.
+    using_debug_files = (
+        args.baseline_debug is not None and args.comparison_debug is not None
+    )
+    if using_debug_files:
+        print("Using stripped binary analysis with separate debug files")
+
     # Execute bloaty to get the analysis output of symbol size, what symbols are new, what symbols are old, the size
     # change for identical symbols, and so on.
     print("Running bloaty analysis (CSV)...")
@@ -443,6 +479,8 @@ def main() -> int:
         args.bloaty_path,
         args.comparison_binary,
         args.baseline_binary,
+        comparison_debug=args.comparison_debug,
+        baseline_debug=args.baseline_debug,
         csv_output=True,
     )
 
@@ -482,6 +520,8 @@ def main() -> int:
         args.bloaty_path,
         args.comparison_binary,
         args.baseline_binary,
+        comparison_debug=args.comparison_debug,
+        baseline_debug=args.baseline_debug,
         csv_output=False,
         limit=20,
     )
@@ -496,6 +536,7 @@ def main() -> int:
         threshold_percent=args.threshold,
         bloaty_txt_output=txt_output,
         module_rollup=module_rollup_table,
+        using_stripped_binaries=using_debug_files,
     )
     args.output_report.write_text(report)
 
