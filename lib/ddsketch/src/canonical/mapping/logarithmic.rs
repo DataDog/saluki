@@ -15,15 +15,6 @@ pub struct LogarithmicMapping {
 
     /// Precomputed 1/ln(gamma) for performance.
     multiplier: f64,
-
-    /// The relative accuracy guarantee.
-    relative_accuracy: f64,
-
-    /// Minimum value that can be indexed.
-    min_indexable_value: f64,
-
-    /// Maximum value that can be indexed.
-    max_indexable_value: f64,
 }
 
 impl LogarithmicMapping {
@@ -53,23 +44,9 @@ impl LogarithmicMapping {
             return Err("gamma must be greater than 1");
         }
 
-        let gamma_ln = gamma.ln();
-        let multiplier = 1.0 / gamma_ln;
+        let multiplier = 1.0 / gamma.ln();
 
-        // Calculate the indexable range.
-        //
-        // The minimum indexable value is constrained by the smallest positive `f64`. The maximum indexable value is
-        // constrained by `i32` index overflow.
-        let min_indexable_value = f64::MIN_POSITIVE.max(gamma.powf(i32::MIN as f64 + 1.0));
-        let max_indexable_value = gamma.powf(i32::MAX as f64 - 1.0).min(f64::MAX / gamma);
-
-        Ok(Self {
-            gamma,
-            multiplier,
-            relative_accuracy,
-            min_indexable_value,
-            max_indexable_value,
-        })
+        Ok(Self { gamma, multiplier })
     }
 }
 
@@ -84,7 +61,7 @@ impl IndexMapping for LogarithmicMapping {
     }
 
     fn value(&self, index: i32) -> f64 {
-        self.lower_bound(index) * (1.0 + self.relative_accuracy)
+        self.lower_bound(index) * (1.0 + self.relative_accuracy())
     }
 
     fn lower_bound(&self, index: i32) -> f64 {
@@ -92,15 +69,15 @@ impl IndexMapping for LogarithmicMapping {
     }
 
     fn relative_accuracy(&self) -> f64 {
-        self.relative_accuracy
+        (self.gamma - 1.0) / (self.gamma + 1.0)
     }
 
     fn min_indexable_value(&self) -> f64 {
-        self.min_indexable_value
+        f64::MIN_POSITIVE.max(self.gamma.powf(i32::MIN as f64 + 1.0))
     }
 
     fn max_indexable_value(&self) -> f64 {
-        self.max_indexable_value
+        self.gamma.powf(i32::MAX as f64 - 1.0).min(f64::MAX / self.gamma)
     }
 
     fn gamma(&self) -> f64 {
