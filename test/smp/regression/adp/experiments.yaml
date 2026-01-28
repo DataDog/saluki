@@ -341,7 +341,7 @@ experiments:
     optimization_goals:
       - cpu
       - memory
-      - throughput
+      - ingress_throughput
 
     target:
       environment:
@@ -364,7 +364,7 @@ experiments:
     optimization_goals:
       - cpu
       - memory
-      - throughput
+      - ingress_throughput
 
     erratic: true
 
@@ -404,11 +404,7 @@ experiments:
     optimization_goals:
       - cpu
       - memory
-      - throughput
-
-    target:
-      environment:
-        DD_LOG_LEVEL: saluki_components::common::datadog::request_builder=trace,saluki_components::encoders::datadog::stats=trace,info
+      - ingress_throughput
 
     lading:
       generator:

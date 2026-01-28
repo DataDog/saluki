@@ -1,4 +1,4 @@
-optimization_goal: throughput
+optimization_goal: ingress_throughput
 erratic: false
 target:
   name: agent-data-plane
@@ -16,7 +16,6 @@ target:
     DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR: tcp://127.0.0.1:5102
     DD_DATA_PLANE_OTLP_ENABLED: "true"
     DD_OTLP_CONFIG: "{}"
-    DD_LOG_LEVEL: saluki_components::common::datadog::request_builder=trace,saluki_components::encoders::datadog::stats=trace,info
   profiling_environment:
     SMP_PROFILING_ENABLED: "true"
     DD_SERVICE: agent-data-plane
