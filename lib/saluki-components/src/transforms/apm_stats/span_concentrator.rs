@@ -1,6 +1,7 @@
 //! Span concentrator for APM stats computation.
 
 use saluki_common::collections::FastHashMap;
+use saluki_context::tags::SharedTagSet;
 use saluki_core::data_model::event::trace::Span;
 use saluki_core::data_model::event::trace_stats::{ClientStatsBucket, ClientStatsPayload};
 use stringtheory::MetaString;
@@ -68,7 +69,7 @@ pub struct InfraTags {
     /// Container ID from the tracer payload.
     pub container_id: MetaString,
     /// Container tags resolved from the container runtime.
-    pub container_tags: Vec<MetaString>,
+    pub container_tags: SharedTagSet,
     /// Hash of the process tags string.
     pub process_tags_hash: u64,
     /// Process tags string from the tracer payload.
@@ -77,7 +78,7 @@ pub struct InfraTags {
 
 impl InfraTags {
     pub fn new(
-        container_id: impl Into<MetaString>, container_tags: Vec<MetaString>, process_tags: impl Into<MetaString>,
+        container_id: impl Into<MetaString>, container_tags: SharedTagSet, process_tags: impl Into<MetaString>,
     ) -> Self {
         let process_tags: MetaString = process_tags.into();
         let process_tags_hash = process_tags_hash(process_tags.as_ref());
@@ -166,7 +167,7 @@ impl SpanConcentrator {
 
     pub fn flush(&mut self, now: u64, force: bool) -> Vec<ClientStatsPayload> {
         let mut m = FastHashMap::<PayloadAggregationKey, Vec<ClientStatsBucket>>::default();
-        let mut container_tags_by_id = FastHashMap::<MetaString, Vec<MetaString>>::default();
+        let mut container_tags_by_id = FastHashMap::<MetaString, SharedTagSet>::default();
         let mut process_tags_by_hash = FastHashMap::<u64, MetaString>::default();
 
         let timestamps: Vec<u64> = self.buckets.keys().copied().collect();
@@ -177,15 +178,13 @@ impl SpanConcentrator {
             }
 
             if let Some(srb) = self.buckets.remove(&ts) {
-                let bucket_container_tags = srb.container_tags_by_id.clone();
-                let bucket_process_tags = srb.process_tags_by_hash.clone();
                 let exported = srb.export();
 
-                for (k, b) in exported {
-                    if let Some(ctags) = bucket_container_tags.get(&k.container_id) {
+                for (k, b) in exported.data {
+                    if let Some(ctags) = exported.container_tags_by_id.get(&k.container_id) {
                         container_tags_by_id.insert(k.container_id.clone(), ctags.clone());
                     }
-                    if let Some(ptags) = bucket_process_tags.get(&k.process_tags_hash) {
+                    if let Some(ptags) = exported.process_tags_by_hash.get(&k.process_tags_hash) {
                         process_tags_by_hash.insert(k.process_tags_hash, ptags.clone());
                     }
                     m.entry(k).or_default().push(b);
@@ -200,13 +199,13 @@ impl SpanConcentrator {
 
         let mut sb: Vec<ClientStatsPayload> = Vec::with_capacity(m.len());
         for (k, s) in m {
-            let p = ClientStatsPayload::new(k.hostname.clone(), k.env.clone(), k.version.clone())
+            let p = ClientStatsPayload::new(k.hostname, k.env, k.version)
                 .with_stats(s)
-                .with_container_id(k.container_id.clone())
-                .with_git_commit_sha(k.git_commit_sha.clone())
-                .with_image_tag(k.image_tag.clone())
-                .with_lang(k.lang.clone())
                 .with_tags(container_tags_by_id.get(&k.container_id).cloned().unwrap_or_default())
+                .with_container_id(k.container_id)
+                .with_git_commit_sha(k.git_commit_sha)
+                .with_image_tag(k.image_tag)
+                .with_lang(k.lang)
                 .with_process_tags(
                     process_tags_by_hash
                         .get(&k.process_tags_hash)
