@@ -37,7 +37,7 @@ mod signature;
 
 use self::probabilistic::PROB_RATE_KEY;
 use crate::common::datadog::{
-    apm::ApmConfig, DECISION_MAKER_PROBABILISTIC, MAX_TRACE_ID_FLOAT, OTEL_TRACE_ID_META_KEY, SAMPLER_HASHER,
+    apm::ApmConfig, sample_by_rate, DECISION_MAKER_PROBABILISTIC, OTEL_TRACE_ID_META_KEY,
     SAMPLING_PRIORITY_METRIC_KEY, TAG_DECISION_MAKER,
 };
 use crate::common::otlp::config::TracesConfig;
@@ -61,14 +61,6 @@ fn normalize_sampling_rate(rate: f64) -> f64 {
         1.0
     } else {
         rate
-    }
-}
-
-fn sample_by_rate(trace_id: u64, rate: f64) -> bool {
-    if rate < 1.0 {
-        trace_id.wrapping_mul(SAMPLER_HASHER) < (rate * MAX_TRACE_ID_FLOAT) as u64
-    } else {
-        true
     }
 }
 

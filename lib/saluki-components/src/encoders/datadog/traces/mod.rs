@@ -51,7 +51,8 @@ use crate::common::datadog::{
     request_builder::{EndpointEncoder, RequestBuilder},
     telemetry::ComponentTelemetry,
     DECISION_MAKER_PROBABILISTIC, DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
-    MAX_TRACE_ID_FLOAT, OTEL_TRACE_ID_META_KEY, SAMPLER_HASHER, TAG_DECISION_MAKER,
+    OTEL_TRACE_ID_META_KEY, TAG_DECISION_MAKER,
+    sample_by_rate,
 };
 use crate::common::otlp::config::TracesConfig;
 use crate::common::otlp::util::{
@@ -659,14 +660,6 @@ fn trace_has_otel_trace_id(trace: &Trace) -> bool {
     };
     span.meta()
         .contains_key(&MetaString::from_static(OTEL_TRACE_ID_META_KEY))
-}
-
-fn sample_by_rate(trace_id: u64, rate: f64) -> bool {
-    if rate < 1.0 {
-        trace_id.wrapping_mul(SAMPLER_HASHER) < (rate * MAX_TRACE_ID_FLOAT) as u64
-    } else {
-        true
-    }
 }
 
 fn convert_span(span: &DdSpan) -> ProtoSpan {

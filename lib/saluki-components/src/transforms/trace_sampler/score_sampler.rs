@@ -5,7 +5,7 @@ use saluki_core::data_model::event::trace::{Span, Trace};
 use stringtheory::MetaString;
 
 use super::signature::{compute_signature_with_root_and_env, Signature};
-use crate::common::datadog::{MAX_TRACE_ID_FLOAT, SAMPLER_HASHER};
+use crate::common::datadog::sample_by_rate;
 use crate::transforms::trace_sampler::core_sampler::Sampler;
 
 // Metric keys for sampling rates
@@ -190,13 +190,3 @@ fn get_global_rate(span: &Span) -> f64 {
     span.metrics().get(KEY_SAMPLING_RATE_GLOBAL).copied().unwrap_or(1.0)
 }
 
-/// SampleByRate returns whether to keep a trace, based on its ID and a sampling rate.
-/// This assumes that trace IDs are nearly uniformly distributed.
-fn sample_by_rate(trace_id: u64, rate: f64) -> bool {
-    // logic taken from here: https://github.com/DataDog/datadog-agent/blob/angel/support-tail-beginning-wildcard/pkg/trace/sampler/sampler.go#L94
-    if rate < 1.0 {
-        trace_id.wrapping_mul(SAMPLER_HASHER) < (rate * MAX_TRACE_ID_FLOAT) as u64
-    } else {
-        true
-    }
-}

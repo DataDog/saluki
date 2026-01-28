@@ -36,3 +36,14 @@ pub const MAX_TRACE_ID_FLOAT: f64 = MAX_TRACE_ID as f64;
 
 /// Hasher used for deterministic sampling.
 pub const SAMPLER_HASHER: u64 = 1111111111111111111;
+
+/// Returns whether to keep a trace, based on its ID and a sampling rate.
+///
+/// This assumes trace IDs are nearly uniformly distributed.
+pub fn sample_by_rate(trace_id: u64, rate: f64) -> bool {
+    if rate < 1.0 {
+        trace_id.wrapping_mul(SAMPLER_HASHER) < (rate * MAX_TRACE_ID_FLOAT) as u64
+    } else {
+        true
+    }
+}
