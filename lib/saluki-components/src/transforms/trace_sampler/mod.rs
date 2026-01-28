@@ -58,7 +58,6 @@ const KEY_ANALYZED_SPANS: &str = "_dd.analyzed";
 const DECISION_MAKER_PROBABILISTIC: &str = "-9";
 const DECISION_MAKER_MANUAL_PRIORITY: &str = "-4";
 
-
 const MAX_TRACE_ID: u64 = u64::MAX;
 const MAX_TRACE_ID_FLOAT: f64 = MAX_TRACE_ID as f64;
 const SAMPLER_HASHER: u64 = 1111111111111111111;
@@ -228,7 +227,10 @@ impl TraceSampler {
         trace
             .spans()
             .get(root_span_idx)
-            .map(|span| span.meta().contains_key(&MetaString::from_static(OTEL_TRACE_ID_META_KEY)))
+            .map(|span| {
+                span.meta()
+                    .contains_key(&MetaString::from_static(OTEL_TRACE_ID_META_KEY))
+            })
             .unwrap_or(false)
     }
 
@@ -361,7 +363,12 @@ impl TraceSampler {
                 if let Some(root_span) = trace.spans_mut().get_mut(root_span_idx) {
                     root_span.metrics_mut().remove(PROB_RATE_KEY);
                 }
-                return (true, PRIORITY_AUTO_KEEP, DECISION_MAKER_PROBABILISTIC, Some(root_span_idx));
+                return (
+                    true,
+                    PRIORITY_AUTO_KEEP,
+                    DECISION_MAKER_PROBABILISTIC,
+                    Some(root_span_idx),
+                );
             }
         } else if self.no_priority_sampler.sample(now, trace, root_span_idx) {
             return (true, PRIORITY_AUTO_KEEP, "", Some(root_span_idx));
