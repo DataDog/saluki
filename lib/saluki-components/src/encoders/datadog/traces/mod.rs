@@ -552,7 +552,9 @@ impl TraceEndpointEncoder {
         rate
     }
 
+    // helper function for adding tag
     fn should_add_otlp_decision_maker(&self, trace: &Trace, sampling: &TraceSampling) -> bool {
+        // logic taken from here: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/api/otlp.go#L556-L579
         if self.apm_config.probabilistic_sampler_enabled() {
             return false;
         }
