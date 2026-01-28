@@ -135,7 +135,7 @@ impl SpanConcentrator {
     pub fn new(
         compute_stats_by_span_kind: bool, peer_tags_aggregation: bool, custom_peer_tags: &[MetaString], now: u64,
     ) -> Self {
-        let mut peer_tag_keys: Vec<MetaString> = BASE_PEER_TAGS.iter().map(|s| MetaString::from_static(*s)).collect();
+        let mut peer_tag_keys: Vec<MetaString> = BASE_PEER_TAGS.iter().map(|s| MetaString::from_static(s)).collect();
         for tag in custom_peer_tags {
             if !peer_tag_keys.iter().any(|t| t == tag) {
                 peer_tag_keys.push(tag.clone());
@@ -292,13 +292,13 @@ impl SpanConcentrator {
         static BASE_SERVICE_PEER_TAGS: &[MetaString] = &[MetaString::from_static(TAG_BASE_SERVICE)];
 
         if !self.peer_tags_aggregation || self.peer_tag_keys.is_empty() {
-            return &EMPTY_PEER_TAGS;
+            return EMPTY_PEER_TAGS;
         }
 
         if (span_kind.is_empty() || span_kind.eq_ignore_ascii_case("internal"))
             && base_service.map(|s| !s.is_empty()).unwrap_or(false)
         {
-            return &BASE_SERVICE_PEER_TAGS;
+            return BASE_SERVICE_PEER_TAGS;
         }
 
         if span_kind.eq_ignore_ascii_case("client")
@@ -308,7 +308,7 @@ impl SpanConcentrator {
             return &self.peer_tag_keys;
         }
 
-        &EMPTY_PEER_TAGS
+        EMPTY_PEER_TAGS
     }
 
     fn add_span_internal(
