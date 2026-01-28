@@ -41,7 +41,7 @@ build-adp-baseline-image:
     - docker buildx build
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${BASELINE_ADP_IMG}
-      --build-arg BUILD_PROFILE=${BUILD_PROFILE}
+      --build-arg BUILD_PROFILE=optimized-release
       --build-arg BUILD_TARGET=x86_64-unknown-linux-musl
       --build-arg BUILD_IMAGE=${ADP_PUBLIC_BASE_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
@@ -89,7 +89,7 @@ build-adp-comparison-image:
     - docker buildx build
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${COMPARISON_ADP_IMG}
-      --build-arg BUILD_PROFILE=${BUILD_PROFILE}
+      --build-arg BUILD_PROFILE=optimized-release
       --build-arg BUILD_TARGET=x86_64-unknown-linux-musl
       --build-arg BUILD_IMAGE=${ADP_PUBLIC_BASE_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
@@ -202,12 +202,22 @@ binary-size-analysis:
     - docker cp comparison-container:/usr/local/bin/agent-data-plane binaries/comparison-adp
     - docker rm comparison-container
 
+    # Extract debug info and strip binaries for accurate release size comparison.
+    # This gives us stripped binaries (reflecting actual release artifact size) while
+    # preserving symbol information in separate debug files for bloaty's analysis.
+    - objcopy --only-keep-debug binaries/baseline-adp binaries/baseline-adp.debug
+    - objcopy --only-keep-debug binaries/comparison-adp binaries/comparison-adp.debug
+    - strip --strip-debug binaries/baseline-adp
+    - strip --strip-debug binaries/comparison-adp
+
     # Run the analysis script to generate bloaty output, markdown report, and check threshold.
     # The script exits with code 1 if size increased by more than 5%.
     - python3 ./test/one-off/analyze-binary-size.py
       --baseline-binary binaries/baseline-adp
-      --comparison-binary binaries/comparison-adp
+      --baseline-debug binaries/baseline-adp.debug
       --baseline-sha ${BASELINE_ADP_SHA}
+      --comparison-binary binaries/comparison-adp
+      --comparison-debug binaries/comparison-adp.debug
       --comparison-sha ${COMPARISON_ADP_SHA}
       --bloaty-path /usr/local/bin/bloaty
       --output-report size-report.md
