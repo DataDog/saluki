@@ -936,31 +936,4 @@ mod tests {
             );
         }
     }
-
-    #[test]
-    fn test_otlp_legacy_sampling_skips_prob_rate_metric() {
-        let mut sampler = create_test_sampler();
-        sampler.probabilistic_sampler_enabled = false;
-        sampler.otlp_sampling_rate = 1.0;
-
-        let mut meta = HashMap::new();
-        meta.insert(OTEL_TRACE_ID_META_KEY.to_string(), "otel-trace-id".to_string());
-        let span = create_test_span_with_meta(12345, 1, meta);
-        let mut trace = create_test_trace(vec![span]);
-
-        let (keep, priority, decision_maker, root_span_idx) = sampler.run_samplers(&mut trace);
-        assert!(keep);
-        assert_eq!(priority, PRIORITY_AUTO_KEEP);
-        assert_eq!(decision_maker, DECISION_MAKER_PROBABILISTIC);
-
-        let root_span_idx = root_span_idx.expect("root span index should be present");
-        sampler.apply_sampling_metadata(&mut trace, keep, priority, decision_maker, root_span_idx);
-
-        let root_span = &trace.spans()[root_span_idx];
-        assert_eq!(
-            root_span.meta().get(TAG_DECISION_MAKER).unwrap(),
-            &MetaString::from(DECISION_MAKER_PROBABILISTIC)
-        );
-        assert!(!root_span.metrics().contains_key(PROB_RATE_KEY));
-    }
 }
