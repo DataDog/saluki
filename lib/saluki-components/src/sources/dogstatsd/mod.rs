@@ -33,7 +33,7 @@ use saluki_env::WorkloadProvider;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::{
     buf::{BytesBuffer, FixedSizeVec},
-    deser::{codec::dogstatsd::*, framing::FramerExt as _},
+    deser::codec::dogstatsd::*,
     net::{
         listener::{Listener, ListenerError},
         ConnectionAddress, ListenAddress, Stream,
