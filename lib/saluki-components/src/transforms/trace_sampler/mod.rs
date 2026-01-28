@@ -220,10 +220,6 @@ impl TraceSampler {
             .unwrap_or(false)
     }
 
-    fn sample_otlp(&self, trace_id: u64) -> bool {
-        sample_by_rate(trace_id, self.otlp_sampling_rate)
-    }
-
     /// Returns `true` if the trace contains a span with an error.
     fn trace_contains_error(&self, trace: &Trace, consider_exception_span_events: bool) -> bool {
         trace.spans().iter().any(|span| {
@@ -346,7 +342,7 @@ impl TraceSampler {
         } else if self.is_otlp_trace(trace, root_span_idx) {
             // some sampling happens upstream in the otlp receiver in the agent: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/api/otlp.go#L572
             let root_trace_id = trace.spans()[root_span_idx].trace_id();
-            if self.sample_otlp(root_trace_id) {
+            if sample_by_rate(root_trace_id, self.otlp_sampling_rate) {
                 if let Some(root_span) = trace.spans_mut().get_mut(root_span_idx) {
                     root_span.metrics_mut().remove(PROB_RATE_KEY);
                 }
