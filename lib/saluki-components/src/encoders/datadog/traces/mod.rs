@@ -50,7 +50,8 @@ use crate::common::datadog::{
     io::RB_BUFFER_CHUNK_SIZE,
     request_builder::{EndpointEncoder, RequestBuilder},
     telemetry::ComponentTelemetry,
-    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
+    DECISION_MAKER_PROBABILISTIC, DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
+    MAX_TRACE_ID_FLOAT, OTEL_TRACE_ID_META_KEY, SAMPLER_HASHER, TAG_DECISION_MAKER,
 };
 use crate::common::otlp::config::TracesConfig;
 use crate::common::otlp::util::{
@@ -65,13 +66,7 @@ static CONTENT_TYPE_PROTOBUF: HeaderValue = HeaderValue::from_static("applicatio
 
 // Sampling metadata keys / values.
 const TAG_OTLP_SAMPLING_RATE: &str = "_dd.otlp_sr";
-const TAG_DECISION_MAKER: &str = "_dd.p.dm";
-const DECISION_MAKER_PROBABILISTIC: &str = "-9";
 const DEFAULT_CHUNK_PRIORITY: i32 = 1; // PRIORITY_AUTO_KEEP
-const OTEL_TRACE_ID_META_KEY: &str = "otel.trace_id";
-const MAX_TRACE_ID: u64 = u64::MAX;
-const MAX_TRACE_ID_FLOAT: f64 = MAX_TRACE_ID as f64;
-const SAMPLER_HASHER: u64 = 1111111111111111111;
 
 fn default_serializer_compressor_kind() -> String {
     "zstd".to_string()

@@ -5,6 +5,7 @@ use saluki_core::data_model::event::trace::{Span, Trace};
 use stringtheory::MetaString;
 
 use super::signature::{compute_signature_with_root_and_env, Signature};
+use crate::common::datadog::{MAX_TRACE_ID_FLOAT, SAMPLER_HASHER};
 use crate::transforms::trace_sampler::core_sampler::Sampler;
 
 // Metric keys for sampling rates
@@ -17,12 +18,6 @@ pub(super) const NO_PRIORITY_RATE_KEY: &str = "_dd.no_p_sr";
 
 // shrinkCardinality is the max Signature cardinality before shrinking
 const SHRINK_CARDINALITY: usize = 200;
-
-// Constants for deterministic sampling
-const MAX_TRACE_ID: u64 = u64::MAX;
-const MAX_TRACE_ID_FLOAT: f64 = MAX_TRACE_ID as f64;
-// Using a prime number for better distribution
-const SAMPLER_HASHER: u64 = 1111111111111111111;
 
 /// ScoreSampler for traces
 ///

@@ -36,7 +36,10 @@ mod score_sampler;
 mod signature;
 
 use self::probabilistic::PROB_RATE_KEY;
-use crate::common::datadog::{apm::ApmConfig, SAMPLING_PRIORITY_METRIC_KEY};
+use crate::common::datadog::{
+    apm::ApmConfig, DECISION_MAKER_PROBABILISTIC, MAX_TRACE_ID_FLOAT, OTEL_TRACE_ID_META_KEY, SAMPLER_HASHER,
+    SAMPLING_PRIORITY_METRIC_KEY, TAG_DECISION_MAKER,
+};
 use crate::common::otlp::config::TracesConfig;
 
 // Sampling priority constants (matching datadog-agent)
@@ -46,21 +49,12 @@ const PRIORITY_USER_KEEP: i32 = 2;
 
 const ERROR_SAMPLE_RATE: f64 = 1.0; // Default extra sample rate (matches agent's ExtraSampleRate)
 
-// Sampling metadata keys / values (matching datadog-agent where applicable).
-const TAG_DECISION_MAKER: &str = "_dd.p.dm";
-const OTEL_TRACE_ID_META_KEY: &str = "otel.trace_id";
-
 // Single Span Sampling and Analytics Events keys
 const KEY_SPAN_SAMPLING_MECHANISM: &str = "_dd.span_sampling.mechanism";
 const KEY_ANALYZED_SPANS: &str = "_dd.analyzed";
 
 // Decision maker values for `_dd.p.dm` (matching datadog-agent).
-const DECISION_MAKER_PROBABILISTIC: &str = "-9";
 const DECISION_MAKER_MANUAL_PRIORITY: &str = "-4";
-
-const MAX_TRACE_ID: u64 = u64::MAX;
-const MAX_TRACE_ID_FLOAT: f64 = MAX_TRACE_ID as f64;
-const SAMPLER_HASHER: u64 = 1111111111111111111;
 
 fn normalize_sampling_rate(rate: f64) -> f64 {
     if rate <= 0.0 || rate >= 1.0 {
