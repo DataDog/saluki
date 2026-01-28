@@ -15,13 +15,11 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{transforms::*, ComponentContext},
-    data_model::event::{trace::Span, Event, EventType},
-    topology::OutputDefinition,
+    data_model::event::{trace::Span, Event},
+    topology::EventsBuffer,
 };
 use saluki_error::GenericError;
 use stringtheory::MetaString;
-use tokio::select;
-use tracing::error;
 
 pub use self::obfuscator::{tags, ObfuscationConfig, Obfuscator};
 use crate::common::datadog::apm::ApmConfig;
@@ -65,17 +63,8 @@ impl Default for TraceObfuscationConfiguration {
 }
 
 #[async_trait]
-impl TransformBuilder for TraceObfuscationConfiguration {
-    fn input_event_type(&self) -> EventType {
-        EventType::Trace
-    }
-
-    fn outputs(&self) -> &[OutputDefinition<EventType>] {
-        static OUTPUTS: &[OutputDefinition<EventType>] = &[OutputDefinition::default_output(EventType::Trace)];
-        OUTPUTS
-    }
-
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+impl SynchronousTransformBuilder for TraceObfuscationConfiguration {
+    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         Ok(Box::new(TraceObfuscation {
             obfuscator: Obfuscator::new(self.config.clone()),
         }))
@@ -249,34 +238,14 @@ impl TraceObfuscation {
     }
 }
 
-#[async_trait]
-impl Transform for TraceObfuscation {
-    async fn run(mut self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
-        let mut health = context.take_health_handle();
-        health.mark_ready();
-
-        loop {
-            select! {
-                _ = health.live() => continue,
-                maybe_events = context.events().next() => match maybe_events {
-                    Some(mut events) => {
-                        for event in &mut events {
-                            if let Event::Trace(ref mut trace) = event {
-                                for span in trace.spans_mut() {
-                                    self.obfuscate_span(span);
-                                }
-                            }
-                        }
-
-                        if let Err(e) = context.dispatcher().dispatch(events).await {
-                            error!(error = %e, "Failed to dispatch events.");
-                        }
-                    },
-                    None => break,
+impl SynchronousTransform for TraceObfuscation {
+    fn transform_buffer(&mut self, buffer: &mut EventsBuffer) {
+        for event in buffer {
+            if let Event::Trace(ref mut trace) = event {
+                for span in trace.spans_mut() {
+                    self.obfuscate_span(span);
                 }
             }
         }
-
-        Ok(())
     }
 }
