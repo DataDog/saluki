@@ -25,7 +25,7 @@ use saluki_components::{
     transforms::{
         AggregateConfiguration, ApmStatsTransformConfiguration, ChainedConfiguration, DogstatsDMapperConfiguration,
         DogstatsDPrefixFilterConfiguration, HostEnrichmentConfiguration, HostTagsConfiguration,
-        TraceObfuscationConfiguration,
+        TraceObfuscationConfiguration, TraceSamplerConfiguration,
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
@@ -330,6 +330,8 @@ async fn add_baseline_traces_pipeline_to_blueprint(
     let dd_traces_enrich_config = ChainedConfiguration::default()
         .with_transform_builder("apm_onboarding", ApmOnboardingConfiguration)
         .with_transform_builder("trace_obfuscation", trace_obfuscation_config);
+    let trace_sampler_config = TraceSamplerConfiguration::from_configuration(config)
+        .error_context("Failed to configure Trace Sampler transform.")?;
     let apm_stats_transform_config = ApmStatsTransformConfiguration::from_configuration(config)
         .error_context("Failed to configure APM Stats transform.")?
         .with_environment_provider(env_provider.clone())
@@ -341,11 +343,13 @@ async fn add_baseline_traces_pipeline_to_blueprint(
 
     blueprint
         .add_transform("traces_enrich", dd_traces_enrich_config)?
+        .add_transform("trace_sampler", trace_sampler_config)?
         .add_transform("dd_apm_stats", apm_stats_transform_config)?
         .add_encoder("dd_stats_encode", dd_apm_stats_encoder)?
         .add_encoder("dd_traces_encode", dd_traces_config)?
-        .connect_component("dd_apm_stats", ["traces_enrich"])?
-        .connect_component("dd_traces_encode", ["traces_enrich"])?
+        .connect_component("trace_sampler", ["traces_enrich"])?
+        .connect_component("dd_apm_stats", ["trace_sampler"])?
+        .connect_component("dd_traces_encode", ["trace_sampler"])?
         .connect_component("dd_stats_encode", ["dd_apm_stats"])?
         .connect_component("dd_out", ["dd_traces_encode", "dd_stats_encode"])?;
 
