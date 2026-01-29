@@ -306,7 +306,7 @@ impl RemoteAgentClient {
             let mut request = tonic::Request::new(ConfigStreamRequest {
                 name: formatted_full_name,
             });
-            
+
             // Add session_id to gRPC metadata (per RemoteAgentRegistry RFC)
             if let Some(sid) = session_id {
                 match sid.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>() {
@@ -318,7 +318,7 @@ impl RemoteAgentClient {
                     }
                 }
             }
-            
+
             client.stream_config_events(request).await
         })
     }

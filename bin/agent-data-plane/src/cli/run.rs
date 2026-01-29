@@ -94,7 +94,7 @@ pub async fn handle_run_command(
         // Note: We don't wait for config to be ready here because RAR registration (which provides
         // the session_id needed for config streaming) happens later in spawn_control_plane.
         // The config will be updated asynchronously once RAR registration completes.
-        
+
         // Use bootstrap config for now - it will be updated dynamically once config stream connects
         (dynamic_config, bootstrap_dp_config)
     } else {

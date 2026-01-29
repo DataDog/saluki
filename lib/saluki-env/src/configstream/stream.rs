@@ -32,7 +32,9 @@ pub async fn create_config_stream(config: &GenericConfiguration) -> Result<mpsc:
     Ok(receiver)
 }
 
-async fn run_config_stream_event_loop(mut client: RemoteAgentClient, sender: mpsc::Sender<ConfigUpdate>, mut session_id: Option<String>) {
+async fn run_config_stream_event_loop(
+    mut client: RemoteAgentClient, sender: mpsc::Sender<ConfigUpdate>, mut session_id: Option<String>,
+) {
     loop {
         // If we don't have a session_id yet, wait and retry
         if session_id.is_none() {
