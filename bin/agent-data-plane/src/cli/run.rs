@@ -91,11 +91,12 @@ pub async fn handle_run_command(
             .into_generic()
             .await?;
 
-        // Note: We don't wait for config to be ready here because RAR registration (which provides
+        // Note: We don't wait for initial config here because RAR registration (which provides
         // the session_id needed for config streaming) happens later in spawn_control_plane.
-        // The config will be updated asynchronously once RAR registration completes.
+        // Config will be updated asynchronously once RAR registration completes and stream connects.
+        info!("Waiting for initial configuration from Datadog Agent...");
 
-        // Use bootstrap config for now - it will be updated dynamically once config stream connects
+        // Use bootstrap config for dp_config since dynamic config may not be ready yet
         (dynamic_config, bootstrap_dp_config)
     } else {
         // If dynamic configuration is disabled, the bootstrap configuration is already the complete and final configuration.
