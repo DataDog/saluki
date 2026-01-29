@@ -8,15 +8,14 @@ use saluki_context::tags::TagSet;
 use saluki_core::data_model::event::trace::{Span as DdSpan, Trace, TraceSampling};
 use saluki_core::data_model::event::Event;
 use stringtheory::interning::GenericMapInterner;
+use stringtheory::interning::Interner as _;
+use stringtheory::MetaString;
 
 use crate::common::datadog::SAMPLING_PRIORITY_METRIC_KEY;
 use crate::common::otlp::config::TracesConfig;
 use crate::common::otlp::traces::transform::otel_span_to_dd_span;
 use crate::common::otlp::traces::transform::otlp_value_to_string;
 use crate::common::otlp::Metrics;
-
-// SAFETY: We know the value is not zero.
-const DEFAULT_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = NonZeroUsize::new(512 * 1024).unwrap(); // 512KB.
 
 pub fn convert_trace_id(trace_id: &[u8]) -> u64 {
     if trace_id.len() < 8 {
@@ -33,9 +32,6 @@ pub fn convert_span_id(span_id: &[u8]) -> u64 {
 }
 
 pub fn resource_attributes_to_tagset(attributes: &[otlp_common::KeyValue], interner: &GenericMapInterner) -> TagSet {
-    use stringtheory::interning::Interner as _;
-    use stringtheory::MetaString;
-
     let mut tags = TagSet::with_capacity(attributes.len());
     for kv in attributes {
         if let Some(key_value) = &kv.value {
@@ -60,8 +56,8 @@ pub struct OtlpTracesTranslator {
 }
 
 impl OtlpTracesTranslator {
-    pub fn new(config: TracesConfig) -> Self {
-        let interner = GenericMapInterner::new(DEFAULT_STRING_INTERNER_SIZE_BYTES);
+    pub fn new(config: TracesConfig, interner_size: NonZeroUsize) -> Self {
+        let interner = GenericMapInterner::new(interner_size);
         Self { config, interner }
     }
 

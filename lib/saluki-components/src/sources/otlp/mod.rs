@@ -37,7 +37,6 @@ use tokio::time::{interval, MissedTickBehavior};
 use tracing::{debug, error};
 
 use crate::common::otlp::config::OtlpConfig;
-use crate::common::otlp::config::TracesConfig;
 use crate::common::otlp::{build_metrics, Metrics, OtlpHandler, OtlpServerBuilder};
 
 mod logs;
@@ -186,7 +185,10 @@ impl SourceBuilder for OtlpConfiguration {
 
         let context_resolver = build_context_resolver(self, &context, maybe_origin_tags_resolver.clone())?;
         let metrics_translator_config = metrics::config::OtlpMetricsTranslatorConfig::default().with_remapping(true);
-        let traces_config = self.otlp_config.traces.clone();
+        let traces_interner_size =
+            std::num::NonZeroUsize::new(self.otlp_config.traces.string_interner_bytes.as_u64() as usize)
+                .ok_or_else(|| generic_error!("otlp_config.traces.string_interner_size must be greater than 0"))?;
+        let traces_translator = OtlpTracesTranslator::new(self.otlp_config.traces.clone(), traces_interner_size);
         let grpc_max_recv_msg_size_bytes =
             self.otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
         let metrics = build_metrics(&context);
@@ -198,7 +200,7 @@ impl SourceBuilder for OtlpConfiguration {
             http_endpoint: ListenAddress::Tcp(http_socket_addr),
             grpc_max_recv_msg_size_bytes,
             metrics_translator_config,
-            traces_config,
+            traces_translator,
             metrics,
         }))
     }
@@ -220,7 +222,7 @@ pub struct Otlp {
     http_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
     metrics_translator_config: metrics::config::OtlpMetricsTranslatorConfig,
-    traces_config: TracesConfig,
+    traces_translator: OtlpTracesTranslator,
     metrics: Metrics, // Telemetry metrics, not DD native metrics.
 }
 
@@ -234,7 +236,7 @@ impl Source for Otlp {
             http_endpoint,
             grpc_max_recv_msg_size_bytes,
             metrics_translator_config,
-            traces_config,
+            traces_translator,
             metrics,
         } = *self;
 
@@ -261,7 +263,7 @@ impl Source for Otlp {
                 converter_shutdown_coordinator.register(),
                 metrics_translator,
                 metrics.clone(),
-                traces_config,
+                traces_translator,
             ),
         );
 
@@ -409,7 +411,7 @@ async fn dispatch_events(mut events: EventsBuffer, source_context: &SourceContex
 async fn run_converter(
     mut receiver: mpsc::Receiver<OtlpResource>, source_context: SourceContext,
     origin_tag_resolver: Option<OtlpOriginTagResolver>, shutdown_handle: DynamicShutdownHandle,
-    mut metrics_translator: OtlpMetricsTranslator, metrics: Metrics, traces_config: TracesConfig,
+    mut metrics_translator: OtlpMetricsTranslator, metrics: Metrics, traces_translator: OtlpTracesTranslator,
 ) {
     tokio::pin!(shutdown_handle);
     debug!("OTLP resource converter task started.");
@@ -420,8 +422,6 @@ async fn run_converter(
     buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     let mut event_buffer_manager = EventBufferManager::default();
-
-    let traces_translator = OtlpTracesTranslator::new(traces_config);
 
     loop {
         select! {

@@ -13,7 +13,7 @@ use saluki_core::{
     data_model::{event::EventType, payload::PayloadType},
     topology::interconnect::EventBufferManager,
 };
-use saluki_error::{ErrorContext as _, GenericError};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
 use tokio::{
     select,
@@ -62,7 +62,10 @@ impl DecoderBuilder for OtlpDecoderConfiguration {
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Decoder + Send>, GenericError> {
         let metrics = build_metrics(&context);
-        let traces_translator = OtlpTracesTranslator::new(self.otlp_config.traces.clone());
+        let traces_interner_size =
+            std::num::NonZeroUsize::new(self.otlp_config.traces.string_interner_bytes.as_u64() as usize)
+                .ok_or_else(|| generic_error!("otlp_config.traces.string_interner_size must be greater than 0"))?;
+        let traces_translator = OtlpTracesTranslator::new(self.otlp_config.traces.clone(), traces_interner_size);
 
         Ok(Box::new(OtlpDecoder {
             traces_translator,
