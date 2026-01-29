@@ -23,7 +23,7 @@ use tracing::error;
 
 use crate::common::datadog::{OTEL_TRACE_ID_META_KEY, SAMPLING_PRIORITY_METRIC_KEY};
 use crate::common::otlp::attributes::{get_int_attribute, HTTP_MAPPINGS};
-use crate::common::otlp::traces::normalize::{normalize_service, normalize_tag_value};
+use crate::common::otlp::traces::normalize::{is_normalized_tag_value, normalize_service, normalize_tag_value};
 use crate::common::otlp::traces::normalize::{truncate_utf8, MAX_RESOURCE_LEN};
 use crate::common::otlp::traces::translator::{convert_span_id, convert_trace_id};
 use crate::common::otlp::util::get_string_attribute;
@@ -223,7 +223,7 @@ pub fn otel_span_to_dd_span(
     }
 
     if let Some(scope) = instrumentation_scope {
-        instrumentation_scope_attributes_to_meta(scope, &mut meta);
+        instrumentation_scope_attributes_to_meta(scope, &mut meta, interner);
     }
 
     if !meta.contains_key("db.name") {
@@ -366,19 +366,34 @@ pub fn otel_to_dd_span_minimal(
 fn get_otel_service(
     span_attributes: &[KeyValue], resource_attributes: &[KeyValue], normalize: bool, interner: &GenericMapInterner,
 ) -> MetaString {
-    let service = use_both_maps(span_attributes, resource_attributes, true, SERVICE_NAME, interner)
+    let service = get_string_attribute(span_attributes, SERVICE_NAME)
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| MetaString::from_static(DEFAULT_SERVICE_NAME));
+        .or_else(|| get_string_attribute(resource_attributes, SERVICE_NAME).filter(|s| !s.is_empty()))
+        .unwrap_or(DEFAULT_SERVICE_NAME);
 
     if normalize {
-        normalize_service(&service)
+        let normalized = normalize_service(&MetaString::from(service));
+        interner
+            .try_intern(normalized.as_ref())
+            .map(MetaString::from)
+            .unwrap_or(normalized)
     } else {
-        service
+        interner
+            .try_intern(service)
+            .map(MetaString::from)
+            .unwrap_or_else(|| MetaString::from(service))
     }
 }
 
 /// Intern a formatted operation name.
 fn intern_operation_name(name: String, interner: &GenericMapInterner) -> MetaString {
+    interner
+        .try_intern(&name)
+        .map(MetaString::from)
+        .unwrap_or_else(|| MetaString::from(name))
+}
+
+fn intern_resource_name(name: String, interner: &GenericMapInterner) -> MetaString {
     interner
         .try_intern(&name)
         .map(MetaString::from)
@@ -571,7 +586,7 @@ fn get_otel_resource_v2(
                 resource_name.push_str(route.as_ref());
             }
         }
-        return MetaString::from(resource_name);
+        return intern_resource_name(resource_name, interner);
     }
 
     if let Some(operation) = use_both_maps(
@@ -593,7 +608,7 @@ fn get_otel_resource_v2(
                 resource_name.push_str(dest.as_ref());
             }
         }
-        return MetaString::from(resource_name);
+        return intern_resource_name(resource_name, interner);
     }
 
     if let Some(method) = use_both_maps(span_attributes, resource_attributes, true, RPC_METHOD_KEY, interner) {
@@ -602,26 +617,17 @@ fn get_otel_resource_v2(
             resource_name.push(' ');
             resource_name.push_str(service.as_ref());
         }
-        return MetaString::from(resource_name);
+        return intern_resource_name(resource_name, interner);
     }
 
     // Enrich GraphQL query resource names.
     // See https://github.com/open-telemetry/semantic-conventions/blob/v1.29.0/docs/graphql/graphql-spans.md
-    if let Some(op_type) = use_both_maps(
-        span_attributes,
-        resource_attributes,
-        true,
-        GRAPHQL_OPERATION_TYPE_KEY,
-        interner,
-    ) {
-        let mut resource_name = op_type.as_ref().to_string();
-        if let Some(op_name) = use_both_maps(
-            span_attributes,
-            resource_attributes,
-            true,
-            GRAPHQL_OPERATION_NAME_KEY,
-            interner,
-        ) {
+    if let Some(op_type) = get_both_string_attribute(span_attributes, resource_attributes, GRAPHQL_OPERATION_TYPE_KEY) {
+        let mut resource_name = normalize_tag_value(op_type).into_owned();
+        if let Some(op_name) =
+            get_both_string_attribute(span_attributes, resource_attributes, GRAPHQL_OPERATION_NAME_KEY)
+        {
+            let op_name = normalize_tag_value(op_name);
             resource_name.push(' ');
             resource_name.push_str(op_name.as_ref());
         }
@@ -629,11 +635,11 @@ fn get_otel_resource_v2(
     }
 
     if use_both_maps(span_attributes, resource_attributes, true, DB_SYSTEM_KEY, interner).is_some() {
-        if let Some(statement) = use_both_maps(span_attributes, resource_attributes, true, DB_STATEMENT_KEY, interner) {
-            return statement;
+        if let Some(statement) = get_both_string_attribute(span_attributes, resource_attributes, DB_STATEMENT_KEY) {
+            return normalize_tag_value(statement);
         }
-        if let Some(query) = use_both_maps(span_attributes, resource_attributes, true, DB_QUERY_TEXT_KEY, interner) {
-            return query;
+        if let Some(query) = get_both_string_attribute(span_attributes, resource_attributes, DB_QUERY_TEXT_KEY) {
+            return normalize_tag_value(query);
         }
     }
 
@@ -801,14 +807,22 @@ fn map_attribute_generic(
 }
 
 fn instrumentation_scope_attributes_to_meta(
-    scope: &OtlpInstrumentationScope, meta: &mut FastHashMap<MetaString, MetaString>,
+    scope: &OtlpInstrumentationScope, meta: &mut FastHashMap<MetaString, MetaString>, interner: &GenericMapInterner,
 ) {
     for attribute in &scope.attributes {
         let Some(value) = attribute.value.as_ref().and_then(|wrapper| wrapper.value.as_ref()) else {
             continue;
         };
         if let Some(serialized) = otlp_value_to_string(value) {
-            meta.insert(attribute.key.as_str().into(), serialized.into());
+            let key = interner
+                .try_intern(attribute.key.as_str())
+                .map(MetaString::from)
+                .unwrap_or_else(|| MetaString::from(attribute.key.as_str()));
+            let value = interner
+                .try_intern(&serialized)
+                .map(MetaString::from)
+                .unwrap_or_else(|| MetaString::from(serialized));
+            meta.insert(key, value);
         }
     }
 }
@@ -1152,15 +1166,24 @@ fn span_kind_name_capitalized(kind: SpanKind) -> &'static str {
 }
 
 fn intern_attribute_value(value: &str, normalize: bool, interner: &GenericMapInterner) -> MetaString {
-    let result = if normalize {
-        normalize_tag_value(value)
-    } else {
-        MetaString::from(value)
-    };
+    if normalize {
+        if is_normalized_tag_value(value) {
+            return interner
+                .try_intern(value)
+                .map(MetaString::from)
+                .unwrap_or_else(|| MetaString::from(value));
+        }
+        let normalized = normalize_tag_value(value);
+        return interner
+            .try_intern(normalized.as_ref())
+            .map(MetaString::from)
+            .unwrap_or(normalized);
+    }
+
     interner
-        .try_intern(result.as_ref())
+        .try_intern(value)
         .map(MetaString::from)
-        .unwrap_or(result)
+        .unwrap_or_else(|| MetaString::from(value))
 }
 
 fn use_both_maps(
@@ -1178,6 +1201,12 @@ fn use_both_maps(
             None
         }
     })
+}
+
+fn get_both_string_attribute<'a>(map: &'a [KeyValue], map2: &'a [KeyValue], key: &str) -> Option<&'a str> {
+    get_string_attribute(map, key)
+        .filter(|value| !value.is_empty())
+        .or_else(|| get_string_attribute(map2, key).filter(|value| !value.is_empty()))
 }
 
 fn use_both_maps_key_list(
@@ -1312,10 +1341,11 @@ pub(super) fn bytes_to_hex_lowercase(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
+
     use otlp_protos::opentelemetry::proto::common::v1::{AnyValue, KeyValue};
     use otlp_protos::opentelemetry::proto::resource::v1::Resource;
     use otlp_protos::opentelemetry::proto::trace::v1::Span as OtlpSpan;
-    use std::num::NonZeroUsize;
 
     use super::*;
 
