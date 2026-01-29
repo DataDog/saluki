@@ -95,7 +95,7 @@ pub async fn handle_run_command(
         // the session_id needed for config streaming) happens later in spawn_control_plane.
         // Config will be updated asynchronously once RAR registration completes and stream connects.
         info!("Waiting for initial configuration from Datadog Agent...");
-        
+
         // Log asynchronously when config is received (for observability and testing)
         let dynamic_config_for_log = dynamic_config.clone();
         tokio::spawn(async move {
