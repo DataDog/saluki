@@ -294,7 +294,7 @@ impl RemoteAgentClient {
     ///
     /// If there is an error with the initial request, or an error occurs while streaming, the next message in the
     /// stream will be `Some(Err(status))`, where the status indicates the underlying error.
-    pub fn stream_config_events(&mut self) -> StreamingResponse<ConfigEvent> {
+    pub fn stream_config_events(&mut self, session_id: Option<String>) -> StreamingResponse<ConfigEvent> {
         let mut client = self.secure_client.clone();
         let app_details = saluki_metadata::get_app_details();
         let formatted_full_name = app_details
@@ -303,11 +303,23 @@ impl RemoteAgentClient {
             .replace("_", "-")
             .to_lowercase();
         StreamingResponse::from_response_future(async move {
-            client
-                .stream_config_events(ConfigStreamRequest {
-                    name: formatted_full_name,
-                })
-                .await
+            let mut request = tonic::Request::new(ConfigStreamRequest {
+                name: formatted_full_name,
+            });
+            
+            // Add session_id to gRPC metadata (per RemoteAgentRegistry RFC)
+            if let Some(sid) = session_id {
+                match sid.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>() {
+                    Ok(metadata_value) => {
+                        request.metadata_mut().insert("session_id", metadata_value);
+                    }
+                    Err(e) => {
+                        return Err(tonic::Status::internal(format!("Invalid session_id format: {}", e)));
+                    }
+                }
+            }
+            
+            client.stream_config_events(request).await
         })
     }
 }

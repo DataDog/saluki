@@ -207,6 +207,8 @@ async fn run_remote_agent_helper(
                 if client.refresh_remote_agent_request(&id).await.is_err() {
                     loop_timer.reset_after(REFRESH_FAILED_RETRY_INTERVAL);
                     session_id.update(None);
+                    // Clear environment variable when session expires
+                    std::env::remove_var("DD_ADP_SESSION_ID");
 
                     warn!("Failed to refresh registration with the Datadog Agent. Resetting session ID and attempting to re-register shortly.");
 
@@ -223,7 +225,9 @@ async fn run_remote_agent_helper(
                         let new_refresh_interval = resp.recommended_refresh_interval_secs;
                         info!(session_id = %resp.session_id, "Successfully registered with the Datadog Agent. Refreshing every {} seconds.", new_refresh_interval);
 
-                        session_id.update(Some(resp.session_id));
+                        session_id.update(Some(resp.session_id.clone()));
+                        // Set environment variable so config stream can access it
+                        std::env::set_var("DD_ADP_SESSION_ID", &resp.session_id);
                         loop_timer.reset_after(Duration::from_secs(new_refresh_interval as u64));
                     }
                     Err(e) => {

@@ -23,15 +23,29 @@ pub async fn create_config_stream(config: &GenericConfiguration) -> Result<mpsc:
         }
     };
 
-    tokio::spawn(run_config_stream_event_loop(client, sender));
+    // Get session_id from environment or config
+    // ADP should set this after successful RAR registration
+    let session_id = std::env::var("DD_ADP_SESSION_ID").ok();
+
+    tokio::spawn(run_config_stream_event_loop(client, sender, session_id));
 
     Ok(receiver)
 }
 
-async fn run_config_stream_event_loop(mut client: RemoteAgentClient, sender: mpsc::Sender<ConfigUpdate>) {
+async fn run_config_stream_event_loop(mut client: RemoteAgentClient, sender: mpsc::Sender<ConfigUpdate>, mut session_id: Option<String>) {
     loop {
+        // If we don't have a session_id yet, wait and retry
+        if session_id.is_none() {
+            session_id = std::env::var("DD_ADP_SESSION_ID").ok();
+            if session_id.is_none() {
+                debug!("No session_id available yet, waiting for RAR registration...");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+        }
+
         debug!("Establishing a new config stream connection to the core agent...");
-        let mut rac = client.stream_config_events();
+        let mut rac = client.stream_config_events(session_id.clone());
 
         while let Some(result) = rac.next().await {
             match result {
@@ -66,7 +80,13 @@ async fn run_config_stream_event_loop(mut client: RemoteAgentClient, sender: mps
                         }
                     }
                 }
-                Err(e) => error!("Error while reading config event stream: {}.", e),
+                Err(e) => {
+                    error!("Error while reading config event stream: {}.", e);
+                    // Clear session_id on auth errors to trigger re-check
+                    if e.code() == tonic::Code::Unauthenticated || e.code() == tonic::Code::PermissionDenied {
+                        session_id = None;
+                    }
+                }
             }
         }
 
