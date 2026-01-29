@@ -77,6 +77,7 @@ tonic = { workspace = true, features = ["router", "server"] }
 tower = { workspace = true, features = ["limit", "retry", "timeout", "util"] }
 tracing = { workspace = true }
 url = { workspace = true }
+uuid = { workspace = true, features = ["std", "v7"] }
 
 [dev-dependencies]
 proptest = { workspace = true }
