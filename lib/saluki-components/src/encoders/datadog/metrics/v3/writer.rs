@@ -377,7 +377,9 @@ impl<'a> V3MetricBuilder<'a> {
 
     /// Sets the origin metadata for this metric.
     pub fn set_origin(&mut self, product: u32, category: u32, service: u32) {
-        let id = self.writer.intern_origin(product as i32, category as i32, service as i32);
+        let id = self
+            .writer
+            .intern_origin(product as i32, category as i32, service as i32);
         self.writer.origin_infos[self.metric_idx] = id;
     }
 
@@ -392,7 +394,9 @@ impl<'a> V3MetricBuilder<'a> {
     ///
     /// For sketches, the summary values (count, sum, min, max) are stored as points,
     /// and the bin keys/counts are stored separately.
-    pub fn add_sketch(&mut self, timestamp: i64, count: i64, sum: f64, min: f64, max: f64, bin_keys: &[i32], bin_counts: &[u32]) {
+    pub fn add_sketch(
+        &mut self, timestamp: i64, count: i64, sum: f64, min: f64, max: f64, bin_keys: &[i32], bin_counts: &[u32],
+    ) {
         self.writer.timestamps.push(timestamp);
 
         // Count goes in sint64, sum/min/max go in float64
