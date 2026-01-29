@@ -1,5 +1,5 @@
 name: "adp-config-stream"
-description: "Verify ADP handles new config stream endpoint gracefully (full functionality requires Agent PR #45147)"
+description: "Verify ADP receives configuration from Core Agent via config stream"
 timeout: 90s
 
 container:
@@ -16,13 +16,14 @@ container:
     - "8125/udp"
 
 assertions:
-  # TODO: Re-enable full assertions once Agent PR #45147 is merged
-  # For now, just verify the process doesn't crash when config streaming is enabled
   - type: process_stable_for
     duration: 15s
   - type: log_contains
-    pattern: "Waiting for initial configuration"
-    timeout: 30s
+    pattern: "Initial configuration received."
+    timeout: 60s
+  - type: log_contains
+    pattern: "Topology healthy"
+    timeout: 60s
   - type: log_not_contains
     pattern: "panic|PANIC"
     regex: true
