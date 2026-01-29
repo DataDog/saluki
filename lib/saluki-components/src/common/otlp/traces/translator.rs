@@ -32,13 +32,21 @@ pub fn convert_span_id(span_id: &[u8]) -> u64 {
     u64::from_be_bytes(span_id.try_into().unwrap_or_default())
 }
 
-pub fn resource_attributes_to_tagset(attributes: &[otlp_common::KeyValue]) -> TagSet {
+pub fn resource_attributes_to_tagset(attributes: &[otlp_common::KeyValue], interner: &GenericMapInterner) -> TagSet {
+    use stringtheory::interning::Interner as _;
+    use stringtheory::MetaString;
+
     let mut tags = TagSet::with_capacity(attributes.len());
     for kv in attributes {
         if let Some(key_value) = &kv.value {
             if let Some(value) = &key_value.value {
                 if let Some(string_value) = otlp_value_to_string(value) {
-                    tags.insert_tag(format!("{}:{}", kv.key, string_value));
+                    let tag_str = format!("{}:{}", kv.key, string_value);
+                    let tag = interner
+                        .try_intern(&tag_str)
+                        .map(MetaString::from)
+                        .unwrap_or_else(|| MetaString::from(tag_str));
+                    tags.insert_tag(tag);
                 }
             }
         }
@@ -53,7 +61,6 @@ struct TraceEntry {
 }
 pub struct OtlpTracesTranslator {
     config: TracesConfig,
-    #[allow(unused)]
     interner: GenericMapInterner,
 }
 
@@ -65,7 +72,7 @@ impl OtlpTracesTranslator {
 
     pub fn translate_resource_spans(&self, resource_spans: ResourceSpans, metrics: &Metrics) -> Vec<Event> {
         let resource: OtlpResource = resource_spans.resource.unwrap_or_default();
-        let resource_tags: TagSet = resource_attributes_to_tagset(&resource.attributes);
+        let resource_tags: TagSet = resource_attributes_to_tagset(&resource.attributes, &self.interner);
         let mut traces_by_id: FastHashMap<u64, TraceEntry> = FastHashMap::default();
         let ignore_missing_fields = self.config.ignore_missing_datadog_fields;
 
@@ -92,6 +99,7 @@ impl OtlpTracesTranslator {
                     scope_ref,
                     ignore_missing_fields,
                     self.config.enable_otlp_compute_top_level_by_span_kind,
+                    &self.interner,
                     trace_id_hex,
                 );
 
