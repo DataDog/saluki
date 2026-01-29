@@ -237,7 +237,7 @@ fn encoded_len_varint64(value: u64) -> usize {
         return 1;
     }
     let bits = 64 - value.leading_zeros() as usize;
-    (bits + 6) / 7
+    bits.div_ceil(7)
 }
 
 fn encoded_len_varint32(value: u32) -> usize {
@@ -245,7 +245,7 @@ fn encoded_len_varint32(value: u32) -> usize {
         return 1;
     }
     let bits = 32 - value.leading_zeros() as usize;
-    (bits + 6) / 7
+    bits.div_ceil(7)
 }
 
 fn encoded_len_sint64(value: i64) -> usize {
@@ -263,7 +263,7 @@ fn encoded_len_sint32(value: i32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::encoders::datadog::metrics::v3::{V3Writer, V3MetricType};
+    use crate::encoders::datadog::metrics::v3::{V3MetricType, V3Writer};
 
     #[test]
     fn test_serialize_empty() {
