@@ -33,6 +33,7 @@ use saluki_core::topology::TopologyBlueprint;
 use saluki_env::{configstream::create_config_stream, EnvironmentProvider as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
+use saluki_io::net::GrpcTargetAddress;
 use tokio::{select, time::interval};
 use tracing::{error, info, warn};
 
@@ -43,7 +44,6 @@ use crate::{
     },
 };
 use crate::{config::DataPlaneConfiguration, env_provider::ADPEnvironmentProvider};
-use saluki_io::net::GrpcTargetAddress;
 
 /// Runs the data plane.
 #[derive(FromArgs, Debug)]
