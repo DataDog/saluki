@@ -1040,6 +1040,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "dreamweaver"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "indexmap 2.12.1",
+ "otlp-protos",
+ "prost",
+ "rand 0.9.2",
+ "saluki-error",
+ "serde",
+ "serde_yaml",
+ "sha3",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tonic",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -311,6 +311,20 @@ run-adp-standalone-release: ## Runs ADP locally in standalone mode (release)
 	DD_DATA_PLANE_TELEMETRY_ENABLED=true DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	target/release/agent-data-plane --config /tmp/adp-empty-config.yaml run
 
+.PHONY: build-dreamweaver
+build-dreamweaver: check-rust-build-tools
+build-dreamweaver: ## Builds the dreamweaver binary
+	@echo "[*] Building dreamweaver locally..."
+	@cargo build --profile release --package dreamweaver
+
+export DREAMWEAVER_CONFIG ?= $(shell pwd)/test/dreamweaver/ecommerce.yaml
+
+.PHONY: run-dreamweaver
+run-dreamweaver: build-dreamweaver
+run-dreamweaver: ## Runs dreamweaver with config (set DREAMWEAVER_CONFIG to override)
+	@echo "[*] Running dreamweaver with config: $(DREAMWEAVER_CONFIG)"
+	@target/release/dreamweaver $(DREAMWEAVER_CONFIG)
+
 .PHONY: run-dsd-basic-udp
 run-dsd-basic-udp: build-dsd-client ## Runs a basic set of metrics via the Dogstatsd client (UDP)
 	@echo "[*] Sending basic metrics via Dogstatsd (UDP, 127.0.0.1:9191)..."

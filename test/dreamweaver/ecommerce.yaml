@@ -1,0 +1,113 @@
+# Dreamweaver E-commerce Configuration
+# Simulates a simple e-commerce microservices architecture for local testing
+
+# Seed string for reproducible workloads (hashed to 32 bytes via SHA3-256)
+seed: "ecommerce-test-workload"
+
+# Service type templates define the telemetry each service type emits
+templates:
+  http-server:
+    traces:
+      span_kind: server
+      operations:
+        - "GET /api/users"
+        - "GET /api/users/{id}"
+        - "POST /api/orders"
+        - "GET /api/orders"
+        - "GET /api/products"
+      error_rate: 0.01
+      base_duration_ms: 50
+    metrics:
+      - name: http.server.request.duration
+        type: histogram
+        unit: ms
+      - name: http.server.active_requests
+        type: gauge
+      - name: http.server.request.total
+        type: counter
+    logs:
+      - patterns:
+          - "Request received from {ip}"
+          - "Processing request {request_id}"
+        severity: info
+      - patterns:
+          - "Request failed: {error}"
+        severity: error
+
+  database-client:
+    traces:
+      span_kind: client
+      operations:
+        - "SELECT"
+        - "INSERT"
+        - "UPDATE"
+        - "DELETE"
+      error_rate: 0.005
+      base_duration_ms: 25
+    metrics:
+      - name: db.client.connections.active
+        type: gauge
+      - name: db.client.query.duration
+        type: histogram
+        unit: ms
+
+  cache-client:
+    traces:
+      span_kind: client
+      operations:
+        - "GET"
+        - "SET"
+        - "DEL"
+      error_rate: 0.001
+      base_duration_ms: 5
+    metrics:
+      - name: cache.client.hit_ratio
+        type: gauge
+      - name: cache.client.operation.duration
+        type: histogram
+        unit: ms
+
+# Service definitions describe the architecture
+services:
+  # API Gateway - entry point for all requests
+  - name: api-gateway
+    type: http-server
+    downstream:
+      - user-service
+      - product-service
+
+  # User service with database and cache
+  - name: user-service
+    type: http-server
+    downstream:
+      - users-db
+      - users-cache
+
+  - name: users-db
+    type: database-client
+
+  - name: users-cache
+    type: cache-client
+
+  # Product service with database and cache
+  - name: product-service
+    type: http-server
+    downstream:
+      - products-db
+      - products-cache
+
+  - name: products-db
+    type: database-client
+
+  - name: products-cache
+    type: cache-client
+
+# Workload configuration
+workload:
+  rate: 10/s
+  duration: 1m
+
+# Output configuration
+output:
+  endpoint: grpc://localhost:4317
+  batch_size: 50

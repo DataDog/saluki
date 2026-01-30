@@ -1,0 +1,26 @@
+[package]
+name = "dreamweaver"
+version = "0.1.0"
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+[lints]
+workspace = true
+
+[dependencies]
+bytes = { workspace = true }
+indexmap = { workspace = true, features = ["serde"] }
+otlp-protos = { workspace = true }
+prost = { workspace = true }
+rand = { workspace = true, features = ["std", "std_rng"] }
+saluki-error = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+sha3 = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "time", "sync", "macros"] }
+tokio-stream = { workspace = true }
+tokio-util = { workspace = true, features = ["time"] }
+tonic = { workspace = true, features = ["transport"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["ansi", "env-filter", "fmt"] }
