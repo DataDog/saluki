@@ -40,6 +40,7 @@ export CARGO_TOOL_VERSION_cargo-autoinherit ?= 0.1.5
 export CARGO_TOOL_VERSION_cargo-sort ?= 1.0.9
 export CARGO_TOOL_VERSION_dummyhttp ?= 1.1.0
 export CARGO_TOOL_VERSION_cargo-machete ?= 0.9.1
+export CARGO_TOOL_VERSION_rustfilt ?= 0.2.1
 export DDPROF_VERSION ?= 0.20.0
 export LADING_VERSION ?= 0.28.0
 
@@ -714,7 +715,7 @@ sync-licenses: ## Synchronizes the third-party license file with the current cra
 .PHONY: cargo-preinstall
 cargo-preinstall: cargo-install-dd-rust-license-tool cargo-install-cargo-deny cargo-install-cargo-hack
 cargo-preinstall: cargo-install-cargo-nextest cargo-install-cargo-autoinherit cargo-install-cargo-sort
-cargo-preinstall: cargo-install-dummyhttp cargo-install-cargo-machete
+cargo-preinstall: cargo-install-dummyhttp cargo-install-cargo-machete cargo-install-rustfilt
 cargo-preinstall: ## Pre-installs all necessary Cargo tools (used for CI)
 	@echo "[*] Pre-installed all necessary Cargo tools!"
 
