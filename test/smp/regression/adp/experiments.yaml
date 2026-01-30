@@ -413,6 +413,6 @@ experiments:
             target_uri: "http://127.0.0.1:4317/opentelemetry.proto.collector.trace.v1.TraceService/Export"
             bytes_per_second: "5 MiB"
             parallel_connections: 1
-            maximum_prebuild_cache_size_bytes: "512 MiB"
+            maximum_prebuild_cache_size_bytes: "10 MiB"
             variant:
               opentelemetry_traces: {}
