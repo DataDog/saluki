@@ -6,6 +6,7 @@ use saluki_core::data_model::event::trace::Span;
 use saluki_core::data_model::event::trace_stats::{ClientStatsBucket, ClientStatsPayload};
 use stringtheory::MetaString;
 
+use super::aggregation::AggregationRegistry;
 use super::aggregation::{
     get_grpc_status_code, get_status_code, process_tags_hash, PayloadAggregationKey, BUCKET_DURATION_NS,
     TAG_BASE_SERVICE, TAG_SPAN_KIND,
@@ -130,6 +131,10 @@ pub struct SpanConcentrator {
 
     /// Time-bucketed raw stats: bucket_timestamp -> RawBucket
     buckets: FastHashMap<u64, RawBucket>,
+
+    /// Shared registry for aggregation keys.
+    /// Keys are stored here and referenced by hash in individual buckets.
+    key_registry: AggregationRegistry,
 }
 
 impl SpanConcentrator {
@@ -151,6 +156,7 @@ impl SpanConcentrator {
             oldest_ts: align_ts(now, BUCKET_DURATION_NS),
             buffer_len: DEFAULT_BUFFER_LEN,
             buckets: FastHashMap::default(),
+            key_registry: AggregationRegistry::new(),
         }
     }
 
@@ -177,8 +183,9 @@ impl SpanConcentrator {
                 continue;
             }
 
-            if let Some(srb) = self.buckets.remove(&ts) {
-                let exported = srb.export();
+            if let Some(bucket) = self.buckets.remove(&ts) {
+                // Export bucket data, which also decrements reference counts for keys inline
+                let exported = bucket.export(&mut self.key_registry);
 
                 for (k, b) in exported.data {
                     if let Some(ctags) = exported.container_tags_by_id.get(&k.container_id) {
@@ -248,7 +255,7 @@ impl SpanConcentrator {
 
         let span_kind = span.meta().get(TAG_SPAN_KIND).cloned().unwrap_or_default();
         let status_code = get_status_code(span.meta(), span.metrics());
-        let grpc_status_code = get_grpc_status_code(span.meta(), span.metrics());
+        let grpc_status_code = get_grpc_status_code(span.meta(), span.metrics()).to_metastring();
         let is_top_level = span.metrics().get(METRIC_TOP_LEVEL).map(|&v| v == 1.0).unwrap_or(false);
         let matching_peer_tags = self.matching_peer_tags(span, &span_kind);
 
@@ -328,7 +335,7 @@ impl SpanConcentrator {
             b.set_container_tags(tags.container_id.clone(), tags.container_tags.clone());
         }
 
-        b.handle_span(s, weight, origin, agg_key.clone());
+        b.handle_span(s, weight, origin, agg_key.clone(), &mut self.key_registry);
     }
 }
 

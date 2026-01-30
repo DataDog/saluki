@@ -1,9 +1,13 @@
 //! Aggregation keys and helper functions for APM stats.
 
-use std::hash::{Hash, Hasher};
+use std::{
+    collections::hash_map::Entry,
+    fmt,
+    hash::{Hash, Hasher},
+};
 
 use fnv::FnvHasher;
-use saluki_common::collections::FastHashMap;
+use saluki_common::collections::{FastHashMap, PrehashedHashMap};
 use stringtheory::MetaString;
 
 pub const BUCKET_DURATION_NS: u64 = 10_000_000_000;
@@ -11,6 +15,292 @@ pub const TAG_SYNTHETICS: &str = "synthetics";
 pub const TAG_SPAN_KIND: &str = "span.kind";
 pub const TAG_BASE_SERVICE: &str = "_dd.base_service";
 const TAG_STATUS_CODE: &str = "http.status_code";
+
+/// Span kind.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum SpanKind {
+    /// Unspecified or empty span kind.
+    #[default]
+    Unspecified = 0,
+
+    /// Internal span (not a network boundary).
+    Internal = 1,
+
+    /// Server-side span (handling incoming request).
+    Server = 2,
+
+    /// Client-side span (making outgoing request).
+    Client = 3,
+
+    /// Producer span (sending message to queue/topic).
+    Producer = 4,
+
+    /// Consumer span (receiving message from queue/topic).
+    Consumer = 5,
+}
+
+impl SpanKind {
+    /// Parses a span kind from a string in a case-insensitive fashion.
+    ///
+    /// If the span kind is not recognized, `SpanKind::Unspecified` is returned.
+    pub const fn from_str(s: &str) -> Self {
+        if s.eq_ignore_ascii_case("client") {
+            Self::Client
+        } else if s.eq_ignore_ascii_case("server") {
+            Self::Server
+        } else if s.eq_ignore_ascii_case("producer") {
+            Self::Producer
+        } else if s.eq_ignore_ascii_case("consumer") {
+            Self::Consumer
+        } else if s.eq_ignore_ascii_case("internal") {
+            Self::Internal
+        } else {
+            Self::Unspecified
+        }
+    }
+
+    /// Converts `self` into a string representation.
+    pub const fn to_metastring(self) -> MetaString {
+        match self {
+            Self::Unspecified => MetaString::from_static("unspecified"),
+            Self::Internal => MetaString::from_static("internal"),
+            Self::Server => MetaString::from_static("server"),
+            Self::Client => MetaString::from_static("client"),
+            Self::Producer => MetaString::from_static("producer"),
+            Self::Consumer => MetaString::from_static("consumer"),
+        }
+    }
+}
+
+/// gRPC status code.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum GrpcStatusCode {
+    /// No gRPC status code present.
+    #[default]
+    Unset = 255,
+
+    /// Success.
+    Ok = 0,
+
+    /// Cancelled.
+    Cancelled = 1,
+
+    /// Unknown error.
+    Unknown = 2,
+
+    /// Invalid argument.
+    InvalidArgument = 3,
+
+    /// Deadline exceeded.
+    DeadlineExceeded = 4,
+
+    /// Not found.
+    NotFound = 5,
+
+    /// Already exists.
+    AlreadyExists = 6,
+
+    /// Permission denied.
+    PermissionDenied = 7,
+
+    /// Resource exhausted.
+    ResourceExhausted = 8,
+
+    /// Failed precondition.
+    FailedPrecondition = 9,
+
+    /// Aborted.
+    Aborted = 10,
+
+    /// Out of range.
+    OutOfRange = 11,
+
+    /// Unimplemented.
+    Unimplemented = 12,
+
+    /// Internal error.
+    Internal = 13,
+
+    /// Unavailable.
+    Unavailable = 14,
+
+    /// Data loss.
+    DataLoss = 15,
+
+    /// Unauthenticated.
+    Unauthenticated = 16,
+}
+
+impl GrpcStatusCode {
+    /// Parses a numeric code into a `GrpcStatusCode`.
+    ///
+    /// If the code is out of range, `GrpcStatusCode::Unset` is returned.
+    pub const fn from_code(code: u8) -> Self {
+        match code {
+            0 => Self::Ok,
+            1 => Self::Cancelled,
+            2 => Self::Unknown,
+            3 => Self::InvalidArgument,
+            4 => Self::DeadlineExceeded,
+            5 => Self::NotFound,
+            6 => Self::AlreadyExists,
+            7 => Self::PermissionDenied,
+            8 => Self::ResourceExhausted,
+            9 => Self::FailedPrecondition,
+            10 => Self::Aborted,
+            11 => Self::OutOfRange,
+            12 => Self::Unimplemented,
+            13 => Self::Internal,
+            14 => Self::Unavailable,
+            15 => Self::DataLoss,
+            16 => Self::Unauthenticated,
+            _ => Self::Unset,
+        }
+    }
+
+    /// Parses a gRPC status code from a string, either in numeric or the canonical form.
+    ///
+    /// If the status code is not recognized, or is out of range, `GrpcStatusCode::Unset` is returned.
+    pub fn from_str(s: &str) -> Self {
+        if let Ok(code) = s.parse::<u8>() {
+            return Self::from_code(code);
+        }
+
+        // Strip StatusCode. prefix if present
+        let normalized = s.strip_prefix("StatusCode.").unwrap_or(s);
+        let upper = normalized.to_uppercase();
+
+        // TODO: do this with case-insensitive matching so we don't bother with allocating
+        // just to uppercase the string
+        match upper.as_str() {
+            "OK" => Self::Ok,
+            "CANCELLED" | "CANCELED" => Self::Cancelled,
+            "UNKNOWN" => Self::Unknown,
+            "INVALIDARGUMENT" | "INVALID_ARGUMENT" => Self::InvalidArgument,
+            "DEADLINEEXCEEDED" | "DEADLINE_EXCEEDED" => Self::DeadlineExceeded,
+            "NOTFOUND" | "NOT_FOUND" => Self::NotFound,
+            "ALREADYEXISTS" | "ALREADY_EXISTS" => Self::AlreadyExists,
+            "PERMISSIONDENIED" | "PERMISSION_DENIED" => Self::PermissionDenied,
+            "RESOURCEEXHAUSTED" | "RESOURCE_EXHAUSTED" => Self::ResourceExhausted,
+            "FAILEDPRECONDITION" | "FAILED_PRECONDITION" => Self::FailedPrecondition,
+            "ABORTED" => Self::Aborted,
+            "OUTOFRANGE" | "OUT_OF_RANGE" => Self::OutOfRange,
+            "UNIMPLEMENTED" => Self::Unimplemented,
+            "INTERNAL" => Self::Internal,
+            "UNAVAILABLE" => Self::Unavailable,
+            "DATALOSS" | "DATA_LOSS" => Self::DataLoss,
+            "UNAUTHENTICATED" => Self::Unauthenticated,
+            _ => Self::Unset,
+        }
+    }
+
+    /// Converts `self` to a string representation.
+    pub const fn to_metastring(self) -> MetaString {
+        match self {
+            Self::Unset => MetaString::empty(),
+            Self::Ok => MetaString::from_static("0"),
+            Self::Cancelled => MetaString::from_static("1"),
+            Self::Unknown => MetaString::from_static("2"),
+            Self::InvalidArgument => MetaString::from_static("3"),
+            Self::DeadlineExceeded => MetaString::from_static("4"),
+            Self::NotFound => MetaString::from_static("5"),
+            Self::AlreadyExists => MetaString::from_static("6"),
+            Self::PermissionDenied => MetaString::from_static("7"),
+            Self::ResourceExhausted => MetaString::from_static("8"),
+            Self::FailedPrecondition => MetaString::from_static("9"),
+            Self::Aborted => MetaString::from_static("10"),
+            Self::OutOfRange => MetaString::from_static("11"),
+            Self::Unimplemented => MetaString::from_static("12"),
+            Self::Internal => MetaString::from_static("13"),
+            Self::Unavailable => MetaString::from_static("14"),
+            Self::DataLoss => MetaString::from_static("15"),
+            Self::Unauthenticated => MetaString::from_static("16"),
+        }
+    }
+}
+
+/// HTTP method.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum HttpMethod {
+    /// No HTTP method or unknown method.
+    #[default]
+    Unspecified = 0,
+
+    /// GET request.
+    Get = 1,
+
+    /// POST request.
+    Post = 2,
+
+    /// PUT request.
+    Put = 3,
+
+    /// DELETE request.
+    Delete = 4,
+
+    /// PATCH request.
+    Patch = 5,
+
+    /// HEAD request.
+    Head = 6,
+
+    /// OPTIONS request.
+    Options = 7,
+
+    /// CONNECT request.
+    Connect = 8,
+
+    /// TRACE request.
+    Trace = 9,
+}
+
+impl HttpMethod {
+    /// Parses an HTTP method from a string in a case-insensitive fashion.
+    ///
+    /// If the HTTP method is not recognized, `HttpMethod::Unspecified` is returned.
+    pub const fn from_str(s: &str) -> Self {
+        if s.eq_ignore_ascii_case("GET") {
+            Self::Get
+        } else if s.eq_ignore_ascii_case("POST") {
+            Self::Post
+        } else if s.eq_ignore_ascii_case("PUT") {
+            Self::Put
+        } else if s.eq_ignore_ascii_case("DELETE") {
+            Self::Delete
+        } else if s.eq_ignore_ascii_case("PATCH") {
+            Self::Patch
+        } else if s.eq_ignore_ascii_case("HEAD") {
+            Self::Head
+        } else if s.eq_ignore_ascii_case("OPTIONS") {
+            Self::Options
+        } else if s.eq_ignore_ascii_case("CONNECT") {
+            Self::Connect
+        } else if s.eq_ignore_ascii_case("TRACE") {
+            Self::Trace
+        } else {
+            Self::Unspecified
+        }
+    }
+
+    /// Converts `self` to a string representation.
+    pub const fn to_metastring(self) -> MetaString {
+        match self {
+            Self::Unspecified => MetaString::empty(),
+            Self::Get => MetaString::from_static("GET"),
+            Self::Post => MetaString::from_static("POST"),
+            Self::Put => MetaString::from_static("PUT"),
+            Self::Delete => MetaString::from_static("DELETE"),
+            Self::Patch => MetaString::from_static("PATCH"),
+            Self::Head => MetaString::from_static("HEAD"),
+            Self::Options => MetaString::from_static("OPTIONS"),
+            Self::Connect => MetaString::from_static("CONNECT"),
+            Self::Trace => MetaString::from_static("TRACE"),
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Aggregation {
@@ -30,13 +320,13 @@ pub struct BucketsAggregationKey {
     pub name: MetaString,
     pub resource: MetaString,
     pub span_type: MetaString,
-    pub span_kind: MetaString,
+    pub span_kind: SpanKind,
     pub status_code: u32,
     pub synthetics: bool,
     pub peer_tags_hash: u64,
     pub is_trace_root: Option<bool>,
-    pub grpc_status_code: MetaString,
-    pub http_method: MetaString,
+    pub grpc_status_code: GrpcStatusCode,
+    pub http_method: HttpMethod,
     pub http_endpoint: MetaString,
 }
 
@@ -50,6 +340,95 @@ pub struct PayloadAggregationKey {
     pub image_tag: MetaString,
     pub lang: MetaString,
     pub process_tags_hash: u64,
+}
+
+/// A registry that stores aggregation keys with reference counting.
+///
+/// Keys are stored once and referenced by hash. When a bucket is flushed,
+/// it decrements the reference count for its keys, and keys with zero
+/// references are automatically removed.
+pub struct AggregationRegistry {
+    entries: PrehashedHashMap<AggregationKeyHash, RegistryEntry>,
+}
+
+struct RegistryEntry {
+    key: Aggregation,
+    ref_count: u32,
+}
+
+#[derive(Clone, Copy, Hash, Eq, PartialEq)]
+pub struct AggregationKeyHash(u64);
+
+impl fmt::Display for AggregationKeyHash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:x}", self.0)
+    }
+}
+
+impl AggregationRegistry {
+    /// Creates a new empty registry.
+    pub fn new() -> Self {
+        Self {
+            entries: PrehashedHashMap::default(),
+        }
+    }
+
+    /// Computes a stable hash for an aggregation key.
+    #[inline]
+    pub fn hash_key(key: &Aggregation) -> AggregationKeyHash {
+        let mut hasher = FnvHasher::default();
+        key.hash(&mut hasher);
+        AggregationKeyHash(hasher.finish())
+    }
+
+    /// Inserts a new key or increments the reference count if it already exists.
+    ///
+    /// Called when a bucket first uses this key. The caller should have already
+    /// computed the hash via `hash_key()`.
+    pub fn insert_or_increment(&mut self, key_hash: AggregationKeyHash, key: Aggregation) {
+        self.entries
+            .entry(key_hash)
+            .and_modify(|e| e.ref_count += 1)
+            .or_insert_with(|| RegistryEntry { key, ref_count: 1 });
+    }
+
+    /// Decrements the reference count for a key, removing it if the count reaches zero.
+    pub fn decrement(&mut self, key_hash: AggregationKeyHash) {
+        if let Entry::Occupied(mut entry) = self.entries.entry(key_hash) {
+            let new_ref_count = entry.get().ref_count.saturating_sub(1);
+            if new_ref_count == 0 {
+                entry.remove();
+            } else {
+                entry.get_mut().ref_count = new_ref_count;
+            }
+        }
+    }
+
+    /// Looks up the full aggregation key by its hash.
+    ///
+    /// Used during export to reconstruct the full key from the hash.
+    #[inline]
+    pub fn get(&self, key_hash: AggregationKeyHash) -> Option<&Aggregation> {
+        self.entries.get(&key_hash).map(|e| &e.key)
+    }
+
+    /// Returns the number of unique keys currently in the registry.
+    #[allow(dead_code)]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Returns true if the registry contains no keys.
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+impl Default for AggregationRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub fn tags_fnv_hash<I, T>(tags: I) -> u64
@@ -101,7 +480,7 @@ pub fn get_status_code(meta: &FastHashMap<MetaString, MetaString>, metrics: &Fas
 
 pub fn get_grpc_status_code(
     meta: &FastHashMap<MetaString, MetaString>, metrics: &FastHashMap<MetaString, f64>,
-) -> MetaString {
+) -> GrpcStatusCode {
     const STATUS_CODE_FIELDS: &[&str] = &[
         "rpc.grpc.status_code",
         "grpc.code",
@@ -115,60 +494,17 @@ pub fn get_grpc_status_code(
                 continue;
             }
 
-            if value.parse::<u64>().is_ok() {
-                return value.clone();
-            }
-
-            let normalized = value.strip_prefix("StatusCode.").unwrap_or(value);
-            let upper = normalized.to_uppercase();
-
-            if let Some(code) = grpc_status_name_to_code(&upper) {
-                return MetaString::from_static(code);
-            }
-
-            return MetaString::empty();
+            return GrpcStatusCode::from_str(value.as_ref());
         }
     }
 
     for key in STATUS_CODE_FIELDS {
         if let Some(&code) = metrics.get(*key) {
-            return MetaString::from((code as u64).to_string());
+            return GrpcStatusCode::from_code(code as u8);
         }
     }
 
-    MetaString::default()
-}
-
-fn grpc_status_name_to_code(name: &str) -> Option<&'static str> {
-    match name {
-        "CANCELLED" | "CANCELED" => Some("1"),
-        "INVALIDARGUMENT" => Some("3"),
-        "DEADLINEEXCEEDED" => Some("4"),
-        "NOTFOUND" => Some("5"),
-        "ALREADYEXISTS" => Some("6"),
-        "PERMISSIONDENIED" => Some("7"),
-        "RESOURCEEXHAUSTED" => Some("8"),
-        "FAILEDPRECONDITION" => Some("9"),
-        "OUTOFRANGE" => Some("11"),
-        "DATALOSS" => Some("15"),
-        "OK" => Some("0"),
-        "UNKNOWN" => Some("2"),
-        "INVALID_ARGUMENT" => Some("3"),
-        "DEADLINE_EXCEEDED" => Some("4"),
-        "NOT_FOUND" => Some("5"),
-        "ALREADY_EXISTS" => Some("6"),
-        "PERMISSION_DENIED" => Some("7"),
-        "RESOURCE_EXHAUSTED" => Some("8"),
-        "FAILED_PRECONDITION" => Some("9"),
-        "ABORTED" => Some("10"),
-        "OUT_OF_RANGE" => Some("11"),
-        "UNIMPLEMENTED" => Some("12"),
-        "INTERNAL" => Some("13"),
-        "UNAVAILABLE" => Some("14"),
-        "DATA_LOSS" => Some("15"),
-        "UNAUTHENTICATED" => Some("16"),
-        _ => None,
-    }
+    GrpcStatusCode::Unset
 }
 
 #[cfg(test)]
@@ -217,44 +553,44 @@ mod tests {
         // Empty span
         let meta = FastHashMap::default();
         let metrics = FastHashMap::default();
-        assert_eq!(get_grpc_status_code(&meta, &metrics).as_ref(), "");
+        assert_eq!(get_grpc_status_code(&meta, &metrics), GrpcStatusCode::Unset);
 
         // Meta with lowercase name "aborted"
         let mut meta = FastHashMap::default();
         meta.insert(MetaString::from("rpc.grpc.status_code"), MetaString::from("aborted"));
         let metrics = FastHashMap::default();
-        assert_eq!(get_grpc_status_code(&meta, &metrics).as_ref(), "10");
+        assert_eq!(get_grpc_status_code(&meta, &metrics), GrpcStatusCode::Aborted);
 
         // Metrics with numeric code
         let meta = FastHashMap::default();
         let mut metrics = FastHashMap::default();
         metrics.insert(MetaString::from("grpc.code"), 1.0);
-        assert_eq!(get_grpc_status_code(&meta, &metrics).as_ref(), "1");
+        assert_eq!(get_grpc_status_code(&meta, &metrics), GrpcStatusCode::Cancelled);
 
         // Both meta and metrics - meta takes precedence
         let mut meta = FastHashMap::default();
         meta.insert(MetaString::from("grpc.status.code"), MetaString::from("0"));
         let mut metrics = FastHashMap::default();
         metrics.insert(MetaString::from("grpc.status.code"), 1.0);
-        assert_eq!(get_grpc_status_code(&meta, &metrics).as_ref(), "0");
+        assert_eq!(get_grpc_status_code(&meta, &metrics), GrpcStatusCode::Ok);
 
         // Numeric string in meta
         let mut meta = FastHashMap::default();
         meta.insert(MetaString::from("rpc.grpc.status.code"), MetaString::from("15"));
         let metrics = FastHashMap::default();
-        assert_eq!(get_grpc_status_code(&meta, &metrics).as_ref(), "15");
+        assert_eq!(get_grpc_status_code(&meta, &metrics), GrpcStatusCode::DataLoss);
 
         // "Canceled" (mixed case)
         let mut meta = FastHashMap::default();
         meta.insert(MetaString::from("rpc.grpc.status.code"), MetaString::from("Canceled"));
         let metrics = FastHashMap::default();
-        assert_eq!(get_grpc_status_code(&meta, &metrics).as_ref(), "1");
+        assert_eq!(get_grpc_status_code(&meta, &metrics), GrpcStatusCode::Cancelled);
 
         // "CANCELLED" (uppercase)
         let mut meta = FastHashMap::default();
         meta.insert(MetaString::from("rpc.grpc.status.code"), MetaString::from("CANCELLED"));
         let metrics = FastHashMap::default();
-        assert_eq!(get_grpc_status_code(&meta, &metrics).as_ref(), "1");
+        assert_eq!(get_grpc_status_code(&meta, &metrics), GrpcStatusCode::Cancelled);
 
         // With "StatusCode." prefix
         let mut meta = FastHashMap::default();
@@ -263,7 +599,7 @@ mod tests {
             MetaString::from("StatusCode.ABORTED"),
         );
         let metrics = FastHashMap::default();
-        assert_eq!(get_grpc_status_code(&meta, &metrics).as_ref(), "10");
+        assert_eq!(get_grpc_status_code(&meta, &metrics), GrpcStatusCode::Aborted);
 
         // Invalid prefix (typo)
         let mut meta = FastHashMap::default();
@@ -272,7 +608,7 @@ mod tests {
             MetaString::from("StatusCodee.ABORTED"),
         );
         let metrics = FastHashMap::default();
-        assert_eq!(get_grpc_status_code(&meta, &metrics).as_ref(), "");
+        assert_eq!(get_grpc_status_code(&meta, &metrics), GrpcStatusCode::Unset);
 
         // "InvalidArgument" (PascalCase)
         let mut meta = FastHashMap::default();
@@ -281,7 +617,7 @@ mod tests {
             MetaString::from("InvalidArgument"),
         );
         let metrics = FastHashMap::default();
-        assert_eq!(get_grpc_status_code(&meta, &metrics).as_ref(), "3");
+        assert_eq!(get_grpc_status_code(&meta, &metrics), GrpcStatusCode::InvalidArgument);
     }
 
     #[test]
@@ -311,7 +647,7 @@ mod tests {
                 stat_span.is_none() || {
                     let s = stat_span.unwrap();
                     let agg = new_aggregation_from_span(&s, "", PayloadAggregationKey::default());
-                    agg.bucket_key.service.is_empty() && agg.bucket_key.span_kind.is_empty()
+                    agg.bucket_key.service.is_empty() && agg.bucket_key.span_kind == SpanKind::Unspecified
                 }
             );
         }
@@ -327,7 +663,7 @@ mod tests {
             if let Some(stat_span) = concentrator.new_stat_span_from_span(&span) {
                 let agg = new_aggregation_from_span(&stat_span, "", PayloadAggregationKey::default());
                 assert_eq!(agg.bucket_key.service.as_ref(), "a");
-                assert_eq!(agg.bucket_key.span_kind.as_ref(), "client");
+                assert_eq!(agg.bucket_key.span_kind, SpanKind::Client);
                 assert_eq!(agg.bucket_key.peer_tags_hash, 0); // disabled
             }
         }
@@ -348,7 +684,7 @@ mod tests {
             if let Some(stat_span) = concentrator.new_stat_span_from_span(&span) {
                 let agg = new_aggregation_from_span(&stat_span, "", PayloadAggregationKey::default());
                 assert_eq!(agg.bucket_key.service.as_ref(), "a");
-                assert_eq!(agg.bucket_key.span_kind.as_ref(), "client");
+                assert_eq!(agg.bucket_key.span_kind, SpanKind::Client);
                 assert_ne!(agg.bucket_key.peer_tags_hash, 0); // enabled and has peer tag
             }
         }
@@ -369,7 +705,7 @@ mod tests {
             if let Some(stat_span) = concentrator.new_stat_span_from_span(&span) {
                 let agg = new_aggregation_from_span(&stat_span, "", PayloadAggregationKey::default());
                 assert_eq!(agg.bucket_key.service.as_ref(), "a");
-                assert_eq!(agg.bucket_key.span_kind.as_ref(), "producer");
+                assert_eq!(agg.bucket_key.span_kind, SpanKind::Producer);
                 assert_ne!(agg.bucket_key.peer_tags_hash, 0);
             }
         }
@@ -392,7 +728,7 @@ mod tests {
             if let Some(stat_span) = concentrator.new_stat_span_from_span(&span) {
                 let agg = new_aggregation_from_span(&stat_span, "", PayloadAggregationKey::default());
                 assert_eq!(agg.bucket_key.service.as_ref(), "a");
-                assert_eq!(agg.bucket_key.span_kind.as_ref(), "client");
+                assert_eq!(agg.bucket_key.span_kind, SpanKind::Client);
                 assert_eq!(agg.bucket_key.peer_tags_hash, 0); // empty tags = 0 hash
             }
         }

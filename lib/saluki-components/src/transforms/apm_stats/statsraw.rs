@@ -1,4 +1,6 @@
-use ddsketch::canonical::DDSketch;
+use ddsketch::canonical::mapping::FixedLogarithmicMapping;
+use ddsketch::canonical::store::CollapsingLowestDenseStore;
+use ddsketch::canonical::PositiveOnlyDDSketch;
 use protobuf::Message;
 use rand::Rng as _;
 use saluki_common::collections::{FastHashMap, PrehashedHashMap};
@@ -7,16 +9,28 @@ use saluki_core::data_model::event::trace_stats::{ClientGroupedStats, ClientStat
 use stringtheory::MetaString;
 use tracing::error;
 
-use super::aggregation::{tags_fnv_hash, Aggregation, BucketsAggregationKey, PayloadAggregationKey, TAG_SYNTHETICS};
+use super::aggregation::{
+    tags_fnv_hash, Aggregation, AggregationKeyHash, AggregationRegistry, BucketsAggregationKey, GrpcStatusCode,
+    HttpMethod, PayloadAggregationKey, SpanKind, TAG_SYNTHETICS,
+};
 use super::span_concentrator::StatSpan;
+
+/// Type alias for DDSketch optimized for latencies (positive-only values).
+///
+/// Uses `PositiveOnlyDDSketch` which eliminates the negative store, saving 48 bytes per sketch.
+/// Combined with the zero-sized `FixedLogarithmicMapping`, this saves 64 bytes per sketch
+/// compared to the standard `DDSketch<LogarithmicMapping, CollapsingLowestDenseStore>`.
+type ApmDDSketch = PositiveOnlyDDSketch<FixedLogarithmicMapping, CollapsingLowestDenseStore>;
 
 struct GroupedStats {
     hits: f64,
     top_level_hits: f64,
     errors: f64,
     duration: f64,
-    ok_distribution: DDSketch,
-    err_distribution: DDSketch,
+    ok_distribution: ApmDDSketch,
+    /// Error distribution is lazily initialized on first error to save memory.
+    /// Many services have few or no errors, so this avoids allocating a full sketch in those cases.
+    err_distribution: Option<Box<ApmDDSketch>>,
     peer_tags: Vec<MetaString>,
 }
 
@@ -28,17 +42,19 @@ impl GroupedStats {
             top_level_hits: 0.0,
             errors: 0.0,
             duration: 0.0,
-            ok_distribution: DDSketch::with_relative_accuracy(0.01)
-                .expect("Relative accuracy should be valid (0 <= 0.01 <= 1)"),
-            err_distribution: DDSketch::with_relative_accuracy(0.01)
-                .expect("Relative accuracy should be valid (0 <= 0.01 <= 1)"),
+            ok_distribution: ApmDDSketch::default(),
+            err_distribution: None,
             peer_tags: Vec::new(),
         }
     }
 
     fn export(self, bucket_agg_key: BucketsAggregationKey) -> ClientGroupedStats {
         let ok_summary = convert_to_ddsketch_proto_bytes(&self.ok_distribution);
-        let error_summary = convert_to_ddsketch_proto_bytes(&self.err_distribution);
+        let error_summary = self
+            .err_distribution
+            .as_ref()
+            .map(|d| convert_to_ddsketch_proto_bytes(d))
+            .unwrap_or_default();
 
         ClientGroupedStats::new(bucket_agg_key.service, bucket_agg_key.name, bucket_agg_key.resource)
             .with_http_status_code(bucket_agg_key.status_code)
@@ -50,11 +66,11 @@ impl GroupedStats {
             .with_ok_summary(ok_summary)
             .with_error_summary(error_summary)
             .with_synthetics(bucket_agg_key.synthetics)
-            .with_span_kind(bucket_agg_key.span_kind)
+            .with_span_kind(bucket_agg_key.span_kind.to_metastring())
             .with_peer_tags(self.peer_tags)
             .with_is_trace_root(bucket_agg_key.is_trace_root)
-            .with_grpc_status_code(bucket_agg_key.grpc_status_code)
-            .with_http_method(bucket_agg_key.http_method)
+            .with_grpc_status_code(bucket_agg_key.grpc_status_code.to_metastring())
+            .with_http_method(bucket_agg_key.http_method.to_metastring())
             .with_http_endpoint(bucket_agg_key.http_endpoint)
     }
 }
@@ -69,7 +85,9 @@ pub struct RawBucket {
     start: u64,
     /// Bucket duration in nanoseconds.
     duration: u64,
-    data: FastHashMap<Aggregation, GroupedStats>,
+    /// Stats grouped by aggregation key hash.
+    /// The full aggregation keys are stored in the shared `AggregationRegistry`.
+    data: FastHashMap<AggregationKeyHash, GroupedStats>,
     /// Map of container ID to container tags.
     pub(super) container_tags_by_id: FastHashMap<MetaString, SharedTagSet>,
     /// Map of process tags hash to process tags.
@@ -109,17 +127,24 @@ impl RawBucket {
         self.process_tags_by_hash.get(&hash)
     }
 
-    pub fn handle_span(&mut self, span: &StatSpan, weight: f64, origin: &str, payload_key: PayloadAggregationKey) {
+    /// Handles a span by aggregating its stats into this bucket.
+    ///
+    /// The `registry` is used to store/lookup the full aggregation key, while this bucket
+    /// only stores the hash as the key. This deduplicates keys across buckets.
+    pub fn handle_span(
+        &mut self, span: &StatSpan, weight: f64, origin: &str, payload_key: PayloadAggregationKey,
+        registry: &mut AggregationRegistry,
+    ) {
         if payload_key.env.is_empty() {
             error!("PayloadAggregationKey env should never be empty");
             return;
         }
         let aggr = new_aggregation_from_span(span, origin, payload_key);
-        self.add(span, weight, aggr);
-    }
+        let key_hash = AggregationRegistry::hash_key(&aggr);
 
-    fn add(&mut self, span: &StatSpan, weight: f64, aggr: Aggregation) {
-        let gs = self.data.entry(aggr).or_insert_with(|| {
+        // Use entry API - registry increment only happens on actual insert
+        let gs = self.data.entry(key_hash).or_insert_with(|| {
+            registry.insert_or_increment(key_hash, aggr);
             let mut gs = GroupedStats::new();
             gs.peer_tags = span.matching_peer_tags.clone();
             gs
@@ -138,17 +163,34 @@ impl RawBucket {
 
         let trunc_dur = ns_timestamp_to_float(span.duration);
         if span.error != 0 {
-            gs.err_distribution.add(trunc_dur);
+            gs.err_distribution
+                .get_or_insert_with(|| Box::new(ApmDDSketch::default()))
+                .add(trunc_dur);
         } else {
             gs.ok_distribution.add(trunc_dur);
         }
     }
 
-    pub fn export(self) -> ExportedBucket {
+    /// Exports this bucket's data, looking up full keys from the registry.
+    ///
+    /// The `registry` is used to retrieve the full aggregation keys from their hashes. After looking up each key, the
+    /// reference count is decremented inline, removing keys that are no longer referenced by any bucket.
+    pub fn export(self, registry: &mut AggregationRegistry) -> ExportedBucket {
         let mut data = FastHashMap::default();
 
-        for (agg, gs) in self.data {
-            let (bucket_agg_key, payload_agg_key) = agg.into_parts();
+        for (key_hash, gs) in self.data {
+            // Look up the full aggregation key from the registry
+            let Some(agg) = registry.get(key_hash) else {
+                error!("Missing aggregation key in registry for hash {}", key_hash);
+                continue;
+            };
+
+            let (bucket_agg_key, payload_agg_key) = agg.clone().into_parts();
+
+            // Decrement reference count now that we've cloned the key.
+            // Keys with zero references are automatically removed.
+            registry.decrement(key_hash);
+
             let grouped_stats = gs.export(bucket_agg_key);
 
             let bucket = data
@@ -184,13 +226,13 @@ pub(super) fn new_aggregation_from_span(
             name: span.name.clone(),
             resource: span.resource.clone(),
             span_type: span.typ.clone(),
-            span_kind: span.span_kind.clone(),
+            span_kind: SpanKind::from_str(span.span_kind.as_ref()),
             status_code: span.status_code,
             synthetics,
             is_trace_root,
-            grpc_status_code: span.grpc_status_code.clone(),
+            grpc_status_code: GrpcStatusCode::from_str(span.grpc_status_code.as_ref()),
             peer_tags_hash: tags_fnv_hash(&span.matching_peer_tags),
-            http_method: span.http_method.clone(),
+            http_method: HttpMethod::from_str(span.http_method.as_ref()),
             http_endpoint: span.http_endpoint.clone(),
         },
     }
@@ -218,7 +260,7 @@ fn round(f: f64) -> u64 {
     }
 }
 
-fn convert_to_ddsketch_proto_bytes(sketch: &DDSketch) -> Vec<u8> {
+fn convert_to_ddsketch_proto_bytes(sketch: &ApmDDSketch) -> Vec<u8> {
     let proto = sketch.to_proto();
     match proto.write_to_bytes() {
         Ok(bytes) => bytes,
@@ -261,6 +303,8 @@ mod tests {
         assert_eq!(gs.top_level_hits, 0.0);
         assert_eq!(gs.errors, 0.0);
         assert_eq!(gs.duration, 0.0);
+        assert!(gs.ok_distribution.is_empty());
+        assert!(gs.err_distribution.is_none()); // Lazily initialized
         assert!(gs.peer_tags.is_empty());
     }
 
@@ -343,7 +387,7 @@ mod tests {
                 },
             );
             assert_eq!(aggr.bucket_key.service.as_ref(), "thing");
-            assert_eq!(aggr.bucket_key.span_kind.as_ref(), "client");
+            assert_eq!(aggr.bucket_key.span_kind, SpanKind::Client);
             assert_eq!(aggr.bucket_key.peer_tags_hash, 0); // no peer tags
         }
 
@@ -380,7 +424,7 @@ mod tests {
                 },
             );
             assert_eq!(aggr.bucket_key.service.as_ref(), "thing");
-            assert_eq!(aggr.bucket_key.span_kind.as_ref(), "client");
+            assert_eq!(aggr.bucket_key.span_kind, SpanKind::Client);
             assert_ne!(aggr.bucket_key.peer_tags_hash, 0); // has peer tags
         }
 
@@ -418,7 +462,7 @@ mod tests {
                 },
             );
             assert_eq!(aggr.bucket_key.service.as_ref(), "thing");
-            assert_eq!(aggr.bucket_key.span_kind.as_ref(), "client");
+            assert_eq!(aggr.bucket_key.span_kind, SpanKind::Client);
             assert_ne!(aggr.bucket_key.peer_tags_hash, 0);
         }
     }
