@@ -20,13 +20,12 @@ use saluki_core::{
     components::{transforms::*, ComponentContext},
     data_model::event::{
         trace::{Span, Trace, TraceSampling},
-        Event, EventType,
+        Event,
     },
-    topology::OutputDefinition,
+    topology::EventsBuffer,
 };
 use saluki_error::GenericError;
 use stringtheory::MetaString;
-use tokio::select;
 use tracing::debug;
 
 mod core_sampler;
@@ -85,17 +84,8 @@ impl TraceSamplerConfiguration {
 }
 
 #[async_trait]
-impl TransformBuilder for TraceSamplerConfiguration {
-    fn input_event_type(&self) -> EventType {
-        EventType::Trace
-    }
-
-    fn outputs(&self) -> &[OutputDefinition<EventType>] {
-        static OUTPUTS: &[OutputDefinition<EventType>] = &[OutputDefinition::default_output(EventType::Trace)];
-        OUTPUTS
-    }
-
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+impl SynchronousTransformBuilder for TraceSamplerConfiguration {
+    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         let sampler = TraceSampler {
             sampling_rate: self.apm_config.probabilistic_sampler_sampling_percentage() / 100.0,
             error_sampling_enabled: self.apm_config.error_sampling_enabled(),
@@ -405,127 +395,68 @@ impl TraceSampler {
         );
         trace.set_sampling(Some(sampling));
     }
-}
 
-#[async_trait]
-impl Transform for TraceSampler {
-    async fn run(mut self: Box<Self>, mut context: TransformContext) -> Result<(), GenericError> {
-        let mut health = context.take_health_handle();
-        health.mark_ready();
-
-        debug!("Trace sampler transform started.");
-
-        loop {
-            select! {
-                _ = health.live() => continue,
-                maybe_events = context.events().next() => match maybe_events {
-                    Some(events) => {
-                        for event in events {
-                            match event {
-                                Event::Trace(mut trace) => {
-                                    // keep is a boolean that indicates if the trace should be kept or dropped
-                                    // priority is the sampling priority
-                                    // decision_maker is the tag that indicates the decision maker (probabilistic, error, etc.)
-                                    // root_span_idx is the index of the root span of the trace
-                                    let (keep, priority, decision_maker, root_span_idx) = self.run_samplers(&mut trace);
-                                    if keep {
-                                        if let Some(root_idx) = root_span_idx {
-                                            self.apply_sampling_metadata(
-                                                &mut trace,
-                                                keep,
-                                                priority,
-                                                decision_maker,
-                                                root_idx,
-                                            );
-                                        }
-
-                                        // Send the trace to the next component
-                                        let mut dispatcher = context
-                                            .dispatcher()
-                                            .buffered()
-                                            .expect("default output should always exist");
-
-                                        dispatcher.push(Event::Trace(trace)).await?;
-                                        dispatcher.flush().await?;
-                                    } else if !self.error_tracking_standalone {
-                                        // logic taken from here: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/agent.go#L980-L990
-
-                                        // try single span sampling (keeps spans marked for sampling when trace would be dropped)
-                                        let modified = self.single_span_sampling(&mut trace);
-                                        if !modified {
-                                            // Fall back to analytics events if no SSS spans
-                                            let analyzed_spans = self.get_analyzed_spans(&trace);
-                                            if !analyzed_spans.is_empty() {
-                                                // Replace trace spans with analyzed events
-                                                trace.set_spans(analyzed_spans);
-                                                // Mark trace as kept with high priority
-                                                let sampling = TraceSampling::new(
-                                                    false,
-                                                    Some(PRIORITY_USER_KEEP),
-                                                    None,
-                                                    Some(MetaString::from(format!("{:.2}", self.sampling_rate))),
-                                                );
-                                                trace.set_sampling(Some(sampling));
-
-                                                // Send the modified trace downstream
-                                                let mut dispatcher = context
-                                                    .dispatcher()
-                                                    .buffered()
-                                                    .expect("default output should always exist");
-                                                dispatcher.push(Event::Trace(trace)).await?;
-                                                dispatcher.flush().await?;
-                                                continue; // Skip to next event
-                                            }
-                                        } else if self.has_analyzed_spans(&trace) {
-                                            // Warn about both SSS and analytics events
-                                            debug!("Detected both analytics events AND single span sampling in the same trace. Single span sampling wins because App Analytics is deprecated.");
-
-                                            // Send the SSS-modified trace downstream
-                                            let mut dispatcher = context
-                                                .dispatcher()
-                                                .buffered()
-                                                .expect("default output should always exist");
-                                            dispatcher.push(Event::Trace(trace)).await?;
-                                            dispatcher.flush().await?;
-                                            continue; // Skip to next event
-                                        }
-
-                                        // If we modified the trace with SSS, send it
-                                        if modified {
-                                            let mut dispatcher = context
-                                                .dispatcher()
-                                                .buffered()
-                                                .expect("default output should always exist");
-                                            dispatcher.push(Event::Trace(trace)).await?;
-                                            dispatcher.flush().await?;
-                                        } else {
-                                            // Neither SSS nor analytics events found, drop the trace
-                                            debug!("Dropping trace with priority {}", priority);
-                                        }
-                                    }
-                                }
-                                other => {
-                                    // Pass through non-trace events
-                                    let mut dispatcher = context
-                                        .dispatcher()
-                                        .buffered()
-                                        .expect("default output should always exist");
-                                    dispatcher.push(other).await?;
-                                    dispatcher.flush().await?;
-                                }
-                            }
-                        }
-                    }
-                    None => {
-                        debug!("Event stream terminated, shutting down trace sampler transform");
-                        break;
-                    }
-                }
+    fn process_trace(&mut self, trace: &mut Trace) -> bool {
+        // keep is a boolean that indicates if the trace should be kept or dropped
+        // priority is the sampling priority
+        // decision_maker is the tag that indicates the decision maker (probabilistic, error, etc.)
+        // root_span_idx is the index of the root span of the trace
+        let (keep, priority, decision_maker, root_span_idx) = self.run_samplers(trace);
+        if keep {
+            if let Some(root_idx) = root_span_idx {
+                self.apply_sampling_metadata(trace, keep, priority, decision_maker, root_idx);
             }
+            return true;
         }
 
-        debug!("Trace sampler transform stopped.");
-        Ok(())
+        if self.error_tracking_standalone {
+            return false;
+        }
+
+        // logic taken from here: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/agent.go#L980-L990
+        // try single span sampling (keeps spans marked for sampling when trace would be dropped)
+        let modified = self.single_span_sampling(trace);
+        if !modified {
+            // Fall back to analytics events if no SSS spans
+            let analyzed_spans = self.get_analyzed_spans(trace);
+            if !analyzed_spans.is_empty() {
+                // Replace trace spans with analyzed events
+                trace.set_spans(analyzed_spans);
+                // Mark trace as kept with high priority
+                let sampling = TraceSampling::new(
+                    false,
+                    Some(PRIORITY_USER_KEEP),
+                    None,
+                    Some(MetaString::from(format!("{:.2}", self.sampling_rate))),
+                );
+                trace.set_sampling(Some(sampling));
+                return true;
+            }
+        } else if self.has_analyzed_spans(trace) {
+            // Warn about both SSS and analytics events
+            debug!(
+                "Detected both analytics events AND single span sampling in the same trace. Single span sampling wins because App Analytics is deprecated."
+            );
+            return true;
+        }
+
+        // If we modified the trace with SSS, send it
+        if modified {
+            return true;
+        }
+
+        // Neither SSS nor analytics events found, drop the trace
+        debug!("Dropping trace with priority {}", priority);
+        false
+    }
+}
+
+impl SynchronousTransform for TraceSampler {
+    fn transform_buffer(&mut self, buffer: &mut EventsBuffer) {
+        buffer.remove_if(|event| match event {
+            Event::Trace(trace) => !self.process_trace(trace),
+            _ => false,
+        });
     }
 }
 
