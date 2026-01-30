@@ -227,29 +227,6 @@ impl TraceSampler {
         false
     }
 
-    /// Returns all spans from the given trace that have Single Span Sampling tags present.
-    fn get_single_span_sampled_spans(&self, trace: &Trace) -> Vec<Span> {
-        let mut sampled_spans = Vec::new();
-        for span in trace.spans().iter() {
-            if span.metrics().contains_key(KEY_SPAN_SAMPLING_MECHANISM) {
-                sampled_spans.push(span.clone());
-            }
-        }
-        sampled_spans
-    }
-
-    /// Returns all spans from the given trace that have Single Span Sampling tags present.
-    fn get_analyzed_spans(&self, trace: &Trace) -> Vec<Span> {
-        let mut analyzed_spans = Vec::new();
-        for span in trace.spans().iter() {
-            if span.metrics().contains_key(KEY_ANALYZED_SPANS) {
-                // Keep spans that have the analyzed tag
-                analyzed_spans.push(span.clone());
-            }
-        }
-        analyzed_spans
-    }
-
     /// Returns `true` if the given trace has any analyzed spans.
     fn has_analyzed_spans(&self, trace: &Trace) -> bool {
         trace
@@ -261,10 +238,12 @@ impl TraceSampler {
     /// Apply Single Span Sampling to the trace
     /// Returns true if the trace was modified
     fn single_span_sampling(&self, trace: &mut Trace) -> bool {
-        let ss_spans = self.get_single_span_sampled_spans(trace);
-        if !ss_spans.is_empty() {
-            // Span sampling has kept some spans -> update the trace
-            trace.set_spans(ss_spans);
+        let has_sss = trace
+            .spans()
+            .iter()
+            .any(|span| span.metrics().contains_key(KEY_SPAN_SAMPLING_MECHANISM));
+        if has_sss {
+            trace.retain_spans(|span| span.metrics().contains_key(KEY_SPAN_SAMPLING_MECHANISM));
             // Set high priority and mark as kept
             let sampling = TraceSampling::new(
                 false,
@@ -418,10 +397,9 @@ impl TraceSampler {
         let modified = self.single_span_sampling(trace);
         if !modified {
             // Fall back to analytics events if no SSS spans
-            let analyzed_spans = self.get_analyzed_spans(trace);
-            if !analyzed_spans.is_empty() {
+            if self.has_analyzed_spans(trace) {
                 // Replace trace spans with analyzed events
-                trace.set_spans(analyzed_spans);
+                trace.retain_spans(|span| span.metrics().contains_key(KEY_ANALYZED_SPANS));
                 // Mark trace as kept with high priority
                 let sampling = TraceSampling::new(
                     false,
@@ -795,16 +773,25 @@ mod tests {
 
         let trace = create_test_trace(vec![analyzed_span.clone(), regular_span]);
 
-        let analyzed_spans = sampler.get_analyzed_spans(&trace);
-        assert_eq!(analyzed_spans.len(), 1);
-        assert_eq!(analyzed_spans[0].span_id(), 1);
+        let analyzed_span_ids: Vec<u64> = trace
+            .spans()
+            .iter()
+            .filter(|span| span.metrics().contains_key(KEY_ANALYZED_SPANS))
+            .map(|span| span.span_id())
+            .collect();
+        assert_eq!(analyzed_span_ids, vec![1]);
 
         assert!(sampler.has_analyzed_spans(&trace));
 
         // Test 2: Trace without analyzed spans
         let trace_no_analytics = create_test_trace(vec![create_test_span(12345, 3, 0)]);
-        let analyzed_spans = sampler.get_analyzed_spans(&trace_no_analytics);
-        assert!(analyzed_spans.is_empty());
+        let analyzed_span_ids: Vec<u64> = trace_no_analytics
+            .spans()
+            .iter()
+            .filter(|span| span.metrics().contains_key(KEY_ANALYZED_SPANS))
+            .map(|span| span.span_id())
+            .collect();
+        assert!(analyzed_span_ids.is_empty());
         assert!(!sampler.has_analyzed_spans(&trace_no_analytics));
     }
 

@@ -95,6 +95,14 @@ impl Trace {
         self.spans = spans;
     }
 
+    /// Retains only the spans specified by the predicate.
+    pub fn retain_spans<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&Span) -> bool,
+    {
+        self.spans.retain(|span| f(span));
+    }
+
     /// Returns the resource-level tags associated with this trace.
     pub fn resource_tags(&self) -> &TagSet {
         &self.resource_tags
