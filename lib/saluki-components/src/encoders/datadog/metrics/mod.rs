@@ -377,14 +377,7 @@ async fn run_request_builder(
     loop {
         // Ensure we have a validation batch UUID if validation is enabled.
         if validation_enabled && batch_id.is_none() {
-            let new_batch_id = Uuid::now_v7();
-            let new_batch_id = new_batch_id.as_hyphenated().to_string();
-            match HeaderValue::from_str(&new_batch_id) {
-                Ok(value) => batch_id = Some(value),
-                Err(e) => {
-                    debug!(error = %e, "Failed to generate validation batch UUID. Current batch will not be correlated on the backend.")
-                }
-            }
+            batch_id = Some(Uuid::now_v7());
         }
 
         select! {
@@ -534,7 +527,7 @@ impl EncodeResult {
 
 async fn encode_v2_metrics(
     request_builder: &mut RequestBuilder<v2::MetricsEndpointEncoder>, metric: Metric, telemetry: &ComponentTelemetry,
-    payloads_tx: &mut mpsc::Sender<Payload>, batch_id: Option<&HeaderValue>,
+    payloads_tx: &mut mpsc::Sender<Payload>, batch_id: Option<&Uuid>,
 ) -> Result<EncodeResult, GenericError> {
     // Encode the metric. If we get it back, that means the current request is full, and we need to
     // flush it before we can try to encode the metric again... so we'll hold on to it in that case
@@ -569,17 +562,18 @@ async fn encode_v2_metrics(
 
 async fn flush_v2_metrics(
     request_builder: &mut RequestBuilder<MetricsEndpointEncoder>, payloads_tx: &mut mpsc::Sender<Payload>,
-    batch_id: Option<&HeaderValue>,
+    batch_id: Option<&Uuid>,
 ) -> Result<usize, GenericError> {
     let mut requests_flushed = 0;
 
     let maybe_requests = request_builder.flush().await;
-    for maybe_request in maybe_requests {
+    let batch_len = maybe_requests.len();
+    for (batch_seq, maybe_request) in maybe_requests.into_iter().enumerate() {
         match maybe_request {
             Ok((events, request)) => {
                 requests_flushed += 1;
 
-                flush_payload(request, events, payloads_tx, batch_id).await?;
+                flush_payload(request, events, payloads_tx, batch_id, batch_seq, batch_len).await?;
             }
 
             // TODO: Increment a counter here that metrics were dropped due to a flush failure.
@@ -596,7 +590,7 @@ async fn flush_v2_metrics(
 
 async fn encode_and_flush_v3_metrics(
     endpoint: MetricsEndpoint, ep_config: &EndpointConfiguration, metrics: &mut Vec<Metric>,
-    telemetry: &ComponentTelemetry, payloads_tx: &mut mpsc::Sender<Payload>, batch_id: Option<&HeaderValue>,
+    telemetry: &ComponentTelemetry, payloads_tx: &mut mpsc::Sender<Payload>, batch_id: Option<&Uuid>,
 ) -> Result<(), GenericError> {
     match endpoint {
         MetricsEndpoint::Series => {
@@ -610,7 +604,7 @@ async fn encode_and_flush_v3_metrics(
 
 async fn encode_and_flush_v3_series_metrics(
     ep_config: &EndpointConfiguration, metrics: &mut Vec<Metric>, telemetry: &ComponentTelemetry,
-    payloads_tx: &mut mpsc::Sender<Payload>, batch_id: Option<&HeaderValue>,
+    payloads_tx: &mut mpsc::Sender<Payload>, batch_id: Option<&Uuid>,
 ) -> Result<(), GenericError> {
     let metrics_to_flush = std::mem::take(metrics);
     let events = metrics_to_flush.len();
@@ -618,7 +612,7 @@ async fn encode_and_flush_v3_series_metrics(
     match encode_v3_metrics_batch(&metrics_to_flush, ep_config.additional_tags()) {
         Ok(encoded) => match create_v3_request("/api/v3/series", encoded, ep_config.compression_scheme()).await {
             Ok(request) => {
-                flush_payload(request, events, payloads_tx, batch_id).await?;
+                flush_payload(request, events, payloads_tx, batch_id, 0, 1).await?;
                 debug!(events, "Sent V3 series payload.");
             }
             Err(e) => {
@@ -637,7 +631,7 @@ async fn encode_and_flush_v3_series_metrics(
 
 async fn encode_and_flush_v3_sketch_metrics(
     ep_config: &EndpointConfiguration, metrics: &mut Vec<Metric>, telemetry: &ComponentTelemetry,
-    payloads_tx: &mut mpsc::Sender<Payload>, batch_id: Option<&HeaderValue>,
+    payloads_tx: &mut mpsc::Sender<Payload>, batch_id: Option<&Uuid>,
 ) -> Result<(), GenericError> {
     let metrics_to_flush = std::mem::take(metrics);
     let events = metrics_to_flush.len();
@@ -645,7 +639,7 @@ async fn encode_and_flush_v3_sketch_metrics(
     match encode_v3_metrics_batch(&metrics_to_flush, ep_config.additional_tags()) {
         Ok(encoded) => match create_v3_request("/api/v3/sketches", encoded, ep_config.compression_scheme()).await {
             Ok(request) => {
-                flush_payload(request, events, payloads_tx, batch_id).await?;
+                flush_payload(request, events, payloads_tx, batch_id, 0, 1).await?;
                 debug!(events, "Sent V3 sketches payload.");
             }
             Err(e) => {
@@ -662,15 +656,30 @@ async fn encode_and_flush_v3_sketch_metrics(
     Ok(())
 }
 
+/// Converts a `Uuid` to a `HeaderValue`.
+fn uuid_to_header_value(uuid: &Uuid) -> HeaderValue {
+    let s = uuid.as_hyphenated().to_string();
+    // SAFETY: UUID hyphenated format only contains [0-9a-f-], all valid ASCII header chars.
+    unsafe { HeaderValue::from_maybe_shared_unchecked(s) }
+}
+
+/// Converts a `usize` to a `HeaderValue`.
+fn usize_to_header_value(value: usize) -> HeaderValue {
+    let s = value.to_string();
+    // SAFETY: Integer strings only contain ASCII digits [0-9], all valid header chars.
+    unsafe { HeaderValue::from_maybe_shared_unchecked(s) }
+}
+
 async fn flush_payload(
     mut request: Request<FrozenChunkedBytesBuffer>, event_count: usize, payloads_tx: &mut mpsc::Sender<Payload>,
-    batch_id: Option<&HeaderValue>,
+    batch_id: Option<&Uuid>, batch_seq: usize, batch_len: usize,
 ) -> Result<(), GenericError> {
-    // Attach the validation batch UUID if present.
+    // Attach the validation batch UUID and sequence headers if present.
     if let Some(batch_id) = batch_id {
-        request
-            .headers_mut()
-            .insert("X-Datadog-Validation-Batch-UUID", batch_id.clone());
+        let headers = request.headers_mut();
+        headers.insert("X-Metrics-Request-ID", uuid_to_header_value(batch_id));
+        headers.insert("X-Metrics-Request-Seq", usize_to_header_value(batch_seq));
+        headers.insert("X-Metrics-Request-Len", usize_to_header_value(batch_len));
     }
 
     let payload_meta = PayloadMetadata::from_event_count(event_count);
