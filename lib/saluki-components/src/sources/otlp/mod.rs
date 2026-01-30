@@ -319,9 +319,7 @@ impl SourceHandler {
         Self { tx }
     }
 
-    async fn handle_metrics_request_inner(
-        &self, request: ExportMetricsServiceRequest,
-    ) -> Result<(), GenericError> {
+    async fn handle_metrics_request_inner(&self, request: ExportMetricsServiceRequest) -> Result<(), GenericError> {
         for resource_metrics in request.resource_metrics {
             self.tx
                 .send(OtlpResource::Metrics(resource_metrics))
@@ -341,9 +339,7 @@ impl SourceHandler {
         Ok(())
     }
 
-    async fn handle_traces_request_inner(
-        &self, request: ExportTraceServiceRequest,
-    ) -> Result<(), GenericError> {
+    async fn handle_traces_request_inner(&self, request: ExportTraceServiceRequest) -> Result<(), GenericError> {
         for resource_spans in request.resource_spans {
             self.tx
                 .send(OtlpResource::Traces(resource_spans))
@@ -362,9 +358,7 @@ impl OtlpHandler for SourceHandler {
         self.handle_metrics_request_inner(request).await
     }
 
-    async fn handle_metrics_request(
-        &self, request: ExportMetricsServiceRequest,
-    ) -> Result<(), GenericError> {
+    async fn handle_metrics_request(&self, request: ExportMetricsServiceRequest) -> Result<(), GenericError> {
         self.handle_metrics_request_inner(request).await
     }
 
@@ -383,9 +377,7 @@ impl OtlpHandler for SourceHandler {
         self.handle_traces_request_inner(request).await
     }
 
-    async fn handle_traces_request(
-        &self, request: ExportTraceServiceRequest,
-    ) -> Result<(), GenericError> {
+    async fn handle_traces_request(&self, request: ExportTraceServiceRequest) -> Result<(), GenericError> {
         self.handle_traces_request_inner(request).await
     }
 }

@@ -110,9 +110,7 @@ pub trait OtlpHandler: Send + Sync + 'static {
     async fn handle_logs(&self, body: Bytes) -> Result<(), GenericError>;
     async fn handle_traces(&self, body: Bytes) -> Result<(), GenericError>;
 
-    async fn handle_metrics_request(
-        &self, request: ExportMetricsServiceRequest,
-    ) -> Result<(), GenericError> {
+    async fn handle_metrics_request(&self, request: ExportMetricsServiceRequest) -> Result<(), GenericError> {
         self.handle_metrics(Bytes::from(request.encode_to_vec())).await
     }
 
@@ -120,9 +118,7 @@ pub trait OtlpHandler: Send + Sync + 'static {
         self.handle_logs(Bytes::from(request.encode_to_vec())).await
     }
 
-    async fn handle_traces_request(
-        &self, request: ExportTraceServiceRequest,
-    ) -> Result<(), GenericError> {
+    async fn handle_traces_request(&self, request: ExportTraceServiceRequest) -> Result<(), GenericError> {
         self.handle_traces(Bytes::from(request.encode_to_vec())).await
     }
 }
