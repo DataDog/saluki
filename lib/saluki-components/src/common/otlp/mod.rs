@@ -109,6 +109,22 @@ pub trait OtlpHandler: Send + Sync + 'static {
     async fn handle_metrics(&self, body: Bytes) -> Result<(), GenericError>;
     async fn handle_logs(&self, body: Bytes) -> Result<(), GenericError>;
     async fn handle_traces(&self, body: Bytes) -> Result<(), GenericError>;
+
+    async fn handle_metrics_request(
+        &self, request: ExportMetricsServiceRequest,
+    ) -> Result<(), GenericError> {
+        self.handle_metrics(Bytes::from(request.encode_to_vec())).await
+    }
+
+    async fn handle_logs_request(&self, request: ExportLogsServiceRequest) -> Result<(), GenericError> {
+        self.handle_logs(Bytes::from(request.encode_to_vec())).await
+    }
+
+    async fn handle_traces_request(
+        &self, request: ExportTraceServiceRequest,
+    ) -> Result<(), GenericError> {
+        self.handle_traces(Bytes::from(request.encode_to_vec())).await
+    }
 }
 
 /// OTLP server configuration and setup.
@@ -267,10 +283,8 @@ impl<H: OtlpHandler> MetricsService for GrpcServiceImpl<H> {
         &self, request: TonicRequest<ExportMetricsServiceRequest>,
     ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
         self.memory_limiter.wait_for_capacity().await;
-
-        let raw_bytes = request.into_inner().encode_to_vec();
-
-        match self.handler.handle_metrics(Bytes::from(raw_bytes)).await {
+        let request = request.into_inner();
+        match self.handler.handle_metrics_request(request).await {
             Ok(()) => Ok(Response::new(ExportMetricsServiceResponse { partial_success: None })),
             Err(e) => {
                 error!(error = %e, "Failed to handle OTLP metrics.");
@@ -286,10 +300,8 @@ impl<H: OtlpHandler> LogsService for GrpcServiceImpl<H> {
         &self, request: TonicRequest<ExportLogsServiceRequest>,
     ) -> Result<Response<ExportLogsServiceResponse>, Status> {
         self.memory_limiter.wait_for_capacity().await;
-
-        let raw_bytes = request.into_inner().encode_to_vec();
-
-        match self.handler.handle_logs(Bytes::from(raw_bytes)).await {
+        let request = request.into_inner();
+        match self.handler.handle_logs_request(request).await {
             Ok(()) => Ok(Response::new(ExportLogsServiceResponse { partial_success: None })),
             Err(e) => {
                 error!(error = %e, "Failed to handle OTLP logs.");
@@ -305,10 +317,8 @@ impl<H: OtlpHandler> TraceService for GrpcServiceImpl<H> {
         &self, request: TonicRequest<ExportTraceServiceRequest>,
     ) -> Result<Response<ExportTraceServiceResponse>, Status> {
         self.memory_limiter.wait_for_capacity().await;
-
-        let raw_bytes = request.into_inner().encode_to_vec();
-
-        match self.handler.handle_traces(Bytes::from(raw_bytes)).await {
+        let request = request.into_inner();
+        match self.handler.handle_traces_request(request).await {
             Ok(()) => Ok(Response::new(ExportTraceServiceResponse { partial_success: None })),
             Err(e) => {
                 error!(error = %e, "Failed to handle OTLP traces.");

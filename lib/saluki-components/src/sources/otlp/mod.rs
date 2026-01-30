@@ -318,14 +318,10 @@ impl SourceHandler {
     fn new(tx: mpsc::Sender<OtlpResource>) -> Self {
         Self { tx }
     }
-}
 
-#[async_trait]
-impl OtlpHandler for SourceHandler {
-    async fn handle_metrics(&self, body: Bytes) -> Result<(), GenericError> {
-        let request =
-            ExportMetricsServiceRequest::decode(body).error_context("Failed to decode metrics export request.")?;
-
+    async fn handle_metrics_request_inner(
+        &self, request: ExportMetricsServiceRequest,
+    ) -> Result<(), GenericError> {
         for resource_metrics in request.resource_metrics {
             self.tx
                 .send(OtlpResource::Metrics(resource_metrics))
@@ -335,9 +331,7 @@ impl OtlpHandler for SourceHandler {
         Ok(())
     }
 
-    async fn handle_logs(&self, body: Bytes) -> Result<(), GenericError> {
-        let request = ExportLogsServiceRequest::decode(body).error_context("Failed to decode logs export request.")?;
-
+    async fn handle_logs_request_inner(&self, request: ExportLogsServiceRequest) -> Result<(), GenericError> {
         for resource_logs in request.resource_logs {
             self.tx
                 .send(OtlpResource::Logs(resource_logs))
@@ -347,10 +341,9 @@ impl OtlpHandler for SourceHandler {
         Ok(())
     }
 
-    async fn handle_traces(&self, body: Bytes) -> Result<(), GenericError> {
-        let request =
-            ExportTraceServiceRequest::decode(body).error_context("Failed to decode trace export request.")?;
-
+    async fn handle_traces_request_inner(
+        &self, request: ExportTraceServiceRequest,
+    ) -> Result<(), GenericError> {
         for resource_spans in request.resource_spans {
             self.tx
                 .send(OtlpResource::Traces(resource_spans))
@@ -358,6 +351,42 @@ impl OtlpHandler for SourceHandler {
                 .error_context("Failed to send resource spans to converter: channel is closed.")?;
         }
         Ok(())
+    }
+}
+
+#[async_trait]
+impl OtlpHandler for SourceHandler {
+    async fn handle_metrics(&self, body: Bytes) -> Result<(), GenericError> {
+        let request =
+            ExportMetricsServiceRequest::decode(body).error_context("Failed to decode metrics export request.")?;
+        self.handle_metrics_request_inner(request).await
+    }
+
+    async fn handle_metrics_request(
+        &self, request: ExportMetricsServiceRequest,
+    ) -> Result<(), GenericError> {
+        self.handle_metrics_request_inner(request).await
+    }
+
+    async fn handle_logs(&self, body: Bytes) -> Result<(), GenericError> {
+        let request = ExportLogsServiceRequest::decode(body).error_context("Failed to decode logs export request.")?;
+        self.handle_logs_request_inner(request).await
+    }
+
+    async fn handle_logs_request(&self, request: ExportLogsServiceRequest) -> Result<(), GenericError> {
+        self.handle_logs_request_inner(request).await
+    }
+
+    async fn handle_traces(&self, body: Bytes) -> Result<(), GenericError> {
+        let request =
+            ExportTraceServiceRequest::decode(body).error_context("Failed to decode trace export request.")?;
+        self.handle_traces_request_inner(request).await
+    }
+
+    async fn handle_traces_request(
+        &self, request: ExportTraceServiceRequest,
+    ) -> Result<(), GenericError> {
+        self.handle_traces_request_inner(request).await
     }
 }
 
