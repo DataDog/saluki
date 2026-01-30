@@ -248,7 +248,7 @@ impl SpanConcentrator {
 
         let span_kind = span.meta().get(TAG_SPAN_KIND).cloned().unwrap_or_default();
         let status_code = get_status_code(span.meta(), span.metrics());
-        let grpc_status_code = get_grpc_status_code(span.meta(), span.metrics());
+        let grpc_status_code = get_grpc_status_code(span.meta(), span.metrics()).to_metastring();
         let is_top_level = span.metrics().get(METRIC_TOP_LEVEL).map(|&v| v == 1.0).unwrap_or(false);
         let matching_peer_tags = self.matching_peer_tags(span, &span_kind);
 

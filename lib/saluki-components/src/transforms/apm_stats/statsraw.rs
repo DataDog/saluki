@@ -1,3 +1,5 @@
+use ddsketch::canonical::mapping::FixedLogarithmicMapping;
+use ddsketch::canonical::store::CollapsingLowestDenseStore;
 use ddsketch::canonical::DDSketch;
 use protobuf::Message;
 use rand::Rng as _;
@@ -7,16 +9,22 @@ use saluki_core::data_model::event::trace_stats::{ClientGroupedStats, ClientStat
 use stringtheory::MetaString;
 use tracing::error;
 
-use super::aggregation::{tags_fnv_hash, Aggregation, BucketsAggregationKey, PayloadAggregationKey, TAG_SYNTHETICS};
+use super::aggregation::{
+    tags_fnv_hash, Aggregation, BucketsAggregationKey, GrpcStatusCode, HttpMethod, PayloadAggregationKey, SpanKind,
+    TAG_SYNTHETICS,
+};
 use super::span_concentrator::StatSpan;
+
+/// Type alias for DDSketch with zero-sized mapping (saves 16 bytes per sketch).
+type ApmDDSketch = DDSketch<FixedLogarithmicMapping, CollapsingLowestDenseStore>;
 
 struct GroupedStats {
     hits: f64,
     top_level_hits: f64,
     errors: f64,
     duration: f64,
-    ok_distribution: DDSketch,
-    err_distribution: DDSketch,
+    ok_distribution: ApmDDSketch,
+    err_distribution: ApmDDSketch,
     peer_tags: Vec<MetaString>,
 }
 
@@ -28,10 +36,8 @@ impl GroupedStats {
             top_level_hits: 0.0,
             errors: 0.0,
             duration: 0.0,
-            ok_distribution: DDSketch::with_relative_accuracy(0.01)
-                .expect("Relative accuracy should be valid (0 <= 0.01 <= 1)"),
-            err_distribution: DDSketch::with_relative_accuracy(0.01)
-                .expect("Relative accuracy should be valid (0 <= 0.01 <= 1)"),
+            ok_distribution: ApmDDSketch::default(),
+            err_distribution: ApmDDSketch::default(),
             peer_tags: Vec::new(),
         }
     }
@@ -50,11 +56,11 @@ impl GroupedStats {
             .with_ok_summary(ok_summary)
             .with_error_summary(error_summary)
             .with_synthetics(bucket_agg_key.synthetics)
-            .with_span_kind(bucket_agg_key.span_kind)
+            .with_span_kind(bucket_agg_key.span_kind.to_metastring())
             .with_peer_tags(self.peer_tags)
             .with_is_trace_root(bucket_agg_key.is_trace_root)
-            .with_grpc_status_code(bucket_agg_key.grpc_status_code)
-            .with_http_method(bucket_agg_key.http_method)
+            .with_grpc_status_code(bucket_agg_key.grpc_status_code.to_metastring())
+            .with_http_method(bucket_agg_key.http_method.to_metastring())
             .with_http_endpoint(bucket_agg_key.http_endpoint)
     }
 }
@@ -184,13 +190,13 @@ pub(super) fn new_aggregation_from_span(
             name: span.name.clone(),
             resource: span.resource.clone(),
             span_type: span.typ.clone(),
-            span_kind: span.span_kind.clone(),
+            span_kind: SpanKind::from_str(span.span_kind.as_ref()),
             status_code: span.status_code,
             synthetics,
             is_trace_root,
-            grpc_status_code: span.grpc_status_code.clone(),
+            grpc_status_code: GrpcStatusCode::from_str(span.grpc_status_code.as_ref()),
             peer_tags_hash: tags_fnv_hash(&span.matching_peer_tags),
-            http_method: span.http_method.clone(),
+            http_method: HttpMethod::from_str(span.http_method.as_ref()),
             http_endpoint: span.http_endpoint.clone(),
         },
     }
@@ -218,7 +224,7 @@ fn round(f: f64) -> u64 {
     }
 }
 
-fn convert_to_ddsketch_proto_bytes(sketch: &DDSketch) -> Vec<u8> {
+fn convert_to_ddsketch_proto_bytes(sketch: &ApmDDSketch) -> Vec<u8> {
     let proto = sketch.to_proto();
     match proto.write_to_bytes() {
         Ok(bytes) => bytes,
@@ -343,7 +349,7 @@ mod tests {
                 },
             );
             assert_eq!(aggr.bucket_key.service.as_ref(), "thing");
-            assert_eq!(aggr.bucket_key.span_kind.as_ref(), "client");
+            assert_eq!(aggr.bucket_key.span_kind, SpanKind::Client);
             assert_eq!(aggr.bucket_key.peer_tags_hash, 0); // no peer tags
         }
 
@@ -380,7 +386,7 @@ mod tests {
                 },
             );
             assert_eq!(aggr.bucket_key.service.as_ref(), "thing");
-            assert_eq!(aggr.bucket_key.span_kind.as_ref(), "client");
+            assert_eq!(aggr.bucket_key.span_kind, SpanKind::Client);
             assert_ne!(aggr.bucket_key.peer_tags_hash, 0); // has peer tags
         }
 
@@ -418,7 +424,7 @@ mod tests {
                 },
             );
             assert_eq!(aggr.bucket_key.service.as_ref(), "thing");
-            assert_eq!(aggr.bucket_key.span_kind.as_ref(), "client");
+            assert_eq!(aggr.bucket_key.span_kind, SpanKind::Client);
             assert_ne!(aggr.bucket_key.peer_tags_hash, 0);
         }
     }
