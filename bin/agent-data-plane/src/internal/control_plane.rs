@@ -117,23 +117,19 @@ async fn configure_and_spawn_api_endpoints(
             pre_registered.set_prometheus_addr(prometheus_listen_addr);
             pre_registered
         } else {
-            // No pre-registration, create new config and register now
+            // No pre-registration, create new config
+            // The background loop spawned by spawn() will handle initial registration
             let secure_api_grpc_target_addr =
                 GrpcTargetAddress::try_from_listen_addr(dp_config.secure_api_listen_address()).ok_or_else(|| {
                     generic_error!("Failed to get valid gRPC target address from secure API listen address.")
                 })?;
 
-            let mut config = RemoteAgentHelperConfiguration::from_configuration(
+            RemoteAgentHelperConfiguration::from_configuration(
                 &config,
                 secure_api_grpc_target_addr,
                 prometheus_listen_addr,
             )
-            .await?;
-
-            // Perform initial registration since we didn't do early registration
-            config.register_once().await?;
-
-            config
+            .await?
         };
 
         // Create and register the Remote Agent gRPC services with the privileged API.
@@ -146,9 +142,10 @@ async fn configure_and_spawn_api_endpoints(
             privileged_api = privileged_api.with_grpc_service(remote_agent_config.create_telemetry_service());
         }
 
-        // Spawn the remote agent helper task to handle periodic refreshes.
-        // If a session_id already exists (from early registration), this will only perform refreshes.
-        // Otherwise, it will perform the initial registration followed by refreshes.
+        // Spawn the remote agent helper task to handle RAR registration and periodic refreshes.
+        // If a session_id already exists (from early registration for config streaming),
+        // this will only perform refreshes. Otherwise, it will perform the initial registration
+        // followed by refreshes.
         remote_agent_config.spawn();
     }
 
