@@ -368,7 +368,7 @@ fn convert_client_stats_payload(client_payload: &ClientStatsPayload) -> ProtoCli
     proto_client.set_agentAggregation(client_payload.agent_aggregation().to_string());
     proto_client.set_service(client_payload.service().to_string());
     proto_client.set_containerID(client_payload.container_id().to_string());
-    proto_client.set_tags(client_payload.tags().iter().map(|s| s.to_string()).collect());
+    proto_client.set_tags(client_payload.tags().into_iter().map(|s| s.to_string()).collect());
     proto_client.set_git_commit_sha(client_payload.git_commit_sha().to_string());
     proto_client.set_image_tag(client_payload.image_tag().to_string());
     proto_client.set_process_tags_hash(client_payload.process_tags_hash());

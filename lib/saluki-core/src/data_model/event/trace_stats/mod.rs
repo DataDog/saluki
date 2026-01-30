@@ -1,5 +1,6 @@
 //! Trace stats.
 
+use saluki_context::tags::SharedTagSet;
 use stringtheory::MetaString;
 
 /// Trace statistics output from the APM Stats transform.
@@ -46,7 +47,7 @@ pub struct ClientStatsPayload {
     agent_aggregation: MetaString,
     service: MetaString,
     container_id: MetaString,
-    tags: Vec<MetaString>,
+    tags: SharedTagSet,
     git_commit_sha: MetaString,
     image_tag: MetaString,
     process_tags_hash: u64,
@@ -113,8 +114,8 @@ impl ClientStatsPayload {
     }
 
     /// Sets the orchestrator tags.
-    pub fn with_tags(mut self, tags: Vec<MetaString>) -> Self {
-        self.tags = tags;
+    pub fn with_tags(mut self, tags: impl Into<SharedTagSet>) -> Self {
+        self.tags = tags.into();
         self
     }
 
@@ -198,7 +199,7 @@ impl ClientStatsPayload {
     }
 
     /// Returns the orchestrator tags.
-    pub fn tags(&self) -> &[MetaString] {
+    pub fn tags(&self) -> &SharedTagSet {
         &self.tags
     }
 
@@ -220,6 +221,18 @@ impl ClientStatsPayload {
     /// Returns the process tags.
     pub fn process_tags(&self) -> &str {
         &self.process_tags
+    }
+
+    /// Adds a new client statistics bucket to this payload.
+    pub fn add_stats(&mut self, stats: ClientStatsBucket) {
+        self.stats.push(stats);
+    }
+
+    /// Consumes the statistics buckets and returns them.
+    ///
+    /// No statistics buckets will remain in `self`.
+    pub fn take_stats(&mut self) -> Vec<ClientStatsBucket> {
+        std::mem::take(&mut self.stats)
     }
 }
 
@@ -247,6 +260,12 @@ impl ClientStatsBucket {
             stats,
             agent_time_shift: 0,
         }
+    }
+
+    /// Sets the grouped stats.
+    pub fn with_stats(mut self, stats: Vec<ClientGroupedStats>) -> Self {
+        self.stats = stats;
+        self
     }
 
     /// Sets the agent time shift.
@@ -278,6 +297,13 @@ impl ClientStatsBucket {
     /// Returns the agent time shift.
     pub fn agent_time_shift(&self) -> i64 {
         self.agent_time_shift
+    }
+
+    /// Consumes the grouped statistics and returns them.
+    ///
+    /// No statistics groups will remain in `self`.
+    pub fn take_stats(&mut self) -> Vec<ClientGroupedStats> {
+        std::mem::take(&mut self.stats)
     }
 }
 

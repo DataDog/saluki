@@ -10,6 +10,7 @@ export BUILD_TARGET := $(or $(BUILD_TARGET),default)
 export APP_GIT_HASH := $(or $(CI_COMMIT_SHA),$(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git))
 export APP_BUILD_TIME := $(or $(CI_PIPELINE_CREATED_AT),0000-00-00T00:00:00-00:00)
 
+
 # ADP-specific settings used during builds.
 export ADP_APP_FULL_NAME := Agent Data Plane
 export ADP_APP_SHORT_NAME := data-plane
@@ -102,6 +103,14 @@ build-adp: ## Builds the ADP binary in debug mode
 build-adp-release: override BUILD_PROFILE=release
 build-adp-release: build-adp-base
 build-adp-release: ## Builds the ADP binary in release mode
+
+.PHONY: build-adp-system-alloc
+build-adp-system-alloc: ## Builds the ADP binary in debug mode with the system allocator (useful for memory profiling)
+	@$(MAKE) --no-print-directory build-adp-base BUILD_PROFILE=devel RUSTFLAGS="--cfg tokio_unstable --cfg system_allocator"
+
+.PHONY: build-adp-release-system-alloc
+build-adp-release-system-alloc: ## Builds the ADP binary in release mode with the system allocator (useful for memory profiling)
+	@$(MAKE) --no-print-directory build-adp-base BUILD_PROFILE=release RUSTFLAGS="--cfg tokio_unstable --cfg system_allocator"
 
 .PHONY: build-adp-image-base
 build-adp-image-base:

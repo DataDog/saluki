@@ -1,7 +1,8 @@
 use ddsketch::canonical::DDSketch;
 use protobuf::Message;
 use rand::Rng as _;
-use saluki_common::collections::FastHashMap;
+use saluki_common::collections::{FastHashMap, PrehashedHashMap};
+use saluki_context::tags::SharedTagSet;
 use saluki_core::data_model::event::trace_stats::{ClientGroupedStats, ClientStatsBucket};
 use stringtheory::MetaString;
 use tracing::error;
@@ -35,30 +36,26 @@ impl GroupedStats {
         }
     }
 
-    fn export(self, agg: &Aggregation) -> ClientGroupedStats {
+    fn export(self, bucket_agg_key: BucketsAggregationKey) -> ClientGroupedStats {
         let ok_summary = convert_to_ddsketch_proto_bytes(&self.ok_distribution);
         let error_summary = convert_to_ddsketch_proto_bytes(&self.err_distribution);
 
-        ClientGroupedStats::new(
-            agg.bucket_key.service.clone(),
-            agg.bucket_key.name.clone(),
-            agg.bucket_key.resource.clone(),
-        )
-        .with_http_status_code(agg.bucket_key.status_code)
-        .with_span_type(agg.bucket_key.span_type.clone())
-        .with_hits(round(self.hits))
-        .with_errors(round(self.errors))
-        .with_duration(round(self.duration))
-        .with_top_level_hits(round(self.top_level_hits))
-        .with_ok_summary(ok_summary)
-        .with_error_summary(error_summary)
-        .with_synthetics(agg.bucket_key.synthetics)
-        .with_span_kind(agg.bucket_key.span_kind.clone())
-        .with_peer_tags(self.peer_tags)
-        .with_is_trace_root(agg.bucket_key.is_trace_root)
-        .with_grpc_status_code(agg.bucket_key.grpc_status_code.clone())
-        .with_http_method(agg.bucket_key.http_method.clone())
-        .with_http_endpoint(agg.bucket_key.http_endpoint.clone())
+        ClientGroupedStats::new(bucket_agg_key.service, bucket_agg_key.name, bucket_agg_key.resource)
+            .with_http_status_code(bucket_agg_key.status_code)
+            .with_span_type(bucket_agg_key.span_type)
+            .with_hits(round(self.hits))
+            .with_errors(round(self.errors))
+            .with_duration(round(self.duration))
+            .with_top_level_hits(round(self.top_level_hits))
+            .with_ok_summary(ok_summary)
+            .with_error_summary(error_summary)
+            .with_synthetics(bucket_agg_key.synthetics)
+            .with_span_kind(bucket_agg_key.span_kind)
+            .with_peer_tags(self.peer_tags)
+            .with_is_trace_root(bucket_agg_key.is_trace_root)
+            .with_grpc_status_code(bucket_agg_key.grpc_status_code)
+            .with_http_method(bucket_agg_key.http_method)
+            .with_http_endpoint(bucket_agg_key.http_endpoint)
     }
 }
 
@@ -74,9 +71,9 @@ pub struct RawBucket {
     duration: u64,
     data: FastHashMap<Aggregation, GroupedStats>,
     /// Map of container ID to container tags.
-    pub(super) container_tags_by_id: FastHashMap<MetaString, Vec<MetaString>>,
+    pub(super) container_tags_by_id: FastHashMap<MetaString, SharedTagSet>,
     /// Map of process tags hash to process tags.
-    pub(super) process_tags_by_hash: FastHashMap<u64, MetaString>,
+    pub(super) process_tags_by_hash: PrehashedHashMap<u64, MetaString>,
 }
 
 impl RawBucket {
@@ -86,7 +83,7 @@ impl RawBucket {
             duration,
             data: FastHashMap::default(),
             container_tags_by_id: FastHashMap::default(),
-            process_tags_by_hash: FastHashMap::default(),
+            process_tags_by_hash: PrehashedHashMap::default(),
         }
     }
 
@@ -96,13 +93,13 @@ impl RawBucket {
     }
 
     /// Store container tags for later export.
-    pub fn set_container_tags(&mut self, container_id: MetaString, tags: Vec<MetaString>) {
-        self.container_tags_by_id.insert(container_id, tags);
+    pub fn set_container_tags(&mut self, container_id: MetaString, tags: impl Into<SharedTagSet>) {
+        self.container_tags_by_id.insert(container_id, tags.into());
     }
 
     /// Get container tags by container ID.
     #[allow(unused)]
-    pub fn get_container_tags(&self, container_id: &MetaString) -> Option<&Vec<MetaString>> {
+    pub fn get_container_tags(&self, container_id: &MetaString) -> Option<&SharedTagSet> {
         self.container_tags_by_id.get(container_id)
     }
 
@@ -147,20 +144,31 @@ impl RawBucket {
         }
     }
 
-    pub fn export(self) -> FastHashMap<PayloadAggregationKey, ClientStatsBucket> {
-        let mut result = FastHashMap::default();
+    pub fn export(self) -> ExportedBucket {
+        let mut data = FastHashMap::default();
 
         for (agg, gs) in self.data {
-            let grouped_stats = gs.export(&agg);
+            let (bucket_agg_key, payload_agg_key) = agg.into_parts();
+            let grouped_stats = gs.export(bucket_agg_key);
 
-            let bucket = result
-                .entry(agg.payload_key)
+            let bucket = data
+                .entry(payload_agg_key)
                 .or_insert_with(|| ClientStatsBucket::new(self.start, self.duration, Vec::new()));
             bucket.stats_mut().push(grouped_stats);
         }
 
-        result
+        ExportedBucket {
+            data,
+            container_tags_by_id: self.container_tags_by_id,
+            process_tags_by_hash: self.process_tags_by_hash,
+        }
     }
+}
+
+pub struct ExportedBucket {
+    pub data: FastHashMap<PayloadAggregationKey, ClientStatsBucket>,
+    pub container_tags_by_id: FastHashMap<MetaString, SharedTagSet>,
+    pub process_tags_by_hash: PrehashedHashMap<u64, MetaString>,
 }
 
 pub(super) fn new_aggregation_from_span(

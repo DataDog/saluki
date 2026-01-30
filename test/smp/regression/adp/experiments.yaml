@@ -333,12 +333,15 @@ experiments:
             maximum_prebuild_cache_size_bytes: "768 Mb"
 
   # ============================================================================
-  # OTLP Experiments (2)
+  # OTLP Experiments
   # ============================================================================
 
-  - name: otlp_ingest_metrics_adp
+  - name: otlp_ingest_metrics_5mb
     extends: otlp_base
-    optimization_goal: memory
+    optimization_goals:
+      - cpu
+      - memory
+      - ingress_throughput
 
     target:
       environment:
@@ -356,9 +359,12 @@ experiments:
             variant:
               opentelemetry_metrics: {}
 
-  - name: otlp_ingest_logs_adp
+  - name: otlp_ingest_logs_5mb
     extends: otlp_base
-    optimization_goal: memory
+    optimization_goals:
+      - cpu
+      - memory
+      - ingress_throughput
 
     erratic: true
 
@@ -392,3 +398,21 @@ experiments:
                       warn: 10
                       error: 10
                       fatal: 10
+
+  - name: otlp_ingest_traces_5mb
+    extends: otlp_base
+    optimization_goals:
+      - cpu
+      - memory
+      - ingress_throughput
+
+    lading:
+      generator:
+        - grpc:
+            seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
+            target_uri: "http://127.0.0.1:4317/opentelemetry.proto.collector.trace.v1.TraceService/Export"
+            bytes_per_second: "5 MiB"
+            parallel_connections: 1
+            maximum_prebuild_cache_size_bytes: "10 MiB"
+            variant:
+              opentelemetry_traces: {}
