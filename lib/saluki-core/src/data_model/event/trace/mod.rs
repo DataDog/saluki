@@ -100,7 +100,18 @@ impl Trace {
     where
         F: FnMut(&Span) -> bool,
     {
-        self.spans.retain(|span| f(span));
+        if self.spans.is_empty() {
+            return;
+        }
+
+        let mut kept = Vec::new();
+        for span in self.spans.drain(..) {
+            if f(&span) {
+                kept.push(span);
+            }
+        }
+        kept.shrink_to_fit();
+        self.spans = kept;
     }
 
     /// Returns the resource-level tags associated with this trace.
