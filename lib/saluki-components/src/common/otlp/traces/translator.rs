@@ -40,6 +40,11 @@ pub fn resource_attributes_to_tagset(attributes: &[otlp_common::KeyValue]) -> Ta
     tags
 }
 
+struct TraceEntry {
+    spans: Vec<DdSpan>,
+    priority: Option<i32>,
+}
+
 pub struct OtlpTracesTranslator {
     config: TracesConfig,
 }
@@ -52,8 +57,7 @@ impl OtlpTracesTranslator {
     pub fn translate_resource_spans(&self, resource_spans: ResourceSpans, metrics: &Metrics) -> Vec<Event> {
         let resource: OtlpResource = resource_spans.resource.unwrap_or_default();
         let resource_tags: TagSet = resource_attributes_to_tagset(&resource.attributes);
-        let mut traces_by_id: FastHashMap<u64, Vec<DdSpan>> = FastHashMap::default();
-        let mut priorities_by_id: FastHashMap<u64, i32> = FastHashMap::default();
+        let mut traces_by_id: FastHashMap<u64, TraceEntry> = FastHashMap::default();
         let ignore_missing_fields = self.config.ignore_missing_datadog_fields;
 
         for scope_spans in resource_spans.scope_spans {
@@ -70,25 +74,30 @@ impl OtlpTracesTranslator {
                     self.config.enable_otlp_compute_top_level_by_span_kind,
                 );
 
+                let entry = traces_by_id.entry(trace_id).or_insert_with(|| TraceEntry {
+                    spans: Vec::new(),
+                    priority: None,
+                });
+
                 // Track last-seen priority for this trace (overwrites previous values)
                 if let Some(&priority) = dd_span.metrics().get(SAMPLING_PRIORITY_METRIC_KEY) {
-                    priorities_by_id.insert(trace_id, priority as i32);
+                    entry.priority = Some(priority as i32);
                 }
 
-                traces_by_id.entry(trace_id).or_default().push(dd_span);
+                entry.spans.push(dd_span);
             }
         }
 
         traces_by_id
             .into_iter()
-            .filter_map(|(trace_id, spans)| {
-                if spans.is_empty() {
+            .filter_map(|(_, entry)| {
+                if entry.spans.is_empty() {
                     None
                 } else {
-                    let mut trace = Trace::new(spans, resource_tags.clone());
+                    let mut trace = Trace::new(entry.spans, resource_tags.clone());
 
                     // Set the trace-level sampling priority if one was found
-                    if let Some(&priority) = priorities_by_id.get(&trace_id) {
+                    if let Some(priority) = entry.priority {
                         trace.set_sampling(Some(TraceSampling::new(false, Some(priority), None, None)));
                     }
 
