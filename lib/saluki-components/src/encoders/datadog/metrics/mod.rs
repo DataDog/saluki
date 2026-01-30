@@ -127,14 +127,23 @@ pub struct DatadogMetricsConfiguration {
     #[serde(rename = "serializer_experimental_use_v3_api_sketches_enabled", default)]
     use_v3_sketches: bool,
 
-    /// Enable validation mode for V3 payloads.
+    /// Enable validation mode for V3 series payloads.
     ///
-    /// When enabled along with V3 series/sketches, both V2 and V3 payloads are generated and sent for the same metrics,
+    /// When enabled along with V3 series, both V2 and V3 payloads are generated and sent for the same series metrics,
     /// allowing backend comparison for validation.
     ///
     /// Defaults to `false`.
-    #[serde(rename = "serializer_experimental_use_v3_api_validate", default)]
-    use_v3_validate: bool,
+    #[serde(rename = "serializer_experimental_use_v3_api_series_validate", default)]
+    use_v3_series_validate: bool,
+
+    /// Enable validation mode for V3 sketch payloads.
+    ///
+    /// When enabled along with V3 sketches, both V2 and V3 payloads are generated and sent for the same sketch metrics,
+    /// allowing backend comparison for validation.
+    ///
+    /// Defaults to `false`.
+    #[serde(rename = "serializer_experimental_use_v3_api_sketches_validate", default)]
+    use_v3_sketches_validate: bool,
 
     /// Override compression level for V3 payloads.
     ///
@@ -192,7 +201,7 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
         );
 
         // Create our V2 request builders.
-        let v2_series_builder = if !self.use_v3_series || self.use_v3_validate {
+        let v2_series_builder = if !self.use_v3_series || self.use_v3_series_validate {
             let request_builder = v2::create_v2_request_builder(MetricsEndpoint::Series, &v2_endpoint_config)
                 .await
                 .error_context("Failed to create V2 series request builder.")?;
@@ -201,7 +210,7 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
             None
         };
 
-        let v2_sketch_builder = if !self.use_v3_sketches || self.use_v3_validate {
+        let v2_sketch_builder = if !self.use_v3_sketches || self.use_v3_sketches_validate {
             let request_builder = v2::create_v2_request_builder(MetricsEndpoint::Sketches, &v2_endpoint_config)
                 .await
                 .error_context("Failed to create V2 sketches request builder.")?;
@@ -221,7 +230,8 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
             debug!(
                 v3_series = self.use_v3_series,
                 v3_sketches = self.use_v3_sketches,
-                v3_validation = self.use_v3_validate,
+                v3_series_validation = self.use_v3_series_validate,
+                v3_sketches_validation = self.use_v3_sketches_validate,
                 "V3 encoding support is enabled."
             );
         }
@@ -231,6 +241,8 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
             v2_sketch_builder,
             use_v3_series: self.use_v3_series,
             use_v3_sketches: self.use_v3_sketches,
+            use_v3_series_validate: self.use_v3_series_validate,
+            use_v3_sketches_validate: self.use_v3_sketches_validate,
             v3_endpoint_config,
             telemetry,
             flush_timeout,
@@ -267,6 +279,8 @@ pub struct DatadogMetrics {
     v2_sketch_builder: Option<RequestBuilder<v2::MetricsEndpointEncoder>>,
     use_v3_series: bool,
     use_v3_sketches: bool,
+    use_v3_series_validate: bool,
+    use_v3_sketches_validate: bool,
     v3_endpoint_config: EndpointConfiguration,
     telemetry: ComponentTelemetry,
     flush_timeout: Duration,
@@ -280,6 +294,8 @@ impl Encoder for DatadogMetrics {
             v2_sketch_builder,
             use_v3_series,
             use_v3_sketches,
+            use_v3_series_validate,
+            use_v3_sketches_validate,
             v3_endpoint_config,
             telemetry,
             flush_timeout,
@@ -295,6 +311,8 @@ impl Encoder for DatadogMetrics {
             v2_sketch_builder,
             use_v3_series,
             use_v3_sketches,
+            use_v3_series_validate,
+            use_v3_sketches_validate,
             v3_endpoint_config,
             telemetry,
             events_rx,
@@ -357,7 +375,8 @@ impl Encoder for DatadogMetrics {
 async fn run_request_builder(
     mut v2_series_builder: Option<RequestBuilder<v2::MetricsEndpointEncoder>>,
     mut v2_sketch_builder: Option<RequestBuilder<v2::MetricsEndpointEncoder>>, use_v3_series: bool,
-    use_v3_sketches: bool, v3_endpoint_config: EndpointConfiguration, telemetry: ComponentTelemetry,
+    use_v3_sketches: bool, use_v3_series_validate: bool, use_v3_sketches_validate: bool,
+    v3_endpoint_config: EndpointConfiguration, telemetry: ComponentTelemetry,
     mut events_rx: mpsc::Receiver<EventsBuffer>, mut payloads_tx: mpsc::Sender<PayloadsBuffer>,
     flush_timeout: Duration,
 ) -> Result<(), GenericError> {
@@ -371,8 +390,9 @@ async fn run_request_builder(
     let mut v3_sketch_metrics = use_v3_sketches.then(Vec::<Metric>::new);
 
     let mut batch_id = None;
-    let validation_enabled =
-        (v2_series_builder.is_some() || v2_sketch_builder.is_some()) && (use_v3_series || use_v3_sketches);
+    let series_validation_enabled = use_v3_series && use_v3_series_validate;
+    let sketches_validation_enabled = use_v3_sketches && use_v3_sketches_validate;
+    let validation_enabled = series_validation_enabled || sketches_validation_enabled;
 
     loop {
         // Ensure we have a validation batch UUID if validation is enabled.
