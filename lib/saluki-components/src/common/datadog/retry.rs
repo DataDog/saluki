@@ -1,7 +1,14 @@
-use std::time::Duration;
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
+use saluki_config::GenericConfiguration;
 use saluki_io::net::util::retry::{DefaultHttpRetryPolicy, ExponentialBackoff};
 use serde::Deserialize;
+use tracing::debug;
+
+const RETRY_TXN_DIR: &str = "transactions_to_retry";
 
 const fn default_request_backoff_factor() -> f64 {
     2.0
@@ -33,10 +40,6 @@ const fn default_storage_max_size_bytes() -> u64 {
 
 const fn default_storage_max_disk_ratio() -> f64 {
     0.8
-}
-
-fn default_storage_path() -> String {
-    "/opt/datadog-agent/run/transactions_to_retry".to_string()
 }
 
 /// Datadog Agent-specific forwarder retry configuration.
@@ -107,8 +110,8 @@ pub struct RetryConfiguration {
     /// The path to the directory where the retry queue will be stored on disk.
     ///
     /// Defaults to `/opt/datadog-agent/run/transactions_to_retry`.
-    #[serde(default = "default_storage_path", rename = "forwarder_storage_path")]
-    storage_path: String,
+    #[serde(default, rename = "forwarder_storage_path")]
+    storage_path: PathBuf,
 
     /// The maximum disk usage ratio for storing transactions on disk.
     ///
@@ -125,6 +128,28 @@ pub struct RetryConfiguration {
 }
 
 impl RetryConfiguration {
+    pub(super) fn fix_empty_storage_path(&mut self, config: &GenericConfiguration) {
+        // If `forwarder_storage_path` is empty, try setting it to a default path based on `run_path`.
+        if self.storage_path.parent().is_none() {
+            let storage_path = match config.try_get_typed::<PathBuf>("run_path") {
+                Ok(Some(mut run_path)) => {
+                    run_path.push(RETRY_TXN_DIR);
+                    run_path
+                }
+                Ok(None) => {
+                    debug!("`forwarder_storage_path` and `run_path` were empty. Cannot calculate default storage path for forwarder.");
+                    return;
+                }
+                Err(e) => {
+                    debug!(error = %e, "Failed to read `run_path` from configuration. Cannot calculate default storage path for forwarder.");
+                    return;
+                }
+            };
+
+            self.storage_path = storage_path;
+        }
+    }
+
     /// Returns the maximum size of the retry queue in bytes.
     pub const fn queue_max_size_bytes(&self) -> u64 {
         self.retry_queue_max_size_bytes
@@ -136,7 +161,7 @@ impl RetryConfiguration {
     }
 
     /// Returns the path to the directory where the retry queue will be stored on disk.
-    pub fn storage_path(&self) -> &str {
+    pub fn storage_path(&self) -> &Path {
         &self.storage_path
     }
 
@@ -156,5 +181,69 @@ impl RetryConfiguration {
         let recovery_error_decrease_factor = (!self.recovery_reset).then_some(self.recovery_error_decrease_factor);
         DefaultHttpRetryPolicy::with_backoff(retry_backoff)
             .with_recovery_error_decrease_factor(recovery_error_decrease_factor)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use saluki_config::ConfigurationLoader;
+    use serde_json::json;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn fix_empty_storage_path_sets_path_from_run_path() {
+        const RUN_PATH: &str = "/my/little/run_path";
+
+        // Create a base configuration with only `run_path` set.
+        let base_config_values = json!({ "run_path": RUN_PATH });
+        let (config, _) = ConfigurationLoader::for_tests(Some(base_config_values), None, false).await;
+
+        // Read our retry configuration, and make sure we start out with the expected empty `storage_path`.
+        let mut retry_config: RetryConfiguration = config.as_typed().expect("should deserialize");
+        assert_eq!(retry_config.storage_path(), PathBuf::new());
+
+        // Try to fix up the empty storage path, and make sure the updated storage path is based on the `run_path` we
+        // set on our base configuration.
+        retry_config.fix_empty_storage_path(&config);
+
+        let expected = PathBuf::from(RUN_PATH).join(RETRY_TXN_DIR);
+        assert_eq!(expected, retry_config.storage_path());
+    }
+
+    #[tokio::test]
+    async fn fix_empty_storage_path_does_nothing_when_path_already_set() {
+        const RUN_PATH: &str = "/my/little/run_path";
+        const FORWARDER_STORAGE_PATH: &str = "/custom/path/to/storage";
+
+        // Create a base configuration with both `run_path` and `forwarder_storage_path` set.
+        let base_config_values = json!({ "run_path": RUN_PATH, "forwarder_storage_path": FORWARDER_STORAGE_PATH });
+        let (config, _) = ConfigurationLoader::for_tests(Some(base_config_values), None, false).await;
+
+        // Read our retry configuration, and make sure we see the storage path that we initially set.
+        let mut retry_config: RetryConfiguration = config.as_typed().expect("should deserialize");
+
+        let initial_storage_path = retry_config.storage_path().to_path_buf();
+        assert_eq!(initial_storage_path, PathBuf::from(FORWARDER_STORAGE_PATH));
+
+        // Try to fix up the storage path, and make sure nothing changes since it's not actually empty.
+        retry_config.fix_empty_storage_path(&config);
+        assert_eq!(initial_storage_path, retry_config.storage_path());
+    }
+
+    #[tokio::test]
+    async fn fix_empty_storage_path_does_nothing_when_run_path_missing() {
+        // Create a base configuration for _no_ values set.
+        let (config, _) = ConfigurationLoader::for_tests(None, None, false).await;
+
+        // Read our retry configuration, and make sure we start out with the expected empty `storage_path`.
+        let mut retry_config: RetryConfiguration = config.as_typed().expect("should deserialize");
+        assert_eq!(retry_config.storage_path(), PathBuf::new());
+
+        // Try to fix up the empty storage path, and make sure the storage path is still empty: when we have no
+        // `run_path` set, we can't actually construct a valid path.
+        retry_config.fix_empty_storage_path(&config);
+
+        assert_eq!(PathBuf::new(), retry_config.storage_path());
     }
 }

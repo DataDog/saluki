@@ -1,11 +1,13 @@
-/.github
-/.gitlab
-/.git
-/.vscode
-/docker/Dockerfile.*
-/target
-/test
-/tooling
+.github/
+.gitlab/
+.git/
+.vscode/
+.vale/
+docker/Dockerfile.*
+node_modules/
+target/
+**/fuzz/target
+test/
 .gitignore
 .gitlab-ci.yml
 CONTRIBUTING.md
@@ -15,3 +17,4 @@ README.md
 rustfmt.toml
 SECURITY.md
 static-analysis.datadog.yml
+.vale.ini

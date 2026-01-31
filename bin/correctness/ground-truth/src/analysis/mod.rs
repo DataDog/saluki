@@ -1,150 +1,55 @@
-use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use stele::{Metric, MetricValue};
-use tracing::{error, info, warn};
+use saluki_error::GenericError;
+use serde::Deserialize;
 
-mod metric;
-use self::metric::{NormalizedMetric, NormalizedMetrics};
+mod collected;
+pub use self::collected::CollectedData;
 
-/// Raw test run results.
-///
-/// This holds the raw metrics sent from DogStatsD and Agent Data Plane, from the perspective of the `metrics-intake``
-/// collection service.
-pub struct RawTestResults {
-    dsd_metrics: Vec<Metric>,
-    adp_metrics: Vec<Metric>,
+mod metrics;
+mod traces;
+
+/// Types of analysis to perform on collected data
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AnalysisMode {
+    /// Compares metrics between the baseline and comparison targets.
+    Metrics,
+
+    /// Compares traces between the baseline and comparison targets.
+    Traces,
 }
 
-impl RawTestResults {
-    /// Creates a new `RawTestResults` instance with the given metrics.
-    pub fn new(dsd_metrics: Vec<Metric>, adp_metrics: Vec<Metric>) -> Self {
+/// Analysis runner.
+pub struct AnalysisRunner {
+    mode: AnalysisMode,
+    baseline_data: CollectedData,
+    comparison_data: CollectedData,
+}
+
+impl AnalysisRunner {
+    /// Creates a new `AnalysisRunner` with the given analysis mode, baseline data, and comparison data.
+    pub fn new(mode: AnalysisMode, baseline_data: CollectedData, comparison_data: CollectedData) -> Self {
         Self {
-            dsd_metrics,
-            adp_metrics,
+            mode,
+            baseline_data,
+            comparison_data,
         }
     }
 
-    /// Analyzes the raw metrics from DogStatsD and Agent Data Plane, comparing them to one another.
+    /// Runs the configured analysis.
     ///
     /// # Errors
     ///
-    /// If analysis fails, an error will be returned with specific details.
+    /// If the analysis fails, or if the analysis identifies a difference between the baseline and comparison data, an error is returned.
     pub fn run_analysis(self) -> Result<(), GenericError> {
-        info!(
-            "Received {} total metric payloads from DogStatsD, and {} total metric payloads from Agent Data Plane.",
-            self.dsd_metrics.len(),
-            self.adp_metrics.len()
-        );
-
-        // Normalize the metrics from DSD and ADP, which makes them suitable for analysis.
-        let mut dsd_metrics = NormalizedMetrics::try_from_stele_metrics(self.dsd_metrics)
-            .error_context("Failed to normalize DogStatsD metrics.")?;
-
-        let mut adp_metrics = NormalizedMetrics::try_from_stele_metrics(self.adp_metrics)
-            .error_context("Failed to normalize Agent Data Plane metrics.")?;
-
-        info!(
-            "Normalized {} unique metrics from raw DogStatsD payloads, and {} unique metrics from raw Agent Data Plane payloads.",
-            dsd_metrics.len(),
-            adp_metrics.len()
-        );
-
-        // Filter out internal telemetry metrics.
-        filter_internal_telemetry_metrics(&mut dsd_metrics, &mut adp_metrics);
-
-        // Make sure both DSD and ADP emitted the same unique set of metrics. We don't yet care about the _values_ of
-        // those metrics, just that both sides are emitting the same contexts.
-        let (dsd_only_contexts, adp_only_contexts) = NormalizedMetrics::context_differences(&dsd_metrics, &adp_metrics);
-
-        if !dsd_only_contexts.is_empty() || !adp_only_contexts.is_empty() {
-            error!("Mismatch in unique metrics between DogStatsD and Agent Data Plane!");
-
-            error!("Metrics in DogStatsD but not in Agent Data Plane:");
-            for context in dsd_only_contexts {
-                error!("  - {}", context);
+        match self.mode {
+            AnalysisMode::Metrics => {
+                let analyzer = metrics::MetricsAnalyzer::new(&self.baseline_data, &self.comparison_data)?;
+                analyzer.run_analysis()
             }
-
-            error!("Metrics in Agent Data Plane but not in DogStatsD:");
-            for context in adp_only_contexts {
-                error!("  - {}", context);
+            AnalysisMode::Traces => {
+                let analyzer = traces::TracesAnalyzer::new(&self.baseline_data, &self.comparison_data)?;
+                analyzer.run_analysis()
             }
-
-            return Err(generic_error!(
-                "Mismatch in metric payloads between DogStatsD and Agent Data Plane."
-            ));
         }
-
-        info!(
-            "DogStatsD and Agent Data Plane both emitted the same set of {} unique metric contexts. Continuing...",
-            dsd_metrics.len()
-        );
-
-        compare_metric_values(&dsd_metrics, &adp_metrics)
-    }
-}
-
-fn compare_metric_values(dsd_metrics: &NormalizedMetrics, adp_metrics: &NormalizedMetrics) -> Result<(), GenericError> {
-    let mut mismatched_count = 0;
-
-    // We can safely assume that the metrics are sorted and deduplicated at this point, so we can simply iterate over
-    // them in lockstep.
-    for (dsd_metric, adp_metric) in dsd_metrics.metrics().iter().zip(adp_metrics.metrics().iter()) {
-        let dsd_value = dsd_metric.normalized_value();
-        let adp_value = adp_metric.normalized_value();
-
-        if dsd_value != adp_value {
-            mismatched_count += 1;
-
-            error!("Found mismatched metric '{}':", dsd_metric.context());
-            warn!("  DSD: {}", get_formatted_metric_values(dsd_metric, dsd_value));
-            warn!("  ADP: {}", get_formatted_metric_values(adp_metric, adp_value));
-        }
-    }
-
-    if mismatched_count == 0 {
-        Ok(())
-    } else {
-        Err(generic_error!(
-            "{} metrics from DogStatsD and Agent Data Plane did not match.",
-            mismatched_count
-        ))
-    }
-}
-
-fn filter_internal_telemetry_metrics(dsd_metrics: &mut NormalizedMetrics, adp_metrics: &mut NormalizedMetrics) {
-    let dsd_filtered_metrics = dsd_metrics.remove_matching(is_internal_telemetry);
-    let adp_filtered_metrics = adp_metrics.remove_matching(is_internal_telemetry);
-
-    info!("Filtered {} internal telemetry metric(s) from DogStatsD, and {} internal telemetry metric(s) from Agent Data Plane.", dsd_filtered_metrics.len(), adp_filtered_metrics.len());
-}
-
-fn is_internal_telemetry(metric: &NormalizedMetric) -> bool {
-    metric.context().name().starts_with("datadog.") || metric.context().name().starts_with("n_o_i_n_d_e_x")
-}
-
-fn get_formatted_metric_values(metric: &NormalizedMetric, value: &MetricValue) -> String {
-    let collapsed_value = get_formatted_metric_value(value);
-
-    let mut raw_values = Vec::new();
-    for (ts, raw_value) in metric.raw_values() {
-        raw_values.push(format!("({} => {})", ts, get_formatted_metric_value(raw_value)));
-    }
-
-    format!("{} (raw: {})", collapsed_value, raw_values.join(", "))
-}
-
-fn get_formatted_metric_value(value: &MetricValue) -> String {
-    match value {
-        MetricValue::Count { value } => format!("count({})", value),
-        MetricValue::Rate { interval, value } => format!("rate({} over {}s)", value, interval),
-        MetricValue::Gauge { value } => format!("gauge({})", value),
-        MetricValue::Sketch { sketch } => format!(
-            "sketch(min={} max={} avg={} sum={} cnt={} bins_n={})",
-            sketch.min().unwrap_or(0.0),
-            sketch.max().unwrap_or(0.0),
-            sketch.avg().unwrap_or(0.0),
-            sketch.sum().unwrap_or(0.0),
-            sketch.count(),
-            sketch.bin_count(),
-        ),
     }
 }

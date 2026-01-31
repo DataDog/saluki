@@ -12,7 +12,6 @@ workspace = true
 tls-fips = ["saluki-tls/fips"]
 
 [dependencies]
-arc-swap = { workspace = true }
 axum = { workspace = true }
 bytesize = { workspace = true }
 chrono = { workspace = true }
@@ -24,7 +23,7 @@ memory-accounting = { workspace = true }
 metrics = { workspace = true }
 rcgen = { workspace = true, features = ["crypto", "aws_lc_rs", "pem"] }
 rustls = { workspace = true, features = ["tls12"] }
-rustls-pemfile = { workspace = true, features = ["std"] }
+rustls-pki-types = { workspace = true }
 ryu = { workspace = true }
 saluki-api = { workspace = true }
 saluki-common = { workspace = true }
@@ -39,7 +38,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
 tokio = { workspace = true, features = ["macros", "sync"] }
-tonic = { workspace = true, features = ["router", "transport"] }
+tonic = { workspace = true, features = ["router"] }
 tower = { workspace = true, features = ["util"] }
 tracing = { workspace = true }
 tracing-appender = { workspace = true }

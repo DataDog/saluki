@@ -1,0 +1,42 @@
+name: "adp-rar-disabled"
+description: "Verify ADP gracefully handles RAR being disabled on the Core Agent"
+timeout: 90s
+
+container:
+  image: "saluki-images/datadog-agent:testing-devel"
+  env:
+    DD_API_KEY: "test-api-key"
+    DD_HOSTNAME: "integration-test-rar-disabled"
+    # Core Agent setting to disable RAR
+    DD_REMOTE_AGENT_REGISTRY_ENABLED: "false"
+    # ADP settings - enable RAR integration (which will fail gracefully)
+    DD_DATA_PLANE_ENABLED: "true"
+    DD_DATA_PLANE_STANDALONE_MODE: "false"
+    DD_DATA_PLANE_REMOTE_AGENT_ENABLED: "true"
+    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+    DD_DOGSTATSD_PORT: "8125"
+  exposed_ports:
+    - "8125/udp"
+
+assertions:
+  # Verify ADP starts successfully
+  - type: log_contains
+    pattern: "Agent Data Plane starting"
+    timeout: 30s
+  # ADP should report registration failure (Core Agent returns error when RAR disabled)
+  - type: log_contains
+    pattern: "Failed to register with the Datadog Agent. Registration will be retried periodically in the background."
+    timeout: 60s
+  # ADP should remain stable and continue operating despite registration failures
+  - type: process_stable_for
+    duration: 30s
+  # DogStatsD port should be listening
+  - type: port_listening
+    port: 8125
+    protocol: udp
+    timeout: 30s
+  # No panics in ADP itself
+  - type: log_not_contains
+    pattern: "panic|PANIC"
+    regex: true
+    during: 10s

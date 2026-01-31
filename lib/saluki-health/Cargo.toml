@@ -10,7 +10,6 @@ workspace = true
 
 [dependencies]
 futures = { workspace = true }
-metrics = { workspace = true }
 saluki-api = { workspace = true }
 saluki-common = { workspace = true }
 saluki-error = { workspace = true }

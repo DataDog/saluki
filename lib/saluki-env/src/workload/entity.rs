@@ -1,14 +1,16 @@
 use std::{cmp::Ordering, fmt};
 
 use stringtheory::MetaString;
+use tracing::warn;
 
 const ENTITY_PREFIX_POD_UID: &str = "kubernetes_pod_uid://";
 const ENTITY_PREFIX_CONTAINER_ID: &str = "container_id://";
 const ENTITY_PREFIX_CONTAINER_INODE: &str = "container_inode://";
 const ENTITY_PREFIX_CONTAINER_PID: &str = "container_pid://";
 
-const RAW_CONTAINER_ID_PREFIX_INODE: &str = "in-";
-const RAW_CONTAINER_ID_PREFIX_CID: &str = "ci-";
+const LOCAL_DATA_PREFIX_INODE: &str = "in-";
+const LOCAL_DATA_PREFIX_CID: &str = "ci-";
+const LOCAL_DATA_PREFIX_LEGACY_CID: &str = "cid-";
 
 /// An entity identifier.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -42,40 +44,64 @@ pub enum EntityId {
 }
 
 impl EntityId {
-    /// Creates an `EntityId` from a raw container ID.
+    /// Creates an `EntityId` from Local Data.
     ///
-    /// This method handles two special cases when the raw container ID is prefixed with "ci-" or "in-":
+    /// This method follows the same logic/behavior as the Datadog Agent's origin detection logic:
+    /// - If the input starts with `ci-`, we treat it as a container ID.
+    /// - If the input starts with `in-`, we treat it as a container cgroup controller inode.
+    /// - If the input contains a comma, we split the input and search for either a prefixed container ID or prefixed
+    ///   inode. If both are present, we use the container ID.
+    /// - If the input starts with `cid-`, we treat it as a container ID.
+    /// - If none of the above conditions are met, we assume the entire input is a container ID.
     ///
-    /// - "ci-" indicates that the raw container ID is a real container ID, but just with an identifying prefix. The
-    ///   prefix is stripped and the remainder is treated as the container ID.
-    /// - "in-" indicates that the raw container ID is actually the inode of the cgroups controller for a container. The
-    ///   prefix is stripped and the remainder is parsed as an integer, and the result is treated as the container inode.
-    ///
-    /// If the raw container ID does not start with either of these prefixes, we assume the entire value is the
-    /// container ID. If the raw container ID starts with the "in-" prefix, but the remainder is not a valid integer,
-    /// `None` is returned.
-    pub fn from_raw_container_id<S>(raw_container_id: S) -> Option<Self>
+    /// If the input fails to be parsed in a valid fashion (e.g., `in-` prefix but the remainder is not a valid
+    /// integer), or is empty, `None` is returned.
+    pub fn from_local_data<S>(raw_local_data: S) -> Option<Self>
     where
         S: AsRef<str> + Into<MetaString>,
     {
-        if raw_container_id.as_ref().starts_with(RAW_CONTAINER_ID_PREFIX_INODE) {
-            // We have a "container ID" that is actually the inode of the cgroups controller for the container where
-            // the metric originated. We treat this separately from true container IDs, which are typically 64 character
-            // hexadecimal strings.
-            let raw_inode = raw_container_id
-                .as_ref()
-                .trim_start_matches(RAW_CONTAINER_ID_PREFIX_INODE);
-            let inode = raw_inode.parse().ok()?;
-            Some(Self::ContainerInode(inode))
-        } else if raw_container_id.as_ref().starts_with(RAW_CONTAINER_ID_PREFIX_CID) {
-            // We have a real container ID, but just with an identifying prefix. We can simply strip the prefix and
-            // treat the remainder as the container ID.
-            let raw_cid = raw_container_id
-                .as_ref()
-                .trim_start_matches(RAW_CONTAINER_ID_PREFIX_CID);
-            Some(Self::Container(raw_cid.into()))
-        } else {
-            Some(Self::Container(raw_container_id.into()))
+        let local_data_value = raw_local_data.as_ref();
+        if local_data_value.is_empty() {
+            return None;
+        }
+
+        if local_data_value.contains(',') {
+            let mut maybe_container_inode = None;
+            for local_data_subvalue in local_data_value.split(',') {
+                match parse_local_data_value(local_data_subvalue) {
+                    // We always prefer the container ID if we get it.
+                    Ok(Some(Self::Container(cid))) => return Some(Self::Container(cid)),
+                    Ok(Some(Self::ContainerInode(inode))) => maybe_container_inode = Some(inode),
+                    Err(()) => {
+                        warn!(
+                            local_data = local_data_value,
+                            local_data_subvalue,
+                            "Failed parsing Local Data subvalue. Metric may be missing origin detection-based tags."
+                        );
+                    }
+                    _ => {}
+                }
+            }
+
+            // Return the container inode if we found one.
+            if let Some(inode) = maybe_container_inode {
+                return Some(Self::ContainerInode(inode));
+            }
+        }
+
+        // Try to parse the local data value as a single entity ID value, falling back to treating the entire value as a
+        // container ID otherwise.
+        match parse_local_data_value(local_data_value) {
+            // We always prefer the container ID if we get it.
+            Ok(Some(eid)) => Some(eid),
+            Ok(None) => Some(Self::Container(raw_local_data.into())),
+            Err(()) => {
+                warn!(
+                    local_data = local_data_value,
+                    "Failed parsing Local Data value. Metric may be missing origin detection-based tags."
+                );
+                None
+            }
         }
     }
 
@@ -190,31 +216,64 @@ impl Ord for HighestPrecedenceEntityIdRef<'_> {
     }
 }
 
+fn parse_local_data_value(raw_local_data_value: &str) -> Result<Option<EntityId>, ()> {
+    if raw_local_data_value.starts_with(LOCAL_DATA_PREFIX_CID) {
+        let cid = raw_local_data_value.trim_start_matches(LOCAL_DATA_PREFIX_CID);
+        Ok(Some(EntityId::Container(cid.into())))
+    } else if raw_local_data_value.starts_with(LOCAL_DATA_PREFIX_INODE) {
+        let inode = raw_local_data_value
+            .trim_start_matches(LOCAL_DATA_PREFIX_INODE)
+            .parse()
+            .map_err(|_| ())?;
+        Ok(Some(EntityId::ContainerInode(inode)))
+    } else if raw_local_data_value.starts_with(LOCAL_DATA_PREFIX_LEGACY_CID) {
+        let cid = raw_local_data_value.trim_start_matches(LOCAL_DATA_PREFIX_LEGACY_CID);
+        Ok(Some(EntityId::Container(cid.into())))
+    } else {
+        Ok(None)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn raw_container_id_inode_valid() {
-        let container_inode = 123456;
-        let raw_container_id = format!("{}{}", RAW_CONTAINER_ID_PREFIX_INODE, container_inode);
-        let entity_id = EntityId::from_raw_container_id(raw_container_id).unwrap();
-        assert_eq!(entity_id, EntityId::ContainerInode(container_inode));
-    }
+    fn local_data() {
+        const PREFIX_CID: &str = "ci-singlecontainerid";
+        const PREFIX_LEGACY_CID: &str = "cid-singlecontainerid";
+        const CID: EntityId = EntityId::Container(MetaString::from_static("singlecontainerid"));
+        const PREFIX_INODE: &str = "in-12345";
+        const INODE: EntityId = EntityId::ContainerInode(12345);
 
-    #[test]
-    fn raw_container_id_inode_invalid() {
-        let raw_container_id = format!("{}invalid", RAW_CONTAINER_ID_PREFIX_INODE);
-        let entity_id = EntityId::from_raw_container_id(raw_container_id);
-        assert!(entity_id.is_none());
-    }
+        let cases = [
+            // Empty inputs aren't valid.
+            ("".into(), None),
+            // Invalid container inode values.
+            ("in-notanumber".into(), None),
+            // Fallback to treat any unparsed value as container ID.
+            ("random".into(), Some(EntityId::Container("random".into()))),
+            // Single prefixed values.
+            (PREFIX_CID.into(), Some(CID.clone())),
+            (PREFIX_INODE.into(), Some(INODE.clone())),
+            (PREFIX_LEGACY_CID.into(), Some(CID.clone())),
+            // Multiple prefixed values, comma separated.
+            //
+            // We should always prefer container ID over inode. We also test invalid values here since we should
+            // ignore them as we iterate over the split values.
+            (format!("{},{}", PREFIX_CID, PREFIX_INODE), Some(CID.clone())),
+            (format!("{},{}", PREFIX_INODE, PREFIX_CID), Some(CID.clone())),
+            (format!("{},{}", PREFIX_LEGACY_CID, PREFIX_INODE), Some(CID.clone())),
+            (format!("{},{}", PREFIX_INODE, PREFIX_LEGACY_CID), Some(CID.clone())),
+            (format!("{},invalid", PREFIX_CID), Some(CID.clone())),
+            (format!("{},invalid", PREFIX_LEGACY_CID), Some(CID.clone())),
+            (format!("{},invalid", PREFIX_INODE), Some(INODE.clone())),
+        ];
 
-    #[test]
-    fn raw_container_id_cid() {
-        let container_id = "abcdef1234567890";
-        let raw_container_id = format!("{}{}", RAW_CONTAINER_ID_PREFIX_CID, container_id);
-        let entity_id = EntityId::from_raw_container_id(raw_container_id).unwrap();
-        assert_eq!(entity_id, EntityId::Container(MetaString::from(container_id)));
+        for (input, expected) in cases {
+            let actual = EntityId::from_local_data(input);
+            assert_eq!(actual, expected);
+        }
     }
 
     #[test]

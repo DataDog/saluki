@@ -730,11 +730,11 @@ mod tests {
     use super::*;
     use crate::interning::InternedStringState;
 
-    fn create_shard(capacity: NonZeroUsize) -> Arc<Mutex<InternerShardState>> {
+    pub(super) fn create_shard(capacity: NonZeroUsize) -> Arc<Mutex<InternerShardState>> {
         Arc::new(Mutex::new(InternerShardState::with_capacity(capacity)))
     }
 
-    fn intern_for_shard(shard: &Arc<Mutex<InternerShardState>>, s: &str) -> Option<InternedString> {
+    pub(super) fn intern_for_shard(shard: &Arc<Mutex<InternerShardState>>, s: &str) -> Option<InternedString> {
         let hash = hash_string(s);
         intern_with_shard_and_hash(shard, hash, s)
     }
@@ -759,7 +759,7 @@ mod tests {
         shard.lock().unwrap().reclaimed.first().unwrap()
     }
 
-    fn get_reclaimed_entry_for_string(s: &InternedString) -> ReclaimedEntry {
+    pub(super) fn get_reclaimed_entry_for_string(s: &InternedString) -> ReclaimedEntry {
         let state = match &s.state {
             InternedStringState::FixedSize(state) => state,
             _ => panic!("unexpected string state"),
@@ -1056,8 +1056,19 @@ mod tests {
             assert_eq!(unique_strs.len(), interner.len());
         }
     }
+}
 
-    #[cfg(feature = "loom")]
+#[cfg(all(test, feature = "loom"))]
+mod loom_tests {
+    use std::{num::NonZeroUsize, ops::Deref};
+
+    use loom::sync::{Arc, Mutex};
+
+    use super::{
+        tests::{create_shard, get_reclaimed_entry_for_string, intern_for_shard},
+        *,
+    };
+
     #[test]
     fn concurrent_drop_and_intern() {
         fn shard_reclaimed_entries(shard: &Arc<Mutex<InternerShardState>>) -> Vec<ReclaimedEntry> {

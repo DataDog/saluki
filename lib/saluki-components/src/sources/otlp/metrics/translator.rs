@@ -17,15 +17,15 @@ use saluki_core::data_model::event::Event;
 use saluki_error::GenericError;
 use tracing::{debug, warn};
 
-use super::super::attributes::raw_origin_from_attributes;
-use super::super::attributes::source::{Source, SourceKind};
-use super::super::attributes::translator::AttributeTranslator;
 use super::cache::PointsCache;
-use super::config::{HistogramMode, NumberMode, OtlpTranslatorConfig};
+use super::config::{HistogramMode, NumberMode, OtlpMetricsTranslatorConfig};
 use super::dimensions::Dimensions;
 use super::internal::{instrumentationlibrary, instrumentationscope};
 use super::remap;
 use super::runtime_metrics::{RuntimeMetricMapping, RUNTIME_METRICS_MAPPINGS};
+use crate::common::otlp::attributes::raw_origin_from_attributes;
+use crate::common::otlp::attributes::translator::AttributeTranslator;
+use crate::common::otlp::util::{Source, SourceKind};
 use crate::sources::otlp::metrics::config::InitialCumulMonoValueMode;
 use crate::sources::otlp::Metrics;
 
@@ -63,7 +63,7 @@ struct TranslationContext<'a> {
 
 /// A translator for converting OTLP metrics into Saluki `Event::Metric`s.
 pub struct OtlpMetricsTranslator {
-    config: OtlpTranslatorConfig,
+    config: OtlpMetricsTranslatorConfig,
     context_resolver: ContextResolver,
     prev_pts: PointsCache,
     process_start_time_ns: u64, // Used for initial value consumption.
@@ -81,7 +81,7 @@ struct HistogramInfo {
 
 impl OtlpMetricsTranslator {
     /// Creates a new, empty `OtlpMetricsTranslator`.
-    pub fn new(config: OtlpTranslatorConfig, context_resolver: ContextResolver) -> Self {
+    pub fn new(config: OtlpMetricsTranslatorConfig, context_resolver: ContextResolver) -> Self {
         let process_start_time_ns = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("System time is before the UNIX epoch, this should not happen.")
@@ -126,10 +126,14 @@ impl OtlpMetricsTranslator {
                 }
 
                 if self.config.instrumentation_scope_metadata_as_tags {
-                    if let Some(scope) = &scope_metrics.scope {
-                        for tag in instrumentationscope::tags_from_instrumentation_scope_metadata(scope) {
-                            mutable_tags.insert_tag(tag);
-                        }
+                    // Always add instrumentation scope tags, even if scope is `None`
+                    // to match the datadog agent's behavior which adds "n/a" values
+                    let scope_tags = match &scope_metrics.scope {
+                        Some(scope) => instrumentationscope::tags_from_instrumentation_scope_metadata(scope),
+                        None => instrumentationscope::tags_from_empty_instrumentation_scope(),
+                    };
+                    for tag in scope_tags {
+                        mutable_tags.insert_tag(tag);
                     }
                 } else if self.config.instrumentation_library_metadata_as_tags {
                     if let Some(scope) = &scope_metrics.scope {
@@ -197,6 +201,8 @@ impl OtlpMetricsTranslator {
         //         events.push(Event::new_with_kind(None, EventKind::Tags(tag_set.into_shared())));
         //     }
         // }
+
+        metrics.metrics_received().increment(events.len() as u64);
 
         Ok(events)
     }

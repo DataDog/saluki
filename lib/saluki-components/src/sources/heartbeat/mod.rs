@@ -78,10 +78,9 @@ impl SourceBuilder for HeartbeatConfiguration {
         }))
     }
 
-    fn outputs(&self) -> &[OutputDefinition] {
-        static OUTPUTS: [OutputDefinition; 1] = [OutputDefinition::default_output(EventType::Metric)];
-
-        &OUTPUTS
+    fn outputs(&self) -> &[OutputDefinition<EventType>] {
+        static OUTPUTS: &[OutputDefinition<EventType>] = &[OutputDefinition::default_output(EventType::Metric)];
+        OUTPUTS
     }
 }
 

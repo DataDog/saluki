@@ -22,8 +22,8 @@ application-specific binaries.
 ### Shared libraries
 
 - `lib/datadog-protos`: Rust bindings generated from Protocol Buffers definitions for metrics/trace intake APIs
-- `lib/ddsketch-agent`: Rust implementation of the [DDSketch][ddsketch] algorithm matched to the implementation
-  [used][ddsketch-agent] in the Datadog Agent
+- `lib/ddsketch`: Rust implementation of the [DDSketch][ddsketch] algorithm, including both the Agent-specific
+  implementation [used][ddsketch-agent] in the Datadog Agent and the canonical implementation matching `sketches-go`
 - `lib/memory-accounting`: foundational traits and helpers for declaring memory bounds on components, and partitioning
   memory grants based on those components
 - `lib/process-memory`: cross-platform library for querying the RSS of the current process with few to no allocations

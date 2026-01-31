@@ -6,12 +6,11 @@ use std::{
 };
 
 use async_trait::async_trait;
-use ddsketch_agent::DDSketch;
+use ddsketch::DDSketch;
 use http::{Request, Response};
 use hyper::{body::Incoming, service::service_fn};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::{collections::FastIndexMap, iter::ReusableDeduplicator};
-use saluki_config::GenericConfiguration;
 use saluki_context::{tags::Tag, Context};
 use saluki_core::components::{destinations::*, ComponentContext};
 use saluki_core::data_model::event::{
@@ -74,14 +73,9 @@ pub struct PrometheusConfiguration {
 }
 
 impl PrometheusConfiguration {
-    /// Creates a new `PrometheusConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
-    }
-
-    /// Returns the listen address for the Prometheus scrape endpoint.
-    pub fn listen_address(&self) -> &ListenAddress {
-        &self.listen_addr
+    /// Creates a new `PrometheusConfiguration` for the given listen address.
+    pub fn from_listen_address(listen_addr: ListenAddress) -> Self {
+        Self { listen_addr }
     }
 }
 
@@ -294,6 +288,11 @@ fn get_help_text(metric_name: &str) -> Option<&'static str> {
         "dogstatsd__packet_pool_get" => Some("Count of get done in the packet pool"),
         "dogstatsd__packet_pool_put" => Some("Count of put done in the packet pool"),
         "dogstatsd__packet_pool" => Some("Usage of the packet pool in dogstatsd"),
+        "transactions__errors" => Some("Count of transactions errored grouped by type of error"),
+        "transactions__http_errors" => Some("Count of transactions http errors per http code"),
+        "transactions__dropped" => Some("Transaction drop count"),
+        "transactions__success" => Some("Successful transaction count"),
+        "transactions__success_bytes" => Some("Successful transaction sizes in bytes"),
         _ => None,
     }
 }

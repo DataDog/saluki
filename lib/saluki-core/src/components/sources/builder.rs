@@ -3,7 +3,7 @@ use memory_accounting::MemoryBounds;
 use saluki_error::GenericError;
 
 use super::Source;
-use crate::{components::ComponentContext, topology::OutputDefinition};
+use crate::{components::ComponentContext, data_model::event::EventType, topology::OutputDefinition};
 
 /// A source builder.
 ///
@@ -12,7 +12,7 @@ use crate::{components::ComponentContext, topology::OutputDefinition};
 #[async_trait]
 pub trait SourceBuilder: MemoryBounds {
     /// Event outputs exposed by this source.
-    fn outputs(&self) -> &[OutputDefinition];
+    fn outputs(&self) -> &[OutputDefinition<EventType>];
 
     /// Builds an instance of the source.
     ///

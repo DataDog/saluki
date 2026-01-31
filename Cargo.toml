@@ -2,15 +2,17 @@
 members = [
   "bin/agent-data-plane",
   "bin/correctness/airlock",
+  "bin/correctness/datadog-intake",
   "bin/correctness/ground-truth",
-  "bin/correctness/metrics-intake",
   "bin/correctness/millstone",
+  "bin/correctness/panoramic",
   "bin/correctness/stele",
-  "lib/datadog-protos",
-  "lib/ddsketch-agent",
+  "lib/ddsketch",
   "lib/memory-accounting",
-  "lib/otlp-protos",
   "lib/process-memory",
+  "lib/protos/containerd",
+  "lib/protos/datadog",
+  "lib/protos/otlp",
   "lib/saluki-api",
   "lib/saluki-app",
   "lib/saluki-common",
@@ -35,8 +37,9 @@ license = "Apache-2.0"
 repository = "https://github.com/DataDog/saluki"
 
 [workspace.dependencies]
-datadog-protos = { path = "lib/datadog-protos" }
-ddsketch-agent = { path = "lib/ddsketch-agent" }
+datadog-protos = { path = "lib/protos/datadog" }
+containerd-protos = { path = "lib/protos/containerd" }
+ddsketch = { path = "lib/ddsketch" }
 memory-accounting = { path = "lib/memory-accounting" }
 process-memory = { path = "lib/process-memory" }
 saluki-api = { path = "lib/saluki-api" }
@@ -55,8 +58,9 @@ saluki-metrics = { path = "lib/saluki-metrics" }
 saluki-tls = { path = "lib/saluki-tls" }
 stele = { path = "bin/correctness/stele" }
 stringtheory = { path = "lib/stringtheory" }
-otlp-protos = { path = "lib/otlp-protos" }
+otlp-protos = { path = "lib/protos/otlp" }
 async-trait = { version = "0.1", default-features = false }
+atty = { version = "0.2", default-features = false }
 axum = { version = "0.8", default-features = false }
 bytes = { version = "1", default-features = false }
 protobuf = { version = "3.7", default-features = false, features = [
@@ -71,17 +75,19 @@ snafu = { version = "0.8", default-features = false, features = ["std"] }
 tokio = { version = "1", default-features = false }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 async-compression = { version = "0.4.13", default-features = false, features = [
+  "gzip",
   "zlib",
   "zstd",
 ] }
 bitmask-enum = { version = "2.2", default-features = false }
 figment = { version = "0.10", default-features = false }
-foldhash = { version = "0.1.5", default-features = false, features = ["std"] }
+foldhash = { version = "0.2", default-features = false, features = ["std"] }
 headers = { version = "0.4.0" }
 http = { version = "1", default-features = false }
 http-body = { version = "1", default-features = false }
 http-body-util = { version = "0.1.0", default-features = false }
 hyper = { version = "1", default-features = false }
+hyper-hickory = { version = "0.8.0", default-features = false, features = ["tokio", "system-config"] }
 hyper-http-proxy = { version = "1.1", default-features = false, features = [
   "rustls-tls-native-roots",
 ] }
@@ -96,13 +102,14 @@ memchr = { version = "2.7", default-features = false }
 metrics = { version = "0.24", default-features = false }
 metrics-util = { version = "0.20", default-features = false }
 nom = { version = "8", default-features = false }
-ordered-float = { version = "4", default-features = false }
+ordered-float = { version = "5", default-features = false }
 paste = { version = "1", default-features = false }
 pin-project = { version = "1.1", default-features = false }
 pin-project-lite = { version = "0.2", default-features = false }
 proptest = { version = "1.7", default-features = false, features = ["std"] }
-prost = { version = "0.13", default-features = false }
+prost = { version = "0.14", default-features = false }
 quanta = { version = "0.12", default-features = false }
+crossterm = { version = "0.28", default-features = false }
 rand = { version = "0.9", default-features = false }
 rand_distr = { version = "0.5", default-features = false }
 regex = { version = "1.11", default-features = false }
@@ -123,25 +130,25 @@ ndarray-stats = { version = "0.6", default-features = false }
 noisy_float = { version = "0.2", default-features = false }
 libc = { version = "0.2.169", default-features = false }
 socket2 = { version = "0.6", default-features = false }
-containerd-client = { git = "https://github.com/containerd/rust-extensions", rev = "c0b92c4e96e54cf60156865a6c2e0a6fe044556f", default-features = false }
-tonic-build = { version = "0.13", default-features = false }
-tonic = { version = "0.13", default-features = false }
+tonic-prost-build = { version = "0.14", default-features = false }
+tonic-prost = { version = "0.14", default-features = false }
+tonic = { version = "0.14", default-features = false }
 arc-swap = { version = "1.7.1", default-features = false }
 async-stream = { version = "0.3.5", default-features = false }
 futures = { version = "0.3.30", default-features = false }
-prost-types = { version = "0.13", default-features = false }
+prost-types = { version = "0.14", default-features = false }
 serde_json = { version = "1.0.138", default-features = false, features = [
   "std",
 ] }
 faster-hex = { version = "0.10", default-features = false }
-rustls-pemfile = { version = "2.2", default-features = false }
+rustls-pki-types = { version = "1.13", default-features = false, features = ["alloc"] }
 tokio-rustls = { version = "0.26.0", default-features = false, features = [
   "aws_lc_rs",
 ] }
 anyhow = { version = "1", default-features = false }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 bytesize = { version = "2", default-features = false, features = ["serde"] }
-criterion = { version = "0.6", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 dhat = { version = "0.3", default-features = false }
 average = { version = "0.16", default-features = false }
 loom = { version = "0.7", default-features = false }
@@ -155,7 +162,7 @@ smallvec = { version = "1.13", default-features = false, features = [
 ] }
 windows-sys = { version = "0.59", default-features = false }
 rustls-native-certs = { version = "0.8", default-features = false }
-hashbrown = { version = "0.15", default-features = false }
+hashbrown = { version = "0.16", default-features = false }
 quick_cache = { version = "0.6", default-features = false }
 crossbeam-queue = { version = "0.3", default-features = false, features = [
   "alloc",
@@ -163,9 +170,8 @@ crossbeam-queue = { version = "0.3", default-features = false, features = [
 float-cmp = { version = "0.10", default-features = false }
 tower-http = { version = "0.6", default-features = false }
 bollard = { version = "0.18", default-features = false }
-clap = { version = "4.5.26", default-features = false }
 reqwest = { version = "0.12.12", default-features = false }
-lading-payload = { git = "https://github.com/DataDog/lading", rev = "e68256aa3f6d395a864f4ba21b71e13b88c7e4b3" }
+lading-payload = { git = "https://github.com/DataDog/lading", tag = "v0.30.0" }
 serde_yaml = { version = "0.9", default-features = false }
 serde_with = { version = "3.12.0", default-features = false, features = [
   "macros",
@@ -197,18 +203,38 @@ ryu = { version = "1", default-features = false }
 colored = { version = "3", default-features = false }
 tracing-rolling-file = "0.1"
 tracing-appender = { version = "0.2", default-features = false }
+base64 = { version = "0.22.1", default-features = false }
+treediff = { version = "5", default-features = false }
+argh = { version = "0.1", default-features = false }
+rmp-serde = { version = "1.3", default-features = false }
+serde_bytes = { version = "0.11.19", default-features = false }
+num-traits = { version = "0.2", default-features = false }
+
+[patch.crates-io]
+# Forked version of `hyper-http-proxy` that removes an unused dependency on `rustls-native-certs`, which transitively depends
+# on a version of `rustls-pemfile` that is no longer maintained and triggers a hit when running `cargo deny`.
+hyper-http-proxy = { git = "https://github.com/tobz/hyper-http-proxy.git", branch = "main" }
+
+[profile.devel]
+inherits = "dev"
 
 [profile.release]
 debug = true
+lto = "thin"
+codegen-units = 8
 
 [profile.optimized-release]
 inherits = "release"
 lto = "fat"
 codegen-units = 1
-debug = true
 
 [workspace.lints.clippy]
 new_without_default = "allow"
 uninlined_format_args = "allow"
 map_entry = "allow"
 mutable_key_type = "allow"
+
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+  'cfg(system_allocator)',
+] }

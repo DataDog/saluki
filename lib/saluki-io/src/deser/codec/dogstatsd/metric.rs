@@ -9,6 +9,7 @@ use nom::{
 };
 use saluki_context::{origin::OriginTagCardinality, tags::RawTags};
 use saluki_core::data_model::event::metric::*;
+use tracing::warn;
 
 use super::{helpers::*, DogstatsdCodecConfiguration, NomParserError};
 
@@ -28,7 +29,7 @@ pub struct MetricPacket<'a> {
     pub values: MetricValues,
     pub num_points: u64,
     pub timestamp: Option<u64>,
-    pub container_id: Option<&'a str>,
+    pub local_data: Option<&'a str>,
     pub external_data: Option<&'a str>,
     pub cardinality: Option<OriginTagCardinality>,
 }
@@ -54,7 +55,7 @@ pub fn parse_dogstatsd_metric<'a>(
     // if it's any of the protocol extensions we know of.
     let mut maybe_sample_rate = None;
     let mut maybe_tags = None;
-    let mut maybe_container_id = None;
+    let mut maybe_local_data = None;
     let mut maybe_timestamp = None;
     let mut maybe_external_data = None;
     let mut maybe_cardinality = None;
@@ -72,7 +73,9 @@ pub fn parse_dogstatsd_metric<'a>(
                 // point downstream to calculate the true metric value.
                 b'@' => {
                     let (_, sample_rate) =
-                        all_consuming(preceded(tag("@"), map_res(double, SampleRate::try_from))).parse(chunk)?;
+                        all_consuming(preceded(tag("@"), map_res(double, sample_rate(metric_name, config))))
+                            .parse(chunk)?;
+
                     maybe_sample_rate = Some(sample_rate);
                 }
                 // Tags: additional tags to be added to the metric.
@@ -80,10 +83,10 @@ pub fn parse_dogstatsd_metric<'a>(
                     let (_, tags) = all_consuming(preceded(tag("#"), tags(config))).parse(chunk)?;
                     maybe_tags = Some(tags);
                 }
-                // Container ID: client-provided container ID for the container that this metric originated from.
+                // Local Data: client-provided data used for resolving the entity ID that this metric originated from.
                 b'c' if chunk.len() > 1 && chunk[1] == b':' => {
-                    let (_, container_id) = all_consuming(preceded(tag("c:"), container_id)).parse(chunk)?;
-                    maybe_container_id = Some(container_id);
+                    let (_, local_data) = all_consuming(preceded(tag("c:"), local_data)).parse(chunk)?;
+                    maybe_local_data = Some(local_data);
                 }
                 // Timestamp: client-provided timestamp for the metric, relative to the Unix epoch, in seconds.
                 b'T' => {
@@ -137,7 +140,7 @@ pub fn parse_dogstatsd_metric<'a>(
             values: metric_values,
             num_points,
             timestamp: maybe_timestamp,
-            container_id: maybe_container_id,
+            local_data: maybe_local_data,
             external_data: maybe_external_data,
             cardinality: maybe_cardinality,
         },
@@ -154,6 +157,24 @@ fn permissive_metric_name(input: &[u8]) -> IResult<&[u8], &str> {
         unsafe { std::str::from_utf8_unchecked(b) }
     })
     .parse(input)
+}
+
+#[inline]
+fn sample_rate<'a>(
+    metric_name: &'a str, config: &'a DogstatsdCodecConfiguration,
+) -> impl Fn(f64) -> Result<SampleRate, &'static str> + 'a {
+    let minimum_sample_rate = config.minimum_sample_rate;
+
+    move |mut raw_sample_rate| {
+        if raw_sample_rate < minimum_sample_rate {
+            raw_sample_rate = minimum_sample_rate;
+            warn!(
+                "Sample rate for metric '{}' is below minimum of {}. Clamping to minimum.",
+                metric_name, minimum_sample_rate
+            );
+        }
+        SampleRate::try_from(raw_sample_rate)
+    }
 }
 
 #[inline]
@@ -357,11 +378,11 @@ mod tests {
     }
 
     #[test]
-    fn metric_container_id() {
+    fn metric_local_data() {
         let name = "my.counter";
         let value = 1.0;
-        let container_id = "abcdef123456";
-        let raw = format!("{}:{}|c|c:{}", name, value, container_id);
+        let local_data = "abcdef123456";
+        let raw = format!("{}:{}|c|c:{}", name, value, local_data);
         let expected = Metric::counter(name, value);
 
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
@@ -369,7 +390,7 @@ mod tests {
 
         let config = DogstatsdCodecConfiguration::default();
         let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
-        assert_eq!(packet.container_id, Some(container_id));
+        assert_eq!(packet.local_data, Some(local_data));
     }
 
     #[test]
@@ -423,7 +444,7 @@ mod tests {
         let value = 1.0;
         let sample_rate = 0.5;
         let tags = ["tag1", "tag2"];
-        let container_id = "abcdef123456";
+        let local_data = "abcdef123456";
         let external_data = "it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183";
         let cardinality = "orchestrator";
         let timestamp = 1234567890;
@@ -433,7 +454,7 @@ mod tests {
             value,
             tags.join(","),
             sample_rate,
-            container_id,
+            local_data,
             external_data,
             cardinality,
             timestamp
@@ -458,7 +479,7 @@ mod tests {
 
         let config = DogstatsdCodecConfiguration::default();
         let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
-        assert_eq!(packet.container_id, Some(container_id));
+        assert_eq!(packet.local_data, Some(local_data));
         assert_eq!(packet.external_data, Some(external_data));
         assert_eq!(packet.cardinality, Some(OriginTagCardinality::Orchestrator));
     }
@@ -568,6 +589,47 @@ mod tests {
         }
     }
 
+    #[test]
+    fn minimum_sample_rate() {
+        // Sample rate of 0.01 should lead to a count of 100 when handling a single value.
+        let minimum_sample_rate = SampleRate::try_from(0.01).unwrap();
+        let config = DogstatsdCodecConfiguration::default().with_minimum_sample_rate(minimum_sample_rate.rate());
+
+        let cases = [
+            // Worst case scenario: sample rate of zero, or "infinitely sampled".
+            "test:1|d|@0".to_string(),
+            // Bunch of values with different sample rates all below the minimum sample rate.
+            "test:1|d|@0.001".to_string(),
+            "test:1|d|@0.0005".to_string(),
+            "test:1|d|@0.00001".to_string(),
+            // Control: use the minimum sample rate.
+            format!("test:1|d|@{}", minimum_sample_rate.rate()),
+            // Bunch of values with _greater_ sampling rates than the minimum.
+            "test:1|d|@0.1".to_string(),
+            "test:1|d|@0.5".to_string(),
+            "test:1|d".to_string(),
+        ];
+
+        for input in cases {
+            let metric = parse_dsd_metric_with_conf(input.as_bytes(), &config)
+                .expect("Should not fail to parse metric.")
+                .expect("Metric should be present.");
+
+            let sketch = match metric.values() {
+                MetricValues::Distribution(points) => {
+                    points
+                        .into_iter()
+                        .next()
+                        .expect("Should have at least one sketch point.")
+                        .1
+                }
+                _ => panic!("Unexpected metric type."),
+            };
+
+            assert!(sketch.count() as u64 <= minimum_sample_rate.weight());
+        }
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(1000))]
         #[test]
@@ -578,8 +640,6 @@ mod tests {
             // As this is a property test, it is _not_ exhaustive but generally should catch simple issues that manage
             // to escape the unit tests. This is left here for the sole reason of incrementally running this every time
             // all tests are run, in the hopes of potentially catching an issue that might have been missed.
-            //
-            // TODO: True exhaustive-style testing a la afl/honggfuzz.
             let _ = parse_dsd_metric(&input);
         }
     }

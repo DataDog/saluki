@@ -1,7 +1,6 @@
 #!/usr/bin/execlineb -S1
 
-# Check if Agent Data Plane was enabled in the first place.
-if { s6-test -f "/etc/datadog-agent/adp/enabled" }
+# Disable the service if it exits with code 0, else wait 2 seconds before restarting it
 
 ifthenelse
     { s6-test ${1} -eq 0 }

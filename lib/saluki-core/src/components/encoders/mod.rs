@@ -23,7 +23,7 @@ pub enum ProcessResult {
     FlushRequired(Event),
 }
 
-/// A encoder.
+/// An encoder.
 ///
 /// Encoders are the bridge between forwarders and the rest of the topology. They are responsible for encoding
 /// telemetry events into output payloads that can then be forwarded. Most encoders are specific to a particular system
@@ -38,7 +38,7 @@ pub trait Encoder {
     /// Runs the encoder.
     ///
     /// The encoder context provides access primarily to the event stream, used to receive events sent to the encoder,
-    /// and the forwarder, used to send payloads to the downstream forwarder in the topology, as well as other
+    /// and the dispatcher, used to send payloads to the downstream forwarder in the topology, as well as other
     /// information such as the component context.
     ///
     /// Encoders are expected to run indefinitely until their event stream is terminated, or an error occurs.

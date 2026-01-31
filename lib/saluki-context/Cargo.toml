@@ -9,7 +9,6 @@ repository = { workspace = true }
 workspace = true
 
 [dependencies]
-crossbeam-queue = { workspace = true, features = ["alloc"] }
 indexmap = { workspace = true }
 memchr = { workspace = true }
 metrics = { workspace = true }

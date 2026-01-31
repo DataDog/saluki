@@ -263,16 +263,16 @@ impl APIHandler for DogStatsDAPIHandler {
 }
 
 impl DogStatsDStatisticsConfiguration {
-    /// Creates a new 'DogStatsDStatisticsConfiguration' from the given configuration.
-    pub fn from_configuration() -> Result<Self, GenericError> {
+    /// Creates a new `DogStatsDStatisticsConfiguration`.
+    pub fn new() -> Self {
         let (tx, rx) = mpsc::channel(4);
         let state = DogStatsDAPIHandlerState { tx: Arc::new(tx) };
         let handler = DogStatsDAPIHandler { state };
 
-        Ok(Self {
+        Self {
             api_handler: handler,
             rx: Arc::new(Mutex::new(rx)),
-        })
+        }
     }
 
     /// Returns an API handler for DogStatsD API.

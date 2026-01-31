@@ -4,52 +4,51 @@
 mkfile_path := $(abspath $(lastword $(MAKEFILE_LIST)))
 mkfile_dir := $(dir $(mkfile_path))
 
-export TARGET_ARCH ?= $(shell uname -m | sed s/x86_64/amd64/ | sed s/aarch64/arm64/)
-export TARGET_TRIPLE ?= $(shell command -v rustc 1>/dev/null && rustc -vV | sed -n 's|host: ||p')
+# High-level settings that ultimately get passed down to build-specific targets and other spots.
+export TARGET_ARCH := $(shell uname -m | sed s/x86_64/amd64/ | sed s/aarch64/arm64/)
+export BUILD_TARGET := $(or $(BUILD_TARGET),default)
+export APP_GIT_HASH := $(or $(CI_COMMIT_SHA),$(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git))
+export APP_BUILD_TIME := $(or $(CI_PIPELINE_CREATED_AT),0000-00-00T00:00:00-00:00)
 
-# High-level settings that ultimately get passed down to build-specific targets.
-export APP_FULL_NAME ?= Agent Data Plane
-export APP_SHORT_NAME ?= data-plane
-export APP_IDENTIFIER ?= adp
-export APP_GIT_HASH ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git)
-export APP_VERSION ?= $(shell cat bin/agent-data-plane/Cargo.toml | grep -E "^version = \"" | head -n 1 | cut -d '"' -f 2)
 
-# Override autoinstalling of tools. (Eg `cargo install`)
-export AUTOINSTALL ?= true
-# Override the container tool. Tries docker first and then tries podman.
-export CONTAINER_TOOL ?= auto
-ifeq ($(CONTAINER_TOOL),auto)
-	ifeq ($(shell docker version >/dev/null 2>&1 && echo docker), docker)
-		override CONTAINER_TOOL = docker
-	else ifeq ($(shell podman version >/dev/null 2>&1 && echo podman), podman)
-		override CONTAINER_TOOL = podman
-	else
-		override CONTAINER_TOOL = unknown
-	endif
-endif
+# ADP-specific settings used during builds.
+export ADP_APP_FULL_NAME := Agent Data Plane
+export ADP_APP_SHORT_NAME := data-plane
+export ADP_APP_IDENTIFIER := adp
+export ADP_APP_GIT_HASH := $(APP_GIT_HASH)
+export ADP_APP_VERSION_AUTO := $(shell cat bin/agent-data-plane/Cargo.toml | grep -E "^version = \"" | head -n 1 | cut -d '"' -f 2)
+export ADP_APP_VERSION := $(or $(ADP_APP_VERSION),$(ADP_APP_VERSION_AUTO))
+export ADP_APP_BUILD_TIME := $(APP_BUILD_TIME)
 
-# Basic settings for base build images. These are varied between local development and CI.
-export RUST_VERSION ?= $(shell grep channel rust-toolchain.toml | cut -d '"' -f 2)
-
+# General build settings used for tooling, etc.
 export GO_BUILD_IMAGE ?= golang:1.23-bullseye
 export GO_APP_IMAGE ?= ubuntu:24.04
-export CARGO_BIN_DIR ?= $(shell echo "${HOME}/.cargo/bin")
-export GIT_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git)
 
-# Specific versions of various tools we use.
+# Tool configuration.
+export AUTOINSTALL ?= true
+export CARGO_BIN_DIR := $(shell echo "${HOME}/.cargo/bin")
+export CARGO_BINSTALL_STRATEGIES ?= crate-meta-data,compile
+ifeq ($(CI),true)
+	override CARGO_BINSTALL_STRATEGIES = compile
+endif
+export CARGO_TOOL_VERSION_cargo-binstall ?= 1.16.7
 export CARGO_TOOL_VERSION_dd-rust-license-tool ?= 1.0.3
-export CARGO_TOOL_VERSION_cargo-deny ?= 0.18.3
+export CARGO_TOOL_VERSION_cargo-deny ?= 0.18.9
 export CARGO_TOOL_VERSION_cargo-hack ?= 0.6.30
 export CARGO_TOOL_VERSION_cargo-nextest ?= 0.9.99
 export CARGO_TOOL_VERSION_cargo-autoinherit ?= 0.1.5
 export CARGO_TOOL_VERSION_cargo-sort ?= 1.0.9
 export CARGO_TOOL_VERSION_dummyhttp ?= 1.1.0
-export DDPROF_VERSION ?= 0.19.0
+export CARGO_TOOL_VERSION_cargo-machete ?= 0.9.1
+export CARGO_TOOL_VERSION_rustfilt ?= 0.2.1
+export DDPROF_VERSION ?= 0.20.0
 export LADING_VERSION ?= 0.28.0
 
 # Version of source repositories (Git tag) for vendored Protocol Buffers definitions.
-export PROTOBUF_SRC_REPO_DD_AGENT ?= 7.69.4
+export PROTOBUF_SRC_REPO_DD_AGENT ?= 7.73.x
 export PROTOBUF_SRC_REPO_AGENT_PAYLOAD ?= v5.0.164
+export PROTOBUF_SRC_REPO_CONTAINERD ?= v2.2.0
+export PROTOBUF_SRC_REPO_SKETCHES_GO ?= v1.4.7
 
 FMT_YELLOW = \033[0;33m
 FMT_BLUE = \033[0;36m
@@ -84,92 +83,106 @@ help:
 
 ##@ Building
 
+.PHONY: build-adp-base
+build-adp-base: check-rust-build-tools
+build-adp-base:
+	@echo "[*] Building ADP locally (profile: $(BUILD_PROFILE))"
+	@APP_FULL_NAME="$(ADP_APP_FULL_NAME)" \
+	APP_SHORT_NAME="$(ADP_APP_SHORT_NAME)" \
+	APP_IDENTIFIER="$(ADP_APP_IDENTIFIER)" \
+	APP_GIT_HASH="$(ADP_APP_GIT_HASH)" \
+	APP_VERSION="$(ADP_APP_VERSION)" \
+	APP_BUILD_DATE="$(ADP_APP_BUILD_DATE)" \
+	cargo build --profile $(BUILD_PROFILE) --package agent-data-plane
+
 .PHONY: build-adp
-build-adp: check-rust-build-tools
+build-adp: override BUILD_PROFILE=devel
+build-adp: build-adp-base
 build-adp: ## Builds the ADP binary in debug mode
-	@echo "[*] Building ADP locally..."
-	@cargo build --profile dev --package agent-data-plane
 
 .PHONY: build-adp-release
-build-adp-release: check-rust-build-tools
+build-adp-release: override BUILD_PROFILE=release
+build-adp-release: build-adp-base
 build-adp-release: ## Builds the ADP binary in release mode
-	@echo "[*] Building ADP locally..."
-	@cargo build --profile release --package agent-data-plane
 
-.PHONY: build-adp-and-checks
-build-adp-and-checks: check-rust-build-tools
-build-adp-and-checks: ## Builds the ADP binary with python in debug mode
-	@echo "[*] Building ADP with Checks locally..."
-	@cargo build --profile dev --package agent-data-plane --features python-checks
+.PHONY: build-adp-system-alloc
+build-adp-system-alloc: ## Builds the ADP binary in debug mode with the system allocator (useful for memory profiling)
+	@$(MAKE) --no-print-directory build-adp-base BUILD_PROFILE=devel RUSTFLAGS="--cfg tokio_unstable --cfg system_allocator"
 
-.PHONY: build-adp-and-checks-release
-build-adp-and-checks-release: check-rust-build-tools
-build-adp-and-checks-release: ## Builds the ADP binary with python in release mode
-	@echo "[*] Building ADP with Checks locally..."
-	@cargo build --profile release --package agent-data-plane --features python-checks
+.PHONY: build-adp-release-system-alloc
+build-adp-release-system-alloc: ## Builds the ADP binary in release mode with the system allocator (useful for memory profiling)
+	@$(MAKE) --no-print-directory build-adp-base BUILD_PROFILE=release RUSTFLAGS="--cfg tokio_unstable --cfg system_allocator"
+
+.PHONY: build-adp-image-base
+build-adp-image-base:
+	@echo "[*] Building ADP image... (target: ${BUILD_TARGET}, profile: ${BUILD_PROFILE}, features: ${BUILD_FEATURES})"
+	@docker build \
+		--tag saluki-images/agent-data-plane:$(IMAGE_TAG)-$(BUILD_PROFILE) \
+		--tag local.dev/saluki-images/agent-data-plane:$(IMAGE_TAG)-$(BUILD_PROFILE) \
+		--build-arg "BUILD_TARGET=$(BUILD_TARGET)" \
+		--build-arg "BUILD_PROFILE=$(BUILD_PROFILE)" \
+		--build-arg "BUILD_FEATURES=$(BUILD_FEATURES)" \
+		--build-arg "APP_FULL_NAME=$(ADP_APP_FULL_NAME)" \
+		--build-arg "APP_SHORT_NAME=$(ADP_APP_SHORT_NAME)" \
+		--build-arg "APP_IDENTIFIER=$(ADP_APP_IDENTIFIER)" \
+		--build-arg "APP_VERSION=$(ADP_APP_VERSION)" \
+		--build-arg "APP_GIT_HASH=$(ADP_APP_GIT_HASH)" \
+		--file ./docker/Dockerfile.agent-data-plane \
+		.
 
 .PHONY: build-adp-image
-build-adp-image: ## Builds the ADP container image in release mode ('latest' tag)
-	@echo "[*] Building ADP image..."
-	@$(CONTAINER_TOOL) build \
-		--tag saluki-images/agent-data-plane:latest \
-		--tag local.dev/saluki-images/agent-data-plane:testing \
-		--build-arg "RUST_VERSION=$(RUST_VERSION)" \
-		--build-arg "APP_FULL_NAME=$(APP_FULL_NAME)" \
-		--build-arg "APP_SHORT_NAME=$(APP_SHORT_NAME)" \
-		--build-arg "APP_IDENTIFIER=$(APP_IDENTIFIER)" \
-		--build-arg "APP_VERSION=$(APP_VERSION)" \
-		--build-arg "APP_GIT_HASH=$(APP_GIT_HASH)" \
-		--file ./docker/Dockerfile.agent-data-plane \
-		.
+build-adp-image: override BUILD_PROFILE = devel
+build-adp-image: override BUILD_FEATURES = default
+build-adp-image: override IMAGE_TAG = testing
+build-adp-image: build-adp-image-base
+build-adp-image: ## Builds the ADP container image in debug mode
+
+.PHONY: build-adp-image-release
+build-adp-image-release: override BUILD_PROFILE = release
+build-adp-image-release: override BUILD_FEATURES = default
+build-adp-image-release: override IMAGE_TAG = testing
+build-adp-image-release: build-adp-image-base
+build-adp-image-release: ## Builds the ADP container image in release mode
 
 .PHONY: build-adp-image-fips
-build-adp-image-fips: ## Builds the ADP container image in release mode ('latest' tag, FIPS enabled)
-	@echo "[*] Building ADP image..."
-	@$(CONTAINER_TOOL) build \
-		--tag saluki-images/agent-data-plane:latest-fips \
-		--tag local.dev/saluki-images/agent-data-plane:testing-fips \
-		--build-arg "RUST_VERSION=$(RUST_VERSION)" \
-		--build-arg "APP_FULL_NAME=$(APP_FULL_NAME)" \
-		--build-arg "APP_SHORT_NAME=$(APP_SHORT_NAME)" \
-		--build-arg "APP_IDENTIFIER=$(APP_IDENTIFIER)" \
-		--build-arg "APP_VERSION=$(APP_VERSION)" \
-		--build-arg "APP_GIT_HASH=$(APP_GIT_HASH)" \
-		--build-arg "BUILD_FEATURES=fips" \
-		--file ./docker/Dockerfile.agent-data-plane \
-		.
+build-adp-image-fips: override BUILD_PROFILE = devel
+build-adp-image-fips: override BUILD_FEATURES = fips
+build-adp-image-fips: override IMAGE_TAG = testing-fips
+build-adp-image-fips: build-adp-image-base
+build-adp-image-fips: ## Builds the ADP container image in debug mode (FIPS enabled)
 
-.PHONY: build-adp-checks-image
-build-adp-checks-image: ## Builds the ADP + Checks container image in release mode ('latest' tag)
-	@echo "[*] Building ADP image..."
-	@$(CONTAINER_TOOL) build \
-		--tag saluki-images/agent-data-plane:latest \
-		--tag local.dev/saluki-images/agent-data-plane-checks:testing \
-		--build-arg "RUST_VERSION=$(RUST_VERSION)" \
-		--build-arg "APP_FULL_NAME=$(APP_FULL_NAME)" \
-		--build-arg "APP_SHORT_NAME=$(APP_SHORT_NAME)" \
-		--build-arg "APP_IDENTIFIER=$(APP_IDENTIFIER)" \
-		--build-arg "APP_VERSION=$(APP_VERSION)" \
-		--build-arg "APP_GIT_HASH=$(APP_GIT_HASH)" \
-		--build-arg "BUILD_FEATURES=python-checks" \
-		--build-arg "BUILDER_BASE=builder-python" \
-		--file ./docker/Dockerfile.agent-data-plane \
-		.
+.PHONY: build-adp-image-fips-release
+build-adp-image-fips-release: override BUILD_PROFILE = release
+build-adp-image-fips-release: override BUILD_FEATURES = fips
+build-adp-image-fips-release: override IMAGE_TAG = testing-fips
+build-adp-image-fips-release: build-adp-image-base
+build-adp-image-fips-release: ## Builds the ADP container image in release mode (FIPS enabled)
 
 .PHONY: build-datadog-agent-image
-build-datadog-agent-image: build-adp-image ## Builds a converged Datadog Agent container image containing ADP ('latest' tag)
-	@echo "[*] Building converged Datadog Agent image..."
-	@$(CONTAINER_TOOL) build \
-		--tag saluki-images/datadog-agent:latest \
-		--tag local.dev/saluki-images/datadog-agent:testing \
+build-datadog-agent-image: build-adp-image ## Builds the converged Datadog Agent/ADP container image (debug mode)
+	@echo "[*] Building converged Datadog Agent image... (debug mode)"
+	@docker build \
+		--tag saluki-images/datadog-agent:testing-devel \
+		--tag local.dev/saluki-images/datadog-agent:testing-devel \
+		--build-arg ADP_IMAGE=saluki-images/agent-data-plane:testing-devel \
+		--file ./docker/Dockerfile.datadog-agent \
+		.
+
+.PHONY: build-datadog-agent-image-release
+build-datadog-agent-image-release: build-adp-image-release ## Builds the converged Datadog Agent/ADP container image (release mode)
+	@echo "[*] Building converged Datadog Agent image... (release mode)"
+	@docker build \
+		--tag saluki-images/datadog-agent:testing-release \
+		--tag local.dev/saluki-images/datadog-agent:testing-release \
+		--build-arg ADP_IMAGE=saluki-images/agent-data-plane:testing-release \
 		--file ./docker/Dockerfile.datadog-agent \
 		.
 
 .PHONY: build-gen-statsd-image
 build-gen-statsd-image: ## Builds the gen-statsd container image ('latest' tag)
 	@echo "[*] Building gen-statsd image..."
-	@$(CONTAINER_TOOL) build \
-		--tag saluki-images/gen-statsd:latest \
+	@docker build \
+		--tag saluki-images/gen-statsd:latest-release \
 		--tag local.dev/saluki-images/gen-statsd:testing \
 		--build-arg BUILD_IMAGE=$(GO_BUILD_IMAGE) \
 		--build-arg APP_IMAGE=$(GO_APP_IMAGE) \
@@ -180,21 +193,21 @@ build-gen-statsd-image: ## Builds the gen-statsd container image ('latest' tag)
 build-ground-truth: check-rust-build-tools
 build-ground-truth: ## Builds the ground-truth binary in debug mode
 	@echo "[*] Building ground-truth locally..."
-	@cargo build --profile dev --package ground-truth
+	@cargo build --profile release --package ground-truth
 
-.PHONY: build-metrics-intake-image
-build-metrics-intake-image: ## Builds the metrics-intake container image in release mode ('latest' tag)
-	@echo "[*] Building metrics-intake image..."
-	@$(CONTAINER_TOOL) build \
-		--tag saluki-images/metrics-intake:latest \
-		--tag local.dev/saluki-images/metrics-intake:testing \
-		--file ./docker/Dockerfile.metrics-intake \
+.PHONY: build-datadog-intake-image
+build-datadog-intake-image: ## Builds the datadog-intake container image in release mode ('latest' tag)
+	@echo "[*] Building datadog-intake image..."
+	@docker build \
+		--tag saluki-images/datadog-intake:latest \
+		--tag local.dev/saluki-images/datadog-intake:testing \
+		--file ./docker/Dockerfile.datadog-intake \
 		.
 
 .PHONY: build-millstone-image
 build-millstone-image: ## Builds the millstone container image in release mode ('latest' tag)
 	@echo "[*] Building millstone image..."
-	@$(CONTAINER_TOOL) build \
+	@docker build \
 		--tag saluki-images/millstone:latest \
 		--tag local.dev/saluki-images/millstone:testing \
 		--file ./docker/Dockerfile.millstone \
@@ -212,7 +225,7 @@ endif
 	@git -C test/build/dd-agent-benchmarks pull origin
 	@cd test/build/dd-agent-benchmarks/docker/proxy-dumper && go mod vendor
 	@echo "[*] Building proxy-dumper image..."
-	@$(CONTAINER_TOOL) build \
+	@docker build \
 		--tag saluki-images/proxy-dumper:latest \
 		--tag local.dev/saluki-images/proxy-dumper:testing \
 		--build-arg BUILD_IMAGE=$(GO_BUILD_IMAGE) \
@@ -236,8 +249,16 @@ endif
 ifeq ($(shell command -v protoc >/dev/null || echo not-found), not-found)
 	$(error "Please install protoc: https://protobuf.dev/installation/")
 endif
+ifeq ($(shell command -v cargo-binstall >/dev/null || echo not-found), not-found)
+	@echo "[*] Installing cargo-binstall@$(CARGO_TOOL_VERSION_cargo-binstall)..."
+	@cargo install cargo-binstall@$(CARGO_TOOL_VERSION_cargo-binstall)
+endif
 
 ##@ Running
+
+.PHONY: create-dummy-agent-config
+create-dummy-agent-config:
+	@echo "{}" > /tmp/adp-empty-config.yaml
 
 .PHONY: run-adp
 run-adp: build-adp
@@ -249,10 +270,11 @@ ifeq ($(shell test -n "$(DD_API_KEY)" || echo not-found), not-found)
 	$(error "API key not set. Please set the DD_API_KEY environment variable.")
 endif
 	@echo "[*] Running ADP..."
-	@DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
-	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
+	@DD_DATA_PLANE_ENABLED=true DD_DATA_PLANE_DOGSTATSD_ENABLED=true \
+	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
+	DD_DATA_PLANE_TELEMETRY_ENABLED=true DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	DD_AUTH_TOKEN_FILE_PATH=/etc/datadog-agent/auth_token \
-	target/debug/agent-data-plane run
+	target/devel/agent-data-plane run
 
 .PHONY: run-adp-release
 run-adp-release: build-adp-release
@@ -264,53 +286,31 @@ ifeq ($(shell test -n "$(DD_API_KEY)" || echo not-found), not-found)
 	$(error "API key not set. Please set the DD_API_KEY environment variable.")
 endif
 	@echo "[*] Running ADP..."
-	@DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
-	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
+	@DD_DATA_PLANE_ENABLED=true DD_DATA_PLANE_DOGSTATSD_ENABLED=true \
+	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
+	DD_DATA_PLANE_TELEMETRY_ENABLED=true DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	DD_AUTH_TOKEN_FILE_PATH=/etc/datadog-agent/auth_token \
 	target/release/agent-data-plane run
 
 .PHONY: run-adp-standalone
-run-adp-standalone: build-adp
+run-adp-standalone: build-adp create-dummy-agent-config
 run-adp-standalone: ## Runs ADP locally in standalone mode (debug)
 	@echo "[*] Running ADP..."
-	@DD_ADP_STANDALONE_MODE=true \
-	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
+	@DD_DATA_PLANE_STANDALONE_MODE=true DD_DATA_PLANE_DOGSTATSD_ENABLED=true \
+ 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
-	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
-	target/debug/agent-data-plane run
+	DD_DATA_PLANE_TELEMETRY_ENABLED=true DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102 \
+	target/devel/agent-data-plane --config /tmp/adp-empty-config.yaml run
 
 .PHONY: run-adp-standalone-release
-run-adp-standalone-release: build-adp-release
+run-adp-standalone-release: build-adp-release create-dummy-agent-config
 run-adp-standalone-release: ## Runs ADP locally in standalone mode (release)
 	@echo "[*] Running ADP..."
-	@DD_ADP_STANDALONE_MODE=true \
+	@DD_DATA_PLANE_STANDALONE_MODE=true DD_DATA_PLANE_DOGSTATSD_ENABLED=true \
 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
-	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
-	target/debug/agent-data-plane run
-
-.PHONY: run-adp-with-checks
-run-adp-with-checks: build-adp-and-checks
-run-adp-with-checks: ## Runs ADP + Checks locally (debug)
-	@echo "[*] Running ADP and checks..."
-	@DD_ADP_STANDALONE_MODE=false \
-	DD_AUTH_TOKEN_FILE_PATH=../datadog-agent/bin/agent/dist/auth_token \
-	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
-	DD_CHECKS_CONFIG_DIR=./dist/conf.d \
-	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
-	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
-	target/debug/agent-data-plane run
-
-.PHONY: run-adp-with-checks-standalone
-run-adp-with-checks-standalone: build-adp-and-checks
-run-adp-with-checks-standalone: ## Runs ADP + Checks locally in standalone mode (debug)
-	@echo "[*] Running ADP and checks..."
-	@DD_ADP_STANDALONE_MODE=true \
-	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=check-agent-standalone \
-	DD_CHECKS_CONFIG_DIR=./dist/conf.d \
-	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
-	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
-	target/debug/agent-data-plane run
+	DD_DATA_PLANE_TELEMETRY_ENABLED=true DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102 \
+	target/release/agent-data-plane --config /tmp/adp-empty-config.yaml run
 
 .PHONY: run-dsd-basic-udp
 run-dsd-basic-udp: build-dsd-client ## Runs a basic set of metrics via the Dogstatsd client (UDP)
@@ -421,6 +421,12 @@ endif
 
 ##@ Checking
 
+.PHONY: check-lint-tools
+check-lint-tools:
+ifeq ($(shell command -v vale >/dev/null || echo not-found), not-found)
+	$(error "Please install Vale: https://vale.sh/docs/install")
+endif
+
 .PHONY: check-all
 check-all: ## Check everything
 check-all: check-fmt check-clippy check-features check-deny check-licenses
@@ -460,13 +466,29 @@ check-features: ## Checks that all packages with feature flags can be built with
 	jq -r "select(.features | del(.default) | length > 0) | .name" | \
 	xargs -I {} -- cargo hack --feature-powerset --package {} check --tests --quiet
 
+.PHONY: check-unused-deps
+check-unused-deps: check-rust-build-tools cargo-install-cargo-machete
+check-unused-deps: ## Checks for any imported dependencies that are not used in code
+	@echo "[*] Checking for unused dependencies..."
+	@cargo machete
+
+.PHONY: check-docs
+check-docs: check-lint-tools
+check-docs: ## Checks prose/code documentation against our style guide
+	@vale docs lib bin
+
+.PHONY: sync-docs-config
+sync-docs-config: check-lint-tools
+sync-docs-config: ## Synchronizes the Vale configuration, updating configured style packages
+	@vale sync
+
 ##@ Testing
 
 .PHONY: test
 test: check-rust-build-tools cargo-install-cargo-nextest
 test: ## Runs all unit tests
 	@echo "[*] Running unit tests..."
-	cargo nextest run --features python-checks --lib -E 'not test(/property_test_*/)'
+	cargo nextest run --lib -E 'not test(/property_test_*/)'
 
 .PHONY: test-property
 test-property: check-rust-build-tools cargo-install-cargo-nextest
@@ -478,7 +500,7 @@ test-property: ## Runs all property tests
 test-docs: check-rust-build-tools
 test-docs: ## Runs all doctests
 	@echo "[*] Running doctests..."
-	cargo test --workspace --exclude datadog-protos --doc
+	cargo test --workspace --exclude containerd-protos --exclude datadog-protos --exclude otlp-protos --doc
 
 .PHONY: test-miri
 test-miri: check-rust-build-tools ensure-rust-miri
@@ -497,39 +519,55 @@ test-all: ## Test everything
 test-all: test test-property test-docs test-miri test-loom
 
 .PHONY: test-correctness
-test-correctness: build-ground-truth
-test-correctness: ## Runs the metrics correctness (ground-truth) suite
-	@echo "[*] Running correctness suite..."
-	@echo "[*] Running 'no-origin-detection' test case..."
-	@target/debug/ground-truth \
-		--millstone-image saluki-images/millstone:latest \
-		--millstone-config-path $(shell pwd)/test/correctness/millstone.yaml \
-		--metrics-intake-image saluki-images/metrics-intake:latest \
-		--metrics-intake-config-path $(shell pwd)/test/correctness/metrics-intake.yaml \
-		--dsd-image docker.io/datadog/dogstatsd:7.68.3 \
-		--dsd-config-path $(shell pwd)/test/correctness/datadog-no-origin-detection.yaml \
-		--adp-image saluki-images/agent-data-plane:latest \
-		--adp-config-path $(shell pwd)/test/correctness/datadog-no-origin-detection.yaml
+test-correctness: ## Runs the complete correctness suite
+test-correctness: test-correctness-dsd-plain test-correctness-dsd-origin-detection test-correctness-otlp-metrics test-correctness-otlp-traces
 
-.PHONY: test-correctness-origin-detection
-test-correctness-origin-detection: build-ground-truth
-test-correctness-origin-detection: ## Runs the metrics correctness (ground-truth) suite (origin detection)
-	@echo "[*] Running correctness suite..."
-	@echo "[*] Running 'origin-detection' test case..."
-	@target/debug/ground-truth \
-		--millstone-image saluki-images/millstone:latest \
-		--millstone-config-path $(shell pwd)/test/correctness/millstone.yaml \
-		--metrics-intake-image saluki-images/metrics-intake:latest \
-		--metrics-intake-config-path $(shell pwd)/test/correctness/metrics-intake.yaml \
-		--dsd-image saluki-images/datadog-agent:latest \
-		--dsd-entrypoint /bin/entrypoint.sh \
-		--dsd-command /init \
-		--dsd-config-path $(shell pwd)/test/correctness/datadog-origin-detection.yaml \
-		--adp-image saluki-images/datadog-agent:latest \
-		--adp-command /init \
-		--adp-config-path $(shell pwd)/test/correctness/datadog-origin-detection.yaml \
-		--adp-env-arg DD_ADP_ENABLED=true \
-		--adp-env-arg DD_AGGREGATE_CONTEXT_LIMIT=500000
+.PHONY: test-correctness-dsd-plain
+test-correctness-dsd-plain: build-ground-truth
+test-correctness-dsd-plain: ## Runs the 'dsd-plain' correctness test case
+	@echo "[*] Running 'dsd-plain' correctness test case..."
+	@target/release/ground-truth $(shell pwd)/test/correctness/dsd-plain/config.yaml
+
+.PHONY: test-correctness-dsd-origin-detection
+test-correctness-dsd-origin-detection: build-ground-truth
+test-correctness-dsd-origin-detection: ## Runs the 'dsd-origin-detection' correctness test case
+	@echo "[*] Running 'dsd-origin-detection' correctness test case..."
+	@target/release/ground-truth $(shell pwd)/test/correctness/dsd-origin-detection/config.yaml
+
+.PHONY: test-correctness-otlp-metrics
+test-correctness-otlp-metrics: build-ground-truth
+test-correctness-otlp-metrics: ## Runs the 'otlp-metrics' correctness test case
+	@echo "[*] Running 'otlp-metrics' correctness test case..."
+	@target/release/ground-truth $(shell pwd)/test/correctness/otlp-metrics/config.yaml
+
+.PHONY: test-correctness-otlp-traces
+test-correctness-otlp-traces: build-ground-truth
+test-correctness-otlp-traces: ## Runs the 'otlp-traces' correctness test case
+	@echo "[*] Running 'otlp-traces' correctness test case..."
+	@target/release/ground-truth $(shell pwd)/test/correctness/otlp-traces/config.yaml
+
+.PHONY: build-panoramic
+build-panoramic: check-rust-build-tools
+build-panoramic: ## Builds the panoramic binary (ADP integration test runner)
+	@echo "[*] Building panoramic..."
+	@cargo build --profile release --package panoramic
+
+.PHONY: test-integration
+test-integration: build-panoramic build-datadog-agent-image
+test-integration: ## Runs all ADP integration tests
+	@echo "[*] Running ADP integration tests..."
+	@target/release/panoramic run -d $(shell pwd)/test/integration/cases
+
+.PHONY: test-integration-quick
+test-integration-quick: build-panoramic
+test-integration-quick: ## Runs ADP integration tests (assumes images already built)
+	@echo "[*] Running ADP integration tests (quick mode)..."
+	@target/release/panoramic run -d $(shell pwd)/test/integration/cases
+
+.PHONY: list-integration-tests
+list-integration-tests: build-panoramic
+list-integration-tests: ## Lists available ADP integration tests
+	@target/release/panoramic list -d $(shell pwd)/test/integration/cases
 
 .PHONY: ensure-rust-miri
 ensure-rust-miri:
@@ -557,14 +595,24 @@ ifeq ($(shell test -S /var/run/datadog/apm.socket || echo not-found), not-found)
 endif
 	@echo "[*] Running ADP under ddprof (service: adp, environment: local, version: $(GIT_COMMIT))..."
 	@DD_API_KEY=api-key-adp-profiling DD_HOSTNAME=adp-profiling DD_DD_URL=http://127.0.0.1:9095 \
-	DD_ADP_STANDALONE_MODE=true \
+	DD_DATA_PLANE_STANDALONE_MODE=true \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_ADP_OTLP_ENABLED=true DD_OTLP_CONFIG="{}" \
-	DD_TELEMETRY_ENABLED=true DD_PROMETHEUS_LISTEN_ADDR=tcp://127.0.0.1:5102 \
+	DD_DATA_PLANE_TELEMETRY_ENABLED=true DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102 \
 	./test/ddprof/bin/ddprof --service adp --environment local --service-version $(GIT_COMMIT) \
 	--url unix:///var/run/datadog/apm.socket \
 	--inlined-functions true --timeline --upload-period 10 --preset cpu_live_heap \
 	target/release/agent-data-plane run
+
+.PHONY: generate-smp-experiments
+generate-smp-experiments: ## Generates SMP experiment configs from experiments.yaml
+	@echo "[*] Generating SMP experiment configurations..."
+	@python3 test/smp/regression/adp/generate_experiments.py
+
+.PHONY: check-smp-experiments
+check-smp-experiments: ## Verifies SMP experiment configs are up-to-date (CI)
+	@echo "[*] Checking SMP experiment configurations..."
+	@python3 test/smp/regression/adp/generate_experiments.py --check
 
 .PHONY: profile-run-smp-experiment
 profile-run-smp-experiment: ## Runs a specific SMP experiment for Saluki
@@ -572,7 +620,7 @@ ifeq ($(shell test -f test/smp/regression/adp/cases/$(EXPERIMENT)/lading/lading.
 	$(error "Lading configuration for '$(EXPERIMENT)' not found. (test/smp/regression/adp/cases/$(EXPERIMENT)/lading/lading.yaml) ")
 endif
 	@echo "[*] Running '$(EXPERIMENT)' experiment (15 minutes)..."
-	@$(CONTAINER_TOOL) run --rm --network host \
+	@docker run --rm --network host \
 	    --mount type=bind,source=./test/smp/regression/adp/cases/$(EXPERIMENT)/lading/lading.yaml,target=/tmp/lading.yaml \
 		--mount type=bind,source=/tmp/adp-dogstatsd-dgram.sock,target=/tmp/adp-dogstatsd-dgram.sock \
 		--mount type=bind,source=/tmp/adp-dogstatsd-stream.sock,target=/tmp/adp-dogstatsd-stream.sock \
@@ -596,15 +644,14 @@ fast-edit-test: ## Runs a lightweight format/lint/test pass
 
 ##@ CI
 
-.PHONY: emit-build-metadata
-emit-build-metadata: override APP_BUILD_TIME = $(shell date -u +'%Y-%m-%dT%H:%M:%SZ')
-emit-build-metadata: ## Emits build metadata shell variables suitable for use during image builds
-	@echo "APP_FULL_NAME=${APP_FULL_NAME}"
-	@echo "APP_SHORT_NAME=${APP_SHORT_NAME}"
-	@echo "APP_IDENTIFIER=${APP_IDENTIFIER}"
-	@echo "APP_GIT_HASH=${APP_GIT_HASH}"
-	@echo "APP_VERSION=${APP_VERSION}"
-	@echo "APP_BUILD_TIME=${APP_BUILD_TIME}"
+.PHONY: emit-adp-build-metadata
+emit-adp-build-metadata: ## Emits ADP build metadata shell variables suitable for use during image builds
+	@echo "APP_FULL_NAME=${ADP_APP_FULL_NAME}"
+	@echo "APP_SHORT_NAME=${ADP_APP_SHORT_NAME}"
+	@echo "APP_IDENTIFIER=${ADP_APP_IDENTIFIER}"
+	@echo "APP_GIT_HASH=${ADP_APP_GIT_HASH}"
+	@echo "APP_VERSION=${ADP_APP_VERSION}"
+	@echo "APP_BUILD_TIME=${ADP_APP_BUILD_TIME}"
 
 ##@ Docs
 
@@ -625,7 +672,11 @@ run-docs: ## Runs a local development server for documentation
 
 .PHONY: update-protos
 update-protos: ## Updates all vendored Protocol Buffers definitions from their source repositories
-	@DD_AGENT_GIT_TAG=$(PROTOBUF_SRC_REPO_DD_AGENT) AGENT_PAYLOAD_GIT_TAG=$(PROTOBUF_SRC_REPO_AGENT_PAYLOAD) ./tooling/update-protos.sh
+	@DD_AGENT_GIT_TAG=$(PROTOBUF_SRC_REPO_DD_AGENT) \
+	AGENT_PAYLOAD_GIT_TAG=$(PROTOBUF_SRC_REPO_AGENT_PAYLOAD) \
+	CONTAINERD_GIT_TAG=$(PROTOBUF_SRC_REPO_CONTAINERD) \
+	SKETCHES_GO_GIT_TAG=$(PROTOBUF_SRC_REPO_SKETCHES_GO) \
+	./tooling/update-protos.sh
 
 .PHONY: clean
 clean: check-rust-build-tools
@@ -641,9 +692,9 @@ clean-docker: ## Cleans up Docker build cache
 .PHONY: clean-airlock
 clean-airlock: ## Cleans up Airlock-related resources in Docker (used for correctness tests)
 	@echo "[*] Cleaning Airlock-related resources..."
-	@$(CONTAINER_TOOL) container ls --filter label=created_by=airlock -q | xargs -r $(CONTAINER_TOOL) container rm -f
-	@$(CONTAINER_TOOL) volume ls --filter label=created_by=airlock -q | xargs -r $(CONTAINER_TOOL) volume rm -f
-	@$(CONTAINER_TOOL) network ls --filter label=created_by=airlock -q | xargs -r $(CONTAINER_TOOL) network rm -f
+	@docker container ls --filter label=created_by=airlock -q | xargs -r docker container rm -f
+	@docker volume ls --filter label=created_by=airlock -q | xargs -r docker volume rm -f
+	@docker network ls --filter label=created_by=airlock -q | xargs -r docker network rm -f
 
 .PHONY: fmt
 fmt: check-rust-build-tools cargo-install-cargo-autoinherit cargo-install-cargo-sort
@@ -664,6 +715,7 @@ sync-licenses: ## Synchronizes the third-party license file with the current cra
 .PHONY: cargo-preinstall
 cargo-preinstall: cargo-install-dd-rust-license-tool cargo-install-cargo-deny cargo-install-cargo-hack
 cargo-preinstall: cargo-install-cargo-nextest cargo-install-cargo-autoinherit cargo-install-cargo-sort
+cargo-preinstall: cargo-install-dummyhttp cargo-install-cargo-machete cargo-install-rustfilt
 cargo-preinstall: ## Pre-installs all necessary Cargo tools (used for CI)
 	@echo "[*] Pre-installed all necessary Cargo tools!"
 
@@ -671,4 +723,4 @@ cargo-preinstall: ## Pre-installs all necessary Cargo tools (used for CI)
 cargo-install-%: override TOOL = $(@:cargo-install-%=%)
 cargo-install-%: override VERSIONED_TOOL = ${TOOL}@$(CARGO_TOOL_VERSION_$(TOOL))
 cargo-install-%: check-rust-build-tools
-	@$(if $(findstring true,$(AUTOINSTALL)),test -f ${CARGO_BIN_DIR}/${TOOL} || (echo "[*] Installing ${VERSIONED_TOOL}..." && cargo install ${VERSIONED_TOOL} --quiet),)
+	@$(if $(findstring true,$(AUTOINSTALL)),test -f ${CARGO_BIN_DIR}/${TOOL} || (echo "[*] Installing ${VERSIONED_TOOL}..." && cargo binstall --strategies ${CARGO_BINSTALL_STRATEGIES} ${VERSIONED_TOOL} --quiet -y),)

@@ -673,7 +673,7 @@ mod tests {
     use super::*;
     use crate::interning::InternedStringState;
 
-    fn create_interner(capacity: usize) -> GenericMapInterner {
+    pub(super) fn create_interner(capacity: usize) -> GenericMapInterner {
         assert!(capacity > 0, "capacity must be greater than zero");
         GenericMapInterner::new(NonZeroUsize::new(capacity).unwrap())
     }
@@ -694,7 +694,7 @@ mod tests {
         EntryHeader::len_for(s)
     }
 
-    fn get_reclaimed_entry_for_string(s: &InternedString) -> ReclaimedEntry {
+    pub(super) fn get_reclaimed_entry_for_string(s: &InternedString) -> ReclaimedEntry {
         let state = match &s.state {
             InternedStringState::GenericMap(state) => state,
             _ => panic!("unexpected string state"),
@@ -1023,8 +1023,17 @@ mod tests {
             assert_eq!(unique_strs.len(), interner.len());
         }
     }
+}
 
-    #[cfg(feature = "loom")]
+#[cfg(all(test, feature = "loom"))]
+mod loom_tests {
+    use std::ops::Deref;
+
+    use super::{
+        tests::{create_interner, get_reclaimed_entry_for_string},
+        *,
+    };
+
     #[test]
     fn concurrent_drop_and_intern() {
         fn reclaimed_entries(interner: &GenericMapInterner) -> Vec<ReclaimedEntry> {

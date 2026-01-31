@@ -1,6 +1,6 @@
 [package]
 name = "agent-data-plane"
-version = "0.1.24"
+version = "0.1.30"
 edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
@@ -14,38 +14,22 @@ fips = ["saluki-app/tls-fips"]
 python-checks = ["saluki-components/python-checks"]
 
 [dependencies]
-arc-swap = { workspace = true }
+argh = { workspace = true, features = ["help"] }
 async-trait = { workspace = true }
 bytesize = { workspace = true }
 chrono = { workspace = true }
-clap = { workspace = true, features = [
-  "std",
-  "color",
-  "derive",
-  "help",
-  "wrap_help",
-  "usage",
-  "error-context",
-  "suggestions",
-] }
 colored = { workspace = true }
 comfy-table = { workspace = true }
 datadog-protos = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
-hyper = { workspace = true }
 memory-accounting = { workspace = true }
-otlp-protos = { workspace = true }
 papaya = { workspace = true }
-prost-types = { workspace = true }
-rand = { workspace = true }
-rand_distr = { workspace = true }
 reqwest = { workspace = true, features = [
   "rustls-tls-native-roots-no-provider",
   "json",
 ] }
-saluki-api = { workspace = true }
 saluki-app = { workspace = true }
 saluki-common = { workspace = true }
 saluki-components = { workspace = true }
@@ -69,10 +53,9 @@ tokio = { workspace = true, features = [
 ] }
 tonic = { workspace = true }
 tracing = { workspace = true }
-uuid = { workspace = true, features = ["std", "v7"] }
+uuid = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-tikv-jemalloc-ctl = { workspace = true, features = ["use_std"] }
 tikv-jemallocator = { workspace = true, features = [
   "background_threads",
   "unprefixed_malloc_on_supported_platforms",

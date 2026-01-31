@@ -382,6 +382,8 @@ mod tests {
                     }
                 }
                 Event::Log(_) => todo!(),
+                Event::Trace(_) => todo!(),
+                Event::TraceStats(_) => todo!(),
             }
         }
 

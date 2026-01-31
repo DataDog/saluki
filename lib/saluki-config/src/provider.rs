@@ -7,8 +7,8 @@ use figment::{
 };
 use saluki_error::{ErrorContext as _, GenericError};
 use serde::Serialize;
-use serde_json::Value as JsonValue;
-use serde_yaml::Value as YamlValue;
+use serde_json::{Map as JsonMap, Value as JsonValue};
+use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 
 pub struct ResolvedProvider {
     data: Map<Profile, Dict>,
@@ -38,7 +38,14 @@ impl ResolvedProvider {
             )
         })?;
 
+        // Normalize the raw YAML data we got back.
+        //
+        // If the file is empty, we'll get a null value which we just normalize as an empty map to make `Serialized` happy.
         drop_nested_nulls_yaml(&mut raw_yaml_value);
+
+        if raw_yaml_value.is_null() {
+            raw_yaml_value = YamlValue::Mapping(YamlMapping::new());
+        }
 
         Self::from_serialized(raw_yaml_value, metadata)
     }
@@ -56,7 +63,14 @@ impl ResolvedProvider {
             )
         })?;
 
+        // Normalize the raw JSON data we got back.
+        //
+        // If the file is empty, we'll get a null value which we just normalize as an empty map to make `Serialized` happy.
         drop_nested_nulls_json(&mut raw_json_value);
+
+        if raw_json_value.is_null() {
+            raw_json_value = JsonValue::Object(JsonMap::new());
+        }
 
         Self::from_serialized(raw_json_value, metadata)
     }

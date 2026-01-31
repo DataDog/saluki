@@ -1,0 +1,21 @@
+analysis_mode: traces
+millstone:
+  image: saluki-images/millstone:latest
+  config_path: millstone.yaml
+datadog_intake:
+  image: saluki-images/datadog-intake:latest
+  config_path: ../datadog-intake.yaml
+baseline:
+  image: saluki-images/datadog-agent:testing-devel
+  files:
+    - datadog.yaml:/etc/datadog-agent/datadog.yaml
+  additional_env_vars:
+    - DD_API_KEY=correctness-test
+comparison:
+  image: saluki-images/datadog-agent:testing-devel
+  files:
+    - datadog.yaml:/etc/datadog-agent/datadog.yaml
+  additional_env_vars:
+    - DD_API_KEY=correctness-test
+    - DD_DATA_PLANE_ENABLED=true
+    - DD_DATA_PLANE_OTLP_ENABLED=true

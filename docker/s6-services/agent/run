@@ -1,4 +1,6 @@
 #!/usr/bin/execlineb -P
 
+# TODO: Remove this once https://github.com/DataDog/datadog-agent/pull/43876 lands and is released,
+# since the Core Agent will handle this itself.
 foreground { /initlog.sh "starting agent" }
 s6-envdir -I /run/agent/env agent run

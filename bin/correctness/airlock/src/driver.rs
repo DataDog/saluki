@@ -11,6 +11,7 @@ use bollard::{
     image::CreateImageOptions,
     models::{HealthConfig, HealthStatusEnum, HostConfig, Ipam},
     network::CreateNetworkOptions,
+    secret::ContainerStateStatusEnum,
     volume::CreateVolumeOptions,
     Docker,
 };
@@ -22,7 +23,10 @@ use tokio::{
 };
 use tracing::{debug, error, trace};
 
-use crate::config::{ADPConfig, DSDConfig, MetricsIntakeConfig, MillstoneConfig};
+use crate::config::{DatadogIntakeConfig, MillstoneConfig, TargetConfig};
+
+const MILLSTONE_CONFIG_PATH_INTERNAL: &str = "/etc/millstone/config.toml";
+const DATADOG_INTAKE_CONFIG_PATH_INTERNAL: &str = "/etc/datadog-intake/config.toml";
 
 pub enum ExitStatus {
     Success,
@@ -41,6 +45,7 @@ impl fmt::Display for ExitStatus {
 /// Driver configuration.
 ///
 /// This is the basic set of configuration options needed to spawn the container for a given driver.
+#[derive(Clone)]
 pub struct DriverConfig {
     driver_id: &'static str,
     image: String,
@@ -55,36 +60,65 @@ pub struct DriverConfig {
 impl DriverConfig {
     pub async fn millstone(config: MillstoneConfig) -> Result<Self, GenericError> {
         // Ensure the given configuration file path actually exists.
-        if let Err(e) = tokio::fs::try_exists(&config.config_path).await {
-            return Err(generic_error!(
-                "Failed to ensure specified millstone configuration exists locally: {}",
-                e
-            ));
+        match tokio::fs::metadata(&config.config_path).await {
+            Ok(metadata) if metadata.is_file() => {}
+            Ok(_) => {
+                return Err(generic_error!(
+                    "Specified millstone configuration path ({}) does not point to a file.",
+                    config.config_path.display()
+                ))
+            }
+            Err(e) => {
+                return Err(generic_error!(
+                    "Failed to ensure specified millstone configuration ({}) exists locally: {}",
+                    config.config_path.display(),
+                    e
+                ))
+            }
         }
 
-        let entrypoint = vec![config.binary_path, "/etc/millstone/config.yaml".to_string()];
+        let millstone_binary_path = config
+            .binary_path
+            .unwrap_or_else(|| "/usr/local/bin/millstone".to_string());
+        let entrypoint = vec![millstone_binary_path, MILLSTONE_CONFIG_PATH_INTERNAL.to_string()];
 
         let driver_config = Self::from_image("millstone", config.image)
             .with_entrypoint(entrypoint)
-            .with_bind_mount(config.config_path, "/etc/millstone/config.yaml");
+            .with_bind_mount(config.config_path, MILLSTONE_CONFIG_PATH_INTERNAL);
 
         Ok(driver_config)
     }
 
-    pub async fn metrics_intake(config: MetricsIntakeConfig) -> Result<Self, GenericError> {
+    pub async fn datadog_intake(config: DatadogIntakeConfig) -> Result<Self, GenericError> {
         // Ensure the given configuration file path actually exists.
-        if let Err(e) = tokio::fs::try_exists(&config.config_path).await {
-            return Err(generic_error!(
-                "Failed to ensure specified metrics-intake configuration exists locally: {}",
-                e
-            ));
+        match tokio::fs::metadata(&config.config_path).await {
+            Ok(metadata) if metadata.is_file() => {}
+            Ok(_) => {
+                return Err(generic_error!(
+                    "Specified datadog-intake configuration ({}) does not point to a file.",
+                    config.config_path.display()
+                ))
+            }
+            Err(e) => {
+                return Err(generic_error!(
+                    "Failed to ensure specified datadog-intake configuration ({}) exists locally: {}",
+                    config.config_path.display(),
+                    e
+                ))
+            }
         }
 
-        let entrypoint = vec![config.binary_path, "/etc/metrics-intake/config.yaml".to_string()];
+        let datadog_intake_binary_path = config
+            .binary_path
+            .unwrap_or_else(|| "/usr/local/bin/datadog-intake".to_string());
+        let entrypoint = vec![
+            datadog_intake_binary_path,
+            DATADOG_INTAKE_CONFIG_PATH_INTERNAL.to_string(),
+        ];
 
-        let driver_config = DriverConfig::from_image("metrics-intake", config.image)
+        let driver_config = DriverConfig::from_image("datadog-intake", config.image)
             .with_entrypoint(entrypoint)
-            .with_bind_mount(config.config_path, "/etc/metrics-intake/config.yaml")
+            .with_bind_mount(config.config_path, DATADOG_INTAKE_CONFIG_PATH_INTERNAL)
             // Map our intake port to an ephemeral port on the host side, which we'll query once the container has been
             // started so that we can connect to it.
             .with_exposed_port("tcp", 2049);
@@ -92,54 +126,11 @@ impl DriverConfig {
         Ok(driver_config)
     }
 
-    pub async fn dogstatsd(config: DSDConfig) -> Result<Self, GenericError> {
-        // Ensure the given configuration file path actually exists.
-        if let Err(e) = tokio::fs::try_exists(&config.config_path).await {
-            return Err(generic_error!(
-                "Failed to ensure specified DogStatsD configuration exists locally: {}",
-                e
-            ));
-        }
-
-        let driver_config = DriverConfig::from_image("dogstatsd", config.image)
+    pub async fn target(target_id: &'static str, config: TargetConfig) -> Result<Self, GenericError> {
+        let driver_config = DriverConfig::from_image(target_id, config.image)
             .with_entrypoint(config.entrypoint)
             .with_command(config.command)
-            .with_bind_mount(config.config_path.clone(), "/etc/datadog-agent/dogstatsd.yaml")
-            .with_bind_mount(config.config_path, "/etc/datadog-agent/datadog.yaml")
-            // We override the default health check baked into the image, which is egregiously long in my opinion. It
-            // has an interval of 60 seconds, with no startup allowance... which means it takes a full minute before the
-            // first healthcheck is even triggered, even if the Agent is healthy long before that. Very dumb.
-            //
-            // We're specifying a startup period here so that we rapidly check the Agent's health (once a second) during
-            // the "startup" period (20 seconds), which should lead to detecting the Agent becoming healthy almost as
-            // soon as that transition happens.
-            .with_healthcheck(
-                vec!["/probe.sh".to_string()],
-                Duration::from_secs(60),
-                Duration::from_secs(5),
-                2,
-                Duration::from_secs(20),
-                Duration::from_secs(1),
-            )
-            .with_env_vars(config.additional_env_args);
-
-        Ok(driver_config)
-    }
-
-    pub async fn agent_data_plane(config: ADPConfig) -> Result<Self, GenericError> {
-        // Ensure the given configuration file path actually exists.
-        if let Err(e) = tokio::fs::try_exists(&config.config_path).await {
-            return Err(generic_error!(
-                "Failed to ensure specified ADP configuration exists locally: {}",
-                e
-            ));
-        }
-
-        let driver_config = DriverConfig::from_image("agent-data-plane", config.image)
-            .with_entrypoint(config.entrypoint)
-            .with_command(config.command)
-            .with_bind_mount(config.config_path, "/etc/datadog-agent/datadog.yaml")
-            .with_env_vars(config.additional_env_args);
+            .with_env_vars(config.additional_env_vars);
 
         Ok(driver_config)
     }
@@ -159,14 +150,22 @@ impl DriverConfig {
     }
 
     /// Sets the entrypoint for the container.
+    ///
+    /// If `entrypoint` is empty, the default entrypoint will be used.
     pub fn with_entrypoint(mut self, entrypoint: Vec<String>) -> Self {
-        self.entrypoint = Some(entrypoint);
+        if !entrypoint.is_empty() {
+            self.entrypoint = Some(entrypoint);
+        }
         self
     }
 
     /// Sets the command for the container.
+    ///
+    /// If `command` is empty, the default command will be used.
     pub fn with_command(mut self, command: Vec<String>) -> Self {
-        self.command = Some(command);
+        if !command.is_empty() {
+            self.command = Some(command);
+        }
         self
     }
 
@@ -717,15 +716,25 @@ impl Driver {
         loop {
             // Inspect the container, and see if it even has any health checks defined. If not, then we can return early.
             let response = self.docker.inspect_container(&self.container_name, None).await?;
-            if let Some(health_status) = response.state.and_then(|s| s.health).and_then(|h| h.status) {
+            let state = response
+                .state
+                .ok_or_else(|| generic_error!("Container state should be present."))?;
+
+            // Make sure the container is actually running.
+            let status = state
+                .status
+                .ok_or_else(|| generic_error!("Container status should be present."))?;
+            if status != ContainerStateStatusEnum::RUNNING {
+                return Err(generic_error!("Container exited unexpectedly."));
+            }
+
+            if let Some(health_status) = state.health.and_then(|h| h.status) {
                 match health_status {
                     // No healthcheck defined, or healthy, so we're good to go.
                     HealthStatusEnum::EMPTY | HealthStatusEnum::NONE | HealthStatusEnum::HEALTHY => {
                         debug!(
                             driver_id = self.config.driver_id,
-                            isolation_group = self.isolation_group_id,
-                            "Container '{}' healthy or no healthcheck defined. Proceeding.",
-                            &self.container_name
+                            "Container '{}' healthy or no healthcheck defined. Proceeding.", &self.container_name
                         );
                         return Ok(());
                     }
@@ -734,18 +743,14 @@ impl Driver {
                     HealthStatusEnum::STARTING | HealthStatusEnum::UNHEALTHY => {
                         debug!(
                             driver_id = self.config.driver_id,
-                            isolation_group = self.isolation_group_id,
-                            "Container '{}' not yet healthy. Waiting...",
-                            &self.container_name
+                            "Container '{}' not yet healthy. Waiting...", &self.container_name
                         );
                     }
                 }
             } else {
                 debug!(
                     driver_id = self.config.driver_id,
-                    isolation_group = self.isolation_group_id,
-                    "Container '{}' has no healthcheck defined. Proceeding.",
-                    &self.container_name
+                    "Container '{}' has no healthcheck defined. Proceeding.", &self.container_name
                 );
                 return Ok(());
             }

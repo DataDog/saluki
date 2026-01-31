@@ -5,9 +5,7 @@ use std::{
 
 use saluki_error::{generic_error, GenericError};
 use tokio::{
-    pin,
-    runtime::Runtime,
-    select,
+    pin, select,
     task::{Id, JoinError, JoinSet},
     time::{interval, sleep},
 };
@@ -17,7 +15,6 @@ use super::{shutdown::ComponentShutdownCoordinator, ComponentId};
 
 /// A running topology.
 pub struct RunningTopology {
-    thread_pool: Runtime,
     shutdown_coordinator: ComponentShutdownCoordinator,
     component_tasks: JoinSet<Result<(), GenericError>>,
     component_task_map: HashMap<Id, ComponentId>,
@@ -26,11 +23,10 @@ pub struct RunningTopology {
 impl RunningTopology {
     /// Creates a new `RunningTopology`.
     pub(super) fn from_parts(
-        thread_pool: Runtime, shutdown_coordinator: ComponentShutdownCoordinator,
-        component_tasks: JoinSet<Result<(), GenericError>>, component_task_map: HashMap<Id, ComponentId>,
+        shutdown_coordinator: ComponentShutdownCoordinator, component_tasks: JoinSet<Result<(), GenericError>>,
+        component_task_map: HashMap<Id, ComponentId>,
     ) -> Self {
         Self {
-            thread_pool,
             shutdown_coordinator,
             component_tasks,
             component_task_map,
@@ -119,11 +115,6 @@ impl RunningTopology {
                 },
             }
         }
-
-        // Trigger the thread pool to shutdown, which will stop the runtime and all tasks.
-        //
-        // We do this without waiting.
-        self.thread_pool.shutdown_background();
 
         if stopped_cleanly {
             Ok(())

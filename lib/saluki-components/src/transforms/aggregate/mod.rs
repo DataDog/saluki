@@ -4,7 +4,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use ddsketch_agent::DDSketch;
+use ddsketch::DDSketch;
 use hashbrown::{hash_map::Entry, HashMap};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::time::get_unix_timestamp;
@@ -232,9 +232,8 @@ impl TransformBuilder for AggregateConfiguration {
         EventType::Metric
     }
 
-    fn outputs(&self) -> &[OutputDefinition] {
-        static OUTPUTS: &[OutputDefinition] = &[OutputDefinition::default_output(EventType::Metric)];
-
+    fn outputs(&self) -> &[OutputDefinition<EventType>] {
+        static OUTPUTS: &[OutputDefinition<EventType>] = &[OutputDefinition::default_output(EventType::Metric)];
         OUTPUTS
     }
 }
@@ -710,7 +709,7 @@ async fn transform_and_push_metric(
                     .map(|(ts, hist)| {
                         let mut sketch = DDSketch::default();
                         for sample in hist.samples() {
-                            sketch.insert_n(sample.value.into_inner(), sample.weight as u32);
+                            sketch.insert_n(sample.value.into_inner(), sample.weight);
                         }
                         (ts, sketch)
                     })

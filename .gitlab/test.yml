@@ -70,6 +70,12 @@ unit-tests-miri-macos-arm64:
   script:
     - make test-miri
 
+loom-tests:
+  extends: .linux-arm64-test-job-heavy
+  stage: test
+  script:
+    - make test-loom
+
 check-clippy:
   extends: .linux-arm64-test-job-heavy
   stage: test
@@ -93,3 +99,23 @@ check-licenses:
   stage: test
   script:
     - make check-licenses
+
+check-protos:
+  extends: .linux-arm64-test-job
+  stage: test
+  script:
+    - make update-protos
+    - git diff --exit-code || (echo "Protocol Buffers definitions not up-to-date. Run `make update-protos` locally and commit."; exit 1)
+
+check-unused-deps:
+  extends: .linux-arm64-test-job
+  stage: test
+  script:
+    - make check-unused-deps
+
+check-smp-experiments:
+  extends: .linux-arm64-test-job
+  stage: test
+  script:
+    - pip install pyyaml
+    - make check-smp-experiments

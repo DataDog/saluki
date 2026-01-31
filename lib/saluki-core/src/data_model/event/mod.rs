@@ -16,6 +16,12 @@ use self::service_check::ServiceCheck;
 pub mod log;
 use self::log::Log;
 
+pub mod trace;
+use self::trace::Trace;
+
+pub mod trace_stats;
+use self::trace_stats::TraceStats;
+
 /// Telemetry event type.
 ///
 /// This type is a bitmask, which means different event types can be combined together. This makes `EventType` mainly
@@ -34,6 +40,12 @@ pub enum EventType {
 
     /// Logs.
     Log,
+
+    /// Traces.
+    Trace,
+
+    /// Trace stats.
+    TraceStats,
 }
 
 impl Default for EventType {
@@ -62,6 +74,14 @@ impl fmt::Display for EventType {
             types.push("Log");
         }
 
+        if self.contains(Self::Trace) {
+            types.push("Trace");
+        }
+
+        if self.contains(Self::TraceStats) {
+            types.push("TraceStats");
+        }
+
         write!(f, "{}", types.join("|"))
     }
 }
@@ -80,6 +100,12 @@ pub enum Event {
 
     /// A log.
     Log(Log),
+
+    /// A trace.
+    Trace(Trace),
+
+    /// Trace stats.
+    TraceStats(TraceStats),
 }
 
 impl Event {
@@ -90,6 +116,8 @@ impl Event {
             Event::EventD(_) => EventType::EventD,
             Event::ServiceCheck(_) => EventType::ServiceCheck,
             Event::Log(_) => EventType::Log,
+            Event::Trace(_) => EventType::Trace,
+            Event::TraceStats(_) => EventType::TraceStats,
         }
     }
 
@@ -143,6 +171,36 @@ impl Event {
         }
     }
 
+    /// Returns a reference inner event value, if this event is a `Trace`.
+    ///
+    /// Otherwise, `None` is returned.
+    pub fn try_into_trace(self) -> Option<Trace> {
+        match self {
+            Event::Trace(trace) => Some(trace),
+            _ => None,
+        }
+    }
+
+    /// Returns a mutable reference inner event value, if this event is a `Trace`.
+    ///
+    /// Otherwise, `None` is returned.
+    pub fn try_as_trace_mut(&mut self) -> Option<&mut Trace> {
+        match self {
+            Event::Trace(trace) => Some(trace),
+            _ => None,
+        }
+    }
+
+    /// Returns the inner event value, if this event is a `TraceStats`.
+    ///
+    /// Otherwise, `None` is returned and the original event is consumed.
+    pub fn try_into_trace_stats(self) -> Option<TraceStats> {
+        match self {
+            Event::TraceStats(stats) => Some(stats),
+            _ => None,
+        }
+    }
+
     #[allow(unused)]
     /// Returns `true` if the event is a metric.
     pub fn is_metric(&self) -> bool {
@@ -162,6 +220,11 @@ impl Event {
     /// Returns `true` if the event is a log.
     pub fn is_log(&self) -> bool {
         matches!(self, Event::Log(_))
+    }
+
+    /// Returns `true` if the event is a trace.
+    pub fn is_trace(&self) -> bool {
+        matches!(self, Event::Trace(_))
     }
 }
 
@@ -186,5 +249,7 @@ mod tests {
         println!("EventD: {} bytes", std::mem::size_of::<EventD>());
         println!("ServiceCheck: {} bytes", std::mem::size_of::<ServiceCheck>());
         println!("Log: {} bytes", std::mem::size_of::<Log>());
+        println!("Trace: {} bytes", std::mem::size_of::<Trace>());
+        println!("TraceStats: {} bytes", std::mem::size_of::<TraceStats>());
     }
 }

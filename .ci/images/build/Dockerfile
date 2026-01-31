@@ -3,36 +3,44 @@ ARG DD_AGENT_IMAGE=datadog/agent:${DD_AGENT_VERSION}
 
 FROM ${DD_AGENT_IMAGE} AS agent
 
-FROM registry.ddbuild.io/images/mirror/ubuntu:14.04
+FROM registry.ddbuild.io/images/docker:27.3.1
 
 ARG RUST_VERSION=1.90.0
 ARG TARGETARCH
 
-# Install basic utilities and an updated compiler/binutils toolchain, which is necessary for compiling.
+# Install the basics for building and compiling software projects.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends build-essential software-properties-common curl ca-certificates git gnupg2 cmake3 unzip && \
-    add-apt-repository ppa:ubuntu-toolchain-r/test -y && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends gcc-8 g++-8 binutils-2.26 && \
-    update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-8 60 --slave /usr/bin/g++ g++ /usr/bin/g++-8 && \
+    apt-get install -y --no-install-recommends build-essential software-properties-common curl ca-certificates git gnupg2 \
+    lsb-release make cmake unzip gcc g++ binutils jq bc bzip2 ninja-build python3 python3-pip && \
     apt-get clean
-ENV PATH="/usr/lib/binutils-2.26/bin:${PATH}"
 
 # Install Go, which we need to build AWS-LC in FIPS-compliant mode.
 ENV PATH="/usr/local/go/bin:${PATH}"
 RUN curl -s -L -o /tmp/go-1.23.0.tar.gz https://go.dev/dl/go1.23.0.linux-${TARGETARCH}.tar.gz
 RUN tar -C /usr/local -xzf /tmp/go-1.23.0.tar.gz
 
-# Install a number of packages/tools by hand, because the versions in Ubuntu 14.04 are too old or not available at all.
+# Install a number of packages/tools by hand, because the versions in Ubuntu are too old, or just aren't available
+# from the normal package manager repositories.
+RUN curl -L https://s3.amazonaws.com/dd-package-public/dd-package-$(dpkg --print-architecture).deb -o dd-package.deb && \
+    dpkg -i dd-package.deb && \
+    rm dd-package.deb && \
+    apt-get update && \
+    dd-package --bucket binaries-ddbuild-io-prod --package devtools/dd-package-dev --distribution "20.04"
+
+COPY .ci/install-pr-commenter.sh /
+RUN chmod +x /install-pr-commenter.sh && /install-pr-commenter.sh
+
+COPY .ci/install-bloaty.sh /
+RUN chmod +x /install-bloaty.sh && /install-bloaty.sh
+
 COPY .ci/install-protoc.sh /
 RUN chmod +x /install-protoc.sh && /install-protoc.sh
 
 COPY .ci/install-awscli.sh /
 RUN chmod +x /install-awscli.sh && /install-awscli.sh
 
-RUN curl -s -L -o /tmp/jq https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-${TARGETARCH} && \
-    mv /tmp/jq /usr/local/bin/jq && \
-    chmod +x /usr/local/bin/jq
+COPY .ci/install-vault.sh /
+RUN chmod +x /install-vault.sh && /install-vault.sh
 
 # Install Rust and common Cargo tooling that we depend on.
 RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain ${RUST_VERSION}
@@ -41,14 +49,10 @@ RUN rustup toolchain add nightly && \
     rustup component add clippy
 
 # Pre-install the relevant Cargo tools we use in the build process.
-COPY ./Makefile /
-RUN make cargo-preinstall
-
-# Import python bits from Agent image.
-# Do last in the pipeline to avoid polluting the builds of above protobuf/go etc from using these libs
-COPY --from=agent /opt/datadog-agent/embedded/ /opt/datadog-agent/embedded/
-ENV LD_LIBRARY_PATH="/opt/datadog-agent/embedded/lib:${LD_LIBRARY_PATH}"
-ENV PATH="/opt/datadog-agent/embedded/bin:${PATH}"
+WORKDIR /tmp
+COPY ./Makefile /tmp
+COPY ./bin/agent-data-plane/Cargo.toml /tmp/bin/agent-data-plane/Cargo.toml
+RUN CI=true make cargo-preinstall
 
 COPY .ci/images/build/entrypoint.sh /
 RUN chmod +x /entrypoint.sh

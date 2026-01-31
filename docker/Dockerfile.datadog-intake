@@ -1,0 +1,24 @@
+ARG BASE_IMAGE=ubuntu:24.04
+
+FROM ${BASE_IMAGE} AS builder
+
+ARG RUST_VERSION=stable
+
+# Install Rust and other build dependencies.
+RUN apt-get update && \
+    apt-get install --no-install-recommends -y \
+    build-essential ca-certificates make cmake gcc g++ perl protobuf-compiler curl rustup
+RUN rustup default ${RUST_VERSION}
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Build datadog-intake.
+WORKDIR /datadog-intake
+COPY . /datadog-intake
+RUN cargo build --profile release --bin datadog-intake
+
+# Now stick our resulting binary in a clean image.
+FROM ${BASE_IMAGE}
+
+COPY --from=builder /datadog-intake/target/release/datadog-intake /usr/local/bin/datadog-intake
+
+ENTRYPOINT [ "/usr/local/bin/datadog-intake" ]

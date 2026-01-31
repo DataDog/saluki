@@ -1,12 +1,12 @@
 //! API server.
 
-use std::{convert::Infallible, error::Error, future::Future, io::BufReader};
+use std::{convert::Infallible, error::Error, future::Future};
 
 use axum::Router;
 use http::{Request, Response};
 use rcgen::{generate_simple_self_signed, CertifiedKey};
-use rustls::ServerConfig;
-use rustls_pemfile::{certs, pkcs8_private_keys};
+use rustls::{pki_types::PrivateKeyDer, ServerConfig};
+use rustls_pki_types::PrivatePkcs8KeyDer;
 use saluki_api::APIHandler;
 use saluki_error::GenericError;
 use saluki_io::net::{
@@ -108,18 +108,12 @@ impl APIBuilder {
     /// This will enable TLS for the server, and the server will only accept connections that are encrypted with TLS.
     pub fn with_self_signed_tls(self) -> Self {
         let CertifiedKey { cert, key_pair } = generate_simple_self_signed(["localhost".to_owned()]).unwrap();
-        let cert_file = cert.pem();
-        let key_file = key_pair.serialize_pem();
-
-        let cert_file = &mut BufReader::new(cert_file.as_bytes());
-        let key_file = &mut BufReader::new(key_file.as_bytes());
-
-        let cert_chain = certs(cert_file).collect::<Result<Vec<_>, _>>().unwrap();
-        let mut keys = pkcs8_private_keys(key_file).collect::<Result<Vec<_>, _>>().unwrap();
+        let cert_chain = vec![cert.der().clone()];
+        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_pair.serialize_der()));
 
         let config = ServerConfig::builder()
             .with_no_client_auth()
-            .with_single_cert(cert_chain, rustls::pki_types::PrivateKeyDer::Pkcs8(keys.remove(0)))
+            .with_single_cert(cert_chain, key)
             .unwrap();
 
         self.with_tls_config(config)

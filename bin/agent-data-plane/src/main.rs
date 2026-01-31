@@ -7,32 +7,28 @@
 #![deny(missing_docs)]
 use std::time::Instant;
 
-use clap::Parser as _;
 use saluki_app::bootstrap::AppBootstrapper;
 use saluki_config::ConfigurationLoader;
 use saluki_error::{ErrorContext as _, GenericError};
 use tracing::{error, info, warn};
 
+mod cli;
+use self::cli::*;
+use crate::internal::platform::PlatformSettings;
+
 mod components;
 mod config;
-use self::config::{Action, Cli};
-
 mod env_provider;
 mod internal;
 
-mod cli;
-use self::cli::{
-    config::handle_config_command, debug::handle_debug_command, dogstatsd::handle_dogstatsd_subcommand, run::run,
-};
-
 pub(crate) mod state;
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(system_allocator)))]
 #[global_allocator]
 static ALLOC: memory_accounting::allocator::TrackingAllocator<tikv_jemallocator::Jemalloc> =
     memory_accounting::allocator::TrackingAllocator::new(tikv_jemallocator::Jemalloc);
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(not(target_os = "linux"), system_allocator))]
 #[global_allocator]
 static ALLOC: memory_accounting::allocator::TrackingAllocator<std::alloc::System> =
     memory_accounting::allocator::TrackingAllocator::new(std::alloc::System);
@@ -40,20 +36,19 @@ static ALLOC: memory_accounting::allocator::TrackingAllocator<std::alloc::System
 #[tokio::main]
 async fn main() -> Result<(), GenericError> {
     let started = Instant::now();
-    let cli = Cli::parse();
+    let cli: Cli = argh::from_env();
 
     // Load our "bootstrap" configuration -- static configuration on disk or from environment variables -- so we can
     // initialize basic subsystems before executing the given subcommand.
+    let bootstrap_config_path = cli.config_file.unwrap_or_else(PlatformSettings::get_config_file_path);
     let bootstrap_config = ConfigurationLoader::default()
-        .try_from_yaml(
-            cli.config_file
-                .unwrap_or_else(|| self::internal::platform::DATADOG_AGENT_CONF_YAML.into()),
-        )
-        .from_environment(self::internal::platform::DATADOG_AGENT_ENV_VAR_PREFIX)
+        .from_yaml(&bootstrap_config_path)
+        .error_context("Failed to load Datadog Agent configuration file during bootstrap.")?
+        .from_environment(PlatformSettings::get_env_var_prefix())
         .error_context("Environment variable prefix should not be empty.")?
         .with_default_secrets_resolution()
         .await
-        .error_context("Failed to load secrets resolution configuration.")?
+        .error_context("Failed to load secrets resolution configuration during bootstrap.")?
         .bootstrap_generic();
 
     // Proceed with bootstrapping.
@@ -70,9 +65,9 @@ async fn main() -> Result<(), GenericError> {
 
     // Run the given subcommand.
     match cli.action {
-        Action::Run(config) => {
+        Action::Run(cmd) => {
             // Populate our PID file, if configured.
-            if let Some(pid_file) = &config.pid_file {
+            if let Some(pid_file) = &cmd.pid_file {
                 let pid = std::process::id();
                 if let Err(e) = std::fs::write(pid_file, pid.to_string()) {
                     error!(error = %e, path = %pid_file.display(), "Failed to update PID file. Exiting.");
@@ -80,7 +75,7 @@ async fn main() -> Result<(), GenericError> {
                 }
             }
 
-            let exit_code = match run(started, bootstrap_config).await {
+            let exit_code = match handle_run_command(started, bootstrap_config_path, bootstrap_config).await {
                 Ok(()) => {
                     info!("Agent Data Plane stopped.");
                     0
@@ -92,7 +87,7 @@ async fn main() -> Result<(), GenericError> {
             };
 
             // Remove the PID file, if configured.
-            if let Some(pid_file) = &config.pid_file {
+            if let Some(pid_file) = &cmd.pid_file {
                 if let Err(e) = std::fs::remove_file(pid_file) {
                     warn!(error = %e, path = %pid_file.display(), "Failed to delete PID file while exiting.");
                 }
@@ -100,9 +95,9 @@ async fn main() -> Result<(), GenericError> {
 
             std::process::exit(exit_code);
         }
-        Action::Debug(config) => handle_debug_command(&bootstrap_config, config).await,
-        Action::Config => handle_config_command(&bootstrap_config).await,
-        Action::Dogstatsd(config) => handle_dogstatsd_subcommand(&bootstrap_config, config).await,
+        Action::Debug(cmd) => handle_debug_command(&bootstrap_config, cmd).await,
+        Action::Config(_) => handle_config_command(&bootstrap_config).await,
+        Action::Dogstatsd(cmd) => handle_dogstatsd_command(&bootstrap_config, cmd).await,
     }
 
     Ok(())

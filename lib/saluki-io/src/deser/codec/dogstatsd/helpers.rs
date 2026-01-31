@@ -30,7 +30,7 @@ pub const SOURCE_TYPE_PREFIX: &[u8] = b"s:";
 pub const ALERT_TYPE_PREFIX: &[u8] = b"t:";
 pub const TAGS_PREFIX: &[u8] = b"#";
 pub const SERVICE_CHECK_MESSAGE_PREFIX: &[u8] = b"m:";
-pub const CONTAINER_ID_PREFIX: &[u8] = b"c:";
+pub const LOCAL_DATA_PREFIX: &[u8] = b"c:";
 pub const EXTERNAL_DATA_PREFIX: &[u8] = b"e:";
 pub const CARDINALITY_PREFIX: &[u8] = b"card:";
 
@@ -125,17 +125,19 @@ pub fn unix_timestamp(input: &[u8]) -> IResult<&[u8], u64> {
     parse_u64(input)
 }
 
-/// Parses a container ID from the input slice.
+/// Parses Local Data from the input slice.
 ///
 /// # Errors
 ///
 /// If the input slice does not contain at least one byte of valid characters, an error is returned.
 #[inline]
-pub fn container_id(input: &[u8]) -> IResult<&[u8], &str> {
-    // We generally only expect container IDs to be either long hexadecimal strings (like 64 characters), or in special
+pub fn local_data(input: &[u8]) -> IResult<&[u8], &str> {
+    // Local Data is only meant to be able to represent container IDs (which arelong hexadecimal strings), or in special
     // cases, the inode number of the cgroup controller that contains the container sending the metrics, where the value
     // will look like `in-<integer value>`.
-    let valid_char = |c: u8| c.is_ascii_alphanumeric() || c == b'-';
+    //
+    // In some cases, it might contain _multiple_ of these values, separated by a comma.
+    let valid_char = |c: u8| c.is_ascii_alphanumeric() || c == b'-' || c == b',';
     map(take_while1(valid_char), |b| {
         // SAFETY: We know the bytes in `b` can only be comprised of ASCII characters, which ensures that it's valid to
         // interpret the bytes directly as UTF-8.

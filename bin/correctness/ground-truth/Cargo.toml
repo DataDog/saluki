@@ -10,20 +10,14 @@ workspace = true
 
 [dependencies]
 airlock = { path = "../airlock" }
-clap = { workspace = true, features = [
-  "std",
-  "color",
-  "derive",
-  "help",
-  "wrap_help",
-  "usage",
-  "error-context",
-  "suggestions",
-] }
 rand = { workspace = true, features = ["std", "std_rng", "thread_rng"] }
 rand_distr = { workspace = true }
 reqwest = { workspace = true, features = ["json", "zstd", "rustls-tls-native-roots"] }
+saluki-common = { workspace = true }
+saluki-config = { workspace = true }
 saluki-error = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 stele = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
 tokio-util = { workspace = true }
@@ -37,3 +31,4 @@ tracing-subscriber = { workspace = true, features = [
   "std",
   "tracing-log",
 ] }
+treediff = { workspace = true, features = ["with-serde-json"] }

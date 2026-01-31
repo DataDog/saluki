@@ -15,13 +15,15 @@ python-checks = ["dep:pyo3"]
 [dependencies]
 async-trait = { workspace = true }
 axum = { workspace = true }
+base64 = { workspace = true, features = ["std"] }
 bytes = { workspace = true }
 bytesize = { workspace = true }
 chrono = { workspace = true }
 datadog-protos = { workspace = true }
-ddsketch-agent = { workspace = true }
+ddsketch = { workspace = true }
 faster-hex = { workspace = true }
 float-cmp = { workspace = true, features = ["ratio"] }
+fnv = { workspace = true }
 foldhash = { workspace = true }
 futures = { workspace = true }
 hashbrown = { workspace = true }
@@ -32,7 +34,6 @@ http-body-util = { workspace = true }
 http-serde-ext = { workspace = true }
 hyper = { workspace = true, features = ["client"] }
 hyper-http-proxy = { workspace = true }
-indexmap = { workspace = true, features = ["std"] }
 memory-accounting = { workspace = true }
 metrics = { workspace = true }
 opentelemetry-semantic-conventions = { workspace = true, features = ["semconv_experimental"] }
@@ -43,6 +44,7 @@ protobuf = { workspace = true }
 pyo3 = { workspace = true, features = ["macros"], optional = true }
 rand = { workspace = true, features = ["std", "std_rng"] }
 regex = { workspace = true, features = ["unicode-perl"] }
+rmp-serde = { workspace = true }
 saluki-api = { workspace = true }
 saluki-common = { workspace = true }
 saluki-config = { workspace = true }
@@ -50,7 +52,6 @@ saluki-context = { workspace = true }
 saluki-core = { workspace = true }
 saluki-env = { workspace = true }
 saluki-error = { workspace = true }
-saluki-health = { workspace = true }
 saluki-io = { workspace = true }
 saluki-metadata = { workspace = true }
 saluki-metrics = { workspace = true }
@@ -70,7 +71,7 @@ tokio = { workspace = true, features = [
   "signal",
   "sync",
 ] }
-tonic = { workspace = true }
+tonic = { workspace = true, features = ["router", "server"] }
 tower = { workspace = true, features = ["limit", "retry", "timeout", "util"] }
 tracing = { workspace = true }
 url = { workspace = true }

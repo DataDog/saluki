@@ -75,6 +75,7 @@ impl AdditionalEndpoints {
         for (raw_endpoint, api_keys) in self.0.mappings() {
             let endpoint = parse_and_normalize_endpoint(raw_endpoint)?;
             let logs_authority = compute_logs_authority(&endpoint);
+            let traces_authority = compute_traces_authority(&endpoint);
 
             // With our fully parsed and versioned endpoint, we'll now create a resolved version for each associated API
             // key attached to it.
@@ -92,6 +93,7 @@ impl AdditionalEndpoints {
                     api_key: trimmed_api_key.to_string(),
                     config: None,
                     logs_authority: logs_authority.clone(),
+                    traces_authority: traces_authority.clone(),
                 });
             }
         }
@@ -188,6 +190,9 @@ pub struct ResolvedEndpoint {
     /// Pre-computed logs intake authority (e.g., `agent-http-intake.logs.datadoghq.com`).
     /// This is derived from the endpoint host when it contains `.agent.` marker.
     logs_authority: Option<Authority>,
+    /// Pre-computed traces intake authority (e.g., `trace.agent.datadoghq.com`).
+    /// This is derived from the endpoint host when it contains `.agent.` marker.
+    traces_authority: Option<Authority>,
 }
 
 impl ResolvedEndpoint {
@@ -201,11 +206,13 @@ impl ResolvedEndpoint {
     fn from_raw_endpoint(raw_endpoint: &str, api_key: &str) -> Result<Self, EndpointError> {
         let endpoint = parse_and_normalize_endpoint(raw_endpoint)?;
         let logs_authority = compute_logs_authority(&endpoint);
+        let traces_authority = compute_traces_authority(&endpoint);
         Ok(Self {
             endpoint,
             api_key: api_key.to_string(),
             config: None,
             logs_authority,
+            traces_authority,
         })
     }
 
@@ -216,6 +223,7 @@ impl ResolvedEndpoint {
             api_key: self.api_key,
             config,
             logs_authority: self.logs_authority,
+            traces_authority: self.traces_authority,
         }
     }
 
@@ -256,6 +264,11 @@ impl ResolvedEndpoint {
     /// and is used for routing log payloads to the appropriate logs intake host.
     pub fn logs_authority(&self) -> Option<&Authority> {
         self.logs_authority.as_ref()
+    }
+
+    /// Returns the pre-computed traces intake authority, if available.
+    pub fn traces_authority(&self) -> Option<&Authority> {
+        self.traces_authority.as_ref()
     }
 }
 
@@ -376,6 +389,19 @@ fn compute_logs_authority(endpoint: &Url) -> Option<Authority> {
     let logs_host = format!("agent-http-intake.logs.{}", site);
 
     Authority::from_str(&logs_host).ok()
+}
+
+/// Computes the traces intake authority from a resolved endpoint URL.
+/// Returns `None` if the host doesn't contain the marker or if the authority cannot be parsed.
+fn compute_traces_authority(endpoint: &Url) -> Option<Authority> {
+    const AGENT_HOST_MARKER: &str = ".agent.";
+
+    let host = endpoint.host_str()?;
+    let idx = host.find(AGENT_HOST_MARKER)?;
+    let site = &host[idx + AGENT_HOST_MARKER.len()..];
+    let traces_host = format!("trace.agent.{}", site);
+
+    Authority::from_str(&traces_host).ok()
 }
 
 #[cfg(test)]

@@ -8,13 +8,17 @@ use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use metrics::{Counter, Gauge, Histogram};
 use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
-use saluki_context::tags::{RawTags, RawTagsFilter};
-use saluki_context::TagsResolver;
-use saluki_core::data_model::event::eventd::EventD;
-use saluki_core::data_model::event::metric::{MetricMetadata, MetricOrigin};
-use saluki_core::data_model::event::service_check::ServiceCheck;
-use saluki_core::data_model::event::{metric::Metric, Event, EventType};
-use saluki_core::topology::EventsBuffer;
+use saluki_context::{
+    tags::{RawTags, RawTagsFilter},
+    TagsResolver,
+};
+use saluki_core::data_model::event::metric::Metric;
+use saluki_core::data_model::event::{
+    eventd::EventD,
+    metric::{MetricMetadata, MetricOrigin},
+    service_check::ServiceCheck,
+    Event, EventType,
+};
 use saluki_core::{
     components::{sources::*, ComponentContext},
     observability::ComponentMetricsExt as _,
@@ -22,21 +26,14 @@ use saluki_core::{
     topology::{
         interconnect::EventBufferManager,
         shutdown::{DynamicShutdownCoordinator, DynamicShutdownHandle},
-        OutputDefinition,
+        EventsBuffer, OutputDefinition,
     },
 };
 use saluki_env::WorkloadProvider;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use saluki_io::deser::codec::dogstatsd::{EventPacket, ServiceCheckPacket};
 use saluki_io::{
     buf::{BytesBuffer, FixedSizeVec},
-    deser::{
-        codec::{
-            dogstatsd::{parse_message_type, MessageType, MetricPacket, ParseError, ParsedPacket},
-            DogstatsdCodec, DogstatsdCodecConfiguration,
-        },
-        framing::FramerExt as _,
-    },
+    deser::{codec::dogstatsd::*, framing::FramerExt as _},
     net::{
         listener::{Listener, ListenerError},
         ConnectionAddress, ListenAddress, Stream,
@@ -44,6 +41,7 @@ use saluki_io::{
 };
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
+use serde_with::{serde_as, NoneAsEmptyString};
 use snafu::{ResultExt as _, Snafu};
 use tokio::{
     select,
@@ -125,6 +123,10 @@ const fn default_dogstatsd_permissive_decoding() -> bool {
     true
 }
 
+const fn default_dogstatsd_minimum_sample_rate() -> f64 {
+    0.000000003845
+}
+
 const fn default_enable_payloads_series() -> bool {
     true
 }
@@ -144,6 +146,7 @@ const fn default_enable_payloads_service_checks() -> bool {
 /// DogStatsD source.
 ///
 /// Accepts metrics over TCP, UDP, or Unix Domain Sockets in the StatsD/DogStatsD format.
+#[serde_as]
 #[derive(Deserialize)]
 pub struct DogStatsDConfiguration {
     /// The size of the buffer used to receive messages into, in bytes.
@@ -185,7 +188,8 @@ pub struct DogStatsDConfiguration {
     /// If not set, UDS (in datagram mode) is not used.
     ///
     /// Defaults to unset.
-    #[serde(rename = "dogstatsd_socket")]
+    #[serde(rename = "dogstatsd_socket", default)]
+    #[serde_as(as = "NoneAsEmptyString")]
     socket_path: Option<String>,
 
     /// The Unix domain socket path to listen on, in stream mode.
@@ -193,7 +197,8 @@ pub struct DogStatsDConfiguration {
     /// If not set, UDS (in stream mode) is not used.
     ///
     /// Defaults to unset.
-    #[serde(rename = "dogstatsd_stream_socket")]
+    #[serde(rename = "dogstatsd_stream_socket", default)]
+    #[serde_as(as = "NoneAsEmptyString")]
     socket_stream_path: Option<String>,
 
     /// Whether or not to listen for non-local traffic in UDP mode.
@@ -278,6 +283,21 @@ pub struct DogStatsDConfiguration {
         default = "default_dogstatsd_permissive_decoding"
     )]
     permissive_decoding: bool,
+
+    /// The minimum sample rate allowed for metrics.
+    ///
+    /// When metrics are sent with a sample rate _lower_ than this value then it will be clamped to this value. This is
+    /// done in order to ensure an upper bound on how many equivalent samples are tracked for the metric, as high sample
+    /// rates (very small numbers, such as `0.00000001`) can lead to large memory growth.
+    ///
+    /// A warning log will be emitted when clamping occurs, as this represents an effective loss of metric samples.
+    ///
+    /// Defaults to `0.000000003845`. (~260M samples)
+    #[serde(
+        rename = "dogstatsd_minimum_sample_rate",
+        default = "default_dogstatsd_minimum_sample_rate"
+    )]
+    minimum_sample_rate: f64,
 
     /// Whether or not to enable sending serie payloads.
     ///
@@ -414,7 +434,8 @@ impl SourceBuilder for DogStatsDConfiguration {
 
         let codec_config = DogstatsdCodecConfiguration::default()
             .with_timestamps(self.no_aggregation_pipeline_support)
-            .with_permissive_mode(self.permissive_decoding);
+            .with_permissive_mode(self.permissive_decoding)
+            .with_minimum_sample_rate(self.minimum_sample_rate);
 
         let codec = DogstatsdCodec::from_configuration(codec_config);
 
@@ -436,15 +457,14 @@ impl SourceBuilder for DogStatsDConfiguration {
         }))
     }
 
-    fn outputs(&self) -> &[OutputDefinition] {
-        static OUTPUTS: LazyLock<Vec<OutputDefinition>> = LazyLock::new(|| {
+    fn outputs(&self) -> &[OutputDefinition<EventType>] {
+        static OUTPUTS: LazyLock<Vec<OutputDefinition<EventType>>> = LazyLock::new(|| {
             vec![
                 OutputDefinition::named_output("metrics", EventType::Metric),
                 OutputDefinition::named_output("events", EventType::EventD),
                 OutputDefinition::named_output("service_checks", EventType::ServiceCheck),
             ]
         });
-
         &OUTPUTS
     }
 }
@@ -1179,7 +1199,7 @@ mod tests {
 
     use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
     use saluki_io::{
-        deser::codec::{dogstatsd::ParsedPacket, DogstatsdCodec, DogstatsdCodecConfiguration},
+        deser::codec::dogstatsd::{DogstatsdCodec, DogstatsdCodecConfiguration, ParsedPacket},
         net::ConnectionAddress,
     };
 

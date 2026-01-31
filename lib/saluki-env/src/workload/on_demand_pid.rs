@@ -153,12 +153,6 @@ fn resolve_linux_pid(
     process_id: u32, pid_mappings_cache: &PIDCache, cgroups_reader: &CgroupsReader,
 ) -> Option<EntityId> {
     // First, check our PID mapping cache.
-    //
-    // TODO: This should be an actual cache, with expiration, because PIDs will eventually get recycled so we
-    // shouldn't keep results forever, but perhaps most important: this is a slow memory leak generator otherwise.
-    //
-    // This is simply a stopgap to make sure this functionality, overall, works for the purposes of origin
-    // detection.
     if let Some(container_id) = pid_mappings_cache.get(&process_id) {
         trace!(
             "Resolved PID {} to container ID {} from cache.",

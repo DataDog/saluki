@@ -1,9 +1,9 @@
-use containerd_client::types::Envelope;
+use containerd_protos::types::Envelope;
 use prost::{DecodeError, Name};
 use stringtheory::MetaString;
 
 mod containerd_events {
-    pub use containerd_client::events::*;
+    pub use containerd_protos::events::*;
 }
 
 /// Containerd event topics.

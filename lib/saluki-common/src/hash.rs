@@ -13,7 +13,7 @@ use sha3::digest::{ExtendableOutput as _, Update as _};
 /// Currently, [`foldhash`][foldhash] is used as the underlying implementation.
 ///
 /// [foldhash]: http://github.com/orlp/foldhash
-pub type FastHasher = foldhash::quality::FoldHasher;
+pub type FastHasher = foldhash::quality::FoldHasher<'static>;
 
 /// [`BuildHasher`] implementation for [`FastHasher`].
 pub type FastBuildHasher = foldhash::quality::RandomState;

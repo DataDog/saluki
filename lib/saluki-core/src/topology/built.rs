@@ -19,9 +19,11 @@ use super::{
 };
 use crate::{
     components::{
+        decoders::{Decoder, DecoderContext},
         destinations::{Destination, DestinationContext},
         encoders::{Encoder, EncoderContext},
         forwarders::{Forwarder, ForwarderContext},
+        relays::{Relay, RelayContext},
         sources::{Source, SourceContext},
         transforms::{Transform, TransformContext},
         ComponentContext, ComponentType,
@@ -39,6 +41,8 @@ pub struct BuiltTopology {
     name: String,
     graph: Graph,
     sources: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Source + Send>>>>,
+    relays: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Relay + Send>>>>,
+    decoders: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Decoder + Send>>>>,
     transforms: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Transform + Send>>>>,
     destinations: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Destination + Send>>>>,
     encoders: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Encoder + Send>>>>,
@@ -52,6 +56,8 @@ impl BuiltTopology {
     pub(crate) fn from_parts(
         name: String, graph: Graph,
         sources: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Source + Send>>>>,
+        relays: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Relay + Send>>>>,
+        decoders: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Decoder + Send>>>>,
         transforms: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Transform + Send>>>>,
         destinations: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Destination + Send>>>>,
         encoders: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Encoder + Send>>>>,
@@ -62,6 +68,8 @@ impl BuiltTopology {
             name,
             graph,
             sources,
+            relays,
+            decoders,
             transforms,
             destinations,
             encoders,
@@ -91,6 +99,10 @@ impl BuiltTopology {
             .build()
             .error_context("Failed to build asynchronous thread pool runtime.")?;
         let thread_pool_handle = thread_pool.handle().clone();
+
+        std::thread::spawn(move || {
+            thread_pool.block_on(std::future::pending::<()>());
+        });
 
         let topology_context = TopologyContext::new(memory_limiter, health_registry.clone(), thread_pool_handle);
 
@@ -132,6 +144,70 @@ impl BuiltTopology {
                 component_context,
                 alloc_group,
                 source.run(context),
+            );
+            component_task_map.insert(task_handle.id(), component_id);
+        }
+
+        // Spawn our relays.
+        for (component_id, relay) in self.relays {
+            let (relay, component_registry) = relay.into_parts();
+
+            let dispatcher = interconnects
+                .take_relay_dispatcher(&component_id)
+                .ok_or_else(|| generic_error!("No payloads dispatcher found for relay component '{}'", component_id))?;
+
+            let shutdown_handle = shutdown_coordinator.register();
+            let health_handle = health_registry
+                .register_component(format!("{}.relays.{}", root_component_name, component_id))
+                .expect("duplicate relay component ID in health registry");
+
+            let component_context = ComponentContext::relay(component_id.clone());
+            let context = RelayContext::new(
+                &topology_context,
+                &component_context,
+                component_registry,
+                shutdown_handle,
+                health_handle,
+                dispatcher,
+            );
+
+            let (alloc_group, relay) = relay.into_parts();
+            let task_handle = spawn_component(&mut component_tasks, component_context, alloc_group, relay.run(context));
+            component_task_map.insert(task_handle.id(), component_id);
+        }
+
+        // Spawn our decoders.
+        for (component_id, decoder) in self.decoders {
+            let (decoder, component_registry) = decoder.into_parts();
+
+            let dispatcher = interconnects
+                .take_decoder_dispatcher(&component_id)
+                .ok_or_else(|| generic_error!("No events dispatcher found for decoder component '{}'", component_id))?;
+
+            let consumer = interconnects
+                .take_decoder_consumer(&component_id)
+                .ok_or_else(|| generic_error!("No payloads consumer found for decoder component '{}'", component_id))?;
+
+            let health_handle = health_registry
+                .register_component(format!("{}.decoders.{}", root_component_name, component_id))
+                .expect("duplicate decoder component ID in health registry");
+
+            let component_context = ComponentContext::decoder(component_id.clone());
+            let context = DecoderContext::new(
+                &topology_context,
+                &component_context,
+                component_registry,
+                health_handle,
+                dispatcher,
+                consumer,
+            );
+
+            let (alloc_group, decoder) = decoder.into_parts();
+            let task_handle = spawn_component(
+                &mut component_tasks,
+                component_context,
+                alloc_group,
+                decoder.run(context),
             );
             component_task_map.insert(task_handle.id(), component_id);
         }
@@ -271,7 +347,6 @@ impl BuiltTopology {
         }
 
         Ok(RunningTopology::from_parts(
-            thread_pool,
             shutdown_coordinator,
             component_tasks,
             component_task_map,
@@ -282,6 +357,9 @@ impl BuiltTopology {
 struct ComponentInterconnects {
     interconnect_capacity: NonZeroUsize,
     source_dispatchers: HashMap<ComponentId, EventsDispatcher>,
+    relay_dispatchers: HashMap<ComponentId, PayloadsDispatcher>,
+    decoder_consumers: HashMap<ComponentId, (mpsc::Sender<PayloadsBuffer>, PayloadsConsumer)>,
+    decoder_dispatchers: HashMap<ComponentId, EventsDispatcher>,
     transform_consumers: HashMap<ComponentId, (mpsc::Sender<EventsBuffer>, EventsConsumer)>,
     transform_dispatchers: HashMap<ComponentId, EventsDispatcher>,
     destination_consumers: HashMap<ComponentId, (mpsc::Sender<EventsBuffer>, EventsConsumer)>,
@@ -295,6 +373,9 @@ impl ComponentInterconnects {
         let mut interconnects = Self {
             interconnect_capacity,
             source_dispatchers: HashMap::new(),
+            relay_dispatchers: HashMap::new(),
+            decoder_consumers: HashMap::new(),
+            decoder_dispatchers: HashMap::new(),
             transform_consumers: HashMap::new(),
             transform_dispatchers: HashMap::new(),
             destination_consumers: HashMap::new(),
@@ -309,6 +390,20 @@ impl ComponentInterconnects {
 
     fn take_source_dispatcher(&mut self, component_id: &ComponentId) -> Option<EventsDispatcher> {
         self.source_dispatchers.remove(component_id)
+    }
+
+    fn take_relay_dispatcher(&mut self, component_id: &ComponentId) -> Option<PayloadsDispatcher> {
+        self.relay_dispatchers.remove(component_id)
+    }
+
+    fn take_decoder_dispatcher(&mut self, component_id: &ComponentId) -> Option<EventsDispatcher> {
+        self.decoder_dispatchers.remove(component_id)
+    }
+
+    fn take_decoder_consumer(&mut self, component_id: &ComponentId) -> Option<PayloadsConsumer> {
+        self.decoder_consumers
+            .remove(component_id)
+            .map(|(_, consumer)| consumer)
     }
 
     fn take_transform_dispatcher(&mut self, component_id: &ComponentId) -> Option<EventsDispatcher> {
@@ -351,12 +446,14 @@ impl ComponentInterconnects {
         let outbound_edges = graph.get_outbound_directed_edges();
         for (upstream_id, output_map) in outbound_edges {
             match upstream_id.component_type() {
-                ComponentType::Source | ComponentType::Transform => {
+                ComponentType::Source | ComponentType::Decoder | ComponentType::Transform => {
                     self.generate_event_interconnect(upstream_id, output_map)?;
                 }
-                ComponentType::Encoder => self.generate_payload_interconnect(upstream_id, output_map)?,
+                ComponentType::Relay | ComponentType::Encoder => {
+                    self.generate_payload_interconnect(upstream_id, output_map)?
+                }
                 _ => panic!(
-                    "Only sources, transforms, and encoders can dispatch events/payloads to downstream components."
+                    "Only sources, decoders, transforms, relays, and encoders can dispatch events/payloads to downstream components."
                 ),
             }
         }
@@ -416,12 +513,16 @@ impl ComponentInterconnects {
                 .source_dispatchers
                 .entry(component_id)
                 .or_insert_with(|| EventsDispatcher::new(component_context)),
+            ComponentType::Decoder => self
+                .decoder_dispatchers
+                .entry(component_id)
+                .or_insert_with(|| EventsDispatcher::new(component_context)),
             ComponentType::Transform => self
                 .transform_dispatchers
                 .entry(component_id)
                 .or_insert_with(|| EventsDispatcher::new(component_context)),
             _ => {
-                panic!("Only sources and transforms can dispatch events to downstream components.")
+                panic!("Only sources, decoders, and transforms can dispatch events to downstream components.")
             }
         }
     }
@@ -453,12 +554,16 @@ impl ComponentInterconnects {
         let (component_id, component_type, component_context) = component_id.into_parts();
 
         match component_type {
+            ComponentType::Relay => self
+                .relay_dispatchers
+                .entry(component_id)
+                .or_insert_with(|| PayloadsDispatcher::new(component_context)),
             ComponentType::Encoder => self
                 .encoder_dispatchers
                 .entry(component_id)
                 .or_insert_with(|| PayloadsDispatcher::new(component_context)),
             _ => {
-                panic!("Only encoders can dispatch payloads to downstream components.")
+                panic!("Only relays and encoders can dispatch payloads to downstream components.")
             }
         }
     }
@@ -468,11 +573,15 @@ impl ComponentInterconnects {
         let interconnect_capacity = self.interconnect_capacity;
 
         let (sender, _) = match component_type {
+            ComponentType::Decoder => self
+                .decoder_consumers
+                .entry(component_id)
+                .or_insert_with(|| build_payloads_consumer_pair(component_context, interconnect_capacity)),
             ComponentType::Forwarder => self
                 .forwarder_consumers
                 .entry(component_id)
                 .or_insert_with(|| build_payloads_consumer_pair(component_context, interconnect_capacity)),
-            _ => panic!("Only forwarders can consume payloads."),
+            _ => panic!("Only decoders and forwarders can consume payloads."),
         };
 
         sender.clone()

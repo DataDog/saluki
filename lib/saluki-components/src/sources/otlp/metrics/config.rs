@@ -49,7 +49,7 @@ impl Default for InitialCumulMonoValueMode {
 
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
-pub struct OtlpTranslatorConfig {
+pub struct OtlpMetricsTranslatorConfig {
     pub hist_mode: HistogramMode,
     pub send_histogram_aggregations: bool,
     pub number_mode: NumberMode,
@@ -70,7 +70,7 @@ pub struct OtlpTranslatorConfig {
 }
 
 #[allow(dead_code)]
-impl OtlpTranslatorConfig {
+impl OtlpMetricsTranslatorConfig {
     pub fn with_remapping(mut self, with_remapping: bool) -> Self {
         self.with_remapping = with_remapping;
         if with_remapping {
@@ -129,14 +129,14 @@ impl OtlpTranslatorConfig {
     }
 }
 
-impl Default for OtlpTranslatorConfig {
+impl Default for OtlpMetricsTranslatorConfig {
     fn default() -> Self {
         Self {
             hist_mode: HistogramMode::default(),
             send_histogram_aggregations: true,
             number_mode: NumberMode::default(),
             initial_cumul_mono_value_mode: InitialCumulMonoValueMode::default(),
-            instrumentation_scope_metadata_as_tags: false,
+            instrumentation_scope_metadata_as_tags: true,
             instrumentation_library_metadata_as_tags: false,
             with_remapping: false,
             with_otel_prefix: false,

@@ -4,7 +4,7 @@ include:
 stages:
   - test
   - build
-  - correctness
+  - e2e
   - benchmark
   - release
   - internal
@@ -19,19 +19,20 @@ workflow:
       variables:
         BASE_ADP_IMAGE_VERSION: "v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}"
         APP_DEV_BUILD: "true"
+        BUILD_PROFILE: "release"
 
     - if: $CI_COMMIT_TAG
       variables:
         BASE_ADP_IMAGE_VERSION: ${CI_COMMIT_TAG}
         APP_DEV_BUILD: "false"
+        BUILD_PROFILE: "optimized-release"
 
 variables:
   # High-level repository paths we build off of, and dedicated images needed for various jobs.
   IMAGE_REGISTRY: "registry.ddbuild.io"
-  DOCKER_BUILD_IMAGE: "${IMAGE_REGISTRY}/docker:24.0.4-jammy"
+  DOCKER_BUILD_IMAGE: "${IMAGE_REGISTRY}/docker:27.3.1"
   GBI_BASE_IMAGE: "${IMAGE_REGISTRY}/images/base/gbi-ubuntu_2404:release"
   PUBLIC_BASE_IMAGE: "${IMAGE_REGISTRY}/images/mirror/ubuntu:24.04"
-  ALPINE_BUILD_IMAGE: "${IMAGE_REGISTRY}/images/mirror/alpine:3.20"
 
   # Base repository paths for where our CI images go, whether they're helper images or actual
   # output artifacts like ADP itself.
@@ -43,8 +44,8 @@ variables:
 
   # Converged Datadog Agent-specific variables, which control how we build the converged Datadog Agent image that we
   # publicly publish.
-  PUBLIC_DSD_VERSION: "7.68.3"
-  PUBLIC_DD_AGENT_VERSION: "7.68.3-jmx"
+  PUBLIC_DSD_VERSION: "7.75.0"
+  PUBLIC_DD_AGENT_VERSION: "7.75.0-jmx"
 
   # Base images to copy Agent Data Plane into, depending on whether the image is meant for our internal environment or
   # public registries.
@@ -56,6 +57,7 @@ variables:
   ADP_BUILD_IMAGE: "${SALUKI_BUILD_CI_IMAGE}"
 
   ADP_IMAGE_REPO_NAME: "${SALUKI_IMAGE_REPO_PREFIX}/agent-data-plane"
+  ADP_IMAGE_REPO_BASE: "${SALUKI_IMAGE_REPO_BASE}/agent-data-plane"
 
   # The image version depending on whether this is an official release or not: v3727183-d55fef5a (not official) va
   # 0.1.10 (official), etc.
@@ -90,13 +92,36 @@ default:
   rules:
     if: $CI_COMMIT_BRANCH != "main" && $CI_COMMIT_TAG == null
 
+# We're running on an MQ branch.
+.on_mq_branch:
+  rules:
+    if: $CI_COMMIT_BRANCH =~ /^mq-working-branch/
+
 # Common build-specific variables that need to be shared across stages.
 .build-common-variables:
   variables:
-    BUILD_PROFILE: "optimized-release"
     BUILD_FEATURES: "default"
-    BUILDER_BASE: "builder"
-    FIPS_ENABLED: "false"
+    KUBERNETES_CPU_REQUEST: "24"
+    KUBERNETES_MEMORY_REQUEST: "24Gi"
+    KUBERNETES_MEMORY_LIMIT: "48Gi"
+
+.build-amd64-variables:
+  variables:
+    BUILD_ARCH: amd64
+    BUILD_TARGET: x86_64-unknown-linux-musl
+
+.build-arm64-variables:
+  variables:
+    BUILD_ARCH: arm64
+    BUILD_TARGET: aarch64-unknown-linux-musl
+    # There's an issue with cross-compiling for ARM64 from the GNU toolchain
+    # due to MUSL's lack of support for `__getauxval`, which is needed for
+    # "outline atomics", which involves runtime detection of LSE instructions
+    # used for atomics.
+    #
+    # Without this, `jemalloc` fails to compile due to how it detects support
+    # for different atomic operations.
+    BUILD_CFLAGS: "-mno-outline-atomics"
 
 .linux-test-job:
   image: "${SALUKI_BUILD_CI_IMAGE}"
@@ -127,7 +152,7 @@ default:
     KUBERNETES_MEMORY_LIMIT: "12Gi"
 
 .macos-amd64-test-job:
-  tags: ["macos:ventura-amd64", "specific:true"]
+  tags: ["macos:sonoma-amd64", "specific:true"]
 
 .macos-arm64-test-job:
-  tags: ["macos:ventura-arm64", "specific:true"]
+  tags: ["macos:sonoma-arm64", "specific:true"]

@@ -10,7 +10,6 @@ use saluki_core::{
 };
 use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
-use serde::Deserialize;
 use stringtheory::MetaString;
 use tokio::select;
 use tracing::debug;
@@ -28,24 +27,23 @@ use crate::common::datadog::{
 /// Forwards Datadog-specific payloads to the Datadog platform. Handles the standard Datadog Agent configuration,
 /// in terms of specifying additional endpoints, adding the necessary HTTP request headers for authentication,
 /// identification, and more.
-#[derive(Deserialize)]
 pub struct DatadogConfiguration {
     /// Forwarder configuration settings.
     ///
     /// See [`ForwarderConfiguration`] for more information about the available settings.
-    #[serde(flatten)]
     forwarder_config: ForwarderConfiguration,
 
-    #[serde(skip)]
     configuration: Option<GenericConfiguration>,
 }
 
 impl DatadogConfiguration {
     /// Creates a new `DatadogConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let mut forwarder_config: DatadogConfiguration = config.as_typed()?;
-        forwarder_config.configuration = Some(config.clone());
-        Ok(forwarder_config)
+        let forwarder_config = ForwarderConfiguration::from_configuration(config)?;
+        Ok(Self {
+            forwarder_config,
+            configuration: Some(config.clone()),
+        })
     }
 
     /// Overrides the default endpoint that payloads are sent to.
@@ -156,7 +154,7 @@ impl Forwarder for Datadog {
                         let transaction = Transaction::from_original(transaction_meta, request);
 
                         forwarder.send_transaction(transaction).await?;
-                    },
+                    }
                     None => break,
                 },
             }
@@ -178,6 +176,7 @@ fn get_dd_endpoint_name(uri: &Uri) -> Option<MetaString> {
         "/api/beta/sketches" => Some(MetaString::from_static("sketches_v2")),
         "/api/v1/check_run" => Some(MetaString::from_static("check_run_v1")),
         "/api/v1/events_batch" => Some(MetaString::from_static("events_batch_v1")),
+        "/api/v0.2/traces" => Some(MetaString::from_static("traces_v0.2")),
         _ => None,
     }
 }

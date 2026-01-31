@@ -23,7 +23,7 @@ pub struct EventPacket<'a> {
     pub alert_type: Option<AlertType>,
     pub source_type_name: Option<&'a str>,
     pub tags: RawTags<'a>,
-    pub container_id: Option<&'a str>,
+    pub local_data: Option<&'a str>,
     pub external_data: Option<&'a str>,
     pub cardinality: Option<OriginTagCardinality>,
 }
@@ -72,7 +72,7 @@ pub fn parse_dogstatsd_event<'a>(
     let mut maybe_aggregation_key = None;
     let mut maybe_source_type = None;
     let mut maybe_tags = None;
-    let mut maybe_container_id = None;
+    let mut maybe_local_data = None;
     let mut maybe_external_data = None;
     let mut maybe_cardinality = None;
 
@@ -118,11 +118,10 @@ pub fn parse_dogstatsd_event<'a>(
                         all_consuming(preceded(tag(ALERT_TYPE_PREFIX), ascii_alphanum_and_seps)).parse(chunk)?;
                     maybe_alert_type = AlertType::try_from_string(alert_type);
                 }
-                // Container ID: client-provided container ID for the container that this event originated from.
-                CONTAINER_ID_PREFIX => {
-                    let (_, container_id) =
-                        all_consuming(preceded(tag(CONTAINER_ID_PREFIX), container_id)).parse(chunk)?;
-                    maybe_container_id = Some(container_id);
+                // Local Data: client-provided data used for resolving the entity ID that this event originated from.
+                LOCAL_DATA_PREFIX => {
+                    let (_, local_data) = all_consuming(preceded(tag(LOCAL_DATA_PREFIX), local_data)).parse(chunk)?;
+                    maybe_local_data = Some(local_data);
                 }
                 // External Data: client-provided data used for resolving the entity ID that this event originated from.
                 EXTERNAL_DATA_PREFIX => {
@@ -165,7 +164,7 @@ pub fn parse_dogstatsd_event<'a>(
         priority: maybe_priority,
         alert_type: maybe_alert_type,
         source_type_name: maybe_source_type,
-        container_id: maybe_container_id,
+        local_data: maybe_local_data,
         external_data: maybe_external_data,
         cardinality: maybe_cardinality,
     };
@@ -322,7 +321,7 @@ mod tests {
         let event_source_type = MetaString::from("testsource");
         let event_alert_type = AlertType::Success;
         let event_timestamp = 1234567890;
-        let event_container_id = "abcdef123456";
+        let event_local_data = "abcdef123456";
         let event_external_data = "it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183";
         let event_cardinality = "low";
         let tags = ["tags1", "tags2"];
@@ -339,7 +338,7 @@ mod tests {
             event_source_type,
             event_alert_type,
             event_timestamp,
-            event_container_id,
+            event_local_data,
             event_external_data,
             event_cardinality,
             tags.join(","),
@@ -357,7 +356,7 @@ mod tests {
 
         let config = DogstatsdCodecConfiguration::default();
         let (_, packet) = parse_dogstatsd_event(raw.as_bytes(), &config).expect("should not fail to parse");
-        assert_eq!(packet.container_id, Some(event_container_id));
+        assert_eq!(packet.local_data, Some(event_local_data));
         assert_eq!(packet.external_data, Some(event_external_data));
         assert_eq!(packet.cardinality, Some(OriginTagCardinality::Low));
     }

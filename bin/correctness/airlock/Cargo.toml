@@ -10,16 +10,6 @@ workspace = true
 
 [dependencies]
 bollard = { workspace = true, features = ["http", "pipe"] }
-clap = { workspace = true, features = [
-  "std",
-  "color",
-  "derive",
-  "help",
-  "wrap_help",
-  "usage",
-  "error-context",
-  "suggestions",
-] }
 futures = { workspace = true }
 saluki-error = { workspace = true }
 tokio = { workspace = true, features = [
