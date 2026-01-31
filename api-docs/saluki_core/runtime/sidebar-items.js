@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["RestartMode","ShutdownStrategy","SupervisorError"],"struct":["ProcessShutdown","RestartStrategy","ShutdownHandle","Supervisor"],"trait":["Supervisable"],"type":["SupervisorFuture"]};
