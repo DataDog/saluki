@@ -243,7 +243,7 @@ impl Source for Otlp {
         let memory_limiter = context.topology_context().memory_limiter();
 
         // Create the internal channel for decoupling the servers from the converter.
-        let (tx, rx) = mpsc::channel::<OtlpResource>(1024);
+        let (tx, rx) = mpsc::channel::<OtlpResource>(256);
 
         let mut converter_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
