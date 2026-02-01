@@ -10,6 +10,7 @@ use tokio::{
 use tracing::{debug, error, warn};
 
 use super::{
+    dedicated::{spawn_dedicated_runtime, RuntimeConfiguration, RuntimeMode},
     restart::{RestartAction, RestartMode, RestartState, RestartStrategy},
     shutdown::{ProcessShutdown, ShutdownHandle},
 };
@@ -141,10 +142,23 @@ impl ChildSpecification {
                 let process = Process::supervisor(&sup.supervisor_id, Some(parent_process)).context(InvalidName {
                     name: sup.supervisor_id.to_string(),
                 })?;
-                Ok(Some((
-                    process.clone(),
-                    sup.as_nested_process(process, process_shutdown),
-                )))
+
+                match sup.runtime_mode() {
+                    RuntimeMode::Ambient => {
+                        // Run on the parent's ambient runtime.
+                        Ok(Some((
+                            process.clone(),
+                            sup.as_nested_process(process, process_shutdown),
+                        )))
+                    }
+                    RuntimeMode::Dedicated(config) => {
+                        // Spawn in a dedicated runtime on a new OS thread.
+                        let handle = spawn_dedicated_runtime(sup.inner_clone(), config.clone(), process_shutdown)
+                            .map_err(|_| SupervisorError::FailedToInitialize)?;
+
+                        Ok(Some((process, Box::pin(handle))))
+                    }
+                }
             }
         }
     }
@@ -204,6 +218,7 @@ pub struct Supervisor {
     supervisor_id: Arc<str>,
     child_specs: Vec<ChildSpecification>,
     restart_strategy: RestartStrategy,
+    runtime_mode: RuntimeMode,
 }
 
 impl Supervisor {
@@ -222,13 +237,38 @@ impl Supervisor {
             supervisor_id: supervisor_id.as_ref().into(),
             child_specs: Vec::new(),
             restart_strategy: RestartStrategy::default(),
+            runtime_mode: RuntimeMode::default(),
         })
+    }
+
+    /// Returns the supervisor's ID.
+    pub fn id(&self) -> &str {
+        &self.supervisor_id
     }
 
     /// Sets the restart strategy for the supervisor.
     pub fn with_restart_strategy(mut self, strategy: RestartStrategy) -> Self {
         self.restart_strategy = strategy;
         self
+    }
+
+    /// Configures this supervisor to run in a dedicated runtime.
+    ///
+    /// When this supervisor is added as a child to another supervisor, it will spawn its own
+    /// OS thread(s) and Tokio runtime instead of running on the parent's ambient runtime.
+    ///
+    /// This provides runtime isolation, which can be useful for:
+    /// - CPU-bound work that shouldn't block the parent's runtime
+    /// - Isolating failures in one part of the system
+    /// - Using different runtime configurations (e.g., single-threaded vs multi-threaded)
+    pub fn with_dedicated_runtime(mut self, config: RuntimeConfiguration) -> Self {
+        self.runtime_mode = RuntimeMode::Dedicated(config);
+        self
+    }
+
+    /// Returns the runtime mode for this supervisor.
+    pub(crate) fn runtime_mode(&self) -> &RuntimeMode {
+        &self.runtime_mode
     }
 
     /// Adds a worker to the supervisor.
@@ -372,6 +412,21 @@ impl Supervisor {
     /// If the supervisor exceeds its restart limits, or fails to initialize a child process, an error is returned.
     pub async fn run_with_shutdown<F: Future + Send + 'static>(&mut self, shutdown: F) -> Result<(), SupervisorError> {
         let process_shutdown = ProcessShutdown::wrapped(shutdown);
+        self.run_with_process_shutdown(process_shutdown).await
+    }
+
+    /// Runs the supervisor until the given `ProcessShutdown` signal is received.
+    ///
+    /// This is an internal variant of `run_with_shutdown` that takes a `ProcessShutdown` directly,
+    /// used when spawning supervisors in dedicated runtimes where the shutdown signal is already
+    /// wrapped in a `ProcessShutdown`.
+    ///
+    /// # Errors
+    ///
+    /// If the supervisor exceeds its restart limits, or fails to initialize a child process, an error is returned.
+    pub(crate) async fn run_with_process_shutdown(
+        &mut self, process_shutdown: ProcessShutdown,
+    ) -> Result<(), SupervisorError> {
         let process = Process::supervisor(&self.supervisor_id, None).context(InvalidName {
             name: self.supervisor_id.to_string(),
         })?;
@@ -390,6 +445,7 @@ impl Supervisor {
             supervisor_id: Arc::clone(&self.supervisor_id),
             child_specs: self.child_specs.clone(),
             restart_strategy: self.restart_strategy,
+            runtime_mode: self.runtime_mode.clone(),
         }
     }
 }
