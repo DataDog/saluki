@@ -1023,7 +1023,7 @@
 <a href=#1023 id=1023 data-nosnippet>1023</a>
 <a href=#1024 id=1024 data-nosnippet>1024</a>        <span class="comment">// Create four unique gauges, and insert all of them. The third and fourth should fail because we've reached
 <a href=#1025 id=1025 data-nosnippet>1025</a>        // the context limit.
-<a href=#1026 id=1026 data-nosnippet>1026</a>        </span><span class="kw">let </span>input_metrics = <span class="macro">vec!</span>[
+<a href=#1026 id=1026 data-nosnippet>1026</a>        </span><span class="kw">let </span>input_metrics = [
 <a href=#1027 id=1027 data-nosnippet>1027</a>            Metric::gauge(<span class="string">"metric1"</span>, <span class="number">1.0</span>),
 <a href=#1028 id=1028 data-nosnippet>1028</a>            Metric::gauge(<span class="string">"metric2"</span>, <span class="number">2.0</span>),
 <a href=#1029 id=1029 data-nosnippet>1029</a>            Metric::gauge(<span class="string">"metric3"</span>, <span class="number">3.0</span>),
@@ -1064,7 +1064,7 @@
 <a href=#1064 id=1064 data-nosnippet>1064</a>        );
 <a href=#1065 id=1065 data-nosnippet>1065</a>
 <a href=#1066 id=1066 data-nosnippet>1066</a>        <span class="comment">// Create our input metrics.
-<a href=#1067 id=1067 data-nosnippet>1067</a>        </span><span class="kw">let </span>input_metrics = <span class="macro">vec!</span>[
+<a href=#1067 id=1067 data-nosnippet>1067</a>        </span><span class="kw">let </span>input_metrics = [
 <a href=#1068 id=1068 data-nosnippet>1068</a>            Metric::counter(<span class="string">"metric1"</span>, <span class="number">1.0</span>),
 <a href=#1069 id=1069 data-nosnippet>1069</a>            Metric::counter(<span class="string">"metric2"</span>, <span class="number">2.0</span>),
 <a href=#1070 id=1070 data-nosnippet>1070</a>            Metric::counter(<span class="string">"metric3"</span>, <span class="number">3.0</span>),
@@ -1119,7 +1119,7 @@
 <a href=#1119 id=1119 data-nosnippet>1119</a>        );
 <a href=#1120 id=1120 data-nosnippet>1120</a>
 <a href=#1121 id=1121 data-nosnippet>1121</a>        <span class="comment">// Create two unique counters, and insert both of them.
-<a href=#1122 id=1122 data-nosnippet>1122</a>        </span><span class="kw">let </span>input_metrics = <span class="macro">vec!</span>[Metric::counter(<span class="string">"metric1"</span>, <span class="number">1.0</span>), Metric::counter(<span class="string">"metric2"</span>, <span class="number">2.0</span>)];
+<a href=#1122 id=1122 data-nosnippet>1122</a>        </span><span class="kw">let </span>input_metrics = [Metric::counter(<span class="string">"metric1"</span>, <span class="number">1.0</span>), Metric::counter(<span class="string">"metric2"</span>, <span class="number">2.0</span>)];
 <a href=#1123 id=1123 data-nosnippet>1123</a>
 <a href=#1124 id=1124 data-nosnippet>1124</a>        <span class="macro">assert!</span>(state.insert(insert_ts(<span class="number">1</span>), input_metrics[<span class="number">0</span>].clone()));
 <a href=#1125 id=1125 data-nosnippet>1125</a>        <span class="macro">assert!</span>(state.insert(insert_ts(<span class="number">1</span>), input_metrics[<span class="number">1</span>].clone()));
