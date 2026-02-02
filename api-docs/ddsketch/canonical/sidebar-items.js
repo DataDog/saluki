@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["ProtoConversionError"],"mod":["mapping","store"],"struct":["DDSketch"]};
+window.SIDEBAR_ITEMS = {"enum":["ProtoConversionError"],"mod":["mapping","store"],"struct":["DDSketch","PositiveOnlyDDSketch"]};

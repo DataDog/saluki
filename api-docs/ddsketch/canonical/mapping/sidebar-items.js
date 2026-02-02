@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["LogarithmicMapping"],"trait":["IndexMapping"]};
+window.SIDEBAR_ITEMS = {"struct":["FixedLogarithmicMapping","LogarithmicMapping"],"trait":["IndexMapping"]};
