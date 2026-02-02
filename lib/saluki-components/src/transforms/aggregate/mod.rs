@@ -1023,7 +1023,7 @@ mod tests {
 
         // Create four unique gauges, and insert all of them. The third and fourth should fail because we've reached
         // the context limit.
-        let input_metrics = vec![
+        let input_metrics = [
             Metric::gauge("metric1", 1.0),
             Metric::gauge("metric2", 2.0),
             Metric::gauge("metric3", 3.0),
@@ -1064,7 +1064,7 @@ mod tests {
         );
 
         // Create our input metrics.
-        let input_metrics = vec![
+        let input_metrics = [
             Metric::counter("metric1", 1.0),
             Metric::counter("metric2", 2.0),
             Metric::counter("metric3", 3.0),
@@ -1119,7 +1119,7 @@ mod tests {
         );
 
         // Create two unique counters, and insert both of them.
-        let input_metrics = vec![Metric::counter("metric1", 1.0), Metric::counter("metric2", 2.0)];
+        let input_metrics = [Metric::counter("metric1", 1.0), Metric::counter("metric2", 2.0)];
 
         assert!(state.insert(insert_ts(1), input_metrics[0].clone()));
         assert!(state.insert(insert_ts(1), input_metrics[1].clone()));
