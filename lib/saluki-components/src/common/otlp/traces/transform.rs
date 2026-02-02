@@ -443,7 +443,7 @@ fn get_otel_operation_name_v2(
             string_builder.clear();
             let _ = string_builder.push_str(db_system.as_ref());
             let _ = string_builder.push_str(".query");
-            return MetaString::from_interner(string_builder.as_str(), interner);
+            return string_builder.to_meta_string();
         }
     }
 
@@ -470,7 +470,7 @@ fn get_otel_operation_name_v2(
                 let _ = string_builder.push_str(system.as_ref());
                 let _ = string_builder.push('.');
                 let _ = string_builder.push_str(operation.as_ref());
-                return MetaString::from_interner(string_builder.as_str(), interner);
+                return string_builder.to_meta_string();
             }
             _ => {}
         }
@@ -486,7 +486,7 @@ fn get_otel_operation_name_v2(
                 let _ = string_builder.push_str("aws.");
                 let _ = string_builder.push_str(service.as_ref());
                 let _ = string_builder.push_str(".request");
-                return MetaString::from_interner(string_builder.as_str(), interner);
+                return string_builder.to_meta_string();
             }
             return MetaString::from_static("aws.client.request");
         }
@@ -495,13 +495,13 @@ fn get_otel_operation_name_v2(
             string_builder.clear();
             let _ = string_builder.push_str(rpc_system.as_ref());
             let _ = string_builder.push_str(".client.request");
-            return MetaString::from_interner(string_builder.as_str(), interner);
+            return string_builder.to_meta_string();
         }
         if is_server {
             string_builder.clear();
             let _ = string_builder.push_str(rpc_system.as_ref());
             let _ = string_builder.push_str(".server.request");
-            return MetaString::from_interner(string_builder.as_str(), interner);
+            return string_builder.to_meta_string();
         }
     }
 
@@ -528,7 +528,7 @@ fn get_otel_operation_name_v2(
             let _ = string_builder.push('.');
             let _ = string_builder.push_str(invoked.as_ref());
             let _ = string_builder.push_str(".invoke");
-            return MetaString::from_interner(string_builder.as_str(), interner);
+            return string_builder.to_meta_string();
         }
     }
     // FAAS server
@@ -537,7 +537,7 @@ fn get_otel_operation_name_v2(
             string_builder.clear();
             let _ = string_builder.push_str(trigger.as_ref());
             let _ = string_builder.push_str(".invoke");
-            return MetaString::from_interner(string_builder.as_str(), interner);
+            return string_builder.to_meta_string();
         }
     }
 
@@ -564,7 +564,7 @@ fn get_otel_operation_name_v2(
             string_builder.clear();
             let _ = string_builder.push_str(protocol.as_ref());
             let _ = string_builder.push_str(".server.request");
-            return MetaString::from_interner(string_builder.as_str(), interner);
+            return string_builder.to_meta_string();
         }
         return MetaString::from_static("server.request");
     }
@@ -579,7 +579,7 @@ fn get_otel_operation_name_v2(
             string_builder.clear();
             let _ = string_builder.push_str(protocol.as_ref());
             let _ = string_builder.push_str(".client.request");
-            return MetaString::from_interner(string_builder.as_str(), interner);
+            return string_builder.to_meta_string();
         }
         return MetaString::from_static("client.request");
     }
@@ -621,7 +621,7 @@ fn get_otel_resource_v2(
                 let _ = string_builder.push_str(route.as_ref());
             }
         }
-        return MetaString::from_interner(string_builder.as_str(), interner);
+        return string_builder.to_meta_string();
     }
 
     if let Some(operation) = use_both_maps(
@@ -644,7 +644,7 @@ fn get_otel_resource_v2(
                 let _ = string_builder.push_str(dest.as_ref());
             }
         }
-        return MetaString::from_interner(string_builder.as_str(), interner);
+        return string_builder.to_meta_string();
     }
 
     if let Some(method) = use_both_maps(span_attributes, resource_attributes, true, RPC_METHOD_KEY, interner) {
@@ -654,7 +654,7 @@ fn get_otel_resource_v2(
             let _ = string_builder.push(' ');
             let _ = string_builder.push_str(service.as_ref());
         }
-        return MetaString::from_interner(string_builder.as_str(), interner);
+        return string_builder.to_meta_string();
     }
 
     // Enrich GraphQL query resource names.
@@ -1153,7 +1153,7 @@ fn get_dd_key_for_otlp_attribute(
         string_builder.clear();
         let _ = string_builder.push_str(HTTP_REQUEST_HEADERS_PREFIX);
         let _ = string_builder.push_str(header_suffix);
-        return Some(MetaString::from_interner(string_builder.as_str(), interner));
+        return Some(string_builder.to_meta_string());
     }
     if !is_datadog_apm_convention_key(key) {
         return Some(MetaString::from_interner(key, interner));
