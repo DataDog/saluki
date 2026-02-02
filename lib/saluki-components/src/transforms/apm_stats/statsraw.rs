@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use ddsketch::canonical::mapping::FixedLogarithmicMapping;
 use ddsketch::canonical::store::CollapsingLowestDenseStore;
 use ddsketch::canonical::PositiveOnlyDDSketch;
@@ -14,6 +16,12 @@ use super::aggregation::{
     HttpMethod, PayloadAggregationKey, SpanKind, TAG_SYNTHETICS,
 };
 use super::span_concentrator::StatSpan;
+
+static EMPTY_DDSKETCH_ENCODED: LazyLock<Vec<u8>> = LazyLock::new(|| {
+    let sketch = PositiveOnlyDDSketch::new(FixedLogarithmicMapping, CollapsingLowestDenseStore::new(2048));
+    let sketch_proto = sketch.to_proto();
+    sketch_proto.write_to_bytes().unwrap()
+});
 
 /// Type alias for DDSketch optimized for latencies (positive-only values).
 ///
@@ -54,7 +62,7 @@ impl GroupedStats {
             .err_distribution
             .as_ref()
             .map(|d| convert_to_ddsketch_proto_bytes(d))
-            .unwrap_or_default();
+            .unwrap_or_else(|| EMPTY_DDSKETCH_ENCODED.clone());
 
         ClientGroupedStats::new(bucket_agg_key.service, bucket_agg_key.name, bucket_agg_key.resource)
             .with_http_status_code(bucket_agg_key.status_code)
