@@ -47,11 +47,11 @@ impl FieldUpdateWatcher {
                     }
 
                     // If a new value was present but failed to deserialize, warn so we don't silently hide updates.
-                    if new_ref.is_some() {
+                    if let Some(new_ref) = new_ref {
                         warn!(
                             key = %self.key,
                             expected = %std::any::type_name::<T>(),
-                            actual = %get_type_name(new_ref.as_ref().unwrap()),
+                            actual = %get_type_name(new_ref),
                             "FieldUpdateWatcher failed to deserialize new value. Skipping update."
                         );
                     }
