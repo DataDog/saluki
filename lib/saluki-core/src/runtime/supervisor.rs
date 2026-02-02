@@ -237,7 +237,7 @@ where
 /// Supervisors automatically create their own allocation group
 /// ([`TrackingAllocator`][memory_accounting::allocator::TrackingAllocator]), which is used to track both the memory
 /// usage of the supervisor itself and its children. Additionally, individual worker processes are wrapped in a
-/// dedicated [`tracing::Span`] to allow tracing the casual relationship between arbitrary code and the worker executing
+/// dedicated [`tracing::Span`] to allow tracing the causal relationship between arbitrary code and the worker executing
 /// it.
 ///
 /// # Restart Strategies
@@ -512,7 +512,6 @@ impl WorkerState {
     async fn add_worker(&mut self, worker_id: usize, child_spec: &ChildSpecification) -> Result<(), SupervisorError> {
         let (process_shutdown, shutdown_handle) = ProcessShutdown::paired();
         let (process, worker) = child_spec.initialize(&self.process, process_shutdown).await?;
-
         let shutdown_strategy = child_spec.shutdown_strategy();
         let abort_handle = self.worker_tasks.spawn(worker.into_instrumented(process));
         self.worker_map.insert(
