@@ -109,8 +109,6 @@ pub async fn handle_run_command(
             .and_then(|c| c.get_session_id())
             .ok_or_else(|| generic_error!("Session ID unavailable after RAR registration"))?;
 
-        info!("Waiting for initial configuration from Datadog Agent...");
-
         let config_updates_receiver = create_config_stream(&bootstrap_config, session_id)
             .await
             .error_context("Failed to create configuration updates stream from control plane.")?;
@@ -128,8 +126,15 @@ pub async fn handle_run_command(
             .into_generic()
             .await?;
 
-        // Use bootstrap config for dp_config since dynamic config may not be ready yet
-        (dynamic_config, bootstrap_dp_config)
+        info!("Waiting for initial configuration from Datadog Agent...");
+        dynamic_config.ready().await;
+        info!("Initial configuration received.");
+
+        // Reload our data plane configuration based on the dynamic configuration.
+        let dynamic_dp_config = DataPlaneConfiguration::from_configuration(&dynamic_config)
+            .error_context("Failed to load data plane configuration.")?;
+
+        (dynamic_config, dynamic_dp_config)
     } else {
         // If dynamic configuration is disabled, the bootstrap configuration is already the complete and final configuration.
         (bootstrap_config, bootstrap_dp_config)

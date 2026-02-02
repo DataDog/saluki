@@ -9,9 +9,6 @@ container:
     DD_HOSTNAME: "integration-test"
     DD_DATA_PLANE_ENABLED: "false"
     DD_DATA_PLANE_STANDALONE_MODE: "false"
-    # Explicitly disable all pipelines to ensure clean exit
-    DD_DATA_PLANE_DOGSTATSD_ENABLED: "false"
-    DD_DATA_PLANE_OTLP_ENABLED: "false"
 
 assertions:
   # ADP should log that it's not enabled and exit
