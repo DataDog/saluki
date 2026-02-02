@@ -95,7 +95,7 @@ const DD_NAMESPACED_TO_APM_CONVENTIONS: &[(&str, &str)] = &[
 // https://github.com/DataDog/datadog-agent/blob/instrument-otlp-traffic/pkg/trace/transform/transform.go#L357
 pub fn otel_span_to_dd_span(
     otel_span: &OtlpSpan, otel_resource: &Resource, instrumentation_scope: Option<&OtlpInstrumentationScope>,
-    ignore_missing_fields: bool, compute_top_level_by_span_kind: bool,
+    ignore_missing_fields: bool, compute_top_level_by_span_kind: bool, trace_id_hex: Option<MetaString>,
 ) -> DdSpan {
     let span_attributes = &otel_span.attributes;
     let resource_attributes = &otel_resource.attributes;
@@ -117,7 +117,11 @@ pub fn otel_span_to_dd_span(
         map_attribute_generic(attribute, &mut meta, &mut metrics, ignore_missing_fields);
     }
 
-    if !otel_span.trace_id.is_empty() {
+    if let Some(trace_id_hex) = trace_id_hex {
+        if !trace_id_hex.is_empty() {
+            meta.insert(OTEL_TRACE_ID_META_KEY.into(), trace_id_hex);
+        }
+    } else if !otel_span.trace_id.is_empty() {
         meta.insert(
             OTEL_TRACE_ID_META_KEY.into(),
             bytes_to_hex_lowercase(&otel_span.trace_id).into(),
@@ -1112,7 +1116,7 @@ fn get_otel_status_code(
     None
 }
 
-fn bytes_to_hex_lowercase(bytes: &[u8]) -> String {
+pub(super) fn bytes_to_hex_lowercase(bytes: &[u8]) -> String {
     if bytes.is_empty() {
         return String::new();
     }
@@ -1591,7 +1595,7 @@ mod tests {
                 ..Default::default()
             };
 
-            let dd_span = otel_span_to_dd_span(&span, &resource, None, false, true);
+            let dd_span = otel_span_to_dd_span(&span, &resource, None, false, true, None);
             let meta = dd_span.meta();
 
             if tc.should_map {
