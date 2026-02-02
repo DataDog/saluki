@@ -96,22 +96,31 @@ impl Trace {
     }
 
     /// Retains only the spans specified by the predicate.
-    pub fn retain_spans<F>(&mut self, mut f: F)
+    ///
+    /// Returns the number of spans retained. If no spans match, the trace is left unchanged.
+    pub fn retain_spans<F>(&mut self, mut f: F) -> usize
     where
         F: FnMut(&Span) -> bool,
     {
         if self.spans.is_empty() {
-            return;
+            return 0;
         }
 
-        let mut kept = Vec::new();
-        for span in self.spans.drain(..) {
-            if f(&span) {
-                kept.push(span);
+        let mut has_match = false;
+        for span in self.spans.iter() {
+            if f(span) {
+                has_match = true;
+                break;
             }
         }
-        kept.shrink_to_fit();
-        self.spans = kept;
+
+        if !has_match {
+            return 0;
+        }
+
+        self.spans.retain(|span| f(span));
+        self.spans.shrink_to_fit();
+        self.spans.len()
     }
 
     /// Returns the resource-level tags associated with this trace.
