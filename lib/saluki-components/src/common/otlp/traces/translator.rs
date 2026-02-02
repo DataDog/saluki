@@ -69,10 +69,13 @@ impl OtlpTracesTranslator {
 
     pub fn translate_resource_spans(&mut self, resource_spans: ResourceSpans, metrics: &Metrics) -> Vec<Event> {
         let resource: OtlpResource = resource_spans.resource.unwrap_or_default();
-        let resource_tags: TagSet = resource_attributes_to_tagset(&resource.attributes, &mut self.string_builder);
+        let ignore_missing_fields = self.config.ignore_missing_datadog_fields;
+        let compute_top_level = self.config.enable_otlp_compute_top_level_by_span_kind;
+        let interner = &self.interner;
+        let string_builder = &mut self.string_builder;
+        let resource_tags: TagSet = resource_attributes_to_tagset(&resource.attributes, string_builder);
         let mut traces_by_id: FastHashMap<u64, Vec<DdSpan>> = FastHashMap::default();
         let mut priorities_by_id: FastHashMap<u64, i32> = FastHashMap::default();
-        let ignore_missing_fields = self.config.ignore_missing_datadog_fields;
 
         for scope_spans in resource_spans.scope_spans {
             let scope = scope_spans.scope;
@@ -85,8 +88,9 @@ impl OtlpTracesTranslator {
                     &resource,
                     scope_ref,
                     ignore_missing_fields,
-                    self.config.enable_otlp_compute_top_level_by_span_kind,
-                    &self.interner,
+                    compute_top_level,
+                    interner,
+                    string_builder,
                 );
 
                 // Track last-seen priority for this trace (overwrites previous values)
