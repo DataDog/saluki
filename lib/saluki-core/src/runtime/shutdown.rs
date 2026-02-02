@@ -1,8 +1,10 @@
 use std::{
     future::{pending, Future},
     pin::Pin,
+    task::{Context, Poll},
 };
 
+use futures::FutureExt as _;
 use tokio::sync::oneshot;
 
 /// A shutdown signal for a process.
@@ -62,6 +64,24 @@ impl ProcessShutdown {
     pub async fn wait_for_shutdown(&mut self) {
         if let Some(shutdown_rx) = self.shutdown.take() {
             let _ = shutdown_rx.await;
+        }
+    }
+}
+
+impl Future for ProcessShutdown {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if let Some(mut shutdown_rx) = self.shutdown.take() {
+            match shutdown_rx.poll_unpin(cx) {
+                Poll::Pending => {
+                    self.shutdown = Some(shutdown_rx);
+                    Poll::Pending
+                }
+                Poll::Ready(()) => Poll::Ready(()),
+            }
+        } else {
+            Poll::Ready(())
         }
     }
 }
