@@ -32,18 +32,20 @@ use stringtheory::MetaString;
 use tokio::{select, time::interval};
 use tracing::{debug, error};
 
-use crate::common::datadog::apm::ApmConfig;
-use crate::common::otlp::util::{extract_container_tags_from_resource_tagset, KEY_DATADOG_CONTAINER_ID};
+use crate::common::{
+    datadog::apm::ApmConfig,
+    otlp::util::{extract_container_tags_from_resource_tagset, KEY_DATADOG_CONTAINER_ID},
+};
 
 mod aggregation;
+use self::aggregation::{process_tags_hash, PayloadAggregationKey};
 
-use self::aggregation::process_tags_hash;
 mod span_concentrator;
-mod statsraw;
-mod weight;
-
-use self::aggregation::PayloadAggregationKey;
 use self::span_concentrator::{InfraTags, SpanConcentrator};
+
+mod statsraw;
+
+mod weight;
 use self::weight::weight;
 
 /// Default flush interval for the APM stats transform.
