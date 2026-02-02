@@ -6,45 +6,33 @@ const DEFAULT_SWEEP_INTERVAL: Duration = Duration::from_secs(1800);
 // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/config.go#L131-L140
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[allow(dead_code)]
+#[derive(Default)]
 pub enum HistogramMode {
     NoBuckets,
     Counters,
+    #[default]
     Distributions,
-}
-
-impl Default for HistogramMode {
-    fn default() -> Self {
-        Self::Distributions
-    }
 }
 
 // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/config.go#L178-L190
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[allow(dead_code)]
+#[derive(Default)]
 pub enum NumberMode {
+    #[default]
     CumulativeToDelta,
     RawValue,
-}
-
-impl Default for NumberMode {
-    fn default() -> Self {
-        Self::CumulativeToDelta
-    }
 }
 
 // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/config.go#L209-L224
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[allow(dead_code)]
+#[derive(Default)]
 pub enum InitialCumulMonoValueMode {
+    #[default]
     Auto,
     Drop,
     Keep,
-}
-
-impl Default for InitialCumulMonoValueMode {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 #[derive(Debug, Clone, Copy)]

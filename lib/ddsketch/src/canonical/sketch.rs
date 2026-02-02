@@ -294,6 +294,238 @@ impl<M: IndexMapping + Default, S: Store + Default> Default for DDSketch<M, S> {
     }
 }
 
+/// A DDSketch optimized for positive-only values (e.g., latencies, durations).
+///
+/// This is a memory-optimized variant of [`DDSketch`] that eliminates the negative value store,
+/// saving 48 bytes per sketch instance. Use this when you know all values will be non-negative,
+/// such as when tracking latencies or other timing metrics.
+///
+/// Negative values are treated as zero (mapped to `zero_count`).
+///
+/// # Example
+///
+/// ```
+/// use ddsketch::canonical::PositiveOnlyDDSketch;
+/// use ddsketch::canonical::mapping::FixedLogarithmicMapping;
+/// use ddsketch::canonical::store::CollapsingLowestDenseStore;
+///
+/// let mut sketch: PositiveOnlyDDSketch<FixedLogarithmicMapping, CollapsingLowestDenseStore> =
+///     PositiveOnlyDDSketch::default();
+/// sketch.add(1.0);
+/// sketch.add(2.0);
+/// sketch.add(3.0);
+///
+/// let median = sketch.quantile(0.5).unwrap();
+/// ```
+#[derive(Clone, Debug)]
+pub struct PositiveOnlyDDSketch<M: IndexMapping = LogarithmicMapping, S: Store = CollapsingLowestDenseStore> {
+    /// The index mapping for this sketch.
+    mapping: M,
+
+    /// Store for positive values.
+    positive_store: S,
+
+    /// Count of values that map to zero (including negative values).
+    zero_count: u64,
+}
+
+impl<M: IndexMapping, S: Store> PositiveOnlyDDSketch<M, S> {
+    /// Creates a new `PositiveOnlyDDSketch` with the given mapping and store.
+    pub fn new(mapping: M, positive_store: S) -> Self {
+        Self {
+            mapping,
+            positive_store,
+            zero_count: 0,
+        }
+    }
+
+    /// Adds a single value to the sketch.
+    ///
+    /// Negative values are treated as zero.
+    #[inline]
+    pub fn add(&mut self, value: f64) {
+        self.add_n(value, 1);
+    }
+
+    /// Adds a value to the sketch with the given count.
+    ///
+    /// Negative values are treated as zero.
+    #[inline]
+    pub fn add_n(&mut self, value: f64, n: u64) {
+        if n == 0 {
+            return;
+        }
+
+        if value > self.mapping.min_indexable_value() {
+            let index = self.mapping.index(value);
+            self.positive_store.add(index, n);
+        } else {
+            // Values at or below min_indexable_value (including negatives) go to zero_count
+            self.zero_count += n;
+        }
+    }
+
+    /// Returns the approximate value at the given quantile.
+    ///
+    /// The quantile must be in the range of [0, 1].
+    ///
+    /// Returns `None` if the sketch is empty, or if the quantile is out of bounds.
+    pub fn quantile(&self, q: f64) -> Option<f64> {
+        if self.is_empty() {
+            return None;
+        }
+
+        if !(0.0..=1.0).contains(&q) {
+            return None;
+        }
+
+        let rank = (q * (self.count() - 1) as f64).round_ties_even() as u64;
+
+        if rank < self.zero_count {
+            return Some(0.0);
+        }
+
+        let positive_rank = rank - self.zero_count;
+        if let Some(index) = self.positive_store.key_at_rank(positive_rank) {
+            return Some(self.mapping.value(index));
+        }
+
+        unreachable!("rank out of bounds on non-empty sketch")
+    }
+
+    /// Merges another sketch into this one.
+    ///
+    /// The other sketch must use the same mapping type.
+    pub fn merge(&mut self, other: &Self)
+    where
+        M: PartialEq,
+    {
+        if other.is_empty() {
+            return;
+        }
+
+        self.positive_store.merge(&other.positive_store);
+        self.zero_count += other.zero_count;
+    }
+
+    /// Returns `true` if the sketch is empty.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.count() == 0
+    }
+
+    /// Returns the total number of values added to the sketch.
+    #[inline]
+    pub fn count(&self) -> u64 {
+        self.positive_store.total_count() + self.zero_count
+    }
+
+    /// Clears the sketch, removing all values.
+    pub fn clear(&mut self) {
+        self.positive_store.clear();
+        self.zero_count = 0;
+    }
+
+    /// Returns a reference to the index mapping.
+    pub fn mapping(&self) -> &M {
+        &self.mapping
+    }
+
+    /// Returns a reference to the positive value store.
+    pub fn positive_store(&self) -> &S {
+        &self.positive_store
+    }
+
+    /// Returns the count of values mapped to zero.
+    pub fn zero_count(&self) -> u64 {
+        self.zero_count
+    }
+
+    /// Returns the relative accuracy of this sketch.
+    pub fn relative_accuracy(&self) -> f64 {
+        self.mapping.relative_accuracy()
+    }
+
+    /// Creates a `PositiveOnlyDDSketch` from a protobuf `DDSketch` message.
+    ///
+    /// This validates that the protobuf's index mapping is compatible with the mapping type `M`,
+    /// then populates the store with the positive bin data. Any negative values in the protobuf
+    /// are ignored.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The protobuf is missing a mapping
+    /// - The mapping parameters don't match the provided mapping
+    /// - Any bin counts are negative or non-integer
+    /// - The zero count is negative or non-integer
+    pub fn from_proto(proto: &ProtoDDSketch, mapping: M) -> Result<Self, ProtoConversionError>
+    where
+        S: Default,
+    {
+        // Validate the mapping
+        let proto_mapping = proto.mapping.as_ref().ok_or(ProtoConversionError::MissingMapping)?;
+        mapping.validate_proto_mapping(proto_mapping)?;
+
+        // Validate and convert zero count
+        let zero_count = if proto.zeroCount < 0.0 {
+            return Err(ProtoConversionError::NegativeZeroCount { count: proto.zeroCount });
+        } else if proto.zeroCount.fract() != 0.0 {
+            return Err(ProtoConversionError::NonIntegerZeroCount { count: proto.zeroCount });
+        } else {
+            proto.zeroCount as u64
+        };
+
+        let mut positive_store = S::default();
+        if let Some(proto_positive) = proto.positiveValues.as_ref() {
+            positive_store.merge_from_proto(proto_positive)?;
+        }
+
+        // Note: negativeValues is intentionally ignored for positive-only sketches
+
+        Ok(Self {
+            mapping,
+            positive_store,
+            zero_count,
+        })
+    }
+
+    /// Converts this `PositiveOnlyDDSketch` to a protobuf `DDSketch` message.
+    ///
+    /// The resulting protobuf will have no `negativeValues` field set.
+    pub fn to_proto(&self) -> ProtoDDSketch {
+        let mut proto = ProtoDDSketch::new();
+
+        proto.set_mapping(self.mapping.to_proto());
+
+        if !self.positive_store.is_empty() {
+            proto.set_positiveValues(self.positive_store.to_proto());
+        }
+
+        // No negativeValues - this is a positive-only sketch
+
+        proto.set_zeroCount(self.zero_count as f64);
+
+        proto
+    }
+}
+
+impl<M: IndexMapping + PartialEq, S: Store + PartialEq> PartialEq for PositiveOnlyDDSketch<M, S> {
+    fn eq(&self, other: &Self) -> bool {
+        self.mapping == other.mapping
+            && self.positive_store == other.positive_store
+            && self.zero_count == other.zero_count
+    }
+}
+
+impl<M: IndexMapping + PartialEq, S: Store + PartialEq> Eq for PositiveOnlyDDSketch<M, S> {}
+
+impl<M: IndexMapping + Default, S: Store + Default> Default for PositiveOnlyDDSketch<M, S> {
+    fn default() -> Self {
+        Self::new(M::default(), S::default())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ndarray::{Array, Axis};
@@ -670,6 +902,158 @@ mod tests {
         match result {
             Err(crate::canonical::ProtoConversionError::MissingMapping) => {}
             _ => panic!("Expected MissingMapping error"),
+        }
+    }
+
+    // ==================== PositiveOnlyDDSketch tests ====================
+
+    #[test]
+    fn test_positive_only_size() {
+        use crate::canonical::mapping::FixedLogarithmicMapping;
+
+        // Verify the memory savings - PositiveOnlyDDSketch should be smaller than DDSketch
+        let ddsketch_size = std::mem::size_of::<DDSketch<FixedLogarithmicMapping, CollapsingLowestDenseStore>>();
+        let positive_only_size =
+            std::mem::size_of::<PositiveOnlyDDSketch<FixedLogarithmicMapping, CollapsingLowestDenseStore>>();
+
+        // PositiveOnlyDDSketch should be ~48 bytes smaller (one less store)
+        assert!(
+            ddsketch_size > positive_only_size,
+            "PositiveOnlyDDSketch ({} bytes) should be smaller than DDSketch ({} bytes)",
+            positive_only_size,
+            ddsketch_size
+        );
+        assert_eq!(
+            ddsketch_size - positive_only_size,
+            48,
+            "Expected 48 bytes savings from removing negative store"
+        );
+    }
+
+    #[test]
+    fn test_positive_only_empty() {
+        let sketch: PositiveOnlyDDSketch = PositiveOnlyDDSketch::default();
+
+        assert!(sketch.is_empty());
+        assert_eq!(sketch.count(), 0);
+        assert_eq!(sketch.quantile(0.5), None);
+    }
+
+    #[test]
+    fn test_positive_only_add_and_quantile() {
+        let mut sketch: PositiveOnlyDDSketch = PositiveOnlyDDSketch::default();
+
+        for i in 1..=100 {
+            sketch.add(i as f64);
+        }
+
+        assert_eq!(sketch.count(), 100);
+
+        // Check median is approximately 50
+        let median = sketch.quantile(0.5).unwrap();
+        assert!((median - 50.0).abs() < 2.0, "median {} should be close to 50", median);
+    }
+
+    #[test]
+    fn test_positive_only_negative_values_become_zero() {
+        let mut sketch: PositiveOnlyDDSketch = PositiveOnlyDDSketch::default();
+
+        sketch.add(-10.0);
+        sketch.add(-5.0);
+        sketch.add(0.0);
+        sketch.add(5.0);
+        sketch.add(10.0);
+
+        assert_eq!(sketch.count(), 5);
+        // Negative values and zero should all go to zero_count
+        assert_eq!(sketch.zero_count(), 3);
+    }
+
+    #[test]
+    fn test_positive_only_merge() {
+        let mut sketch1: PositiveOnlyDDSketch = PositiveOnlyDDSketch::default();
+        sketch1.add(1.0);
+        sketch1.add(2.0);
+
+        let mut sketch2: PositiveOnlyDDSketch = PositiveOnlyDDSketch::default();
+        sketch2.add(3.0);
+        sketch2.add(4.0);
+
+        sketch1.merge(&sketch2);
+
+        assert_eq!(sketch1.count(), 4);
+    }
+
+    #[test]
+    fn test_positive_only_clear() {
+        let mut sketch: PositiveOnlyDDSketch = PositiveOnlyDDSketch::default();
+        sketch.add(1.0);
+        sketch.add(2.0);
+
+        sketch.clear();
+
+        assert!(sketch.is_empty());
+        assert_eq!(sketch.count(), 0);
+    }
+
+    #[test]
+    fn test_positive_only_proto_roundtrip() {
+        let mut sketch: PositiveOnlyDDSketch = PositiveOnlyDDSketch::default();
+        sketch.add(1.0);
+        sketch.add(2.0);
+        sketch.add(3.0);
+        sketch.add(100.0);
+
+        let proto = sketch.to_proto();
+
+        // Verify no negative values in proto
+        assert!(proto.negativeValues.is_none());
+
+        let mapping = LogarithmicMapping::new(0.01).unwrap();
+        let recovered: PositiveOnlyDDSketch = PositiveOnlyDDSketch::from_proto(&proto, mapping).unwrap();
+
+        assert_eq!(sketch.count(), recovered.count());
+        assert_eq!(sketch.zero_count(), recovered.zero_count());
+
+        // Check quantiles are approximately equal
+        for q in [0.25, 0.5, 0.75, 0.99] {
+            let orig = sketch.quantile(q).unwrap();
+            let recov = recovered.quantile(q).unwrap();
+            assert!(
+                (orig - recov).abs() < 0.01,
+                "quantile {} mismatch: {} vs {}",
+                q,
+                orig,
+                recov
+            );
+        }
+    }
+
+    #[test]
+    fn test_positive_only_matches_ddsketch_for_positive_values() {
+        // Verify that PositiveOnlyDDSketch produces the same results as DDSketch for positive values
+        let mut ddsketch: DDSketch = DDSketch::default();
+        let mut positive_only: PositiveOnlyDDSketch = PositiveOnlyDDSketch::default();
+
+        for i in 1..=1000 {
+            let value = i as f64;
+            ddsketch.add(value);
+            positive_only.add(value);
+        }
+
+        assert_eq!(ddsketch.count(), positive_only.count());
+
+        // Check that quantiles match
+        for q in [0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99] {
+            let dd_quantile = ddsketch.quantile(q).unwrap();
+            let po_quantile = positive_only.quantile(q).unwrap();
+            assert!(
+                (dd_quantile - po_quantile).abs() < 0.001,
+                "quantile {} mismatch: DDSketch={}, PositiveOnly={}",
+                q,
+                dd_quantile,
+                po_quantile
+            );
         }
     }
 }

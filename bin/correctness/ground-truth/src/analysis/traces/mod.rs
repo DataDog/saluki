@@ -198,18 +198,43 @@ impl TracesAnalyzer {
             ));
         }
 
-        let baseline_aggregation_keys = self.baseline_spans.keys().collect::<HashSet<_>>();
-        let comparison_aggregation_keys = self.comparison_spans.keys().collect::<HashSet<_>>();
-        if baseline_aggregation_keys != comparison_aggregation_keys {
-            let mut baseline_only_aggregation_keys = baseline_aggregation_keys
-                .difference(&comparison_aggregation_keys)
-                .collect::<Vec<_>>();
-            baseline_only_aggregation_keys.sort_unstable();
+        if baseline_stats_aggregation_keys != comparison_stats_aggregation_keys {
+            let baseline_only_aggregation_keys: Vec<_> = baseline_stats_aggregation_keys
+                .difference(&comparison_stats_aggregation_keys)
+                .collect();
 
-            let mut comparison_only_aggregation_keys = comparison_aggregation_keys
-                .difference(&baseline_aggregation_keys)
-                .collect::<Vec<_>>();
-            comparison_only_aggregation_keys.sort_unstable();
+            let comparison_only_aggregation_keys: Vec<_> = comparison_stats_aggregation_keys
+                .difference(&baseline_stats_aggregation_keys)
+                .collect();
+
+            // Print details of mismatched stats for debugging
+            error!(
+                "Aggregation key mismatch: {} baseline-only keys, {} comparison-only keys.",
+                baseline_only_aggregation_keys.len(),
+                comparison_only_aggregation_keys.len()
+            );
+
+            // Show samples of baseline-only stats
+            for key in baseline_only_aggregation_keys.iter().take(3) {
+                if let Some(stats) = self.baseline_trace_stats.get(key) {
+                    error!(
+                        "Baseline-only key {}: {}",
+                        key,
+                        serde_json::to_string(stats).unwrap_or_else(|_| "<serialization error>".to_string())
+                    );
+                }
+            }
+
+            // Show samples of comparison-only stats
+            for key in comparison_only_aggregation_keys.iter().take(3) {
+                if let Some(stats) = self.comparison_trace_stats.get(key) {
+                    error!(
+                        "Comparison-only key {}: {}",
+                        key,
+                        serde_json::to_string(stats).unwrap_or_else(|_| "<serialization error>".to_string())
+                    );
+                }
+            }
 
             return Err(generic_error!(
                 "Baseline and comparison targets have non-overlapped set of statistic aggregation keys: {} baseline-only keys and {} comparison-only keys.",
