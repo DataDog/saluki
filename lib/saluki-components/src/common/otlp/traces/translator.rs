@@ -4,11 +4,11 @@ use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common};
 use otlp_protos::opentelemetry::proto::resource::v1::Resource as OtlpResource;
 use otlp_protos::opentelemetry::proto::trace::v1::ResourceSpans;
 use saluki_common::collections::FastHashMap;
+use saluki_common::strings::StringBuilder;
 use saluki_context::tags::TagSet;
 use saluki_core::data_model::event::trace::{Span as DdSpan, Trace, TraceSampling};
 use saluki_core::data_model::event::Event;
 use stringtheory::interning::GenericMapInterner;
-use stringtheory::interning::Interner as _;
 use stringtheory::MetaString;
 
 use crate::common::datadog::SAMPLING_PRIORITY_METRIC_KEY;
@@ -33,15 +33,16 @@ pub fn convert_span_id(span_id: &[u8]) -> u64 {
 
 pub fn resource_attributes_to_tagset(attributes: &[otlp_common::KeyValue], interner: &GenericMapInterner) -> TagSet {
     let mut tags = TagSet::with_capacity(attributes.len());
+    let mut string_builder = StringBuilder::new();
     for kv in attributes {
         if let Some(key_value) = &kv.value {
             if let Some(value) = &key_value.value {
                 if let Some(string_value) = otlp_value_to_string(value) {
-                    let tag_str = format!("{}:{}", kv.key, string_value);
-                    let tag = interner
-                        .try_intern(&tag_str)
-                        .map(MetaString::from)
-                        .unwrap_or_else(|| MetaString::from(tag_str));
+                    string_builder.clear();
+                    let _ = string_builder.push_str(kv.key.as_str());
+                    let _ = string_builder.push(':');
+                    let _ = string_builder.push_str(string_value.as_str());
+                    let tag = MetaString::from_interner(string_builder.as_str(), interner);
                     tags.insert_tag(tag);
                 }
             }

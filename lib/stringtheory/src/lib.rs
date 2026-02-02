@@ -17,10 +17,11 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 mod clone;
+
 pub use self::clone::CheapMetaString;
 
 pub mod interning;
-use self::interning::{InternedString, InternedStringState};
+use self::interning::{InternedString, InternedStringState, Interner};
 
 const ZERO_VALUE: usize = 0;
 const TOP_MOST_BIT: usize = usize::MAX & !(isize::MAX as usize);
@@ -736,6 +737,23 @@ impl MetaString {
     /// Attempts to create a new `MetaString` from the given string if it can be inlined.
     pub fn try_inline(s: &str) -> Option<Self> {
         Inner::try_inlined(s).map(|inner| Self { inner })
+    }
+
+    /// Creates a new `MetaString` from the given string, using the provided interner.
+    ///
+    /// The string is inlined if possible. If it cannot be inlined, the interner is tried. If interning fails, an owned
+    /// string is allocated.
+    pub fn from_interner<I>(s: &str, interner: &I) -> Self
+    where
+        I: Interner,
+    {
+        if let Some(inlined) = Self::try_inline(s) {
+            return inlined;
+        }
+        if let Some(interned) = interner.try_intern(s) {
+            return Self::from(interned);
+        }
+        Self::from(s.to_owned())
     }
 
     /// Returns `true` if `self` has a length of zero bytes.
