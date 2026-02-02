@@ -9,7 +9,6 @@ use saluki_context::tags::TagSet;
 use saluki_core::data_model::event::trace::{Span as DdSpan, Trace, TraceSampling};
 use saluki_core::data_model::event::Event;
 use stringtheory::interning::GenericMapInterner;
-use stringtheory::MetaString;
 
 use crate::common::datadog::SAMPLING_PRIORITY_METRIC_KEY;
 use crate::common::otlp::config::TracesConfig;
@@ -31,9 +30,10 @@ pub fn convert_span_id(span_id: &[u8]) -> u64 {
     u64::from_be_bytes(span_id.try_into().unwrap_or_default())
 }
 
-pub fn resource_attributes_to_tagset(attributes: &[otlp_common::KeyValue], interner: &GenericMapInterner) -> TagSet {
+fn resource_attributes_to_tagset(
+    attributes: &[otlp_common::KeyValue], string_builder: &mut StringBuilder<GenericMapInterner>,
+) -> TagSet {
     let mut tags = TagSet::with_capacity(attributes.len());
-    let mut string_builder = StringBuilder::new();
     for kv in attributes {
         if let Some(key_value) = &kv.value {
             if let Some(value) = &key_value.value {
@@ -42,8 +42,7 @@ pub fn resource_attributes_to_tagset(attributes: &[otlp_common::KeyValue], inter
                     let _ = string_builder.push_str(kv.key.as_str());
                     let _ = string_builder.push(':');
                     let _ = string_builder.push_str(string_value.as_str());
-                    let tag = MetaString::from_interner(string_builder.as_str(), interner);
-                    tags.insert_tag(tag);
+                    tags.insert_tag(string_builder.to_meta_string());
                 }
             }
         }
@@ -54,17 +53,23 @@ pub fn resource_attributes_to_tagset(attributes: &[otlp_common::KeyValue], inter
 pub struct OtlpTracesTranslator {
     config: TracesConfig,
     interner: GenericMapInterner,
+    string_builder: StringBuilder<GenericMapInterner>,
 }
 
 impl OtlpTracesTranslator {
     pub fn new(config: TracesConfig, interner_size: NonZeroUsize) -> Self {
         let interner = GenericMapInterner::new(interner_size);
-        Self { config, interner }
+        let string_builder = StringBuilder::new().with_interner(interner.clone());
+        Self {
+            config,
+            interner,
+            string_builder,
+        }
     }
 
-    pub fn translate_resource_spans(&self, resource_spans: ResourceSpans, metrics: &Metrics) -> Vec<Event> {
+    pub fn translate_resource_spans(&mut self, resource_spans: ResourceSpans, metrics: &Metrics) -> Vec<Event> {
         let resource: OtlpResource = resource_spans.resource.unwrap_or_default();
-        let resource_tags: TagSet = resource_attributes_to_tagset(&resource.attributes, &self.interner);
+        let resource_tags: TagSet = resource_attributes_to_tagset(&resource.attributes, &mut self.string_builder);
         let mut traces_by_id: FastHashMap<u64, Vec<DdSpan>> = FastHashMap::default();
         let mut priorities_by_id: FastHashMap<u64, i32> = FastHashMap::default();
         let ignore_missing_fields = self.config.ignore_missing_datadog_fields;
