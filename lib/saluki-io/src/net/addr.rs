@@ -81,6 +81,8 @@ impl ListenAddress {
 
                 Some(connect_addr)
             }
+            // TODO: why did i do this? it's totally possible to connect to a unix domain socket locally...
+            // in fact, it's kind of the only way to connect to a unix domain socket :thonk:
             #[cfg(unix)]
             Self::Unixgram(_) => None,
             #[cfg(unix)]
