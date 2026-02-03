@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["RemoteAgentClient"]};
+window.SIDEBAR_ITEMS = {"struct":["RemoteAgentClient","SessionId","SessionIdHandle"]};
