@@ -33,6 +33,7 @@ dependencies = [
  "http-body-util",
  "memory-accounting",
  "papaya",
+ "prost-types",
  "reqwest",
  "saluki-app",
  "saluki-common",

@@ -7,9 +7,7 @@ use std::{
 };
 
 use backon::{BackoffBuilder, ConstantBuilder, Retryable as _};
-use datadog_protos::agent::v1::{
-    RefreshRemoteAgentRequest, RefreshRemoteAgentResponse, RegisterRemoteAgentRequest, RegisterRemoteAgentResponse,
-};
+use datadog_protos::agent::v1::{RefreshRemoteAgentRequest, RegisterRemoteAgentRequest, RegisterRemoteAgentResponse};
 use datadog_protos::agent::{
     AgentClient, AgentSecureClient, AutodiscoveryStreamResponse, ConfigEvent, ConfigStreamRequest, EntityId,
     FetchEntityRequest, HostTagReply, HostTagRequest, HostnameRequest, StreamTagsRequest, StreamTagsResponse,
@@ -27,10 +25,11 @@ use serde::Deserialize;
 use tonic::{
     service::interceptor::InterceptedService,
     transport::{Channel, Endpoint, Uri},
-    Code, Response, Status, Streaming,
+    Code, Request, Response, Status, Streaming,
 };
 use tracing::warn;
 
+use super::session::SessionId;
 use crate::helpers::tonic::BearerAuthInterceptor;
 
 fn default_agent_ipc_endpoint() -> Uri {
@@ -255,18 +254,19 @@ impl RemoteAgentClient {
         Ok(response)
     }
 
-    /// Refreshes a Remote Agent with the Agent.
+    /// Refreshes the given remote agent session with the Agent.
+    ///
+    /// # Errors
     ///
     /// If there is an error sending the request to the Agent API, an error will be returned.
-    pub async fn refresh_remote_agent_request(
-        &mut self, session_id: &str,
-    ) -> Result<Response<RefreshRemoteAgentResponse>, GenericError> {
+    pub async fn refresh_remote_agent_request(&mut self, session_id: &SessionId) -> Result<Response<()>, GenericError> {
         let mut client = self.secure_client.clone();
         let response = client
             .refresh_remote_agent(RefreshRemoteAgentRequest {
                 session_id: session_id.to_string(),
             })
-            .await?;
+            .await?
+            .map(|_| ());
         Ok(response)
     }
 
@@ -294,7 +294,7 @@ impl RemoteAgentClient {
     ///
     /// If there is an error with the initial request, or an error occurs while streaming, the next message in the
     /// stream will be `Some(Err(status))`, where the status indicates the underlying error.
-    pub fn stream_config_events(&mut self, session_id: Option<String>) -> StreamingResponse<ConfigEvent> {
+    pub fn stream_config_events(&mut self, session_id: &SessionId) -> StreamingResponse<ConfigEvent> {
         let mut client = self.secure_client.clone();
         let app_details = saluki_metadata::get_app_details();
         let formatted_full_name = app_details
@@ -302,25 +302,16 @@ impl RemoteAgentClient {
             .replace(" ", "-")
             .replace("_", "-")
             .to_lowercase();
-        StreamingResponse::from_response_future(async move {
-            let mut request = tonic::Request::new(ConfigStreamRequest {
-                name: formatted_full_name,
-            });
 
-            // Add session_id to gRPC metadata (per RemoteAgentRegistry RFC)
-            if let Some(sid) = session_id {
-                match sid.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>() {
-                    Ok(metadata_value) => {
-                        request.metadata_mut().insert("session_id", metadata_value);
-                    }
-                    Err(e) => {
-                        return Err(tonic::Status::internal(format!("Invalid session_id format: {}", e)));
-                    }
-                }
-            }
+        let mut request = Request::new(ConfigStreamRequest {
+            name: formatted_full_name,
+        });
 
-            client.stream_config_events(request).await
-        })
+        request
+            .metadata_mut()
+            .insert("session_id", session_id.to_grpc_header_value());
+
+        StreamingResponse::from_response_future(async move { client.stream_config_events(request).await })
     }
 }
 

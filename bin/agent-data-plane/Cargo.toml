@@ -26,6 +26,7 @@ http = { workspace = true }
 http-body-util = { workspace = true }
 memory-accounting = { workspace = true }
 papaya = { workspace = true }
+prost-types = { workspace = true }
 reqwest = { workspace = true, features = [
   "rustls-tls-native-roots-no-provider",
   "json",

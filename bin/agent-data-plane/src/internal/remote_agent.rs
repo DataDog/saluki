@@ -1,35 +1,34 @@
-use std::sync::{Arc, Mutex};
 use std::{collections::hash_map::Entry, time::Duration};
 use std::{collections::HashMap, net::SocketAddr};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use datadog_protos::agent::flare::v1::{
-    flare_provider_server::FlareProvider, flare_provider_server::FlareProviderServer, GetFlareFilesRequest,
-    GetFlareFilesResponse,
+use datadog_protos::agent::{
+    config_event,
+    flare::v1::{flare_provider_server::*, *},
+    status::v1::{status_provider_server::*, *},
+    telemetry::v1::{get_telemetry_response::*, telemetry_provider_server::*, *},
+    ConfigSnapshot,
 };
-use datadog_protos::agent::status::v1::{
-    status_provider_server::StatusProvider, status_provider_server::StatusProviderServer, GetStatusDetailsRequest,
-    GetStatusDetailsResponse, StatusSection,
-};
-use datadog_protos::agent::telemetry::v1::{
-    get_telemetry_response::Payload, telemetry_provider_server::TelemetryProvider,
-    telemetry_provider_server::TelemetryProviderServer, GetTelemetryRequest, GetTelemetryResponse,
-};
+use futures::StreamExt;
 use http::{Request, Uri};
 use http_body_util::BodyExt;
+use prost_types::value::Kind;
 use saluki_common::task::spawn_traced_named;
-use saluki_config::GenericConfiguration;
+use saluki_config::{dynamic::ConfigUpdate, upsert, GenericConfiguration};
 use saluki_core::state::reflector::Reflector;
-use saluki_env::helpers::remote_agent::RemoteAgentClient;
-use saluki_error::GenericError;
-use saluki_io::net::client::http::HttpClient;
-use saluki_io::net::GrpcTargetAddress;
-use tokio::time::{interval, MissedTickBehavior};
-use tonic::server::NamedService;
-use tonic::Status;
-use tracing::{debug, info, warn};
+use saluki_env::helpers::remote_agent::{RemoteAgentClient, SessionId, SessionIdHandle};
+use saluki_error::{generic_error, GenericError};
+use saluki_io::net::{client::http::HttpClient, GrpcTargetAddress};
+use serde_json::{Map, Value};
+use tokio::{
+    sync::{mpsc, oneshot},
+    time::{interval, MissedTickBehavior},
+};
+use tonic::{server::NamedService, Status};
+use tracing::{debug, error, info, warn};
 
+use crate::config::DataPlaneConfiguration;
 use crate::state::metrics::{get_shared_metrics_state, AggregatedMetricsProcessor};
 
 const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
@@ -50,126 +49,80 @@ const LISTENER_UNIX: &str = "listener_type:unix";
 const LISTENER_UNIXGRAM: &str = "listener_type:unixgram";
 const SESSION_ID_METADATA_KEY: &str = "session_id";
 
-/// A handle for updating the session ID at runtime.
+/// Remote agent initialization.
 ///
-/// This handle allows you to dynamically update the session ID that is added to gRPC responses
-/// even after the server has started.
-#[derive(Clone, Debug, Default)]
-pub struct SessionIdHandle {
-    session_id: Arc<Mutex<Option<String>>>,
-}
-
-impl SessionIdHandle {
-    /// Creates a new `SessionIdHandle` with no session ID.
-    pub fn new() -> Self {
-        Self {
-            session_id: Arc::new(Mutex::new(None)),
-        }
-    }
-
-    /// Updates the session ID to a new value.
-    ///
-    /// This change will be reflected in all subsequent gRPC responses.
-    pub fn update(&self, new_session_id: Option<String>) {
-        if let Ok(mut session_id) = self.session_id.lock() {
-            *session_id = new_session_id;
-        }
-    }
-
-    /// Gets the current session ID.
-    pub fn get(&self) -> Option<String> {
-        self.session_id.lock().ok().and_then(|s| s.clone())
-    }
-}
-
-/// Remote Agent helper configuration.
-pub struct RemoteAgentHelperConfiguration {
-    pid: u32,
-    display_name: String,
-    api_listen_addr: GrpcTargetAddress,
+/// This helper type is used to coordinate the initialization of remote agent state by registering to the Core Agent and
+/// acquiring the necessary information to allow initialization of ADP itself to proceed.
+pub struct RemoteAgentBootstrap {
     client: RemoteAgentClient,
+    session_id: SessionIdHandle,
     internal_metrics: Reflector<AggregatedMetricsProcessor>,
     prometheus_listen_addr: Option<SocketAddr>,
-    session_id: SessionIdHandle,
-    service_names: Vec<String>,
 }
 
-impl RemoteAgentHelperConfiguration {
-    /// Creates a new `RemoteAgentHelperConfiguration` from the given configuration.
+impl RemoteAgentBootstrap {
+    /// Creates a new `RemoteAgentBootstrap` from the given configurations.
+    ///
+    /// A remote agent client is created and immediately attempts to register with the Core Agent. This function does
+    /// not return until registration finishes, whether successful or not.
+    ///
+    /// # Errors
+    ///
+    /// If the configuration is invalid, an error is returned.
     pub async fn from_configuration(
-        config: &GenericConfiguration, api_listen_addr: GrpcTargetAddress, prometheus_listen_addr: Option<SocketAddr>,
+        config: &GenericConfiguration, dp_config: &DataPlaneConfiguration,
     ) -> Result<Self, GenericError> {
-        let app_details = saluki_metadata::get_app_details();
-        let formatted_full_name = app_details
-            .full_name()
-            .replace(" ", "-")
-            .replace("_", "-")
-            .to_lowercase();
+        let api_listen_addr = GrpcTargetAddress::try_from_listen_addr(dp_config.secure_api_listen_address())
+            .ok_or_else(|| generic_error!("Failed to get valid gRPC target address from secure API listen address."))?;
+
+        let mut prometheus_listen_addr = None;
+        if dp_config.telemetry_enabled() {
+            prometheus_listen_addr = dp_config
+                .telemetry_listen_addr()
+                .as_local_connect_addr()
+                .ok_or_else(|| generic_error!("Telemetry listen address present but not valid for local connections."))
+                .map(Some)?;
+        }
+
+        // Generate our remote agent state, which is mostly fixed but has a few dynamic bits.
+        let service_names = vec![
+            <StatusProviderServer<()> as NamedService>::NAME.to_string(),
+            <TelemetryProviderServer<()> as NamedService>::NAME.to_string(),
+            <FlareProviderServer<()> as NamedService>::NAME.to_string(),
+        ];
+
+        let (state, init_reg_rx) = RemoteAgentState::new(api_listen_addr, service_names);
+        let session_id = state.session_id.clone();
+
+        // Create our client, and then immediately start the registration loop.
+        //
+        // Wait for the result of the initial registration attempt before proceeding.
         let client = RemoteAgentClient::from_configuration(config).await?;
+        spawn_traced_named(
+            "adp-remote-agent-task",
+            run_remote_agent_registration_loop(client.clone(), state),
+        );
+
+        match init_reg_rx.await {
+            Ok(Ok(())) => (),
+            Ok(Err(e)) => return Err(e),
+            Err(_) => {
+                return Err(generic_error!(
+                    "Failed to initialize remote agent state. Registration task failed unexpectedly."
+                ))
+            }
+        }
 
         Ok(Self {
-            pid: std::process::id(),
-            display_name: formatted_full_name,
-            api_listen_addr,
             client,
+            session_id,
             internal_metrics: get_shared_metrics_state().await,
             prometheus_listen_addr,
-            session_id: SessionIdHandle::new(),
-            service_names: Vec::new(),
         })
     }
 
-    /// Performs a single RAR registration and returns the session ID.
-    ///
-    /// This is used for config streaming which requires a session ID upfront.
-    /// The session ID is stored internally and made available for subsequent operations.
-    ///
-    /// After calling this, the refresh loop will detect the existing session and perform
-    /// refreshes instead of attempting to re-register.
-    pub async fn register_once(&mut self) -> Result<String, GenericError> {
-        let api_listen_addr = self.api_listen_addr.to_string();
-
-        let resp = self
-            .client
-            .register_remote_agent_request(
-                self.pid,
-                &self.display_name,
-                &api_listen_addr,
-                self.service_names.clone(),
-            )
-            .await?;
-
-        let resp = resp.into_inner();
-        info!(
-            session_id = %resp.session_id,
-            "Registered with Remote Agent Registry for config streaming."
-        );
-
-        self.session_id.update(Some(resp.session_id.clone()));
-
-        Ok(resp.session_id)
-    }
-
-    /// Gets the current session ID if available.
-    pub fn get_session_id(&self) -> Option<String> {
-        self.session_id.get()
-    }
-
-    /// Sets the Prometheus listen address.
-    ///
-    /// Used when updating a pre-registered config with telemetry information.
-    pub fn set_prometheus_addr(&mut self, addr: Option<SocketAddr>) {
-        self.prometheus_listen_addr = addr;
-    }
-
-    /// Creates a new `StatusProviderServer` for the remote agent helper.
-    ///
-    /// The service name is automatically tracked for registration.
-    /// The service is wrapped with a layer that adds session_id to responses.
-    pub fn create_status_service(&mut self) -> StatusProviderServer<RemoteAgentImpl> {
-        self.service_names
-            .push(<StatusProviderServer<RemoteAgentImpl> as NamedService>::NAME.to_string());
-
+    /// Creates a new `StatusProviderServer` tied to this remote agent.
+    pub fn create_status_service(&self) -> StatusProviderServer<RemoteAgentImpl> {
         StatusProviderServer::new(RemoteAgentImpl {
             started: Utc::now(),
             internal_metrics: self.internal_metrics.clone(),
@@ -178,14 +131,8 @@ impl RemoteAgentHelperConfiguration {
         })
     }
 
-    /// Creates a new `TelemetryProviderServer` for the remote agent helper.
-    ///
-    /// The service name is automatically tracked for registration.
-    /// The service is wrapped with a layer that adds session_id to responses.
-    pub fn create_telemetry_service(&mut self) -> TelemetryProviderServer<RemoteAgentImpl> {
-        self.service_names
-            .push(<TelemetryProviderServer<RemoteAgentImpl> as NamedService>::NAME.to_string());
-
+    /// Creates a new `TelemetryProviderServer` tied to this remote agent.
+    pub fn create_telemetry_service(&self) -> TelemetryProviderServer<RemoteAgentImpl> {
         TelemetryProviderServer::new(RemoteAgentImpl {
             started: Utc::now(),
             internal_metrics: self.internal_metrics.clone(),
@@ -194,14 +141,8 @@ impl RemoteAgentHelperConfiguration {
         })
     }
 
-    /// Creates a new `FlareProviderServer` for the remote agent helper.
-    ///
-    /// The service name is automatically tracked for registration.
-    /// The service is wrapped with a layer that adds session_id to responses.
-    pub fn create_flare_service(&mut self) -> FlareProviderServer<RemoteAgentImpl> {
-        self.service_names
-            .push(<FlareProviderServer<RemoteAgentImpl> as NamedService>::NAME.to_string());
-
+    /// Creates a new `FlareProviderServer` tied to this remote agent.
+    pub fn create_flare_service(&self) -> FlareProviderServer<RemoteAgentImpl> {
         FlareProviderServer::new(RemoteAgentImpl {
             started: Utc::now(),
             internal_metrics: self.internal_metrics.clone(),
@@ -210,46 +151,70 @@ impl RemoteAgentHelperConfiguration {
         })
     }
 
-    /// Spawns the remote agent helper task.
-    ///
-    /// The spawned task ensures that this process is registered as a Remote Agent with the configured Datadog Agent
-    /// instance and maintains the registration with periodic refreshes.
-    pub fn spawn(self) {
-        spawn_traced_named(
-            "adp-remote-agent-task",
-            run_remote_agent_helper(
-                self.pid,
-                self.display_name,
-                self.api_listen_addr,
-                self.client,
-                self.session_id,
-                self.service_names,
-            ),
-        );
+    /// Creates a config stream that receives configuration events from the Core Agent.
+    pub fn create_config_stream(&self) -> mpsc::Receiver<ConfigUpdate> {
+        let (sender, receiver) = mpsc::channel(100);
+
+        let client = self.client.clone();
+        let session_id = self.session_id.clone();
+
+        tokio::spawn(run_config_stream_event_loop(client, sender, session_id));
+
+        receiver
     }
 }
 
-async fn run_remote_agent_helper(
-    pid: u32, display_name: String, api_listen_addr: GrpcTargetAddress, mut client: RemoteAgentClient,
-    session_id: SessionIdHandle, service_names: Vec<String>,
-) {
-    let api_listen_addr = api_listen_addr.to_string();
+struct RemoteAgentState {
+    pid: u32,
+    display_name: String,
+    api_listen_addr: String,
+    session_id: SessionIdHandle,
+    service_names: Vec<String>,
+    initial_registration_tx: Option<oneshot::Sender<Result<(), GenericError>>>,
+}
 
+impl RemoteAgentState {
+    fn new(
+        api_listen_addr: GrpcTargetAddress, service_names: Vec<String>,
+    ) -> (Self, oneshot::Receiver<Result<(), GenericError>>) {
+        let app_details = saluki_metadata::get_app_details();
+        let display_name = app_details
+            .full_name()
+            .replace(" ", "-")
+            .replace("_", "-")
+            .to_lowercase();
+
+        let (init_reg_tx, init_reg_rx) = oneshot::channel();
+
+        let state = Self {
+            pid: std::process::id(),
+            display_name,
+            api_listen_addr: api_listen_addr.to_string(),
+            session_id: SessionIdHandle::empty(),
+            service_names,
+            initial_registration_tx: Some(init_reg_tx),
+        };
+
+        (state, init_reg_rx)
+    }
+}
+
+async fn run_remote_agent_registration_loop(mut client: RemoteAgentClient, mut state: RemoteAgentState) {
     let mut loop_timer = interval(DEFAULT_REFRESH_INTERVAL);
     loop_timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-    debug!("Remote Agent helper started.");
+    debug!("Remote Agent registration task started.");
 
     loop {
         loop_timer.tick().await;
 
-        match session_id.get() {
-            Some(id) => {
-                debug!(session_id = %id, "Refreshing registration with Datadog Agent.");
+        match state.session_id.get() {
+            Some(session_id) => {
+                debug!(%session_id, "Refreshing registration with Datadog Agent.");
 
-                if client.refresh_remote_agent_request(&id).await.is_err() {
+                if client.refresh_remote_agent_request(&session_id).await.is_err() {
                     loop_timer.reset_after(REFRESH_FAILED_RETRY_INTERVAL);
-                    session_id.update(None);
+                    state.session_id.update(None);
                     warn!("Failed to refresh registration with the Datadog Agent. Resetting session ID and attempting to re-register shortly.");
 
                     continue;
@@ -257,23 +222,147 @@ async fn run_remote_agent_helper(
             }
             None => {
                 match client
-                    .register_remote_agent_request(pid, &display_name, &api_listen_addr, service_names.clone())
+                    .register_remote_agent_request(
+                        state.pid,
+                        &state.display_name,
+                        &state.api_listen_addr,
+                        state.service_names.clone(),
+                    )
                     .await
                 {
                     Ok(resp) => {
                         let resp = resp.into_inner();
+                        let new_session_id = match SessionId::new(&resp.session_id) {
+                            Ok(session_id) => session_id,
+                            Err(e) => {
+                                warn!(error = %e, "Received invalid session ID from Datadog Agent after registation. Registration will be retried periodically in the background.");
+                                loop_timer.reset_after(DEFAULT_REFRESH_INTERVAL);
+                                continue;
+                            }
+                        };
                         let new_refresh_interval = resp.recommended_refresh_interval_secs;
-                        info!(session_id = %resp.session_id, "Successfully registered with the Datadog Agent. Refreshing every {} seconds.", new_refresh_interval);
+                        info!(session_id = %new_session_id, "Successfully registered with the Datadog Agent. Refreshing every {} seconds.", new_refresh_interval);
 
-                        session_id.update(Some(resp.session_id.clone()));
+                        state.session_id.update(Some(new_session_id));
                         loop_timer.reset_after(Duration::from_secs(new_refresh_interval as u64));
+
+                        if let Some(tx) = state.initial_registration_tx.take() {
+                            let _ = tx.send(Ok(()));
+                        }
                     }
                     Err(e) => {
                         warn!(error = %e, "Failed to register with the Datadog Agent. Registration will be retried periodically in the background.");
                         loop_timer.reset_after(DEFAULT_REFRESH_INTERVAL);
+
+                        if let Some(tx) = state.initial_registration_tx.take() {
+                            let _ = tx.send(Err(e));
+                        }
                     }
                 }
             }
+        }
+    }
+}
+
+async fn run_config_stream_event_loop(
+    mut client: RemoteAgentClient, sender: mpsc::Sender<ConfigUpdate>, session_id: SessionIdHandle,
+) {
+    loop {
+        debug!("Establishing a new config stream connection to the Core Agent.");
+
+        // Read the current session ID.
+        //
+        // We do this every loop since it can change in the background due to re-registration.
+        let current_session_id = session_id.wait_for_update().await;
+
+        let mut stream = client.stream_config_events(&current_session_id);
+        while let Some(result) = stream.next().await {
+            match result {
+                Ok(event) => {
+                    let update = match event.event {
+                        Some(config_event::Event::Snapshot(snapshot)) => {
+                            let map = snapshot_to_map(&snapshot);
+                            Some(ConfigUpdate::Snapshot(map))
+                        }
+                        Some(config_event::Event::Update(update)) => {
+                            if let Some(setting) = update.setting {
+                                let v = proto_value_to_serde_value(&setting.value);
+                                Some(ConfigUpdate::Partial {
+                                    key: setting.key,
+                                    value: v,
+                                })
+                            } else {
+                                None
+                            }
+                        }
+                        None => {
+                            error!("Received a configuration update event with no data.");
+                            None
+                        }
+                    };
+
+                    if let Some(update) = update {
+                        if sender.send(update).await.is_err() {
+                            warn!("Dynamic configuration channel closed. Config stream shutting down.");
+                            return;
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Error while reading config event stream: {}.", e);
+                }
+            }
+        }
+
+        debug!("Config stream ended, retrying in 5 seconds...");
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+}
+
+/// Converts a `ConfigSnapshot` into a nested `serde_json::Value::Object`.
+fn snapshot_to_map(snapshot: &ConfigSnapshot) -> Value {
+    let mut root = Value::Object(Map::new());
+
+    for setting in &snapshot.settings {
+        let value = proto_value_to_serde_value(&setting.value);
+        upsert(&mut root, &setting.key, value);
+    }
+
+    root
+}
+
+/// Recursively converts a `google::protobuf::Value` into a `serde_json::Value`.
+fn proto_value_to_serde_value(proto_val: &Option<prost_types::Value>) -> Value {
+    let Some(kind) = proto_val.as_ref().and_then(|v| v.kind.as_ref()) else {
+        return Value::Null;
+    };
+
+    match kind {
+        Kind::NullValue(_) => Value::Null,
+        Kind::NumberValue(n) => {
+            if n.fract() == 0.0 && *n >= i64::MIN as f64 && *n <= i64::MAX as f64 {
+                Value::from(*n as i64)
+            } else {
+                Value::from(*n)
+            }
+        }
+        Kind::StringValue(s) => Value::String(s.clone()),
+        Kind::BoolValue(b) => Value::Bool(*b),
+        Kind::StructValue(s) => {
+            let json_map: Map<String, Value> = s
+                .fields
+                .iter()
+                .map(|(k, v)| (k.clone(), proto_value_to_serde_value(&Some(v.clone()))))
+                .collect();
+            Value::Object(json_map)
+        }
+        Kind::ListValue(l) => {
+            let json_list: Vec<Value> = l
+                .values
+                .iter()
+                .map(|v| proto_value_to_serde_value(&Some(v.clone())))
+                .collect();
+            Value::Array(json_list)
         }
     }
 }
@@ -345,10 +434,7 @@ impl RemoteAgentImpl {
             .ok_or(Status::failed_precondition(
                 "session ID not set; must be registered with Core Agent",
             ))?
-            .parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
-            .or(Err(Status::internal(
-                "unable to convert session ID into valid gRPC metadata",
-            )))?;
+            .to_grpc_header_value();
 
         next().await.map(|mut resp| {
             resp.metadata_mut().append(SESSION_ID_METADATA_KEY, metadata_session_id);
