@@ -334,7 +334,7 @@ def format_module_rollup(aggregated: dict[str, dict], limit: int = 20) -> str:
     for module, data in top_modules:
         filesize_str = format_size_change(data["filesize"])
         count_str = str(data["count"])
-        lines.append(f"| {module} | {filesize_str} | {count_str} |")
+        lines.append(f"| `{module}` | {filesize_str} | {count_str} |")
 
     return "\n".join(lines)
 
@@ -400,8 +400,9 @@ def generate_report(
 
 ### Changes by Module
 
-{module_rollup}
+</summary>
 
+{module_rollup}
 </details>
 
 <details>
