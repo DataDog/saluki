@@ -183,6 +183,23 @@ def demangle_escape_sequences(text: str) -> str:
     return result
 
 
+def strip_rust_hash_suffix(symbol: str) -> str:
+    """Strip Rust version hash suffix from a demangled symbol name.
+
+    Rust symbols often have a trailing hash like ::h654dff07593b4c08 which
+    represents compiler version, generics instantiation, and other factors.
+    For module-level grouping, these hashes should be removed so that symbols
+    differing only in these transparent ways are collapsed together.
+
+    The hash pattern is ::h followed by exactly 16 lowercase hex characters.
+    This must be called AFTER demangling, as mangled symbols use a different
+    representation for this hash.
+    """
+    import re
+
+    return re.sub(r"::h[a-f0-9]{16}$", "", symbol)
+
+
 def demangle_symbol(symbol: str) -> str:
     """Demangle a Rust symbol name to extract the module path.
 
@@ -274,6 +291,9 @@ def extract_module_prefix(
         or symbol.startswith("$LT$")
     ):
         working_symbol = demangle_symbol(symbol)
+
+    # Strip Rust version hash suffix before module extraction
+    working_symbol = strip_rust_hash_suffix(working_symbol)
 
     # For Rust symbols, split on :: and determine depth based on crate ownership
     parts = working_symbol.split("::")
