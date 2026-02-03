@@ -53,7 +53,7 @@ fn get_cert_path_from_config(config: &GenericConfiguration) -> Result<PathBuf, G
 pub async fn spawn_control_plane(
     config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, component_registry: &ComponentRegistry,
     health_registry: HealthRegistry, env_provider: ADPEnvironmentProvider,
-    dsd_stats_config: DogStatsDStatisticsConfiguration,
+    dsd_stats_config: DogStatsDStatisticsConfiguration, pre_registered_rar: Option<RemoteAgentHelperConfiguration>,
 ) -> Result<(), GenericError> {
     // Build our unprivileged and privileged API server.
     //
@@ -79,7 +79,8 @@ pub async fn spawn_control_plane(
     let dp_config = dp_config.clone();
     let init = async move {
         // Handle any final configuration of our API endpoints and spawn them.
-        configure_and_spawn_api_endpoints(config, dp_config, unprivileged_api, privileged_api).await?;
+        configure_and_spawn_api_endpoints(config, dp_config, unprivileged_api, privileged_api, pre_registered_rar)
+            .await?;
 
         health_registry.spawn().await?;
 
@@ -91,32 +92,45 @@ pub async fn spawn_control_plane(
 
 async fn configure_and_spawn_api_endpoints(
     config: GenericConfiguration, dp_config: DataPlaneConfiguration, unprivileged_api: APIBuilder,
-    mut privileged_api: APIBuilder,
+    mut privileged_api: APIBuilder, pre_registered_rar: Option<RemoteAgentHelperConfiguration>,
 ) -> Result<(), GenericError> {
     // When not in standalone mode, install the necessary components for registering ourselves with the Datadog Agent as
     // a "remote agent", which wires up ADP to allow the Datadog Agent to query it for status and flare information.
     if !dp_config.standalone_mode() && dp_config.remote_agent_enabled() {
-        let secure_api_grpc_target_addr =
-            GrpcTargetAddress::try_from_listen_addr(dp_config.secure_api_listen_address()).ok_or_else(|| {
-                generic_error!("Failed to get valid gRPC target address from secure API listen address.")
-            })?;
+        // Determine the Prometheus listen address if telemetry is enabled
+        let prometheus_listen_addr = if dp_config.telemetry_enabled() {
+            Some(
+                dp_config
+                    .telemetry_listen_addr()
+                    .as_local_connect_addr()
+                    .ok_or_else(|| {
+                        generic_error!("Telemetry listen address present but not valid for local connections.")
+                    })?,
+            )
+        } else {
+            None
+        };
 
-        let mut prometheus_listen_addr = None;
-        if dp_config.telemetry_enabled() {
-            prometheus_listen_addr = dp_config
-                .telemetry_listen_addr()
-                .as_local_connect_addr()
-                .ok_or_else(|| generic_error!("Telemetry listen address present but not valid for local connections."))
-                .map(Some)?;
-        }
+        let mut remote_agent_config = if let Some(mut pre_registered) = pre_registered_rar {
+            // Reuse pre-registered config from early RAR registration (for config streaming)
+            info!("Reusing pre-registered RAR configuration for control plane.");
+            pre_registered.set_prometheus_addr(prometheus_listen_addr);
+            pre_registered
+        } else {
+            // No pre-registration, create new config
+            // The background loop spawned by spawn() will handle initial registration
+            let secure_api_grpc_target_addr =
+                GrpcTargetAddress::try_from_listen_addr(dp_config.secure_api_listen_address()).ok_or_else(|| {
+                    generic_error!("Failed to get valid gRPC target address from secure API listen address.")
+                })?;
 
-        // Build our helper configuration for registering ourselves with the Datadog Agent as a remote agent.
-        let mut remote_agent_config = RemoteAgentHelperConfiguration::from_configuration(
-            &config,
-            secure_api_grpc_target_addr,
-            prometheus_listen_addr,
-        )
-        .await?;
+            RemoteAgentHelperConfiguration::from_configuration(
+                &config,
+                secure_api_grpc_target_addr,
+                prometheus_listen_addr,
+            )
+            .await?
+        };
 
         // Create and register the Remote Agent gRPC services with the privileged API.
         // Each service is tracked automatically for registration with the Remote Agent Registry.
@@ -128,7 +142,10 @@ async fn configure_and_spawn_api_endpoints(
             privileged_api = privileged_api.with_grpc_service(remote_agent_config.create_telemetry_service());
         }
 
-        // Spawn the remote agent helper task.
+        // Spawn the remote agent helper task to handle RAR registration and periodic refreshes.
+        // If a session_id already exists (from early registration for config streaming),
+        // this will only perform refreshes. Otherwise, it will perform the initial registration
+        // followed by refreshes.
         remote_agent_config.spawn();
     }
 

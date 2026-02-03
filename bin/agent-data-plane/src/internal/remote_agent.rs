@@ -119,6 +119,49 @@ impl RemoteAgentHelperConfiguration {
         })
     }
 
+    /// Performs a single RAR registration and returns the session ID.
+    ///
+    /// This is used for config streaming which requires a session ID upfront.
+    /// The session ID is stored internally and made available for subsequent operations.
+    ///
+    /// After calling this, the refresh loop will detect the existing session and perform
+    /// refreshes instead of attempting to re-register.
+    pub async fn register_once(&mut self) -> Result<String, GenericError> {
+        let api_listen_addr = self.api_listen_addr.to_string();
+
+        let resp = self
+            .client
+            .register_remote_agent_request(
+                self.pid,
+                &self.display_name,
+                &api_listen_addr,
+                self.service_names.clone(),
+            )
+            .await?;
+
+        let resp = resp.into_inner();
+        info!(
+            session_id = %resp.session_id,
+            "Registered with Remote Agent Registry for config streaming."
+        );
+
+        self.session_id.update(Some(resp.session_id.clone()));
+
+        Ok(resp.session_id)
+    }
+
+    /// Gets the current session ID if available.
+    pub fn get_session_id(&self) -> Option<String> {
+        self.session_id.get()
+    }
+
+    /// Sets the Prometheus listen address.
+    ///
+    /// Used when updating a pre-registered config with telemetry information.
+    pub fn set_prometheus_addr(&mut self, addr: Option<SocketAddr>) {
+        self.prometheus_listen_addr = addr;
+    }
+
     /// Creates a new `StatusProviderServer` for the remote agent helper.
     ///
     /// The service name is automatically tracked for registration.
@@ -207,7 +250,6 @@ async fn run_remote_agent_helper(
                 if client.refresh_remote_agent_request(&id).await.is_err() {
                     loop_timer.reset_after(REFRESH_FAILED_RETRY_INTERVAL);
                     session_id.update(None);
-
                     warn!("Failed to refresh registration with the Datadog Agent. Resetting session ID and attempting to re-register shortly.");
 
                     continue;
@@ -223,7 +265,7 @@ async fn run_remote_agent_helper(
                         let new_refresh_interval = resp.recommended_refresh_interval_secs;
                         info!(session_id = %resp.session_id, "Successfully registered with the Datadog Agent. Refreshing every {} seconds.", new_refresh_interval);
 
-                        session_id.update(Some(resp.session_id));
+                        session_id.update(Some(resp.session_id.clone()));
                         loop_timer.reset_after(Duration::from_secs(new_refresh_interval as u64));
                     }
                     Err(e) => {

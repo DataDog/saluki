@@ -33,12 +33,15 @@ use saluki_core::topology::TopologyBlueprint;
 use saluki_env::{configstream::create_config_stream, EnvironmentProvider as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
+use saluki_io::net::GrpcTargetAddress;
 use tokio::{select, time::interval};
 use tracing::{error, info, warn};
 
 use crate::{
     components::apm_onboarding::ApmOnboardingConfiguration,
-    internal::{spawn_control_plane, spawn_internal_observability_topology},
+    internal::{
+        remote_agent::RemoteAgentHelperConfiguration, spawn_control_plane, spawn_internal_observability_topology,
+    },
 };
 use crate::{config::DataPlaneConfiguration, env_provider::ADPEnvironmentProvider};
 
@@ -73,8 +76,40 @@ pub async fn handle_run_command(
 
     let in_standalone_mode = bootstrap_dp_config.standalone_mode();
     let use_new_config_stream_endpoint = bootstrap_dp_config.use_new_config_stream_endpoint();
-    let (config, dp_config) = if !in_standalone_mode && use_new_config_stream_endpoint {
-        let config_updates_receiver = create_config_stream(&bootstrap_config)
+    let should_use_config_stream = !in_standalone_mode && use_new_config_stream_endpoint;
+
+    // Early RAR registration for config streaming (if enabled)
+    let early_rar_config = if should_use_config_stream {
+        let secure_api_grpc_target_addr = GrpcTargetAddress::try_from_listen_addr(
+            bootstrap_dp_config.secure_api_listen_address(),
+        )
+        .ok_or_else(|| generic_error!("Failed to get valid gRPC target address from secure API listen address."))?;
+
+        let mut remote_agent_config = RemoteAgentHelperConfiguration::from_configuration(
+            &bootstrap_config,
+            secure_api_grpc_target_addr,
+            None, // Prometheus address will be set later after telemetry config is loaded
+        )
+        .await
+        .error_context("Failed to create remote agent configuration for RAR registration.")?;
+
+        remote_agent_config
+            .register_once()
+            .await
+            .error_context("Failed to register with Remote Agent Registry for config streaming.")?;
+
+        Some(remote_agent_config)
+    } else {
+        None
+    };
+
+    let (config, dp_config) = if should_use_config_stream {
+        let session_id = early_rar_config
+            .as_ref()
+            .and_then(|c| c.get_session_id())
+            .ok_or_else(|| generic_error!("Session ID unavailable after RAR registration"))?;
+
+        let config_updates_receiver = create_config_stream(&bootstrap_config, session_id)
             .await
             .error_context("Failed to create configuration updates stream from control plane.")?;
 
@@ -138,6 +173,7 @@ pub async fn handle_run_command(
         health_registry.clone(),
         env_provider,
         dsd_stats_config,
+        early_rar_config,
     )
     .await
     .error_context("Failed to spawn control plane.")?;

@@ -11,8 +11,10 @@ use tracing::{debug, error, warn};
 
 use crate::helpers::remote_agent::RemoteAgentClient;
 
-/// Creates a new `ConfigStreamer` that receives a stream of config events from the remote agent.
-pub async fn create_config_stream(config: &GenericConfiguration) -> Result<mpsc::Receiver<ConfigUpdate>, GenericError> {
+/// Creates a new config stream that receives configuration events from the remote agent.
+pub async fn create_config_stream(
+    config: &GenericConfiguration, session_id: String,
+) -> Result<mpsc::Receiver<ConfigUpdate>, GenericError> {
     let (sender, receiver) = mpsc::channel(100);
 
     let client = match RemoteAgentClient::from_configuration(config).await {
@@ -23,15 +25,17 @@ pub async fn create_config_stream(config: &GenericConfiguration) -> Result<mpsc:
         }
     };
 
-    tokio::spawn(run_config_stream_event_loop(client, sender));
+    tokio::spawn(run_config_stream_event_loop(client, sender, session_id));
 
     Ok(receiver)
 }
 
-async fn run_config_stream_event_loop(mut client: RemoteAgentClient, sender: mpsc::Sender<ConfigUpdate>) {
+async fn run_config_stream_event_loop(
+    mut client: RemoteAgentClient, sender: mpsc::Sender<ConfigUpdate>, session_id: String,
+) {
     loop {
         debug!("Establishing a new config stream connection to the core agent...");
-        let mut rac = client.stream_config_events();
+        let mut rac = client.stream_config_events(Some(session_id.clone()));
 
         while let Some(result) = rac.next().await {
             match result {
@@ -66,7 +70,9 @@ async fn run_config_stream_event_loop(mut client: RemoteAgentClient, sender: mps
                         }
                     }
                 }
-                Err(e) => error!("Error while reading config event stream: {}.", e),
+                Err(e) => {
+                    error!("Error while reading config event stream: {}.", e);
+                }
             }
         }
 
