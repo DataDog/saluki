@@ -74,6 +74,7 @@ impl SessionIdHandle {
     pub fn update(&self, new_session_id: Option<SessionId>) {
         if let Ok(mut session_id) = self.inner.session_id.lock() {
             *session_id = new_session_id;
+            self.inner.change_notify.notify_waiters();
         }
     }
 
