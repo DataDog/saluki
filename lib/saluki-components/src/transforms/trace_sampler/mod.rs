@@ -332,10 +332,7 @@ impl TraceSampler {
                 return (false, priority, "", Some(root_span_idx));
             }
 
-            if self
-                .priority_sampler
-                .sample(now, trace, root_span_idx, priority, 0.0)
-            {
+            if self.priority_sampler.sample(now, trace, root_span_idx, priority, 0.0) {
                 return (true, priority, "", Some(root_span_idx));
             }
         } else if self.is_otlp_trace(trace, root_span_idx) {
@@ -382,10 +379,7 @@ impl TraceSampler {
 
         // Add tag for the decision maker
         let existing_decision_maker = if decision_maker.is_empty() {
-            root_span_value
-                .meta()
-                .get(TAG_DECISION_MAKER)
-                .cloned()
+            root_span_value.meta().get(TAG_DECISION_MAKER).cloned()
         } else {
             None
         };
@@ -411,11 +405,7 @@ impl TraceSampler {
         let sampling = TraceSampling::new(
             !keep,
             Some(priority),
-            if priority > 0 {
-                decision_maker_meta
-            } else {
-                None
-            },
+            if priority > 0 { decision_maker_meta } else { None },
             Some(MetaString::from(format!("{:.2}", sampling_rate))),
         );
         trace.set_sampling(Some(sampling));
