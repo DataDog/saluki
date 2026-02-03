@@ -85,11 +85,14 @@ impl RemoteAgentBootstrap {
         }
 
         // Generate our remote agent state, which is mostly fixed but has a few dynamic bits.
-        let service_names = vec![
+        let mut service_names = vec![
             <StatusProviderServer<()> as NamedService>::NAME.to_string(),
-            <TelemetryProviderServer<()> as NamedService>::NAME.to_string(),
             <FlareProviderServer<()> as NamedService>::NAME.to_string(),
         ];
+
+        if dp_config.telemetry_enabled() {
+            service_names.push(<TelemetryProviderServer<()> as NamedService>::NAME.to_string());
+        }
 
         let (state, init_reg_rx) = RemoteAgentState::new(api_listen_addr, service_names);
         let session_id = state.session_id.clone();
