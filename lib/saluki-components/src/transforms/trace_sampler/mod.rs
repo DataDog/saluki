@@ -28,8 +28,10 @@ use saluki_error::GenericError;
 use stringtheory::MetaString;
 use tracing::debug;
 
+mod catalog;
 mod core_sampler;
 mod errors;
+mod priority_sampler;
 mod probabilistic;
 mod score_sampler;
 mod signature;
