@@ -95,6 +95,34 @@ impl Trace {
         self.spans = spans;
     }
 
+    /// Retains only the spans specified by the predicate.
+    ///
+    /// Returns the number of spans retained. If no spans match, the trace is left unchanged.
+    pub fn retain_spans<F>(&mut self, mut f: F) -> usize
+    where
+        F: FnMut(&Span) -> bool,
+    {
+        if self.spans.is_empty() {
+            return 0;
+        }
+
+        let mut has_match = false;
+        for span in self.spans.iter() {
+            if f(span) {
+                has_match = true;
+                break;
+            }
+        }
+
+        if !has_match {
+            return 0;
+        }
+
+        self.spans.retain(|span| f(span));
+        self.spans.shrink_to_fit();
+        self.spans.len()
+    }
+
     /// Returns the resource-level tags associated with this trace.
     pub fn resource_tags(&self) -> &TagSet {
         &self.resource_tags
