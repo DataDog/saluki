@@ -3628,7 +3628,6 @@ dependencies = [
  "pin-project-lite",
  "proptest",
  "prost",
- "prost-types",
  "regex",
  "saluki-api",
  "saluki-common",
