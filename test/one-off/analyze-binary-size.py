@@ -400,9 +400,9 @@ def generate_report(
 
 ### Changes by Module
 
-{module_rollup}
-
 </summary>
+
+{module_rollup}
 </details>
 
 <details>
