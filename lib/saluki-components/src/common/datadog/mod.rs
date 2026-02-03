@@ -10,6 +10,9 @@ mod retry;
 pub mod telemetry;
 pub mod transaction;
 
+use saluki_core::data_model::event::trace::Trace;
+use stringtheory::MetaString;
+
 /// Metric key used to store Datadog sampling priority (`_sampling_priority_v1`).
 pub const SAMPLING_PRIORITY_METRIC_KEY: &str = "_sampling_priority_v1";
 
@@ -45,5 +48,21 @@ pub fn sample_by_rate(trace_id: u64, rate: f64) -> bool {
         trace_id.wrapping_mul(SAMPLER_HASHER) < (rate * MAX_TRACE_ID_FLOAT) as u64
     } else {
         true
+    }
+}
+
+pub fn get_trace_env(trace: &Trace, root_span_idx: usize) -> Option<&MetaString> {
+    // logic taken from here: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/traceutil/trace.go#L19-L20
+    let env = trace.spans().get(root_span_idx).and_then(|span| span.meta().get("env"));
+    match env {
+        Some(env) => Some(env),
+        None => {
+            for span in trace.spans().iter() {
+                if let Some(env) = span.meta().get("env") {
+                    return Some(env);
+                }
+            }
+            None
+        }
     }
 }
