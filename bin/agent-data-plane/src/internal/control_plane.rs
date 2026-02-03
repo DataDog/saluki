@@ -95,7 +95,9 @@ async fn configure_and_spawn_api_endpoints(
     if let Some(ra_bootstrap) = ra_bootstrap {
         privileged_api = privileged_api.with_grpc_service(ra_bootstrap.create_status_service());
         privileged_api = privileged_api.with_grpc_service(ra_bootstrap.create_flare_service());
-        privileged_api = privileged_api.with_grpc_service(ra_bootstrap.create_telemetry_service());
+        if let Some(telemetry_service) = ra_bootstrap.create_telemetry_service() {
+            privileged_api = privileged_api.with_grpc_service(telemetry_service);
+        }
     }
 
     spawn_unprivileged_api(unprivileged_api, dp_config.api_listen_address().clone()).await?;

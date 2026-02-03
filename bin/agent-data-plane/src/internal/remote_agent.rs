@@ -132,12 +132,16 @@ impl RemoteAgentBootstrap {
     }
 
     /// Creates a new `TelemetryProviderServer` tied to this remote agent.
-    pub fn create_telemetry_service(&self) -> TelemetryProviderServer<RemoteAgentImpl> {
-        TelemetryProviderServer::new(RemoteAgentImpl {
-            started: Utc::now(),
-            internal_metrics: self.internal_metrics.clone(),
-            prometheus_listen_addr: self.prometheus_listen_addr,
-            session_id: self.session_id.clone(),
+    ///
+    /// Returns `None` if telemetry is not enabled.
+    pub fn create_telemetry_service(&self) -> Option<TelemetryProviderServer<RemoteAgentImpl>> {
+        self.prometheus_listen_addr.is_some().then(|| {
+            TelemetryProviderServer::new(RemoteAgentImpl {
+                started: Utc::now(),
+                internal_metrics: self.internal_metrics.clone(),
+                prometheus_listen_addr: self.prometheus_listen_addr,
+                session_id: self.session_id.clone(),
+            })
         })
     }
 
