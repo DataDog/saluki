@@ -7,6 +7,8 @@
 use saluki_core::data_model::event::trace::{Span, Trace};
 use stringtheory::MetaString;
 
+use crate::common::datadog::get_trace_env;
+
 const OFFSET_32: u32 = 2166136261;
 const PRIME_32: u32 = 16777619;
 const KEY_HTTP_STATUS_CODE: &str = "http.status_code";
@@ -28,19 +30,40 @@ pub(super) fn fnv1a_32(seed: &[u8], bytes: &[u8]) -> u32 {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub(super) struct Signature(pub(super) u64);
 
-fn get_trace_env(trace: &Trace, root_span_idx: usize) -> Option<&MetaString> {
-    // logic taken from here: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/traceutil/trace.go#L19-L20
-    let env = trace.spans().get(root_span_idx).and_then(|span| span.meta().get("env"));
-    match env {
-        Some(env) => Some(env),
-        None => {
-            for span in trace.spans().iter() {
-                if let Some(env) = span.meta().get("env") {
-                    return Some(env);
-                }
-            }
-            None
+/// Service identifier for sampling rate lookups.
+///
+/// Represents a unique (service name, environment) pair used as a key
+/// for storing and retrieving sampling rates in distributed sampling.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub(super) struct ServiceSignature {
+    name: MetaString,
+    env: MetaString,
+}
+
+impl ServiceSignature {
+    /// Creates a new ServiceSignature from name and environment.
+    pub(super) fn new(name: impl Into<MetaString>, env: impl Into<MetaString>) -> Self {
+        Self {
+            name: name.into(),
+            env: env.into(),
         }
+    }
+
+    /// Computes FNV-1a hash matching Go's ServiceSignature.Hash().
+    ///
+    /// The hash is computed over: `name + "," + env`
+    pub(super) fn hash(&self) -> Signature {
+        let mut h = OFFSET_32;
+        h = write_hash(h, self.name.as_ref().as_bytes());
+        h = write_hash(h, b",");
+        h = write_hash(h, self.env.as_ref().as_bytes());
+        Signature(h as u64)
+    }
+}
+
+impl std::fmt::Display for ServiceSignature {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "service:{},env:{}", self.name.as_ref(), self.env.as_ref())
     }
 }
 

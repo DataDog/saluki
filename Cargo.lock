@@ -3502,6 +3502,7 @@ dependencies = [
  "http-serde-ext",
  "hyper",
  "hyper-http-proxy",
+ "lru-slab",
  "memory-accounting",
  "metrics",
  "opentelemetry-semantic-conventions",
