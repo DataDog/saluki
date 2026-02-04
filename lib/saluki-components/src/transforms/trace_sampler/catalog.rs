@@ -24,22 +24,17 @@ struct CatalogEntry {
     sig: Signature,
 }
 
-/// Inner state protected by mutex.
-struct Inner {
+/// LRU cache mapping service signatures to their computed hashes.
+///
+/// The catalog maintains a bounded cache of service signatures, evicting
+/// the least recently used entries when the capacity is exceeded.
+pub(super) struct ServiceKeyCatalog {
     /// Map from ServiceSignature to slot token in the LRU slab.
     items: FastHashMap<ServiceSignature, u32>,
     /// LRU list of entries (front = most recently used).
     entries: LruSlab<CatalogEntry>,
     /// Maximum number of entries before eviction.
     max_entries: usize,
-}
-
-/// LRU cache mapping service signatures to their computed hashes.
-///
-/// The catalog maintains a bounded cache of service signatures, evicting
-/// the least recently used entries when the capacity is exceeded.
-pub(super) struct ServiceKeyCatalog {
-    inner: Inner,
 }
 
 impl ServiceKeyCatalog {
@@ -59,11 +54,9 @@ impl ServiceKeyCatalog {
         };
         let prealloc = max.min(INITIAL_SIZE) as u32;
         Self {
-            inner: Inner {
-                items: FastHashMap::default(),
-                entries: LruSlab::with_capacity(prealloc),
-                max_entries: max,
-            },
+            items: FastHashMap::default(),
+            entries: LruSlab::with_capacity(prealloc),
+            max_entries: max,
         }
     }
 
@@ -74,9 +67,9 @@ impl ServiceKeyCatalog {
     /// and evicts the least recently used entry if at capacity.
     pub fn register(&mut self, svc_sig: ServiceSignature) -> Signature {
         // Check if signature already exists
-        if let Some(&slot) = self.inner.items.get(&svc_sig) {
+        if let Some(&slot) = self.items.get(&svc_sig) {
             // Move to front (most recently used) and return cached hash.
-            let sig = self.inner.entries.get_mut(slot).sig;
+            let sig = self.entries.get_mut(slot).sig;
             return sig;
         }
 
@@ -88,16 +81,16 @@ impl ServiceKeyCatalog {
         };
 
         // Add to front
-        let slot = self.inner.entries.insert(entry);
-        self.inner.items.insert(svc_sig.clone(), slot);
+        let slot = self.entries.insert(entry);
+        self.items.insert(svc_sig.clone(), slot);
 
         // Evict if over capacity
-        if self.inner.entries.len() as usize > self.inner.max_entries {
-            if let Some(slot) = self.inner.entries.lru() {
-                let evicted = self.inner.entries.remove(slot);
-                self.inner.items.remove(&evicted.key);
+        if self.entries.len() as usize > self.max_entries {
+            if let Some(slot) = self.entries.lru() {
+                let evicted = self.entries.remove(slot);
+                self.items.remove(&evicted.key);
                 warn!(
-                    max_entries = self.inner.max_entries,
+                    max_entries = self.max_entries,
                     evicted_service = %evicted.key,
                     "Service-rates catalog exceeded capacity, dropping oldest entry"
                 );
@@ -113,15 +106,15 @@ mod tests {
     use super::*;
 
     fn catalog_contains(catalog: &ServiceKeyCatalog, expected: &FastHashMap<ServiceSignature, Signature>) {
-        assert_eq!(catalog.inner.items.len(), expected.len(), "too many items in map");
+        assert_eq!(catalog.items.len(), expected.len(), "too many items in map");
         assert_eq!(
-            catalog.inner.entries.len() as usize,
+            catalog.entries.len() as usize,
             expected.len(),
             "too many elements in list",
         );
 
-        for (key, slot) in &catalog.inner.items {
-            let entry = catalog.inner.entries.peek(*slot);
+        for (key, slot) in &catalog.items {
+            let entry = catalog.entries.peek(*slot);
             assert_eq!(&entry.key, key, "list element in map incorrect for key");
             let expected_sig = expected
                 .get(key)
@@ -131,11 +124,10 @@ mod tests {
 
         for (key, expected_sig) in expected {
             let slot = catalog
-                .inner
                 .items
                 .get(key)
                 .unwrap_or_else(|| panic!("missing item in map: {}", key));
-            let entry = catalog.inner.entries.peek(*slot);
+            let entry = catalog.entries.peek(*slot);
             assert_eq!(&entry.sig, expected_sig, "invalid value in map at key {}", key);
         }
     }
@@ -143,9 +135,9 @@ mod tests {
     #[test]
     fn test_new_service_lookup() {
         let catalog = ServiceKeyCatalog::with_max_entries(0);
-        assert!(catalog.inner.items.is_empty());
-        assert_eq!(catalog.inner.entries.len(), 0);
-        assert_eq!(catalog.inner.max_entries, MAX_CATALOG_ENTRIES);
+        assert!(catalog.items.is_empty());
+        assert_eq!(catalog.entries.len(), 0);
+        assert_eq!(catalog.max_entries, MAX_CATALOG_ENTRIES);
     }
 
     #[test]

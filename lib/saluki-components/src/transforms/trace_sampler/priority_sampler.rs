@@ -2,20 +2,19 @@
 #![allow(dead_code)]
 use std::time::SystemTime;
 
-use saluki_core::data_model::event::trace::{Span, Trace};
+use saluki_core::data_model::event::trace::Trace;
 use stringtheory::MetaString;
 
 use super::{
     catalog::ServiceKeyCatalog,
     core_sampler::Sampler,
+    score_sampler::weight_root,
     signature::{ServiceSignature, Signature},
     PRIORITY_AUTO_DROP, PRIORITY_AUTO_KEEP, PRIORITY_USER_KEEP,
 };
 use crate::common::datadog::get_trace_env;
 
 const DEPRECATED_RATE_KEY: &str = "_sampling_priority_rate_v1";
-const KEY_SAMPLING_RATE_GLOBAL: &str = "_sample_rate";
-const KEY_SAMPLING_RATE_PRE_SAMPLER: &str = "_dd1.sr.rapre";
 
 /// Priority sampler for traces with sampling priority set by the tracer.
 pub struct PrioritySampler {
@@ -70,7 +69,7 @@ impl PrioritySampler {
             (root.service(), tracer_env, weight)
         };
 
-        let sampler_env = to_sampler_env(tracer_env, self.agent_env.as_ref());
+        let sampler_env = to_sampler_env(tracer_env, &self.agent_env);
         let svc_sig = ServiceSignature::new(service_name, sampler_env);
         let signature = self.catalog.register(svc_sig);
 
@@ -98,30 +97,12 @@ impl PrioritySampler {
     }
 }
 
-fn to_sampler_env(tracer_env: &str, agent_env: &str) -> String {
+fn to_sampler_env(tracer_env: &str, agent_env: &MetaString) -> MetaString {
     if tracer_env.is_empty() {
-        agent_env.to_string()
+        agent_env.clone()
     } else {
-        tracer_env.to_string()
+        MetaString::from(tracer_env)
     }
-}
-
-fn weight_root(span: &Span) -> f32 {
-    let client_rate = span
-        .metrics()
-        .get(&MetaString::from_static(KEY_SAMPLING_RATE_GLOBAL))
-        .copied()
-        .filter(|&r| r > 0.0 && r <= 1.0)
-        .unwrap_or(1.0);
-
-    let pre_sampler_rate = span
-        .metrics()
-        .get(&MetaString::from_static(KEY_SAMPLING_RATE_PRE_SAMPLER))
-        .copied()
-        .filter(|&r| r > 0.0 && r <= 1.0)
-        .unwrap_or(1.0);
-
-    (1.0 / (pre_sampler_rate * client_rate)) as f32
 }
 
 #[cfg(test)]

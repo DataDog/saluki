@@ -167,7 +167,7 @@ impl ScoreSampler {
 }
 
 /// Calculate the weight from the span's global rate and presampler rate.
-fn weight_root(span: &Span) -> f32 {
+pub(super) fn weight_root(span: &Span) -> f32 {
     let client_rate = span
         .metrics()
         .get(KEY_SAMPLING_RATE_GLOBAL)

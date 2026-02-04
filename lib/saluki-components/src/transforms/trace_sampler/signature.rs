@@ -5,6 +5,7 @@
 //! - a signature newtype + compute helper (for score/TPS samplers)
 
 use saluki_core::data_model::event::trace::{Span, Trace};
+use stringtheory::MetaString;
 
 use crate::common::datadog::get_trace_env;
 
@@ -35,13 +36,13 @@ pub(super) struct Signature(pub(super) u64);
 /// for storing and retrieving sampling rates in distributed sampling.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub(super) struct ServiceSignature {
-    pub name: String,
-    pub env: String,
+    name: MetaString,
+    env: MetaString,
 }
 
 impl ServiceSignature {
     /// Creates a new ServiceSignature from name and environment.
-    pub fn new(name: impl Into<String>, env: impl Into<String>) -> Self {
+    pub(super) fn new(name: impl Into<MetaString>, env: impl Into<MetaString>) -> Self {
         Self {
             name: name.into(),
             env: env.into(),
@@ -51,18 +52,18 @@ impl ServiceSignature {
     /// Computes FNV-1a hash matching Go's ServiceSignature.Hash().
     ///
     /// The hash is computed over: `name + "," + env`
-    pub fn hash(&self) -> Signature {
+    pub(super) fn hash(&self) -> Signature {
         let mut h = OFFSET_32;
-        h = write_hash(h, self.name.as_bytes());
+        h = write_hash(h, self.name.as_ref().as_bytes());
         h = write_hash(h, b",");
-        h = write_hash(h, self.env.as_bytes());
+        h = write_hash(h, self.env.as_ref().as_bytes());
         Signature(h as u64)
     }
 }
 
 impl std::fmt::Display for ServiceSignature {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "service:{},env:{}", self.name, self.env)
+        write!(f, "service:{},env:{}", self.name.as_ref(), self.env.as_ref())
     }
 }
 
