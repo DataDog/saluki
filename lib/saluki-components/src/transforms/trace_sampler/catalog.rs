@@ -54,7 +54,7 @@ impl ServiceKeyCatalog {
         };
         let prealloc = max.min(INITIAL_SIZE) as u32;
         Self {
-            items: FastHashMap::default(),
+            items: FastHashMap::with_capacity_and_hasher(INITIAL_SIZE, Default::default()),
             entries: LruSlab::with_capacity(prealloc),
             max_entries: max,
         }
@@ -82,7 +82,7 @@ impl ServiceKeyCatalog {
 
         // Add to front
         let slot = self.entries.insert(entry);
-        self.items.insert(svc_sig.clone(), slot);
+        self.items.insert(svc_sig, slot);
 
         // Evict if over capacity
         if self.entries.len() as usize > self.max_entries {
