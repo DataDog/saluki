@@ -133,6 +133,7 @@ templates:
         # Enable the OTLP pipeline.
         DD_DATA_PLANE_OTLP_ENABLED: "true"
         DD_OTLP_CONFIG: "{}"
+        DD_OTLP_EVENT_BUFFER_SOFT_LIMIT: "32"
 
 experiments:
   # ============================================================================

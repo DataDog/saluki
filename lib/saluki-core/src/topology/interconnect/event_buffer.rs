@@ -222,6 +222,16 @@ impl<const N: usize> EventBufferManager<N> {
     pub fn consume(&mut self) -> Option<FixedSizeEventBuffer<N>> {
         self.current.take()
     }
+
+    /// Returns the number of events in the current buffer.
+    pub fn len(&self) -> usize {
+        self.current.as_ref().map_or(0, FixedSizeEventBuffer::len)
+    }
+
+    /// Returns true if the current buffer has no events.
+    pub fn is_empty(&self) -> bool {
+        self.current.as_ref().is_none_or(FixedSizeEventBuffer::is_empty)
+    }
 }
 
 #[cfg(test)]

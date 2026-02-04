@@ -1,5 +1,4 @@
-use std::sync::Arc;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -65,6 +64,10 @@ const fn default_allow_context_heap_allocations() -> bool {
     true
 }
 
+const fn default_event_buffer_soft_limit() -> usize {
+    32
+}
+
 /// Configuration for the OTLP source.
 #[derive(Deserialize, Default)]
 pub struct OtlpConfiguration {
@@ -115,6 +118,12 @@ pub struct OtlpConfiguration {
         default = "default_allow_context_heap_allocations"
     )]
     allow_context_heap_allocations: bool,
+
+    /// The maximum number of events to accumulate in the OTLP converter buffer before forcing a flush.
+    ///
+    /// Defaults to 32.
+    #[serde(rename = "otlp_event_buffer_soft_limit", default = "default_event_buffer_soft_limit")]
+    event_buffer_soft_limit: usize,
 
     /// Workload provider to utilize for origin detection/enrichment.
     #[serde(skip)]
@@ -200,6 +209,7 @@ impl SourceBuilder for OtlpConfiguration {
             metrics_translator_config,
             traces_config,
             metrics,
+            event_buffer_soft_limit: self.event_buffer_soft_limit,
         }))
     }
 }
@@ -222,6 +232,7 @@ pub struct Otlp {
     metrics_translator_config: metrics::config::OtlpMetricsTranslatorConfig,
     traces_config: TracesConfig,
     metrics: Metrics, // Telemetry metrics, not DD native metrics.
+    event_buffer_soft_limit: usize,
 }
 
 #[async_trait]
@@ -236,6 +247,7 @@ impl Source for Otlp {
             metrics_translator_config,
             traces_config,
             metrics,
+            event_buffer_soft_limit,
         } = *self;
 
         let mut global_shutdown = context.take_shutdown_handle();
@@ -262,6 +274,7 @@ impl Source for Otlp {
                 metrics_translator,
                 metrics.clone(),
                 traces_config,
+                event_buffer_soft_limit,
             ),
         );
 
@@ -431,6 +444,7 @@ async fn run_converter(
     mut receiver: mpsc::Receiver<OtlpResource>, source_context: SourceContext,
     origin_tag_resolver: Option<OtlpOriginTagResolver>, shutdown_handle: DynamicShutdownHandle,
     mut metrics_translator: OtlpMetricsTranslator, metrics: Metrics, traces_config: TracesConfig,
+    event_buffer_soft_limit: usize,
 ) {
     tokio::pin!(shutdown_handle);
     debug!("OTLP resource converter task started.");
@@ -473,11 +487,15 @@ async fn run_converter(
                         }
                     }
                     OtlpResource::Traces(resource_spans) => {
-                        let trace_events =
-                            traces_translator.translate_resource_spans(resource_spans, &metrics);
+                        let trace_events = traces_translator.translate_resource_spans(resource_spans, &metrics);
                         for trace_event in trace_events {
                             if let Some(event_buffer) = event_buffer_manager.try_push(trace_event) {
                                 dispatch_events(event_buffer, &source_context).await;
+                            }
+                            if event_buffer_soft_limit > 0 && event_buffer_manager.len() >= event_buffer_soft_limit {
+                                if let Some(event_buffer) = event_buffer_manager.consume() {
+                                    dispatch_events(event_buffer, &source_context).await;
+                                }
                             }
                         }
                     }
