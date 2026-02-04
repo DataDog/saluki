@@ -5,7 +5,9 @@ use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
 use serde::Deserialize;
 
-use super::{endpoints::EndpointConfiguration, proxy::ProxyConfiguration, retry::RetryConfiguration};
+use super::{
+    endpoints::EndpointConfiguration, protocol::V3ApiConfig, proxy::ProxyConfiguration, retry::RetryConfiguration,
+};
 
 const fn default_endpoint_concurrency() -> usize {
     1
@@ -67,6 +69,13 @@ pub struct ForwarderConfiguration {
         rename = "forwarder_connection_reset_interval"
     )]
     connection_reset_interval_secs: u64,
+
+    /// V3 API configuration for per-endpoint V3 support.
+    ///
+    /// This is read from the encoder configuration and used by the I/O layer to filter payloads
+    /// based on endpoint URL matching.
+    #[serde(rename = "serializer_experimental_use_v3_api", default)]
+    v3_api: V3ApiConfig,
 }
 
 impl ForwarderConfiguration {
@@ -118,6 +127,11 @@ impl ForwarderConfiguration {
     /// Returns the connection reset interval.
     pub const fn connection_reset_interval(&self) -> Duration {
         Duration::from_secs(self.connection_reset_interval_secs)
+    }
+
+    /// Returns a reference to the V3 API configuration.
+    pub fn v3_api(&self) -> &V3ApiConfig {
+        &self.v3_api
     }
 }
 
