@@ -9,6 +9,7 @@ members = [
   "bin/correctness/stele",
   "lib/ddsketch",
   "lib/memory-accounting",
+  "lib/ottl",
   "lib/process-memory",
   "lib/protos/containerd",
   "lib/protos/datadog",
@@ -41,6 +42,7 @@ datadog-protos = { path = "lib/protos/datadog" }
 containerd-protos = { path = "lib/protos/containerd" }
 ddsketch = { path = "lib/ddsketch" }
 memory-accounting = { path = "lib/memory-accounting" }
+ottl = { path = "lib/ottl" }
 process-memory = { path = "lib/process-memory" }
 saluki-api = { path = "lib/saluki-api" }
 saluki-app = { path = "lib/saluki-app" }
@@ -87,7 +89,10 @@ http = { version = "1", default-features = false }
 http-body = { version = "1", default-features = false }
 http-body-util = { version = "0.1.0", default-features = false }
 hyper = { version = "1", default-features = false }
-hyper-hickory = { version = "0.8.0", default-features = false, features = ["tokio", "system-config"] }
+hyper-hickory = { version = "0.8.0", default-features = false, features = [
+  "tokio",
+  "system-config",
+] }
 hyper-http-proxy = { version = "1.1", default-features = false, features = [
   "rustls-tls-native-roots",
 ] }
@@ -141,7 +146,9 @@ serde_json = { version = "1.0.138", default-features = false, features = [
   "std",
 ] }
 faster-hex = { version = "0.10", default-features = false }
-rustls-pki-types = { version = "1.13", default-features = false, features = ["alloc"] }
+rustls-pki-types = { version = "1.13", default-features = false, features = [
+  "alloc",
+] }
 tokio-rustls = { version = "0.26.0", default-features = false, features = [
   "aws_lc_rs",
 ] }
@@ -235,6 +242,4 @@ map_entry = "allow"
 mutable_key_type = "allow"
 
 [workspace.lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = [
-  'cfg(system_allocator)',
-] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(system_allocator)'] }
