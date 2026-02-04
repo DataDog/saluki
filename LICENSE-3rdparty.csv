@@ -391,3 +391,5 @@ zerovec-derive,https://github.com/unicode-org/icu4x,Unicode-3.0,Manish Goregaoka
 zstd,https://github.com/gyscos/zstd-rs,MIT,Alexandre Bury <alexandre.bury@gmail.com>
 zstd-safe,https://github.com/gyscos/zstd-rs,MIT OR Apache-2.0,Alexandre Bury <alexandre.bury@gmail.com>
 zstd-sys,https://github.com/gyscos/zstd-rs,MIT OR Apache-2.0,Alexandre Bury <alexandre.bury@gmail.com>
+chumsky,https://github.com/zesterer/chumsky,MIT,Joshua Barretto <joshua.s.barretto@gmail.com>
+logos,https://github.com/maciejhirsz/logos,MIT OR Apache-2.0,Maciej Hirsz <hello@maciej.codes>
