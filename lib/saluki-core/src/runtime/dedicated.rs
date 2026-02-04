@@ -127,7 +127,7 @@ impl Future for DedicatedRuntimeHandle {
 
 /// Spawns a supervisor in a dedicated runtime on a new OS thread, returning a handle to await for the result.
 ///
-/// The returned handle will resolve if initialization of the of the runtime failed, or after the supervisor completes,
+/// The returned handle will resolve if initialization of the runtime failed, or after the supervisor completes,
 /// whether due to shutdown or failure.
 ///
 /// A background OS thread is spawned to run the supervisor, named after the supervisor's ID: `<id>-sup-rt`. For
