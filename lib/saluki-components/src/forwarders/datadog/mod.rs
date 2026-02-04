@@ -19,7 +19,7 @@ use crate::common::datadog::{
     io::TransactionForwarder,
     telemetry::ComponentTelemetry,
     transaction::{Metadata, Transaction},
-    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT,
+    MetricsPayloadInfo, DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT,
 };
 
 /// Datadog forwarder.
@@ -150,7 +150,10 @@ impl Forwarder for Datadog {
                 maybe_payload = context.payloads().next() => match maybe_payload {
                     Some(payload) => if let Some(http_payload) = payload.try_into_http_payload() {
                         let (payload_meta, request) = http_payload.into_parts();
-                        let transaction_meta = Metadata::from_event_count(payload_meta.event_count());
+                        let transaction_meta = Metadata::new(
+                            payload_meta.event_count(),
+                            payload_meta.get::<MetricsPayloadInfo>().copied(),
+                        );
                         let transaction = Transaction::from_original(transaction_meta, request);
 
                         forwarder.send_transaction(transaction).await?;
