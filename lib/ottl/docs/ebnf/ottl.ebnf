@@ -1,0 +1,113 @@
+(*white spaces!*)
+WS = {" " | "\t"};
+
+(*OTTL.ebnf — Expanded OTTL grammar in Extended Backus–Naur Form (EBNF)
+Source: OpenTelemetry OTTL `LANGUAGE.md`, `README.md`, `ottlfuncs` and `contexts/*` README files
+EBNF conventions used: { } repetition, [ ] optional, ( ) grouping, | alternation 
+A single OTTL statement: an Editor invocation and optional condition*)
+ROOT = [WS], (EDITOR_INVOCATION_STATEMENT | BOOLEAN_EXPRESSION), [WS];
+
+EDITOR_INVOCATION_STATEMENT = EDITOR_INVOCATION, [WHERE_CLAUSE];
+
+WHERE_CLAUSE = [WS], "where", [WS], BOOLEAN_EXPRESSION;
+
+(*Editor invocation (function that mutates telemetry). Identifier must start lowercase.
+Semantic rule: exactly one Editor invocation per statement.*)
+EDITOR_INVOCATION = LOWER_IDENT, [WS], "(", [WS], [ARG_LIST], [WS], ")";
+
+(*Converter invocation: identifier starts with uppercase letter, may be indexed by keys*)
+CONVERTER_INVOCATION = UPPER_IDENT, [WS], "(", [WS], [ARG_LIST], [WS], ")", {INDEX};
+
+(*Generic function invocation: can be Converter or Editor or other functions*)
+FUNCTION_INVOCATION = (CONVERTER_INVOCATION | EDITOR_INVOCATION);
+
+NAMED_ARG = LOWER_IDENT, [WS], "=", [WS], VALUE;
+
+ARG_LIST = (VALUE, {[WS], ",", VALUE}, {[WS], ",", NAMED_ARG}) | (NAMED_ARG, {[WS], ",", NAMED_ARG});
+
+(*Values — where values can appear as function arguments or in expressions*)
+VALUE = [WS], (PATH | LIST | MAP | LITERAL | ENUM | CONVERTER_INVOCATION | FUNCTION_INVOCATION | MATH_EXPRESSION), [WS];
+
+(*PATH: starts with lowercase identifier (context), dotted segments, and optional indexes*)
+PATH = LOWER_IDENT, {".", IDENT_SEGMENT}, {INDEX};
+
+IDENT_SEGMENT = LOWER_IDENT | UPPER_IDENT;
+
+INDEX = "[", [WS], (STRING_LITERAL | INT_LITERAL), [WS], "]";
+
+(*LIST*)
+LIST = "[", [WS], [VALUE, {[WS], ",", VALUE}], [WS], "]";
+
+(*MAP*)
+MAP = "{", [WS], [MAP_ENTRY, {[WS], ",", [WS], MAP_ENTRY}], [WS], "}";
+
+MAP_ENTRY = STRING_LITERAL, [WS], ":", [WS], VALUE;
+
+SIGN = "+" | "-";
+
+(*LITERALS*)
+LITERAL = STRING_LITERAL | INT_LITERAL | FLOAT_LITERAL | BOOL_LITERAL | NIL_LITERAL | BYTES_LITERAL;
+
+STRING_LITERAL = '"', {UPPER | LOWER | DIGIT | " " | "!" | "#" | "$" | "%" | "&" | "'" | "(" | ")" | "*" | "+" | "," | "-" | "." | "/" | ":" | ";" | "<" | "=" | ">" | "?" | "@" | "[" | "\\" | "]" | "^" | "_" | "`" | "{" | "|" | "}" | "~"}, '"';
+
+FLOAT_LITERAL = [SIGN], (DIGIT, {DIGIT}, ".", {DIGIT} | ".", DIGIT, {DIGIT});
+
+INT_LITERAL = [SIGN], DIGIT, {DIGIT};
+
+BOOL_LITERAL = "true" | "false";
+
+NIL_LITERAL = "nil";
+
+(*Math expressions with precedence: +/-, */ *)
+MATH_EXPRESSION = MATH_TERM, {[WS], ("+" | "-"), [WS], MATH_TERM};
+
+MATH_TERM = MATH_FACTOR, {[WS], ("*" | "/"), [WS], MATH_FACTOR};
+
+MATH_FACTOR = [("+" | "-")], [WS], MATH_PRIMARY;
+
+MATH_PRIMARY = LITERAL | PATH | CONVERTER_INVOCATION | "(", [WS], MATH_EXPRESSION, [WS], ")";
+
+(*Boolean expressions with precedence: not > and > or*)
+BOOLEAN_EXPRESSION = BOOLEAN_TERM, {[WS], "or", [WS], BOOLEAN_TERM};
+
+BOOLEAN_TERM = BOOLEAN_FACTOR, {[WS], "and", [WS], BOOLEAN_FACTOR};
+
+BOOLEAN_FACTOR = ["not", [WS]], BOOLEAN_PRIMARY;
+
+BOOLEAN_PRIMARY = "(", [WS], BOOLEAN_EXPRESSION, [WS], ")" | BOOLEAN_VALUE;
+
+BOOLEAN_VALUE = BOOL_LITERAL | CONVERTER_INVOCATION | COMPARISON;
+
+COMPARISON = VALUE, [WS], COMP_OP, [WS], VALUE;
+
+COMP_OP = "==" | "!=" | "<" | ">" | "<=" | ">=";
+
+LOWER = "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j" | "k" | "l" | "m" | "n" | "o" | "p" | "q" | "r" | "s" | "t" | "u" | "v" | "w" | "x" | "y" | "z";
+
+UPPER = "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J" | "K" | "L" | "M" | "N" | "O" | "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z";
+
+DIGIT = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9";
+
+HEXDIGIT = DIGIT | "a" | "b" | "c" | "d" | "e" | "f" | "A" | "B" | "C" | "D" | "E" | "F";
+
+BYTES_LITERAL = "0x", HEXDIGIT, {HEXDIGIT};
+
+LETTER = LOWER | UPPER;
+
+IDENT_CHAR = LETTER | DIGIT | "_";
+
+LOWER_IDENT = LOWER, {IDENT_CHAR};
+
+UPPER_IDENT = UPPER, {IDENT_CHAR};
+
+(*ENUM: uppercase identifier (interpreted by user-provided EnumParser)*)
+ENUM = UPPER, {DIGIT | UPPER | "_"};
+
+(*
+Notes / semantics (not part of formal EBNF):
+- Editors: identifiers must start with a lowercase letter; a Statement must contain a single Editor invocation.
+- Converters: identifiers must start with an uppercase letter; may be followed by indexing using ["key"] or [0] etc.
+- Enums: uppercase identifiers interpreted to int64 by user-provided EnumParser at parse-time.
+- Math expressions follow typical precedence; mixing int64 and float64 is a runtime error per LANGUAGE.md.
+- Comparison rules, value typing and indexing behaviors are governed by host context implementation described in LANGUAGE.md.
+*)
