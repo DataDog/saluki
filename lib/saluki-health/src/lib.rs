@@ -1,3 +1,4 @@
+use std::future::Future;
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
 use std::{
@@ -357,12 +358,40 @@ impl HealthRegistry {
 
     /// Spawns the health registry runner, which manages the scheduling and collection of liveness probes.
     ///
+    /// The runner will run until the given `shutdown` future resolves, at which point it will
+    /// gracefully stop. After the runner stops, the health registry can be spawned again by
+    /// calling this method with a new shutdown future.
+    ///
     /// # Errors
     ///
-    /// If the health registry has already been spawned, an error will be returned.
-    pub async fn spawn(self) -> Result<JoinHandle<()>, GenericError> {
+    /// If the health registry runner is currently running (i.e., has been spawned but not yet
+    /// stopped), an error will be returned.
+    pub async fn spawn<F>(self, shutdown: F) -> Result<JoinHandle<()>, GenericError>
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
         let runner = self.into_runner()?;
-        Ok(tokio::spawn(runner.run()))
+        Ok(tokio::spawn(runner.run(shutdown)))
+    }
+}
+
+/// A guard that returns the response receiver back to the registry when dropped.
+///
+/// This allows the health registry runner to be restarted gracefully - when the runner stops
+/// (either due to shutdown or an error), the receiver is returned to the registry state so
+/// that a subsequent call to `spawn()` can succeed.
+struct RunnerGuard {
+    registry: Arc<Mutex<RegistryState>>,
+    responses_rx: Option<mpsc::Receiver<LivenessResponse>>,
+}
+
+impl Drop for RunnerGuard {
+    fn drop(&mut self) {
+        if let Some(rx) = self.responses_rx.take() {
+            let mut inner = self.registry.lock().unwrap();
+            inner.responses_rx = Some(rx);
+            debug!("Returned response receiver to registry state.");
+        }
     }
 }
 
@@ -410,7 +439,7 @@ struct Runner {
     registry: Arc<Mutex<RegistryState>>,
     pending_probes: DelayQueue<usize>,
     pending_timeouts: DelayQueue<usize>,
-    responses_rx: mpsc::Receiver<LivenessResponse>,
+    guard: RunnerGuard,
     pending_components_notify: Arc<Notify>,
     #[cfg(test)]
     state: Arc<RunnerState>,
@@ -424,11 +453,16 @@ impl Runner {
         #[cfg(test)]
         let state = Arc::new(RunnerState::new());
 
+        let guard = RunnerGuard {
+            registry: Arc::clone(&registry),
+            responses_rx: Some(responses_rx),
+        };
+
         Self {
             registry,
             pending_probes: DelayQueue::new(),
             pending_timeouts: DelayQueue::new(),
-            responses_rx,
+            guard,
             pending_components_notify,
             #[cfg(test)]
             state,
@@ -494,6 +528,26 @@ impl Runner {
         self.pending_probes.insert(component_id, duration);
     }
 
+    fn schedule_all_existing_components(&mut self) {
+        // First, drain any pending components to avoid scheduling them twice.
+        // This handles the case where components were registered before the runner started.
+        let _pending = self.drain_pending_components();
+
+        let component_count = {
+            let registry = self.registry.lock().unwrap();
+            registry.component_state.len()
+        };
+
+        for component_id in 0..component_count {
+            self.process_component_health_update(component_id, HealthUpdate::Unknown);
+            self.schedule_probe_for_component(component_id, Duration::ZERO);
+        }
+
+        if component_count > 0 {
+            debug!(component_count, "Scheduled probes for all existing components.");
+        }
+    }
+
     fn handle_component_probe_response(&mut self, response: LivenessResponse) {
         let component_id = response.request.component_id;
         let timeout_key = response.request.timeout_key;
@@ -551,11 +605,33 @@ impl Runner {
         }
     }
 
-    async fn run(mut self) {
+    async fn run<F: Future<Output = ()>>(mut self, shutdown: F) {
         info!("Health checker running.");
+
+        // Take the response receiver out of the guard so we can use it in the select loop.
+        // It will be put back when the guard is dropped.
+        let mut responses_rx = self
+            .guard
+            .responses_rx
+            .take()
+            .expect("responses_rx should always be Some when Runner is created");
+
+        // Schedule probes for all existing components. This allows the runner to "pick up where it
+        // left off" after a restart - any components that were registered before the runner was
+        // restarted will be immediately probed.
+        self.schedule_all_existing_components();
+
+        // Pin the shutdown future so we can poll it in the select loop.
+        let mut shutdown = std::pin::pin!(shutdown);
 
         loop {
             select! {
+                // Shutdown signal received - exit the run loop gracefully.
+                _ = &mut shutdown => {
+                    info!("Health checker shutting down.");
+                    break;
+                },
+
                 // A component has been scheduled to have a liveness probe sent to it.
                 Some(entry) = self.pending_probes.next() => {
                     #[cfg(test)]
@@ -579,7 +655,7 @@ impl Runner {
                 },
 
                 // A probe response has been received.
-                Some(response) = self.responses_rx.recv() => {
+                Some(response) = responses_rx.recv() => {
                     self.handle_component_probe_response(response);
                 },
 
@@ -594,6 +670,12 @@ impl Runner {
                 },
             }
         }
+
+        // Put the receiver back in the guard so it can be returned to the registry state when dropped.
+        self.guard.responses_rx = Some(responses_rx);
+
+        // When we exit the loop, the RunnerGuard will be dropped, returning the response receiver
+        // back to the registry state so that a subsequent spawn() can succeed.
     }
 }
 
@@ -601,6 +683,8 @@ impl Runner {
 mod tests {
     use std::future::Future;
 
+    use futures::FutureExt as _;
+    use tokio::sync::oneshot;
     use tokio_test::{
         assert_pending, assert_ready,
         task::{spawn, Spawn},
@@ -630,7 +714,10 @@ mod tests {
         // This ensures that the component is registered, and that it schedules/sends an initial probe request to the component:
         let runner = registry.into_runner().expect("should not fail to create runner");
         let runner_state = runner.state();
-        let registry_task = spawn(runner.run());
+
+        // Create a shutdown future that never resolves (for tests that don't need shutdown).
+        let shutdown = std::future::pending();
+        let registry_task = spawn(runner.run(shutdown));
 
         (handle, registry_task, registry_state, runner_state)
     }
@@ -669,12 +756,51 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn duplicate_registry_spawn_fails() {
+    async fn duplicate_registry_spawn_fails_while_running() {
         let registry = HealthRegistry::new();
         let registry2 = registry.clone();
 
-        assert!(registry.spawn().await.is_ok());
-        assert!(registry2.spawn().await.is_err());
+        // First spawn should succeed (using a future that never resolves).
+        let shutdown = std::future::pending();
+        assert!(registry.spawn(shutdown).await.is_ok());
+
+        // Second spawn should fail while the first is still running.
+        let shutdown2 = std::future::pending();
+        assert!(registry2.spawn(shutdown2).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn registry_can_be_respawned_after_shutdown() {
+        let registry = HealthRegistry::new();
+        let registry2 = registry.clone();
+        let registry3 = registry.clone();
+
+        // First spawn should succeed.
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let join_handle = registry
+            .spawn(shutdown_rx.map(|_| ()))
+            .await
+            .expect("first spawn should succeed");
+
+        // Trigger shutdown.
+        let _ = shutdown_tx.send(());
+
+        // Wait for the runner to stop.
+        join_handle.await.expect("runner should complete without panic");
+
+        // Now we should be able to spawn again.
+        let shutdown2 = std::future::pending();
+        assert!(
+            registry2.spawn(shutdown2).await.is_ok(),
+            "should be able to respawn after shutdown"
+        );
+
+        // But not a third time while the second is running.
+        let shutdown3 = std::future::pending();
+        assert!(
+            registry3.spawn(shutdown3).await.is_err(),
+            "should not be able to spawn while running"
+        );
     }
 
     #[test]
