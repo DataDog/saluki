@@ -27,7 +27,7 @@ ENV APP_BUILD_TIME=${APP_BUILD_TIME}
 # Install Rust and other build dependencies.
 RUN apt-get update && \
     apt-get install --no-install-recommends -y \
-    build-essential ca-certificates musl-dev musl-tools linux-headers-generic make cmake gcc g++ perl golang-go protobuf-compiler curl unzip rustup
+    build-essential ca-certificates musl-dev musl-tools linux-headers-6.8.0-94-generic make cmake gcc g++ perl golang-go protobuf-compiler curl unzip rustup
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Copy over required build headers for AWS-LC.

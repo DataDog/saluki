@@ -28,8 +28,10 @@ use saluki_error::GenericError;
 use stringtheory::MetaString;
 use tracing::debug;
 
+mod catalog;
 mod core_sampler;
 mod errors;
+mod priority_sampler;
 mod probabilistic;
 mod score_sampler;
 mod signature;
@@ -53,7 +55,6 @@ const KEY_SPAN_SAMPLING_MECHANISM: &str = "_dd.span_sampling.mechanism";
 const KEY_ANALYZED_SPANS: &str = "_dd.analyzed";
 
 // Decision maker values for `_dd.p.dm` (matching datadog-agent).
-const DECISION_MAKER_MANUAL_PRIORITY: &str = "-4";
 
 fn normalize_sampling_rate(rate: f64) -> f64 {
     if rate <= 0.0 || rate >= 1.0 {
@@ -93,6 +94,11 @@ impl SynchronousTransformBuilder for TraceSamplerConfiguration {
             probabilistic_sampler_enabled: self.apm_config.probabilistic_sampler_enabled(),
             otlp_sampling_rate: self.otlp_sampling_rate,
             error_sampler: errors::ErrorsSampler::new(self.apm_config.errors_per_second(), ERROR_SAMPLE_RATE),
+            priority_sampler: priority_sampler::PrioritySampler::new(
+                self.apm_config.default_env().clone(),
+                ERROR_SAMPLE_RATE,
+                self.apm_config.target_traces_per_second(),
+            ),
             no_priority_sampler: score_sampler::NoPrioritySampler::new(
                 self.apm_config.target_traces_per_second(),
                 ERROR_SAMPLE_RATE,
@@ -116,6 +122,7 @@ pub struct TraceSampler {
     probabilistic_sampler_enabled: bool,
     otlp_sampling_rate: f64,
     error_sampler: errors::ErrorsSampler,
+    priority_sampler: priority_sampler::PrioritySampler,
     no_priority_sampler: score_sampler::NoPrioritySampler,
 }
 
@@ -320,9 +327,13 @@ impl TraceSampler {
 
         let user_priority = self.get_user_priority(trace, root_span_idx);
         if let Some(priority) = user_priority {
-            if priority > 0 {
-                // User wants to keep this trace
-                return (true, priority, DECISION_MAKER_MANUAL_PRIORITY, Some(root_span_idx));
+            if priority < PRIORITY_AUTO_DROP {
+                // Manual drop: short-circuit and skip other samplers.
+                return (false, priority, "", Some(root_span_idx));
+            }
+
+            if self.priority_sampler.sample(now, trace, root_span_idx, priority, 0.0) {
+                return (true, priority, "", Some(root_span_idx));
             }
         } else if self.is_otlp_trace(trace, root_span_idx) {
             // some sampling happens upstream in the otlp receiver in the agent: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/api/otlp.go#L572
@@ -342,7 +353,7 @@ impl TraceSampler {
             return (true, PRIORITY_AUTO_KEEP, "", Some(root_span_idx));
         }
 
-        if self.error_sampling_enabled && self.trace_contains_error(trace, false) {
+        if self.error_sampling_enabled && contains_error {
             let keep = self.error_sampler.sample_error(now, trace, root_span_idx);
             if keep {
                 return (true, PRIORITY_AUTO_KEEP, "", Some(root_span_idx));
@@ -367,9 +378,22 @@ impl TraceSampler {
         };
 
         // Add tag for the decision maker
+        let existing_decision_maker = if decision_maker.is_empty() {
+            root_span_value.meta().get(TAG_DECISION_MAKER).cloned()
+        } else {
+            None
+        };
+        let decision_maker_meta = if decision_maker.is_empty() {
+            existing_decision_maker
+        } else {
+            Some(MetaString::from(decision_maker))
+        };
+
         let meta = root_span_value.meta_mut();
-        if priority > 0 && !decision_maker.is_empty() {
-            meta.insert(MetaString::from(TAG_DECISION_MAKER), MetaString::from(decision_maker));
+        if priority > 0 {
+            if let Some(dm) = decision_maker_meta.as_ref() {
+                meta.insert(MetaString::from(TAG_DECISION_MAKER), dm.clone());
+            }
         }
 
         // Now we can use trace again to set sampling metadata
@@ -381,11 +405,7 @@ impl TraceSampler {
         let sampling = TraceSampling::new(
             !keep,
             Some(priority),
-            if priority > 0 && !decision_maker.is_empty() {
-                Some(MetaString::from(decision_maker))
-            } else {
-                None
-            },
+            if priority > 0 { decision_maker_meta } else { None },
             Some(MetaString::from(format!("{:.2}", sampling_rate))),
         );
         trace.set_sampling(Some(sampling));
@@ -450,10 +470,9 @@ mod tests {
 
     use saluki_context::tags::TagSet;
     use saluki_core::data_model::event::trace::{Span as DdSpan, Trace};
-
-    use super::*;
     const PRIORITY_USER_DROP: i32 = -1;
 
+    use super::*;
     fn create_test_sampler() -> TraceSampler {
         TraceSampler {
             sampling_rate: 1.0,
@@ -462,6 +481,7 @@ mod tests {
             probabilistic_sampler_enabled: true,
             otlp_sampling_rate: 1.0,
             error_sampler: errors::ErrorsSampler::new(10.0, 1.0),
+            priority_sampler: priority_sampler::PrioritySampler::new(MetaString::from("agent-env"), 1.0, 10.0),
             no_priority_sampler: score_sampler::NoPrioritySampler::new(10.0, 1.0),
         }
     }
@@ -581,7 +601,7 @@ mod tests {
         let (keep, priority, decision_maker, _) = sampler.run_samplers(&mut trace);
         assert!(keep);
         assert_eq!(priority, PRIORITY_USER_KEEP);
-        assert_eq!(decision_maker, DECISION_MAKER_MANUAL_PRIORITY);
+        assert_eq!(decision_maker, "");
 
         // Test manual drop (priority = -1) via trace-level priority
         let span = create_test_span(12345, 1, 0);
@@ -590,7 +610,7 @@ mod tests {
 
         let (keep, priority, _, _) = sampler.run_samplers(&mut trace);
         assert!(!keep); // Should not keep when user drops
-        assert_eq!(priority, PRIORITY_AUTO_DROP); // Fallthrough to auto-drop
+        assert_eq!(priority, PRIORITY_USER_DROP);
 
         // Test that priority = 1 (auto keep) via trace-level is also respected
         let span = create_test_span(12345, 1, 0);
@@ -600,7 +620,7 @@ mod tests {
         let (keep, priority, decision_maker, _) = sampler.run_samplers(&mut trace);
         assert!(keep);
         assert_eq!(priority, PRIORITY_AUTO_KEEP);
-        assert_eq!(decision_maker, DECISION_MAKER_MANUAL_PRIORITY);
+        assert_eq!(decision_maker, "");
     }
 
     #[test]
@@ -658,7 +678,7 @@ mod tests {
         let (keep, priority, decision_maker, _) = sampler.run_samplers(&mut trace);
         assert!(keep);
         assert_eq!(priority, 2); // UserKeep
-        assert_eq!(decision_maker, DECISION_MAKER_MANUAL_PRIORITY); // manual decision
+        assert_eq!(decision_maker, "");
     }
 
     #[test]
