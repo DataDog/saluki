@@ -666,7 +666,7 @@ bump-adp-version: ## Creates a PR branch that bumps the ADP patch version
 	@git checkout -b bump-adp-version-$(NEW_VERSION) origin/main
 	@sed -i 's/^version = "$(CURRENT_VERSION)"/version = "$(NEW_VERSION)"/' bin/agent-data-plane/Cargo.toml
 	@cargo update -p agent-data-plane --quiet
-	@git add bin/agent-data-plane/Cargo.toml
+	@git add bin/agent-data-plane/Cargo.toml Cargo.lock
 	@git commit -m "chore(agent-data-plane): bump version to $(NEW_VERSION)"
 	@echo "[*] Created branch 'bump-adp-version-$(NEW_VERSION)' with version bump commit."
 
