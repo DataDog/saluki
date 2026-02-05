@@ -425,7 +425,7 @@ fn now_nanos() -> u64 {
 }
 
 /// Resolves container ID from OTLP resource tags.
-fn resolve_container_id(resource_tags: &TagSet) -> MetaString {
+fn resolve_container_id(resource_tags: &SharedTagSet) -> MetaString {
     for key in [KEY_DATADOG_CONTAINER_ID, CONTAINER_ID, K8S_POD_UID] {
         if let Some(tag) = resource_tags.get_single_tag(key) {
             if let Some(value) = tag.value() {
@@ -440,7 +440,7 @@ fn resolve_container_id(resource_tags: &TagSet) -> MetaString {
 }
 
 /// Extracts container tags from OTLP resource tags.
-fn extract_container_tags(resource_tags: &TagSet) -> SharedTagSet {
+fn extract_container_tags(resource_tags: &SharedTagSet) -> SharedTagSet {
     let mut container_tags_set = TagSet::default();
     extract_container_tags_from_resource_tagset(resource_tags, &mut container_tags_set);
 
