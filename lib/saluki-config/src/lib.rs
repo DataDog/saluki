@@ -861,9 +861,7 @@ fn has_valid_secret_backend_command(configuration: &Figment) -> bool {
     configuration
         .find_value("secret_backend_command")
         .ok()
-        .map_or(false, |v| {
-            v.as_str().filter(|s| !s.is_empty() && *s != "none").is_some()
-        })
+        .map_or(false, |v| v.as_str().filter(|s| !s.is_empty()).is_some())
 }
 
 #[cfg(test)]
@@ -878,18 +876,13 @@ mod tests {
 
     #[test]
     fn test_has_valid_secret_backend_command() {
-        // When `secrets_backend_command` is not set at all, or is set to an empty string, or set to "none", or not even
-        // a string value... then we should consider those scenarios as "secrets backend not configured".
+        // When `secrets_backend_command` is not set at all, or is set to an empty string, or isn't even a string
+        // value... then we should consider those scenarios as "secrets backend not configured".
         let figment = Figment::new();
         assert!(!has_valid_secret_backend_command(&figment));
 
         let figment = json_to_figment!({
             "secret_backend_command": ""
-        });
-        assert!(!has_valid_secret_backend_command(&figment));
-
-        let figment = json_to_figment!({
-            "secret_backend_command": "none"
         });
         assert!(!has_valid_secret_backend_command(&figment));
 
