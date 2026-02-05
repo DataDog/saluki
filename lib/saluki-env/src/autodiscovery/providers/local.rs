@@ -78,6 +78,7 @@ impl LocalAutodiscoveryProvider {
 
 #[derive(Debug, Deserialize)]
 struct LocalCheckConfig {
+    #[serde(default = "HashMap::new")]
     init_config: HashMap<String, serde_yaml::Value>,
     instances: Vec<HashMap<String, serde_yaml::Value>>,
 }
