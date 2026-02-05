@@ -29,12 +29,12 @@ use tokio::time;
 
 use async_trait::async_trait;
 
-use crate::interface::{check::Check, sink::Sink, Mapping};
-use crate::interface::{
+use integration_check::{check::Check, sink::Sink, Mapping};
+use integration_check::{
     log, metric,
     service_check::{self, ServiceCheck},
 };
-use crate::interface::{GenericError, Result};
+use integration_check::{GenericError, Result};
 
 use super::config::{Init, Instance};
 

@@ -79,6 +79,7 @@ tower = { workspace = true, features = ["limit", "retry", "timeout", "util"] }
 tracing = { workspace = true }
 url = { workspace = true }
 core-checks = { workspace = true }
+integration-check = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

@@ -9,7 +9,7 @@ use saluki_core::data_model::event::service_check::{CheckStatus, ServiceCheck};
 use saluki_core::data_model::event::Event;
 use stringtheory::MetaString;
 
-use core_checks::interface::sink::{
+use integration_check::sink::{
     event, histogram,
     metric::{Metric as RsMetric, Type},
     service_check,

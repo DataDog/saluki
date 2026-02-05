@@ -10,8 +10,8 @@ use async_trait::async_trait;
 use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, info, trace, warn};
 
-use core_checks::interface::check::Check as RustCheck;
-use core_checks::interface::sink::{event, event_platform, histogram, log, metric, service_check, Sink};
+use integration_check::check::Check as RustCheck;
+use integration_check::sink::{event, event_platform, histogram, log, metric, service_check, Sink};
 
 use crate::sources::checks::builder::native::metric::{
     event_to_eventd, histogram_to_event, metric_to_event, service_check_to_event,

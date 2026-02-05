@@ -735,6 +735,7 @@ dependencies = [
  "hyper",
  "hyper-tls",
  "hyper-util",
+ "integration-check",
  "libc",
  "native-tls",
  "regex",
@@ -2003,6 +2004,16 @@ name = "inlinable_string"
 version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8fae54786f62fb2918dcfae3d568594e50eb9b5c25bf04371af6fe7516452fb"
+
+[[package]]
+name = "integration-check"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "serde",
+ "serde_yaml",
+]
 
 [[package]]
 name = "ipconfig"
@@ -3708,6 +3719,7 @@ dependencies = [
  "http-serde-ext",
  "hyper",
  "hyper-http-proxy",
+ "integration-check",
  "lru-slab",
  "memory-accounting",
  "metrics",
