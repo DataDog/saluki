@@ -337,8 +337,7 @@ impl ConfigurationLoader {
         let configuration = build_figment_from_sources(&self.provider_sources);
 
         // If no secrets backend is set, we can't resolve secrets, so just return early.
-        let has_valid_backend_command = has_valid_secret_backend_command(&configuration);
-        if !has_valid_backend_command {
+        if !has_valid_secret_backend_command(&configuration) {
             debug!("No secrets backend configured; skipping secrets resolution.");
             return Ok(self);
         }
