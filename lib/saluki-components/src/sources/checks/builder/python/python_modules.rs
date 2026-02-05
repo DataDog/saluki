@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{LazyLock, OnceLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -21,7 +21,7 @@ use crate::sources::checks::execution_context::ExecutionContext;
 static GLOBAL_METRIC_SENDER: OnceLock<Sender<Event>> = OnceLock::new();
 
 // Global state to store the execution context
-static GLOBAL_EXECUTION_CONTEXT: OnceLock<ExecutionContext> = OnceLock::new();
+static GLOBAL_EXECUTION_CONTEXT: OnceLock<Arc<ExecutionContext>> = OnceLock::new();
 
 /// Sets the event sender to be used by the aggregator module.
 pub fn set_event_sender(check_metrics_tx: Sender<Event>) -> &'static Sender<Event> {
@@ -29,8 +29,10 @@ pub fn set_event_sender(check_metrics_tx: Sender<Event>) -> &'static Sender<Even
 }
 
 /// Sets the `ExecutionContext` to be used by the datadog_agent module.
-pub fn set_execution_context(execution_context: ExecutionContext) -> &'static ExecutionContext {
-    GLOBAL_EXECUTION_CONTEXT.get_or_init(|| execution_context)
+pub fn set_execution_context(execution_context: Arc<ExecutionContext>) -> Arc<ExecutionContext> {
+    GLOBAL_EXECUTION_CONTEXT
+        .get_or_init(|| execution_context.clone())
+        .clone()
 }
 
 fn try_send_metric(metric: CheckMetric) -> Result<(), GenericError> {
@@ -73,10 +75,11 @@ where
     }
 }
 
-fn fetch_hostname() -> &'static str {
+fn fetch_hostname() -> String {
+    // FIXME avoid re-alloc?
     match GLOBAL_EXECUTION_CONTEXT.get() {
-        Some(execution_context) => execution_context.hostname(),
-        None => "",
+        Some(execution_context) => execution_context.hostname().to_string(),
+        None => "".to_string(),
     }
 }
 
@@ -264,7 +267,7 @@ pub mod datadog_agent {
     }
 
     #[pyfunction]
-    fn get_hostname() -> &'static str {
+    fn get_hostname() -> String {
         trace!("Called get_hostname()");
         fetch_hostname()
     }
@@ -407,7 +410,8 @@ mod tests {
             .await
             .expect("convert to generic configuration");
 
-        set_execution_context(ExecutionContext::new(config));
+        let execution_context = ExecutionContext::new(config);
+        set_execution_context(Arc::new(execution_context));
 
         pyo3::append_to_inittab!(datadog_agent);
         pyo3::prepare_freethreaded_python();
@@ -442,6 +446,7 @@ mod tests {
             .expect("convert to generic configuration");
 
         let execution_context = ExecutionContext::new(generic_configuration).with_hostname("agent-test-host");
+        let execution_context = Arc::new(execution_context);
         set_execution_context(execution_context);
 
         pyo3::append_to_inittab!(datadog_agent);

@@ -2,7 +2,7 @@
 //!
 //! This module provides the `Autodiscovery` trait, which deals with providing information about autodiscovery.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::hash::Hasher;
 
 use async_trait::async_trait;
@@ -89,7 +89,7 @@ impl From<ProtoAdvancedAdIdentifier> for AdvancedADIdentifier {
 /// Raw data trait for configuration data
 pub trait RawData {
     /// Get the value of the data
-    fn get_value(&self) -> &HashMap<MetaString, serde_yaml::Value>;
+    fn get_value(&self) -> &BTreeMap<MetaString, serde_yaml::Value>;
 
     /// Get a value from the data
     fn get(&self, key: &str) -> Option<&serde_yaml::Value> {
@@ -107,11 +107,11 @@ pub trait RawData {
 /// Generic map of key-value pairs
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Data {
-    value: HashMap<MetaString, serde_yaml::Value>,
+    value: BTreeMap<MetaString, serde_yaml::Value>,
 }
 
 impl RawData for Data {
-    fn get_value(&self) -> &HashMap<MetaString, serde_yaml::Value> {
+    fn get_value(&self) -> &BTreeMap<MetaString, serde_yaml::Value> {
         &self.value
     }
 }
@@ -122,7 +122,7 @@ pub struct Instance {
     /// Instance ID
     id: String,
     /// Instance value
-    value: HashMap<MetaString, serde_yaml::Value>,
+    value: BTreeMap<MetaString, serde_yaml::Value>,
 }
 
 impl Instance {
@@ -133,7 +133,7 @@ impl Instance {
 }
 
 impl RawData for Instance {
-    fn get_value(&self) -> &HashMap<MetaString, serde_yaml::Value> {
+    fn get_value(&self) -> &BTreeMap<MetaString, serde_yaml::Value> {
         &self.value
     }
 }
@@ -250,9 +250,9 @@ impl From<ProtoConfig> for Config {
 fn bytes_to_data(bytes: Vec<u8>) -> Result<Data, GenericError> {
     let parse_bytes = String::from_utf8(bytes)?;
 
-    let map: HashMap<String, serde_yaml::Value> = serde_yaml::from_str(&parse_bytes)?;
+    let map: BTreeMap<String, serde_yaml::Value> = serde_yaml::from_str(&parse_bytes)?;
 
-    let mut result = HashMap::<MetaString, serde_yaml::Value>::new();
+    let mut result = BTreeMap::<MetaString, serde_yaml::Value>::new();
 
     for (key, value) in map {
         result.insert(key.into(), value);

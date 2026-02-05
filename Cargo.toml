@@ -28,6 +28,7 @@ members = [
   "lib/saluki-metrics",
   "lib/saluki-tls",
   "lib/stringtheory",
+  "lib/core-checks"
 ]
 resolver = "2"
 
@@ -59,6 +60,7 @@ saluki-tls = { path = "lib/saluki-tls" }
 stele = { path = "bin/correctness/stele" }
 stringtheory = { path = "lib/stringtheory" }
 otlp-protos = { path = "lib/protos/otlp" }
+core-checks = { path = "lib/core-checks" }
 async-trait = { version = "0.1", default-features = false }
 atty = { version = "0.2", default-features = false }
 axum = { version = "0.8", default-features = false }

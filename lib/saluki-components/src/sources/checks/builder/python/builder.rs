@@ -1,11 +1,12 @@
 //! A Python implementation of CheckBuilder
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use pyo3::types::{PyDict, PyList, PyNone, PyTuple, PyType};
 use pyo3::PyObject;
 use pyo3::{prelude::*, IntoPyObjectExt};
@@ -13,26 +14,29 @@ use saluki_core::data_model::event::Event;
 use saluki_env::autodiscovery::{Data, Instance, RawData};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stringtheory::MetaString;
-use tokio::sync::mpsc::Sender;
+use tokio::sync::{mpsc::Sender, Mutex};
 use tracing::{debug, error, info, warn};
 
 use super::python_modules::aggregator as pyagg;
 use super::python_modules::datadog_agent;
 use crate::sources::checks::builder::CheckBuilder;
-use crate::sources::checks::check::Check;
+use crate::sources::checks::check::{Check, CheckID};
 use crate::sources::checks::execution_context::ExecutionContext;
 
 struct PythonCheck {
     version: String,
     interval: Duration,
-    instance: PyObject,
+    instance: Mutex<PyObject>,
     source: String,
     id: String,
 }
 
+#[async_trait]
 impl Check for PythonCheck {
-    fn run(&self) -> Result<(), GenericError> {
-        let result = pyo3::Python::with_gil(|py| self.instance.call_method(py, "run", (), None));
+    async fn run(&self) -> Result<(), GenericError> {
+        let instance = self.instance.lock().await;
+
+        let result = pyo3::Python::with_gil(|py| instance.call_method(py, "run", (), None));
         match result {
             Ok(_) => Ok(()),
             Err(e) => Err(generic_error!(e)),
@@ -47,7 +51,7 @@ impl Check for PythonCheck {
         &self.version
     }
 
-    fn id(&self) -> &str {
+    fn id(&self) -> &CheckID {
         &self.id
     }
 
@@ -61,12 +65,13 @@ static INTERPRETER_INITIALIZED_AND_READY: OnceLock<bool> = OnceLock::new();
 pub struct PythonCheckBuilder {
     check_events_tx: Sender<Event>,
     custom_checks_folders: Option<Vec<String>>,
-    execution_context: ExecutionContext,
+    execution_context: Arc<ExecutionContext>,
 }
 
 impl PythonCheckBuilder {
     pub fn new(
-        check_events_tx: Sender<Event>, custom_checks_folders: Option<Vec<String>>, execution_context: ExecutionContext,
+        check_events_tx: Sender<Event>, custom_checks_folders: Option<Vec<String>>,
+        execution_context: Arc<ExecutionContext>,
     ) -> Self {
         Self {
             check_events_tx,
@@ -135,8 +140,9 @@ impl PythonCheckBuilder {
     }
 }
 
+#[async_trait]
 impl CheckBuilder for PythonCheckBuilder {
-    fn build_check(
+    async fn build_check(
         &self, name: &str, instance: &Instance, init_config: &Data, source: &MetaString,
     ) -> Option<Arc<dyn Check + Send + Sync>> {
         if !self.interpreter_initialized_and_ready() {
@@ -146,7 +152,7 @@ impl CheckBuilder for PythonCheckBuilder {
         let mut load_errors = vec![];
         for import_path in [name.to_string(), format!("datadog_checks.{}", name)].iter() {
             match register_check_from_imports(name, import_path, instance, init_config, source) {
-                Ok(handle) => return Some(handle),
+                Ok(handle) => return Some(Arc::new(handle)),
                 Err(e) => {
                     load_errors.push(e.root_cause().to_string());
                 }
@@ -159,7 +165,7 @@ impl CheckBuilder for PythonCheckBuilder {
 
 fn register_check_from_imports(
     name: &str, import_path: &str, instance: &Instance, init_config: &Data, source: &MetaString,
-) -> Result<Arc<dyn Check + Send + Sync>, GenericError> {
+) -> Result<PythonCheck, GenericError> {
     pyo3::Python::with_gil(|py| {
         let dd_checks_module = py.import("datadog_checks.checks")?;
         let check_class = dd_checks_module.getattr("AgentCheck")?;
@@ -217,19 +223,19 @@ fn register_check_from_imports(
 
         check_instance.setattr("check_id", instance.id())?;
 
-        let check = Arc::new(PythonCheck {
+        let check = PythonCheck {
             version,
             interval: Duration::from_secs(min_interval),
-            instance: check_instance.clone().unbind(),
+            instance: Mutex::new(check_instance.clone().unbind()),
             source: source.to_string(),
             id: instance.id().clone(),
-        }) as Arc<dyn Check + Send + Sync>;
+        };
         Ok(check)
     })
 }
 
 fn map_to_pydict<'py>(
-    map: &HashMap<MetaString, serde_yaml::Value>, p: &'py pyo3::Python,
+    map: &BTreeMap<MetaString, serde_yaml::Value>, p: &'py pyo3::Python,
 ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
     let dict = PyDict::new(*p);
     for (key, value) in map {

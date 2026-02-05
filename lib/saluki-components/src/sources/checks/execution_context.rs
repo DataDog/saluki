@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use saluki_config::GenericConfiguration;
 use saluki_env::{EnvironmentProvider, HostProvider};
@@ -12,7 +12,7 @@ use tracing::warn;
 #[derive(Clone)]
 pub struct ExecutionContext {
     configuration: GenericConfiguration,
-    hostname: String,
+    hostname: Arc<str>,
     http_headers: HashMap<String, String>,
 }
 
@@ -33,7 +33,7 @@ impl ExecutionContext {
 
         Self {
             configuration,
-            hostname: "".to_string(),
+            hostname: Arc::from("unknown"),
             http_headers,
         }
     }
@@ -54,7 +54,7 @@ impl ExecutionContext {
         });
 
         Self {
-            hostname,
+            hostname: Arc::from(hostname),
             ..execution_context
         }
     }
@@ -67,15 +67,15 @@ impl ExecutionContext {
     /// Get the hostname.
     ///
     /// Computed from the `EnvironmentProvider` if one has been provided to the `ExecutionContext` constructor.
-    pub fn hostname(&self) -> &str {
-        &self.hostname
+    pub fn hostname(&self) -> Arc<str> {
+        self.hostname.clone()
     }
 
     /// Override the hostname.
     #[allow(dead_code)]
     pub fn with_hostname<S: AsRef<str>>(self, hostname: S) -> Self {
         Self {
-            hostname: hostname.as_ref().to_string(),
+            hostname: Arc::from(hostname.as_ref()),
             ..self
         }
     }

@@ -9,10 +9,12 @@ repository = { workspace = true }
 workspace = true
 
 [features]
-default = []
+default = ["checks"]
+checks = []
 python-checks = ["dep:pyo3"]
 
 [dependencies]
+anyhow.workspace = true
 async-trait = { workspace = true }
 axum = { workspace = true }
 base64 = { workspace = true, features = ["std"] }
@@ -76,6 +78,7 @@ tonic = { workspace = true, features = ["router", "server"] }
 tower = { workspace = true, features = ["limit", "retry", "timeout", "util"] }
 tracing = { workspace = true }
 url = { workspace = true }
+core-checks = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

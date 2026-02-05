@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -102,7 +103,7 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, CheckConfig), Gene
         .instances
         .into_iter()
         .map(|instance| {
-            let mut result = HashMap::new();
+            let mut result = BTreeMap::new();
             for (key, value) in instance {
                 result.insert(key.into(), value);
             }
@@ -111,7 +112,7 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, CheckConfig), Gene
         .collect();
 
     let init_config = {
-        let mut result = HashMap::new();
+        let mut result = BTreeMap::new();
         for (key, value) in check_config.init_config {
             result.insert(key.into(), value);
         }
