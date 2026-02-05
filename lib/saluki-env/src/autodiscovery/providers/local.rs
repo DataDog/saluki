@@ -276,6 +276,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_parse_minimal_config_file() {
+        let test_file = test_data_path().join("test-minimal-config.yaml");
+
+        let (_, config) = parse_config_file(&test_file).await.unwrap();
+
+        // Parsing a config without `init_config` yields an empty hash map for that field.
+        assert!(config.init_config.value.is_empty());
+    }
+
+    #[tokio::test]
     async fn test_scan_and_emit_events_new_config() {
         let dir = tempdir().unwrap();
         let _test_file = copy_test_file("config1.yaml", dir.path()).await;
