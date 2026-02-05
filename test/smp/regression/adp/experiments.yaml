@@ -423,7 +423,6 @@ experiments:
     optimization_goals:
       - cpu
       - memory
-      - ingress_throughput
 
     target:
       environment:
