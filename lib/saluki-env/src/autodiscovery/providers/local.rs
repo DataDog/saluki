@@ -78,6 +78,7 @@ impl LocalAutodiscoveryProvider {
 
 #[derive(Debug, Deserialize)]
 struct LocalCheckConfig {
+    #[serde(default)]
     init_config: HashMap<String, serde_yaml::Value>,
     instances: Vec<HashMap<String, serde_yaml::Value>>,
 }
@@ -272,6 +273,16 @@ mod tests {
             Some(&serde_yaml::Value::String("test-service".to_string()))
         );
         assert_eq!(config.source, "local");
+    }
+
+    #[tokio::test]
+    async fn test_parse_minimal_config_file() {
+        let test_file = test_data_path().join("test-minimal-config.yaml");
+
+        let (_, config) = parse_config_file(&test_file).await.unwrap();
+
+        // Parsing a config without `init_config` yields an empty hash map for that field.
+        assert!(config.init_config.value.is_empty());
     }
 
     #[tokio::test]

@@ -40,6 +40,7 @@ export CARGO_TOOL_VERSION_cargo-autoinherit ?= 0.1.5
 export CARGO_TOOL_VERSION_cargo-sort ?= 1.0.9
 export CARGO_TOOL_VERSION_dummyhttp ?= 1.1.0
 export CARGO_TOOL_VERSION_cargo-machete ?= 0.9.1
+export CARGO_TOOL_VERSION_rustfilt ?= 0.2.1
 export DDPROF_VERSION ?= 0.20.0
 export LADING_VERSION ?= 0.28.0
 
@@ -652,6 +653,23 @@ emit-adp-build-metadata: ## Emits ADP build metadata shell variables suitable fo
 	@echo "APP_VERSION=${ADP_APP_VERSION}"
 	@echo "APP_BUILD_TIME=${ADP_APP_BUILD_TIME}"
 
+.PHONY: bump-adp-version
+bump-adp-version: ## Creates a PR branch that bumps the ADP patch version
+	$(eval CURRENT_VERSION := $(shell grep -E '^version = "' bin/agent-data-plane/Cargo.toml | head -n 1 | cut -d '"' -f 2))
+	$(eval MAJOR := $(shell echo $(CURRENT_VERSION) | cut -d '.' -f 1))
+	$(eval MINOR := $(shell echo $(CURRENT_VERSION) | cut -d '.' -f 2))
+	$(eval PATCH := $(shell echo $(CURRENT_VERSION) | cut -d '.' -f 3))
+	$(eval NEW_PATCH := $(shell echo $$(($(PATCH) + 1))))
+	$(eval NEW_VERSION := $(MAJOR).$(MINOR).$(NEW_PATCH))
+	@echo "[*] Bumping ADP from $(CURRENT_VERSION) to $(NEW_VERSION)"
+	@git fetch origin main
+	@git checkout -b bump-adp-version-$(NEW_VERSION) origin/main
+	@sed -i 's/^version = "$(CURRENT_VERSION)"/version = "$(NEW_VERSION)"/' bin/agent-data-plane/Cargo.toml
+	@cargo update -p agent-data-plane --quiet
+	@git add bin/agent-data-plane/Cargo.toml Cargo.lock
+	@git commit -m "chore(agent-data-plane): bump version to $(NEW_VERSION)"
+	@echo "[*] Created branch 'bump-adp-version-$(NEW_VERSION)' with version bump commit."
+
 ##@ Docs
 
 .PHONY: check-js-build-tools
@@ -714,7 +732,7 @@ sync-licenses: ## Synchronizes the third-party license file with the current cra
 .PHONY: cargo-preinstall
 cargo-preinstall: cargo-install-dd-rust-license-tool cargo-install-cargo-deny cargo-install-cargo-hack
 cargo-preinstall: cargo-install-cargo-nextest cargo-install-cargo-autoinherit cargo-install-cargo-sort
-cargo-preinstall: cargo-install-dummyhttp cargo-install-cargo-machete
+cargo-preinstall: cargo-install-dummyhttp cargo-install-cargo-machete cargo-install-rustfilt
 cargo-preinstall: ## Pre-installs all necessary Cargo tools (used for CI)
 	@echo "[*] Pre-installed all necessary Cargo tools!"
 

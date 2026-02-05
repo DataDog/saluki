@@ -11,7 +11,7 @@ pub use self::observability::spawn_internal_observability_topology;
 
 pub mod platform;
 
-mod remote_agent;
+pub mod remote_agent;
 
 /// Creates a single-threaded Tokio runtime, initializing it and driving it to completion.
 ///

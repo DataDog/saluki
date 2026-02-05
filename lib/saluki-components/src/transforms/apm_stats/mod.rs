@@ -32,18 +32,20 @@ use stringtheory::MetaString;
 use tokio::{select, time::interval};
 use tracing::{debug, error};
 
-use crate::common::datadog::apm::ApmConfig;
-use crate::common::otlp::util::{extract_container_tags_from_resource_tagset, KEY_DATADOG_CONTAINER_ID};
+use crate::common::{
+    datadog::apm::ApmConfig,
+    otlp::util::{extract_container_tags_from_resource_tagset, KEY_DATADOG_CONTAINER_ID},
+};
 
 mod aggregation;
+use self::aggregation::{process_tags_hash, PayloadAggregationKey};
 
-use self::aggregation::process_tags_hash;
 mod span_concentrator;
-mod statsraw;
-mod weight;
-
-use self::aggregation::PayloadAggregationKey;
 use self::span_concentrator::{InfraTags, SpanConcentrator};
+
+mod statsraw;
+
+mod weight;
 use self::weight::weight;
 
 /// Default flush interval for the APM stats transform.
@@ -423,7 +425,7 @@ fn now_nanos() -> u64 {
 }
 
 /// Resolves container ID from OTLP resource tags.
-fn resolve_container_id(resource_tags: &TagSet) -> MetaString {
+fn resolve_container_id(resource_tags: &SharedTagSet) -> MetaString {
     for key in [KEY_DATADOG_CONTAINER_ID, CONTAINER_ID, K8S_POD_UID] {
         if let Some(tag) = resource_tags.get_single_tag(key) {
             if let Some(value) = tag.value() {
@@ -438,7 +440,7 @@ fn resolve_container_id(resource_tags: &TagSet) -> MetaString {
 }
 
 /// Extracts container tags from OTLP resource tags.
-fn extract_container_tags(resource_tags: &TagSet) -> SharedTagSet {
+fn extract_container_tags(resource_tags: &SharedTagSet) -> SharedTagSet {
     let mut container_tags_set = TagSet::default();
     extract_container_tags_from_resource_tagset(resource_tags, &mut container_tags_set);
 

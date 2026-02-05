@@ -37,6 +37,33 @@ def get_file_size(path: Path) -> int:
     return path.stat().st_size
 
 
+def demangle_with_rustfilt(text: str) -> str:
+    """Demangle Rust symbols using rustfilt.
+
+    Rust symbols are mangled using the C++ Itanium ABI (legacy mangling) or Rust's
+    v0 mangling scheme. This function pipes the text through rustfilt to demangle
+    symbols like `_ZN17crossbeam_channel5waker9SyncWaker6notify17h0ddc00b08af3a086E`
+    into readable form like `crossbeam_channel::waker::SyncWaker::notify`.
+
+    If rustfilt is not available, returns the original text unchanged.
+    """
+    try:
+        result = subprocess.run(
+            ["rustfilt"],
+            input=text,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout
+    except FileNotFoundError:
+        print("Warning: rustfilt not found, skipping Rust symbol demangling")
+        return text
+    except subprocess.CalledProcessError as e:
+        print(f"Warning: rustfilt failed: {e.stderr}")
+        return text
+
+
 def format_size(bytes_val: int) -> str:
     """Format a byte count as a human-readable string."""
     abs_bytes = abs(bytes_val)
@@ -156,6 +183,23 @@ def demangle_escape_sequences(text: str) -> str:
     return result
 
 
+def strip_rust_hash_suffix(symbol: str) -> str:
+    """Strip Rust version hash suffix from a demangled symbol name.
+
+    Rust symbols often have a trailing hash like ::h654dff07593b4c08 which
+    represents compiler version, generics instantiation, and other factors.
+    For module-level grouping, these hashes should be removed so that symbols
+    differing only in these transparent ways are collapsed together.
+
+    The hash pattern is ::h followed by exactly 16 lowercase hex characters.
+    This must be called AFTER demangling, as mangled symbols use a different
+    representation for this hash.
+    """
+    import re
+
+    return re.sub(r"::h[a-f0-9]{16}$", "", symbol)
+
+
 def demangle_symbol(symbol: str) -> str:
     """Demangle a Rust symbol name to extract the module path.
 
@@ -248,6 +292,9 @@ def extract_module_prefix(
     ):
         working_symbol = demangle_symbol(symbol)
 
+    # Strip Rust version hash suffix before module extraction
+    working_symbol = strip_rust_hash_suffix(working_symbol)
+
     # For Rust symbols, split on :: and determine depth based on crate ownership
     parts = working_symbol.split("::")
     if not parts:
@@ -307,7 +354,7 @@ def format_module_rollup(aggregated: dict[str, dict], limit: int = 20) -> str:
     for module, data in top_modules:
         filesize_str = format_size_change(data["filesize"])
         count_str = str(data["count"])
-        lines.append(f"| {module} | {filesize_str} | {count_str} |")
+        lines.append(f"| `{module}` | {filesize_str} | {count_str} |")
 
     return "\n".join(lines)
 
@@ -373,8 +420,9 @@ def generate_report(
 
 ### Changes by Module
 
-{module_rollup}
+</summary>
 
+{module_rollup}
 </details>
 
 <details>
@@ -484,8 +532,11 @@ def main() -> int:
         csv_output=True,
     )
 
-    # Demangle symbols in CSV output (only the first column, preserving CSV structure)
-    csv_lines = csv_output_raw.strip().split("\n")
+    # Demangle symbols in CSV output using rustfilt first (for _ZN mangled names),
+    # then demangle_escape_sequences (for any remaining Rust escape sequences like $LT$).
+    print("Demangling symbols...")
+    csv_output_demangled = demangle_with_rustfilt(csv_output_raw)
+    csv_lines = csv_output_demangled.strip().split("\n")
     demangled_csv_lines = [csv_lines[0]]  # Keep header as-is
     for line in csv_lines[1:]:
         # Split on comma (only last 2 are numeric), demangle first field (symbol), rejoin
@@ -516,7 +567,7 @@ def main() -> int:
 
     # Run bloaty for human-readable output (top 20)
     print("Running bloaty analysis (text)...")
-    txt_output = run_bloaty(
+    txt_output_raw = run_bloaty(
         args.bloaty_path,
         args.comparison_binary,
         args.baseline_binary,
@@ -525,6 +576,7 @@ def main() -> int:
         csv_output=False,
         limit=20,
     )
+    txt_output = demangle_with_rustfilt(txt_output_raw)
     txt_output = demangle_escape_sequences(txt_output)
     args.output_txt.write_text(txt_output)
 

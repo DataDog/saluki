@@ -98,7 +98,7 @@ const DD_NAMESPACED_TO_APM_CONVENTIONS: &[(&str, &str)] = &[
 pub fn otel_span_to_dd_span(
     otel_span: &OtlpSpan, otel_resource: &Resource, instrumentation_scope: Option<&OtlpInstrumentationScope>,
     ignore_missing_fields: bool, compute_top_level_by_span_kind: bool, interner: &GenericMapInterner,
-    string_builder: &mut StringBuilder<GenericMapInterner>,
+    string_builder: &mut StringBuilder<GenericMapInterner>, trace_id_hex: Option<MetaString>,
 ) -> DdSpan {
     let span_attributes = &otel_span.attributes;
     let resource_attributes = &otel_resource.attributes;
@@ -129,7 +129,11 @@ pub fn otel_span_to_dd_span(
         );
     }
 
-    if !otel_span.trace_id.is_empty() {
+    if let Some(trace_id_hex) = trace_id_hex {
+        if !trace_id_hex.is_empty() {
+            meta.insert(MetaString::from_static(OTEL_TRACE_ID_META_KEY), trace_id_hex);
+        }
+    } else if !otel_span.trace_id.is_empty() {
         meta.insert(
             MetaString::from_static(OTEL_TRACE_ID_META_KEY),
             bytes_to_hex_lowercase(&otel_span.trace_id).into(),
@@ -1355,7 +1359,7 @@ fn get_otel_status_code(
     None
 }
 
-fn bytes_to_hex_lowercase(bytes: &[u8]) -> String {
+pub(super) fn bytes_to_hex_lowercase(bytes: &[u8]) -> String {
     if bytes.is_empty() {
         return String::new();
     }
@@ -1890,7 +1894,16 @@ mod tests {
                 ..Default::default()
             };
 
-            let dd_span = otel_span_to_dd_span(&span, &resource, None, false, true, &interner, &mut string_builder);
+            let dd_span = otel_span_to_dd_span(
+                &span,
+                &resource,
+                None,
+                false,
+                true,
+                &interner,
+                &mut string_builder,
+                None,
+            );
             let meta = dd_span.meta();
 
             if tc.should_map {

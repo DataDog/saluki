@@ -4,6 +4,9 @@ use datadog_protos::sketches::{index_mapping::Interpolation, IndexMapping as Pro
 
 use super::error::ProtoConversionError;
 
+mod fixed;
+pub use self::fixed::FixedLogarithmicMapping;
+
 mod logarithmic;
 pub use self::logarithmic::LogarithmicMapping;
 

@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 use opentelemetry_semantic_conventions::resource::*;
 use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common, any_value::Value};
 use saluki_common::collections::{FastHashMap, FastHashSet};
-use saluki_context::tags::TagSet;
+use saluki_context::tags::{SharedTagSet, TagSet};
 
 // ============================================================================
 // Datadog attribute key constants shared across the encoder and translator
@@ -144,9 +144,9 @@ pub fn extract_container_tags_from_resource_attributes(attributes: &[otlp_common
 
 /// Extracts container tags from a resource tagset and inserts them into the provided TagSet.
 ///
-/// This mirrors `extract_container_tags_from_resource_attributes`, but operates on a `TagSet` representation of the
-/// resource.
-pub fn extract_container_tags_from_resource_tagset(resource_tags: &TagSet, tags: &mut TagSet) {
+/// This mirrors `extract_container_tags_from_resource_attributes`, but operates on a `SharedTagSet` representation of
+/// the resource.
+pub fn extract_container_tags_from_resource_tagset(resource_tags: &SharedTagSet, tags: &mut TagSet) {
     let mut extracted_tags = FastHashSet::default();
 
     for tag in resource_tags {
@@ -208,10 +208,10 @@ pub fn resource_to_source(resource: &otlp_protos::opentelemetry::proto::resource
     None
 }
 
-/// Resolves the source metadata from a resource `TagSet`.
+/// Resolves the source metadata from a resource `SharedTagSet`.
 ///
 /// This is equivalent to `resource_to_source`, but avoids the OTLP protobuf resource type.
-pub fn tags_to_source(resource_tags: &TagSet) -> Option<Source> {
+pub fn tags_to_source(resource_tags: &SharedTagSet) -> Option<Source> {
     let get = |key: &str| -> Option<&str> { resource_tags.get_single_tag(key).and_then(|t| t.value()) };
 
     // AWS ECS Fargate

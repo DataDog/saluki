@@ -40,7 +40,7 @@
   - changed-files:
       - any-glob-to-any-file:
           - "lib/saluki-io/**/*"
-          - "lib/datadog-protos/**/*"
+          - "lib/protos/**/*"
 
 "area/memory":
   - changed-files:
@@ -60,6 +60,82 @@
       - any-glob-to-any-file:
           - "test/**/*"
 
+# Decoders.
+"decoders/otlp":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/decoders/otlp/**/*"
+
+# Destinations.
+"destination/blackhole":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/destinations/blackhole/**/*"
+
+"destination/dogstatsd-stats":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/destinations/dsd_stats/**/*"
+
+"destination/prometheus":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/destinations/prometheus/**/*"
+
+# Encoders.
+"encoder/buffered-incremental":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/encoders/buffered_incremental/**/*"
+
+"encoder/datadog-events":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/encoders/datadog/events/**/*"
+
+"encoder/datadog-logs":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/encoders/datadog/logs/**/*"
+
+"encoder/datadog-metrics":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/encoders/datadog/metrics/**/*"
+
+"encoder/datadog-service-checks":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/encoders/datadog/service_checks/**/*"
+
+"encoder/datadog-stats":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/encoders/datadog/stats/**/*"
+
+"encoder/datadog-traces":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/encoders/datadog/traces/**/*"
+
+# Forwarders.
+"forwarder/datadog":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/forwarders/datadog/**/*"
+
+"forwarder/otlp":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/forwarders/otlp/**/*"
+
+# Relays.
+"relay/otlp":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/relays/otlp/**/*"
+
+# Sources.
 "source/checks":
   - changed-files:
       - any-glob-to-any-file:
@@ -80,10 +156,21 @@
       - any-glob-to-any-file:
           - "lib/saluki-components/src/sources/internal_metrics/**/*"
 
+"source/otlp":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/sources/otlp/**/*"
+
+# Transforms.
 "transform/aggregate":
   - changed-files:
       - any-glob-to-any-file:
           - "lib/saluki-components/src/transforms/aggregate/**/*"
+
+"transform/apm-stats":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "lib/saluki-components/src/transforms/apm_stats/**/*"
 
 "transform/chained":
   - changed-files:
@@ -110,32 +197,17 @@
       - any-glob-to-any-file:
           - "lib/saluki-components/src/transforms/host_tags/**/*"
 
-"destination/blackhole":
+"transform/metric-router":
   - changed-files:
       - any-glob-to-any-file:
-          - "lib/saluki-components/src/destinations/blackhole/**/*"
+          - "lib/saluki-components/src/transforms/metric_router/**/*"
 
-"destination/datadog":
+"transform/trace-obfuscation":
   - changed-files:
       - any-glob-to-any-file:
-          - "lib/saluki-components/src/destinations/datadog/**/*"
+          - "lib/saluki-components/src/transforms/trace_obfuscation/**/*"
 
-"destination/datadog-events":
+"transform/trace-sampler":
   - changed-files:
       - any-glob-to-any-file:
-          - "lib/saluki-components/src/destinations/datadog/events/**/*"
-
-"destination/datadog-service-checks":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "lib/saluki-components/src/destinations/datadog/service_checks/**/*"
-
-"destination/datadog-metrics":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "lib/saluki-components/src/destinations/datadog/metrics/**/*"
-
-"destination/prometheus":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "lib/saluki-components/src/destinations/prometheus/**/*"
+          - "lib/saluki-components/src/transforms/trace_sampler/**/*"

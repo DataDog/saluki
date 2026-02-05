@@ -42,4 +42,4 @@ pub mod store;
 pub use self::store::Store;
 
 mod sketch;
-pub use self::sketch::DDSketch;
+pub use self::sketch::{DDSketch, PositiveOnlyDDSketch};

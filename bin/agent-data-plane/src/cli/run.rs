@@ -30,7 +30,7 @@ use saluki_components::{
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_core::topology::TopologyBlueprint;
-use saluki_env::{configstream::create_config_stream, EnvironmentProvider as _};
+use saluki_env::EnvironmentProvider as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
 use tokio::{select, time::interval};
@@ -38,7 +38,7 @@ use tracing::{error, info, warn};
 
 use crate::{
     components::apm_onboarding::ApmOnboardingConfiguration,
-    internal::{spawn_control_plane, spawn_internal_observability_topology},
+    internal::{remote_agent::RemoteAgentBootstrap, spawn_control_plane, spawn_internal_observability_topology},
 };
 use crate::{config::DataPlaneConfiguration, env_provider::ADPEnvironmentProvider};
 
@@ -65,44 +65,57 @@ pub async fn handle_run_command(
         "Agent Data Plane starting..."
     );
 
-    // Load our "bootstrap" configuration, and then determine if we need to actually source our configuration from the control plane.
+    // Load our "bootstrap" configuration.
     //
-    // When we're in standalone mode, we'll use the bootstrap configuration as our final configuration.
+    // If remote agent mode is enabled, we'll register as a remote agent, which will unlock the ability to receive
+    // configuration updates from the Core Agent, which we'll use to build our final, updated configuration. Otherwise,
+    // we keep the bootstrap configuration and use it as-is.
     let bootstrap_dp_config = DataPlaneConfiguration::from_configuration(&bootstrap_config)
         .error_context("Failed to load data plane configuration.")?;
 
     let in_standalone_mode = bootstrap_dp_config.standalone_mode();
+    let remote_agent_enabled = bootstrap_dp_config.remote_agent_enabled();
     let use_new_config_stream_endpoint = bootstrap_dp_config.use_new_config_stream_endpoint();
-    let (config, dp_config) = if !in_standalone_mode && use_new_config_stream_endpoint {
-        let config_updates_receiver = create_config_stream(&bootstrap_config)
+    let should_bootstrap_remote_agent = !in_standalone_mode && (remote_agent_enabled || use_new_config_stream_endpoint);
+
+    let ra_bootstrap = if should_bootstrap_remote_agent {
+        let ra_bootstrap = RemoteAgentBootstrap::from_configuration(&bootstrap_config, &bootstrap_dp_config)
             .await
-            .error_context("Failed to create configuration updates stream from control plane.")?;
+            .error_context("Failed to bootstrap remote agent state.")?;
 
-        // Build a new configuration that uses the configuration sent by the control plane as the authoritative
-        // configuration source, but with environment variables on top of that to allow for ADP-specific overriding: log
-        // level, etc.
-        let dynamic_config = ConfigurationLoader::default()
-            .from_yaml(&bootstrap_config_path)
-            .error_context("Failed to load Datadog Agent configuration file.")?
-            .with_dynamic_configuration(config_updates_receiver)
-            .from_environment(crate::internal::platform::DATADOG_AGENT_ENV_VAR_PREFIX)?
-            .with_default_secrets_resolution()
-            .await?
-            .into_generic()
-            .await?;
-
-        info!("Waiting for initial configuration from Datadog Agent...");
-        dynamic_config.ready().await;
-        info!("Initial configuration received.");
-
-        // Reload our data plane configuration based on the dynamic configuration.
-        let dynamic_dp_config = DataPlaneConfiguration::from_configuration(&dynamic_config)
-            .error_context("Failed to load data plane configuration.")?;
-
-        (dynamic_config, dynamic_dp_config)
+        Some(ra_bootstrap)
     } else {
+        None
+    };
+
+    let (config, dp_config) = match &ra_bootstrap {
+        Some(ra_bootstrap) if use_new_config_stream_endpoint => {
+            // Build a new configuration that uses the configuration sent by the control plane as the authoritative
+            // configuration source, but with environment variables on top of that to allow for ADP-specific overriding: log
+            // level, etc.
+            let dynamic_config = ConfigurationLoader::default()
+                .from_yaml(&bootstrap_config_path)
+                .error_context("Failed to load Datadog Agent configuration file.")?
+                .with_dynamic_configuration(ra_bootstrap.create_config_stream())
+                .from_environment(crate::internal::platform::DATADOG_AGENT_ENV_VAR_PREFIX)?
+                .with_default_secrets_resolution()
+                .await?
+                .into_generic()
+                .await?;
+
+            info!("Waiting for initial configuration from Datadog Agent...");
+            dynamic_config.ready().await;
+            info!("Initial configuration received.");
+
+            // Reload our data plane configuration based on the dynamic configuration.
+            let dynamic_dp_config = DataPlaneConfiguration::from_configuration(&dynamic_config)
+                .error_context("Failed to load data plane configuration.")?;
+
+            (dynamic_config, dynamic_dp_config)
+        }
+
         // If dynamic configuration is disabled, the bootstrap configuration is already the complete and final configuration.
-        (bootstrap_config, bootstrap_dp_config)
+        _ => (bootstrap_config, bootstrap_dp_config),
     };
 
     if !in_standalone_mode && !dp_config.enabled() {
@@ -138,6 +151,7 @@ pub async fn handle_run_command(
         health_registry.clone(),
         env_provider,
         dsd_stats_config,
+        ra_bootstrap,
     )
     .await
     .error_context("Failed to spawn control plane.")?;

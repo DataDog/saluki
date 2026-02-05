@@ -1,7 +1,7 @@
 //! Traces.
 
 use saluki_common::collections::FastHashMap;
-use saluki_context::tags::TagSet;
+use saluki_context::tags::SharedTagSet;
 use stringtheory::MetaString;
 
 /// Trace-level sampling metadata.
@@ -61,7 +61,7 @@ pub struct Trace {
     /// Resource-level tags associated with this trace.
     ///
     /// This is derived from the resource of the spans and used to construct the tracer payload.
-    resource_tags: TagSet,
+    resource_tags: SharedTagSet,
     /// Trace-level sampling metadata.
     ///
     /// This field contains sampling decision information (priority, decision maker, rates)
@@ -72,10 +72,10 @@ pub struct Trace {
 
 impl Trace {
     /// Creates a new `Trace` with the given spans.
-    pub fn new(spans: Vec<Span>, resource_tags: TagSet) -> Self {
+    pub fn new(spans: Vec<Span>, resource_tags: impl Into<SharedTagSet>) -> Self {
         Self {
             spans,
-            resource_tags,
+            resource_tags: resource_tags.into(),
             sampling: None,
         }
     }
@@ -95,8 +95,36 @@ impl Trace {
         self.spans = spans;
     }
 
+    /// Retains only the spans specified by the predicate.
+    ///
+    /// Returns the number of spans retained. If no spans match, the trace is left unchanged.
+    pub fn retain_spans<F>(&mut self, mut f: F) -> usize
+    where
+        F: FnMut(&Span) -> bool,
+    {
+        if self.spans.is_empty() {
+            return 0;
+        }
+
+        let mut has_match = false;
+        for span in self.spans.iter() {
+            if f(span) {
+                has_match = true;
+                break;
+            }
+        }
+
+        if !has_match {
+            return 0;
+        }
+
+        self.spans.retain(|span| f(span));
+        self.spans.shrink_to_fit();
+        self.spans.len()
+    }
+
     /// Returns the resource-level tags associated with this trace.
-    pub fn resource_tags(&self) -> &TagSet {
+    pub fn resource_tags(&self) -> &SharedTagSet {
         &self.resource_tags
     }
 
