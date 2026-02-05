@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common};
@@ -7,6 +8,8 @@ use saluki_common::collections::FastHashMap;
 use saluki_context::tags::TagSet;
 use saluki_core::data_model::event::trace::{Span as DdSpan, Trace, TraceSampling};
 use saluki_core::data_model::event::Event;
+use stringtheory::interning::GenericMapInterner;
+use stringtheory::interning::Interner as _;
 use stringtheory::MetaString;
 
 use crate::common::datadog::SAMPLING_PRIORITY_METRIC_KEY;
@@ -28,13 +31,18 @@ pub fn convert_span_id(span_id: &[u8]) -> u64 {
     u64::from_be_bytes(span_id.try_into().unwrap_or_default())
 }
 
-pub fn resource_attributes_to_tagset(attributes: &[otlp_common::KeyValue]) -> TagSet {
+pub fn resource_attributes_to_tagset(attributes: &[otlp_common::KeyValue], interner: &GenericMapInterner) -> TagSet {
     let mut tags = TagSet::with_capacity(attributes.len());
     for kv in attributes {
         if let Some(key_value) = &kv.value {
             if let Some(value) = &key_value.value {
                 if let Some(string_value) = otlp_value_to_string(value) {
-                    tags.insert_tag(format!("{}:{}", kv.key, string_value));
+                    let tag_str = format!("{}:{}", kv.key, string_value);
+                    let tag = interner
+                        .try_intern(&tag_str)
+                        .map(MetaString::from)
+                        .unwrap_or_else(|| MetaString::from(tag_str));
+                    tags.insert_tag(tag);
                 }
             }
         }
@@ -49,16 +57,18 @@ struct TraceEntry {
 }
 pub struct OtlpTracesTranslator {
     config: TracesConfig,
+    interner: GenericMapInterner,
 }
 
 impl OtlpTracesTranslator {
-    pub fn new(config: TracesConfig) -> Self {
-        Self { config }
+    pub fn new(config: TracesConfig, interner_size: NonZeroUsize) -> Self {
+        let interner = GenericMapInterner::new(interner_size);
+        Self { config, interner }
     }
 
     pub fn translate_resource_spans(&self, resource_spans: ResourceSpans, metrics: &Metrics) -> Vec<Event> {
         let resource: OtlpResource = resource_spans.resource.unwrap_or_default();
-        let resource_tags = resource_attributes_to_tagset(&resource.attributes).into_shared();
+        let resource_tags = resource_attributes_to_tagset(&resource.attributes, &self.interner).into_shared();
         let mut traces_by_id: FastHashMap<u64, TraceEntry> = FastHashMap::default();
         let ignore_missing_fields = self.config.ignore_missing_datadog_fields;
 
@@ -85,6 +95,7 @@ impl OtlpTracesTranslator {
                     scope_ref,
                     ignore_missing_fields,
                     self.config.enable_otlp_compute_top_level_by_span_kind,
+                    &self.interner,
                     trace_id_hex,
                 );
 

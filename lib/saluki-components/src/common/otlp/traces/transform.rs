@@ -17,12 +17,13 @@ use otlp_protos::opentelemetry::proto::trace::v1::{
 use saluki_common::collections::FastHashMap;
 use saluki_core::data_model::event::trace::Span as DdSpan;
 use serde_json::{Map as JsonMap, Value as JsonValue};
+use stringtheory::interning::{GenericMapInterner, Interner};
 use stringtheory::MetaString;
 use tracing::error;
 
 use crate::common::datadog::{OTEL_TRACE_ID_META_KEY, SAMPLING_PRIORITY_METRIC_KEY};
 use crate::common::otlp::attributes::{get_int_attribute, HTTP_MAPPINGS};
-use crate::common::otlp::traces::normalize::{normalize_service, normalize_tag_value};
+use crate::common::otlp::traces::normalize::{is_normalized_tag_value, normalize_service, normalize_tag_value};
 use crate::common::otlp::traces::normalize::{truncate_utf8, MAX_RESOURCE_LEN};
 use crate::common::otlp::traces::translator::{convert_span_id, convert_trace_id};
 use crate::common::otlp::util::get_string_attribute;
@@ -95,7 +96,8 @@ const DD_NAMESPACED_TO_APM_CONVENTIONS: &[(&str, &str)] = &[
 // https://github.com/DataDog/datadog-agent/blob/instrument-otlp-traffic/pkg/trace/transform/transform.go#L357
 pub fn otel_span_to_dd_span(
     otel_span: &OtlpSpan, otel_resource: &Resource, instrumentation_scope: Option<&OtlpInstrumentationScope>,
-    ignore_missing_fields: bool, compute_top_level_by_span_kind: bool, trace_id_hex: Option<MetaString>,
+    ignore_missing_fields: bool, compute_top_level_by_span_kind: bool, interner: &GenericMapInterner,
+    trace_id_hex: Option<MetaString>,
 ) -> DdSpan {
     let span_attributes = &otel_span.attributes;
     let resource_attributes = &otel_resource.attributes;
@@ -105,16 +107,17 @@ pub fn otel_span_to_dd_span(
         instrumentation_scope,
         ignore_missing_fields,
         compute_top_level_by_span_kind,
+        interner,
     );
 
     for (dd_key, apm_key) in DD_NAMESPACED_TO_APM_CONVENTIONS {
-        if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, dd_key) {
-            meta.insert((*apm_key).into(), value);
+        if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, dd_key, interner) {
+            meta.insert(MetaString::from_static(apm_key), value);
         }
     }
 
     for attribute in span_attributes {
-        map_attribute_generic(attribute, &mut meta, &mut metrics, ignore_missing_fields);
+        map_attribute_generic(attribute, &mut meta, &mut metrics, ignore_missing_fields, interner);
     }
 
     if let Some(trace_id_hex) = trace_id_hex {
@@ -123,38 +126,50 @@ pub fn otel_span_to_dd_span(
         }
     } else if !otel_span.trace_id.is_empty() {
         meta.insert(
-            OTEL_TRACE_ID_META_KEY.into(),
+            MetaString::from_static(OTEL_TRACE_ID_META_KEY),
             bytes_to_hex_lowercase(&otel_span.trace_id).into(),
         );
     }
 
     if !meta.contains_key("version") {
-        let version = get_otel_version(span_attributes, resource_attributes, ignore_missing_fields);
+        let version = get_otel_version(span_attributes, resource_attributes, ignore_missing_fields, interner);
         if !version.is_empty() {
-            meta.insert("version".into(), version);
+            meta.insert(MetaString::from_static("version"), version);
         }
     }
 
     if let Some(events_json) = marshal_events(&otel_span.events) {
-        meta.insert("events".into(), events_json.into());
+        meta.insert(MetaString::from_static("events"), events_json.into());
     }
     if span_contains_exception_event(&otel_span.events) {
-        meta.insert("_dd.span_events.has_exception".into(), MetaString::from_static("true"));
+        meta.insert(
+            MetaString::from_static("_dd.span_events.has_exception"),
+            MetaString::from_static("true"),
+        );
     }
     if let Some(links_json) = marshal_links(&otel_span.links) {
-        meta.insert("_dd.span_links".into(), links_json.into());
+        meta.insert(MetaString::from_static("_dd.span_links"), links_json.into());
     }
 
     if !otel_span.trace_state.is_empty() {
-        meta.insert(W3C_TRACESTATE_META_KEY.into(), otel_span.trace_state.as_str().into());
+        meta.insert(
+            MetaString::from_static(W3C_TRACESTATE_META_KEY),
+            otel_span.trace_state.as_str().into(),
+        );
     }
 
     if let Some(scope) = instrumentation_scope {
         if !scope.name.is_empty() {
-            meta.insert(OTEL_LIBRARY_NAME_META_KEY.into(), scope.name.as_str().into());
+            meta.insert(
+                MetaString::from_static(OTEL_LIBRARY_NAME_META_KEY),
+                scope.name.as_str().into(),
+            );
         }
         if !scope.version.is_empty() {
-            meta.insert(OTEL_LIBRARY_VERSION_META_KEY.into(), scope.version.as_str().into());
+            meta.insert(
+                MetaString::from_static(OTEL_LIBRARY_VERSION_META_KEY),
+                scope.version.as_str().into(),
+            );
         }
     }
 
@@ -163,12 +178,15 @@ pub fn otel_span_to_dd_span(
         .and_then(|s| StatusCode::try_from(s.code).ok())
         .unwrap_or(StatusCode::Unset);
     meta.insert(
-        OTEL_STATUS_CODE_META_KEY.into(),
-        MetaString::from(status_code_to_string(status_code)),
+        MetaString::from_static(OTEL_STATUS_CODE_META_KEY),
+        MetaString::from_static(status_code_to_string(status_code)),
     );
     if let Some(status) = status {
         if !status.message.is_empty() {
-            meta.insert(OTEL_STATUS_DESCRIPTION_META_KEY.into(), status.message.as_str().into());
+            meta.insert(
+                MetaString::from_static(OTEL_STATUS_DESCRIPTION_META_KEY),
+                status.message.as_str().into(),
+            );
         }
     }
 
@@ -181,9 +199,9 @@ pub fn otel_span_to_dd_span(
         }
 
         if !meta.contains_key("env") {
-            let env = get_otel_env(span_attributes, resource_attributes, ignore_missing_fields);
+            let env = get_otel_env(span_attributes, resource_attributes, ignore_missing_fields, interner);
             if !env.is_empty() {
-                meta.insert("env".into(), env);
+                meta.insert(MetaString::from_static("env"), env);
             }
         }
     }
@@ -199,17 +217,20 @@ pub fn otel_span_to_dd_span(
                 &mut meta,
                 &mut metrics,
                 ignore_missing_fields,
+                interner,
             );
         }
     }
 
     if let Some(scope) = instrumentation_scope {
-        instrumentation_scope_attributes_to_meta(scope, &mut meta);
+        instrumentation_scope_attributes_to_meta(scope, &mut meta, interner);
     }
 
     if !meta.contains_key("db.name") {
-        if let Some(db_namespace) = use_both_maps(resource_attributes, span_attributes, false, DB_NAMESPACE_KEY) {
-            meta.insert("db.name".into(), db_namespace);
+        if let Some(db_namespace) =
+            use_both_maps(resource_attributes, span_attributes, false, DB_NAMESPACE_KEY, interner)
+        {
+            meta.insert(MetaString::from_static("db.name"), db_namespace);
         }
     }
 
@@ -221,7 +242,7 @@ pub fn otel_span_to_dd_span(
 // to be used in OTLPTracesToConcentratorInputs. Do not use them for other purposes.
 pub fn otel_to_dd_span_minimal(
     otel_span: &OtlpSpan, otel_resource: &Resource, _instrumentation_scope: Option<&OtlpInstrumentationScope>,
-    ignore_missing_fields: bool, compute_top_level_by_span_kind: bool,
+    ignore_missing_fields: bool, compute_top_level_by_span_kind: bool, interner: &GenericMapInterner,
 ) -> (
     DdSpan,
     FastHashMap<MetaString, MetaString>,
@@ -255,41 +276,61 @@ pub fn otel_to_dd_span_minimal(
     }
 
     if is_top_level {
-        metrics.insert(MetaString::from("_top_level"), 1.0);
+        metrics.insert(MetaString::from_static("_top_level"), 1.0);
     }
 
-    if use_both_maps(span_attributes, resource_attributes, false, "_dd.measured").is_some_and(|v| *v == *"1")
+    if use_both_maps(span_attributes, resource_attributes, false, "_dd.measured", interner).is_some_and(|v| *v == *"1")
         || (compute_top_level_by_span_kind
             && (otel_span.kind() == SpanKind::Client || otel_span.kind() == SpanKind::Producer))
     {
-        metrics.insert(MetaString::from("_dd.measured"), 1.0);
+        metrics.insert(MetaString::from_static("_dd.measured"), 1.0);
     }
 
-    let span_kind =
-        use_both_maps(span_attributes, resource_attributes, true, KEY_DATADOG_SPAN_KIND).unwrap_or_else(|| {
-            let kind = SpanKind::try_from(otel_span.kind).unwrap_or(SpanKind::Unspecified);
-            MetaString::from(span_kind_name(kind))
-        });
-    meta.insert(MetaString::from(SPAN_KIND_META_KEY), span_kind);
+    let span_kind = use_both_maps(
+        span_attributes,
+        resource_attributes,
+        true,
+        KEY_DATADOG_SPAN_KIND,
+        interner,
+    )
+    .unwrap_or_else(|| {
+        let kind = SpanKind::try_from(otel_span.kind).unwrap_or(SpanKind::Unspecified);
+        MetaString::from_static(span_kind_name(kind))
+    });
+    meta.insert(MetaString::from_static(SPAN_KIND_META_KEY), span_kind);
 
-    let mut service =
-        use_both_maps(span_attributes, resource_attributes, true, KEY_DATADOG_SERVICE).unwrap_or_default();
-    let mut name = use_both_maps(span_attributes, resource_attributes, true, KEY_DATADOG_NAME).unwrap_or_default();
-    let mut resource =
-        use_both_maps(span_attributes, resource_attributes, true, KEY_DATADOG_RESOURCE).unwrap_or_default();
-    let mut span_type = use_both_maps(span_attributes, resource_attributes, true, KEY_DATADOG_TYPE).unwrap_or_default();
+    let mut service = use_both_maps(
+        span_attributes,
+        resource_attributes,
+        true,
+        KEY_DATADOG_SERVICE,
+        interner,
+    )
+    .unwrap_or_default();
+    let mut name =
+        use_both_maps(span_attributes, resource_attributes, true, KEY_DATADOG_NAME, interner).unwrap_or_default();
+    let mut resource = use_both_maps(
+        span_attributes,
+        resource_attributes,
+        true,
+        KEY_DATADOG_RESOURCE,
+        interner,
+    )
+    .unwrap_or_default();
+    let mut span_type =
+        use_both_maps(span_attributes, resource_attributes, true, KEY_DATADOG_TYPE, interner).unwrap_or_default();
 
     if !ignore_missing_fields {
         // the functions below are based off the V2 agent functions as they are used by default
         // TODO: allow the user to opt out of V2 via config and also implement the V1 versions of the functions
         if service.is_empty() {
-            service = get_otel_service(span_attributes, resource_attributes, true);
+            service = get_otel_service(span_attributes, resource_attributes, true, interner);
         }
         if name.is_empty() {
-            name = get_otel_operation_name_v2(otel_span, span_attributes, resource_attributes);
+            name = get_otel_operation_name_v2(otel_span, span_attributes, resource_attributes, interner);
         }
         if resource.is_empty() {
-            resource = get_otel_resource_v2_truncated(otel_span, span_attributes, resource_attributes);
+            resource = get_otel_resource_v2_truncated(otel_span, span_attributes, resource_attributes, interner);
             // Agent normalizer sets resource = name when resource is empty
             // https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/normalizer.go#L245-248
             if resource.is_empty() {
@@ -297,7 +338,7 @@ pub fn otel_to_dd_span_minimal(
             }
         }
         if span_type.is_empty() {
-            span_type = get_otel_span_type(otel_span, span_attributes, resource_attributes);
+            span_type = get_otel_span_type(otel_span, span_attributes, resource_attributes, interner);
         }
     }
 
@@ -313,7 +354,7 @@ pub fn otel_to_dd_span_minimal(
         .with_duration(duration);
 
     if let Some(status_code) = get_otel_status_code(span_attributes, resource_attributes, ignore_missing_fields) {
-        metrics.insert(HTTP_STATUS_CODE_KEY.into(), status_code as f64);
+        metrics.insert(MetaString::from_static(HTTP_STATUS_CODE_KEY), status_code as f64);
     }
 
     // TODO: add peer key tags (unfinished in the agent as well)
@@ -322,24 +363,49 @@ pub fn otel_to_dd_span_minimal(
 }
 
 /// Returns the DD service name based on OTel span and resource attributes.
-fn get_otel_service(span_attributes: &[KeyValue], resource_attributes: &[KeyValue], normalize: bool) -> MetaString {
-    let service = use_both_maps(span_attributes, resource_attributes, true, SERVICE_NAME)
+fn get_otel_service(
+    span_attributes: &[KeyValue], resource_attributes: &[KeyValue], normalize: bool, interner: &GenericMapInterner,
+) -> MetaString {
+    let service = get_string_attribute(span_attributes, SERVICE_NAME)
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| MetaString::from_static(DEFAULT_SERVICE_NAME));
+        .or_else(|| get_string_attribute(resource_attributes, SERVICE_NAME).filter(|s| !s.is_empty()))
+        .unwrap_or(DEFAULT_SERVICE_NAME);
 
     if normalize {
-        normalize_service(&service)
+        let normalized = normalize_service(&MetaString::from(service));
+        interner
+            .try_intern(normalized.as_ref())
+            .map(MetaString::from)
+            .unwrap_or(normalized)
     } else {
-        service
+        interner
+            .try_intern(service)
+            .map(MetaString::from)
+            .unwrap_or_else(|| MetaString::from(service))
     }
+}
+
+/// Intern a formatted operation name.
+fn intern_operation_name(name: String, interner: &GenericMapInterner) -> MetaString {
+    interner
+        .try_intern(&name)
+        .map(MetaString::from)
+        .unwrap_or_else(|| MetaString::from(name))
+}
+
+fn intern_resource_name(name: String, interner: &GenericMapInterner) -> MetaString {
+    interner
+        .try_intern(&name)
+        .map(MetaString::from)
+        .unwrap_or_else(|| MetaString::from(name))
 }
 
 // GetOTelOperationNameV2 returns the DD operation name based on OTel span and resource attributes and given configs.
 // based on code from https://github.com/DataDog/datadog-agent/blob/instrument-otlp-traffic/pkg/trace/traceutil/otel_util.go#L424
 fn get_otel_operation_name_v2(
-    otel_span: &OtlpSpan, span_attributes: &[KeyValue], resource_attributes: &[KeyValue],
+    otel_span: &OtlpSpan, span_attributes: &[KeyValue], resource_attributes: &[KeyValue], interner: &GenericMapInterner,
 ) -> MetaString {
-    if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, OPERATION_NAME_KEY) {
+    if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, OPERATION_NAME_KEY, interner) {
         if !value.is_empty() {
             return value;
         }
@@ -351,7 +417,15 @@ fn get_otel_operation_name_v2(
 
     // http
     for http_request_method_key in HTTP_REQUEST_METHOD_KEYS {
-        if use_both_maps(span_attributes, resource_attributes, true, http_request_method_key).is_some() {
+        if use_both_maps(
+            span_attributes,
+            resource_attributes,
+            true,
+            http_request_method_key,
+            interner,
+        )
+        .is_some()
+        {
             if is_server {
                 return MetaString::from_static("http.server.request");
             }
@@ -363,71 +437,116 @@ fn get_otel_operation_name_v2(
 
     // database
     if is_client {
-        if let Some(db_system) = use_both_maps(span_attributes, resource_attributes, true, DB_SYSTEM_KEY) {
-            return MetaString::from(format!("{db_system}.query"));
+        if let Some(db_system) = use_both_maps(span_attributes, resource_attributes, true, DB_SYSTEM_KEY, interner) {
+            return intern_operation_name(format!("{db_system}.query"), interner);
         }
     }
 
     // messaging
     if let (Some(system), Some(operation)) = (
-        use_both_maps(span_attributes, resource_attributes, true, MESSAGING_SYSTEM_KEY),
-        use_both_maps(span_attributes, resource_attributes, true, MESSAGING_OPERATION_KEY),
+        use_both_maps(
+            span_attributes,
+            resource_attributes,
+            true,
+            MESSAGING_SYSTEM_KEY,
+            interner,
+        ),
+        use_both_maps(
+            span_attributes,
+            resource_attributes,
+            true,
+            MESSAGING_OPERATION_KEY,
+            interner,
+        ),
     ) {
         match span_kind {
             SpanKind::Client | SpanKind::Server | SpanKind::Consumer | SpanKind::Producer => {
-                return MetaString::from(format!("{system}.{operation}"))
+                return intern_operation_name(format!("{system}.{operation}"), interner);
             }
             _ => {}
         }
     }
 
     // RPC & AWS
-    if let Some(rpc_system) = use_both_maps(span_attributes, resource_attributes, true, RPC_SYSTEM_KEY) {
+    if let Some(rpc_system) = use_both_maps(span_attributes, resource_attributes, true, RPC_SYSTEM_KEY, interner) {
         let is_aws = rpc_system == "aws-api";
         if is_aws && is_client {
-            if let Some(service) = use_both_maps(span_attributes, resource_attributes, true, RPC_SERVICE_KEY) {
-                return MetaString::from(format!("aws.{service}.request"));
+            if let Some(service) = use_both_maps(span_attributes, resource_attributes, true, RPC_SERVICE_KEY, interner)
+            {
+                return intern_operation_name(format!("aws.{service}.request"), interner);
             }
-            return MetaString::from("aws.client.request");
+            return MetaString::from_static("aws.client.request");
         }
 
         if is_client {
-            return MetaString::from(format!("{rpc_system}.client.request"));
+            return intern_operation_name(format!("{rpc_system}.client.request"), interner);
         }
         if is_server {
-            return MetaString::from(format!("{rpc_system}.server.request"));
+            return intern_operation_name(format!("{rpc_system}.server.request"), interner);
         }
     }
 
     // FAAS client
     if is_client {
         if let (Some(provider), Some(invoked)) = (
-            use_both_maps(span_attributes, resource_attributes, true, FAAS_INVOKED_PROVIDER_KEY),
-            use_both_maps(span_attributes, resource_attributes, true, FAAS_INVOKED_NAME_KEY),
+            use_both_maps(
+                span_attributes,
+                resource_attributes,
+                true,
+                FAAS_INVOKED_PROVIDER_KEY,
+                interner,
+            ),
+            use_both_maps(
+                span_attributes,
+                resource_attributes,
+                true,
+                FAAS_INVOKED_NAME_KEY,
+                interner,
+            ),
         ) {
-            return MetaString::from(format!("{provider}.{invoked}.invoke"));
+            return intern_operation_name(format!("{provider}.{invoked}.invoke"), interner);
         }
     }
     // FAAS server
     if is_server {
-        if let Some(trigger) = use_both_maps(span_attributes, resource_attributes, true, FAAS_TRIGGER_KEY) {
-            return MetaString::from(format!("{trigger}.invoke"));
+        if let Some(trigger) = use_both_maps(span_attributes, resource_attributes, true, FAAS_TRIGGER_KEY, interner) {
+            return intern_operation_name(format!("{trigger}.invoke"), interner);
         }
     }
 
-    if use_both_maps(span_attributes, resource_attributes, true, GRAPHQL_OPERATION_TYPE_KEY).is_some() {
+    if use_both_maps(
+        span_attributes,
+        resource_attributes,
+        true,
+        GRAPHQL_OPERATION_TYPE_KEY,
+        interner,
+    )
+    .is_some()
+    {
         return MetaString::from_static("graphql.server.request");
     }
 
     if is_server {
-        if let Some(protocol) = use_both_maps(span_attributes, resource_attributes, true, NETWORK_PROTOCOL_NAME_KEY) {
-            return MetaString::from(format!("{protocol}.server.request"));
+        if let Some(protocol) = use_both_maps(
+            span_attributes,
+            resource_attributes,
+            true,
+            NETWORK_PROTOCOL_NAME_KEY,
+            interner,
+        ) {
+            return intern_operation_name(format!("{protocol}.server.request"), interner);
         }
         return MetaString::from_static("server.request");
     }
     if is_client {
-        if let Some(protocol) = use_both_maps(span_attributes, resource_attributes, true, NETWORK_PROTOCOL_NAME_KEY) {
-            return MetaString::from(format!("{protocol}.client.request"));
+        if let Some(protocol) = use_both_maps(
+            span_attributes,
+            resource_attributes,
+            true,
+            NETWORK_PROTOCOL_NAME_KEY,
+            interner,
+        ) {
+            return intern_operation_name(format!("{protocol}.client.request"), interner);
         }
         return MetaString::from_static("client.request");
     }
@@ -438,73 +557,89 @@ fn get_otel_operation_name_v2(
         span_kind
     };
     // Use capitalized span kind name for operation  (e.g., "Internal", "Client", "Server")
-    MetaString::from(span_kind_name_capitalized(fallback_kind))
+    MetaString::from_static(span_kind_name_capitalized(fallback_kind))
 }
 
 // GetOTelResourceV2 returns the DD resource name based on OTel span and resource attributes.
 // based on this code https://github.com/DataDog/datadog-agent/blob/instrument-otlp-traffic/pkg/trace/traceutil/otel_util.go#L348
 fn get_otel_resource_v2(
-    otel_span: &OtlpSpan, span_attributes: &[KeyValue], resource_attributes: &[KeyValue],
+    otel_span: &OtlpSpan, span_attributes: &[KeyValue], resource_attributes: &[KeyValue], interner: &GenericMapInterner,
 ) -> MetaString {
     let span_kind = SpanKind::try_from(otel_span.kind).unwrap_or(SpanKind::Unspecified);
-    if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, RESOURCE_NAME_KEY) {
+    if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, RESOURCE_NAME_KEY, interner) {
         if !value.is_empty() {
             return value;
         }
     }
 
-    if let Some(method) = use_both_maps_key_list(span_attributes, resource_attributes, HTTP_REQUEST_METHOD_KEYS) {
+    if let Some(method) =
+        use_both_maps_key_list(span_attributes, resource_attributes, HTTP_REQUEST_METHOD_KEYS, interner)
+    {
         let mut resource_name = if method.as_ref() == "_OTHER" {
             String::from("HTTP")
         } else {
             method.as_ref().to_string()
         };
         if span_kind == SpanKind::Server {
-            if let Some(route) = use_both_maps(span_attributes, resource_attributes, true, HTTP_ROUTE_KEY) {
+            if let Some(route) = use_both_maps(span_attributes, resource_attributes, true, HTTP_ROUTE_KEY, interner) {
                 resource_name.push(' ');
                 resource_name.push_str(route.as_ref());
             }
         }
-        return MetaString::from(resource_name);
+        return intern_resource_name(resource_name, interner);
     }
 
-    if let Some(operation) = use_both_maps(span_attributes, resource_attributes, true, MESSAGING_OPERATION_KEY) {
+    if let Some(operation) = use_both_maps(
+        span_attributes,
+        resource_attributes,
+        true,
+        MESSAGING_OPERATION_KEY,
+        interner,
+    ) {
         let mut resource_name = operation.as_ref().to_string();
-        if let Some(dest) = use_both_maps_key_list(span_attributes, resource_attributes, MESSAGING_DESTINATION_KEYS) {
+        if let Some(dest) = use_both_maps_key_list(
+            span_attributes,
+            resource_attributes,
+            MESSAGING_DESTINATION_KEYS,
+            interner,
+        ) {
             if !dest.is_empty() {
                 resource_name.push(' ');
                 resource_name.push_str(dest.as_ref());
             }
         }
-        return MetaString::from(resource_name);
+        return intern_resource_name(resource_name, interner);
     }
 
-    if let Some(method) = use_both_maps(span_attributes, resource_attributes, true, RPC_METHOD_KEY) {
+    if let Some(method) = use_both_maps(span_attributes, resource_attributes, true, RPC_METHOD_KEY, interner) {
         let mut resource_name = method.as_ref().to_string();
-        if let Some(service) = use_both_maps(span_attributes, resource_attributes, true, RPC_SERVICE_KEY) {
+        if let Some(service) = use_both_maps(span_attributes, resource_attributes, true, RPC_SERVICE_KEY, interner) {
             resource_name.push(' ');
             resource_name.push_str(service.as_ref());
         }
-        return MetaString::from(resource_name);
+        return intern_resource_name(resource_name, interner);
     }
 
     // Enrich GraphQL query resource names.
     // See https://github.com/open-telemetry/semantic-conventions/blob/v1.29.0/docs/graphql/graphql-spans.md
-    if let Some(op_type) = use_both_maps(span_attributes, resource_attributes, true, GRAPHQL_OPERATION_TYPE_KEY) {
-        let mut resource_name = op_type.as_ref().to_string();
-        if let Some(op_name) = use_both_maps(span_attributes, resource_attributes, true, GRAPHQL_OPERATION_NAME_KEY) {
+    if let Some(op_type) = get_both_string_attribute(span_attributes, resource_attributes, GRAPHQL_OPERATION_TYPE_KEY) {
+        let mut resource_name = normalize_tag_value(op_type).into_owned();
+        if let Some(op_name) =
+            get_both_string_attribute(span_attributes, resource_attributes, GRAPHQL_OPERATION_NAME_KEY)
+        {
+            let op_name = normalize_tag_value(op_name);
             resource_name.push(' ');
             resource_name.push_str(op_name.as_ref());
         }
         return MetaString::from(resource_name);
     }
 
-    if use_both_maps(span_attributes, resource_attributes, true, DB_SYSTEM_KEY).is_some() {
-        if let Some(statement) = use_both_maps(span_attributes, resource_attributes, true, DB_STATEMENT_KEY) {
-            return statement;
+    if use_both_maps(span_attributes, resource_attributes, true, DB_SYSTEM_KEY, interner).is_some() {
+        if let Some(statement) = get_both_string_attribute(span_attributes, resource_attributes, DB_STATEMENT_KEY) {
+            return normalize_tag_value(statement);
         }
-        if let Some(query) = use_both_maps(span_attributes, resource_attributes, true, DB_QUERY_TEXT_KEY) {
-            return query;
+        if let Some(query) = get_both_string_attribute(span_attributes, resource_attributes, DB_QUERY_TEXT_KEY) {
+            return normalize_tag_value(query);
         }
     }
 
@@ -515,9 +650,9 @@ fn get_otel_resource_v2(
 }
 
 fn get_otel_resource_v2_truncated(
-    otel_span: &OtlpSpan, span_attributes: &[KeyValue], resource_attributes: &[KeyValue],
+    otel_span: &OtlpSpan, span_attributes: &[KeyValue], resource_attributes: &[KeyValue], interner: &GenericMapInterner,
 ) -> MetaString {
-    let res_name = get_otel_resource_v2(otel_span, span_attributes, resource_attributes);
+    let res_name = get_otel_resource_v2(otel_span, span_attributes, resource_attributes, interner);
     if res_name.len() > MAX_RESOURCE_LEN {
         MetaString::from(truncate_utf8(&res_name, MAX_RESOURCE_LEN))
     } else {
@@ -526,9 +661,9 @@ fn get_otel_resource_v2_truncated(
 }
 
 fn get_otel_span_type(
-    otel_span: &OtlpSpan, span_attributes: &[KeyValue], resource_attributes: &[KeyValue],
+    otel_span: &OtlpSpan, span_attributes: &[KeyValue], resource_attributes: &[KeyValue], interner: &GenericMapInterner,
 ) -> MetaString {
-    if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, "span.type") {
+    if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, "span.type", interner) {
         if !value.is_empty() {
             return value;
         }
@@ -538,7 +673,8 @@ fn get_otel_span_type(
     let span_type = match span_kind {
         SpanKind::Server => "web",
         SpanKind::Client => {
-            if let Some(db_system) = use_both_maps(span_attributes, resource_attributes, true, DB_SYSTEM_KEY) {
+            if let Some(db_system) = use_both_maps(span_attributes, resource_attributes, true, DB_SYSTEM_KEY, interner)
+            {
                 map_db_system_to_span_type(db_system.as_ref())
             } else {
                 "http"
@@ -547,7 +683,7 @@ fn get_otel_span_type(
         _ => "custom",
     };
 
-    MetaString::from(span_type)
+    MetaString::from_static(span_type)
 }
 
 fn map_db_system_to_span_type(db_system: &str) -> &'static str {
@@ -603,7 +739,7 @@ const SQL_DB_SYSTEMS: &[&str] = &[
 
 fn map_attribute_generic(
     attribute: &KeyValue, meta: &mut FastHashMap<MetaString, MetaString>, metrics: &mut FastHashMap<MetaString, f64>,
-    ignore_missing_fields: bool,
+    ignore_missing_fields: bool, interner: &GenericMapInterner,
 ) {
     if attribute.key.is_empty() {
         return;
@@ -621,6 +757,7 @@ fn map_attribute_generic(
                 meta,
                 metrics,
                 ignore_missing_fields,
+                interner,
             );
         }
         OtlpValue::BoolValue(b) => {
@@ -631,6 +768,7 @@ fn map_attribute_generic(
                 meta,
                 metrics,
                 ignore_missing_fields,
+                interner,
             );
         }
         OtlpValue::BytesValue(bytes) => {
@@ -641,6 +779,7 @@ fn map_attribute_generic(
                 meta,
                 metrics,
                 ignore_missing_fields,
+                interner,
             );
         }
         OtlpValue::IntValue(i) => {
@@ -649,10 +788,17 @@ fn map_attribute_generic(
                 *i as f64,
                 metrics,
                 ignore_missing_fields,
+                interner,
             );
         }
         OtlpValue::DoubleValue(d) => {
-            conditionally_map_otlp_attribute_to_metric(attribute.key.as_str(), *d, metrics, ignore_missing_fields);
+            conditionally_map_otlp_attribute_to_metric(
+                attribute.key.as_str(),
+                *d,
+                metrics,
+                ignore_missing_fields,
+                interner,
+            );
         }
         _ => {
             // Skip complex values for now.
@@ -661,14 +807,22 @@ fn map_attribute_generic(
 }
 
 fn instrumentation_scope_attributes_to_meta(
-    scope: &OtlpInstrumentationScope, meta: &mut FastHashMap<MetaString, MetaString>,
+    scope: &OtlpInstrumentationScope, meta: &mut FastHashMap<MetaString, MetaString>, interner: &GenericMapInterner,
 ) {
     for attribute in &scope.attributes {
         let Some(value) = attribute.value.as_ref().and_then(|wrapper| wrapper.value.as_ref()) else {
             continue;
         };
         if let Some(serialized) = otlp_value_to_string(value) {
-            meta.insert(attribute.key.as_str().into(), serialized.into());
+            let key = interner
+                .try_intern(attribute.key.as_str())
+                .map(MetaString::from)
+                .unwrap_or_else(|| MetaString::from(attribute.key.as_str()));
+            let value = interner
+                .try_intern(&serialized)
+                .map(MetaString::from)
+                .unwrap_or_else(|| MetaString::from(serialized));
+            meta.insert(key, value);
         }
     }
 }
@@ -769,13 +923,13 @@ fn status_to_error(
                 let meta_value: MetaString = serialized.clone().into();
                 match attribute.key.as_str() {
                     EXCEPTION_MESSAGE_KEY => {
-                        meta.insert("error.msg".into(), meta_value);
+                        meta.insert(MetaString::from_static("error.msg"), meta_value);
                     }
                     EXCEPTION_TYPE_KEY => {
-                        meta.insert("error.type".into(), serialized.into());
+                        meta.insert(MetaString::from_static("error.type"), serialized.into());
                     }
                     EXCEPTION_STACKTRACE_KEY => {
-                        meta.insert("error.stack".into(), serialized.into());
+                        meta.insert(MetaString::from_static("error.stack"), serialized.into());
                     }
                     _ => {}
                 }
@@ -784,7 +938,7 @@ fn status_to_error(
     }
     if !meta.contains_key("error.msg") {
         if !status.message.is_empty() {
-            meta.insert("error.msg".into(), status.message.as_str().into());
+            meta.insert(MetaString::from_static("error.msg"), status.message.as_str().into());
         } else if let Some(http_code) =
             get_first_from_meta(meta, &[HTTP_RESPONSE_STATUS_CODE_KEY, HTTP_STATUS_CODE_KEY])
         {
@@ -793,7 +947,7 @@ fn status_to_error(
                 message.push(' ');
                 message.push_str(http_text.as_ref());
             }
-            meta.insert("error.msg".into(), message.into());
+            meta.insert(MetaString::from_static("error.msg"), message.into());
         }
     }
     1
@@ -879,9 +1033,9 @@ pub(super) fn otlp_value_to_string(value: &OtlpValue) -> Option<String> {
 
 fn conditionally_map_otlp_attribute_to_meta(
     key: &str, value: &str, meta: &mut FastHashMap<MetaString, MetaString>, metrics: &mut FastHashMap<MetaString, f64>,
-    ignore_missing_fields: bool,
+    ignore_missing_fields: bool, interner: &GenericMapInterner,
 ) {
-    if let Some(mapped_key) = get_dd_key_for_otlp_attribute(key) {
+    if let Some(mapped_key) = get_dd_key_for_otlp_attribute(key, interner) {
         if meta.contains_key(&mapped_key) {
             return;
         }
@@ -894,8 +1048,9 @@ fn conditionally_map_otlp_attribute_to_meta(
 
 fn conditionally_map_otlp_attribute_to_metric(
     key: &str, value: f64, metrics: &mut FastHashMap<MetaString, f64>, ignore_missing_fields: bool,
+    interner: &GenericMapInterner,
 ) {
-    if let Some(mapped_key) = get_dd_key_for_otlp_attribute(key) {
+    if let Some(mapped_key) = get_dd_key_for_otlp_attribute(key, interner) {
         if metrics.contains_key(&mapped_key) {
             return;
         }
@@ -922,7 +1077,7 @@ fn set_meta_field_otlp_if_empty(
             }
             if let Some(parsed) = parse_bool(value) {
                 metrics
-                    .entry(EVENT_EXTRACTION_METRIC_KEY.into())
+                    .entry(MetaString::from_static(EVENT_EXTRACTION_METRIC_KEY))
                     .or_insert(if parsed { 1.0 } else { 0.0 });
             }
         }
@@ -945,16 +1100,26 @@ fn set_metric_field_otlp_if_empty(key: MetaString, value: f64, metrics: &mut Fas
 // OTLP HTTP convention. Otherwise, check if it is a Datadog APM convention key - if it is, it will be handled with
 // specialized logic elsewhere, so return None. If it isn't, return the original key.
 // based on the logic from the agent code https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/transform/transform.go#L179
-fn get_dd_key_for_otlp_attribute(key: &str) -> Option<MetaString> {
+fn get_dd_key_for_otlp_attribute(key: &str, interner: &GenericMapInterner) -> Option<MetaString> {
     if let Some(mapped) = HTTP_MAPPINGS.get(key) {
         return Some(MetaString::from_static(mapped));
     }
     if let Some(header_suffix) = key.strip_prefix(HTTP_REQUEST_HEADER_PREFIX) {
         let mapped_key = format!("{HTTP_REQUEST_HEADERS_PREFIX}{header_suffix}");
-        return Some(MetaString::from(mapped_key));
+        return Some(
+            interner
+                .try_intern(&mapped_key)
+                .map(MetaString::from)
+                .unwrap_or_else(|| MetaString::from(mapped_key)),
+        );
     }
     if !is_datadog_apm_convention_key(key) {
-        return Some(MetaString::from(key));
+        return Some(
+            interner
+                .try_intern(key)
+                .map(MetaString::from)
+                .unwrap_or_else(|| MetaString::from(key)),
+        );
     }
     None
 }
@@ -1000,34 +1165,55 @@ fn span_kind_name_capitalized(kind: SpanKind) -> &'static str {
     }
 }
 
-fn use_both_maps(map: &[KeyValue], map2: &[KeyValue], normalize: bool, key: &str) -> Option<MetaString> {
+fn intern_attribute_value(value: &str, normalize: bool, interner: &GenericMapInterner) -> MetaString {
+    if normalize {
+        if is_normalized_tag_value(value) {
+            return interner
+                .try_intern(value)
+                .map(MetaString::from)
+                .unwrap_or_else(|| MetaString::from(value));
+        }
+        let normalized = normalize_tag_value(value);
+        return interner
+            .try_intern(normalized.as_ref())
+            .map(MetaString::from)
+            .unwrap_or(normalized);
+    }
+
+    interner
+        .try_intern(value)
+        .map(MetaString::from)
+        .unwrap_or_else(|| MetaString::from(value))
+}
+
+fn use_both_maps(
+    map: &[KeyValue], map2: &[KeyValue], normalize: bool, key: &str, interner: &GenericMapInterner,
+) -> Option<MetaString> {
     if let Some(value) = get_string_attribute(map, key) {
         if !value.is_empty() {
-            return Some(if normalize {
-                normalize_tag_value(value)
-            } else {
-                MetaString::from(value)
-            });
+            return Some(intern_attribute_value(value, normalize, interner));
         }
     }
     get_string_attribute(map2, key).and_then(|value| {
         if !value.is_empty() {
-            Some(if normalize {
-                normalize_tag_value(value)
-            } else {
-                MetaString::from(value)
-            })
+            Some(intern_attribute_value(value, normalize, interner))
         } else {
             None
         }
     })
 }
 
+fn get_both_string_attribute<'a>(map: &'a [KeyValue], map2: &'a [KeyValue], key: &str) -> Option<&'a str> {
+    get_string_attribute(map, key)
+        .filter(|value| !value.is_empty())
+        .or_else(|| get_string_attribute(map2, key).filter(|value| !value.is_empty()))
+}
+
 fn use_both_maps_key_list(
-    span_attributes: &[KeyValue], resource_attributes: &[KeyValue], keys: &[&str],
+    span_attributes: &[KeyValue], resource_attributes: &[KeyValue], keys: &[&str], interner: &GenericMapInterner,
 ) -> Option<MetaString> {
     for key in keys {
-        if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, key) {
+        if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, key, interner) {
             return Some(value);
         }
     }
@@ -1036,8 +1222,15 @@ fn use_both_maps_key_list(
 
 fn get_otel_env(
     span_attributes: &[KeyValue], resource_attributes: &[KeyValue], ignore_missing_fields: bool,
+    interner: &GenericMapInterner,
 ) -> MetaString {
-    if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, KEY_DATADOG_ENVIRONMENT) {
+    if let Some(value) = use_both_maps(
+        span_attributes,
+        resource_attributes,
+        true,
+        KEY_DATADOG_ENVIRONMENT,
+        interner,
+    ) {
         return value;
     }
 
@@ -1049,6 +1242,7 @@ fn get_otel_env(
         span_attributes,
         resource_attributes,
         &[DEPLOYMENT_ENVIRONMENT_NAME, DEPLOYMENT_ENVIRONMENT_KEY],
+        interner,
     ) {
         return value;
     }
@@ -1059,8 +1253,15 @@ fn get_otel_env(
 // GetOTelVersion returns the version based on OTel span and resource attributes, with span taking precedence.
 fn get_otel_version(
     span_attributes: &[KeyValue], resource_attributes: &[KeyValue], ignore_missing_fields: bool,
+    interner: &GenericMapInterner,
 ) -> MetaString {
-    if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, KEY_DATADOG_VERSION) {
+    if let Some(value) = use_both_maps(
+        span_attributes,
+        resource_attributes,
+        true,
+        KEY_DATADOG_VERSION,
+        interner,
+    ) {
         return value;
     }
 
@@ -1068,7 +1269,7 @@ fn get_otel_version(
         return MetaString::empty();
     }
 
-    if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, SERVICE_VERSION) {
+    if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, SERVICE_VERSION, interner) {
         return value;
     }
 
@@ -1077,8 +1278,15 @@ fn get_otel_version(
 
 fn get_otel_container_id(
     span_attributes: &[KeyValue], resource_attributes: &[KeyValue], ignore_missing_fields: bool,
+    interner: &GenericMapInterner,
 ) -> MetaString {
-    if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, KEY_DATADOG_CONTAINER_ID) {
+    if let Some(value) = use_both_maps(
+        span_attributes,
+        resource_attributes,
+        true,
+        KEY_DATADOG_CONTAINER_ID,
+        interner,
+    ) {
         return value;
     }
 
@@ -1086,11 +1294,11 @@ fn get_otel_container_id(
         return MetaString::empty();
     }
 
-    if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, CONTAINER_ID) {
+    if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, CONTAINER_ID, interner) {
         return value;
     }
 
-    if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, K8S_POD_UID) {
+    if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, K8S_POD_UID, interner) {
         return value;
     }
 
@@ -1133,6 +1341,8 @@ pub(super) fn bytes_to_hex_lowercase(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
+
     use otlp_protos::opentelemetry::proto::common::v1::{AnyValue, KeyValue};
     use otlp_protos::opentelemetry::proto::resource::v1::Resource;
     use otlp_protos::opentelemetry::proto::trace::v1::Span as OtlpSpan;
@@ -1166,6 +1376,10 @@ mod tests {
                 value: Some(OtlpValue::BoolValue(value)),
             }),
         }
+    }
+
+    fn test_interner() -> GenericMapInterner {
+        GenericMapInterner::new(NonZeroUsize::new(64 * 1024).unwrap())
     }
 
     // Semantic convention keys (matching Go's semconv117 and semconv127)
@@ -1263,8 +1477,14 @@ mod tests {
             },
         ];
 
+        let interner = test_interner();
         for tc in test_cases {
-            let result = get_otel_env(&tc.span_attrs, &tc.resource_attrs, tc.ignore_missing_datadog_fields);
+            let result = get_otel_env(
+                &tc.span_attrs,
+                &tc.resource_attrs,
+                tc.ignore_missing_datadog_fields,
+                &interner,
+            );
             assert_eq!(result.as_ref(), tc.expected, "test case: {}", tc.name);
         }
     }
@@ -1273,27 +1493,28 @@ mod tests {
     fn test_map_attribute_generic_matches_agent_rules() {
         let mut meta = FastHashMap::default();
         let mut metrics = FastHashMap::default();
+        let interner = test_interner();
 
         let http_attr = kv_str("http.request.method", "GET");
-        map_attribute_generic(&http_attr, &mut meta, &mut metrics, false);
+        map_attribute_generic(&http_attr, &mut meta, &mut metrics, false, &interner);
         assert_eq!(meta.get("http.method").map(|v| v.as_ref()), Some("GET"));
 
         let sampling_attr = kv_int("sampling.priority", 2);
-        map_attribute_generic(&sampling_attr, &mut meta, &mut metrics, false);
+        map_attribute_generic(&sampling_attr, &mut meta, &mut metrics, false, &interner);
         assert_eq!(metrics.get(SAMPLING_PRIORITY_METRIC_KEY), Some(&2.0));
 
         let analytics_attr = kv_bool(ANALYTICS_EVENT_KEY, true);
-        map_attribute_generic(&analytics_attr, &mut meta, &mut metrics, false);
+        map_attribute_generic(&analytics_attr, &mut meta, &mut metrics, false, &interner);
         assert_eq!(metrics.get(EVENT_EXTRACTION_METRIC_KEY), Some(&1.0));
 
         let dd_attr = kv_str("datadog.service", "svc");
-        map_attribute_generic(&dd_attr, &mut meta, &mut metrics, false);
+        map_attribute_generic(&dd_attr, &mut meta, &mut metrics, false, &interner);
         assert!(!meta.contains_key("datadog.service"));
 
         let mut meta_ignore = FastHashMap::default();
         let mut metrics_ignore = FastHashMap::default();
         let env_attr = kv_str("env", "prod");
-        map_attribute_generic(&env_attr, &mut meta_ignore, &mut metrics_ignore, true);
+        map_attribute_generic(&env_attr, &mut meta_ignore, &mut metrics_ignore, true, &interner);
         assert!(meta_ignore.is_empty());
     }
 
@@ -1366,8 +1587,14 @@ mod tests {
             },
         ];
 
+        let interner = test_interner();
         for tc in test_cases {
-            let result = get_otel_version(&tc.span_attrs, &tc.resource_attrs, tc.ignore_missing_datadog_fields);
+            let result = get_otel_version(
+                &tc.span_attrs,
+                &tc.resource_attrs,
+                tc.ignore_missing_datadog_fields,
+                &interner,
+            );
             assert_eq!(result.as_ref(), tc.expected, "test case: {}", tc.name);
         }
     }
@@ -1441,8 +1668,14 @@ mod tests {
             },
         ];
 
+        let interner = test_interner();
         for tc in test_cases {
-            let result = get_otel_container_id(&tc.span_attrs, &tc.resource_attrs, tc.ignore_missing_datadog_fields);
+            let result = get_otel_container_id(
+                &tc.span_attrs,
+                &tc.resource_attrs,
+                tc.ignore_missing_datadog_fields,
+                &interner,
+            );
             assert_eq!(result.as_ref(), tc.expected, "test case: {}", tc.name);
         }
     }
@@ -1584,6 +1817,7 @@ mod tests {
             },
         ];
 
+        let interner = test_interner();
         for tc in test_cases {
             let span = OtlpSpan {
                 name: "test-span".to_string(),
@@ -1595,7 +1829,7 @@ mod tests {
                 ..Default::default()
             };
 
-            let dd_span = otel_span_to_dd_span(&span, &resource, None, false, true, None);
+            let dd_span = otel_span_to_dd_span(&span, &resource, None, false, true, &interner, None);
             let meta = dd_span.meta();
 
             if tc.should_map {

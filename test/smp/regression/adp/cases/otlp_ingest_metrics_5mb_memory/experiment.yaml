@@ -18,6 +18,7 @@ target:
     DD_OTLP_CONFIG: "{}"
     DD_AGGREGATE_CONTEXT_LIMIT: "3100"
     DD_OTLP_CACHED_CONTEXT_LIMIT: "3100"
+    DD_OTLP_CONFIG__TRACES__STRING_INTERNER_SIZE: 4MiB
   profiling_environment:
     SMP_PROFILING_ENABLED: "true"
     DD_SERVICE: agent-data-plane
