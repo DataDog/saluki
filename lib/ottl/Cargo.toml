@@ -12,7 +12,7 @@ workspace = true
 path = "src/mod.rs"
 
 [dependencies]
-logos = "0.14"
-chumsky = "0.9"
+chumsky = { workspace = true }
+logos = { workspace = true }
 
 [dev-dependencies]

@@ -9,6 +9,7 @@ use super::{CallbackMap, EnumMap, EvalContext, OttlParser, PathResolver, Result,
 ///
 /// Create a parser using [`Parser::new`], then use the [`OttlParser`] trait methods
 /// to check for errors and execute the statement.
+#[allow(dead_code)] //AZH: temporary, since this is just an API review we don't have yet code which is using it.
 pub struct Parser<'a> {
     /// Map of editor function names to their implementations
     editors: &'a mut CallbackMap,
@@ -36,11 +37,8 @@ impl<'a> Parser<'a> {
     ///
     /// A new `Parser` instance configured with the provided callbacks and ready to execute.
     pub fn new(
-        editors_map: &'a mut CallbackMap,
-        converters_map: &'a mut CallbackMap,
-        enums_map: &'a mut EnumMap,
-        path_resolver_cb: &'a mut PathResolver,
-        _expression: &str,
+        editors_map: &'a mut CallbackMap, converters_map: &'a mut CallbackMap, enums_map: &'a mut EnumMap,
+        path_resolver_cb: &'a mut PathResolver, _expression: &str,
     ) -> Self {
         Self {
             editors: editors_map,

@@ -42,10 +42,7 @@ fn test_comparison_operators() {
 #[test]
 fn test_arithmetic_operators() {
     let tokens = Lexer::collect_tokens("+ - * /");
-    assert_eq!(
-        tokens,
-        vec![Token::Plus, Token::Minus, Token::Star, Token::Slash,]
-    );
+    assert_eq!(tokens, vec![Token::Plus, Token::Minus, Token::Star, Token::Slash,]);
 }
 
 #[test]
@@ -96,11 +93,11 @@ fn test_int_literal() {
 
 #[test]
 fn test_float_literal() {
-    let tokens = Lexer::collect_tokens("3.14 .5 -2.0 +0.1");
+    let tokens = Lexer::collect_tokens("6.18 .5 -2.0 +0.1");
     assert_eq!(
         tokens,
         vec![
-            Token::FloatLiteral("3.14"),
+            Token::FloatLiteral("6.18"),
             Token::FloatLiteral(".5"),
             Token::FloatLiteral("-2.0"),
             Token::FloatLiteral("+0.1"),
@@ -300,10 +297,7 @@ fn test_enum() {
     let tokens = Lexer::collect_tokens("SPAN_KIND_SERVER STATUS_OK");
     assert_eq!(
         tokens,
-        vec![
-            Token::UpperIdent("SPAN_KIND_SERVER"),
-            Token::UpperIdent("STATUS_OK"),
-        ]
+        vec![Token::UpperIdent("SPAN_KIND_SERVER"), Token::UpperIdent("STATUS_OK"),]
     );
 }
 
@@ -333,7 +327,7 @@ use crate::{Argument, Value};
 fn test_value_equality() {
     assert_eq!(Value::Bool(true), Value::Bool(true));
     assert_eq!(Value::Int(42), Value::Int(42));
-    assert_eq!(Value::Float(3.14), Value::Float(3.14));
+    assert_eq!(Value::Float(6.18), Value::Float(6.18));
     assert_eq!(Value::String("hello".into()), Value::String("hello".into()));
     assert_eq!(Value::Nil, Value::Nil);
 

@@ -134,16 +134,15 @@ impl Argument {
 /// Trait for accessing (reading and writing) path values in the context.
 pub trait PathAccessor: fmt::Debug {
     /// Get the value at this path from the context
-    fn get(&self, ctx: &EvalContext, path: &String) -> Result<&Value>;
+    fn get(&self, ctx: &EvalContext, path: &str) -> Result<&Value>;
 
     /// Set the value at this path in the context
-    fn set(&self, ctx: &mut EvalContext, path: &String, value: &Value) -> Result<()>;
+    fn set(&self, ctx: &mut EvalContext, path: &str, value: &Value) -> Result<()>;
 }
 
 /// Type alias for the path resolver function.
 /// Takes a path string (e.g., "body.attributes.key") and returns a PathAccessor.
-pub type PathResolver =
-    Arc<dyn Fn(&str) -> Result<Arc<dyn PathAccessor + Send + Sync>> + Send + Sync>;
+pub type PathResolver = Arc<dyn Fn(&str) -> Result<Arc<dyn PathAccessor + Send + Sync>> + Send + Sync>;
 
 // =====================================================================================================================
 // Callback Types
