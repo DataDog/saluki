@@ -14,7 +14,7 @@ use saluki_core::runtime::{
 };
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
-use saluki_io::net::{build_datadog_agent_server_tls_config, get_ipc_cert_file_path};
+use saluki_io::net::{build_datadog_agent_server_tls_config, get_ipc_cert_file_path, ServerConfig};
 use tracing::info;
 
 use crate::{
@@ -133,21 +133,30 @@ pub struct PrivilegedApiWorker {
     env_provider: ADPEnvironmentProvider,
     dsd_stats_config: DogStatsDStatisticsConfiguration,
     ra_bootstrap: Option<RemoteAgentBootstrap>,
+    tls_config: ServerConfig,
 }
 
 impl PrivilegedApiWorker {
     /// Creates a new `PrivilegedApiWorker`.
-    pub fn new(
+    ///
+    /// # Errors
+    ///
+    /// If the TLS configuration cannot be loaded, an error is returned.
+    pub async fn new(
         config: GenericConfiguration, dp_config: DataPlaneConfiguration, env_provider: ADPEnvironmentProvider,
         dsd_stats_config: DogStatsDStatisticsConfiguration, ra_bootstrap: Option<RemoteAgentBootstrap>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, GenericError> {
+        let cert_path = get_cert_path_from_config(&config)?;
+        let tls_config = build_datadog_agent_server_tls_config(cert_path).await?;
+
+        Ok(Self {
             config,
             dp_config,
             env_provider,
             dsd_stats_config,
             ra_bootstrap,
-        }
+            tls_config,
+        })
     }
 }
 
@@ -158,18 +167,8 @@ impl Supervisable for PrivilegedApiWorker {
     }
 
     async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
-        // Load our TLS configuration.
-        //
-        // TODO: should this need to happen during process init or could we do it once when creating `PrivilegedApiWorker`
-        // and simplify things?
-        let cert_path =
-            get_cert_path_from_config(&self.config).map_err(|e| InitializationError::Failed { source: e })?;
-        let tls_config = build_datadog_agent_server_tls_config(cert_path)
-            .await
-            .map_err(|e| InitializationError::Failed { source: e })?;
-
         let mut api_builder = APIBuilder::new()
-            .with_tls_config(tls_config)
+            .with_tls_config(self.tls_config.clone())
             // TODO: make these handlers cloneable and move them up to the config for the worker so they can
             // be cloned for each initialization
             .with_optional_handler(acquire_logging_api_handler())
@@ -206,7 +205,7 @@ impl Supervisable for PrivilegedApiWorker {
 /// # Errors
 ///
 /// If the supervisor cannot be created, an error is returned.
-pub fn create_control_plane_supervisor(
+pub async fn create_control_plane_supervisor(
     config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, component_registry: &ComponentRegistry,
     health_registry: HealthRegistry, env_provider: ADPEnvironmentProvider,
     dsd_stats_config: DogStatsDStatisticsConfiguration, ra_bootstrap: Option<RemoteAgentBootstrap>,
@@ -225,13 +224,16 @@ pub fn create_control_plane_supervisor(
         health_registry,
         scoped_registry,
     ));
-    supervisor.add_worker(PrivilegedApiWorker::new(
-        config.clone(),
-        dp_config.clone(),
-        env_provider,
-        dsd_stats_config,
-        ra_bootstrap,
-    ));
+    supervisor.add_worker(
+        PrivilegedApiWorker::new(
+            config.clone(),
+            dp_config.clone(),
+            env_provider,
+            dsd_stats_config,
+            ra_bootstrap,
+        )
+        .await?,
+    );
 
     Ok(supervisor)
 }
