@@ -1,3 +1,4 @@
+use std::collections::hash_map::IntoIter;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -6,7 +7,7 @@ use otlp_protos::opentelemetry::proto::resource::v1::Resource as OtlpResource;
 use otlp_protos::opentelemetry::proto::trace::v1::ResourceSpans;
 use saluki_common::collections::FastHashMap;
 use saluki_common::strings::StringBuilder;
-use saluki_context::tags::TagSet;
+use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_core::data_model::event::trace::{Span as DdSpan, Trace, TraceSampling};
 use saluki_core::data_model::event::Event;
 use stringtheory::interning::GenericMapInterner;
@@ -74,7 +75,7 @@ impl OtlpTracesTranslator {
         }
     }
 
-    pub fn translate_resource_spans(&mut self, resource_spans: ResourceSpans, metrics: &Metrics) -> Vec<Event> {
+    pub fn translate_spans(&mut self, resource_spans: ResourceSpans, metrics: &Metrics) -> impl Iterator<Item = Event> {
         let resource: OtlpResource = resource_spans.resource.unwrap_or_default();
         let ignore_missing_fields = self.config.ignore_missing_datadog_fields;
         let compute_top_level = self.config.enable_otlp_compute_top_level_by_span_kind;
@@ -120,23 +121,38 @@ impl OtlpTracesTranslator {
             }
         }
 
-        traces_by_id
-            .into_iter()
-            .filter_map(|(_, entry)| {
-                if entry.spans.is_empty() {
-                    None
-                } else {
-                    let mut trace = Trace::new(entry.spans, resource_tags.clone());
+        OtlpTraceEventsIter {
+            resource_tags,
+            entries: traces_by_id.into_iter(),
+        }
+    }
+}
 
-                    // Set the trace-level sampling priority if one was found
-                    if let Some(priority) = entry.priority {
-                        trace.set_sampling(Some(TraceSampling::new(false, Some(priority), None, None)));
-                    }
+struct OtlpTraceEventsIter {
+    resource_tags: SharedTagSet,
+    entries: IntoIter<u64, TraceEntry>,
+}
 
-                    Some(Event::Trace(trace))
-                }
-            })
-            .collect()
+impl Iterator for OtlpTraceEventsIter {
+    type Item = Event;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        for (_, entry) in self.entries.by_ref() {
+            if entry.spans.is_empty() {
+                continue;
+            }
+
+            let mut trace = Trace::new(entry.spans, self.resource_tags.clone());
+
+            // Set the trace-level sampling priority if one was found
+            if let Some(priority) = entry.priority {
+                trace.set_sampling(Some(TraceSampling::new(false, Some(priority), None, None)));
+            }
+
+            return Some(Event::Trace(trace));
+        }
+
+        None
     }
 }
 
