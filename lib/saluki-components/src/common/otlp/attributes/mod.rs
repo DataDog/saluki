@@ -264,17 +264,3 @@ fn try_get_int_from_value(value: Option<&otlp_common::any_value::Value>) -> Opti
         None
     }
 }
-
-pub fn get_int_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<&'a i64> {
-    attributes.iter().find_map(|kv| {
-        if kv.key == key {
-            if let Some(Value::IntValue(i_val)) = kv.value.as_ref().and_then(|v| v.value.as_ref()) {
-                Some(i_val)
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    })
-}
