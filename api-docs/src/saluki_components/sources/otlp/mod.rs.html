@@ -16,14 +16,14 @@
 <a href=#16 id=16 data-nosnippet>16</a><span class="kw">use </span>saluki_common::task::HandleExt <span class="kw">as _</span>;
 <a href=#17 id=17 data-nosnippet>17</a><span class="kw">use </span>saluki_config::GenericConfiguration;
 <a href=#18 id=18 data-nosnippet>18</a><span class="kw">use </span>saluki_context::ContextResolver;
-<a href=#19 id=19 data-nosnippet>19</a><span class="kw">use </span>saluki_core::topology::interconnect::EventBufferManager;
+<a href=#19 id=19 data-nosnippet>19</a><span class="kw">use </span>saluki_core::topology::interconnect::BufferedDispatcher;
 <a href=#20 id=20 data-nosnippet>20</a><span class="kw">use </span>saluki_core::topology::shutdown::{DynamicShutdownCoordinator, DynamicShutdownHandle};
 <a href=#21 id=21 data-nosnippet>21</a><span class="kw">use </span>saluki_core::{
 <a href=#22 id=22 data-nosnippet>22</a>    components::{
 <a href=#23 id=23 data-nosnippet>23</a>        sources::{Source, SourceBuilder, SourceContext},
 <a href=#24 id=24 data-nosnippet>24</a>        ComponentContext,
 <a href=#25 id=25 data-nosnippet>25</a>    },
-<a href=#26 id=26 data-nosnippet>26</a>    data_model::event::{Event, EventType},
+<a href=#26 id=26 data-nosnippet>26</a>    data_model::event::EventType,
 <a href=#27 id=27 data-nosnippet>27</a>    topology::{EventsBuffer, OutputDefinition},
 <a href=#28 id=28 data-nosnippet>28</a>};
 <a href=#29 id=29 data-nosnippet>29</a><span class="kw">use </span>saluki_env::WorkloadProvider;
@@ -363,121 +363,120 @@
 <a href=#363 id=363 data-nosnippet>363</a>    }
 <a href=#364 id=364 data-nosnippet>364</a>}
 <a href=#365 id=365 data-nosnippet>365</a>
-<a href=#366 id=366 data-nosnippet>366</a><span class="kw">async fn </span>dispatch_events(<span class="kw-2">mut </span>events: EventsBuffer, source_context: <span class="kw-2">&amp;</span>SourceContext) {
-<a href=#367 id=367 data-nosnippet>367</a>    <span class="kw">if </span>events.is_empty() {
-<a href=#368 id=368 data-nosnippet>368</a>        <span class="kw">return</span>;
-<a href=#369 id=369 data-nosnippet>369</a>    }
-<a href=#370 id=370 data-nosnippet>370</a>
-<a href=#371 id=371 data-nosnippet>371</a>    <span class="kw">if </span>events.has_event_type(EventType::Trace) {
-<a href=#372 id=372 data-nosnippet>372</a>        <span class="kw">let </span><span class="kw-2">mut </span>buffered_dispatcher = source_context
-<a href=#373 id=373 data-nosnippet>373</a>            .dispatcher()
-<a href=#374 id=374 data-nosnippet>374</a>            .buffered_named(<span class="string">"traces"</span>)
-<a href=#375 id=375 data-nosnippet>375</a>            .expect(<span class="string">"traces output should exist"</span>);
-<a href=#376 id=376 data-nosnippet>376</a>        <span class="kw">for </span>trace_event <span class="kw">in </span>events.extract(Event::is_trace) {
-<a href=#377 id=377 data-nosnippet>377</a>            <span class="kw">if let </span><span class="prelude-val">Err</span>(e) = buffered_dispatcher.push(trace_event).<span class="kw">await </span>{
-<a href=#378 id=378 data-nosnippet>378</a>                <span class="macro">error!</span>(error = %e, <span class="string">"Failed to dispatch trace(s)."</span>);
-<a href=#379 id=379 data-nosnippet>379</a>            }
-<a href=#380 id=380 data-nosnippet>380</a>        }
-<a href=#381 id=381 data-nosnippet>381</a>        <span class="kw">if let </span><span class="prelude-val">Err</span>(e) = buffered_dispatcher.flush().<span class="kw">await </span>{
-<a href=#382 id=382 data-nosnippet>382</a>            <span class="macro">error!</span>(error = %e, <span class="string">"Failed to flush trace(s)."</span>);
-<a href=#383 id=383 data-nosnippet>383</a>        }
-<a href=#384 id=384 data-nosnippet>384</a>    }
-<a href=#385 id=385 data-nosnippet>385</a>
-<a href=#386 id=386 data-nosnippet>386</a>    <span class="kw">if </span>events.has_event_type(EventType::Log) {
-<a href=#387 id=387 data-nosnippet>387</a>        <span class="kw">let </span><span class="kw-2">mut </span>buffered_dispatcher = source_context
-<a href=#388 id=388 data-nosnippet>388</a>            .dispatcher()
-<a href=#389 id=389 data-nosnippet>389</a>            .buffered_named(<span class="string">"logs"</span>)
-<a href=#390 id=390 data-nosnippet>390</a>            .expect(<span class="string">"logs output should exist"</span>);
-<a href=#391 id=391 data-nosnippet>391</a>
-<a href=#392 id=392 data-nosnippet>392</a>        <span class="kw">for </span>log_event <span class="kw">in </span>events.extract(Event::is_log) {
-<a href=#393 id=393 data-nosnippet>393</a>            <span class="kw">if let </span><span class="prelude-val">Err</span>(e) = buffered_dispatcher.push(log_event).<span class="kw">await </span>{
-<a href=#394 id=394 data-nosnippet>394</a>                <span class="macro">error!</span>(error = %e, <span class="string">"Failed to dispatch log(s)."</span>);
-<a href=#395 id=395 data-nosnippet>395</a>            }
-<a href=#396 id=396 data-nosnippet>396</a>        }
-<a href=#397 id=397 data-nosnippet>397</a>
-<a href=#398 id=398 data-nosnippet>398</a>        <span class="kw">if let </span><span class="prelude-val">Err</span>(e) = buffered_dispatcher.flush().<span class="kw">await </span>{
-<a href=#399 id=399 data-nosnippet>399</a>            <span class="macro">error!</span>(error = %e, <span class="string">"Failed to flush log(s)."</span>);
-<a href=#400 id=400 data-nosnippet>400</a>        }
-<a href=#401 id=401 data-nosnippet>401</a>    }
-<a href=#402 id=402 data-nosnippet>402</a>
-<a href=#403 id=403 data-nosnippet>403</a>    <span class="kw">let </span>len = events.len();
-<a href=#404 id=404 data-nosnippet>404</a>    <span class="kw">if let </span><span class="prelude-val">Err</span>(e) = source_context.dispatcher().dispatch_named(<span class="string">"metrics"</span>, events).<span class="kw">await </span>{
-<a href=#405 id=405 data-nosnippet>405</a>        <span class="macro">error!</span>(error = %e, <span class="string">"Failed to dispatch metric events."</span>);
-<a href=#406 id=406 data-nosnippet>406</a>    } <span class="kw">else </span>{
-<a href=#407 id=407 data-nosnippet>407</a>        <span class="macro">debug!</span>(events_len = len, <span class="string">"Dispatched metric events."</span>);
-<a href=#408 id=408 data-nosnippet>408</a>    }
-<a href=#409 id=409 data-nosnippet>409</a>}
-<a href=#410 id=410 data-nosnippet>410</a>
-<a href=#411 id=411 data-nosnippet>411</a><span class="kw">async fn </span>run_converter(
-<a href=#412 id=412 data-nosnippet>412</a>    <span class="kw-2">mut </span>receiver: mpsc::Receiver&lt;OtlpResource&gt;, source_context: SourceContext,
-<a href=#413 id=413 data-nosnippet>413</a>    origin_tag_resolver: <span class="prelude-ty">Option</span>&lt;OtlpOriginTagResolver&gt;, shutdown_handle: DynamicShutdownHandle,
-<a href=#414 id=414 data-nosnippet>414</a>    <span class="kw-2">mut </span>metrics_translator: OtlpMetricsTranslator, metrics: Metrics, traces_translator: OtlpTracesTranslator,
-<a href=#415 id=415 data-nosnippet>415</a>) {
-<a href=#416 id=416 data-nosnippet>416</a>    <span class="macro">tokio::pin!</span>(shutdown_handle);
-<a href=#417 id=417 data-nosnippet>417</a>    <span class="macro">debug!</span>(<span class="string">"OTLP resource converter task started."</span>);
-<a href=#418 id=418 data-nosnippet>418</a>
-<a href=#419 id=419 data-nosnippet>419</a>    <span class="comment">// Set a buffer flush interval of 100ms, which will ensure we always flush buffered events at least every 100ms if
-<a href=#420 id=420 data-nosnippet>420</a>    // we're otherwise idle and not receiving packets from the client.
-<a href=#421 id=421 data-nosnippet>421</a>    </span><span class="kw">let </span><span class="kw-2">mut </span>buffer_flush = interval(Duration::from_millis(<span class="number">100</span>));
-<a href=#422 id=422 data-nosnippet>422</a>    buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
-<a href=#423 id=423 data-nosnippet>423</a>
-<a href=#424 id=424 data-nosnippet>424</a>    <span class="kw">let </span><span class="kw-2">mut </span>event_buffer_manager = EventBufferManager::default();
-<a href=#425 id=425 data-nosnippet>425</a>
-<a href=#426 id=426 data-nosnippet>426</a>    <span class="kw">loop </span>{
-<a href=#427 id=427 data-nosnippet>427</a>        <span class="macro">select!</span> {
-<a href=#428 id=428 data-nosnippet>428</a>            <span class="prelude-val">Some</span>(otlp_resource) = receiver.recv() =&gt; {
-<a href=#429 id=429 data-nosnippet>429</a>                <span class="kw">match </span>otlp_resource {
-<a href=#430 id=430 data-nosnippet>430</a>                    OtlpResource::Metrics(resource_metrics) =&gt; {
-<a href=#431 id=431 data-nosnippet>431</a>                        <span class="kw">match </span>metrics_translator.map_metrics(resource_metrics, <span class="kw-2">&amp;</span>metrics) {
-<a href=#432 id=432 data-nosnippet>432</a>                            <span class="prelude-val">Ok</span>(events) =&gt; {
-<a href=#433 id=433 data-nosnippet>433</a>                                <span class="kw">for </span>event <span class="kw">in </span>events {
-<a href=#434 id=434 data-nosnippet>434</a>                                    <span class="kw">if let </span><span class="prelude-val">Some</span>(event_buffer) = event_buffer_manager.try_push(event) {
-<a href=#435 id=435 data-nosnippet>435</a>                                        dispatch_events(event_buffer, <span class="kw-2">&amp;</span>source_context).<span class="kw">await</span>;
-<a href=#436 id=436 data-nosnippet>436</a>                                    }
-<a href=#437 id=437 data-nosnippet>437</a>                                }
-<a href=#438 id=438 data-nosnippet>438</a>                            }
-<a href=#439 id=439 data-nosnippet>439</a>                            <span class="prelude-val">Err</span>(e) =&gt; {
-<a href=#440 id=440 data-nosnippet>440</a>                                <span class="macro">error!</span>(error = %e, <span class="string">"Failed to handle resource metrics."</span>);
-<a href=#441 id=441 data-nosnippet>441</a>                            }
-<a href=#442 id=442 data-nosnippet>442</a>                        }
-<a href=#443 id=443 data-nosnippet>443</a>                    }
-<a href=#444 id=444 data-nosnippet>444</a>                    OtlpResource::Logs(resource_logs) =&gt; {
-<a href=#445 id=445 data-nosnippet>445</a>                        <span class="kw">let </span>translator = OtlpLogsTranslator::from_resource_logs(resource_logs, origin_tag_resolver.as_ref());
-<a href=#446 id=446 data-nosnippet>446</a>                        <span class="kw">for </span>log_event <span class="kw">in </span>translator {
-<a href=#447 id=447 data-nosnippet>447</a>                            metrics.logs_received().increment(<span class="number">1</span>);
-<a href=#448 id=448 data-nosnippet>448</a>
-<a href=#449 id=449 data-nosnippet>449</a>                            <span class="kw">if let </span><span class="prelude-val">Some</span>(event_buffer) = event_buffer_manager.try_push(log_event) {
-<a href=#450 id=450 data-nosnippet>450</a>                                dispatch_events(event_buffer, <span class="kw-2">&amp;</span>source_context).<span class="kw">await</span>;
-<a href=#451 id=451 data-nosnippet>451</a>                            }
-<a href=#452 id=452 data-nosnippet>452</a>                        }
-<a href=#453 id=453 data-nosnippet>453</a>                    }
-<a href=#454 id=454 data-nosnippet>454</a>                    OtlpResource::Traces(resource_spans) =&gt; {
-<a href=#455 id=455 data-nosnippet>455</a>                        <span class="kw">let </span>trace_events =
-<a href=#456 id=456 data-nosnippet>456</a>                            traces_translator.translate_resource_spans(resource_spans, <span class="kw-2">&amp;</span>metrics);
-<a href=#457 id=457 data-nosnippet>457</a>                        <span class="kw">for </span>trace_event <span class="kw">in </span>trace_events {
-<a href=#458 id=458 data-nosnippet>458</a>                            <span class="kw">if let </span><span class="prelude-val">Some</span>(event_buffer) = event_buffer_manager.try_push(trace_event) {
-<a href=#459 id=459 data-nosnippet>459</a>                                dispatch_events(event_buffer, <span class="kw-2">&amp;</span>source_context).<span class="kw">await</span>;
-<a href=#460 id=460 data-nosnippet>460</a>                            }
-<a href=#461 id=461 data-nosnippet>461</a>                        }
-<a href=#462 id=462 data-nosnippet>462</a>                    }
-<a href=#463 id=463 data-nosnippet>463</a>                }
-<a href=#464 id=464 data-nosnippet>464</a>            },
-<a href=#465 id=465 data-nosnippet>465</a>            <span class="kw">_ </span>= buffer_flush.tick() =&gt; {
-<a href=#466 id=466 data-nosnippet>466</a>                <span class="kw">if let </span><span class="prelude-val">Some</span>(event_buffer) = event_buffer_manager.consume() {
-<a href=#467 id=467 data-nosnippet>467</a>                    dispatch_events(event_buffer, <span class="kw-2">&amp;</span>source_context).<span class="kw">await</span>;
-<a href=#468 id=468 data-nosnippet>468</a>                }
-<a href=#469 id=469 data-nosnippet>469</a>            },
-<a href=#470 id=470 data-nosnippet>470</a>            <span class="kw">_ </span>= <span class="kw-2">&amp;mut </span>shutdown_handle =&gt; {
-<a href=#471 id=471 data-nosnippet>471</a>                <span class="macro">debug!</span>(<span class="string">"Converter task received shutdown signal."</span>);
-<a href=#472 id=472 data-nosnippet>472</a>                <span class="kw">break</span>;
-<a href=#473 id=473 data-nosnippet>473</a>            }
-<a href=#474 id=474 data-nosnippet>474</a>        }
-<a href=#475 id=475 data-nosnippet>475</a>    }
-<a href=#476 id=476 data-nosnippet>476</a>
-<a href=#477 id=477 data-nosnippet>477</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(event_buffer) = event_buffer_manager.consume() {
-<a href=#478 id=478 data-nosnippet>478</a>        dispatch_events(event_buffer, <span class="kw-2">&amp;</span>source_context).<span class="kw">await</span>;
-<a href=#479 id=479 data-nosnippet>479</a>    }
-<a href=#480 id=480 data-nosnippet>480</a>
-<a href=#481 id=481 data-nosnippet>481</a>    <span class="macro">debug!</span>(<span class="string">"OTLP resource converter task stopped."</span>);
-<a href=#482 id=482 data-nosnippet>482</a>}
+<a href=#366 id=366 data-nosnippet>366</a><span class="kw">async fn </span>run_converter(
+<a href=#367 id=367 data-nosnippet>367</a>    <span class="kw-2">mut </span>receiver: mpsc::Receiver&lt;OtlpResource&gt;, source_context: SourceContext,
+<a href=#368 id=368 data-nosnippet>368</a>    origin_tag_resolver: <span class="prelude-ty">Option</span>&lt;OtlpOriginTagResolver&gt;, shutdown_handle: DynamicShutdownHandle,
+<a href=#369 id=369 data-nosnippet>369</a>    <span class="kw-2">mut </span>metrics_translator: OtlpMetricsTranslator, metrics: Metrics, traces_translator: OtlpTracesTranslator,
+<a href=#370 id=370 data-nosnippet>370</a>) {
+<a href=#371 id=371 data-nosnippet>371</a>    <span class="macro">tokio::pin!</span>(shutdown_handle);
+<a href=#372 id=372 data-nosnippet>372</a>    <span class="macro">debug!</span>(<span class="string">"OTLP resource converter task started."</span>);
+<a href=#373 id=373 data-nosnippet>373</a>
+<a href=#374 id=374 data-nosnippet>374</a>    <span class="comment">// Set a buffer flush interval of 100ms, which will ensure we always flush buffered events at least every 100ms if
+<a href=#375 id=375 data-nosnippet>375</a>    // we're otherwise idle and not receiving packets from the client.
+<a href=#376 id=376 data-nosnippet>376</a>    </span><span class="kw">let </span><span class="kw-2">mut </span>buffer_flush = interval(Duration::from_millis(<span class="number">100</span>));
+<a href=#377 id=377 data-nosnippet>377</a>    buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
+<a href=#378 id=378 data-nosnippet>378</a>
+<a href=#379 id=379 data-nosnippet>379</a>    <span class="kw">let </span><span class="kw-2">mut </span>metrics_dispatcher: <span class="prelude-ty">Option</span>&lt;BufferedDispatcher&lt;<span class="lifetime">'_</span>, EventsBuffer&gt;&gt; = <span class="prelude-val">None</span>;
+<a href=#380 id=380 data-nosnippet>380</a>    <span class="kw">let </span><span class="kw-2">mut </span>logs_dispatcher: <span class="prelude-ty">Option</span>&lt;BufferedDispatcher&lt;<span class="lifetime">'_</span>, EventsBuffer&gt;&gt; = <span class="prelude-val">None</span>;
+<a href=#381 id=381 data-nosnippet>381</a>    <span class="kw">let </span><span class="kw-2">mut </span>traces_dispatcher: <span class="prelude-ty">Option</span>&lt;BufferedDispatcher&lt;<span class="lifetime">'_</span>, EventsBuffer&gt;&gt; = <span class="prelude-val">None</span>;
+<a href=#382 id=382 data-nosnippet>382</a>
+<a href=#383 id=383 data-nosnippet>383</a>    <span class="kw">loop </span>{
+<a href=#384 id=384 data-nosnippet>384</a>        <span class="macro">select!</span> {
+<a href=#385 id=385 data-nosnippet>385</a>            <span class="prelude-val">Some</span>(otlp_resource) = receiver.recv() =&gt; {
+<a href=#386 id=386 data-nosnippet>386</a>                <span class="kw">match </span>otlp_resource {
+<a href=#387 id=387 data-nosnippet>387</a>                    OtlpResource::Metrics(resource_metrics) =&gt; {
+<a href=#388 id=388 data-nosnippet>388</a>                        <span class="kw">match </span>metrics_translator.translate_metrics(resource_metrics, <span class="kw-2">&amp;</span>metrics) {
+<a href=#389 id=389 data-nosnippet>389</a>                            <span class="prelude-val">Ok</span>(events) =&gt; {
+<a href=#390 id=390 data-nosnippet>390</a>                                <span class="kw">for </span>event <span class="kw">in </span>events {
+<a href=#391 id=391 data-nosnippet>391</a>                                    <span class="kw">let </span>dispatcher = metrics_dispatcher.get_or_insert_with(|| {
+<a href=#392 id=392 data-nosnippet>392</a>                                        source_context
+<a href=#393 id=393 data-nosnippet>393</a>                                            .dispatcher()
+<a href=#394 id=394 data-nosnippet>394</a>                                            .buffered_named(<span class="string">"metrics"</span>)
+<a href=#395 id=395 data-nosnippet>395</a>                                            .expect(<span class="string">"metrics output should exist"</span>)
+<a href=#396 id=396 data-nosnippet>396</a>                                    });
+<a href=#397 id=397 data-nosnippet>397</a>                                    <span class="kw">if let </span><span class="prelude-val">Err</span>(e) = dispatcher.push(event).<span class="kw">await </span>{
+<a href=#398 id=398 data-nosnippet>398</a>                                        <span class="macro">error!</span>(error = %e, <span class="string">"Failed to dispatch metric event."</span>);
+<a href=#399 id=399 data-nosnippet>399</a>                                    }
+<a href=#400 id=400 data-nosnippet>400</a>                                }
+<a href=#401 id=401 data-nosnippet>401</a>                            }
+<a href=#402 id=402 data-nosnippet>402</a>                            <span class="prelude-val">Err</span>(e) =&gt; {
+<a href=#403 id=403 data-nosnippet>403</a>                                <span class="macro">error!</span>(error = %e, <span class="string">"Failed to handle resource metrics."</span>);
+<a href=#404 id=404 data-nosnippet>404</a>                            }
+<a href=#405 id=405 data-nosnippet>405</a>                        }
+<a href=#406 id=406 data-nosnippet>406</a>                    }
+<a href=#407 id=407 data-nosnippet>407</a>                    OtlpResource::Logs(resource_logs) =&gt; {
+<a href=#408 id=408 data-nosnippet>408</a>                        <span class="kw">let </span>translator = OtlpLogsTranslator::from_resource_logs(resource_logs, origin_tag_resolver.as_ref());
+<a href=#409 id=409 data-nosnippet>409</a>                        <span class="kw">for </span>log_event <span class="kw">in </span>translator {
+<a href=#410 id=410 data-nosnippet>410</a>                            metrics.logs_received().increment(<span class="number">1</span>);
+<a href=#411 id=411 data-nosnippet>411</a>
+<a href=#412 id=412 data-nosnippet>412</a>                            <span class="kw">let </span>dispatcher = logs_dispatcher.get_or_insert_with(|| {
+<a href=#413 id=413 data-nosnippet>413</a>                                source_context
+<a href=#414 id=414 data-nosnippet>414</a>                                    .dispatcher()
+<a href=#415 id=415 data-nosnippet>415</a>                                    .buffered_named(<span class="string">"logs"</span>)
+<a href=#416 id=416 data-nosnippet>416</a>                                    .expect(<span class="string">"logs output should exist"</span>)
+<a href=#417 id=417 data-nosnippet>417</a>                            });
+<a href=#418 id=418 data-nosnippet>418</a>                            <span class="kw">if let </span><span class="prelude-val">Err</span>(e) = dispatcher.push(log_event).<span class="kw">await </span>{
+<a href=#419 id=419 data-nosnippet>419</a>                                <span class="macro">error!</span>(error = %e, <span class="string">"Failed to dispatch log event."</span>);
+<a href=#420 id=420 data-nosnippet>420</a>                            }
+<a href=#421 id=421 data-nosnippet>421</a>                        }
+<a href=#422 id=422 data-nosnippet>422</a>                    }
+<a href=#423 id=423 data-nosnippet>423</a>                    OtlpResource::Traces(resource_spans) =&gt; {
+<a href=#424 id=424 data-nosnippet>424</a>                        <span class="kw">for </span>trace_event <span class="kw">in
+<a href=#425 id=425 data-nosnippet>425</a>                            </span>traces_translator.translate_spans(resource_spans, <span class="kw-2">&amp;</span>metrics)
+<a href=#426 id=426 data-nosnippet>426</a>                        {
+<a href=#427 id=427 data-nosnippet>427</a>                            <span class="kw">let </span>dispatcher = traces_dispatcher.get_or_insert_with(|| {
+<a href=#428 id=428 data-nosnippet>428</a>                                source_context
+<a href=#429 id=429 data-nosnippet>429</a>                                    .dispatcher()
+<a href=#430 id=430 data-nosnippet>430</a>                                    .buffered_named(<span class="string">"traces"</span>)
+<a href=#431 id=431 data-nosnippet>431</a>                                    .expect(<span class="string">"traces output should exist"</span>)
+<a href=#432 id=432 data-nosnippet>432</a>                            });
+<a href=#433 id=433 data-nosnippet>433</a>                            <span class="kw">if let </span><span class="prelude-val">Err</span>(e) = dispatcher.push(trace_event).<span class="kw">await </span>{
+<a href=#434 id=434 data-nosnippet>434</a>                                <span class="macro">error!</span>(error = %e, <span class="string">"Failed to dispatch trace event."</span>);
+<a href=#435 id=435 data-nosnippet>435</a>                            }
+<a href=#436 id=436 data-nosnippet>436</a>                        }
+<a href=#437 id=437 data-nosnippet>437</a>                    }
+<a href=#438 id=438 data-nosnippet>438</a>                }
+<a href=#439 id=439 data-nosnippet>439</a>            },
+<a href=#440 id=440 data-nosnippet>440</a>            <span class="kw">_ </span>= buffer_flush.tick() =&gt; {
+<a href=#441 id=441 data-nosnippet>441</a>                <span class="kw">if let </span><span class="prelude-val">Some</span>(dispatcher) = metrics_dispatcher.take() {
+<a href=#442 id=442 data-nosnippet>442</a>                    <span class="kw">if let </span><span class="prelude-val">Err</span>(e) = dispatcher.flush().<span class="kw">await </span>{
+<a href=#443 id=443 data-nosnippet>443</a>                        <span class="macro">error!</span>(error = %e, <span class="string">"Failed to flush metric events."</span>);
+<a href=#444 id=444 data-nosnippet>444</a>                    }
+<a href=#445 id=445 data-nosnippet>445</a>                }
+<a href=#446 id=446 data-nosnippet>446</a>                <span class="kw">if let </span><span class="prelude-val">Some</span>(dispatcher) = logs_dispatcher.take() {
+<a href=#447 id=447 data-nosnippet>447</a>                    <span class="kw">if let </span><span class="prelude-val">Err</span>(e) = dispatcher.flush().<span class="kw">await </span>{
+<a href=#448 id=448 data-nosnippet>448</a>                        <span class="macro">error!</span>(error = %e, <span class="string">"Failed to flush log events."</span>);
+<a href=#449 id=449 data-nosnippet>449</a>                    }
+<a href=#450 id=450 data-nosnippet>450</a>                }
+<a href=#451 id=451 data-nosnippet>451</a>                <span class="kw">if let </span><span class="prelude-val">Some</span>(dispatcher) = traces_dispatcher.take() {
+<a href=#452 id=452 data-nosnippet>452</a>                    <span class="kw">if let </span><span class="prelude-val">Err</span>(e) = dispatcher.flush().<span class="kw">await </span>{
+<a href=#453 id=453 data-nosnippet>453</a>                        <span class="macro">error!</span>(error = %e, <span class="string">"Failed to flush trace events."</span>);
+<a href=#454 id=454 data-nosnippet>454</a>                    }
+<a href=#455 id=455 data-nosnippet>455</a>                }
+<a href=#456 id=456 data-nosnippet>456</a>            },
+<a href=#457 id=457 data-nosnippet>457</a>            <span class="kw">_ </span>= <span class="kw-2">&amp;mut </span>shutdown_handle =&gt; {
+<a href=#458 id=458 data-nosnippet>458</a>                <span class="macro">debug!</span>(<span class="string">"Converter task received shutdown signal."</span>);
+<a href=#459 id=459 data-nosnippet>459</a>                <span class="kw">break</span>;
+<a href=#460 id=460 data-nosnippet>460</a>            }
+<a href=#461 id=461 data-nosnippet>461</a>        }
+<a href=#462 id=462 data-nosnippet>462</a>    }
+<a href=#463 id=463 data-nosnippet>463</a>
+<a href=#464 id=464 data-nosnippet>464</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(dispatcher) = metrics_dispatcher.take() {
+<a href=#465 id=465 data-nosnippet>465</a>        <span class="kw">if let </span><span class="prelude-val">Err</span>(e) = dispatcher.flush().<span class="kw">await </span>{
+<a href=#466 id=466 data-nosnippet>466</a>            <span class="macro">error!</span>(error = %e, <span class="string">"Failed to flush metric events."</span>);
+<a href=#467 id=467 data-nosnippet>467</a>        }
+<a href=#468 id=468 data-nosnippet>468</a>    }
+<a href=#469 id=469 data-nosnippet>469</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(dispatcher) = logs_dispatcher.take() {
+<a href=#470 id=470 data-nosnippet>470</a>        <span class="kw">if let </span><span class="prelude-val">Err</span>(e) = dispatcher.flush().<span class="kw">await </span>{
+<a href=#471 id=471 data-nosnippet>471</a>            <span class="macro">error!</span>(error = %e, <span class="string">"Failed to flush log events."</span>);
+<a href=#472 id=472 data-nosnippet>472</a>        }
+<a href=#473 id=473 data-nosnippet>473</a>    }
+<a href=#474 id=474 data-nosnippet>474</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(dispatcher) = traces_dispatcher.take() {
+<a href=#475 id=475 data-nosnippet>475</a>        <span class="kw">if let </span><span class="prelude-val">Err</span>(e) = dispatcher.flush().<span class="kw">await </span>{
+<a href=#476 id=476 data-nosnippet>476</a>            <span class="macro">error!</span>(error = %e, <span class="string">"Failed to flush trace events."</span>);
+<a href=#477 id=477 data-nosnippet>477</a>        }
+<a href=#478 id=478 data-nosnippet>478</a>    }
+<a href=#479 id=479 data-nosnippet>479</a>
+<a href=#480 id=480 data-nosnippet>480</a>    <span class="macro">debug!</span>(<span class="string">"OTLP resource converter task stopped."</span>);
+<a href=#481 id=481 data-nosnippet>481</a>}
 </code></pre></div></section></main></body></html>
