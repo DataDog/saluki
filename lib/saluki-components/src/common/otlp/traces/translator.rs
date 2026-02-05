@@ -57,9 +57,7 @@ impl OtlpTracesTranslator {
         Self { config }
     }
 
-    pub fn translate_resource_spans_iter(
-        &self, resource_spans: ResourceSpans, metrics: &Metrics,
-    ) -> impl Iterator<Item = Event> {
+    pub fn translate_spans(&self, resource_spans: ResourceSpans, metrics: &Metrics) -> impl Iterator<Item = Event> {
         let resource: OtlpResource = resource_spans.resource.unwrap_or_default();
         let resource_tags: TagSet = resource_attributes_to_tagset(&resource.attributes);
         let mut traces_by_id: FastHashMap<u64, TraceEntry> = FastHashMap::default();

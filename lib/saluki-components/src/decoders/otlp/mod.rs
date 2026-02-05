@@ -130,7 +130,7 @@ impl Decoder for OtlpDecoder {
                             for resource_spans in request.resource_spans {
                                 for trace_event in self
                                     .traces_translator
-                                    .translate_resource_spans_iter(resource_spans, &self.metrics)
+                                    .translate_spans(resource_spans, &self.metrics)
                                 {
                                     if let Some(event_buffer) = event_buffer_manager.try_push(trace_event) {
                                         if let Err(e) = context.dispatcher().dispatch(event_buffer).await {

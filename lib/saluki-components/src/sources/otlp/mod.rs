@@ -385,7 +385,7 @@ async fn run_converter(
             Some(otlp_resource) = receiver.recv() => {
                 match otlp_resource {
                     OtlpResource::Metrics(resource_metrics) => {
-                        match metrics_translator.map_metrics_iter(resource_metrics, &metrics) {
+                        match metrics_translator.translate_metrics(resource_metrics, &metrics) {
                             Ok(events) => {
                                 for event in events {
                                     let dispatcher = metrics_dispatcher.get_or_insert_with(|| {
@@ -422,7 +422,7 @@ async fn run_converter(
                     }
                     OtlpResource::Traces(resource_spans) => {
                         for trace_event in
-                            traces_translator.translate_resource_spans_iter(resource_spans, &metrics)
+                            traces_translator.translate_spans(resource_spans, &metrics)
                         {
                             let dispatcher = traces_dispatcher.get_or_insert_with(|| {
                                 source_context

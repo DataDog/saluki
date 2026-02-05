@@ -99,7 +99,7 @@ impl OtlpMetricsTranslator {
 
     /// Translates a batch of OTLP `ResourceMetrics` into Saluki `Event`s.
     /// This is the Rust equivalent of the Go `MapMetrics` function.
-    pub fn map_metrics_iter(
+    pub fn translate_metrics(
         &mut self, resource_metrics: OtlpResourceMetrics, metrics: &Metrics,
     ) -> Result<IntoIter<Event>, GenericError> {
         let mut events = Vec::new();
