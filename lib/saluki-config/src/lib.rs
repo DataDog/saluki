@@ -860,7 +860,7 @@ fn has_valid_secret_backend_command(configuration: &Figment) -> bool {
     configuration
         .find_value("secret_backend_command")
         .ok()
-        .map_or(false, |v| v.as_str().filter(|s| !s.is_empty()).is_some())
+        .is_some_and(|v| v.as_str().filter(|s| !s.is_empty()).is_some())
 }
 
 #[cfg(test)]
