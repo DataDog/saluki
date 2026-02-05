@@ -89,6 +89,10 @@ pub struct OtlpDecoder {
 #[async_trait]
 impl Decoder for OtlpDecoder {
     async fn run(self: Box<Self>, mut context: DecoderContext) -> Result<(), GenericError> {
+        let Self {
+            mut traces_translator,
+            metrics,
+        } = *self;
         let mut health = context.take_health_handle();
         health.mark_ready();
 
@@ -131,10 +135,7 @@ impl Decoder for OtlpDecoder {
                             };
 
                             for resource_spans in request.resource_spans {
-                                for trace_event in self
-                                    .traces_translator
-                                    .translate_spans(resource_spans, &self.metrics)
-                                {
+                                for trace_event in traces_translator.translate_spans(resource_spans, &metrics) {
                                     if let Some(event_buffer) = event_buffer_manager.try_push(trace_event) {
                                         if let Err(e) = context.dispatcher().dispatch(event_buffer).await {
                                             error!(error = %e, "Failed to dispatch trace events.");

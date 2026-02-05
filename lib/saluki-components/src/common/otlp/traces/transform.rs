@@ -15,6 +15,7 @@ use otlp_protos::opentelemetry::proto::trace::v1::{
     Status as OtlpStatus,
 };
 use saluki_common::collections::FastHashMap;
+use saluki_common::strings::StringBuilder;
 use saluki_core::data_model::event::trace::Span as DdSpan;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use stringtheory::interning::{GenericMapInterner, Interner};
@@ -97,7 +98,7 @@ const DD_NAMESPACED_TO_APM_CONVENTIONS: &[(&str, &str)] = &[
 pub fn otel_span_to_dd_span(
     otel_span: &OtlpSpan, otel_resource: &Resource, instrumentation_scope: Option<&OtlpInstrumentationScope>,
     ignore_missing_fields: bool, compute_top_level_by_span_kind: bool, interner: &GenericMapInterner,
-    trace_id_hex: Option<MetaString>,
+    string_builder: &mut StringBuilder<GenericMapInterner>, trace_id_hex: Option<MetaString>,
 ) -> DdSpan {
     let span_attributes = &otel_span.attributes;
     let resource_attributes = &otel_resource.attributes;
@@ -108,6 +109,7 @@ pub fn otel_span_to_dd_span(
         ignore_missing_fields,
         compute_top_level_by_span_kind,
         interner,
+        string_builder,
     );
 
     for (dd_key, apm_key) in DD_NAMESPACED_TO_APM_CONVENTIONS {
@@ -117,12 +119,19 @@ pub fn otel_span_to_dd_span(
     }
 
     for attribute in span_attributes {
-        map_attribute_generic(attribute, &mut meta, &mut metrics, ignore_missing_fields, interner);
+        map_attribute_generic(
+            attribute,
+            &mut meta,
+            &mut metrics,
+            ignore_missing_fields,
+            interner,
+            string_builder,
+        );
     }
 
     if let Some(trace_id_hex) = trace_id_hex {
         if !trace_id_hex.is_empty() {
-            meta.insert(OTEL_TRACE_ID_META_KEY.into(), trace_id_hex);
+            meta.insert(MetaString::from_static(OTEL_TRACE_ID_META_KEY), trace_id_hex);
         }
     } else if !otel_span.trace_id.is_empty() {
         meta.insert(
@@ -218,6 +227,7 @@ pub fn otel_span_to_dd_span(
                 &mut metrics,
                 ignore_missing_fields,
                 interner,
+                string_builder,
             );
         }
     }
@@ -243,6 +253,7 @@ pub fn otel_span_to_dd_span(
 pub fn otel_to_dd_span_minimal(
     otel_span: &OtlpSpan, otel_resource: &Resource, _instrumentation_scope: Option<&OtlpInstrumentationScope>,
     ignore_missing_fields: bool, compute_top_level_by_span_kind: bool, interner: &GenericMapInterner,
+    string_builder: &mut StringBuilder<GenericMapInterner>,
 ) -> (
     DdSpan,
     FastHashMap<MetaString, MetaString>,
@@ -327,10 +338,22 @@ pub fn otel_to_dd_span_minimal(
             service = get_otel_service(span_attributes, resource_attributes, true, interner);
         }
         if name.is_empty() {
-            name = get_otel_operation_name_v2(otel_span, span_attributes, resource_attributes, interner);
+            name = get_otel_operation_name_v2(
+                otel_span,
+                span_attributes,
+                resource_attributes,
+                interner,
+                string_builder,
+            );
         }
         if resource.is_empty() {
-            resource = get_otel_resource_v2_truncated(otel_span, span_attributes, resource_attributes, interner);
+            resource = get_otel_resource_v2_truncated(
+                otel_span,
+                span_attributes,
+                resource_attributes,
+                interner,
+                string_builder,
+            );
             // Agent normalizer sets resource = name when resource is empty
             // https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/normalizer.go#L245-248
             if resource.is_empty() {
@@ -378,32 +401,15 @@ fn get_otel_service(
             .map(MetaString::from)
             .unwrap_or(normalized)
     } else {
-        interner
-            .try_intern(service)
-            .map(MetaString::from)
-            .unwrap_or_else(|| MetaString::from(service))
+        MetaString::from_interner(service, interner)
     }
-}
-
-/// Intern a formatted operation name.
-fn intern_operation_name(name: String, interner: &GenericMapInterner) -> MetaString {
-    interner
-        .try_intern(&name)
-        .map(MetaString::from)
-        .unwrap_or_else(|| MetaString::from(name))
-}
-
-fn intern_resource_name(name: String, interner: &GenericMapInterner) -> MetaString {
-    interner
-        .try_intern(&name)
-        .map(MetaString::from)
-        .unwrap_or_else(|| MetaString::from(name))
 }
 
 // GetOTelOperationNameV2 returns the DD operation name based on OTel span and resource attributes and given configs.
 // based on code from https://github.com/DataDog/datadog-agent/blob/instrument-otlp-traffic/pkg/trace/traceutil/otel_util.go#L424
 fn get_otel_operation_name_v2(
-    otel_span: &OtlpSpan, span_attributes: &[KeyValue], resource_attributes: &[KeyValue], interner: &GenericMapInterner,
+    otel_span: &OtlpSpan, span_attributes: &[KeyValue], resource_attributes: &[KeyValue],
+    interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
 ) -> MetaString {
     if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, OPERATION_NAME_KEY, interner) {
         if !value.is_empty() {
@@ -438,7 +444,10 @@ fn get_otel_operation_name_v2(
     // database
     if is_client {
         if let Some(db_system) = use_both_maps(span_attributes, resource_attributes, true, DB_SYSTEM_KEY, interner) {
-            return intern_operation_name(format!("{db_system}.query"), interner);
+            string_builder.clear();
+            let _ = string_builder.push_str(db_system.as_ref());
+            let _ = string_builder.push_str(".query");
+            return string_builder.to_meta_string();
         }
     }
 
@@ -461,7 +470,11 @@ fn get_otel_operation_name_v2(
     ) {
         match span_kind {
             SpanKind::Client | SpanKind::Server | SpanKind::Consumer | SpanKind::Producer => {
-                return intern_operation_name(format!("{system}.{operation}"), interner);
+                string_builder.clear();
+                let _ = string_builder.push_str(system.as_ref());
+                let _ = string_builder.push('.');
+                let _ = string_builder.push_str(operation.as_ref());
+                return string_builder.to_meta_string();
             }
             _ => {}
         }
@@ -473,16 +486,26 @@ fn get_otel_operation_name_v2(
         if is_aws && is_client {
             if let Some(service) = use_both_maps(span_attributes, resource_attributes, true, RPC_SERVICE_KEY, interner)
             {
-                return intern_operation_name(format!("aws.{service}.request"), interner);
+                string_builder.clear();
+                let _ = string_builder.push_str("aws.");
+                let _ = string_builder.push_str(service.as_ref());
+                let _ = string_builder.push_str(".request");
+                return string_builder.to_meta_string();
             }
             return MetaString::from_static("aws.client.request");
         }
 
         if is_client {
-            return intern_operation_name(format!("{rpc_system}.client.request"), interner);
+            string_builder.clear();
+            let _ = string_builder.push_str(rpc_system.as_ref());
+            let _ = string_builder.push_str(".client.request");
+            return string_builder.to_meta_string();
         }
         if is_server {
-            return intern_operation_name(format!("{rpc_system}.server.request"), interner);
+            string_builder.clear();
+            let _ = string_builder.push_str(rpc_system.as_ref());
+            let _ = string_builder.push_str(".server.request");
+            return string_builder.to_meta_string();
         }
     }
 
@@ -504,13 +527,21 @@ fn get_otel_operation_name_v2(
                 interner,
             ),
         ) {
-            return intern_operation_name(format!("{provider}.{invoked}.invoke"), interner);
+            string_builder.clear();
+            let _ = string_builder.push_str(provider.as_ref());
+            let _ = string_builder.push('.');
+            let _ = string_builder.push_str(invoked.as_ref());
+            let _ = string_builder.push_str(".invoke");
+            return string_builder.to_meta_string();
         }
     }
     // FAAS server
     if is_server {
         if let Some(trigger) = use_both_maps(span_attributes, resource_attributes, true, FAAS_TRIGGER_KEY, interner) {
-            return intern_operation_name(format!("{trigger}.invoke"), interner);
+            string_builder.clear();
+            let _ = string_builder.push_str(trigger.as_ref());
+            let _ = string_builder.push_str(".invoke");
+            return string_builder.to_meta_string();
         }
     }
 
@@ -534,7 +565,10 @@ fn get_otel_operation_name_v2(
             NETWORK_PROTOCOL_NAME_KEY,
             interner,
         ) {
-            return intern_operation_name(format!("{protocol}.server.request"), interner);
+            string_builder.clear();
+            let _ = string_builder.push_str(protocol.as_ref());
+            let _ = string_builder.push_str(".server.request");
+            return string_builder.to_meta_string();
         }
         return MetaString::from_static("server.request");
     }
@@ -546,7 +580,10 @@ fn get_otel_operation_name_v2(
             NETWORK_PROTOCOL_NAME_KEY,
             interner,
         ) {
-            return intern_operation_name(format!("{protocol}.client.request"), interner);
+            string_builder.clear();
+            let _ = string_builder.push_str(protocol.as_ref());
+            let _ = string_builder.push_str(".client.request");
+            return string_builder.to_meta_string();
         }
         return MetaString::from_static("client.request");
     }
@@ -563,7 +600,8 @@ fn get_otel_operation_name_v2(
 // GetOTelResourceV2 returns the DD resource name based on OTel span and resource attributes.
 // based on this code https://github.com/DataDog/datadog-agent/blob/instrument-otlp-traffic/pkg/trace/traceutil/otel_util.go#L348
 fn get_otel_resource_v2(
-    otel_span: &OtlpSpan, span_attributes: &[KeyValue], resource_attributes: &[KeyValue], interner: &GenericMapInterner,
+    otel_span: &OtlpSpan, span_attributes: &[KeyValue], resource_attributes: &[KeyValue],
+    interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
 ) -> MetaString {
     let span_kind = SpanKind::try_from(otel_span.kind).unwrap_or(SpanKind::Unspecified);
     if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, RESOURCE_NAME_KEY, interner) {
@@ -575,18 +613,19 @@ fn get_otel_resource_v2(
     if let Some(method) =
         use_both_maps_key_list(span_attributes, resource_attributes, HTTP_REQUEST_METHOD_KEYS, interner)
     {
-        let mut resource_name = if method.as_ref() == "_OTHER" {
-            String::from("HTTP")
+        string_builder.clear();
+        if method.as_ref() == "_OTHER" {
+            let _ = string_builder.push_str("HTTP");
         } else {
-            method.as_ref().to_string()
-        };
+            let _ = string_builder.push_str(method.as_ref());
+        }
         if span_kind == SpanKind::Server {
             if let Some(route) = use_both_maps(span_attributes, resource_attributes, true, HTTP_ROUTE_KEY, interner) {
-                resource_name.push(' ');
-                resource_name.push_str(route.as_ref());
+                let _ = string_builder.push(' ');
+                let _ = string_builder.push_str(route.as_ref());
             }
         }
-        return intern_resource_name(resource_name, interner);
+        return string_builder.to_meta_string();
     }
 
     if let Some(operation) = use_both_maps(
@@ -596,7 +635,8 @@ fn get_otel_resource_v2(
         MESSAGING_OPERATION_KEY,
         interner,
     ) {
-        let mut resource_name = operation.as_ref().to_string();
+        string_builder.clear();
+        let _ = string_builder.push_str(operation.as_ref());
         if let Some(dest) = use_both_maps_key_list(
             span_attributes,
             resource_attributes,
@@ -604,20 +644,21 @@ fn get_otel_resource_v2(
             interner,
         ) {
             if !dest.is_empty() {
-                resource_name.push(' ');
-                resource_name.push_str(dest.as_ref());
+                let _ = string_builder.push(' ');
+                let _ = string_builder.push_str(dest.as_ref());
             }
         }
-        return intern_resource_name(resource_name, interner);
+        return string_builder.to_meta_string();
     }
 
     if let Some(method) = use_both_maps(span_attributes, resource_attributes, true, RPC_METHOD_KEY, interner) {
-        let mut resource_name = method.as_ref().to_string();
+        string_builder.clear();
+        let _ = string_builder.push_str(method.as_ref());
         if let Some(service) = use_both_maps(span_attributes, resource_attributes, true, RPC_SERVICE_KEY, interner) {
-            resource_name.push(' ');
-            resource_name.push_str(service.as_ref());
+            let _ = string_builder.push(' ');
+            let _ = string_builder.push_str(service.as_ref());
         }
-        return intern_resource_name(resource_name, interner);
+        return string_builder.to_meta_string();
     }
 
     // Enrich GraphQL query resource names.
@@ -650,9 +691,16 @@ fn get_otel_resource_v2(
 }
 
 fn get_otel_resource_v2_truncated(
-    otel_span: &OtlpSpan, span_attributes: &[KeyValue], resource_attributes: &[KeyValue], interner: &GenericMapInterner,
+    otel_span: &OtlpSpan, span_attributes: &[KeyValue], resource_attributes: &[KeyValue],
+    interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
 ) -> MetaString {
-    let res_name = get_otel_resource_v2(otel_span, span_attributes, resource_attributes, interner);
+    let res_name = get_otel_resource_v2(
+        otel_span,
+        span_attributes,
+        resource_attributes,
+        interner,
+        string_builder,
+    );
     if res_name.len() > MAX_RESOURCE_LEN {
         MetaString::from(truncate_utf8(&res_name, MAX_RESOURCE_LEN))
     } else {
@@ -739,7 +787,7 @@ const SQL_DB_SYSTEMS: &[&str] = &[
 
 fn map_attribute_generic(
     attribute: &KeyValue, meta: &mut FastHashMap<MetaString, MetaString>, metrics: &mut FastHashMap<MetaString, f64>,
-    ignore_missing_fields: bool, interner: &GenericMapInterner,
+    ignore_missing_fields: bool, interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
 ) {
     if attribute.key.is_empty() {
         return;
@@ -758,6 +806,7 @@ fn map_attribute_generic(
                 metrics,
                 ignore_missing_fields,
                 interner,
+                string_builder,
             );
         }
         OtlpValue::BoolValue(b) => {
@@ -769,6 +818,7 @@ fn map_attribute_generic(
                 metrics,
                 ignore_missing_fields,
                 interner,
+                string_builder,
             );
         }
         OtlpValue::BytesValue(bytes) => {
@@ -780,6 +830,7 @@ fn map_attribute_generic(
                 metrics,
                 ignore_missing_fields,
                 interner,
+                string_builder,
             );
         }
         OtlpValue::IntValue(i) => {
@@ -789,6 +840,7 @@ fn map_attribute_generic(
                 metrics,
                 ignore_missing_fields,
                 interner,
+                string_builder,
             );
         }
         OtlpValue::DoubleValue(d) => {
@@ -798,6 +850,7 @@ fn map_attribute_generic(
                 metrics,
                 ignore_missing_fields,
                 interner,
+                string_builder,
             );
         }
         _ => {
@@ -814,14 +867,8 @@ fn instrumentation_scope_attributes_to_meta(
             continue;
         };
         if let Some(serialized) = otlp_value_to_string(value) {
-            let key = interner
-                .try_intern(attribute.key.as_str())
-                .map(MetaString::from)
-                .unwrap_or_else(|| MetaString::from(attribute.key.as_str()));
-            let value = interner
-                .try_intern(&serialized)
-                .map(MetaString::from)
-                .unwrap_or_else(|| MetaString::from(serialized));
+            let key = MetaString::from_interner(attribute.key.as_str(), interner);
+            let value = MetaString::from_interner(serialized.as_str(), interner);
             meta.insert(key, value);
         }
     }
@@ -1033,9 +1080,9 @@ pub(super) fn otlp_value_to_string(value: &OtlpValue) -> Option<String> {
 
 fn conditionally_map_otlp_attribute_to_meta(
     key: &str, value: &str, meta: &mut FastHashMap<MetaString, MetaString>, metrics: &mut FastHashMap<MetaString, f64>,
-    ignore_missing_fields: bool, interner: &GenericMapInterner,
+    ignore_missing_fields: bool, interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
 ) {
-    if let Some(mapped_key) = get_dd_key_for_otlp_attribute(key, interner) {
+    if let Some(mapped_key) = get_dd_key_for_otlp_attribute(key, interner, string_builder) {
         if meta.contains_key(&mapped_key) {
             return;
         }
@@ -1048,9 +1095,9 @@ fn conditionally_map_otlp_attribute_to_meta(
 
 fn conditionally_map_otlp_attribute_to_metric(
     key: &str, value: f64, metrics: &mut FastHashMap<MetaString, f64>, ignore_missing_fields: bool,
-    interner: &GenericMapInterner,
+    interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
 ) {
-    if let Some(mapped_key) = get_dd_key_for_otlp_attribute(key, interner) {
+    if let Some(mapped_key) = get_dd_key_for_otlp_attribute(key, interner, string_builder) {
         if metrics.contains_key(&mapped_key) {
             return;
         }
@@ -1100,26 +1147,20 @@ fn set_metric_field_otlp_if_empty(key: MetaString, value: f64, metrics: &mut Fas
 // OTLP HTTP convention. Otherwise, check if it is a Datadog APM convention key - if it is, it will be handled with
 // specialized logic elsewhere, so return None. If it isn't, return the original key.
 // based on the logic from the agent code https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/transform/transform.go#L179
-fn get_dd_key_for_otlp_attribute(key: &str, interner: &GenericMapInterner) -> Option<MetaString> {
+fn get_dd_key_for_otlp_attribute(
+    key: &str, interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
+) -> Option<MetaString> {
     if let Some(mapped) = HTTP_MAPPINGS.get(key) {
         return Some(MetaString::from_static(mapped));
     }
     if let Some(header_suffix) = key.strip_prefix(HTTP_REQUEST_HEADER_PREFIX) {
-        let mapped_key = format!("{HTTP_REQUEST_HEADERS_PREFIX}{header_suffix}");
-        return Some(
-            interner
-                .try_intern(&mapped_key)
-                .map(MetaString::from)
-                .unwrap_or_else(|| MetaString::from(mapped_key)),
-        );
+        string_builder.clear();
+        let _ = string_builder.push_str(HTTP_REQUEST_HEADERS_PREFIX);
+        let _ = string_builder.push_str(header_suffix);
+        return Some(string_builder.to_meta_string());
     }
     if !is_datadog_apm_convention_key(key) {
-        return Some(
-            interner
-                .try_intern(key)
-                .map(MetaString::from)
-                .unwrap_or_else(|| MetaString::from(key)),
-        );
+        return Some(MetaString::from_interner(key, interner));
     }
     None
 }
@@ -1168,10 +1209,7 @@ fn span_kind_name_capitalized(kind: SpanKind) -> &'static str {
 fn intern_attribute_value(value: &str, normalize: bool, interner: &GenericMapInterner) -> MetaString {
     if normalize {
         if is_normalized_tag_value(value) {
-            return interner
-                .try_intern(value)
-                .map(MetaString::from)
-                .unwrap_or_else(|| MetaString::from(value));
+            return MetaString::from_interner(value, interner);
         }
         let normalized = normalize_tag_value(value);
         return interner
@@ -1180,10 +1218,7 @@ fn intern_attribute_value(value: &str, normalize: bool, interner: &GenericMapInt
             .unwrap_or(normalized);
     }
 
-    interner
-        .try_intern(value)
-        .map(MetaString::from)
-        .unwrap_or_else(|| MetaString::from(value))
+    MetaString::from_interner(value, interner)
 }
 
 fn use_both_maps(
@@ -1494,27 +1529,56 @@ mod tests {
         let mut meta = FastHashMap::default();
         let mut metrics = FastHashMap::default();
         let interner = test_interner();
+        let mut string_builder = StringBuilder::new().with_interner(interner.clone());
 
         let http_attr = kv_str("http.request.method", "GET");
-        map_attribute_generic(&http_attr, &mut meta, &mut metrics, false, &interner);
+        map_attribute_generic(
+            &http_attr,
+            &mut meta,
+            &mut metrics,
+            false,
+            &interner,
+            &mut string_builder,
+        );
         assert_eq!(meta.get("http.method").map(|v| v.as_ref()), Some("GET"));
 
         let sampling_attr = kv_int("sampling.priority", 2);
-        map_attribute_generic(&sampling_attr, &mut meta, &mut metrics, false, &interner);
+        map_attribute_generic(
+            &sampling_attr,
+            &mut meta,
+            &mut metrics,
+            false,
+            &interner,
+            &mut string_builder,
+        );
         assert_eq!(metrics.get(SAMPLING_PRIORITY_METRIC_KEY), Some(&2.0));
 
         let analytics_attr = kv_bool(ANALYTICS_EVENT_KEY, true);
-        map_attribute_generic(&analytics_attr, &mut meta, &mut metrics, false, &interner);
+        map_attribute_generic(
+            &analytics_attr,
+            &mut meta,
+            &mut metrics,
+            false,
+            &interner,
+            &mut string_builder,
+        );
         assert_eq!(metrics.get(EVENT_EXTRACTION_METRIC_KEY), Some(&1.0));
 
         let dd_attr = kv_str("datadog.service", "svc");
-        map_attribute_generic(&dd_attr, &mut meta, &mut metrics, false, &interner);
+        map_attribute_generic(&dd_attr, &mut meta, &mut metrics, false, &interner, &mut string_builder);
         assert!(!meta.contains_key("datadog.service"));
 
         let mut meta_ignore = FastHashMap::default();
         let mut metrics_ignore = FastHashMap::default();
         let env_attr = kv_str("env", "prod");
-        map_attribute_generic(&env_attr, &mut meta_ignore, &mut metrics_ignore, true, &interner);
+        map_attribute_generic(
+            &env_attr,
+            &mut meta_ignore,
+            &mut metrics_ignore,
+            true,
+            &interner,
+            &mut string_builder,
+        );
         assert!(meta_ignore.is_empty());
     }
 
@@ -1818,6 +1882,7 @@ mod tests {
         ];
 
         let interner = test_interner();
+        let mut string_builder = StringBuilder::new().with_interner(interner.clone());
         for tc in test_cases {
             let span = OtlpSpan {
                 name: "test-span".to_string(),
@@ -1829,7 +1894,16 @@ mod tests {
                 ..Default::default()
             };
 
-            let dd_span = otel_span_to_dd_span(&span, &resource, None, false, true, &interner, None);
+            let dd_span = otel_span_to_dd_span(
+                &span,
+                &resource,
+                None,
+                false,
+                true,
+                &interner,
+                &mut string_builder,
+                None,
+            );
             let meta = dd_span.meta();
 
             if tc.should_map {

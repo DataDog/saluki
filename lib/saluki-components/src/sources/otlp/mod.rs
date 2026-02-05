@@ -366,7 +366,7 @@ impl OtlpHandler for SourceHandler {
 async fn run_converter(
     mut receiver: mpsc::Receiver<OtlpResource>, source_context: SourceContext,
     origin_tag_resolver: Option<OtlpOriginTagResolver>, shutdown_handle: DynamicShutdownHandle,
-    mut metrics_translator: OtlpMetricsTranslator, metrics: Metrics, traces_translator: OtlpTracesTranslator,
+    mut metrics_translator: OtlpMetricsTranslator, metrics: Metrics, mut traces_translator: OtlpTracesTranslator,
 ) {
     tokio::pin!(shutdown_handle);
     debug!("OTLP resource converter task started.");
@@ -421,9 +421,7 @@ async fn run_converter(
                         }
                     }
                     OtlpResource::Traces(resource_spans) => {
-                        for trace_event in
-                            traces_translator.translate_spans(resource_spans, &metrics)
-                        {
+                        for trace_event in traces_translator.translate_spans(resource_spans, &metrics) {
                             let dispatcher = traces_dispatcher.get_or_insert_with(|| {
                                 source_context
                                     .dispatcher()

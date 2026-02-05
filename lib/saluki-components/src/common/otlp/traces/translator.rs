@@ -6,11 +6,11 @@ use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common};
 use otlp_protos::opentelemetry::proto::resource::v1::Resource as OtlpResource;
 use otlp_protos::opentelemetry::proto::trace::v1::ResourceSpans;
 use saluki_common::collections::FastHashMap;
+use saluki_common::strings::StringBuilder;
 use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_core::data_model::event::trace::{Span as DdSpan, Trace, TraceSampling};
 use saluki_core::data_model::event::Event;
 use stringtheory::interning::GenericMapInterner;
-use stringtheory::interning::Interner as _;
 use stringtheory::MetaString;
 
 use crate::common::datadog::SAMPLING_PRIORITY_METRIC_KEY;
@@ -32,18 +32,19 @@ pub fn convert_span_id(span_id: &[u8]) -> u64 {
     u64::from_be_bytes(span_id.try_into().unwrap_or_default())
 }
 
-pub fn resource_attributes_to_tagset(attributes: &[otlp_common::KeyValue], interner: &GenericMapInterner) -> TagSet {
+fn resource_attributes_to_tagset(
+    attributes: &[otlp_common::KeyValue], string_builder: &mut StringBuilder<GenericMapInterner>,
+) -> TagSet {
     let mut tags = TagSet::with_capacity(attributes.len());
     for kv in attributes {
         if let Some(key_value) = &kv.value {
             if let Some(value) = &key_value.value {
                 if let Some(string_value) = otlp_value_to_string(value) {
-                    let tag_str = format!("{}:{}", kv.key, string_value);
-                    let tag = interner
-                        .try_intern(&tag_str)
-                        .map(MetaString::from)
-                        .unwrap_or_else(|| MetaString::from(tag_str));
-                    tags.insert_tag(tag);
+                    string_builder.clear();
+                    let _ = string_builder.push_str(kv.key.as_str());
+                    let _ = string_builder.push(':');
+                    let _ = string_builder.push_str(string_value.as_str());
+                    tags.insert_tag(string_builder.to_meta_string());
                 }
             }
         }
@@ -56,22 +57,32 @@ struct TraceEntry {
     priority: Option<i32>,
     trace_id_hex: Option<MetaString>,
 }
+
 pub struct OtlpTracesTranslator {
     config: TracesConfig,
     interner: GenericMapInterner,
+    string_builder: StringBuilder<GenericMapInterner>,
 }
 
 impl OtlpTracesTranslator {
     pub fn new(config: TracesConfig, interner_size: NonZeroUsize) -> Self {
         let interner = GenericMapInterner::new(interner_size);
-        Self { config, interner }
+        let string_builder = StringBuilder::new().with_interner(interner.clone());
+        Self {
+            config,
+            interner,
+            string_builder,
+        }
     }
 
-    pub fn translate_spans(&self, resource_spans: ResourceSpans, metrics: &Metrics) -> impl Iterator<Item = Event> {
+    pub fn translate_spans(&mut self, resource_spans: ResourceSpans, metrics: &Metrics) -> impl Iterator<Item = Event> {
         let resource: OtlpResource = resource_spans.resource.unwrap_or_default();
-        let resource_tags = resource_attributes_to_tagset(&resource.attributes, &self.interner).into_shared();
-        let mut traces_by_id: FastHashMap<u64, TraceEntry> = FastHashMap::default();
         let ignore_missing_fields = self.config.ignore_missing_datadog_fields;
+        let compute_top_level = self.config.enable_otlp_compute_top_level_by_span_kind;
+        let interner = &self.interner;
+        let string_builder = &mut self.string_builder;
+        let resource_tags = resource_attributes_to_tagset(&resource.attributes, string_builder).into_shared();
+        let mut traces_by_id: FastHashMap<u64, TraceEntry> = FastHashMap::default();
 
         for scope_spans in resource_spans.scope_spans {
             let scope = scope_spans.scope;
@@ -95,8 +106,9 @@ impl OtlpTracesTranslator {
                     &resource,
                     scope_ref,
                     ignore_missing_fields,
-                    self.config.enable_otlp_compute_top_level_by_span_kind,
-                    &self.interner,
+                    compute_top_level,
+                    interner,
+                    string_builder,
                     trace_id_hex,
                 );
 
