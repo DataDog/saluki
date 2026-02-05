@@ -58,7 +58,7 @@ impl OtlpTracesTranslator {
 
     pub fn translate_resource_spans(&self, resource_spans: ResourceSpans, metrics: &Metrics) -> Vec<Event> {
         let resource: OtlpResource = resource_spans.resource.unwrap_or_default();
-        let resource_tags: TagSet = resource_attributes_to_tagset(&resource.attributes);
+        let resource_tags = resource_attributes_to_tagset(&resource.attributes).into_shared();
         let mut traces_by_id: FastHashMap<u64, TraceEntry> = FastHashMap::default();
         let ignore_missing_fields = self.config.ignore_missing_datadog_fields;
 
