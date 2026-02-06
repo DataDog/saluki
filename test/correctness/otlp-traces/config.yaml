@@ -6,13 +6,13 @@ datadog_intake:
   image: saluki-images/datadog-intake:latest
   config_path: ../datadog-intake.yaml
 baseline:
-  image: saluki-images/datadog-agent:testing-devel
+  image: saluki-images/datadog-agent:testing-release
   files:
     - datadog.yaml:/etc/datadog-agent/datadog.yaml
   additional_env_vars:
     - DD_API_KEY=correctness-test
 comparison:
-  image: saluki-images/datadog-agent:testing-devel
+  image: saluki-images/datadog-agent:testing-release
   files:
     - datadog.yaml:/etc/datadog-agent/datadog.yaml
   additional_env_vars:
