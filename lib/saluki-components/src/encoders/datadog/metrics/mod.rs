@@ -32,8 +32,10 @@ use uuid::Uuid;
 
 use crate::{
     common::datadog::{
-        io::RB_BUFFER_CHUNK_SIZE, request_builder::RequestBuilder, telemetry::ComponentTelemetry, MetricsPayloadInfo,
-        V3ApiConfig,
+        io::RB_BUFFER_CHUNK_SIZE,
+        protocol::{MetricsPayloadInfo, V3ApiConfig},
+        request_builder::RequestBuilder,
+        telemetry::ComponentTelemetry,
     },
     encoders::datadog::metrics::v2::MetricsEndpointEncoder,
 };
