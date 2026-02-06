@@ -3,13 +3,14 @@ use std::{
     task::{Context, Poll},
 };
 
-use super::MetricsPayloadInfo;
 use bytes::{Buf, Bytes};
 use http::Request;
 use http_body::{Body, Frame};
 use pin_project::pin_project;
 use saluki_io::net::util::retry::{EventContainer, Retryable};
 use serde::{ser::SerializeSeq as _, Deserialize, Serialize, Serializer};
+
+use super::protocol::MetricsPayloadInfo;
 
 /// Data type for the body of `TransactionBody<B>`.
 pub enum TransactionBodyData<B>

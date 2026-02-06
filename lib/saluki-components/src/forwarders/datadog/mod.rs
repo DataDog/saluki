@@ -17,9 +17,10 @@ use tracing::debug;
 use crate::common::datadog::{
     config::ForwarderConfiguration,
     io::TransactionForwarder,
+    protocol::MetricsPayloadInfo,
     telemetry::ComponentTelemetry,
     transaction::{Metadata, Transaction},
-    MetricsPayloadInfo, DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT,
+    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT,
 };
 
 /// Datadog forwarder.
