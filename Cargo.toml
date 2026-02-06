@@ -217,6 +217,7 @@ num-traits = { version = "0.2", default-features = false }
 #Commented for the time being, will be activated in following PR
 #chumsky = { version = "0.12", default-features = false }
 logos = { version = "0.14", default-features = false }
+lru-slab = { version = "0.1.2", default-features = false }
 
 [patch.crates-io]
 # Forked version of `hyper-http-proxy` that removes an unused dependency on `rustls-native-certs`, which transitively depends

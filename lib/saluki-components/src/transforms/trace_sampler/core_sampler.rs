@@ -209,6 +209,24 @@ impl Sampler {
         (rates, self.default_rate())
     }
 
+    pub fn update_target_tps(&mut self, target_tps: f64) {
+        let prev_target = self.target_tps;
+        self.target_tps = target_tps;
+
+        if prev_target == 0.0 {
+            return;
+        }
+        let ratio = target_tps / prev_target;
+        for rate in self.rates.values_mut() {
+            let new_rate = (*rate * ratio).min(1.0);
+            *rate = new_rate;
+        }
+    }
+
+    pub fn target_tps(&self) -> f64 {
+        self.target_tps
+    }
+
     /// Computes the default rate for unknown signatures.
     /// Based on the moving max of all signatures seen and the lowest stored rate.
     fn default_rate(&self) -> f64 {

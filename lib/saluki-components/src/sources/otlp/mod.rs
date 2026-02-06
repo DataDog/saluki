@@ -16,14 +16,14 @@ use prost::Message;
 use saluki_common::task::HandleExt as _;
 use saluki_config::GenericConfiguration;
 use saluki_context::ContextResolver;
-use saluki_core::topology::interconnect::EventBufferManager;
+use saluki_core::topology::interconnect::BufferedDispatcher;
 use saluki_core::topology::shutdown::{DynamicShutdownCoordinator, DynamicShutdownHandle};
 use saluki_core::{
     components::{
         sources::{Source, SourceBuilder, SourceContext},
         ComponentContext,
     },
-    data_model::event::{Event, EventType},
+    data_model::event::EventType,
     topology::{EventsBuffer, OutputDefinition},
 };
 use saluki_env::WorkloadProvider;
@@ -37,7 +37,6 @@ use tokio::time::{interval, MissedTickBehavior};
 use tracing::{debug, error};
 
 use crate::common::otlp::config::OtlpConfig;
-use crate::common::otlp::config::TracesConfig;
 use crate::common::otlp::{build_metrics, Metrics, OtlpHandler, OtlpServerBuilder};
 
 mod logs;
@@ -186,7 +185,10 @@ impl SourceBuilder for OtlpConfiguration {
 
         let context_resolver = build_context_resolver(self, &context, maybe_origin_tags_resolver.clone())?;
         let metrics_translator_config = metrics::config::OtlpMetricsTranslatorConfig::default().with_remapping(true);
-        let traces_config = self.otlp_config.traces.clone();
+        let traces_interner_size =
+            std::num::NonZeroUsize::new(self.otlp_config.traces.string_interner_bytes.as_u64() as usize)
+                .ok_or_else(|| generic_error!("otlp_config.traces.string_interner_size must be greater than 0"))?;
+        let traces_translator = OtlpTracesTranslator::new(self.otlp_config.traces.clone(), traces_interner_size);
         let grpc_max_recv_msg_size_bytes =
             self.otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
         let metrics = build_metrics(&context);
@@ -198,7 +200,7 @@ impl SourceBuilder for OtlpConfiguration {
             http_endpoint: ListenAddress::Tcp(http_socket_addr),
             grpc_max_recv_msg_size_bytes,
             metrics_translator_config,
-            traces_config,
+            traces_translator,
             metrics,
         }))
     }
@@ -220,7 +222,7 @@ pub struct Otlp {
     http_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
     metrics_translator_config: metrics::config::OtlpMetricsTranslatorConfig,
-    traces_config: TracesConfig,
+    traces_translator: OtlpTracesTranslator,
     metrics: Metrics, // Telemetry metrics, not DD native metrics.
 }
 
@@ -234,7 +236,7 @@ impl Source for Otlp {
             http_endpoint,
             grpc_max_recv_msg_size_bytes,
             metrics_translator_config,
-            traces_config,
+            traces_translator,
             metrics,
         } = *self;
 
@@ -261,7 +263,7 @@ impl Source for Otlp {
                 converter_shutdown_coordinator.register(),
                 metrics_translator,
                 metrics.clone(),
-                traces_config,
+                traces_translator,
             ),
         );
 
@@ -361,55 +363,10 @@ impl OtlpHandler for SourceHandler {
     }
 }
 
-async fn dispatch_events(mut events: EventsBuffer, source_context: &SourceContext) {
-    if events.is_empty() {
-        return;
-    }
-
-    if events.has_event_type(EventType::Trace) {
-        let mut buffered_dispatcher = source_context
-            .dispatcher()
-            .buffered_named("traces")
-            .expect("traces output should exist");
-        for trace_event in events.extract(Event::is_trace) {
-            if let Err(e) = buffered_dispatcher.push(trace_event).await {
-                error!(error = %e, "Failed to dispatch trace(s).");
-            }
-        }
-        if let Err(e) = buffered_dispatcher.flush().await {
-            error!(error = %e, "Failed to flush trace(s).");
-        }
-    }
-
-    if events.has_event_type(EventType::Log) {
-        let mut buffered_dispatcher = source_context
-            .dispatcher()
-            .buffered_named("logs")
-            .expect("logs output should exist");
-
-        for log_event in events.extract(Event::is_log) {
-            if let Err(e) = buffered_dispatcher.push(log_event).await {
-                error!(error = %e, "Failed to dispatch log(s).");
-            }
-        }
-
-        if let Err(e) = buffered_dispatcher.flush().await {
-            error!(error = %e, "Failed to flush log(s).");
-        }
-    }
-
-    let len = events.len();
-    if let Err(e) = source_context.dispatcher().dispatch_named("metrics", events).await {
-        error!(error = %e, "Failed to dispatch metric events.");
-    } else {
-        debug!(events_len = len, "Dispatched metric events.");
-    }
-}
-
 async fn run_converter(
     mut receiver: mpsc::Receiver<OtlpResource>, source_context: SourceContext,
     origin_tag_resolver: Option<OtlpOriginTagResolver>, shutdown_handle: DynamicShutdownHandle,
-    mut metrics_translator: OtlpMetricsTranslator, metrics: Metrics, traces_config: TracesConfig,
+    mut metrics_translator: OtlpMetricsTranslator, metrics: Metrics, mut traces_translator: OtlpTracesTranslator,
 ) {
     tokio::pin!(shutdown_handle);
     debug!("OTLP resource converter task started.");
@@ -419,20 +376,26 @@ async fn run_converter(
     let mut buffer_flush = interval(Duration::from_millis(100));
     buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-    let mut event_buffer_manager = EventBufferManager::default();
-
-    let traces_translator = OtlpTracesTranslator::new(traces_config);
+    let mut metrics_dispatcher: Option<BufferedDispatcher<'_, EventsBuffer>> = None;
+    let mut logs_dispatcher: Option<BufferedDispatcher<'_, EventsBuffer>> = None;
+    let mut traces_dispatcher: Option<BufferedDispatcher<'_, EventsBuffer>> = None;
 
     loop {
         select! {
             Some(otlp_resource) = receiver.recv() => {
                 match otlp_resource {
                     OtlpResource::Metrics(resource_metrics) => {
-                        match metrics_translator.map_metrics(resource_metrics, &metrics) {
+                        match metrics_translator.translate_metrics(resource_metrics, &metrics) {
                             Ok(events) => {
                                 for event in events {
-                                    if let Some(event_buffer) = event_buffer_manager.try_push(event) {
-                                        dispatch_events(event_buffer, &source_context).await;
+                                    let dispatcher = metrics_dispatcher.get_or_insert_with(|| {
+                                        source_context
+                                            .dispatcher()
+                                            .buffered_named("metrics")
+                                            .expect("metrics output should exist")
+                                    });
+                                    if let Err(e) = dispatcher.push(event).await {
+                                        error!(error = %e, "Failed to dispatch metric event.");
                                     }
                                 }
                             }
@@ -446,25 +409,47 @@ async fn run_converter(
                         for log_event in translator {
                             metrics.logs_received().increment(1);
 
-                            if let Some(event_buffer) = event_buffer_manager.try_push(log_event) {
-                                dispatch_events(event_buffer, &source_context).await;
+                            let dispatcher = logs_dispatcher.get_or_insert_with(|| {
+                                source_context
+                                    .dispatcher()
+                                    .buffered_named("logs")
+                                    .expect("logs output should exist")
+                            });
+                            if let Err(e) = dispatcher.push(log_event).await {
+                                error!(error = %e, "Failed to dispatch log event.");
                             }
                         }
                     }
                     OtlpResource::Traces(resource_spans) => {
-                        let trace_events =
-                            traces_translator.translate_resource_spans(resource_spans, &metrics);
-                        for trace_event in trace_events {
-                            if let Some(event_buffer) = event_buffer_manager.try_push(trace_event) {
-                                dispatch_events(event_buffer, &source_context).await;
+                        for trace_event in traces_translator.translate_spans(resource_spans, &metrics) {
+                            let dispatcher = traces_dispatcher.get_or_insert_with(|| {
+                                source_context
+                                    .dispatcher()
+                                    .buffered_named("traces")
+                                    .expect("traces output should exist")
+                            });
+                            if let Err(e) = dispatcher.push(trace_event).await {
+                                error!(error = %e, "Failed to dispatch trace event.");
                             }
                         }
                     }
                 }
             },
             _ = buffer_flush.tick() => {
-                if let Some(event_buffer) = event_buffer_manager.consume() {
-                    dispatch_events(event_buffer, &source_context).await;
+                if let Some(dispatcher) = metrics_dispatcher.take() {
+                    if let Err(e) = dispatcher.flush().await {
+                        error!(error = %e, "Failed to flush metric events.");
+                    }
+                }
+                if let Some(dispatcher) = logs_dispatcher.take() {
+                    if let Err(e) = dispatcher.flush().await {
+                        error!(error = %e, "Failed to flush log events.");
+                    }
+                }
+                if let Some(dispatcher) = traces_dispatcher.take() {
+                    if let Err(e) = dispatcher.flush().await {
+                        error!(error = %e, "Failed to flush trace events.");
+                    }
                 }
             },
             _ = &mut shutdown_handle => {
@@ -474,8 +459,20 @@ async fn run_converter(
         }
     }
 
-    if let Some(event_buffer) = event_buffer_manager.consume() {
-        dispatch_events(event_buffer, &source_context).await;
+    if let Some(dispatcher) = metrics_dispatcher.take() {
+        if let Err(e) = dispatcher.flush().await {
+            error!(error = %e, "Failed to flush metric events.");
+        }
+    }
+    if let Some(dispatcher) = logs_dispatcher.take() {
+        if let Err(e) = dispatcher.flush().await {
+            error!(error = %e, "Failed to flush log events.");
+        }
+    }
+    if let Some(dispatcher) = traces_dispatcher.take() {
+        if let Err(e) = dispatcher.flush().await {
+            error!(error = %e, "Failed to flush trace events.");
+        }
     }
 
     debug!("OTLP resource converter task stopped.");

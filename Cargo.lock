@@ -19,7 +19,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agent-data-plane"
-version = "0.1.30"
+version = "0.1.33"
 dependencies = [
  "argh",
  "async-trait",
@@ -3502,6 +3502,7 @@ dependencies = [
  "http-serde-ext",
  "hyper",
  "hyper-http-proxy",
+ "lru-slab",
  "memory-accounting",
  "metrics",
  "opentelemetry-semantic-conventions",
