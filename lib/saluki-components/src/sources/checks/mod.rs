@@ -209,7 +209,6 @@ impl Source for ChecksSource {
             select! {
                 _ = &mut global_shutdown => {
                     debug!("Checks source received shutdown signal.");
-                    scheduler.clone().shutdown().await;
                     break
                 },
 
@@ -222,7 +221,7 @@ impl Source for ChecksSource {
                                     let mut runnable_checks: Vec<Arc<dyn Check + Send + Sync>> = vec![];
                                     for instance in &config.instances {
                                         let check_id = instance.id();
-                                        if scheduler.clone().is_check_scheduled(check_id) {
+                                        if scheduler.is_check_scheduled(check_id) {
                                             println!("Already scheduled!");
                                             continue;
                                         }
@@ -249,7 +248,7 @@ impl Source for ChecksSource {
                                 AutodiscoveryEvent::CheckUnscheduled { config } => {
                                     for instance in &config.instances {
                                         let check_id = instance.id();
-                                        scheduler.clone().unschedule(check_id).await;
+                                        scheduler.unschedule(check_id).await;
                                     }
                                 }
                                 // We only care about CheckSchedule and CheckUnscheduled events

@@ -36,7 +36,7 @@ impl Scheduler {
     }
 
     // TODO prevent any further call to `enter`?
-    pub async fn shutdown(self: Arc<Self>) {
+    pub async fn shutdown(&self) {
         let mut job_queues = self.job_queues.lock().await;
 
         for (_, jqw) in job_queues.iter() {
@@ -69,7 +69,7 @@ impl Scheduler {
         }
     }
 
-    pub async fn unschedule(self: Arc<Self>, id: &str) {
+    pub async fn unschedule(&self, id: &str) {
         debug!(check.id = id, "Unscheduling check.");
 
         let maybe_queue = self.checks_queue.write().unwrap().remove(id);
@@ -90,7 +90,6 @@ impl Scheduler {
         }
     }
 
-    // FIXME can we avoid going through an Arc?
     async fn get_job_queue(self: Arc<Self>, interval: Duration) -> Arc<JobQueue> {
         debug!(job_queue.interval = interval.as_secs(), "Getting a JobQueue.");
 
