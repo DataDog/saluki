@@ -118,13 +118,13 @@ pub enum Token<'a> {
 
 /// Lexical analysis result
 pub struct Lexer<'a> {
-    _lexer: logos::Lexer<'a, Token<'a>>,
+    lexer: logos::Lexer<'a, Token<'a>>,
 }
 
 impl<'a> Lexer<'a> {
     pub fn new(input: &'a str) -> Self {
         Self {
-            _lexer: Token::lexer(input),
+            lexer: Token::lexer(input),
         }
     }
 
@@ -150,6 +150,6 @@ impl<'a> Iterator for Lexer<'a> {
     type Item = Result<Token<'a>, ()>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self._lexer.next()
+        self.lexer.next()
     }
 }
