@@ -1,0 +1,19 @@
+[package]
+name = "ottl"
+version = "0.1.0"
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/mod.rs"
+
+[dependencies]
+#Commented for the time being, will be activated in following PR
+#chumsky = { workspace = true, features = ["export_derive"] }
+logos = { workspace = true, features = ["export_derive"] }
+
+[dev-dependencies]
