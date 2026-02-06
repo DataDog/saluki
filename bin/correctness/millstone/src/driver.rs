@@ -1,4 +1,7 @@
-use std::time::{Duration, Instant, SystemTime};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant, SystemTime},
+};
 
 use bytesize::ByteSize;
 use saluki_error::{ErrorContext as _, GenericError};
@@ -19,12 +22,19 @@ pub struct Driver {
 impl Driver {
     /// Creates a new `Driver` based on the given configuration.
     ///
+    /// If `output_file` is provided, the driver will write all payloads to the given file path instead of the
+    /// configured target. The configured target is still used to determine corpus generation parameters (e.g.
+    /// framing), so the bytes written to the file are identical to what would be sent over the wire.
+    ///
     /// # Errors
     ///
     /// If an error occurs while creating the corpus, it will be returned.
-    pub fn new(config: Config) -> Result<Self, GenericError> {
+    pub fn new(config: Config, output_file: Option<PathBuf>) -> Result<Self, GenericError> {
         let corpus = Corpus::from_config(&config).error_context("Failed to generate test corpus.")?;
-        let sender = TargetSender::from_config(&config).error_context("Failed to create target sender.")?;
+        let sender = match output_file {
+            Some(path) => TargetSender::from_file(&path).error_context("Failed to create file target sender.")?,
+            None => TargetSender::from_config(&config).error_context("Failed to create target sender.")?,
+        };
 
         Ok(Self { config, corpus, sender })
     }

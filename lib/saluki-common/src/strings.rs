@@ -117,6 +117,11 @@ where
     pub fn try_intern(&mut self) -> Option<MetaString> {
         self.interner.try_intern(self.as_str()).map(MetaString::from)
     }
+
+    /// Returns a `MetaString` using the configured interner.
+    pub fn to_meta_string(&self) -> MetaString {
+        MetaString::from_interner(self.as_str(), &self.interner)
+    }
 }
 
 impl std::fmt::Write for StringBuilder {

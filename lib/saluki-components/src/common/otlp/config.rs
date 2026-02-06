@@ -1,5 +1,6 @@
 //! Shared OTLP receiver configuration.
 
+use bytesize::ByteSize;
 use serde::Deserialize;
 
 fn default_grpc_endpoint() -> String {
@@ -16,6 +17,10 @@ fn default_transport() -> String {
 
 fn default_max_recv_msg_size_mib() -> u64 {
     4
+}
+
+pub(crate) const fn default_traces_string_interner_size() -> ByteSize {
+    ByteSize::kib(512)
 }
 
 /// Receiver configuration for OTLP endpoints.
@@ -201,6 +206,12 @@ pub struct TracesConfig {
     #[serde(default)]
     pub probabilistic_sampler: ProbabilisticSampler,
 
+    /// Total size of the string interner used for OTLP traces.
+    ///
+    /// Defaults to 512 KiB.
+    #[serde(rename = "string_interner_size", default = "default_traces_string_interner_size")]
+    pub string_interner_bytes: ByteSize,
+
     /// The internal port on the Core Agent to forward traces to.
     ///
     /// Defaults to 5003.
@@ -254,6 +265,7 @@ impl Default for TracesConfig {
             ignore_missing_datadog_fields: false,
             enable_otlp_compute_top_level_by_span_kind: default_enable_otlp_compute_top_level_by_span_kind(),
             probabilistic_sampler: ProbabilisticSampler::default(),
+            string_interner_bytes: default_traces_string_interner_size(),
             internal_port: default_internal_port(),
         }
     }

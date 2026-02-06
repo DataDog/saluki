@@ -160,6 +160,10 @@ pub fn normalize_tag_value(value: &str) -> MetaString {
     normalize(value, false)
 }
 
+pub(super) fn is_normalized_tag_value(value: &str) -> bool {
+    is_normalized_ascii_tag(value, false)
+}
+
 /// Normalizes a tag (key:value).
 #[allow(dead_code)]
 pub fn normalize_tag(value: &str) -> MetaString {

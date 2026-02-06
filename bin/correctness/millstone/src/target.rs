@@ -1,7 +1,9 @@
 use std::{
+    fs::File,
     io::Write as _,
     net::{Ipv4Addr, TcpStream, UdpSocket},
     os::unix::net::{UnixDatagram, UnixStream},
+    path::Path,
 };
 
 use prost::bytes::Bytes;
@@ -16,6 +18,7 @@ enum TargetBackend {
     UnixDatagram(UnixDatagram),
     Unix(UnixStream),
     Grpc(GrpcBackend),
+    File(File),
 }
 
 struct GrpcBackend {
@@ -31,6 +34,20 @@ pub struct TargetSender {
 }
 
 impl TargetSender {
+    /// Creates a new `TargetSender` that writes to a file.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs while creating the file, it will be returned.
+    pub fn from_file(path: &Path) -> Result<Self, GenericError> {
+        let file =
+            File::create(path).with_error_context(|| format!("Failed to create output file '{}'.", path.display()))?;
+        Ok(Self {
+            backend: TargetBackend::File(file),
+            runtime: None,
+        })
+    }
+
     /// Creates a new `TargetSender` based on the given configuration.
     ///
     /// # Errors
@@ -98,6 +115,7 @@ impl TargetSender {
                 send_grpc_payload(runtime, channel, &service_method_path, payload)?;
                 payload.len()
             }
+            TargetBackend::File(file) => file.write_all(payload).map(|_| payload.len())?,
         };
 
         Ok(n)
