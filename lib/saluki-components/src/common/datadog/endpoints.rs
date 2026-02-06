@@ -4,7 +4,6 @@ use std::{
     sync::LazyLock,
 };
 
-use super::{MetricsPayloadInfo, MetricsProtocolVersion};
 use http::uri::Authority;
 use regex::Regex;
 use saluki_config::GenericConfiguration;
@@ -15,6 +14,8 @@ use serde_with::{serde_as, DisplayFromStr, OneOrMany, PickFirst};
 use snafu::{ResultExt, Snafu};
 use tracing::debug;
 use url::Url;
+
+use super::protocol::{MetricsPayloadInfo, MetricsProtocolVersion};
 
 static DD_URL_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^app(\.mrf)?(\.[a-z]{2}\d)?\.(datad(oghq|0g)\.(com|eu)|ddog-gov\.com)$").unwrap());
