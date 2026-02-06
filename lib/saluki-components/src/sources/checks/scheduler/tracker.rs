@@ -5,7 +5,7 @@ use tracing::{error, info};
 use super::*;
 
 pub struct RunningCheckTracker {
-    running: RwLock<HashMap<CheckID, Arc<dyn Check + Send + Sync>>>,
+    running: RwLock<HashMap<String, Arc<dyn Check + Send + Sync>>>,
 }
 
 impl RunningCheckTracker {
@@ -23,7 +23,7 @@ impl RunningCheckTracker {
             info!("check #{id} already present");
             return false;
         }
-        running.insert(id.clone(), check.clone());
+        running.insert(id.to_string(), check.clone());
         true
     }
 
@@ -37,7 +37,7 @@ impl RunningCheckTracker {
         }
     }
 
-    pub fn is_running(&self, id: &CheckID) -> bool {
+    pub fn is_running(&self, id: &str) -> bool {
         self.running.read().unwrap().contains_key(id)
     }
 

@@ -3,7 +3,6 @@ use std::time::Duration;
 use async_trait::async_trait;
 use saluki_error::GenericError;
 
-pub type CheckID = String;
 
 /// A check.
 ///
@@ -21,7 +20,7 @@ pub trait Check {
     /// Gets the identifier of the check.
     ///
     /// This is used to uniquely identify check instances.
-    fn id(&self) -> &CheckID;
+    fn id(&self) -> &str;
     /// Get the version of the check.
     fn version(&self) -> &str;
     /// Get the source of the check.

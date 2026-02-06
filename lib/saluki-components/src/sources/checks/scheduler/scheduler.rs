@@ -8,7 +8,7 @@ use tokio::{
 };
 use tracing::{debug, error, info};
 
-use crate::sources::checks::{check::CheckID, Check};
+use crate::sources::checks::check::Check;
 
 use super::*;
 use job::JobQueue;
@@ -21,7 +21,7 @@ struct JobQueueWrapper {
 pub struct Scheduler {
     checks_tx: CheckSender,
     job_queues: Mutex<HashMap<Duration, JobQueueWrapper>>, // FIXME can we avoid the Arc, despite the ref in checks_queue?
-    checks_queue: RwLock<HashMap<CheckID, Arc<JobQueue>>>,
+    checks_queue: RwLock<HashMap<String, Arc<JobQueue>>>,
 }
 
 impl Scheduler {
@@ -59,12 +59,12 @@ impl Scheduler {
         let job_queue = self.clone().get_job_queue(interval).await;
         job_queue.add_job(check.clone()).await;
 
-        if let Some(_) = self.checks_queue.write().unwrap().insert(id.clone(), job_queue.clone()) {
+        if let Some(_) = self.checks_queue.write().unwrap().insert(id.to_string(), job_queue.clone()) {
             error!("Check #{id} was already scheduled!")
         }
     }
 
-    pub async fn unschedule(self: Arc<Self>, id: &CheckID) {
+    pub async fn unschedule(self: Arc<Self>, id: &str) {
         debug!("Unscheduling check #{id}");
 
         let maybe_queue = self.checks_queue.write().unwrap().remove(id);
@@ -107,7 +107,7 @@ impl Scheduler {
         queue
     }
 
-    pub fn is_check_scheduled(&self, id: &CheckID) -> bool {
+    pub fn is_check_scheduled(&self, id: &str) -> bool {
         self.checks_queue.read().unwrap().contains_key(id)
     }
 }

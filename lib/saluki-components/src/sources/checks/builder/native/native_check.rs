@@ -16,7 +16,7 @@ use integration_check::sink::{event, event_platform, histogram, log, metric, ser
 use crate::sources::checks::builder::native::metric::{
     event_to_eventd, histogram_to_event, metric_to_event, service_check_to_event,
 };
-use crate::sources::checks::check::{Check, CheckID};
+use crate::sources::checks::check::Check;
 use crate::sources::checks::execution_context::ExecutionContext;
 
 use serde_yaml::Mapping;
@@ -85,7 +85,7 @@ impl Check for NativeCheck {
         Duration::from_secs(min_interval)
     }
 
-    fn id(&self) -> &CheckID {
+    fn id(&self) -> &str {
         self.instance.id()
     }
 

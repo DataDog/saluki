@@ -20,7 +20,7 @@ use tracing::{debug, error, info, warn};
 use super::python_modules::aggregator as pyagg;
 use super::python_modules::datadog_agent;
 use crate::sources::checks::builder::CheckBuilder;
-use crate::sources::checks::check::{Check, CheckID};
+use crate::sources::checks::check::Check;
 use crate::sources::checks::execution_context::ExecutionContext;
 
 struct PythonCheck {
@@ -51,7 +51,7 @@ impl Check for PythonCheck {
         &self.version
     }
 
-    fn id(&self) -> &CheckID {
+    fn id(&self) -> &str {
         &self.id
     }
 

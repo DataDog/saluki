@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
-pub use super::check::{Check, CheckID};
+pub use super::check::Check;
 
 pub mod job;
 pub mod runner;

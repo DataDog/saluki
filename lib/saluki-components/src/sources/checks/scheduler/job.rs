@@ -59,7 +59,7 @@ mod queue {
         pub async fn add_job(&self, check: Arc<dyn Check + Send + Sync>) {
             assert!(self.interval == check.interval());
 
-            let id = check.id().clone();
+            let id = check.id();
             trace!("JobQueue<{}>: Check #{id} to add", self.interval.as_secs());
 
             {
@@ -75,7 +75,7 @@ mod queue {
             }
         }
 
-        pub async fn remove_job(&self, id: &CheckID) -> bool {
+        pub async fn remove_job(&self, id: &str) -> bool {
             trace!("JobQueue<{}>: Removing check #{id}", self.interval.as_secs());
 
             {
@@ -163,7 +163,7 @@ impl JobBucket {
         self.jobs.push_back(check)
     }
 
-    pub async fn remove_job(&mut self, id: &CheckID) -> bool {
+    pub async fn remove_job(&mut self, id: &str) -> bool {
         for (index, check) in self.jobs.iter().enumerate() {
             if id == check.id() {
                 trace!("JobBucket: Removing Check #{id} found at {index}");
