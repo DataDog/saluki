@@ -1,0 +1,92 @@
+# This is a GitHub Action that ensures that the PR titles match the Conventional Commits spec.
+# See: https://www.conventionalcommits.org/en/v1.0.0/
+
+name: "Semantic PR Title Check"
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize]
+  pull_request:
+    types: [opened, edited, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  main:
+    permissions:
+      pull-requests: read # for amannn/action-semantic-pull-request to analyze PRs
+      statuses: write # for amannn/action-semantic-pull-request to mark status of analyzed PR
+    name: Check For Semantic PR Title
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          requireScope: true
+          types: |
+            chore
+            enhancement
+            feat
+            fix
+            docs
+            revert
+
+          scopes: |
+            agent-data-plane
+            aggregate transform
+            airlock
+            api
+            apm stats transform
+            app
+            blackhole destination
+            buffered incremental encoder
+            chained transform
+            checks source
+            ci
+            common
+            components
+            config
+            containerd-protos
+            context
+            core
+            datadog encoder
+            datadog forwarder
+            datadog-intake
+            datadog-protos
+            ddsketch
+            deps
+            dev
+            docs
+            dogstatsd mapper transform
+            dogstatsd prefix filter transform
+            dogstatsd source
+            dsd stats destination
+            env
+            error
+            ground-truth
+            health
+            heartbeat source
+            host enrichment transform
+            host tags transform
+            internal metrics source
+            io
+            memory-accounting
+            metadata
+            metric router transform
+            metrics
+            millstone
+            otlp decoder
+            otlp forwarder
+            otlp-protos
+            otlp relay
+            otlp source
+            panoramic
+            process-memory
+            prometheus destination
+            stele
+            stringtheory
+            tls
+            trace obfuscation transform
+            trace sampler transform

@@ -695,6 +695,14 @@ update-protos: ## Updates all vendored Protocol Buffers definitions from their s
 	SKETCHES_GO_GIT_TAG=$(PROTOBUF_SRC_REPO_SKETCHES_GO) \
 	./tooling/update-protos.sh
 
+.PHONY: update-pr-title-scopes
+update-pr-title-scopes: ## Updates allowed PR title scopes in the CI workflow based on the codebase
+	@./tooling/update-pr-title-scopes.sh update
+
+.PHONY: check-pr-title-scopes
+check-pr-title-scopes: ## Checks that PR title scopes in the CI workflow are up-to-date
+	@./tooling/update-pr-title-scopes.sh check
+
 .PHONY: clean
 clean: check-rust-build-tools
 clean: ## Clean all build artifacts (debug/release)
