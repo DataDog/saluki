@@ -29,12 +29,12 @@ mod queue {
         state: Mutex<State>,
         sparse_step: usize,
         stop: Notify,
-        interval: Duration, // XXX debug
+        interval: Duration,
     }
 
     impl JobQueue {
         pub fn new(interval: Duration) -> Self {
-            trace!("New from duration {} sec", interval.as_secs());
+            trace!(interval = interval.as_secs(), "JobQueue created.");
 
             let mut state = queue::State {
                 buckets: Vec::with_capacity(interval.as_secs() as usize),
@@ -60,7 +60,11 @@ mod queue {
             assert!(self.interval == check.interval());
 
             let id = check.id();
-            trace!("JobQueue<{}>: Check #{id} to add", self.interval.as_secs());
+            trace!(
+                job_queue.interval = self.interval.as_secs(),
+                check.id = id,
+                "Adding check."
+            );
 
             {
                 let mut state = self.state.lock().await;
@@ -68,7 +72,11 @@ mod queue {
                 let len = state.buckets.len();
 
                 let bucket = &mut state.buckets[index];
-                trace!("JobQueue<{}>: Adding job to bucket #{}", self.interval.as_secs(), index);
+                trace!(
+                    job_queue.interval = self.interval.as_secs(),
+                    job_queue.bucket = index,
+                    "Adding job to bucket."
+                );
                 bucket.add_job(check).await;
 
                 state.add_index = (index + self.sparse_step) % len;
@@ -76,7 +84,11 @@ mod queue {
         }
 
         pub async fn remove_job(&self, id: &str) -> bool {
-            trace!("JobQueue<{}>: Removing check #{id}", self.interval.as_secs());
+            trace!(
+                job_queue.interval = self.interval.as_secs(),
+                check.id = id,
+                "Removing check."
+            );
 
             {
                 let mut state = self.state.lock().await;
@@ -104,7 +116,7 @@ mod queue {
             loop {
                 select! {
                     _ = self.stop.notified() => {
-                        trace!("JobQueue<{}>: Shut down", self.interval.as_secs());
+                        trace!(job_queue.interval = self.interval.as_secs(), "Shut down.");
                         break
                     }
 
@@ -112,16 +124,17 @@ mod queue {
                         let elasped = Instant::now().duration_since(last_tick);
                         if elasped > Duration::from_secs(2) {
                             warn!(
-                                "Previous bucket took over {} secs to schedule. Next checks will be running behind the schedule.",
-                                elasped.as_secs()
+                                elapsed_secs = elasped.as_secs(),
+                                "Previous bucket took over 2 secs to schedule. Next checks will be running behind the schedule."
                             )
                         }
                         last_tick = Instant::now();
 
+                        let schedule_index = self.state.lock().await.schedule_index;
                         trace!(
-                            "JobQueue<{}>: Looking at bucket #{}",
-                            self.interval.as_secs(),
-                            self.state.lock().await.schedule_index
+                            job_queue.interval = self.interval.as_secs(),
+                            job_queue.bucket = schedule_index,
+                            "Looking at bucket."
                         );
 
                         let jobs = {
@@ -158,7 +171,7 @@ impl JobBucket {
 
     // TODO is it okay to add a check twice?
     pub async fn add_job(&mut self, check: Arc<dyn Check + Send + Sync>) {
-        trace!("Adding check #{}", check.id());
+        trace!(check.id = check.id(), "Adding check.");
 
         self.jobs.push_back(check)
     }
@@ -166,13 +179,13 @@ impl JobBucket {
     pub async fn remove_job(&mut self, id: &str) -> bool {
         for (index, check) in self.jobs.iter().enumerate() {
             if id == check.id() {
-                trace!("JobBucket: Removing Check #{id} found at {index}");
+                trace!(check.id = id, job.index = index, "Removing check.");
                 let prev = self.jobs.remove(index);
                 assert!(prev.is_some());
                 return true;
             }
         }
-        debug!("Check #{id} not found");
+        debug!(check.id = id, "Check not found.");
         false
     }
 }

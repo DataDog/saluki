@@ -20,7 +20,7 @@ impl RunningCheckTracker {
 
         let mut running = self.running.write().unwrap();
         if running.contains_key(id) {
-            info!("check #{id} already present");
+            info!(check.id = id, "Check already present.");
             return false;
         }
         running.insert(id.to_string(), check.clone());
@@ -33,7 +33,7 @@ impl RunningCheckTracker {
         let mut running = self.running.write().unwrap();
         let maybe_check = running.remove(id);
         if maybe_check.is_none() {
-            error!("check #{id} is not tracked")
+            error!(check.id = id, "Check is not tracked.")
         }
     }
 

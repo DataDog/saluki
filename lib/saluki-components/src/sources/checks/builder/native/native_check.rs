@@ -51,7 +51,7 @@ impl NativeCheck {
         let check_init_config = data_to_mapping(init_config.get_value());
         let check_instance = data_to_mapping(instance.get_value());
         let check = C::build(sink, check_init_config, check_instance)
-            .inspect_err(|err| error!("error creating {name} check: {err}",))
+            .inspect_err(|err| error!(check.name = %name, error = %err, "Error creating check."))
             .ok()?;
         let check = Arc::new(check);
 
@@ -72,7 +72,7 @@ impl Check for NativeCheck {
     async fn run(&self) -> Result<(), GenericError> {
         let _ = self.init_config; // FIXME
 
-        trace!("NativeCheck::run of {} for {}", self.name, self.id());
+        trace!(check.name = %self.name, id = self.id(), "Running.");
         self.check.run().await
     }
 
@@ -105,47 +105,47 @@ impl Sink for NativeSink {
     async fn submit_metric(&self, metric: metric::Metric, _flush_first: bool) {
         let event = metric_to_event(metric, &self.execution_context);
         if let Err(err) = self.events.send(event).await {
-            error!("unable to send metric: {err}")
+            error!(error = %err, "Unable to send metric.")
         }
     }
 
     async fn submit_service_check(&self, service_check: service_check::ServiceCheck) {
         let event = service_check_to_event(service_check, &self.execution_context);
         if let Err(err) = self.events.send(event).await {
-            error!("unable to send service check: {err}")
+            error!(error = %err, "Unable to send service check.")
         }
     }
 
     async fn submit_event(&self, event: event::Event) {
         let eventd = event_to_eventd(event, &self.execution_context);
         if let Err(err) = self.events.send(eventd).await {
-            error!("unable to send event: {err}")
+            error!(error = %err, "Unable to send event.")
         }
     }
 
     async fn submit_histogram(&self, histogram: histogram::Histrogram, _flush_first: bool) {
         let event = histogram_to_event(histogram, &self.execution_context);
         if let Err(err) = self.events.send(event).await {
-            error!("unable to send histogram: {err}")
+            error!(error = %err, "Unable to send histogram.")
         }
     }
 
     async fn submit_event_platform_event(&self, event: event_platform::Event) {
         // TODO: Implement event platform events conversion
         // For now, log that this is not yet implemented
-        error!("event platform events are not yet implemented: {:#?}", event);
+        error!(event = ?event, "Event platform events are not yet implemented.");
     }
 
     async fn log(&self, level: log::Level, message: String) {
         let id = "fixme_check_id"; // FIXME
                                    // FIXME use tracing::event!
         match level {
-            log::Level::Critical => error!("[check: {}] {message}", id),
-            log::Level::Error => error!("[check: {}] {message}", id),
-            log::Level::Warning => warn!("[check: {}] {message}", id),
-            log::Level::Info => info!("[check: {}] {message}", id),
-            log::Level::Debug => debug!("[check: {}] {message}", id),
-            log::Level::Trace => trace!("[check: {}] {message}", id),
+            log::Level::Critical => error!(check.id = id, "{message}"),
+            log::Level::Error => error!(check.id = id, "{message}"),
+            log::Level::Warning => warn!(check.id = id, "{message}"),
+            log::Level::Info => info!(check.id = id, "{message}"),
+            log::Level::Debug => debug!(check.id = id, "{message}"),
+            log::Level::Trace => trace!(check.id = id, "{message}"),
         }
     }
 }

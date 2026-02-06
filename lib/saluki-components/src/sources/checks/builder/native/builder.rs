@@ -7,7 +7,7 @@ use saluki_env::autodiscovery::{Data, Instance};
 use async_trait::async_trait;
 use stringtheory::MetaString;
 use tokio::sync::mpsc::Sender;
-use tracing::{info, trace};
+use tracing::info;
 
 use crate::sources::checks::builder::native::native_check::{NativeCheck, NativeSink};
 use crate::sources::checks::builder::CheckBuilder;
@@ -25,8 +25,6 @@ impl NativeCheckBuilder {
     pub fn new(
         check_events_tx: Sender<Event>, _: Option<Vec<String>>, execution_context: Arc<ExecutionContext>,
     ) -> Self {
-        trace!("NativeCheckBuilder::new()");
-
         Self {
             check_events_tx,
             execution_context,
@@ -50,7 +48,7 @@ impl CheckBuilder for NativeCheckBuilder {
         let build_fn = match name {
             "http-check" => NativeCheck::build::<HttpCheck<NativeSink>>,
             _ => {
-                info!("unknown check: {name}");
+                info!(check.name = name, "Unknown check.");
                 return None;
             }
         };

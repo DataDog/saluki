@@ -223,21 +223,17 @@ impl Source for ChecksSource {
                                     for instance in &config.instances {
                                         let check_id = instance.id();
                                         if scheduler.clone().is_check_scheduled(check_id) {
-                                            println!("already scheduled!");
+                                            println!("Already scheduled!");
                                             continue;
                                         }
 
                                         for builder in check_builders.iter_mut() {
                                             if let Some(check) = builder.build_check(&config.name, instance, &config.init_config, &config.source).await {
-                                                let check_id = check.id().to_string();
-                                                let check_version = check.version().to_string();
-                                                let check_source = check.source().to_string();
-
                                                 debug!(
-                                                    check_id = check_id,
-                                                    check_name = config.name.as_ref(),
-                                                    check_version = check_version,
-                                                    check_source = check_source,
+                                                    check.id = check.id(),
+                                                    check.name = config.name.as_ref(),
+                                                    check.version = check.version(),
+                                                    check.source = check.source(),
                                                     "Built new check instance."
                                                 );
                                                 runnable_checks.push(check);
@@ -261,7 +257,7 @@ impl Source for ChecksSource {
                             }
                         }
                         Err(e) => {
-                            error!("Error receiving event: {:?}", e);
+                            error!(error = %e, "Receiving auto-discovery event");
                         }
                 }
             }
@@ -290,7 +286,7 @@ async fn drain_and_dispatch_check_events(
             result = check_event_rx.recv() => match result {
                 None => break,
                 Some(check_event) => {
-                    trace!("Received check event: {:?}", check_event);
+                    trace!(event = ?check_event, "Received check event.",);
 
                     match check_event.event_type() {
                        EventType::Metric => {

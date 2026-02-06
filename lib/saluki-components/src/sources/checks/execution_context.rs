@@ -49,7 +49,7 @@ impl ExecutionContext {
     {
         let execution_context = Self::new(configuration);
         let hostname = environment_provider.host().get_hostname().await.unwrap_or_else(|e| {
-            warn!("Failed to get hostname: {:?}", e);
+            warn!(error = ?e, "Failed to get hostname");
             "".to_string()
         });
 

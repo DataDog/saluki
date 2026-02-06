@@ -14,7 +14,7 @@ pub struct Worker {
 
 impl Worker {
     pub fn new(id: WorkerID, tracker: Arc<RunningCheckTracker>) -> (Self, CheckSender) {
-        trace!("New worker #{id}");
+        trace!(worker.id = id, "New worker.");
 
         let (check_tx, check_rx) = mpsc::channel(1);
         let worker = Worker {
@@ -32,16 +32,20 @@ impl Worker {
     async fn run_impl(self: Arc<Self>) {
         let mut check_rx = self.check_rx.lock().await;
 
-        debug!("Woker<{}>: Ready to process checks", self.id);
+        debug!(worker.id = self.id, "Ready to process checks.");
 
         loop {
             match check_rx.recv().await {
                 Some(check) => {
                     let id = check.id();
-                    debug!("Woker<{}>: Check #{id} to run", self.id);
+                    debug!(worker.id = self.id, check.id = id, "Check to run.");
 
                     if !self.tracker.add_check(check.clone()).await {
-                        info!("Woker<{}>: Check #{id} is already running, skipping", self.id);
+                        info!(
+                            worker.id = self.id,
+                            check.id = id,
+                            "Check is already running, skipping."
+                        );
                         break;
                     }
 
@@ -50,7 +54,7 @@ impl Worker {
                     self.tracker.remove_check(check).await
                 }
                 None => {
-                    debug!("Woker<{}>: Finished processing checks", self.id);
+                    debug!(worker.id = self.id, "Finished processing checks.");
                     break;
                 }
             }

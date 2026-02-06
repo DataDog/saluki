@@ -45,7 +45,7 @@ impl Scheduler {
 
         for (_, jqw) in job_queues.drain() {
             if let Err(err) = jqw.join_handle.await {
-                error!("Job task failed: {err}");
+                error!(error = %err, "Job task failed.");
             }
         }
     }
@@ -54,40 +54,45 @@ impl Scheduler {
         let id = check.id();
         let interval = check.interval();
 
-        debug!("Check #{id} of interval {} sec to schedule", interval.as_secs());
+        debug!(check.id = id, check.interval = interval.as_secs(), "Scheduling check.");
 
         let job_queue = self.clone().get_job_queue(interval).await;
         job_queue.add_job(check.clone()).await;
 
-        if let Some(_) = self.checks_queue.write().unwrap().insert(id.to_string(), job_queue.clone()) {
-            error!("Check #{id} was already scheduled!")
+        if let Some(_) = self
+            .checks_queue
+            .write()
+            .unwrap()
+            .insert(id.to_string(), job_queue.clone())
+        {
+            error!(check.id = id, "Check was already scheduled.")
         }
     }
 
     pub async fn unschedule(self: Arc<Self>, id: &str) {
-        debug!("Unscheduling check #{id}");
+        debug!(check.id = id, "Unscheduling check.");
 
         let maybe_queue = self.checks_queue.write().unwrap().remove(id);
         if maybe_queue.is_none() {
-            info!("Check #{id} not scheduled");
+            info!(check.id = id, "Check not scheduled.");
             return;
         }
         let job_queue = maybe_queue.unwrap();
 
         if job_queue.remove_job(id).await == false {
-            error!("check #{id} not found in JobQueue");
+            error!(check.id = id, "Check not found in JobQueue.");
         }
     }
 
     pub async fn enqueue(&self, check: Arc<dyn Check + Send + Sync>) {
         if let Err(err) = self.checks_tx.send(check).await {
-            error!("enqueue check: {err}")
+            error!(error = %err, "Failed to enqueue check.")
         }
     }
 
     // FIXME can we avoid going through an Arc?
     async fn get_job_queue(self: Arc<Self>, interval: Duration) -> Arc<JobQueue> {
-        debug!("Getting a JobQueue for {} sec interval", interval.as_secs());
+        debug!(job_queue.interval = interval.as_secs(), "Getting a JobQueue.");
 
         let mut job_queues = self.job_queues.lock().await;
 

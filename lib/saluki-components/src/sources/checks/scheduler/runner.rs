@@ -58,7 +58,7 @@ impl Runner {
     }
 
     pub async fn ensure_min_workers(&self, count: usize) {
-        debug!("Ensure minimum workers: {count}");
+        debug!(count, "Ensure minimum workers.");
 
         let mut workers_state = self.fixed_workers.lock().await;
 
@@ -120,10 +120,10 @@ impl Runner {
 
     async fn handle_check(&self, check: Arc<dyn Check + Send + Sync>) {
         let id = check.id();
-        debug!("Got Check #{id} to run");
+        debug!(check.id = id, "Got a check to run.");
 
         if self.tracker.is_running(id) {
-            info!("Check #{id} is already running");
+            info!(check.id = id, "Check is already running.");
             return;
         }
 
@@ -134,7 +134,7 @@ impl Runner {
             self.clean_ephemeral_worker().await;
             let check_tx = self.add_ephemeral_worker().await;
             if let Err(err) = check_tx.send(check).await {
-                error!("Unable to send Check to ephemeral worker: {err}")
+                error!(error = %err, "Unable to send check to ephemeral worker.")
             }
         }
     }
@@ -151,21 +151,24 @@ impl Runner {
             let (worker, check_tx, _) = &workers[&i];
             match check_tx.try_send(check.clone()) {
                 Ok(()) => {
-                    debug!("Non blocking send of check #{} to worker #{}", check.id(), worker.id);
+                    debug!(
+                        check.id = check.id(),
+                        worker.id, "Non blocking send of check to worker."
+                    );
                     return;
                 }
                 Err(_) => {
-                    trace!("Worker #{} is busy", worker.id);
+                    trace!(worker.id, "Worker is busy.");
                 }
             }
         }
 
         let (worker, check_tx, _) = &workers[&index];
-        debug!("Blocking send of check #{} to worker #{}", check.id(), worker.id);
+        debug!(check.id = check.id(), worker.id, "Blocking send of check to worker.");
         if let Err(err) = check_tx.send(check.clone()).await {
-            error!("Unable to send check to worker #{}: {err}", worker.id)
+            error!(worker.id, error = %err, "Unable to send check to worker.")
         } else {
-            debug!("Check #{} sent to worker #{}", check.id(), worker.id);
+            debug!(check.id = check.id(), worker.id, "Check sent to worker");
         }
 
         workers_state.next = (index + 1) % (workers_state.workers.len() as WorkerID)
