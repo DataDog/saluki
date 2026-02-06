@@ -9,20 +9,23 @@ on:
   pull_request:
     types: [opened, edited, synchronize]
 
-permissions:
-  contents: read
-
 jobs:
   main:
     permissions:
-      pull-requests: read # for amannn/action-semantic-pull-request to analyze PRs
-      statuses: write # for amannn/action-semantic-pull-request to mark status of analyzed PR
+      id-token: write
     name: Check For Semantic PR Title
     runs-on: ubuntu-24.04
     steps:
+      - name: Get access token from dd-octo-sts
+        uses: DataDog/dd-octo-sts-action@acaa02eee7e3bb0839e4272dacb37b8f3b58ba80 # v1.0.3
+        id: octo-sts
+        with:
+          scope: DataDog/saluki
+          policy: self.check-pr-title
+
       - uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.octo-sts.outputs.token }}
         with:
           requireScope: true
           types: |
