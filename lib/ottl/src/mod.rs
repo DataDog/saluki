@@ -1,3 +1,6 @@
+//AZH: temporary, since this is just an API review we don't have yet code which is using it.
+#![allow(dead_code)]
+
 /// OTTL Parser Library
 ///
 /// This library provides a Rust implementation of the OpenTelemetry Transformation Language (OTTL)
