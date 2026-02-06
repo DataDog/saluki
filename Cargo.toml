@@ -9,7 +9,6 @@ members = [
   "bin/correctness/stele",
   "lib/ddsketch",
   "lib/memory-accounting",
-  "lib/ottl",
   "lib/process-memory",
   "lib/protos/containerd",
   "lib/protos/datadog",
@@ -42,7 +41,6 @@ datadog-protos = { path = "lib/protos/datadog" }
 containerd-protos = { path = "lib/protos/containerd" }
 ddsketch = { path = "lib/ddsketch" }
 memory-accounting = { path = "lib/memory-accounting" }
-ottl = { path = "lib/ottl" }
 process-memory = { path = "lib/process-memory" }
 saluki-api = { path = "lib/saluki-api" }
 saluki-app = { path = "lib/saluki-app" }
