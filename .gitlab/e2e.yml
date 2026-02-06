@@ -124,5 +124,5 @@ test-integration:
     # Copy the bundled Agent/ADP image we built to the local Docker instance so we can share the integration
     # test configurations between CI and local test runs.
     - docker pull ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
-    - docker tag ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA} saluki-images/datadog-agent:testing-release
+    - docker tag ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA} saluki-images/datadog-agent:testing-devel
     - make test-integration-quick
