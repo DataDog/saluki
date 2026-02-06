@@ -3398,11 +3398,14 @@ dependencies = [
 name = "saluki-app"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
+ "async-trait",
  "axum",
  "bytesize",
  "chrono",
  "chrono-tz",
  "http",
+ "hyper",
  "iana-time-zone",
  "itoa",
  "memory-accounting",
