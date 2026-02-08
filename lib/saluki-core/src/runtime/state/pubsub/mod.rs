@@ -1,25 +1,26 @@
 //! A type-erased, async-aware publish/subscribe registry for inter-process coordination.
 //!
-//! The [`PubSubRegistry`] allows processes to publish typed values by identifier and subscribe to receive those values,
+//! The [`PubSubRegistry`] allows processes to publish typed values by handle and subscribe to receive those values,
 //! with async waiting for new values. Multiple subscribers can receive the same published value.
 //!
-//! This enables decoupled coordination where processes don't need to know about each other, only the identifier and
+//! This enables decoupled coordination where processes don't need to know about each other, only the handle and
 //! type of the values they're exchanging.
 //!
 //! # Example
 //!
 //! ```
-//! use saluki_core::runtime::state::{PubSubIdentifier, PubSubRegistry};
+//! use saluki_core::runtime::state::{Handle, PubSubRegistry};
 //!
 //! # #[tokio::main]
 //! # async fn main() {
 //! let registry = PubSubRegistry::new();
+//! let handle = Handle::new_global();
 //!
 //! // Subscribe before publishing
-//! let mut sub = registry.subscribe::<u32>("my-topic");
+//! let mut sub = registry.subscribe::<u32>(handle);
 //!
 //! // Publish a value
-//! registry.publish(42u32, "my-topic").unwrap();
+//! registry.publish(42u32, handle).unwrap();
 //!
 //! // Receive the value
 //! let value = sub.recv().await;
@@ -35,113 +36,44 @@ use std::{
 };
 
 use snafu::Snafu;
-use stringtheory::MetaString;
 use tokio::sync::broadcast;
 
-use crate::runtime::process;
+use super::Handle;
 
 const DEFAULT_CHANNEL_CAPACITY: usize = 16;
-
-/// Identifier for values in the pub/sub registry.
-///
-/// Values are keyed by both their Rust type and an identifier. The identifier can be a string, an integer, or a
-/// process identifier, allowing flexibility in how values are named and scoped.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum PubSubIdentifier {
-    /// A string identifier.
-    String(MetaString),
-    /// An integer identifier.
-    Integer(u64),
-    /// A process identifier.
-    Process(process::Id),
-}
-
-impl From<&str> for PubSubIdentifier {
-    fn from(s: &str) -> Self {
-        Self::String(MetaString::from(s))
-    }
-}
-
-impl From<String> for PubSubIdentifier {
-    fn from(s: String) -> Self {
-        Self::String(MetaString::from(s))
-    }
-}
-
-impl From<MetaString> for PubSubIdentifier {
-    fn from(s: MetaString) -> Self {
-        Self::String(s)
-    }
-}
-
-impl From<u64> for PubSubIdentifier {
-    fn from(n: u64) -> Self {
-        Self::Integer(n)
-    }
-}
-
-impl From<i64> for PubSubIdentifier {
-    fn from(n: i64) -> Self {
-        Self::Integer(n as u64)
-    }
-}
-
-impl From<u32> for PubSubIdentifier {
-    fn from(n: u32) -> Self {
-        Self::Integer(n as u64)
-    }
-}
-
-impl From<i32> for PubSubIdentifier {
-    fn from(n: i32) -> Self {
-        Self::Integer(n as u64)
-    }
-}
-
-impl From<usize> for PubSubIdentifier {
-    fn from(n: usize) -> Self {
-        Self::Integer(n as u64)
-    }
-}
-
-impl From<process::Id> for PubSubIdentifier {
-    fn from(id: process::Id) -> Self {
-        Self::Process(id)
-    }
-}
 
 /// Errors that can occur when publishing to the registry.
 #[derive(Debug, Snafu)]
 pub enum PubSubPublishError {
-    /// No subscribers exist for the given type and identifier.
-    #[snafu(display("No subscribers exist for type '{}' with identifier {:?}", type_name, identifier))]
+    /// No subscribers exist for the given type and handle.
+    #[snafu(display("No subscribers exist for type '{}' with handle {:?}", type_name, handle))]
     NoSubscribers {
         /// The name of the type.
         type_name: &'static str,
-        /// The identifier.
-        identifier: PubSubIdentifier,
+        /// The handle.
+        handle: Handle,
     },
 }
 
-/// Internal key combining type and identifier.
+/// Internal key combining type and handle.
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct StorageKey {
     type_id: TypeId,
-    identifier: PubSubIdentifier,
+    handle: Handle,
 }
 
 impl StorageKey {
-    fn new<T: 'static>(identifier: PubSubIdentifier) -> Self {
+    fn new<T: 'static>(handle: Handle) -> Self {
         Self {
             type_id: TypeId::of::<T>(),
-            identifier,
+            handle,
         }
     }
 }
 
 /// Internal registry state protected by a mutex.
 struct RegistryState {
-    /// Broadcast senders for each (type, identifier) pair, stored type-erased.
+    /// Broadcast senders for each (type, handle) pair, stored type-erased.
     channels: HashMap<StorageKey, Box<dyn Any + Send + Sync>>,
 
     /// Default capacity for new broadcast channels.
@@ -182,8 +114,8 @@ struct PubSubRegistryInner {
 
 /// A publish/subscribe registry for async coordination between processes.
 ///
-/// The registry stores broadcast channels indexed by type and [`PubSubIdentifier`]. Processes can subscribe to receive
-/// values of a given type and identifier, and other processes can publish values that are delivered to all current
+/// The registry stores broadcast channels indexed by type and [`Handle`]. Processes can subscribe to receive
+/// values of a given type and handle, and other processes can publish values that are delivered to all current
 /// subscribers.
 ///
 /// # Thread Safety
@@ -215,19 +147,18 @@ impl PubSubRegistry {
         }
     }
 
-    /// Publishes a value with the given identifier to all current subscribers.
+    /// Publishes a value with the given handle to all current subscribers.
     ///
-    /// The value is delivered to every active [`Subscription`] for the same type and identifier.
+    /// The value is delivered to every active [`Subscription`] for the same type and handle.
     ///
     /// # Errors
     ///
-    /// Returns an error if no subscribers exist for the given type and identifier.
-    pub fn publish<T>(&self, value: T, identifier: impl Into<PubSubIdentifier>) -> Result<(), PubSubPublishError>
+    /// Returns an error if no subscribers exist for the given type and handle.
+    pub fn publish<T>(&self, value: T, handle: Handle) -> Result<(), PubSubPublishError>
     where
         T: Clone + Send + Sync + 'static,
     {
-        let identifier = identifier.into();
-        let key = StorageKey::new::<T>(identifier.clone());
+        let key = StorageKey::new::<T>(handle);
 
         let state = self.inner.state.lock().unwrap();
 
@@ -237,7 +168,7 @@ impl PubSubRegistry {
             .and_then(|boxed| boxed.downcast_ref::<broadcast::Sender<T>>())
             .ok_or(PubSubPublishError::NoSubscribers {
                 type_name: std::any::type_name::<T>(),
-                identifier,
+                handle,
             })?;
 
         // Ignore the receiver count returned by send. If all receivers have been dropped since we
@@ -247,16 +178,15 @@ impl PubSubRegistry {
         Ok(())
     }
 
-    /// Subscribes to values of the given type and identifier.
+    /// Subscribes to values of the given type and handle.
     ///
     /// Returns a [`Subscription`] that can be used to asynchronously receive published values. If no broadcast channel
-    /// exists yet for this (type, identifier) pair, one is created.
-    pub fn subscribe<T>(&self, identifier: impl Into<PubSubIdentifier>) -> Subscription<T>
+    /// exists yet for this (type, handle) pair, one is created.
+    pub fn subscribe<T>(&self, handle: Handle) -> Subscription<T>
     where
         T: Clone + Send + Sync + 'static,
     {
-        let identifier = identifier.into();
-        let key = StorageKey::new::<T>(identifier);
+        let key = StorageKey::new::<T>(handle);
 
         let mut state = self.inner.state.lock().unwrap();
         let rx = state.get_or_create_sender::<T>(key);
@@ -304,9 +234,10 @@ mod tests {
     #[tokio::test]
     async fn subscribe_then_publish() {
         let registry = PubSubRegistry::new();
+        let h = Handle::new_global();
 
-        let mut sub = registry.subscribe::<u32>("test");
-        registry.publish(42u32, "test").unwrap();
+        let mut sub = registry.subscribe::<u32>(h);
+        registry.publish(42u32, h).unwrap();
 
         let value = timeout(Duration::from_millis(100), sub.recv()).await.expect("timeout");
         assert_eq!(value, Some(42));
@@ -315,11 +246,12 @@ mod tests {
     #[tokio::test]
     async fn multiple_subscribers_receive_same_value() {
         let registry = PubSubRegistry::new();
+        let h = Handle::new_global();
 
-        let mut sub1 = registry.subscribe::<u32>("test");
-        let mut sub2 = registry.subscribe::<u32>("test");
+        let mut sub1 = registry.subscribe::<u32>(h);
+        let mut sub2 = registry.subscribe::<u32>(h);
 
-        registry.publish(42u32, "test").unwrap();
+        registry.publish(42u32, h).unwrap();
 
         let v1 = timeout(Duration::from_millis(100), sub1.recv()).await.expect("timeout");
         let v2 = timeout(Duration::from_millis(100), sub2.recv()).await.expect("timeout");
@@ -331,20 +263,22 @@ mod tests {
     #[tokio::test]
     async fn publish_with_no_subscribers_returns_error() {
         let registry = PubSubRegistry::new();
+        let h = Handle::new_global();
 
-        let result = registry.publish(42u32, "test");
+        let result = registry.publish(42u32, h);
         assert!(result.is_err());
     }
 
     #[tokio::test]
-    async fn different_types_same_identifier() {
+    async fn different_types_same_handle() {
         let registry = PubSubRegistry::new();
+        let h = Handle::new_global();
 
-        let mut sub_u32 = registry.subscribe::<u32>("test");
-        let mut sub_string = registry.subscribe::<String>("test");
+        let mut sub_u32 = registry.subscribe::<u32>(h);
+        let mut sub_string = registry.subscribe::<String>(h);
 
-        registry.publish(42u32, "test").unwrap();
-        registry.publish("hello".to_string(), "test").unwrap();
+        registry.publish(42u32, h).unwrap();
+        registry.publish("hello".to_string(), h).unwrap();
 
         let v1 = timeout(Duration::from_millis(100), sub_u32.recv())
             .await
@@ -358,12 +292,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn process_identifier() {
+    async fn process_handle() {
         let registry = PubSubRegistry::new();
-        let pid = process::Id::new();
+        let pid = crate::runtime::process::Id::new();
+        let h = Handle::for_process(pid);
 
-        let mut sub = registry.subscribe::<u32>(pid);
-        registry.publish(42u32, pid).unwrap();
+        let mut sub = registry.subscribe::<u32>(h);
+        registry.publish(42u32, h).unwrap();
 
         let value = timeout(Duration::from_millis(100), sub.recv()).await.expect("timeout");
         assert_eq!(value, Some(42));
@@ -372,8 +307,9 @@ mod tests {
     #[tokio::test]
     async fn channel_closed_returns_none() {
         let registry = PubSubRegistry::new();
+        let h = Handle::new_global();
 
-        let mut sub = registry.subscribe::<u32>("test");
+        let mut sub = registry.subscribe::<u32>(h);
 
         // Drop the registry, which drops the Arc. Since we only have one reference, the sender is dropped.
         drop(registry);
@@ -386,12 +322,13 @@ mod tests {
     async fn lagged_subscriber_recovers() {
         // Create a registry with a tiny buffer so we can force lag.
         let registry = PubSubRegistry::with_channel_capacity(2);
+        let h = Handle::new_global();
 
-        let mut sub = registry.subscribe::<u32>("test");
+        let mut sub = registry.subscribe::<u32>(h);
 
         // Publish more values than the channel can hold.
         for i in 0..10 {
-            registry.publish(i as u32, "test").unwrap();
+            registry.publish(i as u32, h).unwrap();
         }
 
         // The subscriber should skip lagged messages and still receive a value.
@@ -402,12 +339,13 @@ mod tests {
     #[tokio::test]
     async fn multiple_values_received_in_order() {
         let registry = PubSubRegistry::new();
+        let h = Handle::new_global();
 
-        let mut sub = registry.subscribe::<u32>("test");
+        let mut sub = registry.subscribe::<u32>(h);
 
-        registry.publish(1u32, "test").unwrap();
-        registry.publish(2u32, "test").unwrap();
-        registry.publish(3u32, "test").unwrap();
+        registry.publish(1u32, h).unwrap();
+        registry.publish(2u32, h).unwrap();
+        registry.publish(3u32, h).unwrap();
 
         let v1 = timeout(Duration::from_millis(100), sub.recv()).await.expect("timeout");
         let v2 = timeout(Duration::from_millis(100), sub.recv()).await.expect("timeout");
@@ -416,16 +354,5 @@ mod tests {
         assert_eq!(v1, Some(1));
         assert_eq!(v2, Some(2));
         assert_eq!(v3, Some(3));
-    }
-
-    #[tokio::test]
-    async fn integer_identifier() {
-        let registry = PubSubRegistry::new();
-
-        let mut sub = registry.subscribe::<u32>(123u64);
-        registry.publish(42u32, 123u64).unwrap();
-
-        let value = timeout(Duration::from_millis(100), sub.recv()).await.expect("timeout");
-        assert_eq!(value, Some(42));
     }
 }

@@ -1,33 +1,34 @@
 //! A type-erased, async-aware registry for inter-process coordination.
 //!
-//! The [`ResourceRegistry`] allows processes to publish and acquire typed resources by identifier, with async waiting
+//! The [`ResourceRegistry`] allows processes to publish and acquire typed resources by handle, with async waiting
 //! when resources aren't yet available. Acquired resources are temporarily borrowed via a guard—when the guard is
 //! dropped, the resource returns to the registry.
 //!
-//! This enables decoupled coordination where processes don't need to know about each other, only the identifier and
+//! This enables decoupled coordination where processes don't need to know about each other, only the handle and
 //! type of the resource they're exchanging.
 //!
 //! # Example
 //!
 //! ```
-//! use saluki_core::runtime::state::{Identifier, ResourceRegistry};
+//! use saluki_core::runtime::state::{Handle, ResourceRegistry};
 //!
 //! # #[tokio::main]
 //! # async fn main() {
 //! let registry = ResourceRegistry::new();
 //!
 //! // Publish a resource
-//! registry.publish(42u32, "my-resource").unwrap();
+//! let handle = Handle::new_global();
+//! registry.publish(42u32, handle).unwrap();
 //!
 //! // Acquire the resource (returns immediately since it's available)
-//! let guard = registry.acquire::<u32>("my-resource").await;
+//! let guard = registry.acquire::<u32>(handle).await;
 //! assert_eq!(*guard, 42);
 //!
 //! // Resource is returned to registry when guard is dropped
 //! drop(guard);
 //!
 //! // Can acquire again
-//! let guard = registry.try_acquire::<u32>("my-resource");
+//! let guard = registry.try_acquire::<u32>(handle);
 //! assert!(guard.is_some());
 //! # }
 //! ```
@@ -41,94 +42,35 @@ use std::{
 };
 
 use snafu::Snafu;
-use stringtheory::MetaString;
 use tokio::sync::oneshot;
 
-/// Identifier for resources in the registry.
-///
-/// Resources are keyed by both their Rust type and an identifier. The identifier can be either a string or an integer,
-/// allowing flexibility in how resources are named.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum Identifier {
-    /// A string identifier.
-    String(MetaString),
-    /// An integer identifier.
-    Integer(u64),
-}
-
-impl From<&str> for Identifier {
-    fn from(s: &str) -> Self {
-        Self::String(MetaString::from(s))
-    }
-}
-
-impl From<String> for Identifier {
-    fn from(s: String) -> Self {
-        Self::String(MetaString::from(s))
-    }
-}
-
-impl From<MetaString> for Identifier {
-    fn from(s: MetaString) -> Self {
-        Self::String(s)
-    }
-}
-
-impl From<u64> for Identifier {
-    fn from(n: u64) -> Self {
-        Self::Integer(n)
-    }
-}
-
-impl From<i64> for Identifier {
-    fn from(n: i64) -> Self {
-        Self::Integer(n as u64)
-    }
-}
-
-impl From<u32> for Identifier {
-    fn from(n: u32) -> Self {
-        Self::Integer(n as u64)
-    }
-}
-
-impl From<i32> for Identifier {
-    fn from(n: i32) -> Self {
-        Self::Integer(n as u64)
-    }
-}
-
-impl From<usize> for Identifier {
-    fn from(n: usize) -> Self {
-        Self::Integer(n as u64)
-    }
-}
+use super::Handle;
 
 /// Errors that can occur when publishing to the registry.
 #[derive(Debug, Snafu)]
 pub enum PublishError {
-    /// A resource with this type and identifier already exists in the registry.
-    #[snafu(display("Resource already exists for type '{}' with identifier {:?}", type_name, identifier))]
+    /// A resource with this type and handle already exists in the registry.
+    #[snafu(display("Resource already exists for type '{}' with handle {:?}", type_name, handle))]
     AlreadyExists {
         /// The name of the type.
         type_name: &'static str,
-        /// The identifier.
-        identifier: Identifier,
+        /// The handle.
+        handle: Handle,
     },
 }
 
-/// Internal key combining type and identifier.
+/// Internal key combining type and handle.
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct StorageKey {
     type_id: TypeId,
-    identifier: Identifier,
+    handle: Handle,
 }
 
 impl StorageKey {
-    fn new<T: 'static>(identifier: Identifier) -> Self {
+    fn new<T: 'static>(handle: Handle) -> Self {
         Self {
             type_id: TypeId::of::<T>(),
-            identifier,
+            handle,
         }
     }
 }
@@ -241,7 +183,7 @@ impl ResourceRegistryInner {
 
 /// A resource registry for async coordination between processes.
 ///
-/// The registry stores typed resources indexed by an [`Identifier`]. Processes can publish resources and acquire them
+/// The registry stores typed resources indexed by a [`Handle`]. Processes can publish resources and acquire them
 /// asynchronously. When a resource is acquired, it is temporarily removed from the registry and returned via a
 /// [`ResourceGuard`]. When the guard is dropped, the resource is automatically returned to the registry.
 ///
@@ -267,20 +209,19 @@ impl ResourceRegistry {
         }
     }
 
-    /// Publishes a resource with the given identifier.
+    /// Publishes a resource with the given handle.
     ///
     /// The resource becomes available for acquisition by other processes.
     ///
     /// # Errors
     ///
-    /// Returns an error if a resource with the same type and identifier already exists in the registry (whether
+    /// Returns an error if a resource with the same type and handle already exists in the registry (whether
     /// available or currently acquired).
-    pub fn publish<T>(&self, resource: T, identifier: impl Into<Identifier>) -> Result<(), PublishError>
+    pub fn publish<T>(&self, resource: T, handle: Handle) -> Result<(), PublishError>
     where
         T: Send + Sync + 'static,
     {
-        let identifier = identifier.into();
-        let key = StorageKey::new::<T>(identifier.clone());
+        let key = StorageKey::new::<T>(handle);
 
         let mut state = self.inner.state.lock().unwrap();
         state.register_type::<T>();
@@ -289,7 +230,7 @@ impl ResourceRegistry {
         if state.resource_exists(&key) {
             return Err(PublishError::AlreadyExists {
                 type_name: std::any::type_name::<T>(),
-                identifier,
+                handle,
             });
         }
 
@@ -306,12 +247,11 @@ impl ResourceRegistry {
     /// Tries to acquire a resource immediately without waiting.
     ///
     /// Returns `Some(guard)` if the resource is available, `None` otherwise.
-    pub fn try_acquire<T>(&self, identifier: impl Into<Identifier>) -> Option<ResourceGuard<T>>
+    pub fn try_acquire<T>(&self, handle: Handle) -> Option<ResourceGuard<T>>
     where
         T: Send + Sync + 'static,
     {
-        let identifier = identifier.into();
-        let key = StorageKey::new::<T>(identifier);
+        let key = StorageKey::new::<T>(handle);
 
         let mut state = self.inner.state.lock().unwrap();
         state.register_type::<T>();
@@ -330,16 +270,15 @@ impl ResourceRegistry {
         None
     }
 
-    /// Acquires a resource with the given identifier, waiting if not yet available.
+    /// Acquires a resource with the given handle, waiting if not yet available.
     ///
     /// Returns a guard that provides access to the resource. When the guard is dropped, the resource is returned to the
     /// registry and becomes available for acquisition again.
-    pub async fn acquire<T>(&self, identifier: impl Into<Identifier>) -> ResourceGuard<T>
+    pub async fn acquire<T>(&self, handle: Handle) -> ResourceGuard<T>
     where
         T: Send + Sync + 'static,
     {
-        let identifier = identifier.into();
-        let key = StorageKey::new::<T>(identifier);
+        let key = StorageKey::new::<T>(handle);
 
         loop {
             let rx = {
@@ -393,7 +332,7 @@ impl ResourceRegistry {
             .keys()
             .map(|key| ResourceInfo {
                 type_name: state.type_name(key.type_id),
-                identifier: key.identifier.clone(),
+                handle: key.handle,
             })
             .collect();
 
@@ -402,7 +341,7 @@ impl ResourceRegistry {
             .iter()
             .map(|key| ResourceInfo {
                 type_name: state.type_name(key.type_id),
-                identifier: key.identifier.clone(),
+                handle: key.handle,
             })
             .collect();
 
@@ -411,7 +350,7 @@ impl ResourceRegistry {
             .iter()
             .map(|(key, waiters)| PendingRequestInfo {
                 type_name: state.type_name(key.type_id),
-                identifier: key.identifier.clone(),
+                handle: key.handle,
                 waiter_count: waiters.len(),
             })
             .collect();
@@ -475,8 +414,8 @@ pub struct ResourceRegistrySnapshot {
 pub struct ResourceInfo {
     /// The name of the resource's type.
     pub type_name: &'static str,
-    /// The identifier of the resource.
-    pub identifier: Identifier,
+    /// The handle of the resource.
+    pub handle: Handle,
 }
 
 /// Information about pending acquire requests.
@@ -484,9 +423,9 @@ pub struct ResourceInfo {
 pub struct PendingRequestInfo {
     /// The name of the requested type.
     pub type_name: &'static str,
-    /// The identifier being requested.
-    pub identifier: Identifier,
-    /// The number of waiters for this (type, identifier) pair.
+    /// The handle being requested.
+    pub handle: Handle,
+    /// The number of waiters for this (type, handle) pair.
     pub waiter_count: usize,
 }
 
@@ -501,10 +440,11 @@ mod tests {
     #[test]
     fn basic_publish_then_acquire() {
         let registry = ResourceRegistry::new();
+        let h = Handle::new_global();
 
-        registry.publish(42u32, "test").unwrap();
+        registry.publish(42u32, h).unwrap();
 
-        let guard = registry.try_acquire::<u32>("test");
+        let guard = registry.try_acquire::<u32>(h);
         assert!(guard.is_some());
         assert_eq!(*guard.unwrap(), 42);
     }
@@ -513,15 +453,16 @@ mod tests {
     async fn acquire_then_publish_async_waiting() {
         let registry = ResourceRegistry::new();
         let registry_clone = registry.clone();
+        let h = Handle::new_global();
 
         // Spawn a task that will acquire (and wait)
-        let acquire_handle = tokio::spawn(async move { registry_clone.acquire::<u32>("test").await });
+        let acquire_handle = tokio::spawn(async move { registry_clone.acquire::<u32>(h).await });
 
         // Give the acquire task time to register as waiter
         tokio::time::sleep(Duration::from_millis(10)).await;
 
         // Publish the resource
-        registry.publish(42u32, "test").unwrap();
+        registry.publish(42u32, h).unwrap();
 
         // The acquire should complete
         let guard = timeout(Duration::from_millis(100), acquire_handle)
@@ -535,17 +476,18 @@ mod tests {
     #[test]
     fn guard_drop_returns_resource() {
         let registry = ResourceRegistry::new();
+        let h = Handle::new_global();
 
-        registry.publish(42u32, "test").unwrap();
+        registry.publish(42u32, h).unwrap();
 
         // Acquire and drop
         {
-            let guard = registry.try_acquire::<u32>("test").unwrap();
+            let guard = registry.try_acquire::<u32>(h).unwrap();
             assert_eq!(*guard, 42);
         }
 
         // Should be able to acquire again
-        let guard = registry.try_acquire::<u32>("test");
+        let guard = registry.try_acquire::<u32>(h);
         assert!(guard.is_some());
         assert_eq!(*guard.unwrap(), 42);
     }
@@ -553,47 +495,50 @@ mod tests {
     #[test]
     fn publish_duplicate_returns_error() {
         let registry = ResourceRegistry::new();
+        let h = Handle::new_global();
 
-        registry.publish(42u32, "test").unwrap();
+        registry.publish(42u32, h).unwrap();
 
-        let result = registry.publish(100u32, "test");
+        let result = registry.publish(100u32, h);
         assert!(result.is_err());
 
         // Original resource should still be there
-        let guard = registry.try_acquire::<u32>("test").unwrap();
+        let guard = registry.try_acquire::<u32>(h).unwrap();
         assert_eq!(*guard, 42);
     }
 
     #[test]
     fn publish_while_acquired_returns_error() {
         let registry = ResourceRegistry::new();
+        let h = Handle::new_global();
 
-        registry.publish(42u32, "test").unwrap();
+        registry.publish(42u32, h).unwrap();
 
-        let _guard = registry.try_acquire::<u32>("test").unwrap();
+        let _guard = registry.try_acquire::<u32>(h).unwrap();
 
         // Try to publish while acquired
-        let result = registry.publish(100u32, "test");
+        let result = registry.publish(100u32, h);
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn multiple_waiters_fifo() {
         let registry = ResourceRegistry::new();
+        let h = Handle::new_global();
 
         // Spawn multiple waiters
         let registry1 = registry.clone();
-        let handle1 = tokio::spawn(async move { registry1.acquire::<u32>("test").await });
+        let handle1 = tokio::spawn(async move { registry1.acquire::<u32>(h).await });
 
         tokio::time::sleep(Duration::from_millis(5)).await;
 
         let registry2 = registry.clone();
-        let handle2 = tokio::spawn(async move { registry2.acquire::<u32>("test").await });
+        let handle2 = tokio::spawn(async move { registry2.acquire::<u32>(h).await });
 
         tokio::time::sleep(Duration::from_millis(5)).await;
 
         // Publish first resource - should go to first waiter
-        registry.publish(1u32, "test").unwrap();
+        registry.publish(1u32, h).unwrap();
 
         let guard1 = timeout(Duration::from_millis(100), handle1)
             .await
@@ -616,16 +561,17 @@ mod tests {
     }
 
     #[test]
-    fn different_types_same_identifier() {
+    fn different_types_same_handle() {
         let registry = ResourceRegistry::new();
+        let h = Handle::new_global();
 
-        // Publish different types with same identifier
-        registry.publish(42u32, "test").unwrap();
-        registry.publish("hello".to_string(), "test").unwrap();
+        // Publish different types with same handle
+        registry.publish(42u32, h).unwrap();
+        registry.publish("hello".to_string(), h).unwrap();
 
         // Acquire each type
-        let guard_u32 = registry.try_acquire::<u32>("test").unwrap();
-        let guard_string = registry.try_acquire::<String>("test").unwrap();
+        let guard_u32 = registry.try_acquire::<u32>(h).unwrap();
+        let guard_string = registry.try_acquire::<String>(h).unwrap();
 
         assert_eq!(*guard_u32, 42);
         assert_eq!(*guard_string, "hello");
@@ -634,28 +580,31 @@ mod tests {
     #[test]
     fn try_acquire_returns_none_when_not_available() {
         let registry = ResourceRegistry::new();
+        let h = Handle::new_global();
 
-        let guard = registry.try_acquire::<u32>("nonexistent");
+        let guard = registry.try_acquire::<u32>(h);
         assert!(guard.is_none());
     }
 
     #[test]
     fn try_acquire_returns_none_when_acquired() {
         let registry = ResourceRegistry::new();
+        let h = Handle::new_global();
 
-        registry.publish(42u32, "test").unwrap();
-        let _guard = registry.try_acquire::<u32>("test").unwrap();
+        registry.publish(42u32, h).unwrap();
+        let _guard = registry.try_acquire::<u32>(h).unwrap();
 
         // Try to acquire while held
-        let second = registry.try_acquire::<u32>("test");
+        let second = registry.try_acquire::<u32>(h);
         assert!(second.is_none());
     }
 
     #[test]
     fn snapshot_shows_available() {
         let registry = ResourceRegistry::new();
+        let h = Handle::new_global();
 
-        registry.publish(42u32, "test").unwrap();
+        registry.publish(42u32, h).unwrap();
 
         let snapshot = registry.snapshot();
         assert_eq!(snapshot.available_resources.len(), 1);
@@ -666,9 +615,10 @@ mod tests {
     #[test]
     fn snapshot_shows_acquired() {
         let registry = ResourceRegistry::new();
+        let h = Handle::new_global();
 
-        registry.publish(42u32, "test").unwrap();
-        let _guard = registry.try_acquire::<u32>("test").unwrap();
+        registry.publish(42u32, h).unwrap();
+        let _guard = registry.try_acquire::<u32>(h).unwrap();
 
         let snapshot = registry.snapshot();
         assert_eq!(snapshot.available_resources.len(), 0);
@@ -680,9 +630,10 @@ mod tests {
     async fn snapshot_shows_pending() {
         let registry = ResourceRegistry::new();
         let registry_clone = registry.clone();
+        let h = Handle::new_global();
 
         // Spawn a waiter
-        let _handle = tokio::spawn(async move { registry_clone.acquire::<u32>("test").await });
+        let _handle = tokio::spawn(async move { registry_clone.acquire::<u32>(h).await });
 
         // Give it time to register
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -695,27 +646,18 @@ mod tests {
     }
 
     #[test]
-    fn integer_identifier() {
-        let registry = ResourceRegistry::new();
-
-        registry.publish(42u32, 123u64).unwrap();
-
-        let guard = registry.try_acquire::<u32>(123u64).unwrap();
-        assert_eq!(*guard, 42);
-    }
-
-    #[test]
     fn mutable_access_through_guard() {
         let registry = ResourceRegistry::new();
+        let h = Handle::new_global();
 
-        registry.publish(vec![1, 2, 3], "test").unwrap();
+        registry.publish(vec![1, 2, 3], h).unwrap();
 
         {
-            let mut guard = registry.try_acquire::<Vec<i32>>("test").unwrap();
+            let mut guard = registry.try_acquire::<Vec<i32>>(h).unwrap();
             guard.push(4);
         }
 
-        let guard = registry.try_acquire::<Vec<i32>>("test").unwrap();
+        let guard = registry.try_acquire::<Vec<i32>>(h).unwrap();
         assert_eq!(*guard, vec![1, 2, 3, 4]);
     }
 }
