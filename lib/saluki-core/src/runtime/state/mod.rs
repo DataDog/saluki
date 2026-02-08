@@ -11,8 +11,8 @@ pub use self::resources::{
     PendingRequestInfo, PublishError, ResourceGuard, ResourceInfo, ResourceRegistry, ResourceRegistrySnapshot,
 };
 
-mod pubsub;
-pub use self::pubsub::{PubSubPublishError, PubSubRegistry, Subscription};
+mod dataspace;
+pub use self::dataspace::{AssertionUpdate, DataspaceRegistry, Subscription, WildcardSubscription};
 
 static GLOBAL_HANDLE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
