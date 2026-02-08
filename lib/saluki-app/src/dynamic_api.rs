@@ -1,8 +1,8 @@
 //! Dynamic API server.
 //!
 //! Unlike [`APIBuilder`][crate::api::APIBuilder], which constructs its route set once at build time,
-//! `DynamicAPIBuilder` subscribes to runtime notifications via the pub/sub registry and acquires route resources from
-//! the resource registry, hot-swapping the inner router behind an [`ArcSwap`] as handlers are registered or withdrawn.
+//! `DynamicAPIBuilder` subscribes to runtime notifications via the dataspace registry and acquires route resources from
+//! the resource registry, hot-swapping the inner router behind an [`ArcSwap`] as handlers are asserted or retracted.
 
 use std::{
     convert::Infallible,
@@ -19,10 +19,10 @@ use http::Response;
 use rcgen::{generate_simple_self_signed, CertifiedKey};
 use rustls::{pki_types::PrivateKeyDer, ServerConfig};
 use rustls_pki_types::PrivatePkcs8KeyDer;
-use saluki_api::{APIEndpointInterest, EndpointType, InterestType};
+use saluki_api::{APIEndpointInterest, EndpointType};
 use saluki_common::collections::FastIndexMap;
 use saluki_core::runtime::{
-    state::{PubSubRegistry, ResourceRegistry, Subscription},
+    state::{AssertionUpdate, DataspaceRegistry, Handle, ResourceRegistry, WildcardSubscription},
     InitializationError, ProcessShutdown, Supervisable, SupervisorFuture,
 };
 use saluki_error::GenericError;
@@ -40,45 +40,44 @@ use tonic::service::RoutesBuilder;
 use tower::Service;
 use tracing::{debug, info, warn};
 
-/// The well-known pub/sub topic for API endpoint interest notifications.
-const API_ENDPOINT_INTEREST_TOPIC: &str = "api-endpoint-interest";
-
 /// A dynamic API server that can add and remove route sets at runtime.
 ///
 /// `DynamicAPIBuilder` serves HTTP on a given address using an outer [`Router`] whose fallback delegates every request
-/// to an inner [`Router`] stored behind an [`ArcSwap`]. A background event loop subscribes to the [`PubSubRegistry`]
-/// for [`APIEndpointInterest`] notifications, acquires `Router<()>` resources from the [`ResourceRegistry`], and
-/// atomically swaps the inner router as handlers register or withdraw.
+/// to an inner [`Router`] stored behind an [`ArcSwap`]. A background event loop subscribes to the [`DataspaceRegistry`]
+/// for [`APIEndpointInterest`] assertions and retractions, acquires `Router<()>` resources from the
+/// [`ResourceRegistry`], and atomically swaps the inner router as handlers are added or removed.
 ///
 /// ## Publisher protocol
 ///
 /// Any worker that wants to dynamically register API routes must:
 ///
 /// 1. Build a `Router<()>` with state applied (i.e. call `handler.generate_routes().with_state(handler.generate_initial_state())`)
-/// 2. Publish the `Router<()>` to the [`ResourceRegistry`] under a string identifier
-/// 3. Publish an [`APIEndpointInterest`] to the [`PubSubRegistry`] on the `"api-endpoint-interest"` topic
+/// 2. Publish the `Router<()>` to the [`ResourceRegistry`] under a [`Handle`]
+/// 3. Assert an [`APIEndpointInterest`] in the [`DataspaceRegistry`] under the same [`Handle`]
 ///
-/// The resource **must** be published before the interest. If the interest arrives before the resource, the
+/// The resource **must** be published before the assertion. If the assertion arrives before the resource, the
 /// registration will be silently skipped with a warning.
+///
+/// To withdraw routes, retract the [`APIEndpointInterest`] from the [`DataspaceRegistry`].
 pub struct DynamicAPIBuilder {
     endpoint_type: EndpointType,
     listen_address: ListenAddress,
     tls_config: Option<ServerConfig>,
-    pubsub_registry: PubSubRegistry,
+    dataspace_registry: DataspaceRegistry,
     resource_registry: ResourceRegistry,
 }
 
 impl DynamicAPIBuilder {
     /// Creates a new `DynamicAPIBuilder` for the given endpoint type.
     pub fn new(
-        endpoint_type: EndpointType, listen_address: ListenAddress, pubsub_registry: PubSubRegistry,
+        endpoint_type: EndpointType, listen_address: ListenAddress, dataspace_registry: DataspaceRegistry,
         resource_registry: ResourceRegistry,
     ) -> Self {
         Self {
             endpoint_type,
             listen_address,
             tls_config: None,
-            pubsub_registry,
+            dataspace_registry,
             resource_registry,
         }
     }
@@ -120,9 +119,9 @@ impl Supervisable for DynamicAPIBuilder {
         // Build the outer "shell" router whose fallback delegates to whatever is currently in the ArcSwap.
         let outer_router = build_outer_router(Arc::clone(&inner_router));
 
-        // Subscribe to the pub/sub topic for APIEndpointInterest notifications.
-        let subscription: Subscription<APIEndpointInterest> =
-            self.pubsub_registry.subscribe(API_ENDPOINT_INTEREST_TOPIC);
+        // Subscribe to all APIEndpointInterest assertions and retractions in the dataspace.
+        let subscription: WildcardSubscription<APIEndpointInterest> =
+            self.dataspace_registry.subscribe_all::<APIEndpointInterest>();
 
         // Bind the HTTP listener immediately so we fail fast on bind errors.
         let listener = ConnectionOrientedListener::from_listen_address(self.listen_address.clone())
@@ -200,13 +199,13 @@ impl Service<http::Request<AxumBody>> for ArcSwapRouterService {
     }
 }
 
-/// Runs the event loop that listens for API endpoint interest notifications and hot-swaps the inner router.
+/// Runs the event loop that listens for API endpoint interest assertions/retractions and hot-swaps the inner router.
 async fn run_event_loop(
-    inner_router: Arc<ArcSwap<Router>>, mut subscription: Subscription<APIEndpointInterest>,
+    inner_router: Arc<ArcSwap<Router>>, mut subscription: WildcardSubscription<APIEndpointInterest>,
     resource_registry: ResourceRegistry, endpoint_type: EndpointType, mut process_shutdown: ProcessShutdown,
     shutdown_handle: ShutdownHandle, error_handle: ErrorHandle,
 ) -> Result<(), GenericError> {
-    let mut registered_handlers: FastIndexMap<String, Router> = FastIndexMap::default();
+    let mut registered_handlers: FastIndexMap<Handle, Router> = FastIndexMap::default();
 
     let shutdown = process_shutdown.wait_for_shutdown();
     pin!(shutdown);
@@ -227,53 +226,48 @@ async fn run_event_loop(
                 break;
             }
 
-            maybe_interest = subscription.recv() => {
-                let Some(interest) = maybe_interest else {
+            maybe_update = subscription.recv() => {
+                let Some((handle, update)) = maybe_update else {
                     warn!("API endpoint interest channel closed.");
                     break;
                 };
 
-                // Only process interests targeting our endpoint type.
-                if interest.endpoint != endpoint_type {
-                    continue;
-                }
+                match update {
+                    AssertionUpdate::Asserted(interest) => {
+                        // Only process interests targeting our endpoint type.
+                        if interest.endpoint != endpoint_type {
+                            continue;
+                        }
 
-                match interest.interest {
-                    InterestType::Register => {
                         // Acquire the Router<()> from the resource registry (non-blocking).
-                        // The publisher must have published the resource before sending the interest.
-                        match resource_registry.try_acquire::<Router>(interest.identifier.as_str()) {
+                        // The publisher must have published the resource before asserting the interest.
+                        match resource_registry.try_acquire::<Router>(handle) {
                             Some(guard) => {
                                 let router: Router = (*guard).clone();
                                 drop(guard);
 
                                 info!(
-                                    identifier = %interest.identifier,
+                                    handle = ?handle,
                                     "Registering dynamic API handler.",
                                 );
-                                registered_handlers.insert(interest.identifier, router);
+                                registered_handlers.insert(handle, router);
                                 rebuild_router(&inner_router, &registered_handlers);
                             }
                             None => {
                                 warn!(
-                                    identifier = %interest.identifier,
-                                    "Received Register interest but router resource not found in registry. Ignoring.",
+                                    handle = ?handle,
+                                    "Received assertion but router resource not found in registry. Ignoring.",
                                 );
                             }
                         }
                     }
-                    InterestType::Withdraw => {
-                        if registered_handlers.swap_remove(&interest.identifier).is_some() {
+                    AssertionUpdate::Retracted => {
+                        if registered_handlers.swap_remove(&handle).is_some() {
                             info!(
-                                identifier = %interest.identifier,
+                                handle = ?handle,
                                 "Withdrawing dynamic API handler.",
                             );
                             rebuild_router(&inner_router, &registered_handlers);
-                        } else {
-                            warn!(
-                                identifier = %interest.identifier,
-                                "Received Withdraw interest but no handler was registered with this identifier.",
-                            );
                         }
                     }
                 }
@@ -285,7 +279,7 @@ async fn run_event_loop(
 }
 
 /// Rebuilds the merged inner router from all currently-registered handlers and stores it in the [`ArcSwap`].
-fn rebuild_router(inner_router: &Arc<ArcSwap<Router>>, handlers: &FastIndexMap<String, Router>) {
+fn rebuild_router(inner_router: &Arc<ArcSwap<Router>>, handlers: &FastIndexMap<Handle, Router>) {
     let mut merged = Router::new();
     for router in handlers.values() {
         merged = merged.merge(router.clone());

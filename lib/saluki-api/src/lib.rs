@@ -27,25 +27,13 @@ pub enum EndpointType {
     Privileged,
 }
 
-/// Describes whether a handler is being registered or withdrawn.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum InterestType {
-    /// Register a new set of routes.
-    Register,
-    /// Withdraw a previously-registered set of routes.
-    Withdraw,
-}
-
-/// A notification that an API handler wants to register or withdraw routes for a specific endpoint.
+/// Describes which API endpoint a dynamic handler targets.
 ///
-/// The `identifier` must match the resource registry identifier under which the corresponding `Router<()>` (with state
-/// already applied) has been published.
+/// Publishers assert this value in the [`DataspaceRegistry`] alongside a `Router<()>` resource published to the
+/// [`ResourceRegistry`] under the same [`Handle`]. The dynamic API server observes assertions and retractions via a
+/// wildcard subscription, using the handle to look up the corresponding router resource.
 #[derive(Clone, Debug)]
 pub struct APIEndpointInterest {
     /// Which API endpoint this interest targets.
     pub endpoint: EndpointType,
-    /// Whether routes are being added or removed.
-    pub interest: InterestType,
-    /// The resource registry identifier for the `Router<()>` resource.
-    pub identifier: String,
 }
