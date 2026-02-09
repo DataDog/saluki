@@ -10,6 +10,7 @@ workspace = true
 
 [features]
 default = []
+bench = []
 python-checks = ["dep:pyo3"]
 
 [dependencies]
@@ -79,7 +80,14 @@ tracing = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]
+cpu-time = { workspace = true }
+criterion = { workspace = true }
 proptest = { workspace = true }
 pyo3-ffi = { workspace = true }
 saluki-metrics = { workspace = true, features = ["test"] }
 test-strategy = { workspace = true }
+
+[[bench]]
+name = "normalize"
+harness = false
+required-features = ["bench"]
