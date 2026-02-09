@@ -7,8 +7,7 @@ use chumsky::Parser as ChumskyParser;
 
 use super::lexer::Token;
 use super::{
-    Argument, BoxError, CallbackFn, CallbackMap, EnumMap, EvalContext, OttlParser, PathResolver,
-    Result, Value,
+    Argument, BoxError, CallbackFn, CallbackMap, EnumMap, EvalContext, OttlParser, PathResolver, Result, Value,
 };
 
 // =====================================================================================================================
@@ -181,10 +180,7 @@ pub struct Parser {
 impl Parser {
     /// Creates a new parser with the given configuration.
     pub fn new(
-        editors_map: &CallbackMap,
-        converters_map: &CallbackMap,
-        enums_map: &EnumMap,
-        path_resolver_cb: &PathResolver,
+        editors_map: &CallbackMap, converters_map: &CallbackMap, enums_map: &EnumMap, path_resolver_cb: &PathResolver,
         expression: &str,
     ) -> Self {
         let mut parser = Parser {
@@ -267,8 +263,7 @@ type ParserExtra<'src> = extra::Err<Rich<'src, Token<'src>>>;
 
 /// Parser for literal values (string, int, float, bytes, bool, nil)
 /// Supports optional unary minus for numeric literals
-fn literal_parser<'a>(
-) -> impl chumsky::Parser<'a, TokenInput<'a>, ValueExpr, ParserExtra<'a>> + Clone {
+fn literal_parser<'a>() -> impl chumsky::Parser<'a, TokenInput<'a>, ValueExpr, ParserExtra<'a>> + Clone {
     let string_literal = select_ref! {
         Token::StringLiteral(s) => {
             let inner = &s[1..s.len()-1];
@@ -333,8 +328,7 @@ fn literal_parser<'a>(
 
 // =====================================================================================================================
 /// Parser for index expressions: "[" (string | int) "]"
-fn index_parser<'a>() -> impl chumsky::Parser<'a, TokenInput<'a>, IndexExpr, ParserExtra<'a>> + Clone
-{
+fn index_parser<'a>() -> impl chumsky::Parser<'a, TokenInput<'a>, IndexExpr, ParserExtra<'a>> + Clone {
     let index_string = select_ref! {
         Token::StringLiteral(s) => {
             let inner = &s[1..s.len()-1];
@@ -356,8 +350,7 @@ fn index_parser<'a>() -> impl chumsky::Parser<'a, TokenInput<'a>, IndexExpr, Par
 
 // =====================================================================================================================
 /// Parser for lowercase identifiers
-fn lower_ident_parser<'a>(
-) -> impl chumsky::Parser<'a, TokenInput<'a>, String, ParserExtra<'a>> + Clone {
+fn lower_ident_parser<'a>() -> impl chumsky::Parser<'a, TokenInput<'a>, String, ParserExtra<'a>> + Clone {
     select_ref! {
         Token::LowerIdent(s) => s.to_string(),
     }
@@ -365,8 +358,7 @@ fn lower_ident_parser<'a>(
 
 // =====================================================================================================================
 /// Parser for uppercase identifiers
-fn upper_ident_parser<'a>(
-) -> impl chumsky::Parser<'a, TokenInput<'a>, String, ParserExtra<'a>> + Clone {
+fn upper_ident_parser<'a>() -> impl chumsky::Parser<'a, TokenInput<'a>, String, ParserExtra<'a>> + Clone {
     select_ref! {
         Token::UpperIdent(s) => s.to_string(),
     }
@@ -374,8 +366,7 @@ fn upper_ident_parser<'a>(
 
 // =====================================================================================================================
 /// Parser for path expressions: lower_ident ("." ident_segment)* index*
-fn path_parser<'a>() -> impl chumsky::Parser<'a, TokenInput<'a>, PathExpr, ParserExtra<'a>> + Clone
-{
+fn path_parser<'a>() -> impl chumsky::Parser<'a, TokenInput<'a>, PathExpr, ParserExtra<'a>> + Clone {
     let lower_ident = lower_ident_parser();
     let ident_segment = lower_ident_parser().or(upper_ident_parser());
     let index = index_parser();
@@ -397,8 +388,7 @@ fn path_parser<'a>() -> impl chumsky::Parser<'a, TokenInput<'a>, PathExpr, Parse
 
 // =====================================================================================================================
 /// Parser for comparison operators
-fn comp_op_parser<'a>() -> impl chumsky::Parser<'a, TokenInput<'a>, CompOp, ParserExtra<'a>> + Clone
-{
+fn comp_op_parser<'a>() -> impl chumsky::Parser<'a, TokenInput<'a>, CompOp, ParserExtra<'a>> + Clone {
     choice((
         just(&Token::Eq).to(CompOp::Eq),
         just(&Token::NotEq).to(CompOp::NotEq),
@@ -475,10 +465,7 @@ fn make_math_expr<'a>(
                 // Allow lists and maps for comparison operations (==, !=)
                 ValueExpr::List(_) => Ok(MathExpr::Primary(v)),
                 ValueExpr::Map(_) => Ok(MathExpr::Primary(v)),
-                _ => Err(Rich::custom(
-                    span,
-                    "Expected converter, path, literal, list, or map",
-                )),
+                _ => Err(Rich::custom(span, "Expected converter, path, literal, list, or map")),
             }
         });
 
@@ -498,26 +485,19 @@ fn make_math_expr<'a>(
 
         let term = factor
             .clone()
-            .foldl(mul_op.then(factor).repeated(), |left, (op, right)| {
-                MathExpr::Binary {
-                    left: Box::new(left),
-                    op,
-                    right: Box::new(right),
-                }
+            .foldl(mul_op.then(factor).repeated(), |left, (op, right)| MathExpr::Binary {
+                left: Box::new(left),
+                op,
+                right: Box::new(right),
             });
 
-        let add_op = choice((
-            just(&Token::Plus).to(MathOp::Add),
-            just(&Token::Minus).to(MathOp::Sub),
-        ));
+        let add_op = choice((just(&Token::Plus).to(MathOp::Add), just(&Token::Minus).to(MathOp::Sub)));
 
         term.clone()
-            .foldl(add_op.then(term).repeated(), |left, (op, right)| {
-                MathExpr::Binary {
-                    left: Box::new(left),
-                    op,
-                    right: Box::new(right),
-                }
+            .foldl(add_op.then(term).repeated(), |left, (op, right)| MathExpr::Binary {
+                left: Box::new(left),
+                op,
+                right: Box::new(right),
             })
     })
 }
@@ -527,9 +507,7 @@ fn make_math_expr<'a>(
 // =====================================================================================================================
 /// Build the chumsky parser for OTTL (chumsky 0.12 API)
 fn build_parser<'a>(
-    editors_map: &'a CallbackMap,
-    converters_map: &'a CallbackMap,
-    enums_map: &'a EnumMap,
+    editors_map: &'a CallbackMap, converters_map: &'a CallbackMap, enums_map: &'a EnumMap,
 ) -> impl chumsky::Parser<'a, TokenInput<'a>, RootExpr, ParserExtra<'a>> + 'a {
     // References are Copy, so they can be captured in move closures without cloning
 
@@ -638,9 +616,7 @@ fn build_parser<'a>(
 
     // Math expression using extracted make_math_expr (eliminates duplication)
     let math_expr_for_comparison = make_math_expr(value_expr.clone());
-    let comparison_value = math_expr_for_comparison
-        .clone()
-        .map(|m| ValueExpr::Math(Box::new(m)));
+    let comparison_value = math_expr_for_comparison.clone().map(|m| ValueExpr::Math(Box::new(m)));
 
     // Boolean expression
     let bool_expr = recursive({
@@ -679,26 +655,25 @@ fn build_parser<'a>(
                 bool_path,
             ));
 
-            let bool_factor = just(&Token::Not)
-                .or_not()
-                .then(bool_primary)
-                .map(|(not, expr)| {
-                    if not.is_some() {
-                        BoolExpr::Not(Box::new(expr))
-                    } else {
-                        expr
-                    }
+            let bool_factor = just(&Token::Not).or_not().then(bool_primary).map(|(not, expr)| {
+                if not.is_some() {
+                    BoolExpr::Not(Box::new(expr))
+                } else {
+                    expr
+                }
+            });
+
+            let bool_term = bool_factor
+                .clone()
+                .foldl(just(&Token::And).ignore_then(bool_factor).repeated(), |left, right| {
+                    BoolExpr::And(Box::new(left), Box::new(right))
                 });
 
-            let bool_term = bool_factor.clone().foldl(
-                just(&Token::And).ignore_then(bool_factor).repeated(),
-                |left, right| BoolExpr::And(Box::new(left), Box::new(right)),
-            );
-
-            bool_term.clone().foldl(
-                just(&Token::Or).ignore_then(bool_term).repeated(),
-                |left, right| BoolExpr::Or(Box::new(left), Box::new(right)),
-            )
+            bool_term
+                .clone()
+                .foldl(just(&Token::Or).ignore_then(bool_term).repeated(), |left, right| {
+                    BoolExpr::Or(Box::new(left), Box::new(right))
+                })
         }
     });
 
@@ -715,10 +690,7 @@ fn build_parser<'a>(
             // Also accept unary negation
             Ok(m)
         } else {
-            Err(Rich::custom(
-                span,
-                "Expected math expression with operators",
-            ))
+            Err(Rich::custom(span, "Expected math expression with operators"))
         }
     });
 
@@ -728,9 +700,7 @@ fn build_parser<'a>(
     // Editor statement
     let editor_statement = editor_call
         .then(where_clause.or_not())
-        .map(|(editor, condition)| {
-            RootExpr::EditorStatement(EditorStatement { editor, condition })
-        });
+        .map(|(editor, condition)| RootExpr::EditorStatement(EditorStatement { editor, condition }));
 
     // Root expression
     // Each alternative includes end() to ensure full input is consumed.
@@ -738,12 +708,8 @@ fn build_parser<'a>(
     // "== c" remains, end() fails and bool_expr is tried instead.
     choice((
         editor_statement.then_ignore(end()),
-        math_expr_with_ops
-            .map(RootExpr::MathExpression)
-            .then_ignore(end()),
-        bool_expr
-            .map(RootExpr::BooleanExpression)
-            .then_ignore(end()),
+        math_expr_with_ops.map(RootExpr::MathExpression).then_ignore(end()),
+        bool_expr.map(RootExpr::BooleanExpression).then_ignore(end()),
         math_expr.map(RootExpr::MathExpression).then_ignore(end()),
     ))
 }
@@ -778,11 +744,7 @@ fn evaluate_root(root: &RootExpr, ctx: &mut EvalContext, resolver: &PathResolver
 
 // =====================================================================================================================
 /// Evaluate a boolean expression
-fn evaluate_bool_expr(
-    expr: &BoolExpr,
-    ctx: &mut EvalContext,
-    resolver: &PathResolver,
-) -> Result<bool> {
+fn evaluate_bool_expr(expr: &BoolExpr, ctx: &mut EvalContext, resolver: &PathResolver) -> Result<bool> {
     match expr {
         BoolExpr::Literal(b) => Ok(*b),
         BoolExpr::Comparison { left, op, right } => {
@@ -927,11 +889,7 @@ fn evaluate_comparison(left: &Value, op: &CompOp, right: &Value) -> Result<bool>
 
 // =====================================================================================================================
 /// Evaluate a value expression
-fn evaluate_value_expr(
-    expr: &ValueExpr,
-    ctx: &mut EvalContext,
-    resolver: &PathResolver,
-) -> Result<Value> {
+fn evaluate_value_expr(expr: &ValueExpr, ctx: &mut EvalContext, resolver: &PathResolver) -> Result<Value> {
     match expr {
         ValueExpr::Literal(v) => Ok(v.clone()),
         ValueExpr::Path(path) => evaluate_path(path, ctx, resolver),
@@ -1008,11 +966,7 @@ fn apply_index(value: &Value, index: &IndexExpr) -> Result<Value> {
 
 // =====================================================================================================================
 /// Evaluate a function call
-fn evaluate_function_call(
-    fc: &FunctionCall,
-    ctx: &mut EvalContext,
-    resolver: &PathResolver,
-) -> Result<Value> {
+fn evaluate_function_call(fc: &FunctionCall, ctx: &mut EvalContext, resolver: &PathResolver) -> Result<Value> {
     let mut args = Vec::new();
     for arg_expr in &fc.args {
         let arg = match arg_expr {
@@ -1048,11 +1002,7 @@ fn evaluate_function_call(
 
 // =====================================================================================================================
 /// Evaluate a math expression
-fn evaluate_math_expr(
-    expr: &MathExpr,
-    ctx: &mut EvalContext,
-    resolver: &PathResolver,
-) -> Result<Value> {
+fn evaluate_math_expr(expr: &MathExpr, ctx: &mut EvalContext, resolver: &PathResolver) -> Result<Value> {
     match expr {
         MathExpr::Primary(value_expr) => evaluate_value_expr(value_expr, ctx, resolver),
         MathExpr::Negate(inner) => {
@@ -1129,9 +1079,7 @@ fn evaluate_math_op(left: &Value, op: &MathOp, right: &Value) -> Result<Value> {
                 }
             }
         }
-        (Value::String(l), Value::String(r)) if matches!(op, MathOp::Add) => {
-            Ok(Value::String(format!("{}{}", l, r)))
-        }
+        (Value::String(l), Value::String(r)) if matches!(op, MathOp::Add) => Ok(Value::String(format!("{}{}", l, r))),
         _ => Err(format!(
             "Cannot perform math operation on {:?} and {:?}",
             std::mem::discriminant(left),

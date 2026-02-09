@@ -9,6 +9,7 @@ members = [
   "bin/correctness/stele",
   "lib/ddsketch",
   "lib/memory-accounting",
+  "lib/ottl",
   "lib/process-memory",
   "lib/protos/containerd",
   "lib/protos/datadog",
@@ -28,7 +29,6 @@ members = [
   "lib/saluki-metrics",
   "lib/saluki-tls",
   "lib/stringtheory",
-  "lib/ottl",
 ]
 resolver = "2"
 
