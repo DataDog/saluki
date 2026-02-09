@@ -22,7 +22,7 @@ use rustls_pki_types::PrivatePkcs8KeyDer;
 use saluki_api::{APIEndpointInterest, EndpointType};
 use saluki_common::collections::FastIndexMap;
 use saluki_core::runtime::{
-    state::{AssertionUpdate, DataspaceRegistry, Handle, ResourceRegistry, WildcardSubscription},
+    state::{AssertionUpdate, DataspaceRegistry, Handle, ResourceRegistry, Subscription},
     InitializationError, ProcessShutdown, Supervisable, SupervisorFuture,
 };
 use saluki_error::GenericError;
@@ -113,15 +113,12 @@ impl Supervisable for DynamicAPIBuilder {
     }
 
     async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
-        // Create the ArcSwap holding the initial (empty) inner router.
-        let inner_router: Arc<ArcSwap<Router>> = Arc::new(ArcSwap::from_pointee(Router::new()));
+        // Create our default, empty router.
+        let inner_router = Arc::new(ArcSwap::from_pointee(Router::new()));
+        let outer_router = Router::new().fallback_service(DynamicRouterService::from_inner(&inner_router));
 
-        // Build the outer "shell" router whose fallback delegates to whatever is currently in the ArcSwap.
-        let outer_router = build_outer_router(Arc::clone(&inner_router));
-
-        // Subscribe to all APIEndpointInterest assertions and retractions in the dataspace.
-        let subscription: WildcardSubscription<APIEndpointInterest> =
-            self.dataspace_registry.subscribe_all::<APIEndpointInterest>();
+        // Register our interest in all asserted API endpoints.
+        let endpoint_subscriptions = self.dataspace_registry.subscribe_all::<APIEndpointInterest>();
 
         // Bind the HTTP listener immediately so we fail fast on bind errors.
         let listener = ConnectionOrientedListener::from_listen_address(self.listen_address.clone())
@@ -153,7 +150,7 @@ impl Supervisable for DynamicAPIBuilder {
 
             run_event_loop(
                 inner_router,
-                subscription,
+                endpoint_subscriptions,
                 resource_registry,
                 endpoint_type,
                 process_shutdown,
@@ -165,21 +162,26 @@ impl Supervisable for DynamicAPIBuilder {
     }
 }
 
-/// Builds the outer shell router with a fallback service that delegates to the current inner router.
-fn build_outer_router(inner: Arc<ArcSwap<Router>>) -> Router {
-    Router::new().fallback_service(ArcSwapRouterService { inner })
-}
-
-/// A [`tower::Service`] that reads the current [`Router`] from an [`ArcSwap`] on every request.
+/// A [`tower::Service`] that routes a request based on a dynamically-updated [`Router`].
 ///
-/// This is used as the fallback service for the outer shell router, allowing the inner route set to be hot-swapped at
-/// runtime without restarting the HTTP listener.
+/// When installed as the fallback service for a top-level [`Router`], `DynamicRouterService` dynamically routing
+/// requests based on the current defined "inner" router, which itself can be hot-swapped at runtime. This allows for
+/// seamless updates to the API endpoint routing without requiring a restart of the HTTP listener or complicated
+/// configuration changes.
 #[derive(Clone)]
-struct ArcSwapRouterService {
-    inner: Arc<ArcSwap<Router>>,
+struct DynamicRouterService {
+    inner_router: Arc<ArcSwap<Router>>,
 }
 
-impl Service<http::Request<AxumBody>> for ArcSwapRouterService {
+impl DynamicRouterService {
+    fn from_inner(inner_router: &Arc<ArcSwap<Router>>) -> Self {
+        Self {
+            inner_router: Arc::clone(inner_router),
+        }
+    }
+}
+
+impl Service<http::Request<AxumBody>> for DynamicRouterService {
     type Response = Response<AxumBody>;
     type Error = Infallible;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
@@ -189,19 +191,14 @@ impl Service<http::Request<AxumBody>> for ArcSwapRouterService {
     }
 
     fn call(&mut self, request: http::Request<AxumBody>) -> Self::Future {
-        // ArcSwap::load_full() is wait-free; Router::clone() is cheap (Arc internals).
-        let router = self.inner.load_full();
-        Box::pin(async move {
-            let mut svc = (*router).clone();
-            // Router<()> implements Service<Request<AxumBody>, Response = Response<AxumBody>, Error = Infallible>.
-            svc.call(request).await
-        })
+        let mut router = Arc::unwrap_or_clone(self.inner_router.load_full());
+        Box::pin(async move { router.call(request).await })
     }
 }
 
 /// Runs the event loop that listens for API endpoint interest assertions/retractions and hot-swaps the inner router.
 async fn run_event_loop(
-    inner_router: Arc<ArcSwap<Router>>, mut subscription: WildcardSubscription<APIEndpointInterest>,
+    inner_router: Arc<ArcSwap<Router>>, mut subscription: Subscription<APIEndpointInterest>,
     resource_registry: ResourceRegistry, endpoint_type: EndpointType, mut process_shutdown: ProcessShutdown,
     shutdown_handle: ShutdownHandle, error_handle: ErrorHandle,
 ) -> Result<(), GenericError> {
@@ -227,13 +224,13 @@ async fn run_event_loop(
             }
 
             maybe_update = subscription.recv() => {
-                let Some((handle, update)) = maybe_update else {
+                let Some(update) = maybe_update else {
                     warn!("API endpoint interest channel closed.");
                     break;
                 };
 
                 match update {
-                    AssertionUpdate::Asserted(interest) => {
+                    AssertionUpdate::Asserted(handle, interest) => {
                         // Only process interests targeting our endpoint type.
                         if interest.endpoint != endpoint_type {
                             continue;
@@ -261,7 +258,7 @@ async fn run_event_loop(
                             }
                         }
                     }
-                    AssertionUpdate::Retracted => {
+                    AssertionUpdate::Retracted(handle) => {
                         if registered_handlers.swap_remove(&handle).is_some() {
                             info!(
                                 handle = ?handle,
