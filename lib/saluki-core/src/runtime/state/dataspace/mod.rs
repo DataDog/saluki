@@ -29,7 +29,7 @@
 //!
 //! // Receive the assertion
 //! let value = sub.recv().await;
-//! assert_eq!(value, Some(AssertionUpdate::Asserted(42)));
+//! assert_eq!(value, Some(AssertionUpdate::Asserted(handle, 42)));
 //! # }
 //! ```
 
@@ -49,11 +49,11 @@ const DEFAULT_CHANNEL_CAPACITY: usize = 16;
 /// An update received by a subscription, indicating that a value was asserted or retracted.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AssertionUpdate<T> {
-    /// A value was asserted (made available).
-    Asserted(T),
+    /// A value was asserted (made available), along with the handle it is associated with.
+    Asserted(Handle, T),
 
-    /// The value was retracted (withdrawn).
-    Retracted,
+    /// The value associated with the given handle was retracted (withdrawn).
+    Retracted(Handle),
 }
 
 /// Internal key combining type and handle.
@@ -81,7 +81,7 @@ struct RegistryState {
 
     /// Broadcast senders for wildcard subscriptions, keyed by type only.
     ///
-    /// Each entry stores a `broadcast::Sender<(Handle, AssertionUpdate<T>)>`.
+    /// Each entry stores a `broadcast::Sender<AssertionUpdate<T>>`.
     wildcard_channels: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
 
     /// Current assertion values for each (type, handle) pair, stored type-erased.
@@ -123,7 +123,7 @@ impl RegistryState {
     }
 
     /// Gets or creates a wildcard broadcast sender for the given type, returning a new receiver.
-    fn get_or_create_wildcard_sender<T>(&mut self) -> broadcast::Receiver<(Handle, AssertionUpdate<T>)>
+    fn get_or_create_wildcard_sender<T>(&mut self) -> broadcast::Receiver<AssertionUpdate<T>>
     where
         T: Clone + Send + Sync + 'static,
     {
@@ -131,10 +131,10 @@ impl RegistryState {
             .wildcard_channels
             .entry(TypeId::of::<T>())
             .or_insert_with(|| {
-                let (tx, _) = broadcast::channel::<(Handle, AssertionUpdate<T>)>(self.channel_capacity);
+                let (tx, _) = broadcast::channel::<AssertionUpdate<T>>(self.channel_capacity);
                 Box::new(tx)
             })
-            .downcast_ref::<broadcast::Sender<(Handle, AssertionUpdate<T>)>>()
+            .downcast_ref::<broadcast::Sender<AssertionUpdate<T>>>()
             .expect("type mismatch in dataspace registry");
 
         sender.subscribe()
@@ -185,7 +185,7 @@ impl DataspaceRegistry {
     ///
     /// The value is stored so that future subscribers can receive the current state when they subscribe. The assertion
     /// is also delivered to every active [`Subscription`] for the same type and handle, as well as every active
-    /// [`WildcardSubscription`] for the same type.
+    /// wildcard [`Subscription`] for the same type.
     pub fn assert<T>(&self, value: T, handle: Handle)
     where
         T: Clone + Send + Sync + 'static,
@@ -204,21 +204,21 @@ impl DataspaceRegistry {
         let wildcard_sender = state
             .wildcard_channels
             .get(&TypeId::of::<T>())
-            .and_then(|boxed| boxed.downcast_ref::<broadcast::Sender<(Handle, AssertionUpdate<T>)>>());
+            .and_then(|boxed| boxed.downcast_ref::<broadcast::Sender<AssertionUpdate<T>>>());
 
         if let Some(sender) = specific_sender {
-            let _ = sender.send(AssertionUpdate::Asserted(value.clone()));
+            let _ = sender.send(AssertionUpdate::Asserted(handle, value.clone()));
         }
 
         if let Some(sender) = wildcard_sender {
-            let _ = sender.send((handle, AssertionUpdate::Asserted(value)));
+            let _ = sender.send(AssertionUpdate::Asserted(handle, value));
         }
     }
 
     /// Retracts the value of the given type and handle, notifying all current subscribers.
     ///
     /// The stored value for the given type and handle is removed. The retraction is also delivered to every active
-    /// [`Subscription`] for the same type and handle, as well as every active [`WildcardSubscription`] for the same
+    /// [`Subscription`] for the same type and handle, as well as every active wildcard [`Subscription`] for the same
     /// type.
     pub fn retract<T>(&self, handle: Handle)
     where
@@ -238,14 +238,14 @@ impl DataspaceRegistry {
         let wildcard_sender = state
             .wildcard_channels
             .get(&TypeId::of::<T>())
-            .and_then(|boxed| boxed.downcast_ref::<broadcast::Sender<(Handle, AssertionUpdate<T>)>>());
+            .and_then(|boxed| boxed.downcast_ref::<broadcast::Sender<AssertionUpdate<T>>>());
 
         if let Some(sender) = specific_sender {
-            let _ = sender.send(AssertionUpdate::Retracted);
+            let _ = sender.send(AssertionUpdate::Retracted(handle));
         }
 
         if let Some(sender) = wildcard_sender {
-            let _ = sender.send((handle, AssertionUpdate::Retracted));
+            let _ = sender.send(AssertionUpdate::Retracted(handle));
         }
     }
 
@@ -266,23 +266,25 @@ impl DataspaceRegistry {
         let rx = state.get_or_create_sender::<T>(key.clone());
 
         // Look up the current value for this (type, handle) pair and replay it to the new subscriber.
-        let pending = state
+        let pending: VecDeque<_> = state
             .current_values
             .get(&key)
             .and_then(|boxed| boxed.downcast_ref::<T>())
-            .map(|value| AssertionUpdate::Asserted(value.clone()));
+            .map(|value| AssertionUpdate::Asserted(handle, value.clone()))
+            .into_iter()
+            .collect();
 
         Subscription { pending, rx }
     }
 
     /// Subscribes to assertion and retraction updates for the given type across all handles.
     ///
-    /// Returns a [`WildcardSubscription`] that receives updates from every handle, along with the handle each update
-    /// is associated with. If no wildcard broadcast channel exists yet for this type, one is created.
+    /// Returns a [`Subscription`] that receives updates from every handle. Each update carries the handle it is
+    /// associated with. If no wildcard broadcast channel exists yet for this type, one is created.
     ///
     /// If values have already been asserted for this type on any handles, the subscription will immediately yield all
     /// current values before any future broadcast updates.
-    pub fn subscribe_all<T>(&self) -> WildcardSubscription<T>
+    pub fn subscribe_all<T>(&self) -> Subscription<T>
     where
         T: Clone + Send + Sync + 'static,
     {
@@ -298,23 +300,23 @@ impl DataspaceRegistry {
             .filter_map(|(key, boxed)| {
                 boxed
                     .downcast_ref::<T>()
-                    .map(|value| (key.handle, AssertionUpdate::Asserted(value.clone())))
+                    .map(|value| AssertionUpdate::Asserted(key.handle, value.clone()))
             })
             .collect();
 
-        WildcardSubscription { pending, rx }
+        Subscription { pending, rx }
     }
 }
 
-/// A subscription to updates for a specific type and handle from a [`DataspaceRegistry`].
+/// A subscription to updates for a specific type from a [`DataspaceRegistry`].
 ///
-/// Created by calling [`DataspaceRegistry::subscribe`]. Use [`recv`](Subscription::recv) to asynchronously wait for
-/// the next update.
+/// Created by calling [`DataspaceRegistry::subscribe`] or [`DataspaceRegistry::subscribe_all`]. Use
+/// [`recv`](Subscription::recv) to asynchronously wait for the next update.
 ///
-/// If the subscribed type and handle already had an asserted value when this subscription was created, the first call
-/// to [`recv`](Subscription::recv) will return that value before any subsequent broadcast updates.
+/// If values have already been asserted for the subscribed type when this subscription was created, the first calls to
+/// [`recv`](Subscription::recv) will return those values before any subsequent broadcast updates.
 pub struct Subscription<T> {
-    pending: Option<AssertionUpdate<T>>,
+    pending: VecDeque<AssertionUpdate<T>>,
     rx: broadcast::Receiver<AssertionUpdate<T>>,
 }
 
@@ -328,42 +330,6 @@ where
     /// dropped). If messages were missed due to the subscriber falling behind, the missed messages are skipped and the
     /// next available update is returned.
     pub async fn recv(&mut self) -> Option<AssertionUpdate<T>> {
-        if let Some(value) = self.pending.take() {
-            return Some(value);
-        }
-
-        loop {
-            match self.rx.recv().await {
-                Ok(value) => return Some(value),
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(broadcast::error::RecvError::Closed) => return None,
-            }
-        }
-    }
-}
-
-/// A wildcard subscription to updates for a specific type across all handles from a [`DataspaceRegistry`].
-///
-/// Created by calling [`DataspaceRegistry::subscribe_all`]. Use [`recv`](WildcardSubscription::recv) to asynchronously
-/// wait for the next update.
-///
-/// If any values have already been asserted for the subscribed type when this subscription was created, the first
-/// calls to [`recv`](WildcardSubscription::recv) will return those values before any subsequent broadcast updates.
-pub struct WildcardSubscription<T> {
-    pending: VecDeque<(Handle, AssertionUpdate<T>)>,
-    rx: broadcast::Receiver<(Handle, AssertionUpdate<T>)>,
-}
-
-impl<T> WildcardSubscription<T>
-where
-    T: Clone + Send + Sync + 'static,
-{
-    /// Receives the next assertion or retraction update, along with the handle it is associated with.
-    ///
-    /// Returns `Some((handle, update))` when an update is available, or `None` if the channel has been closed (all
-    /// senders dropped). If messages were missed due to the subscriber falling behind, the missed messages are skipped
-    /// and the next available update is returned.
-    pub async fn recv(&mut self) -> Option<(Handle, AssertionUpdate<T>)> {
         if let Some(value) = self.pending.pop_front() {
             return Some(value);
         }
@@ -395,7 +361,7 @@ mod tests {
         registry.assert(42u32, h);
 
         let value = timeout(Duration::from_millis(100), sub.recv()).await.expect("timeout");
-        assert_eq!(value, Some(AssertionUpdate::Asserted(42)));
+        assert_eq!(value, Some(AssertionUpdate::Asserted(h, 42)));
     }
 
     #[tokio::test]
@@ -411,8 +377,8 @@ mod tests {
         let v1 = timeout(Duration::from_millis(100), sub1.recv()).await.expect("timeout");
         let v2 = timeout(Duration::from_millis(100), sub2.recv()).await.expect("timeout");
 
-        assert_eq!(v1, Some(AssertionUpdate::Asserted(42)));
-        assert_eq!(v2, Some(AssertionUpdate::Asserted(42)));
+        assert_eq!(v1, Some(AssertionUpdate::Asserted(h, 42)));
+        assert_eq!(v2, Some(AssertionUpdate::Asserted(h, 42)));
     }
 
     #[tokio::test]
@@ -426,7 +392,7 @@ mod tests {
         // A later subscriber should receive the current value.
         let mut sub = registry.subscribe::<u32>(h);
         let value = timeout(Duration::from_millis(100), sub.recv()).await.expect("timeout");
-        assert_eq!(value, Some(AssertionUpdate::Asserted(42)));
+        assert_eq!(value, Some(AssertionUpdate::Asserted(h, 42)));
     }
 
     #[tokio::test]
@@ -447,8 +413,8 @@ mod tests {
             .await
             .expect("timeout");
 
-        assert_eq!(v1, Some(AssertionUpdate::Asserted(42)));
-        assert_eq!(v2, Some(AssertionUpdate::Asserted("hello".to_string())));
+        assert_eq!(v1, Some(AssertionUpdate::Asserted(h, 42)));
+        assert_eq!(v2, Some(AssertionUpdate::Asserted(h, "hello".to_string())));
     }
 
     #[tokio::test]
@@ -461,7 +427,7 @@ mod tests {
         registry.assert(42u32, h);
 
         let value = timeout(Duration::from_millis(100), sub.recv()).await.expect("timeout");
-        assert_eq!(value, Some(AssertionUpdate::Asserted(42)));
+        assert_eq!(value, Some(AssertionUpdate::Asserted(h, 42)));
     }
 
     #[tokio::test]
@@ -511,9 +477,9 @@ mod tests {
         let v2 = timeout(Duration::from_millis(100), sub.recv()).await.expect("timeout");
         let v3 = timeout(Duration::from_millis(100), sub.recv()).await.expect("timeout");
 
-        assert_eq!(v1, Some(AssertionUpdate::Asserted(1)));
-        assert_eq!(v2, Some(AssertionUpdate::Asserted(2)));
-        assert_eq!(v3, Some(AssertionUpdate::Asserted(3)));
+        assert_eq!(v1, Some(AssertionUpdate::Asserted(h, 1)));
+        assert_eq!(v2, Some(AssertionUpdate::Asserted(h, 2)));
+        assert_eq!(v3, Some(AssertionUpdate::Asserted(h, 3)));
     }
 
     #[tokio::test]
@@ -529,8 +495,8 @@ mod tests {
         let v1 = timeout(Duration::from_millis(100), sub.recv()).await.expect("timeout");
         let v2 = timeout(Duration::from_millis(100), sub.recv()).await.expect("timeout");
 
-        assert_eq!(v1, Some(AssertionUpdate::Asserted(42)));
-        assert_eq!(v2, Some(AssertionUpdate::Retracted));
+        assert_eq!(v1, Some(AssertionUpdate::Asserted(h, 42)));
+        assert_eq!(v2, Some(AssertionUpdate::Retracted(h)));
     }
 
     #[tokio::test]
@@ -555,8 +521,8 @@ mod tests {
         let v1 = timeout(Duration::from_millis(100), sub1.recv()).await.expect("timeout");
         let v2 = timeout(Duration::from_millis(100), sub2.recv()).await.expect("timeout");
 
-        assert_eq!(v1, Some(AssertionUpdate::Retracted));
-        assert_eq!(v2, Some(AssertionUpdate::Retracted));
+        assert_eq!(v1, Some(AssertionUpdate::Retracted(h)));
+        assert_eq!(v2, Some(AssertionUpdate::Retracted(h)));
     }
 
     #[tokio::test]
@@ -574,9 +540,9 @@ mod tests {
         let v2 = timeout(Duration::from_millis(100), sub.recv()).await.expect("timeout");
         let v3 = timeout(Duration::from_millis(100), sub.recv()).await.expect("timeout");
 
-        assert_eq!(v1, Some(AssertionUpdate::Asserted(1)));
-        assert_eq!(v2, Some(AssertionUpdate::Retracted));
-        assert_eq!(v3, Some(AssertionUpdate::Asserted(2)));
+        assert_eq!(v1, Some(AssertionUpdate::Asserted(h, 1)));
+        assert_eq!(v2, Some(AssertionUpdate::Retracted(h)));
+        assert_eq!(v3, Some(AssertionUpdate::Asserted(h, 2)));
     }
 
     #[tokio::test]
@@ -593,8 +559,8 @@ mod tests {
         let v1 = timeout(Duration::from_millis(100), sub.recv()).await.expect("timeout");
         let v2 = timeout(Duration::from_millis(100), sub.recv()).await.expect("timeout");
 
-        assert_eq!(v1, Some((h1, AssertionUpdate::Asserted(1))));
-        assert_eq!(v2, Some((h2, AssertionUpdate::Asserted(2))));
+        assert_eq!(v1, Some(AssertionUpdate::Asserted(h1, 1)));
+        assert_eq!(v2, Some(AssertionUpdate::Asserted(h2, 2)));
     }
 
     #[tokio::test]
@@ -610,8 +576,8 @@ mod tests {
         let v1 = timeout(Duration::from_millis(100), sub.recv()).await.expect("timeout");
         let v2 = timeout(Duration::from_millis(100), sub.recv()).await.expect("timeout");
 
-        assert_eq!(v1, Some((h, AssertionUpdate::Asserted(42))));
-        assert_eq!(v2, Some((h, AssertionUpdate::Retracted)));
+        assert_eq!(v1, Some(AssertionUpdate::Asserted(h, 42)));
+        assert_eq!(v2, Some(AssertionUpdate::Retracted(h)));
     }
 
     #[tokio::test]
@@ -631,8 +597,8 @@ mod tests {
             .await
             .expect("timeout");
 
-        assert_eq!(v_specific, Some(AssertionUpdate::Asserted(42)));
-        assert_eq!(v_wildcard, Some((h, AssertionUpdate::Asserted(42))));
+        assert_eq!(v_specific, Some(AssertionUpdate::Asserted(h, 42)));
+        assert_eq!(v_wildcard, Some(AssertionUpdate::Asserted(h, 42)));
     }
 
     #[tokio::test]
@@ -648,7 +614,7 @@ mod tests {
         let value = timeout(Duration::from_millis(100), wildcard.recv())
             .await
             .expect("timeout");
-        assert_eq!(value, Some((h, AssertionUpdate::Asserted(42))));
+        assert_eq!(value, Some(AssertionUpdate::Asserted(h, 42)));
     }
 
     #[tokio::test]
@@ -662,7 +628,7 @@ mod tests {
         // Subscribe after asserting -- should immediately get the current value.
         let mut sub = registry.subscribe::<u32>(h);
         let value = timeout(Duration::from_millis(100), sub.recv()).await.expect("timeout");
-        assert_eq!(value, Some(AssertionUpdate::Asserted(42)));
+        assert_eq!(value, Some(AssertionUpdate::Asserted(h, 42)));
     }
 
     #[tokio::test]
@@ -700,13 +666,13 @@ mod tests {
         let v2 = timeout(Duration::from_millis(100), sub.recv()).await.expect("timeout");
 
         let mut received = [v1.unwrap(), v2.unwrap()];
-        received.sort_by_key(|(_, update)| match update {
-            AssertionUpdate::Asserted(v) => *v,
-            AssertionUpdate::Retracted => 0,
+        received.sort_by_key(|update| match update {
+            AssertionUpdate::Asserted(_, v) => *v,
+            AssertionUpdate::Retracted(_) => 0,
         });
 
-        assert_eq!(received[0], (h1, AssertionUpdate::Asserted(1)));
-        assert_eq!(received[1], (h2, AssertionUpdate::Asserted(2)));
+        assert_eq!(received[0], AssertionUpdate::Asserted(h1, 1));
+        assert_eq!(received[1], AssertionUpdate::Asserted(h2, 2));
     }
 
     #[tokio::test]
@@ -726,7 +692,7 @@ mod tests {
         let v1 = timeout(Duration::from_millis(100), sub.recv()).await.expect("timeout");
         let v2 = timeout(Duration::from_millis(100), sub.recv()).await.expect("timeout");
 
-        assert_eq!(v1, Some(AssertionUpdate::Asserted(1)));
-        assert_eq!(v2, Some(AssertionUpdate::Asserted(2)));
+        assert_eq!(v1, Some(AssertionUpdate::Asserted(h, 1)));
+        assert_eq!(v2, Some(AssertionUpdate::Asserted(h, 2)));
     }
 }
