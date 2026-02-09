@@ -12,8 +12,7 @@ workspace = true
 path = "src/mod.rs"
 
 [dependencies]
-#Commented for the time being, will be activated in following PR
-#chumsky = { workspace = true, features = ["export_derive"] }
+chumsky = { workspace = true }
 logos = { workspace = true, features = ["export_derive"] }
 
 [dev-dependencies]

@@ -1,6 +1,3 @@
-//AZH: temporary, since this is just an API review we don't have yet code which is using it.
-#![allow(dead_code)]
-
 /// OTTL Parser Library
 ///
 /// This library provides a Rust implementation of the OpenTelemetry Transformation Language (OTTL)
@@ -11,12 +8,12 @@
 /// ```ignore
 /// use ottl::{Parser, OttlParser, CallbackMap, EnumMap, PathResolver};
 ///
-/// let mut editors = CallbackMap::new();
-/// let mut converters = CallbackMap::new();
-/// let mut enums = EnumMap::new();
-/// let mut resolver = ...;
+/// let editors = CallbackMap::new();
+/// let converters = CallbackMap::new();
+/// let enums = EnumMap::new();
+/// let resolver = ...;
 ///
-/// let parser = Parser::new(&mut editors, &mut converters, &mut enums, &mut resolver, "set(\"my.attr\", 1) where 1 > 0");
+/// let parser = Parser::new(&editors, &converters, &enums, &resolver, "set(\"my.attr\", 1) where 1 > 0");
 /// let result = parser.execute(&mut ctx);
 /// ```
 use std::any::Any;
@@ -69,7 +66,6 @@ pub enum Value {
     /// 64-bit floating point
     Float(f64),
     /// String value
-    /// AZH: TODO: consider to use Arc for reference counting in case of cloning and not making full copy with going to heap, locks, etc.
     String(String),
     /// Bytes literal (e.g., 0xC0FFEE)
     Bytes(Vec<u8>),
@@ -145,7 +141,8 @@ pub trait PathAccessor: fmt::Debug {
 
 /// Type alias for the path resolver function.
 /// Takes a path string (e.g., "body.attributes.key") and returns a PathAccessor.
-pub type PathResolver = Arc<dyn Fn(&str) -> Result<Arc<dyn PathAccessor + Send + Sync>> + Send + Sync>;
+pub type PathResolver =
+    Arc<dyn Fn(&str) -> Result<Arc<dyn PathAccessor + Send + Sync>> + Send + Sync>;
 
 // =====================================================================================================================
 // Callback Types
