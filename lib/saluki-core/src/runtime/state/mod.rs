@@ -12,7 +12,7 @@ pub use self::resources::{
 };
 
 mod dataspace;
-pub use self::dataspace::{AssertionUpdate, DataspaceRegistry, Subscription, WildcardSubscription};
+pub use self::dataspace::{AssertionUpdate, DataspaceRegistry, Subscription};
 
 static GLOBAL_HANDLE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
