@@ -28,6 +28,7 @@ members = [
   "lib/saluki-metrics",
   "lib/saluki-tls",
   "lib/stringtheory",
+  "lib/ottl",
 ]
 resolver = "2"
 
@@ -59,6 +60,7 @@ saluki-tls = { path = "lib/saluki-tls" }
 stele = { path = "bin/correctness/stele" }
 stringtheory = { path = "lib/stringtheory" }
 otlp-protos = { path = "lib/protos/otlp" }
+ottl = { path = "lib/ottl" }
 async-trait = { version = "0.1", default-features = false }
 atty = { version = "0.2", default-features = false }
 axum = { version = "0.8", default-features = false }
@@ -214,8 +216,7 @@ argh = { version = "0.1", default-features = false }
 rmp-serde = { version = "1.3", default-features = false }
 serde_bytes = { version = "0.11.19", default-features = false }
 num-traits = { version = "0.2", default-features = false }
-#Commented for the time being, will be activated in following PR
-#chumsky = { version = "0.12", default-features = false }
+chumsky = { version = "0.12", default-features = false }
 logos = { version = "0.14", default-features = false }
 lru-slab = { version = "0.1.2", default-features = false }
 
