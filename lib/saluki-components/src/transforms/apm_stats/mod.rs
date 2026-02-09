@@ -11,7 +11,10 @@ use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use opentelemetry_semantic_conventions::resource::{CONTAINER_ID, K8S_POD_UID};
 use saluki_config::GenericConfiguration;
-use saluki_context::{origin::OriginTagCardinality, tags::TagSet};
+use saluki_context::{
+    origin::OriginTagCardinality,
+    tags::{SharedTagSet, TagSet},
+};
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     data_model::event::{
@@ -29,18 +32,20 @@ use stringtheory::MetaString;
 use tokio::{select, time::interval};
 use tracing::{debug, error};
 
-use crate::common::datadog::apm::ApmConfig;
-use crate::common::otlp::util::{extract_container_tags_from_resource_tagset, KEY_DATADOG_CONTAINER_ID};
+use crate::common::{
+    datadog::apm::ApmConfig,
+    otlp::util::{extract_container_tags_from_resource_tagset, KEY_DATADOG_CONTAINER_ID},
+};
 
 mod aggregation;
+use self::aggregation::{process_tags_hash, PayloadAggregationKey};
 
-use self::aggregation::process_tags_hash;
 mod span_concentrator;
-mod statsraw;
-mod weight;
-
-use self::aggregation::PayloadAggregationKey;
 use self::span_concentrator::{InfraTags, SpanConcentrator};
+
+mod statsraw;
+
+mod weight;
 use self::weight::weight;
 
 /// Default flush interval for the APM stats transform.
@@ -179,7 +184,7 @@ impl ApmStats {
         let resource_tags = trace.resource_tags();
         let container_id = resolve_container_id(resource_tags);
         let mut container_tags = if container_id.is_empty() {
-            vec![]
+            SharedTagSet::default()
         } else {
             extract_container_tags(resource_tags)
         };
@@ -189,12 +194,10 @@ impl ApmStats {
             if let Some(workload_provider) = &self.workload_provider {
                 let entity_id = EntityId::Container(container_id.clone());
                 if let Some(tags) = workload_provider.get_tags_for_entity(&entity_id, OriginTagCardinality::Low) {
-                    container_tags.extend((&tags).into_iter().map(|tag| MetaString::from(tag.as_str())));
+                    container_tags.extend_from_shared(&tags);
                 }
             }
         }
-
-        container_tags.sort();
 
         InfraTags::new(container_id, container_tags, process_tags)
     }
@@ -422,7 +425,7 @@ fn now_nanos() -> u64 {
 }
 
 /// Resolves container ID from OTLP resource tags.
-fn resolve_container_id(resource_tags: &TagSet) -> MetaString {
+fn resolve_container_id(resource_tags: &SharedTagSet) -> MetaString {
     for key in [KEY_DATADOG_CONTAINER_ID, CONTAINER_ID, K8S_POD_UID] {
         if let Some(tag) = resource_tags.get_single_tag(key) {
             if let Some(value) = tag.value() {
@@ -432,32 +435,27 @@ fn resolve_container_id(resource_tags: &TagSet) -> MetaString {
             }
         }
     }
-    MetaString::default()
+
+    MetaString::empty()
 }
 
 /// Extracts container tags from OTLP resource tags.
-fn extract_container_tags(resource_tags: &TagSet) -> Vec<MetaString> {
+fn extract_container_tags(resource_tags: &SharedTagSet) -> SharedTagSet {
     let mut container_tags_set = TagSet::default();
     extract_container_tags_from_resource_tagset(resource_tags, &mut container_tags_set);
 
-    container_tags_set
-        .into_iter()
-        .map(|tag| MetaString::from(tag.as_str()))
-        .collect()
+    container_tags_set.into_shared()
 }
 
 /// Extracts process tags from trace.
-fn extract_process_tags(trace: &Trace) -> String {
+fn extract_process_tags(trace: &Trace) -> MetaString {
     if let Some(first_span) = trace.spans().first() {
         if let Some(process_tags) = first_span.meta().get(TAG_PROCESS_TAGS) {
-            let tags = process_tags.as_ref();
-            if !tags.is_empty() {
-                return tags.to_string();
-            }
+            return process_tags.clone();
         }
     }
 
-    String::new()
+    MetaString::empty()
 }
 
 #[cfg(test)]

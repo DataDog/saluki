@@ -23,7 +23,6 @@ hyper-util = { workspace = true }
 memory-accounting = { workspace = true }
 pin-project-lite = { workspace = true }
 prost = { workspace = true }
-prost-types = { workspace = true }
 regex = { workspace = true, features = ["std", "perf"] }
 saluki-api = { workspace = true }
 saluki-common = { workspace = true }

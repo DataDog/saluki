@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::vec::IntoIter;
 
 use otlp_protos::opentelemetry::proto::common::v1::KeyValue as OtlpKeyValue;
 use otlp_protos::opentelemetry::proto::metrics::v1::{
@@ -96,11 +97,11 @@ impl OtlpMetricsTranslator {
         }
     }
 
-    /// Translates a batch of OTLP `ResourceMetrics` into a collection of Saluki `Event`s.
+    /// Translates a batch of OTLP `ResourceMetrics` into Saluki `Event`s.
     /// This is the Rust equivalent of the Go `MapMetrics` function.
-    pub fn map_metrics(
+    pub fn translate_metrics(
         &mut self, resource_metrics: OtlpResourceMetrics, metrics: &Metrics,
-    ) -> Result<Vec<Event>, GenericError> {
+    ) -> Result<IntoIter<Event>, GenericError> {
         let mut events = Vec::new();
         let resource = resource_metrics.resource.unwrap_or_default();
         let source = self.attribute_translator.resource_to_source(&resource);
@@ -204,7 +205,7 @@ impl OtlpMetricsTranslator {
 
         metrics.metrics_received().increment(events.len() as u64);
 
-        Ok(events)
+        Ok(events.into_iter())
     }
 
     /// Creates a new `OtlpMetricsTranslator` for tests.

@@ -5,6 +5,7 @@ test/k8s/charts/
 test/build/
 test/ddprof
 test/lading
+test/one-off/__pycache__
 dhat-heap.json
 .DS_Store
 dist/
@@ -19,3 +20,4 @@ node_modules/
 fuzz/artifacts/
 fuzz/coverage/
 fuzz/corpus/
+heaptrack.*

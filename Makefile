@@ -10,6 +10,7 @@ export BUILD_TARGET := $(or $(BUILD_TARGET),default)
 export APP_GIT_HASH := $(or $(CI_COMMIT_SHA),$(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git))
 export APP_BUILD_TIME := $(or $(CI_PIPELINE_CREATED_AT),0000-00-00T00:00:00-00:00)
 
+
 # ADP-specific settings used during builds.
 export ADP_APP_FULL_NAME := Agent Data Plane
 export ADP_APP_SHORT_NAME := data-plane
@@ -39,6 +40,7 @@ export CARGO_TOOL_VERSION_cargo-autoinherit ?= 0.1.5
 export CARGO_TOOL_VERSION_cargo-sort ?= 1.0.9
 export CARGO_TOOL_VERSION_dummyhttp ?= 1.1.0
 export CARGO_TOOL_VERSION_cargo-machete ?= 0.9.1
+export CARGO_TOOL_VERSION_rustfilt ?= 0.2.1
 export DDPROF_VERSION ?= 0.20.0
 export LADING_VERSION ?= 0.28.0
 
@@ -102,6 +104,14 @@ build-adp: ## Builds the ADP binary in debug mode
 build-adp-release: override BUILD_PROFILE=release
 build-adp-release: build-adp-base
 build-adp-release: ## Builds the ADP binary in release mode
+
+.PHONY: build-adp-system-alloc
+build-adp-system-alloc: ## Builds the ADP binary in debug mode with the system allocator (useful for memory profiling)
+	@$(MAKE) --no-print-directory build-adp-base BUILD_PROFILE=devel RUSTFLAGS="--cfg tokio_unstable --cfg system_allocator"
+
+.PHONY: build-adp-release-system-alloc
+build-adp-release-system-alloc: ## Builds the ADP binary in release mode with the system allocator (useful for memory profiling)
+	@$(MAKE) --no-print-directory build-adp-base BUILD_PROFILE=release RUSTFLAGS="--cfg tokio_unstable --cfg system_allocator"
 
 .PHONY: build-adp-image-base
 build-adp-image-base:
@@ -643,6 +653,23 @@ emit-adp-build-metadata: ## Emits ADP build metadata shell variables suitable fo
 	@echo "APP_VERSION=${ADP_APP_VERSION}"
 	@echo "APP_BUILD_TIME=${ADP_APP_BUILD_TIME}"
 
+.PHONY: bump-adp-version
+bump-adp-version: ## Creates a PR branch that bumps the ADP patch version
+	$(eval CURRENT_VERSION := $(shell grep -E '^version = "' bin/agent-data-plane/Cargo.toml | head -n 1 | cut -d '"' -f 2))
+	$(eval MAJOR := $(shell echo $(CURRENT_VERSION) | cut -d '.' -f 1))
+	$(eval MINOR := $(shell echo $(CURRENT_VERSION) | cut -d '.' -f 2))
+	$(eval PATCH := $(shell echo $(CURRENT_VERSION) | cut -d '.' -f 3))
+	$(eval NEW_PATCH := $(shell echo $$(($(PATCH) + 1))))
+	$(eval NEW_VERSION := $(MAJOR).$(MINOR).$(NEW_PATCH))
+	@echo "[*] Bumping ADP from $(CURRENT_VERSION) to $(NEW_VERSION)"
+	@git fetch origin main
+	@git checkout -b bump-adp-version-$(NEW_VERSION) origin/main
+	@sed -i 's/^version = "$(CURRENT_VERSION)"/version = "$(NEW_VERSION)"/' bin/agent-data-plane/Cargo.toml
+	@cargo update -p agent-data-plane --quiet
+	@git add bin/agent-data-plane/Cargo.toml Cargo.lock
+	@git commit -m "chore(agent-data-plane): bump version to $(NEW_VERSION)"
+	@echo "[*] Created branch 'bump-adp-version-$(NEW_VERSION)' with version bump commit."
+
 ##@ Docs
 
 .PHONY: check-js-build-tools
@@ -667,6 +694,14 @@ update-protos: ## Updates all vendored Protocol Buffers definitions from their s
 	CONTAINERD_GIT_TAG=$(PROTOBUF_SRC_REPO_CONTAINERD) \
 	SKETCHES_GO_GIT_TAG=$(PROTOBUF_SRC_REPO_SKETCHES_GO) \
 	./tooling/update-protos.sh
+
+.PHONY: update-pr-title-scopes
+update-pr-title-scopes: ## Updates allowed PR title scopes in the CI workflow based on the codebase
+	@./tooling/update-pr-title-scopes.sh update
+
+.PHONY: check-pr-title-scopes
+check-pr-title-scopes: ## Checks that PR title scopes in the CI workflow are up-to-date
+	@./tooling/update-pr-title-scopes.sh check
 
 .PHONY: clean
 clean: check-rust-build-tools
@@ -705,7 +740,7 @@ sync-licenses: ## Synchronizes the third-party license file with the current cra
 .PHONY: cargo-preinstall
 cargo-preinstall: cargo-install-dd-rust-license-tool cargo-install-cargo-deny cargo-install-cargo-hack
 cargo-preinstall: cargo-install-cargo-nextest cargo-install-cargo-autoinherit cargo-install-cargo-sort
-cargo-preinstall: cargo-install-dummyhttp cargo-install-cargo-machete
+cargo-preinstall: cargo-install-dummyhttp cargo-install-cargo-machete cargo-install-rustfilt
 cargo-preinstall: ## Pre-installs all necessary Cargo tools (used for CI)
 	@echo "[*] Pre-installed all necessary Cargo tools!"
 

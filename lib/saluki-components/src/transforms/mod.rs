@@ -21,6 +21,9 @@ pub use self::dogstatsd_mapper::DogstatsDMapperConfiguration;
 mod metric_router;
 pub use self::metric_router::MetricRouterConfiguration;
 
+mod trace_sampler;
+pub use self::trace_sampler::TraceSamplerConfiguration;
+
 mod apm_stats;
 pub use self::apm_stats::ApmStatsTransformConfiguration;
 

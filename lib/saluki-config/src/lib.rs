@@ -334,20 +334,20 @@ impl ConfigurationLoader {
     /// Care should be taken to not return sensitive information in either the error output (standard error) of the
     /// backend command or the `error` field in the JSON response, as these values are logged in order to aid debugging.
     pub async fn with_default_secrets_resolution(mut self) -> Result<Self, ConfigurationError> {
-        let initial_figment = build_figment_from_sources(&self.provider_sources);
+        let configuration = build_figment_from_sources(&self.provider_sources);
 
         // If no secrets backend is set, we can't resolve secrets, so just return early.
-        if !initial_figment.contains("secret_backend_command") {
+        if !has_valid_secret_backend_command(&configuration) {
             debug!("No secrets backend configured; skipping secrets resolution.");
             return Ok(self);
         }
 
-        let resolver_config = initial_figment.extract::<secrets::resolver::ExternalProcessResolverConfiguration>()?;
+        let resolver_config = configuration.extract::<secrets::resolver::ExternalProcessResolverConfiguration>()?;
         let resolver = secrets::resolver::ExternalProcessResolver::from_configuration(resolver_config)
             .await
             .context(Secrets)?;
 
-        let provider = secrets::Provider::new(resolver, &initial_figment)
+        let provider = secrets::Provider::new(resolver, &configuration)
             .await
             .context(Secrets)?;
 
@@ -856,9 +856,52 @@ fn from_figment_error(lookup_sources: &HashSet<LookupSource>, e: figment::Error)
     }
 }
 
+fn has_valid_secret_backend_command(configuration: &Figment) -> bool {
+    configuration
+        .find_value("secret_backend_command")
+        .ok()
+        .is_some_and(|v| v.as_str().filter(|s| !s.is_empty()).is_some())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    macro_rules! json_to_figment {
+        ($json:tt) => {
+            Figment::from(Serialized::defaults(serde_json::json!($json)))
+        };
+    }
+
+    #[test]
+    fn test_has_valid_secret_backend_command() {
+        // When `secrets_backend_command` is not set at all, or is set to an empty string, or isn't even a string
+        // value... then we should consider those scenarios as "secrets backend not configured".
+        let figment = Figment::new();
+        assert!(!has_valid_secret_backend_command(&figment));
+
+        let figment = json_to_figment!({
+            "secret_backend_command": ""
+        });
+        assert!(!has_valid_secret_backend_command(&figment));
+
+        let figment = json_to_figment!({
+            "secret_backend_command": false
+        });
+        assert!(!has_valid_secret_backend_command(&figment));
+
+        // Otherwise, whether it's a valid path or not, then we should consider things enabled, which means we'll
+        // at least attempt secrets resolution:
+        let figment = json_to_figment!({
+            "secret_backend_command": "/usr/bin/foo"
+        });
+        assert!(has_valid_secret_backend_command(&figment));
+
+        let figment = json_to_figment!({
+            "secret_backend_command": "or anything else"
+        });
+        assert!(has_valid_secret_backend_command(&figment));
+    }
 
     #[tokio::test]
     async fn test_static_configuration() {

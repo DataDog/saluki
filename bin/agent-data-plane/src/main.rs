@@ -23,12 +23,12 @@ mod internal;
 
 pub(crate) mod state;
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(system_allocator)))]
 #[global_allocator]
 static ALLOC: memory_accounting::allocator::TrackingAllocator<tikv_jemallocator::Jemalloc> =
     memory_accounting::allocator::TrackingAllocator::new(tikv_jemallocator::Jemalloc);
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(not(target_os = "linux"), system_allocator))]
 #[global_allocator]
 static ALLOC: memory_accounting::allocator::TrackingAllocator<std::alloc::System> =
     memory_accounting::allocator::TrackingAllocator::new(std::alloc::System);

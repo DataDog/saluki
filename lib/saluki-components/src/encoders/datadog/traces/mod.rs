@@ -16,7 +16,7 @@ use opentelemetry_semantic_conventions::resource::{
 use protobuf::{rt::WireType, CodedOutputStream, Message};
 use saluki_common::task::HandleExt as _;
 use saluki_config::GenericConfiguration;
-use saluki_context::tags::TagSet;
+use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_core::data_model::event::trace::{
     AttributeScalarValue, AttributeValue, Span as DdSpan, SpanEvent as DdSpanEvent, SpanLink as DdSpanLink,
 };
@@ -49,7 +49,7 @@ use crate::common::datadog::{
     io::RB_BUFFER_CHUNK_SIZE,
     request_builder::{EndpointEncoder, RequestBuilder},
     telemetry::ComponentTelemetry,
-    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
+    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT, TAG_DECISION_MAKER,
 };
 use crate::common::otlp::config::TracesConfig;
 use crate::common::otlp::util::{
@@ -61,6 +61,10 @@ use crate::common::otlp::util::{
 const CONTAINER_TAGS_META_KEY: &str = "_dd.tags.container";
 const MAX_TRACES_PER_PAYLOAD: usize = 10000;
 static CONTENT_TYPE_PROTOBUF: HeaderValue = HeaderValue::from_static("application/x-protobuf");
+
+// Sampling metadata keys / values.
+const TAG_OTLP_SAMPLING_RATE: &str = "_dd.otlp_sr";
+const DEFAULT_CHUNK_PRIORITY: i32 = 1; // PRIORITY_AUTO_KEEP
 
 fn default_serializer_compressor_kind() -> String {
     "zstd".to_string()
@@ -547,28 +551,40 @@ impl TraceEndpointEncoder {
     }
 
     fn build_trace_chunk(&self, trace: &Trace) -> TraceChunk {
-        let mut spans: Vec<ProtoSpan> = trace.spans().iter().map(convert_span).collect();
+        let spans: Vec<ProtoSpan> = trace.spans().iter().map(convert_span).collect();
         let mut chunk = TraceChunk::new();
 
-        let rate = self.sampling_rate();
         let mut tags = std::collections::HashMap::new();
-        tags.insert("_dd.otlp_sr".to_string(), format!("{:.2}", rate));
 
-        // TODO: Remove this once we have sampling. We have to hardcode the priority to 1 for now so that intake does not drop the trace.
-        const PRIORITY_AUTO_KEEP: i32 = 1;
-        chunk.set_priority(PRIORITY_AUTO_KEEP);
+        // Use trace-level sampling metadata if available (set by the trace sampler transform).
+        // This provides explicit trace-level sampling information without needing to scan spans.
+        if let Some(sampling) = trace.sampling() {
+            // Set priority from trace metadata
+            chunk.set_priority(sampling.priority.unwrap_or(DEFAULT_CHUNK_PRIORITY));
+            chunk.set_droppedTrace(sampling.dropped_trace);
 
-        // Set _dd.p.dm (decision maker)
-        // Only set if sampling priority is "keep" (which it is, since we set PRIORITY_AUTO_KEEP)
-        // Decision maker "-9" indicates probabilistic sampler made the decision
-        const DECISION_MAKER: &str = "-9";
-        if let Some(first_span) = spans.first_mut() {
-            let mut meta = first_span.take_meta();
-            meta.insert("_dd.p.dm".to_string(), DECISION_MAKER.to_string());
-            first_span.set_meta(meta);
+            // Set decision maker tag if present.
+            if let Some(dm) = &sampling.decision_maker {
+                tags.insert(TAG_DECISION_MAKER.to_string(), dm.to_string());
+            }
+
+            // Set OTLP sampling rate tag if present (from sampler)
+            if let Some(otlp_sr) = &sampling.otlp_sampling_rate {
+                tags.insert(TAG_OTLP_SAMPLING_RATE.to_string(), otlp_sr.to_string());
+            } else {
+                // Fallback to encoder's computed rate
+                let rate = self.sampling_rate();
+                tags.insert(TAG_OTLP_SAMPLING_RATE.to_string(), format!("{:.2}", rate));
+            }
+        } else {
+            // Fallback: if trace.sampling is None, use defaults
+            // (No span scanning per the plan's "no fallback scan" requirement)
+            chunk.set_priority(DEFAULT_CHUNK_PRIORITY);
+            chunk.set_droppedTrace(false);
+            let rate = self.sampling_rate();
+            tags.insert(TAG_OTLP_SAMPLING_RATE.to_string(), format!("{:.2}", rate));
         }
 
-        tags.insert("_dd.p.dm".to_string(), DECISION_MAKER.to_string());
         chunk.set_tags(tags);
 
         chunk.set_spans(spans);
@@ -758,12 +774,12 @@ fn write_map_entry_string_string(
     Ok(())
 }
 
-fn get_resource_tag_value<'a>(resource_tags: &'a TagSet, key: &str) -> Option<&'a str> {
+fn get_resource_tag_value<'a>(resource_tags: &'a SharedTagSet, key: &str) -> Option<&'a str> {
     resource_tags.get_single_tag(key).and_then(|t| t.value())
 }
 
 fn resolve_hostname<'a>(
-    resource_tags: &'a TagSet, source: Option<&'a OtlpSource>, default_hostname: Option<&'a str>,
+    resource_tags: &'a SharedTagSet, source: Option<&'a OtlpSource>, default_hostname: Option<&'a str>,
     ignore_missing_fields: bool,
 ) -> Option<&'a str> {
     let mut hostname = match source {
@@ -785,7 +801,7 @@ fn resolve_hostname<'a>(
     hostname
 }
 
-fn resolve_env(resource_tags: &TagSet, ignore_missing_fields: bool) -> Option<&str> {
+fn resolve_env(resource_tags: &SharedTagSet, ignore_missing_fields: bool) -> Option<&str> {
     if let Some(value) = get_resource_tag_value(resource_tags, KEY_DATADOG_ENVIRONMENT) {
         return Some(value);
     }
@@ -798,7 +814,7 @@ fn resolve_env(resource_tags: &TagSet, ignore_missing_fields: bool) -> Option<&s
     get_resource_tag_value(resource_tags, DEPLOYMENT_ENVIRONMENT_KEY)
 }
 
-fn resolve_container_id<'a>(resource_tags: &'a TagSet, first_span: Option<&'a DdSpan>) -> Option<&'a str> {
+fn resolve_container_id<'a>(resource_tags: &'a SharedTagSet, first_span: Option<&'a DdSpan>) -> Option<&'a str> {
     for key in [KEY_DATADOG_CONTAINER_ID, CONTAINER_ID, K8S_POD_UID] {
         if let Some(value) = get_resource_tag_value(resource_tags, key) {
             return Some(value);
@@ -816,7 +832,7 @@ fn resolve_container_id<'a>(resource_tags: &'a TagSet, first_span: Option<&'a Dd
     None
 }
 
-fn resolve_app_version(resource_tags: &TagSet) -> Option<&str> {
+fn resolve_app_version(resource_tags: &SharedTagSet) -> Option<&str> {
     if let Some(value) = get_resource_tag_value(resource_tags, KEY_DATADOG_VERSION) {
         return Some(value);
     }
@@ -824,7 +840,7 @@ fn resolve_app_version(resource_tags: &TagSet) -> Option<&str> {
 }
 
 fn resolve_container_tags(
-    resource_tags: &TagSet, source: Option<&OtlpSource>, ignore_missing_fields: bool,
+    resource_tags: &SharedTagSet, source: Option<&OtlpSource>, ignore_missing_fields: bool,
 ) -> Option<MetaString> {
     // TODO: some refactoring is probably needed to normalize this function, the tags should already be normalized
     // since we do so when we transform OTLP spans to DD spans however to make this class extensible for non otlp traces, we would

@@ -73,7 +73,7 @@ build-adp-image-amd64:
 
 build-adp-image-arm64:
   extends: [.build-common-variables, .build-arm64-variables, .build-adp-definition]
-  tags: ["docker-in-docker:microvm-arm64"]
+  tags: ["docker-in-docker:arm64"]
   variables:
     APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
 
@@ -94,7 +94,7 @@ build-adp-image-fips-amd64:
 
 build-adp-image-fips-arm64:
   extends: [.build-common-variables, .build-arm64-variables, .build-adp-definition]
-  tags: ["docker-in-docker:microvm-arm64"]
+  tags: ["docker-in-docker:arm64"]
   variables:
     APP_IMAGE: ${ADP_PUBLIC_BASE_IMAGE}
     BUILD_FEATURES: "fips"
@@ -120,7 +120,7 @@ build-adp-image-internal-amd64:
 
 build-adp-image-internal-arm64:
   extends: [.build-common-variables, .build-arm64-variables, .build-adp-definition]
-  tags: ["docker-in-docker:microvm-arm64"]
+  tags: ["docker-in-docker:arm64"]
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
@@ -153,7 +153,7 @@ build-adp-image-fips-internal-amd64:
 
 build-adp-image-fips-internal-arm64:
   extends: [.build-common-variables, .build-arm64-variables, .build-adp-definition]
-  tags: ["docker-in-docker:microvm-arm64"]
+  tags: ["docker-in-docker:arm64"]
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
@@ -198,7 +198,7 @@ publish-adp-image-internal:
     strategy: depend
   variables:
     IMAGE_NAME: agent-data-plane
-    IMAGE_VERSION: tmpl-v4
+    IMAGE_VERSION: tmpl-v5
     TMPL_SRC_REPO: ${ADP_IMAGE_REPO_NAME}
     TMPL_SRC_IMAGE: ${ADP_IMAGE_VERSION}-internal
     RELEASE_TAG: ${ADP_IMAGE_VERSION}
@@ -222,7 +222,7 @@ publish-adp-image-internal-fips:
     strategy: depend
   variables:
     IMAGE_NAME: agent-data-plane
-    IMAGE_VERSION: tmpl-v4
+    IMAGE_VERSION: tmpl-v5
     TMPL_SRC_REPO: ${ADP_IMAGE_REPO_NAME}
     TMPL_SRC_IMAGE: ${ADP_IMAGE_VERSION_FIPS}-internal
     RELEASE_TAG: ${ADP_IMAGE_VERSION_FIPS}

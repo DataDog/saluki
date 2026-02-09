@@ -25,12 +25,12 @@ use saluki_components::{
     transforms::{
         AggregateConfiguration, ApmStatsTransformConfiguration, ChainedConfiguration, DogstatsDMapperConfiguration,
         DogstatsDPrefixFilterConfiguration, HostEnrichmentConfiguration, HostTagsConfiguration,
-        TraceObfuscationConfiguration,
+        TraceObfuscationConfiguration, TraceSamplerConfiguration,
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_core::topology::TopologyBlueprint;
-use saluki_env::{configstream::create_config_stream, EnvironmentProvider as _};
+use saluki_env::EnvironmentProvider as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
 use tokio::{select, time::interval};
@@ -38,7 +38,7 @@ use tracing::{error, info, warn};
 
 use crate::{
     components::apm_onboarding::ApmOnboardingConfiguration,
-    internal::{spawn_control_plane, spawn_internal_observability_topology},
+    internal::{remote_agent::RemoteAgentBootstrap, spawn_control_plane, spawn_internal_observability_topology},
 };
 use crate::{config::DataPlaneConfiguration, env_provider::ADPEnvironmentProvider};
 
@@ -65,44 +65,57 @@ pub async fn handle_run_command(
         "Agent Data Plane starting..."
     );
 
-    // Load our "bootstrap" configuration, and then determine if we need to actually source our configuration from the control plane.
+    // Load our "bootstrap" configuration.
     //
-    // When we're in standalone mode, we'll use the bootstrap configuration as our final configuration.
+    // If remote agent mode is enabled, we'll register as a remote agent, which will unlock the ability to receive
+    // configuration updates from the Core Agent, which we'll use to build our final, updated configuration. Otherwise,
+    // we keep the bootstrap configuration and use it as-is.
     let bootstrap_dp_config = DataPlaneConfiguration::from_configuration(&bootstrap_config)
         .error_context("Failed to load data plane configuration.")?;
 
     let in_standalone_mode = bootstrap_dp_config.standalone_mode();
+    let remote_agent_enabled = bootstrap_dp_config.remote_agent_enabled();
     let use_new_config_stream_endpoint = bootstrap_dp_config.use_new_config_stream_endpoint();
-    let (config, dp_config) = if !in_standalone_mode && use_new_config_stream_endpoint {
-        let config_updates_receiver = create_config_stream(&bootstrap_config)
+    let should_bootstrap_remote_agent = !in_standalone_mode && (remote_agent_enabled || use_new_config_stream_endpoint);
+
+    let ra_bootstrap = if should_bootstrap_remote_agent {
+        let ra_bootstrap = RemoteAgentBootstrap::from_configuration(&bootstrap_config, &bootstrap_dp_config)
             .await
-            .error_context("Failed to create configuration updates stream from control plane.")?;
+            .error_context("Failed to bootstrap remote agent state.")?;
 
-        // Build a new configuration that uses the configuration sent by the control plane as the authoritative
-        // configuration source, but with environment variables on top of that to allow for ADP-specific overriding: log
-        // level, etc.
-        let dynamic_config = ConfigurationLoader::default()
-            .from_yaml(&bootstrap_config_path)
-            .error_context("Failed to load Datadog Agent configuration file.")?
-            .with_dynamic_configuration(config_updates_receiver)
-            .from_environment(crate::internal::platform::DATADOG_AGENT_ENV_VAR_PREFIX)?
-            .with_default_secrets_resolution()
-            .await?
-            .into_generic()
-            .await?;
-
-        info!("Waiting for initial configuration from Datadog Agent...");
-        dynamic_config.ready().await;
-        info!("Initial configuration received.");
-
-        // Reload our data plane configuration based on the dynamic configuration.
-        let dynamic_dp_config = DataPlaneConfiguration::from_configuration(&dynamic_config)
-            .error_context("Failed to load data plane configuration.")?;
-
-        (dynamic_config, dynamic_dp_config)
+        Some(ra_bootstrap)
     } else {
+        None
+    };
+
+    let (config, dp_config) = match &ra_bootstrap {
+        Some(ra_bootstrap) if use_new_config_stream_endpoint => {
+            // Build a new configuration that uses the configuration sent by the control plane as the authoritative
+            // configuration source, but with environment variables on top of that to allow for ADP-specific overriding: log
+            // level, etc.
+            let dynamic_config = ConfigurationLoader::default()
+                .from_yaml(&bootstrap_config_path)
+                .error_context("Failed to load Datadog Agent configuration file.")?
+                .with_dynamic_configuration(ra_bootstrap.create_config_stream())
+                .from_environment(crate::internal::platform::DATADOG_AGENT_ENV_VAR_PREFIX)?
+                .with_default_secrets_resolution()
+                .await?
+                .into_generic()
+                .await?;
+
+            info!("Waiting for initial configuration from Datadog Agent...");
+            dynamic_config.ready().await;
+            info!("Initial configuration received.");
+
+            // Reload our data plane configuration based on the dynamic configuration.
+            let dynamic_dp_config = DataPlaneConfiguration::from_configuration(&dynamic_config)
+                .error_context("Failed to load data plane configuration.")?;
+
+            (dynamic_config, dynamic_dp_config)
+        }
+
         // If dynamic configuration is disabled, the bootstrap configuration is already the complete and final configuration.
-        (bootstrap_config, bootstrap_dp_config)
+        _ => (bootstrap_config, bootstrap_dp_config),
     };
 
     if !in_standalone_mode && !dp_config.enabled() {
@@ -138,6 +151,7 @@ pub async fn handle_run_command(
         health_registry.clone(),
         env_provider,
         dsd_stats_config,
+        ra_bootstrap,
     )
     .await
     .error_context("Failed to spawn control plane.")?;
@@ -327,8 +341,12 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         .with_environment_provider(env_provider.clone())
         .await?;
     let trace_obfuscation_config = TraceObfuscationConfiguration::from_apm_configuration(config)?;
-    let dd_traces_enrich_config =
-        ChainedConfiguration::default().with_transform_builder("apm_onboarding", ApmOnboardingConfiguration);
+    let trace_sampler_config = TraceSamplerConfiguration::from_configuration(config)
+        .error_context("Failed to configure Trace Sampler transform.")?;
+    let dd_traces_enrich_config = ChainedConfiguration::default()
+        .with_transform_builder("apm_onboarding", ApmOnboardingConfiguration)
+        .with_transform_builder("trace_obfuscation", trace_obfuscation_config)
+        .with_transform_builder("trace_sampler", trace_sampler_config);
     let apm_stats_transform_config = ApmStatsTransformConfiguration::from_configuration(config)
         .error_context("Failed to configure APM Stats transform.")?
         .with_environment_provider(env_provider.clone())
@@ -339,12 +357,10 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         .await?;
 
     blueprint
-        .add_transform("trace_obfuscation", trace_obfuscation_config)?
         .add_transform("traces_enrich", dd_traces_enrich_config)?
         .add_transform("dd_apm_stats", apm_stats_transform_config)?
         .add_encoder("dd_stats_encode", dd_apm_stats_encoder)?
         .add_encoder("dd_traces_encode", dd_traces_config)?
-        .connect_component("traces_enrich", ["trace_obfuscation"])?
         .connect_component("dd_apm_stats", ["traces_enrich"])?
         .connect_component("dd_traces_encode", ["traces_enrich"])?
         .connect_component("dd_stats_encode", ["dd_apm_stats"])?
@@ -464,7 +480,7 @@ fn add_otlp_pipeline_to_blueprint(
                 .add_decoder("otlp_traces_decode", otlp_decoder_config)?
                 // Traces to decoder, then to the trace pipeline: obfuscation, enrichment, encoding, stats, forwarding.
                 .connect_component("otlp_traces_decode", ["otlp_relay_in.traces"])?
-                .connect_component("trace_obfuscation", ["otlp_traces_decode"])?;
+                .connect_component("traces_enrich", ["otlp_traces_decode"])?;
         }
     } else {
         info!("OTLP proxy mode disabled. OTLP signals will be handled natively.");
@@ -481,7 +497,7 @@ fn add_otlp_pipeline_to_blueprint(
             // to avoid transforming counters into rates.
             .connect_component("metrics_enrich", ["otlp_in.metrics"])?
             .connect_component("dd_logs_encode", ["otlp_in.logs"])?
-            .connect_component("trace_obfuscation", ["otlp_in.traces"])?;
+            .connect_component("traces_enrich", ["otlp_in.traces"])?;
     }
     Ok(())
 }

@@ -1,0 +1,5 @@
+## This file is used for testing the parse_config_file function
+## Minimal test configuration
+
+instances:
+  -

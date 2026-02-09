@@ -1,8 +1,56 @@
 //! Traces.
 
 use saluki_common::collections::FastHashMap;
-use saluki_context::tags::TagSet;
+use saluki_context::tags::SharedTagSet;
 use stringtheory::MetaString;
+
+/// Trace-level sampling metadata.
+///
+/// This struct stores sampling-related metadata that applies to the entire trace,
+/// typically set by the trace sampler and consumed by the encoder.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TraceSampling {
+    /// Whether or not the trace was dropped during sampling.
+    pub dropped_trace: bool,
+    /// The sampling priority assigned to this trace.
+    ///
+    /// Common values include:
+    /// - `2`: Manual keep (user-requested)
+    /// - `1`: Auto keep (sampled in)
+    /// - `0`: Auto drop (sampled out)
+    /// - `-1`: Manual drop (user-requested drop)
+    pub priority: Option<i32>,
+
+    /// The decision maker identifier indicating which sampler made the sampling decision.
+    ///
+    /// Common values include:
+    /// - `-9`: Probabilistic sampler
+    /// - `-4`: Errors sampler
+    /// - `None`: No decision maker set
+    pub decision_maker: Option<MetaString>,
+
+    /// The OTLP sampling rate applied to this trace, formatted as a string (e.g., "0.25").
+    ///
+    /// This corresponds to the `_dd.otlp_sr` tag and represents the effective sampling rate
+    /// from the OTLP ingest path.
+    pub otlp_sampling_rate: Option<MetaString>,
+}
+
+impl TraceSampling {
+    /// Creates a new `TraceSampling` instance.
+    pub fn new(
+        dropped_trace: bool, priority: Option<i32>, decision_maker: Option<MetaString>,
+        otlp_sampling_rate: Option<MetaString>,
+    ) -> Self {
+        Self {
+            dropped_trace,
+            priority,
+            decision_maker,
+            otlp_sampling_rate,
+        }
+    }
+}
+
 /// A trace event.
 ///
 /// A trace is a collection of spans that represent a distributed trace.
@@ -13,13 +61,23 @@ pub struct Trace {
     /// Resource-level tags associated with this trace.
     ///
     /// This is derived from the resource of the spans and used to construct the tracer payload.
-    resource_tags: TagSet,
+    resource_tags: SharedTagSet,
+    /// Trace-level sampling metadata.
+    ///
+    /// This field contains sampling decision information (priority, decision maker, rates)
+    /// that applies to the entire trace. It is set by the trace sampler component and consumed
+    /// by the encoder to populate trace chunk metadata.
+    sampling: Option<TraceSampling>,
 }
 
 impl Trace {
     /// Creates a new `Trace` with the given spans.
-    pub fn new(spans: Vec<Span>, resource_tags: TagSet) -> Self {
-        Self { spans, resource_tags }
+    pub fn new(spans: Vec<Span>, resource_tags: impl Into<SharedTagSet>) -> Self {
+        Self {
+            spans,
+            resource_tags: resource_tags.into(),
+            sampling: None,
+        }
     }
 
     /// Returns a reference to the spans in this trace.
@@ -32,9 +90,52 @@ impl Trace {
         &mut self.spans
     }
 
+    /// Replaces the spans in this trace with the given spans.
+    pub fn set_spans(&mut self, spans: Vec<Span>) {
+        self.spans = spans;
+    }
+
+    /// Retains only the spans specified by the predicate.
+    ///
+    /// Returns the number of spans retained. If no spans match, the trace is left unchanged.
+    pub fn retain_spans<F>(&mut self, mut f: F) -> usize
+    where
+        F: FnMut(&Span) -> bool,
+    {
+        if self.spans.is_empty() {
+            return 0;
+        }
+
+        let mut has_match = false;
+        for span in self.spans.iter() {
+            if f(span) {
+                has_match = true;
+                break;
+            }
+        }
+
+        if !has_match {
+            return 0;
+        }
+
+        self.spans.retain(|span| f(span));
+        self.spans.shrink_to_fit();
+        self.spans.len()
+    }
+
     /// Returns the resource-level tags associated with this trace.
-    pub fn resource_tags(&self) -> &TagSet {
+    pub fn resource_tags(&self) -> &SharedTagSet {
         &self.resource_tags
+    }
+
+    /// Returns a reference to the trace-level sampling metadata, if present.
+    pub fn sampling(&self) -> Option<&TraceSampling> {
+        self.sampling.as_ref()
+    }
+
+    /// Sets the trace-level sampling metadata.
+    pub fn set_sampling(&mut self, sampling: Option<TraceSampling>) {
+        self.sampling = sampling;
     }
 }
 
@@ -246,7 +347,7 @@ impl Span {
         &self.meta
     }
 
-    /// Returns a mutable reference to the string-valued tag map.
+    /// Returns a mutable reference to the meta map.
     pub fn meta_mut(&mut self) -> &mut FastHashMap<MetaString, MetaString> {
         &mut self.meta
     }
@@ -254,6 +355,11 @@ impl Span {
     /// Returns the numeric-valued tag map.
     pub fn metrics(&self) -> &FastHashMap<MetaString, f64> {
         &self.metrics
+    }
+
+    /// Returns a mutable reference to the metrics map.
+    pub fn metrics_mut(&mut self) -> &mut FastHashMap<MetaString, f64> {
+        &mut self.metrics
     }
 
     /// Returns the structured metadata map.

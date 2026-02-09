@@ -8,17 +8,15 @@ use saluki_app::{
 use saluki_common::task::spawn_traced_named;
 use saluki_components::destinations::DogStatsDStatisticsConfiguration;
 use saluki_config::GenericConfiguration;
-use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_error::{ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
-use saluki_io::net::{build_datadog_agent_server_tls_config, get_ipc_cert_file_path, GrpcTargetAddress, ListenAddress};
+use saluki_io::net::{build_datadog_agent_server_tls_config, get_ipc_cert_file_path, ListenAddress};
 use tracing::{error, info};
 
 use crate::{
     config::DataPlaneConfiguration,
     env_provider::ADPEnvironmentProvider,
-    internal::{
-        initialize_and_launch_runtime, platform::PlatformSettings, remote_agent::RemoteAgentHelperConfiguration,
-    },
+    internal::{initialize_and_launch_runtime, platform::PlatformSettings, remote_agent::RemoteAgentBootstrap},
 };
 
 /// Gets the IPC certificate file path from the configuration.
@@ -53,7 +51,7 @@ fn get_cert_path_from_config(config: &GenericConfiguration) -> Result<PathBuf, G
 pub async fn spawn_control_plane(
     config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, component_registry: &ComponentRegistry,
     health_registry: HealthRegistry, env_provider: ADPEnvironmentProvider,
-    dsd_stats_config: DogStatsDStatisticsConfiguration,
+    dsd_stats_config: DogStatsDStatisticsConfiguration, ra_bootstrap: Option<RemoteAgentBootstrap>,
 ) -> Result<(), GenericError> {
     // Build our unprivileged and privileged API server.
     //
@@ -75,11 +73,10 @@ pub async fn spawn_control_plane(
         .with_optional_handler(env_provider.workload_api_handler())
         .with_handler(dsd_stats_config.api_handler());
 
-    let config = config.clone();
     let dp_config = dp_config.clone();
     let init = async move {
         // Handle any final configuration of our API endpoints and spawn them.
-        configure_and_spawn_api_endpoints(config, dp_config, unprivileged_api, privileged_api).await?;
+        configure_and_spawn_api_endpoints(dp_config, unprivileged_api, privileged_api, ra_bootstrap).await?;
 
         health_registry.spawn().await?;
 
@@ -90,46 +87,17 @@ pub async fn spawn_control_plane(
 }
 
 async fn configure_and_spawn_api_endpoints(
-    config: GenericConfiguration, dp_config: DataPlaneConfiguration, unprivileged_api: APIBuilder,
-    mut privileged_api: APIBuilder,
+    dp_config: DataPlaneConfiguration, unprivileged_api: APIBuilder, mut privileged_api: APIBuilder,
+    ra_bootstrap: Option<RemoteAgentBootstrap>,
 ) -> Result<(), GenericError> {
-    // When not in standalone mode, install the necessary components for registering ourselves with the Datadog Agent as
-    // a "remote agent", which wires up ADP to allow the Datadog Agent to query it for status and flare information.
-    if !dp_config.standalone_mode() && dp_config.remote_agent_enabled() {
-        let secure_api_grpc_target_addr =
-            GrpcTargetAddress::try_from_listen_addr(dp_config.secure_api_listen_address()).ok_or_else(|| {
-                generic_error!("Failed to get valid gRPC target address from secure API listen address.")
-            })?;
-
-        let mut prometheus_listen_addr = None;
-        if dp_config.telemetry_enabled() {
-            prometheus_listen_addr = dp_config
-                .telemetry_listen_addr()
-                .as_local_connect_addr()
-                .ok_or_else(|| generic_error!("Telemetry listen address present but not valid for local connections."))
-                .map(Some)?;
+    // If we're not in standalone mode and we've gotten some bootstrapped remote agent state,
+    // wire it up to the privileged API so the Core Agent can communicate with us.
+    if let Some(ra_bootstrap) = ra_bootstrap {
+        privileged_api = privileged_api.with_grpc_service(ra_bootstrap.create_status_service());
+        privileged_api = privileged_api.with_grpc_service(ra_bootstrap.create_flare_service());
+        if let Some(telemetry_service) = ra_bootstrap.create_telemetry_service() {
+            privileged_api = privileged_api.with_grpc_service(telemetry_service);
         }
-
-        // Build our helper configuration for registering ourselves with the Datadog Agent as a remote agent.
-        let mut remote_agent_config = RemoteAgentHelperConfiguration::from_configuration(
-            &config,
-            secure_api_grpc_target_addr,
-            prometheus_listen_addr,
-        )
-        .await?;
-
-        // Create and register the Remote Agent gRPC services with the privileged API.
-        // Each service is tracked automatically for registration with the Remote Agent Registry.
-        privileged_api = privileged_api.with_grpc_service(remote_agent_config.create_status_service());
-        privileged_api = privileged_api.with_grpc_service(remote_agent_config.create_flare_service());
-
-        // Only register the telemetry service if telemetry is enabled
-        if dp_config.telemetry_enabled() {
-            privileged_api = privileged_api.with_grpc_service(remote_agent_config.create_telemetry_service());
-        }
-
-        // Spawn the remote agent helper task.
-        remote_agent_config.spawn();
     }
 
     spawn_unprivileged_api(unprivileged_api, dp_config.api_listen_address().clone()).await?;

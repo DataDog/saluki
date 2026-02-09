@@ -13,7 +13,7 @@ use saluki_core::{
     data_model::{event::EventType, payload::PayloadType},
     topology::interconnect::EventBufferManager,
 };
-use saluki_error::{ErrorContext as _, GenericError};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
 use tokio::{
     select,
@@ -62,7 +62,10 @@ impl DecoderBuilder for OtlpDecoderConfiguration {
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Decoder + Send>, GenericError> {
         let metrics = build_metrics(&context);
-        let traces_translator = OtlpTracesTranslator::new(self.otlp_config.traces.clone());
+        let traces_interner_size =
+            std::num::NonZeroUsize::new(self.otlp_config.traces.string_interner_bytes.as_u64() as usize)
+                .ok_or_else(|| generic_error!("otlp_config.traces.string_interner_size must be greater than 0"))?;
+        let traces_translator = OtlpTracesTranslator::new(self.otlp_config.traces.clone(), traces_interner_size);
 
         Ok(Box::new(OtlpDecoder {
             traces_translator,
@@ -86,6 +89,10 @@ pub struct OtlpDecoder {
 #[async_trait]
 impl Decoder for OtlpDecoder {
     async fn run(self: Box<Self>, mut context: DecoderContext) -> Result<(), GenericError> {
+        let Self {
+            mut traces_translator,
+            metrics,
+        } = *self;
         let mut health = context.take_health_handle();
         health.mark_ready();
 
@@ -128,8 +135,7 @@ impl Decoder for OtlpDecoder {
                             };
 
                             for resource_spans in request.resource_spans {
-                                let trace_events = self.traces_translator.translate_resource_spans(resource_spans, &self.metrics);
-                                for trace_event in trace_events {
+                                for trace_event in traces_translator.translate_spans(resource_spans, &metrics) {
                                     if let Some(event_buffer) = event_buffer_manager.try_push(trace_event) {
                                         if let Err(e) = context.dispatcher().dispatch(event_buffer).await {
                                             error!(error = %e, "Failed to dispatch trace events.");

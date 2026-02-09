@@ -1,17 +1,18 @@
 //! Span concentrator for APM stats computation.
 
 use saluki_common::collections::FastHashMap;
+use saluki_context::tags::SharedTagSet;
 use saluki_core::data_model::event::trace::Span;
 use saluki_core::data_model::event::trace_stats::{ClientStatsBucket, ClientStatsPayload};
 use stringtheory::MetaString;
 
+use super::aggregation::AggregationRegistry;
 use super::aggregation::{
     get_grpc_status_code, get_status_code, process_tags_hash, PayloadAggregationKey, BUCKET_DURATION_NS,
     TAG_BASE_SERVICE, TAG_SPAN_KIND,
 };
 use super::statsraw::RawBucket;
 
-const KINDS_COMPUTED: &[&str] = &["server", "consumer", "client", "producer"];
 const DEFAULT_BUFFER_LEN: u64 = 2;
 const METRIC_TOP_LEVEL: &str = "_top_level";
 const METRIC_MEASURED: &str = "_dd.measured";
@@ -69,7 +70,7 @@ pub struct InfraTags {
     /// Container ID from the tracer payload.
     pub container_id: MetaString,
     /// Container tags resolved from the container runtime.
-    pub container_tags: Vec<MetaString>,
+    pub container_tags: SharedTagSet,
     /// Hash of the process tags string.
     pub process_tags_hash: u64,
     /// Process tags string from the tracer payload.
@@ -78,7 +79,7 @@ pub struct InfraTags {
 
 impl InfraTags {
     pub fn new(
-        container_id: impl Into<MetaString>, container_tags: Vec<MetaString>, process_tags: impl Into<MetaString>,
+        container_id: impl Into<MetaString>, container_tags: SharedTagSet, process_tags: impl Into<MetaString>,
     ) -> Self {
         let process_tags: MetaString = process_tags.into();
         let process_tags_hash = process_tags_hash(process_tags.as_ref());
@@ -130,13 +131,17 @@ pub struct SpanConcentrator {
 
     /// Time-bucketed raw stats: bucket_timestamp -> RawBucket
     buckets: FastHashMap<u64, RawBucket>,
+
+    /// Shared registry for aggregation keys.
+    /// Keys are stored here and referenced by hash in individual buckets.
+    key_registry: AggregationRegistry,
 }
 
 impl SpanConcentrator {
     pub fn new(
         compute_stats_by_span_kind: bool, peer_tags_aggregation: bool, custom_peer_tags: &[MetaString], now: u64,
     ) -> Self {
-        let mut peer_tag_keys: Vec<MetaString> = BASE_PEER_TAGS.iter().map(|&s| MetaString::from(s)).collect();
+        let mut peer_tag_keys: Vec<MetaString> = BASE_PEER_TAGS.iter().map(|s| MetaString::from_static(s)).collect();
         for tag in custom_peer_tags {
             if !peer_tag_keys.iter().any(|t| t == tag) {
                 peer_tag_keys.push(tag.clone());
@@ -151,6 +156,7 @@ impl SpanConcentrator {
             oldest_ts: align_ts(now, BUCKET_DURATION_NS),
             buffer_len: DEFAULT_BUFFER_LEN,
             buckets: FastHashMap::default(),
+            key_registry: AggregationRegistry::new(),
         }
     }
 
@@ -167,7 +173,7 @@ impl SpanConcentrator {
 
     pub fn flush(&mut self, now: u64, force: bool) -> Vec<ClientStatsPayload> {
         let mut m = FastHashMap::<PayloadAggregationKey, Vec<ClientStatsBucket>>::default();
-        let mut container_tags_by_id = FastHashMap::<MetaString, Vec<MetaString>>::default();
+        let mut container_tags_by_id = FastHashMap::<MetaString, SharedTagSet>::default();
         let mut process_tags_by_hash = FastHashMap::<u64, MetaString>::default();
 
         let timestamps: Vec<u64> = self.buckets.keys().copied().collect();
@@ -177,16 +183,15 @@ impl SpanConcentrator {
                 continue;
             }
 
-            if let Some(srb) = self.buckets.remove(&ts) {
-                let bucket_container_tags = srb.container_tags_by_id.clone();
-                let bucket_process_tags = srb.process_tags_by_hash.clone();
-                let exported = srb.export();
+            if let Some(bucket) = self.buckets.remove(&ts) {
+                // Export bucket data, which also decrements reference counts for keys inline
+                let exported = bucket.export(&mut self.key_registry);
 
-                for (k, b) in exported {
-                    if let Some(ctags) = bucket_container_tags.get(&k.container_id) {
+                for (k, b) in exported.data {
+                    if let Some(ctags) = exported.container_tags_by_id.get(&k.container_id) {
                         container_tags_by_id.insert(k.container_id.clone(), ctags.clone());
                     }
-                    if let Some(ptags) = bucket_process_tags.get(&k.process_tags_hash) {
+                    if let Some(ptags) = exported.process_tags_by_hash.get(&k.process_tags_hash) {
                         process_tags_by_hash.insert(k.process_tags_hash, ptags.clone());
                     }
                     m.entry(k).or_default().push(b);
@@ -201,13 +206,13 @@ impl SpanConcentrator {
 
         let mut sb: Vec<ClientStatsPayload> = Vec::with_capacity(m.len());
         for (k, s) in m {
-            let p = ClientStatsPayload::new(k.hostname.clone(), k.env.clone(), k.version.clone())
+            let p = ClientStatsPayload::new(k.hostname, k.env, k.version)
                 .with_stats(s)
-                .with_container_id(k.container_id.clone())
-                .with_git_commit_sha(k.git_commit_sha.clone())
-                .with_image_tag(k.image_tag.clone())
-                .with_lang(k.lang.clone())
                 .with_tags(container_tags_by_id.get(&k.container_id).cloned().unwrap_or_default())
+                .with_container_id(k.container_id)
+                .with_git_commit_sha(k.git_commit_sha)
+                .with_image_tag(k.image_tag)
+                .with_lang(k.lang)
                 .with_process_tags(
                     process_tags_by_hash
                         .get(&k.process_tags_hash)
@@ -233,7 +238,7 @@ impl SpanConcentrator {
         }
         if self.compute_stats_by_span_kind {
             if let Some(kind) = span.meta().get(TAG_SPAN_KIND) {
-                return compute_stats_for_span_kind(kind.as_ref());
+                return compute_stats_for_span_kind(kind);
             }
         }
         false
@@ -250,7 +255,7 @@ impl SpanConcentrator {
 
         let span_kind = span.meta().get(TAG_SPAN_KIND).cloned().unwrap_or_default();
         let status_code = get_status_code(span.meta(), span.metrics());
-        let grpc_status_code = get_grpc_status_code(span.meta(), span.metrics());
+        let grpc_status_code = get_grpc_status_code(span.meta(), span.metrics()).to_metastring();
         let is_top_level = span.metrics().get(METRIC_TOP_LEVEL).map(|&v| v == 1.0).unwrap_or(false);
         let matching_peer_tags = self.matching_peer_tags(span, &span_kind);
 
@@ -273,12 +278,11 @@ impl SpanConcentrator {
         })
     }
 
-    fn matching_peer_tags(&self, span: &Span, span_kind: &MetaString) -> Vec<MetaString> {
+    fn matching_peer_tags(&self, span: &Span, span_kind: &str) -> Vec<MetaString> {
         let mut peer_tags = Vec::new();
 
         let keys_to_check = self.peer_tag_keys_to_aggregate_for_span(span_kind, span.meta().get(TAG_BASE_SERVICE));
-
-        for key in &keys_to_check {
+        for key in keys_to_check {
             if let Some(value) = span.meta().get(key) {
                 if !value.is_empty() {
                     peer_tags.push(MetaString::from(format!("{}:{}", key, value)));
@@ -289,23 +293,28 @@ impl SpanConcentrator {
         peer_tags
     }
 
-    fn peer_tag_keys_to_aggregate_for_span(
-        &self, span_kind: &MetaString, base_service: Option<&MetaString>,
-    ) -> Vec<MetaString> {
+    fn peer_tag_keys_to_aggregate_for_span(&self, span_kind: &str, base_service: Option<&MetaString>) -> &[MetaString] {
+        static EMPTY_PEER_TAGS: &[MetaString] = &[];
+        static BASE_SERVICE_PEER_TAGS: &[MetaString] = &[MetaString::from_static(TAG_BASE_SERVICE)];
+
         if !self.peer_tags_aggregation || self.peer_tag_keys.is_empty() {
-            return Vec::new();
+            return EMPTY_PEER_TAGS;
         }
 
-        let kind_lower = span_kind.as_ref().to_lowercase();
-        if (kind_lower.is_empty() || kind_lower == "internal") && base_service.map(|s| !s.is_empty()).unwrap_or(false) {
-            return vec![MetaString::from(TAG_BASE_SERVICE)];
+        if (span_kind.is_empty() || span_kind.eq_ignore_ascii_case("internal"))
+            && base_service.map(|s| !s.is_empty()).unwrap_or(false)
+        {
+            return BASE_SERVICE_PEER_TAGS;
         }
 
-        if kind_lower == "client" || kind_lower == "producer" || kind_lower == "consumer" {
-            return self.peer_tag_keys.clone();
+        if span_kind.eq_ignore_ascii_case("client")
+            || span_kind.eq_ignore_ascii_case("producer")
+            || span_kind.eq_ignore_ascii_case("consumer")
+        {
+            return &self.peer_tag_keys;
         }
 
-        Vec::new()
+        EMPTY_PEER_TAGS
     }
 
     fn add_span_internal(
@@ -326,7 +335,7 @@ impl SpanConcentrator {
             b.set_container_tags(tags.container_id.clone(), tags.container_tags.clone());
         }
 
-        b.handle_span(s, weight, origin, agg_key.clone());
+        b.handle_span(s, weight, origin, agg_key.clone(), &mut self.key_registry);
     }
 }
 
@@ -336,9 +345,11 @@ fn align_ts(ts: u64, bsize: u64) -> u64 {
     ts - ts % bsize
 }
 
-pub fn compute_stats_for_span_kind(kind: &str) -> bool {
-    let k = kind.to_lowercase();
-    KINDS_COMPUTED.contains(&k.as_str())
+pub const fn compute_stats_for_span_kind(kind: &str) -> bool {
+    kind.eq_ignore_ascii_case("server")
+        || kind.eq_ignore_ascii_case("client")
+        || kind.eq_ignore_ascii_case("producer")
+        || kind.eq_ignore_ascii_case("consumer")
 }
 
 fn is_partial_snapshot(span: &Span) -> bool {

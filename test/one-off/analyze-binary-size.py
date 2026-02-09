@@ -37,6 +37,33 @@ def get_file_size(path: Path) -> int:
     return path.stat().st_size
 
 
+def demangle_with_rustfilt(text: str) -> str:
+    """Demangle Rust symbols using rustfilt.
+
+    Rust symbols are mangled using the C++ Itanium ABI (legacy mangling) or Rust's
+    v0 mangling scheme. This function pipes the text through rustfilt to demangle
+    symbols like `_ZN17crossbeam_channel5waker9SyncWaker6notify17h0ddc00b08af3a086E`
+    into readable form like `crossbeam_channel::waker::SyncWaker::notify`.
+
+    If rustfilt is not available, returns the original text unchanged.
+    """
+    try:
+        result = subprocess.run(
+            ["rustfilt"],
+            input=text,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout
+    except FileNotFoundError:
+        print("Warning: rustfilt not found, skipping Rust symbol demangling")
+        return text
+    except subprocess.CalledProcessError as e:
+        print(f"Warning: rustfilt failed: {e.stderr}")
+        return text
+
+
 def format_size(bytes_val: int) -> str:
     """Format a byte count as a human-readable string."""
     abs_bytes = abs(bytes_val)
@@ -60,11 +87,20 @@ def run_bloaty(
     bloaty_path: Path,
     comparison_binary: Path,
     baseline_binary: Path,
+    comparison_debug: Path | None = None,
+    baseline_debug: Path | None = None,
     csv_output: bool = False,
     limit: int = 20,
 ) -> str:
     """Run bloaty and return its output."""
     cmd = [str(bloaty_path), "-d", "symbols"]
+
+    # Add debug files if provided (for stripped binary analysis).
+    # Bloaty matches debug files to binaries via build ID.
+    if comparison_debug and comparison_debug.exists():
+        cmd.append(f"--debug-file={comparison_debug}")
+    if baseline_debug and baseline_debug.exists():
+        cmd.append(f"--debug-file={baseline_debug}")
 
     if csv_output:
         cmd.extend(["--csv", "-n", "0", "-w"])
@@ -145,6 +181,23 @@ def demangle_escape_sequences(text: str) -> str:
     result = re.sub(r"\$u([0-9a-fA-F]{2,})\$", decode_unicode_escape, result)
 
     return result
+
+
+def strip_rust_hash_suffix(symbol: str) -> str:
+    """Strip Rust version hash suffix from a demangled symbol name.
+
+    Rust symbols often have a trailing hash like ::h654dff07593b4c08 which
+    represents compiler version, generics instantiation, and other factors.
+    For module-level grouping, these hashes should be removed so that symbols
+    differing only in these transparent ways are collapsed together.
+
+    The hash pattern is ::h followed by exactly 16 lowercase hex characters.
+    This must be called AFTER demangling, as mangled symbols use a different
+    representation for this hash.
+    """
+    import re
+
+    return re.sub(r"::h[a-f0-9]{16}$", "", symbol)
 
 
 def demangle_symbol(symbol: str) -> str:
@@ -239,6 +292,9 @@ def extract_module_prefix(
     ):
         working_symbol = demangle_symbol(symbol)
 
+    # Strip Rust version hash suffix before module extraction
+    working_symbol = strip_rust_hash_suffix(working_symbol)
+
     # For Rust symbols, split on :: and determine depth based on crate ownership
     parts = working_symbol.split("::")
     if not parts:
@@ -298,7 +354,7 @@ def format_module_rollup(aggregated: dict[str, dict], limit: int = 20) -> str:
     for module, data in top_modules:
         filesize_str = format_size_change(data["filesize"])
         count_str = str(data["count"])
-        lines.append(f"| {module} | {filesize_str} | {count_str} |")
+        lines.append(f"| `{module}` | {filesize_str} | {count_str} |")
 
     return "\n".join(lines)
 
@@ -311,6 +367,7 @@ def generate_report(
     threshold_percent: float,
     bloaty_txt_output: str,
     module_rollup: str,
+    using_stripped_binaries: bool = False,
 ) -> tuple[str, bool]:
     """
     Generate a Markdown report and determine pass/fail status.
@@ -343,8 +400,15 @@ def generate_report(
     else:
         change_percent_fmt = f"{change_percent:.2f}%"
 
+    analysis_type = (
+        "Stripped binaries (debug symbols excluded)"
+        if using_stripped_binaries
+        else "Full binaries (includes debug symbols)"
+    )
+
     report = f"""
 **Target:** {baseline_sha} (baseline) vs {comparison_sha} (comparison) [diff](../../compare/{baseline_sha}..{comparison_sha})
+**Analysis Type:** {analysis_type}
 **Baseline Size:** {baseline_size_fmt}
 **Comparison Size:** {comparison_size_fmt}
 **Size Change:** {size_diff_fmt} ({change_percent_fmt})
@@ -356,8 +420,9 @@ def generate_report(
 
 ### Changes by Module
 
-{module_rollup}
+</summary>
 
+{module_rollup}
 </details>
 
 <details>
@@ -388,6 +453,18 @@ def main() -> int:
         type=Path,
         required=True,
         help="Path to comparison binary",
+    )
+    parser.add_argument(
+        "--baseline-debug",
+        type=Path,
+        required=False,
+        help="Path to baseline debug file (for stripped binary analysis)",
+    )
+    parser.add_argument(
+        "--comparison-debug",
+        type=Path,
+        required=False,
+        help="Path to comparison debug file (for stripped binary analysis)",
     )
     parser.add_argument(
         "--baseline-sha", type=str, required=True, help="Git SHA of baseline"
@@ -436,6 +513,13 @@ def main() -> int:
     print(f"Baseline binary size: {format_size(baseline_size)}")
     print(f"Comparison binary size: {format_size(comparison_size)}")
 
+    # Determine if we're doing stripped binary analysis.
+    using_debug_files = (
+        args.baseline_debug is not None and args.comparison_debug is not None
+    )
+    if using_debug_files:
+        print("Using stripped binary analysis with separate debug files")
+
     # Execute bloaty to get the analysis output of symbol size, what symbols are new, what symbols are old, the size
     # change for identical symbols, and so on.
     print("Running bloaty analysis (CSV)...")
@@ -443,11 +527,16 @@ def main() -> int:
         args.bloaty_path,
         args.comparison_binary,
         args.baseline_binary,
+        comparison_debug=args.comparison_debug,
+        baseline_debug=args.baseline_debug,
         csv_output=True,
     )
 
-    # Demangle symbols in CSV output (only the first column, preserving CSV structure)
-    csv_lines = csv_output_raw.strip().split("\n")
+    # Demangle symbols in CSV output using rustfilt first (for _ZN mangled names),
+    # then demangle_escape_sequences (for any remaining Rust escape sequences like $LT$).
+    print("Demangling symbols...")
+    csv_output_demangled = demangle_with_rustfilt(csv_output_raw)
+    csv_lines = csv_output_demangled.strip().split("\n")
     demangled_csv_lines = [csv_lines[0]]  # Keep header as-is
     for line in csv_lines[1:]:
         # Split on comma (only last 2 are numeric), demangle first field (symbol), rejoin
@@ -478,13 +567,16 @@ def main() -> int:
 
     # Run bloaty for human-readable output (top 20)
     print("Running bloaty analysis (text)...")
-    txt_output = run_bloaty(
+    txt_output_raw = run_bloaty(
         args.bloaty_path,
         args.comparison_binary,
         args.baseline_binary,
+        comparison_debug=args.comparison_debug,
+        baseline_debug=args.baseline_debug,
         csv_output=False,
         limit=20,
     )
+    txt_output = demangle_with_rustfilt(txt_output_raw)
     txt_output = demangle_escape_sequences(txt_output)
     args.output_txt.write_text(txt_output)
 
@@ -496,6 +588,7 @@ def main() -> int:
         threshold_percent=args.threshold,
         bloaty_txt_output=txt_output,
         module_rollup=module_rollup_table,
+        using_stripped_binaries=using_debug_files,
     )
     args.output_report.write_text(report)
 
