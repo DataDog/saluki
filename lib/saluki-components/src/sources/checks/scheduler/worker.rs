@@ -25,11 +25,11 @@ impl Worker {
         (worker, check_tx)
     }
 
-    pub async fn run(self: Arc<Self>) -> JoinHandle<()> {
+    pub async fn run(self) -> JoinHandle<()> {
         tokio::spawn(async move { self.run_impl().await })
     }
 
-    async fn run_impl(self: Arc<Self>) {
+    async fn run_impl(&self) {
         let mut check_rx = self.check_rx.lock().await;
 
         debug!(worker.id = self.id, "Ready to process checks.");
