@@ -791,21 +791,11 @@ fn test_parser_enums_as_function_args() {
 use std::sync::Mutex;
 
 /// Structure to capture editor call information
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct EditorCallCapture {
     called: bool,
     first_arg: Option<Value>,
     second_arg: Option<Value>,
-}
-
-impl Default for EditorCallCapture {
-    fn default() -> Self {
-        Self {
-            called: false,
-            first_arg: None,
-            second_arg: None,
-        }
-    }
 }
 
 /// PathAccessor that supports both get and set, with tracking
@@ -1266,12 +1256,12 @@ fn test_named_arguments() {
             // Find arguments by name
             let value_arg = args
                 .iter()
-                .find(|a| a.name().as_deref() == Some("value"))
+                .find(|a| a.name() == Some("value"))
                 .or_else(|| args.first())
                 .ok_or("Convert requires value argument")?;
             let format_arg = args
                 .iter()
-                .find(|a| a.name().as_deref() == Some("format"))
+                .find(|a| a.name() == Some("format"))
                 .or_else(|| args.get(1))
                 .ok_or("Convert requires format argument")?;
 
@@ -1908,7 +1898,7 @@ impl PathAccessor for BenchPathAccessor {
         // Return different values based on path pattern
         static INT_VAL: Value = Value::Int(42);
         static BOOL_VAL: Value = Value::Bool(true);
-        static FLOAT_VAL: Value = Value::Float(3.14);
+        static FLOAT_VAL: Value = Value::Float(6.14);
 
         if self.path.contains("int") || self.path.contains("count") || self.path.contains("status") {
             Ok(&INT_VAL)
