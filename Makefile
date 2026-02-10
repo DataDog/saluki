@@ -46,7 +46,7 @@ export LADING_VERSION ?= sha-d608ffbce8f8c77b147d6750b3bb6d6948af239a
 
 # Version of source repositories (Git tag) for vendored Protocol Buffers definitions.
 export PROTOBUF_SRC_REPO_DD_AGENT ?= 7.73.x
-export PROTOBUF_SRC_REPO_AGENT_PAYLOAD ?= v5.0.164
+export PROTOBUF_SRC_REPO_AGENT_PAYLOAD ?= v5.0.180
 export PROTOBUF_SRC_REPO_CONTAINERD ?= v2.2.0
 export PROTOBUF_SRC_REPO_SKETCHES_GO ?= v1.4.7
 
