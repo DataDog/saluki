@@ -1,4 +1,5 @@
 use axum::{body::Bytes, extract::State, http::StatusCode, Json};
+use datadog_protos::metrics::v3::Payload as V3Payload;
 use datadog_protos::metrics::{MetricPayload, SketchPayload};
 use protobuf::Message as _;
 use stele::Metric;
@@ -52,6 +53,52 @@ pub async fn handle_sketch_beta(State(state): State<MetricsState>, body: Bytes) 
         }
         Err(e) => {
             error!(error = %e, "Failed to merge sketch payload.");
+            StatusCode::BAD_REQUEST
+        }
+    }
+}
+
+pub async fn handle_series_v3(State(state): State<MetricsState>, body: Bytes) -> StatusCode {
+    info!("Received v3 series payload.");
+
+    let payload = match V3Payload::parse_from_bytes(&body[..]) {
+        Ok(payload) => payload,
+        Err(e) => {
+            error!(error = %e, "Failed to parse v3 series payload.");
+            return StatusCode::BAD_REQUEST;
+        }
+    };
+
+    match state.merge_v3_payload(payload) {
+        Ok(()) => {
+            info!("Processed v3 series payload.");
+            StatusCode::ACCEPTED
+        }
+        Err(e) => {
+            error!(error = %e, "Failed to merge v3 series payload.");
+            StatusCode::BAD_REQUEST
+        }
+    }
+}
+
+pub async fn handle_sketch_v3(State(state): State<MetricsState>, body: Bytes) -> StatusCode {
+    info!("Received v3 sketch payload.");
+
+    let payload = match V3Payload::parse_from_bytes(&body[..]) {
+        Ok(payload) => payload,
+        Err(e) => {
+            error!(error = %e, "Failed to parse v3 sketch payload.");
+            return StatusCode::BAD_REQUEST;
+        }
+    };
+
+    match state.merge_v3_payload(payload) {
+        Ok(()) => {
+            info!("Processed v3 sketch payload.");
+            StatusCode::ACCEPTED
+        }
+        Err(e) => {
+            error!(error = %e, "Failed to merge v3 sketch payload.");
             StatusCode::BAD_REQUEST
         }
     }
