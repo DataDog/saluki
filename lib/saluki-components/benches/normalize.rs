@@ -415,9 +415,11 @@ fn bench_normalize_tag(c: &mut Criterion) {
         .map(|(_, values)| values.iter().map(|value| value.len()).sum::<usize>())
         .sum::<usize>() as u64;
     group.throughput(Throughput::Bytes(total_bytes));
-    group.bench_function("previous_algorithm", |b| {
+    // check 1 byte at a time.
+    group.bench_function("scalar", |b| {
         b.iter_custom(|iters| measure_normalize_cpu_time(iters, normalize_tag_scalar));
     });
+    // check 16 bytes at a time.
     group.bench_function("simd", |b| {
         b.iter_custom(|iters| measure_normalize_cpu_time(iters, normalize_tag_simd));
     });

@@ -754,6 +754,12 @@ mod tests {
     use std::char;
 
     use super::*;
+
+    fn normalize_tag_scalar_for_tests(value: &str) -> MetaString {
+        normalize_with_ascii_fast_path(value, true, |tag, check_valid_start_char| {
+            is_normalized_ascii_tag_with_simd_check(tag, check_valid_start_char, |_bytes, _start| None)
+        })
+    }
     // Test cases taken from the agent codebase
     // https://github.com/DataDog/datadog-agent/blob/instrument-otlp-traffic/pkg/trace/traceutil/normalize/normalize_test.go#L17
     #[test]
@@ -850,7 +856,9 @@ mod tests {
 
         for (input, expected) in cases.iter() {
             let normalized = normalize_tag(input.as_ref());
+            let scalar = normalize_tag_scalar_for_tests(input.as_ref());
             assert_eq!(normalized.as_ref(), expected.as_ref(), "input {}", input);
+            assert_eq!(normalized, scalar, "Current/scalar mismatch for input {}", input);
         }
     }
 
@@ -972,6 +980,49 @@ mod tests {
 
         let empty = MetaString::from("");
         assert_eq!(truncate_utf8(&empty, 5), "");
+    }
+
+    #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), not(miri)))]
+    #[test]
+    fn test_sse2_simd_matches_scalar_curated_cases() {
+        if !is_x86_feature_detected!("sse2") {
+            return;
+        }
+
+        let mut chunk_boundary_valid = b"aaaaaaaaaaaaaaa_".to_vec();
+        chunk_boundary_valid.extend_from_slice(b"bccccccccccccccc");
+
+        let mut chunk_boundary_invalid = b"aaaaaaaaaaaaaaa_".to_vec();
+        chunk_boundary_invalid.extend_from_slice(b"_ccccccccccccccc");
+
+        let mut start_offset_valid = b":aaaaaaaaaaaaaaa_".to_vec();
+        start_offset_valid.push(b'b');
+
+        let mut start_offset_invalid = b":aaaaaaaaaaaaaaa_".to_vec();
+        start_offset_invalid.push(b'_');
+
+        let cases: Vec<(Vec<u8>, usize)> = vec![
+            (b"abcdefghijklmnopabcdefghijklmnop".to_vec(), 0),
+            (b"abc_def".to_vec(), 0),
+            (b"abc__def".to_vec(), 0),
+            (b"abc_".to_vec(), 0),
+            (chunk_boundary_valid, 0),
+            (chunk_boundary_invalid, 0),
+            (vec![b'a', b'b', b'c', 0xFF, b'd'], 0),
+            (start_offset_valid, 1),
+            (start_offset_invalid, 1),
+        ];
+
+        for (bytes, start) in cases {
+            let scalar = is_normalized_ascii_tag_scalar(&bytes, start);
+            // SAFETY: SSE2 support is runtime-checked above, and slice bounds are valid.
+            let sse2 = unsafe { is_normalized_ascii_tag_simd_sse2(&bytes, start) };
+            assert_eq!(
+                sse2, scalar,
+                "SSE2/Scalar mismatch for bytes {:?} at start {}",
+                bytes, start
+            );
+        }
     }
 
     #[cfg(all(target_arch = "aarch64", not(miri)))]
