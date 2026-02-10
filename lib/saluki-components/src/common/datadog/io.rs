@@ -526,13 +526,22 @@ impl<T: Retryable> PendingTransactions<T> {
                 return Some(transaction);
             }
 
-            match self.low_priority.pop().await {
+            let pop_result = self.low_priority.pop().await;
+
+            let entries_dropped = self.low_priority.take_persisted_entries_dropped();
+            if entries_dropped > 0 {
+                self.telemetry
+                    .low_prio_queue_entries_dropped()
+                    .increment(entries_dropped);
+            }
+
+            match pop_result {
                 Ok(Some(transaction)) => {
                     self.telemetry.low_prio_queue_removals().increment(1);
 
                     debug!(
                         low_prio_queue_len = self.low_priority.len(),
-                        "Enqueued pending transaction from low-priority queue."
+                        "Dequeued pending transaction from low-priority queue."
                     );
                     return Some(transaction);
                 }

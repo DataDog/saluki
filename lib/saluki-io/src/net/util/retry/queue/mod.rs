@@ -148,6 +148,14 @@ where
         self.pending.len() + self.persisted_pending.as_ref().map_or(0, |p| p.len())
     }
 
+    /// Returns the number of persisted entries that have been permanently dropped due to errors since the last call
+    /// to this method, resetting the counter.
+    ///
+    /// Always returns 0 if disk persistence is not enabled.
+    pub fn take_persisted_entries_dropped(&mut self) -> u64 {
+        self.persisted_pending.as_mut().map_or(0, |p| p.take_entries_dropped())
+    }
+
     /// Enqueues an entry.
     ///
     /// If the queue is full and the entry cannot be enqueue in-memory, and disk persistence is enabled, in-memory
