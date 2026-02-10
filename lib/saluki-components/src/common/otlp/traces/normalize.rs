@@ -1,17 +1,18 @@
+#[cfg(all(target_arch = "aarch64", not(miri)))]
+use std::arch::aarch64::*;
+#[cfg(target_arch = "x86")]
+use std::arch::x86::*;
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::*;
+#[cfg(all(test, any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 /// Normalization functions for OTLP traces.
 ///
 /// # Missing
 /// - Add language-specific fallback service names in `normalize_service`.
 use stringtheory::MetaString;
 use tracing::debug;
-#[cfg(target_arch = "x86")]
-use std::arch::x86::*;
-#[cfg(target_arch = "x86_64")]
-use std::arch::x86_64::*;
-#[cfg(all(target_arch = "aarch64", not(miri)))]
-use std::arch::aarch64::*;
-#[cfg(all(test, any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 // Max length in bytes.
 pub const MAX_NAME_LEN: usize = 100;
