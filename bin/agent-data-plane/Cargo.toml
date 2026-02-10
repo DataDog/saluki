@@ -25,7 +25,6 @@ futures = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
 memory-accounting = { workspace = true }
-ottl = { workspace = true }
 papaya = { workspace = true }
 prost-types = { workspace = true }
 reqwest = { workspace = true, features = [

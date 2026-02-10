@@ -9,7 +9,6 @@ members = [
   "bin/correctness/stele",
   "lib/ddsketch",
   "lib/memory-accounting",
-  "lib/ottl",
   "lib/process-memory",
   "lib/protos/containerd",
   "lib/protos/datadog",
@@ -60,7 +59,6 @@ saluki-tls = { path = "lib/saluki-tls" }
 stele = { path = "bin/correctness/stele" }
 stringtheory = { path = "lib/stringtheory" }
 otlp-protos = { path = "lib/protos/otlp" }
-ottl = { path = "lib/ottl" }
 async-trait = { version = "0.1", default-features = false }
 atty = { version = "0.2", default-features = false }
 axum = { version = "0.8", default-features = false }
