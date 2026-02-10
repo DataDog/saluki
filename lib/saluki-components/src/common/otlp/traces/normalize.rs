@@ -4,6 +4,14 @@
 /// - Add language-specific fallback service names in `normalize_service`.
 use stringtheory::MetaString;
 use tracing::debug;
+#[cfg(target_arch = "x86")]
+use std::arch::x86::*;
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::*;
+#[cfg(all(target_arch = "aarch64", not(miri)))]
+use std::arch::aarch64::*;
+#[cfg(all(test, any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 // Max length in bytes.
 pub const MAX_NAME_LEN: usize = 100;
@@ -32,9 +40,6 @@ const NEON_FIRST_LANE: i32 = 0;
 const NEON_LAST_LANE: i32 = 15;
 #[cfg(all(target_arch = "aarch64", not(miri)))]
 const NEON_FOLLOWER_SHIFT_BYTES: i32 = 15;
-
-#[cfg(all(test, any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 // Used to verify that the SIMD optimization was utilized.
 #[cfg(all(test, any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
@@ -484,11 +489,6 @@ fn is_normalized_ascii_tag_simd(_bytes: &[u8], _start: usize) -> Option<bool> {
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "sse2")]
 unsafe fn is_normalized_ascii_tag_simd_sse2(bytes: &[u8], start: usize) -> bool {
-    #[cfg(target_arch = "x86")]
-    use std::arch::x86::*;
-    #[cfg(target_arch = "x86_64")]
-    use std::arch::x86_64::*;
-
     #[cfg(all(test, any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
     SIMD_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
 
@@ -631,8 +631,6 @@ unsafe fn is_normalized_ascii_tag_simd_sse2(bytes: &[u8], start: usize) -> bool 
 #[target_feature(enable = "neon")]
 unsafe fn is_normalized_ascii_tag_simd_neon(bytes: &[u8], start: usize) -> bool {
     // this function is equivalent to the `is_normalized_ascii_tag_simd_sse2` function and the `is_normalized_ascii_tag_simd_sse2` function contains the comments explaining the logic.
-    use std::arch::aarch64::*;
-
     #[cfg(all(test, any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
     SIMD_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
 
