@@ -285,10 +285,17 @@ where
         let storage_max_disk_ratio = self.storage_max_disk_ratio;
         let max_on_disk_bytes = self.max_on_disk_bytes;
 
+        // TODO: Evaluate the possible failures scenarios a little more thoroughly, and see if we can improve
+        // how we handle them instead of just bailing out.
+        //
+        // Essentially, it's not clear to me if we would expect this to fail in a way where we could actually
+        // still write the persistent entries to disk, and if it's worth it to do something like trying to
+        // cache the last known good value we get here to use if we fail to get a new value, etc.
         let limit = tokio::task::spawn_blocking(move || {
             on_disk_bytes_limit(disk_usage_retriever, storage_max_disk_ratio, max_on_disk_bytes)
         })
-        .await??;
+        .await
+        .error_context("Failed to run disk size limit check to completion.")??;
 
         while !self.entries.is_empty() && self.total_on_disk_bytes + required_bytes > limit {
             let entry = self.entries.remove(0);
