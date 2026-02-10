@@ -34,6 +34,11 @@ pub mod metrics {
     pub use super::include::agent_payload::metric_payload::*;
     pub use super::include::agent_payload::sketch_payload::{sketch::*, Sketch};
     pub use super::include::agent_payload::*;
+
+    /// Metrics V3 API-related definitions.
+    pub mod v3 {
+        pub use super::super::include::intake_v3::*;
+    }
 }
 
 /// Event-related definitions.
