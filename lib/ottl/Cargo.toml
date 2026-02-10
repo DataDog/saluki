@@ -16,3 +16,8 @@ chumsky = { workspace = true }
 logos = { workspace = true, features = ["export_derive"] }
 
 [dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "parser"
+harness = false
