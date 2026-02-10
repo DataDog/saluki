@@ -417,7 +417,7 @@ cargo test bench_parser_creation -- --ignored --nocapture
 
 ### Benchmark Results
 
-Results from running on Apple M1 Pro (10 cores), 100,000 iterations per benchmark:
+Results from running on Apple M4 Max (16 cores), 100,000 iterations per benchmark:
 
 | Benchmark | Avg | Median | P99 | Throughput |
 |-----------|-----|--------|-----|------------|
