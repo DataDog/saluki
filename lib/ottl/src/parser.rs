@@ -31,7 +31,7 @@ pub enum IndexExpr {
     /// String index like ["key"]
     String(String),
     /// Integer index like [0]
-    Int(i64),
+    Int(usize),
 }
 
 /// Path expression (e.g., resource.attributes["key"])
@@ -338,7 +338,7 @@ fn index_parser<'a>() -> impl chumsky::Parser<'a, TokenInput<'a>, IndexExpr, Par
 
     let index_int = select_ref! {
         Token::IntLiteral(s) => {
-            let val: i64 = s.parse().unwrap_or(0);
+            let val: usize = s.parse().unwrap_or(0);
             IndexExpr::Int(val)
         }
     };
@@ -935,31 +935,19 @@ fn evaluate_path(path: &PathExpr, ctx: &mut EvalContext, resolver: &PathResolver
 /// For the time being the optimization without certitude that it worth it is postponed.
 fn apply_index(value: &Value, index: &IndexExpr) -> Result<Value> {
     match (value, index) {
-        (Value::List(list), IndexExpr::Int(i)) => {
-            let idx = if *i < 0 {
-                (list.len() as i64 + i) as usize
-            } else {
-                *i as usize
-            };
-            list.get(idx)
-                .cloned()
-                .ok_or_else(|| format!("Index {} out of bounds", i).into())
-        }
+        (Value::List(list), IndexExpr::Int(i)) => list
+            .get(*i)
+            .cloned()
+            .ok_or_else(|| format!("Index {} out of bounds", i).into()),
         (Value::Map(map), IndexExpr::String(key)) => map
             .get(key)
             .cloned()
             .ok_or_else(|| format!("Key '{}' not found", key).into()),
-        (Value::String(s), IndexExpr::Int(i)) => {
-            let idx = if *i < 0 {
-                (s.len() as i64 + i) as usize
-            } else {
-                *i as usize
-            };
-            s.chars()
-                .nth(idx)
-                .map(|c| Value::String(c.to_string()))
-                .ok_or_else(|| format!("Index {} out of bounds", i).into())
-        }
+        (Value::String(s), IndexExpr::Int(i)) => s
+            .chars()
+            .nth(*i)
+            .map(|c| Value::String(c.to_string()))
+            .ok_or_else(|| format!("Index {} out of bounds", i).into()),
         _ => Err(format!("Cannot index {:?} with {:?}", value, index).into()),
     }
 }
