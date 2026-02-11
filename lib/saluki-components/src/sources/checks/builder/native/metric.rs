@@ -120,7 +120,7 @@ pub fn event_to_eventd(event: event::Event, execution_context: &ExecutionContext
 /// Converts a `dd_rs_checks` histogram to a Saluki `Event`.
 ///
 /// Note: Histograms are converted to histogram metrics in Saluki.
-pub fn histogram_to_event(histogram: histogram::Histrogram, execution_context: &ExecutionContext) -> Event {
+pub fn histogram_to_event(histogram: histogram::Histogram, execution_context: &ExecutionContext) -> Event {
     let mut tags = TagSet::default();
     histogram
         .tags

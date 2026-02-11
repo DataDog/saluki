@@ -1,7 +1,7 @@
 use super::Tags;
 
 #[derive(Debug, Clone)]
-pub struct Histrogram {
+pub struct Histogram {
     pub metric_name: String,
     pub value: i64,
     pub lower_bound: f32,

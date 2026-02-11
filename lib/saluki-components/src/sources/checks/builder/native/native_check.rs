@@ -123,7 +123,7 @@ impl Sink for NativeSink {
         }
     }
 
-    async fn submit_histogram(&self, histogram: histogram::Histrogram, _flush_first: bool) {
+    async fn submit_histogram(&self, histogram: histogram::Histogram, _flush_first: bool) {
         let event = histogram_to_event(histogram, &self.execution_context);
         if let Err(err) = self.events.send(event).await {
             error!(error = %err, "Unable to send histogram.")

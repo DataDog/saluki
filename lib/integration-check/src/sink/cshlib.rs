@@ -173,7 +173,7 @@ impl Sink for SharedLibrary {
         }
     }
 
-    async fn submit_histogram(&self, histogram: histogram::Histrogram, flush_first: bool) {
+    async fn submit_histogram(&self, histogram: histogram::Histogram, flush_first: bool) {
         let metric_name = to_cstring(histogram.metric_name);
         let hostname = to_cstring("");
         let tags = map_to_cstring_array(&histogram.tags);

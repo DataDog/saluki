@@ -20,7 +20,7 @@ impl Sink for Console {
         println!("[{}] submit_event: {event:#?}", self.check_id);
     }
 
-    async fn submit_histogram(&self, histogram: histogram::Histrogram, _flush_first: bool) {
+    async fn submit_histogram(&self, histogram: histogram::Histogram, _flush_first: bool) {
         println!("[{}] submit_histogram: {histogram:#?}", self.check_id);
     }
 

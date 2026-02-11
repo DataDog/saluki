@@ -11,7 +11,7 @@ pub trait Sink: Send + Sync {
     async fn submit_metric(&self, metric: metric::Metric, flush_first: bool); // flush arg really usefull?
     async fn submit_service_check(&self, service_check: service_check::ServiceCheck);
     async fn submit_event(&self, event: event::Event);
-    async fn submit_histogram(&self, histogram: histogram::Histrogram, flush_first: bool);
+    async fn submit_histogram(&self, histogram: histogram::Histogram, flush_first: bool);
     async fn submit_event_platform_event(&self, event: event_platform::Event);
 
     // FIXME Accept any kind of string
