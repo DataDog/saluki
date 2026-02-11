@@ -5,6 +5,7 @@ use tracing::{error, info};
 use super::*;
 
 pub struct RunningCheckTracker {
+    // FIXME if getting the actual check isn't needed, not to store the Arc
     running: RwLock<HashMap<String, Arc<dyn Check + Send + Sync>>>,
 }
 
