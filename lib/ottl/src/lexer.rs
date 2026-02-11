@@ -1,7 +1,7 @@
 use logos::Logos;
 
 /// OTTL language tokens
-#[derive(Logos, Debug, PartialEq, Clone)]
+#[derive(Logos, Debug, PartialEq, Eq, Clone, Hash)]
 #[logos(skip r"[ \t]+")] // Skip spaces and tabs
 pub enum Token<'a> {
     // ===== Keywords =====
@@ -53,10 +53,10 @@ pub enum Token<'a> {
     Minus,
 
     #[token("*")]
-    Star,
+    Multiply,
 
     #[token("/")]
-    Slash,
+    Divide,
 
     // ===== Delimiters =====
     #[token("(")]
@@ -98,12 +98,12 @@ pub enum Token<'a> {
     #[regex(r"0x[0-9a-fA-F]+", |lex| lex.slice())]
     BytesLiteral(&'a str),
 
-    /// Float literal: 3.14, .5, -2.0
-    #[regex(r"[+-]?([0-9]+\.[0-9]*|\.[0-9]+)", |lex| lex.slice())]
+    /// Float literal: 6.14, .5
+    #[regex(r"[0-9]+\.[0-9]*|\.[0-9]+", |lex| lex.slice())]
     FloatLiteral(&'a str),
 
-    /// Integer literal: 42, -10, +5
-    #[regex(r"[+-]?[0-9]+", priority = 2, callback = |lex| lex.slice())]
+    /// Integer literal: 42, 10, 5
+    #[regex(r"[0-9]+", priority = 2, callback = |lex| lex.slice())]
     IntLiteral(&'a str),
 
     // ===== Identifiers =====
@@ -116,33 +116,50 @@ pub enum Token<'a> {
     LowerIdent(&'a str),
 }
 
+/// Lexer error with position information
+#[derive(Debug, Clone)]
+pub struct LexerError {
+    /// Position in the input where the error occurred
+    pub position: usize,
+    /// The invalid character or slice that caused the error
+    pub invalid_slice: String,
+}
+
+impl std::fmt::Display for LexerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Invalid token '{}' at position {}",
+            self.invalid_slice, self.position
+        )
+    }
+}
+
 /// Lexical analysis result
 pub struct Lexer<'a> {
     lexer: logos::Lexer<'a, Token<'a>>,
 }
 
 impl<'a> Lexer<'a> {
-    pub fn new(input: &'a str) -> Self {
-        Self {
-            lexer: Token::lexer(input),
-        }
-    }
-
-    /// Collect all tokens into a vector
-    pub fn collect_tokens(input: &'a str) -> Vec<Token<'a>> {
-        Token::lexer(input).filter_map(|result| result.ok()).collect()
-    }
-
     /// Collect tokens with their positions (spans)
-    pub fn collect_with_spans(input: &'a str) -> Vec<(Token<'a>, std::ops::Range<usize>)> {
+    /// Returns an error if any invalid token is encountered
+    pub fn collect_with_spans(input: &'a str) -> Result<Vec<(Token<'a>, std::ops::Range<usize>)>, LexerError> {
         let mut lexer = Token::lexer(input);
         let mut tokens = Vec::new();
         while let Some(result) = lexer.next() {
-            if let Ok(token) = result {
-                tokens.push((token, lexer.span()));
+            match result {
+                Ok(token) => tokens.push((token, lexer.span())),
+                Err(_) => {
+                    let span = lexer.span();
+                    let invalid_slice = input[span.clone()].to_string();
+                    return Err(LexerError {
+                        position: span.start,
+                        invalid_slice,
+                    });
+                }
             }
         }
-        tokens
+        Ok(tokens)
     }
 }
 
