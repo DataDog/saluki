@@ -185,15 +185,11 @@ impl Source for ChecksSource {
         let mut check_builders: Vec<Arc<dyn CheckBuilder + Send + Sync>> =
             self.builders(check_events_tx, self.execution_context.clone());
 
-        let (scheduler, checks_rx) = Scheduler::new();
+        let scheduler = Scheduler::new();
         let scheduler = Arc::new(scheduler);
-        let workers_count = if self.check_runners != 0 {
-            Some(self.check_runners)
-        } else {
-            None
-        };
-        let runner = Runner::new(checks_rx, workers_count).await;
-        let runner = Arc::new(runner);
+        let (runner_rx, scheduler_handle) = scheduler.clone().run();
+        let runner = Runner::new(runner_rx, self.check_runners).await;
+        let runner_handle = runner.run().await;
 
         let mut listener_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
@@ -203,7 +199,6 @@ impl Source for ChecksSource {
         );
 
         let mut autodiscovery_rx = self.autodiscovery_rx;
-        runner.clone().run().await;
 
         loop {
             select! {
@@ -242,7 +237,7 @@ impl Source for ChecksSource {
                                     }
 
                                     for check in runnable_checks {
-                                        scheduler.clone().schedule(check).await;
+                                        scheduler.schedule(check).await;
                                     }
                                 }
                                 AutodiscoveryEvent::CheckUnscheduled { config } => {
@@ -256,7 +251,7 @@ impl Source for ChecksSource {
                             }
                         }
                         Err(e) => {
-                            error!(error = %e, "Receiving auto-discovery event");
+                            error!(error = %e, "Receiving auto-discovery event.");
                         }
                 }
             }
@@ -265,8 +260,14 @@ impl Source for ChecksSource {
         listener_shutdown_coordinator.shutdown().await;
         scheduler.shutdown().await;
 
-        info!("Checks source stopped.");
+        if let Err(err) = scheduler_handle.await {
+            error!(error = %err, "Scheduler runner.")
+        }
+        if let Err(err) = runner_handle.await {
+            error!(error = %err, "Joining runner.")
+        }
 
+        info!("Checks source stopped.");
         Ok(())
     }
 }

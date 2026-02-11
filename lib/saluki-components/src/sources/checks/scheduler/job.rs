@@ -7,7 +7,7 @@ use tokio::{
     task::JoinHandle,
     time::{self, Instant, Interval},
 };
-use tracing::{debug, trace};
+use tracing::{debug, error, trace};
 
 use super::*;
 
@@ -101,22 +101,22 @@ mod queue {
             false
         }
 
-        pub fn run(self: Arc<Self>, scheduler: Arc<Scheduler>) -> JoinHandle<()> {
-            tokio::spawn(async move { self.process(scheduler).await })
+        pub fn run(self: Arc<Self>, checks_tx: CheckSender) -> JoinHandle<()> {
+            tokio::spawn(async move { self.process(checks_tx).await })
         }
 
         pub async fn stop(self: Arc<Self>) {
             self.stop.notify_one()
         }
 
-        pub async fn process(&self, scheduler: Arc<Scheduler>) {
+        pub async fn process(&self, checks_tx: CheckSender) {
             let mut interval: Interval = time::interval(Duration::from_secs(1));
             let mut last_tick = Instant::now();
 
             loop {
                 select! {
                     _ = self.stop.notified() => {
-                        trace!(job_queue.interval = self.interval.as_secs(), "Shut down.");
+                        trace!(job_queue.interval = self.interval.as_secs(), "Shutting down.");
                         break
                     }
 
@@ -148,9 +148,8 @@ mod queue {
                         };
 
                         for check in jobs {
-                            let id = check.id().to_string();
-                            if scheduler.is_check_scheduled(&id) {
-                                scheduler.clone().enqueue(check.clone()).await
+                            if let Err(err) = checks_tx.send(check).await {
+                                error!(job_queue.interval = self.interval.as_secs(), error = %err, "Scheduler checks channel closed")
                             }
                         }
                     }

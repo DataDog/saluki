@@ -2,11 +2,12 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use tokio::select;
 use tokio::{
-    sync::{mpsc, Mutex},
+    sync::{mpsc, Mutex, Notify},
     task::JoinHandle,
 };
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, trace};
 
 use crate::sources::checks::check::Check;
 
@@ -19,44 +20,94 @@ struct JobQueueWrapper {
 }
 
 pub struct Scheduler {
-    checks_tx: CheckSender,
     job_queues: Mutex<HashMap<Duration, JobQueueWrapper>>, // FIXME can we avoid the Arc, despite the ref in checks_queue?
     checks_queue: RwLock<HashMap<String, Arc<JobQueue>>>,
+    jobs_tx: CheckSender,
+    jobs_rx: Mutex<CheckReceiver>,
+    stop: Notify,
 }
 
 impl Scheduler {
-    pub fn new() -> (Self, CheckReceiver) {
-        let (checks_tx, checks_rx) = mpsc::channel(1); // FIXME
+    pub fn new() -> Self {
+        let (jobs_tx, jobs_rx) = mpsc::channel(1);
         let scheduler = Self {
-            checks_tx,
             job_queues: Mutex::new(HashMap::new()),
             checks_queue: RwLock::new(HashMap::new()),
+            jobs_tx,
+            jobs_rx: Mutex::new(jobs_rx),
+            stop: Notify::new(),
         };
-        (scheduler, checks_rx)
+        scheduler
     }
 
-    // TODO prevent any further call to `enter`?
-    pub async fn shutdown(&self) {
-        let mut job_queues = self.job_queues.lock().await;
+    pub fn run(self: Arc<Self>) -> (CheckReceiver, JoinHandle<()>) {
+        let (runner_tx, runner_rx) = mpsc::channel(1);
 
-        for (_, jqw) in job_queues.iter() {
-            jqw.job_queue.clone().stop().await
-        }
+        let handle = tokio::spawn(async move { self.run_impl(runner_tx).await });
+        (runner_rx, handle)
+    }
 
-        for (_, jqw) in job_queues.drain() {
-            if let Err(err) = jqw.join_handle.await {
-                error!(error = %err, "Job task failed.");
+    async fn run_impl(&self, runner_tx: CheckSender) {
+        let mut jobs_rx = self.jobs_rx.lock().await;
+
+        loop {
+            trace!("Waiting to receive a check to forward...");
+
+            select! {
+                _ = self.stop.notified() => {
+                    info!("Shutting down.");
+                    break
+                }
+
+                maybe_check = jobs_rx.recv() => match maybe_check {
+                    Some(check) => {
+                        debug!(check.id = check.id(), "Check to forward");
+
+                        if !self.is_check_scheduled(check.id()) {
+                            debug!(check.id = check.id(), "Dropping already unscheduled Check.");
+                            continue;
+                        }
+
+                        if let Err(err) = runner_tx.send(check).await {
+                            error!(error = %err, "Unable to forward check to Runner.")
+                        }
+                    },
+                    None => {
+                        error!("Unexpected closure of job's checks channel");
+                        break
+                    }
+                }
             }
         }
+
+        {
+            let mut job_queues = self.job_queues.lock().await;
+
+            for (_, jqw) in job_queues.iter() {
+                jqw.job_queue.clone().stop().await
+            }
+            for (_, jqw) in job_queues.drain() {
+                if let Err(err) = jqw.join_handle.await {
+                    error!(error = %err, "Job task failed.");
+                }
+            }
+        }
+
+        // Drops runner_rx signals Runner to shutdown
     }
 
-    pub async fn schedule(self: Arc<Self>, check: Arc<dyn Check + Send + Sync>) {
+    pub async fn shutdown(&self) {
+        self.stop.notify_one()
+    }
+
+    // TODO prevent any call to `schedule` when shutting down?
+    pub async fn schedule(&self, check: Arc<dyn Check + Send + Sync>) {
         let id = check.id();
         let interval = check.interval();
 
         debug!(check.id = id, check.interval = interval.as_secs(), "Scheduling check.");
 
-        let job_queue = self.clone().get_job_queue(interval).await;
+        let job_queue = self.get_job_queue(interval).await;
         job_queue.add_job(check.clone()).await;
 
         if let Some(_) = self
@@ -84,13 +135,7 @@ impl Scheduler {
         }
     }
 
-    pub async fn enqueue(&self, check: Arc<dyn Check + Send + Sync>) {
-        if let Err(err) = self.checks_tx.send(check).await {
-            error!(error = %err, "Failed to enqueue check.")
-        }
-    }
-
-    async fn get_job_queue(self: Arc<Self>, interval: Duration) -> Arc<JobQueue> {
+    async fn get_job_queue(&self, interval: Duration) -> Arc<JobQueue> {
         debug!(job_queue.interval = interval.as_secs(), "Getting a JobQueue.");
 
         let mut job_queues = self.job_queues.lock().await;
@@ -100,7 +145,7 @@ impl Scheduler {
         }
 
         let queue = Arc::new(JobQueue::new(interval));
-        let handle = queue.clone().run(self.clone());
+        let handle = queue.clone().run(self.jobs_tx.clone());
         let wrapper = JobQueueWrapper {
             job_queue: queue.clone(),
             join_handle: handle,

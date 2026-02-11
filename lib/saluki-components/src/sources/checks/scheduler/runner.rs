@@ -8,10 +8,6 @@ use super::tracker::RunningCheckTracker;
 use super::worker::{Worker, WorkerID};
 use super::*;
 
-struct Config {
-    workers_count: Option<usize>,
-}
-
 struct FixedWorkers {
     workers: HashMap<WorkerID, (CheckSender, JoinHandle<()>)>,
     next: WorkerID, // Identify Worker to send check to
@@ -27,14 +23,10 @@ pub struct Runner {
     ephemeral_workers: Mutex<EphemeralWorkers>,
     tracker: Arc<RunningCheckTracker>,
     pending: Mutex<CheckReceiver>,
-    config: Config,
 }
 
 impl Runner {
-    pub async fn new(pending: CheckReceiver, workers_count: Option<usize>) -> Self {
-        let config = Config { workers_count };
-        let workers_count = config.workers_count.unwrap_or(4);
-
+    pub async fn new(pending: CheckReceiver, workers_count: usize) -> Self {
         let fixed_workers = FixedWorkers {
             workers: HashMap::new(),
             next: 0,
@@ -50,7 +42,6 @@ impl Runner {
             ephemeral_workers: Mutex::new(ephemeral_workers),
             tracker: Arc::new(RunningCheckTracker::new()),
             pending: Mutex::new(pending),
-            config,
         };
 
         runner.ensure_min_workers(workers_count).await;
@@ -72,10 +63,6 @@ impl Runner {
     }
 
     pub async fn update_number_workers(&self) {
-        if self.config.workers_count.is_some() {
-            return;
-        }
-
         let checks = self.tracker.running();
         let workers = self.fixed_workers.lock().await.workers.len();
 
@@ -92,7 +79,7 @@ impl Runner {
         }
     }
 
-    pub async fn run(self: Arc<Self>) -> JoinHandle<()> {
+    pub async fn run(self) -> JoinHandle<()> {
         tokio::spawn(async move {
             loop {
                 trace!("Waiting to receive a check to run...");
@@ -135,7 +122,7 @@ impl Runner {
     }
 
     // FIXME should wait for the first one to be ready
-    pub async fn send_to_worker(&self, check: Arc<dyn Check + Send + Sync>) {
+    async fn send_to_worker(&self, check: Arc<dyn Check + Send + Sync>) {
         let mut workers_state = self.fixed_workers.lock().await;
         let index = workers_state.next;
         let workers = &mut workers_state.workers;
