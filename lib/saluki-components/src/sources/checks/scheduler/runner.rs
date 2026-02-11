@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use tokio::{sync::Mutex, task::JoinHandle};
 use tracing::{debug, error, info, trace};
@@ -9,12 +9,12 @@ use super::worker::{Worker, WorkerID};
 use super::*;
 
 struct FixedWorkers {
-    workers: HashMap<WorkerID, (CheckSender, JoinHandle<()>)>,
+    workers: HashMap<WorkerID, (Arc<Worker>, CheckSender, JoinHandle<()>)>,
     next: WorkerID, // Identify Worker to send check to
 }
 
 struct EphemeralWorkers {
-    workers: HashMap<WorkerID, JoinHandle<()>>,
+    workers: HashMap<WorkerID, (Weak<Worker>, JoinHandle<()>)>,
     next: WorkerID, // WorkerID for creating next Worker
 }
 
@@ -56,8 +56,9 @@ impl Runner {
         for i in workers_state.workers.len()..count {
             let id = i as WorkerID;
             let (worker, check_tx) = Worker::new(id, self.tracker.clone());
-            let handle = worker.run().await;
-            let old = workers_state.workers.insert(id, (check_tx, handle));
+            let worker = Arc::new(worker);
+            let handle = worker.clone().run().await;
+            let old = workers_state.workers.insert(id, (worker, check_tx, handle));
             assert!(old.is_none());
         }
     }
@@ -89,7 +90,11 @@ impl Runner {
                     None => {
                         debug!("Shutting down...");
                         let mut workers_state = self.fixed_workers.lock().await;
-                        let handles = workers_state.workers.drain().map(|(_, (_, h))| h).collect::<Vec<_>>(); // drop check_tx to signal shutdown
+                        let handles = workers_state
+                            .workers
+                            .drain()
+                            .map(|(_, (_, _, h))| h)
+                            .collect::<Vec<_>>(); // drop check_tx to signal shutdown
                         for handle in handles {
                             handle.await.expect("joinable worker")
                         }
@@ -129,33 +134,28 @@ impl Runner {
 
         for i in 0..(workers.len() as WorkerID) {
             // FIXME overflow
-            let id = (index + i) % (workers.len() as WorkerID);
-            let (check_tx, _) = &workers[&id];
+            let i = (index + i) % (workers.len() as WorkerID);
+            let (worker, check_tx, _) = &workers[&i];
             match check_tx.try_send(check.clone()) {
                 Ok(()) => {
                     debug!(
                         check.id = check.id(),
-                        worker.id = id,
-                        "Non blocking send of check to worker."
+                        worker.id, "Non blocking send of check to worker."
                     );
                     return;
                 }
                 Err(_) => {
-                    trace!(worker.id = id, "Worker is busy.");
+                    trace!(worker.id, "Worker is busy.");
                 }
             }
         }
 
-        let (check_tx, _) = &workers[&index];
-        debug!(
-            check.id = check.id(),
-            worker.id = index,
-            "Blocking send of check to worker."
-        );
+        let (worker, check_tx, _) = &workers[&index];
+        debug!(check.id = check.id(), worker.id, "Blocking send of check to worker.");
         if let Err(err) = check_tx.send(check.clone()).await {
-            error!(worker.id = index, error = %err, "Unable to send check to worker.")
+            error!(worker.id, error = %err, "Unable to send check to worker.")
         } else {
-            debug!(check.id = check.id(), worker.id = index, "Check sent to worker");
+            debug!(check.id = check.id(), worker.id, "Check sent to worker");
         }
 
         workers_state.next = (index + 1) % (workers_state.workers.len() as WorkerID)
@@ -165,9 +165,11 @@ impl Runner {
         let mut ephemeral_workers = self.ephemeral_workers.lock().await;
 
         let id = ephemeral_workers.next as WorkerID;
-        let (worker, check_tx) = Worker::new(id, self.tracker.clone());
-        let handle = worker.run().await;
-        let old = ephemeral_workers.workers.insert(id, handle);
+        let (worker, check_tx) = Worker::new(id, self.tracker.clone()); // FIXME don't track?
+        let worker = Arc::new(worker);
+        let handle = worker.clone().run().await;
+        let worker = Arc::downgrade(&worker);
+        let old = ephemeral_workers.workers.insert(id, (worker, handle));
         assert!(old.is_none());
 
         ephemeral_workers.next += 1;
@@ -180,7 +182,15 @@ impl Runner {
         let stale = ephemeral_workers
             .workers
             .iter()
-            .filter_map(|(id, handle)| if !handle.is_finished() { Some(*id) } else { None })
+            .filter_map(
+                |(id, (worker, _))| {
+                    if worker.strong_count() == 0 {
+                        Some(*id)
+                    } else {
+                        None
+                    }
+                },
+            )
             .collect::<Vec<_>>();
 
         stale.iter().for_each(|id| {
