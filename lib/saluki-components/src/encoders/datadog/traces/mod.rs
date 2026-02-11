@@ -5,8 +5,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use datadog_protos::traces::{
     attribute_any_value::AttributeAnyValueType, attribute_array_value::AttributeArrayValueType, AttributeAnyValue,
-    AttributeArray, AttributeArrayValue, Span as ProtoSpan, SpanEvent as ProtoSpanEvent, SpanLink as ProtoSpanLink,
-    TraceChunk,
+    AttributeArray, AttributeArrayValue, SpanEvent as ProtoSpanEvent, SpanLink as ProtoSpanLink,
 };
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -94,6 +93,29 @@ const AGENT_PAYLOAD_TRACER_PAYLOADS_FIELD_NUMBER: u32 = 5;
 const AGENT_PAYLOAD_AGENT_VERSION_FIELD_NUMBER: u32 = 7;
 const AGENT_PAYLOAD_TARGET_TPS_FIELD_NUMBER: u32 = 8;
 const AGENT_PAYLOAD_ERROR_TPS_FIELD_NUMBER: u32 = 9;
+
+// Field numbers from tracer_payload.proto for TraceChunk.
+const TRACE_CHUNK_PRIORITY_FIELD_NUMBER: u32 = 1;
+const TRACE_CHUNK_SPANS_FIELD_NUMBER: u32 = 3;
+const TRACE_CHUNK_TAGS_FIELD_NUMBER: u32 = 4;
+const TRACE_CHUNK_DROPPED_TRACE_FIELD_NUMBER: u32 = 5;
+
+// Field numbers from span.proto for Span.
+const SPAN_SERVICE_FIELD_NUMBER: u32 = 1;
+const SPAN_NAME_FIELD_NUMBER: u32 = 2;
+const SPAN_RESOURCE_FIELD_NUMBER: u32 = 3;
+const SPAN_TRACE_ID_FIELD_NUMBER: u32 = 4;
+const SPAN_SPAN_ID_FIELD_NUMBER: u32 = 5;
+const SPAN_PARENT_ID_FIELD_NUMBER: u32 = 6;
+const SPAN_START_FIELD_NUMBER: u32 = 7;
+const SPAN_DURATION_FIELD_NUMBER: u32 = 8;
+const SPAN_ERROR_FIELD_NUMBER: u32 = 9;
+const SPAN_META_FIELD_NUMBER: u32 = 10;
+const SPAN_METRICS_FIELD_NUMBER: u32 = 11;
+const SPAN_TYPE_FIELD_NUMBER: u32 = 12;
+const SPAN_META_STRUCT_FIELD_NUMBER: u32 = 13;
+const SPAN_SPAN_LINKS_FIELD_NUMBER: u32 = 14;
+const SPAN_SPAN_EVENTS_FIELD_NUMBER: u32 = 15;
 
 fn default_env() -> String {
     "none".to_string()
@@ -422,6 +444,8 @@ async fn run_request_builder(
 struct TraceEndpointEncoder {
     tracer_payload_scratch: Vec<u8>,
     chunk_scratch: Vec<u8>,
+    span_scratch: Vec<u8>,
+    inner_scratch: Vec<u8>,
     tags_scratch: Vec<u8>,
     // TODO: do we need additional tags or tag deplicator?
     default_hostname: MetaString,
@@ -439,6 +463,8 @@ impl TraceEndpointEncoder {
         Self {
             tracer_payload_scratch: Vec::new(),
             chunk_scratch: Vec::new(),
+            span_scratch: Vec::new(),
+            inner_scratch: Vec::new(),
             tags_scratch: Vec::new(),
             agent_hostname: default_hostname.as_ref().to_string(),
             default_hostname,
@@ -450,96 +476,39 @@ impl TraceEndpointEncoder {
     }
 
     fn encode_tracer_payload(&mut self, trace: &Trace, output_buffer: &mut Vec<u8>) -> Result<(), protobuf::Error> {
-        let resource_tags = trace.resource_tags();
-        let first_span = trace.spans().first();
-        let source = tags_to_source(resource_tags);
+        let sampling_rate = self.sampling_rate();
 
-        let trace_chunk = self.build_trace_chunk(trace);
-
-        // Build AgentPayload (outer message) writing to output_buffer
-        let mut agent_payload_stream = CodedOutputStream::vec(output_buffer);
-
-        // Write AgentPayload fields defined in agent_payload.proto
-        agent_payload_stream.write_string(AGENT_PAYLOAD_HOSTNAME_FIELD_NUMBER, &self.agent_hostname)?;
-        agent_payload_stream.write_string(AGENT_PAYLOAD_ENV_FIELD_NUMBER, &self.env)?;
-
-        agent_payload_stream.write_string(AGENT_PAYLOAD_AGENT_VERSION_FIELD_NUMBER, &self.version)?;
-        agent_payload_stream.write_double(
-            AGENT_PAYLOAD_TARGET_TPS_FIELD_NUMBER,
-            self.apm_config.target_traces_per_second(),
-        )?;
-        agent_payload_stream.write_double(
-            AGENT_PAYLOAD_ERROR_TPS_FIELD_NUMBER,
-            self.apm_config.errors_per_second(),
-        )?;
-
-        // Build TracerPayload (nested message) in scratch buffer
-        self.tracer_payload_scratch.clear();
-        let mut tracer_payload_stream = CodedOutputStream::vec(&mut self.tracer_payload_scratch);
-
-        // Write TracerPayload fields
-        if let Some(container_id) = resolve_container_id(resource_tags, first_span) {
-            tracer_payload_stream.write_string(TRACER_PAYLOAD_CONTAINER_ID_FIELD_NUMBER, container_id)?;
-        }
-
-        if let Some(lang) = get_resource_tag_value(resource_tags, "telemetry.sdk.language") {
-            tracer_payload_stream.write_string(TRACER_PAYLOAD_LANGUAGE_NAME_FIELD_NUMBER, lang)?;
-        }
-
-        // Write tracer_version for OTLP traces, even if telemetry.sdk.version is missing.
-        let sdk_version = get_resource_tag_value(resource_tags, "telemetry.sdk.version").unwrap_or("");
-        let tracer_version = format!("otlp-{}", sdk_version);
-        tracer_payload_stream.write_string(TRACER_PAYLOAD_TRACER_VERSION_FIELD_NUMBER, &tracer_version)?;
-
-        self.chunk_scratch.clear();
-        write_message_field(
-            &mut tracer_payload_stream,
-            TRACER_PAYLOAD_CHUNKS_FIELD_NUMBER,
-            &trace_chunk,
+        // Encode the trace chunk incrementally into chunk_scratch.
+        encode_trace_chunk(
+            trace,
+            sampling_rate,
             &mut self.chunk_scratch,
+            &mut self.span_scratch,
+            &mut self.inner_scratch,
+            &mut self.tags_scratch,
         )?;
 
-        self.tags_scratch.clear();
-        if let Some(tags) = resolve_container_tags(
-            resource_tags,
-            source.as_ref(),
-            self.otlp_traces.ignore_missing_datadog_fields,
-        ) {
-            write_map_entry_string_string(
-                &mut tracer_payload_stream,
-                TRACER_PAYLOAD_TAGS_FIELD_NUMBER,
-                CONTAINER_TAGS_META_KEY,
-                tags.as_ref(),
-                &mut self.tags_scratch,
-            )?;
-        }
+        // Encode the tracer payload fields into tracer_payload_scratch,
+        // referencing the already-encoded chunk bytes.
+        encode_tracer_payload_fields(
+            trace,
+            self.default_hostname.as_ref(),
+            &self.otlp_traces,
+            &mut self.tracer_payload_scratch,
+            &self.chunk_scratch,
+            &mut self.tags_scratch,
+        )?;
 
-        if let Some(env) = resolve_env(resource_tags, self.otlp_traces.ignore_missing_datadog_fields) {
-            tracer_payload_stream.write_string(TRACER_PAYLOAD_ENV_FIELD_NUMBER, env)?;
-        }
-
-        if let Some(hostname) = resolve_hostname(
-            resource_tags,
-            source.as_ref(),
-            Some(self.default_hostname.as_ref()),
-            self.otlp_traces.ignore_missing_datadog_fields,
-        ) {
-            tracer_payload_stream.write_string(TRACER_PAYLOAD_HOSTNAME_FIELD_NUMBER, hostname)?;
-        }
-
-        if let Some(app_version) = resolve_app_version(resource_tags) {
-            tracer_payload_stream.write_string(TRACER_PAYLOAD_APP_VERSION_FIELD_NUMBER, app_version)?;
-        }
-
-        tracer_payload_stream.flush()?;
-        // Drop tracer_payload_stream to release the mutable borrow of tracer_payload_scratch
-        drop(tracer_payload_stream);
-
-        // Write TracerPayload as a nested message in AgentPayload (repeated field)
-        agent_payload_stream.write_bytes(AGENT_PAYLOAD_TRACER_PAYLOADS_FIELD_NUMBER, &self.tracer_payload_scratch)?;
-        agent_payload_stream.flush()?;
-
-        Ok(())
+        // Encode the outer agent payload into the final output buffer,
+        // referencing the already-encoded tracer payload bytes.
+        encode_agent_payload_fields(
+            &self.agent_hostname,
+            &self.env,
+            &self.version,
+            &self.apm_config,
+            &self.tracer_payload_scratch,
+            output_buffer,
+        )
     }
 
     fn sampling_rate(&self) -> f64 {
@@ -548,48 +517,6 @@ impl TraceEndpointEncoder {
             return 1.0;
         }
         rate
-    }
-
-    fn build_trace_chunk(&self, trace: &Trace) -> TraceChunk {
-        let spans: Vec<ProtoSpan> = trace.spans().iter().map(convert_span).collect();
-        let mut chunk = TraceChunk::new();
-
-        let mut tags = std::collections::HashMap::new();
-
-        // Use trace-level sampling metadata if available (set by the trace sampler transform).
-        // This provides explicit trace-level sampling information without needing to scan spans.
-        if let Some(sampling) = trace.sampling() {
-            // Set priority from trace metadata
-            chunk.set_priority(sampling.priority.unwrap_or(DEFAULT_CHUNK_PRIORITY));
-            chunk.set_droppedTrace(sampling.dropped_trace);
-
-            // Set decision maker tag if present.
-            if let Some(dm) = &sampling.decision_maker {
-                tags.insert(TAG_DECISION_MAKER.to_string(), dm.to_string());
-            }
-
-            // Set OTLP sampling rate tag if present (from sampler)
-            if let Some(otlp_sr) = &sampling.otlp_sampling_rate {
-                tags.insert(TAG_OTLP_SAMPLING_RATE.to_string(), otlp_sr.to_string());
-            } else {
-                // Fallback to encoder's computed rate
-                let rate = self.sampling_rate();
-                tags.insert(TAG_OTLP_SAMPLING_RATE.to_string(), format!("{:.2}", rate));
-            }
-        } else {
-            // Fallback: if trace.sampling is None, use defaults
-            // (No span scanning per the plan's "no fallback scan" requirement)
-            chunk.set_priority(DEFAULT_CHUNK_PRIORITY);
-            chunk.set_droppedTrace(false);
-            let rate = self.sampling_rate();
-            tags.insert(TAG_OTLP_SAMPLING_RATE.to_string(), format!("{:.2}", rate));
-        }
-
-        chunk.set_tags(tags);
-
-        chunk.set_spans(spans);
-
-        chunk
     }
 }
 
@@ -625,35 +552,211 @@ impl EndpointEncoder for TraceEndpointEncoder {
     }
 }
 
-fn convert_span(span: &DdSpan) -> ProtoSpan {
-    let mut proto = ProtoSpan::new();
-    proto.set_service(span.service().to_string());
-    proto.set_name(span.name().to_string());
-    proto.set_resource(span.resource().to_string());
-    proto.set_traceID(span.trace_id());
-    proto.set_spanID(span.span_id());
-    proto.set_parentID(span.parent_id());
-    proto.set_start(span.start() as i64);
-    proto.set_duration(span.duration() as i64);
-    proto.set_error(span.error());
-    proto.set_type(span.span_type().to_string());
+/// Encodes the AgentPayload (outer message) fields into `output_buffer`.
+///
+/// Takes already-encoded tracer payload bytes and wraps them in the agent payload envelope
+/// along with agent-level metadata fields.
+fn encode_agent_payload_fields(
+    agent_hostname: &str, env: &str, version: &str, apm_config: &ApmConfig, tracer_payload_bytes: &[u8],
+    output_buffer: &mut Vec<u8>,
+) -> Result<(), protobuf::Error> {
+    let mut os = CodedOutputStream::vec(output_buffer);
 
-    proto.set_meta(
-        span.meta()
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect(),
-    );
-    proto.set_metrics(span.metrics().iter().map(|(k, v)| (k.to_string(), *v)).collect());
-    proto.set_meta_struct(
-        span.meta_struct()
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.clone()))
-            .collect(),
-    );
-    proto.set_spanLinks(span.span_links().iter().map(convert_span_link).collect());
-    proto.set_spanEvents(span.span_events().iter().map(convert_span_event).collect());
-    proto
+    os.write_string(AGENT_PAYLOAD_HOSTNAME_FIELD_NUMBER, agent_hostname)?;
+    os.write_string(AGENT_PAYLOAD_ENV_FIELD_NUMBER, env)?;
+    os.write_string(AGENT_PAYLOAD_AGENT_VERSION_FIELD_NUMBER, version)?;
+    os.write_double(
+        AGENT_PAYLOAD_TARGET_TPS_FIELD_NUMBER,
+        apm_config.target_traces_per_second(),
+    )?;
+    os.write_double(AGENT_PAYLOAD_ERROR_TPS_FIELD_NUMBER, apm_config.errors_per_second())?;
+
+    // Write the pre-encoded TracerPayload as a nested message (repeated field).
+    os.write_bytes(AGENT_PAYLOAD_TRACER_PAYLOADS_FIELD_NUMBER, tracer_payload_bytes)?;
+    os.flush()?;
+
+    Ok(())
+}
+
+/// Encodes all TracerPayload fields into `tracer_payload_scratch`.
+///
+/// Takes already-encoded trace chunk bytes and writes them as the `chunks` field,
+/// along with tracer-level metadata resolved from resource tags.
+fn encode_tracer_payload_fields(
+    trace: &Trace, default_hostname: &str, otlp_traces: &TracesConfig, tracer_payload_scratch: &mut Vec<u8>,
+    chunk_bytes: &[u8], tags_scratch: &mut Vec<u8>,
+) -> Result<(), protobuf::Error> {
+    let resource_tags = trace.resource_tags();
+    let first_span = trace.spans().first();
+    let source = tags_to_source(resource_tags);
+
+    tracer_payload_scratch.clear();
+    let mut os = CodedOutputStream::vec(tracer_payload_scratch);
+
+    if let Some(container_id) = resolve_container_id(resource_tags, first_span) {
+        os.write_string(TRACER_PAYLOAD_CONTAINER_ID_FIELD_NUMBER, container_id)?;
+    }
+
+    if let Some(lang) = get_resource_tag_value(resource_tags, "telemetry.sdk.language") {
+        os.write_string(TRACER_PAYLOAD_LANGUAGE_NAME_FIELD_NUMBER, lang)?;
+    }
+
+    let sdk_version = get_resource_tag_value(resource_tags, "telemetry.sdk.version").unwrap_or("");
+    let tracer_version = format!("otlp-{}", sdk_version);
+    os.write_string(TRACER_PAYLOAD_TRACER_VERSION_FIELD_NUMBER, &tracer_version)?;
+
+    // Write the pre-encoded TraceChunk as a nested message (repeated field).
+    os.write_tag(TRACER_PAYLOAD_CHUNKS_FIELD_NUMBER, WireType::LengthDelimited)?;
+    os.write_raw_varint32(chunk_bytes.len() as u32)?;
+    os.write_raw_bytes(chunk_bytes)?;
+
+    if let Some(tags) = resolve_container_tags(
+        resource_tags,
+        source.as_ref(),
+        otlp_traces.ignore_missing_datadog_fields,
+    ) {
+        write_map_entry_string_string(
+            &mut os,
+            TRACER_PAYLOAD_TAGS_FIELD_NUMBER,
+            CONTAINER_TAGS_META_KEY,
+            tags.as_ref(),
+            tags_scratch,
+        )?;
+    }
+
+    if let Some(env) = resolve_env(resource_tags, otlp_traces.ignore_missing_datadog_fields) {
+        os.write_string(TRACER_PAYLOAD_ENV_FIELD_NUMBER, env)?;
+    }
+
+    if let Some(hostname) = resolve_hostname(
+        resource_tags,
+        source.as_ref(),
+        Some(default_hostname),
+        otlp_traces.ignore_missing_datadog_fields,
+    ) {
+        os.write_string(TRACER_PAYLOAD_HOSTNAME_FIELD_NUMBER, hostname)?;
+    }
+
+    if let Some(app_version) = resolve_app_version(resource_tags) {
+        os.write_string(TRACER_PAYLOAD_APP_VERSION_FIELD_NUMBER, app_version)?;
+    }
+
+    os.flush()?;
+    Ok(())
+}
+
+/// Encodes a TraceChunk incrementally into `chunk_scratch`.
+///
+/// Writes priority, spans, tags, and droppedTrace fields directly from the trace's
+/// sampling metadata and span data, without allocating intermediate protobuf objects.
+fn encode_trace_chunk(
+    trace: &Trace, sampling_rate: f64, chunk_scratch: &mut Vec<u8>, span_scratch: &mut Vec<u8>,
+    inner_scratch: &mut Vec<u8>, tags_scratch: &mut Vec<u8>,
+) -> Result<(), protobuf::Error> {
+    chunk_scratch.clear();
+    let mut os = CodedOutputStream::vec(chunk_scratch);
+
+    let (priority, dropped_trace, decision_maker, otlp_sr) = match trace.sampling() {
+        Some(sampling) => (
+            sampling.priority.unwrap_or(DEFAULT_CHUNK_PRIORITY),
+            sampling.dropped_trace,
+            sampling.decision_maker.as_ref().map(|dm| dm.to_string()),
+            sampling
+                .otlp_sampling_rate
+                .as_ref()
+                .map(|sr| sr.to_string())
+                .unwrap_or_else(|| format!("{:.2}", sampling_rate)),
+        ),
+        None => (DEFAULT_CHUNK_PRIORITY, false, None, format!("{:.2}", sampling_rate)),
+    };
+
+    os.write_int32(TRACE_CHUNK_PRIORITY_FIELD_NUMBER, priority)?;
+
+    // Encode each span incrementally and write as a repeated length-delimited field.
+    for span in trace.spans() {
+        encode_span(span, span_scratch, inner_scratch, tags_scratch)?;
+        os.write_tag(TRACE_CHUNK_SPANS_FIELD_NUMBER, WireType::LengthDelimited)?;
+        os.write_raw_varint32(span_scratch.len() as u32)?;
+        os.write_raw_bytes(span_scratch)?;
+    }
+
+    // Write chunk tags.
+    if let Some(dm) = &decision_maker {
+        write_map_entry_string_string(
+            &mut os,
+            TRACE_CHUNK_TAGS_FIELD_NUMBER,
+            TAG_DECISION_MAKER,
+            dm,
+            tags_scratch,
+        )?;
+    }
+    write_map_entry_string_string(
+        &mut os,
+        TRACE_CHUNK_TAGS_FIELD_NUMBER,
+        TAG_OTLP_SAMPLING_RATE,
+        &otlp_sr,
+        tags_scratch,
+    )?;
+
+    if dropped_trace {
+        os.write_bool(TRACE_CHUNK_DROPPED_TRACE_FIELD_NUMBER, true)?;
+    }
+
+    os.flush()?;
+    Ok(())
+}
+
+/// Encodes a single span incrementally into `span_scratch`.
+///
+/// Writes all span fields directly from the `DdSpan` accessors without allocating
+/// an intermediate `ProtoSpan`. SpanLinks and SpanEvents are still converted to their
+/// protobuf message types since they are infrequent and deeply nested.
+fn encode_span(
+    span: &DdSpan, span_scratch: &mut Vec<u8>, inner_scratch: &mut Vec<u8>, tags_scratch: &mut Vec<u8>,
+) -> Result<(), protobuf::Error> {
+    span_scratch.clear();
+    let mut os = CodedOutputStream::vec(span_scratch);
+
+    os.write_string(SPAN_SERVICE_FIELD_NUMBER, span.service())?;
+    os.write_string(SPAN_NAME_FIELD_NUMBER, span.name())?;
+    os.write_string(SPAN_RESOURCE_FIELD_NUMBER, span.resource())?;
+    os.write_uint64(SPAN_TRACE_ID_FIELD_NUMBER, span.trace_id())?;
+    os.write_uint64(SPAN_SPAN_ID_FIELD_NUMBER, span.span_id())?;
+    os.write_uint64(SPAN_PARENT_ID_FIELD_NUMBER, span.parent_id())?;
+    os.write_int64(SPAN_START_FIELD_NUMBER, span.start() as i64)?;
+    os.write_int64(SPAN_DURATION_FIELD_NUMBER, span.duration() as i64)?;
+    os.write_int32(SPAN_ERROR_FIELD_NUMBER, span.error())?;
+
+    // meta: map<string, string>
+    for (k, v) in span.meta() {
+        write_map_entry_string_string(&mut os, SPAN_META_FIELD_NUMBER, k.as_ref(), v.as_ref(), tags_scratch)?;
+    }
+
+    // metrics: map<string, double>
+    for (k, v) in span.metrics() {
+        write_map_entry_string_double(&mut os, SPAN_METRICS_FIELD_NUMBER, k.as_ref(), *v, tags_scratch)?;
+    }
+
+    os.write_string(SPAN_TYPE_FIELD_NUMBER, span.span_type())?;
+
+    // meta_struct: map<string, bytes>
+    for (k, v) in span.meta_struct() {
+        write_map_entry_string_bytes(&mut os, SPAN_META_STRUCT_FIELD_NUMBER, k.as_ref(), v, tags_scratch)?;
+    }
+
+    // SpanLinks and SpanEvents: convert to proto messages and write via scratch buffer.
+    for link in span.span_links() {
+        let proto_link = convert_span_link(link);
+        write_message_field(&mut os, SPAN_SPAN_LINKS_FIELD_NUMBER, &proto_link, inner_scratch)?;
+    }
+
+    for event in span.span_events() {
+        let proto_event = convert_span_event(event);
+        write_message_field(&mut os, SPAN_SPAN_EVENTS_FIELD_NUMBER, &proto_event, inner_scratch)?;
+    }
+
+    os.flush()?;
+    Ok(())
 }
 
 fn convert_span_link(link: &DdSpanLink) -> ProtoSpanLink {
@@ -766,6 +869,38 @@ fn write_map_entry_string_string(
         // the field number 1 and 2 correspond to key and value
         nested.write_string(1, key)?;
         nested.write_string(2, value)?;
+        nested.flush()?;
+    }
+    output_stream.write_tag(field_number, WireType::LengthDelimited)?;
+    output_stream.write_raw_varint32(scratch_buf.len() as u32)?;
+    output_stream.write_raw_bytes(scratch_buf)?;
+    Ok(())
+}
+
+fn write_map_entry_string_double(
+    output_stream: &mut CodedOutputStream<'_>, field_number: u32, key: &str, value: f64, scratch_buf: &mut Vec<u8>,
+) -> Result<(), protobuf::Error> {
+    scratch_buf.clear();
+    {
+        let mut nested = CodedOutputStream::vec(scratch_buf);
+        nested.write_string(1, key)?;
+        nested.write_double(2, value)?;
+        nested.flush()?;
+    }
+    output_stream.write_tag(field_number, WireType::LengthDelimited)?;
+    output_stream.write_raw_varint32(scratch_buf.len() as u32)?;
+    output_stream.write_raw_bytes(scratch_buf)?;
+    Ok(())
+}
+
+fn write_map_entry_string_bytes(
+    output_stream: &mut CodedOutputStream<'_>, field_number: u32, key: &str, value: &[u8], scratch_buf: &mut Vec<u8>,
+) -> Result<(), protobuf::Error> {
+    scratch_buf.clear();
+    {
+        let mut nested = CodedOutputStream::vec(scratch_buf);
+        nested.write_string(1, key)?;
+        nested.write_bytes(2, value)?;
         nested.flush()?;
     }
     output_stream.write_tag(field_number, WireType::LengthDelimited)?;
