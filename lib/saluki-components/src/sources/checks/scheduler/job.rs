@@ -130,13 +130,6 @@ mod queue {
                         }
                         last_tick = Instant::now();
 
-                        let schedule_index = self.state.lock().await.schedule_index;
-                        trace!(
-                            job_queue.interval = self.interval.as_secs(),
-                            job_queue.bucket = schedule_index,
-                            "Looking at bucket."
-                        );
-
                         let jobs = {
                             let mut state = self.state.lock().await;
 
