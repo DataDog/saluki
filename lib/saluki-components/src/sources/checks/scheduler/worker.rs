@@ -29,35 +29,28 @@ impl Worker {
         tokio::spawn(async move { self.run_impl().await })
     }
 
-    async fn run_impl(self: Arc<Self>) {
+    async fn run_impl(&self) {
         let mut check_rx = self.check_rx.lock().await;
 
         debug!(worker.id = self.id, "Ready to process checks.");
 
-        loop {
-            match check_rx.recv().await {
-                Some(check) => {
-                    let id = check.id();
-                    debug!(worker.id = self.id, check.id = id, "Check to run.");
+        while let Some(check) = check_rx.recv().await {
+            let id = check.id();
+            debug!(worker.id = self.id, check.id = id, "Check to run.");
 
-                    if !self.tracker.add_check(check.clone()).await {
-                        info!(
-                            worker.id = self.id,
-                            check.id = id,
-                            "Check is already running, skipping."
-                        );
-                        break;
-                    }
-
-                    let _ = check.run().await; // FIXME err
-
-                    self.tracker.remove_check(check).await
-                }
-                None => {
-                    debug!(worker.id = self.id, "Finished processing checks.");
-                    break;
-                }
+            if !self.tracker.add_check(check.clone()).await {
+                info!(
+                    worker.id = self.id,
+                    check.id = id,
+                    "Check is already running, skipping."
+                );
+                break;
             }
+
+            let _ = check.run().await; // FIXME err
+
+            self.tracker.remove_check(check).await
         }
+        debug!(worker.id = self.id, "Finished processing checks.");
     }
 }
