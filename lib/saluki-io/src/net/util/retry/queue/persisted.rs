@@ -92,6 +92,7 @@ pub struct PersistedQueue<T> {
     max_on_disk_bytes: u64,
     storage_max_disk_ratio: f64,
     disk_usage_retriever: DiskUsageRetrieverWrapper,
+    entries_dropped: u64,
     _entry: PhantomData<T>,
 }
 
@@ -124,6 +125,7 @@ where
             max_on_disk_bytes,
             storage_max_disk_ratio,
             disk_usage_retriever,
+            entries_dropped: 0,
             _entry: PhantomData,
         };
 
@@ -145,6 +147,12 @@ where
     /// Returns the number of entries in the queue.
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    /// Returns the number of entries that have been permanently dropped due to errors since the last call to this
+    /// method, resetting the counter.
+    pub fn take_entries_dropped(&mut self) -> u64 {
+        std::mem::take(&mut self.entries_dropped)
     }
 
     /// Enqueues an entry and persists it to disk.
@@ -196,11 +204,11 @@ where
     ///
     /// If there is an error reading or deserializing the entry, an error is returned.
     pub async fn pop(&mut self) -> Result<Option<T>, GenericError> {
-        if self.entries.is_empty() {
-            return Ok(None);
-        }
-
         loop {
+            if self.entries.is_empty() {
+                return Ok(None);
+            }
+
             let entry = self.entries.remove(0);
             match try_deserialize_entry(&entry).await {
                 Ok(Some(deserialized)) => {
@@ -217,9 +225,18 @@ where
                     continue;
                 }
                 Err(e) => {
-                    // We couldn't read the file, so add it back to our entries list and return the error.
-                    self.entries.insert(0, entry);
-                    return Err(e);
+                    // The entry is corrupt or unreadable. Drop it permanently to avoid a poison pill scenario
+                    // where the same entry is retried indefinitely, blocking all other work.
+                    warn!(
+                        entry.path = %entry.path.display(),
+                        entry.len = entry.size_bytes,
+                        error = %e,
+                        "Permanently dropping persisted entry that could not be consumed.",
+                    );
+
+                    self.total_on_disk_bytes -= entry.size_bytes;
+                    self.entries_dropped += 1;
+                    continue;
                 }
             }
         }
@@ -268,10 +285,17 @@ where
         let storage_max_disk_ratio = self.storage_max_disk_ratio;
         let max_on_disk_bytes = self.max_on_disk_bytes;
 
+        // TODO: Evaluate the possible failures scenarios a little more thoroughly, and see if we can improve
+        // how we handle them instead of just bailing out.
+        //
+        // Essentially, it's not clear to me if we would expect this to fail in a way where we could actually
+        // still write the persistent entries to disk, and if it's worth it to do something like trying to
+        // cache the last known good value we get here to use if we fail to get a new value, etc.
         let limit = tokio::task::spawn_blocking(move || {
             on_disk_bytes_limit(disk_usage_retriever, storage_max_disk_ratio, max_on_disk_bytes)
         })
-        .await??;
+        .await
+        .error_context("Failed to run disk size limit check to completion.")??;
 
         while !self.entries.is_empty() && self.total_on_disk_bytes + required_bytes > limit {
             let entry = self.entries.remove(0);
@@ -284,9 +308,18 @@ where
                     continue;
                 }
                 Err(e) => {
-                    // We didn't delete the file, so add it back to our entries list and return the error.
-                    self.entries.insert(0, entry);
-                    return Err(e);
+                    // The entry is corrupt or unreadable. Drop it permanently to avoid blocking subsequent
+                    // entries from being evicted.
+                    warn!(
+                        entry.path = %entry.path.display(),
+                        entry.len = entry.size_bytes,
+                        error = %e,
+                        "Permanently dropping persisted entry that could not be consumed during eviction.",
+                    );
+
+                    self.total_on_disk_bytes -= entry.size_bytes;
+                    self.entries_dropped += 1;
+                    continue;
                 }
             };
 
@@ -337,8 +370,23 @@ async fn try_deserialize_entry<T: DeserializeOwned>(entry: &PersistedEntry) -> R
         },
     };
 
-    let deserialized = serde_json::from_slice(&serialized)
-        .with_error_context(|| format!("Failed to deserialize persisted entry '{}'.", entry.path.display()))?;
+    let deserialized = match serde_json::from_slice(&serialized) {
+        Ok(deserialized) => deserialized,
+        Err(e) => {
+            // Deserialization failed, which means the payload is corrupt or invalid. Attempt to clean up the
+            // file from disk so it doesn't accumulate, but don't fail if we can't.
+            if let Err(remove_err) = tokio::fs::remove_file(&entry.path).await {
+                warn!(
+                    entry.path = %entry.path.display(),
+                    error = %remove_err,
+                    "Failed to remove corrupt persisted entry from disk.",
+                );
+            }
+
+            return Err(e)
+                .with_error_context(|| format!("Failed to deserialize persisted entry '{}'.", entry.path.display()));
+        }
+    };
 
     // Delete the entry from disk before returning, so that we don't risk sending duplicates.
     tokio::fs::remove_file(&entry.path)
@@ -621,6 +669,174 @@ mod tests {
             .expect("should not fail to pop data")
             .expect("should not be empty");
         assert_eq!(data2, actual);
+        assert_eq!(0, files_in_dir(&root_path).await);
+    }
+
+    /// Writes a corrupt (non-JSON) file with a valid retry filename to the given directory, using a timestamp
+    /// that sorts before any real entries (so it will be popped first).
+    async fn write_corrupt_entry(dir: &Path) -> PathBuf {
+        let filename = "retry-20000101000000000000-100000000.json";
+        let path = dir.join(filename);
+        tokio::fs::write(&path, b"this is not valid json").await.unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn corrupt_entry_is_skipped_on_pop() {
+        let data = FakeData::random();
+
+        let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
+        let root_path = temp_dir.path().to_path_buf();
+
+        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(
+            root_path.clone(),
+            1024,
+            0.8,
+            DiskUsageRetrieverWrapper::new(Arc::new(MockDiskUsageRetriever {})),
+        )
+        .await
+        .expect("should not fail to create persisted queue");
+
+        // Write a corrupt file before pushing valid data, so it sorts first.
+        let corrupt_path = write_corrupt_entry(&root_path).await;
+
+        // Push a valid entry.
+        let _ = persisted_queue
+            .push(data.clone())
+            .await
+            .expect("should not fail to push data");
+
+        // Refresh state so the queue picks up the corrupt file.
+        persisted_queue.refresh_entry_state().await.unwrap();
+
+        // Pop should skip the corrupt entry and return the valid one.
+        let actual = persisted_queue
+            .pop()
+            .await
+            .expect("should not fail to pop data")
+            .expect("should have a valid entry");
+        assert_eq!(data, actual);
+
+        // The corrupt file should have been cleaned up from disk.
+        assert!(!corrupt_path.exists());
+
+        // The dropped counter should reflect the corrupt entry.
+        assert_eq!(1, persisted_queue.take_entries_dropped());
+
+        // No files should remain.
+        assert_eq!(0, files_in_dir(&root_path).await);
+    }
+
+    #[tokio::test]
+    async fn corrupt_entry_does_not_block_queue() {
+        let data1 = FakeData::random();
+        let data2 = FakeData::random();
+
+        let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
+        let root_path = temp_dir.path().to_path_buf();
+
+        // Use MockDiskUsageRetriever to avoid disk space ratio causing eviction during push.
+        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(
+            root_path.clone(),
+            1024,
+            0.8,
+            DiskUsageRetrieverWrapper::new(Arc::new(MockDiskUsageRetriever {})),
+        )
+        .await
+        .expect("should not fail to create persisted queue");
+
+        // Push two valid entries, then corrupt the first one on disk.
+        let _ = persisted_queue.push(data1).await.expect("should not fail to push data");
+        let _ = persisted_queue
+            .push(data2.clone())
+            .await
+            .expect("should not fail to push data");
+        assert_eq!(2, persisted_queue.entries.len());
+
+        // Corrupt the oldest entry file on disk.
+        let oldest_path = persisted_queue.entries[0].path.clone();
+        tokio::fs::write(&oldest_path, b"corrupted").await.unwrap();
+
+        // Pop should skip the corrupt entry and return the second valid one.
+        let actual = persisted_queue
+            .pop()
+            .await
+            .expect("should not fail to pop data")
+            .expect("should have a valid entry");
+        assert_eq!(data2, actual);
+
+        assert_eq!(1, persisted_queue.take_entries_dropped());
+        assert_eq!(0, files_in_dir(&root_path).await);
+    }
+
+    #[tokio::test]
+    async fn pop_returns_none_when_all_entries_corrupt() {
+        let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
+        let root_path = temp_dir.path().to_path_buf();
+
+        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(
+            root_path.clone(),
+            1024,
+            0.8,
+            DiskUsageRetrieverWrapper::new(Arc::new(MockDiskUsageRetriever {})),
+        )
+        .await
+        .expect("should not fail to create persisted queue");
+
+        // Write a corrupt entry and refresh state.
+        write_corrupt_entry(&root_path).await;
+        persisted_queue.refresh_entry_state().await.unwrap();
+
+        // Pop should skip the corrupt entry and return None (no valid entries).
+        let result = persisted_queue.pop().await.expect("should not fail to pop data");
+        assert!(result.is_none());
+
+        assert_eq!(1, persisted_queue.take_entries_dropped());
+        assert_eq!(0, files_in_dir(&root_path).await);
+    }
+
+    #[tokio::test]
+    async fn corrupt_entry_dropped_during_eviction() {
+        let data = FakeData::random();
+
+        let temp_dir = tempfile::tempdir().expect("should not fail to create temporary directory");
+        let root_path = temp_dir.path().to_path_buf();
+
+        // Queue sized to hold only one entry.
+        let mut persisted_queue = PersistedQueue::<FakeData>::from_root_path(
+            root_path.clone(),
+            32,
+            0.8,
+            DiskUsageRetrieverWrapper::new(Arc::new(MockDiskUsageRetriever {})),
+        )
+        .await
+        .expect("should not fail to create persisted queue");
+
+        // Push a valid entry, then corrupt it on disk.
+        let _ = persisted_queue
+            .push(FakeData::random())
+            .await
+            .expect("should not fail to push data");
+        let first_path = persisted_queue.entries[0].path.clone();
+        tokio::fs::write(&first_path, b"corrupted").await.unwrap();
+
+        // Push another entry, which needs to evict the first (corrupt) one to make space.
+        // This should succeed without error -- the corrupt entry is dropped during eviction.
+        let _ = persisted_queue
+            .push(data.clone())
+            .await
+            .expect("should not fail to push data");
+
+        // The corrupt entry was dropped during eviction, not via normal eviction tracking.
+        assert_eq!(1, persisted_queue.take_entries_dropped());
+
+        // The valid entry should be poppable.
+        let actual = persisted_queue
+            .pop()
+            .await
+            .expect("should not fail to pop data")
+            .expect("should have a valid entry");
+        assert_eq!(data, actual);
         assert_eq!(0, files_in_dir(&root_path).await);
     }
 }
