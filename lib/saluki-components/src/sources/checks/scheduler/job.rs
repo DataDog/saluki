@@ -114,7 +114,7 @@ impl JobQueue {
                 }
 
                 _ = interval.tick() => {
-                    let elasped = Instant::now().duration_since(last_tick);
+                    let elasped = last_tick.elapsed();
                     if elasped > Duration::from_secs(2) {
                         warn!(
                             elapsed_secs = elasped.as_secs(),
