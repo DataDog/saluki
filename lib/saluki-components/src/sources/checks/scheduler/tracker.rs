@@ -15,7 +15,7 @@ impl RunningCheckTracker {
         }
     }
 
-    pub async fn add_check(&self, check: Arc<dyn Check + Send + Sync>) -> bool {
+    pub fn add_check(&self, check: Arc<dyn Check + Send + Sync>) -> bool {
         let id = check.id();
 
         let mut running = self.running.write().unwrap();
@@ -27,7 +27,7 @@ impl RunningCheckTracker {
         true
     }
 
-    pub async fn remove_check(&self, check: Arc<dyn Check + Send + Sync>) {
+    pub fn remove_check(&self, check: Arc<dyn Check + Send + Sync>) {
         let id = check.id();
 
         let mut running = self.running.write().unwrap();

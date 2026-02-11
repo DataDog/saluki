@@ -38,7 +38,7 @@ impl Worker {
             let id = check.id();
             debug!(worker.id = self.id, check.id = id, "Check to run.");
 
-            if !self.tracker.add_check(check.clone()).await {
+            if !self.tracker.add_check(check.clone()) {
                 info!(
                     worker.id = self.id,
                     check.id = id,
@@ -49,7 +49,7 @@ impl Worker {
 
             let _ = check.run().await; // FIXME err
 
-            self.tracker.remove_check(check).await
+            self.tracker.remove_check(check)
         }
         debug!(worker.id = self.id, "Finished processing checks.");
     }
