@@ -80,6 +80,7 @@ pub struct TransactionQueueTelemetry {
     high_prio_queue_removals: Counter,
     low_prio_queue_insertions: Counter,
     low_prio_queue_removals: Counter,
+    low_prio_queue_entries_dropped: Counter,
 }
 
 impl TransactionQueueTelemetry {
@@ -93,6 +94,8 @@ impl TransactionQueueTelemetry {
             high_prio_queue_removals: builder.register_debug_counter("endpoint_high_prio_queue_removals_total"),
             low_prio_queue_insertions: builder.register_debug_counter("endpoint_low_prio_queue_insertions_total"),
             low_prio_queue_removals: builder.register_debug_counter("endpoint_low_prio_queue_removals_total"),
+            low_prio_queue_entries_dropped: builder
+                .register_debug_counter("endpoint_low_prio_queue_entries_dropped_total"),
         }
     }
 
@@ -110,5 +113,9 @@ impl TransactionQueueTelemetry {
 
     pub fn low_prio_queue_removals(&self) -> &Counter {
         &self.low_prio_queue_removals
+    }
+
+    pub fn low_prio_queue_entries_dropped(&self) -> &Counter {
+        &self.low_prio_queue_entries_dropped
     }
 }
