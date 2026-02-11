@@ -127,6 +127,7 @@ build-adp-image-base:
 		--build-arg "APP_IDENTIFIER=$(ADP_APP_IDENTIFIER)" \
 		--build-arg "APP_VERSION=$(ADP_APP_VERSION)" \
 		--build-arg "APP_GIT_HASH=$(ADP_APP_GIT_HASH)" \
+		--build-arg "INTERNAL_BUILD=true" \
 		--file ./docker/Dockerfile.agent-data-plane \
 		.
 

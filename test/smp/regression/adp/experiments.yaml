@@ -416,7 +416,7 @@ experiments:
             parallel_connections: 1
             maximum_prebuild_cache_size_bytes: "10 MiB"
             variant:
-              opentelemetry_traces_graph:
+              opentelemetry_traces:
                 error_rate: 0.01
                 services:
                   - name: api-gateway
