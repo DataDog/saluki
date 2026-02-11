@@ -417,3 +417,67 @@ experiments:
             maximum_prebuild_cache_size_bytes: "10 MiB"
             variant:
               opentelemetry_traces: {}
+
+  - name: otlp_proxy_handle_traces_5mb
+    extends: otlp_base
+    optimization_goals:
+      - cpu
+      - memory
+
+    target:
+      environment:
+        DD_DATA_PLANE_OTLP_PROXY_ENABLED: "true"
+        DD_DATA_PLANE_OTLP_PROXY_TRACES_ENABLED: "false"
+
+    lading:
+      blackhole:
+        - http:
+            binding_addr: "127.0.0.1:9091"
+        - otlp:
+            grpc_addr: "127.0.0.1:4319"
+
+      generator:
+        - grpc:
+            seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
+            target_uri: "http://127.0.0.1:4317/opentelemetry.proto.collector.trace.v1.TraceService/Export"
+            bytes_per_second: "5 MiB"
+            parallel_connections: 1
+            maximum_prebuild_cache_size_bytes: "512 MiB"
+            variant:
+              opentelemetry_traces: {}
+        - grpc:
+            seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
+            target_uri: "http://127.0.0.1:4317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export"
+            bytes_per_second: "5 MiB"
+            parallel_connections: 1
+            maximum_prebuild_cache_size_bytes: "512 MiB"
+            variant:
+              opentelemetry_metrics: {}
+        - http:
+            seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
+            headers:
+              content-type: "application/x-protobuf"
+            target_uri: "http://127.0.0.1:4318/v1/logs"
+            bytes_per_second: "5 MiB"
+            parallel_connections: 1
+            method:
+              post:
+                maximum_prebuild_cache_size_bytes: "512 MiB"
+                variant:
+                  opentelemetry_logs:
+                    contexts:
+                      total_contexts:
+                        constant: 1000
+                    trace_cardinality:
+                      constant: 10
+                    body_size:
+                      inclusive:
+                        min: 128
+                        max: 512
+                    severity_weights:
+                      trace: 10
+                      debug: 10
+                      info: 10
+                      warn: 10
+                      error: 10
+                      fatal: 10
