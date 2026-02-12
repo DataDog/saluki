@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use ddsketch::DDSketch;
 use http::{HeaderValue, Method, Request};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use protobuf::{rt::WireType, CodedOutputStream};
 use saluki_common::{
     buf::{ChunkedBytesBuffer, FrozenChunkedBytesBuffer},
     task::HandleExt as _,
@@ -648,16 +649,18 @@ async fn encode_and_flush_v3_series_metrics(
     let events = metrics_to_flush.len();
 
     match encode_v3_metrics_batch(&metrics_to_flush, ep_config.additional_tags()) {
-        Ok(encoded) => match create_v3_request("/api/v3/series", encoded, ep_config.compression_scheme()).await {
-            Ok(request) => {
-                flush_payload(request, events, payloads_tx, batch_id, 0, 1, payload_info).await?;
-                debug!(events, "Sent V3 series payload.");
+        Ok(encoded) => {
+            match create_v3_request("/api/intake/metrics/v3/series", encoded, ep_config.compression_scheme()).await {
+                Ok(request) => {
+                    flush_payload(request, events, payloads_tx, batch_id, 0, 1, payload_info).await?;
+                    debug!(events, "Sent V3 series payload.");
+                }
+                Err(e) => {
+                    error!(error = %e, "Failed to create V3 series request.");
+                    telemetry.events_dropped_encoder().increment(events as u64);
+                }
             }
-            Err(e) => {
-                error!(error = %e, "Failed to create V3 series request.");
-                telemetry.events_dropped_encoder().increment(events as u64);
-            }
-        },
+        }
         Err(e) => {
             error!(error = %e, "Failed to encode V3 series batch.");
             telemetry.events_dropped_encoder().increment(events as u64);
@@ -675,7 +678,13 @@ async fn encode_and_flush_v3_sketch_metrics(
     let events = metrics_to_flush.len();
 
     match encode_v3_metrics_batch(&metrics_to_flush, ep_config.additional_tags()) {
-        Ok(encoded) => match create_v3_request("/api/v3/sketches", encoded, ep_config.compression_scheme()).await {
+        Ok(encoded) => match create_v3_request(
+            "/api/intake/metrics/v3/sketches",
+            encoded,
+            ep_config.compression_scheme(),
+        )
+        .await
+        {
             Ok(request) => {
                 flush_payload(request, events, payloads_tx, batch_id, 0, 1, payload_info).await?;
                 debug!(events, "Sent V3 sketches payload.");
@@ -743,9 +752,9 @@ fn encode_v3_metrics_batch(metrics: &[Metric], additional_tags: &SharedTagSet) -
         write_metric_to_v3(&mut writer, metric, additional_tags);
     }
 
-    let encoded_data = writer.close();
     let mut output = Vec::new();
-    v3::serialize_v3_payload(&encoded_data, &mut output)
+    writer
+        .finalize(&mut output)
         .map_err(|e| generic_error!("Failed to serialize V3 payload: {}", e))?;
 
     Ok(output)
@@ -753,6 +762,7 @@ fn encode_v3_metrics_batch(metrics: &[Metric], additional_tags: &SharedTagSet) -
 
 /// Writes a single metric to the V3 writer.
 fn write_metric_to_v3(writer: &mut v3::V3Writer, metric: &Metric, additional_tags: &SharedTagSet) {
+    println!("writing current metric to v3 payload: {:?}", metric);
     let metric_type = match metric.values() {
         MetricValues::Counter(..) => v3::V3MetricType::Count,
         MetricValues::Rate(..) => v3::V3MetricType::Rate,
@@ -763,33 +773,32 @@ fn write_metric_to_v3(writer: &mut v3::V3Writer, metric: &Metric, additional_tag
     let mut builder = writer.write(metric_type, metric.context().name());
 
     // Tags - chain instrumented + additional + origin tags
-    let all_tags: Vec<String> = metric
+    let all_tags = metric
         .context()
         .tags()
         .into_iter()
         .chain(additional_tags)
         .chain(metric.context().origin_tags())
         .filter(|t| !t.name().starts_with("dd.internal.resource"))
-        .map(|t| t.as_str().to_string())
-        .collect();
-    builder.set_tags(all_tags.iter().map(|s| s.as_str()));
+        .map(|t| t.as_str());
+    builder.set_tags(all_tags);
 
     // Resources - extract host and any dd.internal.resource tags
-    let mut resources: Vec<(String, String)> = Vec::new();
+    let mut resources = Vec::new();
     if let Some(host) = metric.metadata().hostname() {
-        resources.push(("host".to_string(), host.to_string()));
+        resources.push(("host", host));
     }
     // Extract dd.internal.resource tags as resources
     for tag in metric.context().tags().into_iter().chain(additional_tags) {
         if tag.name() == "dd.internal.resource" {
             if let Some(value) = tag.value() {
                 if let Some((rtype, rname)) = value.split_once(':') {
-                    resources.push((rtype.to_string(), rname.to_string()));
+                    resources.push((rtype, rname));
                 }
             }
         }
     }
-    builder.set_resources(resources.into_iter());
+    builder.set_resources(&resources);
 
     // Origin metadata
     if let Some(origin) = metric.metadata().origin() {
@@ -881,8 +890,23 @@ fn write_metric_to_v3(writer: &mut v3::V3Writer, metric: &Metric, additional_tag
 async fn create_v3_request(
     endpoint_uri: &str, payload: Vec<u8>, compression_scheme: CompressionScheme,
 ) -> Result<Request<FrozenChunkedBytesBuffer>, GenericError> {
+    // Our `payload` is the inner `MetricData` message structure at this point, so we just manually write out the
+    // `Payload` message framing before writing the metric data.
+    let mut header_buf = [0; 16];
+    let header_len = {
+        let mut header_writer = CodedOutputStream::bytes(&mut header_buf);
+        header_writer.write_tag(3, WireType::LengthDelimited)?;
+        header_writer.write_uint64_no_tag(payload.len() as u64)?;
+        header_writer.flush()?;
+        header_writer.total_bytes_written() as usize
+    };
+
     let buffer = ChunkedBytesBuffer::new(RB_BUFFER_CHUNK_SIZE);
     let mut compressor = Compressor::from_scheme(compression_scheme, buffer);
+    compressor
+        .write_all(&header_buf[..header_len])
+        .await
+        .error_context("Failed to compress V3 payload.")?;
     compressor
         .write_all(&payload)
         .await

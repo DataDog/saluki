@@ -108,7 +108,7 @@ impl NormalizedMetric {
     ///
     /// If the raw values are empty, or if the values cannot be normalized, an error is returned.
     pub fn try_from_values(
-        context: MetricContext, mut raw_values: Vec<(u64, MetricValue)>,
+        context: NormalizedMetricContext, mut raw_values: Vec<(u64, MetricValue)>,
     ) -> Result<Self, GenericError> {
         // We need to first sort the raw values by timestamp, to ensure we have proper ordering semantics.
         raw_values.sort_by(|a, b| a.0.cmp(&b.0));
@@ -116,7 +116,7 @@ impl NormalizedMetric {
             .with_error_context(|| format!("Failed to normalize values for metric '{}'", context.name()))?;
 
         Ok(Self {
-            context: NormalizedMetricContext::from_stele_context(context),
+            context,
             raw_values,
             value,
         })
@@ -183,9 +183,9 @@ impl NormalizedMetrics {
         let mut aggregated_context_values = BTreeMap::new();
 
         for metric in metrics {
-            let context = metric.context();
+            let context = metric.context().clone();
             let metric_type = metric_value_type(metric.values());
-            let key = (context.clone(), metric_type);
+            let key = (NormalizedMetricContext::from_stele_context(context), metric_type);
             let context_values = aggregated_context_values.entry(key).or_insert_with(Vec::new);
             context_values.extend_from_slice(metric.values());
         }
@@ -299,6 +299,8 @@ fn try_normalize_values(raw_values: &[(u64, MetricValue)]) -> Result<MetricValue
                 },
             ) => {
                 if interval_a != interval_b {
+                    println!("current metric value: {:?}", current_value);
+                    println!("new metric value: {:?}", new_value);
                     return Err(generic_error!("Cannot normalize rate values with different intervals."));
                 }
 
