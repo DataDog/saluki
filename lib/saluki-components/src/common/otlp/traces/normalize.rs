@@ -1,6 +1,7 @@
 /// Normalization functions for OTLP traces
 use std::char;
 
+use saluki_common::strings::StringBuilder;
 use stringtheory::MetaString;
 use tracing::debug;
 
@@ -160,6 +161,25 @@ pub fn normalize_tag_value(value: &str) -> MetaString {
     normalize(value, false)
 }
 
+/// Normalizes a tag value into the provided buffer without re-checking whether the input is already normalized.
+///
+/// This should only be used when the caller has already validated the input is not normalized.
+pub(super) fn normalize_tag_value_into_unchecked<I>(value: &str, out: &mut StringBuilder<I>) {
+    out.clear();
+    if value.is_empty() {
+        return;
+    }
+
+    let normalized = normalize_unchecked(value, false);
+    if normalized.is_empty() {
+        return;
+    }
+
+    if let Ok(normalized) = std::str::from_utf8(&normalized) {
+        let _ = out.push_str(normalized);
+    }
+}
+
 pub(super) fn is_normalized_tag_value(value: &str) -> bool {
     is_normalized_ascii_tag(value, false)
 }
@@ -179,6 +199,11 @@ fn normalize(value: &str, remove_digit_start_char: bool) -> MetaString {
     if is_normalized_ascii_tag(value, remove_digit_start_char) {
         return MetaString::from(value);
     }
+    let tag = normalize_unchecked(value, remove_digit_start_char);
+    MetaString::from(String::from_utf8(tag).unwrap_or_default())
+}
+
+fn normalize_unchecked(value: &str, remove_digit_start_char: bool) -> Vec<u8> {
     // Trim is used to to remove invalid characters from the start of the tag
     // Cuts is used to mark the start and end of invalid characters that need to be replaced with underscores
     // Chars is used to count the number of valid characters in the tag
@@ -249,10 +274,13 @@ fn normalize(value: &str, remove_digit_start_char: bool) -> MetaString {
         }
     }
 
-    let mut tag = tag[trim..end_idx].to_vec();
+    if trim > 0 || end_idx < tag.len() {
+        tag.copy_within(trim..end_idx, 0);
+        tag.truncate(end_idx - trim);
+    }
 
     if cuts.is_empty() {
-        return MetaString::from(String::from_utf8(tag).unwrap_or_default());
+        return tag;
     }
 
     let mut delta = trim;
@@ -279,9 +307,8 @@ fn normalize(value: &str, remove_digit_start_char: bool) -> MetaString {
         tag.truncate(new_len);
         delta += (cut_end - cut_start) - 1;
     }
-    let final_str = String::from_utf8(tag).unwrap_or_default();
 
-    MetaString::from(final_str)
+    tag
 }
 
 fn is_valid_metric_name(name: &str) -> bool {
