@@ -1,4 +1,4 @@
-ARG DD_AGENT_VERSION=7.76.2-jmx
+ARG DD_AGENT_VERSION=7.77.0-rc.1-jmx
 ARG DD_AGENT_IMAGE=registry.datadoghq.com/agent:${DD_AGENT_VERSION}
 ARG ADP_IMAGE=saluki-images/agent-data-plane:testing-devel
 

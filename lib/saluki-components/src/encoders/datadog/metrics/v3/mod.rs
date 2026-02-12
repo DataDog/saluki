@@ -11,10 +11,8 @@
 //! - Separate value columns for different numeric types (sint64, float32, float64)
 
 mod interner;
-mod serializer;
 mod types;
 mod writer;
 
-pub use serializer::serialize_v3_payload;
 pub use types::V3MetricType;
 pub use writer::V3Writer;
