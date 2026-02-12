@@ -25,6 +25,10 @@ mod sketch_include {
     include!(concat!(env!("OUT_DIR"), "/sketch_protos/mod.rs"));
 }
 
+mod trace_piecemeal_include {
+    include!(concat!(env!("OUT_DIR"), "/trace_piecemeal/mod.rs"));
+}
+
 /// Metrics-related definitions.
 pub mod metrics {
     pub use super::include::agent_payload::metric_payload::*;
@@ -44,6 +48,11 @@ pub mod traces {
     pub use super::trace_include::span::{attribute_any_value::*, attribute_array_value::*, *};
     pub use super::trace_include::stats::*;
     pub use super::trace_include::tracer_payload::*;
+
+    /// Piecemeal-generated builder types for incremental trace encoding.
+    pub mod builders {
+        pub use super::super::trace_piecemeal_include::datadog::trace::*;
+    }
 }
 
 /// Agent definitions.
