@@ -521,13 +521,19 @@ test-all: test test-property test-docs test-miri test-loom
 
 .PHONY: test-correctness
 test-correctness: ## Runs the complete correctness suite
-test-correctness: test-correctness-dsd-plain test-correctness-dsd-origin-detection test-correctness-otlp-metrics test-correctness-otlp-traces
+test-correctness: test-correctness-dsd-plain test-correctness-dsd-plain-v3 test-correctness-dsd-origin-detection test-correctness-otlp-metrics test-correctness-otlp-traces
 
 .PHONY: test-correctness-dsd-plain
 test-correctness-dsd-plain: build-ground-truth
 test-correctness-dsd-plain: ## Runs the 'dsd-plain' correctness test case
 	@echo "[*] Running 'dsd-plain' correctness test case..."
 	@target/release/ground-truth $(shell pwd)/test/correctness/dsd-plain/config.yaml
+
+.PHONY: test-correctness-dsd-plain-v3
+test-correctness-dsd-plain-v3: build-ground-truth
+test-correctness-dsd-plain-v3: ## Runs the 'dsd-plain-v3' correctness test case
+	@echo "[*] Running 'dsd-plain-v3' correctness test case..."
+	@target/release/ground-truth $(shell pwd)/test/correctness/dsd-plain-v3/config.yaml
 
 .PHONY: test-correctness-dsd-origin-detection
 test-correctness-dsd-origin-detection: build-ground-truth
