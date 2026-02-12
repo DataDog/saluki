@@ -3,23 +3,20 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use datadog_protos::traces::{
-    attribute_any_value::AttributeAnyValueType, attribute_array_value::AttributeArrayValueType, AttributeAnyValue,
-    AttributeArray, AttributeArrayValue, Span as ProtoSpan, SpanEvent as ProtoSpanEvent, SpanLink as ProtoSpanLink,
-    TraceChunk,
+use datadog_protos::traces::builders::{
+    attribute_any_value::AttributeAnyValueType, attribute_array_value::AttributeArrayValueType, AgentPayloadBuilder,
+    AttributeAnyValueBuilder, AttributeArrayValueBuilder,
 };
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use opentelemetry_semantic_conventions::resource::{
     CONTAINER_ID, DEPLOYMENT_ENVIRONMENT_NAME, K8S_POD_UID, SERVICE_VERSION,
 };
-use protobuf::{rt::WireType, CodedOutputStream, Message};
+use piecemeal::{ScratchBuffer, ScratchWriter};
 use saluki_common::task::HandleExt as _;
 use saluki_config::GenericConfiguration;
 use saluki_context::tags::{SharedTagSet, TagSet};
-use saluki_core::data_model::event::trace::{
-    AttributeScalarValue, AttributeValue, Span as DdSpan, SpanEvent as DdSpanEvent, SpanLink as DdSpanLink,
-};
+use saluki_core::data_model::event::trace::{AttributeScalarValue, AttributeValue, Span as DdSpan};
 use saluki_core::topology::{EventsBuffer, PayloadsBuffer};
 use saluki_core::{
     components::{encoders::*, ComponentContext},
@@ -77,23 +74,6 @@ const fn default_zstd_compressor_level() -> i32 {
 const fn default_flush_timeout_secs() -> u64 {
     2
 }
-
-// Field numbers from lib/protos/datadog/proto/datadog-agent/datadog/trace/tracer_payload.proto. This is is used to construct the format of the tracer payload and trace chunk.
-const TRACER_PAYLOAD_CONTAINER_ID_FIELD_NUMBER: u32 = 1;
-const TRACER_PAYLOAD_LANGUAGE_NAME_FIELD_NUMBER: u32 = 2;
-const TRACER_PAYLOAD_TRACER_VERSION_FIELD_NUMBER: u32 = 4;
-const TRACER_PAYLOAD_CHUNKS_FIELD_NUMBER: u32 = 6;
-const TRACER_PAYLOAD_TAGS_FIELD_NUMBER: u32 = 7;
-const TRACER_PAYLOAD_ENV_FIELD_NUMBER: u32 = 8;
-const TRACER_PAYLOAD_HOSTNAME_FIELD_NUMBER: u32 = 9;
-const TRACER_PAYLOAD_APP_VERSION_FIELD_NUMBER: u32 = 10;
-
-const AGENT_PAYLOAD_HOSTNAME_FIELD_NUMBER: u32 = 1;
-const AGENT_PAYLOAD_ENV_FIELD_NUMBER: u32 = 2;
-const AGENT_PAYLOAD_TRACER_PAYLOADS_FIELD_NUMBER: u32 = 5;
-const AGENT_PAYLOAD_AGENT_VERSION_FIELD_NUMBER: u32 = 7;
-const AGENT_PAYLOAD_TARGET_TPS_FIELD_NUMBER: u32 = 8;
-const AGENT_PAYLOAD_ERROR_TPS_FIELD_NUMBER: u32 = 9;
 
 fn default_env() -> String {
     "none".to_string()
@@ -420,10 +400,7 @@ async fn run_request_builder(
 
 #[derive(Debug)]
 struct TraceEndpointEncoder {
-    tracer_payload_scratch: Vec<u8>,
-    chunk_scratch: Vec<u8>,
-    tags_scratch: Vec<u8>,
-    // TODO: do we need additional tags or tag deplicator?
+    scratch: ScratchWriter<Vec<u8>>,
     default_hostname: MetaString,
     agent_hostname: String,
     version: String,
@@ -437,9 +414,7 @@ impl TraceEndpointEncoder {
         default_hostname: MetaString, version: String, env: String, apm_config: ApmConfig, otlp_traces: TracesConfig,
     ) -> Self {
         Self {
-            tracer_payload_scratch: Vec::new(),
-            chunk_scratch: Vec::new(),
-            tags_scratch: Vec::new(),
+            scratch: ScratchWriter::new(Vec::with_capacity(8192)),
             agent_hostname: default_hostname.as_ref().to_string(),
             default_hostname,
             version,
@@ -449,95 +424,174 @@ impl TraceEndpointEncoder {
         }
     }
 
-    fn encode_tracer_payload(&mut self, trace: &Trace, output_buffer: &mut Vec<u8>) -> Result<(), protobuf::Error> {
+    fn encode_tracer_payload(&mut self, trace: &Trace, output_buffer: &mut Vec<u8>) -> std::io::Result<()> {
+        let sampling_rate = self.sampling_rate();
         let resource_tags = trace.resource_tags();
         let first_span = trace.spans().first();
         let source = tags_to_source(resource_tags);
 
-        let trace_chunk = self.build_trace_chunk(trace);
-
-        // Build AgentPayload (outer message) writing to output_buffer
-        let mut agent_payload_stream = CodedOutputStream::vec(output_buffer);
-
-        // Write AgentPayload fields defined in agent_payload.proto
-        agent_payload_stream.write_string(AGENT_PAYLOAD_HOSTNAME_FIELD_NUMBER, &self.agent_hostname)?;
-        agent_payload_stream.write_string(AGENT_PAYLOAD_ENV_FIELD_NUMBER, &self.env)?;
-
-        agent_payload_stream.write_string(AGENT_PAYLOAD_AGENT_VERSION_FIELD_NUMBER, &self.version)?;
-        agent_payload_stream.write_double(
-            AGENT_PAYLOAD_TARGET_TPS_FIELD_NUMBER,
-            self.apm_config.target_traces_per_second(),
-        )?;
-        agent_payload_stream.write_double(
-            AGENT_PAYLOAD_ERROR_TPS_FIELD_NUMBER,
-            self.apm_config.errors_per_second(),
-        )?;
-
-        // Build TracerPayload (nested message) in scratch buffer
-        self.tracer_payload_scratch.clear();
-        let mut tracer_payload_stream = CodedOutputStream::vec(&mut self.tracer_payload_scratch);
-
-        // Write TracerPayload fields
-        if let Some(container_id) = resolve_container_id(resource_tags, first_span) {
-            tracer_payload_stream.write_string(TRACER_PAYLOAD_CONTAINER_ID_FIELD_NUMBER, container_id)?;
-        }
-
-        if let Some(lang) = get_resource_tag_value(resource_tags, "telemetry.sdk.language") {
-            tracer_payload_stream.write_string(TRACER_PAYLOAD_LANGUAGE_NAME_FIELD_NUMBER, lang)?;
-        }
-
-        // Write tracer_version for OTLP traces, even if telemetry.sdk.version is missing.
+        // Resolve metadata from resource tags.
+        let container_id = resolve_container_id(resource_tags, first_span);
+        let lang = get_resource_tag_value(resource_tags, "telemetry.sdk.language");
         let sdk_version = get_resource_tag_value(resource_tags, "telemetry.sdk.version").unwrap_or("");
         let tracer_version = format!("otlp-{}", sdk_version);
-        tracer_payload_stream.write_string(TRACER_PAYLOAD_TRACER_VERSION_FIELD_NUMBER, &tracer_version)?;
-
-        self.chunk_scratch.clear();
-        write_message_field(
-            &mut tracer_payload_stream,
-            TRACER_PAYLOAD_CHUNKS_FIELD_NUMBER,
-            &trace_chunk,
-            &mut self.chunk_scratch,
-        )?;
-
-        self.tags_scratch.clear();
-        if let Some(tags) = resolve_container_tags(
+        let container_tags = resolve_container_tags(
             resource_tags,
             source.as_ref(),
             self.otlp_traces.ignore_missing_datadog_fields,
-        ) {
-            write_map_entry_string_string(
-                &mut tracer_payload_stream,
-                TRACER_PAYLOAD_TAGS_FIELD_NUMBER,
-                CONTAINER_TAGS_META_KEY,
-                tags.as_ref(),
-                &mut self.tags_scratch,
-            )?;
-        }
-
-        if let Some(env) = resolve_env(resource_tags, self.otlp_traces.ignore_missing_datadog_fields) {
-            tracer_payload_stream.write_string(TRACER_PAYLOAD_ENV_FIELD_NUMBER, env)?;
-        }
-
-        if let Some(hostname) = resolve_hostname(
+        );
+        let env = resolve_env(resource_tags, self.otlp_traces.ignore_missing_datadog_fields);
+        let hostname = resolve_hostname(
             resource_tags,
             source.as_ref(),
             Some(self.default_hostname.as_ref()),
             self.otlp_traces.ignore_missing_datadog_fields,
-        ) {
-            tracer_payload_stream.write_string(TRACER_PAYLOAD_HOSTNAME_FIELD_NUMBER, hostname)?;
-        }
+        );
+        let app_version = resolve_app_version(resource_tags);
 
-        if let Some(app_version) = resolve_app_version(resource_tags) {
-            tracer_payload_stream.write_string(TRACER_PAYLOAD_APP_VERSION_FIELD_NUMBER, app_version)?;
-        }
+        // Resolve sampling metadata.
+        let (priority, dropped_trace, decision_maker, otlp_sr) = match trace.sampling() {
+            Some(sampling) => (
+                sampling.priority.unwrap_or(DEFAULT_CHUNK_PRIORITY),
+                sampling.dropped_trace,
+                sampling.decision_maker.as_deref(),
+                sampling
+                    .otlp_sampling_rate
+                    .as_ref()
+                    .map(|sr| sr.to_string())
+                    .unwrap_or_else(|| format!("{:.2}", sampling_rate)),
+            ),
+            None => (DEFAULT_CHUNK_PRIORITY, false, None, format!("{:.2}", sampling_rate)),
+        };
 
-        tracer_payload_stream.flush()?;
-        // Drop tracer_payload_stream to release the mutable borrow of tracer_payload_scratch
-        drop(tracer_payload_stream);
+        // Now incrementally build the payload.
+        let mut ap_builder = AgentPayloadBuilder::new(&mut self.scratch);
 
-        // Write TracerPayload as a nested message in AgentPayload (repeated field)
-        agent_payload_stream.write_bytes(AGENT_PAYLOAD_TRACER_PAYLOADS_FIELD_NUMBER, &self.tracer_payload_scratch)?;
-        agent_payload_stream.flush()?;
+        ap_builder
+            .host_name(&self.agent_hostname)?
+            .env(&self.env)?
+            .agent_version(&self.version)?
+            .target_tps(self.apm_config.target_traces_per_second())?
+            .error_tps(self.apm_config.errors_per_second())?;
+
+        ap_builder.add_tracer_payloads(|tp| {
+            if let Some(cid) = container_id {
+                tp.container_id(cid)?;
+            }
+            if let Some(l) = lang {
+                tp.language_name(l)?;
+            }
+            tp.tracer_version(&tracer_version)?;
+
+            // Encode the single TraceChunk containing all spans.
+            tp.add_chunks(|chunk| {
+                chunk.priority(priority)?;
+
+                for span in trace.spans() {
+                    chunk.add_spans(|s| {
+                        s.service(span.service())?
+                            .name(span.name())?
+                            .resource(span.resource())?
+                            .trace_id(span.trace_id())?
+                            .span_id(span.span_id())?
+                            .parent_id(span.parent_id())?
+                            .start(span.start() as i64)?
+                            .duration(span.duration() as i64)?
+                            .error(span.error())?;
+
+                        {
+                            let mut meta = s.meta();
+                            for (k, v) in span.meta() {
+                                meta.write_entry(k.as_ref(), v.as_ref())?;
+                            }
+                        }
+
+                        {
+                            let mut metrics = s.metrics();
+                            for (k, v) in span.metrics() {
+                                metrics.write_entry(k.as_ref(), *v)?;
+                            }
+                        }
+
+                        s.type_(span.span_type())?;
+
+                        {
+                            let mut ms = s.meta_struct();
+                            for (k, v) in span.meta_struct() {
+                                ms.write_entry(k.as_ref(), v.as_slice())?;
+                            }
+                        }
+
+                        for link in span.span_links() {
+                            s.add_span_links(|sl| {
+                                sl.trace_id(link.trace_id())?
+                                    .trace_id_high(link.trace_id_high())?
+                                    .span_id(link.span_id())?;
+                                {
+                                    let mut attrs = sl.attributes();
+                                    for (k, v) in link.attributes() {
+                                        attrs.write_entry(&**k, &**v)?;
+                                    }
+                                }
+                                let tracestate = link.tracestate().to_string();
+                                sl.tracestate(tracestate.as_str())?.flags(link.flags())?;
+                                Ok(())
+                            })?;
+                        }
+
+                        for event in span.span_events() {
+                            s.add_span_events(|se| {
+                                se.time_unix_nano(event.time_unix_nano())?.name(event.name())?;
+                                {
+                                    let mut attrs = se.attributes();
+                                    for (k, v) in event.attributes() {
+                                        attrs.write_entry(&**k, |av| encode_attribute_value(av, v))?;
+                                    }
+                                }
+                                Ok(())
+                            })?;
+                        }
+
+                        Ok(())
+                    })?;
+                }
+
+                // Chunk tags.
+                {
+                    let mut tags = chunk.tags();
+                    if let Some(dm) = decision_maker {
+                        tags.write_entry(TAG_DECISION_MAKER, dm)?;
+                    }
+                    tags.write_entry(TAG_OTLP_SAMPLING_RATE, otlp_sr.as_str())?;
+                }
+
+                if dropped_trace {
+                    chunk.dropped_trace(true)?;
+                }
+
+                Ok(())
+            })?;
+
+            // Tracer payload tags.
+            if let Some(ct) = container_tags {
+                let mut tags = tp.tags();
+                tags.write_entry(CONTAINER_TAGS_META_KEY, &*ct)?;
+            }
+
+            if let Some(e) = env {
+                tp.env(e)?;
+            }
+            if let Some(h) = hostname {
+                tp.hostname(h)?;
+            }
+            if let Some(av) = app_version {
+                tp.app_version(av)?;
+            }
+
+            Ok(())
+        })?;
+
+        ap_builder.finish(output_buffer)?;
 
         Ok(())
     }
@@ -549,53 +603,11 @@ impl TraceEndpointEncoder {
         }
         rate
     }
-
-    fn build_trace_chunk(&self, trace: &Trace) -> TraceChunk {
-        let spans: Vec<ProtoSpan> = trace.spans().iter().map(convert_span).collect();
-        let mut chunk = TraceChunk::new();
-
-        let mut tags = std::collections::HashMap::new();
-
-        // Use trace-level sampling metadata if available (set by the trace sampler transform).
-        // This provides explicit trace-level sampling information without needing to scan spans.
-        if let Some(sampling) = trace.sampling() {
-            // Set priority from trace metadata
-            chunk.set_priority(sampling.priority.unwrap_or(DEFAULT_CHUNK_PRIORITY));
-            chunk.set_droppedTrace(sampling.dropped_trace);
-
-            // Set decision maker tag if present.
-            if let Some(dm) = &sampling.decision_maker {
-                tags.insert(TAG_DECISION_MAKER.to_string(), dm.to_string());
-            }
-
-            // Set OTLP sampling rate tag if present (from sampler)
-            if let Some(otlp_sr) = &sampling.otlp_sampling_rate {
-                tags.insert(TAG_OTLP_SAMPLING_RATE.to_string(), otlp_sr.to_string());
-            } else {
-                // Fallback to encoder's computed rate
-                let rate = self.sampling_rate();
-                tags.insert(TAG_OTLP_SAMPLING_RATE.to_string(), format!("{:.2}", rate));
-            }
-        } else {
-            // Fallback: if trace.sampling is None, use defaults
-            // (No span scanning per the plan's "no fallback scan" requirement)
-            chunk.set_priority(DEFAULT_CHUNK_PRIORITY);
-            chunk.set_droppedTrace(false);
-            let rate = self.sampling_rate();
-            tags.insert(TAG_OTLP_SAMPLING_RATE.to_string(), format!("{:.2}", rate));
-        }
-
-        chunk.set_tags(tags);
-
-        chunk.set_spans(spans);
-
-        chunk
-    }
 }
 
 impl EndpointEncoder for TraceEndpointEncoder {
     type Input = Trace;
-    type EncodeError = protobuf::Error;
+    type EncodeError = std::io::Error;
     fn encoder_name() -> &'static str {
         "traces"
     }
@@ -625,152 +637,51 @@ impl EndpointEncoder for TraceEndpointEncoder {
     }
 }
 
-fn convert_span(span: &DdSpan) -> ProtoSpan {
-    let mut proto = ProtoSpan::new();
-    proto.set_service(span.service().to_string());
-    proto.set_name(span.name().to_string());
-    proto.set_resource(span.resource().to_string());
-    proto.set_traceID(span.trace_id());
-    proto.set_spanID(span.span_id());
-    proto.set_parentID(span.parent_id());
-    proto.set_start(span.start() as i64);
-    proto.set_duration(span.duration() as i64);
-    proto.set_error(span.error());
-    proto.set_type(span.span_type().to_string());
-
-    proto.set_meta(
-        span.meta()
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect(),
-    );
-    proto.set_metrics(span.metrics().iter().map(|(k, v)| (k.to_string(), *v)).collect());
-    proto.set_meta_struct(
-        span.meta_struct()
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.clone()))
-            .collect(),
-    );
-    proto.set_spanLinks(span.span_links().iter().map(convert_span_link).collect());
-    proto.set_spanEvents(span.span_events().iter().map(convert_span_event).collect());
-    proto
-}
-
-fn convert_span_link(link: &DdSpanLink) -> ProtoSpanLink {
-    let mut proto = ProtoSpanLink::new();
-    proto.set_traceID(link.trace_id());
-    proto.set_traceID_high(link.trace_id_high());
-    proto.set_spanID(link.span_id());
-    proto.set_attributes(
-        link.attributes()
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect(),
-    );
-    proto.set_tracestate(link.tracestate().to_string());
-    proto.set_flags(link.flags());
-    proto
-}
-
-fn convert_span_event(event: &DdSpanEvent) -> ProtoSpanEvent {
-    let mut proto = ProtoSpanEvent::new();
-    proto.set_time_unix_nano(event.time_unix_nano());
-    proto.set_name(event.name().to_string());
-    proto.set_attributes(
-        event
-            .attributes()
-            .iter()
-            .map(|(k, v)| (k.to_string(), convert_attribute_value(v)))
-            .collect(),
-    );
-    proto
-}
-
-fn convert_attribute_value(value: &AttributeValue) -> AttributeAnyValue {
-    let mut proto = AttributeAnyValue::new();
+fn encode_attribute_value<S: ScratchBuffer>(
+    builder: &mut AttributeAnyValueBuilder<'_, S>, value: &AttributeValue,
+) -> std::io::Result<()> {
     match value {
         AttributeValue::String(v) => {
-            proto.set_type(AttributeAnyValueType::STRING_VALUE);
-            proto.set_string_value(v.to_string());
+            builder.type_(AttributeAnyValueType::STRING_VALUE)?.string_value(v)?;
         }
         AttributeValue::Bool(v) => {
-            proto.set_type(AttributeAnyValueType::BOOL_VALUE);
-            proto.set_bool_value(*v);
+            builder.type_(AttributeAnyValueType::BOOL_VALUE)?.bool_value(*v)?;
         }
         AttributeValue::Int(v) => {
-            proto.set_type(AttributeAnyValueType::INT_VALUE);
-            proto.set_int_value(*v);
+            builder.type_(AttributeAnyValueType::INT_VALUE)?.int_value(*v)?;
         }
         AttributeValue::Double(v) => {
-            proto.set_type(AttributeAnyValueType::DOUBLE_VALUE);
-            proto.set_double_value(*v);
+            builder.type_(AttributeAnyValueType::DOUBLE_VALUE)?.double_value(*v)?;
         }
         AttributeValue::Array(values) => {
-            proto.set_type(AttributeAnyValueType::ARRAY_VALUE);
-            let mut array = AttributeArray::new();
-            array.set_values(values.iter().map(convert_attribute_array_value).collect());
-            proto.set_array_value(array);
+            builder.type_(AttributeAnyValueType::ARRAY_VALUE)?.array_value(|arr| {
+                for val in values {
+                    arr.add_values(|av| encode_attribute_array_value(av, val))?;
+                }
+                Ok(())
+            })?;
         }
     }
-    proto
-}
-
-fn convert_attribute_array_value(value: &AttributeScalarValue) -> AttributeArrayValue {
-    let mut proto = AttributeArrayValue::new();
-    match value {
-        AttributeScalarValue::String(v) => {
-            proto.set_type(AttributeArrayValueType::STRING_VALUE);
-            proto.set_string_value(v.to_string());
-        }
-        AttributeScalarValue::Bool(v) => {
-            proto.set_type(AttributeArrayValueType::BOOL_VALUE);
-            proto.set_bool_value(*v);
-        }
-        AttributeScalarValue::Int(v) => {
-            proto.set_type(AttributeArrayValueType::INT_VALUE);
-            proto.set_int_value(*v);
-        }
-        AttributeScalarValue::Double(v) => {
-            proto.set_type(AttributeArrayValueType::DOUBLE_VALUE);
-            proto.set_double_value(*v);
-        }
-    }
-    proto
-}
-
-fn write_message_field<M: Message>(
-    output_stream: &mut CodedOutputStream<'_>, field_number: u32, message: &M, scratch_buf: &mut Vec<u8>,
-) -> Result<(), protobuf::Error> {
-    scratch_buf.clear();
-    {
-        // In protobuf, length-delimited is one of the wire types, it encodes data as [tag][length][value].
-        // We use a nested output stream to write the message to because output_stream requires the size of the message to be known before writing
-        // and the Message type size is not known as it depends on the actual data values and lengths and we
-        // don't know this until runtime.
-        let mut nested = CodedOutputStream::vec(scratch_buf);
-        message.write_to(&mut nested)?;
-        nested.flush()?;
-    }
-    output_stream.write_tag(field_number, WireType::LengthDelimited)?;
-    output_stream.write_raw_varint32(scratch_buf.len() as u32)?;
-    output_stream.write_raw_bytes(scratch_buf)?;
     Ok(())
 }
 
-fn write_map_entry_string_string(
-    output_stream: &mut CodedOutputStream<'_>, field_number: u32, key: &str, value: &str, scratch_buf: &mut Vec<u8>,
-) -> Result<(), protobuf::Error> {
-    scratch_buf.clear();
-    {
-        let mut nested = CodedOutputStream::vec(scratch_buf);
-        // the field number 1 and 2 correspond to key and value
-        nested.write_string(1, key)?;
-        nested.write_string(2, value)?;
-        nested.flush()?;
+fn encode_attribute_array_value<S: ScratchBuffer>(
+    builder: &mut AttributeArrayValueBuilder<'_, S>, value: &AttributeScalarValue,
+) -> std::io::Result<()> {
+    match value {
+        AttributeScalarValue::String(v) => {
+            builder.type_(AttributeArrayValueType::STRING_VALUE)?.string_value(v)?;
+        }
+        AttributeScalarValue::Bool(v) => {
+            builder.type_(AttributeArrayValueType::BOOL_VALUE)?.bool_value(*v)?;
+        }
+        AttributeScalarValue::Int(v) => {
+            builder.type_(AttributeArrayValueType::INT_VALUE)?.int_value(*v)?;
+        }
+        AttributeScalarValue::Double(v) => {
+            builder.type_(AttributeArrayValueType::DOUBLE_VALUE)?.double_value(*v)?;
+        }
     }
-    output_stream.write_tag(field_number, WireType::LengthDelimited)?;
-    output_stream.write_raw_varint32(scratch_buf.len() as u32)?;
-    output_stream.write_raw_bytes(scratch_buf)?;
     Ok(())
 }
 
