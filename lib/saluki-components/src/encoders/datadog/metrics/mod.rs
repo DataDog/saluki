@@ -1,14 +1,16 @@
-use std::{num::NonZeroU64, time::Duration};
+use std::time::Duration;
 
 use async_trait::async_trait;
-use datadog_protos::metrics as proto;
 use ddsketch::DDSketch;
-use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
+use http::{HeaderValue, Method, Request};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use protobuf::{rt::WireType, CodedOutputStream, Enum as _};
-use saluki_common::{iter::ReusableDeduplicator, task::HandleExt as _};
+use protobuf::{rt::WireType, CodedOutputStream};
+use saluki_common::{
+    buf::{ChunkedBytesBuffer, FrozenChunkedBytesBuffer},
+    task::HandleExt as _,
+};
 use saluki_config::GenericConfiguration;
-use saluki_context::tags::{SharedTagSet, Tag};
+use saluki_context::tags::SharedTagSet;
 use saluki_core::{
     components::{encoders::*, ComponentContext},
     data_model::{
@@ -22,64 +24,30 @@ use saluki_core::{
     topology::{EventsBuffer, PayloadsBuffer},
 };
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use saluki_io::compression::CompressionScheme;
+use saluki_io::compression::{CompressionScheme, Compressor};
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
-use tokio::{select, sync::mpsc, time::sleep};
+use tokio::{io::AsyncWriteExt as _, select, sync::mpsc, time::sleep};
 use tracing::{debug, error, warn};
+use uuid::Uuid;
 
-use crate::common::datadog::{
-    io::RB_BUFFER_CHUNK_SIZE,
-    request_builder::{EndpointEncoder, RequestBuilder},
-    telemetry::ComponentTelemetry,
-    DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
+use crate::{
+    common::datadog::{
+        io::RB_BUFFER_CHUNK_SIZE,
+        protocol::{MetricsPayloadInfo, V3ApiConfig},
+        request_builder::RequestBuilder,
+        telemetry::ComponentTelemetry,
+    },
+    encoders::datadog::metrics::v2::MetricsEndpointEncoder,
 };
 
-const SERIES_V2_COMPRESSED_SIZE_LIMIT: usize = 512_000; // 500 KiB
-const SERIES_V2_UNCOMPRESSED_SIZE_LIMIT: usize = 5_242_880; // 5 MiB
+mod endpoint;
+use self::endpoint::{EndpointConfiguration, MetricsEndpoint};
+
+mod v2;
+mod v3;
 
 const DEFAULT_SERIALIZER_COMPRESSOR_KIND: &str = "zstd";
-
-// Protocol Buffers field numbers for series and sketch payload messages.
-//
-// These field numbers come from the Protocol Buffers definitions in `lib/datadog-protos/proto/agent_payload.proto`.
-const RESOURCES_TYPE_FIELD_NUMBER: u32 = 1;
-const RESOURCES_NAME_FIELD_NUMBER: u32 = 2;
-
-const METADATA_ORIGIN_FIELD_NUMBER: u32 = 1;
-
-const ORIGIN_ORIGIN_PRODUCT_FIELD_NUMBER: u32 = 4;
-const ORIGIN_ORIGIN_CATEGORY_FIELD_NUMBER: u32 = 5;
-const ORIGIN_ORIGIN_SERVICE_FIELD_NUMBER: u32 = 6;
-
-const METRIC_POINT_VALUE_FIELD_NUMBER: u32 = 1;
-const METRIC_POINT_TIMESTAMP_FIELD_NUMBER: u32 = 2;
-
-const DOGSKETCH_TS_FIELD_NUMBER: u32 = 1;
-const DOGSKETCH_CNT_FIELD_NUMBER: u32 = 2;
-const DOGSKETCH_MIN_FIELD_NUMBER: u32 = 3;
-const DOGSKETCH_MAX_FIELD_NUMBER: u32 = 4;
-const DOGSKETCH_AVG_FIELD_NUMBER: u32 = 5;
-const DOGSKETCH_SUM_FIELD_NUMBER: u32 = 6;
-const DOGSKETCH_K_FIELD_NUMBER: u32 = 7;
-const DOGSKETCH_N_FIELD_NUMBER: u32 = 8;
-
-const SERIES_RESOURCES_FIELD_NUMBER: u32 = 1;
-const SERIES_METRIC_FIELD_NUMBER: u32 = 2;
-const SERIES_TAGS_FIELD_NUMBER: u32 = 3;
-const SERIES_POINTS_FIELD_NUMBER: u32 = 4;
-const SERIES_TYPE_FIELD_NUMBER: u32 = 5;
-const SERIES_SOURCE_TYPE_NAME_FIELD_NUMBER: u32 = 7;
-const SERIES_INTERVAL_FIELD_NUMBER: u32 = 8;
-const SERIES_METADATA_FIELD_NUMBER: u32 = 9;
-
-const SKETCH_METRIC_FIELD_NUMBER: u32 = 1;
-const SKETCH_HOST_FIELD_NUMBER: u32 = 2;
-const SKETCH_TAGS_FIELD_NUMBER: u32 = 4;
-const SKETCH_DOGSKETCHES_FIELD_NUMBER: u32 = 7;
-const SKETCH_METADATA_FIELD_NUMBER: u32 = 8;
-
-static CONTENT_TYPE_PROTOBUF: HeaderValue = HeaderValue::from_static("application/x-protobuf");
 
 const fn default_max_metrics_per_payload() -> usize {
     10_000
@@ -101,7 +69,6 @@ const fn default_zstd_compressor_level() -> i32 {
 ///
 /// Generates Datadog metrics payloads for the Datadog platform.
 #[derive(Clone, Deserialize)]
-#[allow(dead_code)]
 pub struct DatadogMetricsConfiguration {
     /// Maximum number of input metrics to encode into a single request payload.
     ///
@@ -147,6 +114,21 @@ pub struct DatadogMetricsConfiguration {
     /// Additional tags to apply to all forwarded metrics.
     #[serde(default, skip)]
     additional_tags: Option<SharedTagSet>,
+
+    /// V3 API configuration for per-endpoint V3 support.
+    ///
+    /// Configures which endpoints receive V3 payloads and whether validation mode is enabled.
+    #[serde(rename = "serializer_experimental_use_v3_api", default)]
+    v3_api: V3ApiConfig,
+
+    /// Override compression level for V3 payloads.
+    ///
+    /// When set to a value > 0, this compression level is used specifically for V3 payloads
+    /// instead of the default `zstd_compressor_level`.
+    ///
+    /// Defaults to 0 (use default compression level).
+    #[serde(rename = "serializer_experimental_use_v3_api_compression_level", default)]
+    v3_compression_level: i32,
 }
 
 impl DatadogMetricsConfiguration {
@@ -157,7 +139,6 @@ impl DatadogMetricsConfiguration {
 
     /// Sets additional tags to be applied uniformly to all metrics forwarded by this destination.
     pub fn with_additional_tags(mut self, additional_tags: SharedTagSet) -> Self {
-        // Add the additional tags to the forwarder configuration.
         self.additional_tags = Some(additional_tags);
         self
     }
@@ -176,22 +157,51 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(&context);
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
-        let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
 
-        // Create our request builders.
-        let mut series_encoder = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::Series);
-        let mut sketches_encoder = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::Sketches);
+        let v2_compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
+        let v3_compression_scheme = if self.v3_compression_level > 0 {
+            CompressionScheme::new(&self.compressor_kind, self.v3_compression_level)
+        } else {
+            v2_compression_scheme
+        };
 
-        if let Some(additional_tags) = self.additional_tags.as_ref() {
-            series_encoder = series_encoder.with_additional_tags(additional_tags.clone());
-            sketches_encoder = sketches_encoder.with_additional_tags(additional_tags.clone());
-        }
+        let v2_endpoint_config = EndpointConfiguration::new(
+            v2_compression_scheme,
+            self.max_metrics_per_payload,
+            self.additional_tags.clone(),
+        );
+        let v3_endpoint_config = EndpointConfiguration::new(
+            v3_compression_scheme,
+            self.max_metrics_per_payload,
+            self.additional_tags.clone(),
+        );
 
-        let mut series_rb = RequestBuilder::new(series_encoder, compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
-        series_rb.with_max_inputs_per_payload(self.max_metrics_per_payload);
+        // Derive the V3 flags from the configuration.
+        let use_v3_series = self.v3_api.use_v3_series();
+        let use_v3_sketches = self.v3_api.use_v3_sketches();
+        let use_v3_series_validate = self.v3_api.use_v3_series_validate();
+        let use_v3_sketches_validate = self.v3_api.use_v3_sketches_validate();
 
-        let mut sketches_rb = RequestBuilder::new(sketches_encoder, compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
-        sketches_rb.with_max_inputs_per_payload(self.max_metrics_per_payload);
+        // When any V3 endpoint is configured, we're in per-endpoint mode where both V2 and V3
+        // payloads are generated and tagged, allowing the forwarder to filter per endpoint.
+        let per_endpoint_v3_mode = self.v3_api.any_v3_enabled();
+
+        // Create V2 request builders. We always need V2 builders because:
+        // - Endpoints not in the V3 list need V2 payloads
+        // - Endpoints in the V3 list with validation enabled need both V2 and V3 payloads
+        let v2_series_builder = {
+            let request_builder = v2::create_v2_request_builder(MetricsEndpoint::Series, &v2_endpoint_config)
+                .await
+                .error_context("Failed to create V2 series request builder.")?;
+            Some(request_builder)
+        };
+
+        let v2_sketch_builder = {
+            let request_builder = v2::create_v2_request_builder(MetricsEndpoint::Sketches, &v2_endpoint_config)
+                .await
+                .error_context("Failed to create V2 sketches request builder.")?;
+            Some(request_builder)
+        };
 
         let flush_timeout = match self.flush_timeout_secs {
             // We always give ourselves a minimum flush timeout of 10ms to allow for some very minimal amount of
@@ -200,9 +210,28 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
             secs => Duration::from_secs(secs),
         };
 
+        if use_v3_series || use_v3_sketches {
+            debug!(
+                use_v3_series,
+                use_v3_sketches,
+                use_v3_series_validate,
+                use_v3_sketches_validate,
+                v3_series_endpoints = ?self.v3_api.series.endpoints,
+                v3_sketches_endpoints = ?self.v3_api.sketches.endpoints,
+                "V3 encoding support is enabled."
+            );
+        }
+
         Ok(Box::new(DatadogMetrics {
-            series_rb,
-            sketches_rb,
+            v2_series_builder,
+            v2_sketch_builder,
+            use_v3_series,
+            use_v3_sketches,
+            use_v3_series_validate,
+            use_v3_sketches_validate,
+            per_endpoint_v3_mode,
+            v3_api: self.v3_api.clone(),
+            v3_endpoint_config,
             telemetry,
             flush_timeout,
         }))
@@ -234,8 +263,15 @@ impl MemoryBounds for DatadogMetricsConfiguration {
 }
 
 pub struct DatadogMetrics {
-    series_rb: RequestBuilder<MetricsEndpointEncoder>,
-    sketches_rb: RequestBuilder<MetricsEndpointEncoder>,
+    v2_series_builder: Option<RequestBuilder<v2::MetricsEndpointEncoder>>,
+    v2_sketch_builder: Option<RequestBuilder<v2::MetricsEndpointEncoder>>,
+    use_v3_series: bool,
+    use_v3_sketches: bool,
+    use_v3_series_validate: bool,
+    use_v3_sketches_validate: bool,
+    per_endpoint_v3_mode: bool,
+    v3_api: V3ApiConfig,
+    v3_endpoint_config: EndpointConfiguration,
     telemetry: ComponentTelemetry,
     flush_timeout: Duration,
 }
@@ -244,8 +280,15 @@ pub struct DatadogMetrics {
 impl Encoder for DatadogMetrics {
     async fn run(mut self: Box<Self>, mut context: EncoderContext) -> Result<(), GenericError> {
         let Self {
-            series_rb,
-            sketches_rb,
+            v2_series_builder,
+            v2_sketch_builder,
+            use_v3_series,
+            use_v3_sketches,
+            use_v3_series_validate,
+            use_v3_sketches_validate,
+            per_endpoint_v3_mode,
+            v3_api: _v3_api,
+            v3_endpoint_config,
             telemetry,
             flush_timeout,
         } = *self;
@@ -255,8 +298,20 @@ impl Encoder for DatadogMetrics {
         // Spawn our request builder task.
         let (events_tx, events_rx) = mpsc::channel(8);
         let (payloads_tx, mut payloads_rx) = mpsc::channel(8);
-        let request_builder_fut =
-            run_request_builder(series_rb, sketches_rb, telemetry, events_rx, payloads_tx, flush_timeout);
+        let request_builder_fut = run_request_builder(
+            v2_series_builder,
+            v2_sketch_builder,
+            use_v3_series,
+            use_v3_sketches,
+            use_v3_series_validate,
+            use_v3_sketches_validate,
+            per_endpoint_v3_mode,
+            v3_endpoint_config,
+            telemetry,
+            events_rx,
+            payloads_tx,
+            flush_timeout,
+        );
         let request_builder_handle = context
             .topology_context()
             .global_thread_pool()
@@ -309,16 +364,39 @@ impl Encoder for DatadogMetrics {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_request_builder(
-    mut series_request_builder: RequestBuilder<MetricsEndpointEncoder>,
-    mut sketches_request_builder: RequestBuilder<MetricsEndpointEncoder>, telemetry: ComponentTelemetry,
-    mut events_rx: mpsc::Receiver<EventsBuffer>, payloads_tx: mpsc::Sender<PayloadsBuffer>, flush_timeout: Duration,
+    mut v2_series_builder: Option<RequestBuilder<v2::MetricsEndpointEncoder>>,
+    mut v2_sketch_builder: Option<RequestBuilder<v2::MetricsEndpointEncoder>>, use_v3_series: bool,
+    use_v3_sketches: bool, use_v3_series_validate: bool, use_v3_sketches_validate: bool, per_endpoint_v3_mode: bool,
+    v3_endpoint_config: EndpointConfiguration, telemetry: ComponentTelemetry,
+    mut events_rx: mpsc::Receiver<EventsBuffer>, mut payloads_tx: mpsc::Sender<PayloadsBuffer>,
+    flush_timeout: Duration,
 ) -> Result<(), GenericError> {
     let mut pending_flush = false;
     let pending_flush_timeout = sleep(flush_timeout);
     tokio::pin!(pending_flush_timeout);
 
+    // These vectors being present (or not present) are used not only to hold the metrics we need to encode, but to decide
+    // whether we should encode them as V3 at all.
+    // In per_endpoint_v3_mode, we always create V3 vectors so both formats are emitted.
+    let mut v3_series_metrics = (per_endpoint_v3_mode || use_v3_series).then(Vec::<Metric>::new);
+    let mut v3_sketch_metrics = (per_endpoint_v3_mode || use_v3_sketches).then(Vec::<Metric>::new);
+
+    let mut batch_id = None;
+    let series_validation_enabled = use_v3_series && use_v3_series_validate;
+    let sketches_validation_enabled = use_v3_sketches && use_v3_sketches_validate;
+    let validation_enabled = series_validation_enabled || sketches_validation_enabled;
+
+    // Payload info is only set when per_endpoint_v3_mode is enabled, to allow filtering by endpoint.
+    let tag_payloads = per_endpoint_v3_mode;
+
     loop {
+        // Ensure we have a validation batch UUID if validation is enabled.
+        if validation_enabled && batch_id.is_none() {
+            batch_id = Some(Uuid::now_v7());
+        }
+
         select! {
             Some(event_buffer) = events_rx.recv() => {
                 for event in event_buffer {
@@ -327,57 +405,62 @@ async fn run_request_builder(
                         None => continue,
                     };
 
-                    let request_builder = match MetricsEndpoint::from_metric(&metric) {
-                        MetricsEndpoint::Series => &mut series_request_builder,
-                        MetricsEndpoint::Sketches => &mut sketches_request_builder,
+                    // Figure out which endpoint the metric belongs to, and grab the relevant V2 builder/V3 storage.
+                    let endpoint = MetricsEndpoint::from_metric(&metric);
+                    let (maybe_v2_builder, maybe_v3_metrics) = match endpoint {
+                        MetricsEndpoint::Series => (&mut v2_series_builder, &mut v3_series_metrics),
+                        MetricsEndpoint::Sketches => (&mut v2_sketch_builder, &mut v3_sketch_metrics),
                     };
 
-                    // Encode the metric. If we get it back, that means the current request is full, and we need to
-                    // flush it before we can try to encode the metric again... so we'll hold on to it in that case
-                    // before flushing and trying to encode it again.
-                    let metric_to_retry = match request_builder.encode(metric).await {
-                        Ok(None) => continue,
-                        Ok(Some(metric)) => metric,
-                        Err(e) => {
-                            error!(error = %e, "Failed to encode metric.");
-                            telemetry.events_dropped_encoder().increment(1);
-                            continue;
-                        }
-                    };
-
-
-                    let maybe_requests = request_builder.flush().await;
-                    if maybe_requests.is_empty() {
-                        panic!("builder told us to flush, but gave us nothing");
+                    // Store a copy of the metric in `maybe_v3_metrics` if it's present.
+                    //
+                    // We have to do this before encoding because `RequestBuilder::encode` consumes the metric. This also means we'll
+                    // need to _remove_ the metric if encoding fails.
+                    if let Some(metrics) = maybe_v3_metrics {
+                        metrics.push(metric.clone());
                     }
 
-                    for maybe_request in maybe_requests {
-                        match maybe_request {
-                            Ok((events, request)) => {
-                                let payload_meta = PayloadMetadata::from_event_count(events);
-                                let http_payload = HttpPayload::new(payload_meta, request);
-                                let payload = Payload::Http(http_payload);
-
-                                payloads_tx.send(payload).await
-                                    .map_err(|_| generic_error!("Failed to send payload to encoder."))?;
-                            },
-
-                            // TODO: Increment a counter here that metrics were dropped due to a flush failure.
-                            Err(e) => if e.is_recoverable() {
-                                // If the error is recoverable, we'll hold on to the metric to retry it later.
-                                continue;
-                            } else {
-                                return Err(GenericError::from(e).context("Failed to flush request."));
+                    // Attempt encoding the metric for V2 if configured.
+                    //
+                    // If the metric couldn't be encoded (too big, some other issue), the call returns `false` which is
+                    // our signal to remove the metric from `maybe_v3_metrics` (if we added it), since we know now that
+                    // the metric wasn't encoded for V2 and we want our V2/V3 payload batches to be consistent in
+                    // validation mode.
+                    let v2_payload_info = tag_payloads.then(|| match endpoint {
+                        MetricsEndpoint::Series => MetricsPayloadInfo::v2_series(),
+                        MetricsEndpoint::Sketches => MetricsPayloadInfo::v2_sketches(),
+                    });
+                    let v2_flushed = if let Some(builder) = maybe_v2_builder {
+                        let result = encode_v2_metrics(builder, metric, &telemetry, &mut payloads_tx, batch_id.as_ref(), v2_payload_info).await?;
+                        if !result.encoded() {
+                            if let Some(metrics) = maybe_v3_metrics {
+                                let _ = metrics.pop();
                             }
                         }
-                    }
 
-                    // Now try to encode the metric again. If it fails again, we'll just log it because it shouldn't
-                    // be possible to fail at this point, otherwise we would have already caught that the first
-                    // time.
-                    if let Err(e) = request_builder.encode(metric_to_retry).await {
-                        error!(error = %e, "Failed to encode metric.");
-                        telemetry.events_dropped_encoder().increment(1);
+                        result.flushed()
+                    } else {
+                        false
+                    };
+
+                    // If we flushed via V2, or we've hit our max metrics per payload limit in pure V3 mode, we need to flush our V3 metrics
+                    // as well.
+                    let v3_payload_info = tag_payloads.then(|| match endpoint {
+                        MetricsEndpoint::Series => MetricsPayloadInfo::v3_series(),
+                        MetricsEndpoint::Sketches => MetricsPayloadInfo::v3_sketches(),
+                    });
+                    let v3_flushed = if let Some(v3_metrics) = maybe_v3_metrics {
+                        if v2_flushed || v3_metrics.len() >= v3_endpoint_config.max_metrics_per_payload() {
+                            encode_and_flush_v3_metrics(endpoint, &v3_endpoint_config, v3_metrics, &telemetry, &mut payloads_tx, batch_id.as_ref(), v3_payload_info).await?;
+                        }
+                        true
+                    } else {
+                        false
+                    };
+
+                    // If we flushed either V2 and/or V3, clear our validation batch UUID.
+                    if v2_flushed || v3_flushed {
+                        batch_id = None;
                     }
                 }
 
@@ -394,51 +477,52 @@ async fn run_request_builder(
 
                 pending_flush = false;
 
-                // Once we've encoded and written all metrics, we flush the request builders to generate a request with
-                // anything left over. Again, we'll enqueue those requests to be sent immediately.
-                let maybe_series_requests = series_request_builder.flush().await;
-                for maybe_request in maybe_series_requests {
-                    match maybe_request {
-                        Ok((events, request)) => {
-                            let payload_meta = PayloadMetadata::from_event_count(events);
-                            let http_payload = HttpPayload::new(payload_meta, request);
-                            let payload = Payload::Http(http_payload);
-
-                            payloads_tx.send(payload).await
-                                .map_err(|_| generic_error!("Failed to send payload to encoder."))?;
-                        },
-
-                        // TODO: Increment a counter here that metrics were dropped due to a flush failure.
-                        Err(e) => if e.is_recoverable() {
-                            // If the error is recoverable, we'll hold on to the metric to retry it later.
-                            continue;
-                        } else {
-                            return Err(GenericError::from(e).context("Failed to flush request."));
-                        }
+                // Flush any pending series metrics.
+                let v2_series_payload_info = tag_payloads.then(MetricsPayloadInfo::v2_series);
+                let mut v2_series_flush_succeeded = true;
+                if let Some(builder) = &mut v2_series_builder {
+                    if let Err(e) = flush_v2_metrics(builder, &mut payloads_tx, batch_id.as_ref(), v2_series_payload_info).await {
+                        error!(error = %e, "Failed to flush V2 series metrics: {}", e);
+                        v2_series_flush_succeeded = false;
                     }
                 }
 
-                let maybe_sketches_requests = sketches_request_builder.flush().await;
-                for maybe_request in maybe_sketches_requests {
-                    match maybe_request {
-                        Ok((events, request)) => {
-                            let payload_meta = PayloadMetadata::from_event_count(events);
-                            let http_payload = HttpPayload::new(payload_meta, request);
-                            let payload = Payload::Http(http_payload);
-
-                            payloads_tx.send(payload).await
-                                .map_err(|_| generic_error!("Failed to send payload to encoder."))?;
-                        },
-
-                        // TODO: Increment a counter here that metrics were dropped due to a flush failure.
-                        Err(e) => if e.is_recoverable() {
-                            // If the error is recoverable, we'll hold on to the metric to retry it later.
-                            continue;
-                        } else {
-                            return Err(GenericError::from(e).context("Failed to flush request."));
+                let v3_series_payload_info = tag_payloads.then(MetricsPayloadInfo::v3_series);
+                if let Some(metrics) = &mut v3_series_metrics {
+                    if v2_series_flush_succeeded {
+                        if let Err(e) = encode_and_flush_v3_series_metrics(&v3_endpoint_config, metrics, &telemetry, &mut payloads_tx, batch_id.as_ref(), v3_series_payload_info).await {
+                            error!(error = %e, "Failed to flush V3 series metrics: {}", e);
                         }
+                    } else {
+                        warn!("Failed to flush V2 series metrics, skipping V3 series flush.");
+                        metrics.clear();
                     }
                 }
+
+                // Flush any pending sketch metrics.
+                let v2_sketches_payload_info = tag_payloads.then(MetricsPayloadInfo::v2_sketches);
+                let mut v2_sketches_flush_succeeded = true;
+                if let Some(builder) = &mut v2_sketch_builder {
+                    if let Err(e) = flush_v2_metrics(builder, &mut payloads_tx, batch_id.as_ref(), v2_sketches_payload_info).await {
+                        error!(error = %e, "Failed to flush V2 sketch metrics: {}", e);
+                        v2_sketches_flush_succeeded = false;
+                    }
+                }
+
+                let v3_sketches_payload_info = tag_payloads.then(MetricsPayloadInfo::v3_sketches);
+                if let Some(metrics) = &mut v3_sketch_metrics {
+                    if v2_sketches_flush_succeeded {
+                        if let Err(e) = encode_and_flush_v3_sketch_metrics(&v3_endpoint_config, metrics, &telemetry, &mut payloads_tx, batch_id.as_ref(), v3_sketches_payload_info).await {
+                            error!(error = %e, "Failed to flush V3 sketch metrics: {}", e);
+                        }
+                    } else {
+                        warn!("Failed to flush V2 sketch metrics, skipping V3 sketch flush.");
+                        metrics.clear();
+                    }
+                }
+
+                // Clear our validation batch UUID.
+                batch_id = None;
 
                 debug!("All flushed requests sent to I/O task. Waiting for next event buffer...");
             },
@@ -451,611 +535,404 @@ async fn run_request_builder(
     Ok(())
 }
 
-/// Metrics intake endpoint.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum MetricsEndpoint {
-    /// Series metrics.
-    ///
-    /// Includes counters, gauges, rates, and sets.
-    Series,
-
-    /// Sketch metrics.
-    ///
-    /// Includes histograms and distributions.
-    Sketches,
+struct EncodeResult {
+    encoded: bool,
+    flushed: bool,
 }
 
-impl MetricsEndpoint {
-    /// Creates a new `MetricsEndpoint` from the given metric.
-    pub fn from_metric(metric: &Metric) -> Self {
-        match metric.values() {
-            MetricValues::Counter(..) | MetricValues::Rate(..) | MetricValues::Gauge(..) | MetricValues::Set(..) => {
-                Self::Series
+impl EncodeResult {
+    pub const fn new(encoded: bool, flushed: bool) -> Self {
+        Self { encoded, flushed }
+    }
+
+    pub const fn encoded(&self) -> bool {
+        self.encoded
+    }
+
+    pub const fn flushed(&self) -> bool {
+        self.flushed
+    }
+}
+
+async fn encode_v2_metrics(
+    request_builder: &mut RequestBuilder<v2::MetricsEndpointEncoder>, metric: Metric, telemetry: &ComponentTelemetry,
+    payloads_tx: &mut mpsc::Sender<Payload>, batch_id: Option<&Uuid>, payload_info: Option<MetricsPayloadInfo>,
+) -> Result<EncodeResult, GenericError> {
+    // Encode the metric. If we get it back, that means the current request is full, and we need to
+    // flush it before we can try to encode the metric again... so we'll hold on to it in that case
+    // before flushing and trying to encode it again.
+    let metric_to_retry = match request_builder.encode(metric).await {
+        Ok(None) => return Ok(EncodeResult::new(true, false)),
+        Ok(Some(metric)) => metric,
+        Err(e) => {
+            error!(error = %e, "Failed to encode metric.");
+            telemetry.events_dropped_encoder().increment(1);
+            return Ok(EncodeResult::new(false, false));
+        }
+    };
+
+    flush_v2_metrics(request_builder, payloads_tx, batch_id, payload_info).await?;
+
+    // Now try to encode the metric again. If it fails again, we'll just log it because it shouldn't
+    // be possible to fail at this point, otherwise we would have already caught that the first
+    // time.
+    match request_builder.encode(metric_to_retry).await {
+        Ok(None) => Ok(EncodeResult::new(true, true)),
+        Ok(Some(_)) => unreachable!(
+            "failure to encode due to size should never occur after flush for metrics which aren't unencodable"
+        ),
+        Err(e) => {
+            error!(error = %e, "Failed to encode metric.");
+            telemetry.events_dropped_encoder().increment(1);
+            Ok(EncodeResult::new(false, true))
+        }
+    }
+}
+
+async fn flush_v2_metrics(
+    request_builder: &mut RequestBuilder<MetricsEndpointEncoder>, payloads_tx: &mut mpsc::Sender<Payload>,
+    batch_id: Option<&Uuid>, payload_info: Option<MetricsPayloadInfo>,
+) -> Result<usize, GenericError> {
+    let mut requests_flushed = 0;
+
+    let maybe_requests = request_builder.flush().await;
+    let batch_len = maybe_requests.len();
+    for (batch_seq, maybe_request) in maybe_requests.into_iter().enumerate() {
+        match maybe_request {
+            Ok((events, request)) => {
+                requests_flushed += 1;
+
+                flush_payload(
+                    request,
+                    events,
+                    payloads_tx,
+                    batch_id,
+                    batch_seq,
+                    batch_len,
+                    payload_info,
+                )
+                .await?;
             }
-            MetricValues::Histogram(..) | MetricValues::Distribution(..) => Self::Sketches,
-        }
-    }
-}
 
-#[derive(Debug)]
-struct MetricsEndpointEncoder {
-    endpoint: MetricsEndpoint,
-    primary_scratch_buf: Vec<u8>,
-    secondary_scratch_buf: Vec<u8>,
-    packed_scratch_buf: Vec<u8>,
-    additional_tags: SharedTagSet,
-    tags_deduplicator: ReusableDeduplicator<Tag>,
-}
-
-impl MetricsEndpointEncoder {
-    /// Creates a new `MetricsEndpointEncoder` for the given endpoint.
-    pub fn from_endpoint(endpoint: MetricsEndpoint) -> Self {
-        Self {
-            endpoint,
-            primary_scratch_buf: Vec::new(),
-            secondary_scratch_buf: Vec::new(),
-            packed_scratch_buf: Vec::new(),
-            additional_tags: SharedTagSet::default(),
-            tags_deduplicator: ReusableDeduplicator::new(),
-        }
-    }
-
-    /// Sets the additional tags to be included with every metric encoded by this encoder.
-    ///
-    /// These tags are added in a deduplicated fashion, the same as instrumented tags and origin tags. This is an
-    /// optimized codepath for tag inclusion in high-volume scenarios, where creating new additional contexts
-    /// through the traditional means (e.g., `ContextResolver`) would be too expensive.
-    pub fn with_additional_tags(mut self, additional_tags: SharedTagSet) -> Self {
-        self.additional_tags = additional_tags;
-        self
-    }
-}
-
-impl EndpointEncoder for MetricsEndpointEncoder {
-    type Input = Metric;
-    type EncodeError = protobuf::Error;
-
-    fn encoder_name() -> &'static str {
-        "metrics"
-    }
-
-    fn compressed_size_limit(&self) -> usize {
-        match self.endpoint {
-            MetricsEndpoint::Series => SERIES_V2_COMPRESSED_SIZE_LIMIT,
-            MetricsEndpoint::Sketches => DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT,
-        }
-    }
-
-    fn uncompressed_size_limit(&self) -> usize {
-        match self.endpoint {
-            MetricsEndpoint::Series => SERIES_V2_UNCOMPRESSED_SIZE_LIMIT,
-            MetricsEndpoint::Sketches => DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
-        }
-    }
-
-    fn is_valid_input(&self, input: &Self::Input) -> bool {
-        let input_endpoint = MetricsEndpoint::from_metric(input);
-        input_endpoint == self.endpoint
-    }
-
-    fn encode(&mut self, input: &Self::Input, buffer: &mut Vec<u8>) -> Result<(), Self::EncodeError> {
-        // NOTE: We're passing _four_ buffers to `encode_single_metric`, which is a lot, but with good reason.
-        //
-        // The first buffer, `buffer`, is the overall output buffer: the caller expects us to put the full encoded
-        // metric payload into this buffer.
-        //
-        // The second and third buffers, `primary_scratch_buf` and `secondary_scratch_buf`, are used for roughly the
-        // same thing but deal with _nesting_. When writing a "message" in Protocol Buffers, the message data itself is
-        // prefixed with the field number and a length delimiter that specifies how long the message is. We can't write
-        // that length delimiter until we know the full size of the message, so we write the message to a scratch
-        // buffer, calculate its size, and then write the field number and length delimiter to the output buffer
-        // followed by the message data from the scratch buffer.
-        //
-        // We have _two_ scratch buffers because you need a dedicated buffer for each level of nested message. We have
-        // to be able to nest up to two levels deep in our metrics payload, so we need two scratch buffers to handle
-        // that.
-        //
-        // The fourth buffer, `packed_scratch_buf`, is used for writing out packed repeated fields. This is similar to
-        // the situation describe above, except it's not _exactly_ the same as an additional level of nesting.. so I
-        // just decided to give it a somewhat more descriptive name.
-        encode_single_metric(
-            input,
-            &self.additional_tags,
-            buffer,
-            &mut self.primary_scratch_buf,
-            &mut self.secondary_scratch_buf,
-            &mut self.packed_scratch_buf,
-            &mut self.tags_deduplicator,
-        )?;
-
-        Ok(())
-    }
-
-    fn endpoint_uri(&self) -> Uri {
-        match self.endpoint {
-            MetricsEndpoint::Series => PathAndQuery::from_static("/api/v2/series").into(),
-            MetricsEndpoint::Sketches => PathAndQuery::from_static("/api/beta/sketches").into(),
-        }
-    }
-
-    fn endpoint_method(&self) -> Method {
-        // Both endpoints use POST.
-        Method::POST
-    }
-
-    fn content_type(&self) -> HeaderValue {
-        // Both endpoints encode via Protocol Buffers.
-        CONTENT_TYPE_PROTOBUF.clone()
-    }
-}
-
-fn field_number_for_metric_type(metric: &Metric) -> u32 {
-    match metric.values() {
-        MetricValues::Counter(..) | MetricValues::Rate(..) | MetricValues::Gauge(..) | MetricValues::Set(..) => 1,
-        MetricValues::Histogram(..) | MetricValues::Distribution(..) => 1,
-    }
-}
-
-fn get_message_size(raw_msg_size: usize) -> Result<u32, protobuf::Error> {
-    const MAX_MESSAGE_SIZE: u64 = i32::MAX as u64;
-
-    // Individual messages cannot be larger than `i32::MAX`, so check that here before proceeding.
-    if raw_msg_size as u64 > MAX_MESSAGE_SIZE {
-        return Err(std::io::Error::other("message size exceeds limit (2147483648 bytes)").into());
-    }
-
-    Ok(raw_msg_size as u32)
-}
-
-fn get_message_size_from_buffer(buf: &[u8]) -> Result<u32, protobuf::Error> {
-    get_message_size(buf.len())
-}
-
-fn encode_single_metric(
-    metric: &Metric, additional_tags: &SharedTagSet, output_buf: &mut Vec<u8>, primary_scratch_buf: &mut Vec<u8>,
-    secondary_scratch_buf: &mut Vec<u8>, packed_scratch_buf: &mut Vec<u8>,
-    tags_deduplicator: &mut ReusableDeduplicator<Tag>,
-) -> Result<(), protobuf::Error> {
-    let mut output_stream = CodedOutputStream::vec(output_buf);
-    let field_number = field_number_for_metric_type(metric);
-
-    write_nested_message(&mut output_stream, primary_scratch_buf, field_number, |os| {
-        // Depending on the metric type, we write out the appropriate fields.
-        match metric.values() {
-            MetricValues::Counter(..) | MetricValues::Rate(..) | MetricValues::Gauge(..) | MetricValues::Set(..) => {
-                encode_series_metric(metric, additional_tags, os, secondary_scratch_buf, tags_deduplicator)
+            // TODO: Increment a counter here that metrics were dropped due to a flush failure.
+            Err(e) => {
+                if !e.is_recoverable() {
+                    return Err(GenericError::from(e).context("Failed to flush request."));
+                }
             }
-            MetricValues::Histogram(..) | MetricValues::Distribution(..) => encode_sketch_metric(
-                metric,
-                additional_tags,
-                os,
-                secondary_scratch_buf,
-                packed_scratch_buf,
-                tags_deduplicator,
-            ),
         }
-    })
+    }
+
+    Ok(requests_flushed)
 }
 
-fn encode_series_metric(
-    metric: &Metric, additional_tags: &SharedTagSet, output_stream: &mut CodedOutputStream<'_>,
-    scratch_buf: &mut Vec<u8>, tags_deduplicator: &mut ReusableDeduplicator<Tag>,
-) -> Result<(), protobuf::Error> {
-    // Write the metric name and tags.
-    output_stream.write_string(SERIES_METRIC_FIELD_NUMBER, metric.context().name())?;
+async fn encode_and_flush_v3_metrics(
+    endpoint: MetricsEndpoint, ep_config: &EndpointConfiguration, metrics: &mut Vec<Metric>,
+    telemetry: &ComponentTelemetry, payloads_tx: &mut mpsc::Sender<Payload>, batch_id: Option<&Uuid>,
+    payload_info: Option<MetricsPayloadInfo>,
+) -> Result<(), GenericError> {
+    match endpoint {
+        MetricsEndpoint::Series => {
+            encode_and_flush_v3_series_metrics(ep_config, metrics, telemetry, payloads_tx, batch_id, payload_info).await
+        }
+        MetricsEndpoint::Sketches => {
+            encode_and_flush_v3_sketch_metrics(ep_config, metrics, telemetry, payloads_tx, batch_id, payload_info).await
+        }
+    }
+}
 
-    let deduplicated_tags = get_deduplicated_tags(metric, additional_tags, tags_deduplicator);
-    write_series_tags(deduplicated_tags, output_stream, scratch_buf)?;
+async fn encode_and_flush_v3_series_metrics(
+    ep_config: &EndpointConfiguration, metrics: &mut Vec<Metric>, telemetry: &ComponentTelemetry,
+    payloads_tx: &mut mpsc::Sender<Payload>, batch_id: Option<&Uuid>, payload_info: Option<MetricsPayloadInfo>,
+) -> Result<(), GenericError> {
+    let metrics_to_flush = std::mem::take(metrics);
+    let events = metrics_to_flush.len();
 
-    // Set the host resource.
-    write_resource(
-        output_stream,
-        scratch_buf,
-        "host",
-        metric.metadata().hostname().unwrap_or_default(),
-    )?;
+    match encode_v3_metrics_batch(&metrics_to_flush, ep_config.additional_tags()) {
+        Ok(encoded) => {
+            match create_v3_request("/api/intake/metrics/v3/series", encoded, ep_config.compression_scheme()).await {
+                Ok(request) => {
+                    flush_payload(request, events, payloads_tx, batch_id, 0, 1, payload_info).await?;
+                    debug!(events, "Sent V3 series payload.");
+                }
+                Err(e) => {
+                    error!(error = %e, "Failed to create V3 series request.");
+                    telemetry.events_dropped_encoder().increment(events as u64);
+                }
+            }
+        }
+        Err(e) => {
+            error!(error = %e, "Failed to encode V3 series batch.");
+            telemetry.events_dropped_encoder().increment(events as u64);
+        }
+    }
 
-    // Write the origin metadata, if it exists.
+    Ok(())
+}
+
+async fn encode_and_flush_v3_sketch_metrics(
+    ep_config: &EndpointConfiguration, metrics: &mut Vec<Metric>, telemetry: &ComponentTelemetry,
+    payloads_tx: &mut mpsc::Sender<Payload>, batch_id: Option<&Uuid>, payload_info: Option<MetricsPayloadInfo>,
+) -> Result<(), GenericError> {
+    let metrics_to_flush = std::mem::take(metrics);
+    let events = metrics_to_flush.len();
+
+    match encode_v3_metrics_batch(&metrics_to_flush, ep_config.additional_tags()) {
+        Ok(encoded) => match create_v3_request(
+            "/api/intake/metrics/v3/sketches",
+            encoded,
+            ep_config.compression_scheme(),
+        )
+        .await
+        {
+            Ok(request) => {
+                flush_payload(request, events, payloads_tx, batch_id, 0, 1, payload_info).await?;
+                debug!(events, "Sent V3 sketches payload.");
+            }
+            Err(e) => {
+                error!(error = %e, "Failed to create V3 sketches request.");
+                telemetry.events_dropped_encoder().increment(events as u64);
+            }
+        },
+        Err(e) => {
+            error!(error = %e, "Failed to encode V3 sketches batch.");
+            telemetry.events_dropped_encoder().increment(events as u64);
+        }
+    }
+
+    Ok(())
+}
+
+/// Converts a `Uuid` to a `HeaderValue`.
+fn uuid_to_header_value(uuid: &Uuid) -> HeaderValue {
+    let s = uuid.as_hyphenated().to_string();
+    // SAFETY: UUID hyphenated format only contains [0-9a-f-], all valid ASCII header chars.
+    unsafe { HeaderValue::from_maybe_shared_unchecked(s) }
+}
+
+/// Converts a `usize` to a `HeaderValue`.
+fn usize_to_header_value(value: usize) -> HeaderValue {
+    let s = value.to_string();
+    // SAFETY: Integer strings only contain ASCII digits [0-9], all valid header chars.
+    unsafe { HeaderValue::from_maybe_shared_unchecked(s) }
+}
+
+async fn flush_payload(
+    mut request: Request<FrozenChunkedBytesBuffer>, event_count: usize, payloads_tx: &mut mpsc::Sender<Payload>,
+    batch_id: Option<&Uuid>, batch_seq: usize, batch_len: usize, payload_info: Option<MetricsPayloadInfo>,
+) -> Result<(), GenericError> {
+    // Attach the validation batch UUID and sequence headers if present.
+    if let Some(batch_id) = batch_id {
+        let headers = request.headers_mut();
+        headers.insert("X-Metrics-Request-ID", uuid_to_header_value(batch_id));
+        headers.insert("X-Metrics-Request-Seq", usize_to_header_value(batch_seq));
+        headers.insert("X-Metrics-Request-Len", usize_to_header_value(batch_len));
+    }
+
+    let mut payload_meta = PayloadMetadata::from_event_count(event_count);
+    if let Some(info) = payload_info {
+        payload_meta = payload_meta.with(info);
+    }
+    let http_payload = HttpPayload::new(payload_meta, request);
+    let payload = Payload::Http(http_payload);
+
+    payloads_tx
+        .send(payload)
+        .await
+        .error_context("Failed to send payload.")?;
+
+    Ok(())
+}
+
+// Encodes a batch of metrics to V3 columnar format.
+fn encode_v3_metrics_batch(metrics: &[Metric], additional_tags: &SharedTagSet) -> Result<Vec<u8>, GenericError> {
+    let mut writer = v3::V3Writer::new();
+
+    for metric in metrics {
+        write_metric_to_v3(&mut writer, metric, additional_tags);
+    }
+
+    let mut output = Vec::new();
+    writer
+        .finalize(&mut output)
+        .map_err(|e| generic_error!("Failed to serialize V3 payload: {}", e))?;
+
+    Ok(output)
+}
+
+/// Writes a single metric to the V3 writer.
+fn write_metric_to_v3(writer: &mut v3::V3Writer, metric: &Metric, additional_tags: &SharedTagSet) {
+    println!("writing current metric to v3 payload: {:?}", metric);
+    let metric_type = match metric.values() {
+        MetricValues::Counter(..) => v3::V3MetricType::Count,
+        MetricValues::Rate(..) => v3::V3MetricType::Rate,
+        MetricValues::Gauge(..) | MetricValues::Set(..) => v3::V3MetricType::Gauge,
+        MetricValues::Histogram(..) | MetricValues::Distribution(..) => v3::V3MetricType::Sketch,
+    };
+
+    let mut builder = writer.write(metric_type, metric.context().name());
+
+    // Tags - chain instrumented + additional + origin tags
+    let all_tags = metric
+        .context()
+        .tags()
+        .into_iter()
+        .chain(additional_tags)
+        .chain(metric.context().origin_tags())
+        .filter(|t| !t.name().starts_with("dd.internal.resource"))
+        .map(|t| t.as_str());
+    builder.set_tags(all_tags);
+
+    // Resources - extract host and any dd.internal.resource tags
+    let mut resources = Vec::new();
+    if let Some(host) = metric.metadata().hostname() {
+        resources.push(("host", host));
+    }
+    // Extract dd.internal.resource tags as resources
+    for tag in metric.context().tags().into_iter().chain(additional_tags) {
+        if tag.name() == "dd.internal.resource" {
+            if let Some(value) = tag.value() {
+                if let Some((rtype, rname)) = value.split_once(':') {
+                    resources.push((rtype, rname));
+                }
+            }
+        }
+    }
+    builder.set_resources(&resources);
+
+    // Origin metadata
     if let Some(origin) = metric.metadata().origin() {
         match origin {
             MetricOrigin::SourceType(source_type) => {
-                output_stream.write_string(SERIES_SOURCE_TYPE_NAME_FIELD_NUMBER, source_type.as_ref())?;
+                builder.set_source_type(source_type.as_ref());
             }
             MetricOrigin::OriginMetadata {
                 product,
                 subproduct,
                 product_detail,
             } => {
-                write_origin_metadata(
-                    output_stream,
-                    scratch_buf,
-                    SERIES_METADATA_FIELD_NUMBER,
-                    *product,
-                    *subproduct,
-                    *product_detail,
-                )?;
+                builder.set_origin(*product, *subproduct, *product_detail);
             }
         }
     }
 
-    // Now write out our metric type, points, and interval (if applicable).
-    let (metric_type, points, maybe_interval) = match metric.values() {
-        MetricValues::Counter(points) => (proto::MetricType::COUNT, points.into_iter(), None),
-        MetricValues::Rate(points, interval) => (proto::MetricType::RATE, points.into_iter(), Some(interval)),
-        MetricValues::Gauge(points) => (proto::MetricType::GAUGE, points.into_iter(), None),
-        MetricValues::Set(points) => (proto::MetricType::GAUGE, points.into_iter(), None),
-        _ => unreachable!(),
-    };
-
-    output_stream.write_enum(SERIES_TYPE_FIELD_NUMBER, metric_type.value())?;
-
-    for (timestamp, value) in points {
-        // If this is a rate metric, scale our value by the interval, in seconds.
-        let value = maybe_interval
-            .map(|interval| value / interval.as_secs_f64())
-            .unwrap_or(value);
-        let timestamp = timestamp.map(|ts| ts.get()).unwrap_or(0) as i64;
-
-        write_point(output_stream, scratch_buf, value, timestamp)?;
-    }
-
-    if let Some(interval) = maybe_interval {
-        output_stream.write_int64(SERIES_INTERVAL_FIELD_NUMBER, interval.as_secs() as i64)?;
-    }
-
-    Ok(())
-}
-
-fn encode_sketch_metric(
-    metric: &Metric, additional_tags: &SharedTagSet, output_stream: &mut CodedOutputStream<'_>,
-    scratch_buf: &mut Vec<u8>, packed_scratch_buf: &mut Vec<u8>, tags_deduplicator: &mut ReusableDeduplicator<Tag>,
-) -> Result<(), protobuf::Error> {
-    // Write the metric name and tags.
-    output_stream.write_string(SKETCH_METRIC_FIELD_NUMBER, metric.context().name())?;
-
-    let deduplicated_tags = get_deduplicated_tags(metric, additional_tags, tags_deduplicator);
-    write_sketch_tags(deduplicated_tags, output_stream, scratch_buf)?;
-
-    // Write the host.
-    output_stream.write_string(
-        SKETCH_HOST_FIELD_NUMBER,
-        metric.metadata().hostname().unwrap_or_default(),
-    )?;
-
-    // Set the origin metadata, if it exists.
-    if let Some(MetricOrigin::OriginMetadata {
-        product,
-        subproduct,
-        product_detail,
-    }) = metric.metadata().origin()
-    {
-        write_origin_metadata(
-            output_stream,
-            scratch_buf,
-            SKETCH_METADATA_FIELD_NUMBER,
-            *product,
-            *subproduct,
-            *product_detail,
-        )?;
-    }
-
-    // Write out our sketches.
+    // Points based on metric type
     match metric.values() {
+        MetricValues::Counter(points) | MetricValues::Gauge(points) => {
+            for (ts, val) in points {
+                let timestamp = ts.map(|t| t.get() as i64).unwrap_or(0);
+                builder.add_point(timestamp, val);
+            }
+        }
+        MetricValues::Rate(points, interval) => {
+            builder.set_interval(interval.as_secs());
+            for (ts, val) in points {
+                let timestamp = ts.map(|t| t.get() as i64).unwrap_or(0);
+                // Scale by interval as done in V2
+                let scaled = val / interval.as_secs_f64();
+                builder.add_point(timestamp, scaled);
+            }
+        }
+        MetricValues::Set(points) => {
+            // Set values are already converted to count in the iterator
+            for (ts, count) in points {
+                let timestamp = ts.map(|t| t.get() as i64).unwrap_or(0);
+                builder.add_point(timestamp, count);
+            }
+        }
         MetricValues::Distribution(sketches) => {
-            for (timestamp, value) in sketches {
-                write_dogsketch(output_stream, scratch_buf, packed_scratch_buf, timestamp, value)?;
-            }
-        }
-        MetricValues::Histogram(points) => {
-            for (timestamp, histogram) in points {
-                // We convert histograms to sketches to be able to write them out in the payload.
-                let mut ddsketch = DDSketch::default();
-                for sample in histogram.samples() {
-                    ddsketch.insert_n(sample.value.into_inner(), sample.weight);
+            for (ts, sketch) in sketches {
+                let timestamp = ts.map(|t| t.get() as i64).unwrap_or(0);
+                if !sketch.is_empty() {
+                    let bin_keys: Vec<i32> = sketch.bins().iter().map(|b| b.key()).collect();
+                    let bin_counts: Vec<u32> = sketch.bins().iter().map(|b| b.count()).collect();
+                    builder.add_sketch(
+                        timestamp,
+                        sketch.count() as i64,
+                        sketch.sum().unwrap_or(0.0),
+                        sketch.min().unwrap_or(0.0),
+                        sketch.max().unwrap_or(0.0),
+                        &bin_keys,
+                        &bin_counts,
+                    );
                 }
-
-                write_dogsketch(output_stream, scratch_buf, packed_scratch_buf, timestamp, &ddsketch)?;
             }
         }
-        _ => unreachable!(),
+        MetricValues::Histogram(histograms) => {
+            for (ts, histogram) in histograms {
+                let timestamp = ts.map(|t| t.get() as i64).unwrap_or(0);
+                // Convert histogram to DDSketch
+                let mut sketch = DDSketch::default();
+                for sample in histogram.samples() {
+                    sketch.insert_n(sample.value.into_inner(), sample.weight);
+                }
+                if !sketch.is_empty() {
+                    let bin_keys: Vec<i32> = sketch.bins().iter().map(|b| b.key()).collect();
+                    let bin_counts: Vec<u32> = sketch.bins().iter().map(|b| b.count()).collect();
+                    builder.add_sketch(
+                        timestamp,
+                        sketch.count() as i64,
+                        sketch.sum().unwrap_or(0.0),
+                        sketch.min().unwrap_or(0.0),
+                        sketch.max().unwrap_or(0.0),
+                        &bin_keys,
+                        &bin_counts,
+                    );
+                }
+            }
+        }
     }
 
-    Ok(())
+    builder.close();
 }
 
-fn write_resource(
-    output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>, resource_type: &str, resource_name: &str,
-) -> Result<(), protobuf::Error> {
-    write_nested_message(output_stream, scratch_buf, SERIES_RESOURCES_FIELD_NUMBER, |os| {
-        os.write_string(RESOURCES_TYPE_FIELD_NUMBER, resource_type)?;
-        os.write_string(RESOURCES_NAME_FIELD_NUMBER, resource_name)
-    })
-}
-
-fn write_origin_metadata(
-    output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>, field_number: u32, origin_product: u32,
-    origin_category: u32, origin_service: u32,
-) -> Result<(), protobuf::Error> {
-    // TODO: Figure out how to cleanly use `write_nested_message` here.
-
-    scratch_buf.clear();
-
-    {
-        let mut origin_output_stream = CodedOutputStream::vec(scratch_buf);
-        origin_output_stream.write_uint32(ORIGIN_ORIGIN_PRODUCT_FIELD_NUMBER, origin_product)?;
-        origin_output_stream.write_uint32(ORIGIN_ORIGIN_CATEGORY_FIELD_NUMBER, origin_category)?;
-        origin_output_stream.write_uint32(ORIGIN_ORIGIN_SERVICE_FIELD_NUMBER, origin_service)?;
-        origin_output_stream.flush()?;
-    }
-
-    // We do a little song and dance here because the `Origin` message is embedded inside of `Metadata`, so we need to
-    // write out field numbers/length delimiters in order: `Metadata`, and then `Origin`... but we write out origin
-    // message to the scratch buffer first... so we write out our `Metadata` preamble stuff to get its length, and then
-    // use that in conjunction with the `Origin` message size to write out the full `Metadata` message.
-    let origin_message_size = get_message_size_from_buffer(scratch_buf)?;
-
-    let mut metadata_preamble_buf = [0; 64];
-    let metadata_preamble_len = {
-        let mut metadata_output_stream = CodedOutputStream::bytes(&mut metadata_preamble_buf[..]);
-        metadata_output_stream.write_tag(METADATA_ORIGIN_FIELD_NUMBER, WireType::LengthDelimited)?;
-        metadata_output_stream.write_raw_varint32(origin_message_size)?;
-        metadata_output_stream.flush()?;
-        metadata_output_stream.total_bytes_written() as usize
+/// Creates a V3 HTTP request from encoded payload data.
+async fn create_v3_request(
+    endpoint_uri: &str, payload: Vec<u8>, compression_scheme: CompressionScheme,
+) -> Result<Request<FrozenChunkedBytesBuffer>, GenericError> {
+    // Our `payload` is the inner `MetricData` message structure at this point, so we just manually write out the
+    // `Payload` message framing before writing the metric data.
+    let mut header_buf = [0; 16];
+    let header_len = {
+        let mut header_writer = CodedOutputStream::bytes(&mut header_buf);
+        header_writer.write_tag(3, WireType::LengthDelimited)?;
+        header_writer.write_uint64_no_tag(payload.len() as u64)?;
+        header_writer.flush()?;
+        header_writer.total_bytes_written() as usize
     };
 
-    let metadata_message_size = get_message_size(scratch_buf.len() + metadata_preamble_len)?;
+    let buffer = ChunkedBytesBuffer::new(RB_BUFFER_CHUNK_SIZE);
+    let mut compressor = Compressor::from_scheme(compression_scheme, buffer);
+    compressor
+        .write_all(&header_buf[..header_len])
+        .await
+        .error_context("Failed to compress V3 payload.")?;
+    compressor
+        .write_all(&payload)
+        .await
+        .error_context("Failed to compress V3 payload.")?;
+    compressor
+        .flush()
+        .await
+        .error_context("Failed to flush V3 compressor.")?;
+    compressor
+        .shutdown()
+        .await
+        .error_context("Failed to shutdown V3 compressor.")?;
 
-    output_stream.write_tag(field_number, WireType::LengthDelimited)?;
-    output_stream.write_raw_varint32(metadata_message_size)?;
-    output_stream.write_raw_bytes(&metadata_preamble_buf[..metadata_preamble_len])?;
-    output_stream.write_raw_bytes(scratch_buf)
-}
+    let content_encoding = compressor.content_encoding();
+    let compressed_buf = compressor.into_inner().freeze();
 
-fn write_point(
-    output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>, value: f64, timestamp: i64,
-) -> Result<(), protobuf::Error> {
-    write_nested_message(output_stream, scratch_buf, SERIES_POINTS_FIELD_NUMBER, |os| {
-        os.write_double(METRIC_POINT_VALUE_FIELD_NUMBER, value)?;
-        os.write_int64(METRIC_POINT_TIMESTAMP_FIELD_NUMBER, timestamp)
-    })
-}
+    let mut builder = Request::builder()
+        .method(Method::POST)
+        .uri(endpoint_uri)
+        .header(http::header::CONTENT_TYPE, "application/x-protobuf");
 
-fn write_dogsketch(
-    output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>, packed_scratch_buf: &mut Vec<u8>,
-    timestamp: Option<NonZeroU64>, sketch: &DDSketch,
-) -> Result<(), protobuf::Error> {
-    // If the sketch is empty, we don't write it out.
-    if sketch.is_empty() {
-        warn!("Attempted to write an empty sketch to sketches payload, skipping.");
-        return Ok(());
+    if let Some(encoding) = content_encoding {
+        builder = builder.header(http::header::CONTENT_ENCODING, encoding);
     }
 
-    write_nested_message(output_stream, scratch_buf, SKETCH_DOGSKETCHES_FIELD_NUMBER, |os| {
-        os.write_int64(DOGSKETCH_TS_FIELD_NUMBER, timestamp.map_or(0, |ts| ts.get() as i64))?;
-        os.write_int64(DOGSKETCH_CNT_FIELD_NUMBER, sketch.count() as i64)?;
-        os.write_double(DOGSKETCH_MIN_FIELD_NUMBER, sketch.min().unwrap())?;
-        os.write_double(DOGSKETCH_MAX_FIELD_NUMBER, sketch.max().unwrap())?;
-        os.write_double(DOGSKETCH_AVG_FIELD_NUMBER, sketch.avg().unwrap())?;
-        os.write_double(DOGSKETCH_SUM_FIELD_NUMBER, sketch.sum().unwrap())?;
-
-        let bin_keys = sketch.bins().iter().map(|bin| bin.key());
-        write_repeated_packed_from_iter(
-            os,
-            packed_scratch_buf,
-            DOGSKETCH_K_FIELD_NUMBER,
-            bin_keys,
-            |inner_os, value| inner_os.write_sint32_no_tag(value),
-        )?;
-
-        let bin_counts = sketch.bins().iter().map(|bin| bin.count());
-        write_repeated_packed_from_iter(
-            os,
-            packed_scratch_buf,
-            DOGSKETCH_N_FIELD_NUMBER,
-            bin_counts,
-            |inner_os, value| inner_os.write_uint32_no_tag(value),
-        )
-    })
-}
-
-fn get_deduplicated_tags<'a>(
-    metric: &'a Metric, additional_tags: &'a SharedTagSet, tags_deduplicator: &'a mut ReusableDeduplicator<Tag>,
-) -> impl Iterator<Item = &'a Tag> {
-    let chained_tags = metric
-        .context()
-        .tags()
-        .into_iter()
-        .chain(additional_tags)
-        .chain(metric.context().origin_tags());
-
-    tags_deduplicator.deduplicated(chained_tags)
-}
-
-fn write_tags<'a, I, F>(
-    tags: I, output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>, tag_encoder: F,
-) -> Result<(), protobuf::Error>
-where
-    I: Iterator<Item = &'a Tag>,
-    F: Fn(&Tag, &mut CodedOutputStream<'_>, &mut Vec<u8>) -> Result<(), protobuf::Error>,
-{
-    for tag in tags {
-        tag_encoder(tag, output_stream, scratch_buf)?;
-    }
-
-    Ok(())
-}
-
-fn write_series_tags<'a, I>(
-    tags: I, output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>,
-) -> Result<(), protobuf::Error>
-where
-    I: Iterator<Item = &'a Tag>,
-{
-    write_tags(tags, output_stream, scratch_buf, |tag, os, buf| {
-        // If this is a resource tag, we'll convert it directly to a resource entry.
-        if tag.name() == "dd.internal.resource" {
-            if let Some((resource_type, resource_name)) = tag.value().and_then(|s| s.split_once(':')) {
-                write_resource(os, buf, resource_type, resource_name)
-            } else {
-                Ok(())
-            }
-        } else {
-            // We're dealing with a normal tag.
-            os.write_string(SERIES_TAGS_FIELD_NUMBER, tag.as_str())
-        }
-    })
-}
-
-fn write_sketch_tags<'a, I>(
-    tags: I, output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>,
-) -> Result<(), protobuf::Error>
-where
-    I: Iterator<Item = &'a Tag>,
-{
-    write_tags(tags, output_stream, scratch_buf, |tag, os, _buf| {
-        // We always write the tags as-is, without any special handling for resource tags.
-        os.write_string(SKETCH_TAGS_FIELD_NUMBER, tag.as_str())
-    })
-}
-
-fn write_nested_message<F>(
-    output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>, field_number: u32, writer: F,
-) -> Result<(), protobuf::Error>
-where
-    F: FnOnce(&mut CodedOutputStream<'_>) -> Result<(), protobuf::Error>,
-{
-    scratch_buf.clear();
-
-    {
-        let mut nested_output_stream = CodedOutputStream::vec(scratch_buf);
-        writer(&mut nested_output_stream)?;
-        nested_output_stream.flush()?;
-    }
-
-    output_stream.write_tag(field_number, WireType::LengthDelimited)?;
-
-    let nested_message_size = get_message_size_from_buffer(scratch_buf)?;
-    output_stream.write_raw_varint32(nested_message_size)?;
-    output_stream.write_raw_bytes(scratch_buf)
-}
-
-fn write_repeated_packed_from_iter<I, T, F>(
-    output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>, field_number: u32, values: I, writer: F,
-) -> Result<(), protobuf::Error>
-where
-    I: Iterator<Item = T>,
-    F: Fn(&mut CodedOutputStream<'_>, T) -> Result<(), protobuf::Error>,
-{
-    // This is a helper function that lets us write out a packed repeated field from an iterator of values.
-    // `CodedOutputStream` has similar functions to handle this, but they require a slice of values, which would mean we
-    // need to either allocate a new vector each time to hold the values, or thread through two additional vectors (one
-    // for `i32`, one for `u32`) to reuse the allocation... both of which are not great options.
-    //
-    // We've simply opted to pass through a _single_ vector that we can reuse, and write the packed values directly to
-    // that, almost identically to how `CodedOutputStream::write_repeated_packed_*` methods would do it.
-
-    scratch_buf.clear();
-
-    {
-        let mut packed_output_stream = CodedOutputStream::vec(scratch_buf);
-        for value in values {
-            writer(&mut packed_output_stream, value)?;
-        }
-        packed_output_stream.flush()?;
-    }
-
-    let data_size = get_message_size_from_buffer(scratch_buf)?;
-
-    output_stream.write_tag(field_number, WireType::LengthDelimited)?;
-    output_stream.write_raw_varint32(data_size)?;
-    output_stream.write_raw_bytes(scratch_buf)
-}
-
-#[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use protobuf::CodedOutputStream;
-    use saluki_common::iter::ReusableDeduplicator;
-    use saluki_context::tags::SharedTagSet;
-    use saluki_core::data_model::event::metric::Metric;
-
-    use super::{encode_sketch_metric, MetricsEndpoint, MetricsEndpointEncoder};
-    use crate::common::datadog::request_builder::EndpointEncoder as _;
-
-    #[test]
-    fn histogram_vs_sketch_identical_payload() {
-        // For the same exact set of points, we should be able to construct either a histogram or distribution from
-        // those points, and when encoded as a sketch payload, end up with the same exact payload.
-        //
-        // They should be identical because the goal is that we convert histograms into sketches in the same way we
-        // would have originally constructed a sketch based on the same samples.
-        let samples = &[1.0, 2.0, 3.0, 4.0, 5.0];
-        let histogram = Metric::histogram("simple_samples", samples);
-        let distribution = Metric::distribution("simple_samples", samples);
-        let host_tags = SharedTagSet::default();
-
-        let mut buf1 = Vec::new();
-        let mut buf2 = Vec::new();
-        let mut tags_deduplicator = ReusableDeduplicator::new();
-
-        let mut histogram_payload = Vec::new();
-        {
-            let mut histogram_writer = CodedOutputStream::vec(&mut histogram_payload);
-            encode_sketch_metric(
-                &histogram,
-                &host_tags,
-                &mut histogram_writer,
-                &mut buf1,
-                &mut buf2,
-                &mut tags_deduplicator,
-            )
-            .expect("Failed to encode histogram as sketch");
-        }
-
-        let mut distribution_payload = Vec::new();
-        {
-            let mut distribution_writer = CodedOutputStream::vec(&mut distribution_payload);
-            encode_sketch_metric(
-                &distribution,
-                &host_tags,
-                &mut distribution_writer,
-                &mut buf1,
-                &mut buf2,
-                &mut tags_deduplicator,
-            )
-            .expect("Failed to encode distribution as sketch");
-        }
-
-        assert_eq!(histogram_payload, distribution_payload);
-    }
-
-    #[test]
-    fn input_valid() {
-        // Our encoder should always consider series metrics valid when set to the series endpoint, and similarly for
-        // sketch metrics when set to the sketches endpoint.
-        let counter = Metric::counter("counter", 1.0);
-        let rate = Metric::rate("rate", 1.0, Duration::from_secs(1));
-        let gauge = Metric::gauge("gauge", 1.0);
-        let set = Metric::set("set", "foo");
-        let histogram = Metric::histogram("histogram", [1.0, 2.0, 3.0]);
-        let distribution = Metric::distribution("distribution", [1.0, 2.0, 3.0]);
-
-        let series_endpoint = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::Series);
-        let sketches_endpoint = MetricsEndpointEncoder::from_endpoint(MetricsEndpoint::Sketches);
-
-        assert!(series_endpoint.is_valid_input(&counter));
-        assert!(series_endpoint.is_valid_input(&rate));
-        assert!(series_endpoint.is_valid_input(&gauge));
-        assert!(series_endpoint.is_valid_input(&set));
-        assert!(!series_endpoint.is_valid_input(&histogram));
-        assert!(!series_endpoint.is_valid_input(&distribution));
-
-        assert!(!sketches_endpoint.is_valid_input(&counter));
-        assert!(!sketches_endpoint.is_valid_input(&rate));
-        assert!(!sketches_endpoint.is_valid_input(&gauge));
-        assert!(!sketches_endpoint.is_valid_input(&set));
-        assert!(sketches_endpoint.is_valid_input(&histogram));
-        assert!(sketches_endpoint.is_valid_input(&distribution));
-    }
+    builder
+        .body(compressed_buf)
+        .map_err(|e| generic_error!("Failed to build V3 request: {}", e))
 }

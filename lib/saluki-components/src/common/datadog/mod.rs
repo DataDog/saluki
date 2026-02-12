@@ -4,6 +4,7 @@ pub mod endpoints;
 pub mod io;
 pub mod middleware;
 pub mod obfuscation;
+pub mod protocol;
 mod proxy;
 pub mod request_builder;
 mod retry;

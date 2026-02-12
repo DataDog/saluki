@@ -15,6 +15,8 @@ use snafu::{ResultExt, Snafu};
 use tracing::debug;
 use url::Url;
 
+use super::protocol::{MetricsPayloadInfo, MetricsProtocolVersion};
+
 static DD_URL_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^app(\.mrf)?(\.[a-z]{2}\d)?\.(datad(oghq|0g)\.(com|eu)|ddog-gov\.com)$").unwrap());
 
@@ -22,6 +24,88 @@ pub const DEFAULT_SITE: &str = "datadoghq.com";
 
 fn default_site() -> String {
     DEFAULT_SITE.to_owned()
+}
+
+/// Per-endpoint V3 protocol settings.
+///
+/// These settings control which protocol versions an endpoint will accept for metrics payloads.
+/// Settings are derived from a global `V3ApiConfig` by matching the endpoint URL against the
+/// configured V3 endpoint lists.
+#[derive(Clone, Debug, Default)]
+pub struct EndpointV3Settings {
+    /// Whether this endpoint accepts V3 series payloads.
+    pub use_v3_series: bool,
+
+    /// Whether this endpoint accepts V3 sketches payloads.
+    pub use_v3_sketches: bool,
+
+    /// Whether validation mode is enabled for series (send both V2 and V3).
+    pub series_validation_mode: bool,
+
+    /// Whether validation mode is enabled for sketches (send both V2 and V3).
+    pub sketches_validation_mode: bool,
+}
+
+impl EndpointV3Settings {
+    /// Creates V3 settings for a specific endpoint based on URL matching.
+    ///
+    /// The `v3_series_endpoints` and `v3_sketches_endpoints` are lists of URL patterns.
+    /// If the endpoint URL contains any of the patterns, V3 is enabled for that metric type.
+    pub fn from_endpoint_url(
+        endpoint_url: &str, v3_series_endpoints: &[String], v3_sketches_endpoints: &[String], series_validate: bool,
+        sketches_validate: bool,
+    ) -> Self {
+        let use_v3_series = v3_series_endpoints.iter().any(|e| endpoint_url.contains(e));
+        let use_v3_sketches = v3_sketches_endpoints.iter().any(|e| endpoint_url.contains(e));
+
+        Self {
+            use_v3_series,
+            use_v3_sketches,
+            series_validation_mode: use_v3_series && series_validate,
+            sketches_validation_mode: use_v3_sketches && sketches_validate,
+        }
+    }
+
+    /// Determines if this endpoint should receive a payload with the given payload info.
+    ///
+    /// Returns `true` if the endpoint should receive the payload, `false` otherwise.
+    ///
+    /// The logic is:
+    /// - V2 series payload: accept if series V3 is disabled OR series validation mode is enabled
+    /// - V2 sketches payload: accept if sketches V3 is disabled OR sketches validation mode is enabled
+    /// - V3 series payload: accept if series V3 is enabled
+    /// - V3 sketches payload: accept if sketches V3 is enabled
+    /// - Non-metrics payloads (None): always accept
+    pub fn should_receive_payload(&self, payload_info: Option<MetricsPayloadInfo>) -> bool {
+        let Some(info) = payload_info else {
+            // No payload info - this is a non-metrics payload or legacy payload, always accept.
+            return true;
+        };
+
+        let is_sketch = info.is_sketch();
+
+        match info.version {
+            MetricsProtocolVersion::V2 => {
+                if is_sketch {
+                    // V2 sketches: accept if V3 sketches is disabled OR validation mode is enabled
+                    !self.use_v3_sketches || self.sketches_validation_mode
+                } else {
+                    // V2 series: accept if V3 series is disabled OR validation mode is enabled
+                    !self.use_v3_series || self.series_validation_mode
+                }
+            }
+
+            MetricsProtocolVersion::V3 => {
+                if is_sketch {
+                    // V3 sketches: accept if V3 sketches is enabled
+                    self.use_v3_sketches
+                } else {
+                    // V3 series: accept if V3 series is enabled
+                    self.use_v3_series
+                }
+            }
+        }
+    }
 }
 
 /// Error type for invalid endpoints.

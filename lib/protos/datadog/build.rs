@@ -88,7 +88,10 @@ fn main() {
     protobuf_codegen::Codegen::new()
         .protoc()
         .includes(["proto", "proto/datadog-agent"])
-        .inputs(["proto/agent-payload/agent_payload.proto"])
+        .inputs([
+            "proto/agent-payload/agent_payload.proto",
+            "proto/agent-payload/intake_v3.proto",
+        ])
         .cargo_out_dir("protos")
         .customize(codegen_customize.clone())
         .run_from_script();

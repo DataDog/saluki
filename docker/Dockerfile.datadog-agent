@@ -1,5 +1,5 @@
-ARG DD_AGENT_VERSION=7.75.2-jmx
-ARG DD_AGENT_IMAGE=datadog/agent:${DD_AGENT_VERSION}
+ARG DD_AGENT_VERSION=vickenty-v3i-py3
+ARG DD_AGENT_IMAGE=registry.datadoghq.com/agent-dev:${DD_AGENT_VERSION}
 ARG ADP_IMAGE=saluki-images/agent-data-plane:testing-dev
 
 # Reference the ADP image so we can copy the relevant bits out of it.

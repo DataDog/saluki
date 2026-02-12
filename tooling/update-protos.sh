@@ -46,6 +46,7 @@ cp -R ${TMP_DIR}/datadog-agent/pkg/proto/datadog lib/protos/datadog/proto/datado
 
 mkdir -p lib/protos/datadog/proto/agent-payload
 cp ${TMP_DIR}/agent-payload/proto/metrics/agent_payload.proto lib/protos/datadog/proto/agent-payload/
+cp ${TMP_DIR}/agent-payload/proto/metrics/intake_v3.proto lib/protos/datadog/proto/agent-payload/
 
 ## containerd and containerd-related definitions.
 ##

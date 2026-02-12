@@ -153,6 +153,7 @@ tokio-rustls = { version = "0.26.0", default-features = false, features = [
   "aws_lc_rs",
 ] }
 anyhow = { version = "1", default-features = false }
+anymap3 = { version = "1", default-features = false, features = ["std"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 bytesize = { version = "2", default-features = false, features = ["serde"] }
 criterion = { version = "0.8", features = ["html_reports"] }

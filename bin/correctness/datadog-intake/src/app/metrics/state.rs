@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex};
 
+use datadog_protos::metrics::v3::Payload as V3Payload;
 use datadog_protos::metrics::{MetricPayload, SketchPayload};
 use saluki_error::GenericError;
 use stele::Metric;
@@ -36,6 +37,16 @@ impl MetricsState {
     /// Merges the given sketch payload into the current metrics state.
     pub fn merge_sketch_payload(&self, payload: SketchPayload) -> Result<(), GenericError> {
         let metrics = Metric::try_from_sketch(payload)?;
+
+        let mut data = self.metrics.lock().unwrap();
+        data.extend(metrics);
+
+        Ok(())
+    }
+
+    /// Merges the given v3 payload into the current metrics state.
+    pub fn merge_v3_payload(&self, payload: V3Payload) -> Result<(), GenericError> {
+        let metrics = Metric::try_from_v3(payload)?;
 
         let mut data = self.metrics.lock().unwrap();
         data.extend(metrics);

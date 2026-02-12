@@ -8,6 +8,7 @@ android_system_properties,https://github.com/nical/android_system_properties,MIT
 anes,https://github.com/zrzka/anes-rs,MIT OR Apache-2.0,Robert Vojta <rvojta@me.com>
 anstyle,https://github.com/rust-cli/anstyle,MIT OR Apache-2.0,The anstyle Authors
 anyhow,https://github.com/dtolnay/anyhow,MIT OR Apache-2.0,David Tolnay <dtolnay@gmail.com>
+anymap3,https://github.com/reivilibre/anymap3,BlueOak-1.0.0 OR MIT OR Apache-2.0,"Olivier 'reivilibre' (fork maintainer) <contact@librepush.net>, Chris Morgan (original author) <rust@chrismorgan.info>"
 arc-swap,https://github.com/vorner/arc-swap,MIT OR Apache-2.0,Michal 'vorner' Vaner <vorner@vorner.cz>
 argh,https://github.com/google/argh,BSD-3-Clause,"Taylor Cramer <cramertj@google.com>, Benjamin Brittain <bwb@google.com>, Erick Tryzelaar <etryzelaar@google.com>"
 arrayvec,https://github.com/bluss/arrayvec,MIT OR Apache-2.0,bluss
