@@ -3,8 +3,11 @@
 //! The [`V3Writer`] accumulates metrics in columnar format with dictionary deduplication,
 //! then produces [`V3EncodedData`] ready for protobuf serialization.
 
+use protobuf::CodedOutputStream;
+use saluki_error::GenericError;
+
 use super::interner::Interner;
-use super::types::{V3MetricType, V3ValueType};
+use super::types::{field_numbers, V3MetricType, V3ValueType};
 
 /// Appends a varint-length-prefixed string to the destination buffer.
 fn append_len_str(dst: &mut Vec<u8>, s: &str) {
@@ -46,8 +49,10 @@ pub fn delta_encode_i32(s: &mut [i32]) {
 }
 
 /// Encoded V3 payload data ready for protobuf serialization.
+///
+/// Used primarily as a helper for testing.
 #[derive(Debug, Default)]
-pub struct V3EncodedData {
+struct V3EncodedData {
     // Dictionary encoded bytes (varint-length-prefixed strings)
     pub dict_name_bytes: Vec<u8>,
     pub dict_tags_bytes: Vec<u8>,
@@ -128,6 +133,10 @@ pub struct V3Writer {
     sketch_num_bins: Vec<u64>,
     sketch_bin_keys: Vec<i32>,
     sketch_bin_cnts: Vec<u32>,
+
+    // Scratch data
+    tag_ids: Vec<i64>,
+    resource_ids: Vec<(i64, i64)>,
 }
 
 impl V3Writer {
@@ -162,11 +171,8 @@ impl V3Writer {
         }
     }
 
-    /// Finalizes the writer and returns the encoded data.
-    ///
-    /// This performs delta encoding on all index arrays.
-    pub fn close(mut self) -> V3EncodedData {
-        // Delta-encode all the index arrays
+    fn finalize_inner(mut self) -> V3EncodedData {
+        // Delta encode all of the index arrays first.
         delta_encode(&mut self.names);
         delta_encode(&mut self.tags);
         delta_encode(&mut self.resources);
@@ -202,49 +208,120 @@ impl V3Writer {
         }
     }
 
+    /// Finalizes the writer and serializes the data to the given output buffer.
+    ///
+    /// This performs delta encoding on all index arrays.
+    pub fn finalize(self, output: &mut Vec<u8>) -> Result<(), GenericError> {
+        let data = self.finalize_inner();
+
+        // Create our writer and start, well.. writing!
+        let mut os = CodedOutputStream::vec(output);
+
+        // Dictionary fields (bytes - varint-length-prefixed strings concatenated)
+        if !data.dict_name_bytes.is_empty() {
+            os.write_bytes(field_numbers::DICT_NAME_STR, &data.dict_name_bytes)?;
+        }
+        if !data.dict_tags_bytes.is_empty() {
+            os.write_bytes(field_numbers::DICT_TAGS_STR, &data.dict_tags_bytes)?;
+        }
+
+        // Packed repeated fields for dictionaries
+        os.write_repeated_packed_sint64(field_numbers::DICT_TAGSETS, &data.dict_tagsets)?;
+
+        if !data.dict_resource_str_bytes.is_empty() {
+            os.write_bytes(field_numbers::DICT_RESOURCE_STR, &data.dict_resource_str_bytes)?;
+        }
+
+        os.write_repeated_packed_int64(field_numbers::DICT_RESOURCE_LEN, &data.dict_resource_len)?;
+        os.write_repeated_packed_sint64(field_numbers::DICT_RESOURCE_TYPE, &data.dict_resource_type)?;
+        os.write_repeated_packed_sint64(field_numbers::DICT_RESOURCE_NAME, &data.dict_resource_name)?;
+
+        if !data.dict_source_type_bytes.is_empty() {
+            os.write_bytes(field_numbers::DICT_SOURCE_TYPE_NAME, &data.dict_source_type_bytes)?;
+        }
+
+        os.write_repeated_packed_int32(field_numbers::DICT_ORIGIN_INFO, &data.dict_origin_info)?;
+
+        // Per-metric columns
+        os.write_repeated_packed_uint64(field_numbers::TYPES, &data.types)?;
+        os.write_repeated_packed_sint64(field_numbers::NAMES, &data.names)?;
+        os.write_repeated_packed_sint64(field_numbers::TAGS, &data.tags)?;
+        os.write_repeated_packed_sint64(field_numbers::RESOURCES, &data.resources)?;
+        os.write_repeated_packed_uint64(field_numbers::INTERVALS, &data.intervals)?;
+        os.write_repeated_packed_uint64(field_numbers::NUM_POINTS, &data.num_points)?;
+        os.write_repeated_packed_sint64(field_numbers::SOURCE_TYPE_NAME, &data.source_type_names)?;
+        os.write_repeated_packed_sint64(field_numbers::ORIGIN_INFO, &data.origin_infos)?;
+
+        // Point data
+        os.write_repeated_packed_sint64(field_numbers::TIMESTAMPS, &data.timestamps)?;
+        os.write_repeated_packed_sint64(field_numbers::VALS_SINT64, &data.vals_sint64)?;
+        os.write_repeated_packed_float(field_numbers::VALS_FLOAT32, &data.vals_float32)?;
+        os.write_repeated_packed_double(field_numbers::VALS_FLOAT64, &data.vals_float64)?;
+
+        // Sketch data
+        os.write_repeated_packed_uint64(field_numbers::SKETCH_NUM_BINS, &data.sketch_num_bins)?;
+        os.write_repeated_packed_sint32(field_numbers::SKETCH_BIN_KEYS, &data.sketch_bin_keys)?;
+        os.write_repeated_packed_uint32(field_numbers::SKETCH_BIN_CNTS, &data.sketch_bin_cnts)?;
+
+        os.flush()?;
+        Ok(())
+    }
+
     // Internal helper methods
 
     fn intern_name(&mut self, name: &str) -> i64 {
         if name.is_empty() {
             return 0;
         }
-        let (id, is_new) = self.name_interner.get_or_insert(name.to_string());
+        let (id, is_new) = self.name_interner.get_or_insert(name);
         if is_new {
             append_len_str(&mut self.dict_name_bytes, name);
         }
         id
     }
 
-    fn intern_tag(&mut self, tag: &str) -> i64 {
+    fn intern_tag(&mut self, tag: &str) {
         if tag.is_empty() {
-            return 0;
+            self.tag_ids.push(0);
+            return;
         }
-        let (id, is_new) = self.tag_interner.get_or_insert(tag.to_string());
+
+        let (id, is_new) = self.tag_interner.get_or_insert(tag);
         if is_new {
             append_len_str(&mut self.dict_tags_bytes, tag);
         }
-        id
+        self.tag_ids.push(id);
     }
 
-    fn intern_tagset(&mut self, tag_ids: Vec<i64>) -> i64 {
-        if tag_ids.is_empty() {
+    fn intern_tagset<I, S>(&mut self, tags: I) -> i64
+    where
+        I: Iterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.tag_ids.clear();
+        for tag in tags {
+            self.intern_tag(tag.as_ref());
+        }
+
+        if self.tag_ids.is_empty() {
             return 0;
         }
-        let (id, is_new) = self.tagset_interner.get_or_insert(tag_ids.clone());
+
+        let (id, is_new) = self.tagset_interner.get_or_insert(&self.tag_ids);
         if is_new {
-            self.encode_tagset(&tag_ids);
+            self.encode_tagset();
         }
         id
     }
 
-    fn encode_tagset(&mut self, tag_ids: &[i64]) {
+    fn encode_tagset(&mut self) {
         // Push the length
-        self.dict_tagsets.push(tag_ids.len() as i64);
+        self.dict_tagsets.push(self.tag_ids.len() as i64);
 
         let start = self.dict_tagsets.len();
 
         // Add all tag IDs
-        self.dict_tagsets.extend_from_slice(tag_ids);
+        self.dict_tagsets.extend_from_slice(&self.tag_ids);
 
         // Sort and delta-encode the tagset portion
         self.dict_tagsets[start..].sort_unstable();
@@ -255,38 +332,39 @@ impl V3Writer {
         if s.is_empty() {
             return 0;
         }
-        let (id, is_new) = self.resource_str_interner.get_or_insert(s.to_string());
+        let (id, is_new) = self.resource_str_interner.get_or_insert(s);
         if is_new {
             append_len_str(&mut self.dict_resource_str_bytes, s);
         }
         id
     }
 
-    fn intern_resources(&mut self, resources: &[(String, String)]) -> i64 {
-        if resources.is_empty() {
+    fn intern_resources(&mut self, resources: &[(&str, &str)]) -> i64 {
+        self.resource_ids.clear();
+        for (resource_type, resource_name) in resources {
+            let type_id = self.intern_resource_str(resource_type);
+            let name_id = self.intern_resource_str(resource_name);
+            self.resource_ids.push((type_id, name_id));
+        }
+
+        if self.resource_ids.is_empty() {
             return 0;
         }
 
-        // Convert to (type_id, name_id) pairs
-        let id_pairs: Vec<(i64, i64)> = resources
-            .iter()
-            .map(|(t, n)| (self.intern_resource_str(t), self.intern_resource_str(n)))
-            .collect();
-
-        let (id, is_new) = self.resource_interner.get_or_insert(id_pairs.clone());
+        let (id, is_new) = self.resource_interner.get_or_insert(&self.resource_ids);
         if is_new {
-            self.encode_resources(&id_pairs);
+            self.encode_resources();
         }
         id
     }
 
-    fn encode_resources(&mut self, id_pairs: &[(i64, i64)]) {
-        self.dict_resource_len.push(id_pairs.len() as i64);
+    fn encode_resources(&mut self) {
+        self.dict_resource_len.push(self.resource_ids.len() as i64);
 
         let type_start = self.dict_resource_type.len();
         let name_start = self.dict_resource_name.len();
 
-        for (type_id, name_id) in id_pairs {
+        for (type_id, name_id) in &self.resource_ids {
             self.dict_resource_type.push(*type_id);
             self.dict_resource_name.push(*name_id);
         }
@@ -299,7 +377,7 @@ impl V3Writer {
         if s.is_empty() {
             return 0;
         }
-        let (id, is_new) = self.source_type_interner.get_or_insert(s.to_string());
+        let (id, is_new) = self.source_type_interner.get_or_insert(s);
         if is_new {
             append_len_str(&mut self.dict_source_type_bytes, s);
         }
@@ -310,7 +388,7 @@ impl V3Writer {
         if product == 0 && category == 0 && service == 0 {
             return 0;
         }
-        let (id, is_new) = self.origin_interner.get_or_insert((product, category, service));
+        let (id, is_new) = self.origin_interner.get_or_insert(&(product, category, service));
         if is_new {
             self.dict_origin_info.push(product);
             self.dict_origin_info.push(category);
@@ -339,24 +417,15 @@ impl<'a> V3MetricBuilder<'a> {
         I: Iterator<Item = S>,
         S: AsRef<str>,
     {
-        let tag_ids: Vec<i64> = tags.map(|t| self.writer.intern_tag(t.as_ref())).collect();
-        let tagset_id = self.writer.intern_tagset(tag_ids);
+        let tagset_id = self.writer.intern_tagset(tags);
         self.writer.tags[self.metric_idx] = tagset_id;
     }
 
     /// Sets the resources for this metric.
     ///
     /// Resources are (type, name) pairs, e.g., ("host", "server1").
-    pub fn set_resources<I>(&mut self, resources: I)
-    where
-        I: Iterator<Item = (String, String)>,
-    {
-        let resources: Vec<(String, String)> = resources.collect();
-        if resources.is_empty() {
-            self.writer.resources[self.metric_idx] = 0;
-            return;
-        }
-        let res_id = self.writer.intern_resources(&resources);
+    pub fn set_resources(&mut self, resources: &[(&str, &str)]) {
+        let res_id = self.writer.intern_resources(resources);
         self.writer.resources[self.metric_idx] = res_id;
     }
 
@@ -516,7 +585,7 @@ mod tests {
             metric.close();
         }
 
-        let data = writer.close();
+        let data = writer.finalize_inner();
 
         assert_eq!(data.types.len(), 1);
         assert_eq!(data.names.len(), 1);
@@ -540,7 +609,7 @@ mod tests {
             m2.close();
         }
 
-        let data = writer.close();
+        let data = writer.finalize_inner();
 
         assert_eq!(data.types.len(), 2);
         assert_eq!(data.names.len(), 2);
@@ -560,7 +629,7 @@ mod tests {
             metric.close();
         }
 
-        let data = writer.close();
+        let data = writer.finalize_inner();
 
         // Values should be compacted - zero values don't need storage
         assert!(data.vals_float64.is_empty());
@@ -579,11 +648,36 @@ mod tests {
             metric.close();
         }
 
-        let data = writer.close();
+        let data = writer.finalize_inner();
 
         // Integer values should be stored in sint64
         assert!(data.vals_float64.is_empty());
         assert_eq!(data.vals_sint64, vec![100, 200]);
         assert!(data.vals_float32.is_empty());
+    }
+
+    #[test]
+    fn test_serialize_empty() {
+        let writer = V3Writer::new();
+        let mut output = Vec::new();
+        writer.finalize(&mut output).unwrap();
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn test_serialize_basic_metric() {
+        let mut writer = V3Writer::new();
+
+        {
+            let mut metric = writer.write(V3MetricType::Gauge, "test.metric");
+            metric.add_point(1000, 42.0);
+            metric.close();
+        }
+
+        let mut output = Vec::new();
+        writer.finalize(&mut output).unwrap();
+
+        // Should produce non-empty output
+        assert!(!output.is_empty());
     }
 }
