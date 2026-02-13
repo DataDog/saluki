@@ -811,7 +811,7 @@ fn write_metric_to_v3(writer: &mut v3::V3Writer, metric: &Metric, additional_tag
                 subproduct,
                 product_detail,
             } => {
-                builder.set_origin(*product, *subproduct, *product_detail);
+                builder.set_origin(*product, *subproduct, *product_detail, false);
             }
         }
     }
