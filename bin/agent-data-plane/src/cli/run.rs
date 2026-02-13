@@ -9,8 +9,6 @@ use saluki_app::{
     memory::{initialize_memory_bounds, MemoryBoundsConfiguration},
     metrics::emit_startup_metrics,
 };
-#[cfg(feature = "python-checks")]
-use saluki_components::sources::ChecksConfiguration;
 use saluki_components::{
     decoders::otlp::OtlpDecoderConfiguration,
     destinations::DogStatsDStatisticsConfiguration,
@@ -281,9 +279,6 @@ async fn create_topology(
         add_otlp_pipeline_to_blueprint(&mut blueprint, config, dp_config, env_provider)?;
     }
 
-    #[cfg(feature = "python-checks")]
-    add_checks_to_blueprint(&mut blueprint, config, env_provider)?;
-
     Ok(blueprint)
 }
 
@@ -499,23 +494,6 @@ fn add_otlp_pipeline_to_blueprint(
             .connect_component("dd_logs_encode", ["otlp_in.logs"])?
             .connect_component("traces_enrich", ["otlp_in.traces"])?;
     }
-    Ok(())
-}
-
-#[cfg(feature = "python-checks")]
-fn add_checks_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
-) -> Result<(), GenericError> {
-    let checks_config = ChecksConfiguration::from_configuration(config)
-        .error_context("Failed to configure checks source.")?
-        .with_environment_provider(env_provider.clone());
-
-    blueprint
-        .add_source("checks_in", checks_config)?
-        .connect_component("dsd_agg", ["checks_in.metrics"])?
-        .connect_component("dd_service_checks_encode", ["checks_in.service_checks"])?
-        .connect_component("dd_events_encode", ["checks_in.events"])?;
-
     Ok(())
 }
 

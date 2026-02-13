@@ -6,11 +6,6 @@ use saluki_env::{
     workload::providers::{RemoteAgentWorkloadAPIHandler, RemoteAgentWorkloadProvider},
     EnvironmentProvider,
 };
-#[cfg(feature = "python-checks")]
-use saluki_env::{
-    autodiscovery::providers::{LocalAutodiscoveryProvider, RemoteAgentAutodiscoveryProvider},
-    helpers::remote_agent::RemoteAgentClient,
-};
 use saluki_error::GenericError;
 use saluki_health::HealthRegistry;
 use tracing::{debug, warn};
@@ -72,12 +67,10 @@ impl ADPEnvironmentProvider {
             Some(provider)
         };
 
-        let autodiscovery_provider = configure_autodiscovery_provider(in_standalone_mode, config).await?;
-
         Ok(Self {
             host_provider,
             workload_provider,
-            autodiscovery_provider,
+            autodiscovery_provider: None,
         })
     }
 
@@ -87,38 +80,6 @@ impl ADPEnvironmentProvider {
     /// See [`RemoteAgentWorkloadAPIHandler`] for more information about routes and responses.
     pub fn workload_api_handler(&self) -> Option<RemoteAgentWorkloadAPIHandler> {
         self.workload_provider.as_ref().map(|provider| provider.api_handler())
-    }
-}
-
-async fn configure_autodiscovery_provider(
-    in_standalone_mode: bool, config: &GenericConfiguration,
-) -> Result<Option<BoxedAutodiscoveryProvider>, GenericError> {
-    #[cfg(feature = "python-checks")]
-    {
-        if in_standalone_mode {
-            debug!("Using local autodiscovery provider due to standalone mode.");
-            let config_dir = config.get_typed_or_default::<String>("checks_config_dir");
-            let paths = if config_dir.is_empty() {
-                vec!["/etc/datadog-agent/conf.d"]
-            } else {
-                config_dir.split(",").collect::<Vec<&str>>()
-            };
-            Ok(Some(BoxedAutodiscoveryProvider::from_provider(
-                LocalAutodiscoveryProvider::new(paths),
-            )))
-        } else {
-            let client = RemoteAgentClient::from_configuration(config).await?;
-            Ok(Some(BoxedAutodiscoveryProvider::from_provider(
-                RemoteAgentAutodiscoveryProvider::new(client),
-            )))
-        }
-    }
-    #[cfg(not(feature = "python-checks"))]
-    {
-        // Suppress unused variable warning
-        let _ = in_standalone_mode;
-        let _ = config;
-        Ok(None)
     }
 }
 
