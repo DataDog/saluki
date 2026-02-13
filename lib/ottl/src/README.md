@@ -403,6 +403,9 @@ The library includes a comprehensive benchmark suite to measure execution perfor
 
 ```bash
 # Run the benchmark
+cargo bench -p ottl
+
+# If you want to run benchmark from tests with manual control
 cargo test bench_execute_complex_realistic -- --ignored --nocapture
 ```
 
