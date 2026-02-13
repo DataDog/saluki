@@ -1,18 +1,20 @@
-#[cfg(all(target_arch = "aarch64", not(miri)))]
-use std::arch::aarch64::*;
-#[cfg(target_arch = "x86")]
-use std::arch::x86::*;
-#[cfg(target_arch = "x86_64")]
-use std::arch::x86_64::*;
+//! Normalization functions for OTLP traces.
+//!
+//! # Missing
+//! - Add language-specific fallback service names in `normalize_service`.
 #[cfg(all(test, any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-/// Normalization functions for OTLP traces.
-///
-/// # Missing
-/// - Add language-specific fallback service names in `normalize_service`.
+use std::sync::atomic::AtomicUsize;
 use stringtheory::MetaString;
 use tracing::debug;
+
+#[cfg(all(target_arch = "aarch64", not(miri)))]
+mod normalize_neon;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+mod normalize_sse2;
+#[cfg(all(target_arch = "aarch64", not(miri)))]
+use normalize_neon::is_normalized_ascii_tag_simd_neon;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+use normalize_sse2::is_normalized_ascii_tag_simd_sse2;
 
 // Max length in bytes.
 pub const MAX_NAME_LEN: usize = 100;
@@ -22,25 +24,6 @@ pub const MAX_TAG_LEN: usize = 200;
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"))]
 const SIMD_CHUNK_SIZE: usize = 16;
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-// Bitmask where all 16 lanes are set (0xFFFF = 0b1111_1111_1111_1111). Used to
-// check if every lane satisfied a condition via _mm_movemask_epi8.
-const SIMD_ALL_LANES_MASK: i32 = 0xFFFF;
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-// Bitmask for the last lane only (bit 15 -> 0x8000 = 0b1000_0000_0000_0000). Used
-// to detect whether the final byte of a 16-byte chunk is an underscore.
-const SIMD_LAST_LANE_MASK: i32 = 0x8000;
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-// Bitmask for all lanes except the last (0x7FFF = 0b0111_1111_1111_1111). Used
-// when checking that an underscore has a valid follower byte within the same
-// chunk.
-const SIMD_MASK_EXCEPT_LAST: i32 = 0x7FFF;
-#[cfg(all(target_arch = "aarch64", not(miri)))]
-const NEON_FIRST_LANE: i32 = 0;
-#[cfg(all(target_arch = "aarch64", not(miri)))]
-const NEON_LAST_LANE: i32 = 15;
-#[cfg(all(target_arch = "aarch64", not(miri)))]
-const NEON_FOLLOWER_SHIFT_BYTES: i32 = 15;
 
 // Used to verify that the SIMD optimization was utilized.
 #[cfg(all(test, any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
@@ -202,24 +185,6 @@ pub(super) fn is_normalized_tag_value(value: &str) -> bool {
 #[allow(dead_code)]
 pub fn normalize_tag(value: &str) -> MetaString {
     normalize(value, true)
-}
-
-/// Normalizes a tag using a scalar-only fast-path validity check.
-///
-/// This function is exposed for A/B benchmarking and keeps normalization behavior
-/// identical to `normalize_tag`.
-#[cfg(feature = "bench")]
-pub fn normalize_tag_scalar(value: &str) -> MetaString {
-    normalize_with_ascii_fast_path(value, true, is_normalized_ascii_tag_scalar_only)
-}
-
-/// Normalizes a tag using the SIMD-accelerated fast-path validity check when available.
-///
-/// This function is exposed for A/B benchmarking and keeps normalization behavior
-/// identical to `normalize_tag`.
-#[cfg(feature = "bench")]
-pub fn normalize_tag_simd(value: &str) -> MetaString {
-    normalize_with_ascii_fast_path(value, true, is_normalized_ascii_tag_simd_preferred)
 }
 
 fn normalize(value: &str, remove_digit_start_char: bool) -> MetaString {
@@ -389,18 +354,7 @@ fn is_valid_metric_name(name: &str) -> bool {
 }
 
 fn is_normalized_ascii_tag(tag: &str, check_valid_start_char: bool) -> bool {
-    // We call different `is_normalized_ascii_tag_simd` depending on the target CPU architecture, for x86/x86_64 (intel/amd processors) we use the SSE2 SIMD implementation whereas for
-    // aarch64 (apple M chips). The function variant is chosen at compile by the `#[cfg..]`
-    is_normalized_ascii_tag_with_simd_check(tag, check_valid_start_char, is_normalized_ascii_tag_simd)
-}
-
-#[cfg(feature = "bench")]
-fn is_normalized_ascii_tag_scalar_only(tag: &str, check_valid_start_char: bool) -> bool {
-    is_normalized_ascii_tag_with_simd_check(tag, check_valid_start_char, is_normalized_ascii_tag_no_simd)
-}
-
-#[cfg(feature = "bench")]
-fn is_normalized_ascii_tag_simd_preferred(tag: &str, check_valid_start_char: bool) -> bool {
+    // Dispatch to the target-specific SIMD checker when available.
     is_normalized_ascii_tag_with_simd_check(tag, check_valid_start_char, is_normalized_ascii_tag_simd)
 }
 
@@ -428,11 +382,6 @@ where
     }
 
     is_normalized_ascii_tag_scalar(bytes, start)
-}
-
-#[cfg(feature = "bench")]
-fn is_normalized_ascii_tag_no_simd(_bytes: &[u8], _start: usize) -> Option<bool> {
-    None
 }
 
 fn is_normalized_ascii_tag_scalar(bytes: &[u8], mut i: usize) -> bool {
@@ -485,248 +434,6 @@ fn is_normalized_ascii_tag_simd(bytes: &[u8], start: usize) -> Option<bool> {
 ))]
 fn is_normalized_ascii_tag_simd(_bytes: &[u8], _start: usize) -> Option<bool> {
     None
-}
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-#[target_feature(enable = "sse2")]
-unsafe fn is_normalized_ascii_tag_simd_sse2(bytes: &[u8], start: usize) -> bool {
-    #[cfg(all(test, any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
-    SIMD_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
-
-    // Validate `bytes[start..]` as a normalized ASCII tag using 16-byte SSE2 chunks.
-    //
-    // Rules enforced here:
-    // - Allowed characters: lowercase a-z, digits 0-9, '.', '/', '-', ':', '_' (underscore).
-    // - Any non-ASCII byte (high bit set) is invalid.
-    // - Underscore is a separator: it MUST be followed by a non-underscore allowed character.
-    // - Trailing underscore is invalid.
-    //
-    // The SIMD loop walks 16-byte chunks and validates character classes in parallel.
-    // Underscore follower rules are enforced in-chunk for lanes 0..14 and with a
-    // direct next-byte check for lane 15.
-
-    let mut i = start;
-    let len = bytes.len();
-
-    // Tracks if the previous chunk ended with an underscore. If true, the next
-    // byte must be an allowed non-underscore character.
-    let mut trailing_underscore = false;
-
-    // Build repeated-byte constants for range comparisons. _mm_set1_epi8 sets the 16 lanes to the same value for parallel comparison.
-    // We use (min - 1) and (max + 1) with signed gt comparisons:
-    // `x > (min - 1)` && `(max + 1) > x`  <=>  min <= x <= max.
-    let lower_min = _mm_set1_epi8((b'a' - 1) as i8);
-    let lower_max = _mm_set1_epi8((b'z' + 1) as i8);
-    let digit_min = _mm_set1_epi8((b'0' - 1) as i8);
-    let digit_max = _mm_set1_epi8((b'9' + 1) as i8);
-
-    let dot = _mm_set1_epi8(b'.' as i8);
-    let slash = _mm_set1_epi8(b'/' as i8);
-    let dash = _mm_set1_epi8(b'-' as i8);
-    let colon = _mm_set1_epi8(b':' as i8);
-    let underscore = _mm_set1_epi8(b'_' as i8);
-
-    // Validate chunks and enforce underscore follower rules.
-    while i + SIMD_CHUNK_SIZE <= len {
-        // Load 16 bytes from memory into a SIMD register starting at ptr
-        let ptr = bytes.as_ptr().add(i) as *const __m128i;
-        let chunk = _mm_loadu_si128(ptr);
-
-        // Reject any byte with the high bit set. _mm_movemask_epi8 returns a 16-bit
-        // mask of the most significant bits for the 16 lanes. Any 1 bit means a non-ASCII (>= 0x80) byte.
-        if _mm_movemask_epi8(chunk) != 0 {
-            return false;
-        }
-
-        // Build masks for allowed character classes.
-        // Range check uses strict greater-than on adjusted bounds:
-        //   ge_a:   chunk > (b'a' - 1)  == chunk >= b'a'
-        //   le_z:   (b'z' + 1) > chunk  == chunk <= b'z'
-        // Example: for byte 'm' (0x6D), both comparisons are true, so is_lower
-        // has 0xFF (1111_1111 in binary) in that lane. For byte '{' (0x7B), ge_a is true but le_z
-        // is false, so is_lower becomes 0x00 in that lane.
-        let ge_a = _mm_cmpgt_epi8(chunk, lower_min);
-        let le_z = _mm_cmpgt_epi8(lower_max, chunk);
-        let is_lower = _mm_and_si128(ge_a, le_z);
-
-        let ge_0 = _mm_cmpgt_epi8(chunk, digit_min);
-        let le_9 = _mm_cmpgt_epi8(digit_max, chunk);
-        let is_digit = _mm_and_si128(ge_0, le_9);
-
-        let is_dot = _mm_cmpeq_epi8(chunk, dot);
-        let is_slash = _mm_cmpeq_epi8(chunk, slash);
-        let is_dash = _mm_cmpeq_epi8(chunk, dash);
-        let is_colon = _mm_cmpeq_epi8(chunk, colon);
-        let is_underscore = _mm_cmpeq_epi8(chunk, underscore);
-
-        // "Allowed" excludes underscore so we can validate underscore follower rules.
-        let mut allowed = _mm_or_si128(is_lower, is_digit);
-        allowed = _mm_or_si128(allowed, is_dot);
-        allowed = _mm_or_si128(allowed, is_slash);
-        allowed = _mm_or_si128(allowed, is_dash);
-        allowed = _mm_or_si128(allowed, is_colon);
-
-        // First, ensure every byte is either allowed or underscore.
-        let allowed_or_underscore = _mm_or_si128(allowed, is_underscore);
-        if _mm_movemask_epi8(allowed_or_underscore) != SIMD_ALL_LANES_MASK {
-            return false;
-        }
-
-        let allowed_mask = _mm_movemask_epi8(allowed);
-        if trailing_underscore && (allowed_mask & 1) == 0 {
-            return false;
-        }
-        trailing_underscore = false;
-
-        // For each underscore in lanes 0..14, the immediately following byte
-        // must be "allowed" (lower/digit/dot/slash/dash/colon).
-        let underscore_mask = _mm_movemask_epi8(is_underscore);
-        let required_followers = (underscore_mask & SIMD_MASK_EXCEPT_LAST) << 1;
-        if (required_followers & !allowed_mask) != 0 {
-            return false;
-        }
-
-        if (underscore_mask & SIMD_LAST_LANE_MASK) != 0 {
-            let next_idx = i + SIMD_CHUNK_SIZE;
-            if next_idx < len {
-                if !IS_VALID_ASCII_TAG_CHAR_LOOKUP[bytes[next_idx] as usize] {
-                    return false;
-                }
-            } else {
-                trailing_underscore = true;
-            }
-        }
-
-        i += SIMD_CHUNK_SIZE;
-    }
-
-    // handle remaining bytes and any trailing underscore from the last chunk.
-    while i < len {
-        let b = bytes[i];
-        if trailing_underscore {
-            // The byte after an underscore must be an allowed non-underscore character.
-            if !IS_VALID_ASCII_TAG_CHAR_LOOKUP[b as usize] {
-                return false;
-            }
-            trailing_underscore = false;
-            i += 1;
-            continue;
-        }
-        if IS_VALID_ASCII_TAG_CHAR_LOOKUP[b as usize] {
-            i += 1;
-            continue;
-        }
-        if b == b'_' {
-            trailing_underscore = true;
-            i += 1;
-            continue;
-        }
-        return false;
-    }
-
-    // Reject a trailing underscore at end-of-input.
-    !trailing_underscore
-}
-
-#[cfg(all(target_arch = "aarch64", not(miri)))]
-#[target_feature(enable = "neon")]
-unsafe fn is_normalized_ascii_tag_simd_neon(bytes: &[u8], start: usize) -> bool {
-    // this function is equivalent to the `is_normalized_ascii_tag_simd_sse2` function and the `is_normalized_ascii_tag_simd_sse2` function contains the comments explaining the logic.
-    #[cfg(all(test, any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
-    SIMD_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
-
-    let mut i = start;
-    let len = bytes.len();
-    let mut trailing_underscore = false;
-
-    let ascii_high_bit = vdupq_n_u8(0x80);
-    let lower_min = vdupq_n_u8(b'a');
-    let lower_max = vdupq_n_u8(b'z');
-    let digit_min = vdupq_n_u8(b'0');
-    let digit_max = vdupq_n_u8(b'9');
-    let dot = vdupq_n_u8(b'.');
-    let slash = vdupq_n_u8(b'/');
-    let dash = vdupq_n_u8(b'-');
-    let colon = vdupq_n_u8(b':');
-    let underscore = vdupq_n_u8(b'_');
-    let zero = vdupq_n_u8(0);
-
-    // Validate chunks and enforce underscore follower rules.
-    while i + SIMD_CHUNK_SIZE <= len {
-        let chunk = vld1q_u8(bytes.as_ptr().add(i));
-
-        if vmaxvq_u8(vandq_u8(chunk, ascii_high_bit)) != 0 {
-            return false;
-        }
-
-        let is_lower = vandq_u8(vcgeq_u8(chunk, lower_min), vcleq_u8(chunk, lower_max));
-        let is_digit = vandq_u8(vcgeq_u8(chunk, digit_min), vcleq_u8(chunk, digit_max));
-        let is_dot = vceqq_u8(chunk, dot);
-        let is_slash = vceqq_u8(chunk, slash);
-        let is_dash = vceqq_u8(chunk, dash);
-        let is_colon = vceqq_u8(chunk, colon);
-        let is_underscore = vceqq_u8(chunk, underscore);
-
-        let mut allowed = vorrq_u8(is_lower, is_digit);
-        allowed = vorrq_u8(allowed, is_dot);
-        allowed = vorrq_u8(allowed, is_slash);
-        allowed = vorrq_u8(allowed, is_dash);
-        allowed = vorrq_u8(allowed, is_colon);
-
-        let allowed_or_underscore = vorrq_u8(allowed, is_underscore);
-        if vminvq_u8(allowed_or_underscore) != u8::MAX {
-            return false;
-        }
-
-        if trailing_underscore && vgetq_lane_u8(allowed, NEON_FIRST_LANE) == 0 {
-            return false;
-        }
-        trailing_underscore = false;
-
-        let required_followers = vextq_u8(zero, is_underscore, NEON_FOLLOWER_SHIFT_BYTES);
-        let missing_followers = vandq_u8(required_followers, vmvnq_u8(allowed));
-        if vmaxvq_u8(missing_followers) != 0 {
-            return false;
-        }
-
-        if vgetq_lane_u8(is_underscore, NEON_LAST_LANE) != 0 {
-            let next_idx = i + SIMD_CHUNK_SIZE;
-            if next_idx < len {
-                if !IS_VALID_ASCII_TAG_CHAR_LOOKUP[bytes[next_idx] as usize] {
-                    return false;
-                }
-            } else {
-                trailing_underscore = true;
-            }
-        }
-
-        i += SIMD_CHUNK_SIZE;
-    }
-
-    // Handle remaining bytes and any trailing underscore from the last chunk.
-    while i < len {
-        let b = bytes[i];
-        if trailing_underscore {
-            if !IS_VALID_ASCII_TAG_CHAR_LOOKUP[b as usize] {
-                return false;
-            }
-            trailing_underscore = false;
-            i += 1;
-            continue;
-        }
-        if IS_VALID_ASCII_TAG_CHAR_LOOKUP[b as usize] {
-            i += 1;
-            continue;
-        }
-        if b == b'_' {
-            trailing_underscore = true;
-            i += 1;
-            continue;
-        }
-        return false;
-    }
-
-    !trailing_underscore
 }
 
 const fn is_valid_ascii_start_char(c: char) -> bool {

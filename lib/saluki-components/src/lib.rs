@@ -19,10 +19,6 @@ pub mod transforms;
 pub mod bench {
     /// Normalizes a trace tag using the production implementation.
     pub use crate::common::otlp::traces::normalize::normalize_tag;
-    /// Normalizes a trace tag while forcing scalar fast-path validation.
-    pub use crate::common::otlp::traces::normalize::normalize_tag_scalar;
-    /// Normalizes a trace tag while preferring SIMD fast-path validation.
-    pub use crate::common::otlp::traces::normalize::normalize_tag_simd;
     /// Normalizes a trace tag value using the production implementation.
     pub use crate::common::otlp::traces::normalize::normalize_tag_value;
 }
