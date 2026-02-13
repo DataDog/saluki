@@ -4,6 +4,7 @@
 //! - Add language-specific fallback service names in `normalize_service`.
 #[cfg(all(test, any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
 use std::sync::atomic::AtomicUsize;
+
 use stringtheory::MetaString;
 use tracing::debug;
 
