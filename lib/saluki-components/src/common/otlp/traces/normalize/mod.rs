@@ -192,7 +192,7 @@ pub fn normalize_tag(value: &str) -> MetaString {
 fn normalize(value: &str, remove_digit_start_char: bool) -> MetaString {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64", all(target_arch = "aarch64", not(miri))))]
     {
-        return normalize_simd(value, remove_digit_start_char);
+        normalize_simd(value, remove_digit_start_char)
     }
 
     #[cfg(not(any(target_arch = "x86", target_arch = "x86_64", all(target_arch = "aarch64", not(miri)),)))]
