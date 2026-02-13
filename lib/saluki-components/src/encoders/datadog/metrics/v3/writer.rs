@@ -9,44 +9,8 @@ use saluki_error::GenericError;
 use super::interner::Interner;
 use super::types::{field_numbers, V3MetricType, V3ValueType};
 
-/// Appends a varint-length-prefixed string to the destination buffer.
-fn append_len_str(dst: &mut Vec<u8>, s: &str) {
-    let mut len = s.len() as u64;
-    loop {
-        let mut byte = (len & 0x7F) as u8;
-        len >>= 7;
-        if len != 0 {
-            byte |= 0x80;
-        }
-        dst.push(byte);
-        if len == 0 {
-            break;
-        }
-    }
-    dst.extend_from_slice(s.as_bytes());
-}
-
-/// Delta-encodes a slice in place, working backwards.
-///
-/// After encoding, `s[i]` contains the difference `s[i] - s[i-1]`.
-pub fn delta_encode(s: &mut [i64]) {
-    if s.len() < 2 {
-        return;
-    }
-    for i in (1..s.len()).rev() {
-        s[i] -= s[i - 1];
-    }
-}
-
-/// Delta-encodes i32 values in place, working backwards.
-pub fn delta_encode_i32(s: &mut [i32]) {
-    if s.len() < 2 {
-        return;
-    }
-    for i in (1..s.len()).rev() {
-        s[i] -= s[i - 1];
-    }
-}
+const METRIC_TYPE_DEFAULT: i32 = 0;
+const METRIC_TYPE_AGENT_HIDDEN: i32 = 9;
 
 /// Encoded V3 payload data ready for protobuf serialization.
 ///
@@ -100,7 +64,7 @@ pub struct V3Writer {
     resource_str_interner: Interner<String>,
     resource_interner: Interner<Vec<(i64, i64)>>,
     source_type_interner: Interner<String>,
-    origin_interner: Interner<(i32, i32, i32)>,
+    origin_interner: Interner<(i32, i32, i32, i32)>,
 
     // Dictionary encoded bytes
     dict_name_bytes: Vec<u8>,
@@ -384,15 +348,21 @@ impl V3Writer {
         id
     }
 
-    fn intern_origin(&mut self, product: i32, category: i32, service: i32) -> i64 {
+    fn intern_origin(&mut self, product: i32, category: i32, service: i32, no_index: bool) -> i64 {
         if product == 0 && category == 0 && service == 0 {
             return 0;
         }
-        let (id, is_new) = self.origin_interner.get_or_insert(&(product, category, service));
+
+        let metric_type = get_origin_metric_type(no_index);
+
+        let (id, is_new) = self
+            .origin_interner
+            .get_or_insert(&(product, category, service, metric_type));
         if is_new {
             self.dict_origin_info.push(product);
             self.dict_origin_info.push(category);
             self.dict_origin_info.push(service);
+            self.dict_origin_info.push(metric_type);
         }
         id
     }
@@ -445,10 +415,10 @@ impl<'a> V3MetricBuilder<'a> {
     }
 
     /// Sets the origin metadata for this metric.
-    pub fn set_origin(&mut self, product: u32, category: u32, service: u32) {
+    pub fn set_origin(&mut self, product: u32, category: u32, service: u32, no_index: bool) {
         let id = self
             .writer
-            .intern_origin(product as i32, category as i32, service as i32);
+            .intern_origin(product as i32, category as i32, service as i32, no_index);
         self.writer.origin_infos[self.metric_idx] = id;
     }
 
@@ -537,6 +507,48 @@ impl<'a> V3MetricBuilder<'a> {
                 // Already stored in vals_float64, keep them
             }
         }
+    }
+}
+
+fn append_len_str(dst: &mut Vec<u8>, s: &str) {
+    let mut len = s.len() as u64;
+    loop {
+        let mut byte = (len & 0x7F) as u8;
+        len >>= 7;
+        if len != 0 {
+            byte |= 0x80;
+        }
+        dst.push(byte);
+        if len == 0 {
+            break;
+        }
+    }
+    dst.extend_from_slice(s.as_bytes());
+}
+
+fn delta_encode(s: &mut [i64]) {
+    if s.len() < 2 {
+        return;
+    }
+    for i in (1..s.len()).rev() {
+        s[i] -= s[i - 1];
+    }
+}
+
+fn delta_encode_i32(s: &mut [i32]) {
+    if s.len() < 2 {
+        return;
+    }
+    for i in (1..s.len()).rev() {
+        s[i] -= s[i - 1];
+    }
+}
+
+const fn get_origin_metric_type(no_index: bool) -> i32 {
+    if no_index {
+        METRIC_TYPE_AGENT_HIDDEN
+    } else {
+        METRIC_TYPE_DEFAULT
     }
 }
 
