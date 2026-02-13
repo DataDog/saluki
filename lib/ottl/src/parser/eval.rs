@@ -2,11 +2,10 @@
 //!
 //! Provides arena-based evaluation with zero-allocation argument passing.
 
-use crate::{Args, BoxError, EvalContext, Result, Value};
-
 use super::arena::AstArena;
 use super::ast::*;
 use super::ops::{compare, math_op};
+use crate::{Args, BoxError, EvalContext, Result, Value};
 
 // =====================================================================================================================
 // Evaluation Helpers
@@ -32,21 +31,19 @@ fn evaluate_resolved_path(path: &ResolvedPath, ctx: &EvalContext) -> Result<Valu
 /// Apply an index to a value
 fn apply_index(value: &Value, index: &IndexExpr) -> Result<Value> {
     match (value, index) {
-        (Value::List(list), IndexExpr::Int(i)) => {
-            list.get(*i)
-                .cloned()
-                .ok_or_else(|| format!("Index {} out of bounds", i).into())
-        }
+        (Value::List(list), IndexExpr::Int(i)) => list
+            .get(*i)
+            .cloned()
+            .ok_or_else(|| format!("Index {} out of bounds", i).into()),
         (Value::Map(map), IndexExpr::String(key)) => map
             .get(key)
             .cloned()
             .ok_or_else(|| format!("Key '{}' not found", key).into()),
-        (Value::String(s), IndexExpr::Int(i)) => {
-            s.chars()
-                .nth(*i)
-                .map(|c| Value::string(c.to_string()))
-                .ok_or_else(|| format!("Index {} out of bounds", i).into())
-        }
+        (Value::String(s), IndexExpr::Int(i)) => s
+            .chars()
+            .nth(*i)
+            .map(|c| Value::string(c.to_string()))
+            .ok_or_else(|| format!("Index {} out of bounds", i).into()),
         _ => Err(format!("Cannot index {:?} with {:?}", value, index).into()),
     }
 }
@@ -105,9 +102,7 @@ impl<'a> Args for ArenaArgs<'a> {
         let ctx = unsafe { &mut *self.ctx };
 
         match &self.args[index] {
-            ArenaArgExpr::Positional(value_ref) => {
-                arena_evaluate_value_expr(*value_ref, self.arena, ctx)
-            }
+            ArenaArgExpr::Positional(value_ref) => arena_evaluate_value_expr(*value_ref, self.arena, ctx),
             ArenaArgExpr::Named { value, .. } => arena_evaluate_value_expr(*value, self.arena, ctx),
         }
     }
@@ -140,11 +135,7 @@ impl<'a> Args for ArenaArgs<'a> {
         let ctx = unsafe { &mut *self.ctx };
 
         match self.arena.get_value(value_ref) {
-            ArenaValueExpr::Path(resolved_path) => {
-                resolved_path
-                    .accessor
-                    .set(ctx, &resolved_path.full_path, value)
-            }
+            ArenaValueExpr::Path(resolved_path) => resolved_path.accessor.set(ctx, &resolved_path.full_path, value),
             _ => Err("set: argument must be a path expression".into()),
         }
     }
@@ -152,11 +143,7 @@ impl<'a> Args for ArenaArgs<'a> {
 
 /// Evaluate the arena-based root expression
 #[inline]
-pub fn arena_evaluate_root(
-    root: &ArenaRootExpr,
-    arena: &AstArena,
-    ctx: &mut EvalContext,
-) -> Result<Value> {
+pub fn arena_evaluate_root(root: &ArenaRootExpr, arena: &AstArena, ctx: &mut EvalContext) -> Result<Value> {
     match root {
         ArenaRootExpr::EditorStatement(stmt) => {
             let should_execute = if let Some(cond_ref) = stmt.condition {
@@ -181,11 +168,7 @@ pub fn arena_evaluate_root(
 
 /// Evaluate an arena-based boolean expression
 #[inline]
-fn arena_evaluate_bool_expr(
-    expr_ref: BoolExprRef,
-    arena: &AstArena,
-    ctx: &mut EvalContext,
-) -> Result<bool> {
+fn arena_evaluate_bool_expr(expr_ref: BoolExprRef, arena: &AstArena, ctx: &mut EvalContext) -> Result<bool> {
     match arena.get_bool(expr_ref) {
         ArenaBoolExpr::Literal(b) => Ok(*b),
         ArenaBoolExpr::Comparison { left, op, right } => {
@@ -230,11 +213,7 @@ fn arena_evaluate_bool_expr(
 
 /// Evaluate an arena-based value expression
 #[inline]
-fn arena_evaluate_value_expr(
-    expr_ref: ValueExprRef,
-    arena: &AstArena,
-    ctx: &mut EvalContext,
-) -> Result<Value> {
+fn arena_evaluate_value_expr(expr_ref: ValueExprRef, arena: &AstArena, ctx: &mut EvalContext) -> Result<Value> {
     match arena.get_value(expr_ref) {
         ArenaValueExpr::Literal(v) => Ok(v.clone()),
         ArenaValueExpr::Path(resolved_path) => evaluate_resolved_path(resolved_path, ctx),
@@ -260,11 +239,7 @@ fn arena_evaluate_value_expr(
 
 /// Evaluate an arena-based function call (ZERO ALLOCATION)
 #[inline]
-fn arena_evaluate_function_call(
-    fc_ref: FunctionCallRef,
-    arena: &AstArena,
-    ctx: &mut EvalContext,
-) -> Result<Value> {
+fn arena_evaluate_function_call(fc_ref: FunctionCallRef, arena: &AstArena, ctx: &mut EvalContext) -> Result<Value> {
     let fc = arena.get_func(fc_ref);
 
     let callback = fc
@@ -285,11 +260,7 @@ fn arena_evaluate_function_call(
 
 /// Evaluate an arena-based math expression
 #[inline]
-fn arena_evaluate_math_expr(
-    expr_ref: MathExprRef,
-    arena: &AstArena,
-    ctx: &mut EvalContext,
-) -> Result<Value> {
+fn arena_evaluate_math_expr(expr_ref: MathExprRef, arena: &AstArena, ctx: &mut EvalContext) -> Result<Value> {
     match arena.get_math(expr_ref) {
         ArenaMathExpr::Primary(value_ref) => arena_evaluate_value_expr(*value_ref, arena, ctx),
         ArenaMathExpr::Negate(inner_ref) => {

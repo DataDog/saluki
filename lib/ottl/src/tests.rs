@@ -1,12 +1,10 @@
 //! Tests for the OTTL lexer and library
 
+use std::sync::Arc;
+
 use crate::lexer::{Lexer, Token};
 use crate::parser::Parser;
-use crate::{
-    CallbackMap, EnumMap, EvalContext, OttlParser, PathAccessor, PathResolver, PathResolverMap,
-    Value,
-};
-use std::sync::Arc;
+use crate::{CallbackMap, EnumMap, EvalContext, OttlParser, PathAccessor, PathResolver, PathResolverMap, Value};
 
 // ============================================================================
 // Helper functions
@@ -61,10 +59,7 @@ fn test_comparison_operators() {
 #[test]
 fn test_arithmetic_operators() {
     let tokens = collect_tokens("+ - * /");
-    assert_eq!(
-        tokens,
-        vec![Token::Plus, Token::Minus, Token::Multiply, Token::Divide,]
-    );
+    assert_eq!(tokens, vec![Token::Plus, Token::Minus, Token::Multiply, Token::Divide,]);
 }
 
 #[test]
@@ -103,10 +98,7 @@ fn test_string_with_escape() {
 fn test_int_literal() {
     // Note: Signs are now separate tokens, handled by the parser
     let tokens = collect_tokens("42 0");
-    assert_eq!(
-        tokens,
-        vec![Token::IntLiteral("42"), Token::IntLiteral("0"),]
-    );
+    assert_eq!(tokens, vec![Token::IntLiteral("42"), Token::IntLiteral("0"),]);
 }
 
 #[test]
@@ -128,10 +120,7 @@ fn test_signed_int_literal() {
 fn test_float_literal() {
     // Note: Signs are now separate tokens, handled by the parser
     let tokens = collect_tokens("6.18 .5");
-    assert_eq!(
-        tokens,
-        vec![Token::FloatLiteral("6.18"), Token::FloatLiteral(".5"),]
-    );
+    assert_eq!(tokens, vec![Token::FloatLiteral("6.18"), Token::FloatLiteral(".5"),]);
 }
 
 #[test]
@@ -341,10 +330,7 @@ fn test_enum() {
     let tokens = collect_tokens("SPAN_KIND_SERVER STATUS_OK");
     assert_eq!(
         tokens,
-        vec![
-            Token::UpperIdent("SPAN_KIND_SERVER"),
-            Token::UpperIdent("STATUS_OK"),
-        ]
+        vec![Token::UpperIdent("SPAN_KIND_SERVER"), Token::UpperIdent("STATUS_OK"),]
     );
 }
 
@@ -429,13 +415,9 @@ fn empty_path_resolver_map() -> PathResolverMap {
 
 /// Create a path resolver map with stub accessor for each given path.
 fn stub_path_resolver_for(paths: &[&str]) -> PathResolverMap {
-    let stub: PathResolver = Arc::new(|| -> crate::Result<Arc<dyn PathAccessor + Send + Sync>> {
-        Ok(Arc::new(StubPathAccessor))
-    });
-    paths
-        .iter()
-        .map(|&p| (p.to_string(), stub.clone()))
-        .collect()
+    let stub: PathResolver =
+        Arc::new(|| -> crate::Result<Arc<dyn PathAccessor + Send + Sync>> { Ok(Arc::new(StubPathAccessor)) });
+    paths.iter().map(|&p| (p.to_string(), stub.clone())).collect()
 }
 
 /// Create a stub EvalContext
@@ -452,17 +434,14 @@ fn test_stub_path_resolver_for_execute_fails() {
     let enums = EnumMap::new();
     let path_resolvers = stub_path_resolver_for(&["stub.path"]);
 
-    let parser = Parser::new(
-        &editors,
-        &converters,
-        &enums,
-        &path_resolvers,
-        "stub.path == 1",
-    );
+    let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, "stub.path == 1");
 
     assert!(parser.is_error().is_ok(), "Parsing should succeed");
     let result = parser.execute(&mut stub_context());
-    assert!(result.is_err(), "Execute should fail: stub accessor returns Err from get");
+    assert!(
+        result.is_err(),
+        "Execute should fail: stub accessor returns Err from get"
+    );
 }
 
 #[test]
@@ -636,13 +615,7 @@ fn test_parser_math_with_converters() {
     assert_eq!(result.unwrap(), Value::Int(3));
 
     // Test: Sum(1,2) * Sum(2,4) = 3 * 6 = 18
-    let parser2 = Parser::new(
-        &editors,
-        &converters,
-        &enums,
-        &path_resolvers,
-        "Sum(1,2) * Sum(2,4)",
-    );
+    let parser2 = Parser::new(&editors, &converters, &enums, &path_resolvers, "Sum(1,2) * Sum(2,4)");
 
     if let Err(e) = parser2.is_error() {
         panic!("Parser error: {}", e);
@@ -743,13 +716,7 @@ fn test_parser_bool_expression_with_enums() {
     assert_eq!(result.unwrap(), Value::Bool(true));
 
     // Test 2: STATUS_ERROR == 500 (500 == 500 = true)
-    let parser2 = Parser::new(
-        &editors,
-        &converters,
-        &enums,
-        &path_resolvers,
-        "STATUS_ERROR == 500",
-    );
+    let parser2 = Parser::new(&editors, &converters, &enums, &path_resolvers, "STATUS_ERROR == 500");
 
     if let Err(e) = parser2.is_error() {
         panic!("Parser error: {}", e);
@@ -912,19 +879,13 @@ impl PathAccessor for TrackingPathAccessor {
     }
 
     fn set(&self, _ctx: &mut EvalContext, path: &str, value: &Value) -> crate::Result<()> {
-        self.set_calls
-            .lock()
-            .unwrap()
-            .push((path.to_string(), value.clone()));
+        self.set_calls.lock().unwrap().push((path.to_string(), value.clone()));
         Ok(())
     }
 }
 
 /// Create a PathResolverMap with tracking accessor for target, my.int.value, status_code
-fn tracking_path_resolver_map(
-    int_value: i64,
-    status_code: i64,
-) -> (PathResolverMap, Arc<TrackingPathAccessor>) {
+fn tracking_path_resolver_map(int_value: i64, status_code: i64) -> (PathResolverMap, Arc<TrackingPathAccessor>) {
     let accessor = Arc::new(TrackingPathAccessor {
         int_value: Value::Int(int_value),
         status_code: Value::Int(status_code),
@@ -932,11 +893,8 @@ fn tracking_path_resolver_map(
         set_calls: Mutex::new(Vec::new()),
     });
     let accessor_clone = accessor.clone();
-    let resolver: PathResolver = Arc::new(
-        move || -> crate::Result<Arc<dyn PathAccessor + Send + Sync>> {
-            Ok(accessor_clone.clone())
-        },
-    );
+    let resolver: PathResolver =
+        Arc::new(move || -> crate::Result<Arc<dyn PathAccessor + Send + Sync>> { Ok(accessor_clone.clone()) });
     let mut m = PathResolverMap::new();
     m.insert("target".to_string(), resolver.clone());
     m.insert("x".to_string(), resolver.clone());
@@ -1106,14 +1064,8 @@ fn test_editor_not_executed_when_condition_false() {
         !capture.called,
         "Editor 'set' should NOT have been called when condition is false"
     );
-    assert!(
-        capture.first_arg.is_none(),
-        "No arguments should be captured"
-    );
-    assert!(
-        capture.second_arg.is_none(),
-        "No arguments should be captured"
-    );
+    assert!(capture.first_arg.is_none(), "No arguments should be captured");
+    assert!(capture.second_arg.is_none(), "No arguments should be captured");
 }
 
 #[test]
@@ -1265,11 +1217,8 @@ fn test_parser_path_expressions_comprehensive() {
         data: Value::Map(data_map),
     });
     let accessor_clone = accessor.clone();
-    let resolver: PathResolver = Arc::new(
-        move || -> crate::Result<Arc<dyn PathAccessor + Send + Sync>> {
-            Ok(accessor_clone.clone())
-        },
-    );
+    let resolver: PathResolver =
+        Arc::new(move || -> crate::Result<Arc<dyn PathAccessor + Send + Sync>> { Ok(accessor_clone.clone()) });
     let mut path_resolvers = PathResolverMap::new();
     path_resolvers.insert("resource.attributes.status".to_string(), resolver.clone());
     path_resolvers.insert("items".to_string(), resolver.clone());
@@ -1325,10 +1274,7 @@ fn test_converter_with_index() {
                 Value::String(s) => s,
                 _ => return Err("Split second argument must be string".into()),
             };
-            let parts: Vec<Value> = text
-                .split(delimiter.as_ref())
-                .map(|s| Value::string(s))
-                .collect();
+            let parts: Vec<Value> = text.split(delimiter.as_ref()).map(Value::string).collect();
             Ok(Value::List(parts))
         }),
     );
@@ -1433,10 +1379,7 @@ fn test_lexer_error_invalid_char() {
 
     // Should have lexer error due to invalid token @
     let err = parser.is_error();
-    assert!(
-        err.is_err(),
-        "Parser should report error for invalid character @"
-    );
+    assert!(err.is_err(), "Parser should report error for invalid character @");
     assert!(
         err.unwrap_err().to_string().contains("@"),
         "Error message should mention the invalid character"
@@ -1490,13 +1433,7 @@ fn test_lexer_error_invalid_bytes_hex() {
 
     // Note: logos may or may not accept this - depends on regex
     // 0xGG won't be recognized as BytesLiteral, will be parsed differently
-    let parser = Parser::new(
-        &editors,
-        &converters,
-        &enums,
-        &path_resolvers,
-        "0xGG == 0x00",
-    );
+    let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, "0xGG == 0x00");
 
     // Should have parsing error
     assert!(
@@ -1513,13 +1450,7 @@ fn test_lexer_error_single_quotes() {
     let enums = EnumMap::new();
     let path_resolvers = empty_path_resolver_map();
 
-    let parser = Parser::new(
-        &editors,
-        &converters,
-        &enums,
-        &path_resolvers,
-        "'single quote'",
-    );
+    let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, "'single quote'");
 
     // Should have error - single quotes not recognized
     assert!(
@@ -1726,13 +1657,7 @@ fn test_syntax_error_unknown_function() {
     let mut ctx = stub_context();
 
     // Parser may succeed, but execution should fail
-    let parser = Parser::new(
-        &editors,
-        &converters,
-        &enums,
-        &path_resolvers,
-        "unknownFunc()",
-    );
+    let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, "unknownFunc()");
 
     // This should either fail at parse time or execute time
     if parser.is_error().is_ok() {
@@ -1774,13 +1699,7 @@ fn test_syntax_error_unknown_enum() {
     let enums = EnumMap::new(); // Empty - no enums registered
     let path_resolvers = empty_path_resolver_map();
 
-    let parser = Parser::new(
-        &editors,
-        &converters,
-        &enums,
-        &path_resolvers,
-        "UNKNOWN_ENUM == 1",
-    );
+    let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, "UNKNOWN_ENUM == 1");
 
     assert!(
         parser.is_error().is_err(),
@@ -1812,13 +1731,7 @@ fn test_syntax_error_invalid_path_start() {
     let enums = EnumMap::new();
     let path_resolvers = empty_path_resolver_map();
 
-    let parser = Parser::new(
-        &editors,
-        &converters,
-        &enums,
-        &path_resolvers,
-        ".invalid.path",
-    );
+    let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, ".invalid.path");
 
     assert!(
         parser.is_error().is_err(),
@@ -1834,13 +1747,7 @@ fn test_syntax_error_double_dot_in_path() {
     let enums = EnumMap::new();
     let path_resolvers = empty_path_resolver_map();
 
-    let parser = Parser::new(
-        &editors,
-        &converters,
-        &enums,
-        &path_resolvers,
-        "path..field",
-    );
+    let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, "path..field");
 
     assert!(
         parser.is_error().is_err(),
@@ -1866,10 +1773,7 @@ fn test_runtime_error_division_by_zero_int() {
     assert!(parser.is_error().is_ok(), "Parsing should succeed");
 
     let result = parser.execute(&mut ctx);
-    assert!(
-        result.is_err(),
-        "Execute should fail with division by zero error"
-    );
+    assert!(result.is_err(), "Execute should fail with division by zero error");
     let err_msg = result.unwrap_err().to_string();
     assert!(
         err_msg.to_lowercase().contains("division") || err_msg.to_lowercase().contains("zero"),
@@ -1892,10 +1796,7 @@ fn test_runtime_error_division_by_zero_float() {
     assert!(parser.is_error().is_ok(), "Parsing should succeed");
 
     let result = parser.execute(&mut ctx);
-    assert!(
-        result.is_err(),
-        "Execute should fail with division by zero error"
-    );
+    assert!(result.is_err(), "Execute should fail with division by zero error");
 }
 
 /// PathAccessor that fails on get (for path_not_found test)
@@ -1924,13 +1825,7 @@ fn test_runtime_error_path_not_found() {
 
     let mut ctx = stub_context();
 
-    let parser = Parser::new(
-        &editors,
-        &converters,
-        &enums,
-        &path_resolvers,
-        "nonexistent.path == 1",
-    );
+    let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, "nonexistent.path == 1");
 
     // Parsing succeeds (resolver provided); execute fails when accessor.get returns error
     assert!(parser.is_error().is_ok(), "Parsing should succeed");
@@ -1946,19 +1841,10 @@ fn test_parse_error_missing_path_resolver() {
     let enums = EnumMap::new();
     let path_resolvers = empty_path_resolver_map();
 
-    let parser = Parser::new(
-        &editors,
-        &converters,
-        &enums,
-        &path_resolvers,
-        "some.unknown.path == 1",
-    );
+    let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, "some.unknown.path == 1");
 
     let err = parser.is_error();
-    assert!(
-        err.is_err(),
-        "Parsing should fail when path has no resolver"
-    );
+    assert!(err.is_err(), "Parsing should fail when path has no resolver");
     let msg = err.unwrap_err().to_string();
     assert!(
         msg.contains("No PathResolver provided for path"),
@@ -1988,21 +1874,12 @@ fn test_runtime_error_index_out_of_bounds() {
     let path_resolvers = empty_path_resolver_map();
     let mut ctx = stub_context();
 
-    let parser = Parser::new(
-        &editors,
-        &converters,
-        &enums,
-        &path_resolvers,
-        "GetList()[999] == 1",
-    );
+    let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, "GetList()[999] == 1");
 
     assert!(parser.is_error().is_ok(), "Parsing should succeed");
 
     let result = parser.execute(&mut ctx);
-    assert!(
-        result.is_err(),
-        "Execute should fail with index out of bounds"
-    );
+    assert!(result.is_err(), "Execute should fail with index out of bounds");
 }
 
 #[test]
@@ -2021,20 +1898,11 @@ fn test_runtime_error_negate_string() {
     let path_resolvers = empty_path_resolver_map();
     let mut ctx = stub_context();
 
-    let parser = Parser::new(
-        &editors,
-        &converters,
-        &enums,
-        &path_resolvers,
-        "-GetString()",
-    );
+    let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, "-GetString()");
 
     if parser.is_error().is_ok() {
         let result = parser.execute(&mut ctx);
-        assert!(
-            result.is_err(),
-            "Execute should fail when negating a string"
-        );
+        assert!(result.is_err(), "Execute should fail when negating a string");
     }
 }
 
@@ -2048,13 +1916,7 @@ fn test_runtime_error_type_mismatch_math() {
     let mut ctx = stub_context();
 
     // Note: "hello" * 2 - this will fail during execution
-    let parser = Parser::new(
-        &editors,
-        &converters,
-        &enums,
-        &path_resolvers,
-        r#""hello" * 2"#,
-    );
+    let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, r#""hello" * 2"#);
 
     // This might fail at parse or execute time depending on grammar
     if parser.is_error().is_ok() {
@@ -2106,20 +1968,11 @@ fn test_runtime_error_bool_comparison_invalid_op() {
     let path_resolvers = empty_path_resolver_map();
     let mut ctx = stub_context();
 
-    let parser: Parser = Parser::new(
-        &editors,
-        &converters,
-        &enums,
-        &path_resolvers,
-        "true < false",
-    );
+    let parser: Parser = Parser::new(&editors, &converters, &enums, &path_resolvers, "true < false");
 
     if parser.is_error().is_ok() {
         let result = parser.execute(&mut ctx);
-        assert!(
-            result.is_err(),
-            "Execute should fail for boolean less-than comparison"
-        );
+        assert!(result.is_err(), "Execute should fail for boolean less-than comparison");
     }
 }
 
@@ -2306,31 +2159,11 @@ fn run_benchmark(name: &str, parser: &Parser, ctx: &mut EvalContext, iterations:
     println!("Iterations: {}", iterations);
     println!("Total time: {:?}", total_elapsed);
     println!("----------------------------------------");
-    println!(
-        "Min:    {:>8} ns ({:>6.2} µs)",
-        min_ns,
-        min_ns as f64 / 1000.0
-    );
-    println!(
-        "Max:    {:>8} ns ({:>6.2} µs)",
-        max_ns,
-        max_ns as f64 / 1000.0
-    );
-    println!(
-        "Avg:    {:>8} ns ({:>6.2} µs)",
-        avg_ns,
-        avg_ns as f64 / 1000.0
-    );
-    println!(
-        "Median: {:>8} ns ({:>6.2} µs)",
-        median_ns,
-        median_ns as f64 / 1000.0
-    );
-    println!(
-        "P99:    {:>8} ns ({:>6.2} µs)",
-        p99_ns,
-        p99_ns as f64 / 1000.0
-    );
+    println!("Min:    {:>8} ns ({:>6.2} µs)", min_ns, min_ns as f64 / 1000.0);
+    println!("Max:    {:>8} ns ({:>6.2} µs)", max_ns, max_ns as f64 / 1000.0);
+    println!("Avg:    {:>8} ns ({:>6.2} µs)", avg_ns, avg_ns as f64 / 1000.0);
+    println!("Median: {:>8} ns ({:>6.2} µs)", median_ns, median_ns as f64 / 1000.0);
+    println!("P99:    {:>8} ns ({:>6.2} µs)", p99_ns, p99_ns as f64 / 1000.0);
     println!("----------------------------------------");
     println!(
         "Throughput: {:.0} ops/sec",

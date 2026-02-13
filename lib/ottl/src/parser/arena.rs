@@ -5,9 +5,8 @@
 //! - Constant folding for literals
 //! - linear memory with less inderections
 
-use crate::{PathResolverMap, Result, Value};
-
 use super::ast::*;
+use crate::{PathResolverMap, Result, Value};
 
 // =====================================================================================================================
 // Arena Storage
@@ -98,9 +97,7 @@ fn resolve_path(path: &PathExpr, path_resolvers: &PathResolverMap) -> Result<Res
 /// Convert boxed AST to arena-based AST for cache-friendly execution
 /// Path resolution happens HERE (once at parse time), not at each execution!
 pub fn convert_to_arena(
-    root: &RootExpr,
-    arena: &mut AstArena,
-    path_resolvers: &PathResolverMap,
+    root: &RootExpr, arena: &mut AstArena, path_resolvers: &PathResolverMap,
 ) -> Result<ArenaRootExpr> {
     match root {
         RootExpr::EditorStatement(stmt) => {
@@ -166,19 +163,13 @@ use super::ops::{compare, try_math_op};
 /// - Recursively converts nested bool/value expressions and function calls.
 /// - Applies **constant folding** where possible: literal comparisons, `not(literal)`, short-circuit
 ///   `and`/`or` with literal operands, so the arena may contain fewer/simpler nodes.
-fn convert_bool_expr(
-    expr: &BoolExpr,
-    arena: &mut AstArena,
-    path_resolvers: &PathResolverMap,
-) -> Result<BoolExprRef> {
+fn convert_bool_expr(expr: &BoolExpr, arena: &mut AstArena, path_resolvers: &PathResolverMap) -> Result<BoolExprRef> {
     let arena_expr = match expr {
         BoolExpr::Literal(b) => ArenaBoolExpr::Literal(*b),
         BoolExpr::Comparison { left, op, right } => {
             // CONSTANT FOLDING: if both sides are literals, compute at parse time!
-            if let (Some(left_val), Some(right_val)) =
-                (try_get_literal(left), try_get_literal(right))
-            {
-                if let Some(result) = compare(left_val, op, right_val).ok() {
+            if let (Some(left_val), Some(right_val)) = (try_get_literal(left), try_get_literal(right)) {
+                if let Ok(result) = compare(left_val, op, right_val) {
                     return Ok(arena.alloc_bool(ArenaBoolExpr::Literal(result)));
                 }
             }
@@ -253,11 +244,7 @@ fn convert_bool_expr(
 /// - Recursively converts primary value expressions and nested math expressions.
 /// - Applies **constant folding**: negate of literal, binary `literal op literal` → computed literal,
 ///   so the arena may contain a single [`ArenaMathExpr::Primary`] where the source had a tree.
-fn convert_math_expr(
-    expr: &MathExpr,
-    arena: &mut AstArena,
-    path_resolvers: &PathResolverMap,
-) -> Result<MathExprRef> {
+fn convert_math_expr(expr: &MathExpr, arena: &mut AstArena, path_resolvers: &PathResolverMap) -> Result<MathExprRef> {
     let arena_expr = match expr {
         MathExpr::Primary(v) => {
             let v_ref = convert_value_expr(v, arena, path_resolvers)?;
@@ -281,9 +268,7 @@ fn convert_math_expr(
         }
         MathExpr::Binary { left, op, right } => {
             // CONSTANT FOLDING: literal op literal => computed literal
-            if let (Some(left_val), Some(right_val)) =
-                (try_get_math_literal(left), try_get_math_literal(right))
-            {
+            if let (Some(left_val), Some(right_val)) = (try_get_math_literal(left), try_get_math_literal(right)) {
                 if let Some(result) = try_math_op(left_val, op, right_val) {
                     let v_ref = arena.alloc_value(ArenaValueExpr::Literal(result));
                     return Ok(arena.alloc_math(ArenaMathExpr::Primary(v_ref)));
@@ -307,9 +292,7 @@ fn convert_math_expr(
 /// - Recursively converts list items, map entries, nested function calls, and math expressions.
 /// - Literals are stored as-is without further conversion.
 fn convert_value_expr(
-    expr: &ValueExpr,
-    arena: &mut AstArena,
-    path_resolvers: &PathResolverMap,
+    expr: &ValueExpr, arena: &mut AstArena, path_resolvers: &PathResolverMap,
 ) -> Result<ValueExprRef> {
     let arena_expr = match expr {
         ValueExpr::Literal(v) => ArenaValueExpr::Literal(v.clone()),
@@ -349,19 +332,13 @@ fn convert_value_expr(
 /// - Preserves `name`, `is_editor`, `indexes`, and the pre-resolved `callback` from the source AST.
 /// - Does not resolve callbacks here; the parser is expected to have attached [`CallbackFn`] when applicable.
 fn convert_function_call(
-    fc: &FunctionCall,
-    arena: &mut AstArena,
-    path_resolvers: &PathResolverMap,
+    fc: &FunctionCall, arena: &mut AstArena, path_resolvers: &PathResolverMap,
 ) -> Result<FunctionCallRef> {
     let args: Result<Vec<_>> = fc
         .args
         .iter()
         .map(|arg| match arg {
-            ArgExpr::Positional(v) => Ok(ArenaArgExpr::Positional(convert_value_expr(
-                v,
-                arena,
-                path_resolvers,
-            )?)),
+            ArgExpr::Positional(v) => Ok(ArenaArgExpr::Positional(convert_value_expr(v, arena, path_resolvers)?)),
             ArgExpr::Named { name, value } => Ok(ArenaArgExpr::Named {
                 name: name.clone(),
                 value: convert_value_expr(value, arena, path_resolvers)?,

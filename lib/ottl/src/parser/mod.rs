@@ -3,26 +3,23 @@
 //! This module is split into submodules for maintainability:
 //! - `ast`: AST type definitions (arena-based and boxed)
 //! - `arena`: Arena storage and AST conversion with constant folding
-//! - `parser`: Chumsky parser
+//! - `grammar`: Chumsky parser
 //! - `eval`: AST evaluation functions
 
 mod arena;
 mod ast;
 mod eval;
+mod grammar;
 mod ops;
-mod parser;
-
-use crate::lexer::Token;
-use crate::{
-    BoxError, CallbackMap, EnumMap, EvalContext, OttlParser, PathResolverMap, Result, Value,
-};
-
-// Re-export AST types that may be needed externally
-pub use ast::*;
 
 use arena::{convert_to_arena, AstArena};
+// Re-export AST types that may be needed externally
+pub use ast::*;
 use eval::arena_evaluate_root;
-use parser::build_parser;
+use grammar::build_parser;
+
+use crate::lexer::Token;
+use crate::{BoxError, CallbackMap, EnumMap, EvalContext, OttlParser, PathResolverMap, Result, Value};
 
 // =====================================================================================================================
 // Parser Implementation
@@ -44,10 +41,7 @@ impl Parser {
     /// Each path that appears in the expression must have a corresponding entry in `path_resolvers`;
     /// otherwise parsing fails with an error.
     pub fn new(
-        editors_map: &CallbackMap,
-        converters_map: &CallbackMap,
-        enums_map: &EnumMap,
-        path_resolvers: &PathResolverMap,
+        editors_map: &CallbackMap, converters_map: &CallbackMap, enums_map: &EnumMap, path_resolvers: &PathResolverMap,
         expression: &str,
     ) -> Self {
         let mut parser = Parser {

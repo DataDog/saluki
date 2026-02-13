@@ -59,9 +59,7 @@ pub fn math_op(left: &Value, op: &MathOp, right: &Value) -> Result<Value> {
         (Value::Float(l), Value::Float(r)) => float_op(*l, *r, op),
         (Value::Int(l), Value::Float(r)) => float_op(*l as f64, *r, op),
         (Value::Float(l), Value::Int(r)) => float_op(*l, *r as f64, op),
-        (Value::String(l), Value::String(r)) if matches!(op, MathOp::Add) => {
-            Ok(Value::string(format!("{}{}", l, r)))
-        }
+        (Value::String(l), Value::String(r)) if matches!(op, MathOp::Add) => Ok(Value::string(format!("{}{}", l, r))),
         _ => Err(format!(
             "Cannot perform math operation on {:?} and {:?}",
             std::mem::discriminant(left),
