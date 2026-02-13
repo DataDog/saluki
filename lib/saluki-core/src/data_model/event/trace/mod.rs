@@ -12,6 +12,7 @@ use stringtheory::MetaString;
 pub struct TraceSampling {
     /// Whether or not the trace was dropped during sampling.
     pub dropped_trace: bool,
+
     /// The sampling priority assigned to this trace.
     ///
     /// Common values include:
@@ -29,18 +30,17 @@ pub struct TraceSampling {
     /// - `None`: No decision maker set
     pub decision_maker: Option<MetaString>,
 
-    /// The OTLP sampling rate applied to this trace, formatted as a string (e.g., "0.25").
+    /// The OTLP sampling rate applied to this trace.
     ///
     /// This corresponds to the `_dd.otlp_sr` tag and represents the effective sampling rate
     /// from the OTLP ingest path.
-    pub otlp_sampling_rate: Option<MetaString>,
+    pub otlp_sampling_rate: Option<f64>,
 }
 
 impl TraceSampling {
     /// Creates a new `TraceSampling` instance.
     pub fn new(
-        dropped_trace: bool, priority: Option<i32>, decision_maker: Option<MetaString>,
-        otlp_sampling_rate: Option<MetaString>,
+        dropped_trace: bool, priority: Option<i32>, decision_maker: Option<MetaString>, otlp_sampling_rate: Option<f64>,
     ) -> Self {
         Self {
             dropped_trace,
