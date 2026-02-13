@@ -458,7 +458,7 @@ impl TraceEndpointEncoder {
                 sampling.priority.unwrap_or(DEFAULT_CHUNK_PRIORITY),
                 sampling.dropped_trace,
                 sampling.decision_maker.as_deref(),
-                sampling.otlp_sampling_rate.unwrap_or_else(|| sampling_rate),
+                sampling.otlp_sampling_rate.unwrap_or(sampling_rate),
             ),
             None => (DEFAULT_CHUNK_PRIORITY, false, None, sampling_rate),
         };
