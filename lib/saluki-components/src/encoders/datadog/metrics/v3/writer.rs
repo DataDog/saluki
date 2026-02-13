@@ -7,7 +7,7 @@ use protobuf::CodedOutputStream;
 use saluki_error::GenericError;
 
 use super::interner::Interner;
-use super::types::{field_numbers, V3MetricType, V3ValueType};
+use super::types::{field_numbers, value_type_for_values, V3MetricType, V3ValueType};
 
 const METRIC_TYPE_DEFAULT: i32 = 0;
 const METRIC_TYPE_AGENT_HIDDEN: i32 = 9;
@@ -474,13 +474,8 @@ impl<'a> V3MetricBuilder<'a> {
         let start = self.point_start_idx;
         let end = self.writer.vals_float64.len();
 
-        // Determine the maximum value type needed
-        let mut val_ty = V3ValueType::Zero;
-        for i in start..end {
-            let val = self.writer.vals_float64[i];
-            let pnt_val_ty = V3ValueType::for_value(val);
-            val_ty = val_ty.max(pnt_val_ty);
-        }
+        // Determine the best value type for all points in this metric.
+        let val_ty = value_type_for_values(self.writer.vals_float64[start..end].iter().copied());
 
         // Update the type field
         self.writer.types[self.metric_idx] |= val_ty.as_u64();
@@ -674,6 +669,50 @@ mod tests {
         let mut output = Vec::new();
         writer.finalize(&mut output).unwrap();
         assert!(output.is_empty());
+    }
+
+    #[test]
+    fn test_value_compaction_large_int_plus_float32() {
+        // Regression test: a large integer (> 2^24) mixed with a fractional
+        // float32 value must use Float64, not Float32, to avoid precision loss.
+        let mut writer = V3Writer::new();
+
+        {
+            let mut metric = writer.write(V3MetricType::Gauge, "mixed.metric");
+            metric.add_point(1000, (1i64 << 30) as f64); // large int, doesn't fit in f32
+            metric.add_point(2000, 1.5); // fractional, fits in f32
+            metric.close();
+        }
+
+        let data = writer.finalize_inner();
+
+        // Must be stored in float64, not float32
+        assert!(
+            data.vals_float32.is_empty(),
+            "large int should not be stored as float32"
+        );
+        assert_eq!(data.vals_float64, vec![(1i64 << 30) as f64, 1.5]);
+        assert!(data.vals_sint64.is_empty());
+    }
+
+    #[test]
+    fn test_value_compaction_small_int_plus_float32() {
+        // Small integers (|v| <= 2^24) mixed with float32 values should
+        // compact to Float32, since small ints fit losslessly in f32.
+        let mut writer = V3Writer::new();
+
+        {
+            let mut metric = writer.write(V3MetricType::Gauge, "small.mixed");
+            metric.add_point(1000, 100.0);
+            metric.add_point(2000, 1.5);
+            metric.close();
+        }
+
+        let data = writer.finalize_inner();
+
+        assert!(data.vals_float64.is_empty());
+        assert_eq!(data.vals_float32, vec![100.0, 1.5]);
+        assert!(data.vals_sint64.is_empty());
     }
 
     #[test]
