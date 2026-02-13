@@ -143,7 +143,9 @@ pub struct Lexer<'a> {
 impl<'a> Lexer<'a> {
     /// Collect tokens with their positions (spans)
     /// Returns an error if any invalid token is encountered
-    pub fn collect_with_spans(input: &'a str) -> Result<Vec<(Token<'a>, std::ops::Range<usize>)>, LexerError> {
+    pub fn collect_with_spans(
+        input: &'a str,
+    ) -> Result<Vec<(Token<'a>, std::ops::Range<usize>)>, LexerError> {
         let mut lexer = Token::lexer(input);
         let mut tokens = Vec::new();
         while let Some(result) = lexer.next() {
