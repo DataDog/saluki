@@ -10,6 +10,7 @@ use tracing::debug;
 
 #[cfg(all(target_arch = "aarch64", not(miri)))]
 mod normalize_neon;
+pub(crate) mod normalize_scalar;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 mod normalize_sse2;
 #[cfg(all(target_arch = "aarch64", not(miri)))]
@@ -189,6 +190,19 @@ pub fn normalize_tag(value: &str) -> MetaString {
 }
 
 fn normalize(value: &str, remove_digit_start_char: bool) -> MetaString {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64", all(target_arch = "aarch64", not(miri))))]
+    {
+        return normalize_simd(value, remove_digit_start_char);
+    }
+
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64", all(target_arch = "aarch64", not(miri)),)))]
+    {
+        normalize_scalar::normalize(value, remove_digit_start_char)
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64", all(target_arch = "aarch64", not(miri))))]
+pub(crate) fn normalize_simd(value: &str, remove_digit_start_char: bool) -> MetaString {
     normalize_with_ascii_fast_path(value, remove_digit_start_char, is_normalized_ascii_tag)
 }
 
@@ -359,6 +373,15 @@ fn is_normalized_ascii_tag(tag: &str, check_valid_start_char: bool) -> bool {
     is_normalized_ascii_tag_with_simd_check(tag, check_valid_start_char, is_normalized_ascii_tag_simd)
 }
 
+#[cfg(any(
+    test,
+    feature = "bench",
+    not(any(target_arch = "x86", target_arch = "x86_64", all(target_arch = "aarch64", not(miri))))
+))]
+fn is_normalized_ascii_tag_without_simd(tag: &str, check_valid_start_char: bool) -> bool {
+    is_normalized_ascii_tag_with_simd_check(tag, check_valid_start_char, |_bytes, _start| None)
+}
+
 fn is_normalized_ascii_tag_with_simd_check<F>(tag: &str, check_valid_start_char: bool, simd_check_fn: F) -> bool
 where
     F: Fn(&[u8], usize) -> Option<bool>,
@@ -464,9 +487,7 @@ mod tests {
     use super::*;
 
     fn normalize_tag_scalar_for_tests(value: &str) -> MetaString {
-        normalize_with_ascii_fast_path(value, true, |tag, check_valid_start_char| {
-            is_normalized_ascii_tag_with_simd_check(tag, check_valid_start_char, |_bytes, _start| None)
-        })
+        normalize_scalar::normalize(value, true)
     }
     // Test cases taken from the agent codebase
     // https://github.com/DataDog/datadog-agent/blob/instrument-otlp-traffic/pkg/trace/traceutil/normalize/normalize_test.go#L17

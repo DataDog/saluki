@@ -80,7 +80,6 @@ tracing = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]
-cpu-time = { workspace = true }
 criterion = { workspace = true }
 proptest = { workspace = true }
 pyo3-ffi = { workspace = true }
