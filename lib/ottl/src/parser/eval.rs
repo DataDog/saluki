@@ -64,11 +64,7 @@ impl<'a> ArenaArgs<'a> {
     /// Builds an [`ArenaArgs`] for a call: borrows arena, argument list, and context.
     #[inline]
     fn new(arena: &'a AstArena, args: &'a [ArenaArgExpr], ctx: &'a mut EvalContext) -> Self {
-        Self {
-            arena,
-            args,
-            ctx,
-        }
+        Self { arena, args, ctx }
     }
 }
 
@@ -97,11 +93,9 @@ impl<'a> Args for ArenaArgs<'a> {
             return Err(format!("Argument index {} out of bounds", index).into());
         }
 
-        let ctx = self.ctx;
-
         match &self.args[index] {
-            ArenaArgExpr::Positional(value_ref) => arena_evaluate_value_expr(*value_ref, self.arena, ctx),
-            ArenaArgExpr::Named { value, .. } => arena_evaluate_value_expr(*value, self.arena, ctx),
+            ArenaArgExpr::Positional(value_ref) => arena_evaluate_value_expr(*value_ref, self.arena, self.ctx),
+            ArenaArgExpr::Named { value, .. } => arena_evaluate_value_expr(*value, self.arena, self.ctx),
         }
     }
 
@@ -130,10 +124,10 @@ impl<'a> Args for ArenaArgs<'a> {
             ArenaArgExpr::Named { value, .. } => *value,
         };
 
-        let ctx = self.ctx;
-
         match self.arena.get_value(value_ref) {
-            ArenaValueExpr::Path(resolved_path) => resolved_path.accessor.set(ctx, &resolved_path.full_path, value),
+            ArenaValueExpr::Path(resolved_path) => {
+                resolved_path.accessor.set(self.ctx, &resolved_path.full_path, value)
+            }
             _ => Err("set: argument must be a path expression".into()),
         }
     }
