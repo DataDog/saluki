@@ -411,17 +411,30 @@ cargo test bench_execute_complex_realistic -- --ignored --nocapture
 
 ### Benchmark Suite
 
-| Benchmark | Description | Expression |
-|-----------|-------------|------------|
-| `bench_execute_complex_realistic` | Real-world scenario (editor + WHERE + paths + enums) | `set(my.int.value, my.int.status + 100) where (my.int.status == STATUS_OK or my.int.status < STATUS_ERROR) and my.bool.enabled` |
+Benchmarks live in `lib/ottl/benches/parser.rs`. Two kinds of benchmarks are included:
+
+- **Parser creation**: measures `Parser::new(...)` (lexer + grammar parse + path resolution).
+- **Execute**: measures only `parser.execute(ctx)`; the parser is built once outside the timed loop.
+
+| Benchmark | What is measured | Expression / scenario |
+|-----------|------------------|-------------------------|
+| `parser_creation` | Time to create parser (lex + parse + path resolution) | `set(my.int.value, my.int.status + 100) where (my.int.status == STATUS_OK or ...) and my.bool.enabled` |
+| `execute_complex_realistic` | Execute: editor + WHERE + paths + enums | Same as above |
+| `execute_math_simple` | Execute: math expression only | `1+2*(9-2)/2` |
+| `execute_bool_enums_paths_converters` | Execute: boolean with enums, paths, `not`, `and`/`or`, converters | `(my.int.status == STATUS_OK or my.bool.enabled) and not IsDisabled() and BoolConv()` |
+| `execute_editor_call` | Execute: single editor call | `set(my.int.value, 42)` |
 
 ### Benchmark Results
 
-Results from running on Apple M4 Max (16 cores), 100,000 iterations (release build).
+Results from running `cargo bench -p ottl` (release build, 100 samples). Times are per iteration.
 
-| Benchmark | Avg | Median | P99 | Throughput |
-|-----------|-----|--------|-----|------------|
-| **complex_realistic** | 70 ns | 83 ns | 84 ns | ~10.6M ops/sec |
+| Benchmark | Time (per iter) | Throughput (approx) |
+|-----------|-----------------|----------------------|
+| `parser_creation` | ~6.3 µs | ~158k parsers/sec |
+| `execute_complex_realistic` | ~69 ns | ~14.5M exec/sec |
+| `execute_math_simple` | ~41 ns | ~24.5M exec/sec |
+| `execute_bool_enums_paths_converters` | ~46 ns | ~21.5M exec/sec |
+| `execute_editor_call` | ~17.5 ns | ~57M exec/sec |
 
 
 ### Optimization Notes
