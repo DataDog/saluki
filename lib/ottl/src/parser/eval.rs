@@ -57,17 +57,17 @@ fn apply_index(value: &Value, index: &IndexExpr) -> Result<Value> {
 struct ArenaArgs<'a> {
     arena: &'a AstArena,
     args: &'a [ArenaArgExpr],
-    ctx: *mut EvalContext,
+    ctx: &'a mut EvalContext,
 }
 
 impl<'a> ArenaArgs<'a> {
     /// Builds an [`ArenaArgs`] for a call: borrows arena, argument list, and context.
     #[inline]
-    fn new(arena: &'a AstArena, args: &'a [ArenaArgExpr], ctx: &mut EvalContext) -> Self {
+    fn new(arena: &'a AstArena, args: &'a [ArenaArgExpr], ctx: &'a mut EvalContext) -> Self {
         Self {
             arena,
             args,
-            ctx: ctx as *mut EvalContext,
+            ctx,
         }
     }
 }
@@ -80,9 +80,7 @@ impl<'a> Args for ArenaArgs<'a> {
     /// Returns exclusive access to the evaluation context for the duration of the call.
     #[inline]
     fn ctx(&mut self) -> &mut EvalContext {
-        // SAFETY: We have exclusive access through the mutable reference in `new`,
-        // and ArenaArgs is never shared or cloned.
-        unsafe { &mut *self.ctx }
+        self.ctx
     }
 
     /// Returns the number of arguments (positional and named).
@@ -99,7 +97,7 @@ impl<'a> Args for ArenaArgs<'a> {
             return Err(format!("Argument index {} out of bounds", index).into());
         }
 
-        let ctx = unsafe { &mut *self.ctx };
+        let ctx = self.ctx;
 
         match &self.args[index] {
             ArenaArgExpr::Positional(value_ref) => arena_evaluate_value_expr(*value_ref, self.arena, ctx),
@@ -132,7 +130,7 @@ impl<'a> Args for ArenaArgs<'a> {
             ArenaArgExpr::Named { value, .. } => *value,
         };
 
-        let ctx = unsafe { &mut *self.ctx };
+        let ctx = self.ctx;
 
         match self.arena.get_value(value_ref) {
             ArenaValueExpr::Path(resolved_path) => resolved_path.accessor.set(ctx, &resolved_path.full_path, value),
