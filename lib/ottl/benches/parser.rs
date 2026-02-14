@@ -110,6 +110,48 @@ impl PathAccessor for BenchPathAccessorBoolEnabled {
 }
 
 // =====================================================================================================================
+// Criterion: parser creation
+// =====================================================================================================================
+
+fn bench_parser_creation(c: &mut Criterion) {
+    let mut editors = CallbackMap::new();
+    let converters = CallbackMap::new();
+
+    editors.insert(
+        "set".to_string(),
+        Arc::new(|args: &mut dyn Args| {
+            let value = args.get(1)?;
+            args.set(0, &value)?;
+            Ok(Value::Nil)
+        }),
+    );
+
+    let mut enums = EnumMap::new();
+    enums.insert("STATUS_OK".to_string(), 200);
+    enums.insert("STATUS_ERROR".to_string(), 500);
+
+    let resolver_int_value: PathResolver =
+        Arc::new(|| Ok(Arc::new(BenchPathAccessorIntValue) as Arc<dyn PathAccessor + Send + Sync>));
+    let resolver_int_status: PathResolver =
+        Arc::new(|| Ok(Arc::new(BenchPathAccessorIntStatus) as Arc<dyn PathAccessor + Send + Sync>));
+    let resolver_bool_enabled: PathResolver =
+        Arc::new(|| Ok(Arc::new(BenchPathAccessorBoolEnabled) as Arc<dyn PathAccessor + Send + Sync>));
+    let mut path_resolvers = PathResolverMap::new();
+    path_resolvers.insert("my.int.value".to_string(), resolver_int_value);
+    path_resolvers.insert("my.int.status".to_string(), resolver_int_status);
+    path_resolvers.insert("my.bool.enabled".to_string(), resolver_bool_enabled);
+
+    let expression = r#"set(my.int.value, my.int.status + 100) where (my.int.status == STATUS_OK or my.int.status < STATUS_ERROR) and my.bool.enabled"#;
+
+    c.bench_function("parser_creation", |b| {
+        b.iter(|| {
+            let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, black_box(expression));
+            black_box(parser)
+        })
+    });
+}
+
+// =====================================================================================================================
 // Criterion: complex real-world-like expression (from bench_execute_complex_realistic)
 // =====================================================================================================================
 
@@ -160,5 +202,125 @@ fn bench_execute_complex_realistic(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_execute_complex_realistic);
+// =====================================================================================================================
+// Criterion: execute — simple math expression only
+// =====================================================================================================================
+
+fn bench_execute_math_simple(c: &mut Criterion) {
+    let editors = CallbackMap::new();
+    let converters = CallbackMap::new();
+    let enums = EnumMap::new();
+    let path_resolvers = PathResolverMap::new();
+
+    // 1+2*(9-2)/2 = 1 + 2*7/2 = 1 + 7 = 8 (math-only RootExpr::MathExpression)
+    let expression = "1+2*(9-2)/2";
+    let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, expression);
+    assert!(parser.is_error().is_ok(), "Parse failed");
+
+    let mut ctx: EvalContext = Box::new(());
+
+    c.bench_function("execute_math_simple", |b| {
+        b.iter(|| {
+            let result = parser.execute(black_box(&mut ctx));
+            black_box(result)
+        })
+    });
+}
+
+// =====================================================================================================================
+// Criterion: execute — boolean expression (enums, paths, negation, and/or, converters)
+// =====================================================================================================================
+
+fn bench_execute_bool_enums_paths_converters(c: &mut Criterion) {
+    let editors = CallbackMap::new();
+    let mut converters = CallbackMap::new();
+
+    // Converter used in condition: returns bool
+    converters.insert(
+        "IsDisabled".to_string(),
+        Arc::new(|_args: &mut dyn Args| Ok(Value::Bool(false))),
+    );
+    converters.insert(
+        "BoolConv".to_string(),
+        Arc::new(|_args: &mut dyn Args| Ok(Value::Bool(true))),
+    );
+
+    let mut enums = EnumMap::new();
+    enums.insert("STATUS_OK".to_string(), 200);
+
+    let resolver_int_status: PathResolver =
+        Arc::new(|| Ok(Arc::new(BenchPathAccessorIntStatus) as Arc<dyn PathAccessor + Send + Sync>));
+    let resolver_bool_enabled: PathResolver =
+        Arc::new(|| Ok(Arc::new(BenchPathAccessorBoolEnabled) as Arc<dyn PathAccessor + Send + Sync>));
+    let mut path_resolvers = PathResolverMap::new();
+    path_resolvers.insert("my.int.status".to_string(), resolver_int_status);
+    path_resolvers.insert("my.bool.enabled".to_string(), resolver_bool_enabled);
+
+    // (path == enum or path) and not converter() and converter()
+    let expression = r#"(my.int.status == STATUS_OK or my.bool.enabled) and not IsDisabled() and BoolConv()"#;
+    let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, expression);
+    assert!(parser.is_error().is_ok(), "Parse failed");
+
+    let mut ctx: EvalContext = Box::new(BenchContext::new());
+
+    c.bench_function("execute_bool_enums_paths_converters", |b| {
+        b.iter(|| {
+            if let Some(bench_ctx) = ctx.downcast_mut::<BenchContext>() {
+                bench_ctx.my_int_status = 200;
+                bench_ctx.my_bool_enabled = true;
+            }
+            let result = parser.execute(black_box(&mut ctx));
+            black_box(result)
+        })
+    });
+}
+
+// =====================================================================================================================
+// Criterion: execute — editor call only
+// =====================================================================================================================
+
+fn bench_execute_editor_call(c: &mut Criterion) {
+    let mut editors = CallbackMap::new();
+    let converters = CallbackMap::new();
+    let enums = EnumMap::new();
+
+    editors.insert(
+        "set".to_string(),
+        Arc::new(|args: &mut dyn Args| {
+            let value = args.get(1)?;
+            args.set(0, &value)?;
+            Ok(Value::Nil)
+        }),
+    );
+
+    let resolver_int_value: PathResolver =
+        Arc::new(|| Ok(Arc::new(BenchPathAccessorIntValue) as Arc<dyn PathAccessor + Send + Sync>));
+    let mut path_resolvers = PathResolverMap::new();
+    path_resolvers.insert("my.int.value".to_string(), resolver_int_value);
+
+    let expression = "set(my.int.value, 42)";
+    let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, expression);
+    assert!(parser.is_error().is_ok(), "Parse failed");
+
+    let mut ctx: EvalContext = Box::new(BenchContext::new());
+
+    c.bench_function("execute_editor_call", |b| {
+        b.iter(|| {
+            if let Some(bench_ctx) = ctx.downcast_mut::<BenchContext>() {
+                bench_ctx.my_int_value = 0;
+            }
+            let result = parser.execute(black_box(&mut ctx));
+            black_box(result)
+        })
+    });
+}
+
+criterion_group!(
+    benches,
+    bench_parser_creation,
+    bench_execute_complex_realistic,
+    bench_execute_math_simple,
+    bench_execute_bool_enums_paths_converters,
+    bench_execute_editor_call,
+);
 criterion_main!(benches);
