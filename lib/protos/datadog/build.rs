@@ -115,6 +115,21 @@ fn main() {
         .customize(codegen_customize)
         .run_from_script();
 
+    // Generate piecemeal builder types for incremental trace encoding.
+    piecemeal_build::ConfigBuilder::new()
+        .input_files(&[
+            "proto/datadog-agent/datadog/trace/agent_payload.proto",
+            "proto/datadog-agent/datadog/trace/tracer_payload.proto",
+            "proto/datadog-agent/datadog/trace/span.proto",
+            "proto/datadog-agent/datadog/trace/idx/tracer_payload.proto",
+            "proto/datadog-agent/datadog/trace/idx/span.proto",
+        ])
+        .cargo_output_dir("trace_piecemeal")
+        .expect("failed to resolve cargo output directory")
+        .include_paths(&["proto/datadog-agent"])
+        .compile()
+        .expect("piecemeal codegen failed for trace protos");
+
     // Handle code generation for gRPC service definitions.
     tonic_prost_build::configure()
         .build_server(true)

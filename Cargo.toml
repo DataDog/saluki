@@ -68,6 +68,8 @@ protobuf = { version = "3.7", default-features = false, features = [
   "with-bytes",
 ] }
 protobuf-codegen = { version = "3.7", default-features = false }
+piecemeal = { git = "https://github.com/tobz/piecemeal" }
+piecemeal-build = { git = "https://github.com/tobz/piecemeal" }
 serde = { version = "1", default-features = false, features = [
   "derive",
   "std",
