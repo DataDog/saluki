@@ -428,6 +428,8 @@ Benchmarks live in `lib/ottl/benches/parser.rs`. Two kinds of benchmarks are inc
 
 Results from running `cargo bench -p ottl` (release build, 100 samples). Times are per iteration.
 
+**N.B.:** Apple M4 Max, 64 GB was used to run benchmarks.
+
 | Benchmark | Time (per iter) | Throughput (approx) |
 |-----------|-----------------|----------------------|
 | `parser_creation` | ~6.3 µs | ~158k parsers/sec |
