@@ -113,22 +113,23 @@ pub enum Argument {
 
 /// Trait for accessing (reading and writing) path values in the context.
 ///
-/// The evaluator calls only [`get_at`](PathAccessor::get_at) with the path and index list;
-/// path interpretation and indexing (e.g. `["key"]`, `[0]`) are the integrator's responsibility.
+/// The evaluator calls [`get`](PathAccessor::get) and [`set`](PathAccessor::set) with the path
+/// and index list; path interpretation and indexing (e.g. `["key"]`, `[0]`) are the integrator's
+/// responsibility.
 pub trait PathAccessor: fmt::Debug {
     /// Get the value at this path with the given indexes applied.
     ///
     /// Path interpretation, including indexing (e.g. `["key"]`, `[0]`), is **not** implemented by
     /// OTTL; the integrator must implement this method. For a typical "get base value then apply
     /// indexes" implementation, use [`crate::helpers::apply_indexes`].
-    fn get_at(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> Result<Value>;
+    fn get(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> Result<Value>;
 
     /// Set the value at this path with the given indexes applied.
     ///
     /// When `indexes` is empty, the implementor sets the value at the path. When `indexes` is
     /// non-empty (e.g. `my.list[0] = x`), the implementor may support updating at that index
     /// or return an error.
-    fn set_at(
+    fn set(
         &self,
         ctx: &mut EvalContext,
         path: &str,

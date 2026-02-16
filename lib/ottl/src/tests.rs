@@ -401,12 +401,12 @@ fn test_argument_access() {
 struct StubPathAccessor;
 
 impl PathAccessor for StubPathAccessor {
-    fn get_at(&self, _ctx: &EvalContext, _path: &str, _indexes: &[IndexExpr]) -> crate::Result<Value> {
-        Err("StubPathAccessor: get_at not implemented".into())
+    fn get(&self, _ctx: &EvalContext, _path: &str, _indexes: &[IndexExpr]) -> crate::Result<Value> {
+        Err("StubPathAccessor: get not implemented".into())
     }
 
-    fn set_at(&self, _ctx: &mut EvalContext, _path: &str, _indexes: &[IndexExpr], _value: &Value) -> crate::Result<()> {
-        Err("StubPathAccessor: set_at not implemented".into())
+    fn set(&self, _ctx: &mut EvalContext, _path: &str, _indexes: &[IndexExpr], _value: &Value) -> crate::Result<()> {
+        Err("StubPathAccessor: set not implemented".into())
     }
 }
 
@@ -430,7 +430,7 @@ fn stub_context() -> EvalContext {
 #[test]
 fn test_stub_path_resolver_for_execute_fails() {
     // stub_path_resolver_for provides resolvers so parsing succeeds;
-    // execute fails because StubPathAccessor::get_at returns Err
+    // execute fails because StubPathAccessor::get returns Err
     let editors = CallbackMap::new();
     let converters = CallbackMap::new();
     let enums = EnumMap::new();
@@ -442,7 +442,7 @@ fn test_stub_path_resolver_for_execute_fails() {
     let result = parser.execute(&mut stub_context());
     assert!(
         result.is_err(),
-        "Execute should fail: stub accessor returns Err from get_at"
+        "Execute should fail: stub accessor returns Err from get"
     );
 }
 
@@ -509,7 +509,7 @@ struct MockPathAccessor {
 }
 
 impl PathAccessor for MockPathAccessor {
-    fn get_at(&self, _ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
+    fn get(&self, _ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
         let v = match path {
             "my.bool.value" => self.bool_value.clone(),
             "my.int.value" => self.int_value.clone(),
@@ -518,8 +518,8 @@ impl PathAccessor for MockPathAccessor {
         crate::helpers::apply_indexes(v, indexes)
     }
 
-    fn set_at(&self, _ctx: &mut EvalContext, _path: &str, _indexes: &[IndexExpr], _value: &Value) -> crate::Result<()> {
-        Err("MockPathAccessor: set_at not implemented".into())
+    fn set(&self, _ctx: &mut EvalContext, _path: &str, _indexes: &[IndexExpr], _value: &Value) -> crate::Result<()> {
+        Err("MockPathAccessor: set not implemented".into())
     }
 }
 
@@ -872,7 +872,7 @@ struct TrackingPathAccessor {
 }
 
 impl PathAccessor for TrackingPathAccessor {
-    fn get_at(&self, _ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
+    fn get(&self, _ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
         let v = match path {
             "my.int.value" => self.int_value.clone(),
             "status_code" => self.status_code.clone(),
@@ -882,7 +882,7 @@ impl PathAccessor for TrackingPathAccessor {
         crate::helpers::apply_indexes(v, indexes)
     }
 
-    fn set_at(&self, _ctx: &mut EvalContext, path: &str, indexes: &[IndexExpr], value: &Value) -> crate::Result<()> {
+    fn set(&self, _ctx: &mut EvalContext, path: &str, indexes: &[IndexExpr], value: &Value) -> crate::Result<()> {
         if !indexes.is_empty() {
             return Err("TrackingPathAccessor: indexed set not supported".into());
         }
@@ -1183,7 +1183,7 @@ struct PathExprAccessor {
 }
 
 impl PathAccessor for PathExprAccessor {
-    fn get_at(&self, _ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
+    fn get(&self, _ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
         let v = match path {
             "resource.attributes.status" => self.resource_status.clone(),
             "resource.count" => self.resource_count.clone(),
@@ -1194,8 +1194,8 @@ impl PathAccessor for PathExprAccessor {
         crate::helpers::apply_indexes(v, indexes)
     }
 
-    fn set_at(&self, _ctx: &mut EvalContext, _path: &str, _indexes: &[IndexExpr], _value: &Value) -> crate::Result<()> {
-        Err("PathExprAccessor: set_at not implemented".into())
+    fn set(&self, _ctx: &mut EvalContext, _path: &str, _indexes: &[IndexExpr], _value: &Value) -> crate::Result<()> {
+        Err("PathExprAccessor: set not implemented".into())
     }
 }
 
@@ -1260,35 +1260,35 @@ fn test_parser_path_expressions_comprehensive() {
 }
 
 // ============================================================================
-// PathAccessor::get_at tests (path index handling)
+// PathAccessor::get tests (path index handling)
 // ============================================================================
 
-/// PathAccessor that overrides get_at: when indexes are present, returns a fixed value
-/// so we can verify the evaluator calls get_at (not only get + internal index application).
+/// PathAccessor that overrides get: when indexes are present, returns a fixed value
+/// so we can verify the evaluator calls get (not only base value + internal index application).
 #[derive(Debug)]
 struct GetAtOverrideAccessor {
     base_value: Value,
 }
 
 impl PathAccessor for GetAtOverrideAccessor {
-    fn get_at(&self, _ctx: &EvalContext, _path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
+    fn get(&self, _ctx: &EvalContext, _path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
         if indexes.is_empty() {
             Ok(self.base_value.clone())
         } else {
-            // Return a distinct value so tests can assert get_at was used
+            // Return a distinct value so tests can assert get was used
             Ok(Value::Int(12345))
         }
     }
 
-    fn set_at(&self, _ctx: &mut EvalContext, _path: &str, _indexes: &[IndexExpr], _value: &Value) -> crate::Result<()> {
-        Err("set_at not implemented".into())
+    fn set(&self, _ctx: &mut EvalContext, _path: &str, _indexes: &[IndexExpr], _value: &Value) -> crate::Result<()> {
+        Err("set not implemented".into())
     }
 }
 
 #[test]
-fn test_path_indexes_use_get_at() {
-    // When a path has indexes (e.g. items[0]), the evaluator calls PathAccessor::get_at.
-    // This test uses an accessor that overrides get_at to return 12345 when indexes are present;
+fn test_path_indexes_use_get() {
+    // When a path has indexes (e.g. items[0]), the evaluator calls PathAccessor::get.
+    // This test uses an accessor that overrides get to return 12345 when indexes are present;
     // we then assert items[0] == 12345 so that the default (get + apply_indexes) is not used.
     let editors = CallbackMap::new();
     let converters = CallbackMap::new();
@@ -1309,11 +1309,11 @@ fn test_path_indexes_use_get_at() {
     assert_eq!(
         result.unwrap(),
         Value::Bool(true),
-        "get_at should be called for path with indexes and return 12345"
+        "get should be called for path with indexes and return 12345"
     );
 }
 
-/// Context that holds a single list at path "my.value"; supports get_at/set_at by index.
+/// Context that holds a single list at path "my.value"; supports get/set by index.
 #[derive(Debug)]
 struct MyValueListContext {
     list: Vec<Value>,
@@ -1324,7 +1324,7 @@ struct MyValueListContext {
 struct MyValueListAccessor;
 
 impl PathAccessor for MyValueListAccessor {
-    fn get_at(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
+    fn get(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
         if path != "my.value" {
             return Err(format!("Unknown path: {}", path).into());
         }
@@ -1335,7 +1335,7 @@ impl PathAccessor for MyValueListAccessor {
         crate::helpers::apply_indexes(value, indexes)
     }
 
-    fn set_at(&self, ctx: &mut EvalContext, path: &str, indexes: &[IndexExpr], value: &Value) -> crate::Result<()> {
+    fn set(&self, ctx: &mut EvalContext, path: &str, indexes: &[IndexExpr], value: &Value) -> crate::Result<()> {
         if path != "my.value" {
             return Err(format!("Unknown path: {}", path).into());
         }
@@ -1360,7 +1360,7 @@ impl PathAccessor for MyValueListAccessor {
 }
 
 #[test]
-fn test_editor_add_indexed_path_then_verify_set_at() {
+fn test_editor_add_indexed_path_then_verify_set() {
     // Context holds my.value as list [1, 2] (so my.value[0]=1, my.value[1]=2).
     // Execute add(my.value[1], 10): editor reads my.value[1] (2), adds 10, writes back via set.
     // Then assert my.value[1] == 12.
@@ -1960,17 +1960,17 @@ fn test_runtime_error_division_by_zero_float() {
 #[derive(Debug)]
 struct FailingPathAccessor;
 impl PathAccessor for FailingPathAccessor {
-    fn get_at(&self, _ctx: &EvalContext, _path: &str, _indexes: &[IndexExpr]) -> crate::Result<Value> {
+    fn get(&self, _ctx: &EvalContext, _path: &str, _indexes: &[IndexExpr]) -> crate::Result<Value> {
         Err("Path resolver failed".into())
     }
-    fn set_at(&self, _ctx: &mut EvalContext, _path: &str, _indexes: &[IndexExpr], _value: &Value) -> crate::Result<()> {
+    fn set(&self, _ctx: &mut EvalContext, _path: &str, _indexes: &[IndexExpr], _value: &Value) -> crate::Result<()> {
         Err("Path resolver failed".into())
     }
 }
 
 #[test]
 fn test_runtime_error_path_not_found() {
-    // Reference to path whose accessor fails on get_at
+    // Reference to path whose accessor fails on get
     let editors = CallbackMap::new();
     let converters = CallbackMap::new();
     let enums = EnumMap::new();
@@ -1984,7 +1984,7 @@ fn test_runtime_error_path_not_found() {
 
     let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, "nonexistent.path == 1");
 
-    // Parsing succeeds (resolver provided); execute fails when accessor.get_at returns error
+    // Parsing succeeds (resolver provided); execute fails when accessor.get returns error
     assert!(parser.is_error().is_ok(), "Parsing should succeed");
     let result = parser.execute(&mut ctx);
     assert!(result.is_err(), "Execute should fail for non-existent path");
@@ -2159,7 +2159,7 @@ impl BenchContext {
 struct BenchPathAccessorIntValue {}
 
 impl PathAccessor for BenchPathAccessorIntValue {
-    fn get_at(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
+    fn get(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
         let v = if path == "my.int.value" {
             if let Some(bench_ctx) = ctx.downcast_ref::<BenchContext>() {
                 Value::Int(bench_ctx.my_int_value)
@@ -2171,7 +2171,7 @@ impl PathAccessor for BenchPathAccessorIntValue {
         };
         crate::helpers::apply_indexes(v, indexes)
     }
-    fn set_at(&self, ctx: &mut EvalContext, path: &str, indexes: &[IndexExpr], value: &Value) -> crate::Result<()> {
+    fn set(&self, ctx: &mut EvalContext, path: &str, indexes: &[IndexExpr], value: &Value) -> crate::Result<()> {
         if !indexes.is_empty() {
             return Err("BenchPathAccessorIntValue: indexed set not supported".into());
         }
@@ -2191,7 +2191,7 @@ struct BenchPathAccessorIntStatus {}
 
 impl PathAccessor for BenchPathAccessorIntStatus {
     #[inline]
-    fn get_at(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
+    fn get(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
         let v = if path == "my.int.status" {
             if let Some(bench_ctx) = ctx.downcast_ref::<BenchContext>() {
                 Value::Int(bench_ctx.my_int_status)
@@ -2203,7 +2203,7 @@ impl PathAccessor for BenchPathAccessorIntStatus {
         };
         crate::helpers::apply_indexes(v, indexes)
     }
-    fn set_at(&self, ctx: &mut EvalContext, path: &str, indexes: &[IndexExpr], value: &Value) -> crate::Result<()> {
+    fn set(&self, ctx: &mut EvalContext, path: &str, indexes: &[IndexExpr], value: &Value) -> crate::Result<()> {
         if !indexes.is_empty() {
             return Err("BenchPathAccessorIntStatus: indexed set not supported".into());
         }
@@ -2223,7 +2223,7 @@ struct BenchPathAccessorBoolEnabled {}
 
 impl PathAccessor for BenchPathAccessorBoolEnabled {
     #[inline]
-    fn get_at(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
+    fn get(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
         let v = if path == "my.bool.enabled" {
             if let Some(bench_ctx) = ctx.downcast_ref::<BenchContext>() {
                 Value::Bool(bench_ctx.my_bool_enabled)
@@ -2235,7 +2235,7 @@ impl PathAccessor for BenchPathAccessorBoolEnabled {
         };
         crate::helpers::apply_indexes(v, indexes)
     }
-    fn set_at(&self, ctx: &mut EvalContext, path: &str, indexes: &[IndexExpr], value: &Value) -> crate::Result<()> {
+    fn set(&self, ctx: &mut EvalContext, path: &str, indexes: &[IndexExpr], value: &Value) -> crate::Result<()> {
         if !indexes.is_empty() {
             return Err("BenchPathAccessorBoolEnabled: indexed set not supported".into());
         }

@@ -36,7 +36,7 @@ impl BenchContext {
 struct BenchPathAccessorIntValue;
 
 impl PathAccessor for BenchPathAccessorIntValue {
-    fn get_at(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> ottl::Result<Value> {
+    fn get(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> ottl::Result<Value> {
         let v = if path == "my.int.value" {
             if let Some(bench_ctx) = ctx.downcast_ref::<BenchContext>() {
                 Value::Int(bench_ctx.my_int_value)
@@ -48,7 +48,7 @@ impl PathAccessor for BenchPathAccessorIntValue {
         };
         helpers::apply_indexes(v, indexes)
     }
-    fn set_at(
+    fn set(
         &self,
         ctx: &mut EvalContext,
         path: &str,
@@ -73,7 +73,7 @@ impl PathAccessor for BenchPathAccessorIntValue {
 struct BenchPathAccessorIntStatus;
 
 impl PathAccessor for BenchPathAccessorIntStatus {
-    fn get_at(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> ottl::Result<Value> {
+    fn get(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> ottl::Result<Value> {
         let v = if path == "my.int.status" {
             if let Some(bench_ctx) = ctx.downcast_ref::<BenchContext>() {
                 Value::Int(bench_ctx.my_int_status)
@@ -85,7 +85,7 @@ impl PathAccessor for BenchPathAccessorIntStatus {
         };
         helpers::apply_indexes(v, indexes)
     }
-    fn set_at(
+    fn set(
         &self,
         ctx: &mut EvalContext,
         path: &str,
@@ -110,7 +110,7 @@ impl PathAccessor for BenchPathAccessorIntStatus {
 struct BenchPathAccessorBoolEnabled;
 
 impl PathAccessor for BenchPathAccessorBoolEnabled {
-    fn get_at(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> ottl::Result<Value> {
+    fn get(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> ottl::Result<Value> {
         let v = if path == "my.bool.enabled" {
             if let Some(bench_ctx) = ctx.downcast_ref::<BenchContext>() {
                 Value::Bool(bench_ctx.my_bool_enabled)
@@ -122,7 +122,7 @@ impl PathAccessor for BenchPathAccessorBoolEnabled {
         };
         helpers::apply_indexes(v, indexes)
     }
-    fn set_at(
+    fn set(
         &self,
         ctx: &mut EvalContext,
         path: &str,
