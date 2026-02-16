@@ -118,9 +118,9 @@ impl<'a> Args for ArenaArgs<'a> {
         };
 
         match self.arena.get_value(value_ref) {
-            ArenaValueExpr::Path(resolved_path) => {
-                resolved_path.accessor.set(self.ctx, &resolved_path.full_path, value)
-            }
+            ArenaValueExpr::Path(resolved_path) => resolved_path
+                .accessor
+                .set_at(self.ctx, &resolved_path.full_path, &resolved_path.indexes, value),
             _ => Err("set: argument must be a path expression".into()),
         }
     }

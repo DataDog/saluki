@@ -138,8 +138,8 @@ pub trait PathAccessor: fmt::Debug {
     /// For a typical "get base value then apply indexes" implementation, use `ottl::helpers::apply_indexes`.
     fn get_at(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> Result<Value>;
 
-    /// Set the value at this path.
-    fn set(&self, ctx: &mut EvalContext, path: &str, value: &Value) -> Result<()>;
+    /// Set at path with optional indexes (empty = set whole path; non-empty = e.g. `my.list[0] = x`).
+    fn set_at(&self, ctx: &mut EvalContext, path: &str, indexes: &[IndexExpr], value: &Value) -> Result<()>;
 }
 ```
 

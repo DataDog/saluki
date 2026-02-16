@@ -48,7 +48,16 @@ impl PathAccessor for BenchPathAccessorIntValue {
         };
         helpers::apply_indexes(v, indexes)
     }
-    fn set(&self, ctx: &mut EvalContext, path: &str, value: &Value) -> ottl::Result<()> {
+    fn set_at(
+        &self,
+        ctx: &mut EvalContext,
+        path: &str,
+        indexes: &[IndexExpr],
+        value: &Value,
+    ) -> ottl::Result<()> {
+        if !indexes.is_empty() {
+            return Err("BenchPathAccessorIntValue: indexed set not supported".into());
+        }
         if path == "my.int.value" {
             if let Some(bench_ctx) = ctx.downcast_mut::<BenchContext>() {
                 if let Value::Int(v) = value {
@@ -76,7 +85,16 @@ impl PathAccessor for BenchPathAccessorIntStatus {
         };
         helpers::apply_indexes(v, indexes)
     }
-    fn set(&self, ctx: &mut EvalContext, path: &str, value: &Value) -> ottl::Result<()> {
+    fn set_at(
+        &self,
+        ctx: &mut EvalContext,
+        path: &str,
+        indexes: &[IndexExpr],
+        value: &Value,
+    ) -> ottl::Result<()> {
+        if !indexes.is_empty() {
+            return Err("BenchPathAccessorIntStatus: indexed set not supported".into());
+        }
         if path == "my.int.status" {
             if let Some(bench_ctx) = ctx.downcast_mut::<BenchContext>() {
                 if let Value::Int(v) = value {
@@ -104,7 +122,16 @@ impl PathAccessor for BenchPathAccessorBoolEnabled {
         };
         helpers::apply_indexes(v, indexes)
     }
-    fn set(&self, ctx: &mut EvalContext, path: &str, value: &Value) -> ottl::Result<()> {
+    fn set_at(
+        &self,
+        ctx: &mut EvalContext,
+        path: &str,
+        indexes: &[IndexExpr],
+        value: &Value,
+    ) -> ottl::Result<()> {
+        if !indexes.is_empty() {
+            return Err("BenchPathAccessorBoolEnabled: indexed set not supported".into());
+        }
         if path == "my.bool.enabled" {
             if let Some(bench_ctx) = ctx.downcast_mut::<BenchContext>() {
                 if let Value::Bool(v) = value {

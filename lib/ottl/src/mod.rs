@@ -123,8 +123,18 @@ pub trait PathAccessor: fmt::Debug {
     /// indexes" implementation, use [`crate::helpers::apply_indexes`].
     fn get_at(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> Result<Value>;
 
-    /// Set the value at this path in the context.
-    fn set(&self, ctx: &mut EvalContext, path: &str, value: &Value) -> Result<()>;
+    /// Set the value at this path with the given indexes applied.
+    ///
+    /// When `indexes` is empty, the implementor sets the value at the path. When `indexes` is
+    /// non-empty (e.g. `my.list[0] = x`), the implementor may support updating at that index
+    /// or return an error.
+    fn set_at(
+        &self,
+        ctx: &mut EvalContext,
+        path: &str,
+        indexes: &[IndexExpr],
+        value: &Value,
+    ) -> Result<()>;
 }
 
 /// Type alias for the path resolver function.
