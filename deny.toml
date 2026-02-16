@@ -37,4 +37,7 @@ allow-git = [
   # Forked version of `hyper-http-proxy` that removes an unused dependency on `rustls-native-certs`, which transitively depends
   # on a version of `rustls-pemfile` that is no longer maintained and triggers a hit when running `cargo deny`.
   "https://github.com/tobz/hyper-http-proxy.git",
+
+  # Yet-to-be-published version of incremental Protocol Buffers encoding library.
+  "https://github.com/tobz/piecemeal.git",
 ]
