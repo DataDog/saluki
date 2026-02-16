@@ -123,7 +123,7 @@ pub type PathResolverMap = HashMap<String, PathResolver>;
 
 Trait for accessing values by path. Per the [OTTL spec](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/pkg/ottl/LANGUAGE.md#paths), **path interpretation (including path indexes) is the integrator's responsibility**.
 
-- **Path with indexes** (e.g. `resource.attributes["key"]`, `items[0]`): the evaluator calls [`get_at`](PathAccessor::get_at) with the path string and the index list; the implementor resolves path and indexes. For a typical "get base value then apply indexes" implementation, use [`ottl::helpers::apply_indexes`](crate::helpers::apply_indexes).
+- **Path with indexes** (e.g. `resource.attributes["key"]`, `items[0]`): the evaluator calls PathAccessor::get or PathAccessor::set with the path string and the index list; the implementor resolves path and indexes. For a typical "get base value then apply indexes" implementation, use [`ottl::helpers::apply_indexes`](crate::helpers::apply_indexes).
 - **Converter/editor return value with indexes** (e.g. `Split("a,b,c", ",")[0]`): the library applies indexes to the function result; the integrator does not handle this.
 
 ```rust
@@ -136,10 +136,11 @@ pub enum IndexExpr {
 pub trait PathAccessor: fmt::Debug {
     /// Get the value at this path with the given indexes applied. Must be implemented by the integrator.
     /// For a typical "get base value then apply indexes" implementation, use `ottl::helpers::apply_indexes`.
-    fn get_at(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> Result<Value>;
+    fn get(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> Result<Value>;
 
     /// Set at path with optional indexes (empty = set whole path; non-empty = e.g. `my.list[0] = x`).
-    fn set_at(&self, ctx: &mut EvalContext, path: &str, indexes: &[IndexExpr], value: &Value) -> Result<()>;
+    /// Must be implemented by the integrator including indexes resolution and interpretation.
+    fn set(&self, ctx: &mut EvalContext, path: &str, indexes: &[IndexExpr], value: &Value) -> Result<()>;
 }
 ```
 
@@ -268,6 +269,8 @@ not is_error or severity == "critical"
 
 ## OTTL Grammar
 
+Dedailed EBNF notation is located at _./docs/ebnf/ottl.ebnf_
+
 ### Root Expression
 
 ```ebnf
@@ -295,7 +298,7 @@ LITERAL = STRING | INT | FLOAT | BYTES | BOOL | NIL
 INDEX = "[" (STRING_LITERAL | INT_LITERAL) "]"
 ```
 
-Path indexes (the `{INDEX}` part) are passed to `PathAccessor::get_at`; the integrator interprets them. Converter invocations may also have indexes (e.g. `Split(...)[0]`); those are applied by the library to the function return value.
+Path indexes (the `{INDEX}` part) are passed to `PathAccessor::get`; the integrator interprets them. Converter invocations may also have indexes (e.g. `Split(...)[0]`); those are applied by the library to the function return value.
 
 ### Literal Types
 
@@ -393,7 +396,7 @@ Main library module, exports the public API:
 - `Value`, `Argument` — data types
 - `Args` — trait for lazy argument evaluation in callbacks
 - `CallbackFn`, `CallbackMap`, `EnumMap` — callback types
-- `PathAccessor`, `PathResolver`, `PathResolverMap` — path handling; `IndexExpr` — index type for `get_at` and converter result; path index interpretation is the integrator's responsibility
+- `PathAccessor`, `PathResolver`, `PathResolverMap` — path handling; `IndexExpr` — index type for `get` and converter result; path index interpretation is the integrator's responsibility
 - `BoxError`, `Result` — error types
 
 ### `tests.rs`
@@ -460,7 +463,7 @@ Results from running `cargo bench -p ottl` (release build, 100 samples). Times a
 
 2. **Short-circuit evaluation**: Boolean expressions use short-circuit evaluation (`and`/`or`), so place cheaper conditions first.
 
-3. **PathAccessor implementation**: Path resolution (including `get_at` and index handling) is entirely up to your implementation. Consider resolving path+indexes in one step to avoid materializing large values.
+3. **PathAccessor implementation**: Path resolution (including `get`/`set` and index handling) is entirely up to your implementation. Consider resolving path+indexes in one step to avoid materializing large values.
 
 4. **Warmup**: Benchmarks include a 1,000-iteration warmup phase to stabilize measurements.
 
