@@ -11,13 +11,6 @@ use crate::{Args, BoxError, EvalContext, Result, Value};
 // Evaluation Helpers
 // =====================================================================================================================
 
-/// Evaluate a pre-resolved path - NO runtime lookup needed!
-/// Path indexes are applied by the accessor (get_at); implementors can resolve path+indexes in one shot.
-#[inline]
-fn evaluate_resolved_path(path: &ResolvedPath, ctx: &EvalContext) -> Result<Value> {
-    path.accessor.get_at(ctx, &path.full_path, &path.indexes)
-}
-
 /// Apply indexes to a value. Used only for converter/editor return value indexing (e.g. Split(...)[0]).
 #[inline]
 pub(crate) fn apply_indexes(value: Value, indexes: &[IndexExpr]) -> Result<Value> {
@@ -176,7 +169,7 @@ fn arena_evaluate_bool_expr(expr_ref: BoolExprRef, arena: &AstArena, ctx: &mut E
             }
         }
         ArenaBoolExpr::Path(resolved_path) => {
-            let value = evaluate_resolved_path(resolved_path, ctx)?;
+            let value = resolved_path.accessor.get_at(ctx, &resolved_path.full_path, &resolved_path.indexes)?;
             match value {
                 Value::Bool(b) => Ok(b),
                 _ => Err("Path did not return a boolean".into()),
@@ -208,7 +201,7 @@ fn arena_evaluate_bool_expr(expr_ref: BoolExprRef, arena: &AstArena, ctx: &mut E
 fn arena_evaluate_value_expr(expr_ref: ValueExprRef, arena: &AstArena, ctx: &mut EvalContext) -> Result<Value> {
     match arena.get_value(expr_ref) {
         ArenaValueExpr::Literal(v) => Ok(v.clone()),
-        ArenaValueExpr::Path(resolved_path) => evaluate_resolved_path(resolved_path, ctx),
+        ArenaValueExpr::Path(resolved_path) => resolved_path.accessor.get_at(ctx, &resolved_path.full_path, &resolved_path.indexes),
         ArenaValueExpr::List(items) => {
             let values: Result<Vec<Value>> = items
                 .iter()

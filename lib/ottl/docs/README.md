@@ -123,7 +123,7 @@ pub type PathResolverMap = HashMap<String, PathResolver>;
 
 Trait for accessing values by path. Per the [OTTL spec](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/pkg/ottl/LANGUAGE.md#paths), **path interpretation (including path indexes) is the integrator's responsibility**.
 
-- **Path with indexes** (e.g. `resource.attributes["key"]`, `items[0]`): the evaluator calls [`get_at`](PathAccessor::get_at) with the path string and the index list; the implementor resolves path and indexes. The library does not provide a helper for this.
+- **Path with indexes** (e.g. `resource.attributes["key"]`, `items[0]`): the evaluator calls [`get_at`](PathAccessor::get_at) with the path string and the index list; the implementor resolves path and indexes. For a typical "get base value then apply indexes" implementation, use [`ottl::helpers::apply_indexes`](crate::helpers::apply_indexes).
 - **Converter/editor return value with indexes** (e.g. `Split("a,b,c", ",")[0]`): the library applies indexes to the function result; the integrator does not handle this.
 
 ```rust
@@ -134,10 +134,8 @@ pub enum IndexExpr {
 }
 
 pub trait PathAccessor: fmt::Debug {
-    /// Get the value at this path (no indexes).
-    fn get(&self, ctx: &EvalContext, path: &str) -> Result<Value>;
-
     /// Get the value at this path with the given indexes applied. Must be implemented by the integrator.
+    /// For a typical "get base value then apply indexes" implementation, use `ottl::helpers::apply_indexes`.
     fn get_at(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> Result<Value>;
 
     /// Set the value at this path.

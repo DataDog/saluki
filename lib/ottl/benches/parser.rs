@@ -36,17 +36,16 @@ impl BenchContext {
 struct BenchPathAccessorIntValue;
 
 impl PathAccessor for BenchPathAccessorIntValue {
-    #[inline]
-    fn get(&self, ctx: &EvalContext, path: &str) -> ottl::Result<Value> {
-        if path == "my.int.value" {
-            if let Some(bench_ctx) = ctx.downcast_ref::<BenchContext>() {
-                return Ok(Value::Int(bench_ctx.my_int_value));
-            }
-        }
-        Ok(Value::Nil)
-    }
     fn get_at(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> ottl::Result<Value> {
-        let v = self.get(ctx, path)?;
+        let v = if path == "my.int.value" {
+            if let Some(bench_ctx) = ctx.downcast_ref::<BenchContext>() {
+                Value::Int(bench_ctx.my_int_value)
+            } else {
+                Value::Nil
+            }
+        } else {
+            Value::Nil
+        };
         helpers::apply_indexes(v, indexes)
     }
     fn set(&self, ctx: &mut EvalContext, path: &str, value: &Value) -> ottl::Result<()> {
@@ -65,17 +64,16 @@ impl PathAccessor for BenchPathAccessorIntValue {
 struct BenchPathAccessorIntStatus;
 
 impl PathAccessor for BenchPathAccessorIntStatus {
-    #[inline]
-    fn get(&self, ctx: &EvalContext, path: &str) -> ottl::Result<Value> {
-        if path == "my.int.status" {
-            if let Some(bench_ctx) = ctx.downcast_ref::<BenchContext>() {
-                return Ok(Value::Int(bench_ctx.my_int_status));
-            }
-        }
-        Ok(Value::Nil)
-    }
     fn get_at(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> ottl::Result<Value> {
-        let v = self.get(ctx, path)?;
+        let v = if path == "my.int.status" {
+            if let Some(bench_ctx) = ctx.downcast_ref::<BenchContext>() {
+                Value::Int(bench_ctx.my_int_status)
+            } else {
+                Value::Nil
+            }
+        } else {
+            Value::Nil
+        };
         helpers::apply_indexes(v, indexes)
     }
     fn set(&self, ctx: &mut EvalContext, path: &str, value: &Value) -> ottl::Result<()> {
@@ -94,17 +92,16 @@ impl PathAccessor for BenchPathAccessorIntStatus {
 struct BenchPathAccessorBoolEnabled;
 
 impl PathAccessor for BenchPathAccessorBoolEnabled {
-    #[inline]
-    fn get(&self, ctx: &EvalContext, path: &str) -> ottl::Result<Value> {
-        if path == "my.bool.enabled" {
-            if let Some(bench_ctx) = ctx.downcast_ref::<BenchContext>() {
-                return Ok(Value::Bool(bench_ctx.my_bool_enabled));
-            }
-        }
-        Ok(Value::Nil)
-    }
     fn get_at(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> ottl::Result<Value> {
-        let v = self.get(ctx, path)?;
+        let v = if path == "my.bool.enabled" {
+            if let Some(bench_ctx) = ctx.downcast_ref::<BenchContext>() {
+                Value::Bool(bench_ctx.my_bool_enabled)
+            } else {
+                Value::Nil
+            }
+        } else {
+            Value::Nil
+        };
         helpers::apply_indexes(v, indexes)
     }
     fn set(&self, ctx: &mut EvalContext, path: &str, value: &Value) -> ottl::Result<()> {
