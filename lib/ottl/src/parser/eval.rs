@@ -12,19 +12,19 @@ use crate::{Args, BoxError, EvalContext, Result, Value};
 // =====================================================================================================================
 
 /// Evaluate a pre-resolved path - NO runtime lookup needed!
+/// Path indexes are applied by the accessor (get_at); implementors can resolve path+indexes in one shot.
 #[inline]
 fn evaluate_resolved_path(path: &ResolvedPath, ctx: &EvalContext) -> Result<Value> {
-    let value = path.accessor.get(ctx, &path.full_path)?;
+    path.accessor.get_at(ctx, &path.full_path, &path.indexes)
+}
 
-    if path.indexes.is_empty() {
-        return Ok(value);
-    }
-
+/// Apply indexes to a value. Used only for converter/editor return value indexing (e.g. Split(...)[0]).
+#[inline]
+pub(crate) fn apply_indexes(value: Value, indexes: &[IndexExpr]) -> Result<Value> {
     let mut current = value;
-    for index in &path.indexes {
+    for index in indexes {
         current = apply_index(&current, index)?;
     }
-
     Ok(current)
 }
 
@@ -241,13 +241,7 @@ fn arena_evaluate_function_call(fc_ref: FunctionCallRef, arena: &AstArena, ctx: 
 
     let mut args = ArenaArgs::new(arena, &fc.args, ctx);
     let result = callback(&mut args)?;
-
-    let mut current = result;
-    for index in &fc.indexes {
-        current = apply_index(&current, index)?;
-    }
-
-    Ok(current)
+    apply_indexes(result, &fc.indexes)
 }
 
 /// Evaluate an arena-based math expression

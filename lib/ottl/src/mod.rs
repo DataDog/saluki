@@ -29,6 +29,7 @@ mod parser;
 mod tests;
 
 // Re-export from submodules
+pub use parser::IndexExpr;
 pub use parser::Parser;
 
 // =====================================================================================================================
@@ -110,11 +111,19 @@ pub enum Argument {
 // =====================================================================================================================
 
 /// Trait for accessing (reading and writing) path values in the context.
+/// N.B.: Path interpretation (including indexes) is the integrator's responsibility
+/// The evaluator only calls [`get_at`](PathAccessor::get_at) with path and indexes; the implementor
+/// decides how to resolve them.
 pub trait PathAccessor: fmt::Debug {
-    /// Get the value at this path from the context.
+    /// Get the value at this path from the context (no indexes).
     /// Returns owned Value - for primitive types this is cheap (Copy-like).
-    /// For strings/bytes, use Arc internally for cheap cloning.
     fn get(&self, ctx: &EvalContext, path: &str) -> Result<Value>;
+
+    /// Get the value at this path with the given indexes applied.
+    ///
+    /// Path interpretation, including indexing (e.g. `["key"]`, `[0]`), is **not** implemented by
+    /// OTTL; the integrator must implement this method.
+    fn get_at(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> Result<Value>;
 
     /// Set the value at this path in the context
     fn set(&self, ctx: &mut EvalContext, path: &str, value: &Value) -> Result<()>;

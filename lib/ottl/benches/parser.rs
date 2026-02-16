@@ -7,12 +7,37 @@ use std::sync::Arc;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use ottl::{
-    Args, CallbackMap, EnumMap, EvalContext, OttlParser, Parser, PathAccessor, PathResolver, PathResolverMap, Value,
+    Args, CallbackMap, EnumMap, EvalContext, IndexExpr, OttlParser, Parser, PathAccessor, PathResolver,
+    PathResolverMap, Value,
 };
 
 // =====================================================================================================================
 // Benchmark context and path accessors (from tests.rs bench_execute_complex_realistic)
 // =====================================================================================================================
+
+/// Local helper for bench PathAccessors: apply indexes (integrator responsibility in real code).
+fn bench_apply_indexes(value: Value, indexes: &[IndexExpr]) -> ottl::Result<Value> {
+    let mut current = value;
+    for index in indexes {
+        current = match (&current, index) {
+            (Value::List(list), IndexExpr::Int(i)) => list
+                .get(*i)
+                .cloned()
+                .ok_or_else(|| -> ottl::BoxError { format!("Index {} out of bounds", i).into() })?,
+            (Value::Map(map), IndexExpr::String(key)) => map
+                .get(key)
+                .cloned()
+                .ok_or_else(|| -> ottl::BoxError { format!("Key '{}' not found", key).into() })?,
+            (Value::String(s), IndexExpr::Int(i)) => s
+                .chars()
+                .nth(*i)
+                .map(|c| Value::string(c.to_string()))
+                .ok_or_else(|| -> ottl::BoxError { format!("Index {} out of bounds", i).into() })?,
+            _ => return Err(format!("Cannot index {:?} with {:?}", current, index).into()),
+        };
+    }
+    Ok(current)
+}
 
 #[derive(Debug)]
 struct BenchContext {
@@ -44,7 +69,10 @@ impl PathAccessor for BenchPathAccessorIntValue {
         }
         Ok(Value::Nil)
     }
-
+    fn get_at(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> ottl::Result<Value> {
+        let v = self.get(ctx, path)?;
+        bench_apply_indexes(v, indexes)
+    }
     fn set(&self, ctx: &mut EvalContext, path: &str, value: &Value) -> ottl::Result<()> {
         if path == "my.int.value" {
             if let Some(bench_ctx) = ctx.downcast_mut::<BenchContext>() {
@@ -70,7 +98,10 @@ impl PathAccessor for BenchPathAccessorIntStatus {
         }
         Ok(Value::Nil)
     }
-
+    fn get_at(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> ottl::Result<Value> {
+        let v = self.get(ctx, path)?;
+        bench_apply_indexes(v, indexes)
+    }
     fn set(&self, ctx: &mut EvalContext, path: &str, value: &Value) -> ottl::Result<()> {
         if path == "my.int.status" {
             if let Some(bench_ctx) = ctx.downcast_mut::<BenchContext>() {
@@ -96,7 +127,10 @@ impl PathAccessor for BenchPathAccessorBoolEnabled {
         }
         Ok(Value::Nil)
     }
-
+    fn get_at(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> ottl::Result<Value> {
+        let v = self.get(ctx, path)?;
+        bench_apply_indexes(v, indexes)
+    }
     fn set(&self, ctx: &mut EvalContext, path: &str, value: &Value) -> ottl::Result<()> {
         if path == "my.bool.enabled" {
             if let Some(bench_ctx) = ctx.downcast_mut::<BenchContext>() {
