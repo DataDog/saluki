@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use ottl::{
-    helpers, Args, CallbackMap, EnumMap, EvalContext, IndexExpr, OttlParser, Parser, PathAccessor,
-    PathResolver, PathResolverMap, Value,
+    helpers, Args, CallbackMap, EnumMap, EvalContext, IndexExpr, OttlParser, Parser, PathAccessor, PathResolver,
+    PathResolverMap, Value,
 };
 
 // =====================================================================================================================
@@ -48,13 +48,7 @@ impl PathAccessor for BenchPathAccessorIntValue {
         };
         helpers::apply_indexes(v, indexes)
     }
-    fn set(
-        &self,
-        ctx: &mut EvalContext,
-        path: &str,
-        indexes: &[IndexExpr],
-        value: &Value,
-    ) -> ottl::Result<()> {
+    fn set(&self, ctx: &mut EvalContext, path: &str, indexes: &[IndexExpr], value: &Value) -> ottl::Result<()> {
         if !indexes.is_empty() {
             return Err("BenchPathAccessorIntValue: indexed set not supported".into());
         }
@@ -85,13 +79,7 @@ impl PathAccessor for BenchPathAccessorIntStatus {
         };
         helpers::apply_indexes(v, indexes)
     }
-    fn set(
-        &self,
-        ctx: &mut EvalContext,
-        path: &str,
-        indexes: &[IndexExpr],
-        value: &Value,
-    ) -> ottl::Result<()> {
+    fn set(&self, ctx: &mut EvalContext, path: &str, indexes: &[IndexExpr], value: &Value) -> ottl::Result<()> {
         if !indexes.is_empty() {
             return Err("BenchPathAccessorIntStatus: indexed set not supported".into());
         }
@@ -122,13 +110,7 @@ impl PathAccessor for BenchPathAccessorBoolEnabled {
         };
         helpers::apply_indexes(v, indexes)
     }
-    fn set(
-        &self,
-        ctx: &mut EvalContext,
-        path: &str,
-        indexes: &[IndexExpr],
-        value: &Value,
-    ) -> ottl::Result<()> {
+    fn set(&self, ctx: &mut EvalContext, path: &str, indexes: &[IndexExpr], value: &Value) -> ottl::Result<()> {
         if !indexes.is_empty() {
             return Err("BenchPathAccessorBoolEnabled: indexed set not supported".into());
         }

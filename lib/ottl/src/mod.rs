@@ -129,13 +129,7 @@ pub trait PathAccessor: fmt::Debug {
     /// When `indexes` is empty, the implementor sets the value at the path. When `indexes` is
     /// non-empty (e.g. `my.list[0] = x`), the implementor may support updating at that index
     /// or return an error.
-    fn set(
-        &self,
-        ctx: &mut EvalContext,
-        path: &str,
-        indexes: &[IndexExpr],
-        value: &Value,
-    ) -> Result<()>;
+    fn set(&self, ctx: &mut EvalContext, path: &str, indexes: &[IndexExpr], value: &Value) -> Result<()>;
 }
 
 /// Type alias for the path resolver function.

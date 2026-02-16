@@ -1355,7 +1355,7 @@ impl PathAccessor for MyValueListAccessor {
             return Err(format!("Index {} out of bounds", idx0).into());
         }
         list_guard.list[idx0] = value.clone();
-        return Ok(());
+        Ok(())
     }
 }
 
