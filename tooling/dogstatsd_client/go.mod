@@ -2,7 +2,7 @@ module saluki/tooling/dogstatsd_client
 
 go 1.22.3
 
-require github.com/DataDog/datadog-go/v5 v5.5.0
+require github.com/DataDog/datadog-go/v5 v5.8.3
 
 require (
 	github.com/Microsoft/go-winio v0.5.0 // indirect
