@@ -7,6 +7,7 @@ container:
   env:
     DD_API_KEY: "test-api-key"
     DD_HOSTNAME: "integration-test"
+    DD_LOG_LEVEL: "info"
     DD_DATA_PLANE_ENABLED: "false"
     DD_DATA_PLANE_STANDALONE_MODE: "false"
 
