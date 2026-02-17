@@ -29,7 +29,7 @@ The library provides a complete pipeline for working with OTTL:
 - Full OTTL grammar support: literals, paths, lists, maps, functions
 - Mathematical expressions with operator precedence
 - Logical expressions with short-circuit evaluation
-- Extensible path system via `PathResolver`
+- Extensible path system via `PathResolverMap` (path → `PathResolver`)
 
 ---
 
@@ -66,16 +66,18 @@ Universal type for all values in OTTL:
 
 ```rust
 pub enum Value {
-    Nil,                        // null/nil
-    Bool(bool),                 // true, false
-    Int(i64),                   // 42, -10
-    Float(f64),                 // 3.14, .5
-    String(String),             // "hello"
-    Bytes(Vec<u8>),             // 0xDEADBEEF
-    List(Vec<Value>),           // [1, 2, 3]
-    Map(HashMap<String, Value>) // {"key": "value"}
+    Nil,                           // null/nil
+    Bool(bool),                    // true, false
+    Int(i64),                      // 42, -10
+    Float(f64),                    // 3.14, .5
+    String(Arc<str>),              // "hello" (Arc for cheap clone)
+    Bytes(Arc<[u8]>),             // 0xDEADBEEF (Arc for cheap clone)
+    List(Vec<Value>),             // [1, 2, 3]
+    Map(HashMap<String, Value>)   // {"key": "value"}
 }
 ```
+
+Helper methods: `Value::string(impl Into<Arc<str>>)` and `Value::bytes(impl Into<Arc<[u8]>>)` for cheap construction.
 
 ### Argument
 
@@ -91,8 +93,18 @@ pub enum Argument {
 ### Callback Types
 
 ```rust
-// Callback function for editors and converters
-pub type CallbackFn = Arc<dyn Fn(&mut EvalContext, Vec<Argument>) -> Result<Value> + Send + Sync>;
+// Lazy argument evaluation — arguments are evaluated only when requested (zero allocation)
+pub trait Args {
+    fn ctx(&mut self) -> &mut EvalContext;
+    fn len(&self) -> usize;
+    fn get(&mut self, index: usize) -> Result<Value>;
+    fn name(&self, index: usize) -> Option<&str>;
+    fn get_named(&mut self, name: &str) -> Option<Result<Value>>;
+    fn set(&mut self, index: usize, value: &Value) -> Result<()>;
+}
+
+// Callback function for editors and converters (receives Args, not Vec<Argument>)
+pub type CallbackFn = Arc<dyn Fn(&mut dyn Args) -> Result<Value> + Send + Sync>;
 
 // Map of function names → their implementations
 pub type CallbackMap = HashMap<String, CallbackFn>;
@@ -100,18 +112,35 @@ pub type CallbackMap = HashMap<String, CallbackFn>;
 // Map of enum values → their numeric equivalents
 pub type EnumMap = HashMap<String, i64>;
 
-// Path resolver (e.g., "resource.attributes")
-pub type PathResolver = Arc<dyn Fn(&str) -> Result<Arc<dyn PathAccessor + Send + Sync>> + Send + Sync>;
+// Path resolver: returns a PathAccessor for one path (resolved at parse time)
+pub type PathResolver = Arc<dyn Fn() -> Result<Arc<dyn PathAccessor + Send + Sync>> + Send + Sync>;
+
+// Map from path string to PathResolver. Every path used in the expression must have an entry.
+pub type PathResolverMap = HashMap<String, PathResolver>;
 ```
 
 ### PathAccessor
 
-Trait for accessing values by path:
+Trait for accessing values by path. Per the [OTTL spec](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/pkg/ottl/LANGUAGE.md#paths), **path interpretation (including path indexes) is the integrator's responsibility**.
+
+- **Path with indexes** (e.g. `resource.attributes["key"]`, `items[0]`): the evaluator calls PathAccessor::get or PathAccessor::set with the path string and the index list; the implementor resolves path and indexes. For a typical "get base value then apply indexes" implementation, use [`ottl::helpers::apply_indexes`](crate::helpers::apply_indexes).
+- **Converter/editor return value with indexes** (e.g. `Split("a,b,c", ",")[0]`): the library applies indexes to the function result; the integrator does not handle this.
 
 ```rust
+// Index expression: string key ["key"] or integer index [0]
+pub enum IndexExpr {
+    String(String),
+    Int(usize),
+}
+
 pub trait PathAccessor: fmt::Debug {
-    fn get(&self, ctx: &EvalContext, path: &str) -> Result<&Value>;
-    fn set(&self, ctx: &mut EvalContext, path: &str, value: &Value) -> Result<()>;
+    /// Get the value at this path with the given indexes applied. Must be implemented by the integrator.
+    /// For a typical "get base value then apply indexes" implementation, use `ottl::helpers::apply_indexes`.
+    fn get(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> Result<Value>;
+
+    /// Set at path with optional indexes (empty = set whole path; non-empty = e.g. `my.list[0] = x`).
+    /// Must be implemented by the integrator including indexes resolution and interpretation.
+    fn set(&self, ctx: &mut EvalContext, path: &str, indexes: &[IndexExpr], value: &Value) -> Result<()>;
 }
 ```
 
@@ -122,21 +151,25 @@ pub trait PathAccessor: fmt::Debug {
 ### Creating a Parser
 
 ```rust
-use ottl::{Parser, OttlParser, CallbackMap, EnumMap, PathResolver};
+use ottl::{Parser, OttlParser, CallbackMap, EnumMap, PathResolver, PathResolverMap};
 
 let editors: CallbackMap = HashMap::new();
 let converters: CallbackMap = HashMap::new();
 let enums: EnumMap = HashMap::new();
-let resolver: PathResolver = Arc::new(|path| { /* ... */ });
+let mut path_resolvers: PathResolverMap = HashMap::new();
+path_resolvers.insert("resource.attributes".to_string(), Arc::new(|| { /* return Ok(Arc::new(...)) */ }));
+path_resolvers.insert("status".to_string(), Arc::new(|| { /* ... */ }));
 
 let parser = Parser::new(
     &editors,
     &converters,
     &enums,
-    &resolver,
+    &path_resolvers,
     "set(resource.attributes[\"key\"], \"value\") where status == 200"
 );
 ```
+
+If any path in the expression is missing from `path_resolvers`, parsing fails with an error.
 
 ### Checking for Parse Errors
 
@@ -176,9 +209,9 @@ pub trait OttlParser {
 // OTTL: set(body, "modified") where status_code >= 400
 
 let mut editors = CallbackMap::new();
-editors.insert("set".to_string(), Arc::new(|ctx, args| {
-    // args[0] = path, args[1] = value
-    // Value setting logic...
+editors.insert("set".to_string(), Arc::new(|args: &mut dyn ottl::Args| {
+    let value = args.get(1)?;
+    args.set(0, &value)?;
     Ok(Value::Nil)
 }));
 ```
@@ -189,14 +222,14 @@ editors.insert("set".to_string(), Arc::new(|ctx, args| {
 // OTTL: Concat(first_name, " ", last_name)
 
 let mut converters = CallbackMap::new();
-converters.insert("Concat".to_string(), Arc::new(|ctx, args| {
+converters.insert("Concat".to_string(), Arc::new(|args: &mut dyn ottl::Args| {
     let mut result = String::new();
-    for arg in args {
-        if let Value::String(s) = arg.value() {
-            result.push_str(s);
+    for i in 0..args.len() {
+        if let Ok(Value::String(s)) = args.get(i) {
+            result.push_str(s.as_ref());
         }
     }
-    Ok(Value::String(result))
+    Ok(Value::string(result))
 }));
 ```
 
@@ -236,6 +269,8 @@ not is_error or severity == "critical"
 
 ## OTTL Grammar
 
+Dedailed EBNF notation is located at _./docs/ebnf/ottl.ebnf_
+
 ### Root Expression
 
 ```ebnf
@@ -262,6 +297,8 @@ LITERAL = STRING | INT | FLOAT | BYTES | BOOL | NIL
 
 INDEX = "[" (STRING_LITERAL | INT_LITERAL) "]"
 ```
+
+Path indexes (the `{INDEX}` part) are passed to `PathAccessor::get`; the integrator interprets them. Converter invocations may also have indexes (e.g. `Split(...)[0]`); those are applied by the library to the function return value.
 
 ### Literal Types
 
@@ -304,11 +341,11 @@ Lexical analyzer based on the [logos](https://crates.io/crates/logos) library.
 | Literals | `StringLiteral`, `IntLiteral`, `FloatLiteral`, `BytesLiteral` |
 | Identifiers | `LowerIdent`, `UpperIdent` |
 
-### `parser.rs`
+### `parser/` (parser, ast, arena, eval)
 
-Syntax analyzer based on [chumsky 0.12](https://crates.io/crates/chumsky).
+Syntax analyzer based on [chumsky 0.12](https://crates.io/crates/chumsky). Parsing produces boxed AST types; they are then converted to an arena-based representation for cache-friendly execution.
 
-**AST Types:**
+**Boxed AST (parsing, in `ast.rs`):**
 
 ```rust
 // Root expressions
@@ -343,24 +380,12 @@ enum ValueExpr {
     Math(Box<MathExpr>),
 }
 
-// Mathematical expressions
-enum MathExpr {
-    Primary(ValueExpr),
-    Negate(Box<MathExpr>),
-    Binary { left: Box<MathExpr>, op: MathOp, right: Box<MathExpr> },
-}
-
-// Logical expressions
-enum BoolExpr {
-    Literal(bool),
-    Comparison { left: ValueExpr, op: CompOp, right: ValueExpr },
-    Converter(Box<FunctionCall>),
-    Path(PathExpr),
-    Not(Box<BoolExpr>),
-    And(Box<BoolExpr>, Box<BoolExpr>),
-    Or(Box<BoolExpr>, Box<BoolExpr>),
-}
+// Mathematical / logical expressions
+enum MathExpr { Primary(ValueExpr), Negate(Box<MathExpr>), Binary { ... } }
+enum BoolExpr { Literal(bool), Comparison { ... }, Converter(...), Path(PathExpr), Not(...), And(...), Or(...) }
 ```
+
+Execution uses **arena-based** types (`ArenaRootExpr`, `ArenaBoolExpr`, `ArenaMathExpr`, `ArenaValueExpr`, `ArenaFunctionCall`, `ResolvedPath`) with indices instead of `Box` for better cache locality.
 
 ### `mod.rs`
 
@@ -369,8 +394,9 @@ Main library module, exports the public API:
 - `Parser` — main parser
 - `OttlParser` — public API trait
 - `Value`, `Argument` — data types
+- `Args` — trait for lazy argument evaluation in callbacks
 - `CallbackFn`, `CallbackMap`, `EnumMap` — callback types
-- `PathAccessor`, `PathResolver` — path handling types
+- `PathAccessor`, `PathResolver`, `PathResolverMap` — path handling; `IndexExpr` — index type for `get` and converter result; path index interpretation is the integrator's responsibility
 - `BoxError`, `Result` — error types
 
 ### `tests.rs`
@@ -394,69 +420,42 @@ The library includes a comprehensive benchmark suite to measure execution perfor
 ### Running Benchmarks
 
 ```bash
-# Run all benchmarks
-cargo test bench_ -- --ignored --nocapture
+# Run the benchmark
+cargo bench -p ottl
 
-# Run a specific benchmark
-cargo test bench_execute_math_simple -- --ignored --nocapture
-cargo test bench_parser_creation -- --ignored --nocapture
+# If you want to run benchmark from tests with manual control
+cargo test bench_execute_complex_realistic -- --ignored --nocapture
 ```
 
 ### Benchmark Suite
 
-| Benchmark | Description | Expression |
-|-----------|-------------|------------|
-| `bench_execute_math_simple` | Simple arithmetic | `1 + 2 * 3 - 4 / 2` |
-| `bench_execute_math_complex` | Nested parentheses | `((1 + 2) * (3 + 4)) / ((5 - 2) * (6 - 4)) + (10 * (2 + 3))` |
-| `bench_execute_bool_comparisons` | Logical operations | `(1 < 2) and (3 > 1) or (5 == 5) and not (10 < 5)` |
-| `bench_execute_with_paths` | Path resolution | `my.int.value + other.int.count * 2 - third.float.value` |
-| `bench_execute_bool_with_paths` | Boolean with paths | `my.bool.enabled and (my.int.status > 0) or (other.int.count < 100)` |
-| `bench_execute_with_converters` | Converter calls | `Add(1, 2) + Add(3, 4) * Add(5, 6)` |
-| `bench_execute_complex_realistic` | Real-world scenario | `set(my.int.value, 100) where (my.int.status == STATUS_OK or ...) and my.bool.enabled` |
-| `bench_parser_creation` | Parse time (not execute) | Complex math expression |
+Benchmarks live in `lib/ottl/benches/parser.rs`. Two kinds of benchmarks are included:
+
+- **Parser creation**: measures `Parser::new(...)` (lexer + grammar parse + path resolution).
+- **Execute**: measures only `parser.execute(ctx)`; the parser is built once outside the timed loop.
+
+| Benchmark | What is measured | Expression / scenario |
+|-----------|------------------|-------------------------|
+| `parser_creation` | Time to create parser (lex + parse + path resolution) | `set(my.int.value, my.int.status + 100) where (my.int.status == STATUS_OK or ...) and my.bool.enabled` |
+| `execute_complex_realistic` | Execute: editor + WHERE + paths + enums | Same as above |
+| `execute_math_simple` | Execute: math expression only | `1+2*(9-2)/2` |
+| `execute_bool_enums_paths_converters` | Execute: boolean with enums, paths, `not`, `and`/`or`, converters | `(my.int.status == STATUS_OK or my.bool.enabled) and not IsDisabled() and BoolConv()` |
+| `execute_editor_call` | Execute: single editor call | `set(my.int.value, 42)` |
 
 ### Benchmark Results
 
-Results from running on Apple M4 Max (16 cores), 100,000 iterations per benchmark:
+Results from running `cargo bench -p ottl` (release build, 100 samples). Times are per iteration.
 
-| Benchmark | Avg | Median | P99 | Throughput |
-|-----------|-----|--------|-----|------------|
-| **math_simple** | 83 ns | 83 ns | 125 ns | ~12M ops/sec |
-| **math_complex** | 292 ns | 292 ns | 375 ns | ~3.4M ops/sec |
-| **bool_comparisons** | 142 ns | 125 ns | 250 ns | ~7M ops/sec |
-| **with_paths** | 625 ns | 584 ns | 917 ns | ~1.6M ops/sec |
-| **bool_with_paths** | 500 ns | 458 ns | 792 ns | ~2M ops/sec |
-| **with_converters** | 542 ns | 500 ns | 834 ns | ~1.8M ops/sec |
-| **complex_realistic** | 709 ns | 667 ns | 1042 ns | ~1.4M ops/sec |
-| **parser_creation** | 42 µs | — | — | ~24K parses/sec |
+**N.B.:** Apple M4 Max, 64 GB was used to run benchmarks.
 
-### Benchmark Output Format
+| Benchmark | Time (per iter) | Throughput (approx) |
+|-----------|-----------------|----------------------|
+| `parser_creation` | ~6.3 µs | ~158k parsers/sec |
+| `execute_complex_realistic` | ~69 ns | ~14.5M exec/sec |
+| `execute_math_simple` | ~41 ns | ~24.5M exec/sec |
+| `execute_bool_enums_paths_converters` | ~46 ns | ~21.5M exec/sec |
+| `execute_editor_call` | ~17.5 ns | ~57M exec/sec |
 
-Each benchmark outputs detailed statistics:
-
-```
-========================================
-BENCHMARK: math_simple
-========================================
-Iterations: 100000
-Total time: 8.3ms
-----------------------------------------
-Min:       42 ns (  0.04 µs)
-Max:     5125 ns (  5.13 µs)
-Avg:       83 ns (  0.08 µs)
-Median:    83 ns (  0.08 µs)
-P99:      125 ns (  0.13 µs)
-----------------------------------------
-Throughput: 12048192 ops/sec
-========================================
-```
-
-### Performance Characteristics
-
-- **Pure math expressions**: ~80-300 ns per execution
-- **Path resolution overhead**: ~400-500 ns additional (depends on PathAccessor implementation)
-- **Converter calls**: ~100-200 ns per call (depends on callback complexity)
-- **Parser creation**: ~40-50 µs per parse (one-time cost, parser is reusable)
 
 ### Optimization Notes
 
@@ -464,7 +463,7 @@ Throughput: 12048192 ops/sec
 
 2. **Short-circuit evaluation**: Boolean expressions use short-circuit evaluation (`and`/`or`), so place cheaper conditions first.
 
-3. **PathAccessor implementation**: Path resolution performance heavily depends on your `PathAccessor` implementation. Consider caching or pre-computing paths.
+3. **PathAccessor implementation**: Path resolution (including `get`/`set` and index handling) is entirely up to your implementation. Consider resolving path+indexes in one step to avoid materializing large values.
 
 4. **Warmup**: Benchmarks include a 1,000-iteration warmup phase to stabilize measurements.
 

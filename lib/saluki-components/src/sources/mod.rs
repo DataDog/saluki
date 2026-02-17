@@ -9,8 +9,5 @@ pub use self::internal_metrics::InternalMetricsConfiguration;
 mod heartbeat;
 pub use self::heartbeat::HeartbeatConfiguration;
 
-mod checks;
-pub use self::checks::ChecksConfiguration;
-
 mod otlp;
 pub use self::otlp::OtlpConfiguration;
