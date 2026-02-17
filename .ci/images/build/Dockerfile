@@ -1,11 +1,6 @@
-ARG DD_AGENT_VERSION=latest-jmx
-ARG DD_AGENT_IMAGE=datadog/agent:${DD_AGENT_VERSION}
-
-FROM ${DD_AGENT_IMAGE} AS agent
-
 FROM registry.ddbuild.io/images/docker:27.3.1
 
-ARG RUST_VERSION=1.90.0
+ARG RUST_VERSION=1.93.0
 ARG TARGETARCH
 
 # Install the basics for building and compiling software projects.
