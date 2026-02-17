@@ -17,7 +17,8 @@ use otlp_protos::opentelemetry::proto::trace::v1::{
 use saluki_common::collections::FastHashMap;
 use saluki_common::strings::StringBuilder;
 use saluki_core::data_model::event::trace::Span as DdSpan;
-use serde_json::{Map as JsonMap, Value as JsonValue};
+use serde::ser::{SerializeMap, SerializeSeq};
+use serde::{Serialize, Serializer};
 use stringtheory::interning::{GenericMapInterner, Interner};
 use stringtheory::MetaString;
 use tracing::error;
@@ -83,6 +84,13 @@ const DATADOG_HOSTNAME_ATTR: &str = "datadog.host.name";
 const EXCEPTION_MESSAGE_KEY: &str = "exception.message";
 const EXCEPTION_TYPE_KEY: &str = "exception.type";
 const EXCEPTION_STACKTRACE_KEY: &str = "exception.stacktrace";
+const JSON_KEY_ATTRIBUTES: &str = "attributes";
+const JSON_KEY_DROPPED_ATTRIBUTES_COUNT: &str = "dropped_attributes_count";
+const JSON_KEY_NAME: &str = "name";
+const JSON_KEY_SPAN_ID: &str = "span_id";
+const JSON_KEY_TIME_UNIX_NANO: &str = "time_unix_nano";
+const JSON_KEY_TRACE_ID: &str = "trace_id";
+const JSON_KEY_TRACESTATE: &str = "tracestate";
 
 const DD_NAMESPACED_TO_APM_CONVENTIONS: &[(&str, &str)] = &[
     (KEY_DATADOG_ENVIRONMENT, "env"),
@@ -883,59 +891,196 @@ fn marshal_events(events: &[OtlpSpanEvent]) -> Option<String> {
     if events.is_empty() {
         return None;
     }
-    let mut serialized = Vec::with_capacity(events.len());
-    for event in events {
-        let mut obj = JsonMap::new();
-        if event.time_unix_nano != 0 {
-            obj.insert("time_unix_nano".to_string(), JsonValue::from(event.time_unix_nano));
-        }
-        if !event.name.is_empty() {
-            obj.insert("name".to_string(), JsonValue::String(event.name.clone()));
-        }
-        if let Some(attributes) = key_values_to_json_object(&event.attributes) {
-            obj.insert("attributes".to_string(), JsonValue::Object(attributes));
-        }
-        if event.dropped_attributes_count != 0 {
-            obj.insert(
-                "dropped_attributes_count".to_string(),
-                JsonValue::from(u64::from(event.dropped_attributes_count)),
-            );
-        }
-        serialized.push(JsonValue::Object(obj));
-    }
-    serde_json::to_string(&serialized).ok()
+    serialize_json(&JsonSpanEvents(events))
 }
 
 fn marshal_links(links: &[OtlpSpanLink]) -> Option<String> {
     if links.is_empty() {
         return None;
     }
-    let mut serialized = Vec::with_capacity(links.len());
-    for link in links {
-        let mut obj = JsonMap::new();
-        obj.insert(
-            "trace_id".to_string(),
-            JsonValue::String(bytes_to_hex_lowercase(&link.trace_id)),
-        );
-        obj.insert(
-            "span_id".to_string(),
-            JsonValue::String(bytes_to_hex_lowercase(&link.span_id)),
-        );
-        if !link.trace_state.is_empty() {
-            obj.insert("tracestate".to_string(), JsonValue::String(link.trace_state.clone()));
+    serialize_json(&JsonSpanLinks(links))
+}
+
+fn serialize_json(value: &impl Serialize) -> Option<String> {
+    let mut output = Vec::new();
+    let mut serializer = serde_json::Serializer::new(&mut output);
+    value.serialize(&mut serializer).ok()?;
+    String::from_utf8(output).ok()
+}
+
+struct JsonSpanEvents<'a>(&'a [OtlpSpanEvent]);
+
+impl Serialize for JsonSpanEvents<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for event in self.0 {
+            seq.serialize_element(&JsonSpanEvent(event))?;
         }
-        if let Some(attributes) = key_values_to_json_object(&link.attributes) {
-            obj.insert("attributes".to_string(), JsonValue::Object(attributes));
+        seq.end()
+    }
+}
+
+struct JsonSpanEvent<'a>(&'a OtlpSpanEvent);
+
+impl Serialize for JsonSpanEvent<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let event = self.0;
+        let mut map = serializer.serialize_map(None)?;
+        if event.time_unix_nano != 0 {
+            map.serialize_entry(JSON_KEY_TIME_UNIX_NANO, &event.time_unix_nano)?;
+        }
+        if !event.name.is_empty() {
+            map.serialize_entry(JSON_KEY_NAME, event.name.as_str())?;
+        }
+        if has_serializable_key_values(&event.attributes) {
+            map.serialize_entry(JSON_KEY_ATTRIBUTES, &JsonKeyValues(&event.attributes))?;
+        }
+        if event.dropped_attributes_count != 0 {
+            map.serialize_entry(
+                JSON_KEY_DROPPED_ATTRIBUTES_COUNT,
+                &u64::from(event.dropped_attributes_count),
+            )?;
+        }
+        map.end()
+    }
+}
+
+struct JsonSpanLinks<'a>(&'a [OtlpSpanLink]);
+
+impl Serialize for JsonSpanLinks<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for link in self.0 {
+            seq.serialize_element(&JsonSpanLink(link))?;
+        }
+        seq.end()
+    }
+}
+
+struct JsonSpanLink<'a>(&'a OtlpSpanLink);
+
+impl Serialize for JsonSpanLink<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let link = self.0;
+        let trace_id = bytes_to_hex_lowercase(&link.trace_id);
+        let span_id = bytes_to_hex_lowercase(&link.span_id);
+
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry(JSON_KEY_TRACE_ID, &trace_id)?;
+        map.serialize_entry(JSON_KEY_SPAN_ID, &span_id)?;
+        if !link.trace_state.is_empty() {
+            map.serialize_entry(JSON_KEY_TRACESTATE, link.trace_state.as_str())?;
+        }
+        if has_serializable_key_values(&link.attributes) {
+            map.serialize_entry(JSON_KEY_ATTRIBUTES, &JsonKeyValues(&link.attributes))?;
         }
         if link.dropped_attributes_count != 0 {
-            obj.insert(
-                "dropped_attributes_count".to_string(),
-                JsonValue::from(u64::from(link.dropped_attributes_count)),
-            );
+            map.serialize_entry(
+                JSON_KEY_DROPPED_ATTRIBUTES_COUNT,
+                &u64::from(link.dropped_attributes_count),
+            )?;
         }
-        serialized.push(JsonValue::Object(obj));
+        map.end()
     }
-    serde_json::to_string(&serialized).ok()
+}
+
+fn has_serializable_key_values(attributes: &[KeyValue]) -> bool {
+    attributes.iter().any(|attribute| {
+        if attribute.key.is_empty() {
+            return false;
+        }
+        attribute
+            .value
+            .as_ref()
+            .and_then(|wrapper| wrapper.value.as_ref())
+            .is_some_and(otlp_value_is_json_serializable)
+    })
+}
+
+struct JsonKeyValues<'a>(&'a [KeyValue]);
+
+impl Serialize for JsonKeyValues<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(None)?;
+        for attribute in self.0 {
+            if attribute.key.is_empty() {
+                continue;
+            }
+            let Some(value) = attribute.value.as_ref().and_then(|wrapper| wrapper.value.as_ref()) else {
+                continue;
+            };
+            if !otlp_value_is_json_serializable(value) {
+                continue;
+            }
+            map.serialize_entry(attribute.key.as_str(), &JsonOtlpValue(value))?;
+        }
+        map.end()
+    }
+}
+
+fn otlp_value_is_json_serializable(value: &OtlpValue) -> bool {
+    !matches!(value, OtlpValue::DoubleValue(v) if !v.is_finite())
+}
+
+struct JsonOtlpValue<'a>(&'a OtlpValue);
+
+impl Serialize for JsonOtlpValue<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self.0 {
+            OtlpValue::StringValue(v) => serializer.serialize_str(v.as_str()),
+            OtlpValue::BoolValue(v) => serializer.serialize_bool(*v),
+            OtlpValue::IntValue(v) => serializer.serialize_i64(*v),
+            OtlpValue::DoubleValue(v) => serializer.serialize_f64(*v),
+            OtlpValue::BytesValue(bytes) => {
+                let encoded = general_purpose::STANDARD.encode(bytes);
+                serializer.serialize_str(&encoded)
+            }
+            OtlpValue::ArrayValue(array) => {
+                let mut seq = serializer.serialize_seq(None)?;
+                for item in &array.values {
+                    let Some(inner) = item.value.as_ref() else {
+                        continue;
+                    };
+                    if !otlp_value_is_json_serializable(inner) {
+                        continue;
+                    }
+                    seq.serialize_element(&JsonOtlpValue(inner))?;
+                }
+                seq.end()
+            }
+            OtlpValue::KvlistValue(kvlist) => {
+                let mut map = serializer.serialize_map(None)?;
+                for key_value in &kvlist.values {
+                    let Some(inner) = key_value.value.as_ref().and_then(|wrapper| wrapper.value.as_ref()) else {
+                        continue;
+                    };
+                    if !otlp_value_is_json_serializable(inner) {
+                        continue;
+                    }
+                    map.serialize_entry(key_value.key.as_str(), &JsonOtlpValue(inner))?;
+                }
+                map.end()
+            }
+        }
+    }
 }
 
 fn status_code_to_string(code: StatusCode) -> &'static str {
@@ -1009,62 +1154,6 @@ fn get_first_from_meta(meta: &FastHashMap<MetaString, MetaString>, keys: &[&str]
     None
 }
 
-fn key_values_to_json_object(attributes: &[KeyValue]) -> Option<JsonMap<String, JsonValue>> {
-    if attributes.is_empty() {
-        return None;
-    }
-    let mut map = JsonMap::new();
-    for attribute in attributes {
-        if attribute.key.is_empty() {
-            continue;
-        }
-        let Some(value) = attribute.value.as_ref().and_then(|wrapper| wrapper.value.as_ref()) else {
-            continue;
-        };
-        if let Some(json_value) = otlp_value_to_json_value(value) {
-            map.insert(attribute.key.clone(), json_value);
-        }
-    }
-    if map.is_empty() {
-        None
-    } else {
-        Some(map)
-    }
-}
-
-fn otlp_value_to_json_value(value: &OtlpValue) -> Option<JsonValue> {
-    match value {
-        OtlpValue::StringValue(v) => Some(JsonValue::String(v.clone())),
-        OtlpValue::BoolValue(v) => Some(JsonValue::Bool(*v)),
-        OtlpValue::IntValue(v) => Some(JsonValue::Number((*v).into())),
-        OtlpValue::DoubleValue(v) => serde_json::Number::from_f64(*v).map(JsonValue::Number),
-        OtlpValue::BytesValue(bytes) => Some(JsonValue::String(general_purpose::STANDARD.encode(bytes))),
-        OtlpValue::ArrayValue(array) => {
-            let mut arr = Vec::with_capacity(array.values.len());
-            for item in &array.values {
-                if let Some(inner) = item.value.as_ref().and_then(otlp_value_to_json_value) {
-                    arr.push(inner);
-                }
-            }
-            Some(JsonValue::Array(arr))
-        }
-        OtlpValue::KvlistValue(kvlist) => {
-            let mut obj = JsonMap::new();
-            for kv in &kvlist.values {
-                if let Some(inner) = kv
-                    .value
-                    .as_ref()
-                    .and_then(|wrapper| wrapper.value.as_ref())
-                    .and_then(otlp_value_to_json_value)
-                {
-                    obj.insert(kv.key.clone(), inner);
-                }
-            }
-            Some(JsonValue::Object(obj))
-        }
-    }
-}
-
 pub(super) fn otlp_value_to_string(value: &OtlpValue) -> Option<String> {
     match value {
         OtlpValue::StringValue(v) => Some(v.clone()),
@@ -1072,9 +1161,7 @@ pub(super) fn otlp_value_to_string(value: &OtlpValue) -> Option<String> {
         OtlpValue::IntValue(v) => Some(v.to_string()),
         OtlpValue::DoubleValue(v) => Some(v.to_string()),
         OtlpValue::BytesValue(bytes) => Some(format!("<{} bytes>", bytes.len())),
-        OtlpValue::ArrayValue(_) | OtlpValue::KvlistValue(_) => {
-            otlp_value_to_json_value(value).map(|json| json.to_string())
-        }
+        OtlpValue::ArrayValue(_) | OtlpValue::KvlistValue(_) => serialize_json(&JsonOtlpValue(value)),
     }
 }
 
