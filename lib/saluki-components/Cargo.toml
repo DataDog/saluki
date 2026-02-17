@@ -11,7 +11,6 @@ workspace = true
 [features]
 default = []
 bench = []
-python-checks = ["dep:pyo3"]
 
 [dependencies]
 async-trait = { workspace = true }
@@ -44,7 +43,6 @@ piecemeal = { workspace = true }
 pin-project = { workspace = true }
 prost = { workspace = true }
 protobuf = { workspace = true }
-pyo3 = { workspace = true, optional = true }
 rand = { workspace = true, features = ["std", "std_rng"] }
 regex = { workspace = true, features = ["unicode-perl"] }
 rmp-serde = { workspace = true }
