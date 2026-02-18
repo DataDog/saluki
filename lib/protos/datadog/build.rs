@@ -130,6 +130,15 @@ fn main() {
         .compile()
         .expect("piecemeal codegen failed for trace protos");
 
+    // Generate piecemeal builder types for checks IPC.
+    piecemeal_build::ConfigBuilder::new()
+        .input_files(&["proto/checks/checks.proto"])
+        .cargo_output_dir("checks_piecemeal")
+        .expect("failed to resolve cargo output directory")
+        .include_paths(&["proto"])
+        .compile()
+        .expect("piecemeal codegen failed for checks protos");
+
     // Handle code generation for gRPC service definitions.
     tonic_prost_build::configure()
         .build_server(true)
