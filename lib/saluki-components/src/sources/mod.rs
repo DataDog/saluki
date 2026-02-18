@@ -1,5 +1,8 @@
 //! Source implementations.
 
+mod checks_ipc;
+pub use self::checks_ipc::ChecksIPCConfiguration;
+
 mod dogstatsd;
 pub use self::dogstatsd::DogStatsDConfiguration;
 
