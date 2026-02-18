@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package datadog.checks.v1.metric;
+
+enum MetricType {
+    METRIC_TYPE_UNSPECIFIED = 0;
+    METRIC_TYPE_COUNTER = 1;
+    METRIC_TYPE_RATE = 2;
+    METRIC_TYPE_GAUGE = 3;
+    METRIC_TYPE_HISTOGRAM = 4;
+}
+
+message Metric {
+    MetricType type = 1;
+    string name = 2;
+    double value = 3;
+    uint64 timestamp = 4;
+    repeated string tags = 5;
+    string hostname = 6;
+    uint64 interval_secs = 7;
+}

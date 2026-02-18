@@ -13,6 +13,7 @@ pub struct DataPlaneConfiguration {
     secure_api_listen_address: ListenAddress,
     telemetry_enabled: bool,
     telemetry_listen_addr: ListenAddress,
+    checks: DataPlaneChecksConfiguration,
     dogstatsd: DataPlaneDogStatsDConfiguration,
     otlp: DataPlaneOtlpConfiguration,
 }
@@ -48,6 +49,7 @@ impl DataPlaneConfiguration {
             telemetry_listen_addr: config
                 .try_get_typed("data_plane.telemetry_listen_addr")?
                 .unwrap_or_else(|| ListenAddress::any_tcp(5102)),
+            checks: DataPlaneChecksConfiguration::from_configuration(config)?,
             dogstatsd: DataPlaneDogStatsDConfiguration::from_configuration(config)?,
             otlp: DataPlaneOtlpConfiguration::from_configuration(config)?,
         })
@@ -97,6 +99,11 @@ impl DataPlaneConfiguration {
         &self.telemetry_listen_addr
     }
 
+    /// Returns a reference to the Checks-specific data plane configuration.
+    pub const fn checks(&self) -> &DataPlaneChecksConfiguration {
+        &self.checks
+    }
+
     /// Returns a reference to the DogStatsD-specific data plane configuration.
     pub const fn dogstatsd(&self) -> &DataPlaneDogStatsDConfiguration {
         &self.dogstatsd
@@ -109,7 +116,7 @@ impl DataPlaneConfiguration {
 
     /// Returns `true` if any data pipelines are enabled.
     pub const fn data_pipelines_enabled(&self) -> bool {
-        self.dogstatsd().enabled() || self.otlp().enabled()
+        self.checks().enabled() || self.dogstatsd().enabled() || self.otlp().enabled()
     }
 
     /// Returns `true` if the metrics pipeline is required.
@@ -118,29 +125,72 @@ impl DataPlaneConfiguration {
     /// by higher-level data pipelines, such as DogStatsD.
     pub const fn metrics_pipeline_required(&self) -> bool {
         // We consider the metrics pipeline to be enabled if:
+        // - Checks is enabled
         // - DogStatsD is enabled
         // - OTLP is enabled and not in proxy mode
-        self.dogstatsd().enabled() || (self.otlp().enabled() && !self.otlp().proxy().enabled())
+        self.checks().enabled()
+            || self.dogstatsd().enabled()
+            || (self.otlp().enabled() && !self.otlp().proxy().enabled())
     }
 
     /// Returns `true` if the logs pipeline is required.
     ///
     /// This indicates that the "baseline" logs pipeline (encoding, forwarding) is required by higher-level data
-    /// pipelines, such as OTLP.
+    /// pipelines, such as Checks or OTLP.
     pub const fn logs_pipeline_required(&self) -> bool {
         // We consider the logs pipeline to be enabled if:
+        // - Checks is enabled
         // - OTLP is enabled and not in proxy mode
-        self.otlp().enabled() && !self.otlp().proxy().enabled()
+        self.checks().enabled() || (self.otlp().enabled() && !self.otlp().proxy().enabled())
+    }
+
+    /// Returns `true` if the events pipeline is required.
+    ///
+    /// This indicates that the "baseline" events pipeline (encoding, forwarding) is required by higher-level data
+    /// pipelines, such as Checks or DogStatsD.
+    pub const fn events_pipeline_required(&self) -> bool {
+        self.checks().enabled() || self.dogstatsd().enabled()
+    }
+
+    /// Returns `true` if the service checks pipeline is required.
+    ///
+    /// This indicates that the "baseline" service checks pipeline (encoding, forwarding) is required by higher-level
+    /// data pipelines, such as Checks or DogStatsD.
+    pub const fn service_checks_pipeline_required(&self) -> bool {
+        self.checks().enabled() || self.dogstatsd().enabled()
     }
 
     /// Returns `true` if the traces pipeline is required.
     ///
-    /// This indicates that the "baseline" traces pipeline (encoding, forwarding) is required by higher-level data
-    /// pipelines, such as OTLP.
+    /// This indicates that the "baseline" traces pipeline (encoding, forwarding).
     pub const fn traces_pipeline_required(&self) -> bool {
         // We consider the traces pipeline to be enabled if:
         // - OTLP is enabled and not in proxy mode or proxy mode is enabled and proxy traces are disabled
         self.otlp().enabled() && (!self.otlp().proxy().enabled() || !self.otlp().proxy().proxy_traces())
+    }
+}
+
+/// Checks-specific data plane configuration.
+#[derive(Clone, Debug)]
+pub struct DataPlaneChecksConfiguration {
+    /// Whether Checks is enabled.
+    ///
+    /// When disabled, Checks will not be started.
+    ///
+    /// Defaults to `false`.
+    enabled: bool,
+}
+
+impl DataPlaneChecksConfiguration {
+    fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        Ok(Self {
+            enabled: config.try_get_typed("data_plane.checks.enabled")?.unwrap_or(false),
+        })
+    }
+
+    /// Returns `true` if Checks is enabled.
+    pub const fn enabled(&self) -> bool {
+        self.enabled
     }
 }
 

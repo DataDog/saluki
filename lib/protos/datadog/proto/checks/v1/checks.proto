@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package datadog.checks.v1;
+
+import "checks/v1/event.proto";
+import "checks/v1/log.proto";
+import "checks/v1/metric.proto";
+import "checks/v1/service_check.proto";
+
+message CheckData {
+    oneof data {
+        datadog.checks.v1.metric.Metric metric = 1;
+        datadog.checks.v1.log.Log log = 2;
+        datadog.checks.v1.service_check.ServiceCheck service_check = 3;
+        datadog.checks.v1.event.Event event = 4;
+    }
+}
+
+message SendCheckPayloadRequest {
+    repeated CheckData data = 1;
+}
+
+message SendCheckPayloadResponse {}
+
+service Checks {
+    rpc SendCheckPayload(SendCheckPayloadRequest) returns (SendCheckPayloadResponse);
+}
