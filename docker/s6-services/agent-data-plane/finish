@@ -6,6 +6,7 @@ ifthenelse
     { s6-test ${1} -eq 0 }
     {
         foreground { /initlog.sh "agent-data-plane exited with code ${1}, disabling" }
+        foreground { s6-sleep 2 }
         foreground { /bin/s6-svc -d /var/run/s6/services/agent-data-plane/ }
     }
     {
