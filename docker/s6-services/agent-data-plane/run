@@ -1,7 +1,4 @@
 #!/usr/bin/execlineb -P
 
 foreground { /initlog.sh "starting agent-data-plane" }
-pipeline {
-    s6-envdir -I /run/adp/env agent-data-plane --config /etc/datadog-agent/datadog.yaml run
-}
-cat
+agent-data-plane --config /etc/datadog-agent/datadog.yaml run
