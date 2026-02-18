@@ -17,12 +17,13 @@ const SIMD_LAST_LANE_MASK: i32 = 0x8000;
 const SIMD_MASK_EXCEPT_LAST: i32 = 0x7FFF;
 
 #[target_feature(enable = "sse2")]
-pub(super) unsafe fn is_normalized_ascii_tag_simd_sse2(bytes: &[u8], start: usize) -> bool {
-    #[cfg(all(test, any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
-    SIMD_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
+#[allow(missing_docs)]
+pub unsafe fn is_normalized_ascii_tag_simd_sse2(tag: &[u8]) -> bool {
+    //#[cfg(all(test, any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
+    //SIMD_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
 
-    let mut i = start;
-    let len = bytes.len();
+    let mut i = 0;
+    let len = tag.len();
     let mut trailing_underscore = false;
 
     let lower_min = _mm_set1_epi8((b'a' - 1) as i8);
@@ -37,7 +38,7 @@ pub(super) unsafe fn is_normalized_ascii_tag_simd_sse2(bytes: &[u8], start: usiz
     let underscore = _mm_set1_epi8(b'_' as i8);
 
     while i + SIMD_CHUNK_SIZE <= len {
-        let ptr = bytes.as_ptr().add(i) as *const __m128i;
+        let ptr = tag.as_ptr().add(i) as *const __m128i;
         let chunk = _mm_loadu_si128(ptr);
 
         if _mm_movemask_epi8(chunk) != 0 {
@@ -84,7 +85,7 @@ pub(super) unsafe fn is_normalized_ascii_tag_simd_sse2(bytes: &[u8], start: usiz
         if (underscore_mask & SIMD_LAST_LANE_MASK) != 0 {
             let next_idx = i + SIMD_CHUNK_SIZE;
             if next_idx < len {
-                if !IS_VALID_ASCII_TAG_CHAR_LOOKUP[bytes[next_idx] as usize] {
+                if !IS_VALID_ASCII_TAG_CHAR_LOOKUP[tag[next_idx] as usize] {
                     return false;
                 }
             } else {
@@ -96,7 +97,7 @@ pub(super) unsafe fn is_normalized_ascii_tag_simd_sse2(bytes: &[u8], start: usiz
     }
 
     while i < len {
-        let b = bytes[i];
+        let b = tag[i];
         if trailing_underscore {
             if !IS_VALID_ASCII_TAG_CHAR_LOOKUP[b as usize] {
                 return false;

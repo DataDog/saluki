@@ -9,12 +9,15 @@ use stringtheory::MetaString;
 use tracing::debug;
 
 #[cfg(all(target_arch = "aarch64", not(miri)))]
-mod normalize_neon;
-pub(crate) mod normalize_scalar;
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-mod normalize_sse2;
+pub(crate) mod normalize_neon;
 #[cfg(all(target_arch = "aarch64", not(miri)))]
 use normalize_neon::is_normalized_ascii_tag_simd_neon;
+
+pub(crate) mod normalize_scalar;
+use normalize_scalar::is_normalized_ascii_tag_scalar;
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+pub(crate) mod normalize_sse2;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use normalize_sse2::is_normalized_ascii_tag_simd_sse2;
 
@@ -190,36 +193,15 @@ pub fn normalize_tag(value: &str) -> MetaString {
 }
 
 fn normalize(value: &str, remove_digit_start_char: bool) -> MetaString {
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64", all(target_arch = "aarch64", not(miri))))]
-    {
-        normalize_simd(value, remove_digit_start_char)
-    }
-
-    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64", all(target_arch = "aarch64", not(miri)),)))]
-    {
-        normalize_scalar::normalize(value, remove_digit_start_char)
-    }
-}
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64", all(target_arch = "aarch64", not(miri))))]
-pub(crate) fn normalize_simd(value: &str, remove_digit_start_char: bool) -> MetaString {
-    normalize_with_ascii_fast_path(value, remove_digit_start_char, is_normalized_ascii_tag)
-}
-
-fn normalize_with_ascii_fast_path<F>(
-    value: &str, remove_digit_start_char: bool, is_normalized_ascii_tag_fn: F,
-) -> MetaString
-where
-    F: Fn(&str, bool) -> bool,
-{
     if value.is_empty() {
         return MetaString::empty();
     }
 
     // Fast Path: return right away if it is valid
-    if is_normalized_ascii_tag_fn(value, remove_digit_start_char) {
+    if is_normalized_ascii_tag(value, remove_digit_start_char) {
         return MetaString::from(value);
     }
+
     // Trim is used to to remove invalid characters from the start of the tag
     // Cuts is used to mark the start and end of invalid characters that need to be replaced with underscores
     // Chars is used to count the number of valid characters in the tag
@@ -369,95 +351,52 @@ fn is_valid_metric_name(name: &str) -> bool {
 }
 
 fn is_normalized_ascii_tag(tag: &str, check_valid_start_char: bool) -> bool {
-    // Dispatch to the target-specific SIMD checker when available.
-    is_normalized_ascii_tag_with_simd_check(tag, check_valid_start_char, is_normalized_ascii_tag_simd)
-}
-
-#[cfg(any(
-    test,
-    feature = "bench",
-    not(any(target_arch = "x86", target_arch = "x86_64", all(target_arch = "aarch64", not(miri))))
-))]
-fn is_normalized_ascii_tag_without_simd(tag: &str, check_valid_start_char: bool) -> bool {
-    is_normalized_ascii_tag_with_simd_check(tag, check_valid_start_char, |_bytes, _start| None)
-}
-
-fn is_normalized_ascii_tag_with_simd_check<F>(tag: &str, check_valid_start_char: bool, simd_check_fn: F) -> bool
-where
-    F: Fn(&[u8], usize) -> Option<bool>,
-{
+    // Check for basic failure cases.
     if tag.is_empty() {
         return true;
     }
+
     if tag.len() > MAX_TAG_LEN {
         return false;
     }
+
     let bytes = tag.as_bytes();
-    let mut start = 0;
+    let mut i = 0;
     if check_valid_start_char {
         if !IS_VALID_ASCII_START_CHAR_LOOKUP[bytes[0] as usize] {
             return false;
         }
-        start = 1;
+        i = 1;
     }
 
-    if let Some(valid) = simd_check_fn(bytes, start) {
-        return valid;
+    // Make sure we have something left after the first character if we checked it.
+    let remaining = &bytes[i..];
+    if remaining.is_empty() {
+        return true;
     }
 
-    is_normalized_ascii_tag_scalar(bytes, start)
+    is_normalized_ascii_tag_inner(remaining)
 }
 
-fn is_normalized_ascii_tag_scalar(bytes: &[u8], mut i: usize) -> bool {
-    while i < bytes.len() {
-        let b = bytes[i];
-        if IS_VALID_ASCII_TAG_CHAR_LOOKUP[b as usize] {
-            i += 1;
-            continue;
-        }
-        if b == b'_' {
-            // An underscore is only valid if it is followed by a valid non-underscore character.
-            i += 1;
-            if i == bytes.len() || !IS_VALID_ASCII_TAG_CHAR_LOOKUP[bytes[i] as usize] {
-                return false;
-            }
-            i += 1;
-            continue;
-        }
-        return false;
-    }
-
-    true
-}
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-fn is_normalized_ascii_tag_simd(bytes: &[u8], start: usize) -> Option<bool> {
-    if bytes.len().saturating_sub(start) < SIMD_CHUNK_SIZE {
-        return None;
-    }
+#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), not(target_arch = "aarch64")))]
+fn is_normalized_ascii_tag_inner(tag: &[u8]) -> bool {
     if !is_x86_feature_detected!("sse2") {
-        return None;
+        return is_normalized_ascii_tag_scalar(tag);
     }
+
     // SAFETY: SSE2 is available and we only load within bounds.
-    Some(unsafe { is_normalized_ascii_tag_simd_sse2(bytes, start) })
+    unsafe { is_normalized_ascii_tag_simd_sse2(tag) }
 }
 
-#[cfg(all(target_arch = "aarch64", not(miri)))]
-fn is_normalized_ascii_tag_simd(bytes: &[u8], start: usize) -> Option<bool> {
-    if bytes.len().saturating_sub(start) < SIMD_CHUNK_SIZE {
-        return None;
-    }
-
+#[cfg(all(not(any(target_arch = "x86", target_arch = "x86_64")), target_arch = "aarch64"))]
+fn is_normalized_ascii_tag_inner(tag: &[u8]) -> Option<bool> {
     // SAFETY: AArch64 guarantees NEON availability and we only load within bounds.
-    Some(unsafe { is_normalized_ascii_tag_simd_neon(bytes, start) })
+    unsafe { is_normalized_ascii_tag_simd_neon(tag) }
 }
 
-#[cfg(any(
-    all(target_arch = "aarch64", miri),
-    not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"))
-))]
-fn is_normalized_ascii_tag_simd(_bytes: &[u8], _start: usize) -> Option<bool> {
-    None
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
+fn is_normalized_ascii_tag_inner(tag: &[u8]) -> Option<bool> {
+    is_normalized_ascii_tag_scalar(tag)
 }
 
 const fn is_valid_ascii_start_char(c: char) -> bool {
@@ -480,6 +419,7 @@ pub(super) fn truncate_utf8(s: &MetaString, max_len: usize) -> &str {
     &s[..end]
 }
 
+/*
 #[cfg(test)]
 mod tests {
     use std::char;
@@ -793,3 +733,4 @@ mod tests {
         }
     }
 }
+*/

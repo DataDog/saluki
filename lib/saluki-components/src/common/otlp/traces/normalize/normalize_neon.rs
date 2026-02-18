@@ -11,12 +11,13 @@ const NEON_LAST_LANE: i32 = 15;
 const NEON_FOLLOWER_SHIFT_BYTES: i32 = 15;
 
 #[target_feature(enable = "neon")]
-pub(super) unsafe fn is_normalized_ascii_tag_simd_neon(bytes: &[u8], start: usize) -> bool {
+#[allow(missing_docs)]
+pub unsafe fn is_normalized_ascii_tag_simd_neon(tag: &[u8]) -> bool {
     #[cfg(all(test, any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
     SIMD_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
 
-    let mut i = start;
-    let len = bytes.len();
+    let mut i = 0;
+    let len = tag.len();
     let mut trailing_underscore = false;
 
     let ascii_high_bit = vdupq_n_u8(0x80);
@@ -32,7 +33,7 @@ pub(super) unsafe fn is_normalized_ascii_tag_simd_neon(bytes: &[u8], start: usiz
     let zero = vdupq_n_u8(0);
 
     while i + SIMD_CHUNK_SIZE <= len {
-        let chunk = vld1q_u8(bytes.as_ptr().add(i));
+        let chunk = vld1q_u8(tag.as_ptr().add(i));
 
         if vmaxvq_u8(vandq_u8(chunk, ascii_high_bit)) != 0 {
             return false;
@@ -83,7 +84,7 @@ pub(super) unsafe fn is_normalized_ascii_tag_simd_neon(bytes: &[u8], start: usiz
     }
 
     while i < len {
-        let b = bytes[i];
+        let b = tag[i];
         if trailing_underscore {
             if !IS_VALID_ASCII_TAG_CHAR_LOOKUP[b as usize] {
                 return false;
