@@ -4,6 +4,19 @@
 //! resource.attributes) so OTTL conditions can be evaluated against the current span.
 //! Uses a generic context type so no type erasure or allocation is required: the
 //! context is passed by reference with minimal copying.
+//!
+//! To avoid copying span or resource data, the context holds pointers that are
+//! created from references in the caller; the only unsafe dereference is isolated
+//! in [`SpanFilterContext::with_borrow`].
+//!
+//! **Why unsafe cannot be removed** (without changing the OTTL library): the parser
+//! is built once and stored as `Parser<SpanFilterContext>`; its context type `C`
+//! must not carry a lifetime. Each call to `should_drop_span(span, resource_tags)`
+//! has references with a call-specific lifetime. To pass those into the parser
+//! without copying, we must erase the lifetime (raw pointers) and dereference once
+//! inside a controlled API. Using `SpanFilterContext<'a>` with references would
+//! require storing a parser that is generic over `'a`, which Rust's type system
+//! does not allow in a single `Vec` without higher-rank or library support.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -15,22 +28,57 @@ use saluki_core::data_model::event::trace::Span;
 /// Context holding the current span and trace resource tags for OTTL evaluation.
 ///
 /// Used when evaluating filter conditions: the same context is passed to each
-/// condition with the current span and the trace's resource tags. Holds raw
-/// pointers to avoid copying and to work with the OTTL library's generic context
-/// type (no `'static` or type erasure required).
+/// condition with the current span and the trace's resource tags. Created from
+/// references via [`SpanFilterContext::new`]; access to the span and tags is
+/// through [`SpanFilterContext::with_borrow`] so that the single dereference
+/// is in one place.
 ///
-/// # Safety
+/// # Send
 ///
 /// Implemented as `Send` so that `Parser<SpanFilterContext>` can be stored in
 /// the transform (which is `Send`). No `SpanFilterContext` value is ever sent
 /// across threads; it is only created on the stack in `should_drop_span` and
-/// used there. The pointers are only dereferenced on the same thread that
-/// created the context.
+/// used there.
 pub struct SpanFilterContext {
-    /// Reference to the span under evaluation.
-    pub span: *const Span,
-    /// Reference to the trace's resource tags (resource.attributes in OTTL terms).
-    pub resource_tags: *const SharedTagSet,
+    span: *const Span,
+    resource_tags: *const SharedTagSet,
+}
+
+impl SpanFilterContext {
+    /// Creates a context from references to the current span and resource tags.
+    ///
+    /// The pointers are created with [`std::ptr::from_ref`]; no allocation or copy.
+    /// The caller must use this context only while `span` and `resource_tags` are
+    /// valid and only on the same thread.
+    #[inline]
+    pub fn new(span: &Span, resource_tags: &SharedTagSet) -> Self {
+        Self {
+            span: std::ptr::from_ref(span),
+            resource_tags: std::ptr::from_ref(resource_tags),
+        }
+    }
+
+    /// Runs a closure with borrowed references to the span and resource tags.
+    ///
+    /// This is the only place where the stored pointers are dereferenced. See the
+    /// module docs for why this cannot be replaced with a fully safe design without
+    /// changing the OTTL library.
+    ///
+    /// # Safety
+    ///
+    /// The pointers must be valid for the duration of the call and must not be
+    /// used from another thread. This is guaranteed when the context is created
+    /// with [`SpanFilterContext::new`] and used only in the same stack frame.
+    #[inline]
+    pub fn with_borrow<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&Span, &SharedTagSet) -> R,
+    {
+        // SAFETY: SpanFilterContext is only constructed from references in the same
+        // call stack (should_drop_span) and is used synchronously before returning.
+        // The pointers are not sent across threads; see Send impl and module docs.
+        unsafe { f(&*self.span, &*self.resource_tags) }
+    }
 }
 
 unsafe impl Send for SpanFilterContext {}
@@ -41,10 +89,8 @@ pub struct SpanPathAccessor;
 
 impl PathAccessor<SpanFilterContext> for SpanPathAccessor {
     fn get(&self, ctx: &SpanFilterContext, path: &str, indexes: &[IndexExpr]) -> ottl::Result<Value> {
-        let span = unsafe { &*ctx.span };
-        let resource_tags = unsafe { &*ctx.resource_tags };
-
-        let value = match path {
+        ctx.with_borrow(|span, resource_tags| {
+            let value = match path {
             "attributes" => {
                 if let Some(IndexExpr::String(key)) = indexes.first() {
                     span.meta()
@@ -70,9 +116,10 @@ impl PathAccessor<SpanFilterContext> for SpanPathAccessor {
                 }
             }
             _ => return Err(format!("Unknown path: {}", path).into()),
-        };
+            };
 
-        Ok(value)
+            Ok(value)
+        })
     }
 
     //AZH: to discuss with Tobias, how to modify the context and path values

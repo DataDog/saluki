@@ -101,10 +101,7 @@ impl OttlFilter {
             return false;
         }
 
-        let mut ctx = SpanFilterContext {
-            span: span as *const _,
-            resource_tags: resource_tags as *const _,
-        };
+        let mut ctx = SpanFilterContext::new(span, resource_tags);
 
         for parser in &self.span_parsers {
             match parser.execute(&mut ctx) {
