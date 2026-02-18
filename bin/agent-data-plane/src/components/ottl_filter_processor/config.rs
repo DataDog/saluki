@@ -33,12 +33,6 @@ pub struct TracesFilterConfig {
     /// OTTL conditions for spans. If any condition matches, the span is dropped.
     #[serde(default)]
     pub span: Vec<String>,
-
-    /// OTTL conditions for span events. If any condition matches, the span event is dropped.
-    /// Not yet implemented; reserved for future use.
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub spanevent: Vec<String>,
 }
 
 /// Root YAML configuration for the OTTL filter processor.
