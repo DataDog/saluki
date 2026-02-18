@@ -23,11 +23,10 @@ use stringtheory::MetaString;
 use tracing::error;
 
 use crate::common::datadog::{OTEL_TRACE_ID_META_KEY, SAMPLING_PRIORITY_METRIC_KEY};
-use crate::common::otlp::attributes::{get_int_attribute, HTTP_MAPPINGS};
+use crate::common::otlp::attributes::HTTP_MAPPINGS;
 use crate::common::otlp::traces::normalize::{is_normalized_tag_value, normalize_service, normalize_tag_value};
 use crate::common::otlp::traces::normalize::{truncate_utf8, MAX_RESOURCE_LEN};
 use crate::common::otlp::traces::translator::{convert_span_id, convert_trace_id};
-use crate::common::otlp::util::get_string_attribute;
 use crate::common::otlp::util::{
     DEPLOYMENT_ENVIRONMENT_KEY, KEY_DATADOG_CONTAINER_ID, KEY_DATADOG_ENVIRONMENT, KEY_DATADOG_VERSION,
 };
@@ -93,6 +92,40 @@ const DD_NAMESPACED_TO_APM_CONVENTIONS: &[(&str, &str)] = &[
     (KEY_DATADOG_HTTP_STATUS_CODE, HTTP_STATUS_CODE_KEY),
 ];
 
+type AttributeMap<'a> = FastHashMap<&'a str, &'a KeyValue>;
+
+fn build_attribute_map(attributes: &[KeyValue]) -> AttributeMap<'_> {
+    let mut map = FastHashMap::default();
+    map.reserve(attributes.len());
+    for attribute in attributes {
+        // keeps the first occurrence and ignores later duplicates
+        map.entry(attribute.key.as_str()).or_insert(attribute);
+    }
+    map
+}
+
+fn get_string_attribute_from_map<'a>(attributes: &'a AttributeMap<'a>, key: &str) -> Option<&'a str> {
+    attributes
+        .get(key)
+        .and_then(|kv| kv.value.as_ref())
+        .and_then(|v| v.value.as_ref())
+        .and_then(|value| match value {
+            OtlpValue::StringValue(s) => Some(s.as_str()),
+            _ => None,
+        })
+}
+
+fn get_int_attribute<'a>(attributes: &'a AttributeMap<'a>, key: &str) -> Option<&'a i64> {
+    attributes
+        .get(key)
+        .and_then(|kv| kv.value.as_ref())
+        .and_then(|v| v.value.as_ref())
+        .and_then(|value| match value {
+            OtlpValue::IntValue(i) => Some(i),
+            _ => None,
+        })
+}
+
 // otel_span_to_dd_span converts an OTLP span to DD span and is based on the logic defined in the agent.
 // https://github.com/DataDog/datadog-agent/blob/instrument-otlp-traffic/pkg/trace/transform/transform.go#L357
 pub fn otel_span_to_dd_span(
@@ -102,10 +135,13 @@ pub fn otel_span_to_dd_span(
 ) -> DdSpan {
     let span_attributes = &otel_span.attributes;
     let resource_attributes = &otel_resource.attributes;
+    let span_attributes_map = build_attribute_map(span_attributes);
+    let resource_attributes_map = build_attribute_map(resource_attributes);
     let (mut dd_span, mut meta, mut metrics) = otel_to_dd_span_minimal(
         otel_span,
         otel_resource,
-        instrumentation_scope,
+        &span_attributes_map,
+        &resource_attributes_map,
         ignore_missing_fields,
         compute_top_level_by_span_kind,
         interner,
@@ -113,7 +149,7 @@ pub fn otel_span_to_dd_span(
     );
 
     for (dd_key, apm_key) in DD_NAMESPACED_TO_APM_CONVENTIONS {
-        if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, dd_key, interner) {
+        if let Some(value) = use_both_maps(&span_attributes_map, &resource_attributes_map, true, dd_key, interner) {
             meta.insert(MetaString::from_static(apm_key), value);
         }
     }
@@ -141,7 +177,12 @@ pub fn otel_span_to_dd_span(
     }
 
     if !meta.contains_key("version") {
-        let version = get_otel_version(span_attributes, resource_attributes, ignore_missing_fields, interner);
+        let version = get_otel_version(
+            &span_attributes_map,
+            &resource_attributes_map,
+            ignore_missing_fields,
+            interner,
+        );
         if !version.is_empty() {
             meta.insert(MetaString::from_static("version"), version);
         }
@@ -208,7 +249,12 @@ pub fn otel_span_to_dd_span(
         }
 
         if !meta.contains_key("env") {
-            let env = get_otel_env(span_attributes, resource_attributes, ignore_missing_fields, interner);
+            let env = get_otel_env(
+                &span_attributes_map,
+                &resource_attributes_map,
+                ignore_missing_fields,
+                interner,
+            );
             if !env.is_empty() {
                 meta.insert(MetaString::from_static("env"), env);
             }
@@ -237,9 +283,13 @@ pub fn otel_span_to_dd_span(
     }
 
     if !meta.contains_key("db.name") {
-        if let Some(db_namespace) =
-            use_both_maps(resource_attributes, span_attributes, false, DB_NAMESPACE_KEY, interner)
-        {
+        if let Some(db_namespace) = use_both_maps(
+            &resource_attributes_map,
+            &span_attributes_map,
+            false,
+            DB_NAMESPACE_KEY,
+            interner,
+        ) {
             meta.insert(MetaString::from_static("db.name"), db_namespace);
         }
     }
@@ -251,16 +301,14 @@ pub fn otel_span_to_dd_span(
 // The converted DD span only has the minimal number of fields for APM stats calculation and is only meant
 // to be used in OTLPTracesToConcentratorInputs. Do not use them for other purposes.
 pub fn otel_to_dd_span_minimal(
-    otel_span: &OtlpSpan, otel_resource: &Resource, _instrumentation_scope: Option<&OtlpInstrumentationScope>,
-    ignore_missing_fields: bool, compute_top_level_by_span_kind: bool, interner: &GenericMapInterner,
-    string_builder: &mut StringBuilder<GenericMapInterner>,
+    otel_span: &OtlpSpan, otel_resource: &Resource, span_attributes_map: &AttributeMap<'_>,
+    resource_attributes_map: &AttributeMap<'_>, ignore_missing_fields: bool, compute_top_level_by_span_kind: bool,
+    interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
 ) -> (
     DdSpan,
     FastHashMap<MetaString, MetaString>,
     FastHashMap<MetaString, f64>,
 ) {
-    let span_attributes = &otel_span.attributes;
-    let resource_attributes = &otel_resource.attributes;
     let mut dd_span = DdSpan::default();
 
     let trace_id = convert_trace_id(&otel_span.trace_id);
@@ -269,16 +317,16 @@ pub fn otel_to_dd_span_minimal(
     let start = otel_span.start_time_unix_nano;
     let duration = otel_span.end_time_unix_nano - otel_span.start_time_unix_nano;
     let mut meta: FastHashMap<MetaString, MetaString> = FastHashMap::default();
-    meta.reserve(span_attributes.len() + resource_attributes.len());
+    meta.reserve(otel_span.attributes.len() + otel_resource.attributes.len());
     let mut metrics: FastHashMap<MetaString, f64> = FastHashMap::default();
     let is_top_level = compute_top_level_by_span_kind
         && (otel_span.parent_span_id.is_empty()
             || otel_span.kind() == SpanKind::Server
             || otel_span.kind() == SpanKind::Consumer);
 
-    if let Some(value) = get_int_attribute(span_attributes, KEY_DATADOG_ERROR) {
+    if let Some(value) = get_int_attribute(span_attributes_map, KEY_DATADOG_ERROR) {
         dd_span = dd_span.with_error(*value as i32);
-    } else if let Some(value) = get_string_attribute(span_attributes, KEY_DATADOG_ERROR) {
+    } else if let Some(value) = get_string_attribute_from_map(span_attributes_map, KEY_DATADOG_ERROR) {
         dd_span = dd_span.with_error(value.parse::<i32>().unwrap_or(0));
     } else if let Some(status) = &otel_span.status {
         if status.code() == StatusCode::Error {
@@ -290,7 +338,14 @@ pub fn otel_to_dd_span_minimal(
         metrics.insert(MetaString::from_static("_top_level"), 1.0);
     }
 
-    if use_both_maps(span_attributes, resource_attributes, false, "_dd.measured", interner).is_some_and(|v| *v == *"1")
+    if use_both_maps(
+        span_attributes_map,
+        resource_attributes_map,
+        false,
+        "_dd.measured",
+        interner,
+    )
+    .is_some_and(|v| *v == *"1")
         || (compute_top_level_by_span_kind
             && (otel_span.kind() == SpanKind::Client || otel_span.kind() == SpanKind::Producer))
     {
@@ -298,8 +353,8 @@ pub fn otel_to_dd_span_minimal(
     }
 
     let span_kind = use_both_maps(
-        span_attributes,
-        resource_attributes,
+        span_attributes_map,
+        resource_attributes_map,
         true,
         KEY_DATADOG_SPAN_KIND,
         interner,
@@ -311,37 +366,49 @@ pub fn otel_to_dd_span_minimal(
     meta.insert(MetaString::from_static(SPAN_KIND_META_KEY), span_kind);
 
     let mut service = use_both_maps(
-        span_attributes,
-        resource_attributes,
+        span_attributes_map,
+        resource_attributes_map,
         true,
         KEY_DATADOG_SERVICE,
         interner,
     )
     .unwrap_or_default();
-    let mut name =
-        use_both_maps(span_attributes, resource_attributes, true, KEY_DATADOG_NAME, interner).unwrap_or_default();
+    let mut name = use_both_maps(
+        span_attributes_map,
+        resource_attributes_map,
+        true,
+        KEY_DATADOG_NAME,
+        interner,
+    )
+    .unwrap_or_default();
     let mut resource = use_both_maps(
-        span_attributes,
-        resource_attributes,
+        span_attributes_map,
+        resource_attributes_map,
         true,
         KEY_DATADOG_RESOURCE,
         interner,
     )
     .unwrap_or_default();
-    let mut span_type =
-        use_both_maps(span_attributes, resource_attributes, true, KEY_DATADOG_TYPE, interner).unwrap_or_default();
+    let mut span_type = use_both_maps(
+        span_attributes_map,
+        resource_attributes_map,
+        true,
+        KEY_DATADOG_TYPE,
+        interner,
+    )
+    .unwrap_or_default();
 
     if !ignore_missing_fields {
         // the functions below are based off the V2 agent functions as they are used by default
         // TODO: allow the user to opt out of V2 via config and also implement the V1 versions of the functions
         if service.is_empty() {
-            service = get_otel_service(span_attributes, resource_attributes, true, interner);
+            service = get_otel_service(span_attributes_map, resource_attributes_map, true, interner);
         }
         if name.is_empty() {
             name = get_otel_operation_name_v2(
                 otel_span,
-                span_attributes,
-                resource_attributes,
+                span_attributes_map,
+                resource_attributes_map,
                 interner,
                 string_builder,
             );
@@ -349,8 +416,8 @@ pub fn otel_to_dd_span_minimal(
         if resource.is_empty() {
             resource = get_otel_resource_v2_truncated(
                 otel_span,
-                span_attributes,
-                resource_attributes,
+                span_attributes_map,
+                resource_attributes_map,
                 interner,
                 string_builder,
             );
@@ -361,7 +428,7 @@ pub fn otel_to_dd_span_minimal(
             }
         }
         if span_type.is_empty() {
-            span_type = get_otel_span_type(otel_span, span_attributes, resource_attributes, interner);
+            span_type = get_otel_span_type(otel_span, span_attributes_map, resource_attributes_map, interner);
         }
     }
 
@@ -376,7 +443,8 @@ pub fn otel_to_dd_span_minimal(
         .with_start(start)
         .with_duration(duration);
 
-    if let Some(status_code) = get_otel_status_code(span_attributes, resource_attributes, ignore_missing_fields) {
+    if let Some(status_code) = get_otel_status_code(span_attributes_map, resource_attributes_map, ignore_missing_fields)
+    {
         metrics.insert(MetaString::from_static(HTTP_STATUS_CODE_KEY), status_code as f64);
     }
 
@@ -387,11 +455,12 @@ pub fn otel_to_dd_span_minimal(
 
 /// Returns the DD service name based on OTel span and resource attributes.
 fn get_otel_service(
-    span_attributes: &[KeyValue], resource_attributes: &[KeyValue], normalize: bool, interner: &GenericMapInterner,
+    span_attributes: &AttributeMap<'_>, resource_attributes: &AttributeMap<'_>, normalize: bool,
+    interner: &GenericMapInterner,
 ) -> MetaString {
-    let service = get_string_attribute(span_attributes, SERVICE_NAME)
+    let service = get_string_attribute_from_map(span_attributes, SERVICE_NAME)
         .filter(|s| !s.is_empty())
-        .or_else(|| get_string_attribute(resource_attributes, SERVICE_NAME).filter(|s| !s.is_empty()))
+        .or_else(|| get_string_attribute_from_map(resource_attributes, SERVICE_NAME).filter(|s| !s.is_empty()))
         .unwrap_or(DEFAULT_SERVICE_NAME);
 
     if normalize {
@@ -408,7 +477,7 @@ fn get_otel_service(
 // GetOTelOperationNameV2 returns the DD operation name based on OTel span and resource attributes and given configs.
 // based on code from https://github.com/DataDog/datadog-agent/blob/instrument-otlp-traffic/pkg/trace/traceutil/otel_util.go#L424
 fn get_otel_operation_name_v2(
-    otel_span: &OtlpSpan, span_attributes: &[KeyValue], resource_attributes: &[KeyValue],
+    otel_span: &OtlpSpan, span_attributes: &AttributeMap<'_>, resource_attributes: &AttributeMap<'_>,
     interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
 ) -> MetaString {
     if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, OPERATION_NAME_KEY, interner) {
@@ -600,7 +669,7 @@ fn get_otel_operation_name_v2(
 // GetOTelResourceV2 returns the DD resource name based on OTel span and resource attributes.
 // based on this code https://github.com/DataDog/datadog-agent/blob/instrument-otlp-traffic/pkg/trace/traceutil/otel_util.go#L348
 fn get_otel_resource_v2(
-    otel_span: &OtlpSpan, span_attributes: &[KeyValue], resource_attributes: &[KeyValue],
+    otel_span: &OtlpSpan, span_attributes: &AttributeMap<'_>, resource_attributes: &AttributeMap<'_>,
     interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
 ) -> MetaString {
     let span_kind = SpanKind::try_from(otel_span.kind).unwrap_or(SpanKind::Unspecified);
@@ -663,10 +732,12 @@ fn get_otel_resource_v2(
 
     // Enrich GraphQL query resource names.
     // See https://github.com/open-telemetry/semantic-conventions/blob/v1.29.0/docs/graphql/graphql-spans.md
-    if let Some(op_type) = get_both_string_attribute(span_attributes, resource_attributes, GRAPHQL_OPERATION_TYPE_KEY) {
+    if let Some(op_type) =
+        get_both_string_attribute_from_maps(span_attributes, resource_attributes, GRAPHQL_OPERATION_TYPE_KEY)
+    {
         let mut resource_name = normalize_tag_value(op_type).into_owned();
         if let Some(op_name) =
-            get_both_string_attribute(span_attributes, resource_attributes, GRAPHQL_OPERATION_NAME_KEY)
+            get_both_string_attribute_from_maps(span_attributes, resource_attributes, GRAPHQL_OPERATION_NAME_KEY)
         {
             let op_name = normalize_tag_value(op_name);
             resource_name.push(' ');
@@ -676,10 +747,14 @@ fn get_otel_resource_v2(
     }
 
     if use_both_maps(span_attributes, resource_attributes, true, DB_SYSTEM_KEY, interner).is_some() {
-        if let Some(statement) = get_both_string_attribute(span_attributes, resource_attributes, DB_STATEMENT_KEY) {
+        if let Some(statement) =
+            get_both_string_attribute_from_maps(span_attributes, resource_attributes, DB_STATEMENT_KEY)
+        {
             return normalize_tag_value(statement);
         }
-        if let Some(query) = get_both_string_attribute(span_attributes, resource_attributes, DB_QUERY_TEXT_KEY) {
+        if let Some(query) =
+            get_both_string_attribute_from_maps(span_attributes, resource_attributes, DB_QUERY_TEXT_KEY)
+        {
             return normalize_tag_value(query);
         }
     }
@@ -691,7 +766,7 @@ fn get_otel_resource_v2(
 }
 
 fn get_otel_resource_v2_truncated(
-    otel_span: &OtlpSpan, span_attributes: &[KeyValue], resource_attributes: &[KeyValue],
+    otel_span: &OtlpSpan, span_attributes: &AttributeMap<'_>, resource_attributes: &AttributeMap<'_>,
     interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
 ) -> MetaString {
     let res_name = get_otel_resource_v2(
@@ -709,7 +784,8 @@ fn get_otel_resource_v2_truncated(
 }
 
 fn get_otel_span_type(
-    otel_span: &OtlpSpan, span_attributes: &[KeyValue], resource_attributes: &[KeyValue], interner: &GenericMapInterner,
+    otel_span: &OtlpSpan, span_attributes: &AttributeMap<'_>, resource_attributes: &AttributeMap<'_>,
+    interner: &GenericMapInterner,
 ) -> MetaString {
     if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, "span.type", interner) {
         if !value.is_empty() {
@@ -1222,14 +1298,14 @@ fn intern_attribute_value(value: &str, normalize: bool, interner: &GenericMapInt
 }
 
 fn use_both_maps(
-    map: &[KeyValue], map2: &[KeyValue], normalize: bool, key: &str, interner: &GenericMapInterner,
+    map: &AttributeMap<'_>, map2: &AttributeMap<'_>, normalize: bool, key: &str, interner: &GenericMapInterner,
 ) -> Option<MetaString> {
-    if let Some(value) = get_string_attribute(map, key) {
+    if let Some(value) = get_string_attribute_from_map(map, key) {
         if !value.is_empty() {
             return Some(intern_attribute_value(value, normalize, interner));
         }
     }
-    get_string_attribute(map2, key).and_then(|value| {
+    get_string_attribute_from_map(map2, key).and_then(|value| {
         if !value.is_empty() {
             Some(intern_attribute_value(value, normalize, interner))
         } else {
@@ -1238,14 +1314,17 @@ fn use_both_maps(
     })
 }
 
-fn get_both_string_attribute<'a>(map: &'a [KeyValue], map2: &'a [KeyValue], key: &str) -> Option<&'a str> {
-    get_string_attribute(map, key)
+fn get_both_string_attribute_from_maps<'a>(
+    map: &'a AttributeMap<'a>, map2: &'a AttributeMap<'a>, key: &str,
+) -> Option<&'a str> {
+    get_string_attribute_from_map(map, key)
         .filter(|value| !value.is_empty())
-        .or_else(|| get_string_attribute(map2, key).filter(|value| !value.is_empty()))
+        .or_else(|| get_string_attribute_from_map(map2, key).filter(|value| !value.is_empty()))
 }
 
 fn use_both_maps_key_list(
-    span_attributes: &[KeyValue], resource_attributes: &[KeyValue], keys: &[&str], interner: &GenericMapInterner,
+    span_attributes: &AttributeMap<'_>, resource_attributes: &AttributeMap<'_>, keys: &[&str],
+    interner: &GenericMapInterner,
 ) -> Option<MetaString> {
     for key in keys {
         if let Some(value) = use_both_maps(span_attributes, resource_attributes, true, key, interner) {
@@ -1256,7 +1335,7 @@ fn use_both_maps_key_list(
 }
 
 fn get_otel_env(
-    span_attributes: &[KeyValue], resource_attributes: &[KeyValue], ignore_missing_fields: bool,
+    span_attributes: &AttributeMap<'_>, resource_attributes: &AttributeMap<'_>, ignore_missing_fields: bool,
     interner: &GenericMapInterner,
 ) -> MetaString {
     if let Some(value) = use_both_maps(
@@ -1287,7 +1366,7 @@ fn get_otel_env(
 
 // GetOTelVersion returns the version based on OTel span and resource attributes, with span taking precedence.
 fn get_otel_version(
-    span_attributes: &[KeyValue], resource_attributes: &[KeyValue], ignore_missing_fields: bool,
+    span_attributes: &AttributeMap<'_>, resource_attributes: &AttributeMap<'_>, ignore_missing_fields: bool,
     interner: &GenericMapInterner,
 ) -> MetaString {
     if let Some(value) = use_both_maps(
@@ -1312,7 +1391,7 @@ fn get_otel_version(
 }
 
 fn get_otel_container_id(
-    span_attributes: &[KeyValue], resource_attributes: &[KeyValue], ignore_missing_fields: bool,
+    span_attributes: &AttributeMap<'_>, resource_attributes: &AttributeMap<'_>, ignore_missing_fields: bool,
     interner: &GenericMapInterner,
 ) -> MetaString {
     if let Some(value) = use_both_maps(
@@ -1341,7 +1420,7 @@ fn get_otel_container_id(
 }
 // GetOTelStatusCode returns the HTTP status code based on OTel span and resource attributes, with span taking precedence.
 fn get_otel_status_code(
-    span_attributes: &[KeyValue], resource_attributes: &[KeyValue], ignore_missing_fields: bool,
+    span_attributes: &AttributeMap<'_>, resource_attributes: &AttributeMap<'_>, ignore_missing_fields: bool,
 ) -> Option<i64> {
     if let Some(value) = get_int_attribute(span_attributes, KEY_DATADOG_HTTP_STATUS_CODE) {
         return Some(*value);
@@ -1351,9 +1430,9 @@ fn get_otel_status_code(
     }
     if !ignore_missing_fields {
         return get_int_attribute(span_attributes, HTTP_STATUS_CODE_KEY)
-            .or_else(|| get_int_attribute(span_attributes, "http.response.status_code"))
+            .or_else(|| get_int_attribute(span_attributes, HTTP_RESPONSE_STATUS_CODE_KEY))
             .or_else(|| get_int_attribute(resource_attributes, HTTP_STATUS_CODE_KEY))
-            .or_else(|| get_int_attribute(resource_attributes, "http.response.status_code"))
+            .or_else(|| get_int_attribute(resource_attributes, HTTP_RESPONSE_STATUS_CODE_KEY))
             .copied();
     }
     None
@@ -1514,9 +1593,11 @@ mod tests {
 
         let interner = test_interner();
         for tc in test_cases {
+            let span_attributes_map = build_attribute_map(&tc.span_attrs);
+            let resource_attributes_map = build_attribute_map(&tc.resource_attrs);
             let result = get_otel_env(
-                &tc.span_attrs,
-                &tc.resource_attrs,
+                &span_attributes_map,
+                &resource_attributes_map,
                 tc.ignore_missing_datadog_fields,
                 &interner,
             );
@@ -1653,9 +1734,11 @@ mod tests {
 
         let interner = test_interner();
         for tc in test_cases {
+            let span_attributes_map = build_attribute_map(&tc.span_attrs);
+            let resource_attributes_map = build_attribute_map(&tc.resource_attrs);
             let result = get_otel_version(
-                &tc.span_attrs,
-                &tc.resource_attrs,
+                &span_attributes_map,
+                &resource_attributes_map,
                 tc.ignore_missing_datadog_fields,
                 &interner,
             );
@@ -1734,9 +1817,11 @@ mod tests {
 
         let interner = test_interner();
         for tc in test_cases {
+            let span_attributes_map = build_attribute_map(&tc.span_attrs);
+            let resource_attributes_map = build_attribute_map(&tc.resource_attrs);
             let result = get_otel_container_id(
-                &tc.span_attrs,
-                &tc.resource_attrs,
+                &span_attributes_map,
+                &resource_attributes_map,
                 tc.ignore_missing_datadog_fields,
                 &interner,
             );
@@ -1827,7 +1912,13 @@ mod tests {
         ];
 
         for tc in test_cases {
-            let result = get_otel_status_code(&tc.span_attrs, &tc.resource_attrs, tc.ignore_missing_datadog_fields);
+            let span_attributes_map = build_attribute_map(&tc.span_attrs);
+            let resource_attributes_map = build_attribute_map(&tc.resource_attrs);
+            let result = get_otel_status_code(
+                &span_attributes_map,
+                &resource_attributes_map,
+                tc.ignore_missing_datadog_fields,
+            );
             assert_eq!(result, tc.expected, "test case: {}", tc.name);
         }
     }
