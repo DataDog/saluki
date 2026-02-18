@@ -83,6 +83,12 @@ impl OtlpTracesTranslator {
         let string_builder = &mut self.string_builder;
         let resource_tags = resource_attributes_to_tagset(&resource.attributes, string_builder).into_shared();
         let mut traces_by_id: FastHashMap<u64, TraceEntry> = FastHashMap::default();
+        let span_count_hint: usize = resource_spans
+            .scope_spans
+            .iter()
+            .map(|scope_spans| scope_spans.spans.len())
+            .sum();
+        traces_by_id.reserve(span_count_hint);
 
         for scope_spans in resource_spans.scope_spans {
             let scope = scope_spans.scope;
@@ -100,7 +106,6 @@ impl OtlpTracesTranslator {
                     entry.trace_id_hex = trace_id_hex_meta(&span.trace_id);
                 }
 
-                let trace_id_hex = entry.trace_id_hex.clone();
                 let dd_span = otel_span_to_dd_span(
                     &span,
                     &resource,
@@ -109,7 +114,7 @@ impl OtlpTracesTranslator {
                     compute_top_level,
                     interner,
                     string_builder,
-                    trace_id_hex,
+                    entry.trace_id_hex.as_ref(),
                 );
 
                 // Track last-seen priority for this trace (overwrites previous values)

@@ -98,7 +98,7 @@ const DD_NAMESPACED_TO_APM_CONVENTIONS: &[(&str, &str)] = &[
 pub fn otel_span_to_dd_span(
     otel_span: &OtlpSpan, otel_resource: &Resource, instrumentation_scope: Option<&OtlpInstrumentationScope>,
     ignore_missing_fields: bool, compute_top_level_by_span_kind: bool, interner: &GenericMapInterner,
-    string_builder: &mut StringBuilder<GenericMapInterner>, trace_id_hex: Option<MetaString>,
+    string_builder: &mut StringBuilder<GenericMapInterner>, trace_id_hex: Option<&MetaString>,
 ) -> DdSpan {
     let span_attributes = &otel_span.attributes;
     let resource_attributes = &otel_resource.attributes;
@@ -131,7 +131,7 @@ pub fn otel_span_to_dd_span(
 
     if let Some(trace_id_hex) = trace_id_hex {
         if !trace_id_hex.is_empty() {
-            meta.insert(MetaString::from_static(OTEL_TRACE_ID_META_KEY), trace_id_hex);
+            meta.insert(MetaString::from_static(OTEL_TRACE_ID_META_KEY), trace_id_hex.clone());
         }
     } else if !otel_span.trace_id.is_empty() {
         meta.insert(
