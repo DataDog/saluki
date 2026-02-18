@@ -49,6 +49,10 @@ pub struct RunCommand {
     #[argh(switch)]
     pub no_tui: bool,
 
+    /// directory to write container logs to (default: auto-generated temp dir)
+    #[argh(option, short = 'l')]
+    pub log_dir: Option<PathBuf>,
+
     /// skip writing container logs to disk
     #[argh(switch)]
     pub no_logs: bool,

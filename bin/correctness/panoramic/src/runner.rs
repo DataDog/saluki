@@ -439,8 +439,20 @@ impl TestRunner {
 
         let mut log_stream = docker.logs(&container_name, Some(logs_options));
 
+        // Use a oneshot channel so the spawned task can signal when the log stream has connected
+        // and delivered its first chunk. This prevents a race where assertions start polling an
+        // empty log buffer before the stream has even connected to the Docker daemon.
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
+
         tokio::spawn(async move {
+            let mut ready_tx = Some(ready_tx);
+
             while let Some(log_result) = log_stream.next().await {
+                // Signal readiness after the first successful poll of the log stream.
+                if let Some(tx) = ready_tx.take() {
+                    let _ = tx.send(());
+                }
+
                 match log_result {
                     Ok(log) => {
                         let mut buffer = log_buffer.write().await;
@@ -468,7 +480,21 @@ impl TestRunner {
                     }
                 }
             }
+
+            // If the stream ended or errored before delivering any data, signal anyway so the
+            // caller isn't stuck waiting.
+            if let Some(tx) = ready_tx.take() {
+                let _ = tx.send(());
+            }
         });
+
+        // Wait for the log stream to connect and deliver its first data before returning. This
+        // ensures the log buffer is populated with historical logs before assertions begin. Under
+        // heavy CI load (especially Docker-in-Docker), the stream connection can be slow.
+        match tokio::time::timeout(Duration::from_secs(5), ready_rx).await {
+            Ok(_) => debug!("Log capture stream connected and delivering data."),
+            Err(_) => warn!("Log capture stream did not deliver data within 5s, proceeding anyway."),
+        }
 
         Ok(())
     }
