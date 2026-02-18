@@ -164,7 +164,6 @@ pub fn otel_span_to_dd_span(
             string_builder,
         );
     }
-
     if let Some(trace_id_hex) = trace_id_hex {
         if !trace_id_hex.is_empty() {
             meta.insert(MetaString::from_static(OTEL_TRACE_ID_META_KEY), trace_id_hex);
