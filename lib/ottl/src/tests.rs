@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::lexer::{Lexer, Token};
 use crate::parser::Parser;
 use crate::{
-    CallbackMap, EnumMap, EvalContext, IndexExpr, OttlParser, PathAccessor, PathResolver, PathResolverMap, Value,
+    CallbackMap, EnumMap, IndexExpr, OttlParser, PathAccessor, PathResolver, PathResolverMap, Value,
 };
 
 // ============================================================================
@@ -396,35 +396,38 @@ fn test_argument_access() {
 // Parser integration tests
 // ============================================================================
 
+/// Test context type for tests that do not need context data (e.g. math-only expressions).
+type TestC = ();
+
 /// Stub PathAccessor that does nothing (for testing purposes).
 #[derive(Debug)]
 struct StubPathAccessor;
 
-impl PathAccessor for StubPathAccessor {
-    fn get(&self, _ctx: &EvalContext, _path: &str, _indexes: &[IndexExpr]) -> crate::Result<Value> {
+impl PathAccessor<TestC> for StubPathAccessor {
+    fn get(&self, _ctx: &TestC, _path: &str, _indexes: &[IndexExpr]) -> crate::Result<Value> {
         Err("StubPathAccessor: get not implemented".into())
     }
 
-    fn set(&self, _ctx: &mut EvalContext, _path: &str, _indexes: &[IndexExpr], _value: &Value) -> crate::Result<()> {
+    fn set(&self, _ctx: &mut TestC, _path: &str, _indexes: &[IndexExpr], _value: &Value) -> crate::Result<()> {
         Err("StubPathAccessor: set not implemented".into())
     }
 }
 
 /// Create an empty path resolver map (for expressions with no paths)
-fn empty_path_resolver_map() -> PathResolverMap {
+fn empty_path_resolver_map() -> PathResolverMap<TestC> {
     PathResolverMap::new()
 }
 
 /// Create a path resolver map with stub accessor for each given path.
-fn stub_path_resolver_for(paths: &[&str]) -> PathResolverMap {
-    let stub: PathResolver =
-        Arc::new(|| -> crate::Result<Arc<dyn PathAccessor + Send + Sync>> { Ok(Arc::new(StubPathAccessor)) });
+fn stub_path_resolver_for(paths: &[&str]) -> PathResolverMap<TestC> {
+    let stub: PathResolver<TestC> =
+        Arc::new(|| -> crate::Result<Arc<dyn PathAccessor<TestC> + Send + Sync>> { Ok(Arc::new(StubPathAccessor)) });
     paths.iter().map(|&p| (p.to_string(), stub.clone())).collect()
 }
 
-/// Create a stub EvalContext
-fn stub_context() -> EvalContext {
-    Box::new(())
+/// Create a stub context for tests.
+fn stub_context() -> TestC {
+    ()
 }
 
 #[test]
@@ -439,7 +442,8 @@ fn test_stub_path_resolver_for_execute_fails() {
     let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, "stub.path == 1");
 
     assert!(parser.is_error().is_ok(), "Parsing should succeed");
-    let result = parser.execute(&mut stub_context());
+    let mut ctx = stub_context();
+    let result = parser.execute(&mut ctx);
     assert!(
         result.is_err(),
         "Execute should fail: stub accessor returns Err from get"
@@ -508,8 +512,8 @@ struct MockPathAccessor {
     int_value: Value,
 }
 
-impl PathAccessor for MockPathAccessor {
-    fn get(&self, _ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
+impl PathAccessor<TestC> for MockPathAccessor {
+    fn get(&self, _ctx: &TestC, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
         let v = match path {
             "my.bool.value" => self.bool_value.clone(),
             "my.int.value" => self.int_value.clone(),
@@ -518,18 +522,18 @@ impl PathAccessor for MockPathAccessor {
         crate::helpers::apply_indexes(v, indexes)
     }
 
-    fn set(&self, _ctx: &mut EvalContext, _path: &str, _indexes: &[IndexExpr], _value: &Value) -> crate::Result<()> {
+    fn set(&self, _ctx: &mut TestC, _path: &str, _indexes: &[IndexExpr], _value: &Value) -> crate::Result<()> {
         Err("MockPathAccessor: set not implemented".into())
     }
 }
 
 /// Create a PathResolverMap with MockPathAccessor for my.bool.value and my.int.value
-fn mock_path_resolver_map(bool_value: bool, int_value: i64) -> PathResolverMap {
+fn mock_path_resolver_map(bool_value: bool, int_value: i64) -> PathResolverMap<TestC> {
     let accessor = Arc::new(MockPathAccessor {
         bool_value: Value::Bool(bool_value),
         int_value: Value::Int(int_value),
     });
-    let resolver: PathResolver = Arc::new(move || Ok(accessor.clone()));
+    let resolver: PathResolver<TestC> = Arc::new(move || Ok(accessor.clone()));
     let mut m = PathResolverMap::new();
     m.insert("my.bool.value".to_string(), resolver.clone());
     m.insert("my.int.value".to_string(), resolver);
@@ -578,7 +582,7 @@ fn test_parser_math_with_converters() {
     // Register Sum converter: Sum(a: int, b: int) -> int { a + b }
     converters.insert(
         "Sum".to_string(),
-        Arc::new(|args: &mut dyn crate::Args| {
+        Arc::new(|args: &mut dyn crate::Args<TestC>| {
             let a = match args.get(0)? {
                 Value::Int(v) => v,
                 _ => return Err("Sum: first argument must be int".into()),
@@ -763,7 +767,7 @@ fn test_parser_enums_as_function_args() {
     // Register Sum converter: Sum(a: int, b: int) -> int { a + b }
     converters.insert(
         "Sum".to_string(),
-        Arc::new(|args: &mut dyn crate::Args| {
+        Arc::new(|args: &mut dyn crate::Args<TestC>| {
             let a = match args.get(0)? {
                 Value::Int(v) => v,
                 _ => return Err("Sum: first argument must be int".into()),
@@ -779,7 +783,7 @@ fn test_parser_enums_as_function_args() {
     // Register Multiply converter: Multiply(a: int, b: int) -> int { a * b }
     converters.insert(
         "Multiply".to_string(),
-        Arc::new(|args: &mut dyn crate::Args| {
+        Arc::new(|args: &mut dyn crate::Args<TestC>| {
             let a = match args.get(0)? {
                 Value::Int(v) => v,
                 _ => return Err("Multiply: first argument must be int".into()),
@@ -871,8 +875,8 @@ struct TrackingPathAccessor {
     set_calls: Mutex<Vec<(String, Value)>>,
 }
 
-impl PathAccessor for TrackingPathAccessor {
-    fn get(&self, _ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
+impl PathAccessor<TestC> for TrackingPathAccessor {
+    fn get(&self, _ctx: &TestC, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
         let v = match path {
             "my.int.value" => self.int_value.clone(),
             "status_code" => self.status_code.clone(),
@@ -882,7 +886,7 @@ impl PathAccessor for TrackingPathAccessor {
         crate::helpers::apply_indexes(v, indexes)
     }
 
-    fn set(&self, _ctx: &mut EvalContext, path: &str, indexes: &[IndexExpr], value: &Value) -> crate::Result<()> {
+    fn set(&self, _ctx: &mut TestC, path: &str, indexes: &[IndexExpr], value: &Value) -> crate::Result<()> {
         if !indexes.is_empty() {
             return Err("TrackingPathAccessor: indexed set not supported".into());
         }
@@ -892,7 +896,7 @@ impl PathAccessor for TrackingPathAccessor {
 }
 
 /// Create a PathResolverMap with tracking accessor for target, my.int.value, status_code
-fn tracking_path_resolver_map(int_value: i64, status_code: i64) -> (PathResolverMap, Arc<TrackingPathAccessor>) {
+fn tracking_path_resolver_map(int_value: i64, status_code: i64) -> (PathResolverMap<TestC>, Arc<TrackingPathAccessor>) {
     let accessor = Arc::new(TrackingPathAccessor {
         int_value: Value::Int(int_value),
         status_code: Value::Int(status_code),
@@ -900,8 +904,8 @@ fn tracking_path_resolver_map(int_value: i64, status_code: i64) -> (PathResolver
         set_calls: Mutex::new(Vec::new()),
     });
     let accessor_clone = accessor.clone();
-    let resolver: PathResolver =
-        Arc::new(move || -> crate::Result<Arc<dyn PathAccessor + Send + Sync>> { Ok(accessor_clone.clone()) });
+    let resolver: PathResolver<TestC> =
+        Arc::new(move || -> crate::Result<Arc<dyn PathAccessor<TestC> + Send + Sync>> { Ok(accessor_clone.clone()) });
     let mut m = PathResolverMap::new();
     m.insert("target".to_string(), resolver.clone());
     m.insert("x".to_string(), resolver.clone());
@@ -922,7 +926,7 @@ fn test_editor_executes_when_condition_true() {
     let mut editors = CallbackMap::new();
     editors.insert(
         "set".to_string(),
-        Arc::new(move |args: &mut dyn crate::Args| {
+        Arc::new(move |args: &mut dyn crate::Args<TestC>| {
             let mut capture = capture_clone.lock().unwrap();
             capture.called = true;
             capture.first_arg = args.get(0).ok();
@@ -935,7 +939,7 @@ fn test_editor_executes_when_condition_true() {
     // Sum converter: Sum(a, b) -> a + b
     converters.insert(
         "Sum".to_string(),
-        Arc::new(|args: &mut dyn crate::Args| {
+        Arc::new(|args: &mut dyn crate::Args<TestC>| {
             let a = match args.get(0)? {
                 Value::Int(v) => v as f64,
                 Value::Float(v) => v,
@@ -1010,7 +1014,7 @@ fn test_editor_not_executed_when_condition_false() {
     let mut editors = CallbackMap::new();
     editors.insert(
         "set".to_string(),
-        Arc::new(move |args: &mut dyn crate::Args| {
+        Arc::new(move |args: &mut dyn crate::Args<TestC>| {
             let mut capture = capture_clone.lock().unwrap();
             capture.called = true;
             capture.first_arg = args.get(0).ok();
@@ -1022,7 +1026,7 @@ fn test_editor_not_executed_when_condition_false() {
     let mut converters = CallbackMap::new();
     converters.insert(
         "Sum".to_string(),
-        Arc::new(|args: &mut dyn crate::Args| {
+        Arc::new(|args: &mut dyn crate::Args<TestC>| {
             let a = match args.get(0)? {
                 Value::Int(v) => v as f64,
                 Value::Float(v) => v,
@@ -1086,7 +1090,7 @@ fn test_editor_set_list_of_maps() {
     let mut editors = CallbackMap::new();
     editors.insert(
         "set".to_string(),
-        Arc::new(move |args: &mut dyn crate::Args| {
+        Arc::new(move |args: &mut dyn crate::Args<TestC>| {
             let mut capture = capture_clone.lock().unwrap();
             capture.called = true;
             capture.first_arg = args.get(0).ok();
@@ -1099,7 +1103,7 @@ fn test_editor_set_list_of_maps() {
     // Double converter: Double(x) -> x * 2
     converters.insert(
         "Double".to_string(),
-        Arc::new(|args: &mut dyn crate::Args| match args.get(0)? {
+        Arc::new(|args: &mut dyn crate::Args<TestC>| match args.get(0)? {
             Value::Int(v) => Ok(Value::Int(v * 2)),
             Value::Float(v) => Ok(Value::Float(v * 2.0)),
             _ => Err("Double: argument must be numeric".into()),
@@ -1182,8 +1186,8 @@ struct PathExprAccessor {
     data: Value,
 }
 
-impl PathAccessor for PathExprAccessor {
-    fn get(&self, _ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
+impl PathAccessor<TestC> for PathExprAccessor {
+    fn get(&self, _ctx: &TestC, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
         let v = match path {
             "resource.attributes.status" => self.resource_status.clone(),
             "resource.count" => self.resource_count.clone(),
@@ -1194,7 +1198,7 @@ impl PathAccessor for PathExprAccessor {
         crate::helpers::apply_indexes(v, indexes)
     }
 
-    fn set(&self, _ctx: &mut EvalContext, _path: &str, _indexes: &[IndexExpr], _value: &Value) -> crate::Result<()> {
+    fn set(&self, _ctx: &mut TestC, _path: &str, _indexes: &[IndexExpr], _value: &Value) -> crate::Result<()> {
         Err("PathExprAccessor: set not implemented".into())
     }
 }
@@ -1225,8 +1229,8 @@ fn test_parser_path_expressions_comprehensive() {
         data: Value::Map(data_map),
     });
     let accessor_clone = accessor.clone();
-    let resolver: PathResolver =
-        Arc::new(move || -> crate::Result<Arc<dyn PathAccessor + Send + Sync>> { Ok(accessor_clone.clone()) });
+    let resolver: PathResolver<TestC> =
+        Arc::new(move || -> crate::Result<Arc<dyn PathAccessor<TestC> + Send + Sync>> { Ok(accessor_clone.clone()) });
     let mut path_resolvers = PathResolverMap::new();
     path_resolvers.insert("resource.attributes.status".to_string(), resolver.clone());
     path_resolvers.insert("items".to_string(), resolver.clone());
@@ -1270,8 +1274,8 @@ struct GetAtOverrideAccessor {
     base_value: Value,
 }
 
-impl PathAccessor for GetAtOverrideAccessor {
-    fn get(&self, _ctx: &EvalContext, _path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
+impl PathAccessor<TestC> for GetAtOverrideAccessor {
+    fn get(&self, _ctx: &TestC, _path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
         if indexes.is_empty() {
             Ok(self.base_value.clone())
         } else {
@@ -1280,7 +1284,7 @@ impl PathAccessor for GetAtOverrideAccessor {
         }
     }
 
-    fn set(&self, _ctx: &mut EvalContext, _path: &str, _indexes: &[IndexExpr], _value: &Value) -> crate::Result<()> {
+    fn set(&self, _ctx: &mut TestC, _path: &str, _indexes: &[IndexExpr], _value: &Value) -> crate::Result<()> {
         Err("set not implemented".into())
     }
 }
@@ -1296,8 +1300,8 @@ fn test_path_indexes_use_get() {
     let accessor = Arc::new(GetAtOverrideAccessor {
         base_value: Value::List(vec![Value::Int(1), Value::Int(2)]),
     });
-    let resolver: PathResolver =
-        Arc::new(move || -> crate::Result<Arc<dyn PathAccessor + Send + Sync>> { Ok(accessor.clone()) });
+    let resolver: PathResolver<TestC> =
+        Arc::new(move || -> crate::Result<Arc<dyn PathAccessor<TestC> + Send + Sync>> { Ok(accessor.clone()) });
     let mut path_resolvers = PathResolverMap::new();
     path_resolvers.insert("items".to_string(), resolver);
     let mut ctx = stub_context();
@@ -1323,19 +1327,16 @@ struct MyValueListContext {
 #[derive(Debug)]
 struct MyValueListAccessor;
 
-impl PathAccessor for MyValueListAccessor {
-    fn get(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
+impl PathAccessor<MyValueListContext> for MyValueListAccessor {
+    fn get(&self, ctx: &MyValueListContext, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
         if path != "my.value" {
             return Err(format!("Unknown path: {}", path).into());
         }
-        let list_guard = ctx
-            .downcast_ref::<MyValueListContext>()
-            .ok_or("Expected MyValueListContext")?;
-        let value = Value::List(list_guard.list.clone());
+        let value = Value::List(ctx.list.clone());
         crate::helpers::apply_indexes(value, indexes)
     }
 
-    fn set(&self, ctx: &mut EvalContext, path: &str, indexes: &[IndexExpr], value: &Value) -> crate::Result<()> {
+    fn set(&self, ctx: &mut MyValueListContext, path: &str, indexes: &[IndexExpr], value: &Value) -> crate::Result<()> {
         if path != "my.value" {
             return Err(format!("Unknown path: {}", path).into());
         }
@@ -1347,14 +1348,11 @@ impl PathAccessor for MyValueListAccessor {
             IndexExpr::Int(i) => *i,
             IndexExpr::String(_) => return Err("my.value: integer index required".into()),
         };
-        let list_guard = ctx
-            .downcast_mut::<MyValueListContext>()
-            .ok_or("Expected MyValueListContext")?;
 
-        if idx0 >= list_guard.list.len() {
+        if idx0 >= ctx.list.len() {
             return Err(format!("Index {} out of bounds", idx0).into());
         }
-        list_guard.list[idx0] = value.clone();
+        ctx.list[idx0] = value.clone();
         Ok(())
     }
 }
@@ -1367,7 +1365,7 @@ fn test_editor_add_indexed_path_then_verify_set() {
     let mut editors = CallbackMap::new();
     editors.insert(
         "add".to_string(),
-        Arc::new(|args: &mut dyn crate::Args| {
+        Arc::new(|args: &mut dyn crate::Args<MyValueListContext>| {
             let a = match args.get(0)? {
                 Value::Int(v) => v,
                 _ => return Err("add: first argument must be int".into()),
@@ -1384,25 +1382,24 @@ fn test_editor_add_indexed_path_then_verify_set() {
     let converters = CallbackMap::new();
     let enums = EnumMap::new();
 
-    let ctx: EvalContext = Box::new(MyValueListContext {
+    let mut ctx = MyValueListContext {
         list: vec![Value::Int(1), Value::Int(2)],
-    });
+    };
 
-    let resolver: PathResolver = Arc::new(|| Ok(Arc::new(MyValueListAccessor) as Arc<dyn PathAccessor + Send + Sync>));
+    let resolver: PathResolver<MyValueListContext> =
+        Arc::new(|| Ok(Arc::new(MyValueListAccessor) as Arc<dyn PathAccessor<MyValueListContext> + Send + Sync>));
     let mut path_resolvers = PathResolverMap::new();
     path_resolvers.insert("my.value".to_string(), resolver);
 
-    let mut ctx = ctx;
-    let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, "add(my.value[1], 10)");
+    let parser = Parser::<MyValueListContext>::new(&editors, &converters, &enums, &path_resolvers, "add(my.value[1], 10)");
     assert!(parser.is_error().is_ok(), "parse should succeed");
     let result = parser.execute(&mut ctx);
     assert!(result.is_ok(), "execute should succeed: {:?}", result);
 
-    let list_ctx = ctx.downcast_ref::<MyValueListContext>().unwrap();
-    assert_eq!(list_ctx.list.len(), 2);
-    assert_eq!(list_ctx.list[0], Value::Int(1), "my.value[0] unchanged");
+    assert_eq!(ctx.list.len(), 2);
+    assert_eq!(ctx.list[0], Value::Int(1), "my.value[0] unchanged");
     assert_eq!(
-        list_ctx.list[1],
+        ctx.list[1],
         Value::Int(12),
         "my.value[1] should be 12 after add(my.value[1], 10)"
     );
@@ -1422,7 +1419,7 @@ fn test_converter_with_index() {
     // Split converter: splits string by delimiter, returns list
     converters.insert(
         "Split".to_string(),
-        Arc::new(|args: &mut dyn crate::Args| {
+        Arc::new(|args: &mut dyn crate::Args<TestC>| {
             let text = match args.get(0)? {
                 Value::String(s) => s,
                 _ => return Err("Split first argument must be string".into()),
@@ -1474,7 +1471,7 @@ fn test_named_arguments() {
     // Uses named arguments: value and format
     converters.insert(
         "Convert".to_string(),
-        Arc::new(|args: &mut dyn crate::Args| {
+        Arc::new(|args: &mut dyn crate::Args<TestC>| {
             // Find arguments by name or positional fallback
             let value_val = args.get_named("value").unwrap_or_else(|| args.get(0))?;
             let format_val = args.get_named("format").unwrap_or_else(|| args.get(1))?;
@@ -1501,7 +1498,7 @@ fn test_named_arguments() {
     let mut ctx = stub_context();
 
     // Convert(value=10, format="hex") == "a"
-    let parser: Parser = Parser::new(
+    let parser: Parser<TestC> = Parser::new(
         &editors,
         &converters,
         &enums,
@@ -1706,7 +1703,7 @@ fn test_parser_error_missing_comma_in_function() {
     let mut editors = CallbackMap::new();
     editors.insert(
         "func".to_string(),
-        Arc::new(|_args: &mut dyn crate::Args| Ok(Value::Nil)),
+        Arc::new(|_args: &mut dyn crate::Args<TestC>| Ok(Value::Nil)),
     );
     let converters = CallbackMap::new();
     let enums = EnumMap::new();
@@ -1959,11 +1956,11 @@ fn test_runtime_error_division_by_zero_float() {
 /// PathAccessor that fails on get (for path_not_found test)
 #[derive(Debug)]
 struct FailingPathAccessor;
-impl PathAccessor for FailingPathAccessor {
-    fn get(&self, _ctx: &EvalContext, _path: &str, _indexes: &[IndexExpr]) -> crate::Result<Value> {
+impl PathAccessor<TestC> for FailingPathAccessor {
+    fn get(&self, _ctx: &TestC, _path: &str, _indexes: &[IndexExpr]) -> crate::Result<Value> {
         Err("Path resolver failed".into())
     }
-    fn set(&self, _ctx: &mut EvalContext, _path: &str, _indexes: &[IndexExpr], _value: &Value) -> crate::Result<()> {
+    fn set(&self, _ctx: &mut TestC, _path: &str, _indexes: &[IndexExpr], _value: &Value) -> crate::Result<()> {
         Err("Path resolver failed".into())
     }
 }
@@ -1975,8 +1972,8 @@ fn test_runtime_error_path_not_found() {
     let converters = CallbackMap::new();
     let enums = EnumMap::new();
 
-    let failing_resolver: PathResolver =
-        Arc::new(|| Ok(Arc::new(FailingPathAccessor) as Arc<dyn PathAccessor + Send + Sync>));
+    let failing_resolver: PathResolver<TestC> =
+        Arc::new(|| Ok(Arc::new(FailingPathAccessor) as Arc<dyn PathAccessor<TestC> + Send + Sync>));
     let mut path_resolvers = PathResolverMap::new();
     path_resolvers.insert("nonexistent.path".to_string(), failing_resolver);
 
@@ -2024,7 +2021,7 @@ fn test_runtime_error_index_out_of_bounds() {
     // Register a converter that returns a small list
     converters.insert(
         "GetList".to_string(),
-        Arc::new(|_args: &mut dyn crate::Args| Ok(Value::List(vec![Value::Int(1), Value::Int(2)]))),
+        Arc::new(|_args: &mut dyn crate::Args<TestC>| Ok(Value::List(vec![Value::Int(1), Value::Int(2)]))),
     );
 
     let enums = EnumMap::new();
@@ -2048,7 +2045,7 @@ fn test_runtime_error_negate_string() {
     // Register a converter that returns a string
     converters.insert(
         "GetString".to_string(),
-        Arc::new(|_args: &mut dyn crate::Args| Ok(Value::string("hello"))),
+        Arc::new(|_args: &mut dyn crate::Args<TestC>| Ok(Value::string("hello"))),
     );
 
     let enums = EnumMap::new();
@@ -2091,7 +2088,7 @@ fn test_runtime_error_key_not_found_in_map() {
     // Register a converter that returns a map
     converters.insert(
         "GetMap".to_string(),
-        Arc::new(|_args: &mut dyn crate::Args| {
+        Arc::new(|_args: &mut dyn crate::Args<TestC>| {
             let mut map = std::collections::HashMap::new();
             map.insert("key1".to_string(), Value::Int(1));
             Ok(Value::Map(map))
@@ -2125,7 +2122,7 @@ fn test_runtime_error_bool_comparison_invalid_op() {
     let path_resolvers = empty_path_resolver_map();
     let mut ctx = stub_context();
 
-    let parser: Parser = Parser::new(&editors, &converters, &enums, &path_resolvers, "true < false");
+    let parser: Parser<TestC> = Parser::new(&editors, &converters, &enums, &path_resolvers, "true < false");
 
     if parser.is_error().is_ok() {
         let result = parser.execute(&mut ctx);
@@ -2158,28 +2155,22 @@ impl BenchContext {
 #[derive(Debug)]
 struct BenchPathAccessorIntValue {}
 
-impl PathAccessor for BenchPathAccessorIntValue {
-    fn get(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
+impl PathAccessor<BenchContext> for BenchPathAccessorIntValue {
+    fn get(&self, ctx: &BenchContext, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
         let v = if path == "my.int.value" {
-            if let Some(bench_ctx) = ctx.downcast_ref::<BenchContext>() {
-                Value::Int(bench_ctx.my_int_value)
-            } else {
-                Value::Nil
-            }
+            Value::Int(ctx.my_int_value)
         } else {
             Value::Nil
         };
         crate::helpers::apply_indexes(v, indexes)
     }
-    fn set(&self, ctx: &mut EvalContext, path: &str, indexes: &[IndexExpr], value: &Value) -> crate::Result<()> {
+    fn set(&self, ctx: &mut BenchContext, path: &str, indexes: &[IndexExpr], value: &Value) -> crate::Result<()> {
         if !indexes.is_empty() {
             return Err("BenchPathAccessorIntValue: indexed set not supported".into());
         }
         if path == "my.int.value" {
-            if let Some(bench_ctx) = ctx.downcast_mut::<BenchContext>() {
-                if let Value::Int(v) = value {
-                    bench_ctx.my_int_value = *v;
-                }
+            if let Value::Int(v) = value {
+                ctx.my_int_value = *v;
             }
         }
         Ok(())
@@ -2189,29 +2180,23 @@ impl PathAccessor for BenchPathAccessorIntValue {
 #[derive(Debug)]
 struct BenchPathAccessorIntStatus {}
 
-impl PathAccessor for BenchPathAccessorIntStatus {
+impl PathAccessor<BenchContext> for BenchPathAccessorIntStatus {
     #[inline]
-    fn get(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
+    fn get(&self, ctx: &BenchContext, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
         let v = if path == "my.int.status" {
-            if let Some(bench_ctx) = ctx.downcast_ref::<BenchContext>() {
-                Value::Int(bench_ctx.my_int_status)
-            } else {
-                Value::Nil
-            }
+            Value::Int(ctx.my_int_status)
         } else {
             Value::Nil
         };
         crate::helpers::apply_indexes(v, indexes)
     }
-    fn set(&self, ctx: &mut EvalContext, path: &str, indexes: &[IndexExpr], value: &Value) -> crate::Result<()> {
+    fn set(&self, ctx: &mut BenchContext, path: &str, indexes: &[IndexExpr], value: &Value) -> crate::Result<()> {
         if !indexes.is_empty() {
             return Err("BenchPathAccessorIntStatus: indexed set not supported".into());
         }
         if path == "my.int.status" {
-            if let Some(bench_ctx) = ctx.downcast_mut::<BenchContext>() {
-                if let Value::Int(v) = value {
-                    bench_ctx.my_int_status = *v;
-                }
+            if let Value::Int(v) = value {
+                ctx.my_int_status = *v;
             }
         }
         Ok(())
@@ -2221,29 +2206,23 @@ impl PathAccessor for BenchPathAccessorIntStatus {
 #[derive(Debug)]
 struct BenchPathAccessorBoolEnabled {}
 
-impl PathAccessor for BenchPathAccessorBoolEnabled {
+impl PathAccessor<BenchContext> for BenchPathAccessorBoolEnabled {
     #[inline]
-    fn get(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
+    fn get(&self, ctx: &BenchContext, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
         let v = if path == "my.bool.enabled" {
-            if let Some(bench_ctx) = ctx.downcast_ref::<BenchContext>() {
-                Value::Bool(bench_ctx.my_bool_enabled)
-            } else {
-                Value::Nil
-            }
+            Value::Bool(ctx.my_bool_enabled)
         } else {
             Value::Nil
         };
         crate::helpers::apply_indexes(v, indexes)
     }
-    fn set(&self, ctx: &mut EvalContext, path: &str, indexes: &[IndexExpr], value: &Value) -> crate::Result<()> {
+    fn set(&self, ctx: &mut BenchContext, path: &str, indexes: &[IndexExpr], value: &Value) -> crate::Result<()> {
         if !indexes.is_empty() {
             return Err("BenchPathAccessorBoolEnabled: indexed set not supported".into());
         }
         if path == "my.bool.enabled" {
-            if let Some(bench_ctx) = ctx.downcast_mut::<BenchContext>() {
-                if let Value::Bool(v) = value {
-                    bench_ctx.my_bool_enabled = *v;
-                }
+            if let Value::Bool(v) = value {
+                ctx.my_bool_enabled = *v;
             }
         }
         Ok(())
@@ -2260,7 +2239,7 @@ fn bench_execute_complex_realistic() {
     // set editor (does nothing in benchmark)
     editors.insert(
         "set".to_string(),
-        Arc::new(|args: &mut dyn crate::Args| {
+        Arc::new(|args: &mut dyn crate::Args<BenchContext>| {
             let value = args.get(1)?;
             args.set(0, &value)?;
             Ok(Value::Nil)
@@ -2272,31 +2251,29 @@ fn bench_execute_complex_realistic() {
     enums.insert("STATUS_ERROR".to_string(), 500);
 
     // Separate PathResolver per path (each returns its dedicated BenchPathAccessor)
-    let resolver_int_value: PathResolver =
-        Arc::new(|| Ok(Arc::new(BenchPathAccessorIntValue {}) as Arc<dyn PathAccessor + Send + Sync>));
-    let resolver_int_status: PathResolver =
-        Arc::new(|| Ok(Arc::new(BenchPathAccessorIntStatus {}) as Arc<dyn PathAccessor + Send + Sync>));
-    let resolver_bool_enabled: PathResolver =
-        Arc::new(|| Ok(Arc::new(BenchPathAccessorBoolEnabled {}) as Arc<dyn PathAccessor + Send + Sync>));
+    let resolver_int_value: PathResolver<BenchContext> =
+        Arc::new(|| Ok(Arc::new(BenchPathAccessorIntValue {}) as Arc<dyn PathAccessor<BenchContext> + Send + Sync>));
+    let resolver_int_status: PathResolver<BenchContext> =
+        Arc::new(|| Ok(Arc::new(BenchPathAccessorIntStatus {}) as Arc<dyn PathAccessor<BenchContext> + Send + Sync>));
+    let resolver_bool_enabled: PathResolver<BenchContext> =
+        Arc::new(|| Ok(Arc::new(BenchPathAccessorBoolEnabled {}) as Arc<dyn PathAccessor<BenchContext> + Send + Sync>));
     let mut path_resolvers = PathResolverMap::new();
     path_resolvers.insert("my.int.value".to_string(), resolver_int_value);
     path_resolvers.insert("my.int.status".to_string(), resolver_int_status);
     path_resolvers.insert("my.bool.enabled".to_string(), resolver_bool_enabled);
 
     let expression = r#"set(my.int.value, my.int.status + 100) where (my.int.status == STATUS_OK or my.int.status < STATUS_ERROR) and my.bool.enabled"#;
-    let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, expression);
+    let parser = Parser::<BenchContext>::new(&editors, &converters, &enums, &path_resolvers, expression);
     assert!(parser.is_error().is_ok(), "Parse failed");
 
-    let mut ctx: EvalContext = Box::new(BenchContext::new());
+    let mut ctx = BenchContext::new();
     run_benchmark("complex_realistic", &parser, &mut ctx, 100_000);
 
-    if let Some(bench_ctx) = ctx.downcast_ref::<BenchContext>() {
-        println!("my_int_value after benchmark: {}", bench_ctx.my_int_value);
-    }
+    println!("my_int_value after benchmark: {}", ctx.my_int_value);
 }
 
 /// Run a benchmark for parser.execute()
-fn run_benchmark(name: &str, parser: &Parser, ctx: &mut EvalContext, iterations: usize) {
+fn run_benchmark<C>(name: &str, parser: &Parser<C>, ctx: &mut C, iterations: usize) {
     use std::time::Instant;
 
     // Warmup

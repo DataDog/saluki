@@ -12,22 +12,33 @@ use crate::{PathResolverMap, Result, Value};
 // Arena Storage
 // =====================================================================================================================
 
-/// Arena storage for all AST nodes - enables cache-friendly traversal
-#[derive(Debug, Clone, Default)]
-pub struct AstArena {
-    pub bool_exprs: Vec<ArenaBoolExpr>,
+/// Arena storage for all AST nodes - enables cache-friendly traversal. Generic over context type `C`.
+#[derive(Debug, Clone)]
+pub struct AstArena<C> {
+    pub bool_exprs: Vec<ArenaBoolExpr<C>>,
     pub math_exprs: Vec<ArenaMathExpr>,
-    pub value_exprs: Vec<ArenaValueExpr>,
-    pub function_calls: Vec<ArenaFunctionCall>,
+    pub value_exprs: Vec<ArenaValueExpr<C>>,
+    pub function_calls: Vec<ArenaFunctionCall<C>>,
 }
 
-impl AstArena {
+impl<C> Default for AstArena<C> {
+    fn default() -> Self {
+        Self {
+            bool_exprs: Vec::new(),
+            math_exprs: Vec::new(),
+            value_exprs: Vec::new(),
+            function_calls: Vec::new(),
+        }
+    }
+}
+
+impl<C> AstArena<C> {
     pub fn new() -> Self {
         Self::default()
     }
 
     #[inline]
-    pub fn alloc_bool(&mut self, expr: ArenaBoolExpr) -> BoolExprRef {
+    pub fn alloc_bool(&mut self, expr: ArenaBoolExpr<C>) -> BoolExprRef {
         let idx = self.bool_exprs.len() as u32;
         self.bool_exprs.push(expr);
         BoolExprRef(idx)
@@ -41,21 +52,21 @@ impl AstArena {
     }
 
     #[inline]
-    pub fn alloc_value(&mut self, expr: ArenaValueExpr) -> ValueExprRef {
+    pub fn alloc_value(&mut self, expr: ArenaValueExpr<C>) -> ValueExprRef {
         let idx = self.value_exprs.len() as u32;
         self.value_exprs.push(expr);
         ValueExprRef(idx)
     }
 
     #[inline]
-    pub fn alloc_func(&mut self, call: ArenaFunctionCall) -> FunctionCallRef {
+    pub fn alloc_func(&mut self, call: ArenaFunctionCall<C>) -> FunctionCallRef {
         let idx = self.function_calls.len() as u32;
         self.function_calls.push(call);
         FunctionCallRef(idx)
     }
 
     #[inline]
-    pub fn get_bool(&self, r: BoolExprRef) -> &ArenaBoolExpr {
+    pub fn get_bool(&self, r: BoolExprRef) -> &ArenaBoolExpr<C> {
         &self.bool_exprs[r.0 as usize]
     }
 
@@ -65,12 +76,12 @@ impl AstArena {
     }
 
     #[inline]
-    pub fn get_value(&self, r: ValueExprRef) -> &ArenaValueExpr {
+    pub fn get_value(&self, r: ValueExprRef) -> &ArenaValueExpr<C> {
         &self.value_exprs[r.0 as usize]
     }
 
     #[inline]
-    pub fn get_func(&self, r: FunctionCallRef) -> &ArenaFunctionCall {
+    pub fn get_func(&self, r: FunctionCallRef) -> &ArenaFunctionCall<C> {
         &self.function_calls[r.0 as usize]
     }
 }
@@ -81,7 +92,7 @@ impl AstArena {
 
 /// Helper to resolve a PathExpr to ResolvedPath at parse time.
 /// Looks up the path in path_resolvers; returns error if no resolver is provided for this path.
-fn resolve_path(path: &PathExpr, path_resolvers: &PathResolverMap) -> Result<ResolvedPath> {
+fn resolve_path<C>(path: &PathExpr, path_resolvers: &PathResolverMap<C>) -> Result<ResolvedPath<C>> {
     let full_path = path.segments.join(".");
     let resolver = path_resolvers
         .get(&full_path)
@@ -94,11 +105,11 @@ fn resolve_path(path: &PathExpr, path_resolvers: &PathResolverMap) -> Result<Res
     })
 }
 
-/// Convert boxed AST to arena-based AST for cache-friendly execution
+/// Convert boxed AST to arena-based AST for cache-friendly execution.
 /// Path resolution happens HERE (once at parse time), not at each execution!
-pub fn convert_to_arena(
-    root: &RootExpr, arena: &mut AstArena, path_resolvers: &PathResolverMap,
-) -> Result<ArenaRootExpr> {
+pub fn convert_to_arena<C>(
+    root: &RootExpr<C>, arena: &mut AstArena<C>, path_resolvers: &PathResolverMap<C>,
+) -> Result<ArenaRootExpr<C>> {
     match root {
         RootExpr::EditorStatement(stmt) => {
             let editor_ref = convert_function_call(&stmt.editor, arena, path_resolvers)?;
@@ -109,6 +120,7 @@ pub fn convert_to_arena(
             Ok(ArenaRootExpr::EditorStatement(ArenaEditorStatement {
                 editor: editor_ref,
                 condition: condition_ref,
+                _marker: std::marker::PhantomData,
             }))
         }
         RootExpr::BooleanExpression(expr) => {
@@ -127,7 +139,7 @@ pub fn convert_to_arena(
 // =====================================================================================================================
 
 /// Check if a ValueExpr is a literal and get its value
-fn try_get_literal(expr: &ValueExpr) -> Option<&Value> {
+fn try_get_literal<C>(expr: &ValueExpr<C>) -> Option<&Value> {
     match expr {
         ValueExpr::Literal(v) => Some(v),
         _ => None,
@@ -135,7 +147,7 @@ fn try_get_literal(expr: &ValueExpr) -> Option<&Value> {
 }
 
 /// Check if arena bool expr is a literal
-fn arena_bool_is_literal(arena: &AstArena, r: BoolExprRef) -> Option<bool> {
+fn arena_bool_is_literal<C>(arena: &AstArena<C>, r: BoolExprRef) -> Option<bool> {
     match arena.get_bool(r) {
         ArenaBoolExpr::Literal(b) => Some(*b),
         _ => None,
@@ -143,7 +155,7 @@ fn arena_bool_is_literal(arena: &AstArena, r: BoolExprRef) -> Option<bool> {
 }
 
 /// Try to get literal value from a MathExpr
-fn try_get_math_literal(expr: &MathExpr) -> Option<&Value> {
+fn try_get_math_literal<C>(expr: &MathExpr<C>) -> Option<&Value> {
     match expr {
         MathExpr::Primary(ValueExpr::Literal(v)) => Some(v),
         _ => None,
@@ -163,7 +175,9 @@ use super::ops::{compare, try_math_op};
 /// - Recursively converts nested bool/value expressions and function calls.
 /// - Applies **constant folding** where possible: literal comparisons, `not(literal)`, short-circuit
 ///   `and`/`or` with literal operands, so the arena may contain fewer/simpler nodes.
-fn convert_bool_expr(expr: &BoolExpr, arena: &mut AstArena, path_resolvers: &PathResolverMap) -> Result<BoolExprRef> {
+fn convert_bool_expr<C>(
+    expr: &BoolExpr<C>, arena: &mut AstArena<C>, path_resolvers: &PathResolverMap<C>,
+) -> Result<BoolExprRef> {
     let arena_expr = match expr {
         BoolExpr::Literal(b) => ArenaBoolExpr::Literal(*b),
         BoolExpr::Comparison { left, op, right } => {
@@ -244,7 +258,9 @@ fn convert_bool_expr(expr: &BoolExpr, arena: &mut AstArena, path_resolvers: &Pat
 /// - Recursively converts primary value expressions and nested math expressions.
 /// - Applies **constant folding**: negate of literal, binary `literal op literal` → computed literal,
 ///   so the arena may contain a single [`ArenaMathExpr::Primary`] where the source had a tree.
-fn convert_math_expr(expr: &MathExpr, arena: &mut AstArena, path_resolvers: &PathResolverMap) -> Result<MathExprRef> {
+fn convert_math_expr<C>(
+    expr: &MathExpr<C>, arena: &mut AstArena<C>, path_resolvers: &PathResolverMap<C>,
+) -> Result<MathExprRef> {
     let arena_expr = match expr {
         MathExpr::Primary(v) => {
             let v_ref = convert_value_expr(v, arena, path_resolvers)?;
@@ -291,8 +307,8 @@ fn convert_math_expr(expr: &MathExpr, arena: &mut AstArena, path_resolvers: &Pat
 /// - Resolves paths via [`resolve_path`] (path → [`ResolvedPath`] with [`crate::PathAccessor`]).
 /// - Recursively converts list items, map entries, nested function calls, and math expressions.
 /// - Literals are stored as-is without further conversion.
-fn convert_value_expr(
-    expr: &ValueExpr, arena: &mut AstArena, path_resolvers: &PathResolverMap,
+fn convert_value_expr<C>(
+    expr: &ValueExpr<C>, arena: &mut AstArena<C>, path_resolvers: &PathResolverMap<C>,
 ) -> Result<ValueExprRef> {
     let arena_expr = match expr {
         ValueExpr::Literal(v) => ArenaValueExpr::Literal(v.clone()),
@@ -331,8 +347,8 @@ fn convert_value_expr(
 /// - Converts all arguments (positional and named) to arena value refs via [`convert_value_expr`].
 /// - Preserves `name`, `is_editor`, `indexes`, and the pre-resolved `callback` from the source AST.
 /// - Does not resolve callbacks here; the parser is expected to have attached [`CallbackFn`] when applicable.
-fn convert_function_call(
-    fc: &FunctionCall, arena: &mut AstArena, path_resolvers: &PathResolverMap,
+fn convert_function_call<C>(
+    fc: &FunctionCall<C>, arena: &mut AstArena<C>, path_resolvers: &PathResolverMap<C>,
 ) -> Result<FunctionCallRef> {
     let args: Result<Vec<_>> = fc
         .args

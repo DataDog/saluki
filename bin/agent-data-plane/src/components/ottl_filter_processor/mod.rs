@@ -7,7 +7,7 @@
 
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use ottl::{CallbackMap, EnumMap, EvalContext, OttlParser, Value};
+use ottl::{CallbackMap, EnumMap, OttlParser, Value};
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{transforms::*, ComponentContext},
@@ -91,7 +91,7 @@ impl MemoryBounds for OttlFilterConfiguration {
 /// Synchronous transform that drops spans matching OTTL conditions.
 pub struct OttlFilter {
     error_mode: ErrorMode,
-    span_parsers: Vec<ottl::Parser>,
+    span_parsers: Vec<ottl::Parser<SpanFilterContext>>,
 }
 
 impl OttlFilter {
@@ -101,11 +101,10 @@ impl OttlFilter {
             return false;
         }
 
-        let ctx: EvalContext = Box::new(SpanFilterContext {
+        let mut ctx = SpanFilterContext {
             span: span as *const _,
             resource_tags: resource_tags as *const _,
-        });
-        let mut ctx = ctx;
+        };
 
         for parser in &self.span_parsers {
             match parser.execute(&mut ctx) {

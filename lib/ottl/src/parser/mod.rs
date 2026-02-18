@@ -19,7 +19,7 @@ use eval::arena_evaluate_root;
 use grammar::build_parser;
 
 use crate::lexer::Token;
-use crate::{BoxError, CallbackMap, EnumMap, EvalContext, OttlParser, PathResolverMap, Result, Value};
+use crate::{BoxError, CallbackMap, EnumMap, OttlParser, PathResolverMap, Result, Value};
 
 // =====================================================================================================================
 // Parser Implementation
@@ -27,24 +27,28 @@ use crate::{BoxError, CallbackMap, EnumMap, EvalContext, OttlParser, PathResolve
 
 /// OTTL Parser that parses input strings and produces executable objects.
 /// Paths are resolved at parse time (not at execution time) for maximum performance.
-pub struct Parser {
+/// Generic over context type `C` so no type erasure or `'static` is required.
+pub struct Parser<C> {
     /// Arena-based AST for cache-friendly execution
-    arena: AstArena,
+    arena: AstArena<C>,
     /// Arena-based root expression
-    arena_root: Option<ArenaRootExpr>,
+    arena_root: Option<ArenaRootExpr<C>>,
     /// Parsing errors
     errors: Vec<String>,
 }
 
-impl Parser {
+impl<C> Parser<C> {
     /// Creates a new parser with the given configuration.
     /// Each path that appears in the expression must have a corresponding entry in `path_resolvers`;
     /// otherwise parsing fails with an error.
     pub fn new(
-        editors_map: &CallbackMap, converters_map: &CallbackMap, enums_map: &EnumMap, path_resolvers: &PathResolverMap,
+        editors_map: &CallbackMap<C>,
+        converters_map: &CallbackMap<C>,
+        enums_map: &EnumMap,
+        path_resolvers: &PathResolverMap<C>,
         expression: &str,
     ) -> Self {
-        let mut parser = Parser {
+        let mut parser = Parser::<C> {
             arena: AstArena::new(),
             arena_root: None,
             errors: Vec::new(),
@@ -99,7 +103,7 @@ impl Parser {
 }
 
 /// Implementation of the [`OttlParser`] trait for [`Parser`].
-impl OttlParser for Parser {
+impl<C> OttlParser<C> for Parser<C> {
     fn is_error(&self) -> Result<()> {
         if self.errors.is_empty() {
             Ok(())
@@ -108,7 +112,7 @@ impl OttlParser for Parser {
         }
     }
 
-    fn execute(&self, ctx: &mut EvalContext) -> Result<Value> {
+    fn execute(&self, ctx: &mut C) -> Result<Value> {
         let arena_root = self
             .arena_root
             .as_ref()
