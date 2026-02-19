@@ -14,7 +14,10 @@ use std::{
 
 use airlock::driver::{Driver, DriverConfig, DriverDetails};
 use bollard::{container::LogOutput, Docker};
-use futures::stream::{self, StreamExt as _};
+use futures::{
+    future,
+    stream::{self, StreamExt as _},
+};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::sync::{mpsc, RwLock, Semaphore};
 use tokio_util::sync::CancellationToken;
@@ -22,9 +25,9 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     assertions::{create_assertion, AssertionContext, AssertionResult, LogBuffer},
-    config::{parse_file_spec, parse_port_spec, TestCase},
+    config::{parse_file_spec, parse_port_spec, AssertionStep, TestCase},
     events::TestEvent,
-    reporter::TestResult,
+    reporter::{PhaseTiming, TestResult},
 };
 
 // ----------------------------------------------------------------------------
@@ -207,6 +210,7 @@ impl TestRunner {
     async fn run(&mut self) -> TestResult {
         let started = Instant::now();
         let test_name = self.test_case.name.clone();
+        let mut phase_timings = Vec::new();
 
         info!(
             test = %test_name,
@@ -216,32 +220,48 @@ impl TestRunner {
 
         // Build the driver configuration.
         debug!(test = %test_name, "Building driver configuration...");
+        let phase_start = Instant::now();
         let driver_config = match self.build_driver_config().await {
             Ok(config) => config,
             Err(e) => {
                 error!(test = %test_name, error = %e, "Failed to build driver configuration.");
+                phase_timings.push(PhaseTiming {
+                    phase: "driver_config_build".to_string(),
+                    duration: phase_start.elapsed(),
+                });
                 return TestResult {
                     name: test_name,
                     passed: false,
                     duration: started.elapsed(),
                     assertion_results: vec![],
                     error: Some(format!("Failed to build driver configuration: {}", e)),
+                    phase_timings,
                 };
             }
         };
+        phase_timings.push(PhaseTiming {
+            phase: "driver_config_build".to_string(),
+            duration: phase_start.elapsed(),
+        });
 
         // Create and start the driver.
+        let phase_start = Instant::now();
         debug!(test = %test_name, "Creating container driver...");
         let mut driver = match Driver::from_config(self.isolation_group_id.clone(), driver_config) {
             Ok(driver) => driver,
             Err(e) => {
                 error!(test = %test_name, error = %e, "Failed to create container driver.");
+                phase_timings.push(PhaseTiming {
+                    phase: "container_start".to_string(),
+                    duration: phase_start.elapsed(),
+                });
                 return TestResult {
                     name: test_name,
                     passed: false,
                     duration: started.elapsed(),
                     assertion_results: vec![],
                     error: Some(format!("Failed to create driver: {}", e)),
+                    phase_timings,
                 };
             }
         };
@@ -251,6 +271,10 @@ impl TestRunner {
             Ok(details) => details,
             Err(e) => {
                 error!(test = %test_name, error = %e, "Failed to start container.");
+                phase_timings.push(PhaseTiming {
+                    phase: "container_start".to_string(),
+                    duration: phase_start.elapsed(),
+                });
                 let _ = self.cleanup(&driver).await;
                 return TestResult {
                     name: test_name,
@@ -258,9 +282,14 @@ impl TestRunner {
                     duration: started.elapsed(),
                     assertion_results: vec![],
                     error: Some(format!("Failed to start container: {}", e)),
+                    phase_timings,
                 };
             }
         };
+        phase_timings.push(PhaseTiming {
+            phase: "container_start".to_string(),
+            duration: phase_start.elapsed(),
+        });
 
         info!(
             test = %test_name,
@@ -296,10 +325,11 @@ impl TestRunner {
         // Run assertions with overall timeout.
         info!(
             test = %test_name,
-            assertion_count = self.test_case.assertions.len(),
+            assertion_count = self.test_case.total_assertion_count(),
             "Running assertions..."
         );
 
+        let phase_start = Instant::now();
         let assertion_results = tokio::select! {
             results = self.run_assertions(&port_mappings, &container_name) => results,
             _ = tokio::time::sleep(self.test_case.timeout.0) => {
@@ -312,6 +342,10 @@ impl TestRunner {
                 }]
             }
         };
+        phase_timings.push(PhaseTiming {
+            phase: "assertions".to_string(),
+            duration: phase_start.elapsed(),
+        });
 
         // Cancel the exit monitor.
         exit_handle.abort();
@@ -337,6 +371,7 @@ impl TestRunner {
         }
 
         // Write logs to disk if configured.
+        let phase_start = Instant::now();
         if let Err(e) = self.write_logs(&test_name).await {
             warn!(test = %test_name, error = %e, "Failed to write container logs to disk.");
         }
@@ -347,6 +382,10 @@ impl TestRunner {
             warn!(test = %test_name, error = %e, "Failed to clean up resources.");
         }
         debug!(test = %test_name, "Cleanup complete.");
+        phase_timings.push(PhaseTiming {
+            phase: "cleanup".to_string(),
+            duration: phase_start.elapsed(),
+        });
 
         info!(
             test = %test_name,
@@ -361,6 +400,7 @@ impl TestRunner {
             duration: started.elapsed(),
             assertion_results,
             error: None,
+            phase_timings,
         }
     }
 
@@ -475,6 +515,7 @@ impl TestRunner {
 
     async fn run_assertions(&self, port_mappings: &HashMap<String, u16>, container_name: &str) -> Vec<AssertionResult> {
         let mut results = Vec::new();
+        let total_steps = self.test_case.assertions.len();
 
         let ctx = AssertionContext {
             log_buffer: self.log_buffer.clone(),
@@ -483,53 +524,109 @@ impl TestRunner {
             container_name: container_name.to_string(),
         };
 
-        for (index, assertion_config) in self.test_case.assertions.iter().enumerate() {
-            let assertion = match create_assertion(assertion_config) {
-                Ok(a) => a,
-                Err(e) => {
-                    error!(error = %e, "Failed to create assertion from configuration.");
-                    results.push(AssertionResult {
-                        name: "config_error".to_string(),
-                        passed: false,
-                        message: format!("Failed to create assertion: {}.", e),
-                        duration: Duration::ZERO,
-                    });
-                    break;
+        for (step_index, step) in self.test_case.assertions.iter().enumerate() {
+            match step {
+                AssertionStep::Single(assertion_config) => {
+                    let assertion = match create_assertion(assertion_config) {
+                        Ok(a) => a,
+                        Err(e) => {
+                            error!(error = %e, "Failed to create assertion from configuration.");
+                            results.push(AssertionResult {
+                                name: "config_error".to_string(),
+                                passed: false,
+                                message: format!("Failed to create assertion: {}.", e),
+                                duration: Duration::ZERO,
+                            });
+                            break;
+                        }
+                    };
+
+                    debug!(
+                        step = step_index + 1,
+                        step_total = total_steps,
+                        assertion_type = assertion.name(),
+                        description = %assertion.description(),
+                        "Running assertion..."
+                    );
+
+                    let result = assertion.check(&ctx).await;
+
+                    if result.passed {
+                        debug!(
+                            assertion_type = assertion.name(),
+                            duration = ?result.duration,
+                            "Assertion passed."
+                        );
+                    } else {
+                        debug!(
+                            assertion_type = assertion.name(),
+                            duration = ?result.duration,
+                            message = %result.message,
+                            "Assertion failed."
+                        );
+                    }
+
+                    let failed = !result.passed;
+                    results.push(result);
+
+                    if failed {
+                        debug!("Stopping assertion execution due to failure (fail-fast).");
+                        break;
+                    }
                 }
-            };
 
-            debug!(
-                assertion_index = index + 1,
-                assertion_total = self.test_case.assertions.len(),
-                assertion_type = assertion.name(),
-                description = %assertion.description(),
-                "Running assertion..."
-            );
+                AssertionStep::Parallel { parallel } => {
+                    let mut assertions = Vec::new();
+                    let mut config_error = false;
 
-            let result = assertion.check(&ctx).await;
+                    for assertion_config in parallel {
+                        match create_assertion(assertion_config) {
+                            Ok(a) => assertions.push(a),
+                            Err(e) => {
+                                error!(error = %e, "Failed to create assertion from configuration.");
+                                results.push(AssertionResult {
+                                    name: "config_error".to_string(),
+                                    passed: false,
+                                    message: format!("Failed to create assertion: {}.", e),
+                                    duration: Duration::ZERO,
+                                });
+                                config_error = true;
+                                break;
+                            }
+                        }
+                    }
 
-            if result.passed {
-                debug!(
-                    assertion_type = assertion.name(),
-                    duration = ?result.duration,
-                    "Assertion passed."
-                );
-            } else {
-                debug!(
-                    assertion_type = assertion.name(),
-                    duration = ?result.duration,
-                    message = %result.message,
-                    "Assertion failed."
-                );
-            }
+                    if config_error {
+                        break;
+                    }
 
-            let failed = !result.passed;
-            results.push(result);
+                    debug!(
+                        step = step_index + 1,
+                        step_total = total_steps,
+                        assertion_count = assertions.len(),
+                        "Running parallel assertion block..."
+                    );
 
-            // Fail fast on first failure.
-            if failed {
-                debug!("Stopping assertion execution due to failure (fail-fast).");
-                break;
+                    let futures: Vec<_> = assertions.iter().map(|a| a.check(&ctx)).collect();
+                    let parallel_results = future::join_all(futures).await;
+
+                    let any_failed = parallel_results.iter().any(|r| !r.passed);
+
+                    for result in parallel_results {
+                        debug!(
+                            assertion_type = %result.name,
+                            passed = result.passed,
+                            duration = ?result.duration,
+                            "Parallel assertion completed."
+                        );
+                        results.push(result);
+                    }
+
+                    if any_failed {
+                        debug!("Stopping assertion execution due to failure in parallel block (fail-fast).");
+                        break;
+                    }
+                }
             }
         }
 

@@ -99,8 +99,8 @@ pub struct TestCase {
     /// Container configuration.
     pub container: ContainerConfig,
 
-    /// List of assertions to run.
-    pub assertions: Vec<AssertionConfig>,
+    /// List of assertion steps to run.
+    pub assertions: Vec<AssertionStep>,
 
     /// Base path for resolving relative file paths.
     #[serde(skip)]
@@ -132,6 +132,22 @@ pub struct ContainerConfig {
     /// Ports to expose (port/protocol format, e.g., "8125/udp").
     #[serde(default)]
     pub exposed_ports: Vec<String>,
+}
+
+/// A single step in the assertion pipeline.
+///
+/// Each step is either a single assertion or a parallel block of assertions
+/// that run concurrently.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(untagged)]
+pub enum AssertionStep {
+    /// A block of assertions that run concurrently.
+    Parallel {
+        /// The assertions to run in parallel.
+        parallel: Vec<AssertionConfig>,
+    },
+    /// A single assertion that runs on its own.
+    Single(AssertionConfig),
 }
 
 /// Configuration for a single assertion.
@@ -212,6 +228,17 @@ pub enum LogStream {
 }
 
 impl TestCase {
+    /// Count total individual assertions across all steps.
+    pub fn total_assertion_count(&self) -> usize {
+        self.assertions
+            .iter()
+            .map(|step| match step {
+                AssertionStep::Single(_) => 1,
+                AssertionStep::Parallel { parallel } => parallel.len(),
+            })
+            .sum()
+    }
+
     /// Load a test case from a YAML configuration file.
     pub fn from_yaml<P: AsRef<Path>>(path: P) -> Result<Self, GenericError> {
         let path = path.as_ref();
