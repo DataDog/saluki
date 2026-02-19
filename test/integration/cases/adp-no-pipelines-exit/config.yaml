@@ -17,4 +17,3 @@ assertions:
   - type: log_contains
     pattern: "No data pipelines are enabled. Exiting."
     timeout: 15s
-    during: 5s
