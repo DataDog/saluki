@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use ottl::{
-    helpers, Args, CallbackMap, EnumMap, EvalContext, IndexExpr, OttlParser, Parser, PathAccessor, PathResolver,
-    PathResolverMap, Value,
+    helpers, Args, CallbackMap, EnumMap, IndexExpr, OttlParser, Parser, PathAccessor, PathResolver, PathResolverMap,
+    Value,
 };
 
 // =====================================================================================================================
@@ -35,28 +35,22 @@ impl BenchContext {
 #[derive(Debug)]
 struct BenchPathAccessorIntValue;
 
-impl PathAccessor for BenchPathAccessorIntValue {
-    fn get(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> ottl::Result<Value> {
+impl PathAccessor<BenchContext> for BenchPathAccessorIntValue {
+    fn get(&self, ctx: &BenchContext, path: &str, indexes: &[IndexExpr]) -> ottl::Result<Value> {
         let v = if path == "my.int.value" {
-            if let Some(bench_ctx) = ctx.downcast_ref::<BenchContext>() {
-                Value::Int(bench_ctx.my_int_value)
-            } else {
-                Value::Nil
-            }
+            Value::Int(ctx.my_int_value)
         } else {
             Value::Nil
         };
         helpers::apply_indexes(v, indexes)
     }
-    fn set(&self, ctx: &mut EvalContext, path: &str, indexes: &[IndexExpr], value: &Value) -> ottl::Result<()> {
+    fn set(&self, ctx: &mut BenchContext, path: &str, indexes: &[IndexExpr], value: &Value) -> ottl::Result<()> {
         if !indexes.is_empty() {
             return Err("BenchPathAccessorIntValue: indexed set not supported".into());
         }
         if path == "my.int.value" {
-            if let Some(bench_ctx) = ctx.downcast_mut::<BenchContext>() {
-                if let Value::Int(v) = value {
-                    bench_ctx.my_int_value = *v;
-                }
+            if let Value::Int(v) = value {
+                ctx.my_int_value = *v;
             }
         }
         Ok(())
@@ -66,28 +60,22 @@ impl PathAccessor for BenchPathAccessorIntValue {
 #[derive(Debug)]
 struct BenchPathAccessorIntStatus;
 
-impl PathAccessor for BenchPathAccessorIntStatus {
-    fn get(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> ottl::Result<Value> {
+impl PathAccessor<BenchContext> for BenchPathAccessorIntStatus {
+    fn get(&self, ctx: &BenchContext, path: &str, indexes: &[IndexExpr]) -> ottl::Result<Value> {
         let v = if path == "my.int.status" {
-            if let Some(bench_ctx) = ctx.downcast_ref::<BenchContext>() {
-                Value::Int(bench_ctx.my_int_status)
-            } else {
-                Value::Nil
-            }
+            Value::Int(ctx.my_int_status)
         } else {
             Value::Nil
         };
         helpers::apply_indexes(v, indexes)
     }
-    fn set(&self, ctx: &mut EvalContext, path: &str, indexes: &[IndexExpr], value: &Value) -> ottl::Result<()> {
+    fn set(&self, ctx: &mut BenchContext, path: &str, indexes: &[IndexExpr], value: &Value) -> ottl::Result<()> {
         if !indexes.is_empty() {
             return Err("BenchPathAccessorIntStatus: indexed set not supported".into());
         }
         if path == "my.int.status" {
-            if let Some(bench_ctx) = ctx.downcast_mut::<BenchContext>() {
-                if let Value::Int(v) = value {
-                    bench_ctx.my_int_status = *v;
-                }
+            if let Value::Int(v) = value {
+                ctx.my_int_status = *v;
             }
         }
         Ok(())
@@ -97,28 +85,22 @@ impl PathAccessor for BenchPathAccessorIntStatus {
 #[derive(Debug)]
 struct BenchPathAccessorBoolEnabled;
 
-impl PathAccessor for BenchPathAccessorBoolEnabled {
-    fn get(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> ottl::Result<Value> {
+impl PathAccessor<BenchContext> for BenchPathAccessorBoolEnabled {
+    fn get(&self, ctx: &BenchContext, path: &str, indexes: &[IndexExpr]) -> ottl::Result<Value> {
         let v = if path == "my.bool.enabled" {
-            if let Some(bench_ctx) = ctx.downcast_ref::<BenchContext>() {
-                Value::Bool(bench_ctx.my_bool_enabled)
-            } else {
-                Value::Nil
-            }
+            Value::Bool(ctx.my_bool_enabled)
         } else {
             Value::Nil
         };
         helpers::apply_indexes(v, indexes)
     }
-    fn set(&self, ctx: &mut EvalContext, path: &str, indexes: &[IndexExpr], value: &Value) -> ottl::Result<()> {
+    fn set(&self, ctx: &mut BenchContext, path: &str, indexes: &[IndexExpr], value: &Value) -> ottl::Result<()> {
         if !indexes.is_empty() {
             return Err("BenchPathAccessorBoolEnabled: indexed set not supported".into());
         }
         if path == "my.bool.enabled" {
-            if let Some(bench_ctx) = ctx.downcast_mut::<BenchContext>() {
-                if let Value::Bool(v) = value {
-                    bench_ctx.my_bool_enabled = *v;
-                }
+            if let Value::Bool(v) = value {
+                ctx.my_bool_enabled = *v;
             }
         }
         Ok(())
@@ -135,7 +117,7 @@ fn bench_parser_creation(c: &mut Criterion) {
 
     editors.insert(
         "set".to_string(),
-        Arc::new(|args: &mut dyn Args| {
+        Arc::new(|args: &mut dyn Args<BenchContext>| {
             let value = args.get(1)?;
             args.set(0, &value)?;
             Ok(Value::Nil)
@@ -146,12 +128,12 @@ fn bench_parser_creation(c: &mut Criterion) {
     enums.insert("STATUS_OK".to_string(), 200);
     enums.insert("STATUS_ERROR".to_string(), 500);
 
-    let resolver_int_value: PathResolver =
-        Arc::new(|| Ok(Arc::new(BenchPathAccessorIntValue) as Arc<dyn PathAccessor + Send + Sync>));
-    let resolver_int_status: PathResolver =
-        Arc::new(|| Ok(Arc::new(BenchPathAccessorIntStatus) as Arc<dyn PathAccessor + Send + Sync>));
-    let resolver_bool_enabled: PathResolver =
-        Arc::new(|| Ok(Arc::new(BenchPathAccessorBoolEnabled) as Arc<dyn PathAccessor + Send + Sync>));
+    let resolver_int_value: PathResolver<BenchContext> =
+        Arc::new(|| Ok(Arc::new(BenchPathAccessorIntValue) as Arc<dyn PathAccessor<BenchContext> + Send + Sync>));
+    let resolver_int_status: PathResolver<BenchContext> =
+        Arc::new(|| Ok(Arc::new(BenchPathAccessorIntStatus) as Arc<dyn PathAccessor<BenchContext> + Send + Sync>));
+    let resolver_bool_enabled: PathResolver<BenchContext> =
+        Arc::new(|| Ok(Arc::new(BenchPathAccessorBoolEnabled) as Arc<dyn PathAccessor<BenchContext> + Send + Sync>));
     let mut path_resolvers = PathResolverMap::new();
     path_resolvers.insert("my.int.value".to_string(), resolver_int_value);
     path_resolvers.insert("my.int.status".to_string(), resolver_int_status);
@@ -161,7 +143,8 @@ fn bench_parser_creation(c: &mut Criterion) {
 
     c.bench_function("parser_creation", |b| {
         b.iter(|| {
-            let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, black_box(expression));
+            let parser =
+                Parser::<BenchContext>::new(&editors, &converters, &enums, &path_resolvers, black_box(expression));
             black_box(parser)
         })
     });
@@ -177,7 +160,7 @@ fn bench_execute_complex_realistic(c: &mut Criterion) {
 
     editors.insert(
         "set".to_string(),
-        Arc::new(|args: &mut dyn Args| {
+        Arc::new(|args: &mut dyn Args<BenchContext>| {
             let value = args.get(1)?;
             args.set(0, &value)?;
             Ok(Value::Nil)
@@ -188,30 +171,28 @@ fn bench_execute_complex_realistic(c: &mut Criterion) {
     enums.insert("STATUS_OK".to_string(), 200);
     enums.insert("STATUS_ERROR".to_string(), 500);
 
-    let resolver_int_value: PathResolver =
-        Arc::new(|| Ok(Arc::new(BenchPathAccessorIntValue) as Arc<dyn PathAccessor + Send + Sync>));
-    let resolver_int_status: PathResolver =
-        Arc::new(|| Ok(Arc::new(BenchPathAccessorIntStatus) as Arc<dyn PathAccessor + Send + Sync>));
-    let resolver_bool_enabled: PathResolver =
-        Arc::new(|| Ok(Arc::new(BenchPathAccessorBoolEnabled) as Arc<dyn PathAccessor + Send + Sync>));
+    let resolver_int_value: PathResolver<BenchContext> =
+        Arc::new(|| Ok(Arc::new(BenchPathAccessorIntValue) as Arc<dyn PathAccessor<BenchContext> + Send + Sync>));
+    let resolver_int_status: PathResolver<BenchContext> =
+        Arc::new(|| Ok(Arc::new(BenchPathAccessorIntStatus) as Arc<dyn PathAccessor<BenchContext> + Send + Sync>));
+    let resolver_bool_enabled: PathResolver<BenchContext> =
+        Arc::new(|| Ok(Arc::new(BenchPathAccessorBoolEnabled) as Arc<dyn PathAccessor<BenchContext> + Send + Sync>));
     let mut path_resolvers = PathResolverMap::new();
     path_resolvers.insert("my.int.value".to_string(), resolver_int_value);
     path_resolvers.insert("my.int.status".to_string(), resolver_int_status);
     path_resolvers.insert("my.bool.enabled".to_string(), resolver_bool_enabled);
 
     let expression = r#"set(my.int.value, my.int.status + 100) where (my.int.status == STATUS_OK or my.int.status < STATUS_ERROR) and my.bool.enabled"#;
-    let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, expression);
+    let parser = Parser::<BenchContext>::new(&editors, &converters, &enums, &path_resolvers, expression);
     assert!(parser.is_error().is_ok(), "Parse failed");
 
-    let mut ctx: EvalContext = Box::new(BenchContext::new());
+    let mut ctx = BenchContext::new();
 
     c.bench_function("execute_complex_realistic", |b| {
         b.iter(|| {
-            if let Some(bench_ctx) = ctx.downcast_mut::<BenchContext>() {
-                bench_ctx.my_int_value = 42;
-                bench_ctx.my_int_status = 200;
-                bench_ctx.my_bool_enabled = true;
-            }
+            ctx.my_int_value = 42;
+            ctx.my_int_status = 200;
+            ctx.my_bool_enabled = true;
             let result = parser.execute(black_box(&mut ctx));
             black_box(result)
         })
@@ -226,14 +207,14 @@ fn bench_execute_math_simple(c: &mut Criterion) {
     let editors = CallbackMap::new();
     let converters = CallbackMap::new();
     let enums = EnumMap::new();
-    let path_resolvers = PathResolverMap::new();
+    let path_resolvers = PathResolverMap::<()>::new();
 
     // 1+2*(9-2)/2 = 1 + 2*7/2 = 1 + 7 = 8 (math-only RootExpr::MathExpression)
     let expression = "1+2*(9-2)/2";
-    let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, expression);
+    let parser = Parser::<()>::new(&editors, &converters, &enums, &path_resolvers, expression);
     assert!(parser.is_error().is_ok(), "Parse failed");
 
-    let mut ctx: EvalContext = Box::new(());
+    let mut ctx = ();
 
     c.bench_function("execute_math_simple", |b| {
         b.iter(|| {
@@ -254,37 +235,35 @@ fn bench_execute_bool_enums_paths_converters(c: &mut Criterion) {
     // Converter used in condition: returns bool
     converters.insert(
         "IsDisabled".to_string(),
-        Arc::new(|_args: &mut dyn Args| Ok(Value::Bool(false))),
+        Arc::new(|_args: &mut dyn Args<BenchContext>| Ok(Value::Bool(false))),
     );
     converters.insert(
         "BoolConv".to_string(),
-        Arc::new(|_args: &mut dyn Args| Ok(Value::Bool(true))),
+        Arc::new(|_args: &mut dyn Args<BenchContext>| Ok(Value::Bool(true))),
     );
 
     let mut enums = EnumMap::new();
     enums.insert("STATUS_OK".to_string(), 200);
 
-    let resolver_int_status: PathResolver =
-        Arc::new(|| Ok(Arc::new(BenchPathAccessorIntStatus) as Arc<dyn PathAccessor + Send + Sync>));
-    let resolver_bool_enabled: PathResolver =
-        Arc::new(|| Ok(Arc::new(BenchPathAccessorBoolEnabled) as Arc<dyn PathAccessor + Send + Sync>));
+    let resolver_int_status: PathResolver<BenchContext> =
+        Arc::new(|| Ok(Arc::new(BenchPathAccessorIntStatus) as Arc<dyn PathAccessor<BenchContext> + Send + Sync>));
+    let resolver_bool_enabled: PathResolver<BenchContext> =
+        Arc::new(|| Ok(Arc::new(BenchPathAccessorBoolEnabled) as Arc<dyn PathAccessor<BenchContext> + Send + Sync>));
     let mut path_resolvers = PathResolverMap::new();
     path_resolvers.insert("my.int.status".to_string(), resolver_int_status);
     path_resolvers.insert("my.bool.enabled".to_string(), resolver_bool_enabled);
 
     // (path == enum or path) and not converter() and converter()
     let expression = r#"(my.int.status == STATUS_OK or my.bool.enabled) and not IsDisabled() and BoolConv()"#;
-    let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, expression);
+    let parser = Parser::<BenchContext>::new(&editors, &converters, &enums, &path_resolvers, expression);
     assert!(parser.is_error().is_ok(), "Parse failed");
 
-    let mut ctx: EvalContext = Box::new(BenchContext::new());
+    let mut ctx = BenchContext::new();
 
     c.bench_function("execute_bool_enums_paths_converters", |b| {
         b.iter(|| {
-            if let Some(bench_ctx) = ctx.downcast_mut::<BenchContext>() {
-                bench_ctx.my_int_status = 200;
-                bench_ctx.my_bool_enabled = true;
-            }
+            ctx.my_int_status = 200;
+            ctx.my_bool_enabled = true;
             let result = parser.execute(black_box(&mut ctx));
             black_box(result)
         })
@@ -302,29 +281,27 @@ fn bench_execute_editor_call(c: &mut Criterion) {
 
     editors.insert(
         "set".to_string(),
-        Arc::new(|args: &mut dyn Args| {
+        Arc::new(|args: &mut dyn Args<BenchContext>| {
             let value = args.get(1)?;
             args.set(0, &value)?;
             Ok(Value::Nil)
         }),
     );
 
-    let resolver_int_value: PathResolver =
-        Arc::new(|| Ok(Arc::new(BenchPathAccessorIntValue) as Arc<dyn PathAccessor + Send + Sync>));
+    let resolver_int_value: PathResolver<BenchContext> =
+        Arc::new(|| Ok(Arc::new(BenchPathAccessorIntValue) as Arc<dyn PathAccessor<BenchContext> + Send + Sync>));
     let mut path_resolvers = PathResolverMap::new();
     path_resolvers.insert("my.int.value".to_string(), resolver_int_value);
 
     let expression = "set(my.int.value, 42)";
-    let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, expression);
+    let parser = Parser::<BenchContext>::new(&editors, &converters, &enums, &path_resolvers, expression);
     assert!(parser.is_error().is_ok(), "Parse failed");
 
-    let mut ctx: EvalContext = Box::new(BenchContext::new());
+    let mut ctx = BenchContext::new();
 
     c.bench_function("execute_editor_call", |b| {
         b.iter(|| {
-            if let Some(bench_ctx) = ctx.downcast_mut::<BenchContext>() {
-                bench_ctx.my_int_value = 0;
-            }
+            ctx.my_int_value = 0;
             let result = parser.execute(black_box(&mut ctx));
             black_box(result)
         })

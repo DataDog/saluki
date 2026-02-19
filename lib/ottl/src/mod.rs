@@ -8,15 +8,16 @@
 /// ```ignore
 /// use ottl::{Parser, OttlParser, CallbackMap, EnumMap, PathResolverMap};
 ///
-/// let editors = CallbackMap::new();
-/// let converters = CallbackMap::new();
+/// type C = MyContext; // or () for path-free expressions
+/// let editors = CallbackMap::<C>::new();
+/// let converters = CallbackMap::<C>::new();
 /// let enums = EnumMap::new();
-/// let path_resolvers = PathResolverMap::new(); // or insert path -> PathResolver for each path in expression
+/// let path_resolvers = PathResolverMap::<C>::new(); // or insert path -> PathResolver for each path
 ///
-/// let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, "set(my.attr, 1) where 1 > 0");
+/// let parser = Parser::<C>::new(&editors, &converters, &enums, &path_resolvers, "set(my.attr, 1) where 1 > 0");
+/// let mut ctx = MyContext::new();
 /// let result = parser.execute(&mut ctx);
 /// ```
-use std::any::Any;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
@@ -42,14 +43,6 @@ pub type BoxError = Box<dyn Error + Send + Sync>;
 
 /// Standard result type for the library
 pub type Result<T> = std::result::Result<T, BoxError>;
-
-// =====================================================================================================================
-// Context Types
-// =====================================================================================================================
-
-/// User-provided context passed to callbacks during evaluation.
-/// This is a placeholder type that will be refined later.
-pub type EvalContext = Box<dyn Any>;
 
 // =====================================================================================================================
 // Value Types
@@ -115,30 +108,31 @@ pub enum Argument {
 ///
 /// The evaluator calls [`get`](PathAccessor::get) and [`set`](PathAccessor::set) with the path
 /// and index list; path interpretation and indexing (e.g. `["key"]`, `[0]`) are the integrator's
-/// responsibility.
-pub trait PathAccessor: fmt::Debug {
+/// responsibility. The context type `C` is a type parameter so that no type erasure or `'static`
+/// is required; you can use context types that hold references.
+pub trait PathAccessor<C>: fmt::Debug {
     /// Get the value at this path with the given indexes applied.
     ///
     /// Path interpretation, including indexing (e.g. `["key"]`, `[0]`), is **not** implemented by
     /// OTTL; the integrator must implement this method. For a typical "get base value then apply
     /// indexes" implementation, use [`crate::helpers::apply_indexes`].
-    fn get(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> Result<Value>;
+    fn get(&self, ctx: &C, path: &str, indexes: &[IndexExpr]) -> Result<Value>;
 
     /// Set the value at this path with the given indexes applied.
     ///
     /// When `indexes` is empty, the implementor sets the value at the path. When `indexes` is
     /// non-empty (e.g. `my.list[0] = x`), the implementor may support updating at that index
     /// or return an error.
-    fn set(&self, ctx: &mut EvalContext, path: &str, indexes: &[IndexExpr], value: &Value) -> Result<()>;
+    fn set(&self, ctx: &mut C, path: &str, indexes: &[IndexExpr], value: &Value) -> Result<()>;
 }
 
-/// Type alias for the path resolver function.
-/// Returns a PathAccessor.
-pub type PathResolver = Arc<dyn Fn() -> Result<Arc<dyn PathAccessor + Send + Sync>> + Send + Sync>;
+/// Type alias for the path resolver function for context type `C`.
+/// Returns a [`PathAccessor`] that operates on context `C`.
+pub type PathResolver<C> = Arc<dyn Fn() -> Result<Arc<dyn PathAccessor<C> + Send + Sync>> + Send + Sync>;
 
 /// Map from path string to its resolver. Parser looks up each path in the expression
 /// in this map; if a path is missing, parsing fails with an error.
-pub type PathResolverMap = HashMap<String, PathResolver>;
+pub type PathResolverMap<C> = HashMap<String, PathResolver<C>>;
 
 // =====================================================================================================================
 // Callback Types
@@ -147,9 +141,10 @@ pub type PathResolverMap = HashMap<String, PathResolver>;
 /// Trait for lazy argument evaluation - ZERO ALLOCATION at runtime!
 /// Arguments are evaluated only when requested by the callback.
 /// Contains both the evaluation context and lazy access to arguments.
-pub trait Args {
-    /// Access to evaluation context
-    fn ctx(&mut self) -> &mut EvalContext;
+/// The context type `C` is a type parameter so callbacks receive the concrete context.
+pub trait Args<C> {
+    /// Access to evaluation context.
+    fn ctx(&mut self) -> &mut C;
 
     /// Number of arguments
     fn len(&self) -> usize;
@@ -181,13 +176,13 @@ pub trait Args {
     fn set(&mut self, index: usize, value: &Value) -> Result<()>;
 }
 
-/// Callback function type for editors and converters.
+/// Callback function type for editors and converters for context type `C`.
 /// Uses lazy Args trait for ZERO-ALLOCATION argument evaluation.
 /// Args provides both context access and lazy argument retrieval.
-pub type CallbackFn = Arc<dyn Fn(&mut dyn Args) -> Result<Value> + Send + Sync>;
+pub type CallbackFn<C> = Arc<dyn Fn(&mut dyn Args<C>) -> Result<Value> + Send + Sync>;
 
-/// Map of function names to their callback implementations.
-pub type CallbackMap = HashMap<String, CallbackFn>;
+/// Map of function names to their callback implementations for context type `C`.
+pub type CallbackMap<C> = HashMap<String, CallbackFn<C>>;
 
 /// Map of enum names to their integer values.
 pub type EnumMap = HashMap<String, i64>;
@@ -200,22 +195,24 @@ pub type EnumMap = HashMap<String, i64>;
 ///
 /// This trait defines the interface for executing parsed OTTL statements.
 /// Implement this trait to create custom parser implementations or use the
-/// default [`Parser`] implementation.
+/// default [`Parser`] implementation. The context type `C` is a type parameter;
+/// no type erasure or `'static` is required.
 ///
 /// # Example
 ///
 /// ```ignore
 /// use ottl::{OttlParser, Parser};
 ///
-/// let parser = Parser::new(...);
+/// let parser: Parser<MyContext> = Parser::new(...);
 ///
 /// // Check for parsing errors
 /// parser.is_error()?;
 ///
 /// // Execute the statement
+/// let mut ctx = MyContext::new();
 /// let result = parser.execute(&mut ctx)?;
 /// ```
-pub trait OttlParser {
+pub trait OttlParser<C> {
     /// Checks if the parser encountered any errors during creation.
     ///
     /// Call this method after creating a parser to verify that the OTTL expression
@@ -240,5 +237,5 @@ pub trait OttlParser {
     ///     return value, returns `Value::Nil`.
     ///   * `Err(BoxError)` - An error if evaluation fails (e.g., type mismatch,
     ///     missing path, callback error).
-    fn execute(&self, ctx: &mut EvalContext) -> Result<Value>;
+    fn execute(&self, ctx: &mut C) -> Result<Value>;
 }

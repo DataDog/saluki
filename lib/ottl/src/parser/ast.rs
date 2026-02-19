@@ -63,18 +63,19 @@ pub struct ValueExprRef(pub(crate) u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FunctionCallRef(pub(crate) u32);
 
-/// Resolved path with pre-computed path string and accessor (resolved at parse time)
+/// Resolved path with pre-computed path string and accessor (resolved at parse time).
+/// Generic over context type `C` so the accessor operates on that context.
 #[derive(Clone)]
-pub struct ResolvedPath {
+pub struct ResolvedPath<C> {
     /// Pre-computed full path string (e.g., "my.int.value")
     pub full_path: String,
     /// Pre-resolved accessor (resolved once at parse time, not at each execution)
-    pub accessor: Arc<dyn PathAccessor + Send + Sync>,
+    pub accessor: Arc<dyn PathAccessor<C> + Send + Sync>,
     /// Optional indexes for indexing into the result
     pub indexes: Vec<IndexExpr>,
 }
 
-impl std::fmt::Debug for ResolvedPath {
+impl<C> std::fmt::Debug for ResolvedPath<C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResolvedPath")
             .field("full_path", &self.full_path)
@@ -83,9 +84,9 @@ impl std::fmt::Debug for ResolvedPath {
     }
 }
 
-/// Arena-based BoolExpr using indices instead of Box
+/// Arena-based BoolExpr using indices instead of Box. Generic over context type `C`.
 #[derive(Debug, Clone)]
-pub enum ArenaBoolExpr {
+pub enum ArenaBoolExpr<C> {
     Literal(bool),
     Comparison {
         left: ValueExprRef,
@@ -94,7 +95,7 @@ pub enum ArenaBoolExpr {
     },
     Converter(FunctionCallRef),
     /// Path with pre-resolved accessor
-    Path(ResolvedPath),
+    Path(ResolvedPath<C>),
     Not(BoolExprRef),
     And(BoolExprRef, BoolExprRef),
     Or(BoolExprRef, BoolExprRef),
@@ -112,29 +113,29 @@ pub enum ArenaMathExpr {
     },
 }
 
-/// Arena-based ValueExpr using indices instead of Box
+/// Arena-based ValueExpr using indices instead of Box. Generic over context type `C`.
 #[derive(Debug, Clone)]
-pub enum ArenaValueExpr {
+pub enum ArenaValueExpr<C> {
     Literal(Value),
     /// Path with pre-resolved accessor (no runtime lookup!)
-    Path(ResolvedPath),
+    Path(ResolvedPath<C>),
     List(Vec<ValueExprRef>),
     Map(Vec<(String, ValueExprRef)>),
     FunctionCall(FunctionCallRef),
     Math(MathExprRef),
 }
 
-/// Arena-based FunctionCall using indices for args
+/// Arena-based FunctionCall using indices for args. Generic over context type `C`.
 #[derive(Clone)]
-pub struct ArenaFunctionCall {
+pub struct ArenaFunctionCall<C> {
     pub name: String,
     pub is_editor: bool,
     pub args: Vec<ArenaArgExpr>,
     pub indexes: Vec<IndexExpr>,
-    pub callback: Option<CallbackFn>,
+    pub callback: Option<CallbackFn<C>>,
 }
 
-impl std::fmt::Debug for ArenaFunctionCall {
+impl<C> std::fmt::Debug for ArenaFunctionCall<C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ArenaFunctionCall")
             .field("name", &self.name)
@@ -153,17 +154,18 @@ pub enum ArenaArgExpr {
     Named { name: String, value: ValueExprRef },
 }
 
-/// Arena-based EditorStatement
+/// Arena-based EditorStatement. Holds [`PhantomData<C>`] so [`ArenaRootExpr<C>`] is well-formed.
 #[derive(Debug, Clone)]
-pub struct ArenaEditorStatement {
+pub struct ArenaEditorStatement<C> {
     pub editor: FunctionCallRef,
     pub condition: Option<BoolExprRef>,
+    pub(crate) _marker: std::marker::PhantomData<C>,
 }
 
-/// Arena-based root expression
+/// Arena-based root expression. Generic over context type `C`.
 #[derive(Debug, Clone)]
-pub enum ArenaRootExpr {
-    EditorStatement(ArenaEditorStatement),
+pub enum ArenaRootExpr<C> {
+    EditorStatement(ArenaEditorStatement<C>),
     BooleanExpression(BoolExprRef),
     MathExpression(MathExprRef),
 }
@@ -181,22 +183,22 @@ pub struct PathExpr {
     pub indexes: Vec<IndexExpr>,
 }
 
-/// Function invocation (Editor or Converter)
+/// Function invocation (Editor or Converter). Generic over context type `C`.
 #[derive(Clone)]
-pub struct FunctionCall {
+pub struct FunctionCall<C> {
     /// Function name
     pub name: String,
     /// Whether this is an editor (lowercase) or converter (uppercase)
     pub is_editor: bool,
     /// Arguments
-    pub args: Vec<ArgExpr>,
+    pub args: Vec<ArgExpr<C>>,
     /// Optional indexes (for converters)
     pub indexes: Vec<IndexExpr>,
     /// Callback reference (resolved at parse time)
-    pub callback: Option<CallbackFn>,
+    pub callback: Option<CallbackFn<C>>,
 }
 
-impl std::fmt::Debug for FunctionCall {
+impl<C: std::fmt::Debug> std::fmt::Debug for FunctionCall<C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FunctionCall")
             .field("name", &self.name)
@@ -208,86 +210,87 @@ impl std::fmt::Debug for FunctionCall {
     }
 }
 
-/// Argument expression
+/// Argument expression. Generic over context type `C`.
 #[derive(Debug, Clone)]
-pub enum ArgExpr {
+pub enum ArgExpr<C> {
     /// Positional argument
-    Positional(ValueExpr),
+    Positional(ValueExpr<C>),
     /// Named argument
-    Named { name: String, value: ValueExpr },
+    Named { name: String, value: ValueExpr<C> },
 }
 
-/// Value expression - any value in OTTL
+/// Value expression - any value in OTTL. Generic over context type `C`.
 #[derive(Debug, Clone)]
-pub enum ValueExpr {
+pub enum ValueExpr<C> {
     /// Literal value
     Literal(Value),
     /// Path expression
     Path(PathExpr),
     /// List literal
-    List(Vec<ValueExpr>),
+    List(Vec<ValueExpr<C>>),
     /// Map literal
-    Map(Vec<(String, ValueExpr)>),
+    Map(Vec<(String, ValueExpr<C>)>),
     /// Function call (converter or editor)
-    FunctionCall(Box<FunctionCall>),
+    FunctionCall(Box<FunctionCall<C>>),
     /// Math expression
-    Math(Box<MathExpr>),
+    Math(Box<MathExpr<C>>),
 }
 
-/// Math expression with operator precedence
+/// Math expression with operator precedence. Generic over context type `C`.
 #[derive(Debug, Clone)]
-pub enum MathExpr {
+pub enum MathExpr<C> {
     /// Primary value (literal, path, converter, or grouped expression)
-    Primary(ValueExpr),
+    Primary(ValueExpr<C>),
     /// Unary negation
-    Negate(Box<MathExpr>),
+    Negate(Box<MathExpr<C>>),
     /// Binary operation: term (+/-) or factor (*/)
     Binary {
-        left: Box<MathExpr>,
+        left: Box<MathExpr<C>>,
         op: MathOp,
-        right: Box<MathExpr>,
+        right: Box<MathExpr<C>>,
     },
 }
 
-/// Boolean expression with operator precedence
+/// Boolean expression with operator precedence. Generic over context type `C`.
 #[derive(Debug, Clone)]
-pub enum BoolExpr {
+pub enum BoolExpr<C> {
     /// Literal boolean
     Literal(bool),
     /// Comparison expression
     Comparison {
-        left: ValueExpr,
+        left: ValueExpr<C>,
         op: CompOp,
-        right: ValueExpr,
+        right: ValueExpr<C>,
     },
     /// Converter call returning boolean
-    Converter(Box<FunctionCall>),
+    Converter(Box<FunctionCall<C>>),
     /// Path that evaluates to boolean
     Path(PathExpr),
     /// Logical NOT
-    Not(Box<BoolExpr>),
+    Not(Box<BoolExpr<C>>),
     /// Logical AND
-    And(Box<BoolExpr>, Box<BoolExpr>),
+    And(Box<BoolExpr<C>>, Box<BoolExpr<C>>),
     /// Logical OR
-    Or(Box<BoolExpr>, Box<BoolExpr>),
+    Or(Box<BoolExpr<C>>, Box<BoolExpr<C>>),
 }
 
-/// Editor invocation statement
+/// Editor invocation statement. Generic over context type `C`.
 #[derive(Debug, Clone)]
-pub struct EditorStatement {
+pub struct EditorStatement<C> {
     /// The editor function call
-    pub editor: FunctionCall,
+    pub editor: FunctionCall<C>,
     /// Optional WHERE clause condition
-    pub condition: Option<BoolExpr>,
+    pub condition: Option<BoolExpr<C>>,
 }
 
-/// Root AST node - either an editor statement, a boolean expression, or a math expression
+/// Root AST node - either an editor statement, a boolean expression, or a math expression.
+/// Generic over context type `C`.
 #[derive(Debug, Clone)]
-pub enum RootExpr {
+pub enum RootExpr<C> {
     /// Editor invocation with optional WHERE clause
-    EditorStatement(EditorStatement),
+    EditorStatement(EditorStatement<C>),
     /// Standalone boolean expression
-    BooleanExpression(BoolExpr),
+    BooleanExpression(BoolExpr<C>),
     /// Standalone math expression
-    MathExpression(MathExpr),
+    MathExpression(MathExpr<C>),
 }

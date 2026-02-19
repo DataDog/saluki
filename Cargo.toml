@@ -59,6 +59,7 @@ saluki-metrics = { path = "lib/saluki-metrics" }
 saluki-tls = { path = "lib/saluki-tls" }
 stele = { path = "bin/correctness/stele" }
 stringtheory = { path = "lib/stringtheory" }
+ottl = { path = "lib/ottl" }
 otlp-protos = { path = "lib/protos/otlp" }
 async-trait = { version = "0.1", default-features = false }
 atty = { version = "0.2", default-features = false }
