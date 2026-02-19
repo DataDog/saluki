@@ -133,182 +133,124 @@ pub fn normalize_name(mut name: MetaString) -> MetaString {
     MetaString::from(normalized)
 }
 
-/// Normalizes a service name.
+/// Normalizes a service name into `out`.
 ///
-/// Truncates to `MAX_SERVICE_LEN` and ensures characters are valid for tags.
-pub fn normalize_service(service: &MetaString) -> MetaString {
+/// The output is always written from a cleared buffer.
+pub(super) fn normalize_service_into<I>(service: &str, out: &mut StringBuilder<I>) {
+    out.clear();
+
     // TODO: add fall back service for languages
     // e.g. https://github.com/DataDog/datadog-agent/blob/instrument-otlp-traffic/pkg/trace/traceutil/normalize/normalize.go#L124
     if service.is_empty() {
-        return DEFAULT_SERVICE_NAME.clone();
+        let _ = out.push_str(DEFAULT_SERVICE_NAME.as_ref());
+        return;
     }
 
-    let truncated = truncate_utf8(service, MAX_SERVICE_LEN);
-    let normalized = normalize_tag_value(truncated);
-
-    if normalized.is_empty() {
-        return DEFAULT_SERVICE_NAME.clone();
+    let truncated = truncate_utf8_str(service, MAX_SERVICE_LEN);
+    if is_normalized_ascii_tag(truncated, false) {
+        let _ = out.push_str(truncated);
+        return;
     }
+    normalize_unchecked(truncated, false, out);
 
-    normalized
+    if out.as_str().is_empty() {
+        let _ = out.push_str(DEFAULT_SERVICE_NAME.as_ref());
+    }
 }
 
-/// Normalizes a tag value.
+/// Normalizes `value` into `out`, clearing any existing contents first.
 ///
-/// Truncates to `MAX_TAG_LEN` and ensures characters are valid ASCII tag characters.
-/// Replaces invalid characters with underscores and trims underscores.
-pub fn normalize_tag_value(value: &str) -> MetaString {
-    normalize(value, false)
-}
-
-/// Normalizes a tag value into the provided buffer without re-checking whether the input is already normalized.
-///
-/// This should only be used when the caller has already validated the input is not normalized.
+/// Use this when the caller has already determined `value` is not normalized, so we
+/// can skip a separate normalized fast-path check.
 pub(super) fn normalize_tag_value_into_unchecked<I>(value: &str, out: &mut StringBuilder<I>) {
     out.clear();
+    normalize_tag_value_append_unchecked(value, out);
+}
+
+/// Appends the normalized form of `value` to `out` without clearing it first.
+///
+/// Use this when extending an existing normalized prefix with a value already known to
+/// require normalization.
+pub(super) fn normalize_tag_value_append_unchecked<I>(value: &str, out: &mut StringBuilder<I>) {
     if value.is_empty() {
         return;
     }
-
-    let normalized = normalize_unchecked(value, false);
-    if normalized.is_empty() {
-        return;
-    }
-
-    if let Ok(normalized) = std::str::from_utf8(&normalized) {
-        let _ = out.push_str(normalized);
-    }
+    normalize_unchecked(value, false, out);
 }
 
 pub(super) fn is_normalized_tag_value(value: &str) -> bool {
     is_normalized_ascii_tag(value, false)
 }
 
-/// Normalizes a tag (key:value).
-#[allow(dead_code)]
-pub fn normalize_tag(value: &str) -> MetaString {
-    normalize(value, true)
-}
-
-fn normalize(value: &str, remove_digit_start_char: bool) -> MetaString {
-    if value.is_empty() {
-        return MetaString::empty();
-    }
-
-    // Fast Path: return right away if it is valid
-    if is_normalized_ascii_tag(value, remove_digit_start_char) {
-        return MetaString::from(value);
-    }
-    let tag = normalize_unchecked(value, remove_digit_start_char);
-    MetaString::from(String::from_utf8(tag).unwrap_or_default())
-}
-
-fn normalize_unchecked(value: &str, remove_digit_start_char: bool) -> Vec<u8> {
-    // Trim is used to to remove invalid characters from the start of the tag
-    // Cuts is used to mark the start and end of invalid characters that need to be replaced with underscores
-    // Chars is used to count the number of valid characters in the tag
-    // Tag is the byte slice of the tag
-    // End_idx is the index of the last valid character in the tag
-    let mut trim = 0usize;
-    let mut cuts: Vec<(usize, usize)> = Vec::new();
+/// Normalization function that writes directly into a [`StringBuilder`].
+///
+/// Characters are emitted as they are processed: valid characters are pushed directly,
+/// runs of illegal characters are collapsed into a single `_`, and trailing illegal
+/// characters are dropped.
+fn normalize_unchecked<I>(value: &str, remove_digit_start_char: bool, out: &mut StringBuilder<I>) {
     let mut chars = 0usize;
-    let mut tag = value.as_bytes().to_vec();
-    let mut end_idx = value.len();
+    let mut pending_underscore = false;
 
     for (idx, mut curr_char) in value.char_indices() {
         let jump = curr_char.len_utf8();
+
         if (curr_char as u32) < 256 && IS_VALID_ASCII_START_CHAR_LOOKUP[curr_char as usize] {
+            if pending_underscore {
+                let _ = out.push('_');
+                pending_underscore = false;
+            }
+            let _ = out.push(curr_char);
             chars += 1;
         } else if curr_char.is_ascii_uppercase() {
-            tag[idx] = curr_char.to_ascii_lowercase() as u8;
+            if pending_underscore {
+                let _ = out.push('_');
+                pending_underscore = false;
+            }
+            let _ = out.push(curr_char.to_ascii_lowercase());
             chars += 1;
         } else {
-            // converts a unicode uppercase character to a lowercase character when the UTF-8 width stays the same
             if curr_char.is_uppercase() {
-                // we check for the number of bytes in the lowercase character to be the same as the original character
-                // this is to avoid the case where the lowercase character is a different number of bytes such as ẞ → ss
                 let mut lowercase = curr_char.to_lowercase();
                 if let Some(lower_char) = lowercase.next() {
                     if lower_char.len_utf8() == jump {
-                        // check if the lowercase character is the same number of bytes as the original character
-                        let mut buf = [0u8; 4]; // UTF-8 is four bytes max
-                        let encoded = lower_char.encode_utf8(&mut buf);
-                        tag[idx..idx + jump].copy_from_slice(encoded.as_bytes());
                         curr_char = lower_char;
                     }
                 }
             }
 
             if curr_char.is_alphabetic() {
+                if pending_underscore {
+                    let _ = out.push('_');
+                    pending_underscore = false;
+                }
+                let _ = out.push(curr_char);
                 chars += 1;
             } else if remove_digit_start_char && chars == 0 {
-                trim = idx + jump;
-                end_idx = idx + jump;
+                let end_idx = idx + jump;
                 if end_idx >= 2 * MAX_TAG_LEN {
                     break;
                 }
                 continue;
             } else if curr_char.is_ascii_digit() || matches!(curr_char, '.' | '/' | '-') {
+                if pending_underscore {
+                    let _ = out.push('_');
+                    pending_underscore = false;
+                }
+                let _ = out.push(curr_char);
                 chars += 1;
             } else {
                 // illegal character
                 chars += 1;
-                if let Some(last) = cuts.last_mut() {
-                    if last.1 >= idx {
-                        last.1 += jump;
-                    } else {
-                        cuts.push((idx, idx + jump));
-                    }
-                } else {
-                    cuts.push((idx, idx + jump));
-                }
+                pending_underscore = true;
             }
         }
 
-        end_idx = idx + jump;
-        if end_idx >= 2 * MAX_TAG_LEN {
-            break;
-        }
-        if chars >= MAX_TAG_LEN {
+        let end_idx = idx + jump;
+        if end_idx >= 2 * MAX_TAG_LEN || chars >= MAX_TAG_LEN {
             break;
         }
     }
-
-    if trim > 0 || end_idx < tag.len() {
-        tag.copy_within(trim..end_idx, 0);
-        tag.truncate(end_idx - trim);
-    }
-
-    if cuts.is_empty() {
-        return tag;
-    }
-
-    let mut delta = trim;
-    for (cut_start, cut_end) in cuts {
-        if cut_end <= delta {
-            continue;
-        }
-
-        let start = cut_start - delta;
-        let end = cut_end - delta;
-
-        if end >= tag.len() {
-            tag.truncate(start);
-            break;
-        }
-
-        tag[start] = b'_';
-        if end - start == 1 {
-            continue;
-        }
-
-        tag.copy_within(end.., start + 1);
-        let new_len = tag.len() - (end - start) + 1;
-        tag.truncate(new_len);
-        delta += (cut_end - cut_start) - 1;
-    }
-
-    tag
+    // Trailing illegal chars (pending_underscore=true) are intentionally dropped.
 }
 
 fn is_valid_metric_name(name: &str) -> bool {
@@ -400,6 +342,10 @@ const fn is_valid_ascii_tag_char(c: char) -> bool {
 
 /// Truncate string to max_len bytes, respecting UTF-8 boundaries.
 pub(super) fn truncate_utf8(s: &MetaString, max_len: usize) -> &str {
+    truncate_utf8_str(s, max_len)
+}
+
+fn truncate_utf8_str(s: &str, max_len: usize) -> &str {
     if s.len() <= max_len {
         return s;
     }
@@ -414,6 +360,13 @@ mod tests {
     use std::char;
 
     use super::*;
+
+    fn normalize_tag(value: &str) -> MetaString {
+        let mut sb = StringBuilder::new();
+        normalize_unchecked(value, true, &mut sb);
+        MetaString::from(sb.as_str())
+    }
+
     // Test cases taken from the agent codebase
     // https://github.com/DataDog/datadog-agent/blob/instrument-otlp-traffic/pkg/trace/traceutil/normalize/normalize_test.go#L17
     #[test]
@@ -559,13 +512,14 @@ mod tests {
 
     #[test]
     fn test_normalize_service() {
+        let mut sb = StringBuilder::new();
         for (service, expected) in base_service_cases().iter() {
-            let normalized = normalize_service(service);
-            assert_eq!(normalized.as_ref(), expected.as_ref(), "service {}", service);
+            normalize_service_into(service, &mut sb);
+            assert_eq!(sb.as_str(), expected.as_ref(), "service {}", service);
         }
 
-        let empty = normalize_service(&MetaString::from(""));
-        assert_eq!(empty.as_ref(), DEFAULT_SERVICE_NAME.as_ref());
+        normalize_service_into("", &mut sb);
+        assert_eq!(sb.as_str(), DEFAULT_SERVICE_NAME.as_ref());
     }
 
     fn base_service_cases() -> Vec<(MetaString, MetaString)> {

@@ -25,7 +25,8 @@ use tracing::error;
 use crate::common::datadog::{OTEL_TRACE_ID_META_KEY, SAMPLING_PRIORITY_METRIC_KEY};
 use crate::common::otlp::attributes::{get_int_attribute, HTTP_MAPPINGS};
 use crate::common::otlp::traces::normalize::{
-    is_normalized_tag_value, normalize_service, normalize_tag_value, normalize_tag_value_into_unchecked,
+    is_normalized_tag_value, normalize_service_into, normalize_tag_value_append_unchecked,
+    normalize_tag_value_into_unchecked,
 };
 use crate::common::otlp::traces::normalize::{truncate_utf8, MAX_RESOURCE_LEN};
 use crate::common::otlp::traces::translator::{convert_span_id, convert_trace_id};
@@ -386,7 +387,7 @@ pub fn otel_to_dd_span_minimal(
         // the functions below are based off the V2 agent functions as they are used by default
         // TODO: allow the user to opt out of V2 via config and also implement the V1 versions of the functions
         if service.is_empty() {
-            service = get_otel_service(span_attributes, resource_attributes, true, interner);
+            service = get_otel_service(span_attributes, resource_attributes, true, interner, string_builder);
         }
         if name.is_empty() {
             name = get_otel_operation_name_v2(
@@ -445,6 +446,7 @@ pub fn otel_to_dd_span_minimal(
 /// Returns the DD service name based on OTel span and resource attributes.
 fn get_otel_service(
     span_attributes: &[KeyValue], resource_attributes: &[KeyValue], normalize: bool, interner: &GenericMapInterner,
+    string_builder: &mut StringBuilder<GenericMapInterner>,
 ) -> MetaString {
     let service = get_string_attribute(span_attributes, SERVICE_NAME)
         .filter(|s| !s.is_empty())
@@ -452,11 +454,11 @@ fn get_otel_service(
         .unwrap_or(DEFAULT_SERVICE_NAME);
 
     if normalize {
-        let normalized = normalize_service(&MetaString::from(service));
+        normalize_service_into(service, string_builder);
         interner
-            .try_intern(normalized.as_ref())
+            .try_intern(string_builder.as_str())
             .map(MetaString::from)
-            .unwrap_or(normalized)
+            .unwrap_or_else(|| MetaString::from(string_builder.as_str()))
     } else {
         MetaString::from_interner(service, interner)
     }
@@ -807,7 +809,7 @@ fn get_otel_resource_v2(
         if is_normalized_tag_value(op_type) {
             let _ = string_builder.push_str(op_type);
         } else {
-            normalize_tag_value_into_unchecked(op_type, string_builder);
+            normalize_tag_value_append_unchecked(op_type, string_builder);
         }
 
         if let Some(op_name) =
@@ -817,8 +819,7 @@ fn get_otel_resource_v2(
             if is_normalized_tag_value(op_name) {
                 let _ = string_builder.push_str(op_name);
             } else {
-                let op_name = normalize_tag_value(op_name);
-                let _ = string_builder.push_str(op_name.as_ref());
+                normalize_tag_value_append_unchecked(op_name, string_builder);
             }
         }
         return string_builder.to_meta_string();
@@ -835,10 +836,12 @@ fn get_otel_resource_v2(
     .is_some()
     {
         if let Some(statement) = get_both_string_attribute(span_attributes, resource_attributes, DB_STATEMENT_KEY) {
-            return normalize_tag_value(statement);
+            normalize_tag_value_into_unchecked(statement, string_builder);
+            return string_builder.to_meta_string();
         }
         if let Some(query) = get_both_string_attribute(span_attributes, resource_attributes, DB_QUERY_TEXT_KEY) {
-            return normalize_tag_value(query);
+            normalize_tag_value_into_unchecked(query, string_builder);
+            return string_builder.to_meta_string();
         }
     }
 
