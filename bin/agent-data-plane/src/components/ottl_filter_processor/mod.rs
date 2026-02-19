@@ -17,7 +17,7 @@ use saluki_core::{
     topology::EventsBuffer,
 };
 use saluki_error::{generic_error, GenericError};
-use tracing::{error, trace};
+use tracing::{debug, error};
 
 mod config;
 mod span_context;
@@ -65,6 +65,9 @@ impl SynchronousTransformBuilder for OttlFilterConfiguration {
                 continue;
             }
             let parser = ottl::Parser::new(&editors, &converters, &enums, &path_resolvers, condition);
+
+            debug!("Add new parser with condition: \"{}\"", condition);
+
             parser
                 .is_error()
                 .map_err(|e| generic_error!("OTTL filter span condition parse error: {}: {}", condition, e))?;
@@ -111,10 +114,13 @@ impl OttlFilter {
         for parser in &self.span_parsers {
             match parser.execute(&mut ctx) {
                 Ok(Value::Bool(true)) => {
-                    trace!(span_name = %span.name(), "OTTL filter condition matched; dropping span");
+                    //debug!(span_name = %span.name(), "OTTL filter condition matched; dropping span");
                     return true;
                 }
-                Ok(Value::Bool(false)) => continue,
+                Ok(Value::Bool(false)) => {
+                    //debug!(span_name = %span.name(), "OTTL filter condition NOT matched; keeping span");
+                    continue;
+                }
                 Ok(_) => continue,
                 Err(e) => match self.error_mode {
                     ErrorMode::Ignore => {
