@@ -3,11 +3,11 @@
     topology_context: &amp;<a class="struct" href="../../topology/struct.TopologyContext.html" title="struct saluki_core::topology::TopologyContext">TopologyContext</a>,
     component_context: &amp;<a class="struct" href="../struct.ComponentContext.html" title="struct saluki_core::components::ComponentContext">ComponentContext</a>,
     component_registry: ComponentRegistry,
-    health_handle: <a class="struct" href="../../../saluki_health/struct.Health.html" title="struct saluki_health::Health">Health</a>,
+    health_handle: Health,
     dispatcher: <a class="type" href="../../topology/type.EventsDispatcher.html" title="type saluki_core::topology::EventsDispatcher">EventsDispatcher</a>,
     consumer: <a class="type" href="../../topology/type.PayloadsConsumer.html" title="type saluki_core::topology::PayloadsConsumer">PayloadsConsumer</a>,
 ) -&gt; Self</h4></section></summary><div class="docblock"><p>Creates a new <code>DecoderContext</code>.</p>
-</div></details><details class="toggle method-toggle" open><summary><section id="method.take_health_handle" class="method"><a class="src rightside" href="../../../src/saluki_core/components/decoders/context.rs.html#41-43">Source</a><h4 class="code-header">pub fn <a href="#method.take_health_handle" class="fn">take_health_handle</a>(&amp;mut self) -&gt; <a class="struct" href="../../../saluki_health/struct.Health.html" title="struct saluki_health::Health">Health</a></h4></section></summary><div class="docblock"><p>Consumes the health handle of this decoder context.</p>
+</div></details><details class="toggle method-toggle" open><summary><section id="method.take_health_handle" class="method"><a class="src rightside" href="../../../src/saluki_core/components/decoders/context.rs.html#41-43">Source</a><h4 class="code-header">pub fn <a href="#method.take_health_handle" class="fn">take_health_handle</a>(&amp;mut self) -&gt; Health</h4></section></summary><div class="docblock"><p>Consumes the health handle of this decoder context.</p>
 <h5 id="panics"><a class="doc-anchor" href="#panics">§</a>Panics</h5>
 <p>Panics if the health handle has already been taken.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.topology_context" class="method"><a class="src rightside" href="../../../src/saluki_core/components/decoders/context.rs.html#46-48">Source</a><h4 class="code-header">pub fn <a href="#method.topology_context" class="fn">topology_context</a>(&amp;self) -&gt; &amp;<a class="struct" href="../../topology/struct.TopologyContext.html" title="struct saluki_core::topology::TopologyContext">TopologyContext</a></h4></section></summary><div class="docblock"><p>Gets a reference to the topology context.</p>
