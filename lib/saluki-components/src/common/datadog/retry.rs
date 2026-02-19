@@ -151,7 +151,7 @@ impl RetryConfiguration {
 
     /// Returns the maximum size of the retry queue in bytes.
     ///
-    /// Preferentially uses `forwarder_retry_payloads_max_size` if set, otherwise uses `forwarder_retry_queue_max_size`. If neither
+    /// Preferentially uses `forwarder_retry_queue_payloads_max_size` if set, otherwise uses `forwarder_retry_queue_max_size`. If neither
     /// are set, defaults to 15MiB.
     pub fn queue_max_size_bytes(&self) -> u64 {
         self.retry_queue_payloads_max_size
