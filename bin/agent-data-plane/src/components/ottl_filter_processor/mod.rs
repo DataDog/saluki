@@ -5,17 +5,19 @@
 //!
 //! [OpenTelemetry filterprocessor]: https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/release/v0.144.x/processor/filterprocessor
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use ottl::{CallbackMap, EnumMap, OttlParser, Value};
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{transforms::*, ComponentContext},
-    data_model::event::trace::Span,
+    data_model::event::trace::{Span, Trace},
     topology::EventsBuffer,
 };
 use saluki_error::{generic_error, GenericError};
-use tracing::{debug, trace};
+use tracing::{error, trace};
 
 mod config;
 mod span_context;
@@ -33,21 +35,15 @@ pub struct OttlFilterConfiguration {
 impl OttlFilterConfiguration {
     /// Creates configuration from the given generic configuration.
     ///
-    /// Reads the OTTL filter config from either:
-    /// - `data_plane.otlp.filter` (ADP-specific path), or
-    /// - `processors.filter/ottl` (OpenTelemetry Collector-style path, same structure as filterprocessor).
+    /// Reads the OTTL filter config from one of (first present wins):
+    /// - `data_plane.otlp.filter` (ADP-specific path),
+    /// - `processors.filter/ottl` (OpenTelemetry Collector-style path), or
+    /// - `ottl_config` (top-level key, e.g. in test/one-off/ottl-filter-processor.yaml).
     ///
-    /// The YAML structure under either path is the same: `error_mode`, `traces.span` (list of OTTL condition strings).
-    /// If neither key is present, a default (no-op) config is used.
+    /// The YAML structure under any path is the same: `error_mode`, `traces.span` (list of OTTL condition strings).
+    /// If none is present, a default (no-op) config is used.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let filter_config = config
-            .try_get_typed::<OttlFilterConfig>("data_plane.otlp.filter")?
-            .or_else(|| {
-                config
-                    .try_get_typed::<OttlFilterConfig>("processors.filter/ottl")
-                    .ok()
-                    .flatten()
-            });
+        let filter_config = config.try_get_typed::<OttlFilterConfig>("ottl_config")?;
         Ok(Self {
             config: filter_config.unwrap_or_default(),
         })
@@ -78,6 +74,7 @@ impl SynchronousTransformBuilder for OttlFilterConfiguration {
         Ok(Box::new(OttlFilter {
             error_mode: self.config.error_mode,
             span_parsers,
+            current_trace: None,
         }))
     }
 }
@@ -92,15 +89,23 @@ impl MemoryBounds for OttlFilterConfiguration {
 pub struct OttlFilter {
     error_mode: ErrorMode,
     span_parsers: Vec<ottl::Parser<SpanFilterContext>>,
+    /// Trace currently being filtered, stored under `Arc` for use in `should_drop_span` (e.g. `resource_tags`).
+    current_trace: Option<Arc<Trace>>,
 }
 
 impl OttlFilter {
     /// Returns true if the span should be dropped (any condition matched).
-    fn should_drop_span(&self, span: &Span, resource_tags: &saluki_context::tags::SharedTagSet) -> bool {
+    ///
+    /// Uses `self.current_trace` (set in `transform_buffer`) to access resource tags.
+    fn should_drop_span(&self, span: &Span) -> bool {
         if self.span_parsers.is_empty() {
             return false;
         }
-
+        let resource_tags = self
+            .current_trace
+            .as_ref()
+            .expect("current_trace set by transform_buffer before retain_spans")
+            .resource_tags();
         let mut ctx = SpanFilterContext::new(span, resource_tags);
 
         for parser in &self.span_parsers {
@@ -113,11 +118,15 @@ impl OttlFilter {
                 Ok(_) => continue,
                 Err(e) => match self.error_mode {
                     ErrorMode::Ignore => {
-                        debug!(error = %e, "OTTL filter condition error; ignoring");
+                        error!(error = %e, "OTTL filter condition error; ignoring");
                     }
                     ErrorMode::Silent => {}
                     ErrorMode::Propagate => {
-                        debug!(error = %e, "OTTL filter condition error; dropping span");
+                        //propagate: The processor returns the error up the pipeline. This will result in the payload
+                        // being dropped from the collector.
+                        // AZH: The current API of SynchronousTransform::transform_buffer does not propagate errors;
+                        //  it only logs them.
+                        error!(error = %e, "OTTL filter condition error; dropping span (error_mode=propagate)");
                         return true;
                     }
                 },
@@ -131,8 +140,8 @@ impl SynchronousTransform for OttlFilter {
     fn transform_buffer(&mut self, event_buffer: &mut EventsBuffer) {
         for event in event_buffer {
             if let Some(trace) = event.try_as_trace_mut() {
-                let resource_tags = trace.resource_tags().clone();
-                trace.retain_spans(|span| !self.should_drop_span(span, &resource_tags));
+                self.current_trace = Some(Arc::new(trace.clone()));
+                trace.retain_spans(|span| !self.should_drop_span(span));
             }
         }
     }
