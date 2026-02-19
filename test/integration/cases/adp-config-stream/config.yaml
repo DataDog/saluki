@@ -29,7 +29,7 @@ assertions:
         timeout: 10s
       - type: log_not_contains
         pattern: "Error while reading config event stream"
-        timeout: 10s
+        during: 10s
       - type: log_not_contains
         pattern: "panic|PANIC"
         regex: true
