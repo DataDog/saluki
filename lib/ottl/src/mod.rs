@@ -6,14 +6,14 @@
 /// # Example
 ///
 /// ```ignore
-/// use ottl::{Parser, OttlParser, CallbackMap, EnumMap, PathResolver};
+/// use ottl::{Parser, OttlParser, CallbackMap, EnumMap, PathResolverMap};
 ///
 /// let editors = CallbackMap::new();
 /// let converters = CallbackMap::new();
 /// let enums = EnumMap::new();
-/// let resolver = ...;
+/// let path_resolvers = PathResolverMap::new(); // or insert path -> PathResolver for each path in expression
 ///
-/// let parser = Parser::new(&editors, &converters, &enums, &resolver, "set(\"my.attr\", 1) where 1 > 0");
+/// let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, "set(my.attr, 1) where 1 > 0");
 /// let result = parser.execute(&mut ctx);
 /// ```
 use std::any::Any;
@@ -22,6 +22,7 @@ use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 
+pub mod helpers;
 pub(crate) mod lexer;
 mod parser;
 
@@ -29,6 +30,7 @@ mod parser;
 mod tests;
 
 // Re-export from submodules
+pub use parser::IndexExpr;
 pub use parser::Parser;
 
 // =====================================================================================================================
@@ -54,6 +56,7 @@ pub type EvalContext = Box<dyn Any>;
 // =====================================================================================================================
 
 /// Represents all possible values in OTTL expressions and function arguments.
+/// Uses Arc<str> for strings and Arc<[u8]> for bytes to enable cheap cloning.
 #[derive(Clone, Default, Debug, PartialEq /* , Eq, PartialOrd - not applicable it seems */)]
 pub enum Value {
     /// Nil/null value
@@ -65,14 +68,29 @@ pub enum Value {
     Int(i64),
     /// 64-bit floating point
     Float(f64),
-    /// String value
-    String(String),
-    /// Bytes literal (e.g., 0xC0FFEE)
-    Bytes(Vec<u8>),
+    /// String value (Arc for cheap clone)
+    String(Arc<str>),
+    /// Bytes literal (e.g., 0xC0FFEE) - Arc for cheap clone
+    Bytes(Arc<[u8]>),
     /// List of values
     List(Vec<Value>),
-    /// Map of string keys to values
+    /// Map of string keys to values  
     Map(HashMap<String, Value>),
+}
+
+///Static methods of Value
+impl Value {
+    ///Static method: create a string value from any string-like type
+    #[inline]
+    pub fn string(s: impl Into<Arc<str>>) -> Self {
+        Value::String(s.into())
+    }
+
+    ///Static method:  create a bytes value from any bytes-like type
+    #[inline]
+    pub fn bytes(b: impl Into<Arc<[u8]>>) -> Self {
+        Value::Bytes(b.into())
+    }
 }
 
 // =====================================================================================================================
@@ -89,67 +107,84 @@ pub enum Argument {
     Named { name: String, value: Value },
 }
 
-/// Methods for extracting data from [`Argument`] values.
-///
-/// These methods provide a unified interface for accessing argument values
-/// regardless of whether the argument is positional or named.
-///
-/// # Examples
-///
-/// ```ignore
-/// let pos_arg = Argument::Positional(Value::Int(42));
-/// let named_arg = Argument::Named { name: String::from("count"), value: Value::Int(10) };
-///
-/// // Both return the inner value
-/// assert_eq!(pos_arg.value(), &Value::Int(42));
-/// assert_eq!(named_arg.value(), &Value::Int(10));
-///
-/// // Only named arguments have a name
-/// assert_eq!(pos_arg.name(), None);
-/// assert_eq!(named_arg.name(), Some("count"));
-/// ```
-impl Argument {
-    /// Returns a reference to the value of this argument.
-    pub fn value(&self) -> &Value {
-        match self {
-            Argument::Positional(v) => v,
-            Argument::Named { value, .. } => value,
-        }
-    }
-
-    /// Get the name if this is a named argument
-    pub fn name(&self) -> Option<&str> {
-        match self {
-            Argument::Positional(_) => None,
-            Argument::Named { name, .. } => Some(name),
-        }
-    }
-}
-
 // =====================================================================================================================
 // Path Accessor Types
 // =====================================================================================================================
 
 /// Trait for accessing (reading and writing) path values in the context.
+///
+/// The evaluator calls [`get`](PathAccessor::get) and [`set`](PathAccessor::set) with the path
+/// and index list; path interpretation and indexing (e.g. `["key"]`, `[0]`) are the integrator's
+/// responsibility.
 pub trait PathAccessor: fmt::Debug {
-    /// Get the value at this path from the context
-    fn get(&self, ctx: &EvalContext, path: &str) -> Result<&Value>;
+    /// Get the value at this path with the given indexes applied.
+    ///
+    /// Path interpretation, including indexing (e.g. `["key"]`, `[0]`), is **not** implemented by
+    /// OTTL; the integrator must implement this method. For a typical "get base value then apply
+    /// indexes" implementation, use [`crate::helpers::apply_indexes`].
+    fn get(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> Result<Value>;
 
-    /// Set the value at this path in the context
-    fn set(&self, ctx: &mut EvalContext, path: &str, value: &Value) -> Result<()>;
+    /// Set the value at this path with the given indexes applied.
+    ///
+    /// When `indexes` is empty, the implementor sets the value at the path. When `indexes` is
+    /// non-empty (e.g. `my.list[0] = x`), the implementor may support updating at that index
+    /// or return an error.
+    fn set(&self, ctx: &mut EvalContext, path: &str, indexes: &[IndexExpr], value: &Value) -> Result<()>;
 }
 
 /// Type alias for the path resolver function.
-/// Takes a path string (e.g., "body.attributes.key") and returns a PathAccessor.
-pub type PathResolver = Arc<dyn Fn(&str) -> Result<Arc<dyn PathAccessor + Send + Sync>> + Send + Sync>;
+/// Returns a PathAccessor.
+pub type PathResolver = Arc<dyn Fn() -> Result<Arc<dyn PathAccessor + Send + Sync>> + Send + Sync>;
+
+/// Map from path string to its resolver. Parser looks up each path in the expression
+/// in this map; if a path is missing, parsing fails with an error.
+pub type PathResolverMap = HashMap<String, PathResolver>;
 
 // =====================================================================================================================
 // Callback Types
 // =====================================================================================================================
 
+/// Trait for lazy argument evaluation - ZERO ALLOCATION at runtime!
+/// Arguments are evaluated only when requested by the callback.
+/// Contains both the evaluation context and lazy access to arguments.
+pub trait Args {
+    /// Access to evaluation context
+    fn ctx(&mut self) -> &mut EvalContext;
+
+    /// Number of arguments
+    fn len(&self) -> usize;
+
+    /// Check if empty
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Get argument value by index (lazy evaluation - NO ALLOCATION)
+    fn get(&mut self, index: usize) -> Result<Value>;
+
+    /// Get argument name by index (for named arguments)
+    fn name(&self, index: usize) -> Option<&str>;
+
+    /// Get named argument value (searches by name, lazy evaluation)
+    fn get_named(&mut self, name: &str) -> Option<Result<Value>> {
+        for i in 0..self.len() {
+            if self.name(i) == Some(name) {
+                return Some(self.get(i));
+            }
+        }
+        None
+    }
+
+    /// Set value at argument path by index.
+    /// The argument at `index` must be a path expression.
+    /// This calls PathAccessor::set on the resolved path.
+    fn set(&mut self, index: usize, value: &Value) -> Result<()>;
+}
+
 /// Callback function type for editors and converters.
-/// Takes a mutable context and a list of arguments, returns a Value or error.
-pub type CallbackFn = Arc<dyn Fn(&mut EvalContext, Vec<Argument>) -> Result<Value> + Send + Sync>;
+/// Uses lazy Args trait for ZERO-ALLOCATION argument evaluation.
+/// Args provides both context access and lazy argument retrieval.
+pub type CallbackFn = Arc<dyn Fn(&mut dyn Args) -> Result<Value> + Send + Sync>;
 
 /// Map of function names to their callback implementations.
 pub type CallbackMap = HashMap<String, CallbackFn>;
