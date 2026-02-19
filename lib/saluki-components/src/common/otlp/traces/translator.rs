@@ -83,12 +83,8 @@ impl OtlpTracesTranslator {
         let string_builder = &mut self.string_builder;
         let resource_tags = resource_attributes_to_tagset(&resource.attributes, string_builder).into_shared();
         let mut traces_by_id: FastHashMap<u64, TraceEntry> = FastHashMap::default();
-        let span_count_hint: usize = resource_spans
-            .scope_spans
-            .iter()
-            .map(|scope_spans| scope_spans.spans.len())
-            .sum();
-        traces_by_id.reserve(span_count_hint);
+        let trace_count_hint = resource_spans.scope_spans.len();
+        traces_by_id.reserve(trace_count_hint);
 
         for scope_spans in resource_spans.scope_spans {
             let scope = scope_spans.scope;
