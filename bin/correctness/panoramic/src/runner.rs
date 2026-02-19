@@ -375,8 +375,14 @@ impl TestRunner {
         if let Err(e) = self.write_logs(&test_name).await {
             warn!(test = %test_name, error = %e, "Failed to write container logs to disk.");
         }
+        debug!(test = %test_name, "Wrote container logs to disk.");
+        phase_timings.push(PhaseTiming {
+            phase: "write_logs".to_string(),
+            duration: phase_start.elapsed(),
+        });
 
         // Cleanup.
+        let phase_start = Instant::now();
         debug!(test = %test_name, "Cleaning up container and resources...");
         if let Err(e) = self.cleanup(&driver).await {
             warn!(test = %test_name, error = %e, "Failed to clean up resources.");
