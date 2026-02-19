@@ -8,6 +8,7 @@ use saluki_io::net::util::retry::{DefaultHttpRetryPolicy, ExponentialBackoff};
 use serde::Deserialize;
 use tracing::debug;
 
+const FORWARDER_RETRY_QUEUE_PAYLOADS_MAX_SIZE_BYTES: u64 = 15 * 1024 * 1024;
 const RETRY_TXN_DIR: &str = "transactions_to_retry";
 
 const fn default_request_backoff_factor() -> f64 {
@@ -28,10 +29,6 @@ const fn default_request_recovery_error_decrease_factor() -> u32 {
 
 const fn default_request_recovery_reset() -> bool {
     false
-}
-
-const fn default_retry_queue_max_size_bytes() -> u64 {
-    15 * 1024 * 1024
 }
 
 const fn default_storage_max_size_bytes() -> u64 {
@@ -91,12 +88,14 @@ pub struct RetryConfiguration {
     /// The maximum in-memory size of the retry queue, in bytes.
     ///
     /// Defaults to 15MiB.
-    #[serde(
-        rename = "forwarder_retry_queue_payloads_max_size",
-        alias = "forwarder_retry_queue_max_size",
-        default = "default_retry_queue_max_size_bytes"
-    )]
-    retry_queue_max_size_bytes: u64,
+    #[serde(rename = "forwarder_retry_queue_payloads_max_size")]
+    retry_queue_payloads_max_size: Option<u64>,
+
+    /// The maximum in-memory size of the retry queue, in bytes. (deprecated)
+    ///
+    /// Defaults to 0.
+    #[serde(rename = "forwarder_retry_queue_max_size")]
+    retry_queue_max_size: Option<u64>,
 
     /// The maximum size of the retry queue on disk, in bytes.
     ///
@@ -151,8 +150,13 @@ impl RetryConfiguration {
     }
 
     /// Returns the maximum size of the retry queue in bytes.
-    pub const fn queue_max_size_bytes(&self) -> u64 {
-        self.retry_queue_max_size_bytes
+    ///
+    /// Preferentially uses `forwarder_retry_payloads_max_size` if set, otherwise uses `forwarder_retry_queue_max_size`. If neither
+    /// are set, defaults to 15MiB.
+    pub fn queue_max_size_bytes(&self) -> u64 {
+        self.retry_queue_payloads_max_size
+            .or(self.retry_queue_max_size)
+            .unwrap_or(FORWARDER_RETRY_QUEUE_PAYLOADS_MAX_SIZE_BYTES)
     }
 
     /// Returns the maximum size of the retry queue on disk, in bytes.
@@ -245,5 +249,34 @@ mod tests {
         retry_config.fix_empty_storage_path(&config);
 
         assert_eq!(PathBuf::new(), retry_config.storage_path());
+    }
+
+    #[tokio::test]
+    async fn queue_max_size_bytes_fallback_behavior() {
+        const OVERRIDE_FALLBACK_SIZE_BYTES: u64 = 1024;
+        const OVERRIDE_PRIMARY_SIZE_BYTES: u64 = 2048;
+
+        // When neither field is set, returns the default (15 MiB).
+        let (config, _) = ConfigurationLoader::for_tests(None, None, false).await;
+        let retry_config: RetryConfiguration = config.as_typed().expect("should deserialize");
+        assert_eq!(
+            retry_config.queue_max_size_bytes(),
+            FORWARDER_RETRY_QUEUE_PAYLOADS_MAX_SIZE_BYTES
+        );
+
+        // When only the deprecated field is set, uses it.
+        let values = json!({ "forwarder_retry_queue_max_size": OVERRIDE_FALLBACK_SIZE_BYTES });
+        let (config, _) = ConfigurationLoader::for_tests(Some(values), None, false).await;
+        let retry_config: RetryConfiguration = config.as_typed().expect("should deserialize");
+        assert_eq!(retry_config.queue_max_size_bytes(), OVERRIDE_FALLBACK_SIZE_BYTES);
+
+        // When both fields are set, the newer field takes priority.
+        let values = json!({
+            "forwarder_retry_queue_payloads_max_size": OVERRIDE_PRIMARY_SIZE_BYTES,
+            "forwarder_retry_queue_max_size": OVERRIDE_FALLBACK_SIZE_BYTES,
+        });
+        let (config, _) = ConfigurationLoader::for_tests(Some(values), None, false).await;
+        let retry_config: RetryConfiguration = config.as_typed().expect("should deserialize");
+        assert_eq!(retry_config.queue_max_size_bytes(), OVERRIDE_PRIMARY_SIZE_BYTES);
     }
 }
