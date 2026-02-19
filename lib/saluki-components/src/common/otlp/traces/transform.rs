@@ -489,16 +489,7 @@ fn get_otel_operation_name_v2(
 
     // http
     for http_request_method_key in HTTP_REQUEST_METHOD_KEYS {
-        if use_both_maps(
-            span_attributes,
-            resource_attributes,
-            true,
-            http_request_method_key,
-            interner,
-            string_builder,
-        )
-        .is_some()
-        {
+        if get_both_string_attribute(span_attributes, resource_attributes, http_request_method_key).is_some() {
             if is_server {
                 return MetaString::from_static("http.server.request");
             }
@@ -641,16 +632,7 @@ fn get_otel_operation_name_v2(
         }
     }
 
-    if use_both_maps(
-        span_attributes,
-        resource_attributes,
-        true,
-        GRAPHQL_OPERATION_TYPE_KEY,
-        interner,
-        string_builder,
-    )
-    .is_some()
-    {
+    if get_both_string_attribute(span_attributes, resource_attributes, GRAPHQL_OPERATION_TYPE_KEY).is_some() {
         return MetaString::from_static("graphql.server.request");
     }
 
@@ -825,16 +807,7 @@ fn get_otel_resource_v2(
         return string_builder.to_meta_string();
     }
 
-    if use_both_maps(
-        span_attributes,
-        resource_attributes,
-        true,
-        DB_SYSTEM_KEY,
-        interner,
-        string_builder,
-    )
-    .is_some()
-    {
+    if get_both_string_attribute(span_attributes, resource_attributes, DB_SYSTEM_KEY).is_some() {
         if let Some(statement) = get_both_string_attribute(span_attributes, resource_attributes, DB_STATEMENT_KEY) {
             normalize_tag_value_into_unchecked(statement, string_builder);
             return string_builder.to_meta_string();

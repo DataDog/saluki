@@ -1,6 +1,6 @@
-ARG DD_AGENT_VERSION=7.75.2-jmx
-ARG DD_AGENT_IMAGE=datadog/agent:${DD_AGENT_VERSION}
-ARG ADP_IMAGE=saluki-images/agent-data-plane:testing-dev
+ARG DD_AGENT_VERSION=7.75.3-jmx
+ARG DD_AGENT_IMAGE=registry.datadoghq.com/agent:${DD_AGENT_VERSION}
+ARG ADP_IMAGE=saluki-images/agent-data-plane:testing-devel
 
 # Reference the ADP image so we can copy the relevant bits out of it.
 FROM ${ADP_IMAGE} AS adp

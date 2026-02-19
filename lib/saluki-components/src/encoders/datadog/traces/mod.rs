@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::time::Duration;
+use std::{fmt::Write, time::Duration};
 
 use async_trait::async_trait;
 use datadog_protos::traces::builders::{
@@ -13,6 +13,7 @@ use opentelemetry_semantic_conventions::resource::{
     CONTAINER_ID, DEPLOYMENT_ENVIRONMENT_NAME, K8S_POD_UID, SERVICE_VERSION,
 };
 use piecemeal::{ScratchBuffer, ScratchWriter};
+use saluki_common::strings::StringBuilder;
 use saluki_common::task::HandleExt as _;
 use saluki_config::GenericConfiguration;
 use saluki_context::tags::{SharedTagSet, TagSet};
@@ -407,6 +408,7 @@ struct TraceEndpointEncoder {
     env: String,
     apm_config: ApmConfig,
     otlp_traces: TracesConfig,
+    string_builder: StringBuilder,
 }
 
 impl TraceEndpointEncoder {
@@ -421,6 +423,7 @@ impl TraceEndpointEncoder {
             env,
             apm_config,
             otlp_traces,
+            string_builder: StringBuilder::new(),
         }
     }
 
@@ -455,13 +458,9 @@ impl TraceEndpointEncoder {
                 sampling.priority.unwrap_or(DEFAULT_CHUNK_PRIORITY),
                 sampling.dropped_trace,
                 sampling.decision_maker.as_deref(),
-                sampling
-                    .otlp_sampling_rate
-                    .as_ref()
-                    .map(|sr| sr.to_string())
-                    .unwrap_or_else(|| format!("{:.2}", sampling_rate)),
+                sampling.otlp_sampling_rate.unwrap_or(sampling_rate),
             ),
-            None => (DEFAULT_CHUNK_PRIORITY, false, None, format!("{:.2}", sampling_rate)),
+            None => (DEFAULT_CHUNK_PRIORITY, false, None, sampling_rate),
         };
 
         // Now incrementally build the payload.
@@ -562,7 +561,11 @@ impl TraceEndpointEncoder {
                     if let Some(dm) = decision_maker {
                         tags.write_entry(TAG_DECISION_MAKER, dm)?;
                     }
-                    tags.write_entry(TAG_OTLP_SAMPLING_RATE, otlp_sr.as_str())?;
+
+                    self.string_builder.clear();
+                    write!(&mut self.string_builder, "{:.2}", otlp_sr)
+                        .expect("should never fail to format sampling rate");
+                    tags.write_entry(TAG_OTLP_SAMPLING_RATE, self.string_builder.as_str())?;
                 }
 
                 if dropped_trace {

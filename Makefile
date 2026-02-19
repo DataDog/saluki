@@ -557,13 +557,13 @@ build-panoramic: ## Builds the panoramic binary (ADP integration test runner)
 test-integration: build-panoramic build-datadog-agent-image
 test-integration: ## Runs all ADP integration tests
 	@echo "[*] Running ADP integration tests..."
-	@target/release/panoramic run -d $(shell pwd)/test/integration/cases
+	@target/release/panoramic run -d $(shell pwd)/test/integration/cases $(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))
 
 .PHONY: test-integration-quick
 test-integration-quick: build-panoramic
 test-integration-quick: ## Runs ADP integration tests (assumes images already built)
 	@echo "[*] Running ADP integration tests (quick mode)..."
-	@target/release/panoramic run -d $(shell pwd)/test/integration/cases
+	@target/release/panoramic run -d $(shell pwd)/test/integration/cases $(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))
 
 .PHONY: list-integration-tests
 list-integration-tests: build-panoramic

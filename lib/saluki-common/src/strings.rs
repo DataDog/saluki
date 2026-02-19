@@ -15,6 +15,11 @@ use stringtheory::{interning::Interner, MetaString};
 ///
 /// The builder supports providing an interner that is used to intern the finalized string. This allows for
 /// efficiently building strings, reusing the intermediate buffer in between before eventually interning the string.
+///
+/// # Formatting
+///
+/// The builder supports formatting strings using the `write!` macro.
+#[derive(Debug)]
 pub struct StringBuilder<I = ()> {
     buf: String,
     limit: usize,
