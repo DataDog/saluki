@@ -238,7 +238,7 @@ impl TraceSampler {
     ///
     /// Returns `true` if the trace was modified.
     fn analyzed_span_sampling(&self, trace: &mut Trace) -> bool {
-        let retained = trace.retain_spans(|span| span.metrics().contains_key(KEY_ANALYZED_SPANS));
+        let retained = trace.retain_spans(|_, span| span.metrics().contains_key(KEY_ANALYZED_SPANS));
         if retained > 0 {
             // Mark trace as kept with high priority
             let sampling = TraceSampling::new(false, Some(PRIORITY_USER_KEEP), None, Some(self.sampling_rate));
@@ -260,7 +260,7 @@ impl TraceSampler {
     /// Apply Single Span Sampling to the trace
     /// Returns true if the trace was modified
     fn single_span_sampling(&self, trace: &mut Trace) -> bool {
-        let retained = trace.retain_spans(|span| span.metrics().contains_key(KEY_SPAN_SAMPLING_MECHANISM));
+        let retained = trace.retain_spans(|_, span| span.metrics().contains_key(KEY_SPAN_SAMPLING_MECHANISM));
         if retained > 0 {
             // Set high priority and mark as kept
             let sampling = TraceSampling::new(
