@@ -5,7 +5,7 @@
 use super::arena::AstArena;
 use super::ast::*;
 use super::ops::{compare, math_op};
-use crate::{Args, BoxError, Result, Value};
+use crate::{Args, BoxError, EvalContextFamily, Result, Value};
 
 // =====================================================================================================================
 // Evaluation Helpers
@@ -47,16 +47,19 @@ fn apply_index(value: &Value, index: &IndexExpr) -> Result<Value> {
 
 /// Zero-allocation argument evaluator for function calls.
 /// Implements lazy evaluation - arguments are only evaluated when requested.
-struct ArenaArgs<'a, C> {
-    arena: &'a AstArena<C>,
-    args: &'a [ArenaArgExpr],
-    ctx: &'a mut C,
+///
+/// The `'eval` lifetime covers the borrow of the arena and arguments.
+/// The `'ctx` lifetime covers the borrow of the context's inner data.
+struct ArenaArgs<'eval, 'ctx, F: EvalContextFamily> {
+    arena: &'eval AstArena<F>,
+    args: &'eval [ArenaArgExpr],
+    ctx: &'eval mut F::Context<'ctx>,
 }
 
-impl<'a, C> ArenaArgs<'a, C> {
+impl<'eval, 'ctx, F: EvalContextFamily> ArenaArgs<'eval, 'ctx, F> {
     /// Builds an [`ArenaArgs`] for a call: borrows arena, argument list, and context.
     #[inline]
-    fn new(arena: &'a AstArena<C>, args: &'a [ArenaArgExpr], ctx: &'a mut C) -> Self {
+    fn new(arena: &'eval AstArena<F>, args: &'eval [ArenaArgExpr], ctx: &'eval mut F::Context<'ctx>) -> Self {
         Self { arena, args, ctx }
     }
 }
@@ -65,13 +68,7 @@ impl<'a, C> ArenaArgs<'a, C> {
 ///
 /// Arguments are stored as [`ArenaArgExpr`] refs; evaluation is lazy and uses the arena
 /// and context to compute values on demand without allocating an argument vector.
-impl<'a, C> Args<C> for ArenaArgs<'a, C> {
-    /// Returns exclusive access to the evaluation context for the duration of the call.
-    #[inline]
-    fn ctx(&mut self) -> &mut C {
-        self.ctx
-    }
-
+impl<'eval, 'ctx, F: EvalContextFamily> Args for ArenaArgs<'eval, 'ctx, F> {
     /// Returns the number of arguments (positional and named).
     #[inline]
     fn len(&self) -> usize {
@@ -130,7 +127,9 @@ impl<'a, C> Args<C> for ArenaArgs<'a, C> {
 
 /// Evaluate the arena-based root expression
 #[inline]
-pub fn arena_evaluate_root<C>(root: &ArenaRootExpr<C>, arena: &AstArena<C>, ctx: &mut C) -> Result<Value> {
+pub fn arena_evaluate_root<F: EvalContextFamily>(
+    root: &ArenaRootExpr, arena: &AstArena<F>, ctx: &mut F::Context<'_>,
+) -> Result<Value> {
     match root {
         ArenaRootExpr::EditorStatement(stmt) => {
             let should_execute = if let Some(cond_ref) = stmt.condition {
@@ -155,7 +154,9 @@ pub fn arena_evaluate_root<C>(root: &ArenaRootExpr<C>, arena: &AstArena<C>, ctx:
 
 /// Evaluate an arena-based boolean expression
 #[inline]
-fn arena_evaluate_bool_expr<C>(expr_ref: BoolExprRef, arena: &AstArena<C>, ctx: &mut C) -> Result<bool> {
+fn arena_evaluate_bool_expr<F: EvalContextFamily>(
+    expr_ref: BoolExprRef, arena: &AstArena<F>, ctx: &mut F::Context<'_>,
+) -> Result<bool> {
     match arena.get_bool(expr_ref) {
         ArenaBoolExpr::Literal(b) => Ok(*b),
         ArenaBoolExpr::Comparison { left, op, right } => {
@@ -202,7 +203,9 @@ fn arena_evaluate_bool_expr<C>(expr_ref: BoolExprRef, arena: &AstArena<C>, ctx: 
 
 /// Evaluate an arena-based value expression
 #[inline]
-fn arena_evaluate_value_expr<C>(expr_ref: ValueExprRef, arena: &AstArena<C>, ctx: &mut C) -> Result<Value> {
+fn arena_evaluate_value_expr<F: EvalContextFamily>(
+    expr_ref: ValueExprRef, arena: &AstArena<F>, ctx: &mut F::Context<'_>,
+) -> Result<Value> {
     match arena.get_value(expr_ref) {
         ArenaValueExpr::Literal(v) => Ok(v.clone()),
         ArenaValueExpr::Path(resolved_path) => {
@@ -232,7 +235,9 @@ fn arena_evaluate_value_expr<C>(expr_ref: ValueExprRef, arena: &AstArena<C>, ctx
 
 /// Evaluate an arena-based function call (ZERO ALLOCATION)
 #[inline]
-fn arena_evaluate_function_call<C>(fc_ref: FunctionCallRef, arena: &AstArena<C>, ctx: &mut C) -> Result<Value> {
+fn arena_evaluate_function_call<F: EvalContextFamily>(
+    fc_ref: FunctionCallRef, arena: &AstArena<F>, ctx: &mut F::Context<'_>,
+) -> Result<Value> {
     let fc = arena.get_func(fc_ref);
 
     let callback = fc
@@ -247,7 +252,9 @@ fn arena_evaluate_function_call<C>(fc_ref: FunctionCallRef, arena: &AstArena<C>,
 
 /// Evaluate an arena-based math expression
 #[inline]
-fn arena_evaluate_math_expr<C>(expr_ref: MathExprRef, arena: &AstArena<C>, ctx: &mut C) -> Result<Value> {
+fn arena_evaluate_math_expr<F: EvalContextFamily>(
+    expr_ref: MathExprRef, arena: &AstArena<F>, ctx: &mut F::Context<'_>,
+) -> Result<Value> {
     match arena.get_math(expr_ref) {
         ArenaMathExpr::Primary(value_ref) => arena_evaluate_value_expr(*value_ref, arena, ctx),
         ArenaMathExpr::Negate(inner_ref) => {

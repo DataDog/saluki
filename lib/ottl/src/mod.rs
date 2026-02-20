@@ -6,16 +6,20 @@
 /// # Example
 ///
 /// ```ignore
-/// use ottl::{Parser, OttlParser, CallbackMap, EnumMap, PathResolverMap};
+/// use ottl::{Parser, OttlParser, CallbackMap, EnumMap, PathResolverMap, EvalContextFamily};
 ///
-/// type C = MyContext; // or () for path-free expressions
-/// let editors = CallbackMap::<C>::new();
-/// let converters = CallbackMap::<C>::new();
+/// struct MyFamily;
+/// impl EvalContextFamily for MyFamily {
+///     type Context<'a> = MyContext<'a>;
+/// }
+///
+/// let editors = CallbackMap::new();
+/// let converters = CallbackMap::new();
 /// let enums = EnumMap::new();
-/// let path_resolvers = PathResolverMap::<C>::new(); // or insert path -> PathResolver for each path
+/// let path_resolvers = PathResolverMap::<MyFamily>::new();
 ///
-/// let parser = Parser::<C>::new(&editors, &converters, &enums, &path_resolvers, "set(my.attr, 1) where 1 > 0");
-/// let mut ctx = MyContext::new();
+/// let parser = Parser::<MyFamily>::new(&editors, &converters, &enums, &path_resolvers, "set(my.attr, 1) where 1 > 0");
+/// let mut ctx = MyContext { /* ... */ };
 /// let result = parser.execute(&mut ctx);
 /// ```
 use std::collections::HashMap;
@@ -45,6 +49,42 @@ pub type BoxError = Box<dyn Error + Send + Sync>;
 pub type Result<T> = std::result::Result<T, BoxError>;
 
 // =====================================================================================================================
+// Context Types
+// =====================================================================================================================
+
+/// A "family" of evaluation context types, parameterized by lifetime.
+///
+/// This trait uses Generic Associated Types (GATs) to separate the context family
+/// (known at parse time, carries no lifetime) from the concrete context type
+/// (instantiated with a lifetime at execution time).
+///
+/// # Why a family?
+///
+/// The parser is long-lived and created once, but contexts are short-lived and often
+/// borrow data. We can't write `Parser<MyContext<'a>>` because `'a` doesn't exist
+/// when the parser is created. Instead, the parser stores the *family* `F`, and
+/// `F::Context<'a>` is only materialized when `execute` is called.
+///
+/// # Example
+///
+/// ```ignore
+/// struct SpanFamily;
+///
+/// impl EvalContextFamily for SpanFamily {
+///     type Context<'a> = SpanContext<'a>;
+/// }
+///
+/// struct SpanContext<'a> {
+///     span: &'a mut Span,
+///     resource: &'a Resource,
+/// }
+/// ```
+pub trait EvalContextFamily: 'static {
+    /// The concrete context type for a given borrow lifetime.
+    type Context<'a>;
+}
+
+// =====================================================================================================================
 // Value Types
 // =====================================================================================================================
 
@@ -67,7 +107,7 @@ pub enum Value {
     Bytes(Arc<[u8]>),
     /// List of values
     List(Vec<Value>),
-    /// Map of string keys to values  
+    /// Map of string keys to values
     Map(HashMap<String, Value>),
 }
 
@@ -108,31 +148,34 @@ pub enum Argument {
 ///
 /// The evaluator calls [`get`](PathAccessor::get) and [`set`](PathAccessor::set) with the path
 /// and index list; path interpretation and indexing (e.g. `["key"]`, `[0]`) are the integrator's
-/// responsibility. The context type `C` is a type parameter so that no type erasure or `'static`
-/// is required; you can use context types that hold references.
-pub trait PathAccessor<C>: fmt::Debug {
+/// responsibility.
+///
+/// The type parameter `F` is the [`EvalContextFamily`] that determines the concrete context type.
+/// The lifetime on `F::Context<'a>` is introduced per method call, so `PathAccessor<F>` itself
+/// carries no lifetime and can be stored in `Arc<dyn PathAccessor<F>>`.
+pub trait PathAccessor<F: EvalContextFamily>: fmt::Debug + Send + Sync {
     /// Get the value at this path with the given indexes applied.
     ///
     /// Path interpretation, including indexing (e.g. `["key"]`, `[0]`), is **not** implemented by
     /// OTTL; the integrator must implement this method. For a typical "get base value then apply
     /// indexes" implementation, use [`crate::helpers::apply_indexes`].
-    fn get(&self, ctx: &C, path: &str, indexes: &[IndexExpr]) -> Result<Value>;
+    fn get<'a>(&self, ctx: &F::Context<'a>, path: &str, indexes: &[IndexExpr]) -> Result<Value>;
 
     /// Set the value at this path with the given indexes applied.
     ///
     /// When `indexes` is empty, the implementor sets the value at the path. When `indexes` is
     /// non-empty (e.g. `my.list[0] = x`), the implementor may support updating at that index
     /// or return an error.
-    fn set(&self, ctx: &mut C, path: &str, indexes: &[IndexExpr], value: &Value) -> Result<()>;
+    fn set<'a>(&self, ctx: &mut F::Context<'a>, path: &str, indexes: &[IndexExpr], value: &Value) -> Result<()>;
 }
 
-/// Type alias for the path resolver function for context type `C`.
-/// Returns a [`PathAccessor`] that operates on context `C`.
-pub type PathResolver<C> = Arc<dyn Fn() -> Result<Arc<dyn PathAccessor<C> + Send + Sync>> + Send + Sync>;
+/// Type alias for the path resolver function.
+/// Returns a PathAccessor for the given context family.
+pub type PathResolver<F> = Arc<dyn Fn() -> Result<Arc<dyn PathAccessor<F>>> + Send + Sync>;
 
 /// Map from path string to its resolver. Parser looks up each path in the expression
 /// in this map; if a path is missing, parsing fails with an error.
-pub type PathResolverMap<C> = HashMap<String, PathResolver<C>>;
+pub type PathResolverMap<F> = HashMap<String, PathResolver<F>>;
 
 // =====================================================================================================================
 // Callback Types
@@ -140,12 +183,7 @@ pub type PathResolverMap<C> = HashMap<String, PathResolver<C>>;
 
 /// Trait for lazy argument evaluation - ZERO ALLOCATION at runtime!
 /// Arguments are evaluated only when requested by the callback.
-/// Contains both the evaluation context and lazy access to arguments.
-/// The context type `C` is a type parameter so callbacks receive the concrete context.
-pub trait Args<C> {
-    /// Access to evaluation context.
-    fn ctx(&mut self) -> &mut C;
-
+pub trait Args {
     /// Number of arguments
     fn len(&self) -> usize;
 
@@ -176,13 +214,12 @@ pub trait Args<C> {
     fn set(&mut self, index: usize, value: &Value) -> Result<()>;
 }
 
-/// Callback function type for editors and converters for context type `C`.
+/// Callback function type for editors and converters.
 /// Uses lazy Args trait for ZERO-ALLOCATION argument evaluation.
-/// Args provides both context access and lazy argument retrieval.
-pub type CallbackFn<C> = Arc<dyn Fn(&mut dyn Args<C>) -> Result<Value> + Send + Sync>;
+pub type CallbackFn = Arc<dyn Fn(&mut dyn Args) -> Result<Value> + Send + Sync>;
 
-/// Map of function names to their callback implementations for context type `C`.
-pub type CallbackMap<C> = HashMap<String, CallbackFn<C>>;
+/// Map of function names to their callback implementations.
+pub type CallbackMap = HashMap<String, CallbackFn>;
 
 /// Map of enum names to their integer values.
 pub type EnumMap = HashMap<String, i64>;
@@ -194,25 +231,24 @@ pub type EnumMap = HashMap<String, i64>;
 /// Public API trait for the OTTL Parser.
 ///
 /// This trait defines the interface for executing parsed OTTL statements.
-/// Implement this trait to create custom parser implementations or use the
-/// default [`Parser`] implementation. The context type `C` is a type parameter;
-/// no type erasure or `'static` is required.
+/// The type parameter `F` is the [`EvalContextFamily`] that determines the
+/// concrete evaluation context type.
 ///
 /// # Example
 ///
 /// ```ignore
-/// use ottl::{OttlParser, Parser};
+/// use ottl::{OttlParser, Parser, EvalContextFamily};
 ///
-/// let parser: Parser<MyContext> = Parser::new(...);
+/// let parser = Parser::<MyFamily>::new(...);
 ///
 /// // Check for parsing errors
 /// parser.is_error()?;
 ///
 /// // Execute the statement
-/// let mut ctx = MyContext::new();
+/// let mut ctx = MyContext { /* ... */ };
 /// let result = parser.execute(&mut ctx)?;
 /// ```
-pub trait OttlParser<C> {
+pub trait OttlParser<F: EvalContextFamily> {
     /// Checks if the parser encountered any errors during creation.
     ///
     /// Call this method after creating a parser to verify that the OTTL expression
@@ -237,5 +273,5 @@ pub trait OttlParser<C> {
     ///     return value, returns `Value::Nil`.
     ///   * `Err(BoxError)` - An error if evaluation fails (e.g., type mismatch,
     ///     missing path, callback error).
-    fn execute(&self, ctx: &mut C) -> Result<Value>;
+    fn execute<'a>(&self, ctx: &mut F::Context<'a>) -> Result<Value>;
 }
