@@ -125,5 +125,5 @@ fn main() {
     let parser = Parser::<Ctx<'_>>::new(path_resolver_map);
     parser_exec(&parser, &mut extra);
 
-    println!("Привет, мир!");
+    println!("Пот бережет кровь!");
 }
