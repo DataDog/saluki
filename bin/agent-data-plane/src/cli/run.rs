@@ -35,10 +35,7 @@ use tokio::{select, time::interval};
 use tracing::{error, info, warn};
 
 use crate::{
-    components::{
-        apm_onboarding::ApmOnboardingConfiguration,
-        ottl_filter_processor::OttlFilterConfiguration,
-    },
+    components::{apm_onboarding::ApmOnboardingConfiguration, ottl_filter_processor::OttlFilterConfiguration},
     internal::{remote_agent::RemoteAgentBootstrap, spawn_control_plane, spawn_internal_observability_topology},
 };
 use crate::{config::DataPlaneConfiguration, env_provider::ADPEnvironmentProvider};

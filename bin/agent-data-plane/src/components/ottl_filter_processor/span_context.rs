@@ -80,7 +80,7 @@ impl PathAccessor<SpanFilterFamily> for ResourceAttributesAccessor {
             ctx.resource_tags
                 .get_single_tag(key.as_str())
                 .and_then(|t| t.value())
-                .map(|s| Value::string(s))
+                .map(Value::string)
                 .unwrap_or(Value::Nil)
         } else if indexes.is_empty() {
             // Cannot build full map without iteration; return empty map for consistency.
@@ -103,8 +103,7 @@ impl PathAccessor<SpanFilterFamily> for ResourceAttributesAccessor {
 /// Registers accessors for: attributes, resource.attributes.
 /// These paths match the OTTL Span context used by the OpenTelemetry filterprocessor.
 pub fn span_filter_path_resolvers() -> PathResolverMap<SpanFilterFamily> {
-    let attributes_accessor: Arc<dyn PathAccessor<SpanFilterFamily> + Send + Sync> =
-        Arc::new(SpanAttributesAccessor);
+    let attributes_accessor: Arc<dyn PathAccessor<SpanFilterFamily> + Send + Sync> = Arc::new(SpanAttributesAccessor);
     let resource_attributes_accessor: Arc<dyn PathAccessor<SpanFilterFamily> + Send + Sync> =
         Arc::new(ResourceAttributesAccessor);
 
