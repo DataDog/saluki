@@ -1,3 +1,4 @@
+/*
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
@@ -133,17 +134,17 @@ fn parser_exec<'a>(parser: &Parser<Ctx<'a>>, extra: &'a mut Vec<i64>) {
         std::process::exit(1);
     }
 }
-
+*/
 fn main() {
     //STEP1: TO FIX THE PROBLEM: comment line below
-    let filter = Filter::new();
+    //let filter = Filter::new();
 
-    let mut extra = vec![40, 50];
+    //let mut extra = vec![40, 50];
 
     //STEP1: TO FIX THE PROBLEM: uncomment line below
     //let filter = Filter::new();
 
-    filter.run(&mut extra);
+    //filter.run(&mut extra);
 
     println!("Пот бережет кровь!");
 }

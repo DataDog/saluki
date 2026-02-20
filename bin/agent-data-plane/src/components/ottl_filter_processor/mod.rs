@@ -23,7 +23,7 @@ mod config;
 mod span_context;
 
 use config::{ErrorMode, OttlFilterConfig};
-use span_context::SpanFilterContext;
+use span_context::{SpanFilterContext, SpanFilterFamily};
 
 /// Configuration for the OTTL filter processor, loaded from the data plane config.
 #[derive(Clone, Debug)]
@@ -91,7 +91,7 @@ impl MemoryBounds for OttlFilterConfiguration {
 /// Synchronous transform that drops spans matching OTTL conditions.
 pub struct OttlFilter {
     error_mode: ErrorMode,
-    span_parsers: Vec<ottl::Parser<SpanFilterContext>>,
+    span_parsers: Vec<ottl::Parser<SpanFilterFamily>>,
     /// Trace currently being filtered, stored under `Arc` for use in `should_drop_span` (e.g. `resource_tags`).
     current_trace: Option<Arc<Trace>>,
 }
@@ -110,7 +110,6 @@ impl OttlFilter {
             .expect("current_trace set by transform_buffer before retain_spans")
             .resource_tags();
         let mut ctx = SpanFilterContext::new(span, resource_tags);
-
         for parser in &self.span_parsers {
             match parser.execute(&mut ctx) {
                 Ok(Value::Bool(true)) => {
