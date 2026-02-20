@@ -101,6 +101,27 @@ impl<'a> PathAccessor<Ctx<'a>> for EmptyPathAccessor {
     }
 }
 
+pub struct Filter<'a> {
+    parser: Parser<Ctx<'a>>,
+}
+
+impl<'a> Filter<'a> {
+    pub fn new() -> Self {
+        let mut path_resolver_map: PathResolverMap<Ctx<'a>> = HashMap::new();
+        path_resolver_map.insert(
+            "attr".to_string(),
+            Arc::new(|| Ok(Arc::new(EmptyPathAccessor) as Arc<dyn PathAccessor<Ctx<'a>> + Send + Sync>)),
+        );
+        Self {
+            parser: Parser::new(path_resolver_map),
+        }
+    }
+
+    pub fn run(&self, extra: &'a mut Vec<i64>) {
+        parser_exec(&self.parser, extra);
+    }
+}
+
 fn parser_exec<'a>(parser: &Parser<Ctx<'a>>, extra: &'a mut Vec<i64>) {
     let mut ctx = Ctx {
         numbers: vec![1, 2, 3],
@@ -114,16 +135,15 @@ fn parser_exec<'a>(parser: &Parser<Ctx<'a>>, extra: &'a mut Vec<i64>) {
 }
 
 fn main() {
-    let mut extra = vec![10, 20, 30];
+    //STEP1: TO FIX THE PROBLEM: comment line below
+    let filter = Filter::new();
 
-    let mut path_resolver_map: PathResolverMap<Ctx<'_>> = HashMap::new();
-    path_resolver_map.insert(
-        "attr".to_string(),
-        Arc::new(|| Ok(Arc::new(EmptyPathAccessor) as Arc<dyn PathAccessor<Ctx<'_>> + Send + Sync>)),
-    );
+    let mut extra = vec![40, 50];
 
-    let parser = Parser::<Ctx<'_>>::new(path_resolver_map);
-    parser_exec(&parser, &mut extra);
+    //STEP1: TO FIX THE PROBLEM: uncomment line below
+    //let filter = Filter::new();
+
+    filter.run(&mut extra);
 
     println!("Пот бережет кровь!");
 }
