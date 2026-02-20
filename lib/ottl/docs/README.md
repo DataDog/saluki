@@ -92,10 +92,13 @@ pub enum Argument {
 
 ### Callback Types
 
+The context type is a generic parameter `C` so that no type erasure or `'static` is required; you can use context types that hold references.
+
 ```rust
 // Lazy argument evaluation — arguments are evaluated only when requested (zero allocation)
-pub trait Args {
-    fn ctx(&mut self) -> &mut EvalContext;
+// C is the evaluation context type.
+pub trait Args<C> {
+    fn ctx(&mut self) -> &mut C;
     fn len(&self) -> usize;
     fn get(&mut self, index: usize) -> Result<Value>;
     fn name(&self, index: usize) -> Option<&str>;
@@ -103,25 +106,25 @@ pub trait Args {
     fn set(&mut self, index: usize, value: &Value) -> Result<()>;
 }
 
-// Callback function for editors and converters (receives Args, not Vec<Argument>)
-pub type CallbackFn = Arc<dyn Fn(&mut dyn Args) -> Result<Value> + Send + Sync>;
+// Callback function for editors and converters for context type C (receives Args<C>, not Vec<Argument>)
+pub type CallbackFn<C> = Arc<dyn Fn(&mut dyn Args<C>) -> Result<Value> + Send + Sync>;
 
-// Map of function names → their implementations
-pub type CallbackMap = HashMap<String, CallbackFn>;
+// Map of function names → their implementations for context type C
+pub type CallbackMap<C> = HashMap<String, CallbackFn<C>>;
 
 // Map of enum values → their numeric equivalents
 pub type EnumMap = HashMap<String, i64>;
 
-// Path resolver: returns a PathAccessor for one path (resolved at parse time)
-pub type PathResolver = Arc<dyn Fn() -> Result<Arc<dyn PathAccessor + Send + Sync>> + Send + Sync>;
+// Path resolver for context type C: returns a PathAccessor<C> (resolved at parse time)
+pub type PathResolver<C> = Arc<dyn Fn() -> Result<Arc<dyn PathAccessor<C> + Send + Sync>> + Send + Sync>;
 
 // Map from path string to PathResolver. Every path used in the expression must have an entry.
-pub type PathResolverMap = HashMap<String, PathResolver>;
+pub type PathResolverMap<C> = HashMap<String, PathResolver<C>>;
 ```
 
 ### PathAccessor
 
-Trait for accessing values by path. Per the [OTTL spec](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/pkg/ottl/LANGUAGE.md#paths), **path interpretation (including path indexes) is the integrator's responsibility**.
+Trait for accessing values by path. Per the [OTTL spec](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/pkg/ottl/LANGUAGE.md#paths), **path interpretation (including path indexes) is the integrator's responsibility**. The context type `C` is a type parameter so that no type erasure or `'static` is required.
 
 - **Path with indexes** (e.g. `resource.attributes["key"]`, `items[0]`): the evaluator calls PathAccessor::get or PathAccessor::set with the path string and the index list; the implementor resolves path and indexes. For a typical "get base value then apply indexes" implementation, use [`ottl::helpers::apply_indexes`](crate::helpers::apply_indexes).
 - **Converter/editor return value with indexes** (e.g. `Split("a,b,c", ",")[0]`): the library applies indexes to the function result; the integrator does not handle this.
@@ -133,14 +136,14 @@ pub enum IndexExpr {
     Int(usize),
 }
 
-pub trait PathAccessor: fmt::Debug {
+pub trait PathAccessor<C>: fmt::Debug {
     /// Get the value at this path with the given indexes applied. Must be implemented by the integrator.
     /// For a typical "get base value then apply indexes" implementation, use `ottl::helpers::apply_indexes`.
-    fn get(&self, ctx: &EvalContext, path: &str, indexes: &[IndexExpr]) -> Result<Value>;
+    fn get(&self, ctx: &C, path: &str, indexes: &[IndexExpr]) -> Result<Value>;
 
     /// Set at path with optional indexes (empty = set whole path; non-empty = e.g. `my.list[0] = x`).
     /// Must be implemented by the integrator including indexes resolution and interpretation.
-    fn set(&self, ctx: &mut EvalContext, path: &str, indexes: &[IndexExpr], value: &Value) -> Result<()>;
+    fn set(&self, ctx: &mut C, path: &str, indexes: &[IndexExpr], value: &Value) -> Result<()>;
 }
 ```
 
@@ -150,17 +153,21 @@ pub trait PathAccessor: fmt::Debug {
 
 ### Creating a Parser
 
+The parser is generic over the context type `C`. Choose a concrete context type (e.g. `MyContext`, or `()` for expressions that do not use paths).
+
 ```rust
 use ottl::{Parser, OttlParser, CallbackMap, EnumMap, PathResolver, PathResolverMap};
 
-let editors: CallbackMap = HashMap::new();
-let converters: CallbackMap = HashMap::new();
+type C = MyContext; // or () for path-free expressions
+
+let editors: CallbackMap<C> = HashMap::new();
+let converters: CallbackMap<C> = HashMap::new();
 let enums: EnumMap = HashMap::new();
-let mut path_resolvers: PathResolverMap = HashMap::new();
+let mut path_resolvers: PathResolverMap<C> = HashMap::new();
 path_resolvers.insert("resource.attributes".to_string(), Arc::new(|| { /* return Ok(Arc::new(...)) */ }));
 path_resolvers.insert("status".to_string(), Arc::new(|| { /* ... */ }));
 
-let parser = Parser::new(
+let parser = Parser::<C>::new(
     &editors,
     &converters,
     &enums,
@@ -182,20 +189,22 @@ if let Err(e) = parser.is_error() {
 
 ### Execution
 
+Pass a mutable reference to your context; no boxing or type erasure is required.
+
 ```rust
-let mut ctx: EvalContext = Box::new(MyContext::new());
+let mut ctx = MyContext::new();
 let result = parser.execute(&mut ctx)?;
 ```
 
 ### OttlParser Trait
 
 ```rust
-pub trait OttlParser {
+pub trait OttlParser<C> {
     /// Checks for parsing errors
     fn is_error(&self) -> Result<()>;
     
-    /// Executes the OTTL expression
-    fn execute(&self, ctx: &mut EvalContext) -> Result<Value>;
+    /// Executes the OTTL expression with the given context
+    fn execute(&self, ctx: &mut C) -> Result<Value>;
 }
 ```
 
@@ -207,9 +216,10 @@ pub trait OttlParser {
 
 ```rust
 // OTTL: set(body, "modified") where status_code >= 400
+// C is your context type (e.g. MyContext)
 
-let mut editors = CallbackMap::new();
-editors.insert("set".to_string(), Arc::new(|args: &mut dyn ottl::Args| {
+let mut editors = CallbackMap::<MyContext>::new();
+editors.insert("set".to_string(), Arc::new(|args: &mut dyn ottl::Args<MyContext>| {
     let value = args.get(1)?;
     args.set(0, &value)?;
     Ok(Value::Nil)
@@ -220,9 +230,10 @@ editors.insert("set".to_string(), Arc::new(|args: &mut dyn ottl::Args| {
 
 ```rust
 // OTTL: Concat(first_name, " ", last_name)
+// C is your context type (e.g. MyContext)
 
-let mut converters = CallbackMap::new();
-converters.insert("Concat".to_string(), Arc::new(|args: &mut dyn ottl::Args| {
+let mut converters = CallbackMap::<MyContext>::new();
+converters.insert("Concat".to_string(), Arc::new(|args: &mut dyn ottl::Args<MyContext>| {
     let mut result = String::new();
     for i in 0..args.len() {
         if let Ok(Value::String(s)) = args.get(i) {
