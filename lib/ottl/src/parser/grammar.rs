@@ -22,8 +22,8 @@ fn unescape(s: &str) -> String {
 // Parser Components
 // =====================================================================================================================
 
-/// Parser for literal values. Generic over context type `C` so the output type unifies with other value expressions.
-fn literal_parser<'a, C>() -> impl chumsky::Parser<'a, TokenInput<'a>, ValueExpr<C>, ParserExtra<'a>> + Clone {
+/// Parser for literal values.
+fn literal_parser<'a>() -> impl chumsky::Parser<'a, TokenInput<'a>, ValueExpr, ParserExtra<'a>> + Clone {
     let string_literal = select_ref! {
         Token::StringLiteral(s) => Value::string(unescape(s))
     };
@@ -132,9 +132,9 @@ fn comp_op_parser<'a>() -> impl chumsky::Parser<'a, TokenInput<'a>, CompOp, Pars
 }
 
 /// Parser for argument list
-fn arg_list_parser<'a, C: 'a>(
-    arg_value: impl chumsky::Parser<'a, TokenInput<'a>, ValueExpr<C>, ParserExtra<'a>> + Clone + 'a,
-) -> impl chumsky::Parser<'a, TokenInput<'a>, Vec<ArgExpr<C>>, ParserExtra<'a>> + Clone + 'a {
+fn arg_list_parser<'a>(
+    arg_value: impl chumsky::Parser<'a, TokenInput<'a>, ValueExpr, ParserExtra<'a>> + Clone + 'a,
+) -> impl chumsky::Parser<'a, TokenInput<'a>, Vec<ArgExpr>, ParserExtra<'a>> + Clone + 'a {
     let named_arg = ident_parser(false)
         .then_ignore(just(&Token::Assign))
         .then(arg_value.clone())
@@ -150,7 +150,7 @@ fn arg_list_parser<'a, C: 'a>(
 }
 
 /// Wraps a MathExpr into ValueExpr, unwrapping simple Primary values
-fn math_to_value_expr<C>(math: MathExpr<C>) -> ValueExpr<C> {
+fn math_to_value_expr(math: MathExpr) -> ValueExpr {
     match math {
         MathExpr::Primary(v) => v,
         other => ValueExpr::Math(Box::new(other)),
@@ -158,9 +158,9 @@ fn math_to_value_expr<C>(math: MathExpr<C>) -> ValueExpr<C> {
 }
 
 /// Creates a math expression parser
-fn make_math_expr<'a, C: 'a>(
-    value_expr: impl chumsky::Parser<'a, TokenInput<'a>, ValueExpr<C>, ParserExtra<'a>> + Clone + 'a,
-) -> impl chumsky::Parser<'a, TokenInput<'a>, MathExpr<C>, ParserExtra<'a>> + Clone + 'a {
+fn make_math_expr<'a>(
+    value_expr: impl chumsky::Parser<'a, TokenInput<'a>, ValueExpr, ParserExtra<'a>> + Clone + 'a,
+) -> impl chumsky::Parser<'a, TokenInput<'a>, MathExpr, ParserExtra<'a>> + Clone + 'a {
     recursive(move |math_expr| {
         let math_literal = choice((
             select_ref! {
@@ -227,11 +227,11 @@ fn make_math_expr<'a, C: 'a>(
 // Main Parser
 // =====================================================================================================================
 
-/// Build the chumsky parser for OTTL. Generic over context type `C`.
-pub fn build_parser<'a, C>(
-    editors_map: &'a CallbackMap<C>, converters_map: &'a CallbackMap<C>, enums_map: &'a EnumMap,
-) -> impl chumsky::Parser<'a, TokenInput<'a>, RootExpr<C>, ParserExtra<'a>> + 'a {
-    let literal = literal_parser::<C>();
+/// Build the chumsky parser for OTTL.
+pub fn build_parser<'a>(
+    editors_map: &'a CallbackMap, converters_map: &'a CallbackMap, enums_map: &'a EnumMap,
+) -> impl chumsky::Parser<'a, TokenInput<'a>, RootExpr, ParserExtra<'a>> + 'a {
+    let literal = literal_parser();
     let index = index_parser();
     let path = path_parser();
     let comp_op = comp_op_parser();

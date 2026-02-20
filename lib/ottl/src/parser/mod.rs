@@ -12,6 +12,8 @@ mod eval;
 mod grammar;
 mod ops;
 
+use std::marker::PhantomData;
+
 use arena::{convert_to_arena, AstArena};
 // Re-export AST types that may be needed externally
 pub use ast::*;
@@ -19,7 +21,7 @@ use eval::arena_evaluate_root;
 use grammar::build_parser;
 
 use crate::lexer::Token;
-use crate::{BoxError, CallbackMap, EnumMap, OttlParser, PathResolverMap, Result, Value};
+use crate::{BoxError, CallbackMap, EnumMap, EvalContextFamily, OttlParser, PathResolverMap, Result, Value};
 
 // =====================================================================================================================
 // Parser Implementation
@@ -27,28 +29,33 @@ use crate::{BoxError, CallbackMap, EnumMap, OttlParser, PathResolverMap, Result,
 
 /// OTTL Parser that parses input strings and produces executable objects.
 /// Paths are resolved at parse time (not at execution time) for maximum performance.
-/// Generic over context type `C` so no type erasure or `'static` is required.
-pub struct Parser<C> {
+///
+/// The type parameter `F` is the [`EvalContextFamily`] that determines the concrete
+/// evaluation context type used at execution time.
+pub struct Parser<F: EvalContextFamily> {
     /// Arena-based AST for cache-friendly execution
-    arena: AstArena<C>,
+    arena: AstArena<F>,
     /// Arena-based root expression
-    arena_root: Option<ArenaRootExpr<C>>,
+    arena_root: Option<ArenaRootExpr>,
     /// Parsing errors
     errors: Vec<String>,
+    /// Marker for the context family type
+    _marker: PhantomData<F>,
 }
 
-impl<C> Parser<C> {
+impl<F: EvalContextFamily> Parser<F> {
     /// Creates a new parser with the given configuration.
     /// Each path that appears in the expression must have a corresponding entry in `path_resolvers`;
     /// otherwise parsing fails with an error.
     pub fn new(
-        editors_map: &CallbackMap<C>, converters_map: &CallbackMap<C>, enums_map: &EnumMap,
-        path_resolvers: &PathResolverMap<C>, expression: &str,
+        editors_map: &CallbackMap, converters_map: &CallbackMap, enums_map: &EnumMap,
+        path_resolvers: &PathResolverMap<F>, expression: &str,
     ) -> Self {
-        let mut parser = Parser::<C> {
+        let mut parser = Parser::<F> {
             arena: AstArena::new(),
             arena_root: None,
             errors: Vec::new(),
+            _marker: PhantomData,
         };
 
         // Tokenize the input
@@ -100,7 +107,7 @@ impl<C> Parser<C> {
 }
 
 /// Implementation of the [`OttlParser`] trait for [`Parser`].
-impl<C> OttlParser<C> for Parser<C> {
+impl<F: EvalContextFamily> OttlParser<F> for Parser<F> {
     fn is_error(&self) -> Result<()> {
         if self.errors.is_empty() {
             Ok(())
@@ -109,7 +116,7 @@ impl<C> OttlParser<C> for Parser<C> {
         }
     }
 
-    fn execute(&self, ctx: &mut C) -> Result<Value> {
+    fn execute<'a>(&self, ctx: &mut F::Context<'a>) -> Result<Value> {
         let arena_root = self
             .arena_root
             .as_ref()
