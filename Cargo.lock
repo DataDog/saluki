@@ -32,6 +32,7 @@ dependencies = [
  "http",
  "http-body-util",
  "memory-accounting",
+ "ottl",
  "papaya",
  "prost-types",
  "reqwest",
