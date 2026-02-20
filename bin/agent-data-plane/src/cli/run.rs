@@ -35,7 +35,7 @@ use tokio::{select, time::interval};
 use tracing::{error, info, warn};
 
 use crate::{
-    components::apm_onboarding::ApmOnboardingConfiguration,
+    components::{apm_onboarding::ApmOnboardingConfiguration, ottl_filter_processor::OttlFilterConfiguration},
     internal::{remote_agent::RemoteAgentBootstrap, spawn_control_plane, spawn_internal_observability_topology},
 };
 use crate::{config::DataPlaneConfiguration, env_provider::ADPEnvironmentProvider};
@@ -338,7 +338,10 @@ async fn add_baseline_traces_pipeline_to_blueprint(
     let trace_obfuscation_config = TraceObfuscationConfiguration::from_apm_configuration(config)?;
     let trace_sampler_config = TraceSamplerConfiguration::from_configuration(config)
         .error_context("Failed to configure Trace Sampler transform.")?;
+    let ottl_filter_config = OttlFilterConfiguration::from_configuration(config)
+        .error_context("Failed to configure OTTL filter processor.")?;
     let dd_traces_enrich_config = ChainedConfiguration::default()
+        .with_transform_builder("ottl_filter", ottl_filter_config)
         .with_transform_builder("apm_onboarding", ApmOnboardingConfiguration)
         .with_transform_builder("trace_obfuscation", trace_obfuscation_config)
         .with_transform_builder("trace_sampler", trace_sampler_config);

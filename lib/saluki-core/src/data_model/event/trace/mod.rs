@@ -100,7 +100,7 @@ impl Trace {
     /// Returns the number of spans retained. If no spans match, the trace is left unchanged.
     pub fn retain_spans<F>(&mut self, mut f: F) -> usize
     where
-        F: FnMut(&Span) -> bool,
+        F: FnMut(&Trace, &Span) -> bool,
     {
         if self.spans.is_empty() {
             return 0;
@@ -108,7 +108,7 @@ impl Trace {
 
         let mut has_match = false;
         for span in self.spans.iter() {
-            if f(span) {
+            if f(self, span) {
                 has_match = true;
                 break;
             }
@@ -118,9 +118,27 @@ impl Trace {
             return 0;
         }
 
-        self.spans.retain(|span| f(span));
-        self.spans.shrink_to_fit();
+        let mut spans = std::mem::take(&mut self.spans);
+        spans.retain(|span| f(self, span));
+        spans.shrink_to_fit();
+        let _ = std::mem::replace(&mut self.spans, spans);
+
         self.spans.len()
+    }
+
+    /// Remove spans only the spans specified by the predicate return true.
+    pub fn remove_spans<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&Trace, &Span) -> bool,
+    {
+        if self.spans.is_empty() {
+            return;
+        }
+
+        let mut spans = std::mem::take(&mut self.spans);
+        spans.retain(|span| !f(self, span));
+        spans.shrink_to_fit();
+        let _ = std::mem::replace(&mut self.spans, spans);
     }
 
     /// Returns the resource-level tags associated with this trace.
