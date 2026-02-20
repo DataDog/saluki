@@ -5,6 +5,16 @@ use serde::Serialize;
 
 use crate::assertions::AssertionResult;
 
+/// Timing information for a single phase of test execution.
+#[derive(Clone, Debug, Serialize)]
+pub struct PhaseTiming {
+    /// Name of the phase.
+    pub phase: String,
+    /// Duration of the phase.
+    #[serde(with = "duration_millis")]
+    pub duration: Duration,
+}
+
 /// Result of a single test case.
 #[derive(Clone, Debug, Serialize)]
 pub struct TestResult {
@@ -19,6 +29,8 @@ pub struct TestResult {
     pub assertion_results: Vec<AssertionResult>,
     /// Error message if the test failed to run.
     pub error: Option<String>,
+    /// Timing breakdown for each phase of test execution.
+    pub phase_timings: Vec<PhaseTiming>,
 }
 
 /// Result of running all test cases.
@@ -112,6 +124,13 @@ impl Reporter {
 
                     println!("  {} {} ({:.2?})", indicator, assertion.name, assertion.duration);
                     println!("    {}", assertion.message);
+                }
+
+                if !result.phase_timings.is_empty() {
+                    println!("  {}", "Phase timings:".dimmed());
+                    for phase in &result.phase_timings {
+                        println!("    {} ({:.2?})", phase.phase, phase.duration);
+                    }
                 }
             }
         }

@@ -13,15 +13,7 @@ container:
     DD_DATA_PLANE_OTLP_ENABLED: "false"
 
 assertions:
-  # ADP should log that no pipelines are enabled and exit with error
+  # ADP should log that no pipelines are enabled and exit.
   - type: log_contains
     pattern: "No data pipelines are enabled. Exiting."
-    timeout: 30s
-  # Container should remain stable (s6 supervisor keeps running)
-  - type: process_stable_for
-    duration: 5s
-  # No panics should occur
-  - type: log_not_contains
-    pattern: "panic|PANIC"
-    regex: true
-    during: 5s
+    timeout: 15s

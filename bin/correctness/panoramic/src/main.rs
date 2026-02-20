@@ -286,7 +286,7 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
         println!(
             "    Timeout: {:?}, Assertions: {}",
             test_case.timeout.0,
-            test_case.assertions.len()
+            test_case.total_assertion_count()
         );
         println!();
     }
