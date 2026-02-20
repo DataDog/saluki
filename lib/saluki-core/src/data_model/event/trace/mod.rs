@@ -126,6 +126,21 @@ impl Trace {
         self.spans.len()
     }
 
+    /// Remove spans only the spans specified by the predicate return true.
+    pub fn remove_spans<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&Trace, &Span) -> bool,
+    {
+        if self.spans.is_empty() {
+            return;
+        }
+
+        let mut spans = std::mem::take(&mut self.spans);
+        spans.retain(|span| !f(self, span));
+        spans.shrink_to_fit();
+        let _ = std::mem::replace(&mut self.spans, spans);
+    }
+
     /// Returns the resource-level tags associated with this trace.
     pub fn resource_tags(&self) -> &SharedTagSet {
         &self.resource_tags
