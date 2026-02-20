@@ -5,370 +5,381 @@
 <a href=#5 id=5 data-nosnippet>5</a>//! - Constant folding for literals
 <a href=#6 id=6 data-nosnippet>6</a>//! - linear memory with less inderections
 <a href=#7 id=7 data-nosnippet>7</a>
-<a href=#8 id=8 data-nosnippet>8</a></span><span class="kw">use </span><span class="kw">super</span>::ast::<span class="kw-2">*</span>;
-<a href=#9 id=9 data-nosnippet>9</a><span class="kw">use </span>crate::{PathResolverMap, <span class="prelude-ty">Result</span>, Value};
-<a href=#10 id=10 data-nosnippet>10</a>
-<a href=#11 id=11 data-nosnippet>11</a><span class="comment">// =====================================================================================================================
-<a href=#12 id=12 data-nosnippet>12</a>// Arena Storage
-<a href=#13 id=13 data-nosnippet>13</a>// =====================================================================================================================
-<a href=#14 id=14 data-nosnippet>14</a>
-<a href=#15 id=15 data-nosnippet>15</a></span><span class="doccomment">/// Arena storage for all AST nodes - enables cache-friendly traversal. Generic over context type `C`.
-<a href=#16 id=16 data-nosnippet>16</a></span><span class="attr">#[derive(Debug, Clone)]
-<a href=#17 id=17 data-nosnippet>17</a></span><span class="kw">pub struct </span>AstArena&lt;C&gt; {
-<a href=#18 id=18 data-nosnippet>18</a>    <span class="kw">pub </span>bool_exprs: Vec&lt;ArenaBoolExpr&lt;C&gt;&gt;,
-<a href=#19 id=19 data-nosnippet>19</a>    <span class="kw">pub </span>math_exprs: Vec&lt;ArenaMathExpr&gt;,
-<a href=#20 id=20 data-nosnippet>20</a>    <span class="kw">pub </span>value_exprs: Vec&lt;ArenaValueExpr&lt;C&gt;&gt;,
-<a href=#21 id=21 data-nosnippet>21</a>    <span class="kw">pub </span>function_calls: Vec&lt;ArenaFunctionCall&lt;C&gt;&gt;,
-<a href=#22 id=22 data-nosnippet>22</a>}
-<a href=#23 id=23 data-nosnippet>23</a>
-<a href=#24 id=24 data-nosnippet>24</a><span class="kw">impl</span>&lt;C&gt; Default <span class="kw">for </span>AstArena&lt;C&gt; {
-<a href=#25 id=25 data-nosnippet>25</a>    <span class="kw">fn </span>default() -&gt; <span class="self">Self </span>{
-<a href=#26 id=26 data-nosnippet>26</a>        <span class="self">Self </span>{
-<a href=#27 id=27 data-nosnippet>27</a>            bool_exprs: Vec::new(),
-<a href=#28 id=28 data-nosnippet>28</a>            math_exprs: Vec::new(),
-<a href=#29 id=29 data-nosnippet>29</a>            value_exprs: Vec::new(),
-<a href=#30 id=30 data-nosnippet>30</a>            function_calls: Vec::new(),
-<a href=#31 id=31 data-nosnippet>31</a>        }
-<a href=#32 id=32 data-nosnippet>32</a>    }
-<a href=#33 id=33 data-nosnippet>33</a>}
-<a href=#34 id=34 data-nosnippet>34</a>
-<a href=#35 id=35 data-nosnippet>35</a><span class="kw">impl</span>&lt;C&gt; AstArena&lt;C&gt; {
-<a href=#36 id=36 data-nosnippet>36</a>    <span class="kw">pub fn </span>new() -&gt; <span class="self">Self </span>{
-<a href=#37 id=37 data-nosnippet>37</a>        <span class="self">Self</span>::default()
+<a href=#8 id=8 data-nosnippet>8</a></span><span class="kw">use </span>std::marker::PhantomData;
+<a href=#9 id=9 data-nosnippet>9</a>
+<a href=#10 id=10 data-nosnippet>10</a><span class="kw">use </span><span class="kw">super</span>::ast::<span class="kw-2">*</span>;
+<a href=#11 id=11 data-nosnippet>11</a><span class="kw">use </span>crate::{EvalContextFamily, PathResolverMap, <span class="prelude-ty">Result</span>, Value};
+<a href=#12 id=12 data-nosnippet>12</a>
+<a href=#13 id=13 data-nosnippet>13</a><span class="comment">// =====================================================================================================================
+<a href=#14 id=14 data-nosnippet>14</a>// Arena Storage
+<a href=#15 id=15 data-nosnippet>15</a>// =====================================================================================================================
+<a href=#16 id=16 data-nosnippet>16</a>
+<a href=#17 id=17 data-nosnippet>17</a></span><span class="doccomment">/// Arena storage for all AST nodes - enables cache-friendly traversal.
+<a href=#18 id=18 data-nosnippet>18</a>///
+<a href=#19 id=19 data-nosnippet>19</a>/// The type parameter `F` is the [`EvalContextFamily`] used by resolved path accessors.
+<a href=#20 id=20 data-nosnippet>20</a></span><span class="attr">#[derive(Debug)]
+<a href=#21 id=21 data-nosnippet>21</a></span><span class="kw">pub struct </span>AstArena&lt;F: EvalContextFamily&gt; {
+<a href=#22 id=22 data-nosnippet>22</a>    <span class="kw">pub </span>bool_exprs: Vec&lt;ArenaBoolExpr&lt;F&gt;&gt;,
+<a href=#23 id=23 data-nosnippet>23</a>    <span class="kw">pub </span>math_exprs: Vec&lt;ArenaMathExpr&gt;,
+<a href=#24 id=24 data-nosnippet>24</a>    <span class="kw">pub </span>value_exprs: Vec&lt;ArenaValueExpr&lt;F&gt;&gt;,
+<a href=#25 id=25 data-nosnippet>25</a>    <span class="kw">pub </span>function_calls: Vec&lt;ArenaFunctionCall&gt;,
+<a href=#26 id=26 data-nosnippet>26</a>    _marker: PhantomData&lt;F&gt;,
+<a href=#27 id=27 data-nosnippet>27</a>}
+<a href=#28 id=28 data-nosnippet>28</a>
+<a href=#29 id=29 data-nosnippet>29</a><span class="kw">impl</span>&lt;F: EvalContextFamily&gt; Clone <span class="kw">for </span>AstArena&lt;F&gt; {
+<a href=#30 id=30 data-nosnippet>30</a>    <span class="kw">fn </span>clone(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="self">Self </span>{
+<a href=#31 id=31 data-nosnippet>31</a>        <span class="self">Self </span>{
+<a href=#32 id=32 data-nosnippet>32</a>            bool_exprs: <span class="self">self</span>.bool_exprs.clone(),
+<a href=#33 id=33 data-nosnippet>33</a>            math_exprs: <span class="self">self</span>.math_exprs.clone(),
+<a href=#34 id=34 data-nosnippet>34</a>            value_exprs: <span class="self">self</span>.value_exprs.clone(),
+<a href=#35 id=35 data-nosnippet>35</a>            function_calls: <span class="self">self</span>.function_calls.clone(),
+<a href=#36 id=36 data-nosnippet>36</a>            _marker: PhantomData,
+<a href=#37 id=37 data-nosnippet>37</a>        }
 <a href=#38 id=38 data-nosnippet>38</a>    }
-<a href=#39 id=39 data-nosnippet>39</a>
-<a href=#40 id=40 data-nosnippet>40</a>    <span class="attr">#[inline]
-<a href=#41 id=41 data-nosnippet>41</a>    </span><span class="kw">pub fn </span>alloc_bool(<span class="kw-2">&amp;mut </span><span class="self">self</span>, expr: ArenaBoolExpr&lt;C&gt;) -&gt; BoolExprRef {
-<a href=#42 id=42 data-nosnippet>42</a>        <span class="kw">let </span>idx = <span class="self">self</span>.bool_exprs.len() <span class="kw">as </span>u32;
-<a href=#43 id=43 data-nosnippet>43</a>        <span class="self">self</span>.bool_exprs.push(expr);
-<a href=#44 id=44 data-nosnippet>44</a>        BoolExprRef(idx)
-<a href=#45 id=45 data-nosnippet>45</a>    }
-<a href=#46 id=46 data-nosnippet>46</a>
-<a href=#47 id=47 data-nosnippet>47</a>    <span class="attr">#[inline]
-<a href=#48 id=48 data-nosnippet>48</a>    </span><span class="kw">pub fn </span>alloc_math(<span class="kw-2">&amp;mut </span><span class="self">self</span>, expr: ArenaMathExpr) -&gt; MathExprRef {
-<a href=#49 id=49 data-nosnippet>49</a>        <span class="kw">let </span>idx = <span class="self">self</span>.math_exprs.len() <span class="kw">as </span>u32;
-<a href=#50 id=50 data-nosnippet>50</a>        <span class="self">self</span>.math_exprs.push(expr);
-<a href=#51 id=51 data-nosnippet>51</a>        MathExprRef(idx)
-<a href=#52 id=52 data-nosnippet>52</a>    }
-<a href=#53 id=53 data-nosnippet>53</a>
-<a href=#54 id=54 data-nosnippet>54</a>    <span class="attr">#[inline]
-<a href=#55 id=55 data-nosnippet>55</a>    </span><span class="kw">pub fn </span>alloc_value(<span class="kw-2">&amp;mut </span><span class="self">self</span>, expr: ArenaValueExpr&lt;C&gt;) -&gt; ValueExprRef {
-<a href=#56 id=56 data-nosnippet>56</a>        <span class="kw">let </span>idx = <span class="self">self</span>.value_exprs.len() <span class="kw">as </span>u32;
-<a href=#57 id=57 data-nosnippet>57</a>        <span class="self">self</span>.value_exprs.push(expr);
-<a href=#58 id=58 data-nosnippet>58</a>        ValueExprRef(idx)
-<a href=#59 id=59 data-nosnippet>59</a>    }
-<a href=#60 id=60 data-nosnippet>60</a>
-<a href=#61 id=61 data-nosnippet>61</a>    <span class="attr">#[inline]
-<a href=#62 id=62 data-nosnippet>62</a>    </span><span class="kw">pub fn </span>alloc_func(<span class="kw-2">&amp;mut </span><span class="self">self</span>, call: ArenaFunctionCall&lt;C&gt;) -&gt; FunctionCallRef {
-<a href=#63 id=63 data-nosnippet>63</a>        <span class="kw">let </span>idx = <span class="self">self</span>.function_calls.len() <span class="kw">as </span>u32;
-<a href=#64 id=64 data-nosnippet>64</a>        <span class="self">self</span>.function_calls.push(call);
-<a href=#65 id=65 data-nosnippet>65</a>        FunctionCallRef(idx)
-<a href=#66 id=66 data-nosnippet>66</a>    }
-<a href=#67 id=67 data-nosnippet>67</a>
-<a href=#68 id=68 data-nosnippet>68</a>    <span class="attr">#[inline]
-<a href=#69 id=69 data-nosnippet>69</a>    </span><span class="kw">pub fn </span>get_bool(<span class="kw-2">&amp;</span><span class="self">self</span>, r: BoolExprRef) -&gt; <span class="kw-2">&amp;</span>ArenaBoolExpr&lt;C&gt; {
-<a href=#70 id=70 data-nosnippet>70</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.bool_exprs[r.<span class="number">0 </span><span class="kw">as </span>usize]
+<a href=#39 id=39 data-nosnippet>39</a>}
+<a href=#40 id=40 data-nosnippet>40</a>
+<a href=#41 id=41 data-nosnippet>41</a><span class="kw">impl</span>&lt;F: EvalContextFamily&gt; AstArena&lt;F&gt; {
+<a href=#42 id=42 data-nosnippet>42</a>    <span class="kw">pub fn </span>new() -&gt; <span class="self">Self </span>{
+<a href=#43 id=43 data-nosnippet>43</a>        <span class="self">Self </span>{
+<a href=#44 id=44 data-nosnippet>44</a>            bool_exprs: Vec::new(),
+<a href=#45 id=45 data-nosnippet>45</a>            math_exprs: Vec::new(),
+<a href=#46 id=46 data-nosnippet>46</a>            value_exprs: Vec::new(),
+<a href=#47 id=47 data-nosnippet>47</a>            function_calls: Vec::new(),
+<a href=#48 id=48 data-nosnippet>48</a>            _marker: PhantomData,
+<a href=#49 id=49 data-nosnippet>49</a>        }
+<a href=#50 id=50 data-nosnippet>50</a>    }
+<a href=#51 id=51 data-nosnippet>51</a>
+<a href=#52 id=52 data-nosnippet>52</a>    <span class="attr">#[inline]
+<a href=#53 id=53 data-nosnippet>53</a>    </span><span class="kw">pub fn </span>alloc_bool(<span class="kw-2">&amp;mut </span><span class="self">self</span>, expr: ArenaBoolExpr&lt;F&gt;) -&gt; BoolExprRef {
+<a href=#54 id=54 data-nosnippet>54</a>        <span class="kw">let </span>idx = <span class="self">self</span>.bool_exprs.len() <span class="kw">as </span>u32;
+<a href=#55 id=55 data-nosnippet>55</a>        <span class="self">self</span>.bool_exprs.push(expr);
+<a href=#56 id=56 data-nosnippet>56</a>        BoolExprRef(idx)
+<a href=#57 id=57 data-nosnippet>57</a>    }
+<a href=#58 id=58 data-nosnippet>58</a>
+<a href=#59 id=59 data-nosnippet>59</a>    <span class="attr">#[inline]
+<a href=#60 id=60 data-nosnippet>60</a>    </span><span class="kw">pub fn </span>alloc_math(<span class="kw-2">&amp;mut </span><span class="self">self</span>, expr: ArenaMathExpr) -&gt; MathExprRef {
+<a href=#61 id=61 data-nosnippet>61</a>        <span class="kw">let </span>idx = <span class="self">self</span>.math_exprs.len() <span class="kw">as </span>u32;
+<a href=#62 id=62 data-nosnippet>62</a>        <span class="self">self</span>.math_exprs.push(expr);
+<a href=#63 id=63 data-nosnippet>63</a>        MathExprRef(idx)
+<a href=#64 id=64 data-nosnippet>64</a>    }
+<a href=#65 id=65 data-nosnippet>65</a>
+<a href=#66 id=66 data-nosnippet>66</a>    <span class="attr">#[inline]
+<a href=#67 id=67 data-nosnippet>67</a>    </span><span class="kw">pub fn </span>alloc_value(<span class="kw-2">&amp;mut </span><span class="self">self</span>, expr: ArenaValueExpr&lt;F&gt;) -&gt; ValueExprRef {
+<a href=#68 id=68 data-nosnippet>68</a>        <span class="kw">let </span>idx = <span class="self">self</span>.value_exprs.len() <span class="kw">as </span>u32;
+<a href=#69 id=69 data-nosnippet>69</a>        <span class="self">self</span>.value_exprs.push(expr);
+<a href=#70 id=70 data-nosnippet>70</a>        ValueExprRef(idx)
 <a href=#71 id=71 data-nosnippet>71</a>    }
 <a href=#72 id=72 data-nosnippet>72</a>
 <a href=#73 id=73 data-nosnippet>73</a>    <span class="attr">#[inline]
-<a href=#74 id=74 data-nosnippet>74</a>    </span><span class="kw">pub fn </span>get_math(<span class="kw-2">&amp;</span><span class="self">self</span>, r: MathExprRef) -&gt; <span class="kw-2">&amp;</span>ArenaMathExpr {
-<a href=#75 id=75 data-nosnippet>75</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.math_exprs[r.<span class="number">0 </span><span class="kw">as </span>usize]
-<a href=#76 id=76 data-nosnippet>76</a>    }
-<a href=#77 id=77 data-nosnippet>77</a>
-<a href=#78 id=78 data-nosnippet>78</a>    <span class="attr">#[inline]
-<a href=#79 id=79 data-nosnippet>79</a>    </span><span class="kw">pub fn </span>get_value(<span class="kw-2">&amp;</span><span class="self">self</span>, r: ValueExprRef) -&gt; <span class="kw-2">&amp;</span>ArenaValueExpr&lt;C&gt; {
-<a href=#80 id=80 data-nosnippet>80</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.value_exprs[r.<span class="number">0 </span><span class="kw">as </span>usize]
-<a href=#81 id=81 data-nosnippet>81</a>    }
-<a href=#82 id=82 data-nosnippet>82</a>
-<a href=#83 id=83 data-nosnippet>83</a>    <span class="attr">#[inline]
-<a href=#84 id=84 data-nosnippet>84</a>    </span><span class="kw">pub fn </span>get_func(<span class="kw-2">&amp;</span><span class="self">self</span>, r: FunctionCallRef) -&gt; <span class="kw-2">&amp;</span>ArenaFunctionCall&lt;C&gt; {
-<a href=#85 id=85 data-nosnippet>85</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.function_calls[r.<span class="number">0 </span><span class="kw">as </span>usize]
-<a href=#86 id=86 data-nosnippet>86</a>    }
-<a href=#87 id=87 data-nosnippet>87</a>}
-<a href=#88 id=88 data-nosnippet>88</a>
-<a href=#89 id=89 data-nosnippet>89</a><span class="comment">// =====================================================================================================================
-<a href=#90 id=90 data-nosnippet>90</a>// AST to Arena Conversion
-<a href=#91 id=91 data-nosnippet>91</a>// =====================================================================================================================
-<a href=#92 id=92 data-nosnippet>92</a>
-<a href=#93 id=93 data-nosnippet>93</a></span><span class="doccomment">/// Helper to resolve a PathExpr to ResolvedPath at parse time.
-<a href=#94 id=94 data-nosnippet>94</a>/// Looks up the path in path_resolvers; returns error if no resolver is provided for this path.
-<a href=#95 id=95 data-nosnippet>95</a></span><span class="kw">fn </span>resolve_path&lt;C&gt;(path: <span class="kw-2">&amp;</span>PathExpr, path_resolvers: <span class="kw-2">&amp;</span>PathResolverMap&lt;C&gt;) -&gt; <span class="prelude-ty">Result</span>&lt;ResolvedPath&lt;C&gt;&gt; {
-<a href=#96 id=96 data-nosnippet>96</a>    <span class="kw">let </span>full_path = path.segments.join(<span class="string">"."</span>);
-<a href=#97 id=97 data-nosnippet>97</a>    <span class="kw">let </span>resolver = path_resolvers
-<a href=#98 id=98 data-nosnippet>98</a>        .get(<span class="kw-2">&amp;</span>full_path)
-<a href=#99 id=99 data-nosnippet>99</a>        .ok_or_else(|| <span class="macro">format!</span>(<span class="string">"No PathResolver provided for path \"{}\""</span>, full_path))<span class="question-mark">?</span>;
-<a href=#100 id=100 data-nosnippet>100</a>    <span class="kw">let </span>accessor = resolver()<span class="question-mark">?</span>;
-<a href=#101 id=101 data-nosnippet>101</a>    <span class="prelude-val">Ok</span>(ResolvedPath {
-<a href=#102 id=102 data-nosnippet>102</a>        full_path,
-<a href=#103 id=103 data-nosnippet>103</a>        accessor,
-<a href=#104 id=104 data-nosnippet>104</a>        indexes: path.indexes.clone(),
-<a href=#105 id=105 data-nosnippet>105</a>    })
-<a href=#106 id=106 data-nosnippet>106</a>}
-<a href=#107 id=107 data-nosnippet>107</a>
-<a href=#108 id=108 data-nosnippet>108</a><span class="doccomment">/// Convert boxed AST to arena-based AST for cache-friendly execution.
-<a href=#109 id=109 data-nosnippet>109</a>/// Path resolution happens HERE (once at parse time), not at each execution!
-<a href=#110 id=110 data-nosnippet>110</a></span><span class="kw">pub fn </span>convert_to_arena&lt;C&gt;(
-<a href=#111 id=111 data-nosnippet>111</a>    root: <span class="kw-2">&amp;</span>RootExpr&lt;C&gt;, arena: <span class="kw-2">&amp;mut </span>AstArena&lt;C&gt;, path_resolvers: <span class="kw-2">&amp;</span>PathResolverMap&lt;C&gt;,
-<a href=#112 id=112 data-nosnippet>112</a>) -&gt; <span class="prelude-ty">Result</span>&lt;ArenaRootExpr&lt;C&gt;&gt; {
-<a href=#113 id=113 data-nosnippet>113</a>    <span class="kw">match </span>root {
-<a href=#114 id=114 data-nosnippet>114</a>        RootExpr::EditorStatement(stmt) =&gt; {
-<a href=#115 id=115 data-nosnippet>115</a>            <span class="kw">let </span>editor_ref = convert_function_call(<span class="kw-2">&amp;</span>stmt.editor, arena, path_resolvers)<span class="question-mark">?</span>;
-<a href=#116 id=116 data-nosnippet>116</a>            <span class="kw">let </span>condition_ref = <span class="kw">match </span><span class="kw-2">&amp;</span>stmt.condition {
-<a href=#117 id=117 data-nosnippet>117</a>                <span class="prelude-val">Some</span>(c) =&gt; <span class="prelude-val">Some</span>(convert_bool_expr(c, arena, path_resolvers)<span class="question-mark">?</span>),
-<a href=#118 id=118 data-nosnippet>118</a>                <span class="prelude-val">None </span>=&gt; <span class="prelude-val">None</span>,
-<a href=#119 id=119 data-nosnippet>119</a>            };
-<a href=#120 id=120 data-nosnippet>120</a>            <span class="prelude-val">Ok</span>(ArenaRootExpr::EditorStatement(ArenaEditorStatement {
-<a href=#121 id=121 data-nosnippet>121</a>                editor: editor_ref,
-<a href=#122 id=122 data-nosnippet>122</a>                condition: condition_ref,
-<a href=#123 id=123 data-nosnippet>123</a>                _marker: std::marker::PhantomData,
-<a href=#124 id=124 data-nosnippet>124</a>            }))
-<a href=#125 id=125 data-nosnippet>125</a>        }
-<a href=#126 id=126 data-nosnippet>126</a>        RootExpr::BooleanExpression(expr) =&gt; {
-<a href=#127 id=127 data-nosnippet>127</a>            <span class="kw">let </span>expr_ref = convert_bool_expr(expr, arena, path_resolvers)<span class="question-mark">?</span>;
-<a href=#128 id=128 data-nosnippet>128</a>            <span class="prelude-val">Ok</span>(ArenaRootExpr::BooleanExpression(expr_ref))
-<a href=#129 id=129 data-nosnippet>129</a>        }
-<a href=#130 id=130 data-nosnippet>130</a>        RootExpr::MathExpression(expr) =&gt; {
-<a href=#131 id=131 data-nosnippet>131</a>            <span class="kw">let </span>expr_ref = convert_math_expr(expr, arena, path_resolvers)<span class="question-mark">?</span>;
-<a href=#132 id=132 data-nosnippet>132</a>            <span class="prelude-val">Ok</span>(ArenaRootExpr::MathExpression(expr_ref))
-<a href=#133 id=133 data-nosnippet>133</a>        }
-<a href=#134 id=134 data-nosnippet>134</a>    }
-<a href=#135 id=135 data-nosnippet>135</a>}
-<a href=#136 id=136 data-nosnippet>136</a>
-<a href=#137 id=137 data-nosnippet>137</a><span class="comment">// =====================================================================================================================
-<a href=#138 id=138 data-nosnippet>138</a>// Constant Folding Helpers
-<a href=#139 id=139 data-nosnippet>139</a>// =====================================================================================================================
-<a href=#140 id=140 data-nosnippet>140</a>
-<a href=#141 id=141 data-nosnippet>141</a></span><span class="doccomment">/// Check if a ValueExpr is a literal and get its value
-<a href=#142 id=142 data-nosnippet>142</a></span><span class="kw">fn </span>try_get_literal&lt;C&gt;(expr: <span class="kw-2">&amp;</span>ValueExpr&lt;C&gt;) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>Value&gt; {
-<a href=#143 id=143 data-nosnippet>143</a>    <span class="kw">match </span>expr {
-<a href=#144 id=144 data-nosnippet>144</a>        ValueExpr::Literal(v) =&gt; <span class="prelude-val">Some</span>(v),
-<a href=#145 id=145 data-nosnippet>145</a>        <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
-<a href=#146 id=146 data-nosnippet>146</a>    }
-<a href=#147 id=147 data-nosnippet>147</a>}
-<a href=#148 id=148 data-nosnippet>148</a>
-<a href=#149 id=149 data-nosnippet>149</a><span class="doccomment">/// Check if arena bool expr is a literal
-<a href=#150 id=150 data-nosnippet>150</a></span><span class="kw">fn </span>arena_bool_is_literal&lt;C&gt;(arena: <span class="kw-2">&amp;</span>AstArena&lt;C&gt;, r: BoolExprRef) -&gt; <span class="prelude-ty">Option</span>&lt;bool&gt; {
-<a href=#151 id=151 data-nosnippet>151</a>    <span class="kw">match </span>arena.get_bool(r) {
-<a href=#152 id=152 data-nosnippet>152</a>        ArenaBoolExpr::Literal(b) =&gt; <span class="prelude-val">Some</span>(<span class="kw-2">*</span>b),
-<a href=#153 id=153 data-nosnippet>153</a>        <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
-<a href=#154 id=154 data-nosnippet>154</a>    }
-<a href=#155 id=155 data-nosnippet>155</a>}
-<a href=#156 id=156 data-nosnippet>156</a>
-<a href=#157 id=157 data-nosnippet>157</a><span class="doccomment">/// Try to get literal value from a MathExpr
-<a href=#158 id=158 data-nosnippet>158</a></span><span class="kw">fn </span>try_get_math_literal&lt;C&gt;(expr: <span class="kw-2">&amp;</span>MathExpr&lt;C&gt;) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>Value&gt; {
-<a href=#159 id=159 data-nosnippet>159</a>    <span class="kw">match </span>expr {
-<a href=#160 id=160 data-nosnippet>160</a>        MathExpr::Primary(ValueExpr::Literal(v)) =&gt; <span class="prelude-val">Some</span>(v),
-<a href=#161 id=161 data-nosnippet>161</a>        <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
-<a href=#162 id=162 data-nosnippet>162</a>    }
-<a href=#163 id=163 data-nosnippet>163</a>}
-<a href=#164 id=164 data-nosnippet>164</a>
-<a href=#165 id=165 data-nosnippet>165</a><span class="comment">// Use shared operations from ops module
-<a href=#166 id=166 data-nosnippet>166</a></span><span class="kw">use </span><span class="kw">super</span>::ops::{compare, try_math_op};
+<a href=#74 id=74 data-nosnippet>74</a>    </span><span class="kw">pub fn </span>alloc_func(<span class="kw-2">&amp;mut </span><span class="self">self</span>, call: ArenaFunctionCall) -&gt; FunctionCallRef {
+<a href=#75 id=75 data-nosnippet>75</a>        <span class="kw">let </span>idx = <span class="self">self</span>.function_calls.len() <span class="kw">as </span>u32;
+<a href=#76 id=76 data-nosnippet>76</a>        <span class="self">self</span>.function_calls.push(call);
+<a href=#77 id=77 data-nosnippet>77</a>        FunctionCallRef(idx)
+<a href=#78 id=78 data-nosnippet>78</a>    }
+<a href=#79 id=79 data-nosnippet>79</a>
+<a href=#80 id=80 data-nosnippet>80</a>    <span class="attr">#[inline]
+<a href=#81 id=81 data-nosnippet>81</a>    </span><span class="kw">pub fn </span>get_bool(<span class="kw-2">&amp;</span><span class="self">self</span>, r: BoolExprRef) -&gt; <span class="kw-2">&amp;</span>ArenaBoolExpr&lt;F&gt; {
+<a href=#82 id=82 data-nosnippet>82</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.bool_exprs[r.<span class="number">0 </span><span class="kw">as </span>usize]
+<a href=#83 id=83 data-nosnippet>83</a>    }
+<a href=#84 id=84 data-nosnippet>84</a>
+<a href=#85 id=85 data-nosnippet>85</a>    <span class="attr">#[inline]
+<a href=#86 id=86 data-nosnippet>86</a>    </span><span class="kw">pub fn </span>get_math(<span class="kw-2">&amp;</span><span class="self">self</span>, r: MathExprRef) -&gt; <span class="kw-2">&amp;</span>ArenaMathExpr {
+<a href=#87 id=87 data-nosnippet>87</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.math_exprs[r.<span class="number">0 </span><span class="kw">as </span>usize]
+<a href=#88 id=88 data-nosnippet>88</a>    }
+<a href=#89 id=89 data-nosnippet>89</a>
+<a href=#90 id=90 data-nosnippet>90</a>    <span class="attr">#[inline]
+<a href=#91 id=91 data-nosnippet>91</a>    </span><span class="kw">pub fn </span>get_value(<span class="kw-2">&amp;</span><span class="self">self</span>, r: ValueExprRef) -&gt; <span class="kw-2">&amp;</span>ArenaValueExpr&lt;F&gt; {
+<a href=#92 id=92 data-nosnippet>92</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.value_exprs[r.<span class="number">0 </span><span class="kw">as </span>usize]
+<a href=#93 id=93 data-nosnippet>93</a>    }
+<a href=#94 id=94 data-nosnippet>94</a>
+<a href=#95 id=95 data-nosnippet>95</a>    <span class="attr">#[inline]
+<a href=#96 id=96 data-nosnippet>96</a>    </span><span class="kw">pub fn </span>get_func(<span class="kw-2">&amp;</span><span class="self">self</span>, r: FunctionCallRef) -&gt; <span class="kw-2">&amp;</span>ArenaFunctionCall {
+<a href=#97 id=97 data-nosnippet>97</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.function_calls[r.<span class="number">0 </span><span class="kw">as </span>usize]
+<a href=#98 id=98 data-nosnippet>98</a>    }
+<a href=#99 id=99 data-nosnippet>99</a>}
+<a href=#100 id=100 data-nosnippet>100</a>
+<a href=#101 id=101 data-nosnippet>101</a><span class="comment">// =====================================================================================================================
+<a href=#102 id=102 data-nosnippet>102</a>// AST to Arena Conversion
+<a href=#103 id=103 data-nosnippet>103</a>// =====================================================================================================================
+<a href=#104 id=104 data-nosnippet>104</a>
+<a href=#105 id=105 data-nosnippet>105</a></span><span class="doccomment">/// Helper to resolve a PathExpr to ResolvedPath at parse time.
+<a href=#106 id=106 data-nosnippet>106</a>/// Looks up the path in path_resolvers; returns error if no resolver is provided for this path.
+<a href=#107 id=107 data-nosnippet>107</a></span><span class="kw">fn </span>resolve_path&lt;F: EvalContextFamily&gt;(path: <span class="kw-2">&amp;</span>PathExpr, path_resolvers: <span class="kw-2">&amp;</span>PathResolverMap&lt;F&gt;) -&gt; <span class="prelude-ty">Result</span>&lt;ResolvedPath&lt;F&gt;&gt; {
+<a href=#108 id=108 data-nosnippet>108</a>    <span class="kw">let </span>full_path = path.segments.join(<span class="string">"."</span>);
+<a href=#109 id=109 data-nosnippet>109</a>    <span class="kw">let </span>resolver = path_resolvers
+<a href=#110 id=110 data-nosnippet>110</a>        .get(<span class="kw-2">&amp;</span>full_path)
+<a href=#111 id=111 data-nosnippet>111</a>        .ok_or_else(|| <span class="macro">format!</span>(<span class="string">"No PathResolver provided for path \"{}\""</span>, full_path))<span class="question-mark">?</span>;
+<a href=#112 id=112 data-nosnippet>112</a>    <span class="kw">let </span>accessor = resolver()<span class="question-mark">?</span>;
+<a href=#113 id=113 data-nosnippet>113</a>    <span class="prelude-val">Ok</span>(ResolvedPath {
+<a href=#114 id=114 data-nosnippet>114</a>        full_path,
+<a href=#115 id=115 data-nosnippet>115</a>        accessor,
+<a href=#116 id=116 data-nosnippet>116</a>        indexes: path.indexes.clone(),
+<a href=#117 id=117 data-nosnippet>117</a>    })
+<a href=#118 id=118 data-nosnippet>118</a>}
+<a href=#119 id=119 data-nosnippet>119</a>
+<a href=#120 id=120 data-nosnippet>120</a><span class="doccomment">/// Convert boxed AST to arena-based AST for cache-friendly execution.
+<a href=#121 id=121 data-nosnippet>121</a>/// Path resolution happens HERE (once at parse time), not at each execution!
+<a href=#122 id=122 data-nosnippet>122</a></span><span class="kw">pub fn </span>convert_to_arena&lt;F: EvalContextFamily&gt;(
+<a href=#123 id=123 data-nosnippet>123</a>    root: <span class="kw-2">&amp;</span>RootExpr, arena: <span class="kw-2">&amp;mut </span>AstArena&lt;F&gt;, path_resolvers: <span class="kw-2">&amp;</span>PathResolverMap&lt;F&gt;,
+<a href=#124 id=124 data-nosnippet>124</a>) -&gt; <span class="prelude-ty">Result</span>&lt;ArenaRootExpr&gt; {
+<a href=#125 id=125 data-nosnippet>125</a>    <span class="kw">match </span>root {
+<a href=#126 id=126 data-nosnippet>126</a>        RootExpr::EditorStatement(stmt) =&gt; {
+<a href=#127 id=127 data-nosnippet>127</a>            <span class="kw">let </span>editor_ref = convert_function_call(<span class="kw-2">&amp;</span>stmt.editor, arena, path_resolvers)<span class="question-mark">?</span>;
+<a href=#128 id=128 data-nosnippet>128</a>            <span class="kw">let </span>condition_ref = <span class="kw">match </span><span class="kw-2">&amp;</span>stmt.condition {
+<a href=#129 id=129 data-nosnippet>129</a>                <span class="prelude-val">Some</span>(c) =&gt; <span class="prelude-val">Some</span>(convert_bool_expr(c, arena, path_resolvers)<span class="question-mark">?</span>),
+<a href=#130 id=130 data-nosnippet>130</a>                <span class="prelude-val">None </span>=&gt; <span class="prelude-val">None</span>,
+<a href=#131 id=131 data-nosnippet>131</a>            };
+<a href=#132 id=132 data-nosnippet>132</a>            <span class="prelude-val">Ok</span>(ArenaRootExpr::EditorStatement(ArenaEditorStatement {
+<a href=#133 id=133 data-nosnippet>133</a>                editor: editor_ref,
+<a href=#134 id=134 data-nosnippet>134</a>                condition: condition_ref,
+<a href=#135 id=135 data-nosnippet>135</a>            }))
+<a href=#136 id=136 data-nosnippet>136</a>        }
+<a href=#137 id=137 data-nosnippet>137</a>        RootExpr::BooleanExpression(expr) =&gt; {
+<a href=#138 id=138 data-nosnippet>138</a>            <span class="kw">let </span>expr_ref = convert_bool_expr(expr, arena, path_resolvers)<span class="question-mark">?</span>;
+<a href=#139 id=139 data-nosnippet>139</a>            <span class="prelude-val">Ok</span>(ArenaRootExpr::BooleanExpression(expr_ref))
+<a href=#140 id=140 data-nosnippet>140</a>        }
+<a href=#141 id=141 data-nosnippet>141</a>        RootExpr::MathExpression(expr) =&gt; {
+<a href=#142 id=142 data-nosnippet>142</a>            <span class="kw">let </span>expr_ref = convert_math_expr(expr, arena, path_resolvers)<span class="question-mark">?</span>;
+<a href=#143 id=143 data-nosnippet>143</a>            <span class="prelude-val">Ok</span>(ArenaRootExpr::MathExpression(expr_ref))
+<a href=#144 id=144 data-nosnippet>144</a>        }
+<a href=#145 id=145 data-nosnippet>145</a>    }
+<a href=#146 id=146 data-nosnippet>146</a>}
+<a href=#147 id=147 data-nosnippet>147</a>
+<a href=#148 id=148 data-nosnippet>148</a><span class="comment">// =====================================================================================================================
+<a href=#149 id=149 data-nosnippet>149</a>// Constant Folding Helpers
+<a href=#150 id=150 data-nosnippet>150</a>// =====================================================================================================================
+<a href=#151 id=151 data-nosnippet>151</a>
+<a href=#152 id=152 data-nosnippet>152</a></span><span class="doccomment">/// Check if a ValueExpr is a literal and get its value
+<a href=#153 id=153 data-nosnippet>153</a></span><span class="kw">fn </span>try_get_literal(expr: <span class="kw-2">&amp;</span>ValueExpr) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>Value&gt; {
+<a href=#154 id=154 data-nosnippet>154</a>    <span class="kw">match </span>expr {
+<a href=#155 id=155 data-nosnippet>155</a>        ValueExpr::Literal(v) =&gt; <span class="prelude-val">Some</span>(v),
+<a href=#156 id=156 data-nosnippet>156</a>        <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
+<a href=#157 id=157 data-nosnippet>157</a>    }
+<a href=#158 id=158 data-nosnippet>158</a>}
+<a href=#159 id=159 data-nosnippet>159</a>
+<a href=#160 id=160 data-nosnippet>160</a><span class="doccomment">/// Check if arena bool expr is a literal
+<a href=#161 id=161 data-nosnippet>161</a></span><span class="kw">fn </span>arena_bool_is_literal&lt;F: EvalContextFamily&gt;(arena: <span class="kw-2">&amp;</span>AstArena&lt;F&gt;, r: BoolExprRef) -&gt; <span class="prelude-ty">Option</span>&lt;bool&gt; {
+<a href=#162 id=162 data-nosnippet>162</a>    <span class="kw">match </span>arena.get_bool(r) {
+<a href=#163 id=163 data-nosnippet>163</a>        ArenaBoolExpr::Literal(b) =&gt; <span class="prelude-val">Some</span>(<span class="kw-2">*</span>b),
+<a href=#164 id=164 data-nosnippet>164</a>        <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
+<a href=#165 id=165 data-nosnippet>165</a>    }
+<a href=#166 id=166 data-nosnippet>166</a>}
 <a href=#167 id=167 data-nosnippet>167</a>
-<a href=#168 id=168 data-nosnippet>168</a><span class="comment">// =====================================================================================================================
-<a href=#169 id=169 data-nosnippet>169</a>// Conversion Functions
-<a href=#170 id=170 data-nosnippet>170</a>// =====================================================================================================================
-<a href=#171 id=171 data-nosnippet>171</a>
-<a href=#172 id=172 data-nosnippet>172</a></span><span class="doccomment">/// Converts a boxed [`BoolExpr`] into arena-based form, allocating nodes in `arena` and returning a [`BoolExprRef`].
-<a href=#173 id=173 data-nosnippet>173</a>///
-<a href=#174 id=174 data-nosnippet>174</a>/// - Resolves paths via [`resolve_path`] (path → [`ResolvedPath`] with [`crate::PathAccessor`]).
-<a href=#175 id=175 data-nosnippet>175</a>/// - Recursively converts nested bool/value expressions and function calls.
-<a href=#176 id=176 data-nosnippet>176</a>/// - Applies **constant folding** where possible: literal comparisons, `not(literal)`, short-circuit
-<a href=#177 id=177 data-nosnippet>177</a>///   `and`/`or` with literal operands, so the arena may contain fewer/simpler nodes.
-<a href=#178 id=178 data-nosnippet>178</a></span><span class="kw">fn </span>convert_bool_expr&lt;C&gt;(
-<a href=#179 id=179 data-nosnippet>179</a>    expr: <span class="kw-2">&amp;</span>BoolExpr&lt;C&gt;, arena: <span class="kw-2">&amp;mut </span>AstArena&lt;C&gt;, path_resolvers: <span class="kw-2">&amp;</span>PathResolverMap&lt;C&gt;,
-<a href=#180 id=180 data-nosnippet>180</a>) -&gt; <span class="prelude-ty">Result</span>&lt;BoolExprRef&gt; {
-<a href=#181 id=181 data-nosnippet>181</a>    <span class="kw">let </span>arena_expr = <span class="kw">match </span>expr {
-<a href=#182 id=182 data-nosnippet>182</a>        BoolExpr::Literal(b) =&gt; ArenaBoolExpr::Literal(<span class="kw-2">*</span>b),
-<a href=#183 id=183 data-nosnippet>183</a>        BoolExpr::Comparison { left, op, right } =&gt; {
-<a href=#184 id=184 data-nosnippet>184</a>            <span class="comment">// CONSTANT FOLDING: if both sides are literals, compute at parse time!
-<a href=#185 id=185 data-nosnippet>185</a>            </span><span class="kw">if let </span>(<span class="prelude-val">Some</span>(left_val), <span class="prelude-val">Some</span>(right_val)) = (try_get_literal(left), try_get_literal(right)) {
-<a href=#186 id=186 data-nosnippet>186</a>                <span class="kw">if let </span><span class="prelude-val">Ok</span>(result) = compare(left_val, op, right_val) {
-<a href=#187 id=187 data-nosnippet>187</a>                    <span class="kw">return </span><span class="prelude-val">Ok</span>(arena.alloc_bool(ArenaBoolExpr::Literal(result)));
-<a href=#188 id=188 data-nosnippet>188</a>                }
-<a href=#189 id=189 data-nosnippet>189</a>            }
-<a href=#190 id=190 data-nosnippet>190</a>            <span class="kw">let </span>left_ref = convert_value_expr(left, arena, path_resolvers)<span class="question-mark">?</span>;
-<a href=#191 id=191 data-nosnippet>191</a>            <span class="kw">let </span>right_ref = convert_value_expr(right, arena, path_resolvers)<span class="question-mark">?</span>;
-<a href=#192 id=192 data-nosnippet>192</a>            ArenaBoolExpr::Comparison {
-<a href=#193 id=193 data-nosnippet>193</a>                left: left_ref,
-<a href=#194 id=194 data-nosnippet>194</a>                op: <span class="kw-2">*</span>op,
-<a href=#195 id=195 data-nosnippet>195</a>                right: right_ref,
-<a href=#196 id=196 data-nosnippet>196</a>            }
-<a href=#197 id=197 data-nosnippet>197</a>        }
-<a href=#198 id=198 data-nosnippet>198</a>        BoolExpr::Converter(fc) =&gt; {
-<a href=#199 id=199 data-nosnippet>199</a>            <span class="kw">let </span>fc_ref = convert_function_call(fc, arena, path_resolvers)<span class="question-mark">?</span>;
-<a href=#200 id=200 data-nosnippet>200</a>            ArenaBoolExpr::Converter(fc_ref)
-<a href=#201 id=201 data-nosnippet>201</a>        }
-<a href=#202 id=202 data-nosnippet>202</a>        BoolExpr::Path(path) =&gt; {
-<a href=#203 id=203 data-nosnippet>203</a>            <span class="kw">let </span>resolved = resolve_path(path, path_resolvers)<span class="question-mark">?</span>;
-<a href=#204 id=204 data-nosnippet>204</a>            ArenaBoolExpr::Path(resolved)
-<a href=#205 id=205 data-nosnippet>205</a>        }
-<a href=#206 id=206 data-nosnippet>206</a>        BoolExpr::Not(inner) =&gt; {
-<a href=#207 id=207 data-nosnippet>207</a>            <span class="kw">let </span>inner_ref = convert_bool_expr(inner, arena, path_resolvers)<span class="question-mark">?</span>;
-<a href=#208 id=208 data-nosnippet>208</a>            <span class="comment">// CONSTANT FOLDING: not(literal) =&gt; !literal
-<a href=#209 id=209 data-nosnippet>209</a>            </span><span class="kw">if let </span><span class="prelude-val">Some</span>(b) = arena_bool_is_literal(arena, inner_ref) {
-<a href=#210 id=210 data-nosnippet>210</a>                <span class="kw">return </span><span class="prelude-val">Ok</span>(arena.alloc_bool(ArenaBoolExpr::Literal(!b)));
-<a href=#211 id=211 data-nosnippet>211</a>            }
-<a href=#212 id=212 data-nosnippet>212</a>            ArenaBoolExpr::Not(inner_ref)
-<a href=#213 id=213 data-nosnippet>213</a>        }
-<a href=#214 id=214 data-nosnippet>214</a>        BoolExpr::And(left, right) =&gt; {
-<a href=#215 id=215 data-nosnippet>215</a>            <span class="kw">let </span>left_ref = convert_bool_expr(left, arena, path_resolvers)<span class="question-mark">?</span>;
-<a href=#216 id=216 data-nosnippet>216</a>            <span class="comment">// CONSTANT FOLDING: false &amp;&amp; x =&gt; false, true &amp;&amp; x =&gt; x
-<a href=#217 id=217 data-nosnippet>217</a>            </span><span class="kw">if let </span><span class="prelude-val">Some</span>(left_val) = arena_bool_is_literal(arena, left_ref) {
-<a href=#218 id=218 data-nosnippet>218</a>                <span class="kw">if </span>!left_val {
-<a href=#219 id=219 data-nosnippet>219</a>                    <span class="kw">return </span><span class="prelude-val">Ok</span>(arena.alloc_bool(ArenaBoolExpr::Literal(<span class="bool-val">false</span>)));
-<a href=#220 id=220 data-nosnippet>220</a>                }
-<a href=#221 id=221 data-nosnippet>221</a>                <span class="kw">return </span>convert_bool_expr(right, arena, path_resolvers);
+<a href=#168 id=168 data-nosnippet>168</a><span class="doccomment">/// Try to get literal value from a MathExpr
+<a href=#169 id=169 data-nosnippet>169</a></span><span class="kw">fn </span>try_get_math_literal(expr: <span class="kw-2">&amp;</span>MathExpr) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>Value&gt; {
+<a href=#170 id=170 data-nosnippet>170</a>    <span class="kw">match </span>expr {
+<a href=#171 id=171 data-nosnippet>171</a>        MathExpr::Primary(ValueExpr::Literal(v)) =&gt; <span class="prelude-val">Some</span>(v),
+<a href=#172 id=172 data-nosnippet>172</a>        <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
+<a href=#173 id=173 data-nosnippet>173</a>    }
+<a href=#174 id=174 data-nosnippet>174</a>}
+<a href=#175 id=175 data-nosnippet>175</a>
+<a href=#176 id=176 data-nosnippet>176</a><span class="comment">// Use shared operations from ops module
+<a href=#177 id=177 data-nosnippet>177</a></span><span class="kw">use </span><span class="kw">super</span>::ops::{compare, try_math_op};
+<a href=#178 id=178 data-nosnippet>178</a>
+<a href=#179 id=179 data-nosnippet>179</a><span class="comment">// =====================================================================================================================
+<a href=#180 id=180 data-nosnippet>180</a>// Conversion Functions
+<a href=#181 id=181 data-nosnippet>181</a>// =====================================================================================================================
+<a href=#182 id=182 data-nosnippet>182</a>
+<a href=#183 id=183 data-nosnippet>183</a></span><span class="doccomment">/// Converts a boxed [`BoolExpr`] into arena-based form, allocating nodes in `arena` and returning a [`BoolExprRef`].
+<a href=#184 id=184 data-nosnippet>184</a>///
+<a href=#185 id=185 data-nosnippet>185</a>/// - Resolves paths via [`resolve_path`] (path → [`ResolvedPath`] with [`crate::PathAccessor`]).
+<a href=#186 id=186 data-nosnippet>186</a>/// - Recursively converts nested bool/value expressions and function calls.
+<a href=#187 id=187 data-nosnippet>187</a>/// - Applies **constant folding** where possible: literal comparisons, `not(literal)`, short-circuit
+<a href=#188 id=188 data-nosnippet>188</a>///   `and`/`or` with literal operands, so the arena may contain fewer/simpler nodes.
+<a href=#189 id=189 data-nosnippet>189</a></span><span class="kw">fn </span>convert_bool_expr&lt;F: EvalContextFamily&gt;(
+<a href=#190 id=190 data-nosnippet>190</a>    expr: <span class="kw-2">&amp;</span>BoolExpr, arena: <span class="kw-2">&amp;mut </span>AstArena&lt;F&gt;, path_resolvers: <span class="kw-2">&amp;</span>PathResolverMap&lt;F&gt;,
+<a href=#191 id=191 data-nosnippet>191</a>) -&gt; <span class="prelude-ty">Result</span>&lt;BoolExprRef&gt; {
+<a href=#192 id=192 data-nosnippet>192</a>    <span class="kw">let </span>arena_expr = <span class="kw">match </span>expr {
+<a href=#193 id=193 data-nosnippet>193</a>        BoolExpr::Literal(b) =&gt; ArenaBoolExpr::Literal(<span class="kw-2">*</span>b),
+<a href=#194 id=194 data-nosnippet>194</a>        BoolExpr::Comparison { left, op, right } =&gt; {
+<a href=#195 id=195 data-nosnippet>195</a>            <span class="comment">// CONSTANT FOLDING: if both sides are literals, compute at parse time!
+<a href=#196 id=196 data-nosnippet>196</a>            </span><span class="kw">if let </span>(<span class="prelude-val">Some</span>(left_val), <span class="prelude-val">Some</span>(right_val)) = (try_get_literal(left), try_get_literal(right)) {
+<a href=#197 id=197 data-nosnippet>197</a>                <span class="kw">if let </span><span class="prelude-val">Ok</span>(result) = compare(left_val, op, right_val) {
+<a href=#198 id=198 data-nosnippet>198</a>                    <span class="kw">return </span><span class="prelude-val">Ok</span>(arena.alloc_bool(ArenaBoolExpr::Literal(result)));
+<a href=#199 id=199 data-nosnippet>199</a>                }
+<a href=#200 id=200 data-nosnippet>200</a>            }
+<a href=#201 id=201 data-nosnippet>201</a>            <span class="kw">let </span>left_ref = convert_value_expr(left, arena, path_resolvers)<span class="question-mark">?</span>;
+<a href=#202 id=202 data-nosnippet>202</a>            <span class="kw">let </span>right_ref = convert_value_expr(right, arena, path_resolvers)<span class="question-mark">?</span>;
+<a href=#203 id=203 data-nosnippet>203</a>            ArenaBoolExpr::Comparison {
+<a href=#204 id=204 data-nosnippet>204</a>                left: left_ref,
+<a href=#205 id=205 data-nosnippet>205</a>                op: <span class="kw-2">*</span>op,
+<a href=#206 id=206 data-nosnippet>206</a>                right: right_ref,
+<a href=#207 id=207 data-nosnippet>207</a>            }
+<a href=#208 id=208 data-nosnippet>208</a>        }
+<a href=#209 id=209 data-nosnippet>209</a>        BoolExpr::Converter(fc) =&gt; {
+<a href=#210 id=210 data-nosnippet>210</a>            <span class="kw">let </span>fc_ref = convert_function_call(fc, arena, path_resolvers)<span class="question-mark">?</span>;
+<a href=#211 id=211 data-nosnippet>211</a>            ArenaBoolExpr::Converter(fc_ref)
+<a href=#212 id=212 data-nosnippet>212</a>        }
+<a href=#213 id=213 data-nosnippet>213</a>        BoolExpr::Path(path) =&gt; {
+<a href=#214 id=214 data-nosnippet>214</a>            <span class="kw">let </span>resolved = resolve_path(path, path_resolvers)<span class="question-mark">?</span>;
+<a href=#215 id=215 data-nosnippet>215</a>            ArenaBoolExpr::Path(resolved)
+<a href=#216 id=216 data-nosnippet>216</a>        }
+<a href=#217 id=217 data-nosnippet>217</a>        BoolExpr::Not(inner) =&gt; {
+<a href=#218 id=218 data-nosnippet>218</a>            <span class="kw">let </span>inner_ref = convert_bool_expr(inner, arena, path_resolvers)<span class="question-mark">?</span>;
+<a href=#219 id=219 data-nosnippet>219</a>            <span class="comment">// CONSTANT FOLDING: not(literal) =&gt; !literal
+<a href=#220 id=220 data-nosnippet>220</a>            </span><span class="kw">if let </span><span class="prelude-val">Some</span>(b) = arena_bool_is_literal(arena, inner_ref) {
+<a href=#221 id=221 data-nosnippet>221</a>                <span class="kw">return </span><span class="prelude-val">Ok</span>(arena.alloc_bool(ArenaBoolExpr::Literal(!b)));
 <a href=#222 id=222 data-nosnippet>222</a>            }
-<a href=#223 id=223 data-nosnippet>223</a>            <span class="kw">let </span>right_ref = convert_bool_expr(right, arena, path_resolvers)<span class="question-mark">?</span>;
-<a href=#224 id=224 data-nosnippet>224</a>            <span class="comment">// CONSTANT FOLDING: x &amp;&amp; false =&gt; false, x &amp;&amp; true =&gt; x
-<a href=#225 id=225 data-nosnippet>225</a>            </span><span class="kw">if let </span><span class="prelude-val">Some</span>(right_val) = arena_bool_is_literal(arena, right_ref) {
-<a href=#226 id=226 data-nosnippet>226</a>                <span class="kw">if </span>!right_val {
-<a href=#227 id=227 data-nosnippet>227</a>                    <span class="kw">return </span><span class="prelude-val">Ok</span>(arena.alloc_bool(ArenaBoolExpr::Literal(<span class="bool-val">false</span>)));
-<a href=#228 id=228 data-nosnippet>228</a>                }
-<a href=#229 id=229 data-nosnippet>229</a>                <span class="kw">return </span><span class="prelude-val">Ok</span>(left_ref);
-<a href=#230 id=230 data-nosnippet>230</a>            }
-<a href=#231 id=231 data-nosnippet>231</a>            ArenaBoolExpr::And(left_ref, right_ref)
-<a href=#232 id=232 data-nosnippet>232</a>        }
-<a href=#233 id=233 data-nosnippet>233</a>        BoolExpr::Or(left, right) =&gt; {
-<a href=#234 id=234 data-nosnippet>234</a>            <span class="kw">let </span>left_ref = convert_bool_expr(left, arena, path_resolvers)<span class="question-mark">?</span>;
-<a href=#235 id=235 data-nosnippet>235</a>            <span class="comment">// CONSTANT FOLDING: true || x =&gt; true, false || x =&gt; x
-<a href=#236 id=236 data-nosnippet>236</a>            </span><span class="kw">if let </span><span class="prelude-val">Some</span>(left_val) = arena_bool_is_literal(arena, left_ref) {
-<a href=#237 id=237 data-nosnippet>237</a>                <span class="kw">if </span>left_val {
-<a href=#238 id=238 data-nosnippet>238</a>                    <span class="kw">return </span><span class="prelude-val">Ok</span>(arena.alloc_bool(ArenaBoolExpr::Literal(<span class="bool-val">true</span>)));
+<a href=#223 id=223 data-nosnippet>223</a>            ArenaBoolExpr::Not(inner_ref)
+<a href=#224 id=224 data-nosnippet>224</a>        }
+<a href=#225 id=225 data-nosnippet>225</a>        BoolExpr::And(left, right) =&gt; {
+<a href=#226 id=226 data-nosnippet>226</a>            <span class="kw">let </span>left_ref = convert_bool_expr(left, arena, path_resolvers)<span class="question-mark">?</span>;
+<a href=#227 id=227 data-nosnippet>227</a>            <span class="comment">// CONSTANT FOLDING: false &amp;&amp; x =&gt; false, true &amp;&amp; x =&gt; x
+<a href=#228 id=228 data-nosnippet>228</a>            </span><span class="kw">if let </span><span class="prelude-val">Some</span>(left_val) = arena_bool_is_literal(arena, left_ref) {
+<a href=#229 id=229 data-nosnippet>229</a>                <span class="kw">if </span>!left_val {
+<a href=#230 id=230 data-nosnippet>230</a>                    <span class="kw">return </span><span class="prelude-val">Ok</span>(arena.alloc_bool(ArenaBoolExpr::Literal(<span class="bool-val">false</span>)));
+<a href=#231 id=231 data-nosnippet>231</a>                }
+<a href=#232 id=232 data-nosnippet>232</a>                <span class="kw">return </span>convert_bool_expr(right, arena, path_resolvers);
+<a href=#233 id=233 data-nosnippet>233</a>            }
+<a href=#234 id=234 data-nosnippet>234</a>            <span class="kw">let </span>right_ref = convert_bool_expr(right, arena, path_resolvers)<span class="question-mark">?</span>;
+<a href=#235 id=235 data-nosnippet>235</a>            <span class="comment">// CONSTANT FOLDING: x &amp;&amp; false =&gt; false, x &amp;&amp; true =&gt; x
+<a href=#236 id=236 data-nosnippet>236</a>            </span><span class="kw">if let </span><span class="prelude-val">Some</span>(right_val) = arena_bool_is_literal(arena, right_ref) {
+<a href=#237 id=237 data-nosnippet>237</a>                <span class="kw">if </span>!right_val {
+<a href=#238 id=238 data-nosnippet>238</a>                    <span class="kw">return </span><span class="prelude-val">Ok</span>(arena.alloc_bool(ArenaBoolExpr::Literal(<span class="bool-val">false</span>)));
 <a href=#239 id=239 data-nosnippet>239</a>                }
-<a href=#240 id=240 data-nosnippet>240</a>                <span class="kw">return </span>convert_bool_expr(right, arena, path_resolvers);
+<a href=#240 id=240 data-nosnippet>240</a>                <span class="kw">return </span><span class="prelude-val">Ok</span>(left_ref);
 <a href=#241 id=241 data-nosnippet>241</a>            }
-<a href=#242 id=242 data-nosnippet>242</a>            <span class="kw">let </span>right_ref = convert_bool_expr(right, arena, path_resolvers)<span class="question-mark">?</span>;
-<a href=#243 id=243 data-nosnippet>243</a>            <span class="comment">// CONSTANT FOLDING: x || true =&gt; true, x || false =&gt; x
-<a href=#244 id=244 data-nosnippet>244</a>            </span><span class="kw">if let </span><span class="prelude-val">Some</span>(right_val) = arena_bool_is_literal(arena, right_ref) {
-<a href=#245 id=245 data-nosnippet>245</a>                <span class="kw">if </span>right_val {
-<a href=#246 id=246 data-nosnippet>246</a>                    <span class="kw">return </span><span class="prelude-val">Ok</span>(arena.alloc_bool(ArenaBoolExpr::Literal(<span class="bool-val">true</span>)));
-<a href=#247 id=247 data-nosnippet>247</a>                }
-<a href=#248 id=248 data-nosnippet>248</a>                <span class="kw">return </span><span class="prelude-val">Ok</span>(left_ref);
-<a href=#249 id=249 data-nosnippet>249</a>            }
-<a href=#250 id=250 data-nosnippet>250</a>            ArenaBoolExpr::Or(left_ref, right_ref)
-<a href=#251 id=251 data-nosnippet>251</a>        }
-<a href=#252 id=252 data-nosnippet>252</a>    };
-<a href=#253 id=253 data-nosnippet>253</a>    <span class="prelude-val">Ok</span>(arena.alloc_bool(arena_expr))
-<a href=#254 id=254 data-nosnippet>254</a>}
-<a href=#255 id=255 data-nosnippet>255</a>
-<a href=#256 id=256 data-nosnippet>256</a><span class="doccomment">/// Converts a boxed [`MathExpr`] into arena-based form, allocating nodes in `arena` and returning a [`MathExprRef`].
-<a href=#257 id=257 data-nosnippet>257</a>///
-<a href=#258 id=258 data-nosnippet>258</a>/// - Recursively converts primary value expressions and nested math expressions.
-<a href=#259 id=259 data-nosnippet>259</a>/// - Applies **constant folding**: negate of literal, binary `literal op literal` → computed literal,
-<a href=#260 id=260 data-nosnippet>260</a>///   so the arena may contain a single [`ArenaMathExpr::Primary`] where the source had a tree.
-<a href=#261 id=261 data-nosnippet>261</a></span><span class="kw">fn </span>convert_math_expr&lt;C&gt;(
-<a href=#262 id=262 data-nosnippet>262</a>    expr: <span class="kw-2">&amp;</span>MathExpr&lt;C&gt;, arena: <span class="kw-2">&amp;mut </span>AstArena&lt;C&gt;, path_resolvers: <span class="kw-2">&amp;</span>PathResolverMap&lt;C&gt;,
-<a href=#263 id=263 data-nosnippet>263</a>) -&gt; <span class="prelude-ty">Result</span>&lt;MathExprRef&gt; {
-<a href=#264 id=264 data-nosnippet>264</a>    <span class="kw">let </span>arena_expr = <span class="kw">match </span>expr {
-<a href=#265 id=265 data-nosnippet>265</a>        MathExpr::Primary(v) =&gt; {
-<a href=#266 id=266 data-nosnippet>266</a>            <span class="kw">let </span>v_ref = convert_value_expr(v, arena, path_resolvers)<span class="question-mark">?</span>;
-<a href=#267 id=267 data-nosnippet>267</a>            ArenaMathExpr::Primary(v_ref)
-<a href=#268 id=268 data-nosnippet>268</a>        }
-<a href=#269 id=269 data-nosnippet>269</a>        MathExpr::Negate(inner) =&gt; {
-<a href=#270 id=270 data-nosnippet>270</a>            <span class="comment">// CONSTANT FOLDING: -literal =&gt; literal negated
-<a href=#271 id=271 data-nosnippet>271</a>            </span><span class="kw">if let </span><span class="prelude-val">Some</span>(val) = try_get_math_literal(inner) {
-<a href=#272 id=272 data-nosnippet>272</a>                <span class="kw">let </span>negated = <span class="kw">match </span>val {
-<a href=#273 id=273 data-nosnippet>273</a>                    Value::Int(i) =&gt; <span class="prelude-val">Some</span>(Value::Int(-i)),
-<a href=#274 id=274 data-nosnippet>274</a>                    Value::Float(f) =&gt; <span class="prelude-val">Some</span>(Value::Float(-f)),
-<a href=#275 id=275 data-nosnippet>275</a>                    <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
-<a href=#276 id=276 data-nosnippet>276</a>                };
-<a href=#277 id=277 data-nosnippet>277</a>                <span class="kw">if let </span><span class="prelude-val">Some</span>(v) = negated {
-<a href=#278 id=278 data-nosnippet>278</a>                    <span class="kw">let </span>v_ref = arena.alloc_value(ArenaValueExpr::Literal(v));
-<a href=#279 id=279 data-nosnippet>279</a>                    <span class="kw">return </span><span class="prelude-val">Ok</span>(arena.alloc_math(ArenaMathExpr::Primary(v_ref)));
-<a href=#280 id=280 data-nosnippet>280</a>                }
-<a href=#281 id=281 data-nosnippet>281</a>            }
-<a href=#282 id=282 data-nosnippet>282</a>            <span class="kw">let </span>inner_ref = convert_math_expr(inner, arena, path_resolvers)<span class="question-mark">?</span>;
-<a href=#283 id=283 data-nosnippet>283</a>            ArenaMathExpr::Negate(inner_ref)
-<a href=#284 id=284 data-nosnippet>284</a>        }
-<a href=#285 id=285 data-nosnippet>285</a>        MathExpr::Binary { left, op, right } =&gt; {
-<a href=#286 id=286 data-nosnippet>286</a>            <span class="comment">// CONSTANT FOLDING: literal op literal =&gt; computed literal
-<a href=#287 id=287 data-nosnippet>287</a>            </span><span class="kw">if let </span>(<span class="prelude-val">Some</span>(left_val), <span class="prelude-val">Some</span>(right_val)) = (try_get_math_literal(left), try_get_math_literal(right)) {
-<a href=#288 id=288 data-nosnippet>288</a>                <span class="kw">if let </span><span class="prelude-val">Some</span>(result) = try_math_op(left_val, op, right_val) {
-<a href=#289 id=289 data-nosnippet>289</a>                    <span class="kw">let </span>v_ref = arena.alloc_value(ArenaValueExpr::Literal(result));
+<a href=#242 id=242 data-nosnippet>242</a>            ArenaBoolExpr::And(left_ref, right_ref)
+<a href=#243 id=243 data-nosnippet>243</a>        }
+<a href=#244 id=244 data-nosnippet>244</a>        BoolExpr::Or(left, right) =&gt; {
+<a href=#245 id=245 data-nosnippet>245</a>            <span class="kw">let </span>left_ref = convert_bool_expr(left, arena, path_resolvers)<span class="question-mark">?</span>;
+<a href=#246 id=246 data-nosnippet>246</a>            <span class="comment">// CONSTANT FOLDING: true || x =&gt; true, false || x =&gt; x
+<a href=#247 id=247 data-nosnippet>247</a>            </span><span class="kw">if let </span><span class="prelude-val">Some</span>(left_val) = arena_bool_is_literal(arena, left_ref) {
+<a href=#248 id=248 data-nosnippet>248</a>                <span class="kw">if </span>left_val {
+<a href=#249 id=249 data-nosnippet>249</a>                    <span class="kw">return </span><span class="prelude-val">Ok</span>(arena.alloc_bool(ArenaBoolExpr::Literal(<span class="bool-val">true</span>)));
+<a href=#250 id=250 data-nosnippet>250</a>                }
+<a href=#251 id=251 data-nosnippet>251</a>                <span class="kw">return </span>convert_bool_expr(right, arena, path_resolvers);
+<a href=#252 id=252 data-nosnippet>252</a>            }
+<a href=#253 id=253 data-nosnippet>253</a>            <span class="kw">let </span>right_ref = convert_bool_expr(right, arena, path_resolvers)<span class="question-mark">?</span>;
+<a href=#254 id=254 data-nosnippet>254</a>            <span class="comment">// CONSTANT FOLDING: x || true =&gt; true, x || false =&gt; x
+<a href=#255 id=255 data-nosnippet>255</a>            </span><span class="kw">if let </span><span class="prelude-val">Some</span>(right_val) = arena_bool_is_literal(arena, right_ref) {
+<a href=#256 id=256 data-nosnippet>256</a>                <span class="kw">if </span>right_val {
+<a href=#257 id=257 data-nosnippet>257</a>                    <span class="kw">return </span><span class="prelude-val">Ok</span>(arena.alloc_bool(ArenaBoolExpr::Literal(<span class="bool-val">true</span>)));
+<a href=#258 id=258 data-nosnippet>258</a>                }
+<a href=#259 id=259 data-nosnippet>259</a>                <span class="kw">return </span><span class="prelude-val">Ok</span>(left_ref);
+<a href=#260 id=260 data-nosnippet>260</a>            }
+<a href=#261 id=261 data-nosnippet>261</a>            ArenaBoolExpr::Or(left_ref, right_ref)
+<a href=#262 id=262 data-nosnippet>262</a>        }
+<a href=#263 id=263 data-nosnippet>263</a>    };
+<a href=#264 id=264 data-nosnippet>264</a>    <span class="prelude-val">Ok</span>(arena.alloc_bool(arena_expr))
+<a href=#265 id=265 data-nosnippet>265</a>}
+<a href=#266 id=266 data-nosnippet>266</a>
+<a href=#267 id=267 data-nosnippet>267</a><span class="doccomment">/// Converts a boxed [`MathExpr`] into arena-based form, allocating nodes in `arena` and returning a [`MathExprRef`].
+<a href=#268 id=268 data-nosnippet>268</a>///
+<a href=#269 id=269 data-nosnippet>269</a>/// - Recursively converts primary value expressions and nested math expressions.
+<a href=#270 id=270 data-nosnippet>270</a>/// - Applies **constant folding**: negate of literal, binary `literal op literal` → computed literal,
+<a href=#271 id=271 data-nosnippet>271</a>///   so the arena may contain a single [`ArenaMathExpr::Primary`] where the source had a tree.
+<a href=#272 id=272 data-nosnippet>272</a></span><span class="kw">fn </span>convert_math_expr&lt;F: EvalContextFamily&gt;(
+<a href=#273 id=273 data-nosnippet>273</a>    expr: <span class="kw-2">&amp;</span>MathExpr, arena: <span class="kw-2">&amp;mut </span>AstArena&lt;F&gt;, path_resolvers: <span class="kw-2">&amp;</span>PathResolverMap&lt;F&gt;,
+<a href=#274 id=274 data-nosnippet>274</a>) -&gt; <span class="prelude-ty">Result</span>&lt;MathExprRef&gt; {
+<a href=#275 id=275 data-nosnippet>275</a>    <span class="kw">let </span>arena_expr = <span class="kw">match </span>expr {
+<a href=#276 id=276 data-nosnippet>276</a>        MathExpr::Primary(v) =&gt; {
+<a href=#277 id=277 data-nosnippet>277</a>            <span class="kw">let </span>v_ref = convert_value_expr(v, arena, path_resolvers)<span class="question-mark">?</span>;
+<a href=#278 id=278 data-nosnippet>278</a>            ArenaMathExpr::Primary(v_ref)
+<a href=#279 id=279 data-nosnippet>279</a>        }
+<a href=#280 id=280 data-nosnippet>280</a>        MathExpr::Negate(inner) =&gt; {
+<a href=#281 id=281 data-nosnippet>281</a>            <span class="comment">// CONSTANT FOLDING: -literal =&gt; literal negated
+<a href=#282 id=282 data-nosnippet>282</a>            </span><span class="kw">if let </span><span class="prelude-val">Some</span>(val) = try_get_math_literal(inner) {
+<a href=#283 id=283 data-nosnippet>283</a>                <span class="kw">let </span>negated = <span class="kw">match </span>val {
+<a href=#284 id=284 data-nosnippet>284</a>                    Value::Int(i) =&gt; <span class="prelude-val">Some</span>(Value::Int(-i)),
+<a href=#285 id=285 data-nosnippet>285</a>                    Value::Float(f) =&gt; <span class="prelude-val">Some</span>(Value::Float(-f)),
+<a href=#286 id=286 data-nosnippet>286</a>                    <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
+<a href=#287 id=287 data-nosnippet>287</a>                };
+<a href=#288 id=288 data-nosnippet>288</a>                <span class="kw">if let </span><span class="prelude-val">Some</span>(v) = negated {
+<a href=#289 id=289 data-nosnippet>289</a>                    <span class="kw">let </span>v_ref = arena.alloc_value(ArenaValueExpr::Literal(v));
 <a href=#290 id=290 data-nosnippet>290</a>                    <span class="kw">return </span><span class="prelude-val">Ok</span>(arena.alloc_math(ArenaMathExpr::Primary(v_ref)));
 <a href=#291 id=291 data-nosnippet>291</a>                }
 <a href=#292 id=292 data-nosnippet>292</a>            }
-<a href=#293 id=293 data-nosnippet>293</a>            <span class="kw">let </span>left_ref = convert_math_expr(left, arena, path_resolvers)<span class="question-mark">?</span>;
-<a href=#294 id=294 data-nosnippet>294</a>            <span class="kw">let </span>right_ref = convert_math_expr(right, arena, path_resolvers)<span class="question-mark">?</span>;
-<a href=#295 id=295 data-nosnippet>295</a>            ArenaMathExpr::Binary {
-<a href=#296 id=296 data-nosnippet>296</a>                left: left_ref,
-<a href=#297 id=297 data-nosnippet>297</a>                op: <span class="kw-2">*</span>op,
-<a href=#298 id=298 data-nosnippet>298</a>                right: right_ref,
-<a href=#299 id=299 data-nosnippet>299</a>            }
-<a href=#300 id=300 data-nosnippet>300</a>        }
-<a href=#301 id=301 data-nosnippet>301</a>    };
-<a href=#302 id=302 data-nosnippet>302</a>    <span class="prelude-val">Ok</span>(arena.alloc_math(arena_expr))
-<a href=#303 id=303 data-nosnippet>303</a>}
-<a href=#304 id=304 data-nosnippet>304</a>
-<a href=#305 id=305 data-nosnippet>305</a><span class="doccomment">/// Converts a boxed [`ValueExpr`] into arena-based form, allocating nodes in `arena` and returning a [`ValueExprRef`].
-<a href=#306 id=306 data-nosnippet>306</a>///
-<a href=#307 id=307 data-nosnippet>307</a>/// - Resolves paths via [`resolve_path`] (path → [`ResolvedPath`] with [`crate::PathAccessor`]).
-<a href=#308 id=308 data-nosnippet>308</a>/// - Recursively converts list items, map entries, nested function calls, and math expressions.
-<a href=#309 id=309 data-nosnippet>309</a>/// - Literals are stored as-is without further conversion.
-<a href=#310 id=310 data-nosnippet>310</a></span><span class="kw">fn </span>convert_value_expr&lt;C&gt;(
-<a href=#311 id=311 data-nosnippet>311</a>    expr: <span class="kw-2">&amp;</span>ValueExpr&lt;C&gt;, arena: <span class="kw-2">&amp;mut </span>AstArena&lt;C&gt;, path_resolvers: <span class="kw-2">&amp;</span>PathResolverMap&lt;C&gt;,
-<a href=#312 id=312 data-nosnippet>312</a>) -&gt; <span class="prelude-ty">Result</span>&lt;ValueExprRef&gt; {
-<a href=#313 id=313 data-nosnippet>313</a>    <span class="kw">let </span>arena_expr = <span class="kw">match </span>expr {
-<a href=#314 id=314 data-nosnippet>314</a>        ValueExpr::Literal(v) =&gt; ArenaValueExpr::Literal(v.clone()),
-<a href=#315 id=315 data-nosnippet>315</a>        ValueExpr::Path(path) =&gt; {
-<a href=#316 id=316 data-nosnippet>316</a>            <span class="kw">let </span>resolved = resolve_path(path, path_resolvers)<span class="question-mark">?</span>;
-<a href=#317 id=317 data-nosnippet>317</a>            ArenaValueExpr::Path(resolved)
-<a href=#318 id=318 data-nosnippet>318</a>        }
-<a href=#319 id=319 data-nosnippet>319</a>        ValueExpr::List(items) =&gt; {
-<a href=#320 id=320 data-nosnippet>320</a>            <span class="kw">let </span>refs: <span class="prelude-ty">Result</span>&lt;Vec&lt;<span class="kw">_</span>&gt;&gt; = items
-<a href=#321 id=321 data-nosnippet>321</a>                .iter()
-<a href=#322 id=322 data-nosnippet>322</a>                .map(|i| convert_value_expr(i, arena, path_resolvers))
-<a href=#323 id=323 data-nosnippet>323</a>                .collect();
-<a href=#324 id=324 data-nosnippet>324</a>            ArenaValueExpr::List(refs<span class="question-mark">?</span>)
-<a href=#325 id=325 data-nosnippet>325</a>        }
-<a href=#326 id=326 data-nosnippet>326</a>        ValueExpr::Map(entries) =&gt; {
-<a href=#327 id=327 data-nosnippet>327</a>            <span class="kw">let </span>refs: <span class="prelude-ty">Result</span>&lt;Vec&lt;<span class="kw">_</span>&gt;&gt; = entries
-<a href=#328 id=328 data-nosnippet>328</a>                .iter()
-<a href=#329 id=329 data-nosnippet>329</a>                .map(|(k, v)| <span class="prelude-val">Ok</span>((k.clone(), convert_value_expr(v, arena, path_resolvers)<span class="question-mark">?</span>)))
-<a href=#330 id=330 data-nosnippet>330</a>                .collect();
-<a href=#331 id=331 data-nosnippet>331</a>            ArenaValueExpr::Map(refs<span class="question-mark">?</span>)
-<a href=#332 id=332 data-nosnippet>332</a>        }
-<a href=#333 id=333 data-nosnippet>333</a>        ValueExpr::FunctionCall(fc) =&gt; {
-<a href=#334 id=334 data-nosnippet>334</a>            <span class="kw">let </span>fc_ref = convert_function_call(fc, arena, path_resolvers)<span class="question-mark">?</span>;
-<a href=#335 id=335 data-nosnippet>335</a>            ArenaValueExpr::FunctionCall(fc_ref)
+<a href=#293 id=293 data-nosnippet>293</a>            <span class="kw">let </span>inner_ref = convert_math_expr(inner, arena, path_resolvers)<span class="question-mark">?</span>;
+<a href=#294 id=294 data-nosnippet>294</a>            ArenaMathExpr::Negate(inner_ref)
+<a href=#295 id=295 data-nosnippet>295</a>        }
+<a href=#296 id=296 data-nosnippet>296</a>        MathExpr::Binary { left, op, right } =&gt; {
+<a href=#297 id=297 data-nosnippet>297</a>            <span class="comment">// CONSTANT FOLDING: literal op literal =&gt; computed literal
+<a href=#298 id=298 data-nosnippet>298</a>            </span><span class="kw">if let </span>(<span class="prelude-val">Some</span>(left_val), <span class="prelude-val">Some</span>(right_val)) = (try_get_math_literal(left), try_get_math_literal(right)) {
+<a href=#299 id=299 data-nosnippet>299</a>                <span class="kw">if let </span><span class="prelude-val">Some</span>(result) = try_math_op(left_val, op, right_val) {
+<a href=#300 id=300 data-nosnippet>300</a>                    <span class="kw">let </span>v_ref = arena.alloc_value(ArenaValueExpr::Literal(result));
+<a href=#301 id=301 data-nosnippet>301</a>                    <span class="kw">return </span><span class="prelude-val">Ok</span>(arena.alloc_math(ArenaMathExpr::Primary(v_ref)));
+<a href=#302 id=302 data-nosnippet>302</a>                }
+<a href=#303 id=303 data-nosnippet>303</a>            }
+<a href=#304 id=304 data-nosnippet>304</a>            <span class="kw">let </span>left_ref = convert_math_expr(left, arena, path_resolvers)<span class="question-mark">?</span>;
+<a href=#305 id=305 data-nosnippet>305</a>            <span class="kw">let </span>right_ref = convert_math_expr(right, arena, path_resolvers)<span class="question-mark">?</span>;
+<a href=#306 id=306 data-nosnippet>306</a>            ArenaMathExpr::Binary {
+<a href=#307 id=307 data-nosnippet>307</a>                left: left_ref,
+<a href=#308 id=308 data-nosnippet>308</a>                op: <span class="kw-2">*</span>op,
+<a href=#309 id=309 data-nosnippet>309</a>                right: right_ref,
+<a href=#310 id=310 data-nosnippet>310</a>            }
+<a href=#311 id=311 data-nosnippet>311</a>        }
+<a href=#312 id=312 data-nosnippet>312</a>    };
+<a href=#313 id=313 data-nosnippet>313</a>    <span class="prelude-val">Ok</span>(arena.alloc_math(arena_expr))
+<a href=#314 id=314 data-nosnippet>314</a>}
+<a href=#315 id=315 data-nosnippet>315</a>
+<a href=#316 id=316 data-nosnippet>316</a><span class="doccomment">/// Converts a boxed [`ValueExpr`] into arena-based form, allocating nodes in `arena` and returning a [`ValueExprRef`].
+<a href=#317 id=317 data-nosnippet>317</a>///
+<a href=#318 id=318 data-nosnippet>318</a>/// - Resolves paths via [`resolve_path`] (path → [`ResolvedPath`] with [`crate::PathAccessor`]).
+<a href=#319 id=319 data-nosnippet>319</a>/// - Recursively converts list items, map entries, nested function calls, and math expressions.
+<a href=#320 id=320 data-nosnippet>320</a>/// - Literals are stored as-is without further conversion.
+<a href=#321 id=321 data-nosnippet>321</a></span><span class="kw">fn </span>convert_value_expr&lt;F: EvalContextFamily&gt;(
+<a href=#322 id=322 data-nosnippet>322</a>    expr: <span class="kw-2">&amp;</span>ValueExpr, arena: <span class="kw-2">&amp;mut </span>AstArena&lt;F&gt;, path_resolvers: <span class="kw-2">&amp;</span>PathResolverMap&lt;F&gt;,
+<a href=#323 id=323 data-nosnippet>323</a>) -&gt; <span class="prelude-ty">Result</span>&lt;ValueExprRef&gt; {
+<a href=#324 id=324 data-nosnippet>324</a>    <span class="kw">let </span>arena_expr = <span class="kw">match </span>expr {
+<a href=#325 id=325 data-nosnippet>325</a>        ValueExpr::Literal(v) =&gt; ArenaValueExpr::Literal(v.clone()),
+<a href=#326 id=326 data-nosnippet>326</a>        ValueExpr::Path(path) =&gt; {
+<a href=#327 id=327 data-nosnippet>327</a>            <span class="kw">let </span>resolved = resolve_path(path, path_resolvers)<span class="question-mark">?</span>;
+<a href=#328 id=328 data-nosnippet>328</a>            ArenaValueExpr::Path(resolved)
+<a href=#329 id=329 data-nosnippet>329</a>        }
+<a href=#330 id=330 data-nosnippet>330</a>        ValueExpr::List(items) =&gt; {
+<a href=#331 id=331 data-nosnippet>331</a>            <span class="kw">let </span>refs: <span class="prelude-ty">Result</span>&lt;Vec&lt;<span class="kw">_</span>&gt;&gt; = items
+<a href=#332 id=332 data-nosnippet>332</a>                .iter()
+<a href=#333 id=333 data-nosnippet>333</a>                .map(|i| convert_value_expr(i, arena, path_resolvers))
+<a href=#334 id=334 data-nosnippet>334</a>                .collect();
+<a href=#335 id=335 data-nosnippet>335</a>            ArenaValueExpr::List(refs<span class="question-mark">?</span>)
 <a href=#336 id=336 data-nosnippet>336</a>        }
-<a href=#337 id=337 data-nosnippet>337</a>        ValueExpr::Math(m) =&gt; {
-<a href=#338 id=338 data-nosnippet>338</a>            <span class="kw">let </span>m_ref = convert_math_expr(m, arena, path_resolvers)<span class="question-mark">?</span>;
-<a href=#339 id=339 data-nosnippet>339</a>            ArenaValueExpr::Math(m_ref)
-<a href=#340 id=340 data-nosnippet>340</a>        }
-<a href=#341 id=341 data-nosnippet>341</a>    };
-<a href=#342 id=342 data-nosnippet>342</a>    <span class="prelude-val">Ok</span>(arena.alloc_value(arena_expr))
-<a href=#343 id=343 data-nosnippet>343</a>}
-<a href=#344 id=344 data-nosnippet>344</a>
-<a href=#345 id=345 data-nosnippet>345</a><span class="doccomment">/// Converts a boxed [`FunctionCall`] into arena-based form, allocating in `arena` and returning a [`FunctionCallRef`].
-<a href=#346 id=346 data-nosnippet>346</a>///
-<a href=#347 id=347 data-nosnippet>347</a>/// - Converts all arguments (positional and named) to arena value refs via [`convert_value_expr`].
-<a href=#348 id=348 data-nosnippet>348</a>/// - Preserves `name`, `is_editor`, `indexes`, and the pre-resolved `callback` from the source AST.
-<a href=#349 id=349 data-nosnippet>349</a>/// - Does not resolve callbacks here; the parser is expected to have attached [`CallbackFn`] when applicable.
-<a href=#350 id=350 data-nosnippet>350</a></span><span class="kw">fn </span>convert_function_call&lt;C&gt;(
-<a href=#351 id=351 data-nosnippet>351</a>    fc: <span class="kw-2">&amp;</span>FunctionCall&lt;C&gt;, arena: <span class="kw-2">&amp;mut </span>AstArena&lt;C&gt;, path_resolvers: <span class="kw-2">&amp;</span>PathResolverMap&lt;C&gt;,
-<a href=#352 id=352 data-nosnippet>352</a>) -&gt; <span class="prelude-ty">Result</span>&lt;FunctionCallRef&gt; {
-<a href=#353 id=353 data-nosnippet>353</a>    <span class="kw">let </span>args: <span class="prelude-ty">Result</span>&lt;Vec&lt;<span class="kw">_</span>&gt;&gt; = fc
-<a href=#354 id=354 data-nosnippet>354</a>        .args
-<a href=#355 id=355 data-nosnippet>355</a>        .iter()
-<a href=#356 id=356 data-nosnippet>356</a>        .map(|arg| <span class="kw">match </span>arg {
-<a href=#357 id=357 data-nosnippet>357</a>            ArgExpr::Positional(v) =&gt; <span class="prelude-val">Ok</span>(ArenaArgExpr::Positional(convert_value_expr(v, arena, path_resolvers)<span class="question-mark">?</span>)),
-<a href=#358 id=358 data-nosnippet>358</a>            ArgExpr::Named { name, value } =&gt; <span class="prelude-val">Ok</span>(ArenaArgExpr::Named {
-<a href=#359 id=359 data-nosnippet>359</a>                name: name.clone(),
-<a href=#360 id=360 data-nosnippet>360</a>                value: convert_value_expr(value, arena, path_resolvers)<span class="question-mark">?</span>,
-<a href=#361 id=361 data-nosnippet>361</a>            }),
-<a href=#362 id=362 data-nosnippet>362</a>        })
-<a href=#363 id=363 data-nosnippet>363</a>        .collect();
-<a href=#364 id=364 data-nosnippet>364</a>
-<a href=#365 id=365 data-nosnippet>365</a>    <span class="kw">let </span>arena_fc = ArenaFunctionCall {
-<a href=#366 id=366 data-nosnippet>366</a>        name: fc.name.clone(),
-<a href=#367 id=367 data-nosnippet>367</a>        is_editor: fc.is_editor,
-<a href=#368 id=368 data-nosnippet>368</a>        args: args<span class="question-mark">?</span>,
-<a href=#369 id=369 data-nosnippet>369</a>        indexes: fc.indexes.clone(),
-<a href=#370 id=370 data-nosnippet>370</a>        callback: fc.callback.clone(),
-<a href=#371 id=371 data-nosnippet>371</a>    };
-<a href=#372 id=372 data-nosnippet>372</a>    <span class="prelude-val">Ok</span>(arena.alloc_func(arena_fc))
-<a href=#373 id=373 data-nosnippet>373</a>}
+<a href=#337 id=337 data-nosnippet>337</a>        ValueExpr::Map(entries) =&gt; {
+<a href=#338 id=338 data-nosnippet>338</a>            <span class="kw">let </span>refs: <span class="prelude-ty">Result</span>&lt;Vec&lt;<span class="kw">_</span>&gt;&gt; = entries
+<a href=#339 id=339 data-nosnippet>339</a>                .iter()
+<a href=#340 id=340 data-nosnippet>340</a>                .map(|(k, v)| <span class="prelude-val">Ok</span>((k.clone(), convert_value_expr(v, arena, path_resolvers)<span class="question-mark">?</span>)))
+<a href=#341 id=341 data-nosnippet>341</a>                .collect();
+<a href=#342 id=342 data-nosnippet>342</a>            ArenaValueExpr::Map(refs<span class="question-mark">?</span>)
+<a href=#343 id=343 data-nosnippet>343</a>        }
+<a href=#344 id=344 data-nosnippet>344</a>        ValueExpr::FunctionCall(fc) =&gt; {
+<a href=#345 id=345 data-nosnippet>345</a>            <span class="kw">let </span>fc_ref = convert_function_call(fc, arena, path_resolvers)<span class="question-mark">?</span>;
+<a href=#346 id=346 data-nosnippet>346</a>            ArenaValueExpr::FunctionCall(fc_ref)
+<a href=#347 id=347 data-nosnippet>347</a>        }
+<a href=#348 id=348 data-nosnippet>348</a>        ValueExpr::Math(m) =&gt; {
+<a href=#349 id=349 data-nosnippet>349</a>            <span class="kw">let </span>m_ref = convert_math_expr(m, arena, path_resolvers)<span class="question-mark">?</span>;
+<a href=#350 id=350 data-nosnippet>350</a>            ArenaValueExpr::Math(m_ref)
+<a href=#351 id=351 data-nosnippet>351</a>        }
+<a href=#352 id=352 data-nosnippet>352</a>    };
+<a href=#353 id=353 data-nosnippet>353</a>    <span class="prelude-val">Ok</span>(arena.alloc_value(arena_expr))
+<a href=#354 id=354 data-nosnippet>354</a>}
+<a href=#355 id=355 data-nosnippet>355</a>
+<a href=#356 id=356 data-nosnippet>356</a><span class="doccomment">/// Converts a boxed [`FunctionCall`] into arena-based form, allocating in `arena` and returning a [`FunctionCallRef`].
+<a href=#357 id=357 data-nosnippet>357</a>///
+<a href=#358 id=358 data-nosnippet>358</a>/// - Converts all arguments (positional and named) to arena value refs via [`convert_value_expr`].
+<a href=#359 id=359 data-nosnippet>359</a>/// - Preserves `name`, `is_editor`, `indexes`, and the pre-resolved `callback` from the source AST.
+<a href=#360 id=360 data-nosnippet>360</a>/// - Does not resolve callbacks here; the parser is expected to have attached [`CallbackFn`] when applicable.
+<a href=#361 id=361 data-nosnippet>361</a></span><span class="kw">fn </span>convert_function_call&lt;F: EvalContextFamily&gt;(
+<a href=#362 id=362 data-nosnippet>362</a>    fc: <span class="kw-2">&amp;</span>FunctionCall, arena: <span class="kw-2">&amp;mut </span>AstArena&lt;F&gt;, path_resolvers: <span class="kw-2">&amp;</span>PathResolverMap&lt;F&gt;,
+<a href=#363 id=363 data-nosnippet>363</a>) -&gt; <span class="prelude-ty">Result</span>&lt;FunctionCallRef&gt; {
+<a href=#364 id=364 data-nosnippet>364</a>    <span class="kw">let </span>args: <span class="prelude-ty">Result</span>&lt;Vec&lt;<span class="kw">_</span>&gt;&gt; = fc
+<a href=#365 id=365 data-nosnippet>365</a>        .args
+<a href=#366 id=366 data-nosnippet>366</a>        .iter()
+<a href=#367 id=367 data-nosnippet>367</a>        .map(|arg| <span class="kw">match </span>arg {
+<a href=#368 id=368 data-nosnippet>368</a>            ArgExpr::Positional(v) =&gt; <span class="prelude-val">Ok</span>(ArenaArgExpr::Positional(convert_value_expr(v, arena, path_resolvers)<span class="question-mark">?</span>)),
+<a href=#369 id=369 data-nosnippet>369</a>            ArgExpr::Named { name, value } =&gt; <span class="prelude-val">Ok</span>(ArenaArgExpr::Named {
+<a href=#370 id=370 data-nosnippet>370</a>                name: name.clone(),
+<a href=#371 id=371 data-nosnippet>371</a>                value: convert_value_expr(value, arena, path_resolvers)<span class="question-mark">?</span>,
+<a href=#372 id=372 data-nosnippet>372</a>            }),
+<a href=#373 id=373 data-nosnippet>373</a>        })
+<a href=#374 id=374 data-nosnippet>374</a>        .collect();
+<a href=#375 id=375 data-nosnippet>375</a>
+<a href=#376 id=376 data-nosnippet>376</a>    <span class="kw">let </span>arena_fc = ArenaFunctionCall {
+<a href=#377 id=377 data-nosnippet>377</a>        name: fc.name.clone(),
+<a href=#378 id=378 data-nosnippet>378</a>        is_editor: fc.is_editor,
+<a href=#379 id=379 data-nosnippet>379</a>        args: args<span class="question-mark">?</span>,
+<a href=#380 id=380 data-nosnippet>380</a>        indexes: fc.indexes.clone(),
+<a href=#381 id=381 data-nosnippet>381</a>        callback: fc.callback.clone(),
+<a href=#382 id=382 data-nosnippet>382</a>    };
+<a href=#383 id=383 data-nosnippet>383</a>    <span class="prelude-val">Ok</span>(arena.alloc_func(arena_fc))
+<a href=#384 id=384 data-nosnippet>384</a>}
 </code></pre></div></section></main></body></html>
