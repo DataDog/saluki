@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "bin/agent-data-plane",
+  "bin/ottl-sandbox",
   "bin/correctness/airlock",
   "bin/correctness/datadog-intake",
   "bin/correctness/ground-truth",
