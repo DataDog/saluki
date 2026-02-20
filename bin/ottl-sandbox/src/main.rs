@@ -50,8 +50,8 @@ impl<C> OttlParser<C> for Parser<C> {
             msg
         })?;
         let accessor = resolver()?;
-        accessor.get(&*ctx)?;
         accessor.set(ctx)?;
+        accessor.get(&*ctx)?;
         Ok(())
     }
 }
@@ -60,44 +60,70 @@ impl<C> OttlParser<C> for Parser<C> {
 // Context and PathAccessor implementation for the sandbox
 // =============================================================================
 
-/// Context type for the sandbox (holds a vector of integers).
-#[derive(Debug, Default)]
-pub struct Ctx {
+/// Context type for the sandbox (holds a vector of integers and a reference to one).
+#[derive(Debug)]
+pub struct Ctx<'a> {
     /// Vector of integers stored in the context.
     pub numbers: Vec<i64>,
+    /// Reference to a vector of integers.
+    pub numbers_ref: &'a mut Vec<i64>,
 }
 
 /// PathAccessor implementation that does nothing (for sandbox).
 #[derive(Debug)]
 pub struct EmptyPathAccessor;
 
-impl PathAccessor<Ctx> for EmptyPathAccessor {
-    fn get(&self, ctx: &Ctx) -> Result<()> {
-        println!("ctx.numbers = {:?}", ctx.numbers);
+impl<'a> PathAccessor<Ctx<'a>> for EmptyPathAccessor {
+    fn get(&self, ctx: &Ctx<'a>) -> Result<()> {
+        println!(
+            "ctx.numbers = [{}]",
+            ctx.numbers
+                .iter()
+                .map(|n| format!("0x{:x}", n))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        println!(
+            "ctx.numbers_ref = [{}]",
+            ctx.numbers_ref
+                .iter()
+                .map(|n| format!("0x{:x}", n))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
         Ok(())
     }
 
-    fn set(&self, _ctx: &mut Ctx) -> Result<()> {
+    fn set(&self, ctx: &mut Ctx<'a>) -> Result<()> {
+        ctx.numbers.push(0xDEADBEEF);
+        ctx.numbers_ref.push(0xDEADBEEF);
         Ok(())
     }
 }
 
-fn main() {
-    let mut path_resolver_map: PathResolverMap<Ctx> = HashMap::new();
-    path_resolver_map.insert(
-        "attr".to_string(),
-        Arc::new(|| Ok(Arc::new(EmptyPathAccessor) as Arc<dyn PathAccessor<Ctx> + Send + Sync>)),
-    );
-
-    let parser = Parser::<Ctx>::new(path_resolver_map);
+fn parser_exec<'a>(parser: &Parser<Ctx<'a>>, extra: &'a mut Vec<i64>) {
     let mut ctx = Ctx {
         numbers: vec![1, 2, 3],
+        numbers_ref: extra,
     };
 
     if let Err(e) = parser.execute(&mut ctx, "attr") {
         eprintln!("execute error: {}", e);
         std::process::exit(1);
     }
+}
+
+fn main() {
+    let mut extra = vec![10, 20, 30];
+
+    let mut path_resolver_map: PathResolverMap<Ctx<'_>> = HashMap::new();
+    path_resolver_map.insert(
+        "attr".to_string(),
+        Arc::new(|| Ok(Arc::new(EmptyPathAccessor) as Arc<dyn PathAccessor<Ctx<'_>> + Send + Sync>)),
+    );
+
+    let parser = Parser::<Ctx<'_>>::new(path_resolver_map);
+    parser_exec(&parser, &mut extra);
 
     println!("Привет, мир!");
 }
