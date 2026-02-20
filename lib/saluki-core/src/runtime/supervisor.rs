@@ -698,19 +698,23 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use async_trait::async_trait;
-    use tokio::time::timeout;
+    use tokio::{
+        sync::oneshot,
+        task::JoinHandle,
+        time::{sleep, timeout},
+    };
 
     use super::*;
-
-    // -- Test infrastructure ---------------------------------------------------------------
 
     /// Behavior for a mock worker during initialization.
     #[derive(Clone)]
     enum InitBehavior {
         /// Initialization succeeds immediately.
         Instant,
+
         /// Initialization takes the given duration before succeeding.
         Slow(Duration),
+
         /// Initialization fails with the given message.
         Fail(&'static str),
     }
@@ -720,6 +724,7 @@ mod tests {
     enum RunBehavior {
         /// Runs until shutdown is received.
         UntilShutdown,
+
         /// Fails with the given error message after the given delay.
         FailAfter(Duration, &'static str),
     }
@@ -795,7 +800,7 @@ mod tests {
             match &self.init_behavior {
                 InitBehavior::Instant => {}
                 InitBehavior::Slow(delay) => {
-                    tokio::time::sleep(*delay).await;
+                    sleep(*delay).await;
                 }
                 InitBehavior::Fail(msg) => {
                     return Err(InitializationError::Failed {
@@ -817,7 +822,7 @@ mod tests {
                     }
                     RunBehavior::FailAfter(delay, msg) => {
                         select! {
-                            _ = tokio::time::sleep(delay) => {
+                            _ = sleep(delay) => {
                                 Err(GenericError::msg(msg))
                             }
                             _ = process_shutdown.wait_for_shutdown() => {
@@ -834,14 +839,11 @@ mod tests {
     /// Returns the supervisor result and provides the shutdown sender.
     async fn run_supervisor_with_trigger(
         mut supervisor: Supervisor,
-    ) -> (
-        tokio::sync::oneshot::Sender<()>,
-        tokio::task::JoinHandle<Result<(), SupervisorError>>,
-    ) {
-        let (tx, rx) = tokio::sync::oneshot::channel();
+    ) -> (oneshot::Sender<()>, JoinHandle<Result<(), SupervisorError>>) {
+        let (tx, rx) = oneshot::channel();
         let handle = tokio::spawn(async move { supervisor.run_with_shutdown(rx).await });
         // Give the supervisor a moment to start and spawn children.
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        sleep(Duration::from_millis(50)).await;
         (tx, handle)
     }
 
@@ -880,7 +882,7 @@ mod tests {
     async fn supervisor_with_no_children_returns_error() {
         let mut sup = Supervisor::new("empty-sup").unwrap();
 
-        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let (tx, rx) = oneshot::channel::<()>();
         let result = sup.run_with_shutdown(rx).await;
         drop(tx);
 
@@ -906,7 +908,7 @@ mod tests {
         let (tx, handle) = run_supervisor_with_trigger(sup).await;
 
         // Wait for a few restarts to happen.
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        sleep(Duration::from_millis(300)).await;
         let _ = tx.send(());
 
         let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
@@ -942,7 +944,7 @@ mod tests {
         let (tx, handle) = run_supervisor_with_trigger(sup).await;
 
         // Wait for at least one restart cycle.
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        sleep(Duration::from_millis(300)).await;
         let _ = tx.send(());
 
         let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
@@ -967,7 +969,7 @@ mod tests {
         // This worker fails immediately, which will exhaust the restart budget quickly.
         sup.add_worker(MockWorker::failing("fast-fail", Duration::ZERO));
 
-        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let (tx, rx) = oneshot::channel::<()>();
         let handle = tokio::spawn(async move { sup.run_with_shutdown(rx).await });
 
         let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
@@ -984,7 +986,7 @@ mod tests {
         sup.add_worker(MockWorker::long_running("good-worker"));
         sup.add_worker(MockWorker::init_failure("bad-worker"));
 
-        let (_tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let (_tx, rx) = oneshot::channel::<()>();
         let result = timeout(Duration::from_secs(2), sup.run_with_shutdown(rx))
             .await
             .unwrap();
@@ -1007,7 +1009,7 @@ mod tests {
         );
         sup.add_worker(init_fail);
 
-        let (_tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let (_tx, rx) = oneshot::channel::<()>();
         let result = timeout(Duration::from_secs(2), sup.run_with_shutdown(rx))
             .await
             .unwrap();
@@ -1039,11 +1041,11 @@ mod tests {
         // This worker takes 30 seconds to initialize — but we'll trigger shutdown immediately.
         sup.add_worker(MockWorker::slow_init("slow-worker", Duration::from_secs(30)));
 
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (tx, rx) = oneshot::channel();
         let handle = tokio::spawn(async move { sup.run_with_shutdown(rx).await });
 
         // Give the supervisor just enough time to spawn the task, then trigger shutdown.
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        sleep(Duration::from_millis(20)).await;
         tx.send(()).unwrap();
 
         // Shutdown should complete quickly even though the worker hasn't finished initializing.
