@@ -241,12 +241,7 @@ impl TraceSampler {
         let retained = trace.retain_spans(|span| span.metrics().contains_key(KEY_ANALYZED_SPANS));
         if retained > 0 {
             // Mark trace as kept with high priority
-            let sampling = TraceSampling::new(
-                false,
-                Some(PRIORITY_USER_KEEP),
-                None,
-                Some(MetaString::from(format!("{:.2}", self.sampling_rate))),
-            );
+            let sampling = TraceSampling::new(false, Some(PRIORITY_USER_KEEP), None, Some(self.sampling_rate));
             trace.set_sampling(Some(sampling));
             true
         } else {
@@ -272,7 +267,7 @@ impl TraceSampler {
                 false,
                 Some(PRIORITY_USER_KEEP),
                 None, // No decision maker for SSS
-                Some(MetaString::from(format!("{:.2}", self.sampling_rate))),
+                Some(self.sampling_rate),
             );
             trace.set_sampling(Some(sampling));
             true
@@ -396,17 +391,16 @@ impl TraceSampler {
             }
         }
 
-        // Now we can use trace again to set sampling metadata
-        let sampling_rate = if is_otlp {
-            self.otlp_sampling_rate
-        } else {
-            self.sampling_rate
-        };
+        // Now we can use trace again to set sampling metadata.
         let sampling = TraceSampling::new(
             !keep,
             Some(priority),
             if priority > 0 { decision_maker_meta } else { None },
-            Some(MetaString::from(format!("{:.2}", sampling_rate))),
+            Some(if is_otlp {
+                self.otlp_sampling_rate
+            } else {
+                self.sampling_rate
+            }),
         );
         trace.set_sampling(Some(sampling));
     }

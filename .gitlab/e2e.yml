@@ -115,11 +115,17 @@ test-integration:
   retry: 2
   timeout: 10m
   image: "${SALUKI_BUILD_CI_IMAGE}"
+  artifacts:
+    expire_in: 1 week
+    paths:
+      - integration-logs/
+    when: always
   variables:
     # Looks weird but we need to set this so that the test runner knows the right image path to pull the `alpine` image, which is required by
     # `airlock` to properly configure some permissions on the shared volume before the target container is started. We don't have access to
     # Docker Hub so the default of `alpine:latest` is insufficient.
     GROUND_TRUTH_ALPINE_IMAGE: registry.ddbuild.io/alpine:latest
+    PANORAMIC_LOG_DIR: integration-logs
   script:
     # Copy the bundled Agent/ADP image we built to the local Docker instance so we can share the integration
     # test configurations between CI and local test runs.

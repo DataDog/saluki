@@ -74,7 +74,7 @@ fn initialize_logging() {
         .init();
 }
 
-async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
+async fn run_tests(mut cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     let mut test_cases = match discover_tests(&cmd.test_dir) {
         Ok(tests) => tests,
         Err(e) => {
@@ -115,8 +115,12 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     let log_dir = if cmd.no_logs {
         None
     } else {
-        match create_log_dir() {
-            Ok(dir) => Some(dir),
+        let dir = cmd.log_dir.take().unwrap_or_else(|| {
+            let timestamp = Local::now().format("%Y%m%d-%H%M%S");
+            std::env::temp_dir().join(format!("panoramic-{}", timestamp))
+        });
+        match std::fs::create_dir_all(&dir) {
+            Ok(()) => Some(dir),
             Err(e) => {
                 if use_tui {
                     eprintln!("Failed to create log directory: {}", e);
@@ -154,15 +158,6 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     } else {
         ExitCode::from(1)
     }
-}
-
-/// Create a unique temporary directory for container logs.
-fn create_log_dir() -> std::io::Result<PathBuf> {
-    let timestamp = Local::now().format("%Y%m%d-%H%M%S");
-    let dir_name = format!("panoramic-{}", timestamp);
-    let log_dir = std::env::temp_dir().join(dir_name);
-    std::fs::create_dir_all(&log_dir)?;
-    Ok(log_dir)
 }
 
 /// Run with the TUI consumer.

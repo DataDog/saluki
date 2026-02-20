@@ -56,6 +56,9 @@
 
 mod process;
 
+mod dedicated;
+pub use self::dedicated::{RuntimeConfiguration, RuntimeMode};
+
 mod restart;
 pub use self::restart::{RestartMode, RestartStrategy};
 

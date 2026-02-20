@@ -5,10 +5,10 @@
 
 #![deny(warnings)]
 #![deny(missing_docs)]
-use std::time::Instant;
+use std::{path::PathBuf, time::Instant};
 
 use saluki_app::bootstrap::AppBootstrapper;
-use saluki_config::ConfigurationLoader;
+use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_error::{ErrorContext as _, GenericError};
 use tracing::{error, info, warn};
 
@@ -64,25 +64,41 @@ async fn main() -> Result<(), GenericError> {
         .error_context("Failed to complete bootstrap phase.")?;
 
     // Run the given subcommand.
-    match cli.action {
+    let maybe_exit_code = run_inner(cli.action, started, bootstrap_config_path, bootstrap_config).await?;
+
+    // Drop the bootstrap guard to ensure logs are flushed, etc.
+    drop(_bootstrap_guard);
+
+    // Exit with the specific exit code, if one was provided.
+    if let Some(exit_code) = maybe_exit_code {
+        std::process::exit(exit_code);
+    }
+
+    Ok(())
+}
+
+async fn run_inner(
+    action: Action, started: Instant, bootstrap_config_path: PathBuf, bootstrap_config: GenericConfiguration,
+) -> Result<Option<i32>, GenericError> {
+    match action {
         Action::Run(cmd) => {
             // Populate our PID file, if configured.
             if let Some(pid_file) = &cmd.pid_file {
                 let pid = std::process::id();
                 if let Err(e) = std::fs::write(pid_file, pid.to_string()) {
                     error!(error = %e, path = %pid_file.display(), "Failed to update PID file. Exiting.");
-                    std::process::exit(1);
+                    return Ok(Some(1));
                 }
             }
 
             let exit_code = match handle_run_command(started, bootstrap_config_path, bootstrap_config).await {
                 Ok(()) => {
                     info!("Agent Data Plane stopped.");
-                    0
+                    None
                 }
                 Err(e) => {
                     error!("{:?}", e);
-                    1
+                    Some(1)
                 }
             };
 
@@ -93,12 +109,14 @@ async fn main() -> Result<(), GenericError> {
                 }
             }
 
-            std::process::exit(exit_code);
+            if let Some(exit_code) = exit_code {
+                return Ok(Some(exit_code));
+            }
         }
         Action::Debug(cmd) => handle_debug_command(&bootstrap_config, cmd).await,
         Action::Config(_) => handle_config_command(&bootstrap_config).await,
         Action::Dogstatsd(cmd) => handle_dogstatsd_command(&bootstrap_config, cmd).await,
     }
 
-    Ok(())
+    Ok(None)
 }
