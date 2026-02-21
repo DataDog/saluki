@@ -61,33 +61,22 @@ impl Supervisable for HealthRegistryWorker {
         "health-registry"
     }
 
-    async fn initialize(&self, mut process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
-        // Spawn the health registry runner - it runs forever until the process exits
-        //
-        // TODO: This pattern doesn't allow us to gracefully restart the health registry worker if the supervisor itself
-        // is restarted. We could do something simpler like `HealthRegistry` having a mutex to ensure only one instance is
-        // running at a time, and that way the worker can be restarted gracefully, picking up where it left off.
+    async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
+        // Spawn the health registry runner with the shutdown signal. The runner will exit
+        // gracefully when the shutdown signal is received, and the response receiver will be
+        // returned to the registry state so that a subsequent spawn can succeed if the supervisor
+        // restarts this worker.
         let handle = self
             .health_registry
             .clone()
-            .spawn()
+            .spawn(process_shutdown)
             .await
             .map_err(|e| InitializationError::Failed { source: e })?;
 
         Ok(Box::pin(async move {
-            tokio::select! {
-                result = handle => {
-                    // The health registry task completed (shouldn't happen normally)
-                    if let Err(e) = result {
-                        return Err(generic_error!("Health registry task panicked: {}", e));
-                    }
-                    Ok(())
-                }
-                _ = process_shutdown.wait_for_shutdown() => {
-                    // On shutdown, we just let the spawned task continue until the runtime shuts down.
-                    // The health registry doesn't have a graceful shutdown mechanism.
-                    Ok(())
-                }
+            match handle.await {
+                Ok(()) => Ok(()),
+                Err(e) => Err(generic_error!("Health registry task panicked: {}", e)),
             }
         }))
     }
