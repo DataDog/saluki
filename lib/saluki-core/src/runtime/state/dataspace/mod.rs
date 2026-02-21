@@ -37,7 +37,7 @@ use std::{
     any::{Any, TypeId},
     collections::{HashMap, VecDeque},
     hash::Hash,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use tokio::sync::broadcast;
@@ -170,6 +170,15 @@ impl DataspaceRegistry {
     /// Creates a new empty registry with the default channel capacity.
     pub fn new() -> Self {
         Self::with_channel_capacity(DEFAULT_CHANNEL_CAPACITY)
+    }
+
+    /// Creates a shared, global `DataspaceRegistry`.
+    ///
+    /// All calls to this function will return the same instance, even though the value given
+    /// is owned and not a static reference.
+    pub fn global() -> Self {
+        static INSTANCE: OnceLock<DataspaceRegistry> = OnceLock::new();
+        INSTANCE.get_or_init(Self::new).clone()
     }
 
     /// Creates a new empty registry with the given channel capacity for broadcast channels.
