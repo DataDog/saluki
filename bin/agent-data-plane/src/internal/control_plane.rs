@@ -2,13 +2,15 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 use memory_accounting::ComponentRegistry;
+use saluki_api::{DynamicRoute, EndpointType};
 use saluki_app::{
-    api::APIBuilder, config::ConfigAPIHandler, logging::acquire_logging_api_handler,
+    api::APIBuilder, config::ConfigAPIHandler, dynamic_api::DynamicAPIBuilder, logging::acquire_logging_api_handler,
     metrics::acquire_metrics_api_handler,
 };
 use saluki_components::destinations::DogStatsDStatisticsConfiguration;
 use saluki_config::GenericConfiguration;
 use saluki_core::runtime::{
+    state::{DataspaceRegistry, Handle},
     InitializationError, ProcessShutdown, RestartStrategy, RuntimeConfiguration, Supervisable, Supervisor,
     SupervisorFuture,
 };
@@ -65,51 +67,23 @@ impl Supervisable for HealthRegistryWorker {
         // spawn can succeed if the supervisor restarts this worker.
         let handle = self.health_registry.clone().spawn(process_shutdown).await?;
 
+        let health_routes = DynamicRoute::http(EndpointType::Unprivileged, self.health_registry.api_handler());
+
         Ok(Box::pin(async move {
-            match handle.await {
+            // Publish our health endpoint route and retract it after the registry task completes,
+            // regardless of whether it failed or not.
+            let dataspace_registry = DataspaceRegistry::global();
+            dataspace_registry.assert(health_routes, Handle::current_process());
+
+            let result = match handle.await {
                 Ok(()) => Ok(()),
                 Err(e) => Err(generic_error!("Health registry task panicked: {}", e)),
-            }
-        }))
-    }
-}
+            };
 
-/// A worker that serves the unprivileged HTTP API.
-pub struct UnprivilegedApiWorker {
-    dp_config: DataPlaneConfiguration,
-    health_registry: HealthRegistry,
-    component_registry: ComponentRegistry,
-}
+            // TODO: OK, yeah, this is clunky. We should just make it a drop guard.
+            dataspace_registry.retract::<DynamicRoute>(Handle::current_process());
 
-impl UnprivilegedApiWorker {
-    /// Creates a new `UnprivilegedApiWorker`.
-    pub fn new(
-        dp_config: DataPlaneConfiguration, health_registry: HealthRegistry, component_registry: ComponentRegistry,
-    ) -> Self {
-        Self {
-            dp_config,
-            health_registry,
-            component_registry,
-        }
-    }
-}
-
-#[async_trait]
-impl Supervisable for UnprivilegedApiWorker {
-    fn name(&self) -> &str {
-        "unprivileged-api"
-    }
-
-    async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
-        let api_builder = APIBuilder::new()
-            .with_handler(self.health_registry.api_handler())
-            .with_handler(self.component_registry.api_handler());
-
-        let listen_address = self.dp_config.api_listen_address().clone();
-
-        Ok(Box::pin(async move {
-            info!("Serving unprivileged API on {}.", listen_address);
-            api_builder.serve(listen_address, process_shutdown).await
+            result
         }))
     }
 }
@@ -208,15 +182,16 @@ pub async fn create_control_plane_supervisor(
         .with_dedicated_runtime(RuntimeConfiguration::single_threaded())
         .with_restart_strategy(RestartStrategy::one_to_one());
 
-    // TODO: just make the API handler for `ComponentRegistry` cloneable so we can create/hold on to it in
-    // `UnprivilegedApiWorker` without having to create a scoped one here just to maintain the ownership necessary
-    let scoped_registry = component_registry.get_or_create("control-plane");
+    // TODO: just make the API handler for `ComponentRegistry` cloneable so we can create/hold on to it in `UnprivilegedApiWorker`
+    // without having to create a scoped one here just to maintain the ownership necessary
+    let _scoped_registry = component_registry.get_or_create("control-plane");
 
     supervisor.add_worker(HealthRegistryWorker::new(health_registry.clone()));
-    supervisor.add_worker(UnprivilegedApiWorker::new(
-        dp_config.clone(),
-        health_registry,
-        scoped_registry,
+
+    supervisor.add_worker(DynamicAPIBuilder::new(
+        EndpointType::Unprivileged,
+        dp_config.api_listen_address().clone(),
+        DataspaceRegistry::global(),
     ));
     supervisor.add_worker(
         PrivilegedApiWorker::new(
