@@ -13,19 +13,35 @@ use memory_accounting::allocator::{AllocationGroupRegistry, AllocationGroupToken
 use pin_project::pin_project;
 use tracing::{debug_span, instrument::Instrumented, Instrument as _};
 
-static GLOBAL_PROCESS_ID_COUNTER: AtomicUsize = AtomicUsize::new(0);
+static GLOBAL_PROCESS_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
 
 /// Process identifier.
 ///
 /// A simple, numeric identifier that uniquely identifies a process.
+///
+/// Guaranteed to be unique.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Id(usize);
 
+tokio::task_local! {
+    static CURRENT_PROCESS_ID: Id;
+}
+
 impl Id {
+    /// The root process identifier, representing the global/unnamed process context.
+    pub const ROOT: Self = Self(0);
+
     /// Creates a new process identifier.
     pub fn new() -> Self {
         let id = GLOBAL_PROCESS_ID_COUNTER.fetch_add(1, Relaxed);
         Self(id)
+    }
+
+    /// Returns the process identifier for the currently executing process.
+    ///
+    /// If called outside of a process context, returns `Id::ROOT`.
+    pub fn current() -> Self {
+        CURRENT_PROCESS_ID.try_with(|id| *id).unwrap_or(Self::ROOT)
     }
 
     fn as_usize(&self) -> usize {
@@ -124,6 +140,7 @@ impl Process {
 /// An instrumented process.
 #[pin_project]
 pub struct InstrumentedProcess<F> {
+    process_id: Id,
     #[pin]
     inner: Instrumented<Tracked<F>>,
 }
@@ -139,9 +156,10 @@ where
             process_name = &*process.name,
         );
 
+        let process_id = process.id;
         let inner = inner.track_allocations(process.alloc_group_token).instrument(span);
 
-        Self { inner }
+        Self { process_id, inner }
     }
 }
 
@@ -152,7 +170,8 @@ where
     type Output = F::Output;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.project().inner.poll(cx)
+        let this = self.project();
+        CURRENT_PROCESS_ID.sync_scope(*this.process_id, || this.inner.poll(cx))
     }
 }
 

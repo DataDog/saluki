@@ -55,6 +55,9 @@
 //! failed workers and supervisors are restarted.
 
 mod process;
+pub use self::process::Id as ProcessId;
+
+pub mod state;
 
 mod dedicated;
 pub use self::dedicated::{RuntimeConfiguration, RuntimeMode};
