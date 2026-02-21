@@ -19,7 +19,7 @@ use http::Response;
 use rcgen::{generate_simple_self_signed, CertifiedKey};
 use rustls::{pki_types::PrivateKeyDer, ServerConfig};
 use rustls_pki_types::PrivatePkcs8KeyDer;
-use saluki_api::{DynamicGrpcRoute, DynamicHttpRoute, EndpointType};
+use saluki_api::{DynamicRoute, EndpointProtocol, EndpointType};
 use saluki_common::collections::FastIndexMap;
 use saluki_core::runtime::{
     state::{AssertionUpdate, DataspaceRegistry, Handle, Subscription},
@@ -108,9 +108,8 @@ impl Supervisable for DynamicAPIBuilder {
         let (inner_http, outer_http) = create_dynamic_router();
         let (inner_grpc, outer_grpc) = create_dynamic_router();
 
-        // Subscribe to both HTTP and gRPC route assertions.
-        let http_subscription = self.dataspace_registry.subscribe_all::<DynamicHttpRoute>();
-        let grpc_subscription = self.dataspace_registry.subscribe_all::<DynamicGrpcRoute>();
+        // Subscribe to all dynamic route assertions.
+        let route_assertions = self.dataspace_registry.subscribe_all::<DynamicRoute>();
 
         // Bind the HTTP listener immediately so we fail fast on bind errors.
         let listener = ConnectionOrientedListener::from_listen_address(self.listen_address.clone())
@@ -125,7 +124,7 @@ impl Supervisable for DynamicAPIBuilder {
         }
         let (shutdown_handle, error_handle) = http_server.listen();
 
-        let endpoint_type = self.endpoint_type.clone();
+        let endpoint_type = self.endpoint_type;
         let listen_address = self.listen_address.clone();
 
         Ok(Box::pin(async move {
@@ -134,8 +133,7 @@ impl Supervisable for DynamicAPIBuilder {
             run_event_loop(
                 inner_http,
                 inner_grpc,
-                http_subscription,
-                grpc_subscription,
+                route_assertions,
                 endpoint_type,
                 process_shutdown,
                 shutdown_handle,
@@ -183,9 +181,8 @@ impl Service<http::Request<AxumBody>> for DynamicRouterService {
 /// Runs the event loop that listens for route assertions/retractions and hot-swaps the inner routers.
 async fn run_event_loop(
     inner_http: Arc<ArcSwap<Router>>, inner_grpc: Arc<ArcSwap<Router>>,
-    mut http_subscription: Subscription<DynamicHttpRoute>, mut grpc_subscription: Subscription<DynamicGrpcRoute>,
-    endpoint_type: EndpointType, mut process_shutdown: ProcessShutdown, shutdown_handle: ShutdownHandle,
-    error_handle: ErrorHandle,
+    mut route_assertions: Subscription<DynamicRoute>, endpoint_type: EndpointType,
+    mut process_shutdown: ProcessShutdown, shutdown_handle: ShutdownHandle, error_handle: ErrorHandle,
 ) -> Result<(), GenericError> {
     let mut http_handlers = FastIndexMap::default();
     let mut grpc_handlers = FastIndexMap::default();
@@ -209,54 +206,56 @@ async fn run_event_loop(
                 break;
             }
 
-            maybe_update = http_subscription.recv() => {
+            maybe_update = route_assertions.recv() => {
                 let Some(update) = maybe_update else {
-                    warn!("HTTP route subscription channel closed.");
+                    warn!("Route subscription channel closed.");
                     break;
                 };
 
+                let mut rebuild_http = false;
+                let mut rebuild_grpc = false;
+
                 match update {
                     AssertionUpdate::Asserted(handle, route) => {
-                        if route.endpoint != endpoint_type {
+                        if route.endpoint_type() != endpoint_type {
                             continue;
                         }
 
-                        debug!(?handle, "Registering dynamic HTTP handler.");
-                        http_handlers.insert(handle, route.router);
+                        match route.endpoint_protocol() {
+                            EndpointProtocol::Http => {
+                                debug!(?handle, "Registering dynamic HTTP handler.");
+                                http_handlers.insert(handle, route.into_router());
+
+                                rebuild_http = true;
+                            },
+                            EndpointProtocol::Grpc => {
+                                debug!(?handle, "Registering dynamic gRPC handler.");
+                                grpc_handlers.insert(handle, route.into_router());
+
+                                rebuild_grpc = true;
+                            },
+                        }
                     }
                     AssertionUpdate::Retracted(handle) => {
                         if http_handlers.swap_remove(&handle).is_some() {
                             debug!(?handle, "Withdrawing dynamic HTTP handler.");
-                        }
-                    }
-                }
-
-                rebuild_router(&inner_http, &http_handlers);
-            }
-
-            maybe_update = grpc_subscription.recv() => {
-                let Some(update) = maybe_update else {
-                    warn!("gRPC route subscription channel closed.");
-                    break;
-                };
-
-                match update {
-                    AssertionUpdate::Asserted(handle, route) => {
-                        if route.endpoint != endpoint_type {
-                            continue;
+                            rebuild_http = true;
                         }
 
-                        info!(handle = ?handle, "Registering dynamic gRPC handler.");
-                        grpc_handlers.insert(handle, route.router);
-                    }
-                    AssertionUpdate::Retracted(handle) => {
                         if grpc_handlers.swap_remove(&handle).is_some() {
-                            info!(handle = ?handle, "Withdrawing dynamic gRPC handler.");
+                            debug!(?handle, "Withdrawing dynamic gRPC handler.");
+                            rebuild_grpc = true;
                         }
                     }
                 }
 
-                rebuild_router(&inner_grpc, &grpc_handlers);
+                if rebuild_http {
+                    rebuild_router(&inner_http, &http_handlers);
+                }
+
+                if rebuild_grpc {
+                    rebuild_router(&inner_grpc, &grpc_handlers);
+                }
             }
         }
     }
