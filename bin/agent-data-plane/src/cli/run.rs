@@ -213,8 +213,8 @@ pub async fn handle_run_command(
     select! {
         result = &mut internal_supervisor_fut => {
             match result {
-                Err(SupervisorError::FailedToInitialize { source }) => {
-                    error!("Internal supervisor failed to initialize: {}. Shutting down...", source);
+                Err(SupervisorError::FailedToInitialize { child_name, source }) => {
+                    error!(child_name, "Internal supervisor failed to initialize: {}. Shutting down...", source);
                     finished_with_error = true;
                 }
                 // If we haven't hit an initialization error -- which implies an error we can't really recover from --
