@@ -29,11 +29,11 @@ use saluki_components::{
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
+use saluki_core::health::HealthRegistry;
 use saluki_core::runtime::SupervisorError;
 use saluki_core::topology::TopologyBlueprint;
 use saluki_env::EnvironmentProvider as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use saluki_health::HealthRegistry;
 use tokio::{select, time::interval};
 use tracing::{error, info, warn};
 

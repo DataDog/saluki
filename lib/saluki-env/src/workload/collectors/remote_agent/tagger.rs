@@ -7,8 +7,8 @@ use saluki_context::{
     origin::OriginTagCardinality,
     tags::{Tag, TagSet},
 };
+use saluki_core::health::Health;
 use saluki_error::GenericError;
-use saluki_health::Health;
 use saluki_io::net::util::tonic::StatusError;
 use saluki_metrics::static_metrics;
 use stringtheory::{
