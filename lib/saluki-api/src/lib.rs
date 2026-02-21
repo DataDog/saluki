@@ -2,6 +2,7 @@ pub use axum::response;
 pub use axum::routing;
 use axum::Router;
 pub use http::StatusCode;
+use tonic::service::Routes;
 
 pub mod extract {
     pub use axum::extract::*;
@@ -18,11 +19,14 @@ pub trait APIHandler {
     fn generate_routes(&self) -> Router<Self::State>;
 }
 
-/// Identifies which API endpoint a handler should be bound to.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// API endpoint type.
+///
+/// Identifies whether or not a route should be exposed on the unprivileged or privileged API endpoint.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum EndpointType {
     /// The unprivileged (plain HTTP) API endpoint.
     Unprivileged,
+
     /// The privileged (TLS-protected) API endpoint.
     Privileged,
 }
@@ -37,35 +41,77 @@ impl EndpointType {
     }
 }
 
-/// A dynamically-registered HTTP route set, asserted into the dataspace registry.
+/// API endpoint protocol.
 ///
-/// Publishers assert a `DynamicHttpRoute` under a [`Handle`] to register HTTP routes with a dynamic API server. The
-/// server observes assertions and retractions via a wildcard subscription and hot-swaps its inner HTTP router.
-#[derive(Clone, Debug)]
-pub struct DynamicHttpRoute {
-    /// Which API endpoint these routes target.
-    pub endpoint: EndpointType,
-    /// The HTTP routes to serve.
-    pub router: Router<()>,
+/// Identifies which application protocol the route should be exposed to.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum EndpointProtocol {
+    /// HTTP.
+    Http,
+
+    /// gRPC.
+    Grpc,
 }
 
-impl DynamicHttpRoute {
-    pub fn unprivilged<T: APIHandler>(handler: T) -> Self {
-        Self {
-            endpoint: EndpointType::Unprivileged,
-            router: handler.generate_routes().with_state(handler.generate_initial_state()),
+impl EndpointProtocol {
+    /// Returns a human-readable name for this endpoint protocol.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Http => "HTTP",
+            Self::Grpc => "gRPC",
         }
     }
 }
 
-/// A dynamically-registered gRPC route set, asserted into the dataspace registry.
+/// A set of dynamic API routes.
 ///
-/// Publishers assert a `DynamicGrpcRoute` under a [`Handle`] to register gRPC routes with a dynamic API server. The
-/// router should be pre-converted from tonic routes (via [`tonic::Routes::into_axum_router`]).
+/// Dynamic routes allow for processes to dynamically register/unregister themselves from running API endpoints,
+/// adapting to changes in the process state and without requiring all routes to be known and declared upfront.
 #[derive(Clone, Debug)]
-pub struct DynamicGrpcRoute {
+pub struct DynamicRoute {
     /// Which API endpoint these routes target.
-    pub endpoint: EndpointType,
-    /// The gRPC routes to serve, as an axum router.
-    pub router: Router<()>,
+    endpoint_type: EndpointType,
+
+    /// Which API protocol these routes target.
+    endpoint_protocol: EndpointProtocol,
+
+    /// The routes to serve.
+    router: Router<()>,
+}
+
+impl DynamicRoute {
+    /// Creates a dynamic HTTP route from the given API handler.
+    pub fn http<T: APIHandler>(endpoint_type: EndpointType, handler: T) -> Self {
+        let router = handler.generate_routes().with_state(handler.generate_initial_state());
+        Self::new(endpoint_type, EndpointProtocol::Http, router)
+    }
+
+    /// Creates a dynamic gRPC route from the given Tonic routes.
+    pub fn grpc(endpoint_type: EndpointType, routes: Routes) -> Self {
+        let router = routes.prepare().into_axum_router();
+        Self::new(endpoint_type, EndpointProtocol::Grpc, router)
+    }
+
+    fn new(endpoint_type: EndpointType, endpoint_protocol: EndpointProtocol, router: Router<()>) -> Self {
+        Self {
+            endpoint_type,
+            endpoint_protocol,
+            router,
+        }
+    }
+
+    /// Returns the type of endpoint these routes target.
+    pub fn endpoint_type(&self) -> EndpointType {
+        self.endpoint_type
+    }
+
+    /// Returns the protocol of endpoint these routes target.
+    pub fn endpoint_protocol(&self) -> EndpointProtocol {
+        self.endpoint_protocol
+    }
+
+    /// Consumes this route and returns the underlying router.
+    pub fn into_router(self) -> Router<()> {
+        self.router
+    }
 }

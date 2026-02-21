@@ -3392,6 +3392,7 @@ dependencies = [
  "axum",
  "axum-extra",
  "http",
+ "tonic",
 ]
 
 [[package]]
