@@ -24,7 +24,6 @@ members = [
   "lib/saluki-core",
   "lib/saluki-env",
   "lib/saluki-error",
-  "lib/saluki-health",
   "lib/saluki-io",
   "lib/saluki-metadata",
   "lib/saluki-metrics",
@@ -54,7 +53,6 @@ saluki-context = { path = "lib/saluki-context" }
 saluki-core = { path = "lib/saluki-core" }
 saluki-env = { path = "lib/saluki-env" }
 saluki-error = { path = "lib/saluki-error" }
-saluki-health = { path = "lib/saluki-health" }
 saluki-io = { path = "lib/saluki-io" }
 saluki-metadata = { path = "lib/saluki-metadata" }
 saluki-metrics = { path = "lib/saluki-metrics" }

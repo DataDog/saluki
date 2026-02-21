@@ -1,3 +1,5 @@
+//! Health registry for tracking component readiness and liveness.
+
 use std::future::Future;
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
@@ -21,13 +23,15 @@ use tokio::{
         mpsc::{self, error::TrySendError},
         Notify,
     },
-    task::JoinHandle,
 };
 use tokio_util::time::{delay_queue::Key, DelayQueue};
 use tracing::{debug, info, trace};
 
 mod api;
 pub use self::api::HealthAPIHandler;
+
+mod worker;
+pub use self::worker::HealthRegistryWorker;
 
 const DEFAULT_PROBE_TIMEOUT_DUR: Duration = Duration::from_secs(5);
 const DEFAULT_PROBE_BACKOFF_DUR: Duration = Duration::from_secs(1);
@@ -341,7 +345,15 @@ impl HealthRegistry {
         true
     }
 
-    fn into_runner(self) -> Result<Runner, GenericError> {
+    /// Creates a [`HealthRegistryWorker`] that can be added to a supervisor to run the health registry.
+    ///
+    /// The worker handles the lifecycle of the health registry runner, including registering the health API routes
+    /// dynamically and running the liveness probing event loop.
+    pub fn worker(&self) -> HealthRegistryWorker {
+        HealthRegistryWorker::new(self.clone())
+    }
+
+    pub(crate) fn into_runner(self) -> Result<Runner, GenericError> {
         // Make sure the runner hasn't already been spawned.
         let (responses_rx, pending_components_notify) = {
             let mut inner = self.inner.lock().unwrap();
@@ -355,24 +367,6 @@ impl HealthRegistry {
         };
 
         Ok(Runner::new(self.inner, responses_rx, pending_components_notify))
-    }
-
-    /// Spawns the health registry runner, which manages the scheduling and collection of liveness probes.
-    ///
-    /// The runner will run until the given `shutdown` future resolves, at which point it will
-    /// gracefully stop. After the runner stops, the health registry can be spawned again by
-    /// calling this method with a new shutdown future.
-    ///
-    /// # Errors
-    ///
-    /// If the health registry runner is currently running (i.e., has been spawned but not yet
-    /// stopped), an error will be returned.
-    pub async fn spawn<F>(self, shutdown: F) -> Result<JoinHandle<()>, GenericError>
-    where
-        F: Future<Output = ()> + Send + 'static,
-    {
-        let runner = self.into_runner()?;
-        Ok(tokio::spawn(runner.run(shutdown)))
     }
 }
 
@@ -436,7 +430,7 @@ impl RunnerState {
     }
 }
 
-struct Runner {
+pub(super) struct Runner {
     registry: Arc<Mutex<RegistryState>>,
     pending_probes: DelayQueue<usize>,
     pending_timeouts: DelayQueue<usize>,
@@ -776,18 +770,17 @@ mod tests {
         assert!(registry.register_component(COMPONENT_ID).is_none());
     }
 
-    #[tokio::test]
-    async fn duplicate_registry_spawn_fails_while_running() {
+    #[test]
+    fn duplicate_runner_creation_fails_while_running() {
         let registry = HealthRegistry::new();
         let registry2 = registry.clone();
 
-        // First spawn should succeed (using a future that never resolves).
-        let shutdown = std::future::pending();
-        assert!(registry.spawn(shutdown).await.is_ok());
+        // First runner creation should succeed. We hold on to it so the RunnerGuard doesn't
+        // return the receiver back to the registry state.
+        let _runner = registry.into_runner().expect("first runner creation should succeed");
 
-        // Second spawn should fail while the first is still running.
-        let shutdown2 = std::future::pending();
-        assert!(registry2.spawn(shutdown2).await.is_err());
+        // Second creation should fail while the first runner still holds the receiver.
+        assert!(registry2.into_runner().is_err());
     }
 
     #[tokio::test]
@@ -796,12 +789,12 @@ mod tests {
         let registry2 = registry.clone();
         let registry3 = registry.clone();
 
-        // First spawn should succeed.
+        // First runner creation should succeed.
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-        let join_handle = registry
-            .spawn(shutdown_rx.map(|_| ()))
-            .await
-            .expect("first spawn should succeed");
+        let runner = registry.into_runner().expect("first runner creation should succeed");
+
+        // Run the runner on a spawned task so we can trigger shutdown.
+        let join_handle = tokio::spawn(runner.run(shutdown_rx.map(|_| ())));
 
         // Trigger shutdown.
         let _ = shutdown_tx.send(());
@@ -809,18 +802,15 @@ mod tests {
         // Wait for the runner to stop.
         join_handle.await.expect("runner should complete without panic");
 
-        // Now we should be able to spawn again.
-        let shutdown2 = std::future::pending();
-        assert!(
-            registry2.spawn(shutdown2).await.is_ok(),
-            "should be able to respawn after shutdown"
-        );
+        // Now we should be able to create a runner again (the RunnerGuard returned the receiver).
+        let _runner2 = registry2
+            .into_runner()
+            .expect("should be able to create runner after shutdown");
 
-        // But not a third time while the second is running.
-        let shutdown3 = std::future::pending();
+        // But not a third time while the second runner holds the receiver.
         assert!(
-            registry3.spawn(shutdown3).await.is_err(),
-            "should not be able to spawn while running"
+            registry3.into_runner().is_err(),
+            "should not be able to create runner while one exists"
         );
     }
 
