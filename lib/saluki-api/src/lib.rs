@@ -49,6 +49,15 @@ pub struct DynamicHttpRoute {
     pub router: Router<()>,
 }
 
+impl DynamicHttpRoute {
+    pub fn unprivilged<T: APIHandler>(handler: T) -> Self {
+        Self {
+            endpoint: EndpointType::Unprivileged,
+            router: handler.generate_routes().with_state(handler.generate_initial_state()),
+        }
+    }
+}
+
 /// A dynamically-registered gRPC route set, asserted into the dataspace registry.
 ///
 /// Publishers assert a `DynamicGrpcRoute` under a [`Handle`] to register gRPC routes with a dynamic API server. The
