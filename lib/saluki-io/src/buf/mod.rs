@@ -6,7 +6,7 @@ mod vec;
 pub use self::vec::{BytesBuffer, FixedSizeVec};
 
 /// An I/O buffer that can be read from.
-pub trait ReadIoBuffer: Buf {
+pub trait ReadIoBuffer: Buf + Send {
     fn capacity(&self) -> usize;
 }
 
@@ -25,6 +25,15 @@ impl ReadIoBuffer for Bytes {
 impl ReadIoBuffer for VecDeque<u8> {
     fn capacity(&self) -> usize {
         self.capacity()
+    }
+}
+
+impl<T> ReadIoBuffer for &mut T
+where
+    T: ReadIoBuffer,
+{
+    fn capacity(&self) -> usize {
+        (**self).capacity()
     }
 }
 
