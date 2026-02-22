@@ -33,13 +33,13 @@ pub struct OttlFilterConfiguration {
 impl OttlFilterConfiguration {
     /// Creates configuration from the given generic configuration.
     ///
-    /// Reads the OTTL filter config from one of (first present wins):
-    /// - `data_plane.otlp.filter` (ADP-specific path),
-    /// - `processors.filter/ottl` (OpenTelemetry Collector-style path), or
-    /// - `ottl_config` (top-level key, e.g. in test/one-off/ottl-filter-processor.yaml).
+    /// Reads the OTTL filter config from the `ottl_config` key at the top level of the
+    /// data-plane configuration. The YAML structure is: `error_mode`, `traces.span` (list
+    /// of OTTL condition strings). If the key is absent, a default (no-op) config is used.
     ///
-    /// The YAML structure under any path is the same: `error_mode`, `traces.span` (list of OTTL condition strings).
-    /// If none is present, a default (no-op) config is used.
+    /// # Errors
+    ///
+    /// Returns an error if a value at `ottl_config` exists but fails to deserialize.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let filter_config = config.try_get_typed::<OttlFilterConfig>("ottl_config")?;
         Ok(Self {
@@ -50,6 +50,11 @@ impl OttlFilterConfiguration {
 
 #[async_trait]
 impl SynchronousTransformBuilder for OttlFilterConfiguration {
+    /// Builds the OTTL filter transform from the current configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any OTTL span condition string fails to parse.
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         let path_resolvers = span_context::span_filter_path_resolvers();
         let editors = CallbackMap::new();

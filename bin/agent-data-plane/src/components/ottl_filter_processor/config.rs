@@ -30,7 +30,13 @@ pub enum ErrorMode {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TracesFilterConfig {
-    /// OTTL conditions for spans. If any condition matches, the span is dropped.
+    /// OTTL condition strings for spans.
+    ///
+    /// If any condition evaluates to `true` for a span, that span is dropped. Add one
+    /// string per condition; combine with logical OR. High-cardinality or complex
+    /// conditions may affect throughput.
+    ///
+    /// Defaults to empty (no spans are dropped).
     #[serde(default)]
     pub span: Vec<String>,
 }
@@ -38,17 +44,16 @@ pub struct TracesFilterConfig {
 /// Root YAML configuration for the OTTL filter processor.
 ///
 /// Matches the structure used by the OpenTelemetry Collector Contrib filterprocessor.
-/// Read from either `data_plane.otlp.filter` or `processors.filter/ottl`. Example:
+/// Read from the `ottl_config` key at the top level of the data-plane configuration (see
+/// [`super::OttlFilterConfiguration::from_configuration`]). Example:
 ///
 /// ```yaml
-/// processors:
-///   filter/ottl:
-///     error_mode: ignore
-///     traces:
-///       span:
-///         - 'attributes["container.name"] == "app_container_1"'
-///         - 'resource.attributes["host.name"] == "localhost"'
-///         - 'name == "app_3"'
+/// ottl_config:
+///   error_mode: ignore
+///   traces:
+///     span:
+///       - 'attributes["container.name"] == "app_container_1"'
+///       - 'resource.attributes["host.name"] == "localhost"'
 /// ```
 ///
 /// Serde deserializes that into: `error_mode` → [`ErrorMode`], `traces.span` → [`TracesFilterConfig::span`].
@@ -62,6 +67,8 @@ pub struct OttlFilterConfig {
     pub error_mode: ErrorMode,
 
     /// Trace-level filters (span and span event conditions).
+    ///
+    /// Defaults to empty (no trace-level filtering).
     #[serde(default)]
     pub traces: TracesFilterConfig,
 }

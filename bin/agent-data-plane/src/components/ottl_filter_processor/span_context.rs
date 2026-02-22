@@ -46,6 +46,8 @@ impl<'a> SpanFilterContext<'a> {
 }
 
 /// Path accessor for the span's `attributes` path (span-level metadata).
+///
+/// The `set` method always returns an error; the filter context is read-only.
 #[derive(Debug)]
 pub struct SpanAttributesAccessor;
 
@@ -66,11 +68,17 @@ impl PathAccessor<SpanFilterFamily> for SpanAttributesAccessor {
     fn set<'a>(
         &self, _ctx: &mut SpanFilterContext<'a>, path: &str, _indexes: &[IndexExpr], _value: &Value,
     ) -> ottl::Result<()> {
-        Err(format!("Filter context is read-only; cannot set path {}", path).into())
+        Err(format!(
+            "Filter context is read-only; setting path `{}` is not supported. Only attribute reads are allowed.",
+            path
+        )
+        .into())
     }
 }
 
 /// Path accessor for the `resource.attributes` path (trace resource tags).
+///
+/// The `set` method always returns an error; the filter context is read-only.
 #[derive(Debug)]
 pub struct ResourceAttributesAccessor;
 
@@ -94,7 +102,11 @@ impl PathAccessor<SpanFilterFamily> for ResourceAttributesAccessor {
     fn set<'a>(
         &self, _ctx: &mut SpanFilterContext<'a>, path: &str, _indexes: &[IndexExpr], _value: &Value,
     ) -> ottl::Result<()> {
-        Err(format!("Filter context is read-only; cannot set path {}", path).into())
+        Err(format!(
+            "Filter context is read-only; setting path `{}` is not supported. Only attribute reads are allowed.",
+            path
+        )
+        .into())
     }
 }
 
