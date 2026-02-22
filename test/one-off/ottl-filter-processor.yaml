@@ -1,0 +1,30 @@
+# Minimal config for local debugging: ADP run with OTLP, no real intake required.
+hostname: "correctness-testing"
+
+data_plane:
+  standalone_mode: true
+  enabled: true
+  otlp:
+    enabled: true
+
+#api_key: dummy-api-key-correctness-testing - use as env var so far
+
+# Local placeholder; no real intake needed for topology to start.
+dd_url: "http://127.0.0.1:9999"
+
+log_level: agent_data_plane::components::ottl_filter_processor=debug,info
+
+ottl_config:
+  error_mode: ignore
+  traces:
+    span:
+      - 'attributes["container.name"] == "app_container_1"'
+      - 'resource.attributes["host.name"] == "localhost"'
+  
+otlp_config:
+  receiver:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+  traces:
+    enable_otlp_compute_top_level_by_span_kind: true
