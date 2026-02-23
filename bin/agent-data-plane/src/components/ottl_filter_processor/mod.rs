@@ -164,28 +164,12 @@ mod tests {
 
     use super::*;
 
-    fn make_span(
-        trace_id: u64,
-        span_id: u64,
-        meta: HashMap<String, String>,
-    ) -> Span {
+    fn make_span(trace_id: u64, span_id: u64, meta: HashMap<String, String>) -> Span {
         let mut meta_map = FastHashMap::default();
         for (k, v) in meta {
             meta_map.insert(MetaString::from(k), MetaString::from(v));
         }
-        Span::new(
-            "svc",
-            "op",
-            "res",
-            "web",
-            trace_id,
-            span_id,
-            0,
-            0,
-            1000,
-            0,
-        )
-        .with_meta(meta_map)
+        Span::new("svc", "op", "res", "web", trace_id, span_id, 0, 0, 1000, 0).with_meta(meta_map)
     }
 
     fn make_trace(spans: Vec<Span>, resource_tags: Option<Vec<&'static str>>) -> Trace {
@@ -273,12 +257,20 @@ mod tests {
         let mut buffer = EventsBuffer::default();
         assert!(buffer.try_push(Event::Trace(trace1)).is_none());
         transform.transform_buffer(&mut buffer);
-        assert_eq!(span_count_in_buffer(&buffer), 0, "first condition matches -> span dropped");
+        assert_eq!(
+            span_count_in_buffer(&buffer),
+            0,
+            "first condition matches -> span dropped"
+        );
         let span_match_second = make_span(2, 1, HashMap::new());
         let trace2 = make_trace(vec![span_match_second], Some(vec!["host.name:localhost"]));
         assert!(buffer.try_push(Event::Trace(trace2)).is_none());
         transform.transform_buffer(&mut buffer);
-        assert_eq!(span_count_in_buffer(&buffer), 0, "second condition matches -> span dropped");
+        assert_eq!(
+            span_count_in_buffer(&buffer),
+            0,
+            "second condition matches -> span dropped"
+        );
     }
 
     /// With no conditions configured, no span is dropped.
@@ -372,14 +364,21 @@ mod tests {
         let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
         let ctx = ComponentContext::transform(ComponentId::try_from("ottl_filter").unwrap());
         let mut transform = ottl_config.build(ctx).await.unwrap();
-        let span_first_false_second_true =
-            make_span(1, 1, HashMap::from([("first".into(), "no".into()), ("second".into(), "yes".into())]));
+        let span_first_false_second_true = make_span(
+            1,
+            1,
+            HashMap::from([("first".into(), "no".into()), ("second".into(), "yes".into())]),
+        );
         let trace = make_trace(vec![span_first_false_second_true], None);
         let mut buffer = EventsBuffer::default();
         assert!(buffer.try_push(Event::Trace(trace)).is_none());
         transform.transform_buffer(&mut buffer);
         assert_eq!(span_count_in_buffer(&buffer), 0);
-        let span_both_false = make_span(2, 1, HashMap::from([("first".into(), "x".into()), ("second".into(), "y".into())]));
+        let span_both_false = make_span(
+            2,
+            1,
+            HashMap::from([("first".into(), "x".into()), ("second".into(), "y".into())]),
+        );
         let trace2 = make_trace(vec![span_both_false], None);
         assert!(buffer.try_push(Event::Trace(trace2)).is_none());
         transform.transform_buffer(&mut buffer);
@@ -404,7 +403,11 @@ mod tests {
         let mut buffer = EventsBuffer::default();
         assert!(buffer.try_push(Event::Trace(trace)).is_none());
         transform.transform_buffer(&mut buffer);
-        assert_eq!(span_count_in_buffer(&buffer), 1, "path returning non-bool errors; ignore keeps span");
+        assert_eq!(
+            span_count_in_buffer(&buffer),
+            1,
+            "path returning non-bool errors; ignore keeps span"
+        );
     }
 
     /// With `error_mode: ignore`, when condition evaluation errors (e.g. type mismatch), the span is kept.
