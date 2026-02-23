@@ -2,6 +2,7 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
+use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
 use std::{borrow::Cow, collections::HashSet};
 
@@ -9,10 +10,13 @@ pub use figment::value;
 use figment::{
     error::Kind,
     providers::{Env, Serialized},
+    value::Value as FigmentValue,
     Figment, Provider,
 };
 use saluki_error::GenericError;
+use serde::de::{DeserializeOwned, Deserializer, MapAccess, Visitor};
 use serde::Deserialize;
+use serde_json::{Map as JsonMap, Value as JsonValue};
 use snafu::{ResultExt as _, Snafu};
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use tracing::{debug, error};
@@ -680,6 +684,56 @@ struct Inner {
     ready_signal: Mutex<Option<oneshot::Receiver<()>>>,
 }
 
+/// Wrapper used to extract a type `T` from config that may contain duplicate keys (last value wins).
+struct DedupExtract<T>(T);
+
+impl<'de, T> Deserialize<'de> for DedupExtract<T>
+where
+    T: DeserializeOwned,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let figment_map = deserializer.deserialize_map(DedupMapVisitor)?;
+        let json_map: JsonMap<String, JsonValue> = figment_map
+            .into_iter()
+            .map(|(k, v)| figment_value_to_json(v).map(|j| (k, j)))
+            .collect::<Result<JsonMap<_, _>, _>>()
+            .map_err(serde::de::Error::custom)?;
+        let value = JsonValue::Object(json_map);
+        let inner = serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+        Ok(DedupExtract(inner))
+    }
+}
+
+/// Converts a figment value to serde_json::Value for re-deserialization.
+fn figment_value_to_json(v: FigmentValue) -> Result<JsonValue, serde_json::Error> {
+    serde_json::to_value(&v)
+}
+
+/// Visitor that collects map entries in Figment's native format, overwriting on duplicate keys (last value wins).
+struct DedupMapVisitor;
+
+impl<'de> Visitor<'de> for DedupMapVisitor {
+    type Value = HashMap<String, FigmentValue>;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut result = HashMap::new();
+        while let Some((key, value)) = map.next_entry::<String, FigmentValue>()? {
+            result.insert(key, value);
+        }
+        Ok(result)
+    }
+}
+
 /// A generic configuration object.
 ///
 /// This represents the merged configuration derived from [`ConfigurationLoader`] in its raw form.  Values can be
@@ -813,6 +867,58 @@ impl GenericConfiguration {
             .unwrap()
             .extract()
             .map_err(|e| from_figment_error(&self.inner.lookup_sources, e))
+    }
+
+    /// Like [`as_typed`](Self::as_typed), but tolerates duplicate keys in the merged configuration.
+    ///
+    /// When configuration is merged from multiple sources (e.g. config stream snapshot and
+    /// environment variables), the same key can appear more than once. Standard deserialization
+    /// then fails with a "duplicate field" error. This method collects the config map with
+    /// last-value-wins for duplicate keys, then deserializes `T`, so any config type can be
+    /// extracted from merged config without error.
+    ///
+    /// Prefer [`as_typed`](Self::as_typed) when duplicates are not expected; use this when
+    /// loading config that combines static (file/env) and dynamic (e.g. config stream) sources.
+    ///
+    /// ## Errors
+    ///
+    /// If the value could not be deserialized into `T`, an error will be returned.
+    pub fn as_typed_allow_duplicate_keys<T>(&self) -> Result<T, ConfigurationError>
+    where
+        T: DeserializeOwned,
+    {
+        self.inner
+            .figment
+            .read()
+            .unwrap()
+            .extract::<DedupExtract<T>>()
+            .map_err(|e| from_figment_error(&self.inner.lookup_sources, e))
+            .map(|wrapper| wrapper.0)
+    }
+
+    /// Returns the merged configuration as a JSON object map, with duplicate keys collapsed (last value wins).
+    ///
+    /// Use this when you need to post-process the config (e.g. collapse key aliases that map to the same
+    /// struct field) before deserializing into a type. The returned map can be large (full merged config);
+    /// process or deserialize promptly and avoid holding it longer than needed.
+    ///
+    /// ## Errors
+    ///
+    /// If the configuration could not be read or converted to a map, an error will be returned.
+    pub fn merged_config_as_json_map(&self) -> Result<JsonMap<String, JsonValue>, ConfigurationError> {
+        let wrapper = self
+            .inner
+            .figment
+            .read()
+            .unwrap()
+            .extract::<DedupExtract<JsonValue>>()
+            .map_err(|e| from_figment_error(&self.inner.lookup_sources, e))?;
+        match wrapper.0 {
+            JsonValue::Object(m) => Ok(m),
+            _ => Err(ConfigurationError::Generic {
+                source: saluki_error::generic_error!("merged config is not an object"),
+            }),
+        }
     }
 
     /// Subscribes for updates to the configuration.

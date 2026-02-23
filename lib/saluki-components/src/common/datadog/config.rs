@@ -3,8 +3,14 @@ use std::time::Duration;
 use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
 use serde::Deserialize;
+use serde_json::Value as JsonValue;
 
 use super::{endpoints::EndpointConfiguration, proxy::ProxyConfiguration, retry::RetryConfiguration};
+
+/// Canonical key for retry queue max size; the deprecated env/key is an alias.
+const RETRY_QUEUE_MAX_SIZE_KEY: &str = "forwarder_retry_queue_payloads_max_size";
+/// Deprecated key that maps to the same field as `RETRY_QUEUE_MAX_SIZE_KEY`.
+const RETRY_QUEUE_MAX_SIZE_ALIAS_KEY: &str = "forwarder_retry_queue_max_size";
 
 const fn default_endpoint_concurrency() -> usize {
     1
@@ -70,8 +76,24 @@ pub struct ForwarderConfiguration {
 
 impl ForwarderConfiguration {
     /// Creates a new `ForwarderConfiguration` from the given configuration.
+    ///
+    /// Uses [`GenericConfiguration::merged_config_as_json_map`] so that merged config (e.g. config
+    /// stream snapshot and environment) with duplicate keys or alias keys mapping to the same field
+    /// is tolerated; the canonical key wins over the deprecated alias.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let mut forwarder_config = config.as_typed::<Self>()?;
+        let mut map = config
+            .merged_config_as_json_map()
+            .map_err(|e| saluki_error::generic_error!("{}", e))?;
+
+        // Collapse deprecated alias so only one key maps to retry_queue_max_size_bytes; avoids
+        // "duplicate field" when both keys are present (e.g. from Agent config).
+        if map.contains_key(RETRY_QUEUE_MAX_SIZE_KEY) {
+            map.remove(RETRY_QUEUE_MAX_SIZE_ALIAS_KEY);
+        }
+
+        // Deserialize from the full map: ForwarderConfiguration uses #[serde(flatten)] and does not
+        // use deny_unknown_fields, so unknown keys are ignored. Do not add deny_unknown_fields.
+        let mut forwarder_config: Self = serde_json::from_value(JsonValue::Object(map)).map_err(GenericError::from)?;
 
         // Handle fixing up the forwarder storage path if it's empty.
         forwarder_config.retry.fix_empty_storage_path(config);
