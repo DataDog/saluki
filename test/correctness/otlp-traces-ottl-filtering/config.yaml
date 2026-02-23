@@ -1,0 +1,25 @@
+# E2E correctness test: OTel Collector (baseline) vs ADP (comparison), both with the same
+# OTTL span filtering. Millstone sends the same traces to both; we assert filtered outputs match.
+analysis_mode: traces
+millstone:
+  image: saluki-images/millstone:latest
+  config_path: millstone.yaml
+datadog_intake:
+  image: saluki-images/datadog-intake:latest
+  config_path: ../datadog-intake.yaml
+baseline:
+  image: otel/opentelemetry-collector-contrib:0.96.0
+  files:
+    - collector.yaml:/etc/otelcol-contrib/config.yaml
+  command:
+    - "--config=/etc/otelcol-contrib/config.yaml"
+  additional_env_vars:
+    - DD_API_KEY=correctness-test
+comparison:
+  image: saluki-images/datadog-agent:testing-release
+  files:
+    - datadog.yaml:/etc/datadog-agent/datadog.yaml
+  additional_env_vars:
+    - DD_API_KEY=correctness-test
+    - DD_DATA_PLANE_ENABLED=true
+    - DD_DATA_PLANE_OTLP_ENABLED=true
