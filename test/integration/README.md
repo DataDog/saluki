@@ -124,7 +124,8 @@ container:
     - "8125/udp"
     - "5102/tcp"
 
-# Required: list of assertions to run (executed sequentially)
+# Required: list of assertion steps to run (executed sequentially)
+# Each step is either a single assertion or a parallel block.
 assertions:
   - type: process_stable_for
     duration: 10s
@@ -138,6 +139,29 @@ assertions:
     pattern: "Topology healthy"
     timeout: 30s
 ```
+
+### Parallel Assertions
+
+By default, assertions run sequentially. To run multiple assertions concurrently, wrap them in a `parallel` block:
+
+```yaml
+assertions:
+  # This runs first, on its own
+  - type: log_contains
+    pattern: "Agent started"
+    timeout: 30s
+
+  # These two run concurrently with each other
+  - parallel:
+    - type: process_stable_for
+      duration: 5s
+    - type: log_not_contains
+      pattern: "panic|PANIC"
+      regex: true
+      during: 5s
+```
+
+Steps (individual assertions and parallel blocks) execute sequentially. If any assertion in a parallel block fails, subsequent steps are skipped. Within a parallel block, all assertions run to completion regardless of individual failures.
 
 ### Available Assertions
 
@@ -213,7 +237,7 @@ Durations support human-readable formats:
 
 3. **Check for absence of errors**: Use `log_not_contains` to verify no panics or fatal errors occur.
 
-4. **Assertions run sequentially**: If an assertion fails, subsequent assertions are skipped.
+4. **Assertions run sequentially by default**: If an assertion fails, subsequent steps are skipped. Use `parallel` blocks to run independent assertions concurrently.
 
 5. **File paths are relative**: Paths in the `files` list are relative to the test case directory.
 

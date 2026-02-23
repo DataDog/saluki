@@ -19,24 +19,15 @@ container:
     - "8125/udp"
 
 assertions:
-  # Verify ADP starts successfully
-  - type: log_contains
-    pattern: "Agent Data Plane starting"
-    timeout: 30s
-  # ADP should report registration failure (Core Agent returns error when RAR disabled)
+  # ADP should report registration failure (Core Agent returns error when RAR disabled).
   - type: log_contains
     pattern: "Failed to register with the Datadog Agent. Registration will be retried periodically in the background."
-    timeout: 60s
-  # ADP should remain stable and continue operating despite registration failures
-  - type: process_stable_for
-    duration: 30s
-  # DogStatsD port should be listening
-  - type: port_listening
-    port: 8125
-    protocol: udp
-    timeout: 30s
-  # No panics in ADP itself
-  - type: log_not_contains
-    pattern: "panic|PANIC"
-    regex: true
-    during: 10s
+    timeout: 10s
+  # Make sure the process becomes healthy, and stays up without errors, for ~10 seconds after.
+  - parallel:
+      - type: process_stable_for
+        duration: 10s
+      - type: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s

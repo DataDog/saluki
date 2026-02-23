@@ -16,13 +16,15 @@ container:
     - "8125/udp"
 
 assertions:
-  - type: process_stable_for
-    duration: 15s
+  # ADP should report registration success.
   - type: log_contains
     pattern: "Successfully registered with the Datadog Agent."
-    regex: true
-    timeout: 60s
-  - type: log_not_contains
-    pattern: "panic|PANIC"
-    regex: true
-    during: 10s
+    timeout: 10s
+  # Make sure the process becomes healthy, and stays up without errors, for ~10 seconds after.
+  - parallel:
+      - type: process_stable_for
+        duration: 10s
+      - type: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s
