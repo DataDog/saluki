@@ -538,4 +538,115 @@ mod tests {
         transform.transform_buffer(&mut buffer);
         assert_eq!(span_count_in_buffer(&buffer), 0);
     }
+
+    // --- Performance tests (run manually: cargo test -- --ignored --nocapture perf_throughput) ---
+
+    /// Number of buffer clones used in throughput tests; only `transform_buffer` time is measured.
+    const PERF_NUM_BUFFERS: usize = 1024;
+    /// Spans per buffer (one trace per buffer) in throughput tests.
+    const PERF_SPANS_PER_BUFFER: usize = 100;
+
+    /// Builds a template buffer with one trace containing `spans`.
+    fn perf_make_buffer(spans: Vec<Span>) -> EventsBuffer {
+        let trace = make_trace(spans, None);
+        let mut buf = EventsBuffer::default();
+        assert!(buf.try_push(Event::Trace(trace)).is_none());
+        buf
+    }
+
+    /// Throughput test: OTTL predicate matches every span (all spans dropped).
+    /// Run with: `cargo test -p agent-data-plane perf_throughput_filter_all --release -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore = "performance test; run with: cargo test -- --ignored --nocapture perf_throughput"]
+    async fn perf_throughput_filter_all() {
+        let cfg_json = serde_json::json!({
+            "ottl_config": { "traces": { "span": ["attributes[\"env\"] == \"drop\""] } }
+        });
+        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
+        let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
+        let ctx = ComponentContext::transform(ComponentId::try_from("ottl_filter").unwrap());
+        let mut transform = ottl_config.build(ctx).await.unwrap();
+
+        let spans: Vec<Span> = (0..PERF_SPANS_PER_BUFFER)
+            .map(|i| make_span(1, i as u64, HashMap::from([("env".into(), "drop".into())])))
+            .collect();
+        let template = perf_make_buffer(spans);
+        let mut buffers: Vec<EventsBuffer> = (0..PERF_NUM_BUFFERS).map(|_| template.clone()).collect();
+        let total_spans = PERF_NUM_BUFFERS * PERF_SPANS_PER_BUFFER;
+
+        let start = std::time::Instant::now();
+        for buf in &mut buffers {
+            transform.transform_buffer(buf);
+        }
+        let elapsed = start.elapsed();
+        let throughput = total_spans as f64 / elapsed.as_secs_f64();
+        println!(
+            "perf_throughput_filter_all: {} spans in {:?} -> {:.0} spans/s",
+            total_spans, elapsed, throughput
+        );
+    }
+
+    /// Throughput test: OTTL predicate matches every second span (half dropped).
+    /// Run with: `cargo test -p agent-data-plane perf_throughput_filter_half --release -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore = "performance test; run with: cargo test -- --ignored --nocapture perf_throughput"]
+    async fn perf_throughput_filter_half() {
+        let cfg_json = serde_json::json!({
+            "ottl_config": { "traces": { "span": ["attributes[\"drop\"] == \"yes\""] } }
+        });
+        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
+        let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
+        let ctx = ComponentContext::transform(ComponentId::try_from("ottl_filter").unwrap());
+        let mut transform = ottl_config.build(ctx).await.unwrap();
+
+        let spans: Vec<Span> = (0..PERF_SPANS_PER_BUFFER)
+            .map(|i| {
+                let drop_val = if i % 2 == 0 { "yes" } else { "no" };
+                make_span(1, i as u64, HashMap::from([("drop".into(), drop_val.to_string())]))
+            })
+            .collect();
+        let template = perf_make_buffer(spans);
+        let mut buffers: Vec<EventsBuffer> = (0..PERF_NUM_BUFFERS).map(|_| template.clone()).collect();
+        let total_spans = PERF_NUM_BUFFERS * PERF_SPANS_PER_BUFFER;
+
+        let start = std::time::Instant::now();
+        for buf in &mut buffers {
+            transform.transform_buffer(buf);
+        }
+        let elapsed = start.elapsed();
+        let throughput = total_spans as f64 / elapsed.as_secs_f64();
+        println!(
+            "perf_throughput_filter_half: {} spans in {:?} -> {:.0} spans/s",
+            total_spans, elapsed, throughput
+        );
+    }
+
+    /// Throughput test: OTTL predicate matches no span (none dropped).
+    /// Run with: `cargo test -p agent-data-plane perf_throughput_filter_none --release -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore = "performance test; run with: cargo test -- --ignored --nocapture perf_throughput"]
+    async fn perf_throughput_filter_none() {
+        let (config, _) = ConfigurationLoader::for_tests(None, None, false).await;
+        let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
+        let ctx = ComponentContext::transform(ComponentId::try_from("ottl_filter").unwrap());
+        let mut transform = ottl_config.build(ctx).await.unwrap();
+
+        let spans: Vec<Span> = (0..PERF_SPANS_PER_BUFFER)
+            .map(|i| make_span(1, i as u64, HashMap::from([("env".into(), "keep".into())])))
+            .collect();
+        let template = perf_make_buffer(spans);
+        let mut buffers: Vec<EventsBuffer> = (0..PERF_NUM_BUFFERS).map(|_| template.clone()).collect();
+        let total_spans = PERF_NUM_BUFFERS * PERF_SPANS_PER_BUFFER;
+
+        let start = std::time::Instant::now();
+        for buf in &mut buffers {
+            transform.transform_buffer(buf);
+        }
+        let elapsed = start.elapsed();
+        let throughput = total_spans as f64 / elapsed.as_secs_f64();
+        println!(
+            "perf_throughput_filter_none: {} spans in {:?} -> {:.0} spans/s",
+            total_spans, elapsed, throughput
+        );
+    }
 }
