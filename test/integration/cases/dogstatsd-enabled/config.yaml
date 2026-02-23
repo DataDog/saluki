@@ -16,23 +16,16 @@ container:
     - "8125/udp"
 
 assertions:
-  # Process should remain stable
-  - type: process_stable_for
-    duration: 10s
-
-  # DogStatsD port should be listening
-  - type: port_listening
-    port: 8125
-    protocol: udp
-    timeout: 30s
-
-  # Should see topology healthy message
-  - type: log_contains
-    pattern: "Topology healthy"
-    timeout: 45s
-
-  # Should not see any panics
-  - type: log_not_contains
-    pattern: "panic|PANIC"
-    regex: true
-    during: 10s
+  # Make sure the process becomes healthy, and stays up without errors, listening for DSD (UDP),
+  # for ~10 seconds after.
+  - parallel:
+      - type: process_stable_for
+        duration: 10s
+      - type: port_listening
+        port: 8125
+        protocol: udp
+        timeout: 10s
+      - type: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s

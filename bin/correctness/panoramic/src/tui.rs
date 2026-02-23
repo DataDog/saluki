@@ -156,6 +156,14 @@ impl Tui {
                             self.add_line(format!("    {}", assertion.message));
                         }
                     }
+
+                    // Add phase timings for diagnostics.
+                    if !result.phase_timings.is_empty() {
+                        self.add_line("  Phase timings:");
+                        for phase in &result.phase_timings {
+                            self.add_line(format!("    {} ({:.2?})", phase.phase, phase.duration));
+                        }
+                    }
                 }
             }
             TestEvent::AllDone => {
