@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -63,7 +63,7 @@ impl LocalAutodiscoveryProvider {
 
         tokio::spawn(async move {
             let mut known_configs = HashSet::new();
-            let mut configs = HashMap::new();
+            let mut configs = BTreeMap::new();
             loop {
                 interval.tick().await;
 
@@ -79,8 +79,8 @@ impl LocalAutodiscoveryProvider {
 #[derive(Debug, Deserialize)]
 struct LocalCheckConfig {
     #[serde(default)]
-    init_config: HashMap<String, serde_yaml::Value>,
-    instances: Vec<HashMap<String, serde_yaml::Value>>,
+    init_config: BTreeMap<String, serde_yaml::Value>,
+    instances: Vec<BTreeMap<String, serde_yaml::Value>>,
 }
 
 /// Parse a YAML file into a Config object
@@ -103,7 +103,7 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, CheckConfig), Gene
         .instances
         .into_iter()
         .map(|instance| {
-            let mut result = HashMap::new();
+            let mut result = BTreeMap::new();
             for (key, value) in instance {
                 result.insert(key.into(), value);
             }
@@ -112,7 +112,7 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, CheckConfig), Gene
         .collect();
 
     let init_config = {
-        let mut result = HashMap::new();
+        let mut result = BTreeMap::new();
         for (key, value) in check_config.init_config {
             result.insert(key.into(), value);
         }
@@ -147,7 +147,7 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, CheckConfig), Gene
 /// Scan and emit events based on configuration files in the directory
 async fn scan_and_emit_events(
     paths: &[PathBuf], known_configs: &mut HashSet<String>, sender: &Sender<AutodiscoveryEvent>,
-    configs: &mut HashMap<String, CheckConfig>,
+    configs: &mut BTreeMap<String, CheckConfig>,
 ) -> Result<(), GenericError> {
     let mut found_configs = HashSet::new();
 
@@ -291,7 +291,7 @@ mod tests {
         let _test_file = copy_test_file("config1.yaml", dir.path()).await;
 
         let mut known_configs = HashSet::new();
-        let mut configs = HashMap::new();
+        let mut configs = BTreeMap::new();
         let (sender, mut receiver) = broadcast::channel::<AutodiscoveryEvent>(10);
 
         scan_and_emit_events(&[dir.path().to_path_buf()], &mut known_configs, &sender, &mut configs)
@@ -331,7 +331,7 @@ mod tests {
 
         let mut known_configs = HashSet::new();
         known_configs.insert("removed-config".to_string());
-        let mut configs = HashMap::new();
+        let mut configs = BTreeMap::new();
         configs.insert(
             "removed-config".to_string(),
             CheckConfig {
