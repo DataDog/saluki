@@ -337,6 +337,13 @@ fn snapshot_to_map(snapshot: &ConfigSnapshot) -> Value {
 
     for setting in &snapshot.settings {
         let value = proto_value_to_serde_value(&setting.value);
+        let scrubbed_value = saluki_common::scrubber::scrub_single(&value.to_string());
+        debug!(
+            key = setting.key,
+            value = scrubbed_value,
+            "Converting snapshot setting entry."
+        );
+
         upsert(&mut root, &setting.key, value);
     }
 

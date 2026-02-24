@@ -48,6 +48,15 @@ pub fn default_scrubber() -> &'static Scrubber {
     DEFAULT_SCRUBBER.get_or_init(Scrubber::default)
 }
 
+/// Scrubs a single string using the default scrubber.
+///
+/// This function ensures that the default scrubber, with its associated regex compilation,
+/// is only initialized once for the lifetime of the application.
+pub fn scrub_single(input: &str) -> String {
+    let scrubbed = default_scrubber().scrub_bytes(input.as_bytes());
+    String::from_utf8_lossy(&scrubbed).into_owned()
+}
+
 impl Default for Scrubber {
     fn default() -> Self {
         let hinted_api_key_replacer = Replacer {

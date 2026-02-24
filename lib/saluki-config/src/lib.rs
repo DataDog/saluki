@@ -583,12 +583,10 @@ async fn run_dynamic_config_updater(
         }
     };
 
-    let scrubber = saluki_common::scrubber::default_scrubber();
     let raw_state = dynamic_state.to_string();
-    let scrubbed_state = scrubber.scrub_bytes(raw_state.as_bytes());
-    let scrubbed_state_str = String::from_utf8_lossy(&scrubbed_state).into_owned();
+    let scrubbed_state = saluki_common::scrubber::scrub_single(&raw_state);
 
-    debug!("Initial snapshot state: {}", scrubbed_state_str);
+    debug!("Initial snapshot state: {}", scrubbed_state);
 
     // Rebuild the configuration with the initial snapshot.
     let new_figment = provider_sources
