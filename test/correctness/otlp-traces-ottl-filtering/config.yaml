@@ -12,6 +12,7 @@ baseline:
   files:
     - collector.yaml:/etc/otelcol-contrib/config.yaml
   command:
+    - "--feature-gates=-exporter.datadogexporter.DisableAPMStats"
     - "--config=/etc/otelcol-contrib/config.yaml"
   additional_env_vars:
     - DD_API_KEY=correctness-test
