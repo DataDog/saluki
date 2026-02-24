@@ -1,5 +1,6 @@
-# E2E correctness test: OTel Collector (baseline) vs ADP (comparison), both with the same
+# E2E correctness test: DDOT (baseline) vs ADP (comparison), both with the same
 # OTTL span filtering. Millstone sends the same traces to both; we assert filtered outputs match.
+# Baseline uses the Datadog Distribution of OpenTelemetry (DDOT) from the agent -full image.
 analysis_mode: traces
 millstone:
   image: saluki-images/millstone:latest
@@ -8,14 +9,18 @@ datadog_intake:
   image: saluki-images/datadog-intake:latest
   config_path: ../datadog-intake.yaml
 baseline:
-  image: otel/opentelemetry-collector-contrib:0.96.0
+  image: datadog/agent:7.75.4-full
+  # Run DDOT (otel-agent) directly so the image entrypoint does not treat our args as a command to exec.
+  entrypoint:
+    - /opt/datadog-agent/embedded/bin/otel-agent
   files:
-    - collector.yaml:/etc/otelcol-contrib/config.yaml
+    - collector.yaml:/etc/datadog-agent/otel-config.yaml
   command:
-    - "--feature-gates=-exporter.datadogexporter.DisableAPMStats"
-    - "--config=/etc/otelcol-contrib/config.yaml"
+    - "--config=/etc/datadog-agent/otel-config.yaml"
   additional_env_vars:
-    - DD_API_KEY=correctness-test
+    - DD_API_KEY=correctness-test    
+    - DD_OTELCOLLECTOR_ENABLED=true
+    - DD_HOSTNAME=correctness-testing     
 comparison:
   image: saluki-images/datadog-agent:testing-release
   files:

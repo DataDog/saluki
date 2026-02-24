@@ -1,6 +1,7 @@
-# OpenTelemetry Collector config for baseline: OTLP receiver, OTTL span filter (same
-# predicates as ADP in datadog.yaml), Datadog exporter to datadog-intake.
+# OpenTelemetry Collector config for baseline (DDOT / otel-agent): OTLP receiver, OTTL
+# span filter (same predicates as ADP in datadog.yaml), Datadog exporter to datadog-intake.
 # Aligns with datadog.yaml behaviour plus OTTL filtering for E2E comparison.
+# Used by the Datadog Distribution of OpenTelemetry (DDOT) from the agent -full image.
 receivers:
   otlp:
     protocols:
