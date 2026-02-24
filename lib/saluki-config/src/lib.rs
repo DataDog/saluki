@@ -583,6 +583,13 @@ async fn run_dynamic_config_updater(
         }
     };
 
+    let scrubber = saluki_common::scrubber::default_scrubber();
+    let raw_state = dynamic_state.to_string();
+    let scrubbed_state = scrubber.scrub_bytes(raw_state.as_bytes());
+    let scrubbed_state_str = String::from_utf8_lossy(&scrubbed_state).into_owned();
+
+    debug!("Initial snapshot state: {}", scrubbed_state_str);
+
     // Rebuild the configuration with the initial snapshot.
     let new_figment = provider_sources
         .iter()
@@ -626,7 +633,7 @@ async fn run_dynamic_config_updater(
                 dynamic_state = new_state;
             }
             ConfigUpdate::Partial { key, value } => {
-                debug!(%key, "Received partial configuration update.");
+                debug!(%key, %value, "Received partial configuration update.");
                 if dynamic_state.is_null() {
                     dynamic_state = serde_json::Value::Object(serde_json::Map::new());
                 }
@@ -865,6 +872,8 @@ fn has_valid_secret_backend_command(configuration: &Figment) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::{json, Value};
+
     use super::*;
 
     macro_rules! json_to_figment {
@@ -1154,5 +1163,24 @@ mod tests {
         // ready() should not resolve until the initial snapshot is processed.
         let res = tokio::time::timeout(std::time::Duration::from_millis(1000), cfg.ready()).await;
         assert!(res.is_err(), "ready() should time out without an initial snapshot");
+    }
+
+    #[test]
+    fn test_upsert_dotted_key() {
+        let mut root = Value::Null;
+
+        let top_level_key = "additional_endpoints";
+        let nested_key = "https://agent.datadoghq.com.";
+        let flattened_key = format!("{}.{}", top_level_key, nested_key);
+        let value = Value::String("encrypted-value".into());
+
+        upsert(&mut root, &flattened_key, value.clone());
+
+        let expected = json!({
+            top_level_key: {
+                nested_key: value,
+            }
+        });
+        assert_eq!(Some(&expected), root.pointer("/additional_endpoints"));
     }
 }

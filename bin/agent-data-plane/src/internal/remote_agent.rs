@@ -288,10 +288,15 @@ async fn run_config_stream_event_loop(
                 Ok(event) => {
                     let update = match event.event {
                         Some(config_event::Event::Snapshot(snapshot)) => {
+                            debug!(
+                                sequence_id = snapshot.sequence_id,
+                                "Received configuration snapshot event."
+                            );
                             let map = snapshot_to_map(&snapshot);
                             Some(ConfigUpdate::Snapshot(map))
                         }
                         Some(config_event::Event::Update(update)) => {
+                            debug!(sequence_id = update.sequence_id, "Received configuration update event.");
                             if let Some(setting) = update.setting {
                                 let v = proto_value_to_serde_value(&setting.value);
                                 Some(ConfigUpdate::Partial {

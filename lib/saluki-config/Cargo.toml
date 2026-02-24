@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 figment = { workspace = true, features = ["env"] }
+saluki-common = { workspace = true }
 saluki-error = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

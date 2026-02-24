@@ -3528,6 +3528,7 @@ name = "saluki-config"
 version = "0.1.0"
 dependencies = [
  "figment",
+ "saluki-common",
  "saluki-error",
  "serde",
  "serde_json",
