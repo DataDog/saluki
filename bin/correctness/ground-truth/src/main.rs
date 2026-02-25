@@ -64,6 +64,7 @@ async fn run(config: Config) -> Result<(), GenericError> {
     let traces_options = match config.analysis_mode {
         crate::analysis::AnalysisMode::Traces => Some(crate::analysis::TracesAnalysisOptions {
             otlp_direct_analysis_mode: config.otlp_direct_analysis_mode,
+            additional_span_ignore_fields: config.additional_span_ignore_fields,
         }),
         crate::analysis::AnalysisMode::Metrics => None,
     };

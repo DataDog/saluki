@@ -22,6 +22,9 @@ pub enum AnalysisMode {
 pub struct TracesAnalysisOptions {
     /// If true, use OTLP-direct analysis (baseline is OTel-based): skip trace stats comparison and do not require baseline SSI metadata.
     pub otlp_direct_analysis_mode: bool,
+
+    /// Additional span field paths to ignore when diffing baseline vs comparison. Merged with the built-in list.
+    pub additional_span_ignore_fields: Vec<String>,
 }
 
 /// Analysis runner.
@@ -64,6 +67,7 @@ impl AnalysisRunner {
             AnalysisMode::Traces => {
                 let opts = self.traces_options.unwrap_or(TracesAnalysisOptions {
                     otlp_direct_analysis_mode: false,
+                    additional_span_ignore_fields: Vec::new(),
                 });
                 let analyzer =
                     traces::TracesAnalyzer::new(&self.baseline_data, &self.comparison_data, opts)?;

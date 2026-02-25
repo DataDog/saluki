@@ -12,7 +12,8 @@ use treediff::value::Key;
 
 use crate::analysis::collected::CollectedData;
 
-static IGNORED_FIELDS_DIFF: &[&str] = &[
+/// Built-in span field paths always ignored when diffing. Configurable additions via `TracesAnalysisOptions::additional_span_ignore_fields`.
+static BASE_IGNORED_FIELDS_DIFF: &[&str] = &[
     // Single Step Instrumentation-related metadata, which is inherently non-deterministic and not suitable for direct
     // comparison.
     "meta._dd.install.id",
@@ -21,10 +22,6 @@ static IGNORED_FIELDS_DIFF: &[&str] = &[
     "agent_metadata.agent_version",
     // Deprecated
     "metrics._sampling_priority_rate_v1",
-    // OTel baseline vs ADP comparison: load/agent and pipeline add fields that differ or are absent in the other.
-    "agent_metadata.target_tps",
-    "metrics._top_level",
-    "metrics._dd.measured",
 ];
 
 static CUSTOM_FIELD_COMPARATORS: &[(&str, &dyn FieldComparator)] = &[("start", &check_start_diff)];
@@ -55,6 +52,7 @@ pub struct TracesAnalyzer {
     comparison_ssi_metadata_present: bool,
     comparison_trace_stats: FastHashMap<AggregationKey, ClientStatistics>,
     options: TracesAnalysisOptions,
+    ignored_fields: HashSet<String>,
 }
 
 impl TracesAnalyzer {
@@ -103,6 +101,12 @@ impl TracesAnalyzer {
         let comparison_trace_stats = get_merged_trace_stats(comparison_data.trace_stats().groups())
             .error_context("Failed to get merged trace statistics from comparison.")?;
 
+        let ignored_fields = BASE_IGNORED_FIELDS_DIFF
+            .iter()
+            .map(|s| (*s).to_string())
+            .chain(options.additional_span_ignore_fields.iter().cloned())
+            .collect::<HashSet<_>>();
+
         Ok(Self {
             baseline_total_traces: baseline_traces.len(),
             baseline_spans,
@@ -113,6 +117,7 @@ impl TracesAnalyzer {
             comparison_ssi_metadata_present,
             comparison_trace_stats,
             options,
+            ignored_fields,
         })
     }
 
@@ -123,7 +128,7 @@ impl TracesAnalyzer {
     /// If analysis fails, an error will be returned with specific details.
     pub fn run_analysis(self) -> Result<(), GenericError> {
         let mut error_count = 0;
-        let mut diff_recorder = DifferenceRecorder::new();
+        let mut diff_recorder = DifferenceRecorder::new(self.ignored_fields);
 
         // We should have an identical number of traces and spans.
         if self.baseline_total_traces != self.comparison_total_traces {
@@ -317,13 +322,12 @@ impl TracesAnalyzer {
 struct DifferenceRecorder {
     key_stack: Vec<Key>,
     detected_diffs: Vec<String>,
-    ignored_fields: HashSet<&'static str>,
+    ignored_fields: HashSet<String>,
     custom_field_comparators: HashMap<&'static str, &'static dyn FieldComparator>,
 }
 
 impl DifferenceRecorder {
-    fn new() -> Self {
-        let ignored_fields = IGNORED_FIELDS_DIFF.iter().copied().collect::<HashSet<_>>();
+    fn new(ignored_fields: HashSet<String>) -> Self {
         let custom_field_comparators = CUSTOM_FIELD_COMPARATORS.iter().copied().collect::<HashMap<_, _>>();
 
         Self {
