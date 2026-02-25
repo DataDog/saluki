@@ -11,12 +11,13 @@ datadog_intake:
 baseline:
   image: datadog/agent:7.75.4-full
   # Run DDOT (otel-agent) directly so the image entrypoint does not treat our args as a command to exec.
-  entrypoint:
-    - /opt/datadog-agent/embedded/bin/otel-agent
+  #entrypoint:
+  #  - /opt/datadog-agent/embedded/bin/otel-agent
   files:
     - collector.yaml:/etc/datadog-agent/otel-config.yaml
-  command:
-    - "--config=/etc/datadog-agent/otel-config.yaml"
+    - datadog_agent.yaml:/etc/datadog-agent/datadog.yaml
+  #command:
+  #  - "--config=/etc/datadog-agent/otel-config.yaml"
   additional_env_vars:
     - DD_API_KEY=correctness-test    
     - DD_OTELCOLLECTOR_ENABLED=true
@@ -24,7 +25,7 @@ baseline:
 comparison:
   image: saluki-images/datadog-agent:testing-release
   files:
-    - datadog.yaml:/etc/datadog-agent/datadog.yaml
+    - datadog_adp.yaml:/etc/datadog-agent/datadog.yaml
   additional_env_vars:
     - DD_API_KEY=correctness-test
     - DD_DATA_PLANE_ENABLED=true
