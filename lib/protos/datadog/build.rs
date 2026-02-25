@@ -130,15 +130,6 @@ fn main() {
         .compile()
         .expect("piecemeal codegen failed for trace protos");
 
-    // Generate piecemeal builder types for checks IPC.
-    piecemeal_build::ConfigBuilder::new()
-        .input_files(&["proto/checks/checks.proto"])
-        .cargo_output_dir("checks_piecemeal")
-        .expect("failed to resolve cargo output directory")
-        .include_paths(&["proto"])
-        .compile()
-        .expect("piecemeal codegen failed for checks protos");
-
     // Handle code generation for gRPC service definitions.
     tonic_prost_build::configure()
         .build_server(true)
@@ -153,4 +144,10 @@ fn main() {
             &["proto", "proto/datadog-agent"],
         )
         .expect("Failed to build gRPC service definitions for Datadog Agent.");
+
+    tonic_prost_build::configure()
+        .build_server(true)
+        .include_file("checks.mod.rs")
+        .compile_protos(&["proto/checks/checks.proto"], &["proto", "proto/checks"])
+        .expect("Failed to build gRPC service definitions for Checks IPC.");
 }
