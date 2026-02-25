@@ -1,6 +1,7 @@
 use std::time::Duration;
 
-use saluki_core::runtime::{ProcessShutdown, Supervisable, Supervisor, SupervisorFuture};
+use async_trait::async_trait;
+use saluki_core::runtime::{InitializationError, ProcessShutdown, Supervisable, Supervisor, SupervisorFuture};
 use saluki_error::GenericError;
 use tokio::{pin, select};
 use tracing::{error, info};
@@ -129,19 +130,24 @@ impl MockWorker {
     }
 }
 
+#[async_trait]
 impl Supervisable for MockWorker {
     fn name(&self) -> &str {
         self.worker_name
     }
 
-    fn initialize(&self, mut process_shutdown: ProcessShutdown) -> Option<SupervisorFuture> {
+    async fn initialize(&self, mut process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
         let worker_name = self.worker_name;
         let delay = self.delay;
         let result = self.result;
         let panic = self.panic;
         let shutdown_delay = self.shutdown_delay;
 
-        Some(Box::pin(async move {
+        // This is where async initialization would happen, e.g.:
+        // let listener = TcpListener::bind(port).await
+        //     .map_err(|e| InitializationError::Failed { source: e.into() })?;
+
+        Ok(Box::pin(async move {
             info!(worker_name, "Worker started.");
             let work = if delay.is_zero() {
                 tokio::time::sleep(Duration::MAX)
