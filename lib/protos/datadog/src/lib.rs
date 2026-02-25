@@ -29,8 +29,8 @@ mod trace_piecemeal_include {
     include!(concat!(env!("OUT_DIR"), "/trace_piecemeal/mod.rs"));
 }
 
-mod checks_piecemeal_include {
-    include!(concat!(env!("OUT_DIR"), "/checks_piecemeal/mod.rs"));
+mod checks_include {
+    include!(concat!(env!("OUT_DIR"), "/checks.mod.rs"));
 }
 
 /// Metrics-related definitions.
@@ -76,5 +76,5 @@ pub mod sketches {
 
 /// Checks definitions.
 pub mod checks {
-    pub use super::checks_piecemeal_include::datadog::checks::*;
+    pub use super::checks_include::datadog::checks::*;
 }

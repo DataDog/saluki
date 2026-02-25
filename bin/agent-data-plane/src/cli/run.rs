@@ -19,7 +19,7 @@ use saluki_components::{
     },
     forwarders::{DatadogConfiguration, OtlpForwarderConfiguration},
     relays::otlp::OtlpRelayConfiguration,
-    sources::{DogStatsDConfiguration, OtlpConfiguration},
+    sources::{ChecksIPCConfiguration, DogStatsDConfiguration, OtlpConfiguration},
     transforms::{
         AggregateConfiguration, ApmStatsTransformConfiguration, ChainedConfiguration, DogstatsDMapperConfiguration,
         DogstatsDPrefixFilterConfiguration, HostEnrichmentConfiguration, HostTagsConfiguration,
@@ -274,6 +274,10 @@ async fn create_topology(
     }
 
     // Now we move on to our actual data pipelines.
+    if dp_config.checks().enabled() {
+        add_checks_pipeline_to_blueprint(&mut blueprint, config).await?;
+    }
+
     if dp_config.dogstatsd().enabled() {
         add_dsd_pipeline_to_blueprint(&mut blueprint, config, env_provider, dsd_stats_config).await?;
     }
@@ -283,6 +287,20 @@ async fn create_topology(
     }
 
     Ok(blueprint)
+}
+
+async fn add_checks_pipeline_to_blueprint(
+    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+) -> Result<(), GenericError> {
+    let checks_config = ChecksIPCConfiguration::from_configuration(config)?;
+
+    blueprint
+        .add_source("checks_ipc_in", checks_config)?
+        .connect_component("metrics_enrich", ["checks_ipc_in.metrics"])?;
+
+    // TODO: events and service checks
+
+    Ok(())
 }
 
 async fn add_baseline_metrics_pipeline_to_blueprint(
