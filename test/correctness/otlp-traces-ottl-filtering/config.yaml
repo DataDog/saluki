@@ -3,7 +3,7 @@
 # Baseline uses the Datadog Distribution of OpenTelemetry (DDOT) from the agent -full image.
 analysis_mode: traces
 # Baseline (DDOT) sends APM stats as metrics, not to /api/v0.2/stats, so intake has 0 aggregation keys; skip stats comparison.
-compare_trace_stats: true
+compare_trace_stats: false
 # Baseline spans from OTel do not contain _dd.install.* metadata; only comparison (ADP) does.
 require_baseline_ssi: false
 millstone:
