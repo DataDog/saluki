@@ -143,11 +143,11 @@ mod tests {
 
         let mut watcher = cfg.watch_for_updates("foobar.a");
 
-        // Update nested value via dotted path
+        // Update nested value via top-level object merge.
         sender
             .send(ConfigUpdate::Partial {
-                key: "foobar.a".to_string(),
-                value: serde_json::json!(true),
+                key: "foobar".to_string(),
+                value: serde_json::json!({ "a": true }),
             })
             .await
             .unwrap();

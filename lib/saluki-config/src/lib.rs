@@ -519,43 +519,51 @@ fn build_figment_from_sources(sources: &[ProviderSource]) -> Figment {
     })
 }
 
-/// Inserts or updates a value for a key.
+/// Recursively merges an incoming JSON value into an existing JSON value.
 ///
-/// Intermediate objects are created if they don't exist.
-pub fn upsert(root: &mut serde_json::Value, key: &str, value: serde_json::Value) {
+/// Objects are merged key-by-key. Non-object values replace the existing value.
+pub fn merge_json_values(existing: &mut serde_json::Value, incoming: serde_json::Value) {
+    match (existing, incoming) {
+        (serde_json::Value::Object(existing_obj), serde_json::Value::Object(incoming_obj)) => {
+            for (key, incoming_value) in incoming_obj {
+                match existing_obj.entry(key) {
+                    serde_json::map::Entry::Occupied(mut occupied) => {
+                        merge_json_values(occupied.get_mut(), incoming_value);
+                    }
+                    serde_json::map::Entry::Vacant(vacant) => {
+                        vacant.insert(incoming_value);
+                    }
+                }
+            }
+        }
+        (existing, incoming) => {
+            *existing = incoming;
+        }
+    }
+}
+
+/// Merges a value into a root object at a top-level key.
+///
+/// If the key exists, the existing value is recursively merged with the incoming value.
+/// If it does not exist, the incoming value is inserted as-is.
+///
+/// If `root` is not an object, it is replaced with an empty object before applying the merge.
+///
+/// This helper intentionally treats `key` as an opaque top-level key and does not split on dots.
+pub fn merge_at_top_level_key(root: &mut serde_json::Value, key: &str, value: serde_json::Value) {
     if !root.is_object() {
         *root = serde_json::Value::Object(serde_json::Map::new());
     }
 
-    let mut current = root;
-    // Create a new node for each segment if the key is dotted.
-    let mut segments = key.split('.').peekable();
-
-    while let Some(seg) = segments.next() {
-        let is_leaf = segments.peek().is_none();
-
-        // Ensure current is an object before operating
-        if !current.is_object() {
-            *current = serde_json::Value::Object(serde_json::Map::new());
+    let Some(node) = root.as_object_mut() else {
+        return;
+    };
+    match node.entry(key.to_string()) {
+        serde_json::map::Entry::Occupied(mut occupied) => {
+            merge_json_values(occupied.get_mut(), value);
         }
-        let node = current.as_object_mut().expect("current node should be an object");
-
-        if is_leaf {
-            node.insert(seg.to_string(), value);
-            break;
-        } else {
-            // Ensure child exists and is an object
-            let should_create_node = match node.get(seg) {
-                Some(v) => !v.is_object(),
-                None => true,
-            };
-            // Check if we need to create an intermediate node if it doesn't exist.
-            if should_create_node {
-                node.insert(seg.to_string(), serde_json::Value::Object(serde_json::Map::new()));
-            }
-
-            // Advance the current node to the next level.
-            current = node.get_mut(seg).expect("should not fail to get nested object");
+        serde_json::map::Entry::Vacant(vacant) => {
+            vacant.insert(value);
         }
     }
 }
@@ -582,7 +590,6 @@ async fn run_dynamic_config_updater(
             serde_json::Value::Null
         }
     };
-
     // Rebuild the configuration with the initial snapshot.
     let new_figment = provider_sources
         .iter()
@@ -622,16 +629,20 @@ async fn run_dynamic_config_updater(
         // Update our local dynamic state based on the received message.
         match update {
             ConfigUpdate::Snapshot(new_state) => {
-                debug!("Received configuration snapshot update.");
                 dynamic_state = new_state;
             }
             ConfigUpdate::Partial { key, value } => {
-                debug!(%key, "Received partial configuration update.");
                 if dynamic_state.is_null() {
                     dynamic_state = serde_json::Value::Object(serde_json::Map::new());
                 }
                 if dynamic_state.is_object() {
-                    upsert(&mut dynamic_state, &key, value);
+                    if value.is_null() {
+                        if let Some(dynamic_obj) = dynamic_state.as_object_mut() {
+                            dynamic_obj.remove(&key);
+                        }
+                    } else {
+                        merge_at_top_level_key(&mut dynamic_state, &key, value);
+                    }
                 } else {
                     error!(
                         "Received partial update but current dynamic state is not an object. This should not happen."
@@ -639,7 +650,6 @@ async fn run_dynamic_config_updater(
                 }
             }
         }
-
         // Rebuild the figment object on every update, respecting the original provider order.
         let new_figment = provider_sources
             .iter()
@@ -979,11 +989,11 @@ mod tests {
 
         assert_eq!(cfg.get_typed::<String>("new_key").unwrap(), "from dynamic update");
 
-        // Test that an update with a nested key is applied.
+        // Test that an update with a nested value is applied via a top-level object merge.
         sender
             .send(ConfigUpdate::Partial {
-                key: "foobar.a".to_string(),
-                value: serde_json::json!(true),
+                key: "foobar".to_string(),
+                value: serde_json::json!({ "a": true }),
             })
             .await
             .unwrap();
@@ -1041,11 +1051,11 @@ mod tests {
             .await
             .unwrap();
 
-        // Also attempt to override the nested env-backed key via dynamic.
+        // Also attempt to override a nested key via a top-level object partial.
         sender
             .send(ConfigUpdate::Partial {
-                key: "foobar.a".to_string(),
-                value: serde_json::json!(false),
+                key: "foobar".to_string(),
+                value: serde_json::json!({ "a": false }),
             })
             .await
             .unwrap();
@@ -1098,8 +1108,8 @@ mod tests {
 
         sender
             .send(ConfigUpdate::Partial {
-                key: "new_parent.new_child".to_string(),
-                value: serde_json::json!(42),
+                key: "new_parent".to_string(),
+                value: serde_json::json!({ "new_child": 42 }),
             })
             .await
             .unwrap();
@@ -1115,9 +1125,276 @@ mod tests {
             }
         })
         .await
-        .expect("timed out waiting for new_parent.new_child update");
+        .expect("timed out waiting for new_parent update");
 
         assert_eq!(cfg.get_typed::<i32>("new_parent.new_child").unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_configuration_merges_top_level_object_partial() {
+        let (cfg, sender) = ConfigurationLoader::for_tests(
+            Some(serde_json::json!({
+                "foo": "bar",
+            })),
+            None,
+            true,
+        )
+        .await;
+        let sender = sender.expect("sender should exist");
+
+        sender
+            .send(ConfigUpdate::Snapshot(serde_json::json!({
+                "logs_config": {
+                    "enabled": true
+                }
+            })))
+            .await
+            .unwrap();
+        cfg.ready().await;
+
+        let mut rx = cfg.subscribe_for_updates().expect("dynamic updates should be enabled");
+        sender
+            .send(ConfigUpdate::Partial {
+                key: "logs_config".to_string(),
+                value: serde_json::json!({
+                    "url": "datadoghq.com",
+                }),
+            })
+            .await
+            .unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                match rx.recv().await {
+                    Ok(ev) if ev.key == "logs_config.url" => break ev,
+                    Err(e) => panic!("updates channel closed: {e}"),
+                    Ok(_) => continue,
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for logs_config.url update");
+
+        assert!(cfg.get_typed::<bool>("logs_config.enabled").unwrap());
+        assert_eq!(cfg.get_typed::<String>("logs_config.url").unwrap(), "datadoghq.com");
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_configuration_null_partial_deletes_top_level_key() {
+        let (cfg, sender) = ConfigurationLoader::for_tests(
+            Some(serde_json::json!({
+                "foo": "bar",
+            })),
+            None,
+            true,
+        )
+        .await;
+        let sender = sender.expect("sender should exist");
+
+        sender
+            .send(ConfigUpdate::Snapshot(serde_json::json!({
+                "logs_config": {
+                    "enabled": true
+                }
+            })))
+            .await
+            .unwrap();
+        cfg.ready().await;
+
+        let mut rx = cfg.subscribe_for_updates().expect("dynamic updates should be enabled");
+        sender
+            .send(ConfigUpdate::Partial {
+                key: "logs_config".to_string(),
+                value: serde_json::Value::Null,
+            })
+            .await
+            .unwrap();
+        // Sync marker to ensure the null update above has been processed.
+        sender
+            .send(ConfigUpdate::Partial {
+                key: "sync_marker".to_string(),
+                value: serde_json::json!(1),
+            })
+            .await
+            .unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                match rx.recv().await {
+                    Ok(ev) if ev.key == "sync_marker" => break ev,
+                    Err(e) => panic!("updates channel closed: {e}"),
+                    Ok(_) => continue,
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for sync marker update");
+
+        assert_eq!(cfg.try_get_typed::<serde_json::Value>("logs_config").unwrap(), None);
+        assert!(cfg.get_typed::<bool>("logs_config.enabled").is_err());
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_configuration_null_partial_restores_lower_precedence_value() {
+        let (cfg, sender) = ConfigurationLoader::for_tests(
+            Some(serde_json::json!({
+                "logs_config": {
+                    "enabled": false
+                }
+            })),
+            None,
+            true,
+        )
+        .await;
+        let sender = sender.expect("sender should exist");
+
+        sender
+            .send(ConfigUpdate::Snapshot(serde_json::json!({
+                "logs_config": {
+                    "enabled": true
+                }
+            })))
+            .await
+            .unwrap();
+        cfg.ready().await;
+
+        let mut rx = cfg.subscribe_for_updates().expect("dynamic updates should be enabled");
+        sender
+            .send(ConfigUpdate::Partial {
+                key: "logs_config".to_string(),
+                value: serde_json::Value::Null,
+            })
+            .await
+            .unwrap();
+        // Sync marker to ensure the null update above has been processed.
+        sender
+            .send(ConfigUpdate::Partial {
+                key: "sync_marker".to_string(),
+                value: serde_json::json!(1),
+            })
+            .await
+            .unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                match rx.recv().await {
+                    Ok(ev) if ev.key == "sync_marker" => break ev,
+                    Err(e) => panic!("updates channel closed: {e}"),
+                    Ok(_) => continue,
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for sync marker update");
+
+        // Dynamic source has been unset, so lower-precedence static value should be visible again.
+        assert!(!cfg.get_typed::<bool>("logs_config.enabled").unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_configuration_multiple_updates_to_same_key() {
+        let (cfg, sender) = ConfigurationLoader::for_tests(
+            Some(serde_json::json!({
+                "foo": "bar",
+            })),
+            None,
+            true,
+        )
+        .await;
+        let sender = sender.expect("sender should exist");
+
+        sender
+            .send(ConfigUpdate::Snapshot(serde_json::json!({
+                "new_key": "from_snapshot"
+            })))
+            .await
+            .unwrap();
+        cfg.ready().await;
+
+        let mut rx = cfg.subscribe_for_updates().expect("dynamic updates should be enabled");
+        sender
+            .send(ConfigUpdate::Partial {
+                key: "new_key".to_string(),
+                value: serde_json::json!("first"),
+            })
+            .await
+            .unwrap();
+        sender
+            .send(ConfigUpdate::Partial {
+                key: "new_key".to_string(),
+                value: serde_json::json!("second"),
+            })
+            .await
+            .unwrap();
+        // Sync marker to ensure all updates above have been processed.
+        sender
+            .send(ConfigUpdate::Partial {
+                key: "sync_marker".to_string(),
+                value: serde_json::json!(1),
+            })
+            .await
+            .unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                match rx.recv().await {
+                    Ok(ev) if ev.key == "sync_marker" => break ev,
+                    Err(e) => panic!("updates channel closed: {e}"),
+                    Ok(_) => continue,
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for sync marker update");
+
+        assert_eq!(cfg.get_typed::<String>("new_key").unwrap(), "second");
+    }
+
+    #[tokio::test]
+    async fn test_dynamic_configuration_top_level_type_change_object_to_string() {
+        let (cfg, sender) = ConfigurationLoader::for_tests(
+            Some(serde_json::json!({
+                "foo": "bar",
+            })),
+            None,
+            true,
+        )
+        .await;
+        let sender = sender.expect("sender should exist");
+
+        sender
+            .send(ConfigUpdate::Snapshot(serde_json::json!({
+                "logs_config": {
+                    "enabled": true
+                }
+            })))
+            .await
+            .unwrap();
+        cfg.ready().await;
+
+        let mut rx = cfg.subscribe_for_updates().expect("dynamic updates should be enabled");
+        sender
+            .send(ConfigUpdate::Partial {
+                key: "logs_config".to_string(),
+                value: serde_json::json!("disabled"),
+            })
+            .await
+            .unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                match rx.recv().await {
+                    Ok(ev) if ev.key == "logs_config" => break ev,
+                    Err(e) => panic!("updates channel closed: {e}"),
+                    Ok(_) => continue,
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for logs_config type-change update");
+
+        assert_eq!(cfg.get_typed::<String>("logs_config").unwrap(), "disabled");
+        assert!(cfg.get_typed::<bool>("logs_config.enabled").is_err());
     }
 
     #[tokio::test]

@@ -1,5 +1,8 @@
-use std::{collections::hash_map::Entry, time::Duration};
-use std::{collections::HashMap, net::SocketAddr};
+use std::{
+    collections::{hash_map::Entry, HashMap},
+    net::SocketAddr,
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -15,7 +18,7 @@ use http::{Request, Uri};
 use http_body_util::BodyExt;
 use prost_types::value::Kind;
 use saluki_common::task::spawn_traced_named;
-use saluki_config::{dynamic::ConfigUpdate, upsert, GenericConfiguration};
+use saluki_config::{dynamic::ConfigUpdate, merge_at_top_level_key, GenericConfiguration};
 use saluki_core::state::reflector::Reflector;
 use saluki_env::helpers::remote_agent::{RemoteAgentClient, SessionId, SessionIdHandle};
 use saluki_error::{generic_error, GenericError};
@@ -332,7 +335,7 @@ fn snapshot_to_map(snapshot: &ConfigSnapshot) -> Value {
 
     for setting in &snapshot.settings {
         let value = proto_value_to_serde_value(&setting.value);
-        upsert(&mut root, &setting.key, value);
+        merge_at_top_level_key(&mut root, &setting.key, value);
     }
 
     root
@@ -580,5 +583,81 @@ impl StatusSectionWriter<'_> {
             .fields
             .insert(name.as_ref().to_string(), value.as_ref().to_string());
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use datadog_protos::agent::{ConfigSetting, ConfigSnapshot};
+    use prost_types::{value::Kind, ListValue, Struct, Value as ProtoValue};
+
+    use super::snapshot_to_map;
+
+    fn json_value_to_proto(value: serde_json::Value) -> Option<ProtoValue> {
+        let kind = match value {
+            serde_json::Value::Null => Kind::NullValue(0),
+            serde_json::Value::Bool(v) => Kind::BoolValue(v),
+            serde_json::Value::Number(v) => {
+                Kind::NumberValue(v.as_f64().expect("number should be representable as f64"))
+            }
+            serde_json::Value::String(v) => Kind::StringValue(v),
+            serde_json::Value::Array(values) => {
+                let values = values
+                    .into_iter()
+                    .map(|value| json_value_to_proto(value).expect("array values should convert"))
+                    .collect();
+                Kind::ListValue(ListValue { values })
+            }
+            serde_json::Value::Object(values) => {
+                let fields = values
+                    .into_iter()
+                    .map(|(key, value)| (key, json_value_to_proto(value).expect("object values should convert")))
+                    .collect();
+                Kind::StructValue(Struct { fields })
+            }
+        };
+
+        Some(ProtoValue { kind: Some(kind) })
+    }
+
+    fn setting(key: &str, value: serde_json::Value) -> ConfigSetting {
+        ConfigSetting {
+            source: String::new(),
+            key: key.to_string(),
+            value: json_value_to_proto(value),
+        }
+    }
+
+    #[test]
+    fn snapshot_to_map_merges_top_level_entries_for_same_key() {
+        let snapshot = ConfigSnapshot {
+            origin: String::new(),
+            sequence_id: 0,
+            settings: vec![
+                setting(
+                    "logs_config",
+                    serde_json::json!({
+                        "enabled": true,
+                    }),
+                ),
+                setting(
+                    "logs_config",
+                    serde_json::json!({
+                        "url": "datadoghq.com",
+                    }),
+                ),
+            ],
+        };
+
+        let map = snapshot_to_map(&snapshot);
+        assert_eq!(
+            map,
+            serde_json::json!({
+                "logs_config": {
+                    "enabled": true,
+                    "url": "datadoghq.com",
+                }
+            })
+        );
     }
 }
