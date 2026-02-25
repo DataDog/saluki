@@ -1,32 +1,47 @@
-use std::net::SocketAddr;
+use std::sync::LazyLock;
 
 use async_trait::async_trait;
-use axum::Router;
+use datadog_protos::checks::checks_server::{Checks, ChecksServer};
+use datadog_protos::checks::{SendCheckPayloadRequest, SendCheckPayloadResponse};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::task::HandleExt as _;
+use saluki_config::GenericConfiguration;
 use saluki_core::components::{sources::*, ComponentContext};
 use saluki_core::data_model::event::EventType;
 use saluki_core::topology::OutputDefinition;
 use saluki_error::{generic_error, GenericError};
-use saluki_io::net::server::http::{ErrorHandle, ShutdownHandle};
-use saluki_io::net::util::hyper::TowerToHyperService;
 use saluki_io::net::ListenAddress;
-use tokio::runtime::Handle;
+use serde::Deserialize;
 use tokio::select;
 use tonic::transport::Server;
-use tracing::debug;
+use tonic::{Response, Status};
+use tracing::{debug, info};
+
+const fn default_grpc_endpoint() -> ListenAddress {
+    ListenAddress::any_tcp(5105)
+}
 
 /// Checks IPC source.
-#[derive(Default)]
+#[derive(Debug, Deserialize)]
 pub struct ChecksIPCConfiguration {
+    #[serde(default = "default_grpc_endpoint")]
     grpc_endpoint: ListenAddress,
+}
+
+impl ChecksIPCConfiguration {
+    /// Creates a new `ChecksIPCConfiguration` from the given configuration.
+    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        Ok(config.as_typed()?)
+    }
 }
 
 #[async_trait]
 impl SourceBuilder for ChecksIPCConfiguration {
     fn outputs(&self) -> &[OutputDefinition<EventType>] {
-        static OUTPUTS: &[OutputDefinition<EventType>] = &[OutputDefinition::default_output(EventType::all_bits())];
-        OUTPUTS
+        static OUTPUTS: LazyLock<Vec<OutputDefinition<EventType>>> =
+            LazyLock::new(|| vec![OutputDefinition::named_output("metrics", EventType::Metric)]);
+
+        &OUTPUTS
     }
 
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
@@ -53,8 +68,7 @@ impl Source for ChecksIPC {
         let mut global_shutdown = context.take_shutdown_handle();
         let mut health = context.take_health_handle();
 
-        let server = ChecksServer::new(service);
-        let grpc_server = Server::builder().add_service(ChecksServer::new(service));
+        let grpc_server = Server::builder().add_service(ChecksServer::new(ChecksService));
 
         let grpc_socket_addr = match self.grpc_endpoint {
             ListenAddress::Tcp(addr) => addr,
@@ -80,5 +94,17 @@ impl Source for ChecksIPC {
 
         debug!("Checks IPC source stopped.");
         Ok(())
+    }
+}
+
+struct ChecksService;
+
+#[async_trait]
+impl Checks for ChecksService {
+    async fn send_check_payload(
+        &self, _request: tonic::Request<SendCheckPayloadRequest>,
+    ) -> Result<Response<SendCheckPayloadResponse>, Status> {
+        info!("Received check payload.");
+        Ok(Response::new(SendCheckPayloadResponse {}))
     }
 }
