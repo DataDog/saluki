@@ -40,9 +40,7 @@ impl AnalysisRunner {
     ///
     /// When mode is `Traces`, `traces_options` should be `Some(...)`; otherwise it is ignored.
     pub fn new(
-        mode: AnalysisMode,
-        baseline_data: CollectedData,
-        comparison_data: CollectedData,
+        mode: AnalysisMode, baseline_data: CollectedData, comparison_data: CollectedData,
         traces_options: Option<TracesAnalysisOptions>,
     ) -> Self {
         Self {
@@ -69,8 +67,7 @@ impl AnalysisRunner {
                     otlp_direct_analysis_mode: false,
                     additional_span_ignore_fields: Vec::new(),
                 });
-                let analyzer =
-                    traces::TracesAnalyzer::new(&self.baseline_data, &self.comparison_data, opts)?;
+                let analyzer = traces::TracesAnalyzer::new(&self.baseline_data, &self.comparison_data, opts)?;
                 analyzer.run_analysis()
             }
         }
