@@ -76,7 +76,7 @@ build-bundled-agent-adp-image:
       --platform linux/amd64
       --file ./docker/Dockerfile.datadog-agent
       --tag ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
-      --build-arg DD_AGENT_VERSION=${PUBLIC_DD_AGENT_VERSION}
+      --build-arg DD_AGENT_IMAGE=${PUBLIC_DD_AGENT_IMAGE}
       --build-arg ADP_IMAGE=${ADP_FULL_IMAGE_TAG}
       --build-arg BUILD_PROFILE=release
       --label git.repository=${CI_PROJECT_NAME}

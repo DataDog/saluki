@@ -29,7 +29,7 @@ use tracing::{debug, error};
 
 use super::{
     config::ForwarderConfiguration,
-    endpoints::ResolvedEndpoint,
+    endpoints::{EndpointV3Settings, ResolvedEndpoint},
     middleware::{for_resolved_endpoint, with_version_info},
     telemetry::{ComponentTelemetry, TransactionQueueTelemetry},
     transaction::{Metadata, Transaction, TransactionBody},
@@ -245,9 +245,20 @@ async fn run_endpoint_io_loop<S, B>(
 {
     let queue_id = generate_retry_queue_id(context, &endpoint);
     let endpoint_url = endpoint.endpoint().to_string();
+
+    // Create V3 settings for this endpoint by matching the URL against the configured V3 endpoint lists.
+    let v3_api = config.v3_api();
+    let endpoint_v3_settings = EndpointV3Settings::from_endpoint_url(
+        &endpoint_url,
+        &v3_api.series.endpoints,
+        &v3_api.sketches.endpoints,
+        v3_api.series.validate,
+        v3_api.sketches.validate,
+    );
     debug!(
         endpoint_url,
         num_workers = config.endpoint_concurrency(),
+        ?endpoint_v3_settings,
         "Starting endpoint I/O task."
     );
 
@@ -294,9 +305,22 @@ async fn run_endpoint_io_loop<S, B>(
         select! {
             // Try and drain the next transaction from our channel, and push it into the pending transactions queue.
             maybe_txn = txns_rx.recv(), if !done => match maybe_txn {
-                Some(txn) => match pending_txns.push_high_priority(txn).await {
-                    Ok(push_result) => telemetry.track_dropped_events(push_result.events_dropped),
-                    Err(e) => error!(endpoint_url, error = %e, "Failed to enqueue transaction. Events may be permanently lost."),
+                Some(txn) => {
+                    // Filter transactions based on endpoint's V3 settings and the transaction's payload info.
+                    let payload_info = txn.metadata().payload_info;
+                    if !endpoint_v3_settings.should_receive_payload(payload_info) {
+                        debug!(
+                            endpoint_url,
+                            ?payload_info,
+                            "Filtering out transaction based on endpoint V3 settings."
+                        );
+                        continue;
+                    }
+
+                    match pending_txns.push_high_priority(txn).await {
+                        Ok(push_result) => telemetry.track_dropped_events(push_result.events_dropped),
+                        Err(e) => error!(endpoint_url, error = %e, "Failed to enqueue transaction. Events may be permanently lost."),
+                    }
                 },
                 None => {
                     // Our transactions channel has been closed, so mark ourselves as done which will stop any further
