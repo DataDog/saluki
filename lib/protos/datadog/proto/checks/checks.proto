@@ -60,3 +60,13 @@ message Event {
     repeated string tags = 3;
     int64 timestamp = 4;
 }
+
+message SendCheckPayloadRequest {
+    CheckPayload payload = 1;
+}
+
+message SendCheckPayloadResponse {}
+
+service Checks {
+    rpc SendCheckPayload(SendCheckPayloadRequest) returns (SendCheckPayloadResponse);
+}
