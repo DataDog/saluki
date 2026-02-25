@@ -20,10 +20,8 @@ pub enum AnalysisMode {
 
 /// Options for traces analysis. Used when `AnalysisMode` is `Traces`.
 pub struct TracesAnalysisOptions {
-    /// If false, skip comparing trace statistics (APM stats aggregation keys).
-    pub compare_trace_stats: bool,
-    /// If false, do not require baseline spans to contain Single Step Instrumentation metadata.
-    pub require_baseline_ssi: bool,
+    /// If true, use OTLP-direct analysis (baseline is OTel-based): skip trace stats comparison and do not require baseline SSI metadata.
+    pub otlp_direct_analysis_mode: bool,
 }
 
 /// Analysis runner.
@@ -65,8 +63,7 @@ impl AnalysisRunner {
             }
             AnalysisMode::Traces => {
                 let opts = self.traces_options.unwrap_or(TracesAnalysisOptions {
-                    compare_trace_stats: true,
-                    require_baseline_ssi: true,
+                    otlp_direct_analysis_mode: false,
                 });
                 let analyzer =
                     traces::TracesAnalyzer::new(&self.baseline_data, &self.comparison_data, opts)?;

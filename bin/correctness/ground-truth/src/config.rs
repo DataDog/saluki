@@ -21,6 +21,10 @@ fn default_datadog_intake_binary_path() -> String {
     "/usr/local/bin/datadog-intake".to_string()
 }
 
+fn default_otlp_direct_analysis_mode() -> bool {
+    false
+}
+
 #[derive(Clone, Deserialize)]
 pub struct Config {
     /// Analysis mode to use.
@@ -38,26 +42,13 @@ pub struct Config {
     /// Comparison target configuration.
     pub comparison: TargetConfig,
 
-    /// When analysis mode is traces: if false, skip comparing trace statistics (APM stats aggregation keys).
-    /// Use when baseline does not send stats to the same intake path as comparison (e.g. OTel Collector with Datadog Connector).
-    #[serde(default = "default_compare_trace_stats")]
-    pub compare_trace_stats: bool,
-
-    /// When analysis mode is traces: if false, do not require baseline spans to contain Single Step Instrumentation metadata.
-    /// Use when baseline is OTel-based and does not add _dd.install.* metadata.
-    #[serde(default = "default_require_baseline_ssi")]
-    pub require_baseline_ssi: bool,
+    /// When analysis mode is traces: if true, use OTLP-direct analysis (baseline is OTel-based).
+    /// Equivalent to skipping trace stats comparison and not requiring baseline SSI metadata.
+    #[serde(default = "default_otlp_direct_analysis_mode")]
+    pub otlp_direct_analysis_mode: bool,
 
     #[serde(skip, default = "PathBuf::new")]
     base_config_path: PathBuf,
-}
-
-fn default_compare_trace_stats() -> bool {
-    true
-}
-
-fn default_require_baseline_ssi() -> bool {
-    true
 }
 
 #[derive(Clone, Deserialize)]

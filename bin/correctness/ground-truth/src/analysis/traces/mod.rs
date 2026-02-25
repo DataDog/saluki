@@ -195,8 +195,8 @@ impl TracesAnalyzer {
             }
         }
 
-        // Compare the baseline and comparison trace statistics when requested.
-        if self.options.compare_trace_stats {
+        // Compare the baseline and comparison trace statistics when not in OTLP-direct mode.
+        if !self.options.otlp_direct_analysis_mode {
             let baseline_stats_aggregation_keys = self.baseline_trace_stats.keys().cloned().collect::<HashSet<_>>();
             let comparison_stats_aggregation_keys = self.comparison_trace_stats.keys().cloned().collect::<HashSet<_>>();
 
@@ -294,8 +294,8 @@ impl TracesAnalyzer {
         }
 
         // Ensure that we observe at least one span on each side where Single Step Instrumentation-related metadata is
-        // present (when required by options).
-        if self.options.require_baseline_ssi && !self.baseline_ssi_metadata_present {
+        // present (when not in OTLP-direct mode).
+        if !self.options.otlp_direct_analysis_mode && !self.baseline_ssi_metadata_present {
             error!("No Single Step Instrumentation metadata found in baseline spans.");
             error_count += 1;
         }

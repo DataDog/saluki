@@ -2,10 +2,8 @@
 # OTTL span filtering. Millstone sends the same traces to both; we assert filtered outputs match.
 # Baseline uses the Datadog Distribution of OpenTelemetry (DDOT) from the agent -full image.
 analysis_mode: traces
-# Baseline (DDOT) sends APM stats as metrics, not to /api/v0.2/stats, so intake has 0 aggregation keys; skip stats comparison.
-compare_trace_stats: false
-# Baseline spans from OTel do not contain _dd.install.* metadata; only comparison (ADP) does.
-require_baseline_ssi: false
+# Baseline is OTel-based (DDOT); use OTLP-direct analysis (skip stats comparison, do not require baseline SSI).
+otlp_direct_analysis_mode: true
 millstone:
   image: saluki-images/millstone:latest
   config_path: millstone.yaml
