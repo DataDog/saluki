@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["RestartMode","RuntimeMode","ShutdownStrategy","SupervisorError"],"struct":["ProcessShutdown","RestartStrategy","RuntimeConfiguration","ShutdownHandle","Supervisor"],"trait":["Supervisable"],"type":["SupervisorFuture"]};
+window.SIDEBAR_ITEMS = {"enum":["InitializationError","RestartMode","RuntimeMode","ShutdownStrategy","SupervisorError"],"struct":["ProcessShutdown","RestartStrategy","RuntimeConfiguration","ShutdownHandle","Supervisor"],"trait":["Supervisable"],"type":["SupervisorFuture"]};
