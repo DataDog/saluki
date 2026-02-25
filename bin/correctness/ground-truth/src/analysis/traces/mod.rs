@@ -21,6 +21,10 @@ static IGNORED_FIELDS_DIFF: &[&str] = &[
     "agent_metadata.agent_version",
     // Deprecated
     "metrics._sampling_priority_rate_v1",
+    // OTel baseline vs ADP comparison: load/agent and pipeline add fields that differ or are absent in the other.
+    "agent_metadata.target_tps",
+    "metrics._top_level",
+    "metrics._dd.measured",
 ];
 
 static CUSTOM_FIELD_COMPARATORS: &[(&str, &dyn FieldComparator)] = &[("start", &check_start_diff)];
@@ -38,6 +42,8 @@ where
     }
 }
 
+use super::TracesAnalysisOptions;
+
 /// Analyzes traces for correctness.
 pub struct TracesAnalyzer {
     baseline_total_traces: usize,
@@ -48,11 +54,14 @@ pub struct TracesAnalyzer {
     comparison_spans: HashMap<u64, Span>,
     comparison_ssi_metadata_present: bool,
     comparison_trace_stats: FastHashMap<AggregationKey, ClientStatistics>,
+    options: TracesAnalysisOptions,
 }
 
 impl TracesAnalyzer {
-    /// Creates a new `TracesAnalyzer` instance with the given baseline/comparison data.
-    pub fn new(baseline_data: &CollectedData, comparison_data: &CollectedData) -> Result<Self, GenericError> {
+    /// Creates a new `TracesAnalyzer` instance with the given baseline/comparison data and options.
+    pub fn new(
+        baseline_data: &CollectedData, comparison_data: &CollectedData, options: TracesAnalysisOptions,
+    ) -> Result<Self, GenericError> {
         let mut baseline_traces = HashSet::new();
         let mut baseline_spans = HashMap::new();
         let mut baseline_ssi_metadata_present = false;
@@ -103,6 +112,7 @@ impl TracesAnalyzer {
             comparison_spans,
             comparison_ssi_metadata_present,
             comparison_trace_stats,
+            options,
         })
     }
 
@@ -185,105 +195,107 @@ impl TracesAnalyzer {
             }
         }
 
-        // Compare the baseline and comparison trace statistics.
-        let baseline_stats_aggregation_keys = self.baseline_trace_stats.keys().cloned().collect::<HashSet<_>>();
-        let comparison_stats_aggregation_keys = self.comparison_trace_stats.keys().cloned().collect::<HashSet<_>>();
+        // Compare the baseline and comparison trace statistics when requested.
+        if self.options.compare_trace_stats {
+            let baseline_stats_aggregation_keys = self.baseline_trace_stats.keys().cloned().collect::<HashSet<_>>();
+            let comparison_stats_aggregation_keys = self.comparison_trace_stats.keys().cloned().collect::<HashSet<_>>();
 
-        // We should have an identical number of aggregation keys.
-        if baseline_stats_aggregation_keys.len() != comparison_stats_aggregation_keys.len() {
-            return Err(generic_error!(
-                "Number of aggregation keys do not match: {} (baseline) vs {} (comparison)",
-                baseline_stats_aggregation_keys.len(),
-                comparison_stats_aggregation_keys.len()
-            ));
-        }
-
-        if baseline_stats_aggregation_keys != comparison_stats_aggregation_keys {
-            let baseline_only_aggregation_keys: Vec<_> = baseline_stats_aggregation_keys
-                .difference(&comparison_stats_aggregation_keys)
-                .collect();
-
-            let comparison_only_aggregation_keys: Vec<_> = comparison_stats_aggregation_keys
-                .difference(&baseline_stats_aggregation_keys)
-                .collect();
-
-            // Print details of mismatched stats for debugging
-            error!(
-                "Aggregation key mismatch: {} baseline-only keys, {} comparison-only keys.",
-                baseline_only_aggregation_keys.len(),
-                comparison_only_aggregation_keys.len()
-            );
-
-            // Show samples of baseline-only stats
-            for key in baseline_only_aggregation_keys.iter().take(3) {
-                if let Some(stats) = self.baseline_trace_stats.get(key) {
-                    error!(
-                        "Baseline-only key {}: {}",
-                        key,
-                        serde_json::to_string(stats).unwrap_or_else(|_| "<serialization error>".to_string())
-                    );
-                }
+            // We should have an identical number of aggregation keys.
+            if baseline_stats_aggregation_keys.len() != comparison_stats_aggregation_keys.len() {
+                return Err(generic_error!(
+                    "Number of aggregation keys do not match: {} (baseline) vs {} (comparison)",
+                    baseline_stats_aggregation_keys.len(),
+                    comparison_stats_aggregation_keys.len()
+                ));
             }
 
-            // Show samples of comparison-only stats
-            for key in comparison_only_aggregation_keys.iter().take(3) {
-                if let Some(stats) = self.comparison_trace_stats.get(key) {
-                    error!(
-                        "Comparison-only key {}: {}",
-                        key,
-                        serde_json::to_string(stats).unwrap_or_else(|_| "<serialization error>".to_string())
-                    );
-                }
-            }
+            if baseline_stats_aggregation_keys != comparison_stats_aggregation_keys {
+                let baseline_only_aggregation_keys: Vec<_> = baseline_stats_aggregation_keys
+                    .difference(&comparison_stats_aggregation_keys)
+                    .collect();
 
-            return Err(generic_error!(
-                "Baseline and comparison targets have non-overlapped set of statistic aggregation keys: {} baseline-only keys and {} comparison-only keys.",
-                baseline_only_aggregation_keys.len(),
-                comparison_only_aggregation_keys.len()
-            ));
-        }
+                let comparison_only_aggregation_keys: Vec<_> = comparison_stats_aggregation_keys
+                    .difference(&baseline_stats_aggregation_keys)
+                    .collect();
 
-        info!(
-            "Analyzing {} aggregated statistics groups from baseline and comparison target.",
-            baseline_stats_aggregation_keys.len()
-        );
+                // Print details of mismatched stats for debugging
+                error!(
+                    "Aggregation key mismatch: {} baseline-only keys, {} comparison-only keys.",
+                    baseline_only_aggregation_keys.len(),
+                    comparison_only_aggregation_keys.len()
+                );
 
-        // Go through each baseline aggregated stats group, and look for a matching group (by ID) on the comparison target side.
-        //
-        // If found, compare the groups.
-        for (baseline_aggegation_key, baseline_stats) in self.baseline_trace_stats.iter() {
-            match self.comparison_trace_stats.get(baseline_aggegation_key) {
-                Some(comparison_stats) => {
-                    // We serialize both spans to JSON for deep comparison.
-                    let baseline_stats_json = serde_json::to_value(baseline_stats).unwrap();
-                    let comparison_stats_json = serde_json::to_value(comparison_stats).unwrap();
-
-                    diff_recorder.clear();
-                    treediff::diff(&baseline_stats_json, &comparison_stats_json, &mut diff_recorder);
-
-                    if !diff_recorder.is_empty() {
-                        error!("Detected mismatched stats group ({}):", baseline_aggegation_key);
-                        for stats_diff in diff_recorder.diffs() {
-                            error!("- {}", stats_diff);
-                        }
-                        error!("");
-
-                        error_count += 1;
+                // Show samples of baseline-only stats
+                for key in baseline_only_aggregation_keys.iter().take(3) {
+                    if let Some(stats) = self.baseline_trace_stats.get(key) {
+                        error!(
+                            "Baseline-only key {}: {}",
+                            key,
+                            serde_json::to_string(stats).unwrap_or_else(|_| "<serialization error>".to_string())
+                        );
                     }
                 }
-                None => {
-                    error!(
-                        "Failed to find matching comparison aggregation key ({}).",
-                        baseline_aggegation_key
-                    );
-                    error_count += 1;
+
+                // Show samples of comparison-only stats
+                for key in comparison_only_aggregation_keys.iter().take(3) {
+                    if let Some(stats) = self.comparison_trace_stats.get(key) {
+                        error!(
+                            "Comparison-only key {}: {}",
+                            key,
+                            serde_json::to_string(stats).unwrap_or_else(|_| "<serialization error>".to_string())
+                        );
+                    }
+                }
+
+                return Err(generic_error!(
+                    "Baseline and comparison targets have non-overlapped set of statistic aggregation keys: {} baseline-only keys and {} comparison-only keys.",
+                    baseline_only_aggregation_keys.len(),
+                    comparison_only_aggregation_keys.len()
+                ));
+            }
+
+            info!(
+                "Analyzing {} aggregated statistics groups from baseline and comparison target.",
+                baseline_stats_aggregation_keys.len()
+            );
+
+            // Go through each baseline aggregated stats group, and look for a matching group (by ID) on the comparison target side.
+            //
+            // If found, compare the groups.
+            for (baseline_aggegation_key, baseline_stats) in self.baseline_trace_stats.iter() {
+                match self.comparison_trace_stats.get(baseline_aggegation_key) {
+                    Some(comparison_stats) => {
+                        // We serialize both spans to JSON for deep comparison.
+                        let baseline_stats_json = serde_json::to_value(baseline_stats).unwrap();
+                        let comparison_stats_json = serde_json::to_value(comparison_stats).unwrap();
+
+                        diff_recorder.clear();
+                        treediff::diff(&baseline_stats_json, &comparison_stats_json, &mut diff_recorder);
+
+                        if !diff_recorder.is_empty() {
+                            error!("Detected mismatched stats group ({}):", baseline_aggegation_key);
+                            for stats_diff in diff_recorder.diffs() {
+                                error!("- {}", stats_diff);
+                            }
+                            error!("");
+
+                            error_count += 1;
+                        }
+                    }
+                    None => {
+                        error!(
+                            "Failed to find matching comparison aggregation key ({}).",
+                            baseline_aggegation_key
+                        );
+                        error_count += 1;
+                    }
                 }
             }
         }
 
         // Ensure that we observe at least one span on each side where Single Step Instrumentation-related metadata is
-        // present.
-        if !self.baseline_ssi_metadata_present {
+        // present (when required by options).
+        if self.options.require_baseline_ssi && !self.baseline_ssi_metadata_present {
             error!("No Single Step Instrumentation metadata found in baseline spans.");
             error_count += 1;
         }

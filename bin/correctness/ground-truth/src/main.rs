@@ -61,7 +61,15 @@ async fn run(config: Config) -> Result<(), GenericError> {
 
     info!("Test run complete. Analyzing results...");
 
-    let analysis_runner = AnalysisRunner::new(config.analysis_mode, baseline_data, comparison_data);
+    let traces_options = match config.analysis_mode {
+        crate::analysis::AnalysisMode::Traces => Some(crate::analysis::TracesAnalysisOptions {
+            compare_trace_stats: config.compare_trace_stats,
+            require_baseline_ssi: config.require_baseline_ssi,
+        }),
+        crate::analysis::AnalysisMode::Metrics => None,
+    };
+    let analysis_runner =
+        AnalysisRunner::new(config.analysis_mode, baseline_data, comparison_data, traces_options);
     analysis_runner.run_analysis()?;
 
     info!("Analysis complete: no difference detected between baseline and comparison.");
