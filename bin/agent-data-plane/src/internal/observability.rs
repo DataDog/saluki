@@ -62,26 +62,17 @@ impl Supervisable for InternalTelemetryWorker {
         let mut blueprint = TopologyBlueprint::new("internal", &self.component_registry);
         blueprint.with_interconnect_capacity(DEFAULT_INTERCONNECT_CAPACITY);
         blueprint
-            .add_source("internal_metrics_in", int_metrics_config)
-            .map_err(|e| InitializationError::Failed { source: e })?
-            .add_transform("internal_metrics_remap", int_metrics_remap_config)
-            .map_err(|e| InitializationError::Failed { source: e })?
-            .add_destination("internal_metrics_out", prometheus_config)
-            .map_err(|e| InitializationError::Failed { source: e })?
-            .connect_component("internal_metrics_remap", ["internal_metrics_in"])
-            .map_err(|e| InitializationError::Failed { source: e })?
-            .connect_component("internal_metrics_out", ["internal_metrics_remap"])
-            .map_err(|e| InitializationError::Failed { source: e })?;
+            .add_source("internal_metrics_in", int_metrics_config)?
+            .add_transform("internal_metrics_remap", int_metrics_remap_config)?
+            .add_destination("internal_metrics_out", prometheus_config)?
+            .connect_component("internal_metrics_remap", ["internal_metrics_in"])?
+            .connect_component("internal_metrics_out", ["internal_metrics_remap"])?;
 
         // Build and spawn the topology
-        let built_topology = blueprint
-            .build()
-            .await
-            .map_err(|e| InitializationError::Failed { source: e })?;
+        let built_topology = blueprint.build().await?;
         let mut running_topology = built_topology
             .spawn(&self.health_registry, MemoryLimiter::noop())
-            .await
-            .map_err(|e| InitializationError::Failed { source: e })?;
+            .await?;
 
         Ok(Box::pin(async move {
             tokio::select! {

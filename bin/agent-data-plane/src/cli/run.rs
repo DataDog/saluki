@@ -244,7 +244,9 @@ pub async fn handle_run_command(
     // Shutdown the primary topology
     let topology_result = running_topology.shutdown_with_timeout(Duration::from_secs(30)).await;
 
-    // Signal the internal supervisor to shutdown (if still running) and drive it to completion
+    // Signal the internal supervisor to shutdown (if still running) and drive it to completion.
+    // If the supervisor already exited (i.e., the select! above matched its branch), both the send
+    // and await resolve immediately — the send is a no-op and the future is already complete.
     let _ = internal_shutdown_tx.send(());
     let _ = internal_supervisor_fut.await;
 

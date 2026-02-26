@@ -15,7 +15,10 @@ use std::{
 use saluki_error::{generic_error, GenericError};
 use tokio::sync::oneshot;
 
-use super::{shutdown::ProcessShutdown, supervisor::Supervisor};
+use super::{
+    shutdown::ProcessShutdown,
+    supervisor::{Supervisor, SupervisorError},
+};
 
 /// Configuration for a dedicated Tokio runtime.
 #[derive(Clone, Debug)]
@@ -80,16 +83,20 @@ pub enum RuntimeMode {
 ///
 /// Allows capturing any runtime initialization failures as well as the result of the supervisor's execution.
 pub(crate) struct DedicatedRuntimeHandle {
+    supervisor_id: String,
     init_rx: Option<oneshot::Receiver<Result<(), GenericError>>>,
-    result_rx: oneshot::Receiver<Result<(), GenericError>>,
+    result_rx: oneshot::Receiver<Result<(), SupervisorError>>,
     thread_handle: Option<JoinHandle<()>>,
 }
 
 impl Future for DedicatedRuntimeHandle {
-    type Output = Result<(), GenericError>;
+    type Output = Result<(), SupervisorError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         // First, check if initialization is still pending.
+        //
+        // NOTE: This is runtime-level initialization (building the Tokio runtime and OS thread), not
+        // supervisor child initialization. These errors are always fatal and non-restartable.
         if let Some(init_rx) = self.init_rx.as_mut() {
             let init_result = ready!(Pin::new(init_rx).poll(cx));
             let maybe_init_error = match init_result {
@@ -108,13 +115,19 @@ impl Future for DedicatedRuntimeHandle {
                     let _ = handle.join();
                 }
 
-                return Poll::Ready(Err(error));
+                return Poll::Ready(Err(SupervisorError::FailedToInitialize {
+                    child_name: self.supervisor_id.clone(),
+                    source: error.into(),
+                }));
             }
         }
 
-        // Check for a final result from the supervisor.
-        let result = ready!(Pin::new(&mut self.result_rx).poll(cx))
-            .map_err(|_| generic_error!("no supervisor result received; supervisor likely panicked"))?;
+        // Check for a final result from the supervisor. The structured `SupervisorError` is preserved
+        // so the parent can distinguish init failures from runtime failures.
+        //
+        // If the channel is closed without a result, the runtime thread panicked or exited after
+        // successful init — this is a runtime failure, not an initialization failure.
+        let result = ready!(Pin::new(&mut self.result_rx).poll(cx)).unwrap_or_else(|_| Err(SupervisorError::Shutdown));
 
         // Join on the thread to clean up.
         if let Some(handle) = self.thread_handle.take() {
@@ -143,7 +156,8 @@ pub(crate) fn spawn_dedicated_runtime(
     let (init_tx, init_rx) = oneshot::channel();
     let (result_tx, result_rx) = oneshot::channel();
 
-    let thread_name = format!("{}-sup-rt", supervisor.id());
+    let supervisor_id = supervisor.id().to_string();
+    let thread_name = format!("{}-sup-rt", supervisor_id);
     let thread_handle = std::thread::Builder::new()
         .name(thread_name.clone())
         .spawn(move || {
@@ -166,11 +180,12 @@ pub(crate) fn spawn_dedicated_runtime(
             //
             // We ignore failures with sending the result because we can't do anything about it anyways.
             let result = runtime.block_on(supervisor.run_with_process_shutdown(process_shutdown));
-            let _ = result_tx.send(result.map_err(|e| e.into()));
+            let _ = result_tx.send(result);
         })
         .map_err(|e| generic_error!("Failed to spawn dedicated runtime thread '{}': {}", thread_name, e))?;
 
     Ok(DedicatedRuntimeHandle {
+        supervisor_id,
         init_rx: Some(init_rx),
         result_rx,
         thread_handle: Some(thread_handle),
