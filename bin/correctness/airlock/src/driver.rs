@@ -725,7 +725,11 @@ impl Driver {
                 .status
                 .ok_or_else(|| generic_error!("Container status should be present."))?;
             if status != ContainerStateStatusEnum::RUNNING {
-                return Err(generic_error!("Container exited unexpectedly."));
+                return Err(generic_error!(
+                    "Container exited unexpectedly (driver_id: {}, container: {}). Check logs in the test run directory.",
+                    self.config.driver_id,
+                    self.container_name
+                ));
             }
 
             if let Some(health_status) = state.health.and_then(|h| h.status) {
