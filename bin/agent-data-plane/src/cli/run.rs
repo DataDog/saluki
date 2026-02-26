@@ -151,6 +151,7 @@ pub async fn handle_run_command(
         dsd_stats_config,
         ra_bootstrap,
     )
+    .await
     .error_context("Failed to create internal supervisor.")?;
 
     // Create shutdown channel for the internal supervisor - we'll drive it in the main select loop

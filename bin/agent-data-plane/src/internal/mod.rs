@@ -28,7 +28,7 @@ use crate::{config::DataPlaneConfiguration, env_provider::ADPEnvironmentProvider
 /// # Errors
 ///
 /// If the supervisor cannot be created, an error is returned.
-pub fn create_internal_supervisor(
+pub async fn create_internal_supervisor(
     config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, component_registry: &ComponentRegistry,
     health_registry: HealthRegistry, env_provider: ADPEnvironmentProvider,
     dsd_stats_config: DogStatsDStatisticsConfiguration, ra_bootstrap: Option<RemoteAgentBootstrap>,
@@ -36,15 +36,18 @@ pub fn create_internal_supervisor(
     let mut root = Supervisor::new("internal-sup")?;
 
     // Add control plane supervisor (dedicated single-threaded runtime)
-    root.add_worker(create_control_plane_supervisor(
-        config,
-        dp_config,
-        component_registry,
-        health_registry.clone(),
-        env_provider,
-        dsd_stats_config,
-        ra_bootstrap,
-    )?);
+    root.add_worker(
+        create_control_plane_supervisor(
+            config,
+            dp_config,
+            component_registry,
+            health_registry.clone(),
+            env_provider,
+            dsd_stats_config,
+            ra_bootstrap,
+        )
+        .await?,
+    );
 
     // Add observability supervisor if telemetry is enabled (dedicated single-threaded runtime)
     if let Some(observability_sup) = create_observability_supervisor(dp_config, component_registry, health_registry)? {
