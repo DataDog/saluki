@@ -222,7 +222,7 @@ fn spawn_prom_scrape_service(
         let payload = Arc::clone(&payload);
         async move {
             let payload = payload.read().await;
-            Ok::<Response<String>, Infallible>(Response::new(payload.to_string()))
+            Ok::<_, Infallible>(Response::new(axum::body::Body::from(payload.to_string())))
         }
     });
 

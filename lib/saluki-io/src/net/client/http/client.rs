@@ -5,8 +5,11 @@ use std::{
     time::Duration,
 };
 
+use bytes::{Buf, Bytes};
 use http::{Request, Response, Uri};
-use hyper::body::{Body, Incoming};
+use http_body::Body;
+use http_body_util::{combinators::BoxBody, BodyExt as _};
+use hyper::body::Incoming;
 use hyper_http_proxy::Proxy;
 use hyper_util::{
     client::legacy::{connect::capture_connection, Builder},
@@ -17,41 +20,46 @@ use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
 use saluki_tls::ClientTLSConfigBuilder;
 use stringtheory::MetaString;
-use tower::{
-    retry::Policy, timeout::TimeoutLayer, util::BoxCloneService, BoxError, Service, ServiceBuilder, ServiceExt as _,
-};
+use tower::{timeout::TimeoutLayer, util::BoxCloneService, BoxError, Service, ServiceBuilder, ServiceExt as _};
 
 use super::{
     conn::{check_connection_state, HttpsCapableConnectorBuilder},
     EndpointTelemetryLayer,
 };
-use crate::net::util::retry::NoopRetryPolicy;
+
+/// The type-erased body type used internally by [`HttpClient`].
+///
+/// All request bodies are converted to this type before being sent over the wire, which ensures a single
+/// monomorphization of the underlying HTTP/2 and TLS stacks regardless of the caller's body type.
+pub type ClientBody = BoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>;
 
 /// An HTTP client.
 #[derive(Clone)]
-pub struct HttpClient<B = ()> {
-    inner: BoxCloneService<Request<B>, Response<Incoming>, BoxError>,
+pub struct HttpClient {
+    inner: BoxCloneService<Request<ClientBody>, Response<Incoming>, BoxError>,
 }
 
-impl HttpClient<()> {
+impl HttpClient {
     /// Creates a new builder for configuring an HTTP client.
     pub fn builder() -> HttpClientBuilder {
         HttpClientBuilder::default()
     }
-}
 
-impl<B> HttpClient<B>
-where
-    B: Body + Clone + Send + Unpin + 'static,
-    B::Data: Send,
-    B::Error: Into<BoxError>,
-{
     /// Sends a request to the server, and waits for a response.
+    ///
+    /// The request body is type-erased internally, so callers can use any body type that implements
+    /// [`Body`] with `Data` types that implement [`Buf`].
     ///
     /// # Errors
     ///
     /// If there was an error sending the request, an error will be returned.
-    pub async fn send(&mut self, mut req: Request<B>) -> Result<Response<Incoming>, BoxError> {
+    pub async fn send<B>(&mut self, req: Request<B>) -> Result<Response<Incoming>, BoxError>
+    where
+        B: Body + Send + Sync + 'static,
+        B::Data: Buf + Send,
+        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        let mut req = req.map(into_client_body);
         let captured_conn = capture_connection(&mut req);
         let result = self.inner.ready().await?.call(req).await;
 
@@ -61,12 +69,7 @@ where
     }
 }
 
-impl<B> Service<Request<B>> for HttpClient<B>
-where
-    B: Body + Send + Unpin + 'static,
-    B::Data: Send,
-    B::Error: Into<BoxError>,
-{
+impl Service<Request<ClientBody>> for HttpClient {
     type Response = Response<Incoming>;
     type Error = BoxError;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
@@ -75,7 +78,7 @@ where
         self.inner.poll_ready(cx)
     }
 
-    fn call(&mut self, mut req: Request<B>) -> Self::Future {
+    fn call(&mut self, mut req: Request<ClientBody>) -> Self::Future {
         let captured_conn = capture_connection(&mut req);
         let fut = self.inner.call(req);
 
@@ -87,6 +90,22 @@ where
             result
         })
     }
+}
+
+/// Converts an arbitrary body into the type-erased [`ClientBody`].
+///
+/// This uses `Buf::copy_to_bytes` for the data conversion, which is zero-copy when the underlying
+/// data is already `Bytes`.
+pub fn into_client_body<B>(body: B) -> ClientBody
+where
+    B: Body + Send + Sync + 'static,
+    B::Data: Buf + Send,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    BoxBody::new(
+        body.map_frame(|frame| frame.map_data(|mut data| data.copy_to_bytes(data.remaining())))
+            .map_err(Into::into),
+    )
 }
 
 /// An HTTP client builder.
@@ -105,17 +124,16 @@ where
 /// - support for FIPS-compliant cryptography (if the `fips` feature is enabled in the `saluki-tls` crate) via [AWS-LC][aws-lc]
 ///
 /// [aws-lc]: https://github.com/aws/aws-lc-rs
-pub struct HttpClientBuilder<P = NoopRetryPolicy> {
+pub struct HttpClientBuilder {
     connector_builder: HttpsCapableConnectorBuilder,
     hyper_builder: Builder,
     tls_builder: ClientTLSConfigBuilder,
-    retry_policy: P,
     request_timeout: Option<Duration>,
     endpoint_telemetry: Option<EndpointTelemetryLayer>,
     proxies: Option<Vec<Proxy>>,
 }
 
-impl<P> HttpClientBuilder<P> {
+impl HttpClientBuilder {
     /// Sets the timeout when connecting to the remote host.
     ///
     /// Defaults to 30 seconds.
@@ -175,23 +193,6 @@ impl<P> HttpClientBuilder<P> {
     pub fn with_idle_conn_timeout(mut self, timeout: Duration) -> Self {
         self.hyper_builder.pool_idle_timeout(timeout);
         self
-    }
-
-    /// Sets the retry policy to use when sending requests.
-    ///
-    /// When set, the client will automatically retry requests that are classified as having failed.
-    ///
-    /// Defaults to no retry policy. (i.e. requests are not retried)
-    pub fn with_retry_policy<P2>(self, retry_policy: P2) -> HttpClientBuilder<P2> {
-        HttpClientBuilder {
-            connector_builder: self.connector_builder,
-            hyper_builder: self.hyper_builder,
-            tls_builder: self.tls_builder,
-            request_timeout: self.request_timeout,
-            retry_policy,
-            endpoint_telemetry: self.endpoint_telemetry,
-            proxies: self.proxies,
-        }
     }
 
     /// Sets the proxies to be used for outgoing requests.
@@ -258,14 +259,7 @@ impl<P> HttpClientBuilder<P> {
     /// # Errors
     ///
     /// If there was an error building the TLS configuration for the client, an error will be returned.
-    pub fn build<B>(self) -> Result<HttpClient<B>, GenericError>
-    where
-        B: Body + Clone + Unpin + Send + 'static,
-        B::Data: Send,
-        B::Error: std::error::Error + Send + Sync,
-        P: Policy<Request<B>, Response<Incoming>, BoxError> + Send + Clone + 'static,
-        P::Future: Send,
-    {
+    pub fn build(self) -> Result<HttpClient, GenericError> {
         let tls_config = self.tls_builder.build()?;
         let connector = self.connector_builder.build(tls_config)?;
         // TODO(fips): Look into updating `hyper-http-proxy` to use the provided connector for establishing the
@@ -280,7 +274,6 @@ impl<P> HttpClientBuilder<P> {
         let client = self.hyper_builder.build(proxy_connector);
 
         let inner = ServiceBuilder::new()
-            .retry(self.retry_policy)
             .option_layer(self.request_timeout.map(TimeoutLayer::new))
             .option_layer(self.endpoint_telemetry)
             .service(client.map_err(BoxError::from))
@@ -303,7 +296,6 @@ impl Default for HttpClientBuilder {
             hyper_builder,
             tls_builder: ClientTLSConfigBuilder::new(),
             request_timeout: Some(Duration::from_secs(20)),
-            retry_policy: NoopRetryPolicy,
             endpoint_telemetry: None,
             proxies: None,
         }
