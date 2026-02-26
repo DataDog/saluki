@@ -28,8 +28,9 @@ ottl = { workspace = true }
 papaya = { workspace = true }
 prost-types = { workspace = true }
 reqwest = { workspace = true, features = [
-  "rustls-tls-native-roots-no-provider",
+  "rustls-no-provider",
   "json",
+  "query",
 ] }
 saluki-app = { workspace = true }
 saluki-common = { workspace = true }
