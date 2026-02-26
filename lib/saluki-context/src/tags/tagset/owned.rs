@@ -1,12 +1,13 @@
 use std::{fmt, ops::Deref as _};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::SharedTagSet;
 use crate::tags::Tag;
 
 /// A set of tags.
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(transparent)]
 pub struct TagSet(Vec<Tag>);
 
 impl TagSet {
