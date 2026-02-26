@@ -2,7 +2,7 @@
 
 use std::{fmt, hash, ops::Deref as _};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use stringtheory::{CheapMetaString, MetaString};
 
 mod raw;
@@ -12,7 +12,8 @@ mod tagset;
 pub use self::tagset::{SharedTagSet, TagSet};
 
 /// A metric tag.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
 pub struct Tag(MetaString);
 
 impl Tag {
@@ -87,15 +88,6 @@ impl hash::Hash for Tag {
 impl fmt::Display for Tag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
-    }
-}
-
-impl Serialize for Tag {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.0)
     }
 }
 
