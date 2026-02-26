@@ -14,7 +14,7 @@ processors:
     traces:
       span:
         - 'attributes["container.name"] == "app_container_1"'
-        - 'resource.attributes["host.name"] == "localhost"'
+        - 'resource.attributes["deployment.environment"] == "production"'
 
 exporters:
   datadog:

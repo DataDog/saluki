@@ -36,7 +36,7 @@ ottl_config:
   traces:
     span:
       - 'attributes["container.name"] == "app_container_1"'
-      - 'resource.attributes["host.name"] == "localhost"'
+      - 'resource.attributes["deployment.environment"] == "production"'
 
 # Enable OTLP receiver on gRPC port 4317
 otlp_config:
