@@ -61,6 +61,9 @@ impl ProcessShutdown {
     ///
     /// If the shutdown signal has been received during a previous call to this function, this function will return
     /// immediately for all subsequent calls.
+    ///
+    /// `ProcessShutdown` also implements [`Future`] directly, which can be useful when passing it to APIs
+    /// that accept a generic future (e.g., as a shutdown signal parameter).
     pub async fn wait_for_shutdown(&mut self) {
         if let Some(shutdown_rx) = self.shutdown.take() {
             let _ = shutdown_rx.await;
@@ -68,6 +71,10 @@ impl ProcessShutdown {
     }
 }
 
+/// Implements [`Future`] for direct use in `select!` or as a generic shutdown signal.
+///
+/// This is equivalent to calling [`ProcessShutdown::wait_for_shutdown`] — once the shutdown signal is received
+/// (or has been received previously), the future resolves immediately.
 impl Future for ProcessShutdown {
     type Output = ();
 

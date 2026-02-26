@@ -69,14 +69,10 @@ impl Supervisable for InternalTelemetryWorker {
             .map_err(|e| InitializationError::Failed { source: e })?;
 
         // Build and spawn the topology
-        let built_topology = blueprint
-            .build()
-            .await
-            .map_err(|e| InitializationError::Failed { source: e })?;
+        let built_topology = blueprint.build().await?;
         let mut running_topology = built_topology
             .spawn(&self.health_registry, MemoryLimiter::noop())
-            .await
-            .map_err(|e| InitializationError::Failed { source: e })?;
+            .await?;
 
         Ok(Box::pin(async move {
             tokio::select! {

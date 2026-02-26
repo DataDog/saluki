@@ -67,12 +67,7 @@ impl Supervisable for HealthRegistryWorker {
         // TODO: This pattern doesn't allow us to gracefully restart the health registry worker if the supervisor itself
         // is restarted. We could do something simpler like `HealthRegistry` having a mutex to ensure only one instance is
         // running at a time, and that way the worker can be restarted gracefully, picking up where it left off.
-        let handle = self
-            .health_registry
-            .clone()
-            .spawn()
-            .await
-            .map_err(|e| InitializationError::Failed { source: e })?;
+        let handle = self.health_registry.clone().spawn().await?;
 
         Ok(Box::pin(async move {
             tokio::select! {
@@ -173,11 +168,8 @@ impl Supervisable for PrivilegedApiWorker {
         //
         // TODO: should this need to happen during process init or could we do it once when creating `PrivilegedApiWorker`
         // and simplify things?
-        let cert_path =
-            get_cert_path_from_config(&self.config).map_err(|e| InitializationError::Failed { source: e })?;
-        let tls_config = build_datadog_agent_server_tls_config(cert_path)
-            .await
-            .map_err(|e| InitializationError::Failed { source: e })?;
+        let cert_path = get_cert_path_from_config(&self.config)?;
+        let tls_config = build_datadog_agent_server_tls_config(cert_path).await?;
 
         let mut api_builder = APIBuilder::new()
             .with_tls_config(tls_config)
