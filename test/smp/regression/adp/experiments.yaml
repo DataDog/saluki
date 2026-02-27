@@ -485,8 +485,10 @@ experiments:
       - cpu
 
     target:
+      command: /maybe-profile.sh /usr/local/bin/agent-data-plane --config /etc/agent-data-plane/ottl_config.yaml run
       files:
-        empty.yaml:
+        empty.yaml: null
+        ottl_config.yaml:
           content:
             ottl_config:
               error_mode: ignore

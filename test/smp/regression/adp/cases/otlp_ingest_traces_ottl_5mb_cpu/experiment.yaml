@@ -2,7 +2,7 @@ optimization_goal: cpu
 erratic: false
 target:
   name: agent-data-plane
-  command: /maybe-profile.sh /usr/local/bin/agent-data-plane --config /etc/agent-data-plane/empty.yaml run
+  command: /maybe-profile.sh /usr/local/bin/agent-data-plane --config /etc/agent-data-plane/ottl_config.yaml run
   cpu_allotment: 4
   memory_allotment: 2GiB
   environment:
