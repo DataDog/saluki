@@ -483,6 +483,7 @@ experiments:
     extends: otlp_base
     optimization_goals:
       - cpu
+      - memory
 
     target:
       command: /maybe-profile.sh /usr/local/bin/agent-data-plane --config /etc/agent-data-plane/ottl_config.yaml run
