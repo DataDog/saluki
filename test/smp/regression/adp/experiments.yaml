@@ -484,6 +484,7 @@ experiments:
     optimization_goals:
       - cpu
       - memory
+      - ingress_throughput
 
     target:
       command: /maybe-profile.sh /usr/local/bin/agent-data-plane --config /etc/agent-data-plane/ottl_config.yaml run
