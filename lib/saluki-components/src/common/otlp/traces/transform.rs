@@ -685,10 +685,12 @@ fn get_otel_resource_v2(
     interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
 ) -> MetaString {
     let span_kind = SpanKind::try_from(otel_span.kind).unwrap_or(SpanKind::Unspecified);
+    // Resource names use raw attribute values without tag normalization,
+    // matching the Go Agent's GetOTelResource behavior.
     if let Some(value) = use_both_maps(
         span_attributes,
         resource_attributes,
-        true,
+        false,
         RESOURCE_NAME_KEY,
         interner,
         string_builder,
@@ -701,6 +703,7 @@ fn get_otel_resource_v2(
     if let Some(method) = use_both_maps_key_list(
         span_attributes,
         resource_attributes,
+        false,
         HTTP_REQUEST_METHOD_KEYS,
         interner,
         string_builder,
@@ -709,7 +712,7 @@ fn get_otel_resource_v2(
             use_both_maps(
                 span_attributes,
                 resource_attributes,
-                true,
+                false,
                 HTTP_ROUTE_KEY,
                 interner,
                 string_builder,
@@ -734,7 +737,7 @@ fn get_otel_resource_v2(
     if let Some(operation) = use_both_maps(
         span_attributes,
         resource_attributes,
-        true,
+        false,
         MESSAGING_OPERATION_KEY,
         interner,
         string_builder,
@@ -742,6 +745,7 @@ fn get_otel_resource_v2(
         let dest = use_both_maps_key_list(
             span_attributes,
             resource_attributes,
+            false,
             MESSAGING_DESTINATION_KEYS,
             interner,
             string_builder,
@@ -761,7 +765,7 @@ fn get_otel_resource_v2(
     if let Some(method) = use_both_maps(
         span_attributes,
         resource_attributes,
-        true,
+        false,
         RPC_METHOD_KEY,
         interner,
         string_builder,
@@ -769,7 +773,7 @@ fn get_otel_resource_v2(
         let service = use_both_maps(
             span_attributes,
             resource_attributes,
-            true,
+            false,
             RPC_SERVICE_KEY,
             interner,
             string_builder,
@@ -1397,14 +1401,14 @@ fn get_both_string_attribute<'a>(map: &'a [KeyValue], map2: &'a [KeyValue], key:
 }
 
 fn use_both_maps_key_list(
-    span_attributes: &[KeyValue], resource_attributes: &[KeyValue], keys: &[&str], interner: &GenericMapInterner,
-    string_builder: &mut StringBuilder<GenericMapInterner>,
+    span_attributes: &[KeyValue], resource_attributes: &[KeyValue], normalize: bool, keys: &[&str],
+    interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
 ) -> Option<MetaString> {
     for key in keys {
         if let Some(value) = use_both_maps(
             span_attributes,
             resource_attributes,
-            true,
+            normalize,
             key,
             interner,
             string_builder,
@@ -1437,6 +1441,7 @@ fn get_otel_env(
     if let Some(value) = use_both_maps_key_list(
         span_attributes,
         resource_attributes,
+        true,
         &[DEPLOYMENT_ENVIRONMENT_NAME, DEPLOYMENT_ENVIRONMENT_KEY],
         interner,
         string_builder,
