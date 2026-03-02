@@ -337,6 +337,7 @@ experiments:
     optimization_goal: memory
 
     target:
+      cpu_allotment: 2
       memory_allotment: 500 MiB
       environment:
         DD_MEMORY_LIMIT: "500MiB"
@@ -346,7 +347,7 @@ experiments:
       - name: memory_usage
         description: "Acceptable upper bound on the memory used by ADP when handling bounded 10 MiB OTLP traces traffic."
         bounds:
-          series: total_rss_bytes
+          series: total_pss_bytes
           upper_bound: "400 MiB"
 
     lading:
