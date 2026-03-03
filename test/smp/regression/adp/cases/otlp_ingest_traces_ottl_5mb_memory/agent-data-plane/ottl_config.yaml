@@ -1,0 +1,6 @@
+ottl_config:
+  error_mode: ignore
+  traces:
+    span:
+    - attributes["container.name"] == "app_container_1"
+    - resource.attributes["deployment.environment"] == "production"
