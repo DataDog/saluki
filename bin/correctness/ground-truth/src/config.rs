@@ -21,6 +21,10 @@ fn default_datadog_intake_binary_path() -> String {
     "/usr/local/bin/datadog-intake".to_string()
 }
 
+fn default_otlp_direct_analysis_mode() -> bool {
+    false
+}
+
 #[derive(Clone, Deserialize)]
 pub struct Config {
     /// Analysis mode to use.
@@ -37,6 +41,16 @@ pub struct Config {
 
     /// Comparison target configuration.
     pub comparison: TargetConfig,
+
+    /// When analysis mode is traces: if true, use OTLP-direct analysis (baseline is OTel-based).
+    /// Equivalent to skipping trace stats comparison and not requiring baseline SSI metadata.
+    #[serde(default = "default_otlp_direct_analysis_mode")]
+    pub otlp_direct_analysis_mode: bool,
+
+    /// When analysis mode is traces: additional span field paths to ignore when diffing baseline vs comparison.
+    /// Merged with the built-in list (SSI metadata, deprecated fields). Use for OTel vs ADP differences (e.g. `agent_metadata.target_tps`, `metrics._top_level`, `metrics._dd.measured`).
+    #[serde(default)]
+    pub additional_span_ignore_fields: Vec<String>,
 
     #[serde(skip, default = "PathBuf::new")]
     base_config_path: PathBuf,

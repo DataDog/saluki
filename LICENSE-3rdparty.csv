@@ -72,6 +72,7 @@ displaydoc,https://github.com/yaahc/displaydoc,MIT OR Apache-2.0,Jane Lusby <jlu
 dyn-clone,https://github.com/dtolnay/dyn-clone,MIT OR Apache-2.0,David Tolnay <dtolnay@gmail.com>
 either,https://github.com/rayon-rs/either,MIT OR Apache-2.0,bluss
 enum-as-inner,https://github.com/bluejekyll/enum-as-inner,MIT OR Apache-2.0,Benjamin Fry <benjaminfry@me.com>
+enum_dispatch,https://gitlab.com/antonok/enum_dispatch,MIT OR Apache-2.0,Anton Lazarev <https://antonok.com>
 equivalent,https://github.com/indexmap-rs/equivalent,Apache-2.0 OR MIT,The equivalent Authors
 errno,https://github.com/lambda-fairy/rust-errno,MIT OR Apache-2.0,"Chris Wong <lambda.fairy@gmail.com>, Dan Gohman <dev@sunfishcode.online>"
 faster-hex,https://github.com/NervosFoundation/faster-hex,MIT,zhangsoledad <787953403@qq.com>

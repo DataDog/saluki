@@ -85,7 +85,7 @@ where
             generate_payloads_inner(&mut generator, rng, &mut payloads, blueprint.size, 8192)?
         }
         Payload::OpenTelemetryTraces(config) => {
-            let mut generator = OpentelemetryTraces::with_config(config, &mut rng)?;
+            let mut generator = OpentelemetryTraces::with_config(&config, &mut rng)?;
             generate_payloads_inner(&mut generator, rng, &mut payloads, blueprint.size, 8192)?
         }
     }

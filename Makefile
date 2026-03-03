@@ -521,7 +521,7 @@ test-all: test test-property test-docs test-miri test-loom
 
 .PHONY: test-correctness
 test-correctness: ## Runs the complete correctness suite
-test-correctness: test-correctness-dsd-plain test-correctness-dsd-origin-detection test-correctness-otlp-metrics test-correctness-otlp-traces
+test-correctness: test-correctness-dsd-plain test-correctness-dsd-origin-detection test-correctness-otlp-metrics test-correctness-otlp-traces test-correctness-otlp-traces-ottl-filtering
 
 .PHONY: test-correctness-dsd-plain
 test-correctness-dsd-plain: build-ground-truth
@@ -546,6 +546,12 @@ test-correctness-otlp-traces: build-ground-truth
 test-correctness-otlp-traces: ## Runs the 'otlp-traces' correctness test case
 	@echo "[*] Running 'otlp-traces' correctness test case..."
 	@target/release/ground-truth $(shell pwd)/test/correctness/otlp-traces/config.yaml
+
+.PHONY: test-correctness-otlp-traces-ottl-filtering
+test-correctness-otlp-traces-ottl-filtering: build-ground-truth
+test-correctness-otlp-traces-ottl-filtering: ## Runs the 'otlp-traces-ottl-filtering' E2E test (OTel Collector + OTTL vs ADP + OTTL)
+	@echo "[*] Running 'otlp-traces-ottl-filtering' correctness test case..."
+	@target/release/ground-truth $(shell pwd)/test/correctness/otlp-traces-ottl-filtering/config.yaml
 
 .PHONY: build-panoramic
 build-panoramic: check-rust-build-tools

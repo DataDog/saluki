@@ -90,7 +90,7 @@ pub struct CorpusBlueprint {
 impl CorpusBlueprint {
     /// Validates the corpus configuration, ensuring that all settings are valid for generating payloads.
     pub fn validate(&self) -> Result<(), GenericError> {
-        match self.payload {
+        match &self.payload {
             Payload::DogStatsD(config) => config
                 .valid()
                 .map_err(|e| generic_error!("Invalid DogStatsD payload configuration: {}", e)),
