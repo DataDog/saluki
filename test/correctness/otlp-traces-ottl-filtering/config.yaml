@@ -16,7 +16,7 @@ datadog_intake:
   image: saluki-images/datadog-intake:latest
   config_path: ../datadog-intake.yaml
 baseline:
-  image: datadog/agent:7.75.4-full
+  image: registry.datadoghq.com/agent:7.75.4-full
   # Run DDOT (otel-agent) directly so the image entrypoint does not treat our args as a command to exec.
   #entrypoint:
   #  - /opt/datadog-agent/embedded/bin/otel-agent
