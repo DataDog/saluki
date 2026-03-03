@@ -111,6 +111,9 @@ test-correctness-otlp-traces-ottl-filtering:
   extends: [.build-common-variables, .test-correctness-definition]
   variables:
     CORRECTNESS_TEST_CASE: otlp-traces-ottl-filtering
+    # Baseline is DDOT (Datadog Distribution of OpenTelemetry) from the full agent image,
+    # not the bundled-agent-adp used by other correctness tests.
+    GROUND_TRUTH_BASELINE__IMAGE: registry.datadoghq.com/agent:7.75.4-full
 
 test-integration:
   stage: e2e
