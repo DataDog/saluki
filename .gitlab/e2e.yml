@@ -107,6 +107,11 @@ test-correctness-otlp-traces:
   variables:
     CORRECTNESS_TEST_CASE: otlp-traces
 
+test-correctness-otlp-traces-ottl-filtering:
+  extends: [.build-common-variables, .test-correctness-definition]
+  variables:
+    CORRECTNESS_TEST_CASE: otlp-traces-ottl-filtering
+
 test-integration:
   stage: e2e
   tags: ["docker-in-docker:amd64"]
