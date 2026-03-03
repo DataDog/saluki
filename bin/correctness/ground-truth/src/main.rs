@@ -11,7 +11,7 @@ mod analysis;
 
 mod config;
 use self::config::Config;
-use crate::analysis::AnalysisRunner;
+use crate::analysis::{AnalysisMode, AnalysisRunner, TracesAnalysisOptions};
 
 mod runner;
 use self::runner::TestRunner;
@@ -62,11 +62,11 @@ async fn run(config: Config) -> Result<(), GenericError> {
     info!("Test run complete. Analyzing results...");
 
     let traces_options = match config.analysis_mode {
-        crate::analysis::AnalysisMode::Traces => Some(crate::analysis::TracesAnalysisOptions {
+        AnalysisMode::Traces => Some(TracesAnalysisOptions {
             otlp_direct_analysis_mode: config.otlp_direct_analysis_mode,
             additional_span_ignore_fields: config.additional_span_ignore_fields,
         }),
-        crate::analysis::AnalysisMode::Metrics => None,
+        AnalysisMode::Metrics => None,
     };
     let analysis_runner = AnalysisRunner::new(config.analysis_mode, baseline_data, comparison_data, traces_options);
     analysis_runner.run_analysis()?;
