@@ -340,7 +340,7 @@ experiments:
       cpu_allotment: 2
       memory_allotment: 500 MiB
       environment:
-        DD_MEMORY_LIMIT: "400MiB"
+        DD_MEMORY_LIMIT: "300MiB"
         DD_MEMORY_SLOP_FACTOR: "0.2"
 
     checks:
