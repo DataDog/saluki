@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use otlp_protos::opentelemetry::proto::collector::logs::v1::logs_service_client::LogsServiceClient;
@@ -64,7 +66,9 @@ impl ForwarderBuilder for OtlpForwarderConfiguration {
         let normalized_endpoint = normalize_endpoint(&self.core_agent_otlp_grpc_endpoint);
         let core_agent_grpc_channel = Channel::from_shared(normalized_endpoint)
             .error_context("Failed to construct gRPC channel due to an invalid endpoint.")?
+            .connect_timeout(Duration::from_secs(5))
             .connect_lazy();
+
         let core_agent_metrics_client = MetricsServiceClient::new(core_agent_grpc_channel.clone());
         let core_agent_logs_client = LogsServiceClient::new(core_agent_grpc_channel);
 

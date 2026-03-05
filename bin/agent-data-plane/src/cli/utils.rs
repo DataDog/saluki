@@ -1,15 +1,18 @@
-use http::StatusCode;
-use reqwest::Client;
+use bytes::Buf as _;
+use futures::TryFutureExt as _;
+use http::{uri::PathAndQuery, Request, Response, StatusCode, Uri};
+use http_body_util::BodyExt as _;
+use hyper::body::Incoming;
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use saluki_io::net::ListenAddress;
+use saluki_io::net::{client::http::HttpClient, ListenAddress};
 
 use crate::config::DataPlaneConfiguration;
 
 /// Typed API client for interacting with the APIs exposed by ADP.
 pub struct DataPlaneAPIClient {
-    privileged_api_client: Client,
-    privileged_api_base_url: String,
+    client: HttpClient,
+    authority: String,
 }
 
 impl DataPlaneAPIClient {
@@ -22,54 +25,52 @@ impl DataPlaneAPIClient {
     pub fn from_config(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let dp_config = DataPlaneConfiguration::from_configuration(config)?;
 
-        let (privileged_api_client, privileged_api_base_url) = {
-            // Figure out if we're dealing with a TCP or Unix domain socket, which informs how we generate the base URL
-            // and how we configure the HTTP client.
-            let listen_address = dp_config.secure_api_listen_address();
-            let (base_url, maybe_unix_socket_path) = match &listen_address {
-                ListenAddress::Tcp(_) => {
-                    let local_address = listen_address
-                        .as_local_connect_addr()
-                        .expect("should get local address for TCP");
-                    (format!("https://{}", local_address), None)
-                }
+        let listen_address = dp_config.secure_api_listen_address();
 
-                #[cfg(unix)]
-                ListenAddress::Unix(path) => {
-                    // For UDS, we have to configure `reqwest` separately to override the host in the URL and use a Unix
-                    // socket instead, which means we just use a dummy host in the base URL since it gets ignored in
-                    // this case.
-                    ("https://127.0.0.1".to_string(), Some(path.as_path()))
-                }
+        let mut builder = HttpClient::builder().with_tls_config(|b| b.danger_accept_invalid_certs());
 
-                _ => {
-                    return Err(generic_error!(
-                        "Expected connection-oriented address (TCP or UDS stream) for privileged API endpoint: {}",
-                        listen_address
-                    ))
-                }
-            };
-
-            let mut builder = reqwest::Client::builder().danger_accept_invalid_certs(true);
-            if let Some(path) = maybe_unix_socket_path {
-                builder = builder.unix_socket(path);
+        let authority = match listen_address {
+            ListenAddress::Tcp(_) => {
+                let local_address = listen_address
+                    .as_local_connect_addr()
+                    .expect("should get local address for TCP");
+                local_address.to_string()
             }
 
-            let client = builder
-                .build()
-                .error_context("Failed to construct API client for privileged API endpoint.")?;
+            #[cfg(unix)]
+            ListenAddress::Unix(path) => {
+                builder = builder.with_unix_socket_path(path);
+                "127.0.0.1".to_string()
+            }
 
-            (client, base_url)
+            _ => {
+                return Err(generic_error!(
+                    "Expected connection-oriented address (TCP or UDS stream) for privileged API endpoint: {}",
+                    listen_address
+                ))
+            }
         };
 
-        Ok(Self {
-            privileged_api_client,
-            privileged_api_base_url,
-        })
+        let client = builder
+            .build()
+            .error_context("Failed to construct API client for privileged API endpoint.")?;
+
+        Ok(Self { client, authority })
     }
 
-    fn get_privileged_url(&self, path: &str) -> String {
-        format!("{}{}", self.privileged_api_base_url, path)
+    fn build_uri(&self, path: &str, query: Option<&str>) -> Uri {
+        let mut pq = path.to_string();
+        if let Some(q) = query {
+            pq.push('?');
+            pq.push_str(q);
+        }
+
+        Uri::builder()
+            .scheme("https")
+            .authority(self.authority.as_str())
+            .path_and_query(pq.parse::<PathAndQuery>().expect("valid path and query"))
+            .build()
+            .expect("valid URI")
     }
 
     /// Temporarily overrides the log level for the process.
@@ -83,18 +84,14 @@ impl DataPlaneAPIClient {
     /// # Errors
     ///
     /// If the request fails, or the server responds with an unexpected status code, an error is returned.
-    pub async fn set_log_level(&self, filter_directives: String, duration_secs: u64) -> Result<(), GenericError> {
-        let url = self.get_privileged_url("/logging/override");
-        let response = self
-            .privileged_api_client
-            .post(url)
-            .query(&[("time_secs", duration_secs)])
-            .body(filter_directives)
-            .send()
-            .await?;
-
-        let _ = process_response(response).await?;
-        Ok(())
+    pub async fn set_log_level(&mut self, filter_directives: String, duration_secs: u64) -> Result<(), GenericError> {
+        let uri = self.build_uri("/logging/override", Some(&format!("time_secs={duration_secs}")));
+        let req = Request::post(uri).body(filter_directives).expect("valid request");
+        self.client
+            .send(req)
+            .and_then(process_response_body)
+            .await
+            .and_then(empty_when_success)
     }
 
     /// Resets the log level for the process.
@@ -104,12 +101,14 @@ impl DataPlaneAPIClient {
     /// # Errors
     ///
     /// If the request fails, or the server responds with an unexpected status code, an error is returned.
-    pub async fn reset_log_level(&self) -> Result<(), GenericError> {
-        let url = self.get_privileged_url("/logging/reset");
-        let response = self.privileged_api_client.post(url).send().await?;
-
-        let _ = process_response(response).await?;
-        Ok(())
+    pub async fn reset_log_level(&mut self) -> Result<(), GenericError> {
+        let uri = self.build_uri("/logging/reset", None);
+        let req = Request::post(uri).body(String::new()).expect("valid request");
+        self.client
+            .send(req)
+            .and_then(process_response_body)
+            .await
+            .and_then(empty_when_success)
     }
 
     /// Temporarily overrides the metric level for the process.
@@ -121,18 +120,14 @@ impl DataPlaneAPIClient {
     /// # Errors
     ///
     /// If the request fails, or the server responds with an unexpected status code, an error is returned.
-    pub async fn set_metric_level(&self, level: String, duration_secs: u64) -> Result<(), GenericError> {
-        let url = self.get_privileged_url("/metrics/override");
-        let response = self
-            .privileged_api_client
-            .post(url)
-            .query(&[("time_secs", duration_secs)])
-            .body(level)
-            .send()
-            .await?;
-
-        let _ = process_response(response).await?;
-        Ok(())
+    pub async fn set_metric_level(&mut self, level: String, duration_secs: u64) -> Result<(), GenericError> {
+        let uri = self.build_uri("/metrics/override", Some(&format!("time_secs={duration_secs}")));
+        let req = Request::post(uri).body(level).expect("valid request");
+        self.client
+            .send(req)
+            .and_then(process_response_body)
+            .await
+            .and_then(empty_when_success)
     }
 
     /// Resets the metric level for the process.
@@ -142,12 +137,14 @@ impl DataPlaneAPIClient {
     /// # Errors
     ///
     /// If the request fails, or the server responds with an unexpected status code, an error is returned.
-    pub async fn reset_metric_level(&self) -> Result<(), GenericError> {
-        let url = self.get_privileged_url("/metrics/reset");
-        let response = self.privileged_api_client.post(url).send().await?;
-
-        let _ = process_response(response).await?;
-        Ok(())
+    pub async fn reset_metric_level(&mut self) -> Result<(), GenericError> {
+        let uri = self.build_uri("/metrics/reset", None);
+        let req = Request::post(uri).body(String::new()).expect("valid request");
+        self.client
+            .send(req)
+            .and_then(process_response_body)
+            .await
+            .and_then(empty_when_success)
     }
 
     /// Triggers a statistics collection for DogStatsD metrics.
@@ -161,18 +158,17 @@ impl DataPlaneAPIClient {
     /// # Errors
     ///
     /// If the request fails, or if the server responds with an unexpected status code, an error is returned.
-    pub async fn dogstatsd_stats(&self, collection_duration_secs: u64) -> Result<String, GenericError> {
-        let url = self.get_privileged_url("/dogstatsd/stats");
-        let response = self
-            .privileged_api_client
-            .get(url)
-            .query(&[("collection_duration_secs", collection_duration_secs)])
-            .send()
-            .await?;
-
-        let response = process_response(response).await?;
-        let response_body = response.text().await.error_context("Failed to read response body.")?;
-        Ok(response_body)
+    pub async fn dogstatsd_stats(&mut self, collection_duration_secs: u64) -> Result<String, GenericError> {
+        let uri = self.build_uri(
+            "/dogstatsd/stats",
+            Some(&format!("collection_duration_secs={collection_duration_secs}")),
+        );
+        let req = Request::get(uri).body(String::new()).expect("valid request");
+        self.client
+            .send(req)
+            .and_then(process_response_body)
+            .await
+            .and_then(body_when_success)
     }
 
     /// Retrieves the configuration of the process.
@@ -184,13 +180,17 @@ impl DataPlaneAPIClient {
     /// # Errors
     ///
     /// If the request fails, or if the server responds with an unexpected status code, an error is returned.
-    pub async fn config(&self) -> Result<String, GenericError> {
-        let url = self.get_privileged_url("/config");
-        let response = self.privileged_api_client.get(url).send().await?;
+    pub async fn config(&mut self) -> Result<String, GenericError> {
+        let uri = self.build_uri("/config", None);
+        let req = Request::get(uri).body(String::new()).expect("valid request");
+        let resp = self.client.send(req).and_then(process_response_body).await?;
+        if resp.status() == StatusCode::NOT_FOUND {
+            return Err(generic_error!(
+                "Workload provider not configured: no External Data available."
+            ));
+        }
 
-        let response = process_response(response).await?;
-        let response_body = response.text().await.error_context("Failed to read response body.")?;
-        Ok(response_body)
+        body_when_success(resp)
     }
 
     /// Retrieves the tags from the workload provider.
@@ -201,16 +201,15 @@ impl DataPlaneAPIClient {
     ///
     /// If the request fails, or if the server responds with an unexpected status code, or if a workload provider is not
     /// configured, an error is returned.
-    pub async fn workload_tags(&self) -> Result<String, GenericError> {
-        let url = self.get_privileged_url("/workload/remote_agent/tags/dump");
-        let response = self.privileged_api_client.get(url).send().await?;
-        if response.status() == StatusCode::NOT_FOUND {
+    pub async fn workload_tags(&mut self) -> Result<String, GenericError> {
+        let uri = self.build_uri("/workload/remote_agent/tags/dump", None);
+        let req = Request::get(uri).body(String::new()).expect("valid request");
+        let resp = self.client.send(req).and_then(process_response_body).await?;
+        if resp.status() == StatusCode::NOT_FOUND {
             return Err(generic_error!("Workload provider not configured: no tags available."));
         }
 
-        let response = process_response(response).await?;
-        let response_body = response.text().await.error_context("Failed to read response body.")?;
-        Ok(response_body)
+        body_when_success(resp)
     }
 
     /// Retrieves the External Data entries from the workload provider.
@@ -221,25 +220,57 @@ impl DataPlaneAPIClient {
     ///
     /// If the request fails, or if the server responds with an unexpected status code, or if a workload provider is not
     /// configured, an error is returned.
-    pub async fn workload_external_data(&self) -> Result<String, GenericError> {
-        let url = self.get_privileged_url("/workload/remote_agent/external_data/dump");
-        let response = self.privileged_api_client.get(url).send().await?;
-        if response.status() == StatusCode::NOT_FOUND {
-            return Err(generic_error!("Workload provider not configured: no tags available."));
+    pub async fn workload_external_data(&mut self) -> Result<String, GenericError> {
+        let uri = self.build_uri("/workload/remote_agent/external_data/dump", None);
+        let req = Request::get(uri).body(String::new()).expect("valid request");
+        let resp = self.client.send(req).and_then(process_response_body).await?;
+        if resp.status() == StatusCode::NOT_FOUND {
+            return Err(generic_error!(
+                "Workload provider not configured: no External Data available."
+            ));
         }
 
-        let response = process_response(response).await?;
-        let response_body = response.text().await.error_context("Failed to read response body.")?;
-        Ok(response_body)
+        Ok(resp.into_body())
     }
 }
 
-async fn process_response(response: reqwest::Response) -> Result<reqwest::Response, GenericError> {
+async fn collect_body(body: Incoming) -> Option<String> {
+    let body = body.collect().await.ok()?.aggregate();
+    String::from_utf8(body.chunk().to_vec()).ok()
+}
+
+async fn process_response_body(response: Response<Incoming>) -> Result<Response<String>, GenericError> {
     let status = response.status();
-    if status.is_success() {
-        Ok(response)
+    let (parts, body) = response.into_parts();
+    let body = collect_body(body).await.unwrap_or_else(|| String::from("<no body>"));
+
+    if !status.is_server_error() {
+        Ok(Response::from_parts(parts, body))
     } else {
-        let body = response.text().await.unwrap_or_else(|_| String::from("<no body>"));
         Err(generic_error!("Received non-success response ({}): {}.", status, body))
+    }
+}
+
+fn body_when_success(resp: Response<String>) -> Result<String, GenericError> {
+    if !resp.status().is_success() {
+        Ok(resp.into_body())
+    } else {
+        Err(generic_error!(
+            "Received non-success response ({}): {}.",
+            resp.status(),
+            resp.into_body()
+        ))
+    }
+}
+
+fn empty_when_success(resp: Response<String>) -> Result<(), GenericError> {
+    if !resp.status().is_success() {
+        Ok(())
+    } else {
+        Err(generic_error!(
+            "Received non-success response ({}): {}.",
+            resp.status(),
+            resp.into_body()
+        ))
     }
 }
