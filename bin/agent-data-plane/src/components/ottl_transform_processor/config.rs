@@ -35,7 +35,7 @@ pub enum ErrorMode {
 ///   error_mode: ignore
 ///   trace_statements:
 ///     - 'set(attributes["container.name"], "app_container_1")'
-///     - 'set(resource.attributes["host.name"], "localhost")'
+///     - 'set(attributes["env"], "production") where resource.attributes["env"] == "staging"'
 /// ```
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]

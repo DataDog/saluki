@@ -1,11 +1,15 @@
-//! OTTL evaluation context.
+//! OTTL evaluation context for the transform processor.
 //!
-//! Provides path accessors for span fields (attributes, resource.attributes) so OTTL
-//! conditions can be evaluated against the current span. Uses the OTTL library's
-//! [`EvalContextFamily`] (GAT-based) design: the parser is parameterized by
-//! [`SpanTransformFamily`], and at execution time a short-lived [`SpanTransformContext<'a>`]
-//! is created from references to the span and resource tags. No unsafe code, raw
-//! pointers, or data copying are required.
+//! Provides path accessors for span fields (`attributes`, `resource.attributes`) so OTTL
+//! statements (e.g. `set(attributes["key"], "value")`) can read and write span data.
+//!
+//! Uses the OTTL library's [`EvalContextFamily`] (GAT-based) design: the parser is
+//! parameterized by [`SpanTransformFamily`], and at execution time a short-lived
+//! [`SpanTransformContext<'a>`] is created from a mutable reference to the span and an
+//! immutable reference to the resource tags.
+//!
+//! `attributes` supports both read and write via [`SpanAttributesAccessor`].
+//! `resource.attributes` is read-only because [`SharedTagSet`] does not expose mutable access.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -13,41 +17,45 @@ use std::sync::Arc;
 use ottl::{EvalContextFamily, IndexExpr, PathAccessor, PathResolverMap, Value};
 use saluki_context::tags::SharedTagSet;
 use saluki_core::data_model::event::trace::Span;
+use stringtheory::MetaString;
 
-/// Family type for the span Transform evaluation context.
+/// Family type for the span transform evaluation context.
 ///
 /// The parser is stored as `Parser<SpanTransformFamily>`. At execution time, a
 /// [`SpanTransformContext<'a>`] is created with references valid for the duration
-/// of the condition evaluation.
+/// of the statement evaluation.
 pub struct SpanTransformFamily;
 
 impl EvalContextFamily for SpanTransformFamily {
     type Context<'a> = SpanTransformContext<'a>;
 }
 
-/// Context holding references to the current span and trace resource tags for OTTL evaluation.
+/// Context holding a mutable reference to the current span and an immutable reference to
+/// the trace resource tags for OTTL evaluation.
 ///
-/// Used when evaluating Transform conditions: created on the stack in `should_drop_span`
-/// with the current span and the trace's resource tags, then passed to each condition
-/// parser. No copying; the context only holds references for the duration of the call.
+/// Created on the stack in `transform_span` with the current span and the trace's resource
+/// tags, then passed to each statement parser. The mutable span reference allows editor
+/// functions like `set` to modify span attributes in place.
 pub struct SpanTransformContext<'a> {
-    /// Reference to the span being evaluated.
-    pub(super) span: &'a Span,
-    /// Reference to the trace's resource-level tags.
+    /// Mutable reference to the span being transformed.
+    pub(super) span: &'a mut Span,
+    /// Reference to the trace's resource-level tags (read-only).
     pub(super) resource_tags: &'a SharedTagSet,
 }
 
 impl<'a> SpanTransformContext<'a> {
-    /// Creates a context from references to the current span and resource tags.
+    /// Creates a context from a mutable span reference and immutable resource tags.
     #[inline]
-    pub fn new(span: &'a Span, resource_tags: &'a SharedTagSet) -> Self {
+    pub fn new(span: &'a mut Span, resource_tags: &'a SharedTagSet) -> Self {
         Self { span, resource_tags }
     }
 }
 
-/// Path accessor for the span's `attributes` path (span-level metadata).
+/// Path accessor for `attributes` (span-level string metadata).
 ///
-/// The `set` method always returns an error; the Transform context is read-only.
+/// Reads from and writes to the span's `meta` map, which stores `MetaString` key-value
+/// pairs. On `set`, string values are inserted directly; `Nil` removes the key; other
+/// value types are converted to their display representation.
 #[derive(Debug)]
 pub struct SpanAttributesAccessor;
 
@@ -66,19 +74,50 @@ impl PathAccessor<SpanTransformFamily> for SpanAttributesAccessor {
     }
 
     fn set<'a>(
-        &self, _ctx: &mut SpanTransformContext<'a>, path: &str, _indexes: &[IndexExpr], _value: &Value,
+        &self, ctx: &mut SpanTransformContext<'a>, _path: &str, indexes: &[IndexExpr], value: &Value,
     ) -> ottl::Result<()> {
-        Err(format!(
-            "Transform context is read-only; setting path `{}` is not supported. Only attribute reads are allowed.",
-            path
-        )
-        .into())
+        if let Some(IndexExpr::String(key)) = indexes.first() {
+            match value {
+                Value::Nil => {
+                    ctx.span.meta_mut().remove(key.as_str());
+                }
+                Value::String(s) => {
+                    ctx.span
+                        .meta_mut()
+                        .insert(MetaString::from(key.as_str()), MetaString::from(Arc::clone(s)));
+                }
+                Value::Int(n) => {
+                    ctx.span
+                        .meta_mut()
+                        .insert(MetaString::from(key.as_str()), MetaString::from(n.to_string().as_str()));
+                }
+                Value::Float(f) => {
+                    ctx.span
+                        .meta_mut()
+                        .insert(MetaString::from(key.as_str()), MetaString::from(f.to_string().as_str()));
+                }
+                Value::Bool(b) => {
+                    ctx.span.meta_mut().insert(
+                        MetaString::from(key.as_str()),
+                        MetaString::from(if *b { "true" } else { "false" }),
+                    );
+                }
+                _ => {
+                    return Err(
+                        format!("set on attributes[\"{}\"] does not support value type {:?}", key, value).into(),
+                    );
+                }
+            }
+            Ok(())
+        } else {
+            Err("set on attributes requires a string index, e.g. attributes[\"key\"]".into())
+        }
     }
 }
 
-/// Path accessor for the `resource.attributes` path (trace resource tags).
+/// Path accessor for `resource.attributes` (trace resource tags).
 ///
-/// The `set` method always returns an error; the Transform context is read-only.
+/// Read-only: [`SharedTagSet`] does not expose mutable access, so `set` returns an error.
 #[derive(Debug)]
 pub struct ResourceAttributesAccessor;
 
@@ -91,7 +130,6 @@ impl PathAccessor<SpanTransformFamily> for ResourceAttributesAccessor {
                 .map(Value::string)
                 .unwrap_or(Value::Nil)
         } else if indexes.is_empty() {
-            // Cannot build full map without iteration; return empty map for consistency.
             Value::Map(HashMap::new())
         } else {
             Value::Nil
@@ -99,21 +137,25 @@ impl PathAccessor<SpanTransformFamily> for ResourceAttributesAccessor {
         Ok(value)
     }
 
+    /// AZH: TODO
+    /// Always returns an error: `SharedTagSet` is an Arc-based immutable type and `Trace`
+    /// does not expose yet mutable way to access resource_tags, so there is no way to write changes
+    /// back to the trace's resource tags.
     fn set<'a>(
         &self, _ctx: &mut SpanTransformContext<'a>, path: &str, _indexes: &[IndexExpr], _value: &Value,
     ) -> ottl::Result<()> {
         Err(format!(
-            "Transform context is read-only; setting path `{}` is not supported. Only attribute reads are allowed.",
+            "resource.attributes is read-only; setting path `{}` is not supported because SharedTagSet does not expose mutable access",
             path
         )
         .into())
     }
 }
 
-/// Builds the path resolver map for span Transform conditions.
+/// Builds the path resolver map for span transform statements.
 ///
-/// Registers accessors for: attributes, resource.attributes.
-/// These paths match the OTTL Span context used by the OpenTelemetry Transformprocessor.
+/// Registers accessors for `attributes` (read-write) and `resource.attributes` (read-only).
+/// These paths match the OTTL span context used by the OpenTelemetry transform processor.
 pub fn span_transform_path_resolvers() -> PathResolverMap<SpanTransformFamily> {
     let attributes_accessor: Arc<dyn PathAccessor<SpanTransformFamily> + Send + Sync> =
         Arc::new(SpanAttributesAccessor);
