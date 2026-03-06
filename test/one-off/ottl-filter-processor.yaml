@@ -12,7 +12,7 @@ data_plane:
 # Local placeholder; no real intake needed for topology to start.
 dd_url: "http://127.0.0.1:9999"
 
-log_level: agent_data_plane::components::ottl_filter_processor=debug,info
+log_level: agent_data_plane::components::ottl_filter_processor=debug,agent_data_plane::components::ottl_transform_processor=debug,info
 
 ottl_config:
   error_mode: ignore
