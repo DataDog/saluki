@@ -1,61 +1,30 @@
 # saluki
+
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/DataDog/saluki/blob/main/LICENSE)
 
-Saluki is an experimental toolkit for building telemetry data planes in Rust.
-
-## Please Read: experimental repository
-
-This repository contains experimental code that is **UNSUPPORTED** and may cease to receive further updates at **ANY TIME**.
-In the event that we cease further development, the repository will be put into a read-only archive state.
+Saluki is a toolkit for building telemetry data planes in Rust.
 
 ## Structure
 
-Everything under `lib` contains reusable/common code, and everything under `bin` contains dedicated crates for building
-application-specific binaries.
+Everything under `lib/` contains reusable/common code, and everything under `bin/` contains dedicated crates for
+building application-specific binaries.
 
-### Binaries / applications
+### Binaries
 
-- `bin/agent-data-plane`: data plane used for testing Saluki, which emulates the [standalone DogStatsD server][standalone-dsd]
-  in the Datadog Agent
-- `bin/correctness`: a number of binaries that are used to run "correctness" tests on ADP/standalone DogStatsD
+- `bin/agent-data-plane`: the primary data plane binary, which provides a production-grade DogStatsD pipeline and an
+  experimental OTLP pipeline
+- `bin/correctness`: binaries used to run correctness tests against ADP and standalone DogStatsD
 
-### Shared libraries
+### Libraries
 
-- `lib/datadog-protos`: Rust bindings generated from Protocol Buffers definitions for metrics/trace intake APIs
-- `lib/ddsketch`: Rust implementation of the [DDSketch][ddsketch] algorithm, including both the Agent-specific
-  implementation [used][ddsketch-agent] in the Datadog Agent and the canonical implementation matching `sketches-go`
-- `lib/memory-accounting`: foundational traits and helpers for declaring memory bounds on components, and partitioning
-  memory grants based on those components
-- `lib/process-memory`: cross-platform library for querying the RSS of the current process with few to no allocations
-- `lib/stringtheory`: custom string types and string interning implementations for high-performance string handling
+The `lib/` directory contains two groups of crates:
 
-### Saluki (core libraries)
+**Reusable and general-purpose** — Implementations of features/capabilities that are required for Saluki or Agent Data
+Plane but aren't specific to Saluki. Examples include `ddsketch`, generated code for Protocol Buffers definitions, and
+so on.
 
-All remaining crates are part of Saluki itself, and all have a name with the prefix `saluki-`:
-
-- `lib/saluki-api`: minimal interface for defining API endpoints (to avoid circular crate dependencies)
-- `lib/saluki-app`: generic helpers for application bring up (initialization of logging, metrics, etc)
-- `lib/saluki-components`: feature-complete implementations of various common components (DogStatsD source, Datadog
-  Metrics destination, and so on)
-- `lib/saluki-config`: lightweight helpers for both typed and untyped configuration file loading
-- `lib/saluki-context`: core primitives for metric contexts (unique name and tag combination), including zero-allocation
-  resolving and caching
-- `lib/saluki-core`: core primitives for building data planes, such as the topology builder, foundational traits for
-  components, buffers, and more
-- `lib/saluki-env`: helpers for interacting with the process's environment, such as querying time, hostname, host
-  environment (e.g. cloud provider), and so on
-- `lib/saluki-error`: generic error type and helpers for error handling based on `anyhow`
-- `lib/saluki-event`: the core event model used by Saluki
-- `lib/saluki-health`: lightweight library for defining components and checking/exposing the health of those components
-- `lib/saluki-io`: core I/O primitives for networking (TCP/UDP/UDS), serialization (codecs and framers), compression,
-  I/O-specific buffers, as well as some common codec implementations (e.g. DogStatsD)
-- `lib/saluki-metadata`: basic crate for currying build-time information about the top-level binary into subcrates to
-  support customization (e.g., getting the binary name/version in a generic way)
-- `lib/saluki-metrics`: helper macros for generating statically-defined metric structs to ease creating/holding
-  registered metric handles
-- `lib/saluki-tls`: lightweight library for initializing global TLS primitives, as well as build client/server TLS
-  configurations, in a centralized way that is amenable to ensuring certain aspects of usage (such as operating in
-  FIPS mode) are controlled and conforming
+**Saluki** (`saluki-*`) — Foundational crates that make up Saluki itself, covering topology construction, component
+traits, I/O primitives, context resolution, configuration, and more.
 
 ## Contributing
 
@@ -64,15 +33,8 @@ If you find an issue with this package and have a fix, or simply want to report 
 
 ## Documentation
 
-Saluki has no public-facing _code_ documentation at this time (2025-02-11). Procedural documentation -- architecture,
-releasing, etc -- can be found [here](https://datadoghq.dev/saluki/)
+Procedural documentation — architecture, releasing, etc — can be found [here](https://datadoghq.dev/saluki/).
 
 ## Security
 
-Please refer to our [Security Policy][security-policy] if you believe you have found a security vulnerability.
-
-[standalone-dsd]: https://github.com/DataDog/datadog-agent/tree/main/cmd/dogstatsd
-[ddsketch]: https://www.vldb.org/pvldb/vol12/p2195-masson.pdf
-[ddsketch-agent]: https://github.com/DataDog/opentelemetry-mapping-go/blob/main/pkg/quantile/sparse.go
-[contributing]: docs/CONTRIBUTING.md
-[security-policy]: SECURITY.md
+Please refer to our [Security Policy](SECURITY.md) if you believe you have found a security vulnerability.
