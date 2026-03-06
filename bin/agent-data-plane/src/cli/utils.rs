@@ -183,14 +183,11 @@ impl DataPlaneAPIClient {
     pub async fn config(&mut self) -> Result<String, GenericError> {
         let uri = self.build_uri("/config", None);
         let req = Request::get(uri).body(String::new()).expect("valid request");
-        let resp = self.client.send(req).and_then(process_response_body).await?;
-        if resp.status() == StatusCode::NOT_FOUND {
-            return Err(generic_error!(
-                "Workload provider not configured: no External Data available."
-            ));
-        }
-
-        body_when_success(resp)
+        self.client
+            .send(req)
+            .and_then(process_response_body)
+            .await
+            .and_then(body_when_success)
     }
 
     /// Retrieves the tags from the workload provider.
@@ -252,7 +249,7 @@ async fn process_response_body(response: Response<Incoming>) -> Result<Response<
 }
 
 fn body_when_success(resp: Response<String>) -> Result<String, GenericError> {
-    if !resp.status().is_success() {
+    if resp.status().is_success() {
         Ok(resp.into_body())
     } else {
         Err(generic_error!(
@@ -264,7 +261,7 @@ fn body_when_success(resp: Response<String>) -> Result<String, GenericError> {
 }
 
 fn empty_when_success(resp: Response<String>) -> Result<(), GenericError> {
-    if !resp.status().is_success() {
+    if resp.status().is_success() {
         Ok(())
     } else {
         Err(generic_error!(
