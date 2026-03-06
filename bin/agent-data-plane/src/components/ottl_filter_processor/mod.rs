@@ -33,15 +33,15 @@ pub struct OttlFilterConfiguration {
 impl OttlFilterConfiguration {
     /// Creates configuration from the given generic configuration.
     ///
-    /// Reads the OTTL filter config from the `ottl_config` key at the top level of the
+    /// Reads the OTTL filter config from the `ottl_filter_config` key at the top level of the
     /// data-plane configuration. The YAML structure is: `error_mode`, `traces.span` (list
     /// of OTTL condition strings). If the key is absent, a default (no-op) config is used.
     ///
     /// # Errors
     ///
-    /// Returns an error if a value at `ottl_config` exists but fails to deserialize.
+    /// Returns an error if a value at `ottl_filter_config` exists but fails to deserialize.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let filter_config = config.try_get_typed::<OttlFilterConfig>("ottl_config")?;
+        let filter_config = config.try_get_typed::<OttlFilterConfig>("ottl_filter_config")?;
         Ok(Self {
             config: filter_config.unwrap_or_default(),
         })
@@ -192,7 +192,7 @@ mod tests {
             .sum()
     }
 
-    /// When `ottl_config` is absent, config defaults to empty conditions and no spans are dropped.
+    /// When `ottl_filter_config` is absent, config defaults to empty conditions and no spans are dropped.
     #[tokio::test]
     async fn from_configuration_absent_key_returns_default() {
         let (config, _) = ConfigurationLoader::for_tests(None, None, false).await;
@@ -207,24 +207,24 @@ mod tests {
         assert_eq!(span_count_in_buffer(&buffer), 1, "default config must not drop spans");
     }
 
-    /// When `ottl_config` is present but invalid (e.g. unknown fields), `from_configuration` returns an error.
+    /// When `ottl_filter_config` is present but invalid (e.g. unknown fields), `from_configuration` returns an error.
     #[tokio::test]
     async fn from_configuration_invalid_yaml_returns_error() {
         let invalid = serde_json::json!({
-            "ottl_config": {
+            "ottl_filter_config": {
                 "unknown_field": 1
             }
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(invalid), None, false).await;
         let result = OttlFilterConfiguration::from_configuration(&config);
-        assert!(result.is_err(), "invalid ottl_config must yield error");
+        assert!(result.is_err(), "invalid ottl_filter_config must yield error");
     }
 
     /// When a span condition string is invalid OTTL syntax, `build` returns an error.
     #[tokio::test]
     async fn build_invalid_condition_returns_error() {
         let cfg_json = serde_json::json!({
-            "ottl_config": {
+            "ottl_filter_config": {
                 "traces": { "span": ["syntax error !!"] }
             }
         });
@@ -239,7 +239,7 @@ mod tests {
     #[tokio::test]
     async fn build_multiple_conditions_all_parsed() {
         let cfg_json = serde_json::json!({
-            "ottl_config": {
+            "ottl_filter_config": {
                 "traces": {
                     "span": [
                         "attributes[\"a\"] == \"x\"",
@@ -292,7 +292,7 @@ mod tests {
     #[tokio::test]
     async fn should_drop_span_condition_true_drops() {
         let cfg_json = serde_json::json!({
-            "ottl_config": { "traces": { "span": ["attributes[\"env\"] == \"drop\""] } }
+            "ottl_filter_config": { "traces": { "span": ["attributes[\"env\"] == \"drop\""] } }
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
         let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
@@ -310,7 +310,7 @@ mod tests {
     #[tokio::test]
     async fn should_drop_span_condition_false_keeps() {
         let cfg_json = serde_json::json!({
-            "ottl_config": { "traces": { "span": ["attributes[\"env\"] == \"drop\""] } }
+            "ottl_filter_config": { "traces": { "span": ["attributes[\"env\"] == \"drop\""] } }
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
         let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
@@ -328,7 +328,7 @@ mod tests {
     #[tokio::test]
     async fn should_drop_span_resource_attributes() {
         let cfg_json = serde_json::json!({
-            "ottl_config": { "traces": { "span": ["resource.attributes[\"host.name\"] == \"localhost\""] } }
+            "ottl_filter_config": { "traces": { "span": ["resource.attributes[\"host.name\"] == \"localhost\""] } }
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
         let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
@@ -351,7 +351,7 @@ mod tests {
     #[tokio::test]
     async fn should_drop_span_or_semantics() {
         let cfg_json = serde_json::json!({
-            "ottl_config": {
+            "ottl_filter_config": {
                 "traces": {
                     "span": [
                         "attributes[\"first\"] == \"no\"",
@@ -389,7 +389,7 @@ mod tests {
     #[tokio::test]
     async fn should_drop_span_non_bool_result_keeps() {
         let cfg_json = serde_json::json!({
-            "ottl_config": {
+            "ottl_filter_config": {
                 "error_mode": "ignore",
                 "traces": { "span": ["attributes[\"x\"]"] }
             }
@@ -414,7 +414,7 @@ mod tests {
     #[tokio::test]
     async fn error_mode_ignore_eval_error_keeps_span() {
         let cfg_json = serde_json::json!({
-            "ottl_config": {
+            "ottl_filter_config": {
                 "error_mode": "ignore",
                 "traces": { "span": ["attributes[\"x\"] > 1"] }
             }
@@ -435,7 +435,7 @@ mod tests {
     #[tokio::test]
     async fn error_mode_silent_eval_error_keeps_span() {
         let cfg_json = serde_json::json!({
-            "ottl_config": {
+            "ottl_filter_config": {
                 "error_mode": "silent",
                 "traces": { "span": ["attributes[\"x\"] > 1"] }
             }
@@ -456,7 +456,7 @@ mod tests {
     #[tokio::test]
     async fn error_mode_propagate_eval_error_drops_span() {
         let cfg_json = serde_json::json!({
-            "ottl_config": {
+            "ottl_filter_config": {
                 "error_mode": "propagate",
                 "traces": { "span": ["attributes[\"x\"] > 1"] }
             }
@@ -477,7 +477,7 @@ mod tests {
     #[tokio::test]
     async fn transform_buffer_trace_spans_filtered() {
         let cfg_json = serde_json::json!({
-            "ottl_config": { "traces": { "span": ["attributes[\"drop\"] == \"yes\""] } }
+            "ottl_filter_config": { "traces": { "span": ["attributes[\"drop\"] == \"yes\""] } }
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
         let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
@@ -524,7 +524,7 @@ mod tests {
     #[tokio::test]
     async fn transform_buffer_all_spans_dropped_trace_empty() {
         let cfg_json = serde_json::json!({
-            "ottl_config": { "traces": { "span": ["attributes[\"env\"] == \"drop\""] } }
+            "ottl_filter_config": { "traces": { "span": ["attributes[\"env\"] == \"drop\""] } }
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
         let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
@@ -560,7 +560,7 @@ mod tests {
     #[ignore = "performance test; run with: cargo test -- --ignored --nocapture perf_throughput"]
     async fn perf_throughput_filter_all() {
         let cfg_json = serde_json::json!({
-            "ottl_config": { "traces": { "span": ["attributes[\"env\"] == \"drop\""] } }
+            "ottl_filter_config": { "traces": { "span": ["attributes[\"env\"] == \"drop\""] } }
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
         let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
@@ -592,7 +592,7 @@ mod tests {
     #[ignore = "performance test; run with: cargo test -- --ignored --nocapture perf_throughput"]
     async fn perf_throughput_filter_half() {
         let cfg_json = serde_json::json!({
-            "ottl_config": { "traces": { "span": ["attributes[\"drop\"] == \"yes\""] } }
+            "ottl_filter_config": { "traces": { "span": ["attributes[\"drop\"] == \"yes\""] } }
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
         let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
