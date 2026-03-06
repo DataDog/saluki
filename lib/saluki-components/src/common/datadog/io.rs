@@ -11,7 +11,7 @@ use saluki_config::GenericConfiguration;
 use saluki_core::components::ComponentContext;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::{
-    client::http::HttpClient,
+    client::http::{into_client_body, HttpClient},
     util::{
         middleware::{RetryCircuitBreakerError, RetryCircuitBreakerLayer},
         retry::{DiskUsageRetrieverImpl, PushResult, RetryQueue, Retryable},
@@ -24,7 +24,7 @@ use tokio::{
     sync::{mpsc, oneshot, Barrier},
     task::JoinSet,
 };
-use tower::{BoxError, Service, ServiceBuilder, ServiceExt as _};
+use tower::{Service, ServiceBuilder, ServiceExt as _};
 use tracing::{debug, error};
 
 use super::{
@@ -86,13 +86,14 @@ pub struct TransactionForwarder<B> {
     config: ForwarderConfiguration,
     telemetry: ComponentTelemetry,
     metrics_builder: MetricsBuilder,
-    client: HttpClient<TransactionBody<B>>,
+    client: HttpClient,
     endpoints: Vec<ResolvedEndpoint>,
+    _marker: std::marker::PhantomData<B>,
 }
 
 impl<B> TransactionForwarder<B>
 where
-    B: Body + Buf + Clone + Unpin + Send + 'static,
+    B: Body + Buf + Clone + Unpin + Send + Sync + 'static,
     B::Data: Send,
     B::Error: std::error::Error + Send + Sync,
 {
@@ -126,6 +127,7 @@ where
             metrics_builder,
             client,
             endpoints,
+            _marker: std::marker::PhantomData,
         })
     }
 
@@ -144,6 +146,7 @@ where
             metrics_builder,
             client,
             endpoints,
+            _marker,
         } = self;
 
         spawn_traced_named(
@@ -167,15 +170,14 @@ where
     }
 }
 
-async fn run_io_loop<S, B>(
+async fn run_io_loop<B>(
     mut transactions_rx: mpsc::Receiver<Transaction<B>>, io_shutdown_tx: oneshot::Sender<()>,
-    context: ComponentContext, config: ForwarderConfiguration, service: S, telemetry: ComponentTelemetry,
+    context: ComponentContext, config: ForwarderConfiguration, service: HttpClient, telemetry: ComponentTelemetry,
     metrics_builder: MetricsBuilder, resolved_endpoints: Vec<ResolvedEndpoint>,
 ) where
-    S: Service<Request<TransactionBody<B>>, Response = Response<Incoming>> + Clone + Send + 'static,
-    S::Future: Send,
-    S::Error: Into<BoxError> + Send + Sync,
-    B: Body + Buf + Clone + Send + 'static,
+    B: Body + Buf + Clone + Send + Sync + 'static,
+    B::Data: Send,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     // Spawn an endpoint I/O task for each endpoint we're configured to send to, which we'll forward transactions to.
     let mut endpoint_txs = Vec::new();
@@ -233,15 +235,14 @@ async fn run_io_loop<S, B>(
     let _ = io_shutdown_tx.send(());
 }
 
-async fn run_endpoint_io_loop<S, B>(
+async fn run_endpoint_io_loop<B>(
     mut txns_rx: mpsc::Receiver<Transaction<B>>, task_barrier: Arc<Barrier>, context: ComponentContext,
-    config: ForwarderConfiguration, service: S, telemetry: ComponentTelemetry,
+    config: ForwarderConfiguration, service: HttpClient, telemetry: ComponentTelemetry,
     txnq_telemetry: TransactionQueueTelemetry, endpoint: ResolvedEndpoint,
 ) where
-    S: Service<Request<TransactionBody<B>>, Response = Response<Incoming>> + Send + 'static,
-    S::Future: Send + 'static,
-    S::Error: Into<BoxError> + Send + Sync + 'static,
-    B: Body + Buf + Clone + Send + 'static,
+    B: Body + Buf + Clone + Send + Sync + 'static,
+    B::Data: Send,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     let queue_id = generate_retry_queue_id(context, &endpoint);
     let endpoint_url = endpoint.endpoint().to_string();
@@ -255,6 +256,10 @@ async fn run_endpoint_io_loop<S, B>(
     //
     // This is where we'll modify the incoming transaction for our our specific endpoint, such as setting the host portion
     // of the URI, adding the API key as a header, and so on.
+    //
+    // The body type conversion from `TransactionBody<B>` to `ClientBody` happens as the innermost layer,
+    // after the retry circuit breaker. This ensures that `RetryCircuitBreakerError::Open(req)` returns
+    // the original `Request<TransactionBody<B>>` so we can reassemble it into a `Transaction<B>` for re-enqueuing.
     let mut service = ServiceBuilder::new()
         // Set the request's URI to the endpoint's URI, and add the API key as a header.
         .map_request(for_resolved_endpoint(endpoint))
@@ -264,7 +269,8 @@ async fn run_endpoint_io_loop<S, B>(
         .layer(RetryCircuitBreakerLayer::new(
             config.retry().to_default_http_retry_policy(),
         ))
-        .service(service.map_err(|e| e.into()));
+        .map_request(|req: Request<TransactionBody<B>>| req.map(into_client_body))
+        .service(service);
 
     let mut retry_queue = RetryQueue::new(queue_id.clone(), config.retry().queue_max_size_bytes());
 

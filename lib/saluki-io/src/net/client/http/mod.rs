@@ -1,14 +1,11 @@
 //! Basic HTTP client.
 
 mod client;
-use saluki_common::buf::FrozenChunkedBytesBuffer;
 
-pub use self::client::HttpClient;
+pub use self::client::{into_client_body, ClientBody, HttpClient};
 
 mod conn;
 pub use self::conn::{HttpsCapableConnector, HttpsCapableConnectorBuilder};
 
 mod telemetry;
 pub use self::telemetry::{EndpointTelemetry, EndpointTelemetryLayer};
-
-pub type ChunkedHttpsClient = HttpClient<FrozenChunkedBytesBuffer>;
