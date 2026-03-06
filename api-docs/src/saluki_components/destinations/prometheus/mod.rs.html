@@ -222,7 +222,7 @@
 <a href=#222 id=222 data-nosnippet>222</a>        <span class="kw">let </span>payload = Arc::clone(<span class="kw-2">&amp;</span>payload);
 <a href=#223 id=223 data-nosnippet>223</a>        <span class="kw">async move </span>{
 <a href=#224 id=224 data-nosnippet>224</a>            <span class="kw">let </span>payload = payload.read().<span class="kw">await</span>;
-<a href=#225 id=225 data-nosnippet>225</a>            Ok::&lt;Response&lt;String&gt;, Infallible&gt;(Response::new(payload.to_string()))
+<a href=#225 id=225 data-nosnippet>225</a>            Ok::&lt;<span class="kw">_</span>, Infallible&gt;(Response::new(axum::body::Body::from(payload.to_string())))
 <a href=#226 id=226 data-nosnippet>226</a>        }
 <a href=#227 id=227 data-nosnippet>227</a>    });
 <a href=#228 id=228 data-nosnippet>228</a>
