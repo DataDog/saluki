@@ -14,7 +14,7 @@ dd_url: "http://127.0.0.1:9999"
 
 log_level: agent_data_plane::components::ottl_filter_processor=debug,agent_data_plane::components::ottl_transform_processor=debug,info
 
-ottl_config:
+ottl_filter_config:
   error_mode: ignore
   traces:
     span:

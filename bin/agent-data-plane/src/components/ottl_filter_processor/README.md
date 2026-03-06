@@ -33,7 +33,7 @@ Configuration is read from the data-plane generic configuration. The OTTL filter
 
 ### Configuration key
 
-The component reads the filter config from the **`ottl_config`** key at the top level of the data-plane configuration (e.g. in a Saluki or ADP config file). Other paths (such as `data_plane.otlp.filter` or a Collector-style `processors.filter/ottl`) may be supported in the future for compatibility.
+The component reads the filter config from the **`ottl_filter_config`** key at the top level of the data-plane configuration (e.g. in a Saluki or ADP config file). Other paths (such as `data_plane.otlp.filter` or a Collector-style `processors.filter/ottl`) may be supported in the future for compatibility.
 
 ### Structure
 
@@ -44,7 +44,7 @@ The component reads the filter config from the **`ottl_config`** key at the top 
 ### Example
 
 ```yaml
-ottl_config:
+ottl_filter_config:
   error_mode: ignore
   traces:
     span:
@@ -57,7 +57,7 @@ Only **`attributes`** and **`resource.attributes`** are valid paths in condition
 - `attributes["container.name"] == "app_container_1"` — span-level attribute.
 - `resource.attributes["host.name"] == "localhost"` — resource-level attribute.
 
-Conditions can use OTTL boolean expressions (`and`, `or`, parentheses) as supported by the OTTL parser. If `ottl_config` is omitted, no filtering is applied (all spans are kept).
+Conditions can use OTTL boolean expressions (`and`, `or`, parentheses) as supported by the OTTL parser. If `ottl_filter_config` is omitted, no filtering is applied (all spans are kept).
 
 ## References
 

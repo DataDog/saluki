@@ -495,7 +495,7 @@ experiments:
         empty.yaml: null
         ottl_config.yaml:
           content:
-            ottl_config:
+            ottl_filter_config:
               error_mode: ignore
               traces:
                 span:
