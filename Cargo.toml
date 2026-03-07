@@ -180,7 +180,7 @@ float-cmp = { version = "0.10", default-features = false }
 tower-http = { version = "0.6", default-features = false }
 bollard = { version = "0.18", default-features = false }
 reqwest = { version = "0.13", default-features = false }
-lading-payload = { git = "https://github.com/DataDog/lading", rev = "bd60f9813012278a87a30516379805841c2e089f" }
+lading-payload = { git = "https://github.com/DataDog/lading", rev = "ed99f5f1329ce90511b579129afa15dd89570544" }
 serde_yaml = { version = "0.9", default-features = false }
 serde_with = { version = "3.12.0", default-features = false, features = [
   "macros",
