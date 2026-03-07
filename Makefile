@@ -508,6 +508,7 @@ test-miri: check-rust-build-tools ensure-rust-miri
 test-miri: ## Runs all Miri-specific unit tests
 	@echo "[*] Running Miri-specific unit tests..."
 	cargo +nightly-2025-06-16 miri test -p stringtheory
+	cargo +nightly-2025-06-16 miri test -p saluki-io deser::framing
 
 .PHONY: test-loom
 test-loom: check-rust-build-tools
