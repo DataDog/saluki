@@ -1,5 +1,6 @@
 use std::{
     future::Future,
+    path::PathBuf,
     pin::Pin,
     task::{Context, Poll},
     time::Duration,
@@ -53,7 +54,7 @@ impl HttpClient {
     /// # Errors
     ///
     /// If there was an error sending the request, an error will be returned.
-    pub async fn send<B>(&mut self, req: Request<B>) -> Result<Response<Incoming>, BoxError>
+    pub async fn send<B>(&mut self, req: Request<B>) -> Result<Response<Incoming>, GenericError>
     where
         B: Body + Send + Sync + 'static,
         B::Data: Buf + Send,
@@ -61,11 +62,17 @@ impl HttpClient {
     {
         let mut req = req.map(into_client_body);
         let captured_conn = capture_connection(&mut req);
-        let result = self.inner.ready().await?.call(req).await;
+        let result = self
+            .inner
+            .ready()
+            .await
+            .map_err(GenericError::from_boxed)?
+            .call(req)
+            .await;
 
         check_connection_state(captured_conn);
 
-        result
+        result.map_err(GenericError::from_boxed)
     }
 }
 
@@ -217,6 +224,19 @@ impl HttpClientBuilder {
         }
 
         self.endpoint_telemetry = Some(layer);
+        self
+    }
+
+    /// Sets a Unix domain socket path to route all connections through.
+    ///
+    /// When set, the client will connect to this Unix socket instead of performing DNS resolution
+    /// and TCP connection. The URI host is ignored — all requests are sent through the configured
+    /// socket.
+    ///
+    /// Defaults to unset (TCP connections via DNS).
+    #[cfg(unix)]
+    pub fn with_unix_socket_path<P: Into<PathBuf>>(mut self, path: P) -> Self {
+        self.connector_builder = self.connector_builder.with_unix_socket_path(path);
         self
     }
 

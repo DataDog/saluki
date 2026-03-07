@@ -1,7 +1,9 @@
 use std::{
     future::Future,
     io,
+    path::PathBuf,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
     time::{Duration, Instant},
 };
@@ -49,11 +51,87 @@ impl ConnectionAgeLimit {
     }
 }
 
+/// An inner transport that abstracts over TCP and Unix domain socket connections.
+///
+/// This allows using a single monomorphization of the HTTP/2 and TLS stacks regardless of the
+/// underlying transport, avoiding duplicate code generation for each transport type.
+enum Transport {
+    Tcp(TokioIo<TcpStream>),
+    #[cfg(unix)]
+    Unix(TokioIo<tokio::net::UnixStream>),
+}
+
+impl Connection for Transport {
+    fn connected(&self) -> Connected {
+        match self {
+            Self::Tcp(s) => s.connected(),
+            #[cfg(unix)]
+            Self::Unix(_) => Connected::new(),
+        }
+    }
+}
+
+impl hyper::rt::Read for Transport {
+    fn poll_read(
+        self: Pin<&mut Self>, cx: &mut Context<'_>, buf: hyper::rt::ReadBufCursor<'_>,
+    ) -> Poll<io::Result<()>> {
+        match Pin::get_mut(self) {
+            Self::Tcp(s) => Pin::new(s).poll_read(cx, buf),
+            #[cfg(unix)]
+            Self::Unix(s) => Pin::new(s).poll_read(cx, buf),
+        }
+    }
+}
+
+impl hyper::rt::Write for Transport {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+        match Pin::get_mut(self) {
+            Self::Tcp(s) => Pin::new(s).poll_write(cx, buf),
+            #[cfg(unix)]
+            Self::Unix(s) => Pin::new(s).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match Pin::get_mut(self) {
+            Self::Tcp(s) => Pin::new(s).poll_flush(cx),
+            #[cfg(unix)]
+            Self::Unix(s) => Pin::new(s).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match Pin::get_mut(self) {
+            Self::Tcp(s) => Pin::new(s).poll_shutdown(cx),
+            #[cfg(unix)]
+            Self::Unix(s) => Pin::new(s).poll_shutdown(cx),
+        }
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        match self {
+            Self::Tcp(s) => s.is_write_vectored(),
+            #[cfg(unix)]
+            Self::Unix(s) => s.is_write_vectored(),
+        }
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>, cx: &mut Context<'_>, bufs: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        match Pin::get_mut(self) {
+            Self::Tcp(s) => Pin::new(s).poll_write_vectored(cx, bufs),
+            #[cfg(unix)]
+            Self::Unix(s) => Pin::new(s).poll_write_vectored(cx, bufs),
+        }
+    }
+}
+
 pin_project! {
     /// A connection that supports both HTTP and HTTPS.
     pub struct HttpsCapableConnection {
         #[pin]
-        inner: MaybeHttpsStream<TokioIo<TcpStream>>,
+        inner: MaybeHttpsStream<Transport>,
         bytes_sent: Option<Counter>,
         conn_age_limit: Option<Duration>,
     }
@@ -125,10 +203,61 @@ impl hyper::rt::Write for HttpsCapableConnection {
     }
 }
 
+/// An inner connector that routes to either TCP (via DNS) or a Unix domain socket.
+///
+/// When a Unix socket path is configured, all connections are routed through that socket regardless
+/// of the URI host. Otherwise, connections are routed via the standard DNS + TCP path.
+#[derive(Clone)]
+struct InnerConnector {
+    http: TokioHickoryHttpConnector,
+    connect_timeout: Duration,
+    #[cfg(unix)]
+    unix_socket_path: Option<Arc<std::path::Path>>,
+}
+
+impl Service<Uri> for InnerConnector {
+    type Response = Transport;
+    type Error = BoxError;
+    type Future = Pin<Box<dyn Future<Output = Result<Transport, BoxError>> + Send>>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        // When routing via a Unix domain socket, the TCP/DNS connector is not used, so we consider
+        // the service immediately ready.
+        #[cfg(unix)]
+        if self.unix_socket_path.is_some() {
+            return Poll::Ready(Ok(()));
+        }
+
+        self.http.poll_ready(cx).map_err(Into::into)
+    }
+
+    fn call(&mut self, dst: Uri) -> Self::Future {
+        #[cfg(unix)]
+        if let Some(path) = self.unix_socket_path.clone() {
+            let connect_timeout = self.connect_timeout;
+            return Box::pin(async move {
+                let stream = tokio::time::timeout(connect_timeout, tokio::net::UnixStream::connect(&*path))
+                    .await
+                    .map_err(|_| -> BoxError {
+                        Box::new(io::Error::new(io::ErrorKind::TimedOut, "unix socket connect timed out"))
+                    })?
+                    .map_err(|e| -> BoxError { Box::new(e) })?;
+                Ok(Transport::Unix(TokioIo::new(stream)))
+            });
+        }
+
+        let fut = self.http.call(dst);
+        Box::pin(async move {
+            let tcp = fut.await.map_err(BoxError::from)?;
+            Ok(Transport::Tcp(tcp))
+        })
+    }
+}
+
 /// A connector that supports HTTP or HTTPS.
 #[derive(Clone)]
 pub struct HttpsCapableConnector {
-    inner: HttpsConnector<TokioHickoryHttpConnector>,
+    inner: HttpsConnector<InnerConnector>,
     bytes_sent: Option<Counter>,
     conn_age_limit: Option<Duration>,
 }
@@ -162,6 +291,8 @@ pub struct HttpsCapableConnectorBuilder {
     connect_timeout: Option<Duration>,
     bytes_sent: Option<Counter>,
     conn_age_limit: Option<Duration>,
+    #[cfg(unix)]
+    unix_socket_path: Option<PathBuf>,
 }
 
 impl HttpsCapableConnectorBuilder {
@@ -198,6 +329,19 @@ impl HttpsCapableConnectorBuilder {
         self
     }
 
+    /// Sets a Unix domain socket path to route all connections through.
+    ///
+    /// When set, the connector will connect to this Unix socket instead of performing DNS resolution
+    /// and TCP connection. The URI host is ignored in this case — all requests are sent through the
+    /// configured socket.
+    ///
+    /// Defaults to unset (TCP connections via DNS).
+    #[cfg(unix)]
+    pub fn with_unix_socket_path<P: Into<PathBuf>>(mut self, path: P) -> Self {
+        self.unix_socket_path = Some(path.into());
+        self
+    }
+
     /// Builds the `HttpsCapableConnector` from the given TLS configuration.
     pub fn build(self, tls_config: ClientConfig) -> Result<HttpsCapableConnector, GenericError> {
         let connect_timeout = self.connect_timeout.unwrap_or(Duration::from_secs(30));
@@ -211,12 +355,19 @@ impl HttpsCapableConnectorBuilder {
         http_connector.set_connect_timeout(Some(connect_timeout));
         http_connector.enforce_http(false);
 
+        let inner_connector = InnerConnector {
+            http: http_connector,
+            connect_timeout,
+            #[cfg(unix)]
+            unix_socket_path: self.unix_socket_path.map(PathBuf::into_boxed_path).map(Arc::from),
+        };
+
         // Create the HTTPS connector.
         let https_connector = HttpsConnectorBuilder::new()
             .with_tls_config(tls_config)
             .https_or_http()
             .enable_all_versions()
-            .wrap_connector(http_connector);
+            .wrap_connector(inner_connector);
 
         Ok(HttpsCapableConnector {
             inner: https_connector,

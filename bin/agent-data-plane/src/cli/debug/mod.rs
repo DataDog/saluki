@@ -63,7 +63,7 @@ pub struct SetMetricLevelCommand {
 
 /// Entrypoint for the `debug` commands.
 pub async fn handle_debug_command(bootstrap_config: &GenericConfiguration, cmd: DebugCommand) {
-    let api_client = match DataPlaneAPIClient::from_config(bootstrap_config) {
+    let mut api_client = match DataPlaneAPIClient::from_config(bootstrap_config) {
         Ok(client) => client,
         Err(e) => {
             error!("Failed to create data plane API client: {:#}", e);
@@ -72,16 +72,16 @@ pub async fn handle_debug_command(bootstrap_config: &GenericConfiguration, cmd: 
     };
 
     match cmd.subcommand {
-        DebugSubcommand::ResetLogLevel(_) => reset_log_level(api_client).await,
-        DebugSubcommand::SetLogLevel(cmd) => set_log_level(api_client, cmd).await,
-        DebugSubcommand::ResetMetricLevel(_) => reset_metric_level(api_client).await,
-        DebugSubcommand::SetMetricLevel(cmd) => set_metric_level(api_client, cmd).await,
-        DebugSubcommand::Workload(cmd) => handle_workload_command(api_client, cmd).await,
+        DebugSubcommand::ResetLogLevel(_) => reset_log_level(&mut api_client).await,
+        DebugSubcommand::SetLogLevel(cmd) => set_log_level(&mut api_client, cmd).await,
+        DebugSubcommand::ResetMetricLevel(_) => reset_metric_level(&mut api_client).await,
+        DebugSubcommand::SetMetricLevel(cmd) => set_metric_level(&mut api_client, cmd).await,
+        DebugSubcommand::Workload(cmd) => handle_workload_command(&mut api_client, cmd).await,
     }
 }
 
 /// Resets the log level to the default configuration.
-async fn reset_log_level(api_client: DataPlaneAPIClient) {
+async fn reset_log_level(api_client: &mut DataPlaneAPIClient) {
     match api_client.reset_log_level().await {
         Ok(()) => info!("Log level reset successful."),
         Err(e) => {
@@ -92,7 +92,7 @@ async fn reset_log_level(api_client: DataPlaneAPIClient) {
 }
 
 /// Sets the log level filter directives for a specified duration in seconds.
-async fn set_log_level(api_client: DataPlaneAPIClient, cmd: SetLogLevelCommand) {
+async fn set_log_level(api_client: &mut DataPlaneAPIClient, cmd: SetLogLevelCommand) {
     match api_client.set_log_level(cmd.filter_directives, cmd.duration_secs).await {
         Ok(()) => info!("Log level override successful."),
         Err(e) => {
@@ -103,7 +103,7 @@ async fn set_log_level(api_client: DataPlaneAPIClient, cmd: SetLogLevelCommand) 
 }
 
 /// Resets the metric level to the default configuration.
-async fn reset_metric_level(api_client: DataPlaneAPIClient) {
+async fn reset_metric_level(api_client: &mut DataPlaneAPIClient) {
     match api_client.reset_metric_level().await {
         Ok(()) => info!("Metric level reset successful."),
         Err(e) => {
@@ -114,7 +114,7 @@ async fn reset_metric_level(api_client: DataPlaneAPIClient) {
 }
 
 /// Sets the metric level filter directive for a specified duration in seconds.
-async fn set_metric_level(api_client: DataPlaneAPIClient, cmd: SetMetricLevelCommand) {
+async fn set_metric_level(api_client: &mut DataPlaneAPIClient, cmd: SetMetricLevelCommand) {
     match api_client.set_metric_level(cmd.level, cmd.duration_secs).await {
         Ok(()) => info!("Metric level override successful."),
         Err(e) => {

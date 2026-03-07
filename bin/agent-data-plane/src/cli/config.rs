@@ -12,7 +12,7 @@ pub struct ConfigCommand {}
 
 /// Entrypoint for the `config` command.
 pub async fn handle_config_command(bootstrap_config: &GenericConfiguration) {
-    let api_client = match DataPlaneAPIClient::from_config(bootstrap_config) {
+    let mut api_client = match DataPlaneAPIClient::from_config(bootstrap_config) {
         Ok(client) => client,
         Err(e) => {
             error!("Failed to create data plane API client: {:#}", e);

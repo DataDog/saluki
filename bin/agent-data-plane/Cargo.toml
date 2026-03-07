@@ -15,6 +15,7 @@ fips = ["saluki-app/tls-fips"]
 [dependencies]
 argh = { workspace = true, features = ["help"] }
 async-trait = { workspace = true }
+bytes = { workspace = true }
 bytesize = { workspace = true }
 chrono = { workspace = true }
 colored = { workspace = true }
@@ -23,15 +24,11 @@ datadog-protos = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
+hyper = { workspace = true }
 memory-accounting = { workspace = true }
 ottl = { workspace = true }
 papaya = { workspace = true }
 prost-types = { workspace = true }
-reqwest = { workspace = true, features = [
-  "rustls-no-provider",
-  "json",
-  "query",
-] }
 saluki-app = { workspace = true }
 saluki-common = { workspace = true }
 saluki-components = { workspace = true }
