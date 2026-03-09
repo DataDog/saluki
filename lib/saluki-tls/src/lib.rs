@@ -2,7 +2,15 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 
-use rustls::{client::Resumption, ClientConfig, RootCertStore};
+use rustls::{
+    client::{
+        danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+        Resumption,
+    },
+    crypto::CryptoProvider,
+    pki_types::{CertificateDer, ServerName, UnixTime},
+    ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme,
+};
 use saluki_error::{generic_error, GenericError};
 use tracing::debug;
 
@@ -16,6 +24,41 @@ static DEFAULT_ROOT_CERT_STORE: OnceLock<Arc<RootCertStore>> = OnceLock::new();
 // Various defaults for TLS configuration.
 const DEFAULT_MAX_TLS12_RESUMPTION_SESSIONS: usize = 8;
 
+/// A certificate verifier that accepts all server certificates without validation.
+///
+/// This is inherently insecure and should only be used for local/development connections where the
+/// server's identity is already established through other means (e.g. connecting via Unix domain socket
+/// to a local process).
+#[derive(Debug)]
+struct AcceptAllServerCertVerifier {
+    provider: Arc<CryptoProvider>,
+}
+
+impl ServerCertVerifier for AcceptAllServerCertVerifier {
+    fn verify_server_cert(
+        &self, _end_entity: &CertificateDer<'_>, _intermediates: &[CertificateDer<'_>], _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8], _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self, message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+    }
+
+    fn verify_tls13_signature(
+        &self, message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.provider.signature_verification_algorithms.supported_schemes()
+    }
+}
+
 /// A TLS client configuration builder.
 ///
 /// Exposes various options for configuring a client's TLS configuration that would otherwise be cumbersome to
@@ -27,6 +70,7 @@ const DEFAULT_MAX_TLS12_RESUMPTION_SESSIONS: usize = 8;
 pub struct ClientTLSConfigBuilder {
     max_tls12_resumption_sessions: Option<usize>,
     root_cert_store: Option<RootCertStore>,
+    danger_accept_invalid_certs: bool,
 }
 
 impl ClientTLSConfigBuilder {
@@ -34,6 +78,7 @@ impl ClientTLSConfigBuilder {
         Self {
             max_tls12_resumption_sessions: None,
             root_cert_store: None,
+            danger_accept_invalid_certs: false,
         }
     }
 
@@ -53,6 +98,16 @@ impl ClientTLSConfigBuilder {
         self
     }
 
+    /// Disables server certificate verification entirely.
+    ///
+    /// This is inherently insecure and should only be used for local/development connections where
+    /// the server's identity is already established through other means (e.g. connecting via Unix
+    /// domain socket to a local process).
+    pub fn danger_accept_invalid_certs(mut self) -> Self {
+        self.danger_accept_invalid_certs = true;
+        self
+    }
+
     /// Builds the client TLS configuration.
     ///
     /// # Errors
@@ -65,16 +120,30 @@ impl ClientTLSConfigBuilder {
             .max_tls12_resumption_sessions
             .unwrap_or(DEFAULT_MAX_TLS12_RESUMPTION_SESSIONS);
 
-        let root_cert_store = self.root_cert_store.map(Arc::new).map(Ok).unwrap_or_else(|| {
-            DEFAULT_ROOT_CERT_STORE
-                .get()
+        let mut config = if self.danger_accept_invalid_certs {
+            let crypto_provider = CryptoProvider::get_default()
                 .map(Arc::clone)
-                .ok_or(generic_error!("Default TLS root certificate store not initialized."))
-        })?;
+                .ok_or_else(|| generic_error!("Default cryptography provider not yet installed."))?;
+            let verifier = Arc::new(AcceptAllServerCertVerifier {
+                provider: crypto_provider,
+            });
 
-        let mut config = ClientConfig::builder()
-            .with_root_certificates(root_cert_store)
-            .with_no_client_auth();
+            ClientConfig::builder()
+                .dangerous()
+                .with_custom_certificate_verifier(verifier)
+                .with_no_client_auth()
+        } else {
+            let root_cert_store = self.root_cert_store.map(Arc::new).map(Ok).unwrap_or_else(|| {
+                DEFAULT_ROOT_CERT_STORE
+                    .get()
+                    .map(Arc::clone)
+                    .ok_or(generic_error!("Default TLS root certificate store not initialized."))
+            })?;
+
+            ClientConfig::builder()
+                .with_root_certificates(root_cert_store)
+                .with_no_client_auth()
+        };
 
         // One unfortunate thing is that by creating `config` above, it assigns the default value for `Resumption` before
         // we reset it down here... which means the big, beefy default one gets allocated and then immediately thrown

@@ -104,7 +104,7 @@ struct StatsResponse<'a> {
 
 /// Entrypoint for the `dogstatsd` commands.
 pub async fn handle_dogstatsd_command(bootstrap_config: &GenericConfiguration, cmd: DogstatsdCommand) {
-    let api_client = match DataPlaneAPIClient::from_config(bootstrap_config) {
+    let mut api_client = match DataPlaneAPIClient::from_config(bootstrap_config) {
         Ok(client) => client,
         Err(e) => {
             error!("Failed to create data plane API client: {:#}", e);
@@ -114,7 +114,7 @@ pub async fn handle_dogstatsd_command(bootstrap_config: &GenericConfiguration, c
 
     match cmd.subcommand {
         DogstatsdSubcommand::Stats(config) => {
-            if let Err(e) = handle_dogstatsd_stats(api_client, config).await {
+            if let Err(e) = handle_dogstatsd_stats(&mut api_client, config).await {
                 error!("Failed to run stats subcommand: {:#}", e);
                 std::process::exit(1);
             }
@@ -122,7 +122,7 @@ pub async fn handle_dogstatsd_command(bootstrap_config: &GenericConfiguration, c
     }
 }
 
-async fn handle_dogstatsd_stats(api_client: DataPlaneAPIClient, cmd: StatsCommand) -> Result<(), GenericError> {
+async fn handle_dogstatsd_stats(api_client: &mut DataPlaneAPIClient, cmd: StatsCommand) -> Result<(), GenericError> {
     // Trigger a statistics collection and wait for it to complete.
     info!(
         "Triggered statistics collection over the next {} seconds. Waiting for completion...",

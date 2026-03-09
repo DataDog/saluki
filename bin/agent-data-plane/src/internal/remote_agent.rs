@@ -488,7 +488,7 @@ impl TelemetryProvider for RemoteAgentImpl {
                 }
 
                 let prometheus_listen_addr = self.prometheus_listen_addr.unwrap();
-                let mut client: HttpClient<String> = HttpClient::builder().build().unwrap();
+                let mut client = HttpClient::builder().build().unwrap();
 
                 let uri_string = format!("http://{}", prometheus_listen_addr);
                 let uri: Uri = uri_string.parse().unwrap();
