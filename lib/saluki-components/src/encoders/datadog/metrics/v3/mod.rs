@@ -10,6 +10,7 @@
 //! - Batch encoding - all metrics must be collected before serialization
 //! - Separate value columns for different numeric types (sint64, float32, float64)
 
+mod constants;
 mod interner;
 mod types;
 mod writer;

@@ -1,47 +1,8 @@
 //! V3 payload type definitions and protocol buffer field numbers.
 
-/// Protocol buffer field numbers for MetricData message.
-///
-/// These correspond to the field numbers in `payload_v3.proto`.
-pub mod field_numbers {
-    // Dictionary fields
-    pub const DICT_NAME_STR: u32 = 1;
-    pub const DICT_TAGS_STR: u32 = 2;
-    pub const DICT_TAGSETS: u32 = 3;
-    pub const DICT_RESOURCE_STR: u32 = 4;
-    pub const DICT_RESOURCE_LEN: u32 = 5;
-    pub const DICT_RESOURCE_TYPE: u32 = 6;
-    pub const DICT_RESOURCE_NAME: u32 = 7;
-    pub const DICT_SOURCE_TYPE_NAME: u32 = 8;
-    pub const DICT_ORIGIN_INFO: u32 = 9;
-
-    // Per-metric columns
-    pub const TYPES: u32 = 10;
-    pub const NAMES: u32 = 11;
-    pub const TAGS: u32 = 12;
-    pub const RESOURCES: u32 = 13;
-    pub const INTERVALS: u32 = 14;
-    pub const NUM_POINTS: u32 = 15;
-
-    // Point data
-    pub const TIMESTAMPS: u32 = 16;
-    pub const VALS_SINT64: u32 = 17;
-    pub const VALS_FLOAT32: u32 = 18;
-    pub const VALS_FLOAT64: u32 = 19;
-
-    // Sketch data
-    pub const SKETCH_NUM_BINS: u32 = 20;
-    pub const SKETCH_BIN_KEYS: u32 = 21;
-    pub const SKETCH_BIN_CNTS: u32 = 22;
-
-    // Additional per-metric columns
-    pub const SOURCE_TYPE_NAME: u32 = 23;
-    pub const ORIGIN_INFO: u32 = 24;
-}
-
 /// V3 metric type values.
 ///
-/// These match the `metricType` enum in `payload_v3.proto`.
+/// These match the `metricType` enum in `intake_v3.proto`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum V3MetricType {
@@ -53,7 +14,7 @@ pub enum V3MetricType {
 
 impl V3MetricType {
     /// Returns the numeric value for encoding in the types column.
-    pub fn as_u64(self) -> u64 {
+    pub const fn as_u64(self) -> u64 {
         self as u64
     }
 }
@@ -67,10 +28,13 @@ impl V3MetricType {
 pub enum V3ValueType {
     /// Value is zero, not stored explicitly.
     Zero = 0x00,
+
     /// Value is stored in vals_sint64.
     Sint64 = 0x10,
+
     /// Value is stored in vals_float32.
     Float32 = 0x20,
+
     /// Value is stored in vals_float64.
     Float64 = 0x30,
 }
