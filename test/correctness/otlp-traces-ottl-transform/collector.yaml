@@ -1,0 +1,32 @@
+# OpenTelemetry Collector config for baseline (DDOT / otel-agent): OTLP receiver, OTTL
+# transform processor (same statements as ADP in datadog.yaml), Datadog exporter to datadog-intake.
+# Aligns with datadog.yaml behaviour plus OTTL transformation for E2E comparison.
+# Used by the Datadog Distribution of OpenTelemetry (DDOT) from the agent -full image.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  transform:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          - set(attributes["test_attr"], "test-val")
+
+exporters:
+  datadog:
+    hostname: correctness-testing
+    api:
+      key: correctness-test
+    traces:
+      endpoint: http://datadog-intake:2049
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [transform]
+      exporters: [datadog]

@@ -1,0 +1,34 @@
+# E2E correctness test: DDOT (baseline) vs ADP (comparison), both with the same
+# OTTL transform statement. Millstone sends the same traces to both; we assert transformed outputs match.
+# Baseline uses the Datadog Distribution of OpenTelemetry (DDOT) from the agent -full image.
+analysis_mode: traces
+# Baseline is OTel-based (DDOT); use OTLP-direct analysis (skip stats comparison, do not require baseline SSI).
+otlp_direct_analysis_mode: true
+# OTel baseline vs ADP: load/agent and pipeline add fields that differ or are absent in the other.
+additional_span_ignore_fields:
+  - agent_metadata.target_tps
+  - metrics._top_level
+  - metrics._dd.measured
+millstone:
+  image: saluki-images/millstone:latest
+  config_path: millstone.yaml
+datadog_intake:
+  image: saluki-images/datadog-intake:latest
+  config_path: ../datadog-intake.yaml
+baseline:
+  image: registry.datadoghq.com/agent:7.75.4-full
+  files:
+    - collector.yaml:/etc/datadog-agent/otel-config.yaml
+    - datadog_agent.yaml:/etc/datadog-agent/datadog.yaml
+  additional_env_vars:
+    - DD_API_KEY=correctness-test    
+    - DD_OTELCOLLECTOR_ENABLED=true
+    - DD_HOSTNAME=correctness-testing     
+comparison:
+  image: saluki-images/datadog-agent:testing-release
+  files:
+    - datadog_adp.yaml:/etc/datadog-agent/datadog.yaml
+  additional_env_vars:
+    - DD_API_KEY=correctness-test
+    - DD_DATA_PLANE_ENABLED=true
+    - DD_DATA_PLANE_OTLP_ENABLED=true
