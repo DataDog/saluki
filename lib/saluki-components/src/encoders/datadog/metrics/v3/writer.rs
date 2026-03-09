@@ -6,8 +6,9 @@
 use protobuf::CodedOutputStream;
 use saluki_error::GenericError;
 
+use super::constants::*;
 use super::interner::Interner;
-use super::types::{field_numbers, value_type_for_values, V3MetricType, V3ValueType};
+use super::types::{value_type_for_values, V3MetricType, V3ValueType};
 
 const METRIC_TYPE_DEFAULT: i32 = 0;
 const METRIC_TYPE_AGENT_HIDDEN: i32 = 9;
@@ -183,49 +184,49 @@ impl V3Writer {
 
         // Dictionary fields (bytes - varint-length-prefixed strings concatenated)
         if !data.dict_name_bytes.is_empty() {
-            os.write_bytes(field_numbers::DICT_NAME_STR, &data.dict_name_bytes)?;
+            os.write_bytes(DICT_NAME_STR_FIELD_NUMBER, &data.dict_name_bytes)?;
         }
         if !data.dict_tags_bytes.is_empty() {
-            os.write_bytes(field_numbers::DICT_TAGS_STR, &data.dict_tags_bytes)?;
+            os.write_bytes(DICT_TAGS_STR_FIELD_NUMBER, &data.dict_tags_bytes)?;
         }
 
         // Packed repeated fields for dictionaries
-        os.write_repeated_packed_sint64(field_numbers::DICT_TAGSETS, &data.dict_tagsets)?;
+        os.write_repeated_packed_sint64(DICT_TAGSETS_FIELD_NUMBER, &data.dict_tagsets)?;
 
         if !data.dict_resource_str_bytes.is_empty() {
-            os.write_bytes(field_numbers::DICT_RESOURCE_STR, &data.dict_resource_str_bytes)?;
+            os.write_bytes(DICT_RESOURCE_STR_FIELD_NUMBER, &data.dict_resource_str_bytes)?;
         }
 
-        os.write_repeated_packed_int64(field_numbers::DICT_RESOURCE_LEN, &data.dict_resource_len)?;
-        os.write_repeated_packed_sint64(field_numbers::DICT_RESOURCE_TYPE, &data.dict_resource_type)?;
-        os.write_repeated_packed_sint64(field_numbers::DICT_RESOURCE_NAME, &data.dict_resource_name)?;
+        os.write_repeated_packed_int64(DICT_RESOURCE_LEN_FIELD_NUMBER, &data.dict_resource_len)?;
+        os.write_repeated_packed_sint64(DICT_RESOURCE_TYPE_FIELD_NUMBER, &data.dict_resource_type)?;
+        os.write_repeated_packed_sint64(DICT_RESOURCE_NAME_FIELD_NUMBER, &data.dict_resource_name)?;
 
         if !data.dict_source_type_bytes.is_empty() {
-            os.write_bytes(field_numbers::DICT_SOURCE_TYPE_NAME, &data.dict_source_type_bytes)?;
+            os.write_bytes(DICT_SOURCE_TYPE_NAME_FIELD_NUMBER, &data.dict_source_type_bytes)?;
         }
 
-        os.write_repeated_packed_int32(field_numbers::DICT_ORIGIN_INFO, &data.dict_origin_info)?;
+        os.write_repeated_packed_int32(DICT_ORIGIN_INFO_FIELD_NUMBER, &data.dict_origin_info)?;
 
         // Per-metric columns
-        os.write_repeated_packed_uint64(field_numbers::TYPES, &data.types)?;
-        os.write_repeated_packed_sint64(field_numbers::NAMES, &data.names)?;
-        os.write_repeated_packed_sint64(field_numbers::TAGS, &data.tags)?;
-        os.write_repeated_packed_sint64(field_numbers::RESOURCES, &data.resources)?;
-        os.write_repeated_packed_uint64(field_numbers::INTERVALS, &data.intervals)?;
-        os.write_repeated_packed_uint64(field_numbers::NUM_POINTS, &data.num_points)?;
-        os.write_repeated_packed_sint64(field_numbers::SOURCE_TYPE_NAME, &data.source_type_names)?;
-        os.write_repeated_packed_sint64(field_numbers::ORIGIN_INFO, &data.origin_infos)?;
+        os.write_repeated_packed_uint64(TYPES_FIELD_NUMBER, &data.types)?;
+        os.write_repeated_packed_sint64(NAMES_FIELD_NUMBER, &data.names)?;
+        os.write_repeated_packed_sint64(TAGS_FIELD_NUMBER, &data.tags)?;
+        os.write_repeated_packed_sint64(RESOURCES_FIELD_NUMBER, &data.resources)?;
+        os.write_repeated_packed_uint64(INTERVALS_FIELD_NUMBER, &data.intervals)?;
+        os.write_repeated_packed_uint64(NUM_POINTS_FIELD_NUMBER, &data.num_points)?;
+        os.write_repeated_packed_sint64(SOURCE_TYPE_NAME_FIELD_NUMBER, &data.source_type_names)?;
+        os.write_repeated_packed_sint64(ORIGIN_INFO_FIELD_NUMBER, &data.origin_infos)?;
 
         // Point data
-        os.write_repeated_packed_sint64(field_numbers::TIMESTAMPS, &data.timestamps)?;
-        os.write_repeated_packed_sint64(field_numbers::VALS_SINT64, &data.vals_sint64)?;
-        os.write_repeated_packed_float(field_numbers::VALS_FLOAT32, &data.vals_float32)?;
-        os.write_repeated_packed_double(field_numbers::VALS_FLOAT64, &data.vals_float64)?;
+        os.write_repeated_packed_sint64(TIMESTAMPS_FIELD_NUMBER, &data.timestamps)?;
+        os.write_repeated_packed_sint64(VALS_SINT64_FIELD_NUMBER, &data.vals_sint64)?;
+        os.write_repeated_packed_float(VALS_FLOAT32_FIELD_NUMBER, &data.vals_float32)?;
+        os.write_repeated_packed_double(VALS_FLOAT64_FIELD_NUMBER, &data.vals_float64)?;
 
         // Sketch data
-        os.write_repeated_packed_uint64(field_numbers::SKETCH_NUM_BINS, &data.sketch_num_bins)?;
-        os.write_repeated_packed_sint32(field_numbers::SKETCH_BIN_KEYS, &data.sketch_bin_keys)?;
-        os.write_repeated_packed_uint32(field_numbers::SKETCH_BIN_CNTS, &data.sketch_bin_cnts)?;
+        os.write_repeated_packed_uint64(SKETCH_NUM_BINS_FIELD_NUMBER, &data.sketch_num_bins)?;
+        os.write_repeated_packed_sint32(SKETCH_BIN_KEYS_FIELD_NUMBER, &data.sketch_bin_keys)?;
+        os.write_repeated_packed_uint32(SKETCH_BIN_CNTS_FIELD_NUMBER, &data.sketch_bin_cnts)?;
 
         os.flush()?;
         Ok(())

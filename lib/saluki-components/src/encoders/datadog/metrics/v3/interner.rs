@@ -1,6 +1,8 @@
 //! Generic interning for dictionary deduplication.
 
-use std::{borrow::Borrow, collections::HashMap, hash::Hash};
+use std::{borrow::Borrow, hash::Hash};
+
+use saluki_common::collections::FastHashMap;
 
 /// Generic interning structure for dictionary deduplication.
 ///
@@ -8,7 +10,7 @@ use std::{borrow::Borrow, collections::HashMap, hash::Hash};
 /// ID 0 is reserved for "empty/none" in the V3 format.
 #[derive(Debug)]
 pub struct Interner<K: Eq + Hash> {
-    index: HashMap<K, i64>,
+    index: FastHashMap<K, i64>,
     last_id: i64,
 }
 
@@ -22,7 +24,7 @@ impl<K: Eq + Hash> Interner<K> {
     /// Creates a new empty interner.
     pub fn new() -> Self {
         Self {
-            index: HashMap::new(),
+            index: FastHashMap::default(),
             last_id: 0,
         }
     }
@@ -46,15 +48,9 @@ impl<K: Eq + Hash> Interner<K> {
     }
 
     /// Returns the number of interned values.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.index.len()
-    }
-
-    /// Returns true if no values have been interned.
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.index.is_empty()
     }
 }
 

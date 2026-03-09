@@ -5,7 +5,7 @@ pub const SERIES_V2_UNCOMPRESSED_SIZE_LIMIT: usize = 5_242_880; // 5 MiB
 
 // Protocol Buffers field numbers for series and sketch payload messages in the V2 format.
 //
-// These field numbers come from the Protocol Buffers definitions in `lib/datadog-protos/proto/agent_payload.proto`.
+// These field numbers come from the Protocol Buffers definitions in `lib/protos/datadog/proto/agent-payload/agent_payload.proto`.
 pub const RESOURCES_TYPE_FIELD_NUMBER: u32 = 1;
 pub const RESOURCES_NAME_FIELD_NUMBER: u32 = 2;
 
