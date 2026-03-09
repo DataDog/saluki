@@ -2513,6 +2513,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "otlp-log-agent"
+version = "0.1.0"
+dependencies = [
+ "memory-accounting",
+ "saluki-app",
+ "saluki-components",
+ "saluki-config",
+ "saluki-core",
+ "saluki-error",
+ "saluki-health",
+ "tikv-jemallocator",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "otlp-protos"
 version = "0.1.0"
 dependencies = [
