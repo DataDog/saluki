@@ -13,7 +13,7 @@
 ///     type Context<'a> = MyContext<'a>;
 /// }
 ///
-/// let editors = CallbackMap::new();
+/// let editors = ottl::editors::standard();
 /// let converters = CallbackMap::new();
 /// let enums = EnumMap::new();
 /// let path_resolvers = PathResolverMap::<MyFamily>::new();
@@ -27,6 +27,7 @@ use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 
+pub mod editors;
 pub mod helpers;
 pub(crate) mod lexer;
 mod parser;
