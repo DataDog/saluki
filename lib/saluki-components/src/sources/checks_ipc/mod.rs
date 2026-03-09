@@ -104,6 +104,11 @@ impl Checks for ChecksService {
     async fn send_check_payload(
         &self, _request: tonic::Request<SendCheckPayloadRequest>,
     ) -> Result<Response<SendCheckPayloadResponse>, Status> {
+        // command for testing locally:
+        //
+        // DD_DATA_PLANE_CHECKS_ENABLED=true make run-adp-standalone
+        // grpcurl -plaintext -proto lib/protos/datadog/proto/checks/checks.proto localhost:5105 datadog.checks.Checks/SendCheckPayload
+
         info!("Received check payload.");
         Ok(Response::new(SendCheckPayloadResponse {}))
     }
