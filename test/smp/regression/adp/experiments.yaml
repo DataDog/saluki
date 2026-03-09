@@ -482,7 +482,7 @@ experiments:
       - memory
       - ingress_throughput
 
-  - name: otlp_ingest_traces_ottl_5mb
+  - name: otlp_ingest_traces_ottl_filtering_5mb
     extends: otlp_traces_5mb_base
     optimization_goals:
       - cpu
@@ -501,3 +501,21 @@ experiments:
                 span:
                   - 'attributes["container.name"] == "app_container_1"'
                   - 'resource.attributes["deployment.environment"] == "production"'
+
+  - name: otlp_ingest_traces_ottl_transform_5mb
+    extends: otlp_traces_5mb_base
+    optimization_goals:
+      - cpu
+      - memory
+      - ingress_throughput
+
+    target:
+      command: /maybe-profile.sh /usr/local/bin/agent-data-plane --config /etc/agent-data-plane/ottl_config.yaml run
+      files:
+        empty.yaml: null
+        ottl_config.yaml:
+          content:
+            ottl_transform_config:
+              error_mode: ignore
+              trace_statements:
+                - 'set(attributes["test_attr"], "test-val")'
