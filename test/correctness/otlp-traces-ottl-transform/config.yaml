@@ -9,6 +9,7 @@ additional_span_ignore_fields:
   - agent_metadata.target_tps
   - metrics._top_level
   - metrics._dd.measured
+  - meta.error.msg
 millstone:
   image: saluki-images/millstone:latest
   config_path: millstone.yaml
