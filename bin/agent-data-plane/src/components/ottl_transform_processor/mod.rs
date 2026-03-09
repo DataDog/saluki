@@ -7,11 +7,9 @@
 //!
 //! [OpenTelemetry Transform processor]: https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/release/v0.144.x/processor/transformprocessor
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use ottl::{CallbackMap, EnumMap, OttlParser, Value};
+use ottl::{CallbackMap, EnumMap, OttlParser};
 use saluki_config::GenericConfiguration;
 use saluki_context::tags::SharedTagSet;
 use saluki_core::{
@@ -64,16 +62,7 @@ impl SynchronousTransformBuilder for OttlTransformConfiguration {
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         let path_resolvers = span_context::span_transform_path_resolvers();
 
-        let mut editors = CallbackMap::new();
-        editors.insert(
-            "set".to_string(),
-            Arc::new(|args: &mut dyn ottl::Args| {
-                let value = args.get(1)?;
-                args.set(0, &value)?;
-                Ok(Value::Nil)
-            }),
-        );
-
+        let editors = ottl::editors::standard();
         let converters = CallbackMap::new();
         let enums = EnumMap::new();
 
