@@ -1,5 +1,5 @@
+use std::collections::HashMap;
 use std::{collections::hash_map::Entry, time::Duration};
-use std::{collections::HashMap, net::SocketAddr};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -11,25 +11,25 @@ use datadog_protos::agent::{
     ConfigSnapshot,
 };
 use futures::StreamExt;
-use http::{Request, Uri};
-use http_body_util::BodyExt;
+use prometheus_exposition::PrometheusRenderer;
 use prost_types::value::Kind;
 use saluki_common::task::spawn_traced_named;
 use saluki_config::{dynamic::ConfigUpdate, upsert, GenericConfiguration};
 use saluki_core::state::reflector::Reflector;
 use saluki_env::helpers::remote_agent::{RemoteAgentClient, SessionId, SessionIdHandle};
 use saluki_error::{generic_error, GenericError};
-use saluki_io::net::{client::http::HttpClient, GrpcTargetAddress};
+use saluki_io::net::GrpcTargetAddress;
 use serde_json::{Map, Value};
 use tokio::{
-    sync::{mpsc, oneshot},
+    sync::{mpsc, oneshot, Mutex},
     time::{interval, MissedTickBehavior},
 };
 use tonic::{server::NamedService, Status};
 use tracing::{debug, error, info, warn};
 
+use crate::components::remapper::{get_datadog_agent_remappings, RemapperRule};
 use crate::config::DataPlaneConfiguration;
-use crate::state::metrics::{get_shared_metrics_state, AggregatedMetricsProcessor};
+use crate::state::metrics::{get_shared_metrics_state, render_rar_telemetry, AggregatedMetricsProcessor};
 
 const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const REFRESH_FAILED_RETRY_INTERVAL: Duration = Duration::from_secs(5);
@@ -57,7 +57,7 @@ pub struct RemoteAgentBootstrap {
     client: RemoteAgentClient,
     session_id: SessionIdHandle,
     internal_metrics: Reflector<AggregatedMetricsProcessor>,
-    prometheus_listen_addr: Option<SocketAddr>,
+    telemetry_enabled: bool,
 }
 
 impl RemoteAgentBootstrap {
@@ -74,15 +74,6 @@ impl RemoteAgentBootstrap {
     ) -> Result<Self, GenericError> {
         let api_listen_addr = GrpcTargetAddress::try_from_listen_addr(dp_config.secure_api_listen_address())
             .ok_or_else(|| generic_error!("Failed to get valid gRPC target address from secure API listen address."))?;
-
-        let mut prometheus_listen_addr = None;
-        if dp_config.telemetry_enabled() {
-            prometheus_listen_addr = dp_config
-                .telemetry_listen_addr()
-                .as_local_connect_addr()
-                .ok_or_else(|| generic_error!("Telemetry listen address present but not valid for local connections."))
-                .map(Some)?;
-        }
 
         // Generate our remote agent state, which is mostly fixed but has a few dynamic bits.
         let mut service_names = vec![
@@ -120,42 +111,37 @@ impl RemoteAgentBootstrap {
             client,
             session_id,
             internal_metrics: get_shared_metrics_state().await,
-            prometheus_listen_addr,
+            telemetry_enabled: dp_config.telemetry_enabled(),
         })
+    }
+
+    fn build_impl(&self) -> RemoteAgentImpl {
+        RemoteAgentImpl {
+            started: Utc::now(),
+            internal_metrics: self.internal_metrics.clone(),
+            telemetry_enabled: self.telemetry_enabled,
+            remapper_rules: get_datadog_agent_remappings(),
+            renderer: Mutex::new(PrometheusRenderer::new()),
+            session_id: self.session_id.clone(),
+        }
     }
 
     /// Creates a new `StatusProviderServer` tied to this remote agent.
     pub fn create_status_service(&self) -> StatusProviderServer<RemoteAgentImpl> {
-        StatusProviderServer::new(RemoteAgentImpl {
-            started: Utc::now(),
-            internal_metrics: self.internal_metrics.clone(),
-            prometheus_listen_addr: self.prometheus_listen_addr,
-            session_id: self.session_id.clone(),
-        })
+        StatusProviderServer::new(self.build_impl())
     }
 
     /// Creates a new `TelemetryProviderServer` tied to this remote agent.
     ///
     /// Returns `None` if telemetry is not enabled.
     pub fn create_telemetry_service(&self) -> Option<TelemetryProviderServer<RemoteAgentImpl>> {
-        self.prometheus_listen_addr.is_some().then(|| {
-            TelemetryProviderServer::new(RemoteAgentImpl {
-                started: Utc::now(),
-                internal_metrics: self.internal_metrics.clone(),
-                prometheus_listen_addr: self.prometheus_listen_addr,
-                session_id: self.session_id.clone(),
-            })
-        })
+        self.telemetry_enabled
+            .then(|| TelemetryProviderServer::new(self.build_impl()))
     }
 
     /// Creates a new `FlareProviderServer` tied to this remote agent.
     pub fn create_flare_service(&self) -> FlareProviderServer<RemoteAgentImpl> {
-        FlareProviderServer::new(RemoteAgentImpl {
-            started: Utc::now(),
-            internal_metrics: self.internal_metrics.clone(),
-            prometheus_listen_addr: self.prometheus_listen_addr,
-            session_id: self.session_id.clone(),
-        })
+        FlareProviderServer::new(self.build_impl())
     }
 
     /// Creates a config stream that receives configuration events from the Core Agent.
@@ -377,7 +363,9 @@ fn proto_value_to_serde_value(proto_val: &Option<prost_types::Value>) -> Value {
 pub struct RemoteAgentImpl {
     started: DateTime<Utc>,
     internal_metrics: Reflector<AggregatedMetricsProcessor>,
-    prometheus_listen_addr: Option<SocketAddr>,
+    telemetry_enabled: bool,
+    remapper_rules: Vec<RemapperRule>,
+    renderer: Mutex<PrometheusRenderer>,
     session_id: SessionIdHandle,
 }
 
@@ -482,34 +470,17 @@ impl TelemetryProvider for RemoteAgentImpl {
     ) -> Result<tonic::Response<GetTelemetryResponse>, Status> {
         return self
             .session_id_middleware(async || {
-                // Telemetry is not enabled.
-                if self.prometheus_listen_addr.is_none() {
+                if !self.telemetry_enabled {
                     return Ok(tonic::Response::new(GetTelemetryResponse { payload: None }));
                 }
 
-                let prometheus_listen_addr = self.prometheus_listen_addr.unwrap();
-                let mut client = HttpClient::builder().build().unwrap();
+                let state = self.internal_metrics.state();
+                let mut renderer = self.renderer.lock().await;
+                let prom_text = render_rar_telemetry(state, &self.remapper_rules, &mut renderer);
 
-                let uri_string = format!("http://{}", prometheus_listen_addr);
-                let uri: Uri = uri_string.parse().unwrap();
-                let request = Request::builder()
-                    .uri(uri)
-                    .body(String::new())
-                    .map_err(|e| Status::internal(e.to_string()))?;
-
-                let resp = client.send(request).await.unwrap();
-
-                match resp.into_body().collect().await {
-                    Ok(body) => {
-                        let body = body.to_bytes();
-                        let body_str = String::from_utf8_lossy(&body[..]);
-                        let response = GetTelemetryResponse {
-                            payload: Some(Payload::PromText(body_str.to_string())),
-                        };
-                        Ok(tonic::Response::new(response))
-                    }
-                    Err(e) => Err(Status::internal(e.to_string())),
-                }
+                Ok(tonic::Response::new(GetTelemetryResponse {
+                    payload: Some(Payload::PromText(prom_text)),
+                }))
             })
             .await;
     }

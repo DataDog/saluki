@@ -28,6 +28,7 @@ hyper = { workspace = true }
 memory-accounting = { workspace = true }
 ottl = { workspace = true }
 papaya = { workspace = true }
+prometheus-exposition = { workspace = true }
 prost-types = { workspace = true }
 saluki-app = { workspace = true }
 saluki-common = { workspace = true }

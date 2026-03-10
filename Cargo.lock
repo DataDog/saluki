@@ -36,6 +36,7 @@ dependencies = [
  "memory-accounting",
  "ottl",
  "papaya",
+ "prometheus-exposition",
  "prost-types",
  "saluki-app",
  "saluki-common",
@@ -2840,6 +2841,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "prometheus-exposition"
+version = "0.1.0"
+
+[[package]]
 name = "proptest"
 version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3572,6 +3577,7 @@ dependencies = [
  "otlp-protos",
  "piecemeal",
  "pin-project",
+ "prometheus-exposition",
  "proptest",
  "prost",
  "protobuf",

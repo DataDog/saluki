@@ -3,7 +3,7 @@ use std::num::NonZeroUsize;
 use async_trait::async_trait;
 use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_context::{Context, ContextResolver, ContextResolverBuilder};
+use saluki_context::{tags::SharedTagSet, Context, ContextResolver, ContextResolverBuilder};
 use saluki_core::data_model::event::{metric::*, Event, EventType};
 use saluki_core::{
     components::{transforms::*, ComponentContext},
@@ -15,7 +15,7 @@ use tokio::select;
 use tracing::{debug, error};
 
 mod rules;
-use self::rules::get_datadog_agent_remappings;
+pub use self::rules::get_datadog_agent_remappings;
 
 /// Agent telemetry remapper transform.
 ///
@@ -229,7 +229,6 @@ impl RemapperRule {
     ///
     /// If the rule is a match, `Some` is returned with the remapped metric. Otherwise, `None` is returned.
     pub fn try_match(&self, metric: &Metric, context_resolver: &mut ContextResolver) -> Option<Context> {
-        // See if the metric matches the name and, potentially, tags that we're looking for.
         if metric.context().name() != self.existing_name {
             return None;
         }
@@ -241,12 +240,40 @@ impl RemapperRule {
             }
         }
 
-        // Build the new tags to use.
-        //
-        // We always add `emitted_by:adp` to the new context to avoid overwriting metrics by the same name that are
-        // still emitted by the Datadog Agent, and then after that, we handle any tag remapping. Remapped tags are
-        // either a straight copy (take the tag as-is) or a rename (different tag name).
+        let new_tags = self.build_remapped_tags(metric_tags);
+        context_resolver.resolve(self.new_name, new_tags.as_slice(), None)
+    }
+
+    /// Attempts to match the given context against this rule without requiring a `ContextResolver`.
+    ///
+    /// If the rule matches, returns a [`RemappedMetric`] containing the new metric name and tags.
+    /// This is useful for rendering metrics in Prometheus format from the metrics reflector state.
+    pub fn try_match_no_context(&self, context: &Context) -> Option<RemappedMetric> {
+        if context.name() != self.existing_name {
+            return None;
+        }
+
+        let metric_tags = context.tags();
+        for existing_tag in self.existing_tags {
+            if !metric_tags.has_tag(existing_tag) {
+                return None;
+            }
+        }
+
+        let tags = self.build_remapped_tags(metric_tags);
+        Some(RemappedMetric {
+            name: self.new_name,
+            tags,
+        })
+    }
+
+    /// Builds the remapped tags for a matched metric.
+    ///
+    /// Always adds `emitted_by:adp`, then handles tag remapping (straight copy or rename), then
+    /// appends any additional fixed tags.
+    fn build_remapped_tags(&self, metric_tags: &SharedTagSet) -> Vec<MetaString> {
         let mut new_tags = vec![MetaString::from_static("emitted_by:adp")];
+
         for (original_tag_name, new_tag_name) in &self.remapped_tags {
             if let Some(tag) = metric_tags.get_single_tag(original_tag_name) {
                 if original_tag_name == new_tag_name {
@@ -266,18 +293,53 @@ impl RemapperRule {
             }
         }
 
-        // Add any additional tags that we need to include.
         for additional_tag in &self.additional_tags {
             new_tags.push(additional_tag.clone());
         }
 
-        context_resolver.resolve(self.new_name, new_tags.as_slice(), None)
+        new_tags
     }
+}
+
+/// A metric that has been remapped by a [`RemapperRule`].
+pub struct RemappedMetric {
+    /// The remapped metric name (Agent-compatible).
+    pub name: &'static str,
+
+    /// The remapped tags in `key:value` format.
+    pub tags: Vec<MetaString>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_match_context() {
+        let rules = get_datadog_agent_remappings();
+
+        let context = Context::from_static_parts("adp.object_pool_acquired", &["pool_name:dsd_packet_bufs"]);
+        let matched = rules.iter().find_map(|r| r.try_match_no_context(&context));
+        let remapped = matched.expect("should have matched");
+        assert_eq!(remapped.name, "dogstatsd.packet_pool_get");
+        assert!(remapped.tags.iter().any(|t| t.as_ref() == "emitted_by:adp"));
+
+        // Should not match without the required tag.
+        let context = Context::from_static_parts("adp.object_pool_acquired", &["pool_name:other"]);
+        let matched = rules.iter().find_map(|r| r.try_match_no_context(&context));
+        assert!(matched.is_none());
+
+        // Test tag remapping.
+        let context = Context::from_static_parts(
+            "adp.component_events_received_total",
+            &["component_id:dsd_in", "message_type:metrics"],
+        );
+        let matched = rules.iter().find_map(|r| r.try_match_no_context(&context));
+        let remapped = matched.expect("should have matched");
+        assert_eq!(remapped.name, "dogstatsd.processed");
+        assert!(remapped.tags.iter().any(|t| t.as_ref() == "message_type:metrics"));
+        assert!(remapped.tags.iter().any(|t| t.as_ref() == "state:ok"));
+    }
 
     #[test]
     fn test_remap_object_pool_metrics() {

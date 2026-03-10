@@ -1,15 +1,20 @@
 #![allow(dead_code)]
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use futures::stream::StreamExt as _;
 use papaya::HashMap;
+use prometheus_exposition::{MetricType, PrometheusRenderer};
 use saluki_context::Context;
 use saluki_core::data_model::event::{metric::MetricValues, Event};
 use saluki_core::{
     observability::metrics::MetricsStream,
     state::reflector::{Processor, Reflector},
 };
+use stringtheory::MetaString;
 use tokio::sync::OnceCell;
+
+use crate::components::remapper::RemapperRule;
 
 /// Aggregated metric value.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -253,6 +258,96 @@ pub async fn get_shared_metrics_state() -> Reflector<AggregatedMetricsProcessor>
         .clone()
 }
 
+/// Renders the RAR-relevant subset of internal metrics in Prometheus text exposition format.
+///
+/// Iterates the aggregated metrics state, matches each metric against the remapper rules, and renders only the
+/// matching metrics (in their Agent-compatible remapped form) using the provided renderer. The remapper rules act as
+/// both the filter (only matched metrics are included) and the name translator.
+pub fn render_rar_telemetry(
+    state: &AggregatedMetricsState, rules: &[RemapperRule], renderer: &mut PrometheusRenderer,
+) -> String {
+    renderer.clear();
+
+    // Collect and group matched metrics by their remapped name.
+    //
+    // We need to group because Prometheus text format requires all series with the same metric name to be under one
+    // TYPE/HELP header.
+    let mut groups: BTreeMap<&'static str, Vec<(Vec<MetaString>, AggregatedMetricValue)>> = BTreeMap::new();
+
+    state.visit_metrics(|context, value| {
+        for rule in rules {
+            if let Some(remapped) = rule.try_match_no_context(context) {
+                groups.entry(remapped.name).or_default().push((remapped.tags, *value));
+                return;
+            }
+        }
+    });
+
+    // Render each group.
+    for (name, series) in groups {
+        // Determine metric type from the first series value.
+        let metric_type = match series.first() {
+            Some((_, AggregatedMetricValue::Counter(_))) => MetricType::Counter,
+            Some((_, AggregatedMetricValue::Gauge(_))) => MetricType::Gauge,
+            None => continue,
+        };
+
+        let help_text = get_help_text(name);
+
+        // Tags are split into key/value pairs at render time, skipping bare tags (those without a `:`).
+        // We pre-collect labels as owned strings since the MetaString tags are consumed by the iterator.
+        let rendered_series: Vec<(Vec<(String, String)>, f64)> = series
+            .into_iter()
+            .map(|(tags, value)| {
+                let labels: Vec<(String, String)> = tags
+                    .iter()
+                    .filter_map(|tag| {
+                        tag.as_ref()
+                            .split_once(':')
+                            .map(|(k, v)| (k.to_string(), v.to_string()))
+                    })
+                    .collect();
+                (labels, value.value())
+            })
+            .collect();
+
+        renderer.render_scalar_group(name, metric_type, help_text, rendered_series);
+    }
+
+    renderer.output().to_string()
+}
+
+fn get_help_text(metric_name: &str) -> Option<&'static str> {
+    // The HELP text for overlapped metrics MUST match the agent's HELP text exactly or else an error will occur on the
+    // agent's side when parsing the metrics. Keys here use the raw (pre-normalization) metric names as produced by the
+    // remapper rules; the renderer handles normalization when writing the output.
+    match metric_name {
+        "no_aggregation.flush" => Some("Count the number of flushes done by the no-aggregation pipeline worker"),
+        "no_aggregation.processed" => {
+            Some("Count the number of samples processed by the no-aggregation pipeline worker")
+        }
+        "aggregator.dogstatsd_contexts_by_mtype" => {
+            Some("Count the number of dogstatsd contexts in the aggregator, by metric type")
+        }
+        "aggregator.flush" => Some("Number of metrics/service checks/events flushed"),
+        "aggregator.dogstatsd_contexts_bytes_by_mtype" => {
+            Some("Estimated count of bytes taken by contexts in the aggregator, by metric type")
+        }
+        "aggregator.dogstatsd_contexts" => Some("Count the number of dogstatsd contexts in the aggregator"),
+        "aggregator.processed" => Some("Amount of metrics/services_checks/events processed by the aggregator"),
+        "dogstatsd.processed" => Some("Count of service checks/events/metrics processed by dogstatsd"),
+        "dogstatsd.packet_pool_get" => Some("Count of get done in the packet pool"),
+        "dogstatsd.packet_pool_put" => Some("Count of put done in the packet pool"),
+        "dogstatsd.packet_pool" => Some("Usage of the packet pool in dogstatsd"),
+        "transactions.errors" => Some("Count of transactions errored grouped by type of error"),
+        "transactions.http_errors" => Some("Count of transactions http errors per http code"),
+        "transactions.dropped" => Some("Transaction drop count"),
+        "transactions.success" => Some("Successful transaction count"),
+        "transactions.success_bytes" => Some("Successful transaction sizes in bytes"),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use saluki_core::data_model::event::metric::Metric;
@@ -345,6 +440,51 @@ mod tests {
     }
 
     #[test]
+    fn test_render_rar_telemetry() {
+        use crate::components::remapper::get_datadog_agent_remappings;
+
+        let processor = AggregatedMetricsProcessor;
+        let state = processor.build_initial_state();
+
+        // Simulate internal metrics that match remapper rules.
+        let metrics = vec![
+            Event::Metric(Metric::counter(
+                Context::from_static_parts("adp.object_pool_acquired", &["pool_name:dsd_packet_bufs"]),
+                42.0,
+            )),
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts("adp.object_pool_in_use", &["pool_name:dsd_packet_bufs"]),
+                7.0,
+            )),
+            // This metric should NOT appear in output (no matching rule).
+            Event::Metric(Metric::counter(
+                Context::from_static_parts("adp.some_unrelated_metric", &[]),
+                100.0,
+            )),
+        ];
+
+        for metric in metrics {
+            processor.process(metric, &state);
+        }
+
+        let rules = get_datadog_agent_remappings();
+        let mut renderer = PrometheusRenderer::new();
+        let output = render_rar_telemetry(&state, &rules, &mut renderer);
+
+        // Matched metrics should appear with remapped names.
+        assert!(output.contains("dogstatsd__packet_pool_get"));
+        assert!(output.contains("dogstatsd__packet_pool{"));
+        assert!(output.contains("emitted_by=\"adp\""));
+
+        // Unmatched metrics should NOT appear.
+        assert!(!output.contains("some_unrelated_metric"));
+
+        // Should have TYPE headers.
+        assert!(output.contains("# TYPE dogstatsd__packet_pool_get counter"));
+        assert!(output.contains("# TYPE dogstatsd__packet_pool gauge"));
+    }
+
+    #[test]
     fn test_aggregate_type_change() {
         // When aggregating metrics with identical contexts but different types (i.e. counter vs gauge), the aggregated
         // metric should be the last type seen.
@@ -357,6 +497,39 @@ mod tests {
         assert_eq!(
             aggregated_metrics,
             vec![("my_metric".to_string(), AggregatedMetricValue::Counter(42.0))]
+        );
+    }
+
+    #[test]
+    fn prom_get_help_text() {
+        // Ensure that we catch when the help text changes for these metrics.
+        assert_eq!(
+            get_help_text("no_aggregation.flush"),
+            Some("Count the number of flushes done by the no-aggregation pipeline worker")
+        );
+        assert_eq!(
+            get_help_text("no_aggregation.processed"),
+            Some("Count the number of samples processed by the no-aggregation pipeline worker")
+        );
+        assert_eq!(
+            get_help_text("aggregator.dogstatsd_contexts_by_mtype"),
+            Some("Count the number of dogstatsd contexts in the aggregator, by metric type")
+        );
+        assert_eq!(
+            get_help_text("aggregator.flush"),
+            Some("Number of metrics/service checks/events flushed")
+        );
+        assert_eq!(
+            get_help_text("aggregator.dogstatsd_contexts_bytes_by_mtype"),
+            Some("Estimated count of bytes taken by contexts in the aggregator, by metric type")
+        );
+        assert_eq!(
+            get_help_text("aggregator.dogstatsd_contexts"),
+            Some("Count the number of dogstatsd contexts in the aggregator")
+        );
+        assert_eq!(
+            get_help_text("aggregator.processed"),
+            Some("Amount of metrics/services_checks/events processed by the aggregator")
         );
     }
 }

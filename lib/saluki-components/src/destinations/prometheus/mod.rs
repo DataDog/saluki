@@ -1,6 +1,5 @@
 use std::{
     convert::Infallible,
-    fmt::Write as _,
     num::NonZeroUsize,
     sync::{Arc, LazyLock},
 };
@@ -10,6 +9,7 @@ use ddsketch::DDSketch;
 use http::{Request, Response};
 use hyper::{body::Incoming, service::service_fn};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use prometheus_exposition::{MetricType, PrometheusRenderer};
 use saluki_common::{collections::FastIndexMap, iter::ReusableDeduplicator};
 use saluki_context::{tags::Tag, Context};
 use saluki_core::components::{destinations::*, ComponentContext};
@@ -33,9 +33,7 @@ use tracing::debug;
 
 const CONTEXT_LIMIT: usize = 10_000;
 const PAYLOAD_SIZE_LIMIT_BYTES: usize = 1024 * 1024;
-const PAYLOAD_BUFFER_SIZE_LIMIT_BYTES: usize = 128 * 1024;
 const TAGS_BUFFER_SIZE_LIMIT_BYTES: usize = 2048;
-const NAME_NORMALIZATION_BUFFER_SIZE: usize = 512;
 
 // Histogram-related constants and pre-calculated buckets.
 const TIME_HISTOGRAM_BUCKET_COUNT: usize = 30;
@@ -90,8 +88,7 @@ impl DestinationBuilder for PrometheusConfiguration {
             listener: ConnectionOrientedListener::from_listen_address(self.listen_addr.clone()).await?,
             metrics: FastIndexMap::default(),
             payload: Arc::new(RwLock::new(String::new())),
-            payload_buffer: String::with_capacity(PAYLOAD_BUFFER_SIZE_LIMIT_BYTES),
-            tags_buffer: String::with_capacity(TAGS_BUFFER_SIZE_LIMIT_BYTES),
+            renderer: PrometheusRenderer::new(),
             interner: FixedSizeInterner::new(METRIC_NAME_STRING_INTERNER_BYTES),
         }))
     }
@@ -102,11 +99,7 @@ impl MemoryBounds for PrometheusConfiguration {
         builder
             .minimum()
             // Capture the size of the heap allocation when the component is built.
-            .with_single_value::<Prometheus>("component struct")
-            // This isn't _really_ bounded since the string buffer could definitely grow larger if the metric name was
-            // larger, but the default buffer size is far beyond any typical metric name that it should almost never
-            // grow beyond this initially allocated size.
-            .with_fixed_amount("name normalization buffer size", NAME_NORMALIZATION_BUFFER_SIZE);
+            .with_single_value::<Prometheus>("component struct");
 
         builder
             .firm()
@@ -115,7 +108,6 @@ impl MemoryBounds for PrometheusConfiguration {
             // high enough to make this a reasonable approximation.
             .with_map::<Context, PrometheusValue>("state map", CONTEXT_LIMIT)
             .with_fixed_amount("payload size", PAYLOAD_SIZE_LIMIT_BYTES)
-            .with_fixed_amount("payload buffer", PAYLOAD_BUFFER_SIZE_LIMIT_BYTES)
             .with_fixed_amount("tags buffer", TAGS_BUFFER_SIZE_LIMIT_BYTES);
     }
 }
@@ -124,8 +116,7 @@ struct Prometheus {
     listener: ConnectionOrientedListener,
     metrics: FastIndexMap<PrometheusContext, FastIndexMap<Context, PrometheusValue>>,
     payload: Arc<RwLock<String>>,
-    payload_buffer: String,
-    tags_buffer: String,
+    renderer: PrometheusRenderer,
     interner: FixedSizeInterner<1>,
 }
 
@@ -136,8 +127,7 @@ impl Destination for Prometheus {
             listener,
             mut metrics,
             payload,
-            mut payload_buffer,
-            mut tags_buffer,
+            mut renderer,
             interner,
         } = *self;
 
@@ -149,7 +139,6 @@ impl Destination for Prometheus {
         debug!("Prometheus destination started.");
 
         let mut contexts = 0;
-        let mut name_buf = String::with_capacity(NAME_NORMALIZATION_BUFFER_SIZE);
         let mut tags_deduplicator = ReusableDeduplicator::new();
 
         loop {
@@ -164,7 +153,7 @@ impl Destination for Prometheus {
                                 // Break apart our metric into its constituent parts, and then normalize it for
                                 // Prometheus: adjust the name if necessary, figuring out the equivalent Prometheus
                                 // metric type, and so on.
-                                let prom_context = match into_prometheus_metric(&metric, &mut name_buf, &interner) {
+                                let prom_context = match into_prometheus_metric(&metric, &mut renderer, &interner) {
                                     Some(prom_context) => prom_context,
                                     None => continue,
                                 };
@@ -192,7 +181,7 @@ impl Destination for Prometheus {
                         }
 
                         // Regenerate the scrape payload.
-                        regenerate_payload(&metrics, &payload, &mut payload_buffer, &mut tags_buffer, &mut tags_deduplicator).await;
+                        regenerate_payload(&metrics, &payload, &mut renderer, &mut tags_deduplicator).await;
                     },
                     None => break,
                 },
@@ -233,72 +222,32 @@ fn spawn_prom_scrape_service(
 #[allow(clippy::mutable_key_type)]
 async fn regenerate_payload(
     metrics: &FastIndexMap<PrometheusContext, FastIndexMap<Context, PrometheusValue>>, payload: &Arc<RwLock<String>>,
-    payload_buffer: &mut String, tags_buffer: &mut String, tags_deduplicator: &mut ReusableDeduplicator<Tag>,
+    renderer: &mut PrometheusRenderer, tags_deduplicator: &mut ReusableDeduplicator<Tag>,
 ) {
-    let mut payload = payload.write().await;
-    payload.clear();
-
-    let mut metrics_written = 0;
-    let metrics_total = metrics.len();
+    renderer.clear();
 
     for (prom_context, contexts) in metrics {
-        if write_metrics(payload_buffer, tags_buffer, prom_context, contexts, tags_deduplicator) {
-            if payload.len() + payload_buffer.len() > PAYLOAD_SIZE_LIMIT_BYTES {
-                debug!(
-                    metrics_written,
-                    metrics_total,
-                    payload_len = payload.len(),
-                    "Writing additional metrics would exceed payload size limit. Skipping remaining metrics."
-                );
-                break;
-            }
-
-            // If we've already written some metrics, add a newline between each grouping.
-            if metrics_written > 0 {
-                payload.push('\n');
-            }
-
-            payload.push_str(payload_buffer);
-
-            metrics_written += 1;
-        } else {
+        if !write_metrics(renderer, prom_context, contexts, tags_deduplicator) {
             debug!("Failed to write metric to payload. Continuing...");
+            continue;
         }
-    }
-}
 
-fn get_help_text(metric_name: &str) -> Option<&'static str> {
-    // The HELP text for overlapped metrics MUST match the agent's HELP text exactly or else an error will occur on the
-    // agent's side when parsing the metrics.
-    match metric_name {
-        "no_aggregation__flush" => Some("Count the number of flushes done by the no-aggregation pipeline worker"),
-        "no_aggregation__processed" => {
-            Some("Count the number of samples processed by the no-aggregation pipeline worker")
+        if renderer.output().len() > PAYLOAD_SIZE_LIMIT_BYTES {
+            debug!(
+                payload_len = renderer.output().len(),
+                "Payload size limit exceeded. Skipping remaining metrics."
+            );
+            break;
         }
-        "aggregator__dogstatsd_contexts_by_mtype" => {
-            Some("Count the number of dogstatsd contexts in the aggregator, by metric type")
-        }
-        "aggregator__flush" => Some("Number of metrics/service checks/events flushed"),
-        "aggregator__dogstatsd_contexts_bytes_by_mtype" => {
-            Some("Estimated count of bytes taken by contexts in the aggregator, by metric type")
-        }
-        "aggregator__dogstatsd_contexts" => Some("Count the number of dogstatsd contexts in the aggregator"),
-        "aggregator__processed" => Some("Amount of metrics/services_checks/events processed by the aggregator"),
-        "dogstatsd__processed" => Some("Count of service checks/events/metrics processed by dogstatsd"),
-        "dogstatsd__packet_pool_get" => Some("Count of get done in the packet pool"),
-        "dogstatsd__packet_pool_put" => Some("Count of put done in the packet pool"),
-        "dogstatsd__packet_pool" => Some("Usage of the packet pool in dogstatsd"),
-        "transactions__errors" => Some("Count of transactions errored grouped by type of error"),
-        "transactions__http_errors" => Some("Count of transactions http errors per http code"),
-        "transactions__dropped" => Some("Transaction drop count"),
-        "transactions__success" => Some("Successful transaction count"),
-        "transactions__success_bytes" => Some("Successful transaction sizes in bytes"),
-        _ => None,
     }
+
+    let mut payload = payload.write().await;
+    payload.clear();
+    payload.push_str(renderer.output());
 }
 
 fn write_metrics(
-    payload_buffer: &mut String, tags_buffer: &mut String, prom_context: &PrometheusContext,
+    renderer: &mut PrometheusRenderer, prom_context: &PrometheusContext,
     contexts: &FastIndexMap<Context, PrometheusValue>, tags_deduplicator: &mut ReusableDeduplicator<Tag>,
 ) -> bool {
     if contexts.is_empty() {
@@ -306,127 +255,46 @@ fn write_metrics(
         return true;
     }
 
-    payload_buffer.clear();
-
-    // Write HELP if available
-    if let Some(help_text) = get_help_text(prom_context.metric_name.as_ref()) {
-        writeln!(payload_buffer, "# HELP {} {}", prom_context.metric_name, help_text).unwrap();
-    }
-    // Write the metric header.
-    writeln!(
-        payload_buffer,
-        "# TYPE {} {}",
-        prom_context.metric_name,
-        prom_context.metric_type.as_str()
-    )
-    .unwrap();
+    renderer.begin_group(&prom_context.metric_name, prom_context.metric_type, None);
 
     for (context, values) in contexts {
-        if payload_buffer.len() > PAYLOAD_BUFFER_SIZE_LIMIT_BYTES {
-            debug!("Payload buffer size limit exceeded. Additional contexts for this metric will be truncated.");
-            break;
-        }
+        let labels = match collect_tags(context, tags_deduplicator) {
+            Some(labels) => labels,
+            None => return false,
+        };
 
-        tags_buffer.clear();
-
-        // Format/encode the tags.
-        if !format_tags(tags_buffer, context, tags_deduplicator) {
-            return false;
-        }
-
-        // Write the metric value itself.
         match values {
             PrometheusValue::Counter(value) | PrometheusValue::Gauge(value) => {
-                // No metric type-specific tags for counters or gauges, so just write them straight out.
-                payload_buffer.push_str(&prom_context.metric_name);
-                if !tags_buffer.is_empty() {
-                    payload_buffer.push('{');
-                    payload_buffer.push_str(tags_buffer);
-                    payload_buffer.push('}');
-                }
-                writeln!(payload_buffer, " {}", value).unwrap();
+                renderer.write_gauge_or_counter_series(labels, *value);
             }
             PrometheusValue::Histogram(histogram) => {
-                // Write the histogram buckets.
-                for (upper_bound_str, count) in histogram.buckets() {
-                    write!(payload_buffer, "{}_bucket{{{}", &prom_context.metric_name, tags_buffer).unwrap();
-                    if !tags_buffer.is_empty() {
-                        payload_buffer.push(',');
-                    }
-                    writeln!(payload_buffer, "le=\"{}\"}} {}", upper_bound_str, count).unwrap();
-                }
-
-                // Write the final bucket -- the +Inf bucket -- which is just equal to the count of the histogram.
-                write!(payload_buffer, "{}_bucket{{{}", &prom_context.metric_name, tags_buffer).unwrap();
-                if !tags_buffer.is_empty() {
-                    payload_buffer.push(',');
-                }
-                writeln!(payload_buffer, "le=\"+Inf\"}} {}", histogram.count).unwrap();
-
-                // Write the histogram sum and count.
-                write!(payload_buffer, "{}_sum", &prom_context.metric_name).unwrap();
-                if !tags_buffer.is_empty() {
-                    payload_buffer.push('{');
-                    payload_buffer.push_str(tags_buffer);
-                    payload_buffer.push('}');
-                }
-                writeln!(payload_buffer, " {}", histogram.sum).unwrap();
-
-                write!(payload_buffer, "{}_count", &prom_context.metric_name).unwrap();
-                if !tags_buffer.is_empty() {
-                    payload_buffer.push('{');
-                    payload_buffer.push_str(tags_buffer);
-                    payload_buffer.push('}');
-                }
-                writeln!(payload_buffer, " {}", histogram.count).unwrap();
+                renderer.write_histogram_series(labels, histogram.buckets(), histogram.sum, histogram.count);
             }
             PrometheusValue::Summary(sketch) => {
-                // We take a fixed set of quantiles from the sketch, which is hard-coded but should generally represent
-                // the quantiles people generally care about.
-                for quantile in [0.1, 0.25, 0.5, 0.95, 0.99, 0.999] {
-                    let q_value = sketch.quantile(quantile).unwrap_or_default();
+                let quantiles = [0.1, 0.25, 0.5, 0.95, 0.99, 0.999]
+                    .into_iter()
+                    .map(|q| (q, sketch.quantile(q).unwrap_or_default()));
 
-                    write!(payload_buffer, "{}{{{}", &prom_context.metric_name, tags_buffer).unwrap();
-                    if !tags_buffer.is_empty() {
-                        payload_buffer.push(',');
-                    }
-                    writeln!(payload_buffer, "quantile=\"{}\"}} {}", quantile, q_value).unwrap();
-                }
-
-                write!(payload_buffer, "{}_sum", &prom_context.metric_name).unwrap();
-                if !tags_buffer.is_empty() {
-                    payload_buffer.push('{');
-                    payload_buffer.push_str(tags_buffer);
-                    payload_buffer.push('}');
-                }
-                writeln!(payload_buffer, " {}", sketch.sum().unwrap_or_default()).unwrap();
-
-                write!(payload_buffer, "{}_count", &prom_context.metric_name).unwrap();
-                if !tags_buffer.is_empty() {
-                    payload_buffer.push('{');
-                    payload_buffer.push_str(tags_buffer);
-                    payload_buffer.push('}');
-                }
-                writeln!(payload_buffer, " {}", sketch.count()).unwrap();
+                renderer.write_summary_series(labels, quantiles, sketch.sum().unwrap_or_default(), sketch.count());
             }
         }
     }
 
+    renderer.finish_group();
     true
 }
 
-fn format_tags(tags_buffer: &mut String, context: &Context, tags_deduplicator: &mut ReusableDeduplicator<Tag>) -> bool {
-    let mut has_tags = false;
+/// Collects tags from a context into key-value pairs suitable for the renderer.
+fn collect_tags<'a>(
+    context: &'a Context, tags_deduplicator: &mut ReusableDeduplicator<Tag>,
+) -> Option<Vec<(&'a str, &'a str)>> {
+    let mut labels = Vec::new();
+    let mut total_bytes = 0;
 
     let chained_tags = context.tags().into_iter().chain(context.origin_tags());
     let deduplicated_tags = tags_deduplicator.deduplicated(chained_tags);
 
     for tag in deduplicated_tags {
-        // If we're not the first tag to be written, add a comma to separate the tags.
-        if has_tags {
-            tags_buffer.push(',');
-        }
-
         let tag_name = tag.name();
         let tag_value = match tag.value() {
             Some(value) => value,
@@ -436,44 +304,24 @@ fn format_tags(tags_buffer: &mut String, context: &Context, tags_deduplicator: &
             }
         };
 
-        has_tags = true;
-
         // Can't exceed the tags buffer size limit: we calculate the addition as tag name/value length plus three bytes
         // to account for having to format it as `name="value",`.
-        if tags_buffer.len() + tag_name.len() + tag_value.len() + 4 > TAGS_BUFFER_SIZE_LIMIT_BYTES {
+        total_bytes += tag_name.len() + tag_value.len() + 4;
+        if total_bytes > TAGS_BUFFER_SIZE_LIMIT_BYTES {
             debug!("Tags buffer size limit exceeded. Tags may be missing from this metric.");
-            return false;
+            return None;
         }
 
-        write!(tags_buffer, "{}=\"{}\"", tag_name, tag_value).unwrap();
+        labels.push((tag_name, tag_value));
     }
 
-    true
-}
-
-#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
-enum PrometheusType {
-    Counter,
-    Gauge,
-    Histogram,
-    Summary,
-}
-
-impl PrometheusType {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Counter => "counter",
-            Self::Gauge => "gauge",
-            Self::Histogram => "histogram",
-            Self::Summary => "summary",
-        }
-    }
+    Some(labels)
 }
 
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
 struct PrometheusContext {
     metric_name: MetaString,
-    metric_type: PrometheusType,
+    metric_type: MetricType,
 }
 
 enum PrometheusValue {
@@ -484,10 +332,11 @@ enum PrometheusValue {
 }
 
 fn into_prometheus_metric(
-    metric: &Metric, name_buf: &mut String, interner: &FixedSizeInterner<1>,
+    metric: &Metric, renderer: &mut PrometheusRenderer, interner: &FixedSizeInterner<1>,
 ) -> Option<PrometheusContext> {
-    // Normalize the metric name first, since we might fail due to the interner being full.
-    let metric_name = match normalize_metric_name(metric.context().name(), name_buf, interner) {
+    // Normalize the metric name using the renderer, then intern it.
+    let normalized = renderer.normalize_metric_name(metric.context().name());
+    let metric_name = match interner.try_intern(normalized).map(MetaString::from) {
         Some(name) => name,
         None => {
             debug!(
@@ -499,10 +348,10 @@ fn into_prometheus_metric(
     };
 
     let metric_type = match metric.values() {
-        MetricValues::Counter(_) => PrometheusType::Counter,
-        MetricValues::Gauge(_) | MetricValues::Set(_) => PrometheusType::Gauge,
-        MetricValues::Histogram(_) => PrometheusType::Histogram,
-        MetricValues::Distribution(_) => PrometheusType::Summary,
+        MetricValues::Counter(_) => MetricType::Counter,
+        MetricValues::Gauge(_) | MetricValues::Set(_) => MetricType::Gauge,
+        MetricValues::Histogram(_) => MetricType::Histogram,
+        MetricValues::Distribution(_) => MetricType::Summary,
         _ => return None,
     };
 
@@ -514,10 +363,10 @@ fn into_prometheus_metric(
 
 fn get_prom_value_for_prom_context(prom_context: &PrometheusContext) -> PrometheusValue {
     match prom_context.metric_type {
-        PrometheusType::Counter => PrometheusValue::Counter(0.0),
-        PrometheusType::Gauge => PrometheusValue::Gauge(0.0),
-        PrometheusType::Histogram => PrometheusValue::Histogram(PrometheusHistogram::new(&prom_context.metric_name)),
-        PrometheusType::Summary => PrometheusValue::Summary(DDSketch::default()),
+        MetricType::Counter => PrometheusValue::Counter(0.0),
+        MetricType::Gauge => PrometheusValue::Gauge(0.0),
+        MetricType::Histogram => PrometheusValue::Histogram(PrometheusHistogram::new(&prom_context.metric_name)),
+        MetricType::Summary => PrometheusValue::Summary(DDSketch::default()),
     }
 }
 
@@ -556,39 +405,6 @@ fn merge_metric_values_with_prom_value(values: MetricValues, prom_value: &mut Pr
         }
         _ => panic!("Mismatched metric types"),
     }
-}
-
-fn normalize_metric_name(name: &str, name_buf: &mut String, interner: &FixedSizeInterner<1>) -> Option<MetaString> {
-    name_buf.clear();
-
-    // Normalize the metric name to a valid Prometheus metric name.
-    for (i, c) in name.chars().enumerate() {
-        if i == 0 && is_valid_name_start_char(c) || i != 0 && is_valid_name_char(c) {
-            name_buf.push(c);
-        } else {
-            // Convert periods to a set of two underscores, and anything else to a single underscore.
-            //
-            // This lets us ensure that the normal separators we use in metrics (periods) are converted in a way
-            // where they can be distinguished on the collector side to potentially reconstitute them back to their
-            // original form.
-            name_buf.push_str(if c == '.' { "__" } else { "_" });
-        }
-    }
-
-    // Now try and intern the normalized name.
-    interner.try_intern(name_buf).map(MetaString::from)
-}
-
-#[inline]
-fn is_valid_name_start_char(c: char) -> bool {
-    // Matches a regular expression of [a-zA-Z_:].
-    c.is_ascii_alphabetic() || c == '_' || c == ':'
-}
-
-#[inline]
-fn is_valid_name_char(c: char) -> bool {
-    // Matches a regular expression of [a-zA-Z0-9_:].
-    c.is_ascii_alphanumeric() || c == '_' || c == ':'
 }
 
 #[derive(Clone)]
@@ -719,38 +535,5 @@ mod tests {
             // Adjust the expected bucket count to fully account for the current sample before moving on.
             expected_bucket_count += sample.1;
         }
-    }
-
-    #[test]
-    fn prom_get_help_text() {
-        // Ensure that we catch when the help text changes for these metrics.
-        assert_eq!(
-            get_help_text("no_aggregation__flush"),
-            Some("Count the number of flushes done by the no-aggregation pipeline worker")
-        );
-        assert_eq!(
-            get_help_text("no_aggregation__processed"),
-            Some("Count the number of samples processed by the no-aggregation pipeline worker")
-        );
-        assert_eq!(
-            get_help_text("aggregator__dogstatsd_contexts_by_mtype"),
-            Some("Count the number of dogstatsd contexts in the aggregator, by metric type")
-        );
-        assert_eq!(
-            get_help_text("aggregator__flush"),
-            Some("Number of metrics/service checks/events flushed")
-        );
-        assert_eq!(
-            get_help_text("aggregator__dogstatsd_contexts_bytes_by_mtype"),
-            Some("Estimated count of bytes taken by contexts in the aggregator, by metric type")
-        );
-        assert_eq!(
-            get_help_text("aggregator__dogstatsd_contexts"),
-            Some("Count the number of dogstatsd contexts in the aggregator")
-        );
-        assert_eq!(
-            get_help_text("aggregator__processed"),
-            Some("Amount of metrics/services_checks/events processed by the aggregator")
-        );
     }
 }
