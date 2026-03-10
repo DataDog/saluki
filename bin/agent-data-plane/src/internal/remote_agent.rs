@@ -27,9 +27,11 @@ use tokio::{
 use tonic::{server::NamedService, Status};
 use tracing::{debug, error, info, warn};
 
-use crate::components::remapper::{get_datadog_agent_remappings, RemapperRule};
 use crate::config::DataPlaneConfiguration;
-use crate::state::metrics::{get_shared_metrics_state, render_rar_telemetry, AggregatedMetricsProcessor};
+use crate::state::metrics::{
+    get_datadog_agent_remappings, get_shared_metrics_state, render_rar_telemetry, AggregatedMetricsProcessor,
+    RemapperRule,
+};
 
 const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const REFRESH_FAILED_RETRY_INTERVAL: Duration = Duration::from_secs(5);

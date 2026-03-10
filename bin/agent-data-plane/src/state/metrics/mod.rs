@@ -14,7 +14,8 @@ use saluki_core::{
 use stringtheory::MetaString;
 use tokio::sync::OnceCell;
 
-use crate::components::remapper::RemapperRule;
+mod rules;
+pub use self::rules::{get_datadog_agent_remappings, RemapperRule};
 
 /// Aggregated metric value.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -441,8 +442,6 @@ mod tests {
 
     #[test]
     fn test_render_rar_telemetry() {
-        use crate::components::remapper::get_datadog_agent_remappings;
-
         let processor = AggregatedMetricsProcessor;
         let state = processor.build_initial_state();
 
@@ -498,6 +497,33 @@ mod tests {
             aggregated_metrics,
             vec![("my_metric".to_string(), AggregatedMetricValue::Counter(42.0))]
         );
+    }
+
+    #[test]
+    fn test_match_context() {
+        let rules = get_datadog_agent_remappings();
+
+        let context = Context::from_static_parts("adp.object_pool_acquired", &["pool_name:dsd_packet_bufs"]);
+        let matched = rules.iter().find_map(|r| r.try_match_no_context(&context));
+        let remapped = matched.expect("should have matched");
+        assert_eq!(remapped.name, "dogstatsd.packet_pool_get");
+        assert!(remapped.tags.iter().any(|t| t.as_ref() == "emitted_by:adp"));
+
+        // Should not match without the required tag.
+        let context = Context::from_static_parts("adp.object_pool_acquired", &["pool_name:other"]);
+        let matched = rules.iter().find_map(|r| r.try_match_no_context(&context));
+        assert!(matched.is_none());
+
+        // Test tag remapping.
+        let context = Context::from_static_parts(
+            "adp.component_events_received_total",
+            &["component_id:dsd_in", "message_type:metrics"],
+        );
+        let matched = rules.iter().find_map(|r| r.try_match_no_context(&context));
+        let remapped = matched.expect("should have matched");
+        assert_eq!(remapped.name, "dogstatsd.processed");
+        assert!(remapped.tags.iter().any(|t| t.as_ref() == "message_type:metrics"));
+        assert!(remapped.tags.iter().any(|t| t.as_ref() == "state:ok"));
     }
 
     #[test]
