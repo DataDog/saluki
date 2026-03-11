@@ -125,11 +125,8 @@ impl RemapperRule {
     }
 
     /// Builds the remapped tags for a matched metric.
-    ///
-    /// Always adds `emitted_by:adp`, then handles tag remapping (straight copy or rename), then
-    /// appends any additional fixed tags.
     fn build_remapped_tags(&self, metric_tags: &SharedTagSet) -> Vec<MetaString> {
-        let mut new_tags = vec![MetaString::from_static("emitted_by:adp")];
+        let mut new_tags = vec![];
 
         for (original_tag_name, new_tag_name) in &self.remapped_tags {
             if let Some(tag) = metric_tags.get_single_tag(original_tag_name) {

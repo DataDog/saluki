@@ -259,6 +259,17 @@ pub async fn get_shared_metrics_state() -> Reflector<AggregatedMetricsProcessor>
         .clone()
 }
 
+/// Merges two aggregated metric values.
+///
+/// Counters are summed, gauges use last-write-wins (the incoming value is kept).
+fn merge_aggregated_values(existing: AggregatedMetricValue, incoming: AggregatedMetricValue) -> AggregatedMetricValue {
+    match (existing, incoming) {
+        (AggregatedMetricValue::Counter(a), AggregatedMetricValue::Counter(b)) => AggregatedMetricValue::Counter(a + b),
+        // For gauges (and mixed types), take the incoming value.
+        (_, other) => other,
+    }
+}
+
 /// Renders the RAR-relevant subset of internal metrics in Prometheus text exposition format.
 ///
 /// Iterates the aggregated metrics state, matches each metric against the remapper rules, and renders only the
@@ -269,27 +280,37 @@ pub fn render_rar_telemetry(
 ) -> String {
     renderer.clear();
 
-    // Collect and group matched metrics by their remapped name.
+    // Collect, deduplicate, and group matched metrics by their remapped name and tags.
     //
-    // We need to group because Prometheus text format requires all series with the same metric name to be under one
-    // TYPE/HELP header.
-    let mut groups: BTreeMap<&'static str, Vec<(Vec<MetaString>, AggregatedMetricValue)>> = BTreeMap::new();
+    // Multiple source metrics can remap to the same (name, tags) identity. We aggregate these by summing counters
+    // and taking the latest value for gauges. We also sort tags to normalize their order so that identical tag sets
+    // in different orders are correctly deduplicated.
+    //
+    // The outer BTreeMap groups by metric name (required because Prometheus text format needs all series with the
+    // same metric name under one TYPE/HELP header), and the inner BTreeMap deduplicates by tag set.
+    let mut groups: BTreeMap<&'static str, BTreeMap<Vec<MetaString>, AggregatedMetricValue>> = BTreeMap::new();
 
     state.visit_metrics(|context, value| {
         for rule in rules {
-            if let Some(remapped) = rule.try_match_no_context(context) {
-                groups.entry(remapped.name).or_default().push((remapped.tags, *value));
+            if let Some(mut remapped) = rule.try_match_no_context(context) {
+                remapped.tags.sort();
+
+                let series = groups.entry(remapped.name).or_default();
+                series
+                    .entry(remapped.tags)
+                    .and_modify(|existing| *existing = merge_aggregated_values(*existing, *value))
+                    .or_insert(*value);
                 return;
             }
         }
     });
 
     // Render each group.
-    for (name, series) in groups {
+    for (name, series) in &groups {
         // Determine metric type from the first series value.
-        let metric_type = match series.first() {
-            Some((_, AggregatedMetricValue::Counter(_))) => MetricType::Counter,
-            Some((_, AggregatedMetricValue::Gauge(_))) => MetricType::Gauge,
+        let metric_type = match series.values().next() {
+            Some(AggregatedMetricValue::Counter(_)) => MetricType::Counter,
+            Some(AggregatedMetricValue::Gauge(_)) => MetricType::Gauge,
             None => continue,
         };
 
@@ -298,7 +319,7 @@ pub fn render_rar_telemetry(
         // Tags are split into key/value pairs at render time, skipping bare tags (those without a `:`).
         // We pre-collect labels as owned strings since the MetaString tags are consumed by the iterator.
         let rendered_series: Vec<(Vec<(String, String)>, f64)> = series
-            .into_iter()
+            .iter()
             .map(|(tags, value)| {
                 let labels: Vec<(String, String)> = tags
                     .iter()
@@ -473,7 +494,6 @@ mod tests {
         // Matched metrics should appear with remapped names.
         assert!(output.contains("dogstatsd__packet_pool_get"));
         assert!(output.contains("dogstatsd__packet_pool{"));
-        assert!(output.contains("emitted_by=\"adp\""));
 
         // Unmatched metrics should NOT appear.
         assert!(!output.contains("some_unrelated_metric"));
@@ -507,7 +527,6 @@ mod tests {
         let matched = rules.iter().find_map(|r| r.try_match_no_context(&context));
         let remapped = matched.expect("should have matched");
         assert_eq!(remapped.name, "dogstatsd.packet_pool_get");
-        assert!(remapped.tags.iter().any(|t| t.as_ref() == "emitted_by:adp"));
 
         // Should not match without the required tag.
         let context = Context::from_static_parts("adp.object_pool_acquired", &["pool_name:other"]);
@@ -524,6 +543,62 @@ mod tests {
         assert_eq!(remapped.name, "dogstatsd.processed");
         assert!(remapped.tags.iter().any(|t| t.as_ref() == "message_type:metrics"));
         assert!(remapped.tags.iter().any(|t| t.as_ref() == "state:ok"));
+    }
+
+    #[test]
+    fn test_rar_telemetry_deduplicates_remapped_metrics() {
+        // Two source metrics with different source tags that remap to the same (name, tags) identity
+        // should be deduplicated (counters summed) in the RAR output.
+        let processor = AggregatedMetricsProcessor;
+        let state = processor.build_initial_state();
+
+        // These two metrics have different listener_type tags, but both remap to
+        // dogstatsd.processed{message_type:metrics, state:ok}.
+        let metrics = vec![
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_events_received_total",
+                    &["component_id:dsd_in", "message_type:metrics", "listener_type:udp"],
+                ),
+                10.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_events_received_total",
+                    &["component_id:dsd_in", "message_type:metrics", "listener_type:unixgram"],
+                ),
+                25.0,
+            )),
+        ];
+
+        for metric in metrics {
+            processor.process(metric, &state);
+        }
+
+        let rules = get_datadog_agent_remappings();
+        let mut renderer = PrometheusRenderer::new();
+        let output = render_rar_telemetry(&state, &rules, &mut renderer);
+
+        // Should only have one dogstatsd__processed series with state="ok" and message_type="metrics",
+        // with the summed value of 35.
+        let processed_lines: Vec<&str> = output
+            .lines()
+            .filter(|line| {
+                line.starts_with("dogstatsd__processed{")
+                    && line.contains("state=\"ok\"")
+                    && line.contains("message_type=\"metrics\"")
+            })
+            .collect();
+        assert_eq!(
+            processed_lines.len(),
+            1,
+            "expected exactly one deduplicated series, got: {processed_lines:?}"
+        );
+        assert!(
+            processed_lines[0].ends_with(" 35"),
+            "expected summed value of 35, got: {}",
+            processed_lines[0]
+        );
     }
 
     #[test]
