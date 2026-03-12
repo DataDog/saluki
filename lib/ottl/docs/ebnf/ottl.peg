@@ -22,7 +22,16 @@ WS <- [ \t]*
 # Top-level rule
 # ---------------------------------------------------------------------------
 
-Root <- WS (EditorInvocationStatement / BooleanExpression) WS !.
+# The implementation tries 3 alternatives in order (grammar.rs build_parser):
+#   1. EditorStatement — editor call with optional WHERE clause
+#   2. MathExpression with operators — to avoid expensive backtracking
+#      through BooleanExpression for inputs like "1 + 2"
+#   3. BooleanExpression — standalone boolean
+#
+# In PEG ordered-choice semantics, (2) is subsumed: if BooleanExpression
+# fails, MathExpression (4) still catches standalone math.  The !. at the
+# end ensures the entire input is consumed.
+Root <- WS (EditorInvocationStatement / BooleanExpression / MathExpression) WS !.
 
 # ---------------------------------------------------------------------------
 # Statements
@@ -33,45 +42,48 @@ EditorInvocationStatement <- EditorInvocation WhereClause?
 WhereClause <- WS 'where' !IdentChar WS BooleanExpression
 
 # ---------------------------------------------------------------------------
-# Function invocations
+# Invocations
 # ---------------------------------------------------------------------------
 
 # Editor invocation: identifier starts with a lowercase letter.
-# Semantic rule: exactly one Editor invocation per statement.
+# Semantic rule: exactly one editor invocation per statement.
+# Only appears at the root level — NOT inside value expressions.
 EditorInvocation <- LowerIdent WS '(' WS ArgList? WS ')'
 
 # Converter invocation: identifier starts with an uppercase letter;
-# result may be indexed.
+# result may be indexed.  Appears inside value expressions and boolean
+# contexts.
 ConverterInvocation <- UpperIdent WS '(' WS ArgList? WS ')' Index*
-
-# Generic function invocation (converter or editor).
-# ConverterInvocation first: the two are disjoint on the leading character
-# (upper vs lower), but converters carry trailing Index* that must not be
-# missed.
-FunctionInvocation <- ConverterInvocation / EditorInvocation
 
 # ---------------------------------------------------------------------------
 # Arguments
 # ---------------------------------------------------------------------------
 
-# Simplified from the EBNF's positional-before-named ordering; the ordering
-# constraint is enforced semantically.
-ArgList  <- Arg (WS ',' WS Arg)*
-Arg      <- NamedArg / Value
+# Argument values support math operators (the implementation wraps them in
+# make_math_expr).  Trailing comma is allowed (allow_trailing() in code).
+# The positional-before-named ordering constraint from the EBNF is enforced
+# semantically, not syntactically.
+ArgList <- Arg (WS ',' WS Arg)* (WS ',')?
+Arg     <- NamedArg / MathExpression
 
 # !'=' distinguishes 'name = value' (named arg) from the '==' comparison
-# operator that could appear inside a Value.
-NamedArg <- LowerIdent WS '=' !'=' WS Value
+# operator that could appear inside a MathExpression.
+NamedArg <- LowerIdent WS '=' !'=' WS MathExpression
 
 # ---------------------------------------------------------------------------
-# Values
+# Value expressions (no math operators)
 # ---------------------------------------------------------------------------
 
-# Restructured from the EBNF: MathExpression subsumes Literal, Path, and
-# FunctionInvocation (and therefore ConverterInvocation / EditorInvocation)
-# through MathPrimary.  List, Map, and Enum remain separate alternatives
-# because they are not part of math expressions.
-Value <- WS (List / Map / MathExpression / Enum) WS
+# ValueExpr is the basic building block for values.  It does NOT include
+# math binary/unary operators — those are layered on top by MathExpression
+# in contexts that support them (function arguments, comparisons, root).
+#
+# Ordering rationale:
+#   ConverterInvocation before Enum — both start with UpperIdent, but
+#     converters require '(' so they are unambiguous.
+#   Literal before Path — BoolLiteral ('true'/'false') and NilLiteral
+#     ('nil') would otherwise be consumed as LowerIdent by Path.
+ValueExpr <- ConverterInvocation / List / Map / Enum / Literal / Path
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -89,11 +101,15 @@ Index <- '[' WS (StringLiteral / IntLiteral) WS ']'
 # Collections
 # ---------------------------------------------------------------------------
 
-List <- '[' WS (Value (WS ',' WS Value)*)? WS ']'
+# List and map elements use ValueExpr directly — the implementation does
+# NOT wrap them in make_math_expr, so "1 + 2" is not valid as a list
+# element.  Trailing commas are allowed.
 
-Map <- '{' WS (MapEntry (WS ',' WS MapEntry)*)? WS '}'
+List <- '[' WS (ValueExpr (WS ',' WS ValueExpr)* (WS ',')?)? WS ']'
 
-MapEntry <- StringLiteral WS ':' WS Value
+Map <- '{' WS (MapEntry (WS ',' WS MapEntry)* (WS ',')?)? WS '}'
+
+MapEntry <- StringLiteral WS ':' WS ValueExpr
 
 # ---------------------------------------------------------------------------
 # Literals
@@ -106,22 +122,31 @@ MapEntry <- StringLiteral WS ':' WS Value
 #     would greedily match '3' and leave '.14' unconsumed.
 #   BoolLiteral and NilLiteral use !IdentChar to prevent matching prefixes
 #     of longer identifiers (e.g. 'true_value').
-Literal <- StringLiteral / BytesLiteral / FloatLiteral / IntLiteral
+#
+# The lexer tokens for floats and ints carry no sign.  The literal_parser
+# in grammar.rs adds an optional leading '-' (but not '+').  FloatLiteral
+# and IntLiteral below are unsigned (matching the lexer tokens); the '-'?
+# here mirrors literal_parser.  In math contexts, MathFactor provides both
+# '+' and '-' as unary operators on top.
+#
+# Index uses IntLiteral directly (unsigned) because the index_parser does
+# not accept a Minus token.
+Literal <- StringLiteral / BytesLiteral / '-'? FloatLiteral / '-'? IntLiteral
          / BoolLiteral / NilLiteral
 
-StringLiteral <- '"' (!'"' [\x20-\x7E])* '"'
+# The lexer regex is: "[^"\\]*(?:\\.[^"\\]*)*"
+# This supports backslash escape sequences (\", \\, etc.).
+StringLiteral <- '"' ('\\' [\x20-\x7E] / !('"' / '\\') [\x20-\x7E])* '"'
 
 BytesLiteral <- '0x' [0-9a-fA-F]+
 
-FloatLiteral <- Sign? ([0-9]+ '.' [0-9]* / '.' [0-9]+)
+FloatLiteral <- [0-9]+ '.' [0-9]* / '.' [0-9]+
 
-IntLiteral <- Sign? [0-9]+
+IntLiteral <- [0-9]+
 
 BoolLiteral <- ('true' / 'false') !IdentChar
 
 NilLiteral <- 'nil' !IdentChar
-
-Sign <- '+' / '-'
 
 # ---------------------------------------------------------------------------
 # Math expressions (precedence: unary +/- > * / > + -)
@@ -133,11 +158,11 @@ MathTerm <- MathFactor (WS ('*' / '/') WS MathFactor)*
 
 MathFactor <- ('+' / '-')? WS MathPrimary
 
-# FunctionInvocation replaces the EBNF's ConverterInvocation here so that
-# MathExpression subsumes both editor and converter invocations, avoiding
-# ordering conflicts in Value (see plan section 3).
-MathPrimary <- Literal / FunctionInvocation / Path
-             / '(' WS MathExpression WS ')'
+# MathPrimary delegates to ValueExpr for all non-parenthesized primaries.
+# This matches the implementation where make_math_expr's 'primary' is
+# choice((paren_math, math_literal, math_value)) — the latter two are
+# subsumed by ValueExpr.
+MathPrimary <- '(' WS MathExpression WS ')' / ValueExpr
 
 # ---------------------------------------------------------------------------
 # Boolean expressions (precedence: not > and > or)
@@ -151,26 +176,34 @@ BooleanFactor <- ('not' !IdentChar WS)? BooleanPrimary
 
 BooleanPrimary <- '(' WS BooleanExpression WS ')' / BooleanValue
 
-# Ordering rationale:
+# Ordering matches the implementation's bool_primary choice order:
 #   Comparison first — so that 'true == false' is parsed as a comparison
 #     rather than consuming just 'true' as a BoolLiteral.
-#   ConverterInvocation before BoolLiteral — converters returning booleans
-#     (e.g. IsMatch) start with UpperIdent, disjoint from BoolLiteral.
-BooleanValue <- Comparison / ConverterInvocation / BoolLiteral
+#   BoolLiteral next — catches bare 'true' / 'false'.
+#   ConverterInvocation — e.g. IsMatch(...) returning boolean; starts with
+#     UpperIdent, disjoint from BoolLiteral.
+#   Path — bare path used as a truthy value (BoolExpr::Path in the AST).
+BooleanValue <- Comparison / BoolLiteral / ConverterInvocation / Path
 
-Comparison <- Value WS CompOp WS Value
+# Comparison operands are MathExpressions (the implementation wraps them
+# via make_math_expr), so '1 + 2 == 3' is valid.
+Comparison <- MathExpression WS CompOp WS MathExpression
 
 # Multi-character operators before their single-character prefixes;
 # otherwise '<' would match before '<='.
 CompOp <- '<=' / '>=' / '==' / '!=' / '<' / '>'
 
 # ---------------------------------------------------------------------------
-# Character classes and identifiers
+# Character classes, identifiers, and keywords
 # ---------------------------------------------------------------------------
 
 IdentChar <- [a-zA-Z0-9_]
 
-LowerIdent <- [a-z] IdentChar*
+# Keywords are reserved words that the lexer emits as dedicated tokens
+# (not as LowerIdent).  LowerIdent must not match these.
+Keyword <- ('where' / 'and' / 'not' / 'or' / 'true' / 'false' / 'nil') !IdentChar
+
+LowerIdent <- !Keyword [a-z] IdentChar*
 
 UpperIdent <- [A-Z] IdentChar*
 
@@ -178,10 +211,12 @@ UpperIdent <- [A-Z] IdentChar*
 # Enum
 # ---------------------------------------------------------------------------
 
-# Enums: uppercase identifiers interpreted to int64 by a user-provided
-# EnumParser at parse-time.  Only uppercase letters, digits, and underscores
-# are allowed after the initial uppercase letter.
-Enum <- [A-Z] [A-Z0-9_]*
+# In the implementation, enum_parser uses ident_parser(true) — any
+# UpperIdent — then validates against the EnumMap at parse time.
+# The EBNF restricts enums to uppercase/digit/underscore, but the code
+# accepts any UpperIdent syntactically.  Semantic validation rejects
+# unknown names.
+Enum <- UpperIdent
 
 # ---------------------------------------------------------------------------
 # Notes / semantics (not part of the formal grammar)
@@ -191,8 +226,8 @@ Enum <- [A-Z] [A-Z0-9_]*
 #   must contain exactly one editor invocation.
 # - Converters: identifiers must start with an uppercase letter; may be
 #   followed by indexing using ["key"] or [0].
-# - Enums: uppercase identifiers interpreted to int64 by a user-provided
-#   EnumParser at parse-time.
+# - Enums: any UpperIdent validated against a user-provided EnumMap at
+#   parse time; unknown names cause a parse error.
 # - Math expressions follow typical precedence; mixing int64 and float64
 #   is a runtime error per LANGUAGE.md.
 # - The positional-before-named argument ordering constraint (present in
