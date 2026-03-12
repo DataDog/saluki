@@ -1,8 +1,9 @@
 (*white spaces!*)
-WS = {" " | "\t"};
+WS = {" " | "\t" | "\n" | "\r"};
 
 (*OTTL.ebnf — Expanded OTTL grammar in Extended Backus–Naur Form (EBNF)
 Source: OpenTelemetry OTTL `LANGUAGE.md`, `README.md`, `ottlfuncs` and `contexts/*` README files
+and github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl source code.
 EBNF conventions used: { } repetition, [ ] optional, ( ) grouping, | alternation 
 A single OTTL statement: an Editor invocation and optional condition*)
 ROOT = [WS], (EDITOR_INVOCATION_STATEMENT | BOOLEAN_EXPRESSION), [WS];
@@ -28,10 +29,15 @@ ARG_LIST = (VALUE, {[WS], ",", VALUE}, {[WS], ",", NAMED_ARG}) | (NAMED_ARG, {[W
 (*Values — where values can appear as function arguments or in expressions*)
 VALUE = [WS], (PATH | LIST | MAP | LITERAL | ENUM | CONVERTER_INVOCATION | FUNCTION_INVOCATION | MATH_EXPRESSION), [WS];
 
-(*PATH: starts with lowercase identifier (context), dotted segments, and optional indexes*)
-PATH = LOWER_IDENT, {".", IDENT_SEGMENT}, {INDEX};
+(*PATH: starts with optional context (lowercase token + "."), then dot-separated
+  fields. Each field is a LOWER_IDENT with zero or more index accessors.
+  Examples:
+    attributes["foo"]           — no context, field with string key
+    foo.attributes["bar"].cat   — context "foo", fields with keys
+    foo.bar["x"]["y"].z         — multiple keys on a single field*)
+PATH = [LOWER_IDENT, "."], FIELD, {".", FIELD};
 
-IDENT_SEGMENT = LOWER_IDENT | UPPER_IDENT;
+FIELD = LOWER_IDENT, {INDEX};
 
 INDEX = "[", [WS], (STRING_LITERAL | INT_LITERAL), [WS], "]";
 
@@ -48,9 +54,20 @@ SIGN = "+" | "-";
 (*LITERALS*)
 LITERAL = STRING_LITERAL | INT_LITERAL | FLOAT_LITERAL | BOOL_LITERAL | NIL_LITERAL | BYTES_LITERAL;
 
+(*
+Basic string implementation
 STRING_LITERAL = '"', {UPPER | LOWER | DIGIT | " " | "!" | "#" | "$" | "%" | "&" | "'" | "(" | ")" | "*" | "+" | "," | "-" | "." | "/" | ":" | ";" | "<" | "=" | ">" | "?" | "@" | "[" | "\\" | "]" | "^" | "_" | "`" | "{" | "|" | "}" | "~"}, '"';
+*)
+STRING_LITERAL = '"', {ESCAPE_SEQ | STRING_CHAR}, '"';
 
-FLOAT_LITERAL = [SIGN], (DIGIT, {DIGIT}, ".", {DIGIT} | ".", DIGIT, {DIGIT});
+ESCAPE_SEQ = '\\', ? any character ?;
+
+STRING_CHAR = ? any character except '"' and '\' ?;
+
+(*Lexer regex: "(\\.|[^\\"])*" — backslash escapes any character;
+  unescaped characters include any character except quote and backslash,
+  including non-ASCII / UTF-8 sequences.*)
+FLOAT_LITERAL = [SIGN], (DIGIT, {DIGIT}, ".", {DIGIT} | ".", DIGIT, {DIGIT}), [("e" | "E"), ["+" | "-"], DIGIT, {DIGIT}];
 
 INT_LITERAL = [SIGN], DIGIT, {DIGIT};
 
