@@ -16,7 +16,6 @@ fips = ["saluki-app/tls-fips"]
 argh = { workspace = true, features = ["help"] }
 async-trait = { workspace = true }
 bytes = { workspace = true }
-bytesize = { workspace = true }
 chrono = { workspace = true }
 colored = { workspace = true }
 comfy-table = { workspace = true }
@@ -28,6 +27,7 @@ hyper = { workspace = true }
 memory-accounting = { workspace = true }
 ottl = { workspace = true }
 papaya = { workspace = true }
+prometheus-exposition = { workspace = true }
 prost-types = { workspace = true }
 saluki-app = { workspace = true }
 saluki-common = { workspace = true }

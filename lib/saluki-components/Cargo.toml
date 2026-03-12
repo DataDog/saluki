@@ -40,6 +40,7 @@ opentelemetry-semantic-conventions = { workspace = true, features = ["semconv_ex
 otlp-protos = { workspace = true }
 piecemeal = { workspace = true }
 pin-project = { workspace = true }
+prometheus-exposition = { workspace = true }
 prost = { workspace = true }
 protobuf = { workspace = true }
 rand = { workspace = true, features = ["std", "std_rng"] }

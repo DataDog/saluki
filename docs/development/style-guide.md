@@ -1,4 +1,4 @@
-# Style Guide
+# Style guide
 
 Our style guide focuses on three main areas: **formatting**, **aesthetics**, and **documentation**.
 
@@ -90,10 +90,10 @@ like guidance from someone who genuinely wants to help you succeed.
 
 **What to avoid:**
 
-- "Please" in instructions—just tell the reader what to do: "Run `make fmt`" not "Please run `make fmt`"
-- Terms like "simply", "easy", "just", or "obviously"—they minimize difficulty and can frustrate readers who find
+- "Please" in instructions — just tell the reader what to do ("Run `make fmt`", not "Please run `make fmt`")
+- Terms like "simply", "easy", "just", or "obviously": they minimize difficulty and can frustrate readers who find
   something challenging
-- Excessive exclamation marks—reserve them for genuinely exciting announcements
+- Excessive exclamation marks: reserve them for genuinely exciting announcements
 - Jargon and buzzwords without explanation
 - Pop culture references and idioms that may not translate globally
 
@@ -111,7 +111,7 @@ Use present tense to describe what things do:
 
 ### Markdown documentation
 
-This section covers documentation written in markdown files, such as those in the `docs/` directory.
+This section covers documentation written in Markdown files, such as those in the `docs/` directory.
 
 #### Structure
 
