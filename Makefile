@@ -265,8 +265,8 @@ create-dummy-agent-config:
 
 create-dummy-ipc-cert: $(ADP_STANDALONE_IPC_CERT_FILE)
 $(ADP_STANDALONE_IPC_CERT_FILE):
-	ifeq ($(shell command -v openssl >/dev/null || echo not-found), not-found)
-		$(error "Please install OpenSSL.")
+ifeq ($(shell command -v openssl >/dev/null || echo not-found), not-found)
+	$(error "Please install OpenSSL.")
 endif
 	@echo "[*] Generating self-signed TLS certificate for privileged API endpoint..."
 	@openssl req -x509 -newkey rsa:2048 -keyout $(ADP_STANDALONE_IPC_CERT_FILE) -out $(ADP_STANDALONE_IPC_CERT_FILE) \
