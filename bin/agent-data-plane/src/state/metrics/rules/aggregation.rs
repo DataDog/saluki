@@ -1,4 +1,4 @@
-use crate::components::remapper::RemapperRule;
+use super::RemapperRule;
 
 pub fn get_aggregation_remappings() -> Vec<RemapperRule> {
     vec![

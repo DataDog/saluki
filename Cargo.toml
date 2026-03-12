@@ -11,6 +11,7 @@ members = [
   "lib/memory-accounting",
   "lib/ottl",
   "lib/process-memory",
+  "lib/prometheus-exposition",
   "lib/protos/containerd",
   "lib/protos/datadog",
   "lib/protos/otlp",
@@ -43,6 +44,7 @@ containerd-protos = { path = "lib/protos/containerd" }
 ddsketch = { path = "lib/ddsketch" }
 memory-accounting = { path = "lib/memory-accounting" }
 process-memory = { path = "lib/process-memory" }
+prometheus-exposition = { path = "lib/prometheus-exposition" }
 saluki-api = { path = "lib/saluki-api" }
 saluki-app = { path = "lib/saluki-app" }
 saluki-common = { path = "lib/saluki-common" }
