@@ -48,28 +48,18 @@ EditorName    <- LowerToken (UpperToken / LowerToken)*
 ConverterName <- UpperToken (UpperToken / LowerToken)*
 
 # ---------------------------------------------------------------------------
-# Entry points
+# Entry point
 # ---------------------------------------------------------------------------
 
-# The implementation provides three separate parsers (three entry points):
-#   1. parseStatement       — parses a Statement
-#   2. parseCondition       — parses a standalone BooleanExpression
-#   3. parseValueExpression — parses a standalone Value
-
-StatementRoot       <- WS Statement WS !.
-ConditionRoot       <- WS BooleanExpression WS !.
-ValueExpressionRoot <- WS Value WS !.
+# A single OTTL root: either an editor invocation statement (with optional
+# where clause) or a standalone boolean expression (for filtering).
+Root <- WS (EditorInvocationStatement / BooleanExpression) WS !.
 
 # ---------------------------------------------------------------------------
 # Statements
 # ---------------------------------------------------------------------------
 
-# The parser accepts both EditorInvocation and ConverterInvocation at
-# statement level syntactically.  If a ConverterInvocation matches, it is
-# rejected with a semantic error: "editor names must start with a lowercase
-# letter but got '<name>'".  This provides better error messages than a
-# parse failure.
-Statement <- (EditorInvocation / ConverterInvocation) WhereClause?
+EditorInvocationStatement <- EditorInvocation WhereClause?
 
 WhereClause <- WS 'where' !IdentChar WS BooleanExpression
 
