@@ -10,7 +10,6 @@ export BUILD_TARGET := $(or $(BUILD_TARGET),default)
 export APP_GIT_HASH := $(or $(CI_COMMIT_SHA),$(shell git rev-parse --short HEAD 2>/dev/null || echo not-in-git))
 export APP_BUILD_TIME := $(or $(CI_PIPELINE_CREATED_AT),0000-00-00T00:00:00-00:00)
 
-
 # ADP-specific settings used during builds.
 export ADP_APP_FULL_NAME := Agent Data Plane
 export ADP_APP_SHORT_NAME := data-plane
@@ -19,6 +18,9 @@ export ADP_APP_GIT_HASH := $(APP_GIT_HASH)
 export ADP_APP_VERSION_AUTO := $(shell cat bin/agent-data-plane/Cargo.toml | grep -E "^version = \"" | head -n 1 | cut -d '"' -f 2)
 export ADP_APP_VERSION := $(or $(ADP_APP_VERSION),$(ADP_APP_VERSION_AUTO))
 export ADP_APP_BUILD_TIME := $(APP_BUILD_TIME)
+
+# ADP-specific settings used when running.
+export ADP_STANDALONE_IPC_CERT_FILE := /tmp/adp-ipc-cert.pem
 
 # General build settings used for tooling, etc.
 export GO_BUILD_IMAGE ?= golang:1.23-bullseye
@@ -261,6 +263,15 @@ endif
 create-dummy-agent-config:
 	@echo "{}" > /tmp/adp-empty-config.yaml
 
+create-dummy-ipc-cert: $(ADP_STANDALONE_IPC_CERT_FILE)
+$(ADP_STANDALONE_IPC_CERT_FILE):
+	ifeq ($(shell command -v openssl >/dev/null || echo not-found), not-found)
+		$(error "Please install OpenSSL.")
+endif
+	@echo "[*] Generating self-signed TLS certificate for privileged API endpoint..."
+	@openssl req -x509 -newkey rsa:2048 -keyout $(ADP_STANDALONE_IPC_CERT_FILE) -out $(ADP_STANDALONE_IPC_CERT_FILE) \
+		-days 365 -nodes -subj "/CN=localhost" -batch 2>/dev/null
+
 .PHONY: run-adp
 run-adp: build-adp
 run-adp: ## Runs ADP locally (debug, requires Datadog Agent for tagging)
@@ -294,23 +305,25 @@ endif
 	target/release/agent-data-plane run
 
 .PHONY: run-adp-standalone
-run-adp-standalone: build-adp create-dummy-agent-config
+run-adp-standalone: build-adp create-dummy-agent-config create-dummy-ipc-cert
 run-adp-standalone: ## Runs ADP locally in standalone mode (debug)
 	@echo "[*] Running ADP..."
 	@DD_DATA_PLANE_STANDALONE_MODE=true DD_DATA_PLANE_DOGSTATSD_ENABLED=true \
  	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_DATA_PLANE_TELEMETRY_ENABLED=true DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102 \
+	DD_IPC_CERT_FILE_PATH=$(ADP_STANDALONE_IPC_CERT_FILE) \
 	target/devel/agent-data-plane --config /tmp/adp-empty-config.yaml run
 
 .PHONY: run-adp-standalone-release
-run-adp-standalone-release: build-adp-release create-dummy-agent-config
+run-adp-standalone-release: build-adp-release create-dummy-agent-config create-dummy-ipc-cert
 run-adp-standalone-release: ## Runs ADP locally in standalone mode (release)
 	@echo "[*] Running ADP..."
 	@DD_DATA_PLANE_STANDALONE_MODE=true DD_DATA_PLANE_DOGSTATSD_ENABLED=true \
 	DD_API_KEY=api-key-adp-standalone DD_HOSTNAME=adp-standalone \
 	DD_DOGSTATSD_PORT=9191 DD_DOGSTATSD_SOCKET=/tmp/adp-dogstatsd-dgram.sock DD_DOGSTATSD_STREAM_SOCKET=/tmp/adp-dogstatsd-stream.sock \
 	DD_DATA_PLANE_TELEMETRY_ENABLED=true DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102 \
+	DD_IPC_CERT_FILE_PATH=$(ADP_STANDALONE_IPC_CERT_FILE) \
 	target/release/agent-data-plane --config /tmp/adp-empty-config.yaml run
 
 .PHONY: run-dsd-basic-udp
