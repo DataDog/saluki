@@ -44,14 +44,14 @@ export default defineConfig({
             },
             {
                 text: "Reference Docs",
-                items: [{ text: "Architecture", link: "/reference/architecture" }],
+                items: [
+                    { text: "Architecture", link: "/reference/architecture" },
+                    { text: "ADRs", link: "/reference/adr" },
+                ],
             },
             {
                 text: "Agent Data Plane",
-                items: [
-                    { text: "Plans / Decisions", link: "/agent-data-plane/records" },
-                    { text: "Releasing", link: "/agent-data-plane/releasing" },
-                ],
+                items: [{ text: "Releasing", link: "/agent-data-plane/releasing" }],
             },
         ],
 
@@ -61,6 +61,9 @@ export default defineConfig({
 
         socialLinks: [{ icon: "github", link: "https://github.com/DataDog/saluki" }],
     },
+
+    srcExclude: ["reference/adr/_template.md"],
+
     vite: {
         server: {
             allowedHosts: true,
