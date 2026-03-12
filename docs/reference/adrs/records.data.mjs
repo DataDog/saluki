@@ -4,7 +4,7 @@ import path from "node:path";
 const config = globalThis.VITEPRESS_CONFIG;
 const md = await createMarkdownRenderer(config.srcDir, config.markdown, config.site.base, config.logger);
 
-export default createContentLoader("./reference/adr/records/*.md", {
+export default createContentLoader("./reference/adrs/records/*.md", {
     transform(rawData) {
         // For each record, generate the full anchor element, including rendering the title as Markdown, so that
         // we can get the right base URL and formatting all of that.

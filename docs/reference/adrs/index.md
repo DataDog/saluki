@@ -10,8 +10,8 @@ An **Architectural Decision (AD)** is a justified software design choice that ad
 
 Adding a new ADR is a straightforward process:
 
-1. Create a new file in the `docs/reference/adr/records` directory with a name following the pattern `number-title.md`. The `number` should be the next highest number in the sequence based on the existing ADRs. `title` should be a very short description of the decision, such as related acronyms or keywords related to the decision.
-2. Write the ADR content in Markdown format, following the template provided in the `docs/reference/adr/_template.md` file.
+1. Create a new file in the `docs/reference/adrs/records` directory with a name following the pattern `number-title.md`. The `number` should be the next highest number in the sequence based on the existing ADRs. `title` should be a very short description of the decision, such as related acronyms or keywords related to the decision.
+2. Write the ADR content in Markdown format, following the template provided in the `docs/reference/adrs/_template.md` file.
 
 ## List of ADRs
 

@@ -46,7 +46,8 @@ export default defineConfig({
                 text: "Reference Docs",
                 items: [
                     { text: "Architecture", link: "/reference/architecture" },
-                    { text: "ADRs", link: "/reference/adr" },
+                    { text: "ADRs", link: "/reference/adrs" },
+                    { text: "Proposals", link: "/reference/proposals" },
                 ],
             },
             {
@@ -62,7 +63,7 @@ export default defineConfig({
         socialLinks: [{ icon: "github", link: "https://github.com/DataDog/saluki" }],
     },
 
-    srcExclude: ["reference/adr/_template.md"],
+    srcExclude: ["reference/adr/_template.md", "reference/proposals/_template.md"],
 
     vite: {
         server: {
