@@ -21,5 +21,5 @@ features:
   - title: Efficient and deterministic
     details: "Saluki is architected to be incredibly resource efficient and deterministic: predict and limit your resource usage ahead of time."
   - title: Fit for purpose
-    details: "Saluki powers Agent Data Plane, the experimental, next-generation data plane for the Datadog Agent: big or small, Saluki should handle it all."
+    details: "Saluki powers Agent Data Plane, the next-generation data plane for the Datadog Agent."
 ---

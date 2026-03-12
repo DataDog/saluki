@@ -4,7 +4,7 @@ First of all, thank you for looking to contribute to Saluki! We're excited to ha
 
 This document covers some simple guidelines for both filing issues and contributing code to the project.
 
-## Filing Issues
+## Filing issues
 
 If you've discovered a bug, have a feature request, or have discovered a security issue, start by [creating a new
 issue](https://github.com/DataDog/saluki/issues/new/choose). We use Github issue templates to provide a number of
@@ -13,7 +13,7 @@ pre-defined issue types, which will prompt you for the necessary information to 
 If none of the existing issue types fit your needs, simply create a **Blank issue** and provide as much information as
 you can.
 
-## Pull Requests
+## Pull requests
 
 You've gotten to the point of working on a fix or a new feature, and now you want to contribute that upstream. This is
 awesome!

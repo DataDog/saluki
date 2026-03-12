@@ -17,12 +17,10 @@ cargo install cargo-fuzz
 # cargo-fuzz requires us to be in the specific folder
 cd lib/saluki-io
 
-cargo +nightly fuzz run parse_dsd_metric
-cargo +nightly fuzz run parse_dsd_metric_with_conf
+cargo +nightly fuzz run dogstatsd_decode_packet
 
 # or, with coverage enabled
-cargo +nightly fuzz coverage parse_dsd_metric
-cargo +nightly fuzz coverage parse_dsd_metric_with_cong
+cargo +nightly fuzz coverage dogstatsd_decode_packet
 ```
 
 ## Corpus and Artifacts
@@ -35,6 +33,6 @@ cargo +nightly fuzz coverage parse_dsd_metric_with_cong
 After running with coverage:
 
 ```bash
-cargo +nightly fuzz coverage parse_dsd_metric
-# Coverage report will be generated in fuzz/coverage/parse_dsd_metric/
+cargo +nightly fuzz coverage dogstatsd_decode_packet
+# Coverage report will be generated in fuzz/coverage/dogstatsd_decode_packet/
 ```

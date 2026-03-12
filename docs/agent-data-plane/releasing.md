@@ -10,7 +10,8 @@ The release process for ADP roughly looks like this:
 
 - create a Github release, which tags `main` at a particular point
 - creation of the Git tag triggers a CI pipeline that additionally unlocks jobs to publish release artifacts
-- the additional CI jobs, once manually triggered, will publish ADP container images to various public container image registries
+- the additional CI jobs, once manually triggered, will publish ADP container images to various public container image
+  registries
 - bump the version of ADP to the next development version
 
 ## Quick steps
@@ -19,8 +20,8 @@ The release process for ADP roughly looks like this:
   passing cleanly (this will get checked in the actual release CI pipeline, but easier to catch problems early)
 - Go to the [Releases](https://github.com/DataDog/saluki/releases) page on Github and click the `Draft a new release`
   button.
-- Fill in the appropriate Git tag (see ["Determining the version"](#determining-the-version) below) and click
-  `Create new tag ... on publish`.
+- Fill in the appropriate Git tag (see ["Determining the version"](#determining-the-version) below) and click `Create
+  new tag ... on publish`.
 - Leave `Previous tag` at `auto`, and change `Release title` to `Agent Data Plane <version>`, where `<version>` is the
   Git tag being created. (e.g., `Agent Data Plane 0.2.0`)
 - Click the `Generate release notes` to automatically populate the relevant changes since the last release.
@@ -30,17 +31,15 @@ The release process for ADP roughly looks like this:
 - Go to the [Gitlab CI pipelines dashboard](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines) for the repository and
   find the pipeline that was triggered for the newly-created Git tag. It may take a minute or two for the repository
   sync and pipeline creation to occur.
-- The pipeline should progress through the `test`, `build`, `correctness`, and `release` stages without
-  issue.
-- Once all stages have completed, the `release` stage will have two blocked jobs: `publish-standalone-adp-image-linux` and
-  `publish-standalone-adp-image-linux-fips`. These jobs perform the actual publishing of the container images to our public
-  container image registries, and must be manually triggered.
+- The pipeline should progress through the `test`, `build`, `correctness`, and `release` stages without issue.
+- Once all stages have completed, the `release` stage will have a number of blocked jobs: standalone image publishing,
+  release tarball publishing, and so on. These jobs perform any necessary final packaging and publish ADP release
+  artifacts, in their various forms, to the relevant container registries and object storage. They _must_ be triggered
+  manually.
 - Once triggered, they should run to completion.
-- Once complete, you should be able to navigate to a public container image registry that we use, such as
-  [Docker Hub](https://hub.docker.com/r/datadog/agent-data-plane/tags), and find the resulting images: if the tag was
-  `0.2.0`, you should be able to see a recently-published image with a tag that looks like `0.2.0` and `0.2.0-fips`.
-- Finally, create a PR that bumps the version of ADP to the next development version. Again, see
-  ["Determining the version"](#determining-the-version) below for information on how we version ADP.
+- Once complete, you should be able to navigate to a public container image registry that we use, such as [Docker
+  Hub](https://hub.docker.com/r/datadog/agent-data-plane/tags), and find the resulting images: if the tag was `0.2.0`,
+  you should be able to see a recently-published image with a tag that looks like `0.2.0` and `0.2.0-fips`.
 
 ## Determining the version
 
@@ -52,15 +51,11 @@ version of the `agent-data-plane` crate. This is due to how we use the version o
 embedding static metadata in the ADP binaries. The version of the ADP binary can be found in the
 `bin/agent-data-plane/Cargo.toml` file, under the `version` field.
 
-In some cases, we may need to bump the version of ADP _prior_ to release if there are any breaking changes that will be included.
-See the subsection below on what constitutes a breaking change. In many cases, it will be sufficient to simply use the current
-version of the `agent-data-plane` crate.
-
 ### Determining the _next_ version
 
-In some cases, there be looking to release a new version with breaking changes, or we may be bumping ADP to the next development
-version and know that we will be introducing breaking changes. When deciding what version to bump to, we follow the
-[Semantic Versioning](https://semver.org/) specification. This means, in a nutshell:
+Normally, a CI job will run to bump the patch release of ADP after the Git tag is generated for the current release. In
+some cases, we may need to bump the minor or major version due to major/breaking changes. When deciding what minor/major
+version to bump to, we follow the [Semantic Versioning](https://semver.org/) specification. This means, in a nutshell:
 
 - prior to v1.0.0:
     - breaking changes are indicated by incrementing the minor version
