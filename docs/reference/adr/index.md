@@ -15,8 +15,9 @@ Adding a new ADR is a straightforward process:
 
 ## List of ADRs
 
-<ul>
+<ul v-if="records.length > 0">
   <li v-for="record of records">
     <a :href="record.url" v-html="record.pretty_title" />
   </li>
 </ul>
+<p v-else><b>No ADRs defined yet!</b></p>
