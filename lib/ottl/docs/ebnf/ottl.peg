@@ -1,0 +1,201 @@
+# ottl.peg — OTTL grammar in Parsing Expression Grammar (PEG) notation
+#
+# Conventions:
+#   <-   rule definition
+#   /    ordered choice (first match wins)
+#   *    zero or more (greedy)
+#   +    one or more (greedy)
+#   ?    optional (greedy)
+#   !e   not-predicate (succeeds iff e fails; consumes nothing)
+#   &e   and-predicate (succeeds iff e succeeds; consumes nothing)
+#   [...]  character class
+#   '...'  literal string
+#   .    any single character
+
+# ---------------------------------------------------------------------------
+# Whitespace
+# ---------------------------------------------------------------------------
+
+WS <- [ \t]*
+
+# ---------------------------------------------------------------------------
+# Top-level rule
+# ---------------------------------------------------------------------------
+
+Root <- WS (EditorInvocationStatement / BooleanExpression) WS !.
+
+# ---------------------------------------------------------------------------
+# Statements
+# ---------------------------------------------------------------------------
+
+EditorInvocationStatement <- EditorInvocation WhereClause?
+
+WhereClause <- WS 'where' !IdentChar WS BooleanExpression
+
+# ---------------------------------------------------------------------------
+# Function invocations
+# ---------------------------------------------------------------------------
+
+# Editor invocation: identifier starts with a lowercase letter.
+# Semantic rule: exactly one Editor invocation per statement.
+EditorInvocation <- LowerIdent WS '(' WS ArgList? WS ')'
+
+# Converter invocation: identifier starts with an uppercase letter;
+# result may be indexed.
+ConverterInvocation <- UpperIdent WS '(' WS ArgList? WS ')' Index*
+
+# Generic function invocation (converter or editor).
+# ConverterInvocation first: the two are disjoint on the leading character
+# (upper vs lower), but converters carry trailing Index* that must not be
+# missed.
+FunctionInvocation <- ConverterInvocation / EditorInvocation
+
+# ---------------------------------------------------------------------------
+# Arguments
+# ---------------------------------------------------------------------------
+
+# Simplified from the EBNF's positional-before-named ordering; the ordering
+# constraint is enforced semantically.
+ArgList  <- Arg (WS ',' WS Arg)*
+Arg      <- NamedArg / Value
+
+# !'=' distinguishes 'name = value' (named arg) from the '==' comparison
+# operator that could appear inside a Value.
+NamedArg <- LowerIdent WS '=' !'=' WS Value
+
+# ---------------------------------------------------------------------------
+# Values
+# ---------------------------------------------------------------------------
+
+# Restructured from the EBNF: MathExpression subsumes Literal, Path, and
+# FunctionInvocation (and therefore ConverterInvocation / EditorInvocation)
+# through MathPrimary.  List, Map, and Enum remain separate alternatives
+# because they are not part of math expressions.
+Value <- WS (List / Map / MathExpression / Enum) WS
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+
+# A path starts with a lowercase identifier (the context name), followed by
+# zero or more dotted segments and optional indexes.
+Path <- LowerIdent ('.' IdentSegment)* Index*
+
+IdentSegment <- LowerIdent / UpperIdent
+
+Index <- '[' WS (StringLiteral / IntLiteral) WS ']'
+
+# ---------------------------------------------------------------------------
+# Collections
+# ---------------------------------------------------------------------------
+
+List <- '[' WS (Value (WS ',' WS Value)*)? WS ']'
+
+Map <- '{' WS (MapEntry (WS ',' WS MapEntry)*)? WS '}'
+
+MapEntry <- StringLiteral WS ':' WS Value
+
+# ---------------------------------------------------------------------------
+# Literals
+# ---------------------------------------------------------------------------
+
+# Ordering rationale:
+#   BytesLiteral before FloatLiteral/IntLiteral — '0x...' starts with a
+#     digit and would otherwise be partially consumed as IntLiteral '0'.
+#   FloatLiteral before IntLiteral — '3.14' starts with digits; IntLiteral
+#     would greedily match '3' and leave '.14' unconsumed.
+#   BoolLiteral and NilLiteral use !IdentChar to prevent matching prefixes
+#     of longer identifiers (e.g. 'true_value').
+Literal <- StringLiteral / BytesLiteral / FloatLiteral / IntLiteral
+         / BoolLiteral / NilLiteral
+
+StringLiteral <- '"' (!'"' [\x20-\x7E])* '"'
+
+BytesLiteral <- '0x' [0-9a-fA-F]+
+
+FloatLiteral <- Sign? ([0-9]+ '.' [0-9]* / '.' [0-9]+)
+
+IntLiteral <- Sign? [0-9]+
+
+BoolLiteral <- ('true' / 'false') !IdentChar
+
+NilLiteral <- 'nil' !IdentChar
+
+Sign <- '+' / '-'
+
+# ---------------------------------------------------------------------------
+# Math expressions (precedence: unary +/- > * / > + -)
+# ---------------------------------------------------------------------------
+
+MathExpression <- MathTerm (WS ('+' / '-') WS MathTerm)*
+
+MathTerm <- MathFactor (WS ('*' / '/') WS MathFactor)*
+
+MathFactor <- ('+' / '-')? WS MathPrimary
+
+# FunctionInvocation replaces the EBNF's ConverterInvocation here so that
+# MathExpression subsumes both editor and converter invocations, avoiding
+# ordering conflicts in Value (see plan section 3).
+MathPrimary <- Literal / FunctionInvocation / Path
+             / '(' WS MathExpression WS ')'
+
+# ---------------------------------------------------------------------------
+# Boolean expressions (precedence: not > and > or)
+# ---------------------------------------------------------------------------
+
+BooleanExpression <- BooleanTerm (WS 'or' !IdentChar WS BooleanTerm)*
+
+BooleanTerm <- BooleanFactor (WS 'and' !IdentChar WS BooleanFactor)*
+
+BooleanFactor <- ('not' !IdentChar WS)? BooleanPrimary
+
+BooleanPrimary <- '(' WS BooleanExpression WS ')' / BooleanValue
+
+# Ordering rationale:
+#   Comparison first — so that 'true == false' is parsed as a comparison
+#     rather than consuming just 'true' as a BoolLiteral.
+#   ConverterInvocation before BoolLiteral — converters returning booleans
+#     (e.g. IsMatch) start with UpperIdent, disjoint from BoolLiteral.
+BooleanValue <- Comparison / ConverterInvocation / BoolLiteral
+
+Comparison <- Value WS CompOp WS Value
+
+# Multi-character operators before their single-character prefixes;
+# otherwise '<' would match before '<='.
+CompOp <- '<=' / '>=' / '==' / '!=' / '<' / '>'
+
+# ---------------------------------------------------------------------------
+# Character classes and identifiers
+# ---------------------------------------------------------------------------
+
+IdentChar <- [a-zA-Z0-9_]
+
+LowerIdent <- [a-z] IdentChar*
+
+UpperIdent <- [A-Z] IdentChar*
+
+# ---------------------------------------------------------------------------
+# Enum
+# ---------------------------------------------------------------------------
+
+# Enums: uppercase identifiers interpreted to int64 by a user-provided
+# EnumParser at parse-time.  Only uppercase letters, digits, and underscores
+# are allowed after the initial uppercase letter.
+Enum <- [A-Z] [A-Z0-9_]*
+
+# ---------------------------------------------------------------------------
+# Notes / semantics (not part of the formal grammar)
+# ---------------------------------------------------------------------------
+#
+# - Editors: identifiers must start with a lowercase letter; a statement
+#   must contain exactly one editor invocation.
+# - Converters: identifiers must start with an uppercase letter; may be
+#   followed by indexing using ["key"] or [0].
+# - Enums: uppercase identifiers interpreted to int64 by a user-provided
+#   EnumParser at parse-time.
+# - Math expressions follow typical precedence; mixing int64 and float64
+#   is a runtime error per LANGUAGE.md.
+# - The positional-before-named argument ordering constraint (present in
+#   the EBNF) is enforced semantically, not syntactically.
+# - Comparison rules, value typing, and indexing behaviors are governed by
+#   the host context implementation described in LANGUAGE.md.
