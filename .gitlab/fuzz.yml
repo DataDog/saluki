@@ -16,5 +16,9 @@ fuzz:infra:
     - apt-get update && apt-get install -y python3 python3-pip
     - pip3 install requests toml # parsing of cargo toml files
   script:
-    - python3 ci/fuzz_infra.py
+    # There's a bug with `cargo-fuzz` not actually respecting .cargo/config.toml where we normally
+    # define the unstable config flag for `tokio`, which we need to properly compile things.
+    #
+    # https://github.com/rust-fuzz/cargo-fuzz/issues/429
+    - RUSTFLAGS="${RUSTFLAGS:-} --cfg tokio_unstable" python3 ci/fuzz_infra.py
   allow_failure: true
