@@ -1,5 +1,8 @@
 # ottl.peg — OTTL grammar in Parsing Expression Grammar (PEG) notation
 #
+# Source: OpenTelemetry OTTL Go implementation
+#   (github.com/open-telemetry/opentelemetry-collector-contrib/pkg/ottl)
+#
 # Conventions:
 #   <-   rule definition
 #   /    ordered choice (first match wins)
@@ -16,28 +19,57 @@
 # Whitespace
 # ---------------------------------------------------------------------------
 
-WS <- [ \t]*
+# The implementation elides whitespace tokens between all grammar elements
+# (participle.Elide("whitespace")).  The lexer pattern is \s+, accepting
+# spaces, tabs, newlines, and other whitespace characters.  In this PEG,
+# WS is inserted explicitly between significant tokens.
+WS <- [ \t\n\r]*
 
 # ---------------------------------------------------------------------------
-# Top-level rule
+# Lexer tokens
 # ---------------------------------------------------------------------------
 
-# The implementation tries 3 alternatives in order (grammar.rs build_parser):
-#   1. EditorStatement — editor call with optional WHERE clause
-#   2. MathExpression with operators — to avoid expensive backtracking
-#      through BooleanExpression for inputs like "1 + 2"
-#   3. BooleanExpression — standalone boolean
-#
-# In PEG ordered-choice semantics, (2) is subsumed: if BooleanExpression
-# fails, MathExpression (4) still catches standalone math.  The !. at the
-# end ensures the entire input is consumed.
-Root <- WS (EditorInvocationStatement / BooleanExpression / MathExpression) WS !.
+# Function names are formed by concatenating adjacent tokens in the parser.
+# Path field names are always single LowerToken values.
+
+IdentChar  <- [a-zA-Z0-9_]
+
+LowerToken <- !ReservedKeyword [a-z] [a-z0-9_]*
+
+UpperToken <- [A-Z] [A-Z0-9_]*
+
+# ReservedKeyword covers tokens that the Go lexer emits as dedicated types
+# (not as Lowercase).  "where" is NOT reserved — it is a regular LowerToken
+# matched by string value in the WhereClause rule.
+ReservedKeyword <- ('and' / 'not' / 'or' / 'true' / 'false' / 'nil') !IdentChar
+
+# Function names: adjacent tokens concatenated without whitespace.
+EditorName    <- LowerToken (UpperToken / LowerToken)*
+ConverterName <- UpperToken (UpperToken / LowerToken)*
+
+# ---------------------------------------------------------------------------
+# Entry points
+# ---------------------------------------------------------------------------
+
+# The implementation provides three separate parsers (three entry points):
+#   1. parseStatement       — parses a Statement
+#   2. parseCondition       — parses a standalone BooleanExpression
+#   3. parseValueExpression — parses a standalone Value
+
+StatementRoot       <- WS Statement WS !.
+ConditionRoot       <- WS BooleanExpression WS !.
+ValueExpressionRoot <- WS Value WS !.
 
 # ---------------------------------------------------------------------------
 # Statements
 # ---------------------------------------------------------------------------
 
-EditorInvocationStatement <- EditorInvocation WhereClause?
+# The parser accepts both EditorInvocation and ConverterInvocation at
+# statement level syntactically.  If a ConverterInvocation matches, it is
+# rejected with a semantic error: "editor names must start with a lowercase
+# letter but got '<name>'".  This provides better error messages than a
+# parse failure.
+Statement <- (EditorInvocation / ConverterInvocation) WhereClause?
 
 WhereClause <- WS 'where' !IdentChar WS BooleanExpression
 
@@ -45,71 +77,99 @@ WhereClause <- WS 'where' !IdentChar WS BooleanExpression
 # Invocations
 # ---------------------------------------------------------------------------
 
-# Editor invocation: identifier starts with a lowercase letter.
+# Editor invocation: name starts with a lowercase token.
 # Semantic rule: exactly one editor invocation per statement.
-# Only appears at the root level — NOT inside value expressions.
-EditorInvocation <- LowerIdent WS '(' WS ArgList? WS ')'
+# Keys (Index*) are accepted syntactically but rejected semantically:
+# "only paths and converters may be indexed, not editors".
+EditorInvocation <- EditorName WS '(' WS ArgList? WS ')' Index*
 
-# Converter invocation: identifier starts with an uppercase letter;
-# result may be indexed.  Appears inside value expressions and boolean
-# contexts.
-ConverterInvocation <- UpperIdent WS '(' WS ArgList? WS ')' Index*
+# Converter invocation: name starts with an uppercase token.
+# May be followed by index accessors.
+ConverterInvocation <- ConverterName WS '(' WS ArgList? WS ')' Index*
 
 # ---------------------------------------------------------------------------
 # Arguments
 # ---------------------------------------------------------------------------
 
-# Argument values support math operators (the implementation wraps them in
-# make_math_expr).  Trailing comma is allowed (allow_trailing() in code).
-# The positional-before-named ordering constraint from the EBNF is enforced
-# semantically, not syntactically.
-ArgList <- Arg (WS ',' WS Arg)* (WS ',')?
-Arg     <- NamedArg / MathExpression
+ArgList <- Arg (WS ',' WS Arg)*
 
-# !'=' distinguishes 'name = value' (named arg) from the '==' comparison
-# operator that could appear inside a MathExpression.
-NamedArg <- LowerIdent WS '=' !'=' WS MathExpression
+# An argument is optionally named (EditorName '=' value) and is either
+# a Value or a bare FunctionName (function reference without invocation).
+# The '=' must not be followed by another '=' to avoid ambiguity with '=='.
+# Positional-before-named ordering is enforced semantically, not
+# syntactically.
+Arg <- (EditorName WS '=' !'=' WS)? (Value / FunctionName)
+
+# A bare converter/function name passed as an argument without invocation.
+# For example, Sha256 in: replace_pattern(attributes["message"], Sha256)
+FunctionName <- ConverterName
 
 # ---------------------------------------------------------------------------
-# Value expressions (no math operators)
+# Values
 # ---------------------------------------------------------------------------
 
-# ValueExpr is the basic building block for values.  It does NOT include
-# math binary/unary operators — those are layered on top by MathExpression
-# in contexts that support them (function arguments, comparisons, root).
+# The parser tries alternatives in this order (matching grammar.go's
+# value struct):
+#   1. NilLiteral
+#   2. MathExprLiteral — only when NOT followed by a math operator
+#   3. MathExpression  — when math operators follow
+#   4. BytesLiteral
+#   5. StringLiteral
+#   6. BoolLiteral
+#   7. Enum — UpperToken NOT followed by LowerToken
+#   8. Map
+#   9. List
+#
+# The negative lookahead in (2) is a parse-time optimization: it avoids
+# wrapping simple literals in a MathExpression AST node.  It does not
+# affect the set of strings the grammar accepts.
 #
 # Ordering rationale:
-#   ConverterInvocation before Enum — both start with UpperIdent, but
-#     converters require '(' so they are unambiguous.
-#   Literal before Path — BoolLiteral ('true'/'false') and NilLiteral
-#     ('nil') would otherwise be consumed as LowerIdent by Path.
-ValueExpr <- ConverterInvocation / List / Map / Enum / Literal / Path
+#   NilLiteral first — "nil" is a dedicated token, not a LowerToken.
+#   BytesLiteral before MathExpression — '0x...' starts with a digit and
+#     would otherwise be partially consumed as IntLiteral '0' in a PEG
+#     without a separate tokenizer.
+#   BoolLiteral after MathExpression — prevents "true" from being consumed
+#     by Path; LowerToken's !ReservedKeyword handles this.
+#   Enum uses UpperToken !(WS LowerToken) to distinguish from converter
+#     names.
+Value <- NilLiteral / BytesLiteral / MathExpression / StringLiteral
+       / BoolLiteral / Enum / Map / List
 
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
 
-# A path starts with a lowercase identifier (the context name), followed by
-# zero or more dotted segments and optional indexes.
-Path <- LowerIdent ('.' IdentSegment)* Index*
+# A path starts with an optional context (a LowerToken followed by '.'),
+# then one or more dot-separated fields.  Each field is a LowerToken
+# (lowercase letters, digits, underscores only) with zero or more index
+# accessors.
+#
+# Examples:
+#   attributes["foo"]           — no context, field "attributes" with key
+#   foo.attributes["bar"].cat   — context "foo", fields with keys
+#   foo.bar["x"]["y"].z         — multiple keys on a single field
+Path <- (LowerToken '.')? Field ('.' Field)*
 
-IdentSegment <- LowerIdent / UpperIdent
+Field <- LowerToken Index*
 
-Index <- '[' WS (StringLiteral / IntLiteral) WS ']'
+# Indexes support four kinds of access:
+#   - String key: ["foo"]
+#   - Integer index: [0]
+#   - Math expression: [Len(x) - 1]
+#   - Bare expression (path/converter): [attributes["key"]]
+Index <- '[' WS (StringLiteral / IntLiteral / MathExpression / MathExprLiteral) WS ']'
 
 # ---------------------------------------------------------------------------
 # Collections
 # ---------------------------------------------------------------------------
 
-# List and map elements use ValueExpr directly — the implementation does
-# NOT wrap them in make_math_expr, so "1 + 2" is not valid as a list
-# element.  Trailing commas are allowed.
+List <- '[' WS (Value (WS ',' WS Value)*)? WS ']'
 
-List <- '[' WS (ValueExpr (WS ',' WS ValueExpr)* (WS ',')?)? WS ']'
-
+# Trailing commas are accepted after map entries.
 Map <- '{' WS (MapEntry (WS ',' WS MapEntry)* (WS ',')?)? WS '}'
 
-MapEntry <- StringLiteral WS ':' WS ValueExpr
+MapEntry <- StringLiteral WS ':' WS Value
 
 # ---------------------------------------------------------------------------
 # Literals
@@ -123,24 +183,16 @@ MapEntry <- StringLiteral WS ':' WS ValueExpr
 #   BoolLiteral and NilLiteral use !IdentChar to prevent matching prefixes
 #     of longer identifiers (e.g. 'true_value').
 #
-# The lexer tokens for floats and ints carry no sign.  The literal_parser
-# in grammar.rs adds an optional leading '-' (but not '+').  FloatLiteral
-# and IntLiteral below are unsigned (matching the lexer tokens); the '-'?
-# here mirrors literal_parser.  In math contexts, MathFactor provides both
-# '+' and '-' as unary operators on top.
-#
-# Index uses IntLiteral directly (unsigned) because the index_parser does
-# not accept a Minus token.
-Literal <- StringLiteral / BytesLiteral / '-'? FloatLiteral / '-'? IntLiteral
-         / BoolLiteral / NilLiteral
+# The lexer tokens for floats and ints carry no sign.  Signs are handled
+# as unary operators in MathFactor.  Literals here are always unsigned.
 
-# The lexer regex is: "[^"\\]*(?:\\.[^"\\]*)*"
-# This supports backslash escape sequences (\", \\, etc.).
-StringLiteral <- '"' ('\\' [\x20-\x7E] / !('"' / '\\') [\x20-\x7E])* '"'
+StringLiteral <- '"' ('\\' . / !'"' !'\\' .)* '"'
 
 BytesLiteral <- '0x' [0-9a-fA-F]+
 
-FloatLiteral <- [0-9]+ '.' [0-9]* / '.' [0-9]+
+# Supports scientific notation.  Lexer regex:
+#   (\d+\.\d*|\d*\.\d+)([eE][-+]?\d+)?
+FloatLiteral <- ([0-9]+ '.' [0-9]* / '.' [0-9]+) ([eE] [+\-]? [0-9]+)?
 
 IntLiteral <- [0-9]+
 
@@ -158,11 +210,18 @@ MathTerm <- MathFactor (WS ('*' / '/') WS MathFactor)*
 
 MathFactor <- ('+' / '-')? WS MathPrimary
 
-# MathPrimary delegates to ValueExpr for all non-parenthesized primaries.
-# This matches the implementation where make_math_expr's 'primary' is
-# choice((paren_math, math_literal, math_value)) — the latter two are
-# subsumed by ValueExpr.
-MathPrimary <- '(' WS MathExpression WS ')' / ValueExpr
+MathPrimary <- '(' WS MathExpression WS ')' / MathExprLiteral
+
+# MathExprLiteral covers values that can appear in math contexts:
+# function invocations, numeric literals, and paths.
+#
+# Ordering: EditorInvocation and ConverterInvocation before numeric
+# literals and paths because function names start with letters (disjoint
+# from digits); FloatLiteral before IntLiteral (see Literal ordering
+# rationale); BytesLiteral is NOT included — bytes cannot participate
+# in math.
+MathExprLiteral <- EditorInvocation / ConverterInvocation
+                 / FloatLiteral / IntLiteral / Path
 
 # ---------------------------------------------------------------------------
 # Boolean expressions (precedence: not > and > or)
@@ -176,61 +235,66 @@ BooleanFactor <- ('not' !IdentChar WS)? BooleanPrimary
 
 BooleanPrimary <- '(' WS BooleanExpression WS ')' / BooleanValue
 
-# Ordering matches the implementation's bool_primary choice order:
+# Ordering matches the implementation's choice order:
 #   Comparison first — so that 'true == false' is parsed as a comparison
 #     rather than consuming just 'true' as a BoolLiteral.
-#   BoolLiteral next — catches bare 'true' / 'false'.
-#   ConverterInvocation — e.g. IsMatch(...) returning boolean; starts with
-#     UpperIdent, disjoint from BoolLiteral.
-#   Path — bare path used as a truthy value (BoolExpr::Path in the AST).
-BooleanValue <- Comparison / BoolLiteral / ConverterInvocation / Path
+#   ConstExpr next — catches bare 'true'/'false' and converter calls
+#     (e.g. IsMatch(...)) returning boolean.
+#
+# Note: bare paths are NOT valid as boolean values.  The test
+# `{condition: "animal", wantErr: true}` confirms this.
+BooleanValue <- Comparison / ConstExpr
 
-# Comparison operands are MathExpressions (the implementation wraps them
-# via make_math_expr), so '1 + 2 == 3' is valid.
-Comparison <- MathExpression WS CompOp WS MathExpression
+ConstExpr <- BoolLiteral / ConverterInvocation
+
+# Comparison operands are full Values (which include MathExpressions),
+# so '1 + 2 == 3' is valid.
+Comparison <- Value WS CompOp WS Value
 
 # Multi-character operators before their single-character prefixes;
 # otherwise '<' would match before '<='.
 CompOp <- '<=' / '>=' / '==' / '!=' / '<' / '>'
 
 # ---------------------------------------------------------------------------
-# Character classes, identifiers, and keywords
-# ---------------------------------------------------------------------------
-
-IdentChar <- [a-zA-Z0-9_]
-
-# Keywords are reserved words that the lexer emits as dedicated tokens
-# (not as LowerIdent).  LowerIdent must not match these.
-Keyword <- ('where' / 'and' / 'not' / 'or' / 'true' / 'false' / 'nil') !IdentChar
-
-LowerIdent <- !Keyword [a-z] IdentChar*
-
-UpperIdent <- [A-Z] IdentChar*
-
-# ---------------------------------------------------------------------------
 # Enum
 # ---------------------------------------------------------------------------
 
-# In the implementation, enum_parser uses ident_parser(true) — any
-# UpperIdent — then validates against the EnumMap at parse time.
-# The EBNF restricts enums to uppercase/digit/underscore, but the code
-# accepts any UpperIdent syntactically.  Semantic validation rejects
-# unknown names.
-Enum <- UpperIdent
+# An Enum is an UpperToken NOT immediately followed (possibly through
+# whitespace) by a LowerToken.  This distinguishes enums (SHA256,
+# TEST_ENUM, S) from the beginning of converter function names
+# (Sha256 = UpperToken "S" + LowerToken "ha256").
+#
+# The lookahead looks through whitespace to match the Go implementation's
+# behavior, where the lexer elides whitespace before the participle
+# parser checks (?! Lowercase) on the token stream.
+#
+# Enum values are validated against a user-provided EnumParser at parse
+# time; unknown names cause a parse error.
+Enum <- UpperToken !(WS LowerToken)
 
 # ---------------------------------------------------------------------------
 # Notes / semantics (not part of the formal grammar)
 # ---------------------------------------------------------------------------
 #
-# - Editors: identifiers must start with a lowercase letter; a statement
-#   must contain exactly one editor invocation.
-# - Converters: identifiers must start with an uppercase letter; may be
-#   followed by indexing using ["key"] or [0].
-# - Enums: any UpperIdent validated against a user-provided EnumMap at
-#   parse time; unknown names cause a parse error.
-# - Math expressions follow typical precedence; mixing int64 and float64
-#   is a runtime error per LANGUAGE.md.
-# - The positional-before-named argument ordering constraint (present in
-#   the EBNF) is enforced semantically, not syntactically.
+# - Editors: names start with a lowercase token; a statement must contain
+#   exactly one editor invocation at the root.
+# - Converters: names start with an uppercase token; may be followed by
+#   index accessors using ["key"] or [0].
+# - Enums: UpperToken not followed by LowerToken, validated against a
+#   user-provided EnumParser at parse time; unknown names cause a parse
+#   error.
+# - Math expressions follow typical precedence (unary +/- > * / > + -);
+#   mixing int64 and float64 is a runtime error per LANGUAGE.md.
+# - The positional-before-named argument ordering constraint is enforced
+#   semantically, not syntactically.
 # - Comparison rules, value typing, and indexing behaviors are governed by
 #   the host context implementation described in LANGUAGE.md.
+# - "where" is NOT a reserved keyword — it is a regular LowerToken that
+#   is matched by string value in the WhereClause rule.  It can appear as
+#   a path field name in contexts where the grammar does not expect it as
+#   a clause keyword.
+# - The lexer splits identifiers at case boundaries.  For example,
+#   "deleteKey" becomes "delete" (LowerToken) + "Key" (UpperToken).
+#   Function names are assembled by concatenating adjacent tokens.
+#   Path field names are always single LowerToken values (lowercase
+#   letters, digits, and underscores only).
