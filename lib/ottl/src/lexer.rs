@@ -2,7 +2,7 @@ use logos::Logos;
 
 /// OTTL language tokens
 #[derive(Logos, Debug, PartialEq, Eq, Clone, Hash)]
-#[logos(skip r"[ \t]+")] // Skip spaces and tabs
+#[logos(skip r"[ \t\n\r]+")] // Skip whitespace: spaces, tabs, newlines, carriage returns
 pub enum Token<'a> {
     // ===== Keywords =====
     #[token("where")]
@@ -90,7 +90,8 @@ pub enum Token<'a> {
     Assign,
 
     // ===== Literals =====
-    /// String literal: "..."
+    /// String literal: `"`, { ESCAPE_SEQ | STRING_CHAR }, `"`
+    /// where ESCAPE_SEQ = `\` + any char, STRING_CHAR = any char except `"` and `\`.
     #[regex(r#""[^"\\]*(?:\\.[^"\\]*)*""#, |lex| lex.slice())]
     StringLiteral(&'a str),
 
@@ -98,8 +99,8 @@ pub enum Token<'a> {
     #[regex(r"0x[0-9a-fA-F]+", |lex| lex.slice())]
     BytesLiteral(&'a str),
 
-    /// Float literal: 6.14, .5
-    #[regex(r"[0-9]+\.[0-9]*|\.[0-9]+", |lex| lex.slice())]
+    /// Float literal: 6.14, .5, 1.0e10, .5E-3
+    #[regex(r"(?:[0-9]+\.[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", |lex| lex.slice())]
     FloatLiteral(&'a str),
 
     /// Integer literal: 42, 10, 5

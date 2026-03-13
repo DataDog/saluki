@@ -103,17 +103,24 @@ impl<F: EvalContextFamily> AstArena<F> {
 // =====================================================================================================================
 
 /// Helper to resolve a PathExpr to ResolvedPath at parse time.
-/// Looks up the path in path_resolvers; returns error if no resolver is provided for this path.
+///
+/// Builds the resolver-map key by joining field names with dots (ignoring per-field keys),
+/// so existing resolver registrations like `"attributes"` or `"resource.attributes"` continue
+/// to work unchanged.
 fn resolve_path<F: EvalContextFamily>(path: &PathExpr, path_resolvers: &PathResolverMap<F>) -> Result<ResolvedPath<F>> {
-    let full_path = path.segments.join(".");
+    let key: String = path
+        .fields
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect::<Vec<_>>()
+        .join(".");
     let resolver = path_resolvers
-        .get(&full_path)
-        .ok_or_else(|| format!("No PathResolver provided for path \"{}\"", full_path))?;
+        .get(&key)
+        .ok_or_else(|| format!("No PathResolver provided for path \"{}\"", key))?;
     let accessor = resolver()?;
     Ok(ResolvedPath {
-        full_path,
+        fields: path.fields.clone(),
         accessor,
-        indexes: path.indexes.clone(),
     })
 }
 

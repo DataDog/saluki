@@ -36,6 +36,7 @@ mod parser;
 mod tests;
 
 // Re-export from submodules
+pub use parser::Field;
 pub use parser::IndexExpr;
 pub use parser::Parser;
 
@@ -147,27 +148,30 @@ pub enum Argument {
 
 /// Trait for accessing (reading and writing) path values in the context.
 ///
-/// The evaluator calls [`get`](PathAccessor::get) and [`set`](PathAccessor::set) with the path
-/// and index list; path interpretation and indexing (e.g. `["key"]`, `[0]`) are the integrator's
-/// responsibility.
+/// The evaluator calls [`get`](PathAccessor::get) and [`set`](PathAccessor::set) with a slice
+/// of [`Field`]s representing the structured path. Each field carries its own name and index
+/// keys; path interpretation is the integrator's responsibility.
+///
+/// The `fields` slice is pre-allocated at parse time and passed by reference at execution time,
+/// so the hot path involves **zero allocation and zero copy**.
 ///
 /// The type parameter `F` is the [`EvalContextFamily`] that determines the concrete context type.
 /// The lifetime on `F::Context<'a>` is introduced per method call, so `PathAccessor<F>` itself
 /// carries no lifetime and can be stored in `Arc<dyn PathAccessor<F>>`.
 pub trait PathAccessor<F: EvalContextFamily>: fmt::Debug + Send + Sync {
-    /// Get the value at this path with the given indexes applied.
+    /// Get the value at this path.
     ///
+    /// `fields` contains the structured path segments with per-field index keys.
     /// Path interpretation, including indexing (e.g. `["key"]`, `[0]`), is **not** implemented by
-    /// OTTL; the integrator must implement this method. For a typical "get base value then apply
-    /// indexes" implementation, use [`crate::helpers::apply_indexes`].
-    fn get<'a>(&self, ctx: &F::Context<'a>, path: &str, indexes: &[IndexExpr]) -> Result<Value>;
+    /// OTTL; the integrator must implement this method. For applying index keys to a value, use
+    /// [`crate::helpers::apply_indexes`].
+    fn get<'a>(&self, ctx: &F::Context<'a>, fields: &[Field]) -> Result<Value>;
 
-    /// Set the value at this path with the given indexes applied.
+    /// Set the value at this path.
     ///
-    /// When `indexes` is empty, the implementor sets the value at the path. When `indexes` is
-    /// non-empty (e.g. `my.list[0] = x`), the implementor may support updating at that index
-    /// or return an error.
-    fn set<'a>(&self, ctx: &mut F::Context<'a>, path: &str, indexes: &[IndexExpr], value: &Value) -> Result<()>;
+    /// `fields` contains the structured path segments with per-field index keys.
+    /// The integrator decides how to interpret the field chain and which keys to honour.
+    fn set<'a>(&self, ctx: &mut F::Context<'a>, fields: &[Field], value: &Value) -> Result<()>;
 }
 
 /// Type alias for the path resolver function.

@@ -7,7 +7,7 @@
 //! - `eval`: AST evaluation functions
 
 mod arena;
-mod ast;
+pub(crate) mod ast;
 mod eval;
 mod grammar;
 mod ops;
