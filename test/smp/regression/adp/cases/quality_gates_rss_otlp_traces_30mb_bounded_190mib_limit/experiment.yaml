@@ -4,7 +4,7 @@ target:
   name: agent-data-plane
   command: /maybe-profile.sh /usr/local/bin/agent-data-plane --config /etc/agent-data-plane/empty.yaml run
   cpu_allotment: 4
-  memory_allotment: 500 MiB
+  memory_allotment: 600 MiB
   environment:
     DD_HOSTNAME: smp-regression
     DD_API_KEY: foo00000001
