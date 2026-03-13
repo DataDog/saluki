@@ -98,8 +98,8 @@ pub enum Token<'a> {
     #[regex(r"0x[0-9a-fA-F]+", |lex| lex.slice())]
     BytesLiteral(&'a str),
 
-    /// Float literal: 6.14, .5
-    #[regex(r"[0-9]+\.[0-9]*|\.[0-9]+", |lex| lex.slice())]
+    /// Float literal: 6.14, .5, 1.0e10, .5E-3
+    #[regex(r"(?:[0-9]+\.[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", |lex| lex.slice())]
     FloatLiteral(&'a str),
 
     /// Integer literal: 42, 10, 5

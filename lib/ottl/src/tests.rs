@@ -146,14 +146,24 @@ fn test_signed_int_literal() {
 #[test]
 fn test_float_literal() {
     // Note: Signs are now separate tokens, handled by the parser
-    let tokens = collect_tokens("6.18 .5");
-    assert_eq!(tokens, vec![Token::FloatLiteral("6.18"), Token::FloatLiteral(".5"),]);
+    let tokens = collect_tokens("6.18 .5 1.0e10 .5E-3 2.e+1 3.14e2");
+    assert_eq!(
+        tokens,
+        vec![
+            Token::FloatLiteral("6.18"),
+            Token::FloatLiteral(".5"),
+            Token::FloatLiteral("1.0e10"),
+            Token::FloatLiteral(".5E-3"),
+            Token::FloatLiteral("2.e+1"),
+            Token::FloatLiteral("3.14e2"),
+        ]
+    );
 }
 
 #[test]
 fn test_signed_float_literal() {
     // Signs are separate tokens
-    let tokens = collect_tokens("-2.0 +0.1");
+    let tokens = collect_tokens("-2.0 +0.1 -1.5e10 +.3E-2");
     assert_eq!(
         tokens,
         vec![
@@ -161,6 +171,10 @@ fn test_signed_float_literal() {
             Token::FloatLiteral("2.0"),
             Token::Plus,
             Token::FloatLiteral("0.1"),
+            Token::Minus,
+            Token::FloatLiteral("1.5e10"),
+            Token::Plus,
+            Token::FloatLiteral(".3E-2"),
         ]
     );
 }
@@ -497,6 +511,7 @@ fn test_parser_math_expression() {
     let enums = EnumMap::new();
     let path_resolvers = empty_path_resolver_map();
 
+    // Integer math: -1 + 2*10 - 10/5 - (1+3*2) = -1 + 20 - 2 - 7 = 10
     let parser = Parser::new(
         &editors,
         &converters,
@@ -504,16 +519,57 @@ fn test_parser_math_expression() {
         &path_resolvers,
         "-1+   2*10 - 10/5 - (1+3*2)",
     );
-
-    // Check no parsing errors
     if let Err(e) = parser.is_error() {
         panic!("Parser error: {}", e);
     }
-
-    // Execute and check result
     let result = parser.execute(&mut ());
     assert!(result.is_ok(), "Execution should succeed: {:?}", result);
     assert_eq!(result.unwrap(), Value::Int(10));
+
+    // Float with scientific notation: 1.0e2 + .5E1 - 2.e+1 = 100.0 + 5.0 - 20.0 = 85.0
+    let parser = Parser::new(
+        &editors,
+        &converters,
+        &enums,
+        &path_resolvers,
+        "1.0e2 + .5E1 - 2.e+1",
+    );
+    if let Err(e) = parser.is_error() {
+        panic!("Parser error (scientific notation): {}", e);
+    }
+    let result = parser.execute(&mut ());
+    assert!(result.is_ok(), "Execution should succeed: {:?}", result);
+    assert_eq!(result.unwrap(), Value::Float(85.0));
+
+    // Mixed plain and scientific floats: 2.5 * 1.0e1 + .25E2 = 25.0 + 25.0 = 50.0
+    let parser = Parser::new(
+        &editors,
+        &converters,
+        &enums,
+        &path_resolvers,
+        "2.5 * 1.0e1 + .25E2",
+    );
+    if let Err(e) = parser.is_error() {
+        panic!("Parser error (mixed floats): {}", e);
+    }
+    let result = parser.execute(&mut ());
+    assert!(result.is_ok(), "Execution should succeed: {:?}", result);
+    assert_eq!(result.unwrap(), Value::Float(50.0));
+
+    // Negative exponent: 5.0e-1 + 2.5e-1 = 0.5 + 0.25 = 0.75
+    let parser = Parser::new(
+        &editors,
+        &converters,
+        &enums,
+        &path_resolvers,
+        "5.0e-1 + 2.5e-1",
+    );
+    if let Err(e) = parser.is_error() {
+        panic!("Parser error (negative exponent): {}", e);
+    }
+    let result = parser.execute(&mut ());
+    assert!(result.is_ok(), "Execution should succeed: {:?}", result);
+    assert_eq!(result.unwrap(), Value::Float(0.75));
 }
 
 #[test]
