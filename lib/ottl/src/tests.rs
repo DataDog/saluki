@@ -113,12 +113,43 @@ fn test_delimiters() {
 fn test_string_literal() {
     let tokens = collect_tokens(r#""hello world""#);
     assert_eq!(tokens, vec![Token::StringLiteral(r#""hello world""#)]);
+
+    // Empty string
+    let tokens = collect_tokens(r#""""#);
+    assert_eq!(tokens, vec![Token::StringLiteral(r#""""#)]);
+
+    // Non-ASCII / UTF-8 characters
+    let tokens = collect_tokens(r#""кириллица 日本語 🎉""#);
+    assert_eq!(tokens, vec![Token::StringLiteral(r#""кириллица 日本語 🎉""#)]);
+
+    // All printable ASCII special characters
+    let tokens = collect_tokens(r#""!@#$%^&*()_+-=[]{}|;':,./<>?~`""#);
+    assert_eq!(
+        tokens,
+        vec![Token::StringLiteral(r#""!@#$%^&*()_+-=[]{}|;':,./<>?~`""#)]
+    );
 }
 
 #[test]
 fn test_string_with_escape() {
+    // Escaped quotes
     let tokens = collect_tokens(r#""hello \"world\"""#);
     assert_eq!(tokens, vec![Token::StringLiteral(r#""hello \"world\"""#)]);
+
+    // Common escape sequences: \n, \t, \r, \\
+    let tokens = collect_tokens(r#""line1\nline2\ttab\r\\backslash""#);
+    assert_eq!(
+        tokens,
+        vec![Token::StringLiteral(r#""line1\nline2\ttab\r\\backslash""#)]
+    );
+
+    // String consisting entirely of escape sequences
+    let tokens = collect_tokens(r#""\\\"\n\t""#);
+    assert_eq!(tokens, vec![Token::StringLiteral(r#""\\\"\n\t""#)]);
+
+    // Escaped arbitrary character (EBNF: '\\', ? any character ?)
+    let tokens = collect_tokens(r#""\a\b\z\1\!""#);
+    assert_eq!(tokens, vec![Token::StringLiteral(r#""\a\b\z\1\!""#)]);
 }
 
 #[test]

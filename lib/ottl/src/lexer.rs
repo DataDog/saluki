@@ -90,7 +90,8 @@ pub enum Token<'a> {
     Assign,
 
     // ===== Literals =====
-    /// String literal: "..."
+    /// String literal: `"`, { ESCAPE_SEQ | STRING_CHAR }, `"`
+    /// where ESCAPE_SEQ = `\` + any char, STRING_CHAR = any char except `"` and `\`.
     #[regex(r#""[^"\\]*(?:\\.[^"\\]*)*""#, |lex| lex.slice())]
     StringLiteral(&'a str),
 
