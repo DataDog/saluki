@@ -4,7 +4,7 @@ target:
   name: agent-data-plane
   command: /maybe-profile.sh /usr/local/bin/agent-data-plane --config /etc/agent-data-plane/empty.yaml run
   cpu_allotment: 4
-  memory_allotment: 500 MiB
+  memory_allotment: 600 MiB
   environment:
     DD_HOSTNAME: smp-regression
     DD_API_KEY: foo00000001
@@ -16,7 +16,7 @@ target:
     DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR: tcp://127.0.0.1:5102
     DD_DATA_PLANE_OTLP_ENABLED: "true"
     DD_OTLP_CONFIG: "{}"
-    DD_MEMORY_LIMIT: 250MiB
+    DD_MEMORY_LIMIT: 300MiB
     DD_MEMORY_SLOP_FACTOR: "0.2"
   profiling_environment:
     SMP_PROFILING_ENABLED: "true"
@@ -29,7 +29,7 @@ checks:
   description: Acceptable upper bound on the memory used by ADP when handling bounded 30 MiB OTLP traces traffic.
   bounds:
     series: total_pss_bytes
-    upper_bound: 250 MiB
+    upper_bound: 300 MiB
 report_links:
 - text: (metrics)
   link: https://app.datadoghq.com/dashboard/4br-nxz-khi?fromUser=true&refresh_mode=paused&tpl_var_adp-run-id%5B0%5D={{ job_id
