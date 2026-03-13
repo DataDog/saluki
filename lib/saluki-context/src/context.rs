@@ -90,6 +90,63 @@ impl Context {
         }
     }
 
+    /// Clones this context, and uses the given tags for the cloned context.
+    ///
+    /// The name and origin tags of this context are preserved.
+    pub fn with_tags(&self, tags: SharedTagSet) -> Self {
+        let name = self.inner.name.clone();
+        let origin_tags = self.inner.origin_tags.clone();
+        let (key, _) = hash_context(&name, &tags, &origin_tags);
+
+        Self {
+            inner: Arc::new(ContextInner {
+                name,
+                tags,
+                origin_tags,
+                key,
+                active_count: Gauge::noop(),
+            }),
+        }
+    }
+
+    /// Clones this context, and uses the given origin tags for the cloned context.
+    ///
+    /// The name and instrumented tags of this context are preserved.
+    pub fn with_origin_tags(&self, origin_tags: SharedTagSet) -> Self {
+        let name = self.inner.name.clone();
+        let tags = self.inner.tags.clone();
+        let (key, _) = hash_context(&name, &tags, &origin_tags);
+
+        Self {
+            inner: Arc::new(ContextInner {
+                name,
+                tags,
+                origin_tags,
+                key,
+                active_count: Gauge::noop(),
+            }),
+        }
+    }
+
+    /// Clones this context, replacing both instrumented tags and origin tags in a single allocation.
+    ///
+    /// Preferred over two separate `with_tags` / `with_origin_tags` calls when both sets need to
+    /// be replaced, as it halves the number of `Arc` allocations.
+    pub fn with_tags_and_origin_tags(&self, tags: SharedTagSet, origin_tags: SharedTagSet) -> Self {
+        let name = self.inner.name.clone();
+        let (key, _) = hash_context(&name, &tags, &origin_tags);
+
+        Self {
+            inner: Arc::new(ContextInner {
+                name,
+                tags,
+                origin_tags,
+                key,
+                active_count: Gauge::noop(),
+            }),
+        }
+    }
+
     pub(crate) fn from_inner(inner: ContextInner) -> Self {
         Self { inner: Arc::new(inner) }
     }
