@@ -2,7 +2,10 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Through
 use saluki_components::transforms::tag_filterlist::{
     compile_filters, filter_metric_tags, CompiledFilters, FilterAction, MetricTagFilterEntry,
 };
-use saluki_context::Context;
+use saluki_context::{
+    tags::{Tag, TagSet},
+    Context,
+};
 use saluki_core::data_model::event::metric::Metric;
 
 // ---------------------------------------------------------------------------
@@ -21,8 +24,22 @@ fn make_tags_static(n: usize) -> Vec<&'static str> {
         .collect()
 }
 
+fn make_origin_tags_static(n: usize) -> Vec<&'static str> {
+    (0..n)
+        .map(|i| Box::leak(format!("orig_tag{i}:val{i}").into_boxed_str()) as &'static str)
+        .collect()
+}
+
 fn distribution_metric(name: &'static str, tags: &[&'static str]) -> Metric {
     Metric::distribution(Context::from_static_parts(name, tags), 1.0)
+}
+
+fn distribution_metric_with_origin_tags(
+    name: &'static str, tags: &[&'static str], origin_tags: &[&'static str],
+) -> Metric {
+    let origin_tag_set: TagSet = origin_tags.iter().map(|s| Tag::from(*s)).collect();
+    let context = Context::from_static_parts(name, tags).with_origin_tags(origin_tag_set.into_shared());
+    Metric::distribution(context, 1.0)
 }
 
 fn counter_metric(name: &'static str, tags: &[&'static str]) -> Metric {
@@ -58,26 +75,38 @@ fn bench_exclude(c: &mut Criterion) {
     let cases: &[(&str, usize, &[usize])] = &[
         // at most half of configured keys match the metric's tags (realistic: over-specified configs)
         // tag keys ≥ n do not exist on the metric
-        ("10tags_exclude5",  10,  &[0, 2, 10, 12, 14]),          // 2/5  match
-        ("10tags_exclude50", 10,  &[0,1,2,3,4,5,6,7,8,9,        // 10/50 match
-                                     10,11,12,13,14,15,16,17,18,19,
-                                     20,21,22,23,24,25,26,27,28,29,
-                                     30,31,32,33,34,35,36,37,38,39,
-                                     40,41,42,43,44,45,46,47,48,49]),
-        ("50tags_exclude5",  50,  &[0, 10, 50, 60, 70]),          // 2/5  match
-        ("50tags_exclude50", 50,  &[0,2,4,6,8,10,12,14,16,18,   // 25/50 match (even 0-48 ∩ metric)
-                                     20,22,24,26,28,30,32,34,36,38,
-                                     40,42,44,46,48,
-                                     50,52,54,56,58,60,62,64,66,68, // these don't exist on metric
-                                     70,72,74,76,78,80,82,84,86,88,
-                                     90,92,94,96,98]),
-        ("100tags_exclude5",  100, &[0, 50, 100, 110, 120]),      // 2/5  match
-        ("100tags_exclude50", 100, &[0,4,8,12,16,20,24,28,32,36, // 25/50 match (every 4th 0-96)
-                                      40,44,48,52,56,60,64,68,72,76,
-                                      80,84,88,92,96,
-                                      100,104,108,112,116,120,124,128,132,136, // don't exist
-                                      140,144,148,152,156,160,164,168,172,176,
-                                      180,184,188,192,196]),
+        ("10tags_exclude5", 10, &[0, 2, 10, 12, 14]), // 2/5  match
+        (
+            "10tags_exclude50",
+            10,
+            &[
+                0, 1, 2, 3, 4, 5, 6, 7, 8, 9, // 10/50 match
+                10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
+                36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49,
+            ],
+        ),
+        ("50tags_exclude5", 50, &[0, 10, 50, 60, 70]), // 2/5  match
+        (
+            "50tags_exclude50",
+            50,
+            &[
+                0, 2, 4, 6, 8, 10, 12, 14, 16, 18, // 25/50 match (even 0-48 ∩ metric)
+                20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 42, 44, 46, 48, 50, 52, 54, 56, 58, 60, 62, 64, 66,
+                68, // these don't exist on metric
+                70, 72, 74, 76, 78, 80, 82, 84, 86, 88, 90, 92, 94, 96, 98,
+            ],
+        ),
+        ("100tags_exclude5", 100, &[0, 50, 100, 110, 120]), // 2/5  match
+        (
+            "100tags_exclude50",
+            100,
+            &[
+                0, 4, 8, 12, 16, 20, 24, 28, 32, 36, // 25/50 match (every 4th 0-96)
+                40, 44, 48, 52, 56, 60, 64, 68, 72, 76, 80, 84, 88, 92, 96, 100, 104, 108, 112, 116, 120, 124, 128,
+                132, 136, // don't exist
+                140, 144, 148, 152, 156, 160, 164, 168, 172, 176, 180, 184, 188, 192, 196,
+            ],
+        ),
     ];
 
     let mut group = c.benchmark_group("tag_filterlist/exclude");
@@ -105,8 +134,8 @@ fn bench_exclude(c: &mut Criterion) {
 
 fn bench_include(c: &mut Criterion) {
     let cases: &[(&str, usize, &[usize])] = &[
-        ("10tags_include2",  10,  &[2, 7]),
-        ("10tags_include5",  10,  &[0, 2, 4, 6, 8]),
+        ("10tags_include2", 10, &[2, 7]),
+        ("10tags_include5", 10, &[0, 2, 4, 6, 8]),
         ("100tags_include2", 100, &[20, 80]),
         ("100tags_include5", 100, &[10, 30, 50, 70, 90]),
     ];
@@ -221,7 +250,10 @@ fn bench_compile_filters(c: &mut Criterion) {
             .map(|i| MetricTagFilterEntry {
                 metric_name: format!("metric.{i}"),
                 action: FilterAction::Exclude,
-                tags: make_tags(5).into_iter().map(|s| s.split(':').next().unwrap().to_string()).collect(),
+                tags: make_tags(5)
+                    .into_iter()
+                    .map(|s| s.split(':').next().unwrap().to_string())
+                    .collect(),
             })
             .collect();
 
@@ -233,6 +265,111 @@ fn bench_compile_filters(c: &mut Criterion) {
     group.finish();
 }
 
+// ---------------------------------------------------------------------------
+// Benchmark: origin_tags exclude with varying origin tag-set sizes
+// ---------------------------------------------------------------------------
+
+fn bench_origin_tags_exclude(c: &mut Criterion) {
+    let sizes = [10usize, 50, 100];
+    let tags_static = make_tags_static(5);
+
+    let mut group = c.benchmark_group("tag_filterlist/origin_tags_exclude");
+    for &n in &sizes {
+        let origin_tags_static = make_origin_tags_static(n);
+        // Exclude the first third of orig_tag keys.
+        let excluded: Vec<String> = (0..n / 3).map(|i| format!("orig_tag{i}")).collect();
+        let excluded_refs: Vec<&str> = excluded.iter().map(|s| s.as_str()).collect();
+        let filters = compile_filters(&exclude_filter("bench.dist", &excluded_refs));
+
+        group.throughput(Throughput::Elements(1));
+        group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            b.iter(|| {
+                let mut metric = distribution_metric_with_origin_tags("bench.dist", &tags_static, &origin_tags_static);
+                filter_metric_tags(&mut metric, &filters);
+                metric
+            });
+        });
+    }
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
+// Benchmark: origin_tags include with varying origin tag-set sizes
+// ---------------------------------------------------------------------------
+
+fn bench_origin_tags_include(c: &mut Criterion) {
+    let sizes = [10usize, 50, 100];
+    let tags_static = make_tags_static(5);
+
+    let mut group = c.benchmark_group("tag_filterlist/origin_tags_include");
+    for &n in &sizes {
+        let origin_tags_static = make_origin_tags_static(n);
+        // Keep only the first third of orig_tag keys.
+        let included: Vec<String> = (0..n / 3).map(|i| format!("orig_tag{i}")).collect();
+        let included_refs: Vec<&str> = included.iter().map(|s| s.as_str()).collect();
+        let filters = compile_filters(&include_filter("bench.dist", &included_refs));
+
+        group.throughput(Throughput::Elements(1));
+        group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            b.iter(|| {
+                let mut metric = distribution_metric_with_origin_tags("bench.dist", &tags_static, &origin_tags_static);
+                filter_metric_tags(&mut metric, &filters);
+                metric
+            });
+        });
+    }
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
+// Benchmark: origin_tags passthrough (fast path — no origin_tags on metric)
+// ---------------------------------------------------------------------------
+
+fn bench_origin_tags_passthrough(c: &mut Criterion) {
+    let tags_static = make_tags_static(20);
+    let filters = compile_filters(&exclude_filter("bench.dist", &["tag0", "tag5"]));
+
+    let mut group = c.benchmark_group("tag_filterlist/origin_tags_passthrough");
+    group.throughput(Throughput::Elements(1));
+    group.bench_function("no_origin_tags", |b| {
+        b.iter(|| {
+            // No origin_tags: exercises the fast path in filter_metric_tags.
+            let mut metric = distribution_metric("bench.dist", &tags_static);
+            filter_metric_tags(&mut metric, &filters);
+            metric
+        });
+    });
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
+// Benchmark: combined instrumented + origin_tags filtering (single alloc path)
+// ---------------------------------------------------------------------------
+
+fn bench_combined(c: &mut Criterion) {
+    let tags_static = make_tags_static(50);
+    let origin_tags_static = make_origin_tags_static(20);
+
+    // Exclude a mix of instrumented tag keys and origin tag keys.
+    let excluded_keys: Vec<String> = (0..10)
+        .map(|i| format!("tag{i}"))
+        .chain((0..5).map(|i| format!("orig_tag{i}")))
+        .collect();
+    let excluded_refs: Vec<&str> = excluded_keys.iter().map(|s| s.as_str()).collect();
+    let filters = compile_filters(&exclude_filter("bench.dist", &excluded_refs));
+
+    let mut group = c.benchmark_group("tag_filterlist/combined");
+    group.throughput(Throughput::Elements(1));
+    group.bench_function("50tags_20origin", |b| {
+        b.iter(|| {
+            let mut metric = distribution_metric_with_origin_tags("bench.dist", &tags_static, &origin_tags_static);
+            filter_metric_tags(&mut metric, &filters);
+            metric
+        });
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_exclude,
@@ -240,5 +377,9 @@ criterion_group!(
     bench_no_match_passthrough,
     bench_filterlist_size,
     bench_compile_filters,
+    bench_origin_tags_exclude,
+    bench_origin_tags_include,
+    bench_origin_tags_passthrough,
+    bench_combined,
 );
 criterion_main!(benches);
