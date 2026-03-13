@@ -2,7 +2,7 @@ use logos::Logos;
 
 /// OTTL language tokens
 #[derive(Logos, Debug, PartialEq, Eq, Clone, Hash)]
-#[logos(skip r"[ \t]+")] // Skip spaces and tabs
+#[logos(skip r"[ \t\n\r]+")] // Skip whitespace: spaces, tabs, newlines, carriage returns
 pub enum Token<'a> {
     // ===== Keywords =====
     #[token("where")]

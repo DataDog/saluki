@@ -377,6 +377,30 @@ fn test_whitespace_handling() {
     );
 }
 
+/// WS = {" " | "\t" | "\n" | "\r"};
+#[test]
+fn test_whitespace_all_kinds() {
+    let tokens = collect_tokens("set\t(\nx\r\n,\r y\n)");
+    assert_eq!(
+        tokens,
+        vec![
+            Token::LowerIdent("set"),
+            Token::LParen,
+            Token::LowerIdent("x"),
+            Token::Comma,
+            Token::LowerIdent("y"),
+            Token::RParen,
+        ]
+    );
+
+    let tokens = collect_tokens("\t\n\r 42 \r\n\t");
+    assert_eq!(tokens, vec![Token::IntLiteral("42")]);
+
+    assert_eq!(collect_tokens("\n\n\n"), vec![]);
+    assert_eq!(collect_tokens("\r\n"), vec![]);
+    assert_eq!(collect_tokens("\t\t"), vec![]);
+}
+
 // ============================================================================
 // Parser tests
 // ============================================================================
