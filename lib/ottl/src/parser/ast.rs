@@ -40,6 +40,22 @@ pub enum IndexExpr {
     Int(usize),
 }
 
+/// A single field in a path expression.
+///
+/// Each field has a name and zero or more index keys. For example, in the path
+/// `resource.attributes["key"]`, there are two fields: `Field { name: "resource", keys: [] }`
+/// and `Field { name: "attributes", keys: [IndexExpr::String("key")] }`.
+///
+/// Pre-allocated at parse time and stored in [`ResolvedPath`]; on the hot path the evaluator
+/// passes `&[Field]` by reference with zero allocation and zero copy.
+#[derive(Debug, Clone)]
+pub struct Field {
+    /// Identifier for this field segment.
+    pub name: String,
+    /// Index keys attached to this field (e.g. `["key"]`, `[0]`).
+    pub keys: Vec<IndexExpr>,
+}
+
 // =====================================================================================================================
 // Arena-based AST Types (used during evaluation - cache-friendly)
 // we are using u32 as index on purpose: usize is considered as too fat
@@ -63,25 +79,25 @@ pub struct ValueExprRef(pub(crate) u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FunctionCallRef(pub(crate) u32);
 
-/// Resolved path with pre-computed path string and accessor (resolved at parse time).
+/// Resolved path with pre-allocated fields and accessor (resolved at parse time).
 ///
 /// The type parameter `F` is the [`EvalContextFamily`] that determines the context type
 /// used by the accessor.
+///
+/// All data is allocated once during parsing. At execution time the evaluator passes
+/// `&self.fields` by reference -- zero allocation, zero copy.
 pub struct ResolvedPath<F: EvalContextFamily> {
-    /// Pre-computed full path string (e.g., "my.int.value")
-    pub full_path: String,
+    /// Structured path fields, each carrying its own index keys.
+    pub fields: Vec<Field>,
     /// Pre-resolved accessor (resolved once at parse time, not at each execution)
     pub accessor: Arc<dyn PathAccessor<F>>,
-    /// Optional indexes for indexing into the result
-    pub indexes: Vec<IndexExpr>,
 }
 
 impl<F: EvalContextFamily> Clone for ResolvedPath<F> {
     fn clone(&self) -> Self {
         Self {
-            full_path: self.full_path.clone(),
+            fields: self.fields.clone(),
             accessor: self.accessor.clone(),
-            indexes: self.indexes.clone(),
         }
     }
 }
@@ -89,8 +105,7 @@ impl<F: EvalContextFamily> Clone for ResolvedPath<F> {
 impl<F: EvalContextFamily> std::fmt::Debug for ResolvedPath<F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResolvedPath")
-            .field("full_path", &self.full_path)
-            .field("indexes", &self.indexes)
+            .field("fields", &self.fields)
             .finish()
     }
 }
@@ -226,13 +241,13 @@ pub enum ArenaRootExpr {
 // Original AST Node Types (used during parsing, then converted to arena)
 // =====================================================================================================================
 
-/// Path expression (e.g., resource.attributes["key"])
+/// Path expression (e.g., `resource.attributes["key"]`).
+///
+/// Each dot-separated segment is a [`Field`] with its own index keys.
 #[derive(Debug, Clone)]
 pub struct PathExpr {
-    /// Segments of the path (e.g., ["resource", "attributes"])
-    pub segments: Vec<String>,
-    /// Optional indexes
-    pub indexes: Vec<IndexExpr>,
+    /// Ordered fields of the path (e.g., `[Field("resource", []), Field("attributes", ["key"])]`).
+    pub fields: Vec<Field>,
 }
 
 /// Function invocation (Editor or Converter)

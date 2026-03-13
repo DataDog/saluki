@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use ottl::{EvalContextFamily, IndexExpr, PathAccessor, PathResolverMap, Value};
+use ottl::{EvalContextFamily, Field, IndexExpr, PathAccessor, PathResolverMap, Value};
 use saluki_context::tags::SharedTagSet;
 use saluki_core::data_model::event::trace::Span;
 use stringtheory::MetaString;
@@ -60,8 +60,8 @@ impl<'a> SpanTransformContext<'a> {
 pub struct SpanAttributesAccessor;
 
 impl PathAccessor<SpanTransformFamily> for SpanAttributesAccessor {
-    fn get<'a>(&self, ctx: &SpanTransformContext<'a>, _path: &str, indexes: &[IndexExpr]) -> ottl::Result<Value> {
-        let value = if let Some(IndexExpr::String(key)) = indexes.first() {
+    fn get<'a>(&self, ctx: &SpanTransformContext<'a>, fields: &[Field]) -> ottl::Result<Value> {
+        let value = if let Some(IndexExpr::String(key)) = fields.first().and_then(|f| f.keys.first()) {
             ctx.span
                 .meta()
                 .get(key.as_str())
@@ -74,9 +74,9 @@ impl PathAccessor<SpanTransformFamily> for SpanAttributesAccessor {
     }
 
     fn set<'a>(
-        &self, ctx: &mut SpanTransformContext<'a>, _path: &str, indexes: &[IndexExpr], value: &Value,
+        &self, ctx: &mut SpanTransformContext<'a>, fields: &[Field], value: &Value,
     ) -> ottl::Result<()> {
-        if let Some(IndexExpr::String(key)) = indexes.first() {
+        if let Some(IndexExpr::String(key)) = fields.first().and_then(|f| f.keys.first()) {
             match value {
                 Value::Nil => {
                     ctx.span.meta_mut().remove(key.as_str());
@@ -122,14 +122,15 @@ impl PathAccessor<SpanTransformFamily> for SpanAttributesAccessor {
 pub struct ResourceAttributesAccessor;
 
 impl PathAccessor<SpanTransformFamily> for ResourceAttributesAccessor {
-    fn get<'a>(&self, ctx: &SpanTransformContext<'a>, _path: &str, indexes: &[IndexExpr]) -> ottl::Result<Value> {
-        let value = if let Some(IndexExpr::String(key)) = indexes.first() {
+    fn get<'a>(&self, ctx: &SpanTransformContext<'a>, fields: &[Field]) -> ottl::Result<Value> {
+        let attrs_field = fields.get(1);
+        let value = if let Some(IndexExpr::String(key)) = attrs_field.and_then(|f| f.keys.first()) {
             ctx.resource_tags
                 .get_single_tag(key.as_str())
                 .and_then(|t| t.value())
                 .map(Value::string)
                 .unwrap_or(Value::Nil)
-        } else if indexes.is_empty() {
+        } else if attrs_field.map_or(true, |f| f.keys.is_empty()) {
             Value::Map(HashMap::new())
         } else {
             Value::Nil
@@ -137,16 +138,16 @@ impl PathAccessor<SpanTransformFamily> for ResourceAttributesAccessor {
         Ok(value)
     }
 
-    /// AZH: TODO
     /// Always returns an error: `SharedTagSet` is an Arc-based immutable type and `Trace`
     /// does not expose yet mutable way to access resource_tags, so there is no way to write changes
     /// back to the trace's resource tags.
     fn set<'a>(
-        &self, _ctx: &mut SpanTransformContext<'a>, path: &str, _indexes: &[IndexExpr], _value: &Value,
+        &self, _ctx: &mut SpanTransformContext<'a>, fields: &[Field], _value: &Value,
     ) -> ottl::Result<()> {
+        let path_str: String = fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(".");
         Err(format!(
             "resource.attributes is read-only; setting path `{}` is not supported because SharedTagSet does not expose mutable access",
-            path
+            path_str
         )
         .into())
     }
