@@ -104,9 +104,7 @@ impl<F: EvalContextFamily> Clone for ResolvedPath<F> {
 
 impl<F: EvalContextFamily> std::fmt::Debug for ResolvedPath<F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ResolvedPath")
-            .field("fields", &self.fields)
-            .finish()
+        f.debug_struct("ResolvedPath").field("fields", &self.fields).finish()
     }
 }
 

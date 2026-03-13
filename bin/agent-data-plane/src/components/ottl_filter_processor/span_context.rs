@@ -65,9 +65,7 @@ impl PathAccessor<SpanFilterFamily> for SpanAttributesAccessor {
         Ok(value)
     }
 
-    fn set<'a>(
-        &self, _ctx: &mut SpanFilterContext<'a>, fields: &[Field], _value: &Value,
-    ) -> ottl::Result<()> {
+    fn set<'a>(&self, _ctx: &mut SpanFilterContext<'a>, fields: &[Field], _value: &Value) -> ottl::Result<()> {
         let path_str: String = fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(".");
         Err(format!(
             "Filter context is read-only; setting path `{}` is not supported. Only attribute reads are allowed.",
@@ -92,7 +90,7 @@ impl PathAccessor<SpanFilterFamily> for ResourceAttributesAccessor {
                 .and_then(|t| t.value())
                 .map(Value::string)
                 .unwrap_or(Value::Nil)
-        } else if attrs_field.map_or(true, |f| f.keys.is_empty()) {
+        } else if attrs_field.is_none_or(|f| f.keys.is_empty()) {
             Value::Map(HashMap::new())
         } else {
             Value::Nil
@@ -100,9 +98,7 @@ impl PathAccessor<SpanFilterFamily> for ResourceAttributesAccessor {
         Ok(value)
     }
 
-    fn set<'a>(
-        &self, _ctx: &mut SpanFilterContext<'a>, fields: &[Field], _value: &Value,
-    ) -> ottl::Result<()> {
+    fn set<'a>(&self, _ctx: &mut SpanFilterContext<'a>, fields: &[Field], _value: &Value) -> ottl::Result<()> {
         let path_str: String = fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(".");
         Err(format!(
             "Filter context is read-only; setting path `{}` is not supported. Only attribute reads are allowed.",

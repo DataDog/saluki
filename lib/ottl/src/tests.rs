@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use crate::lexer::{Lexer, Token};
-use crate::parser::Parser;
 use crate::parser::ast::Field;
+use crate::parser::Parser;
 use crate::{
     CallbackMap, EnumMap, EvalContextFamily, IndexExpr, OttlParser, PathAccessor, PathResolver, PathResolverMap, Value,
 };
@@ -559,13 +559,7 @@ fn test_parser_math_expression() {
     assert_eq!(result.unwrap(), Value::Int(10));
 
     // Float with scientific notation: 1.0e2 + .5E1 - 2.e+1 = 100.0 + 5.0 - 20.0 = 85.0
-    let parser = Parser::new(
-        &editors,
-        &converters,
-        &enums,
-        &path_resolvers,
-        "1.0e2 + .5E1 - 2.e+1",
-    );
+    let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, "1.0e2 + .5E1 - 2.e+1");
     if let Err(e) = parser.is_error() {
         panic!("Parser error (scientific notation): {}", e);
     }
@@ -574,13 +568,7 @@ fn test_parser_math_expression() {
     assert_eq!(result.unwrap(), Value::Float(85.0));
 
     // Mixed plain and scientific floats: 2.5 * 1.0e1 + .25E2 = 25.0 + 25.0 = 50.0
-    let parser = Parser::new(
-        &editors,
-        &converters,
-        &enums,
-        &path_resolvers,
-        "2.5 * 1.0e1 + .25E2",
-    );
+    let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, "2.5 * 1.0e1 + .25E2");
     if let Err(e) = parser.is_error() {
         panic!("Parser error (mixed floats): {}", e);
     }
@@ -589,13 +577,7 @@ fn test_parser_math_expression() {
     assert_eq!(result.unwrap(), Value::Float(50.0));
 
     // Negative exponent: 5.0e-1 + 2.5e-1 = 0.5 + 0.25 = 0.75
-    let parser = Parser::new(
-        &editors,
-        &converters,
-        &enums,
-        &path_resolvers,
-        "5.0e-1 + 2.5e-1",
-    );
+    let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, "5.0e-1 + 2.5e-1");
     if let Err(e) = parser.is_error() {
         panic!("Parser error (negative exponent): {}", e);
     }
@@ -1419,10 +1401,7 @@ impl PathAccessor<UnitFamily> for PerFieldIndexAccessor {
         // Verify the accessor receives correctly structured fields
         match fields.len() {
             // resource.attributes["env"].length  -> 3 fields
-            3 if fields[0].name == "resource"
-                && fields[1].name == "attributes"
-                && fields[2].name == "length" =>
-            {
+            3 if fields[0].name == "resource" && fields[1].name == "attributes" && fields[2].name == "length" => {
                 // attributes must have exactly one string key
                 if let Some(IndexExpr::String(key)) = fields[1].keys.first() {
                     if key == "env" {
@@ -1432,10 +1411,7 @@ impl PathAccessor<UnitFamily> for PerFieldIndexAccessor {
                 Err("attributes key not recognised".into())
             }
             // resource.attributes["env"].name  -> 3 fields
-            3 if fields[0].name == "resource"
-                && fields[1].name == "attributes"
-                && fields[2].name == "name" =>
-            {
+            3 if fields[0].name == "resource" && fields[1].name == "attributes" && fields[2].name == "name" => {
                 if let Some(IndexExpr::String(key)) = fields[1].keys.first() {
                     if key == "env" {
                         return Ok(Value::string("production"));
@@ -1444,13 +1420,10 @@ impl PathAccessor<UnitFamily> for PerFieldIndexAccessor {
                 Err("attributes key not recognised".into())
             }
             // resource.tags["region"]["az"]  -> 2 fields, second has 2 keys
-            2 if fields[0].name == "resource" && fields[1].name == "tags" =>
-            {
+            2 if fields[0].name == "resource" && fields[1].name == "tags" => {
                 // tags must have exactly two string keys
                 if fields[1].keys.len() == 2 {
-                    if let (IndexExpr::String(k1), IndexExpr::String(k2)) =
-                        (&fields[1].keys[0], &fields[1].keys[1])
-                    {
+                    if let (IndexExpr::String(k1), IndexExpr::String(k2)) = (&fields[1].keys[0], &fields[1].keys[1]) {
                         if k1 == "region" && k2 == "az" {
                             return Ok(Value::string("us-east-1a"));
                         }
@@ -1624,11 +1597,7 @@ fn test_per_field_indexes_field_structure_correctness() {
     );
     assert!(parser.is_error().is_ok(), "Parse should succeed");
     let result = parser.execute(&mut ());
-    assert_eq!(
-        result.unwrap(),
-        Value::Bool(true),
-        "Accessor assertions should pass"
-    );
+    assert_eq!(result.unwrap(), Value::Bool(true), "Accessor assertions should pass");
 }
 
 // ============================================================================
@@ -1708,9 +1677,7 @@ impl PathAccessor<ListCtxFamily> for MyValueListAccessor {
         }
     }
 
-    fn set<'a>(
-        &self, ctx: &mut MyValueListContext, fields: &[Field], value: &Value,
-    ) -> crate::Result<()> {
+    fn set<'a>(&self, ctx: &mut MyValueListContext, fields: &[Field], value: &Value) -> crate::Result<()> {
         let path: String = fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(".");
         if path != "my.value" {
             return Err(format!("Unknown path: {}", path).into());

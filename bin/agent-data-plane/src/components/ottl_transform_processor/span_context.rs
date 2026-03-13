@@ -73,9 +73,7 @@ impl PathAccessor<SpanTransformFamily> for SpanAttributesAccessor {
         Ok(value)
     }
 
-    fn set<'a>(
-        &self, ctx: &mut SpanTransformContext<'a>, fields: &[Field], value: &Value,
-    ) -> ottl::Result<()> {
+    fn set<'a>(&self, ctx: &mut SpanTransformContext<'a>, fields: &[Field], value: &Value) -> ottl::Result<()> {
         if let Some(IndexExpr::String(key)) = fields.first().and_then(|f| f.keys.first()) {
             match value {
                 Value::Nil => {
@@ -130,7 +128,7 @@ impl PathAccessor<SpanTransformFamily> for ResourceAttributesAccessor {
                 .and_then(|t| t.value())
                 .map(Value::string)
                 .unwrap_or(Value::Nil)
-        } else if attrs_field.map_or(true, |f| f.keys.is_empty()) {
+        } else if attrs_field.is_none_or(|f| f.keys.is_empty()) {
             Value::Map(HashMap::new())
         } else {
             Value::Nil
@@ -141,9 +139,7 @@ impl PathAccessor<SpanTransformFamily> for ResourceAttributesAccessor {
     /// Always returns an error: `SharedTagSet` is an Arc-based immutable type and `Trace`
     /// does not expose yet mutable way to access resource_tags, so there is no way to write changes
     /// back to the trace's resource tags.
-    fn set<'a>(
-        &self, _ctx: &mut SpanTransformContext<'a>, fields: &[Field], _value: &Value,
-    ) -> ottl::Result<()> {
+    fn set<'a>(&self, _ctx: &mut SpanTransformContext<'a>, fields: &[Field], _value: &Value) -> ottl::Result<()> {
         let path_str: String = fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(".");
         Err(format!(
             "resource.attributes is read-only; setting path `{}` is not supported because SharedTagSet does not expose mutable access",
