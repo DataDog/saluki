@@ -90,6 +90,25 @@ impl Context {
         }
     }
 
+    /// Clones this context, and uses the given tags for the cloned context.
+    ///
+    /// The name and origin tags of this context are preserved.
+    pub fn with_tags(&self, tags: SharedTagSet) -> Self {
+        let name = self.inner.name.clone();
+        let origin_tags = self.inner.origin_tags.clone();
+        let (key, _) = hash_context(&name, &tags, &origin_tags);
+
+        Self {
+            inner: Arc::new(ContextInner {
+                name,
+                tags,
+                origin_tags,
+                key,
+                active_count: Gauge::noop(),
+            }),
+        }
+    }
+
     pub(crate) fn from_inner(inner: ContextInner) -> Self {
         Self { inner: Arc::new(inner) }
     }
