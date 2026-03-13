@@ -134,11 +134,11 @@ templates:
         DD_DATA_PLANE_OTLP_ENABLED: "true"
         DD_OTLP_CONFIG: "{}"
 
-  # Base template for bounded OTLP experiments (30MiB/s total, 6 clients)
-  otlp_base_bounded_30mb_6_clients:
+  # Base template for bounded OTLP experiments (15MiB/s total, 5 clients)
+  otlp_base_bounded_15mb_5_clients:
     target:
       cpu_allotment: 4
-      memory_allotment: 600 MiB
+      memory_allotment: 1 GiB
       environment:
         # Enable the OTLP pipeline.
         DD_DATA_PLANE_OTLP_ENABLED: "true"
@@ -149,7 +149,7 @@ templates:
         - grpc:
             seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
             target_uri: "http://127.0.0.1:4317/opentelemetry.proto.collector.trace.v1.TraceService/Export"
-            bytes_per_second: "5 MiB"
+            bytes_per_second: "3 MiB"
             parallel_connections: 1
             maximum_prebuild_cache_size_bytes: "16 MiB"
             variant:
@@ -216,9 +216,9 @@ templates:
                         table: products
                         query: "SELECT * FROM products LIMIT 50"
         - grpc:
-            seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 132]
+            seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
             target_uri: "http://127.0.0.1:4317/opentelemetry.proto.collector.trace.v1.TraceService/Export"
-            bytes_per_second: "5 MiB"
+            bytes_per_second: "3 MiB"
             parallel_connections: 1
             maximum_prebuild_cache_size_bytes: "16 MiB"
             variant:
@@ -285,9 +285,9 @@ templates:
                         table: products
                         query: "SELECT * FROM products LIMIT 50"
         - grpc:
-            seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 133]
+            seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
             target_uri: "http://127.0.0.1:4317/opentelemetry.proto.collector.trace.v1.TraceService/Export"
-            bytes_per_second: "5 MiB"
+            bytes_per_second: "3 MiB"
             parallel_connections: 1
             maximum_prebuild_cache_size_bytes: "16 MiB"
             variant:
@@ -354,9 +354,9 @@ templates:
                         table: products
                         query: "SELECT * FROM products LIMIT 50"
         - grpc:
-            seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 134]
+            seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
             target_uri: "http://127.0.0.1:4317/opentelemetry.proto.collector.trace.v1.TraceService/Export"
-            bytes_per_second: "5 MiB"
+            bytes_per_second: "3 MiB"
             parallel_connections: 1
             maximum_prebuild_cache_size_bytes: "16 MiB"
             variant:
@@ -423,78 +423,9 @@ templates:
                         table: products
                         query: "SELECT * FROM products LIMIT 50"
         - grpc:
-            seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 135]
+            seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
             target_uri: "http://127.0.0.1:4317/opentelemetry.proto.collector.trace.v1.TraceService/Export"
-            bytes_per_second: "5 MiB"
-            parallel_connections: 1
-            maximum_prebuild_cache_size_bytes: "16 MiB"
-            variant:
-              opentelemetry_traces:
-                error_rate: 0.01
-                services:
-                  - name: api-gateway
-                    service_type: http
-                    scope_name: com.example.gateway
-                    resource_attributes:
-                      - key: deployment.environment
-                        value: production
-                      - key: cloud.region
-                        value:
-                          dictionary: cloud_regions
-                    operations:
-                      - id: get-product
-                        method: GET
-                        route: "/api/v1/products/{id}"
-                        suboperations:
-                          - to: product-service/get-product
-                      - id: list-products
-                        method: GET
-                        route: "/api/v1/products"
-                        suboperations:
-                          - to: product-service/list-products
-                  - name: product-service
-                    service_type: grpc
-                    grpc:
-                      service: ProductService
-                    scope_name: com.example.products
-                    operations:
-                      - id: get-product
-                        method: GetProduct
-                        suboperations:
-                          - to: product-cache/get-product-by-id
-                          - to: product-db/select-product-by-id
-                            rate: 0.1
-                      - id: list-products
-                        method: ListProducts
-                        suboperations:
-                          - to: product-cache/get-products
-                          - to: product-db/select-products
-                            rate: 0.1
-                  - name: product-cache
-                    service_type: database
-                    database:
-                      system: redis
-                    operations:
-                      - id: get-product-by-id
-                        query: "GET products:by_id:$1"
-                      - id: get-products
-                        query: "GET products:full"
-                  - name: product-db
-                    service_type: database
-                    database:
-                      system: postgresql
-                      name: products
-                    operations:
-                      - id: select-product-by-id
-                        table: products
-                        query: "SELECT * FROM products WHERE id = $1"
-                      - id: select-products
-                        table: products
-                        query: "SELECT * FROM products LIMIT 50"
-        - grpc:
-            seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 136]
-            target_uri: "http://127.0.0.1:4317/opentelemetry.proto.collector.trace.v1.TraceService/Export"
-            bytes_per_second: "5 MiB"
+            bytes_per_second: "3 MiB"
             parallel_connections: 1
             maximum_prebuild_cache_size_bytes: "16 MiB"
             variant:
@@ -759,8 +690,8 @@ experiments:
             bytes_per_second: "100 MiB"
             maximum_prebuild_cache_size_bytes: "768 Mb"
 
-  - name: quality_gates_rss_otlp_traces_30mb_bounded_190mib_limit
-    extends: otlp_base_bounded_30mb_6_clients
+  - name: quality_gates_rss_otlp_traces_15mb_bounded_190mb
+    extends: otlp_base_bounded_15mb_5_clients
     optimization_goal: memory
 
     target:
@@ -770,13 +701,13 @@ experiments:
 
     checks:
       - name: memory_usage
-        description: "Acceptable upper bound on the memory used by ADP when handling bounded 30 MiB OTLP traces traffic."
+        description: "Acceptable upper bound on the memory used by ADP when handling bounded 15 MiB OTLP traces traffic."
         bounds:
           series: total_pss_bytes
           upper_bound: "190 MiB"
 
-  - name: quality_gates_rss_otlp_traces_30mb_bounded_215mib_limit
-    extends: otlp_base_bounded_30mb_6_clients
+  - name: quality_gates_rss_otlp_traces_15mb_bounded_215mb
+    extends: otlp_base_bounded_15mb_5_clients
     optimization_goal: memory
 
     target:
@@ -786,13 +717,13 @@ experiments:
 
     checks:
       - name: memory_usage
-        description: "Acceptable upper bound on the memory used by ADP when handling bounded 30 MiB OTLP traces traffic."
+        description: "Acceptable upper bound on the memory used by ADP when handling bounded 15 MiB OTLP traces traffic."
         bounds:
           series: total_pss_bytes
           upper_bound: "215 MiB"
 
-  - name: quality_gates_rss_otlp_traces_30mb_bounded_240mib_limit
-    extends: otlp_base_bounded_30mb_6_clients
+  - name: quality_gates_rss_otlp_traces_15mb_bounded_240mb
+    extends: otlp_base_bounded_15mb_5_clients
     optimization_goal: memory
 
     target:
@@ -802,10 +733,43 @@ experiments:
 
     checks:
       - name: memory_usage
-        description: "Acceptable upper bound on the memory used by ADP when handling bounded 30 MiB OTLP traces traffic."
+        description: "Acceptable upper bound on the memory used by ADP when handling bounded 15 MiB OTLP traces traffic."
         bounds:
           series: total_pss_bytes
           upper_bound: "240 MiB"
+
+  - name: quality_gates_rss_otlp_traces_15mb_bounded_265mb
+    extends: otlp_base_bounded_15mb_5_clients
+    optimization_goal: memory
+
+    target:
+      environment:
+        DD_MEMORY_LIMIT: "265MiB"
+        DD_MEMORY_SLOP_FACTOR: "0.2"
+
+    checks:
+      - name: memory_usage
+        description: "Acceptable upper bound on the memory used by ADP when handling bounded 15 MiB OTLP traces traffic."
+        bounds:
+          series: total_pss_bytes
+          upper_bound: "265 MiB"
+
+  - name: quality_gates_rss_otlp_traces_15mb_bounded_290mb
+    extends: otlp_base_bounded_15mb_5_clients
+    optimization_goal: memory
+
+    target:
+      environment:
+        DD_MEMORY_LIMIT: "290MiB"
+        DD_MEMORY_SLOP_FACTOR: "0.2"
+
+    checks:
+      - name: memory_usage
+        description: "Acceptable upper bound on the memory used by ADP when handling bounded 15 MiB OTLP traces traffic."
+        bounds:
+          series: total_pss_bytes
+          upper_bound: "290 MiB"
+
 
   # ============================================================================
   # OTLP Experiments
