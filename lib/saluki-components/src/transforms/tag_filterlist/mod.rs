@@ -7,6 +7,7 @@
 //! Remote Config.
 
 use async_trait::async_trait;
+use foldhash::fast::RandomState as FoldHashState;
 use hashbrown::{HashMap, HashSet};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
@@ -46,7 +47,7 @@ pub struct MetricTagFilterEntry {
 }
 
 /// Compiled filter table: metric name → (is_exclude, set of tag key names).
-pub type CompiledFilters = HashMap<String, (bool, HashSet<String>)>;
+pub type CompiledFilters = HashMap<String, (bool, HashSet<String, FoldHashState>), FoldHashState>;
 
 /// Compile a slice of filter entries into an O(1)-lookup table.
 ///
@@ -54,11 +55,12 @@ pub type CompiledFilters = HashMap<String, (bool, HashSet<String>)>;
 /// - Same metric name + same action → union of tag key sets.
 /// - Same metric name + conflicting actions → `exclude` wins.
 pub fn compile_filters(entries: &[MetricTagFilterEntry]) -> CompiledFilters {
-    let mut filters: CompiledFilters = HashMap::new();
+    let mut filters: CompiledFilters = HashMap::with_hasher(FoldHashState::default());
 
     for entry in entries {
         let is_exclude = entry.action == FilterAction::Exclude;
-        let tag_set: HashSet<String> = entry.tags.iter().cloned().collect();
+        let mut tag_set = HashSet::with_capacity_and_hasher(entry.tags.len(), FoldHashState::default());
+        tag_set.extend(entry.tags.iter().cloned());
 
         match filters.entry(entry.metric_name.clone()) {
             hashbrown::hash_map::Entry::Vacant(e) => {
@@ -178,44 +180,68 @@ impl Transform for TagFilterlist {
     }
 }
 
-/// Applies a tag filter to a shared tag set, returning a new `TagSet` with the filter applied.
+/// Applies a tag filter to a shared tag set, returning `Some(TagSet)` if any tags were
+/// filtered out, or `None` if the result would be identical to the source.
 ///
 /// Tags whose key is in `names` are excluded when `is_exclude` is true, or kept when false.
-/// Always constructs a fresh `TagSet` without mutating the source, preserving isolation for
+/// Constructs a fresh `TagSet` without mutating the source, preserving isolation for
 /// metrics that share the same underlying `Arc<TagSet>`.
-fn apply_tag_filter(tags: &SharedTagSet, is_exclude: bool, names: &HashSet<String>) -> TagSet {
-    let mut out = TagSet::with_capacity(tags.len());
+#[inline]
+fn apply_tag_filter(tags: &SharedTagSet, is_exclude: bool, names: &HashSet<String, FoldHashState>) -> Option<TagSet> {
+    let capacity = if is_exclude {
+        tags.len().saturating_sub(names.len())
+    } else {
+        names.len().min(tags.len())
+    };
+    let mut out = TagSet::with_capacity(capacity);
+    let mut any_change = false;
     for tag in tags {
-        let in_list = names.contains(tag.name());
-        // XOR: keep if (exclude ∧ not-in-list) ∨ (include ∧ in-list)
-        if is_exclude != in_list {
-            out.insert_tag(tag.clone());
+        if is_exclude != names.contains(tag.name()) {
+            out.extend([tag.clone()]);
+        } else {
+            any_change = true;
         }
     }
-    out
+    if any_change {
+        Some(out)
+    } else {
+        None
+    }
 }
 
 /// Filter the tags of a distribution metric according to the compiled filter table.
 ///
 /// Both instrumented tags and origin tags are filtered using the same tag key list.
 /// If the metric name is not present in `filters`, the metric is left unchanged.
+/// If filtering would not change any tags, the metric context is left untouched (zero allocations).
+#[inline]
 pub fn filter_metric_tags(metric: &mut saluki_core::data_model::event::metric::Metric, filters: &CompiledFilters) {
-    let name = metric.context().name().as_ref().to_owned();
-    let Some((is_exclude, tag_names)) = filters.get(&name) else {
+    let Some((is_exclude, tag_names)) = filters.get(metric.context().name().as_ref()) else {
         return;
     };
 
     let new_tags = apply_tag_filter(metric.context().tags(), *is_exclude, tag_names);
 
     if metric.context().origin_tags().is_empty() {
-        // Fast path: no origin_tags to filter; single allocation.
-        *metric.context_mut() = metric.context().with_tags(new_tags.into_shared());
+        if let Some(filtered) = new_tags {
+            *metric.context_mut() = metric.context().with_tags(filtered.into_shared());
+        }
     } else {
-        // Filter origin_tags with the same list; single Arc allocation for both.
         let new_origin = apply_tag_filter(metric.context().origin_tags(), *is_exclude, tag_names);
-        *metric.context_mut() = metric
-            .context()
-            .with_tags_and_origin_tags(new_tags.into_shared(), new_origin.into_shared());
+        match (new_tags, new_origin) {
+            (None, None) => {}
+            (Some(tags), None) => {
+                *metric.context_mut() = metric.context().with_tags(tags.into_shared());
+            }
+            (None, Some(origin)) => {
+                *metric.context_mut() = metric.context().with_origin_tags(origin.into_shared());
+            }
+            (Some(tags), Some(origin)) => {
+                *metric.context_mut() = metric
+                    .context()
+                    .with_tags_and_origin_tags(tags.into_shared(), origin.into_shared());
+            }
+        }
     }
 }
 
