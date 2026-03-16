@@ -2,7 +2,7 @@
 <a href=#2 id=2 data-nosnippet>2</a>
 <a href=#3 id=3 data-nosnippet>3</a><span class="doccomment">/// OTTL language tokens
 <a href=#4 id=4 data-nosnippet>4</a></span><span class="attr">#[derive(Logos, Debug, PartialEq, Eq, Clone, Hash)]
-<a href=#5 id=5 data-nosnippet>5</a>#[logos(skip <span class="string">r"[ \t]+"</span>)] </span><span class="comment">// Skip spaces and tabs
+<a href=#5 id=5 data-nosnippet>5</a>#[logos(skip <span class="string">r"[ \t\n\r]+"</span>)] </span><span class="comment">// Skip whitespace: spaces, tabs, newlines, carriage returns
 <a href=#6 id=6 data-nosnippet>6</a></span><span class="kw">pub enum </span>Token&lt;<span class="lifetime">'a</span>&gt; {
 <a href=#7 id=7 data-nosnippet>7</a>    <span class="comment">// ===== Keywords =====
 <a href=#8 id=8 data-nosnippet>8</a>    </span><span class="attr">#[token(<span class="string">"where"</span>)]
@@ -90,84 +90,85 @@
 <a href=#90 id=90 data-nosnippet>90</a>    </span>Assign,
 <a href=#91 id=91 data-nosnippet>91</a>
 <a href=#92 id=92 data-nosnippet>92</a>    <span class="comment">// ===== Literals =====
-<a href=#93 id=93 data-nosnippet>93</a>    </span><span class="doccomment">/// String literal: "..."
-<a href=#94 id=94 data-nosnippet>94</a>    </span><span class="attr">#[regex(<span class="string">r#""[^"\\]*(?:\\.[^"\\]*)*""#</span>, |lex| lex.slice())]
-<a href=#95 id=95 data-nosnippet>95</a>    </span>StringLiteral(<span class="kw-2">&amp;</span><span class="lifetime">'a </span>str),
-<a href=#96 id=96 data-nosnippet>96</a>
-<a href=#97 id=97 data-nosnippet>97</a>    <span class="doccomment">/// Bytes literal: 0xC0FFEE
-<a href=#98 id=98 data-nosnippet>98</a>    </span><span class="attr">#[regex(<span class="string">r"0x[0-9a-fA-F]+"</span>, |lex| lex.slice())]
-<a href=#99 id=99 data-nosnippet>99</a>    </span>BytesLiteral(<span class="kw-2">&amp;</span><span class="lifetime">'a </span>str),
-<a href=#100 id=100 data-nosnippet>100</a>
-<a href=#101 id=101 data-nosnippet>101</a>    <span class="doccomment">/// Float literal: 6.14, .5
-<a href=#102 id=102 data-nosnippet>102</a>    </span><span class="attr">#[regex(<span class="string">r"[0-9]+\.[0-9]*|\.[0-9]+"</span>, |lex| lex.slice())]
-<a href=#103 id=103 data-nosnippet>103</a>    </span>FloatLiteral(<span class="kw-2">&amp;</span><span class="lifetime">'a </span>str),
-<a href=#104 id=104 data-nosnippet>104</a>
-<a href=#105 id=105 data-nosnippet>105</a>    <span class="doccomment">/// Integer literal: 42, 10, 5
-<a href=#106 id=106 data-nosnippet>106</a>    </span><span class="attr">#[regex(<span class="string">r"[0-9]+"</span>, priority = <span class="number">2</span>, callback = |lex| lex.slice())]
-<a href=#107 id=107 data-nosnippet>107</a>    </span>IntLiteral(<span class="kw-2">&amp;</span><span class="lifetime">'a </span>str),
-<a href=#108 id=108 data-nosnippet>108</a>
-<a href=#109 id=109 data-nosnippet>109</a>    <span class="comment">// ===== Identifiers =====
-<a href=#110 id=110 data-nosnippet>110</a>    </span><span class="doccomment">/// Uppercase identifier (Converter or Enum)
-<a href=#111 id=111 data-nosnippet>111</a>    </span><span class="attr">#[regex(<span class="string">r"[A-Z][a-zA-Z0-9_]*"</span>, |lex| lex.slice())]
-<a href=#112 id=112 data-nosnippet>112</a>    </span>UpperIdent(<span class="kw-2">&amp;</span><span class="lifetime">'a </span>str),
-<a href=#113 id=113 data-nosnippet>113</a>
-<a href=#114 id=114 data-nosnippet>114</a>    <span class="doccomment">/// Lowercase identifier (Editor, path, named arg)
-<a href=#115 id=115 data-nosnippet>115</a>    </span><span class="attr">#[regex(<span class="string">r"[a-z][a-zA-Z0-9_]*"</span>, priority = <span class="number">1</span>, callback = |lex| lex.slice())]
-<a href=#116 id=116 data-nosnippet>116</a>    </span>LowerIdent(<span class="kw-2">&amp;</span><span class="lifetime">'a </span>str),
-<a href=#117 id=117 data-nosnippet>117</a>}
-<a href=#118 id=118 data-nosnippet>118</a>
-<a href=#119 id=119 data-nosnippet>119</a><span class="doccomment">/// Lexer error with position information
-<a href=#120 id=120 data-nosnippet>120</a></span><span class="attr">#[derive(Debug, Clone)]
-<a href=#121 id=121 data-nosnippet>121</a></span><span class="kw">pub struct </span>LexerError {
-<a href=#122 id=122 data-nosnippet>122</a>    <span class="doccomment">/// Position in the input where the error occurred
-<a href=#123 id=123 data-nosnippet>123</a>    </span><span class="kw">pub </span>position: usize,
-<a href=#124 id=124 data-nosnippet>124</a>    <span class="doccomment">/// The invalid character or slice that caused the error
-<a href=#125 id=125 data-nosnippet>125</a>    </span><span class="kw">pub </span>invalid_slice: String,
-<a href=#126 id=126 data-nosnippet>126</a>}
-<a href=#127 id=127 data-nosnippet>127</a>
-<a href=#128 id=128 data-nosnippet>128</a><span class="kw">impl </span>std::fmt::Display <span class="kw">for </span>LexerError {
-<a href=#129 id=129 data-nosnippet>129</a>    <span class="kw">fn </span>fmt(<span class="kw-2">&amp;</span><span class="self">self</span>, f: <span class="kw-2">&amp;mut </span>std::fmt::Formatter&lt;<span class="lifetime">'_</span>&gt;) -&gt; std::fmt::Result {
-<a href=#130 id=130 data-nosnippet>130</a>        <span class="macro">write!</span>(
-<a href=#131 id=131 data-nosnippet>131</a>            f,
-<a href=#132 id=132 data-nosnippet>132</a>            <span class="string">"Invalid token '{}' at position {}"</span>,
-<a href=#133 id=133 data-nosnippet>133</a>            <span class="self">self</span>.invalid_slice, <span class="self">self</span>.position
-<a href=#134 id=134 data-nosnippet>134</a>        )
-<a href=#135 id=135 data-nosnippet>135</a>    }
-<a href=#136 id=136 data-nosnippet>136</a>}
-<a href=#137 id=137 data-nosnippet>137</a>
-<a href=#138 id=138 data-nosnippet>138</a><span class="doccomment">/// Lexical analysis result
-<a href=#139 id=139 data-nosnippet>139</a></span><span class="kw">pub struct </span>Lexer&lt;<span class="lifetime">'a</span>&gt; {
-<a href=#140 id=140 data-nosnippet>140</a>    lexer: logos::Lexer&lt;<span class="lifetime">'a</span>, Token&lt;<span class="lifetime">'a</span>&gt;&gt;,
-<a href=#141 id=141 data-nosnippet>141</a>}
-<a href=#142 id=142 data-nosnippet>142</a>
-<a href=#143 id=143 data-nosnippet>143</a><span class="kw">impl</span>&lt;<span class="lifetime">'a</span>&gt; Lexer&lt;<span class="lifetime">'a</span>&gt; {
-<a href=#144 id=144 data-nosnippet>144</a>    <span class="doccomment">/// Collect tokens with their positions (spans)
-<a href=#145 id=145 data-nosnippet>145</a>    /// Returns an error if any invalid token is encountered
-<a href=#146 id=146 data-nosnippet>146</a>    </span><span class="kw">pub fn </span>collect_with_spans(input: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>str) -&gt; <span class="prelude-ty">Result</span>&lt;Vec&lt;(Token&lt;<span class="lifetime">'a</span>&gt;, std::ops::Range&lt;usize&gt;)&gt;, LexerError&gt; {
-<a href=#147 id=147 data-nosnippet>147</a>        <span class="kw">let </span><span class="kw-2">mut </span>lexer = Token::lexer(input);
-<a href=#148 id=148 data-nosnippet>148</a>        <span class="kw">let </span><span class="kw-2">mut </span>tokens = Vec::new();
-<a href=#149 id=149 data-nosnippet>149</a>        <span class="kw">while let </span><span class="prelude-val">Some</span>(result) = lexer.next() {
-<a href=#150 id=150 data-nosnippet>150</a>            <span class="kw">match </span>result {
-<a href=#151 id=151 data-nosnippet>151</a>                <span class="prelude-val">Ok</span>(token) =&gt; tokens.push((token, lexer.span())),
-<a href=#152 id=152 data-nosnippet>152</a>                <span class="prelude-val">Err</span>(<span class="kw">_</span>) =&gt; {
-<a href=#153 id=153 data-nosnippet>153</a>                    <span class="kw">let </span>span = lexer.span();
-<a href=#154 id=154 data-nosnippet>154</a>                    <span class="kw">let </span>invalid_slice = input[span.clone()].to_string();
-<a href=#155 id=155 data-nosnippet>155</a>                    <span class="kw">return </span><span class="prelude-val">Err</span>(LexerError {
-<a href=#156 id=156 data-nosnippet>156</a>                        position: span.start,
-<a href=#157 id=157 data-nosnippet>157</a>                        invalid_slice,
-<a href=#158 id=158 data-nosnippet>158</a>                    });
-<a href=#159 id=159 data-nosnippet>159</a>                }
-<a href=#160 id=160 data-nosnippet>160</a>            }
-<a href=#161 id=161 data-nosnippet>161</a>        }
-<a href=#162 id=162 data-nosnippet>162</a>        <span class="prelude-val">Ok</span>(tokens)
-<a href=#163 id=163 data-nosnippet>163</a>    }
-<a href=#164 id=164 data-nosnippet>164</a>}
-<a href=#165 id=165 data-nosnippet>165</a>
-<a href=#166 id=166 data-nosnippet>166</a><span class="kw">impl</span>&lt;<span class="lifetime">'a</span>&gt; Iterator <span class="kw">for </span>Lexer&lt;<span class="lifetime">'a</span>&gt; {
-<a href=#167 id=167 data-nosnippet>167</a>    <span class="kw">type </span>Item = <span class="prelude-ty">Result</span>&lt;Token&lt;<span class="lifetime">'a</span>&gt;, ()&gt;;
-<a href=#168 id=168 data-nosnippet>168</a>
-<a href=#169 id=169 data-nosnippet>169</a>    <span class="kw">fn </span>next(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="self">Self</span>::Item&gt; {
-<a href=#170 id=170 data-nosnippet>170</a>        <span class="self">self</span>.lexer.next()
-<a href=#171 id=171 data-nosnippet>171</a>    }
-<a href=#172 id=172 data-nosnippet>172</a>}
+<a href=#93 id=93 data-nosnippet>93</a>    </span><span class="doccomment">/// String literal: `"`, { ESCAPE_SEQ | STRING_CHAR }, `"`
+<a href=#94 id=94 data-nosnippet>94</a>    /// where ESCAPE_SEQ = `\` + any char, STRING_CHAR = any char except `"` and `\`.
+<a href=#95 id=95 data-nosnippet>95</a>    </span><span class="attr">#[regex(<span class="string">r#""[^"\\]*(?:\\.[^"\\]*)*""#</span>, |lex| lex.slice())]
+<a href=#96 id=96 data-nosnippet>96</a>    </span>StringLiteral(<span class="kw-2">&amp;</span><span class="lifetime">'a </span>str),
+<a href=#97 id=97 data-nosnippet>97</a>
+<a href=#98 id=98 data-nosnippet>98</a>    <span class="doccomment">/// Bytes literal: 0xC0FFEE
+<a href=#99 id=99 data-nosnippet>99</a>    </span><span class="attr">#[regex(<span class="string">r"0x[0-9a-fA-F]+"</span>, |lex| lex.slice())]
+<a href=#100 id=100 data-nosnippet>100</a>    </span>BytesLiteral(<span class="kw-2">&amp;</span><span class="lifetime">'a </span>str),
+<a href=#101 id=101 data-nosnippet>101</a>
+<a href=#102 id=102 data-nosnippet>102</a>    <span class="doccomment">/// Float literal: 6.14, .5, 1.0e10, .5E-3
+<a href=#103 id=103 data-nosnippet>103</a>    </span><span class="attr">#[regex(<span class="string">r"(?:[0-9]+\.[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?"</span>, |lex| lex.slice())]
+<a href=#104 id=104 data-nosnippet>104</a>    </span>FloatLiteral(<span class="kw-2">&amp;</span><span class="lifetime">'a </span>str),
+<a href=#105 id=105 data-nosnippet>105</a>
+<a href=#106 id=106 data-nosnippet>106</a>    <span class="doccomment">/// Integer literal: 42, 10, 5
+<a href=#107 id=107 data-nosnippet>107</a>    </span><span class="attr">#[regex(<span class="string">r"[0-9]+"</span>, priority = <span class="number">2</span>, callback = |lex| lex.slice())]
+<a href=#108 id=108 data-nosnippet>108</a>    </span>IntLiteral(<span class="kw-2">&amp;</span><span class="lifetime">'a </span>str),
+<a href=#109 id=109 data-nosnippet>109</a>
+<a href=#110 id=110 data-nosnippet>110</a>    <span class="comment">// ===== Identifiers =====
+<a href=#111 id=111 data-nosnippet>111</a>    </span><span class="doccomment">/// Uppercase identifier (Converter or Enum)
+<a href=#112 id=112 data-nosnippet>112</a>    </span><span class="attr">#[regex(<span class="string">r"[A-Z][a-zA-Z0-9_]*"</span>, |lex| lex.slice())]
+<a href=#113 id=113 data-nosnippet>113</a>    </span>UpperIdent(<span class="kw-2">&amp;</span><span class="lifetime">'a </span>str),
+<a href=#114 id=114 data-nosnippet>114</a>
+<a href=#115 id=115 data-nosnippet>115</a>    <span class="doccomment">/// Lowercase identifier (Editor, path, named arg)
+<a href=#116 id=116 data-nosnippet>116</a>    </span><span class="attr">#[regex(<span class="string">r"[a-z][a-zA-Z0-9_]*"</span>, priority = <span class="number">1</span>, callback = |lex| lex.slice())]
+<a href=#117 id=117 data-nosnippet>117</a>    </span>LowerIdent(<span class="kw-2">&amp;</span><span class="lifetime">'a </span>str),
+<a href=#118 id=118 data-nosnippet>118</a>}
+<a href=#119 id=119 data-nosnippet>119</a>
+<a href=#120 id=120 data-nosnippet>120</a><span class="doccomment">/// Lexer error with position information
+<a href=#121 id=121 data-nosnippet>121</a></span><span class="attr">#[derive(Debug, Clone)]
+<a href=#122 id=122 data-nosnippet>122</a></span><span class="kw">pub struct </span>LexerError {
+<a href=#123 id=123 data-nosnippet>123</a>    <span class="doccomment">/// Position in the input where the error occurred
+<a href=#124 id=124 data-nosnippet>124</a>    </span><span class="kw">pub </span>position: usize,
+<a href=#125 id=125 data-nosnippet>125</a>    <span class="doccomment">/// The invalid character or slice that caused the error
+<a href=#126 id=126 data-nosnippet>126</a>    </span><span class="kw">pub </span>invalid_slice: String,
+<a href=#127 id=127 data-nosnippet>127</a>}
+<a href=#128 id=128 data-nosnippet>128</a>
+<a href=#129 id=129 data-nosnippet>129</a><span class="kw">impl </span>std::fmt::Display <span class="kw">for </span>LexerError {
+<a href=#130 id=130 data-nosnippet>130</a>    <span class="kw">fn </span>fmt(<span class="kw-2">&amp;</span><span class="self">self</span>, f: <span class="kw-2">&amp;mut </span>std::fmt::Formatter&lt;<span class="lifetime">'_</span>&gt;) -&gt; std::fmt::Result {
+<a href=#131 id=131 data-nosnippet>131</a>        <span class="macro">write!</span>(
+<a href=#132 id=132 data-nosnippet>132</a>            f,
+<a href=#133 id=133 data-nosnippet>133</a>            <span class="string">"Invalid token '{}' at position {}"</span>,
+<a href=#134 id=134 data-nosnippet>134</a>            <span class="self">self</span>.invalid_slice, <span class="self">self</span>.position
+<a href=#135 id=135 data-nosnippet>135</a>        )
+<a href=#136 id=136 data-nosnippet>136</a>    }
+<a href=#137 id=137 data-nosnippet>137</a>}
+<a href=#138 id=138 data-nosnippet>138</a>
+<a href=#139 id=139 data-nosnippet>139</a><span class="doccomment">/// Lexical analysis result
+<a href=#140 id=140 data-nosnippet>140</a></span><span class="kw">pub struct </span>Lexer&lt;<span class="lifetime">'a</span>&gt; {
+<a href=#141 id=141 data-nosnippet>141</a>    lexer: logos::Lexer&lt;<span class="lifetime">'a</span>, Token&lt;<span class="lifetime">'a</span>&gt;&gt;,
+<a href=#142 id=142 data-nosnippet>142</a>}
+<a href=#143 id=143 data-nosnippet>143</a>
+<a href=#144 id=144 data-nosnippet>144</a><span class="kw">impl</span>&lt;<span class="lifetime">'a</span>&gt; Lexer&lt;<span class="lifetime">'a</span>&gt; {
+<a href=#145 id=145 data-nosnippet>145</a>    <span class="doccomment">/// Collect tokens with their positions (spans)
+<a href=#146 id=146 data-nosnippet>146</a>    /// Returns an error if any invalid token is encountered
+<a href=#147 id=147 data-nosnippet>147</a>    </span><span class="kw">pub fn </span>collect_with_spans(input: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>str) -&gt; <span class="prelude-ty">Result</span>&lt;Vec&lt;(Token&lt;<span class="lifetime">'a</span>&gt;, std::ops::Range&lt;usize&gt;)&gt;, LexerError&gt; {
+<a href=#148 id=148 data-nosnippet>148</a>        <span class="kw">let </span><span class="kw-2">mut </span>lexer = Token::lexer(input);
+<a href=#149 id=149 data-nosnippet>149</a>        <span class="kw">let </span><span class="kw-2">mut </span>tokens = Vec::new();
+<a href=#150 id=150 data-nosnippet>150</a>        <span class="kw">while let </span><span class="prelude-val">Some</span>(result) = lexer.next() {
+<a href=#151 id=151 data-nosnippet>151</a>            <span class="kw">match </span>result {
+<a href=#152 id=152 data-nosnippet>152</a>                <span class="prelude-val">Ok</span>(token) =&gt; tokens.push((token, lexer.span())),
+<a href=#153 id=153 data-nosnippet>153</a>                <span class="prelude-val">Err</span>(<span class="kw">_</span>) =&gt; {
+<a href=#154 id=154 data-nosnippet>154</a>                    <span class="kw">let </span>span = lexer.span();
+<a href=#155 id=155 data-nosnippet>155</a>                    <span class="kw">let </span>invalid_slice = input[span.clone()].to_string();
+<a href=#156 id=156 data-nosnippet>156</a>                    <span class="kw">return </span><span class="prelude-val">Err</span>(LexerError {
+<a href=#157 id=157 data-nosnippet>157</a>                        position: span.start,
+<a href=#158 id=158 data-nosnippet>158</a>                        invalid_slice,
+<a href=#159 id=159 data-nosnippet>159</a>                    });
+<a href=#160 id=160 data-nosnippet>160</a>                }
+<a href=#161 id=161 data-nosnippet>161</a>            }
+<a href=#162 id=162 data-nosnippet>162</a>        }
+<a href=#163 id=163 data-nosnippet>163</a>        <span class="prelude-val">Ok</span>(tokens)
+<a href=#164 id=164 data-nosnippet>164</a>    }
+<a href=#165 id=165 data-nosnippet>165</a>}
+<a href=#166 id=166 data-nosnippet>166</a>
+<a href=#167 id=167 data-nosnippet>167</a><span class="kw">impl</span>&lt;<span class="lifetime">'a</span>&gt; Iterator <span class="kw">for </span>Lexer&lt;<span class="lifetime">'a</span>&gt; {
+<a href=#168 id=168 data-nosnippet>168</a>    <span class="kw">type </span>Item = <span class="prelude-ty">Result</span>&lt;Token&lt;<span class="lifetime">'a</span>&gt;, ()&gt;;
+<a href=#169 id=169 data-nosnippet>169</a>
+<a href=#170 id=170 data-nosnippet>170</a>    <span class="kw">fn </span>next(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="self">Self</span>::Item&gt; {
+<a href=#171 id=171 data-nosnippet>171</a>        <span class="self">self</span>.lexer.next()
+<a href=#172 id=172 data-nosnippet>172</a>    }
+<a href=#173 id=173 data-nosnippet>173</a>}
 </code></pre></div></section></main></body></html>
