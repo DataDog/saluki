@@ -13,6 +13,9 @@ use crate::{IndexExpr, Value};
 /// and [`IndexExpr::String`] respectively, and into [`Value::String`] with
 /// [`IndexExpr::Int`] (character index). Any other combination returns an error.
 ///
+/// Typically called inside a [`crate::PathAccessor`] implementation to apply per-field
+/// keys: `apply_indexes(base_value, &field.keys)`.
+///
 /// # Errors
 ///
 /// Returns an error if an index is out of bounds, a map key is missing, or
@@ -25,8 +28,8 @@ use crate::{IndexExpr, Value};
 /// use ottl::{Value, IndexExpr};
 ///
 /// let list = Value::List(vec![Value::Int(1), Value::Int(2)]);
-/// let indexes = [IndexExpr::Int(0)];
-/// let v = apply_indexes(list, &indexes)?;
+/// let keys = [IndexExpr::Int(0)];
+/// let v = apply_indexes(list, &keys)?;
 /// assert!(matches!(v, Value::Int(1)));
 /// ```
 pub fn apply_indexes(value: Value, indexes: &[IndexExpr]) -> crate::Result<Value> {

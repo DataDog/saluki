@@ -115,11 +115,7 @@ impl<'eval, 'ctx, F: EvalContextFamily> Args for ArenaArgs<'eval, 'ctx, F> {
         };
 
         match self.arena.get_value(value_ref) {
-            ArenaValueExpr::Path(resolved_path) => {
-                resolved_path
-                    .accessor
-                    .set(self.ctx, &resolved_path.full_path, &resolved_path.indexes, value)
-            }
+            ArenaValueExpr::Path(resolved_path) => resolved_path.accessor.set(self.ctx, &resolved_path.fields, value),
             _ => Err("set: argument must be a path expression".into()),
         }
     }
@@ -172,9 +168,7 @@ fn arena_evaluate_bool_expr<F: EvalContextFamily>(
             }
         }
         ArenaBoolExpr::Path(resolved_path) => {
-            let value = resolved_path
-                .accessor
-                .get(ctx, &resolved_path.full_path, &resolved_path.indexes)?;
+            let value = resolved_path.accessor.get(ctx, &resolved_path.fields)?;
             match value {
                 Value::Bool(b) => Ok(b),
                 _ => Err("Path did not return a boolean".into()),
@@ -208,11 +202,7 @@ fn arena_evaluate_value_expr<F: EvalContextFamily>(
 ) -> Result<Value> {
     match arena.get_value(expr_ref) {
         ArenaValueExpr::Literal(v) => Ok(v.clone()),
-        ArenaValueExpr::Path(resolved_path) => {
-            resolved_path
-                .accessor
-                .get(ctx, &resolved_path.full_path, &resolved_path.indexes)
-        }
+        ArenaValueExpr::Path(resolved_path) => resolved_path.accessor.get(ctx, &resolved_path.fields),
         ArenaValueExpr::List(items) => {
             let values: Result<Vec<Value>> = items
                 .iter()

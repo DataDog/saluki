@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use crate::lexer::{Lexer, Token};
+use crate::parser::ast::Field;
 use crate::parser::Parser;
 use crate::{
     CallbackMap, EnumMap, EvalContextFamily, IndexExpr, OttlParser, PathAccessor, PathResolver, PathResolverMap, Value,
@@ -113,12 +114,43 @@ fn test_delimiters() {
 fn test_string_literal() {
     let tokens = collect_tokens(r#""hello world""#);
     assert_eq!(tokens, vec![Token::StringLiteral(r#""hello world""#)]);
+
+    // Empty string
+    let tokens = collect_tokens(r#""""#);
+    assert_eq!(tokens, vec![Token::StringLiteral(r#""""#)]);
+
+    // Non-ASCII / UTF-8 characters
+    let tokens = collect_tokens(r#""кириллица 日本語 🎉""#);
+    assert_eq!(tokens, vec![Token::StringLiteral(r#""кириллица 日本語 🎉""#)]);
+
+    // All printable ASCII special characters
+    let tokens = collect_tokens(r#""!@#$%^&*()_+-=[]{}|;':,./<>?~`""#);
+    assert_eq!(
+        tokens,
+        vec![Token::StringLiteral(r#""!@#$%^&*()_+-=[]{}|;':,./<>?~`""#)]
+    );
 }
 
 #[test]
 fn test_string_with_escape() {
+    // Escaped quotes
     let tokens = collect_tokens(r#""hello \"world\"""#);
     assert_eq!(tokens, vec![Token::StringLiteral(r#""hello \"world\"""#)]);
+
+    // Common escape sequences: \n, \t, \r, \\
+    let tokens = collect_tokens(r#""line1\nline2\ttab\r\\backslash""#);
+    assert_eq!(
+        tokens,
+        vec![Token::StringLiteral(r#""line1\nline2\ttab\r\\backslash""#)]
+    );
+
+    // String consisting entirely of escape sequences
+    let tokens = collect_tokens(r#""\\\"\n\t""#);
+    assert_eq!(tokens, vec![Token::StringLiteral(r#""\\\"\n\t""#)]);
+
+    // Escaped arbitrary character (EBNF: '\\', ? any character ?)
+    let tokens = collect_tokens(r#""\a\b\z\1\!""#);
+    assert_eq!(tokens, vec![Token::StringLiteral(r#""\a\b\z\1\!""#)]);
 }
 
 #[test]
@@ -146,14 +178,24 @@ fn test_signed_int_literal() {
 #[test]
 fn test_float_literal() {
     // Note: Signs are now separate tokens, handled by the parser
-    let tokens = collect_tokens("6.18 .5");
-    assert_eq!(tokens, vec![Token::FloatLiteral("6.18"), Token::FloatLiteral(".5"),]);
+    let tokens = collect_tokens("6.18 .5 1.0e10 .5E-3 2.e+1 3.14e2");
+    assert_eq!(
+        tokens,
+        vec![
+            Token::FloatLiteral("6.18"),
+            Token::FloatLiteral(".5"),
+            Token::FloatLiteral("1.0e10"),
+            Token::FloatLiteral(".5E-3"),
+            Token::FloatLiteral("2.e+1"),
+            Token::FloatLiteral("3.14e2"),
+        ]
+    );
 }
 
 #[test]
 fn test_signed_float_literal() {
     // Signs are separate tokens
-    let tokens = collect_tokens("-2.0 +0.1");
+    let tokens = collect_tokens("-2.0 +0.1 -1.5e10 +.3E-2");
     assert_eq!(
         tokens,
         vec![
@@ -161,6 +203,10 @@ fn test_signed_float_literal() {
             Token::FloatLiteral("2.0"),
             Token::Plus,
             Token::FloatLiteral("0.1"),
+            Token::Minus,
+            Token::FloatLiteral("1.5e10"),
+            Token::Plus,
+            Token::FloatLiteral(".3E-2"),
         ]
     );
 }
@@ -377,6 +423,30 @@ fn test_whitespace_handling() {
     );
 }
 
+/// WS = {" " | "\t" | "\n" | "\r"};
+#[test]
+fn test_whitespace_all_kinds() {
+    let tokens = collect_tokens("set\t(\nx\r\n,\r y\n)");
+    assert_eq!(
+        tokens,
+        vec![
+            Token::LowerIdent("set"),
+            Token::LParen,
+            Token::LowerIdent("x"),
+            Token::Comma,
+            Token::LowerIdent("y"),
+            Token::RParen,
+        ]
+    );
+
+    let tokens = collect_tokens("\t\n\r 42 \r\n\t");
+    assert_eq!(tokens, vec![Token::IntLiteral("42")]);
+
+    assert_eq!(collect_tokens("\n\n\n"), vec![]);
+    assert_eq!(collect_tokens("\r\n"), vec![]);
+    assert_eq!(collect_tokens("\t\t"), vec![]);
+}
+
 // ============================================================================
 // Parser tests
 // ============================================================================
@@ -426,11 +496,11 @@ fn test_argument_access() {
 struct StubPathAccessor;
 
 impl PathAccessor<UnitFamily> for StubPathAccessor {
-    fn get<'a>(&self, _ctx: &(), _path: &str, _indexes: &[IndexExpr]) -> crate::Result<Value> {
+    fn get<'a>(&self, _ctx: &(), _fields: &[Field]) -> crate::Result<Value> {
         Err("StubPathAccessor: get not implemented".into())
     }
 
-    fn set<'a>(&self, _ctx: &mut (), _path: &str, _indexes: &[IndexExpr], _value: &Value) -> crate::Result<()> {
+    fn set<'a>(&self, _ctx: &mut (), _fields: &[Field], _value: &Value) -> crate::Result<()> {
         Err("StubPathAccessor: set not implemented".into())
     }
 }
@@ -473,6 +543,7 @@ fn test_parser_math_expression() {
     let enums = EnumMap::new();
     let path_resolvers = empty_path_resolver_map();
 
+    // Integer math: -1 + 2*10 - 10/5 - (1+3*2) = -1 + 20 - 2 - 7 = 10
     let parser = Parser::new(
         &editors,
         &converters,
@@ -480,16 +551,39 @@ fn test_parser_math_expression() {
         &path_resolvers,
         "-1+   2*10 - 10/5 - (1+3*2)",
     );
-
-    // Check no parsing errors
     if let Err(e) = parser.is_error() {
         panic!("Parser error: {}", e);
     }
-
-    // Execute and check result
     let result = parser.execute(&mut ());
     assert!(result.is_ok(), "Execution should succeed: {:?}", result);
     assert_eq!(result.unwrap(), Value::Int(10));
+
+    // Float with scientific notation: 1.0e2 + .5E1 - 2.e+1 = 100.0 + 5.0 - 20.0 = 85.0
+    let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, "1.0e2 + .5E1 - 2.e+1");
+    if let Err(e) = parser.is_error() {
+        panic!("Parser error (scientific notation): {}", e);
+    }
+    let result = parser.execute(&mut ());
+    assert!(result.is_ok(), "Execution should succeed: {:?}", result);
+    assert_eq!(result.unwrap(), Value::Float(85.0));
+
+    // Mixed plain and scientific floats: 2.5 * 1.0e1 + .25E2 = 25.0 + 25.0 = 50.0
+    let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, "2.5 * 1.0e1 + .25E2");
+    if let Err(e) = parser.is_error() {
+        panic!("Parser error (mixed floats): {}", e);
+    }
+    let result = parser.execute(&mut ());
+    assert!(result.is_ok(), "Execution should succeed: {:?}", result);
+    assert_eq!(result.unwrap(), Value::Float(50.0));
+
+    // Negative exponent: 5.0e-1 + 2.5e-1 = 0.5 + 0.25 = 0.75
+    let parser = Parser::new(&editors, &converters, &enums, &path_resolvers, "5.0e-1 + 2.5e-1");
+    if let Err(e) = parser.is_error() {
+        panic!("Parser error (negative exponent): {}", e);
+    }
+    let result = parser.execute(&mut ());
+    assert!(result.is_ok(), "Execution should succeed: {:?}", result);
+    assert_eq!(result.unwrap(), Value::Float(0.75));
 }
 
 #[test]
@@ -527,16 +621,21 @@ struct MockPathAccessor {
 }
 
 impl PathAccessor<UnitFamily> for MockPathAccessor {
-    fn get<'a>(&self, _ctx: &(), path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
-        let v = match path {
+    fn get<'a>(&self, _ctx: &(), fields: &[Field]) -> crate::Result<Value> {
+        let path: String = fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(".");
+        let v = match path.as_str() {
             "my.bool.value" => self.bool_value.clone(),
             "my.int.value" => self.int_value.clone(),
             _ => return Err(format!("Unknown path: {}", path).into()),
         };
-        crate::helpers::apply_indexes(v, indexes)
+        if let Some(last) = fields.last() {
+            crate::helpers::apply_indexes(v, &last.keys)
+        } else {
+            Ok(v)
+        }
     }
 
-    fn set<'a>(&self, _ctx: &mut (), _path: &str, _indexes: &[IndexExpr], _value: &Value) -> crate::Result<()> {
+    fn set<'a>(&self, _ctx: &mut (), _fields: &[Field], _value: &Value) -> crate::Result<()> {
         Err("MockPathAccessor: set not implemented".into())
     }
 }
@@ -885,21 +984,28 @@ struct TrackingPathAccessor {
 }
 
 impl PathAccessor<UnitFamily> for TrackingPathAccessor {
-    fn get<'a>(&self, _ctx: &(), path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
-        let v = match path {
+    fn get<'a>(&self, _ctx: &(), fields: &[Field]) -> crate::Result<Value> {
+        let path: String = fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(".");
+        let v = match path.as_str() {
             "my.int.value" => self.int_value.clone(),
             "status_code" => self.status_code.clone(),
-            "target" | "x" => self.target_path.clone(), // For editor's first argument
+            "target" | "x" => self.target_path.clone(),
             _ => return Err(format!("Unknown path: {}", path).into()),
         };
-        crate::helpers::apply_indexes(v, indexes)
+        if let Some(last) = fields.last() {
+            crate::helpers::apply_indexes(v, &last.keys)
+        } else {
+            Ok(v)
+        }
     }
 
-    fn set<'a>(&self, _ctx: &mut (), path: &str, indexes: &[IndexExpr], value: &Value) -> crate::Result<()> {
-        if !indexes.is_empty() {
+    fn set<'a>(&self, _ctx: &mut (), fields: &[Field], value: &Value) -> crate::Result<()> {
+        let has_keys = fields.iter().any(|f| !f.keys.is_empty());
+        if has_keys {
             return Err("TrackingPathAccessor: indexed set not supported".into());
         }
-        self.set_calls.lock().unwrap().push((path.to_string(), value.clone()));
+        let path: String = fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(".");
+        self.set_calls.lock().unwrap().push((path, value.clone()));
         Ok(())
     }
 }
@@ -1195,18 +1301,23 @@ struct PathExprAccessor {
 }
 
 impl PathAccessor<UnitFamily> for PathExprAccessor {
-    fn get<'a>(&self, _ctx: &(), path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
-        let v = match path {
+    fn get<'a>(&self, _ctx: &(), fields: &[Field]) -> crate::Result<Value> {
+        let path: String = fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(".");
+        let v = match path.as_str() {
             "resource.attributes.status" => self.resource_status.clone(),
             "resource.count" => self.resource_count.clone(),
             "items" => self.items.clone(),
             "data" => self.data.clone(),
             _ => return Err(format!("Unknown path: {}", path).into()),
         };
-        crate::helpers::apply_indexes(v, indexes)
+        if let Some(last) = fields.last() {
+            crate::helpers::apply_indexes(v, &last.keys)
+        } else {
+            Ok(v)
+        }
     }
 
-    fn set<'a>(&self, _ctx: &mut (), _path: &str, _indexes: &[IndexExpr], _value: &Value) -> crate::Result<()> {
+    fn set<'a>(&self, _ctx: &mut (), _fields: &[Field], _value: &Value) -> crate::Result<()> {
         Err("PathExprAccessor: set not implemented".into())
     }
 }
@@ -1270,6 +1381,226 @@ fn test_parser_path_expressions_comprehensive() {
 }
 
 // ============================================================================
+// Per-field index tests (indexes on intermediate fields)
+// ============================================================================
+
+/// PathAccessor that interprets per-field keys on intermediate path segments.
+///
+/// Handles a nested structure shaped like:
+///   resource.attributes["env"].length   -> 10
+///   resource.attributes["env"].name     -> "production"
+///   resource.tags["region"]["az"]       -> "us-east-1a"
+///
+/// This accessor inspects each field's keys individually, exercising the new
+/// `Field { name, keys }` design where intermediate fields carry their own indexes.
+#[derive(Debug)]
+struct PerFieldIndexAccessor;
+
+impl PathAccessor<UnitFamily> for PerFieldIndexAccessor {
+    fn get<'a>(&self, _ctx: &(), fields: &[Field]) -> crate::Result<Value> {
+        // Verify the accessor receives correctly structured fields
+        match fields.len() {
+            // resource.attributes["env"].length  -> 3 fields
+            3 if fields[0].name == "resource" && fields[1].name == "attributes" && fields[2].name == "length" => {
+                // attributes must have exactly one string key
+                if let Some(IndexExpr::String(key)) = fields[1].keys.first() {
+                    if key == "env" {
+                        return Ok(Value::Int(10));
+                    }
+                }
+                Err("attributes key not recognised".into())
+            }
+            // resource.attributes["env"].name  -> 3 fields
+            3 if fields[0].name == "resource" && fields[1].name == "attributes" && fields[2].name == "name" => {
+                if let Some(IndexExpr::String(key)) = fields[1].keys.first() {
+                    if key == "env" {
+                        return Ok(Value::string("production"));
+                    }
+                }
+                Err("attributes key not recognised".into())
+            }
+            // resource.tags["region"]["az"]  -> 2 fields, second has 2 keys
+            2 if fields[0].name == "resource" && fields[1].name == "tags" => {
+                // tags must have exactly two string keys
+                if fields[1].keys.len() == 2 {
+                    if let (IndexExpr::String(k1), IndexExpr::String(k2)) = (&fields[1].keys[0], &fields[1].keys[1]) {
+                        if k1 == "region" && k2 == "az" {
+                            return Ok(Value::string("us-east-1a"));
+                        }
+                    }
+                }
+                Err("tags keys not recognised".into())
+            }
+            _ => {
+                let desc: String = fields
+                    .iter()
+                    .map(|f| {
+                        let keys: Vec<String> = f
+                            .keys
+                            .iter()
+                            .map(|k| match k {
+                                IndexExpr::String(s) => format!("[\"{}\" ]", s),
+                                IndexExpr::Int(i) => format!("[{}]", i),
+                            })
+                            .collect();
+                        format!("{}{}", f.name, keys.join(""))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(".");
+                Err(format!("Unknown structured path: {}", desc).into())
+            }
+        }
+    }
+
+    fn set<'a>(&self, _ctx: &mut (), _fields: &[Field], _value: &Value) -> crate::Result<()> {
+        Err("PerFieldIndexAccessor: set not implemented".into())
+    }
+}
+
+#[test]
+fn test_per_field_indexes_intermediate_keys() {
+    // Tests the core new capability: indexes on INTERMEDIATE fields, not just the last one.
+    // The path `resource.attributes["env"].length` has three fields:
+    //   Field { name: "resource", keys: [] }
+    //   Field { name: "attributes", keys: [String("env")] }   <- intermediate field with key
+    //   Field { name: "length", keys: [] }
+    let editors = CallbackMap::new();
+    let converters = CallbackMap::new();
+    let enums = EnumMap::new();
+
+    let accessor: Arc<dyn PathAccessor<UnitFamily>> = Arc::new(PerFieldIndexAccessor);
+    let resolver: PathResolver<UnitFamily> = Arc::new({
+        let a = accessor.clone();
+        move || Ok(a.clone())
+    });
+
+    let mut path_resolvers = PathResolverMap::new();
+    path_resolvers.insert("resource.attributes.length".to_string(), resolver.clone());
+    path_resolvers.insert("resource.attributes.name".to_string(), resolver.clone());
+    path_resolvers.insert("resource.tags".to_string(), resolver);
+
+    // Test 1: intermediate string key -> integer value
+    // resource.attributes["env"].length == 10
+    let parser = Parser::new(
+        &editors,
+        &converters,
+        &enums,
+        &path_resolvers,
+        r#"resource.attributes["env"].length == 10"#,
+    );
+    assert!(parser.is_error().is_ok(), "Parse should succeed");
+    let result = parser.execute(&mut ());
+    assert_eq!(result.unwrap(), Value::Bool(true));
+
+    // Test 2: intermediate string key -> string value
+    // resource.attributes["env"].name == "production"
+    let parser = Parser::new(
+        &editors,
+        &converters,
+        &enums,
+        &path_resolvers,
+        r#"resource.attributes["env"].name == "production""#,
+    );
+    assert!(parser.is_error().is_ok(), "Parse should succeed");
+    let result = parser.execute(&mut ());
+    assert_eq!(result.unwrap(), Value::Bool(true));
+
+    // Test 3: multiple keys on one intermediate field
+    // resource.tags["region"]["az"] == "us-east-1a"
+    let parser = Parser::new(
+        &editors,
+        &converters,
+        &enums,
+        &path_resolvers,
+        r#"resource.tags["region"]["az"] == "us-east-1a""#,
+    );
+    assert!(parser.is_error().is_ok(), "Parse should succeed");
+    let result = parser.execute(&mut ());
+    assert_eq!(result.unwrap(), Value::Bool(true));
+
+    // Test 4: combined expression using all three paths
+    let parser = Parser::new(
+        &editors,
+        &converters,
+        &enums,
+        &path_resolvers,
+        r#"resource.attributes["env"].length == 10 and resource.attributes["env"].name == "production" and resource.tags["region"]["az"] == "us-east-1a""#,
+    );
+    assert!(parser.is_error().is_ok(), "Parse should succeed");
+    let result = parser.execute(&mut ());
+    assert_eq!(result.unwrap(), Value::Bool(true));
+}
+
+#[test]
+fn test_per_field_indexes_field_structure_correctness() {
+    // Verifies that the parser produces the correct Field structure for paths with
+    // per-field indexes. We use a custom accessor that asserts the exact shape of the
+    // fields slice it receives.
+
+    #[derive(Debug)]
+    struct AssertingAccessor;
+
+    impl PathAccessor<UnitFamily> for AssertingAccessor {
+        fn get<'a>(&self, _ctx: &(), fields: &[Field]) -> crate::Result<Value> {
+            // For path: ctx.map["key1"]["key2"].leaf
+            // Expected fields:
+            //   [0] Field { name: "ctx",  keys: [] }
+            //   [1] Field { name: "map",  keys: [String("key1"), String("key2")] }
+            //   [2] Field { name: "leaf", keys: [] }
+            assert_eq!(fields.len(), 3, "Expected 3 fields, got {}", fields.len());
+
+            assert_eq!(fields[0].name, "ctx");
+            assert!(fields[0].keys.is_empty(), "ctx should have no keys");
+
+            assert_eq!(fields[1].name, "map");
+            assert_eq!(fields[1].keys.len(), 2, "map should have 2 keys");
+            match &fields[1].keys[0] {
+                IndexExpr::String(s) => assert_eq!(s, "key1"),
+                other => panic!("Expected String(\"key1\"), got {:?}", other),
+            }
+            match &fields[1].keys[1] {
+                IndexExpr::String(s) => assert_eq!(s, "key2"),
+                other => panic!("Expected String(\"key2\"), got {:?}", other),
+            }
+
+            assert_eq!(fields[2].name, "leaf");
+            assert!(fields[2].keys.is_empty(), "leaf should have no keys");
+
+            Ok(Value::Bool(true))
+        }
+
+        fn set<'a>(&self, _ctx: &mut (), _fields: &[Field], _value: &Value) -> crate::Result<()> {
+            Err("not implemented".into())
+        }
+    }
+
+    let editors = CallbackMap::new();
+    let converters = CallbackMap::new();
+    let enums = EnumMap::new();
+
+    let accessor: Arc<dyn PathAccessor<UnitFamily>> = Arc::new(AssertingAccessor);
+    let resolver: PathResolver<UnitFamily> = Arc::new({
+        let a = accessor.clone();
+        move || Ok(a.clone())
+    });
+
+    let mut path_resolvers = PathResolverMap::new();
+    path_resolvers.insert("ctx.map.leaf".to_string(), resolver);
+
+    // The expression must evaluate the path, triggering the assertions inside the accessor.
+    let parser = Parser::new(
+        &editors,
+        &converters,
+        &enums,
+        &path_resolvers,
+        r#"ctx.map["key1"]["key2"].leaf"#,
+    );
+    assert!(parser.is_error().is_ok(), "Parse should succeed");
+    let result = parser.execute(&mut ());
+    assert_eq!(result.unwrap(), Value::Bool(true), "Accessor assertions should pass");
+}
+
+// ============================================================================
 // PathAccessor::get tests (path index handling)
 // ============================================================================
 
@@ -1281,16 +1612,16 @@ struct GetAtOverrideAccessor {
 }
 
 impl PathAccessor<UnitFamily> for GetAtOverrideAccessor {
-    fn get<'a>(&self, _ctx: &(), _path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
-        if indexes.is_empty() {
+    fn get<'a>(&self, _ctx: &(), fields: &[Field]) -> crate::Result<Value> {
+        let has_keys = fields.iter().any(|f| !f.keys.is_empty());
+        if !has_keys {
             Ok(self.base_value.clone())
         } else {
-            // Return a distinct value so tests can assert get was used
             Ok(Value::Int(12345))
         }
     }
 
-    fn set<'a>(&self, _ctx: &mut (), _path: &str, _indexes: &[IndexExpr], _value: &Value) -> crate::Result<()> {
+    fn set<'a>(&self, _ctx: &mut (), _fields: &[Field], _value: &Value) -> crate::Result<()> {
         Err("set not implemented".into())
     }
 }
@@ -1333,25 +1664,30 @@ struct MyValueListContext {
 struct MyValueListAccessor;
 
 impl PathAccessor<ListCtxFamily> for MyValueListAccessor {
-    fn get<'a>(&self, ctx: &MyValueListContext, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
+    fn get<'a>(&self, ctx: &MyValueListContext, fields: &[Field]) -> crate::Result<Value> {
+        let path: String = fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(".");
         if path != "my.value" {
             return Err(format!("Unknown path: {}", path).into());
         }
         let value = Value::List(ctx.list.clone());
-        crate::helpers::apply_indexes(value, indexes)
+        if let Some(last) = fields.last() {
+            crate::helpers::apply_indexes(value, &last.keys)
+        } else {
+            Ok(value)
+        }
     }
 
-    fn set<'a>(
-        &self, ctx: &mut MyValueListContext, path: &str, indexes: &[IndexExpr], value: &Value,
-    ) -> crate::Result<()> {
+    fn set<'a>(&self, ctx: &mut MyValueListContext, fields: &[Field], value: &Value) -> crate::Result<()> {
+        let path: String = fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(".");
         if path != "my.value" {
             return Err(format!("Unknown path: {}", path).into());
         }
 
-        if indexes.len() != 1 {
-            return Err("my.value: at most 1  indexe allowed".into());
+        let last_keys = fields.last().map(|f| &f.keys[..]).unwrap_or(&[]);
+        if last_keys.len() != 1 {
+            return Err("my.value: exactly 1 index required".into());
         }
-        let idx0 = match &indexes[0] {
+        let idx0 = match &last_keys[0] {
             IndexExpr::Int(i) => *i,
             IndexExpr::String(_) => return Err("my.value: integer index required".into()),
         };
@@ -1957,10 +2293,10 @@ fn test_runtime_error_division_by_zero_float() {
 #[derive(Debug)]
 struct FailingPathAccessor;
 impl PathAccessor<UnitFamily> for FailingPathAccessor {
-    fn get<'a>(&self, _ctx: &(), _path: &str, _indexes: &[IndexExpr]) -> crate::Result<Value> {
+    fn get<'a>(&self, _ctx: &(), _fields: &[Field]) -> crate::Result<Value> {
         Err("Path resolver failed".into())
     }
-    fn set<'a>(&self, _ctx: &mut (), _path: &str, _indexes: &[IndexExpr], _value: &Value) -> crate::Result<()> {
+    fn set<'a>(&self, _ctx: &mut (), _fields: &[Field], _value: &Value) -> crate::Result<()> {
         Err("Path resolver failed".into())
     }
 }
@@ -2149,22 +2485,12 @@ impl BenchContext {
 struct BenchPathAccessorIntValue {}
 
 impl PathAccessor<BenchFamily> for BenchPathAccessorIntValue {
-    fn get<'a>(&self, ctx: &BenchContext, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
-        let v = if path == "my.int.value" {
-            Value::Int(ctx.my_int_value)
-        } else {
-            Value::Nil
-        };
-        crate::helpers::apply_indexes(v, indexes)
+    fn get<'a>(&self, ctx: &BenchContext, _fields: &[Field]) -> crate::Result<Value> {
+        Ok(Value::Int(ctx.my_int_value))
     }
-    fn set<'a>(&self, ctx: &mut BenchContext, path: &str, indexes: &[IndexExpr], value: &Value) -> crate::Result<()> {
-        if !indexes.is_empty() {
-            return Err("BenchPathAccessorIntValue: indexed set not supported".into());
-        }
-        if path == "my.int.value" {
-            if let Value::Int(v) = value {
-                ctx.my_int_value = *v;
-            }
+    fn set<'a>(&self, ctx: &mut BenchContext, _fields: &[Field], value: &Value) -> crate::Result<()> {
+        if let Value::Int(v) = value {
+            ctx.my_int_value = *v;
         }
         Ok(())
     }
@@ -2175,22 +2501,12 @@ struct BenchPathAccessorIntStatus {}
 
 impl PathAccessor<BenchFamily> for BenchPathAccessorIntStatus {
     #[inline]
-    fn get<'a>(&self, ctx: &BenchContext, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
-        let v = if path == "my.int.status" {
-            Value::Int(ctx.my_int_status)
-        } else {
-            Value::Nil
-        };
-        crate::helpers::apply_indexes(v, indexes)
+    fn get<'a>(&self, ctx: &BenchContext, _fields: &[Field]) -> crate::Result<Value> {
+        Ok(Value::Int(ctx.my_int_status))
     }
-    fn set<'a>(&self, ctx: &mut BenchContext, path: &str, indexes: &[IndexExpr], value: &Value) -> crate::Result<()> {
-        if !indexes.is_empty() {
-            return Err("BenchPathAccessorIntStatus: indexed set not supported".into());
-        }
-        if path == "my.int.status" {
-            if let Value::Int(v) = value {
-                ctx.my_int_status = *v;
-            }
+    fn set<'a>(&self, ctx: &mut BenchContext, _fields: &[Field], value: &Value) -> crate::Result<()> {
+        if let Value::Int(v) = value {
+            ctx.my_int_status = *v;
         }
         Ok(())
     }
@@ -2201,22 +2517,12 @@ struct BenchPathAccessorBoolEnabled {}
 
 impl PathAccessor<BenchFamily> for BenchPathAccessorBoolEnabled {
     #[inline]
-    fn get<'a>(&self, ctx: &BenchContext, path: &str, indexes: &[IndexExpr]) -> crate::Result<Value> {
-        let v = if path == "my.bool.enabled" {
-            Value::Bool(ctx.my_bool_enabled)
-        } else {
-            Value::Nil
-        };
-        crate::helpers::apply_indexes(v, indexes)
+    fn get<'a>(&self, ctx: &BenchContext, _fields: &[Field]) -> crate::Result<Value> {
+        Ok(Value::Bool(ctx.my_bool_enabled))
     }
-    fn set<'a>(&self, ctx: &mut BenchContext, path: &str, indexes: &[IndexExpr], value: &Value) -> crate::Result<()> {
-        if !indexes.is_empty() {
-            return Err("BenchPathAccessorBoolEnabled: indexed set not supported".into());
-        }
-        if path == "my.bool.enabled" {
-            if let Value::Bool(v) = value {
-                ctx.my_bool_enabled = *v;
-            }
+    fn set<'a>(&self, ctx: &mut BenchContext, _fields: &[Field], value: &Value) -> crate::Result<()> {
+        if let Value::Bool(v) = value {
+            ctx.my_bool_enabled = *v;
         }
         Ok(())
     }
