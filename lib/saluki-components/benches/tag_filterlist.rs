@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
 use saluki_components::transforms::tag_filterlist::{
     compile_filters, filter_metric_tags, CompiledFilters, FilterAction, MetricTagFilterEntry,
 };
@@ -118,11 +118,14 @@ fn bench_exclude(c: &mut Criterion) {
 
         group.throughput(Throughput::Elements(1));
         group.bench_function(BenchmarkId::new("", label), |b| {
-            b.iter(|| {
-                let mut metric = distribution_metric("bench.dist", &tags_static);
-                filter_metric_tags(&mut metric, &filters);
-                metric
-            });
+            b.iter_batched(
+                || distribution_metric("bench.dist", &tags_static),
+                |mut metric| {
+                    filter_metric_tags(&mut metric, &filters);
+                    metric
+                },
+                BatchSize::SmallInput,
+            );
         });
     }
     group.finish();
@@ -149,11 +152,14 @@ fn bench_include(c: &mut Criterion) {
 
         group.throughput(Throughput::Elements(1));
         group.bench_function(BenchmarkId::new("", label), |b| {
-            b.iter(|| {
-                let mut metric = distribution_metric("bench.dist", &tags_static);
-                filter_metric_tags(&mut metric, &filters);
-                metric
-            });
+            b.iter_batched(
+                || distribution_metric("bench.dist", &tags_static),
+                |mut metric| {
+                    filter_metric_tags(&mut metric, &filters);
+                    metric
+                },
+                BatchSize::SmallInput,
+            );
         });
     }
     group.finish();
@@ -172,25 +178,31 @@ fn bench_no_match_passthrough(c: &mut Criterion) {
     let mut group = c.benchmark_group("tag_filterlist/passthrough");
     group.throughput(Throughput::Elements(1));
     group.bench_function("no_match", |b| {
-        b.iter(|| {
-            let mut metric = distribution_metric("bench.dist", &tags_static);
-            filter_metric_tags(&mut metric, &filters);
-            metric
-        });
+        b.iter_batched(
+            || distribution_metric("bench.dist", &tags_static),
+            |mut metric| {
+                filter_metric_tags(&mut metric, &filters);
+                metric
+            },
+            BatchSize::SmallInput,
+        );
     });
 
     // Non-distribution (counter) — type check is done before calling filter_metric_tags;
     // benchmark a simulated path that checks is_sketch() and skips.
     let counter_tags = make_tags_static(20);
     group.bench_function("non_distribution", |b| {
-        b.iter(|| {
-            let metric = counter_metric("bench.dist", &counter_tags);
-            // Simulate the guard in Transform::run: only call filter_metric_tags for sketches.
-            if metric.values().is_sketch() {
-                unreachable!("counter is not a sketch");
-            }
-            metric
-        });
+        b.iter_batched(
+            || counter_metric("bench.dist", &counter_tags),
+            |metric| {
+                // Simulate the guard in Transform::run: only call filter_metric_tags for sketches.
+                if metric.values().is_sketch() {
+                    unreachable!("counter is not a sketch");
+                }
+                metric
+            },
+            BatchSize::SmallInput,
+        );
     });
     group.finish();
 }
@@ -227,11 +239,14 @@ fn bench_filterlist_size(c: &mut Criterion) {
         let filters = compile_filters(&entries);
 
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
-            b.iter(|| {
-                let mut metric = distribution_metric("bench.dist", &tags_static);
-                filter_metric_tags(&mut metric, &filters);
-                metric
-            });
+            b.iter_batched(
+                || distribution_metric("bench.dist", &tags_static),
+                |mut metric| {
+                    filter_metric_tags(&mut metric, &filters);
+                    metric
+                },
+                BatchSize::SmallInput,
+            );
         });
     }
     group.finish();
@@ -283,11 +298,14 @@ fn bench_origin_tags_exclude(c: &mut Criterion) {
 
         group.throughput(Throughput::Elements(1));
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
-            b.iter(|| {
-                let mut metric = distribution_metric_with_origin_tags("bench.dist", &tags_static, &origin_tags_static);
-                filter_metric_tags(&mut metric, &filters);
-                metric
-            });
+            b.iter_batched(
+                || distribution_metric_with_origin_tags("bench.dist", &tags_static, &origin_tags_static),
+                |mut metric| {
+                    filter_metric_tags(&mut metric, &filters);
+                    metric
+                },
+                BatchSize::SmallInput,
+            );
         });
     }
     group.finish();
@@ -311,11 +329,14 @@ fn bench_origin_tags_include(c: &mut Criterion) {
 
         group.throughput(Throughput::Elements(1));
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
-            b.iter(|| {
-                let mut metric = distribution_metric_with_origin_tags("bench.dist", &tags_static, &origin_tags_static);
-                filter_metric_tags(&mut metric, &filters);
-                metric
-            });
+            b.iter_batched(
+                || distribution_metric_with_origin_tags("bench.dist", &tags_static, &origin_tags_static),
+                |mut metric| {
+                    filter_metric_tags(&mut metric, &filters);
+                    metric
+                },
+                BatchSize::SmallInput,
+            );
         });
     }
     group.finish();
@@ -332,12 +353,15 @@ fn bench_origin_tags_passthrough(c: &mut Criterion) {
     let mut group = c.benchmark_group("tag_filterlist/origin_tags_passthrough");
     group.throughput(Throughput::Elements(1));
     group.bench_function("no_origin_tags", |b| {
-        b.iter(|| {
-            // No origin_tags: exercises the fast path in filter_metric_tags.
-            let mut metric = distribution_metric("bench.dist", &tags_static);
-            filter_metric_tags(&mut metric, &filters);
-            metric
-        });
+        b.iter_batched(
+            || distribution_metric("bench.dist", &tags_static),
+            |mut metric| {
+                // No origin_tags: exercises the fast path in filter_metric_tags.
+                filter_metric_tags(&mut metric, &filters);
+                metric
+            },
+            BatchSize::SmallInput,
+        );
     });
     group.finish();
 }
@@ -361,11 +385,14 @@ fn bench_combined(c: &mut Criterion) {
     let mut group = c.benchmark_group("tag_filterlist/combined");
     group.throughput(Throughput::Elements(1));
     group.bench_function("50tags_20origin", |b| {
-        b.iter(|| {
-            let mut metric = distribution_metric_with_origin_tags("bench.dist", &tags_static, &origin_tags_static);
-            filter_metric_tags(&mut metric, &filters);
-            metric
-        });
+        b.iter_batched(
+            || distribution_metric_with_origin_tags("bench.dist", &tags_static, &origin_tags_static),
+            |mut metric| {
+                filter_metric_tags(&mut metric, &filters);
+                metric
+            },
+            BatchSize::SmallInput,
+        );
     });
     group.finish();
 }
