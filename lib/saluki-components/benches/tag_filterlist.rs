@@ -20,7 +20,7 @@ fn make_tags_static(n: usize) -> Vec<&'static str> {
     // Leak allocations so we can hand &'static str to Context::from_static_parts.
     // Benchmarks run for a bounded time so the leak is acceptable.
     (0..n)
-        .map(|i| Box::leak(format!("tag{i}:val{i}").into_boxed_str()) as &'static str)
+        .map(|i| Box::leak(format!("filter_tag_filter_tag_filter_tag_{i}:value_{i}").into_boxed_str()) as &'static str)
         .collect()
 }
 
