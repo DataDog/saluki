@@ -32,6 +32,7 @@ message Metric {
     string name = 2;
     repeated string tags = 3;
     repeated MetricPoint points = 4;
+    uint64 interval_secs = 5;
 }
 
 message Log {
