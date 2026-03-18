@@ -129,7 +129,7 @@ impl Checks for ChecksService {
         // command for testing locally:
         //
         // DD_DATA_PLANE_CHECKS_ENABLED=true make run-adp-standalone
-        // grpcurl -plaintext -proto lib/protos/datadog/proto/checks/checks.proto localhost:5105 datadog.checks.Checks/SendCheckPayload
+        // grpcurl -d '{"payload": {"data": [{"metric": {"type": 1, "name": "my_counter", "tags": ["tag1:value1"], "points": [{"timestamp": 1234, "value": 1.0}]}}]}}' -plaintext -proto lib/protos/datadog/proto/checks/checks.proto localhost:5105 datadog.checks.Checks/SendCheckPayload
 
         info!("Received check payload.");
 
