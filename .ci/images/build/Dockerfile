@@ -16,10 +16,7 @@ RUN tar -C /usr/local -xzf /tmp/go-1.23.0.tar.gz
 
 # Install a number of packages/tools by hand, because the versions in Ubuntu are too old, or just aren't available
 # from the normal package manager repositories.
-RUN curl -L https://s3.amazonaws.com/dd-package-public/dd-package-$(dpkg --print-architecture).deb -o dd-package.deb && \
-    dpkg -i dd-package.deb && \
-    rm dd-package.deb && \
-    apt-get update && \
+RUN apt-get update && \
     dd-package --bucket binaries-ddbuild-io-prod --package devtools/dd-package-dev --distribution "20.04"
 
 COPY .ci/install-pr-commenter.sh /
