@@ -107,8 +107,8 @@ impl NormalizedMetric {
     /// # Errors
     ///
     /// If the raw values are empty, or if the values cannot be normalized, an error is returned.
-    pub fn try_from_values(
-        context: MetricContext, mut raw_values: Vec<(u64, MetricValue)>,
+    fn try_from_normalized_values(
+        context: NormalizedMetricContext, mut raw_values: Vec<(u64, MetricValue)>,
     ) -> Result<Self, GenericError> {
         // We need to first sort the raw values by timestamp, to ensure we have proper ordering semantics.
         raw_values.sort_by(|a, b| a.0.cmp(&b.0));
@@ -116,7 +116,7 @@ impl NormalizedMetric {
             .with_error_context(|| format!("Failed to normalize values for metric '{}'", context.name()))?;
 
         Ok(Self {
-            context: NormalizedMetricContext::from_stele_context(context),
+            context,
             raw_values,
             value,
         })
@@ -176,23 +176,24 @@ impl NormalizedMetrics {
             return Err(generic_error!("Cannot normalize an empty set of metrics."));
         }
 
-        // Aggregate metric values by (context, type), using a `BTreeMap` so that we can get sorted metrics for ~free.
+        // Aggregate metric values by normalized (context, type), using a `BTreeMap` so that metric ordering is stable
+        // even when the original intake payload emits the same tag set in a different order.
         //
         // We group by type because metrics with the same context but different types (e.g., Count vs Rate) cannot be
         // merged together during normalization.
         let mut aggregated_context_values = BTreeMap::new();
 
         for metric in metrics {
-            let context = metric.context();
+            let context = NormalizedMetricContext::from_stele_context(metric.context().clone());
             let metric_type = metric_value_type(metric.values());
-            let key = (context.clone(), metric_type);
+            let key = (context, metric_type);
             let context_values = aggregated_context_values.entry(key).or_insert_with(Vec::new);
             context_values.extend_from_slice(metric.values());
         }
 
         let metrics = aggregated_context_values
             .into_iter()
-            .map(|((context, _type), values)| NormalizedMetric::try_from_values(context, values))
+            .map(|((context, _type), values)| NormalizedMetric::try_from_normalized_values(context, values))
             .try_fold(Vec::new(), |mut metrics, maybe_metric| {
                 metrics.push(maybe_metric?);
                 Ok::<_, GenericError>(metrics)
@@ -315,4 +316,43 @@ fn try_normalize_values(raw_values: &[(u64, MetricValue)]) -> Result<MetricValue
     }
 
     Ok(current_value)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use stele::Metric;
+
+    use super::NormalizedMetrics;
+
+    fn metric(name: &str, tags: &[&str], points: &[(u64, f64)]) -> Metric {
+        serde_json::from_value(json!({
+            "context": {
+                "name": name,
+                "tags": tags,
+            },
+            "values": points
+                .iter()
+                .map(|(ts, value)| json!([ts, {"mtype": "Count", "value": value}]))
+                .collect::<Vec<_>>(),
+        }))
+        .expect("metric should deserialize")
+    }
+
+    #[test]
+    fn normalizes_context_order_before_grouping_metrics() {
+        let metrics = vec![
+            metric("tagfilter.miss", &["pod:pod-a", "env:prod"], &[(10, 2.0)]),
+            metric("tagfilter.miss", &["env:prod", "pod:pod-a"], &[(20, 3.0)]),
+        ];
+
+        let normalized = NormalizedMetrics::try_from_stele_metrics(&metrics).expect("metrics should normalize");
+
+        assert_eq!(normalized.len(), 1);
+        assert_eq!(
+            normalized.metrics()[0].context().to_string(),
+            "tagfilter.miss[env:prod, pod:pod-a]"
+        );
+        assert_eq!(normalized.metrics()[0].raw_values().len(), 2);
+    }
 }

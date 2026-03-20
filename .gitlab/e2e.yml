@@ -123,6 +123,11 @@ test-correctness-otlp-traces-ottl-transform:
   variables:
     CORRECTNESS_TEST_CASE: otlp-traces-ottl-transform
 
+test-correctness-dsd-tag-filterlist:
+  extends: [.build-common-variables, .test-correctness-definition]
+  variables:
+    CORRECTNESS_TEST_CASE: dsd-tag-filterlist
+
 test-integration:
   stage: e2e
   tags: ["docker-in-docker:amd64"]
