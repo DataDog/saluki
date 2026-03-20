@@ -349,7 +349,10 @@ mod tests {
         let normalized = NormalizedMetrics::try_from_stele_metrics(&metrics).expect("metrics should normalize");
 
         assert_eq!(normalized.len(), 1);
-        assert_eq!(normalized.metrics()[0].context().to_string(), "tagfilter.miss[env:prod, pod:pod-a]");
+        assert_eq!(
+            normalized.metrics()[0].context().to_string(),
+            "tagfilter.miss[env:prod, pod:pod-a]"
+        );
         assert_eq!(normalized.metrics()[0].raw_values().len(), 2);
     }
 }

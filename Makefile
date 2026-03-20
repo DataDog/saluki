@@ -521,7 +521,7 @@ test-all: test test-property test-docs test-miri test-loom
 
 .PHONY: test-correctness
 test-correctness: ## Runs the complete correctness suite
-test-correctness: test-correctness-dsd-plain test-correctness-dsd-origin-detection test-correctness-otlp-metrics test-correctness-otlp-traces test-correctness-otlp-traces-ottl-filtering test-correctness-otlp-traces-ottl-transform
+test-correctness: test-correctness-dsd-plain test-correctness-dsd-origin-detection test-correctness-dsd-tag-filterlist test-correctness-otlp-metrics test-correctness-otlp-traces test-correctness-otlp-traces-ottl-filtering test-correctness-otlp-traces-ottl-transform
 
 .PHONY: test-correctness-dsd-plain
 test-correctness-dsd-plain: build-ground-truth
@@ -534,6 +534,12 @@ test-correctness-dsd-origin-detection: build-ground-truth
 test-correctness-dsd-origin-detection: ## Runs the 'dsd-origin-detection' correctness test case
 	@echo "[*] Running 'dsd-origin-detection' correctness test case..."
 	@target/release/ground-truth $(shell pwd)/test/correctness/dsd-origin-detection/config.yaml
+
+.PHONY: test-correctness-dsd-tag-filterlist
+test-correctness-dsd-tag-filterlist: build-ground-truth
+test-correctness-dsd-tag-filterlist: ## Runs the 'dsd-tag-filterlist' correctness test case
+	@echo "[*] Running 'dsd-tag-filterlist' correctness test case..."
+	@target/release/ground-truth $(shell pwd)/test/correctness/dsd-tag-filterlist/config.yaml
 
 .PHONY: test-correctness-otlp-metrics
 test-correctness-otlp-metrics: build-ground-truth

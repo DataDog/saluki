@@ -17,7 +17,7 @@ use saluki_core::{
         transforms::{Transform, TransformBuilder, TransformContext},
         ComponentContext,
     },
-    data_model::event::EventType,
+    data_model::event::{metric::Metric, EventType},
     topology::OutputDefinition,
 };
 use saluki_error::GenericError;
@@ -215,7 +215,7 @@ fn apply_tag_filter(tags: &SharedTagSet, is_exclude: bool, names: &HashSet<Strin
 /// If the metric name is not present in `filters`, the metric is left unchanged.
 /// If filtering would not change any tags, the metric context is left untouched (zero allocations).
 #[inline]
-pub fn filter_metric_tags(metric: &mut saluki_core::data_model::event::metric::Metric, filters: &CompiledFilters) {
+pub fn filter_metric_tags(metric: &mut Metric, filters: &CompiledFilters) {
     let Some((is_exclude, tag_names)) = filters.get(metric.context().name().as_ref()) else {
         return;
     };
