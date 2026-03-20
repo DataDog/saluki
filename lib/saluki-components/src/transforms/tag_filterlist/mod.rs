@@ -6,6 +6,8 @@
 //! Configuration is read from the `metric_tag_filterlist` key and can be updated at runtime via
 //! Remote Config.
 
+mod telemetry;
+
 use async_trait::async_trait;
 use foldhash::fast::RandomState as FoldHashState;
 use hashbrown::{HashMap, HashSet};
@@ -18,12 +20,16 @@ use saluki_core::{
         ComponentContext,
     },
     data_model::event::{metric::Metric, EventType},
+    observability::ComponentMetricsExt,
     topology::OutputDefinition,
 };
 use saluki_error::GenericError;
+use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use tokio::select;
 use tracing::debug;
+
+use self::telemetry::Telemetry;
 
 /// Action applied to the configured tag list: keep only listed tags, or remove listed tags.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -48,6 +54,25 @@ pub struct MetricTagFilterEntry {
 
 /// Compiled filter table: metric name → (is_exclude, set of tag key names).
 pub type CompiledFilters = HashMap<String, (bool, HashSet<String, FoldHashState>), FoldHashState>;
+
+struct FilteredTagSet {
+    tags: TagSet,
+    removed: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Outcome of attempting to apply `metric_tag_filterlist` rules to a metric.
+pub enum FilterMetricTagsOutcome {
+    /// No rule existed for the metric name.
+    RuleMiss,
+    /// A rule existed, but applying it did not change any tags.
+    NoChange,
+    /// A rule existed and removed one or more tags.
+    Modified {
+        /// Total number of instrumented and origin tags removed.
+        removed_tags: usize,
+    },
+}
 
 /// Compile a slice of filter entries into an O(1)-lookup table.
 ///
@@ -117,13 +142,15 @@ impl TransformBuilder for TagFilterlistConfiguration {
         OUTPUTS
     }
 
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+        let metrics_builder = MetricsBuilder::from_component_context(&context);
         Ok(Box::new(TagFilterlist {
             filters: compile_filters(&self.entries),
             configuration: self
                 .configuration
                 .clone()
                 .expect("configuration must be set via from_configuration"),
+            telemetry: Telemetry::new(&metrics_builder),
         }))
     }
 }
@@ -137,6 +164,7 @@ impl MemoryBounds for TagFilterlistConfiguration {
 struct TagFilterlist {
     filters: CompiledFilters,
     configuration: GenericConfiguration,
+    telemetry: Telemetry,
 }
 
 #[async_trait]
@@ -157,7 +185,8 @@ impl Transform for TagFilterlist {
                         for event in &mut events {
                             if let Some(metric) = event.try_as_metric_mut() {
                                 if metric.values().is_sketch() {
-                                    filter_metric_tags(metric, &self.filters);
+                                    let outcome = filter_metric_tags(metric, &self.filters);
+                                    self.telemetry.record(outcome);
                                 }
                             }
                         }
@@ -187,7 +216,9 @@ impl Transform for TagFilterlist {
 /// Constructs a fresh `TagSet` without mutating the source, preserving isolation for
 /// metrics that share the same underlying `Arc<TagSet>`.
 #[inline]
-fn apply_tag_filter(tags: &SharedTagSet, is_exclude: bool, names: &HashSet<String, FoldHashState>) -> Option<TagSet> {
+fn apply_tag_filter(
+    tags: &SharedTagSet, is_exclude: bool, names: &HashSet<String, FoldHashState>,
+) -> Option<FilteredTagSet> {
     let capacity = if is_exclude {
         tags.len().saturating_sub(names.len())
     } else {
@@ -202,8 +233,9 @@ fn apply_tag_filter(tags: &SharedTagSet, is_exclude: bool, names: &HashSet<Strin
             any_change = true;
         }
     }
+    let removed = tags.len().saturating_sub(out.len());
     if any_change {
-        Some(out)
+        Some(FilteredTagSet { tags: out, removed })
     } else {
         None
     }
@@ -215,31 +247,41 @@ fn apply_tag_filter(tags: &SharedTagSet, is_exclude: bool, names: &HashSet<Strin
 /// If the metric name is not present in `filters`, the metric is left unchanged.
 /// If filtering would not change any tags, the metric context is left untouched (zero allocations).
 #[inline]
-pub fn filter_metric_tags(metric: &mut Metric, filters: &CompiledFilters) {
+pub fn filter_metric_tags(metric: &mut Metric, filters: &CompiledFilters) -> FilterMetricTagsOutcome {
     let Some((is_exclude, tag_names)) = filters.get(metric.context().name().as_ref()) else {
-        return;
+        return FilterMetricTagsOutcome::RuleMiss;
     };
 
     let new_tags = apply_tag_filter(metric.context().tags(), *is_exclude, tag_names);
 
     if metric.context().origin_tags().is_empty() {
         if let Some(filtered) = new_tags {
-            *metric.context_mut() = metric.context().with_tags(filtered.into_shared());
+            let removed_tags = filtered.removed;
+            *metric.context_mut() = metric.context().with_tags(filtered.tags.into_shared());
+            FilterMetricTagsOutcome::Modified { removed_tags }
+        } else {
+            FilterMetricTagsOutcome::NoChange
         }
     } else {
         let new_origin = apply_tag_filter(metric.context().origin_tags(), *is_exclude, tag_names);
         match (new_tags, new_origin) {
-            (None, None) => {}
+            (None, None) => FilterMetricTagsOutcome::NoChange,
             (Some(tags), None) => {
-                *metric.context_mut() = metric.context().with_tags(tags.into_shared());
+                let removed_tags = tags.removed;
+                *metric.context_mut() = metric.context().with_tags(tags.tags.into_shared());
+                FilterMetricTagsOutcome::Modified { removed_tags }
             }
             (None, Some(origin)) => {
-                *metric.context_mut() = metric.context().with_origin_tags(origin.into_shared());
+                let removed_tags = origin.removed;
+                *metric.context_mut() = metric.context().with_origin_tags(origin.tags.into_shared());
+                FilterMetricTagsOutcome::Modified { removed_tags }
             }
             (Some(tags), Some(origin)) => {
+                let removed_tags = tags.removed + origin.removed;
                 *metric.context_mut() = metric
                     .context()
-                    .with_tags_and_origin_tags(tags.into_shared(), origin.into_shared());
+                    .with_tags_and_origin_tags(tags.tags.into_shared(), origin.tags.into_shared());
+                FilterMetricTagsOutcome::Modified { removed_tags }
             }
         }
     }
@@ -250,6 +292,7 @@ mod tests {
     use saluki_config::{dynamic::ConfigUpdate, ConfigurationLoader};
     use saluki_context::{tags::Tag, Context};
     use saluki_core::data_model::event::metric::Metric;
+    use saluki_metrics::{test::TestRecorder, MetricsBuilder};
 
     use super::*;
 
@@ -605,6 +648,31 @@ mod tests {
         // Both instrumented and origin tags should have env/host removed.
         assert_eq!(tag_names(&metric), vec!["service:web"]);
         assert_eq!(origin_tag_names(&metric), vec!["region:us-east-1"]);
+    }
+
+    #[test]
+    fn telemetry_records_hits_misses_and_filtered_tags() {
+        let recorder = TestRecorder::default();
+        let _local = metrics::set_default_local_recorder(&recorder);
+
+        let builder = MetricsBuilder::default();
+        let telemetry = Telemetry::new(&builder);
+
+        assert_eq!(recorder.counter("tag_filterlist_rule_hits_total"), Some(0));
+        assert_eq!(recorder.counter("tag_filterlist_rule_misses_total"), Some(0));
+        assert_eq!(recorder.counter("tag_filterlist_noop_hits_total"), Some(0));
+        assert_eq!(recorder.counter("tag_filterlist_metrics_modified_total"), Some(0));
+        assert_eq!(recorder.counter("tag_filterlist_tags_filtered_total"), Some(0));
+
+        telemetry.record(FilterMetricTagsOutcome::RuleMiss);
+        telemetry.record(FilterMetricTagsOutcome::NoChange);
+        telemetry.record(FilterMetricTagsOutcome::Modified { removed_tags: 3 });
+
+        assert_eq!(recorder.counter("tag_filterlist_rule_hits_total"), Some(2));
+        assert_eq!(recorder.counter("tag_filterlist_rule_misses_total"), Some(1));
+        assert_eq!(recorder.counter("tag_filterlist_noop_hits_total"), Some(1));
+        assert_eq!(recorder.counter("tag_filterlist_metrics_modified_total"), Some(1));
+        assert_eq!(recorder.counter("tag_filterlist_tags_filtered_total"), Some(3));
     }
 
     #[tokio::test]
