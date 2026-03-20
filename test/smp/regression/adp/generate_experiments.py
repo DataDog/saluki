@@ -59,6 +59,9 @@ def merge_generator_lists(base_generators: list, overlay_generators: list) -> li
     """
     if not base_generators:
         return copy.deepcopy(overlay_generators)
+    # An explicit empty overlay list means "replace with no generators" (e.g., no-traffic experiments).
+    if overlay_generators is not None and len(overlay_generators) == 0:
+        return []
     if not overlay_generators:
         return copy.deepcopy(base_generators)
 
