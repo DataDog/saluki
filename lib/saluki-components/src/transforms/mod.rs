@@ -27,5 +27,8 @@ pub use self::trace_sampler::TraceSamplerConfiguration;
 mod apm_stats;
 pub use self::apm_stats::ApmStatsTransformConfiguration;
 
+pub mod tag_filterlist;
+pub use self::tag_filterlist::TagFilterlistConfiguration;
+
 mod trace_obfuscation;
 pub use self::trace_obfuscation::TraceObfuscationConfiguration;
