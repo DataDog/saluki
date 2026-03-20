@@ -76,5 +76,5 @@ pub mod sketches {
 
 /// Checks definitions.
 pub mod checks {
-    pub use super::checks_include::datadog::checks::*;
+    pub use super::checks_include::datadog::checks::v1::*;
 }
