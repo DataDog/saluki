@@ -254,6 +254,8 @@ async fn create_topology(
     // is the only reason we're differentiating here.
     if dp_config.metrics_pipeline_required()
         || dp_config.logs_pipeline_required()
+        || dp_config.events_pipeline_required()
+        || dp_config.service_checks_pipeline_required()
         || dp_config.traces_pipeline_required()
     {
         let dd_forwarder_config =
@@ -267,6 +269,14 @@ async fn create_topology(
 
     if dp_config.logs_pipeline_required() {
         add_baseline_logs_pipeline_to_blueprint(&mut blueprint, config).await?;
+    }
+
+    if dp_config.events_pipeline_required() {
+        add_baseline_events_pipeline_to_blueprint(&mut blueprint, config).await?;
+    }
+
+    if dp_config.service_checks_pipeline_required() {
+        add_baseline_service_checks_pipeline_to_blueprint(&mut blueprint, config).await?;
     }
 
     if dp_config.traces_pipeline_required() {
@@ -296,9 +306,10 @@ async fn add_checks_pipeline_to_blueprint(
 
     blueprint
         .add_source("checks_ipc_in", checks_config)?
-        .connect_component("metrics_enrich", ["checks_ipc_in.metrics"])?;
-
-    // TODO: events and service checks
+        .connect_component("metrics_enrich", ["checks_ipc_in.metrics"])?
+        .connect_component("dd_logs_encode", ["checks_ipc_in.logs"])?
+        .connect_component("dd_events_encode", ["checks_ipc_in.events"])?
+        .connect_component("dd_service_checks_encode", ["checks_ipc_in.service_checks"])?;
 
     Ok(())
 }
@@ -345,6 +356,34 @@ async fn add_baseline_logs_pipeline_to_blueprint(
         .add_encoder("dd_logs_encode", dd_logs_config)?
         // Logs.
         .connect_component("dd_out", ["dd_logs_encode"])?;
+
+    Ok(())
+}
+
+async fn add_baseline_events_pipeline_to_blueprint(
+    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+) -> Result<(), GenericError> {
+    let dd_events_config = DatadogEventsConfiguration::from_configuration(config)
+        .map(BufferedIncrementalConfiguration::from_encoder_builder)
+        .error_context("Failed to configure Datadog Events encoder.")?;
+
+    blueprint
+        .add_encoder("dd_events_encode", dd_events_config)?
+        .connect_component("dd_out", ["dd_events_encode"])?;
+
+    Ok(())
+}
+
+async fn add_baseline_service_checks_pipeline_to_blueprint(
+    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+) -> Result<(), GenericError> {
+    let dd_service_checks_config = DatadogServiceChecksConfiguration::from_configuration(config)
+        .map(BufferedIncrementalConfiguration::from_encoder_builder)
+        .error_context("Failed to configure Datadog Service Checks encoder.")?;
+
+    blueprint
+        .add_encoder("dd_service_checks_encode", dd_service_checks_config)?
+        .connect_component("dd_out", ["dd_service_checks_encode"])?;
 
     Ok(())
 }
@@ -434,30 +473,21 @@ async fn add_dsd_pipeline_to_blueprint(
         ChainedConfiguration::default().with_transform_builder("dogstatsd_mapper", dsd_mapper_config);
     let dsd_agg_config =
         AggregateConfiguration::from_configuration(config).error_context("Failed to configure aggregate transform.")?;
-    let dd_events_config = DatadogEventsConfiguration::from_configuration(config)
-        .map(BufferedIncrementalConfiguration::from_encoder_builder)
-        .error_context("Failed to configure Datadog Events encoder.")?;
-    let dd_service_checks_config = DatadogServiceChecksConfiguration::from_configuration(config)
-        .map(BufferedIncrementalConfiguration::from_encoder_builder)
-        .error_context("Failed to configure Datadog Service Checks encoder.")?;
-
     blueprint
         // Components.
         .add_source("dsd_in", dsd_config)?
         .add_transform("dsd_prefix_filter", dsd_prefix_filter_configuration)?
         .add_transform("dsd_enrich", dsd_enrich_config)?
         .add_transform("dsd_agg", dsd_agg_config)?
-        .add_encoder("dd_events_encode", dd_events_config)?
-        .add_encoder("dd_service_checks_encode", dd_service_checks_config)?
         .add_destination("dsd_stats_out", dsd_stats_config)?
         // Metrics.
         .connect_component("dsd_prefix_filter", ["dsd_in.metrics"])?
         .connect_component("dsd_enrich", ["dsd_prefix_filter"])?
         .connect_component("dsd_agg", ["dsd_enrich"])?
         .connect_component("metrics_enrich", ["dsd_agg"])?
-        .connect_component("dd_service_checks_encode", ["dsd_in.service_checks"])?
+        // Events and service checks.
         .connect_component("dd_events_encode", ["dsd_in.events"])?
-        .connect_component("dd_out", ["dd_service_checks_encode", "dd_events_encode"])?
+        .connect_component("dd_service_checks_encode", ["dsd_in.service_checks"])?
         // DogStatsD Stats.
         .connect_component("dsd_stats_out", ["dsd_in.metrics"])?;
 

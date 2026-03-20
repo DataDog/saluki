@@ -138,11 +138,28 @@ impl DataPlaneConfiguration {
     /// Returns `true` if the logs pipeline is required.
     ///
     /// This indicates that the "baseline" logs pipeline (encoding, forwarding) is required by higher-level data
-    /// pipelines, such as OTLP.
+    /// pipelines, such as Checks or OTLP.
     pub const fn logs_pipeline_required(&self) -> bool {
         // We consider the logs pipeline to be enabled if:
+        // - Checks is enabled
         // - OTLP is enabled and not in proxy mode
-        self.otlp().enabled() && !self.otlp().proxy().enabled()
+        self.checks().enabled() || (self.otlp().enabled() && !self.otlp().proxy().enabled())
+    }
+
+    /// Returns `true` if the events pipeline is required.
+    ///
+    /// This indicates that the "baseline" events pipeline (encoding, forwarding) is required by higher-level data
+    /// pipelines, such as Checks or DogStatsD.
+    pub const fn events_pipeline_required(&self) -> bool {
+        self.checks().enabled() || self.dogstatsd().enabled()
+    }
+
+    /// Returns `true` if the service checks pipeline is required.
+    ///
+    /// This indicates that the "baseline" service checks pipeline (encoding, forwarding) is required by higher-level
+    /// data pipelines, such as Checks or DogStatsD.
+    pub const fn service_checks_pipeline_required(&self) -> bool {
+        self.checks().enabled() || self.dogstatsd().enabled()
     }
 
     /// Returns `true` if the traces pipeline is required.

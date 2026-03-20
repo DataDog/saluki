@@ -2,23 +2,33 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use datadog_protos::checks::check_data::Data;
-use datadog_protos::checks::checks_server::{Checks, ChecksServer};
-use datadog_protos::checks::{SendCheckPayloadRequest, SendCheckPayloadResponse};
-use datadog_protos::metrics::MetricType;
+use datadog_protos::checks::{
+    check_data::Data,
+    checks_server::{Checks, ChecksServer},
+    log::LogLevel,
+    metric::MetricType,
+    SendCheckPayloadRequest, SendCheckPayloadResponse,
+};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use protobuf::Enum as _;
 use saluki_common::task::HandleExt as _;
 use saluki_config::GenericConfiguration;
 use saluki_context::tags::{Tag, TagSet};
 use saluki_context::Context;
-use saluki_core::components::{sources::*, ComponentContext};
+use saluki_core::data_model::event::eventd::EventD;
+use saluki_core::data_model::event::log::Log;
 use saluki_core::data_model::event::metric::Metric;
+use saluki_core::data_model::event::service_check::{CheckStatus, ServiceCheck};
 use saluki_core::data_model::event::{Event, EventType};
 use saluki_core::topology::OutputDefinition;
+use saluki_core::{
+    components::{sources::*, ComponentContext},
+    data_model::event::log::LogStatus,
+};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::ListenAddress;
 use serde::Deserialize;
+use stringtheory::MetaString;
 use tokio::select;
 use tokio::sync::mpsc;
 use tonic::transport::Server;
@@ -46,8 +56,14 @@ impl ChecksIPCConfiguration {
 #[async_trait]
 impl SourceBuilder for ChecksIPCConfiguration {
     fn outputs(&self) -> &[OutputDefinition<EventType>] {
-        static OUTPUTS: LazyLock<Vec<OutputDefinition<EventType>>> =
-            LazyLock::new(|| vec![OutputDefinition::named_output("metrics", EventType::Metric)]);
+        static OUTPUTS: LazyLock<Vec<OutputDefinition<EventType>>> = LazyLock::new(|| {
+            vec![
+                OutputDefinition::named_output("metrics", EventType::Metric),
+                OutputDefinition::named_output("logs", EventType::Log),
+                OutputDefinition::named_output("events", EventType::EventD),
+                OutputDefinition::named_output("service_checks", EventType::ServiceCheck),
+            ]
+        });
 
         &OUTPUTS
     }
@@ -99,15 +115,19 @@ impl Source for ChecksIPC {
                     break;
                 },
                 _ = health.live() => continue,
-                Some(event) = events_rx.recv() => match event {
-                    Event::Metric(metric) => {
-                        let buffered = context.dispatcher().buffered_named("metrics")
-                            .error_context("Failed to get buffered dispatcher for metrics")?;
-                        if let Err(e) = buffered.send_all([Event::Metric(metric)]).await {
-                            warn!("Failed to dispatch metric event: {:?}", e);
-                        }
-                    },
-                    _ => {},
+                Some(event) = events_rx.recv() => {
+                    let output_name = match &event {
+                        Event::Metric(_) => "metrics",
+                        Event::Log(_) => "logs",
+                        Event::EventD(_) => "events",
+                        Event::ServiceCheck(_) => "service_checks",
+                        _ => continue,
+                    };
+                    let buffered = context.dispatcher().buffered_named(output_name)
+                        .error_context("Failed to get buffered dispatcher")?;
+                    if let Err(e) = buffered.send_all([event]).await {
+                        warn!("Failed to dispatch {output_name} event: {:?}", e);
+                    }
                 },
             }
         }
@@ -133,10 +153,7 @@ impl Checks for ChecksService {
 
         info!("Received check payload.");
 
-        let payload = request
-            .into_inner()
-            .payload
-            .ok_or_else(|| Status::invalid_argument("payload is required"))?;
+        let payload = request.into_inner();
         for check_data in payload.data.into_iter().filter_map(|data| data.data) {
             let event = match check_data {
                 Data::Metric(metric) => {
@@ -156,7 +173,7 @@ impl Checks for ChecksService {
                         MetricType::COUNT => Metric::counter(context, &points[..]),
                         MetricType::GAUGE => Metric::gauge(context, &points[..]),
                         MetricType::RATE => {
-                            let interval_secs = metric.interval_secs as u64;
+                            let interval_secs = metric.interval_secs;
                             if interval_secs == 0 {
                                 warn!("Received rate metric from check with interval of zero. Skipping.");
                                 continue;
@@ -172,7 +189,34 @@ impl Checks for ChecksService {
 
                     Event::Metric(metric)
                 }
-                _ => continue,
+                Data::Log(log) => {
+                    let status = proto_status_to_log_status(log.status);
+                    Event::Log(Log::new(log.message).with_status(status))
+                }
+                Data::Event(event) => {
+                    let tags = event.tags.into_iter().map(Tag::from).collect::<TagSet>();
+                    Event::EventD(
+                        EventD::new(event.title, event.text)
+                            .with_timestamp(event.timestamp as u64)
+                            .with_tags(tags.into_shared()),
+                    )
+                }
+                Data::ServiceCheck(sc) => {
+                    let status = match CheckStatus::try_from(sc.status as u8) {
+                        Ok(status) => status,
+                        Err(_) => {
+                            warn!("Received service check with invalid status: {}. Skipping.", sc.status);
+                            continue;
+                        }
+                    };
+                    let tags = sc.tags.into_iter().map(Tag::from).collect::<TagSet>();
+                    Event::ServiceCheck(
+                        ServiceCheck::new(sc.name, status)
+                            .with_timestamp(sc.timestamp as u64)
+                            .with_message(MetaString::from(sc.message))
+                            .with_tags(tags.into_shared()),
+                    )
+                }
             };
 
             if let Err(e) = self.events_tx.send(event).await {
@@ -181,5 +225,25 @@ impl Checks for ChecksService {
         }
 
         Ok(Response::new(SendCheckPayloadResponse {}))
+    }
+}
+
+fn log_level_to_log_status(log_level: LogLevel) -> LogStatus {
+    match log_level {
+    LOG_LEVEL_UNSPECIFIED = 0;
+    LOG_LEVEL_TRACE = 7;
+    LOG_LEVEL_DEBUG = 10;
+    LOG_LEVEL_INFO = 20;
+    LOG_LEVEL_WARNING = 30;
+    LOG_LEVEL_ERROR = 40;
+    LOG_LEVEL_CRITICAL = 50;
+
+        LogLevel::LOG_LEVEL_TRACE => LogStatus::Trace,
+        LogLevel::LOG_LEVEL_DEBUG => LogStatus::Debug,
+        LogLevel::LOG_LEVEL_INFO => LogStatus::Info,
+        LogLevel::LOG_LEVEL_WARNING => LogStatus::Warning,
+        LogLevel::LOG_LEVEL_ERROR => LogStatus::Error,
+        LogLevel::LOG_LEVEL_CRITICAL => LogStatus::Emergency,
+        _ => LogStatus::Info,
     }
 }
