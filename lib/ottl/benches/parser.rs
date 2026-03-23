@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use ottl::{
-    helpers, Args, CallbackMap, EnumMap, EvalContextFamily, IndexExpr, OttlParser, Parser, PathAccessor, PathResolver,
+    Args, CallbackMap, EnumMap, EvalContextFamily, Field, OttlParser, Parser, PathAccessor, PathResolver,
     PathResolverMap, Value,
 };
 
@@ -43,22 +43,12 @@ impl BenchContext {
 struct BenchPathAccessorIntValue;
 
 impl PathAccessor<BenchFamily> for BenchPathAccessorIntValue {
-    fn get<'a>(&self, ctx: &BenchContext, path: &str, indexes: &[IndexExpr]) -> ottl::Result<Value> {
-        let v = if path == "my.int.value" {
-            Value::Int(ctx.my_int_value)
-        } else {
-            Value::Nil
-        };
-        helpers::apply_indexes(v, indexes)
+    fn get<'a>(&self, ctx: &BenchContext, _fields: &[Field]) -> ottl::Result<Value> {
+        Ok(Value::Int(ctx.my_int_value))
     }
-    fn set<'a>(&self, ctx: &mut BenchContext, path: &str, indexes: &[IndexExpr], value: &Value) -> ottl::Result<()> {
-        if !indexes.is_empty() {
-            return Err("BenchPathAccessorIntValue: indexed set not supported".into());
-        }
-        if path == "my.int.value" {
-            if let Value::Int(v) = value {
-                ctx.my_int_value = *v;
-            }
+    fn set<'a>(&self, ctx: &mut BenchContext, _fields: &[Field], value: &Value) -> ottl::Result<()> {
+        if let Value::Int(v) = value {
+            ctx.my_int_value = *v;
         }
         Ok(())
     }
@@ -68,22 +58,12 @@ impl PathAccessor<BenchFamily> for BenchPathAccessorIntValue {
 struct BenchPathAccessorIntStatus;
 
 impl PathAccessor<BenchFamily> for BenchPathAccessorIntStatus {
-    fn get<'a>(&self, ctx: &BenchContext, path: &str, indexes: &[IndexExpr]) -> ottl::Result<Value> {
-        let v = if path == "my.int.status" {
-            Value::Int(ctx.my_int_status)
-        } else {
-            Value::Nil
-        };
-        helpers::apply_indexes(v, indexes)
+    fn get<'a>(&self, ctx: &BenchContext, _fields: &[Field]) -> ottl::Result<Value> {
+        Ok(Value::Int(ctx.my_int_status))
     }
-    fn set<'a>(&self, ctx: &mut BenchContext, path: &str, indexes: &[IndexExpr], value: &Value) -> ottl::Result<()> {
-        if !indexes.is_empty() {
-            return Err("BenchPathAccessorIntStatus: indexed set not supported".into());
-        }
-        if path == "my.int.status" {
-            if let Value::Int(v) = value {
-                ctx.my_int_status = *v;
-            }
+    fn set<'a>(&self, ctx: &mut BenchContext, _fields: &[Field], value: &Value) -> ottl::Result<()> {
+        if let Value::Int(v) = value {
+            ctx.my_int_status = *v;
         }
         Ok(())
     }
@@ -93,22 +73,12 @@ impl PathAccessor<BenchFamily> for BenchPathAccessorIntStatus {
 struct BenchPathAccessorBoolEnabled;
 
 impl PathAccessor<BenchFamily> for BenchPathAccessorBoolEnabled {
-    fn get<'a>(&self, ctx: &BenchContext, path: &str, indexes: &[IndexExpr]) -> ottl::Result<Value> {
-        let v = if path == "my.bool.enabled" {
-            Value::Bool(ctx.my_bool_enabled)
-        } else {
-            Value::Nil
-        };
-        helpers::apply_indexes(v, indexes)
+    fn get<'a>(&self, ctx: &BenchContext, _fields: &[Field]) -> ottl::Result<Value> {
+        Ok(Value::Bool(ctx.my_bool_enabled))
     }
-    fn set<'a>(&self, ctx: &mut BenchContext, path: &str, indexes: &[IndexExpr], value: &Value) -> ottl::Result<()> {
-        if !indexes.is_empty() {
-            return Err("BenchPathAccessorBoolEnabled: indexed set not supported".into());
-        }
-        if path == "my.bool.enabled" {
-            if let Value::Bool(v) = value {
-                ctx.my_bool_enabled = *v;
-            }
+    fn set<'a>(&self, ctx: &mut BenchContext, _fields: &[Field], value: &Value) -> ottl::Result<()> {
+        if let Value::Bool(v) = value {
+            ctx.my_bool_enabled = *v;
         }
         Ok(())
     }

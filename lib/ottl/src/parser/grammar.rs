@@ -98,25 +98,26 @@ fn ident_parser<'a>(upper: bool) -> impl chumsky::Parser<'a, TokenInput<'a>, Str
     }
 }
 
-/// Parser for path expressions: lower_ident ("." ident_segment)* index*
+/// Parser for path expressions: `FIELD ("." FIELD)*` where `FIELD = LOWER_IDENT {INDEX}`.
+///
+/// Each field carries its own index keys, matching the EBNF:
+/// ```text
+/// PATH  = [LOWER_IDENT, "."], FIELD, {".", FIELD};
+/// FIELD = LOWER_IDENT, {INDEX};
+/// ```
 fn path_parser<'a>() -> impl chumsky::Parser<'a, TokenInput<'a>, PathExpr, ParserExtra<'a>> + Clone {
     let lower_ident = ident_parser(false);
-    let ident_segment = ident_parser(false).or(ident_parser(true));
     let index = index_parser();
 
-    lower_ident
-        .then(
-            just(&Token::Dot)
-                .ignore_then(ident_segment)
-                .repeated()
-                .collect::<Vec<_>>(),
-        )
+    let field = lower_ident
         .then(index.repeated().collect::<Vec<_>>())
-        .map(|((first, rest), indexes)| {
-            let mut segments = vec![first];
-            segments.extend(rest);
-            PathExpr { segments, indexes }
-        })
+        .map(|(name, keys)| Field { name, keys });
+
+    field
+        .separated_by(just(&Token::Dot))
+        .at_least(1)
+        .collect::<Vec<_>>()
+        .map(|fields| PathExpr { fields })
 }
 
 /// Parser for comparison operators
