@@ -10,7 +10,6 @@ use datadog_protos::checks::{
     SendCheckPayloadRequest, SendCheckPayloadResponse,
 };
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use protobuf::Enum as _;
 use saluki_common::task::HandleExt as _;
 use saluki_config::GenericConfiguration;
 use saluki_context::tags::{Tag, TagSet};
@@ -157,31 +156,31 @@ impl Checks for ChecksService {
         for check_data in payload.data.into_iter().filter_map(|data| data.data) {
             let event = match check_data {
                 Data::Metric(metric) => {
-                    let metric_type = match MetricType::from_i32(metric.r#type) {
-                        Some(typ) => typ,
-                        None => continue,
+                    let metric_type = match MetricType::try_from(metric.r#type) {
+                        Ok(typ) => typ,
+                        Err(_) => continue,
                     };
 
                     let tags = metric.tags.into_iter().map(Tag::from).collect::<TagSet>();
                     let context = Context::from_parts(metric.name, tags.into_shared());
-                    let points = metric
-                        .points
-                        .into_iter()
-                        .map(|point| (point.timestamp as u64, point.value))
-                        .collect::<Vec<_>>();
                     let metric = match metric_type {
-                        MetricType::COUNT => Metric::counter(context, &points[..]),
-                        MetricType::GAUGE => Metric::gauge(context, &points[..]),
-                        MetricType::RATE => {
+                        MetricType::Counter => Metric::counter(context, (metric.timestamp, metric.value)),
+                        MetricType::Gauge => Metric::gauge(context, (metric.timestamp, metric.value)),
+                        MetricType::Rate => {
                             let interval_secs = metric.interval_secs;
                             if interval_secs == 0 {
                                 warn!("Received rate metric from check with interval of zero. Skipping.");
                                 continue;
                             }
 
-                            Metric::rate(context, &points[..], Duration::from_secs(interval_secs))
+                            Metric::rate(
+                                context,
+                                (metric.timestamp, metric.value),
+                                Duration::from_secs(interval_secs),
+                            )
                         }
-                        MetricType::UNSPECIFIED => {
+                        MetricType::Histogram => Metric::histogram(context, (metric.timestamp, metric.value)),
+                        MetricType::Unspecified => {
                             warn!("Received metric with unspecified type. Skipping.");
                             continue;
                         }
@@ -190,14 +189,18 @@ impl Checks for ChecksService {
                     Event::Metric(metric)
                 }
                 Data::Log(log) => {
-                    let status = proto_status_to_log_status(log.status);
+                    let status = match LogLevel::try_from(log.level) {
+                        Ok(level) => log_level_to_log_status(level),
+                        Err(_) => continue,
+                    };
+
                     Event::Log(Log::new(log.message).with_status(status))
                 }
                 Data::Event(event) => {
                     let tags = event.tags.into_iter().map(Tag::from).collect::<TagSet>();
                     Event::EventD(
                         EventD::new(event.title, event.text)
-                            .with_timestamp(event.timestamp as u64)
+                            .with_timestamp(event.timestamp)
                             .with_tags(tags.into_shared()),
                     )
                 }
@@ -212,7 +215,6 @@ impl Checks for ChecksService {
                     let tags = sc.tags.into_iter().map(Tag::from).collect::<TagSet>();
                     Event::ServiceCheck(
                         ServiceCheck::new(sc.name, status)
-                            .with_timestamp(sc.timestamp as u64)
                             .with_message(MetaString::from(sc.message))
                             .with_tags(tags.into_shared()),
                     )
@@ -230,20 +232,12 @@ impl Checks for ChecksService {
 
 fn log_level_to_log_status(log_level: LogLevel) -> LogStatus {
     match log_level {
-    LOG_LEVEL_UNSPECIFIED = 0;
-    LOG_LEVEL_TRACE = 7;
-    LOG_LEVEL_DEBUG = 10;
-    LOG_LEVEL_INFO = 20;
-    LOG_LEVEL_WARNING = 30;
-    LOG_LEVEL_ERROR = 40;
-    LOG_LEVEL_CRITICAL = 50;
-
-        LogLevel::LOG_LEVEL_TRACE => LogStatus::Trace,
-        LogLevel::LOG_LEVEL_DEBUG => LogStatus::Debug,
-        LogLevel::LOG_LEVEL_INFO => LogStatus::Info,
-        LogLevel::LOG_LEVEL_WARNING => LogStatus::Warning,
-        LogLevel::LOG_LEVEL_ERROR => LogStatus::Error,
-        LogLevel::LOG_LEVEL_CRITICAL => LogStatus::Emergency,
+        LogLevel::Trace => LogStatus::Trace,
+        LogLevel::Debug => LogStatus::Debug,
+        LogLevel::Info => LogStatus::Info,
+        LogLevel::Warning => LogStatus::Warning,
+        LogLevel::Error => LogStatus::Error,
+        LogLevel::Critical => LogStatus::Emergency,
         _ => LogStatus::Info,
     }
 }
