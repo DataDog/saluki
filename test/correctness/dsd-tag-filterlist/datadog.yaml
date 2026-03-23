@@ -46,3 +46,11 @@ metric_tag_filterlist:
     tags:
       - env
       - service
+  - metric_name: tagfilter.conflict
+    action: include
+    tags:
+      - env
+  - metric_name: tagfilter.conflict
+    action: exclude
+    tags:
+      - pod
