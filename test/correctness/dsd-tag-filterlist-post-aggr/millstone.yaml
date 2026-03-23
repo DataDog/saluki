@@ -1,26 +1,41 @@
 seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
 target: "unixgram:///airlock/metrics.sock"
 aggregation_bucket_width_secs: 10
-volume: 10000
+volume: 20000
 corpus:
-  size: 10000
+  size: 20000
   payload:
     dogstatsd:
       contexts:
-        constant: 256
+        constant: 1024
       metric_names:
         - "tagfilter.exclude"
         - "tagfilter.include"
         - "tagfilter.miss"
+        - "tagfilter.exclude.multi"
+        - "tagfilter.include.multi"
       tag_names:
         - "env"
         - "pod"
+        - "service"
+        - "region"
+        - "version"
       tag_values:
         - "prod"
         - "staging"
+        - "dev"
         - "pod-a"
         - "pod-b"
         - "pod-c"
+        - "web"
+        - "api"
+        - "worker"
+        - "us-east-1"
+        - "us-west-2"
+        - "eu-west-1"
+        - "v1"
+        - "v2"
+        - "v3"
       name_length:
         inclusive:
           min: 1
@@ -30,7 +45,9 @@ corpus:
           min: 3
           max: 16
       tags_per_msg:
-        constant: 2
+        inclusive:
+          min: 2
+          max: 5
       unique_tag_ratio: 1.0
       value:
         float_probability: 0.5

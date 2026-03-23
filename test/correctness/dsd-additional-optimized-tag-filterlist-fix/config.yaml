@@ -1,0 +1,19 @@
+analysis_mode: metrics
+millstone:
+  image: saluki-images/millstone:latest
+  config_path: millstone.yaml
+datadog_intake:
+  image: saluki-images/datadog-intake:latest
+  config_path: ../datadog-intake.yaml
+baseline:
+  image: registry.datadoghq.com/agent:7.76.2-jmx
+  files:
+    - datadog.yaml:/etc/datadog-agent/datadog.yaml
+  additional_env_vars:
+    - DD_API_KEY=correctness-test
+comparison:
+  image: datadog/agent-dev:efcf783f-py3-jmx
+  files:
+    - datadog.yaml:/etc/datadog-agent/datadog.yaml
+  additional_env_vars:
+    - DD_API_KEY=correctness-test

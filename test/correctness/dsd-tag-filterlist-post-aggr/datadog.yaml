@@ -28,3 +28,13 @@ metric_tag_filterlist:
     action: include
     tags:
       - env
+  - metric_name: tagfilter.exclude.multi
+    action: exclude
+    tags:
+      - pod
+      - region
+  - metric_name: tagfilter.include.multi
+    action: include
+    tags:
+      - env
+      - service
