@@ -1,6 +1,9 @@
 generate-build-ci-image:
   stage: internal
   image: ${DOCKER_BUILD_IMAGE}
+  id_tokens:
+    DDSIGN_ID_TOKEN:
+      aud: image-integrity
   needs: []
   rules:
     - if: $CI_PIPELINE_SOURCE == "web"
@@ -26,12 +29,18 @@ generate-build-ci-image:
       --build-arg DD_AGENT_IMAGE=registry.datadoghq.com/agent:latest-jmx
       --squash
       --push
+      --metadata-file ./build-ci-metadata
       --file .ci/images/build/Dockerfile
       .
+    - ddsign sign ${SALUKI_IMAGE_REPO_BASE}/build-ci:v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}
+      --docker-metadata-file ./build-ci-metadata
 
 generate-general-ci-image:
   stage: internal
   image: ${DOCKER_BUILD_IMAGE}
+  id_tokens:
+    DDSIGN_ID_TOKEN:
+      aud: image-integrity
   needs: []
   rules:
     - if: $CI_PIPELINE_SOURCE == "web"
@@ -51,12 +60,18 @@ generate-general-ci-image:
       --label ci.job_id=${CI_JOB_ID}
       --squash
       --push
+      --metadata-file ./general-ci-metadata
       --file .ci/images/general/Dockerfile
       .
+    - ddsign sign ${SALUKI_IMAGE_REPO_BASE}/general-ci:v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}
+      --docker-metadata-file ./general-ci-metadata
 
 generate-smp-ci-image:
   stage: internal
   image: ${DOCKER_BUILD_IMAGE}
+  id_tokens:
+    DDSIGN_ID_TOKEN:
+      aud: image-integrity
   needs: []
   rules:
     - if: $CI_PIPELINE_SOURCE == "web"
@@ -76,5 +91,8 @@ generate-smp-ci-image:
       --label ci.job_id=${CI_JOB_ID}
       --squash
       --push
+      --metadata-file ./smp-ci-metadata
       --file .ci/images/smp/Dockerfile
       .
+    - ddsign sign ${SALUKI_IMAGE_REPO_BASE}/smp-ci:v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}
+      --docker-metadata-file ./smp-ci-metadata
