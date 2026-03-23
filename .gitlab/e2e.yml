@@ -128,6 +128,26 @@ test-correctness-dsd-tag-filterlist:
   variables:
     CORRECTNESS_TEST_CASE: dsd-tag-filterlist
 
+test-correctness-dsd-optimized-tag-filterlist:
+  extends: [.build-common-variables, .test-correctness-definition]
+  variables:
+    CORRECTNESS_TEST_CASE: dsd-optimized-tag-filterlist
+
+test-correctness-dsd-additional-optimized-tag-filterlist:
+  extends: [.build-common-variables, .test-correctness-definition]
+  variables:
+    CORRECTNESS_TEST_CASE: dsd-additional-optimized-tag-filterlist
+
+test-correctness-dsd-tag-filterlist-context-cache:
+  extends: [.build-common-variables, .test-correctness-definition]
+  variables:
+    CORRECTNESS_TEST_CASE: dsd-tag-filterlist-context-cache
+
+test-correctness-dsd-tag-filterlist-post-aggr:
+  extends: [.build-common-variables, .test-correctness-definition]
+  variables:
+    CORRECTNESS_TEST_CASE: dsd-tag-filterlist-post-aggr
+
 test-integration:
   stage: e2e
   tags: ["docker-in-docker:amd64"]

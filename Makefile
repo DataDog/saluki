@@ -521,7 +521,7 @@ test-all: test test-property test-docs test-miri test-loom
 
 .PHONY: test-correctness
 test-correctness: ## Runs the complete correctness suite
-test-correctness: test-correctness-dsd-plain test-correctness-dsd-origin-detection test-correctness-dsd-tag-filterlist test-correctness-otlp-metrics test-correctness-otlp-traces test-correctness-otlp-traces-ottl-filtering test-correctness-otlp-traces-ottl-transform
+test-correctness: test-correctness-dsd-plain test-correctness-dsd-origin-detection test-correctness-dsd-tag-filterlist test-correctness-dsd-optimized-tag-filterlist test-correctness-dsd-additional-optimized-tag-filterlist test-correctness-dsd-tag-filterlist-context-cache test-correctness-dsd-tag-filterlist-post-aggr test-correctness-otlp-metrics test-correctness-otlp-traces test-correctness-otlp-traces-ottl-filtering test-correctness-otlp-traces-ottl-transform
 
 .PHONY: test-correctness-dsd-plain
 test-correctness-dsd-plain: build-ground-truth
@@ -540,6 +540,30 @@ test-correctness-dsd-tag-filterlist: build-ground-truth
 test-correctness-dsd-tag-filterlist: ## Runs the 'dsd-tag-filterlist' correctness test case
 	@echo "[*] Running 'dsd-tag-filterlist' correctness test case..."
 	@target/release/ground-truth $(shell pwd)/test/correctness/dsd-tag-filterlist/config.yaml
+
+.PHONY: test-correctness-dsd-optimized-tag-filterlist
+test-correctness-dsd-optimized-tag-filterlist: build-ground-truth
+test-correctness-dsd-optimized-tag-filterlist: ## Runs the 'dsd-optimized-tag-filterlist' correctness test case
+	@echo "[*] Running 'dsd-optimized-tag-filterlist' correctness test case..."
+	@target/release/ground-truth $(shell pwd)/test/correctness/dsd-optimized-tag-filterlist/config.yaml
+
+.PHONY: test-correctness-dsd-additional-optimized-tag-filterlist
+test-correctness-dsd-additional-optimized-tag-filterlist: build-ground-truth
+test-correctness-dsd-additional-optimized-tag-filterlist: ## Runs the 'dsd-additional-optimized-tag-filterlist' correctness test case
+	@echo "[*] Running 'dsd-additional-optimized-tag-filterlist' correctness test case..."
+	@target/release/ground-truth $(shell pwd)/test/correctness/dsd-additional-optimized-tag-filterlist/config.yaml
+
+.PHONY: test-correctness-dsd-tag-filterlist-context-cache
+test-correctness-dsd-tag-filterlist-context-cache: build-ground-truth
+test-correctness-dsd-tag-filterlist-context-cache: ## Runs the 'dsd-tag-filterlist-context-cache' correctness test case
+	@echo "[*] Running 'dsd-tag-filterlist-context-cache' correctness test case..."
+	@target/release/ground-truth $(shell pwd)/test/correctness/dsd-tag-filterlist-context-cache/config.yaml
+
+.PHONY: test-correctness-dsd-tag-filterlist-post-aggr
+test-correctness-dsd-tag-filterlist-post-aggr: build-ground-truth
+test-correctness-dsd-tag-filterlist-post-aggr: ## Runs the 'dsd-tag-filterlist-post-aggr' correctness test case
+	@echo "[*] Running 'dsd-tag-filterlist-post-aggr' correctness test case..."
+	@target/release/ground-truth $(shell pwd)/test/correctness/dsd-tag-filterlist-post-aggr/config.yaml
 
 .PHONY: test-correctness-otlp-metrics
 test-correctness-otlp-metrics: build-ground-truth

@@ -1,0 +1,30 @@
+# Using a fixed hostname ensures consistent tags between the baseline and comparison agents.
+hostname: "correctness-testing"
+
+# Dummy API key.
+api_key: dummy-api-key-correctness-testing
+
+# We have to specifically configure the health port to use.
+health_port: 5555
+
+# Point ourselves at the datadog-intake service.
+dd_url: "http://datadog-intake:2049"
+
+# Turn off UDP and listen on a UDS socket instead.
+dogstatsd_port: 0
+dogstatsd_socket: /airlock/metrics.sock
+
+dogstatsd_origin_detection: false
+
+# Keep worker count at 1 to ensure deterministic gauge processing.
+dogstatsd_workers_count: 1
+
+metric_tag_filterlist:
+  - metric_name: tagfilter.exclude
+    action: exclude
+    tags:
+      - pod
+  - metric_name: tagfilter.include
+    action: include
+    tags:
+      - env
