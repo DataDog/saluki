@@ -12,7 +12,7 @@ baseline:
   additional_env_vars:
     - DD_API_KEY=correctness-test
 comparison:
-  image: datadog/agent-dev:aef811fd-py3-jmx
+  image: registry.datadoghq.com/agent-dev:aef811fd-py3-jmx
   files:
     - datadog.yaml:/etc/datadog-agent/datadog.yaml
   additional_env_vars:
