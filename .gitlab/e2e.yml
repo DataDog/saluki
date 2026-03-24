@@ -22,12 +22,15 @@
     - make build-ground-truth
     - target/release/ground-truth ./test/correctness/${CORRECTNESS_TEST_CASE}/config.yaml
 
-# Mixin for correctness tests where both baseline and comparison are CI-built ADP images.
-# Tests comparing against external agent-dev images should NOT extend this and instead
-# let config.yaml specify the images directly.
-.test-correctness-adp:
+# Mixin that overrides the comparison image to the CI-built ADP image.
+# Tests comparing against external agent-dev images should NOT extend this.
+.test-correctness-adp-comparison:
   variables:
     GROUND_TRUTH_COMPARISON__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
+
+# Mixin that overrides the baseline image to the CI-built ADP image.
+.test-correctness-adp-baseline:
+  variables:
     GROUND_TRUTH_BASELINE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
 
 build-datadog-intake-image:
@@ -94,57 +97,69 @@ build-bundled-agent-adp-image:
       .
 
 test-correctness-dsd-plain:
-  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp]
+  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-comparison, .test-correctness-adp-baseline]
   variables:
     CORRECTNESS_TEST_CASE: dsd-plain
 
 test-correctness-dsd-origin-detection:
-  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp]
+  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-comparison, .test-correctness-adp-baseline]
   variables:
     CORRECTNESS_TEST_CASE: dsd-origin-detection
 
 test-correctness-otlp-metrics:
-  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp]
+  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-comparison, .test-correctness-adp-baseline]
   variables:
     CORRECTNESS_TEST_CASE: otlp-metrics
 
 test-correctness-otlp-traces:
-  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp]
+  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-comparison, .test-correctness-adp-baseline]
   variables:
     CORRECTNESS_TEST_CASE: otlp-traces
 
 test-correctness-otlp-traces-ottl-filtering:
-  extends: [.build-common-variables, .test-correctness-definition]
+  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-comparison]
   variables:
     CORRECTNESS_TEST_CASE: otlp-traces-ottl-filtering
 
 test-correctness-otlp-traces-ottl-transform:
-  extends: [.build-common-variables, .test-correctness-definition]
+  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-comparison]
   variables:
     CORRECTNESS_TEST_CASE: otlp-traces-ottl-transform
 
 test-correctness-dsd-tag-filterlist:
-  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp]
+  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-comparison]
   variables:
     CORRECTNESS_TEST_CASE: dsd-tag-filterlist
 
 test-correctness-dsd-optimized-tag-filterlist:
   extends: [.build-common-variables, .test-correctness-definition]
+  needs:
+    - build-datadog-intake-image
+    - build-millstone-image
   variables:
     CORRECTNESS_TEST_CASE: dsd-optimized-tag-filterlist
 
 test-correctness-dsd-additional-optimized-tag-filterlist:
   extends: [.build-common-variables, .test-correctness-definition]
+  needs:
+    - build-datadog-intake-image
+    - build-millstone-image
   variables:
     CORRECTNESS_TEST_CASE: dsd-additional-optimized-tag-filterlist
 
 test-correctness-dsd-tag-filterlist-context-cache:
   extends: [.build-common-variables, .test-correctness-definition]
+  needs:
+    - build-datadog-intake-image
+    - build-millstone-image
   variables:
     CORRECTNESS_TEST_CASE: dsd-tag-filterlist-context-cache
 
 test-correctness-dsd-tag-filterlist-post-aggr:
   extends: [.build-common-variables, .test-correctness-definition]
+  needs:
+    - build-datadog-intake-image
+    - build-millstone-image
   variables:
     CORRECTNESS_TEST_CASE: dsd-tag-filterlist-post-aggr
 
