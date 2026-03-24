@@ -1,6 +1,7 @@
+use crate::hash::{FastBuildHasher, NoopU64BuildHasher};
+
 mod bitset;
 pub use self::bitset::ContiguousBitSet;
-use crate::hash::{FastBuildHasher, NoopU64BuildHasher};
 
 /// A hash set based on the standard library's ([`HashSet`][std::collections::HashSet]) using [`FastHasher`][crate::hash::FastHasher].
 pub type FastHashSet<T> = std::collections::HashSet<T, FastBuildHasher>;

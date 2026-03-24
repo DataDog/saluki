@@ -1,30 +1,28 @@
 use std::fmt;
 
 use saluki_common::collections::ContiguousBitSet;
-use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
-use super::{frozen::tag_has_name, SharedTagSet};
+use super::SharedTagSet;
 use crate::tags::Tag;
 
 /// A mutable set of tags, optionally backed by a [`SharedTagSet`] base.
 ///
-/// `TagSet` supports efficient mutation through an overlay approach: it wraps an immutable
-/// [`SharedTagSet`] base with a small set of additions and a bitset tracking which base tags have
-/// been removed. This avoids full materialization when only a few tags need to change.
+/// `TagSet` supports efficient mutation through an overlay approach: it wraps an immutable [`SharedTagSet`] base with a
+/// small set of additions and a bitset tracking which base tags have been removed. This avoids full materialization
+/// when only a few tags need to change.
 ///
 /// # Construction
 ///
-/// A `TagSet` can be created from scratch (empty base, tags go into additions) or by wrapping an
-/// existing [`SharedTagSet`] for mutation. When constructed from scratch, the usage pattern is the
-/// same as before: call [`insert_tag`][TagSet::insert_tag] in a loop, then
-/// [`into_shared`][TagSet::into_shared] to freeze.
+/// A `TagSet` can be created from scratch (empty base, tags go into additions) or by wrapping an existing
+/// [`SharedTagSet`] for mutation. When constructed from scratch, the usage pattern is the same as before: call
+/// [`insert_tag`][TagSet::insert_tag] in a loop, then [`into_shared`][TagSet::into_shared] to freeze.
 ///
 /// # Conversion
 ///
-/// When converting back to [`SharedTagSet`] via [`into_shared`][TagSet::into_shared], if no
-/// mutations have been made, the base is returned as-is with zero cost. Otherwise, the effective
-/// tags are materialized into a new [`SharedTagSet`].
+/// When converting back to [`SharedTagSet`] via [`into_shared`][TagSet::into_shared], if no mutations have been made,
+/// the base is returned as-is with zero cost. Otherwise, the effective tags are materialized into a new
+/// [`SharedTagSet`].
 #[derive(Clone, Debug, Default)]
 pub struct TagSet {
     /// Immutable base (structurally shared via Arc, never modified).
@@ -95,7 +93,7 @@ impl TagSet {
         // Remove from additions.
         let mut i = 0;
         while i < self.additions.len() {
-            if tag_has_name(&self.additions[i], tag_name) {
+            if self.additions[i].name() == tag_name {
                 removed.push(self.additions.remove(i));
             } else {
                 i += 1;
@@ -104,7 +102,7 @@ impl TagSet {
 
         // Mark matching base tags as removed: collect indices and tags first.
         let base_matches: SmallVec<[usize; 4]> = base_indexed_iter(&self.base)
-            .filter(|&(idx, base_tag)| !is_removed_in(&self.removals, idx) && tag_has_name(base_tag, tag_name))
+            .filter(|&(idx, base_tag)| !is_removed_in(&self.removals, idx) && base_tag.name() == tag_name)
             .map(|(idx, _)| idx)
             .collect();
         for &idx in &base_matches {
@@ -158,13 +156,13 @@ impl TagSet {
         let tag_name = tag_name.as_ref();
 
         // Check additions first (they shadow base tags).
-        if let Some(tag) = self.additions.iter().find(|t| tag_has_name(t, tag_name)) {
+        if let Some(tag) = self.additions.iter().find(|t| t.name() == tag_name) {
             return Some(tag);
         }
 
         // Check base, skipping removed.
         for (idx, base_tag) in base_indexed_iter(&self.base) {
-            if !is_removed_in(&self.removals, idx) && tag_has_name(base_tag, tag_name) {
+            if !is_removed_in(&self.removals, idx) && base_tag.name() == tag_name {
                 return Some(base_tag);
             }
         }
@@ -410,34 +408,6 @@ impl fmt::Display for TagSet {
         }
 
         write!(f, "]")
-    }
-}
-
-impl Serialize for TagSet {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use serde::ser::SerializeSeq;
-        let mut seq = serializer.serialize_seq(Some(self.len()))?;
-        for tag in self {
-            seq.serialize_element(tag)?;
-        }
-        seq.end()
-    }
-}
-
-impl<'de> Deserialize<'de> for TagSet {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let tags = Vec::<Tag>::deserialize(deserializer)?;
-        Ok(Self {
-            base: SharedTagSet::default(),
-            additions: SmallVec::from_vec(tags),
-            removals: ContiguousBitSet::new(),
-        })
     }
 }
 

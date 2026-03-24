@@ -41,7 +41,7 @@ impl FrozenTagSet {
     /// If multiple tags are present with the same name, the first tag with a matching name will be
     /// returned. If no tag in the set matches, `None` is returned.
     pub fn get_single_tag(&self, tag_name: &str) -> Option<&Tag> {
-        self.0.iter().find(|tag| tag_has_name(tag, tag_name))
+        self.0.iter().find(|tag| tag.name() == tag_name)
     }
 
     /// Returns the size of the tag set, in bytes.
@@ -85,11 +85,4 @@ impl fmt::Display for FrozenTagSet {
 
         write!(f, "]")
     }
-}
-
-pub(crate) fn tag_has_name(tag: &Tag, tag_name: &str) -> bool {
-    let tag_str = tag.as_str();
-    tag_str
-        .split_once(':')
-        .map_or_else(|| tag_str == tag_name, |(name, _)| name == tag_name)
 }
