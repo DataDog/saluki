@@ -7,7 +7,7 @@ target:
   memory_allotment: 3200MiB
   environment:
     DD_HOSTNAME: smp-regression
-    DD_API_KEY: "00000001"
+    DD_API_KEY: foo00000001
     DD_DD_URL: http://127.0.0.1:9091
     DD_IPC_CERT_FILE_PATH: /etc/agent-data-plane/cert.pem
     DD_LOG_FORMAT_JSON: "true"

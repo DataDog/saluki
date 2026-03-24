@@ -133,7 +133,6 @@ templates:
     target:
       memory_allotment: 3200MiB
       environment:
-        DD_API_KEY: "00000001"
         DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
         DD_DOGSTATSD_PORT: "0"
         DD_DOGSTATSD_SOCKET: /tmp/dsd.socket
