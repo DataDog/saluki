@@ -137,6 +137,7 @@ templates:
         DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
         DD_DOGSTATSD_PORT: "0"
         DD_DOGSTATSD_SOCKET: /tmp/dsd.socket
+        DD_DOGSTATSD_ORIGIN_DETECTION: "true"
         # Keep the aggregate transform from dropping contexts under the higher-cardinality load.
         DD_AGGREGATE_CONTEXT_LIMIT: "80000"
     checks:
