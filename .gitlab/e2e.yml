@@ -18,16 +18,16 @@
     GROUND_TRUTH_ALPINE_IMAGE: registry.ddbuild.io/alpine:latest
     GROUND_TRUTH_MILLSTONE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
     GROUND_TRUTH_DATADOG_INTAKE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/datadog-intake:${CI_COMMIT_SHA}
-    GROUND_TRUTH_COMPARISON__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
   script:
     - make build-ground-truth
     - target/release/ground-truth ./test/correctness/${CORRECTNESS_TEST_CASE}/config.yaml
 
-# Mixin for correctness tests where baseline is the CI-built bundled ADP image.
-# Tests with a different baseline (e.g. DDOT) should NOT extend this and instead
-# let config.yaml specify the baseline image directly.
-.test-correctness-adp-baseline:
+# Mixin for correctness tests where both baseline and comparison are CI-built ADP images.
+# Tests comparing against external agent-dev images should NOT extend this and instead
+# let config.yaml specify the images directly.
+.test-correctness-adp:
   variables:
+    GROUND_TRUTH_COMPARISON__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
     GROUND_TRUTH_BASELINE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
 
 build-datadog-intake-image:
@@ -94,22 +94,22 @@ build-bundled-agent-adp-image:
       .
 
 test-correctness-dsd-plain:
-  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-baseline]
+  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp]
   variables:
     CORRECTNESS_TEST_CASE: dsd-plain
 
 test-correctness-dsd-origin-detection:
-  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-baseline]
+  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp]
   variables:
     CORRECTNESS_TEST_CASE: dsd-origin-detection
 
 test-correctness-otlp-metrics:
-  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-baseline]
+  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp]
   variables:
     CORRECTNESS_TEST_CASE: otlp-metrics
 
 test-correctness-otlp-traces:
-  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-baseline]
+  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp]
   variables:
     CORRECTNESS_TEST_CASE: otlp-traces
 
@@ -124,7 +124,7 @@ test-correctness-otlp-traces-ottl-transform:
     CORRECTNESS_TEST_CASE: otlp-traces-ottl-transform
 
 test-correctness-dsd-tag-filterlist:
-  extends: [.build-common-variables, .test-correctness-definition]
+  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp]
   variables:
     CORRECTNESS_TEST_CASE: dsd-tag-filterlist
 
