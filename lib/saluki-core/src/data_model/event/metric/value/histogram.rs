@@ -25,6 +25,7 @@ pub struct WeightedSample {
 pub struct Histogram {
     sum: OrderedFloat<f64>,
     samples: SmallVec<[WeightedSample; 3]>,
+    _foo: SmallVec<[u64; 3]>,
 }
 
 impl Histogram {
