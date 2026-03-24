@@ -58,9 +58,9 @@ impl TagSet {
 
     /// Inserts a tag into the set.
     ///
-    /// If a tag with the same complete value already exists (in additions or the base), this does
-    /// nothing. If a tag with the same name but different value exists in the base, the base tag
-    /// is shadowed (its removal bit is set) and the new tag is added to additions.
+    /// If the tag is already present in the set, this does nothing. Presence is checked by exact
+    /// tag value (both name and value), not just by name — multiple tags with the same name but
+    /// different values can coexist.
     pub fn insert_tag<T>(&mut self, tag: T)
     where
         T: Into<Tag>,
@@ -78,19 +78,6 @@ impl TagSet {
         if found_in_base {
             return;
         }
-
-        // Shadow any base tag with the same name: collect indices first to avoid borrow conflict.
-        let tag_name = tag.name();
-        let to_remove: SmallVec<[usize; 4]> = base_indexed_iter(&self.base)
-            .filter(|&(idx, base_tag)| !is_removed_in(&self.removals, idx) && tag_has_name(base_tag, tag_name))
-            .map(|(idx, _)| idx)
-            .collect();
-        for idx in to_remove {
-            self.set_removed(idx);
-        }
-
-        // Replace any existing addition with the same name.
-        self.additions.retain(|t| t.name() != tag_name);
 
         self.additions.push(tag);
     }
@@ -581,26 +568,28 @@ mod tests {
     }
 
     #[test]
-    fn insert_shadows_base_tag_with_same_name() {
+    fn insert_same_name_different_value_keeps_both() {
         let base = shared_from(&["env:staging", "service:web"]);
         let mut ts = TagSet::from(base);
         ts.insert_tag(Tag::from("env:production"));
 
-        assert_eq!(ts.len(), 2);
-        let env_tag = ts.get_single_tag("env").unwrap();
-        assert_eq!(env_tag.as_str(), "env:production");
+        // Both env tags coexist — insert only deduplicates by exact value, not by name.
+        assert_eq!(ts.len(), 3);
+        assert!(ts.has_tag("env:staging"));
+        assert!(ts.has_tag("env:production"));
         assert!(ts.has_tag("service:web"));
-        assert!(!ts.has_tag("env:staging"));
     }
 
     #[test]
-    fn insert_replaces_existing_addition_with_same_name() {
+    fn insert_same_name_different_value_in_additions() {
         let mut ts = TagSet::default();
         ts.insert_tag(Tag::from("env:staging"));
         ts.insert_tag(Tag::from("env:production"));
 
-        assert_eq!(ts.len(), 1);
-        assert_eq!(ts.get_single_tag("env").unwrap().as_str(), "env:production");
+        // Both coexist.
+        assert_eq!(ts.len(), 2);
+        assert!(ts.has_tag("env:staging"));
+        assert!(ts.has_tag("env:production"));
     }
 
     // --- Remove ---
@@ -691,13 +680,15 @@ mod tests {
     }
 
     #[test]
-    fn insert_shadowing_tag_in_second_chain() {
+    fn insert_same_name_in_second_chain_keeps_both() {
         let base = chained_shared(&[&["a:1"], &["b:2"]]);
         let mut ts = TagSet::from(base);
-        ts.insert_tag(Tag::from("b:replaced"));
+        ts.insert_tag(Tag::from("b:other"));
 
-        assert_eq!(ts.len(), 2);
-        assert_eq!(ts.get_single_tag("b").unwrap().as_str(), "b:replaced");
+        // Both b tags coexist.
+        assert_eq!(ts.len(), 3);
+        assert!(ts.has_tag("b:2"));
+        assert!(ts.has_tag("b:other"));
     }
 
     // --- Clone independence ---
@@ -743,8 +734,8 @@ mod tests {
         ts.insert_tag(Tag::from("d:4"));
         assert_eq!(ts.len(), 3);
 
-        ts.insert_tag(Tag::from("a:replaced")); // Shadows base a:1
-        assert_eq!(ts.len(), 3);
+        ts.insert_tag(Tag::from("a:other")); // Coexists with base a:1
+        assert_eq!(ts.len(), 4);
     }
 
     // --- Retain ---
@@ -821,7 +812,7 @@ mod tests {
 
 #[cfg(test)]
 mod proptests {
-    use std::collections::BTreeMap;
+    use std::collections::BTreeSet;
 
     use proptest::prelude::*;
 
@@ -860,18 +851,14 @@ mod proptests {
     }
 
     /// Build a SharedTagSet from multiple groups (each becomes a chained FrozenTagSet).
-    /// Deduplicates tags by name across groups to avoid cross-chain duplicates, which
-    /// SharedTagSet allows but would complicate the reference model.
+    /// Deduplicates exact tags across groups to avoid cross-chain duplicates.
     fn build_chained_base(groups: &[Vec<String>]) -> SharedTagSet {
-        let mut seen_names = std::collections::HashSet::new();
+        let mut seen_tags = std::collections::HashSet::new();
 
         let mut shared = {
             let ts: TagSet = groups[0]
                 .iter()
-                .filter(|s| {
-                    let name = s.split_once(':').map_or(s.as_str(), |(n, _)| n);
-                    seen_names.insert(name.to_string())
-                })
+                .filter(|s| seen_tags.insert(s.to_string()))
                 .map(|s| Tag::from(s.as_str()))
                 .collect();
             ts.into_shared()
@@ -879,10 +866,7 @@ mod proptests {
         for group in &groups[1..] {
             let ts: TagSet = group
                 .iter()
-                .filter(|s| {
-                    let name = s.split_once(':').map_or(s.as_str(), |(n, _)| n);
-                    seen_names.insert(name.to_string())
-                })
+                .filter(|s| seen_tags.insert(s.to_string()))
                 .map(|s| Tag::from(s.as_str()))
                 .collect();
             shared.extend_from_shared(&ts.into_shared());
@@ -890,16 +874,20 @@ mod proptests {
         shared
     }
 
-    /// Apply operations to a naive reference model (BTreeMap<name, full_tag>).
-    /// This mirrors the semantics of TagSet: insert_tag replaces by name, remove_tags removes by name.
-    fn apply_to_reference(reference: &mut BTreeMap<String, String>, op: &Op) {
+    /// Reference model: a Vec<String> of full tag strings.
+    /// Insert adds if exact tag not present. Remove-by-name removes all with matching name.
+    fn apply_to_reference(reference: &mut Vec<String>, op: &Op) {
         match op {
             Op::Insert(tag) => {
-                let name = tag.split_once(':').map_or(tag.as_str(), |(n, _)| n);
-                reference.insert(name.to_string(), tag.clone());
+                if !reference.contains(tag) {
+                    reference.push(tag.clone());
+                }
             }
             Op::RemoveByName(name) => {
-                reference.remove(name);
+                reference.retain(|t| {
+                    let tag_name = t.split_once(':').map_or(t.as_str(), |(n, _)| n);
+                    tag_name != name.as_str()
+                });
             }
         }
     }
@@ -928,12 +916,7 @@ mod proptests {
             let base = build_chained_base(&base_groups);
 
             // Build the reference model from the base.
-            let mut reference = BTreeMap::new();
-            for tag in &base {
-                let name = tag.name().to_string();
-                // First occurrence wins for duplicate names (matching TagSet semantics).
-                reference.entry(name).or_insert_with(|| tag.as_str().to_string());
-            }
+            let mut reference: Vec<String> = base.into_iter().map(|t| t.as_str().to_string()).collect();
 
             // Build the TagSet from the base.
             let mut ts = TagSet::from(base);
@@ -944,19 +927,16 @@ mod proptests {
                 apply_to_tagset(&mut ts, op);
             }
 
-            // Compare: collect TagSet tags as a BTreeMap for comparison.
-            let mut ts_map = BTreeMap::new();
-            for tag in &ts {
-                let name = tag.name().to_string();
-                ts_map.entry(name).or_insert_with(|| tag.as_str().to_string());
-            }
-
-            prop_assert_eq!(&reference, &ts_map,
-                "TagSet and reference diverged after ops: {:?}", ops);
-
-            // Also verify len matches.
+            // Verify len matches before consuming.
             prop_assert_eq!(ts.len(), reference.len(),
                 "len mismatch: TagSet={}, reference={}", ts.len(), reference.len());
+
+            // Compare as sorted sets of tag strings.
+            let ref_set: BTreeSet<String> = reference.iter().cloned().collect();
+            let ts_set: BTreeSet<String> = ts.into_iter().map(|t| t.as_str().to_string()).collect();
+
+            prop_assert_eq!(&ref_set, &ts_set,
+                "TagSet and reference diverged after ops: {:?}", ops);
         }
     }
 }
