@@ -22,5 +22,10 @@ tokio = { workspace = true, features = ["rt", "time"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
+criterion = { workspace = true }
 metrics-util = { workspace = true, features = ["debugging"] }
 proptest = { workspace = true }
+
+[[bench]]
+name = "tagset"
+harness = false

@@ -3,7 +3,7 @@ use std::{fmt, ops::Deref as _, sync::Arc};
 use serde::{ser::SerializeSeq as _, Serialize};
 use smallvec::SmallVec;
 
-use super::TagSet;
+use super::{frozen::FrozenTagSet, TagSet};
 use crate::tags::Tag;
 
 /// A shared, read-only set of tags.
@@ -12,14 +12,14 @@ use crate::tags::Tag;
 ///
 /// In many cases, it is useful to extend a set of tags with additional tags, without needing to clone the additional
 /// tags or re-allocate the underlying storage to fit the entire set of tags. `SharedTagSet` supports this by utilizing
-/// "structural sharing", where `SharedTagSet` is internally represented by a set of smart pointers to `TagSet`.
+/// "structural sharing", where `SharedTagSet` is internally represented by a set of smart pointers to `FrozenTagSet`.
 ///
 /// This allows `SharedTagSet` to be cheaply extended with additional `SharedTagSet` instances, without needing to
 /// allocate enough underlying storage to hold all of the individual tags. Extending a `SharedTagSet` will allocate a
 /// small amount of memory (8 bytes) for each additional `SharedTagSet` that is chained after the first additional one:
 /// this means that all new `SharedTagSet` instances can be extended once with no allocations whatsoever.
 #[derive(Clone, Debug, Default)]
-pub struct SharedTagSet(SmallVec<[Arc<TagSet>; 2]>);
+pub struct SharedTagSet(SmallVec<[Arc<FrozenTagSet>; 2]>);
 
 impl SharedTagSet {
     /// Returns `true` if the tag set is empty.
@@ -55,11 +55,11 @@ impl SharedTagSet {
 
     /// Extends `self` with the tags from the `other`.
     ///
-    /// If any of the individual `TagSet` instances in `other` are already present in `self`, they will not be added
+    /// If any of the individual `FrozenTagSet` instances in `other` are already present in `self`, they will not be added
     /// again. This method does not avoid duplicates across different `SharedTagSet` instances, so if the same tag is
     /// present in both `self` and `other`, it will be present when querying the resulting `SharedTagSet`.
     pub fn extend_from_shared(&mut self, other: &SharedTagSet) {
-        // For each underlying `TagSet` in the other `SharedTagSet`, check if it is already present in this one, and if
+        // For each underlying `FrozenTagSet` in the other `SharedTagSet`, check if it is already present in this one, and if
         // not, add it.
         for tag_set in &other.0 {
             if !self.0.iter().any(|ts| Arc::ptr_eq(ts, tag_set)) {
@@ -68,9 +68,35 @@ impl SharedTagSet {
         }
     }
 
-    /// Returns a reference to the underlying `TagSet` instances.
-    pub fn as_tag_sets(&self) -> &[Arc<TagSet>] {
-        &self.0
+    /// Creates a `SharedTagSet` from a vector of tags.
+    pub(super) fn from_tags(tags: Vec<Tag>) -> Self {
+        if tags.is_empty() {
+            return Self::default();
+        }
+        let mut inner = SmallVec::new();
+        inner.push(Arc::new(FrozenTagSet::new(tags)));
+        Self(inner)
+    }
+
+    /// Gets a tag by its flattened index across all chained tag sets.
+    pub(super) fn get_by_flat_index(&self, index: usize) -> Option<&Tag> {
+        let mut remaining = index;
+        for ts in &self.0 {
+            let len = ts.len();
+            if remaining < len {
+                return ts.into_iter().nth(remaining);
+            }
+            remaining -= len;
+        }
+        None
+    }
+
+    /// Creates a mutable `TagSet` from this `SharedTagSet`.
+    ///
+    /// This clones the `SharedTagSet` (cheap — just Arc pointer copies) and wraps it as the base
+    /// of a new `TagSet` that can be mutated.
+    pub fn to_mutable(&self) -> TagSet {
+        TagSet::from(self.clone())
     }
 
     /// Returns the size of the tag set, in bytes.
@@ -82,15 +108,13 @@ impl SharedTagSet {
     /// worst-case usage, and should be used as a rough estimate.
     pub fn size_of(&self) -> usize {
         // Calculate the size of the SharedTagSet, which includes the size of the SmallVec and the size of each Arc.
-        (self.0.len() * std::mem::size_of::<Arc<TagSet>>()) + self.0.iter().map(|ts| ts.size_of()).sum::<usize>()
+        (self.0.len() * std::mem::size_of::<Arc<FrozenTagSet>>()) + self.0.iter().map(|ts| ts.size_of()).sum::<usize>()
     }
 }
 
 impl From<TagSet> for SharedTagSet {
     fn from(tag_set: TagSet) -> Self {
-        let mut inner = SmallVec::new();
-        inner.push(Arc::new(tag_set));
-        Self(inner)
+        tag_set.into_shared()
     }
 }
 
@@ -196,7 +220,7 @@ impl FromIterator<Tag> for SharedTagSet {
 /// Iterator over the tags in a `SharedTagSet`.
 #[derive(Clone)]
 pub struct SharedTagSetIterator<'a> {
-    inner: std::slice::Iter<'a, Arc<TagSet>>,
+    inner: std::slice::Iter<'a, Arc<FrozenTagSet>>,
     current: Option<std::slice::Iter<'a, Tag>>,
 }
 

@@ -3534,6 +3534,7 @@ dependencies = [
  "serde",
  "serde_with",
  "sha3",
+ "smallvec",
  "stringtheory",
  "tokio",
  "tokio-test",
@@ -3623,6 +3624,7 @@ dependencies = [
 name = "saluki-context"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "indexmap 2.13.0",
  "memchr",
  "metrics",
