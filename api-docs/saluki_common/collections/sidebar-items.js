@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"type":["FastConcurrentHashMap","FastConcurrentHashSet","FastHashMap","FastHashSet","FastIndexMap","PrehashedHashMap","PrehashedHashSet"]};
+window.SIDEBAR_ITEMS = {"struct":["ContiguousBitSet"],"type":["FastConcurrentHashMap","FastConcurrentHashSet","FastHashMap","FastHashSet","FastIndexMap","PrehashedHashMap","PrehashedHashSet"]};
