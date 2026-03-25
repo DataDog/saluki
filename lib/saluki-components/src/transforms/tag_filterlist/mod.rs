@@ -8,6 +8,8 @@
 
 mod telemetry;
 
+use std::sync::{Arc, Weak};
+
 use async_trait::async_trait;
 use foldhash::fast::RandomState as FoldHashState;
 use hashbrown::{HashMap, HashSet};
@@ -59,6 +61,14 @@ struct FilteredTagSet {
     tags: TagSet,
     removed: usize,
 }
+
+struct CachedFilterResult {
+    weak: Weak<TagSet>,
+    filtered: SharedTagSet,
+    removed: usize,
+}
+
+type FilteredTagSetCache = HashMap<(usize, usize), CachedFilterResult, FoldHashState>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// Outcome of attempting to apply `metric_tag_filterlist` rules to a metric.
@@ -151,6 +161,7 @@ impl TransformBuilder for TagFilterlistConfiguration {
                 .clone()
                 .expect("configuration must be set via from_configuration"),
             telemetry: Telemetry::new(&metrics_builder),
+            tag_filter_cache: HashMap::with_hasher(FoldHashState::default()),
         }))
     }
 }
@@ -165,6 +176,7 @@ struct TagFilterlist {
     filters: CompiledFilters,
     configuration: GenericConfiguration,
     telemetry: Telemetry,
+    tag_filter_cache: FilteredTagSetCache,
 }
 
 #[async_trait]
@@ -185,7 +197,7 @@ impl Transform for TagFilterlist {
                         for event in &mut events {
                             if let Some(metric) = event.try_as_metric_mut() {
                                 if metric.values().is_sketch() {
-                                    let outcome = filter_metric_tags(metric, &self.filters);
+                                    let outcome = self.filter_metric_tags_cached(metric);
                                     self.telemetry.record(outcome);
                                 }
                             }
@@ -198,6 +210,7 @@ impl Transform for TagFilterlist {
                 },
                 (_, new_entries) = watcher.changed::<Vec<MetricTagFilterEntry>>() => {
                     self.filters = compile_filters(new_entries.as_deref().unwrap_or(&[]));
+                    self.tag_filter_cache.clear();
                     debug!("Updated metric tag filterlist.");
                 },
             }
@@ -238,6 +251,110 @@ fn apply_tag_filter(
         Some(FilteredTagSet { tags: out, removed })
     } else {
         None
+    }
+}
+
+/// Applies a tag filter to a shared tag set, using a cache to avoid redundant allocations.
+///
+/// `rule_ptr` is the address of the filter rule's tag-name set, used as a cache discriminator.
+/// Different metric names map to different filter rules (different pointers), so caching by
+/// `(arc_ptr, rule_ptr)` is safe even when two metric names happen to share the same `Arc<TagSet>`.
+///
+/// Returns `Some((filtered_shared, removed_count))` if any tags were removed, or `None` if the
+/// result would be identical to the source.
+#[inline]
+fn apply_tag_filter_cached(
+    cache: &mut FilteredTagSetCache, tags: &SharedTagSet, rule_ptr: usize, is_exclude: bool,
+    names: &HashSet<String, FoldHashState>,
+) -> Option<(SharedTagSet, usize)> {
+    if let Some(arc) = tags.as_tag_sets().first() {
+        let key = (Arc::as_ptr(arc) as usize, rule_ptr);
+
+        if let Some(entry) = cache.get(&key) {
+            if let Some(live) = entry.weak.upgrade() {
+                if Arc::ptr_eq(&live, arc) {
+                    return Some((entry.filtered.clone(), entry.removed));
+                }
+            }
+            // Stale entry (pointer reused by a new Arc) — evict and recompute.
+            cache.remove(&key);
+        }
+
+        let result = apply_tag_filter(tags, is_exclude, names)?;
+        let removed = result.removed;
+        let filtered = result.tags.into_shared();
+        cache.insert(
+            key,
+            CachedFilterResult {
+                weak: Arc::downgrade(arc),
+                filtered: filtered.clone(),
+                removed,
+            },
+        );
+        Some((filtered, removed))
+    } else {
+        // Empty SharedTagSet — no Arc to key by, just compute without caching.
+        let result = apply_tag_filter(tags, is_exclude, names)?;
+        Some((result.tags.into_shared(), result.removed))
+    }
+}
+
+impl TagFilterlist {
+    /// Filters the tags of a sketch metric using a cache to avoid redundant allocations.
+    ///
+    /// Identical to [`filter_metric_tags`] in behavior, but caches the filtered `SharedTagSet`
+    /// so that metrics sharing the same underlying `Arc<TagSet>` skip reallocation on cache hits.
+    fn filter_metric_tags_cached(&mut self, metric: &mut Metric) -> FilterMetricTagsOutcome {
+        let Some((is_exclude, tag_names)) = self.filters.get(metric.context().name().as_ref()) else {
+            return FilterMetricTagsOutcome::RuleMiss;
+        };
+        let is_exclude = *is_exclude;
+        // Use the address of this rule's tag-name set as a cache discriminator so that two
+        // metric names sharing the same Arc<TagSet> don't collide in the cache.
+        let rule_ptr = tag_names as *const _ as usize;
+
+        let new_tags = apply_tag_filter_cached(
+            &mut self.tag_filter_cache,
+            metric.context().tags(),
+            rule_ptr,
+            is_exclude,
+            tag_names,
+        );
+
+        if metric.context().origin_tags().is_empty() {
+            match new_tags {
+                Some((filtered, removed_tags)) => {
+                    *metric.context_mut() = metric.context().with_tags(filtered);
+                    FilterMetricTagsOutcome::Modified { removed_tags }
+                }
+                None => FilterMetricTagsOutcome::NoChange,
+            }
+        } else {
+            let new_origin = apply_tag_filter_cached(
+                &mut self.tag_filter_cache,
+                metric.context().origin_tags(),
+                rule_ptr,
+                is_exclude,
+                tag_names,
+            );
+            match (new_tags, new_origin) {
+                (None, None) => FilterMetricTagsOutcome::NoChange,
+                (Some((tags, removed)), None) => {
+                    *metric.context_mut() = metric.context().with_tags(tags);
+                    FilterMetricTagsOutcome::Modified { removed_tags: removed }
+                }
+                (None, Some((origin, removed))) => {
+                    *metric.context_mut() = metric.context().with_origin_tags(origin);
+                    FilterMetricTagsOutcome::Modified { removed_tags: removed }
+                }
+                (Some((tags, tags_removed)), Some((origin, origin_removed))) => {
+                    *metric.context_mut() = metric.context().with_tags_and_origin_tags(tags, origin);
+                    FilterMetricTagsOutcome::Modified {
+                        removed_tags: tags_removed + origin_removed,
+                    }
+                }
+            }
+        }
     }
 }
 
