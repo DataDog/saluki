@@ -8,12 +8,13 @@
 
 mod telemetry;
 
-use std::sync::{Arc, Weak};
+use std::{num::NonZeroUsize, sync::{Arc, Weak}};
 
 use async_trait::async_trait;
 use foldhash::fast::RandomState as FoldHashState;
 use hashbrown::{HashMap, HashSet};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_common::cache::{Cache, CacheBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_core::{
@@ -62,13 +63,14 @@ struct FilteredTagSet {
     removed: usize,
 }
 
+#[derive(Clone)]
 struct CachedFilterResult {
     weak: Weak<TagSet>,
     filtered: SharedTagSet,
     removed: usize,
 }
 
-type FilteredTagSetCache = HashMap<(usize, usize), CachedFilterResult, FoldHashState>;
+type FilteredTagSetCache = Cache<(usize, usize), CachedFilterResult>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// Outcome of attempting to apply `metric_tag_filterlist` rules to a metric.
@@ -120,6 +122,11 @@ pub fn compile_filters(entries: &[MetricTagFilterEntry]) -> CompiledFilters {
 }
 
 /// Metric Tag Filterlist transform.
+fn default_cache_limit() -> usize {
+    5000
+}
+
+/// Metric Tag Filterlist transform.
 ///
 /// Removes or retains specific tags from distribution metrics based on per-metric configuration.
 /// Configuration is read from `metric_tag_filterlist` and supports runtime updates via Remote Config.
@@ -127,6 +134,13 @@ pub fn compile_filters(entries: &[MetricTagFilterEntry]) -> CompiledFilters {
 pub struct TagFilterlistConfiguration {
     #[serde(default, rename = "metric_tag_filterlist")]
     entries: Vec<MetricTagFilterEntry>,
+
+    /// Maximum number of filtered tag sets to cache.
+    ///
+    /// Should be set to match `aggregate_context_limit` to ensure the cache can hold one entry per
+    /// distinct context. Defaults to 5000.
+    #[serde(rename = "aggregate_context_limit", default = "default_cache_limit")]
+    cache_limit: usize,
 
     #[serde(skip)]
     configuration: Option<GenericConfiguration>,
@@ -154,6 +168,13 @@ impl TransformBuilder for TagFilterlistConfiguration {
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(&context);
+        let cache_limit = NonZeroUsize::new(self.cache_limit.max(1)).expect("cache_limit is always >= 1");
+        let tag_filter_cache = CacheBuilder::<(usize, usize), CachedFilterResult>::from_identifier(
+            "tag_filterlist_filtered_tagset_cache",
+        )?
+        .with_capacity(cache_limit)
+        .build();
+
         Ok(Box::new(TagFilterlist {
             filters: compile_filters(&self.entries),
             configuration: self
@@ -161,7 +182,7 @@ impl TransformBuilder for TagFilterlistConfiguration {
                 .clone()
                 .expect("configuration must be set via from_configuration"),
             telemetry: Telemetry::new(&metrics_builder),
-            tag_filter_cache: HashMap::with_hasher(FoldHashState::default()),
+            tag_filter_cache,
         }))
     }
 }
@@ -210,7 +231,8 @@ impl Transform for TagFilterlist {
                 },
                 (_, new_entries) = watcher.changed::<Vec<MetricTagFilterEntry>>() => {
                     self.filters = compile_filters(new_entries.as_deref().unwrap_or(&[]));
-                    self.tag_filter_cache.clear();
+                    // Stale cache entries (with old rule_ptrs) will never match new lookups
+                    // and will be naturally evicted by LRU as new entries fill the cache.
                     debug!("Updated metric tag filterlist.");
                 },
             }
@@ -264,7 +286,7 @@ fn apply_tag_filter(
 /// result would be identical to the source.
 #[inline]
 fn apply_tag_filter_cached(
-    cache: &mut FilteredTagSetCache, tags: &SharedTagSet, rule_ptr: usize, is_exclude: bool,
+    cache: &FilteredTagSetCache, tags: &SharedTagSet, rule_ptr: usize, is_exclude: bool,
     names: &HashSet<String, FoldHashState>,
 ) -> Option<(SharedTagSet, usize)> {
     if let Some(arc) = tags.as_tag_sets().first() {
@@ -314,7 +336,7 @@ impl TagFilterlist {
         let rule_ptr = tag_names as *const _ as usize;
 
         let new_tags = apply_tag_filter_cached(
-            &mut self.tag_filter_cache,
+            &self.tag_filter_cache,
             metric.context().tags(),
             rule_ptr,
             is_exclude,
@@ -331,7 +353,7 @@ impl TagFilterlist {
             }
         } else {
             let new_origin = apply_tag_filter_cached(
-                &mut self.tag_filter_cache,
+                &self.tag_filter_cache,
                 metric.context().origin_tags(),
                 rule_ptr,
                 is_exclude,
