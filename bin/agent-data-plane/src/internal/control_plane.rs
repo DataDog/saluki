@@ -25,13 +25,11 @@ use crate::{
 
 /// Gets the IPC certificate file path from the configuration.
 fn get_cert_path_from_config(config: &GenericConfiguration) -> Result<PathBuf, GenericError> {
-    // Try to get the auth token file path first
     let auth_token_file_path = config
         .try_get_typed::<PathBuf>("auth_token_file_path")
         .error_context("Failed to get Agent auth token file path.")?
         .unwrap_or_else(PlatformSettings::get_auth_token_path);
 
-    // Try to get the explicit IPC cert file path
     let ipc_cert_file_path = config
         .try_get_typed::<Option<PathBuf>>("ipc_cert_file_path")
         .error_context("Failed to get Agent IPC cert file path.")?
@@ -65,8 +63,8 @@ impl Supervisable for HealthRegistryWorker {
         // Spawn the health registry runner - it runs forever until the process exits
         //
         // TODO: This pattern doesn't allow us to gracefully restart the health registry worker if the supervisor itself
-        // is restarted. We could do something simpler like `HealthRegistry` having a mutex to ensure only one instance is
-        // running at a time, and that way the worker can be restarted gracefully, picking up where it left off.
+        // is restarted. We could do something simpler like `HealthRegistry` having a mutex to ensure only one instance
+        // is running at a time, and that way the worker can be restarted gracefully, picking up where it left off.
         let handle = self.health_registry.clone().spawn().await?;
 
         Ok(Box::pin(async move {
@@ -79,8 +77,8 @@ impl Supervisable for HealthRegistryWorker {
                     Ok(())
                 }
                 _ = process_shutdown.wait_for_shutdown() => {
-                    // On shutdown, we just let the spawned task continue until the runtime shuts down.
-                    // The health registry doesn't have a graceful shutdown mechanism.
+                    // On shutdown, we just let the spawned task continue until the runtime shuts down. The health
+                    // registry doesn't have a graceful shutdown mechanism.
                     Ok(())
                 }
             }
@@ -166,15 +164,15 @@ impl Supervisable for PrivilegedApiWorker {
     async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
         // Load our TLS configuration.
         //
-        // TODO: should this need to happen during process init or could we do it once when creating `PrivilegedApiWorker`
-        // and simplify things?
+        // TODO: should this need to happen during process init or could we do it once when creating
+        // `PrivilegedApiWorker` and simplify things?
         let cert_path = get_cert_path_from_config(&self.config)?;
         let tls_config = build_datadog_agent_server_tls_config(cert_path).await?;
 
         let mut api_builder = APIBuilder::new()
             .with_tls_config(tls_config)
-            // TODO: make these handlers cloneable and move them up to the config for the worker so they can
-            // be cloned for each initialization
+            // TODO: make these handlers cloneable and move them up to the config for the worker so they can be cloned
+            // for each initialization
             .with_optional_handler(acquire_logging_api_handler())
             .with_optional_handler(acquire_metrics_api_handler())
             .with_handler(ConfigAPIHandler::new(self.config.clone()))
@@ -204,7 +202,9 @@ impl Supervisable for PrivilegedApiWorker {
 /// Creates the control plane supervisor.
 ///
 /// This supervisor manages the health registry, unprivileged and privileged APIs, and optionally the remote agent
-/// registration task. It runs on a dedicated single-threaded runtime.
+/// registration task.
+///
+/// It runs on a dedicated single-threaded runtime.
 ///
 /// # Errors
 ///
@@ -218,8 +218,8 @@ pub fn create_control_plane_supervisor(
         .with_dedicated_runtime(RuntimeConfiguration::single_threaded())
         .with_restart_strategy(RestartStrategy::one_to_one());
 
-    // TODO: just make the API handler for `ComponentRegistry` cloneable so we can create/hold on to it in `UnprivilegedApiWorker`
-    // without having to create a scoped one here just to maintain the ownership necessary
+    // TODO: just make the API handler for `ComponentRegistry` cloneable so we can create/hold on to it in
+    // `UnprivilegedApiWorker` without having to create a scoped one here just to maintain the ownership necessary
     let scoped_registry = component_registry.get_or_create("control-plane");
 
     supervisor.add_worker(HealthRegistryWorker::new(health_registry.clone()));

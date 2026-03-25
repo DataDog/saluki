@@ -61,12 +61,9 @@ impl Supervisable for InternalTelemetryWorker {
         let mut blueprint = TopologyBlueprint::new("internal", &self.component_registry);
         blueprint.with_interconnect_capacity(DEFAULT_INTERCONNECT_CAPACITY);
         blueprint
-            .add_source("internal_metrics_in", int_metrics_config)
-            .map_err(|e| InitializationError::Failed { source: e })?
-            .add_destination("internal_metrics_out", prometheus_config)
-            .map_err(|e| InitializationError::Failed { source: e })?
-            .connect_component("internal_metrics_out", ["internal_metrics_in"])
-            .map_err(|e| InitializationError::Failed { source: e })?;
+            .add_source("internal_metrics_in", int_metrics_config)?
+            .add_destination("internal_metrics_out", prometheus_config)?
+            .connect_component("internal_metrics_out", ["internal_metrics_in"])?;
 
         // Build and spawn the topology
         let built_topology = blueprint.build().await?;
@@ -92,9 +89,10 @@ impl Supervisable for InternalTelemetryWorker {
 /// Creates the observability supervisor.
 ///
 /// This supervisor manages the internal telemetry topology (Prometheus metrics endpoint).
+///
 /// It runs on a dedicated single-threaded runtime.
 ///
-/// Returns `None` if telemetry is not enabled.
+/// Returns `Ok(None)` if telemetry is not enabled.
 ///
 /// # Errors
 ///
