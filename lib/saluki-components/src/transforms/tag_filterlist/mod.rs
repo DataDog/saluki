@@ -8,7 +8,10 @@
 
 mod telemetry;
 
-use std::{num::NonZeroUsize, sync::{Arc, Weak}};
+use std::{
+    num::NonZeroUsize,
+    sync::{Arc, Weak},
+};
 
 use async_trait::async_trait;
 use foldhash::fast::RandomState as FoldHashState;
@@ -70,7 +73,10 @@ struct CachedFilterResult {
     removed: usize,
 }
 
-type FilteredTagSetCache = Cache<(usize, usize), CachedFilterResult>;
+// Cache key: (Arc<TagSet> pointer, filter rule pointer, filter generation).
+// The generation is incremented on every config update to prevent stale hits when
+// the allocator reuses a rule pointer address after a config change.
+type FilteredTagSetCache = Cache<(usize, usize, u64), CachedFilterResult>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// Outcome of attempting to apply `metric_tag_filterlist` rules to a metric.
@@ -169,7 +175,7 @@ impl TransformBuilder for TagFilterlistConfiguration {
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(&context);
         let cache_limit = NonZeroUsize::new(self.cache_limit.max(1)).expect("cache_limit is always >= 1");
-        let tag_filter_cache = CacheBuilder::<(usize, usize), CachedFilterResult>::from_identifier(
+        let tag_filter_cache = CacheBuilder::<(usize, usize, u64), CachedFilterResult>::from_identifier(
             "tag_filterlist_filtered_tagset_cache",
         )?
         .with_capacity(cache_limit)
@@ -177,6 +183,7 @@ impl TransformBuilder for TagFilterlistConfiguration {
 
         Ok(Box::new(TagFilterlist {
             filters: compile_filters(&self.entries),
+            filter_generation: 0,
             configuration: self
                 .configuration
                 .clone()
@@ -195,6 +202,7 @@ impl MemoryBounds for TagFilterlistConfiguration {
 
 struct TagFilterlist {
     filters: CompiledFilters,
+    filter_generation: u64,
     configuration: GenericConfiguration,
     telemetry: Telemetry,
     tag_filter_cache: FilteredTagSetCache,
@@ -231,8 +239,7 @@ impl Transform for TagFilterlist {
                 },
                 (_, new_entries) = watcher.changed::<Vec<MetricTagFilterEntry>>() => {
                     self.filters = compile_filters(new_entries.as_deref().unwrap_or(&[]));
-                    // Stale cache entries (with old rule_ptrs) will never match new lookups
-                    // and will be naturally evicted by LRU as new entries fill the cache.
+                    self.filter_generation += 1;
                     debug!("Updated metric tag filterlist.");
                 },
             }
@@ -280,17 +287,24 @@ fn apply_tag_filter(
 ///
 /// `rule_ptr` is the address of the filter rule's tag-name set, used as a cache discriminator.
 /// Different metric names map to different filter rules (different pointers), so caching by
-/// `(arc_ptr, rule_ptr)` is safe even when two metric names happen to share the same `Arc<TagSet>`.
+/// `(arc_ptr, rule_ptr, generation)` is safe even when two metric names happen to share the same
+/// `Arc<TagSet>`. The `generation` counter is incremented on every config update to prevent stale
+/// hits if the allocator reuses a freed rule pointer address after a config change.
+///
+/// Caching is skipped for structurally-shared `SharedTagSet`s (those with more than one underlying
+/// `Arc<TagSet>`), since keying only by the first pointer would be ambiguous.
 ///
 /// Returns `Some((filtered_shared, removed_count))` if any tags were removed, or `None` if the
 /// result would be identical to the source.
 #[inline]
 fn apply_tag_filter_cached(
-    cache: &FilteredTagSetCache, tags: &SharedTagSet, rule_ptr: usize, is_exclude: bool,
+    cache: &FilteredTagSetCache, tags: &SharedTagSet, rule_ptr: usize, generation: u64, is_exclude: bool,
     names: &HashSet<String, FoldHashState>,
 ) -> Option<(SharedTagSet, usize)> {
-    if let Some(arc) = tags.as_tag_sets().first() {
-        let key = (Arc::as_ptr(arc) as usize, rule_ptr);
+    // Only cache single-Arc SharedTagSets. Structurally-shared sets (multiple chained Arcs)
+    // cannot be safely identified by their first pointer alone.
+    if let [arc] = tags.as_tag_sets() {
+        let key = (Arc::as_ptr(arc) as usize, rule_ptr, generation);
 
         if let Some(entry) = cache.get(&key) {
             if let Some(live) = entry.weak.upgrade() {
@@ -315,7 +329,7 @@ fn apply_tag_filter_cached(
         );
         Some((filtered, removed))
     } else {
-        // Empty SharedTagSet — no Arc to key by, just compute without caching.
+        // Empty or multi-Arc SharedTagSet — compute without caching.
         let result = apply_tag_filter(tags, is_exclude, names)?;
         Some((result.tags.into_shared(), result.removed))
     }
@@ -335,10 +349,12 @@ impl TagFilterlist {
         // metric names sharing the same Arc<TagSet> don't collide in the cache.
         let rule_ptr = tag_names as *const _ as usize;
 
+        let generation = self.filter_generation;
         let new_tags = apply_tag_filter_cached(
             &self.tag_filter_cache,
             metric.context().tags(),
             rule_ptr,
+            generation,
             is_exclude,
             tag_names,
         );
@@ -356,6 +372,7 @@ impl TagFilterlist {
                 &self.tag_filter_cache,
                 metric.context().origin_tags(),
                 rule_ptr,
+                generation,
                 is_exclude,
                 tag_names,
             );
@@ -944,5 +961,99 @@ mod tests {
         let mut metric = distribution_metric("my.dist", &["env:prod", "service:web", "host:h1"]);
         filter_metric_tags(&mut metric, &filters);
         assert_eq!(tag_names(&metric), vec!["service:web"]);
+    }
+
+    // --- Cache behavior tests ---
+
+    fn make_cache() -> FilteredTagSetCache {
+        CacheBuilder::for_tests().build()
+    }
+
+    #[test]
+    fn cache_hit_reuses_filtered_arc() {
+        let cache = make_cache();
+        let entries = vec![MetricTagFilterEntry {
+            metric_name: "my.dist".to_string(),
+            action: FilterAction::Exclude,
+            tags: vec!["host".to_string()],
+        }];
+        let filters = compile_filters(&entries);
+        let (is_exclude, tag_names) = filters.get("my.dist").unwrap();
+        let rule_ptr = tag_names as *const _ as usize;
+
+        let tag_set: TagSet = ["env:prod", "host:h1"].iter().map(|s| Tag::from(*s)).collect();
+        let shared = tag_set.into_shared();
+
+        let result1 = apply_tag_filter_cached(&cache, &shared, rule_ptr, 0, *is_exclude, tag_names);
+        let result2 = apply_tag_filter_cached(&cache, &shared, rule_ptr, 0, *is_exclude, tag_names);
+
+        let (filtered1, removed1) = result1.unwrap();
+        let (filtered2, removed2) = result2.unwrap();
+
+        assert_eq!(removed1, removed2);
+        // Both results should share the same underlying Arc — cache hit.
+        assert!(filtered1
+            .as_tag_sets()
+            .iter()
+            .zip(filtered2.as_tag_sets().iter())
+            .all(|(a, b)| Arc::ptr_eq(a, b)));
+    }
+
+    #[test]
+    fn multi_arc_tagset_skips_cache() {
+        let cache = make_cache();
+        let entries = vec![MetricTagFilterEntry {
+            metric_name: "my.dist".to_string(),
+            action: FilterAction::Exclude,
+            tags: vec!["host".to_string()],
+        }];
+        let filters = compile_filters(&entries);
+        let (is_exclude, tag_names) = filters.get("my.dist").unwrap();
+        let rule_ptr = tag_names as *const _ as usize;
+
+        // Build a SharedTagSet with two chained Arcs via extend_from_shared.
+        let ts1: TagSet = [Tag::from("env:prod"), Tag::from("host:h1")].into_iter().collect();
+        let ts2: TagSet = [Tag::from("service:web")].into_iter().collect();
+        let mut multi_arc = ts1.into_shared();
+        multi_arc.extend_from_shared(&ts2.into_shared());
+        assert_eq!(multi_arc.as_tag_sets().len(), 2, "should be multi-Arc");
+
+        // Call twice — should compute both times (no caching).
+        let r1 = apply_tag_filter_cached(&cache, &multi_arc, rule_ptr, 0, *is_exclude, tag_names);
+        let r2 = apply_tag_filter_cached(&cache, &multi_arc, rule_ptr, 0, *is_exclude, tag_names);
+
+        assert!(r1.is_some());
+        assert!(r2.is_some());
+        // Cache should remain empty since multi-Arc sets are not cached.
+        assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn generation_change_causes_cache_miss() {
+        let cache = make_cache();
+        let entries = vec![MetricTagFilterEntry {
+            metric_name: "my.dist".to_string(),
+            action: FilterAction::Exclude,
+            tags: vec!["host".to_string()],
+        }];
+        let filters = compile_filters(&entries);
+        let (is_exclude, tag_names) = filters.get("my.dist").unwrap();
+        let rule_ptr = tag_names as *const _ as usize;
+
+        let tag_set: TagSet = ["env:prod", "host:h1"].iter().map(|s| Tag::from(*s)).collect();
+        let shared = tag_set.into_shared();
+
+        // Generation 0: cache miss → allocates new Arc.
+        let (filtered_gen0, _) = apply_tag_filter_cached(&cache, &shared, rule_ptr, 0, *is_exclude, tag_names).unwrap();
+
+        // Generation 1 (simulated config update): should be a cache miss → new Arc.
+        let (filtered_gen1, _) = apply_tag_filter_cached(&cache, &shared, rule_ptr, 1, *is_exclude, tag_names).unwrap();
+
+        // The two results should NOT share the same Arc — gen1 was a fresh allocation.
+        assert!(!filtered_gen0
+            .as_tag_sets()
+            .iter()
+            .zip(filtered_gen1.as_tag_sets().iter())
+            .all(|(a, b)| Arc::ptr_eq(a, b)));
     }
 }
