@@ -1,7 +1,5 @@
 use std::fmt;
 
-use serde::{Deserialize, Serialize};
-
 use crate::tags::Tag;
 
 /// Flat, immutable tag storage.
@@ -9,30 +7,29 @@ use crate::tags::Tag;
 /// This is a private type used as the backing storage inside `SharedTagSet`. It holds a simple
 /// `Vec<Tag>` and provides read-only access. External callers work with `TagSet` (mutable) and
 /// `SharedTagSet` (shared/frozen) instead.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(transparent)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct FrozenTagSet(Vec<Tag>);
 
 impl FrozenTagSet {
     /// Creates a new `FrozenTagSet` from the given vector of tags.
-    pub fn new(tags: Vec<Tag>) -> Self {
+    pub(crate) fn new(tags: Vec<Tag>) -> Self {
         Self(tags)
     }
 
     /// Returns `true` if the tag set is empty.
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
     /// Returns the number of tags in the set.
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.0.len()
     }
 
     /// Returns `true` if the given tag is contained in the set.
     ///
     /// This matches the complete tag, rather than just the name.
-    pub fn has_tag(&self, tag: &str) -> bool {
+    pub(crate) fn has_tag(&self, tag: &str) -> bool {
         self.0.iter().any(|existing| existing.as_str() == tag)
     }
 
@@ -40,12 +37,12 @@ impl FrozenTagSet {
     ///
     /// If multiple tags are present with the same name, the first tag with a matching name will be
     /// returned. If no tag in the set matches, `None` is returned.
-    pub fn get_single_tag(&self, tag_name: &str) -> Option<&Tag> {
+    pub(crate) fn get_single_tag(&self, tag_name: &str) -> Option<&Tag> {
         self.0.iter().find(|tag| tag.name() == tag_name)
     }
 
     /// Returns the size of the tag set, in bytes.
-    pub fn size_of(&self) -> usize {
+    pub(crate) fn size_of(&self) -> usize {
         (self.len() * std::mem::size_of::<Tag>()) + self.0.iter().map(|tag| tag.len()).sum::<usize>()
     }
 }
