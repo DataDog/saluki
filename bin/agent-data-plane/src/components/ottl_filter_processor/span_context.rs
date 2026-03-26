@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use ottl::{EvalContextFamily, Field, IndexExpr, PathAccessor, PathResolverMap, Value};
-use saluki_context::tags::SharedTagSet;
+use saluki_context::tags::TagSet;
 use saluki_core::data_model::event::trace::Span;
 
 /// Family type for the span filter evaluation context.
@@ -34,13 +34,13 @@ pub struct SpanFilterContext<'a> {
     /// Reference to the span being evaluated.
     pub(super) span: &'a Span,
     /// Reference to the trace's resource-level tags.
-    pub(super) resource_tags: &'a SharedTagSet,
+    pub(super) resource_tags: &'a TagSet,
 }
 
 impl<'a> SpanFilterContext<'a> {
     /// Creates a context from references to the current span and resource tags.
     #[inline]
-    pub fn new(span: &'a Span, resource_tags: &'a SharedTagSet) -> Self {
+    pub fn new(span: &'a Span, resource_tags: &'a TagSet) -> Self {
         Self { span, resource_tags }
     }
 }

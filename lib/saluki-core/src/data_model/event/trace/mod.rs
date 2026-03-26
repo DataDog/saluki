@@ -1,7 +1,7 @@
 //! Traces.
 
 use saluki_common::collections::FastHashMap;
-use saluki_context::tags::SharedTagSet;
+use saluki_context::tags::TagSet;
 use stringtheory::MetaString;
 
 /// Trace-level sampling metadata.
@@ -61,7 +61,7 @@ pub struct Trace {
     /// Resource-level tags associated with this trace.
     ///
     /// This is derived from the resource of the spans and used to construct the tracer payload.
-    resource_tags: SharedTagSet,
+    resource_tags: TagSet,
     /// Trace-level sampling metadata.
     ///
     /// This field contains sampling decision information (priority, decision maker, rates)
@@ -72,7 +72,7 @@ pub struct Trace {
 
 impl Trace {
     /// Creates a new `Trace` with the given spans.
-    pub fn new(spans: Vec<Span>, resource_tags: impl Into<SharedTagSet>) -> Self {
+    pub fn new(spans: Vec<Span>, resource_tags: impl Into<TagSet>) -> Self {
         Self {
             spans,
             resource_tags: resource_tags.into(),
@@ -142,7 +142,7 @@ impl Trace {
     }
 
     /// Returns the resource-level tags associated with this trace.
-    pub fn resource_tags(&self) -> &SharedTagSet {
+    pub fn resource_tags(&self) -> &TagSet {
         &self.resource_tags
     }
 

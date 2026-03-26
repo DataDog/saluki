@@ -1,6 +1,7 @@
-use std::fmt;
+use std::{fmt, hash};
 
 use saluki_common::collections::ContiguousBitSet;
+use serde::{ser::SerializeSeq as _, Serialize};
 use smallvec::SmallVec;
 
 use super::SharedTagSet;
@@ -211,6 +212,13 @@ impl TagSet {
         }
     }
 
+    /// Merges the tags from a shared set into this set.
+    ///
+    /// This method does not attempt to avoid adding duplicate tags.
+    pub fn merge_shared(&mut self, other: &SharedTagSet) {
+        self.base.extend_from_shared(other);
+    }
+
     /// Consumes this `TagSet` and returns a shared, read-only version of it.
     ///
     /// If no mutations have been made (no additions, no removals), the base `SharedTagSet` is
@@ -223,6 +231,14 @@ impl TagSet {
         // Materialize: collect effective tags into a new SharedTagSet.
         let effective: Vec<Tag> = self.into_iter().collect();
         SharedTagSet::from_tags(effective)
+    }
+
+    /// Returns the estimated size of the tag set, in bytes.
+    ///
+    /// This includes the size of the base `SharedTagSet`, additions, and removal tracking. The value returned is a rough
+    /// estimate and does not compensate for inlined, interned, or heap-allocated tags.
+    pub fn size_of(&self) -> usize {
+        self.base.size_of() + self.additions.iter().map(|t| t.len()).sum::<usize>()
     }
 
     /// Returns `true` if this `TagSet` has been modified from its base.
@@ -253,6 +269,29 @@ impl PartialEq<TagSet> for TagSet {
         }
 
         true
+    }
+}
+
+impl Eq for TagSet {}
+
+impl hash::Hash for TagSet {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+        for tag in self {
+            tag.hash(state);
+        }
+    }
+}
+
+impl Serialize for TagSet {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut seq = serializer.serialize_seq(Some(self.len()))?;
+        for tag in self {
+            seq.serialize_element(tag)?;
+        }
+        seq.end()
     }
 }
 

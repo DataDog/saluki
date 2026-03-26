@@ -9,7 +9,7 @@ use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::{
-    tags::{SharedTagSet, Tag},
+    tags::{SharedTagSet, Tag, TagSet},
     ContextResolver, ContextResolverBuilder,
 };
 use saluki_core::{components::transforms::*, topology::EventsBuffer};
@@ -116,7 +116,14 @@ impl HostTagsEnrichment {
             _ => return,
         };
 
-        let tags = metric.context().tags().into_iter().chain(host_tags);
+        // TODO: use mutable tagsets to chain host tags on existing metric tags instead of allocating
+        let tags = metric
+            .context()
+            .tags()
+            .into_iter()
+            .chain(host_tags)
+            .cloned()
+            .collect::<TagSet>();
         let origin_tags = metric.context().origin_tags().clone();
 
         if let Some(context) = resolver.resolve_with_origin_tags(metric.context().name(), tags, origin_tags) {
