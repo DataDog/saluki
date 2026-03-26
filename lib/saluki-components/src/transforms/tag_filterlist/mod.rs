@@ -8,18 +8,17 @@
 
 mod telemetry;
 
-use std::{
-    num::NonZeroUsize,
-    sync::{Arc, Weak},
-};
+use std::{num::NonZeroUsize, time::Duration};
 
 use async_trait::async_trait;
 use foldhash::fast::RandomState as FoldHashState;
 use hashbrown::{HashMap, HashSet};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_common::cache::{Cache, CacheBuilder};
 use saluki_config::GenericConfiguration;
-use saluki_context::tags::{SharedTagSet, TagSet};
+use saluki_context::{
+    tags::{SharedTagSet, TagSet},
+    ContextResolver, ContextResolverBuilder,
+};
 use saluki_core::{
     components::{
         transforms::{Transform, TransformBuilder, TransformContext},
@@ -65,18 +64,6 @@ struct FilteredTagSet {
     tags: TagSet,
     removed: usize,
 }
-
-#[derive(Clone)]
-struct CachedFilterResult {
-    weak: Weak<TagSet>,
-    filtered: SharedTagSet,
-    removed: usize,
-}
-
-// Cache key: (Arc<TagSet> pointer, filter rule pointer, filter generation).
-// The generation is incremented on every config update to prevent stale hits when
-// the allocator reuses a rule pointer address after a config change.
-type FilteredTagSetCache = Cache<(usize, usize, u64), CachedFilterResult>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// Outcome of attempting to apply `metric_tag_filterlist` rules to a metric.
@@ -127,10 +114,13 @@ pub fn compile_filters(entries: &[MetricTagFilterEntry]) -> CompiledFilters {
     filters
 }
 
-/// Metric Tag Filterlist transform.
-fn default_cache_limit() -> usize {
+/// Default number of filtered contexts to retain in the local resolver cache.
+fn default_context_resolver_limit() -> usize {
     5000
 }
+
+const DEFAULT_TAG_FILTERLIST_INTERNER_CAPACITY_BYTES: usize = 64 * 1024;
+const TAG_FILTERLIST_RESOLVER_IDLE_EXPIRATION: Duration = Duration::from_secs(30);
 
 /// Metric Tag Filterlist transform.
 ///
@@ -141,12 +131,12 @@ pub struct TagFilterlistConfiguration {
     #[serde(default, rename = "metric_tag_filterlist")]
     entries: Vec<MetricTagFilterEntry>,
 
-    /// Maximum number of filtered tag sets to cache.
+    /// Maximum number of filtered contexts to cache in the local resolver.
     ///
-    /// Should be set to match `aggregate_context_limit` to ensure the cache can hold one entry per
-    /// distinct context. Defaults to 5000.
-    #[serde(rename = "aggregate_context_limit", default = "default_cache_limit")]
-    cache_limit: usize,
+    /// This should generally match `aggregate_context_limit` so the resolver can retain one
+    /// filtered context per distinct aggregated context. Defaults to 5000.
+    #[serde(rename = "aggregate_context_limit", default = "default_context_resolver_limit")]
+    context_resolver_limit: usize,
 
     #[serde(skip)]
     configuration: Option<GenericConfiguration>,
@@ -174,38 +164,47 @@ impl TransformBuilder for TagFilterlistConfiguration {
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(&context);
-        let cache_limit = NonZeroUsize::new(self.cache_limit.max(1)).expect("cache_limit is always >= 1");
-        let tag_filter_cache = CacheBuilder::<(usize, usize, u64), CachedFilterResult>::from_identifier(
-            "tag_filterlist_filtered_tagset_cache",
-        )?
-        .with_capacity(cache_limit)
-        .build();
+        let context_resolver_limit =
+            NonZeroUsize::new(self.context_resolver_limit.max(1)).expect("context_resolver_limit is always >= 1");
+        let context_resolver =
+            ContextResolverBuilder::from_name(format!("{}/tag_filterlist/primary", context.component_id()))?
+                .with_cached_contexts_limit(context_resolver_limit.get())
+                .with_idle_context_expiration(TAG_FILTERLIST_RESOLVER_IDLE_EXPIRATION)
+                .with_interner_capacity_bytes(
+                    NonZeroUsize::new(DEFAULT_TAG_FILTERLIST_INTERNER_CAPACITY_BYTES)
+                        .expect("tag filter interner capacity is non-zero"),
+                )
+                .build();
 
         Ok(Box::new(TagFilterlist {
             filters: compile_filters(&self.entries),
-            filter_generation: 0,
             configuration: self
                 .configuration
                 .clone()
                 .expect("configuration must be set via from_configuration"),
             telemetry: Telemetry::new(&metrics_builder),
-            tag_filter_cache,
+            context_resolver,
         }))
     }
 }
 
 impl MemoryBounds for TagFilterlistConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
-        builder.minimum().with_single_value::<TagFilterlist>("component struct");
+        builder
+            .minimum()
+            .with_single_value::<TagFilterlist>("component struct")
+            .with_fixed_amount(
+                "tag filter context resolver string interner",
+                DEFAULT_TAG_FILTERLIST_INTERNER_CAPACITY_BYTES,
+            );
     }
 }
 
 struct TagFilterlist {
     filters: CompiledFilters,
-    filter_generation: u64,
     configuration: GenericConfiguration,
     telemetry: Telemetry,
-    tag_filter_cache: FilteredTagSetCache,
+    context_resolver: ContextResolver,
 }
 
 #[async_trait]
@@ -226,7 +225,11 @@ impl Transform for TagFilterlist {
                         for event in &mut events {
                             if let Some(metric) = event.try_as_metric_mut() {
                                 if metric.values().is_sketch() {
-                                    let outcome = self.filter_metric_tags_cached(metric);
+                                    let outcome = filter_metric_tags_with_resolver(
+                                        metric,
+                                        &self.filters,
+                                        &mut self.context_resolver,
+                                    );
                                     self.telemetry.record(outcome);
                                 }
                             }
@@ -239,7 +242,6 @@ impl Transform for TagFilterlist {
                 },
                 (_, new_entries) = watcher.changed::<Vec<MetricTagFilterEntry>>() => {
                     self.filters = compile_filters(new_entries.as_deref().unwrap_or(&[]));
-                    self.filter_generation += 1;
                     debug!("Updated metric tag filterlist.");
                 },
             }
@@ -261,137 +263,110 @@ impl Transform for TagFilterlist {
 fn apply_tag_filter(
     tags: &SharedTagSet, is_exclude: bool, names: &HashSet<String, FoldHashState>,
 ) -> Option<FilteredTagSet> {
-    let capacity = if is_exclude {
+    let estimated_capacity = if is_exclude {
         tags.len().saturating_sub(names.len())
     } else {
         names.len().min(tags.len())
     };
-    let mut out = TagSet::with_capacity(capacity);
-    let mut any_change = false;
-    for tag in tags {
+    let mut out: Option<TagSet> = None;
+    let mut removed = 0;
+
+    for (idx, tag) in tags.into_iter().enumerate() {
         if is_exclude != names.contains(tag.name()) {
-            out.extend([tag.clone()]);
-        } else {
-            any_change = true;
-        }
-    }
-    let removed = tags.len().saturating_sub(out.len());
-    if any_change {
-        Some(FilteredTagSet { tags: out, removed })
-    } else {
-        None
-    }
-}
-
-/// Applies a tag filter to a shared tag set, using a cache to avoid redundant allocations.
-///
-/// `rule_ptr` is the address of the filter rule's tag-name set, used as a cache discriminator.
-/// Different metric names map to different filter rules (different pointers), so caching by
-/// `(arc_ptr, rule_ptr, generation)` is safe even when two metric names happen to share the same
-/// `Arc<TagSet>`. The `generation` counter is incremented on every config update to prevent stale
-/// hits if the allocator reuses a freed rule pointer address after a config change.
-///
-/// Caching is skipped for structurally-shared `SharedTagSet`s (those with more than one underlying
-/// `Arc<TagSet>`), since keying only by the first pointer would be ambiguous.
-///
-/// Returns `Some((filtered_shared, removed_count))` if any tags were removed, or `None` if the
-/// result would be identical to the source.
-#[inline]
-fn apply_tag_filter_cached(
-    cache: &FilteredTagSetCache, tags: &SharedTagSet, rule_ptr: usize, generation: u64, is_exclude: bool,
-    names: &HashSet<String, FoldHashState>,
-) -> Option<(SharedTagSet, usize)> {
-    // Only cache single-Arc SharedTagSets. Structurally-shared sets (multiple chained Arcs)
-    // cannot be safely identified by their first pointer alone.
-    if let [arc] = tags.as_tag_sets() {
-        let key = (Arc::as_ptr(arc) as usize, rule_ptr, generation);
-
-        if let Some(entry) = cache.get(&key) {
-            if let Some(live) = entry.weak.upgrade() {
-                if Arc::ptr_eq(&live, arc) {
-                    return Some((entry.filtered.clone(), entry.removed));
-                }
+            if let Some(out) = out.as_mut() {
+                out.extend([tag.clone()]);
             }
-            // Stale entry (pointer reused by a new Arc) — evict and recompute.
-            cache.remove(&key);
+            continue;
         }
 
-        let result = apply_tag_filter(tags, is_exclude, names)?;
-        let removed = result.removed;
-        let filtered = result.tags.into_shared();
-        cache.insert(
-            key,
-            CachedFilterResult {
-                weak: Arc::downgrade(arc),
-                filtered: filtered.clone(),
-                removed,
-            },
-        );
-        Some((filtered, removed))
-    } else {
-        // Empty or multi-Arc SharedTagSet — compute without caching.
-        let result = apply_tag_filter(tags, is_exclude, names)?;
-        Some((result.tags.into_shared(), result.removed))
+        removed += 1;
+        if out.is_none() {
+            // Delay allocating the output until we know filtering actually changes the tag set.
+            let mut filtered = TagSet::with_capacity(estimated_capacity.max(idx));
+            for existing in tags.into_iter().take(idx) {
+                filtered.extend([existing.clone()]);
+            }
+            out = Some(filtered);
+        }
     }
+
+    out.map(|tags| FilteredTagSet { tags, removed })
 }
 
-impl TagFilterlist {
-    /// Filters the tags of a sketch metric using a cache to avoid redundant allocations.
-    ///
-    /// Identical to [`filter_metric_tags`] in behavior, but caches the filtered `SharedTagSet`
-    /// so that metrics sharing the same underlying `Arc<TagSet>` skip reallocation on cache hits.
-    fn filter_metric_tags_cached(&mut self, metric: &mut Metric) -> FilterMetricTagsOutcome {
-        let Some((is_exclude, tag_names)) = self.filters.get(metric.context().name().as_ref()) else {
-            return FilterMetricTagsOutcome::RuleMiss;
-        };
-        let is_exclude = *is_exclude;
-        // Use the address of this rule's tag-name set as a cache discriminator so that two
-        // metric names sharing the same Arc<TagSet> don't collide in the cache.
-        let rule_ptr = tag_names as *const _ as usize;
+/// Filters the tags of a sketch metric and resolves modified outputs through a local context
+/// resolver so repeated filtered contexts can be reused across metrics.
+fn filter_metric_tags_with_resolver(
+    metric: &mut Metric, filters: &CompiledFilters, context_resolver: &mut ContextResolver,
+) -> FilterMetricTagsOutcome {
+    let Some((is_exclude, tag_names)) = filters.get(metric.context().name().as_ref()) else {
+        return FilterMetricTagsOutcome::RuleMiss;
+    };
 
-        let generation = self.filter_generation;
-        let new_tags = apply_tag_filter_cached(
-            &self.tag_filter_cache,
-            metric.context().tags(),
-            rule_ptr,
-            generation,
-            is_exclude,
-            tag_names,
-        );
+    let new_tags = apply_tag_filter(metric.context().tags(), *is_exclude, tag_names);
 
-        if metric.context().origin_tags().is_empty() {
-            match new_tags {
-                Some((filtered, removed_tags)) => {
-                    *metric.context_mut() = metric.context().with_tags(filtered);
-                    FilterMetricTagsOutcome::Modified { removed_tags }
+    if metric.context().origin_tags().is_empty() {
+        match new_tags {
+            Some(filtered) => {
+                let removed_tags = filtered.removed;
+                if let Some(context) = context_resolver.resolve_with_origin_tags(
+                    metric.context().name(),
+                    &filtered.tags,
+                    metric.context().origin_tags().clone(),
+                ) {
+                    *metric.context_mut() = context;
+                } else {
+                    *metric.context_mut() = metric.context().with_tags(filtered.tags.into_shared());
                 }
-                None => FilterMetricTagsOutcome::NoChange,
+                FilterMetricTagsOutcome::Modified { removed_tags }
             }
-        } else {
-            let new_origin = apply_tag_filter_cached(
-                &self.tag_filter_cache,
-                metric.context().origin_tags(),
-                rule_ptr,
-                generation,
-                is_exclude,
-                tag_names,
-            );
-            match (new_tags, new_origin) {
-                (None, None) => FilterMetricTagsOutcome::NoChange,
-                (Some((tags, removed)), None) => {
-                    *metric.context_mut() = metric.context().with_tags(tags);
-                    FilterMetricTagsOutcome::Modified { removed_tags: removed }
+            None => FilterMetricTagsOutcome::NoChange,
+        }
+    } else {
+        let new_origin = apply_tag_filter(metric.context().origin_tags(), *is_exclude, tag_names);
+        match (new_tags, new_origin) {
+            (None, None) => FilterMetricTagsOutcome::NoChange,
+            (Some(tags), None) => {
+                let removed_tags = tags.removed;
+                if let Some(context) = context_resolver.resolve_with_origin_tags(
+                    metric.context().name(),
+                    &tags.tags,
+                    metric.context().origin_tags().clone(),
+                ) {
+                    *metric.context_mut() = context;
+                } else {
+                    *metric.context_mut() = metric.context().with_tags(tags.tags.into_shared());
                 }
-                (None, Some((origin, removed))) => {
-                    *metric.context_mut() = metric.context().with_origin_tags(origin);
-                    FilterMetricTagsOutcome::Modified { removed_tags: removed }
+                FilterMetricTagsOutcome::Modified { removed_tags }
+            }
+            (None, Some(origin)) => {
+                let removed_tags = origin.removed;
+                let filtered_origin = origin.tags.into_shared();
+                if let Some(context) = context_resolver.resolve_with_origin_tags(
+                    metric.context().name(),
+                    metric.context().tags(),
+                    filtered_origin.clone(),
+                ) {
+                    *metric.context_mut() = context;
+                } else {
+                    *metric.context_mut() = metric.context().with_origin_tags(filtered_origin);
                 }
-                (Some((tags, tags_removed)), Some((origin, origin_removed))) => {
-                    *metric.context_mut() = metric.context().with_tags_and_origin_tags(tags, origin);
-                    FilterMetricTagsOutcome::Modified {
-                        removed_tags: tags_removed + origin_removed,
-                    }
+                FilterMetricTagsOutcome::Modified { removed_tags }
+            }
+            (Some(tags), Some(origin)) => {
+                let removed_tags = tags.removed + origin.removed;
+                let filtered_origin = origin.tags.into_shared();
+                if let Some(context) = context_resolver.resolve_with_origin_tags(
+                    metric.context().name(),
+                    &tags.tags,
+                    filtered_origin.clone(),
+                ) {
+                    *metric.context_mut() = context;
+                } else {
+                    *metric.context_mut() = metric
+                        .context()
+                        .with_tags_and_origin_tags(tags.tags.into_shared(), filtered_origin);
                 }
+                FilterMetricTagsOutcome::Modified { removed_tags }
             }
         }
     }
@@ -445,8 +420,10 @@ pub fn filter_metric_tags(metric: &mut Metric, filters: &CompiledFilters) -> Fil
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use saluki_config::{dynamic::ConfigUpdate, ConfigurationLoader};
-    use saluki_context::{tags::Tag, Context};
+    use saluki_context::{tags::Tag, Context, ContextResolverBuilder};
     use saluki_core::data_model::event::metric::Metric;
     use saluki_metrics::{test::TestRecorder, MetricsBuilder};
 
@@ -963,97 +940,56 @@ mod tests {
         assert_eq!(tag_names(&metric), vec!["service:web"]);
     }
 
-    // --- Cache behavior tests ---
-
-    fn make_cache() -> FilteredTagSetCache {
-        CacheBuilder::for_tests().build()
-    }
+    // --- Resolver behavior tests ---
 
     #[test]
-    fn cache_hit_reuses_filtered_arc() {
-        let cache = make_cache();
+    fn resolver_hit_reuses_filtered_context() {
         let entries = vec![MetricTagFilterEntry {
             metric_name: "my.dist".to_string(),
             action: FilterAction::Exclude,
             tags: vec!["host".to_string()],
         }];
         let filters = compile_filters(&entries);
-        let (is_exclude, tag_names) = filters.get("my.dist").unwrap();
-        let rule_ptr = tag_names as *const _ as usize;
+        let mut context_resolver = ContextResolverBuilder::for_tests().build();
 
-        let tag_set: TagSet = ["env:prod", "host:h1"].iter().map(|s| Tag::from(*s)).collect();
-        let shared = tag_set.into_shared();
+        let mut metric1 = distribution_metric("my.dist", &["env:prod", "host:h1"]);
+        let mut metric2 = distribution_metric("my.dist", &["env:prod", "host:h1"]);
 
-        let result1 = apply_tag_filter_cached(&cache, &shared, rule_ptr, 0, *is_exclude, tag_names);
-        let result2 = apply_tag_filter_cached(&cache, &shared, rule_ptr, 0, *is_exclude, tag_names);
+        let outcome1 = filter_metric_tags_with_resolver(&mut metric1, &filters, &mut context_resolver);
+        let outcome2 = filter_metric_tags_with_resolver(&mut metric2, &filters, &mut context_resolver);
 
-        let (filtered1, removed1) = result1.unwrap();
-        let (filtered2, removed2) = result2.unwrap();
-
-        assert_eq!(removed1, removed2);
-        // Both results should share the same underlying Arc — cache hit.
-        assert!(filtered1
+        assert_eq!(outcome1, FilterMetricTagsOutcome::Modified { removed_tags: 1 });
+        assert_eq!(outcome2, FilterMetricTagsOutcome::Modified { removed_tags: 1 });
+        assert!(metric1
+            .context()
+            .tags()
             .as_tag_sets()
             .iter()
-            .zip(filtered2.as_tag_sets().iter())
+            .zip(metric2.context().tags().as_tag_sets().iter())
             .all(|(a, b)| Arc::ptr_eq(a, b)));
     }
 
     #[test]
-    fn multi_arc_tagset_skips_cache() {
-        let cache = make_cache();
+    fn resolver_no_change_preserves_original_context_tags() {
         let entries = vec![MetricTagFilterEntry {
             metric_name: "my.dist".to_string(),
             action: FilterAction::Exclude,
-            tags: vec!["host".to_string()],
+            tags: vec!["region".to_string()],
         }];
         let filters = compile_filters(&entries);
-        let (is_exclude, tag_names) = filters.get("my.dist").unwrap();
-        let rule_ptr = tag_names as *const _ as usize;
+        let mut context_resolver = ContextResolverBuilder::for_tests().build();
+        let mut metric = distribution_metric("my.dist", &["env:prod", "host:h1"]);
+        let original_tags = metric.context().tags().clone();
 
-        // Build a SharedTagSet with two chained Arcs via extend_from_shared.
-        let ts1: TagSet = [Tag::from("env:prod"), Tag::from("host:h1")].into_iter().collect();
-        let ts2: TagSet = [Tag::from("service:web")].into_iter().collect();
-        let mut multi_arc = ts1.into_shared();
-        multi_arc.extend_from_shared(&ts2.into_shared());
-        assert_eq!(multi_arc.as_tag_sets().len(), 2, "should be multi-Arc");
+        let outcome = filter_metric_tags_with_resolver(&mut metric, &filters, &mut context_resolver);
 
-        // Call twice — should compute both times (no caching).
-        let r1 = apply_tag_filter_cached(&cache, &multi_arc, rule_ptr, 0, *is_exclude, tag_names);
-        let r2 = apply_tag_filter_cached(&cache, &multi_arc, rule_ptr, 0, *is_exclude, tag_names);
-
-        assert!(r1.is_some());
-        assert!(r2.is_some());
-        // Cache should remain empty since multi-Arc sets are not cached.
-        assert_eq!(cache.len(), 0);
-    }
-
-    #[test]
-    fn generation_change_causes_cache_miss() {
-        let cache = make_cache();
-        let entries = vec![MetricTagFilterEntry {
-            metric_name: "my.dist".to_string(),
-            action: FilterAction::Exclude,
-            tags: vec!["host".to_string()],
-        }];
-        let filters = compile_filters(&entries);
-        let (is_exclude, tag_names) = filters.get("my.dist").unwrap();
-        let rule_ptr = tag_names as *const _ as usize;
-
-        let tag_set: TagSet = ["env:prod", "host:h1"].iter().map(|s| Tag::from(*s)).collect();
-        let shared = tag_set.into_shared();
-
-        // Generation 0: cache miss → allocates new Arc.
-        let (filtered_gen0, _) = apply_tag_filter_cached(&cache, &shared, rule_ptr, 0, *is_exclude, tag_names).unwrap();
-
-        // Generation 1 (simulated config update): should be a cache miss → new Arc.
-        let (filtered_gen1, _) = apply_tag_filter_cached(&cache, &shared, rule_ptr, 1, *is_exclude, tag_names).unwrap();
-
-        // The two results should NOT share the same Arc — gen1 was a fresh allocation.
-        assert!(!filtered_gen0
+        assert_eq!(outcome, FilterMetricTagsOutcome::NoChange);
+        assert!(metric
+            .context()
+            .tags()
             .as_tag_sets()
             .iter()
-            .zip(filtered_gen1.as_tag_sets().iter())
+            .zip(original_tags.as_tag_sets().iter())
             .all(|(a, b)| Arc::ptr_eq(a, b)));
     }
 }
