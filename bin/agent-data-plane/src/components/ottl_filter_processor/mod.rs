@@ -153,7 +153,7 @@ mod tests {
     use std::collections::HashMap;
 
     use saluki_common::collections::FastHashMap;
-    use saluki_config::ConfigurationLoader;
+    use saluki_config::{value::value, ConfigurationLoader};
     use saluki_context::tags::TagSet;
     use saluki_core::{
         components::{transforms::*, ComponentContext},
@@ -210,7 +210,7 @@ mod tests {
     /// When `ottl_filter_config` is present but invalid (e.g. unknown fields), `from_configuration` returns an error.
     #[tokio::test]
     async fn from_configuration_invalid_yaml_returns_error() {
-        let invalid = serde_json::json!({
+        let invalid = value!({
             "ottl_filter_config": {
                 "unknown_field": 1
             }
@@ -223,7 +223,7 @@ mod tests {
     /// When a span condition string is invalid OTTL syntax, `build` returns an error.
     #[tokio::test]
     async fn build_invalid_condition_returns_error() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_filter_config": {
                 "traces": { "span": ["syntax error !!"] }
             }
@@ -238,7 +238,7 @@ mod tests {
     /// Multiple valid conditions in `traces.span` are all parsed; filter uses OR semantics (any match drops the span).
     #[tokio::test]
     async fn build_multiple_conditions_all_parsed() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_filter_config": {
                 "traces": {
                     "span": [
@@ -291,7 +291,7 @@ mod tests {
     /// When the condition evaluates to true for a span, that span is dropped.
     #[tokio::test]
     async fn should_drop_span_condition_true_drops() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_filter_config": { "traces": { "span": ["attributes[\"env\"] == \"drop\""] } }
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
@@ -309,7 +309,7 @@ mod tests {
     /// When the condition evaluates to false for a span, that span is kept.
     #[tokio::test]
     async fn should_drop_span_condition_false_keeps() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_filter_config": { "traces": { "span": ["attributes[\"env\"] == \"drop\""] } }
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
@@ -327,7 +327,7 @@ mod tests {
     /// Conditions on `resource.attributes` match trace resource tags; matching span is dropped, non-matching kept.
     #[tokio::test]
     async fn should_drop_span_resource_attributes() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_filter_config": { "traces": { "span": ["resource.attributes[\"host.name\"] == \"localhost\""] } }
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
@@ -350,7 +350,7 @@ mod tests {
     /// Multiple conditions are combined with OR: span is dropped if any condition is true; kept only if all are false.
     #[tokio::test]
     async fn should_drop_span_or_semantics() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_filter_config": {
                 "traces": {
                     "span": [
@@ -388,7 +388,7 @@ mod tests {
     /// Path used as condition returns non-bool → OTTL errors; with `error_mode: ignore` the span is kept.
     #[tokio::test]
     async fn should_drop_span_non_bool_result_keeps() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_filter_config": {
                 "error_mode": "ignore",
                 "traces": { "span": ["attributes[\"x\"]"] }
@@ -413,7 +413,7 @@ mod tests {
     /// With `error_mode: ignore`, when condition evaluation errors (e.g. type mismatch), the span is kept.
     #[tokio::test]
     async fn error_mode_ignore_eval_error_keeps_span() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_filter_config": {
                 "error_mode": "ignore",
                 "traces": { "span": ["attributes[\"x\"] > 1"] }
@@ -434,7 +434,7 @@ mod tests {
     /// With `error_mode: silent`, when condition evaluation errors, the span is kept (no log).
     #[tokio::test]
     async fn error_mode_silent_eval_error_keeps_span() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_filter_config": {
                 "error_mode": "silent",
                 "traces": { "span": ["attributes[\"x\"] > 1"] }
@@ -455,7 +455,7 @@ mod tests {
     /// With `error_mode: propagate`, when condition evaluation errors, the span is dropped.
     #[tokio::test]
     async fn error_mode_propagate_eval_error_drops_span() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_filter_config": {
                 "error_mode": "propagate",
                 "traces": { "span": ["attributes[\"x\"] > 1"] }
@@ -476,7 +476,7 @@ mod tests {
     /// `transform_buffer` removes only spans that match the condition; remaining spans are unchanged and in order.
     #[tokio::test]
     async fn transform_buffer_trace_spans_filtered() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_filter_config": { "traces": { "span": ["attributes[\"drop\"] == \"yes\""] } }
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
@@ -523,7 +523,7 @@ mod tests {
     /// When all spans in a trace match the condition, the trace ends up with zero spans.
     #[tokio::test]
     async fn transform_buffer_all_spans_dropped_trace_empty() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_filter_config": { "traces": { "span": ["attributes[\"env\"] == \"drop\""] } }
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
@@ -559,7 +559,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "performance test; run with: cargo test -- --ignored --nocapture perf_throughput"]
     async fn perf_throughput_filter_all() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_filter_config": { "traces": { "span": ["attributes[\"env\"] == \"drop\""] } }
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
@@ -591,7 +591,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "performance test; run with: cargo test -- --ignored --nocapture perf_throughput"]
     async fn perf_throughput_filter_half() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_filter_config": { "traces": { "span": ["attributes[\"drop\"] == \"yes\""] } }
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;

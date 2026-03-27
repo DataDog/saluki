@@ -14,12 +14,16 @@ use futures::StreamExt;
 use prometheus_exposition::PrometheusRenderer;
 use prost_types::value::Kind;
 use saluki_common::task::spawn_traced_named;
-use saluki_config::{dynamic::ConfigUpdate, upsert, GenericConfiguration};
+use saluki_config::{
+    dynamic::ConfigUpdate,
+    upsert,
+    value::{VArray, VObject, Value},
+    GenericConfiguration,
+};
 use saluki_core::state::reflector::Reflector;
 use saluki_env::helpers::remote_agent::{RemoteAgentClient, SessionId, SessionIdHandle};
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::GrpcTargetAddress;
-use serde_json::{Map, Value};
 use tokio::{
     sync::{mpsc, oneshot, Mutex},
     time::{interval, MissedTickBehavior},
@@ -281,7 +285,7 @@ async fn run_config_stream_event_loop(
                         }
                         Some(config_event::Event::Update(update)) => {
                             if let Some(setting) = update.setting {
-                                let v = proto_value_to_serde_value(&setting.value);
+                                let v = proto_value_to_facet_value(&setting.value);
                                 Some(ConfigUpdate::Partial {
                                     key: setting.key,
                                     value: v,
@@ -314,26 +318,26 @@ async fn run_config_stream_event_loop(
     }
 }
 
-/// Converts a `ConfigSnapshot` into a nested `serde_json::Value::Object`.
+/// Converts a `ConfigSnapshot` into a nested `facet_value::Value` object.
 fn snapshot_to_map(snapshot: &ConfigSnapshot) -> Value {
-    let mut root = Value::Object(Map::new());
+    let mut root = Value::from(VObject::new());
 
     for setting in &snapshot.settings {
-        let value = proto_value_to_serde_value(&setting.value);
+        let value = proto_value_to_facet_value(&setting.value);
         upsert(&mut root, &setting.key, value);
     }
 
     root
 }
 
-/// Recursively converts a `google::protobuf::Value` into a `serde_json::Value`.
-fn proto_value_to_serde_value(proto_val: &Option<prost_types::Value>) -> Value {
+/// Recursively converts a `google::protobuf::Value` into a `facet_value::Value`.
+fn proto_value_to_facet_value(proto_val: &Option<prost_types::Value>) -> Value {
     let Some(kind) = proto_val.as_ref().and_then(|v| v.kind.as_ref()) else {
-        return Value::Null;
+        return Value::NULL;
     };
 
     match kind {
-        Kind::NullValue(_) => Value::Null,
+        Kind::NullValue(_) => Value::NULL,
         Kind::NumberValue(n) => {
             if n.fract() == 0.0 && *n >= i64::MIN as f64 && *n <= i64::MAX as f64 {
                 Value::from(*n as i64)
@@ -341,23 +345,28 @@ fn proto_value_to_serde_value(proto_val: &Option<prost_types::Value>) -> Value {
                 Value::from(*n)
             }
         }
-        Kind::StringValue(s) => Value::String(s.clone()),
-        Kind::BoolValue(b) => Value::Bool(*b),
+        Kind::StringValue(s) => Value::from(s.as_str()),
+        Kind::BoolValue(b) => {
+            if *b {
+                Value::TRUE
+            } else {
+                Value::FALSE
+            }
+        }
         Kind::StructValue(s) => {
-            let json_map: Map<String, Value> = s
-                .fields
-                .iter()
-                .map(|(k, v)| (k.clone(), proto_value_to_serde_value(&Some(v.clone()))))
-                .collect();
-            Value::Object(json_map)
+            let mut obj = VObject::new();
+            for (k, v) in &s.fields {
+                obj.insert(k.as_str(), proto_value_to_facet_value(&Some(v.clone())));
+            }
+            Value::from(obj)
         }
         Kind::ListValue(l) => {
-            let json_list: Vec<Value> = l
+            let arr: VArray = l
                 .values
                 .iter()
-                .map(|v| proto_value_to_serde_value(&Some(v.clone())))
+                .map(|v| proto_value_to_facet_value(&Some(v.clone())))
                 .collect();
-            Value::Array(json_list)
+            Value::from(arr)
         }
     }
 }

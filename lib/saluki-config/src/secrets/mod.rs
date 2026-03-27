@@ -1,9 +1,6 @@
 use std::collections::HashMap;
 
-use figment::{
-    value::{Dict, Map, Value},
-    Figment, Metadata, Profile,
-};
+use facet_value::Value;
 use tracing::error;
 
 pub mod resolver;
@@ -15,53 +12,45 @@ pub use self::errors::Error;
 const SECRET_REF_PREFIX: &str = "ENC[";
 const SECRET_REF_SUFFIX: &str = "]";
 
-/// A provider that handles the resolution of secrets in a configuration.
-pub struct Provider {
-    metadata: Metadata,
-    secrets: Dict,
+/// A secrets overlay that resolves secret references in configuration values.
+///
+/// After resolution, the overlay can be converted to a `Value` for merging into the configuration.
+pub struct SecretsOverlay {
+    secrets: Value,
 }
 
-impl Provider {
-    /// Creates a new `Provider` instance, resolving any secrets found in the given source data.
+impl SecretsOverlay {
+    /// Creates a new `SecretsOverlay` instance, resolving any secrets found in the given source data.
     ///
     /// # Errors
     ///
     /// If there is an issue while resolving the secrets, an error will be returned.
-    pub async fn new<R: Resolver>(resolver: R, source: &Figment) -> Result<Self, Error> {
-        let mut provider = Self {
-            metadata: Metadata::from("Secrets", resolver.source()),
-            secrets: Dict::default(),
+    pub async fn new<R: Resolver>(resolver: R, source: &Value) -> Result<Self, Error> {
+        let mut overlay = Self {
+            secrets: Value::from(facet_value::VObject::new()),
         };
 
         // Extract any secret references from the input data, simply returning early if we find none.
         let secret_refs = extract_secret_refs(source);
         if secret_refs.is_empty() {
-            return Ok(provider);
+            return Ok(overlay);
         }
 
         // Try and resolve the detected secrets using the provider resolver.
         //
-        // For any resolved secrets that we get back, we'll add them to our internal dictionary.
+        // For any resolved secrets that we get back, we'll add them to our internal value.
         let resolved_secrets = resolver.resolve(secret_refs).await?;
 
         for (key, value) in resolved_secrets {
-            set_nested_dict_entry(&mut provider.secrets, key, value);
+            set_nested_value(&mut overlay.secrets, key, value);
         }
 
-        Ok(provider)
-    }
-}
-
-impl figment::Provider for Provider {
-    fn metadata(&self) -> Metadata {
-        self.metadata.clone()
+        Ok(overlay)
     }
 
-    fn data(&self) -> Result<Map<Profile, Dict>, figment::Error> {
-        let mut data = Map::new();
-        data.insert(Profile::default(), self.secrets.clone());
-
-        Ok(data)
+    /// Consumes the overlay and returns the resolved secrets as a `Value`.
+    pub fn into_value(self) -> Value {
+        self.secrets
     }
 }
 
@@ -96,64 +85,60 @@ impl KeyPath {
     }
 }
 
-fn set_nested_dict_entry(dict: &mut Dict, key: KeyPath, value: String) {
-    fn get_or_create(dict: &mut Dict, key: String) -> Option<&mut Dict> {
-        let entry = dict.entry(key).or_insert_with(|| Dict::default().into());
-        if let Value::Dict(_, dict) = entry {
-            Some(dict)
-        } else {
-            None
-        }
+fn set_nested_value(root: &mut Value, key: KeyPath, value: String) {
+    let mut segments = key.into_segments();
+    if segments.is_empty() {
+        return;
     }
 
-    let mut current_dict = dict;
-    let mut segments = key.into_segments();
+    let mut current = root;
 
     for segment in segments.drain(..segments.len() - 1) {
-        match get_or_create(current_dict, segment) {
-            Some(dict) => current_dict = dict,
-            None => return,
+        // Ensure current is an object.
+        if current.as_object().is_none() {
+            *current = Value::from(facet_value::VObject::new());
         }
+
+        let obj = current.as_object_mut().unwrap();
+        if obj.get(&segment).is_none() {
+            obj.insert(&segment, Value::from(facet_value::VObject::new()));
+        }
+        current = obj.get_mut(&segment).unwrap();
     }
 
     let leaf_key = segments
         .pop()
         .expect("parts should always have at least one element left");
-    current_dict.insert(leaf_key, value.into());
+
+    if current.as_object().is_none() {
+        *current = Value::from(facet_value::VObject::new());
+    }
+    current.as_object_mut().unwrap().insert(&leaf_key, Value::from(value));
 }
 
-fn extract_secret_refs(source: &Figment) -> HashMap<KeyPath, String> {
+fn extract_secret_refs(source: &Value) -> HashMap<KeyPath, String> {
     let mut secrets = HashMap::new();
 
-    match source.extract::<Value>() {
-        Ok(value) => match value.as_dict() {
-            Some(dict) => extract_secret_refs_inner(KeyPath::root(), dict, &mut secrets),
-            None => {
-                error!("Failed to extract configuration values as a dictionary during secrets resolution. No secrets will be resolved.");
-            }
-        },
-        Err(e) => {
-            error!(error = %e, "Failed to iterate over existing configuration values during secrets resolution. No secrets will be resolved.");
-
-            return secrets;
+    match source.as_object() {
+        Some(obj) => extract_secret_refs_inner(KeyPath::root(), obj, &mut secrets),
+        None => {
+            error!("Failed to extract configuration values as an object during secrets resolution. No secrets will be resolved.");
         }
-    };
+    }
 
     secrets
 }
 
-fn extract_secret_refs_inner(parent_path: KeyPath, dict: &Dict, secrets: &mut HashMap<KeyPath, String>) {
-    for (key, value) in dict.iter() {
-        let current_path = parent_path.push(key);
+fn extract_secret_refs_inner(parent_path: KeyPath, obj: &facet_value::VObject, secrets: &mut HashMap<KeyPath, String>) {
+    for (key, value) in obj.iter() {
+        let current_path = parent_path.push(key.as_str());
 
-        match value {
-            Value::String(_, value) => {
-                if let Some(secret_ref) = parse_secret_ref(value) {
-                    secrets.insert(current_path, secret_ref.to_string());
-                }
+        if let Some(s) = value.as_string() {
+            if let Some(secret_ref) = parse_secret_ref(s.as_str()) {
+                secrets.insert(current_path, secret_ref.to_string());
             }
-            Value::Dict(_, dict) => extract_secret_refs_inner(current_path, dict, secrets),
-            _ => {}
+        } else if let Some(nested_obj) = value.as_object() {
+            extract_secret_refs_inner(current_path, nested_obj, secrets);
         }
     }
 }
@@ -168,8 +153,7 @@ fn parse_secret_ref(value: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use figment::{providers::Serialized, Source};
-    use serde_json::json;
+    use facet_value::value;
 
     use super::*;
 
@@ -185,10 +169,6 @@ mod tests {
     }
 
     impl Resolver for InMemoryResolver {
-        fn source(&self) -> Source {
-            Source::Custom("secrets[in-memory]".to_string())
-        }
-
         async fn resolve(&self, secrets: HashMap<KeyPath, String>) -> Result<HashMap<KeyPath, String>, Error> {
             let mut resolved = HashMap::new();
             for secret in secrets {
@@ -203,86 +183,98 @@ mod tests {
 
     #[tokio::test]
     async fn provider_no_secrets() {
-        let source = Figment::new();
+        let source = value!({});
         let resolver = InMemoryResolver::default();
-        let provider = Provider::new(resolver, &source)
+        let overlay = SecretsOverlay::new(resolver, &source)
             .await
             .expect("should not fail to resolve secrets in empty source config");
 
-        assert!(provider.secrets.is_empty());
+        let secrets_value = overlay.into_value();
+        assert!(secrets_value.as_object().unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn provider_basic_secret() {
-        let source = Figment::new().adjoin(("my-secret", "ENC[my-secret-ref]"));
+        let source = value!({
+            "my-secret": "ENC[my-secret-ref]"
+        });
 
         let mut resolver = InMemoryResolver::default();
         resolver.add_secret("my-secret-ref", "my-secret-value");
 
-        let provider = Provider::new(resolver, &source)
+        let overlay = SecretsOverlay::new(resolver, &source)
             .await
             .expect("should not fail to resolve secrets in non-empty source config");
 
-        assert!(!provider.secrets.is_empty());
+        let secrets_value = overlay.into_value();
+        let obj = secrets_value.as_object().unwrap();
         assert_eq!(
-            provider.secrets.get("my-secret").and_then(|v| v.as_str()),
+            obj.get("my-secret").and_then(|v| v.as_string()).map(|s| s.as_str()),
             Some("my-secret-value")
         );
     }
 
     #[tokio::test]
     async fn provider_nested_secret() {
-        let source = Figment::new().adjoin(("server.api_key", "ENC[server-api-key-ref]"));
+        let source = value!({
+            "server": {
+                "api_key": "ENC[server-api-key-ref]"
+            }
+        });
 
         let mut resolver = InMemoryResolver::default();
         resolver.add_secret("server-api-key-ref", "my-server-api-key-value");
 
-        let provider = Provider::new(resolver, &source)
+        let overlay = SecretsOverlay::new(resolver, &source)
             .await
             .expect("should not fail to resolve secrets in non-empty source config");
 
-        assert!(!provider.secrets.is_empty());
-
-        let secrets_value = Value::from(provider.secrets.clone());
+        let secrets_value = overlay.into_value();
+        let server = secrets_value
+            .as_object()
+            .unwrap()
+            .get("server")
+            .unwrap()
+            .as_object()
+            .unwrap();
         assert_eq!(
-            secrets_value.find("server.api_key"),
-            Some(Value::from("my-server-api-key-value"))
+            server.get("api_key").and_then(|v| v.as_string()).map(|s| s.as_str()),
+            Some("my-server-api-key-value")
         );
     }
 
     #[tokio::test]
     async fn provider_nested_secret_period_separators() {
         let tenant1_url = "https://tenant1.saas.io";
-        let source_secrets = json!({
+        let source = value!({
             "additional_endpoints": {
-                tenant1_url: "ENC[tenant1-api-key-ref]"
+                (tenant1_url): "ENC[tenant1-api-key-ref]"
             }
         });
-
-        let source = Figment::new().adjoin(Serialized::defaults(source_secrets));
 
         let mut resolver = InMemoryResolver::default();
         resolver.add_secret("tenant1-api-key-ref", "tenant1-api-key-value");
 
-        let provider = Provider::new(resolver, &source)
+        let overlay = SecretsOverlay::new(resolver, &source)
             .await
             .expect("should not fail to resolve secrets in non-empty source config");
 
-        assert!(!provider.secrets.is_empty());
-
-        // We have to drop down to the level of `Dict`, and avoid using `Value::find`, due to the period separators in
-        // `tenant1_url`, but this simulates what would happen when the configuration is deserialized to a typed struct,
-        // etc.
-        let additional_endpoints = provider
-            .secrets
+        let secrets_value = overlay.into_value();
+        // We have to drill down through the object to avoid issues with period separators in the key.
+        let additional_endpoints = secrets_value
+            .as_object()
+            .unwrap()
             .get("additional_endpoints")
             .expect("should have additional_endpoints")
-            .as_dict()
-            .expect("additional_endpoints should be a dictionary");
+            .as_object()
+            .expect("additional_endpoints should be an object");
 
         assert_eq!(
-            additional_endpoints.get(tenant1_url),
-            Some(&Value::from("tenant1-api-key-value"))
+            additional_endpoints
+                .get(tenant1_url)
+                .and_then(|v| v.as_string())
+                .map(|s| s.as_str()),
+            Some("tenant1-api-key-value")
         );
     }
 

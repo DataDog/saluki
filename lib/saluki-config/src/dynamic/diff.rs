@@ -1,36 +1,36 @@
 //! Functions for diffing configuration values.
 
+use facet_value::Value;
+
 use super::event::ConfigChangeEvent;
 
 /// Diffs two configuration values and returns a list of changes.
-pub fn diff_config(old_config: &figment::value::Value, new_config: &figment::value::Value) -> Vec<ConfigChangeEvent> {
+pub fn diff_config(old_config: &Value, new_config: &Value) -> Vec<ConfigChangeEvent> {
     let mut changes = Vec::new();
     diff_recursive(old_config, new_config, "", &mut changes);
     changes
 }
 
-fn diff_recursive(
-    old_config: &figment::value::Value, new_config: &figment::value::Value, path: &str,
-    changes: &mut Vec<ConfigChangeEvent>,
-) {
-    if let (Some(old_dict), Some(new_dict)) = (old_config.as_dict(), new_config.as_dict()) {
-        for (key, new_value) in new_dict {
+fn diff_recursive(old_config: &Value, new_config: &Value, path: &str, changes: &mut Vec<ConfigChangeEvent>) {
+    if let (Some(old_obj), Some(new_obj)) = (old_config.as_object(), new_config.as_object()) {
+        for (key, new_value) in new_obj.iter() {
+            let key_str = key.as_str();
             let current_path = if path.is_empty() {
-                key.clone()
+                key_str.to_string()
             } else {
-                format!("{}.{}", path, key)
+                format!("{}.{}", path, key_str)
             };
 
-            match old_dict.get(key) {
+            match old_obj.get(key_str) {
                 Some(old_value) => {
                     if old_value != new_value {
-                        if new_value.as_dict().is_some() && old_value.as_dict().is_some() {
+                        if new_value.as_object().is_some() && old_value.as_object().is_some() {
                             diff_recursive(old_value, new_value, &current_path, changes);
                         } else {
                             changes.push(ConfigChangeEvent {
                                 key: current_path,
-                                old_value: Some(serde_json::to_value(old_value).unwrap()),
-                                new_value: Some(serde_json::to_value(new_value).unwrap()),
+                                old_value: Some(old_value.clone()),
+                                new_value: Some(new_value.clone()),
                             });
                         }
                     }
@@ -39,7 +39,7 @@ fn diff_recursive(
                     changes.push(ConfigChangeEvent {
                         key: current_path,
                         old_value: None,
-                        new_value: Some(serde_json::to_value(new_value).unwrap()),
+                        new_value: Some(new_value.clone()),
                     });
                 }
             }
@@ -49,20 +49,13 @@ fn diff_recursive(
 
 #[cfg(test)]
 mod tests {
-    use figment::{providers::Serialized, value::Value, Figment};
-    use serde_json::json;
+    use facet_value::value;
 
     use super::*;
 
-    fn to_figment_value(json: serde_json::Value) -> Value {
-        let serialized = Serialized::defaults(json);
-        let value: Value = Figment::from(serialized).extract().unwrap();
-        value
-    }
-
     #[test]
     fn test_diff_config_basic() {
-        let old_json = json!({
+        let old = value!({
             "a": "original",
             "nested": {
                 "b": 100
@@ -70,64 +63,60 @@ mod tests {
             "unchanged": true
         });
 
-        let new_json = json!({
-            "a": "updated", // modified
+        let new = value!({
+            "a": "updated",
             "nested": {
-                "b": 200, // nested modified
-                "c": "new"  // nested added
+                "b": 200,
+                "c": "new"
             },
             "unchanged": true,
-            "d": "added" // added
+            "d": "added"
         });
 
-        let old_config = to_figment_value(old_json);
-        let new_config = to_figment_value(new_json);
-
-        let changes = diff_config(&old_config, &new_config);
+        let changes = diff_config(&old, &new);
 
         // We expect 4 changes in total.
         assert_eq!(changes.len(), 4);
 
-        println!("changes: {:?}", changes);
-
-        assert!(changes.contains(&ConfigChangeEvent {
-            key: "a".to_string(),
-            old_value: Some("original".into()),
-            new_value: Some("updated".into())
-        }));
-        assert!(changes.contains(&ConfigChangeEvent {
-            key: "nested.b".to_string(),
-            old_value: Some(100.into()),
-            new_value: Some(200.into())
-        }));
-        assert!(changes.contains(&ConfigChangeEvent {
-            key: "nested.c".to_string(),
-            old_value: None,
-            new_value: Some("new".into())
-        }));
-        assert!(changes.contains(&ConfigChangeEvent {
-            key: "d".to_string(),
-            old_value: None,
-            new_value: Some("added".into())
-        }));
+        assert!(changes.iter().any(|c| c.key == "a"
+            && c.old_value.as_ref().and_then(|v| v.as_string()).map(|s| s.as_str()) == Some("original")
+            && c.new_value.as_ref().and_then(|v| v.as_string()).map(|s| s.as_str()) == Some("updated")));
+        assert!(changes.iter().any(|c| c.key == "nested.b"
+            && c.old_value
+                .as_ref()
+                .and_then(|v| v.as_number())
+                .and_then(|n| n.to_i64())
+                == Some(100)
+            && c.new_value
+                .as_ref()
+                .and_then(|v| v.as_number())
+                .and_then(|n| n.to_i64())
+                == Some(200)));
+        assert!(changes.iter().any(|c| c.key == "nested.c"
+            && c.old_value.is_none()
+            && c.new_value.as_ref().and_then(|v| v.as_string()).map(|s| s.as_str()) == Some("new")));
+        assert!(changes.iter().any(|c| c.key == "d"
+            && c.old_value.is_none()
+            && c.new_value.as_ref().and_then(|v| v.as_string()).map(|s| s.as_str()) == Some("added")));
     }
 
     #[test]
     fn test_diff_config_no_change() {
-        let old_json = json!({
+        let old = value!({
             "a": "original",
             "nested": {
                 "b": 100
-            },
+            }
         });
 
-        let new_json = old_json.clone();
+        let new = value!({
+            "a": "original",
+            "nested": {
+                "b": 100
+            }
+        });
 
-        let old_config = to_figment_value(old_json);
-        let new_config = to_figment_value(new_json);
-
-        let changes = diff_config(&old_config, &new_config);
-
+        let changes = diff_config(&old, &new);
         assert!(changes.is_empty());
     }
 }
