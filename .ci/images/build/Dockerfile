@@ -38,7 +38,8 @@ RUN chmod +x /install-vault.sh && /install-vault.sh
 RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain ${RUST_VERSION}
 ENV PATH="/root/.cargo/bin:${PATH}"
 RUN rustup toolchain add nightly && \
-    rustup component add clippy rustfmt
+    rustup component add clippy && \
+    rustup component add --toolchain nightly rustfmt
 
 # Pre-install the relevant Cargo tools we use in the build process.
 WORKDIR /tmp
