@@ -16,7 +16,7 @@ use piecemeal::{ScratchBuffer, ScratchWriter};
 use saluki_common::strings::StringBuilder;
 use saluki_common::task::HandleExt as _;
 use saluki_config::GenericConfiguration;
-use saluki_context::tags::{SharedTagSet, TagSet};
+use saluki_context::tags::TagSet;
 use saluki_core::data_model::event::trace::{AttributeScalarValue, AttributeValue, Span as DdSpan};
 use saluki_core::topology::{EventsBuffer, PayloadsBuffer};
 use saluki_core::{
@@ -688,12 +688,12 @@ fn encode_attribute_array_value<S: ScratchBuffer>(
     Ok(())
 }
 
-fn get_resource_tag_value<'a>(resource_tags: &'a SharedTagSet, key: &str) -> Option<&'a str> {
+fn get_resource_tag_value<'a>(resource_tags: &'a TagSet, key: &str) -> Option<&'a str> {
     resource_tags.get_single_tag(key).and_then(|t| t.value())
 }
 
 fn resolve_hostname<'a>(
-    resource_tags: &'a SharedTagSet, source: Option<&'a OtlpSource>, default_hostname: Option<&'a str>,
+    resource_tags: &'a TagSet, source: Option<&'a OtlpSource>, default_hostname: Option<&'a str>,
     ignore_missing_fields: bool,
 ) -> Option<&'a str> {
     let mut hostname = match source {
@@ -715,7 +715,7 @@ fn resolve_hostname<'a>(
     hostname
 }
 
-fn resolve_env(resource_tags: &SharedTagSet, ignore_missing_fields: bool) -> Option<&str> {
+fn resolve_env(resource_tags: &TagSet, ignore_missing_fields: bool) -> Option<&str> {
     if let Some(value) = get_resource_tag_value(resource_tags, KEY_DATADOG_ENVIRONMENT) {
         return Some(value);
     }
@@ -728,7 +728,7 @@ fn resolve_env(resource_tags: &SharedTagSet, ignore_missing_fields: bool) -> Opt
     get_resource_tag_value(resource_tags, DEPLOYMENT_ENVIRONMENT_KEY)
 }
 
-fn resolve_container_id<'a>(resource_tags: &'a SharedTagSet, first_span: Option<&'a DdSpan>) -> Option<&'a str> {
+fn resolve_container_id<'a>(resource_tags: &'a TagSet, first_span: Option<&'a DdSpan>) -> Option<&'a str> {
     for key in [KEY_DATADOG_CONTAINER_ID, CONTAINER_ID, K8S_POD_UID] {
         if let Some(value) = get_resource_tag_value(resource_tags, key) {
             return Some(value);
@@ -746,7 +746,7 @@ fn resolve_container_id<'a>(resource_tags: &'a SharedTagSet, first_span: Option<
     None
 }
 
-fn resolve_app_version(resource_tags: &SharedTagSet) -> Option<&str> {
+fn resolve_app_version(resource_tags: &TagSet) -> Option<&str> {
     if let Some(value) = get_resource_tag_value(resource_tags, KEY_DATADOG_VERSION) {
         return Some(value);
     }
@@ -754,7 +754,7 @@ fn resolve_app_version(resource_tags: &SharedTagSet) -> Option<&str> {
 }
 
 fn resolve_container_tags(
-    resource_tags: &SharedTagSet, source: Option<&OtlpSource>, ignore_missing_fields: bool,
+    resource_tags: &TagSet, source: Option<&OtlpSource>, ignore_missing_fields: bool,
 ) -> Option<MetaString> {
     // TODO: some refactoring is probably needed to normalize this function, the tags should already be normalized
     // since we do so when we transform OTLP spans to DD spans however to make this class extensible for non otlp traces, we would

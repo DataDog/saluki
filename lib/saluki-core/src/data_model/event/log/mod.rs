@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use saluki_context::tags::SharedTagSet;
+use saluki_context::tags::TagSet;
 use serde_json::Value as JsonValue;
 use stringtheory::MetaString;
 
@@ -20,7 +20,7 @@ pub struct Log {
     /// Service associated with the log.
     service: MetaString,
     /// Tags of the log.
-    tags: SharedTagSet,
+    tags: TagSet,
     /// Additional properties of the log.
     additional_properties: HashMap<MetaString, JsonValue>,
 }
@@ -74,7 +74,7 @@ impl Log {
             source: None,
             hostname: MetaString::empty(),
             service: MetaString::empty(),
-            tags: SharedTagSet::default(),
+            tags: TagSet::default(),
             additional_properties: HashMap::new(),
         }
     }
@@ -104,8 +104,8 @@ impl Log {
     }
 
     /// Sets the tags string.
-    pub fn with_tags(mut self, tags: impl Into<Option<SharedTagSet>>) -> Self {
-        self.tags = tags.into().unwrap_or_else(SharedTagSet::default);
+    pub fn with_tags(mut self, tags: impl Into<Option<TagSet>>) -> Self {
+        self.tags = tags.into().unwrap_or_else(TagSet::default);
         self
     }
 
@@ -143,7 +143,7 @@ impl Log {
     }
 
     /// Returns the tags, if set.
-    pub fn tags(&self) -> &SharedTagSet {
+    pub fn tags(&self) -> &TagSet {
         &self.tags
     }
 

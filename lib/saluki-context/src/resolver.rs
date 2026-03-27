@@ -378,8 +378,8 @@ impl ContextResolver {
         Some(Context::from_inner(ContextInner::from_parts(
             key,
             context_name,
-            context_tags,
-            origin_tags,
+            context_tags.into(),
+            origin_tags.into(),
             self.telemetry.active_contexts().clone(),
         )))
     }
@@ -422,13 +422,15 @@ impl ContextResolver {
     /// This method is intended primarily to allow for resolving contexts in a consistent way while _reusing_ the origin
     /// tags from another context, such as when remapping the name and/or instrumented tags of a given metric, while
     /// maintaining its origin association.
-    pub fn resolve_with_origin_tags<N, I, T>(&mut self, name: N, tags: I, origin_tags: SharedTagSet) -> Option<Context>
+    pub fn resolve_with_origin_tags<N, I, T>(
+        &mut self, name: N, tags: I, origin_tags: impl Into<SharedTagSet>,
+    ) -> Option<Context>
     where
         N: AsRef<str> + CheapMetaString,
         I: IntoIterator<Item = T> + Clone,
         T: AsRef<str> + CheapMetaString,
     {
-        self.resolve_inner(name, tags, origin_tags)
+        self.resolve_inner(name, tags, origin_tags.into())
     }
 
     fn resolve_inner<N, I, T>(&mut self, name: N, tags: I, origin_tags: SharedTagSet) -> Option<Context>

@@ -1,16 +1,32 @@
-use std::fmt;
+use std::{fmt, hash};
 
 use saluki_common::collections::ContiguousBitSet;
+use serde::{ser::SerializeSeq as _, Serialize};
 use smallvec::SmallVec;
 
 use super::SharedTagSet;
 use crate::tags::Tag;
+
+/// Heap-allocated overlay for mutation state, only created when a `TagSet` is actually mutated.
+#[derive(Clone, Debug)]
+struct TagSetOverlay {
+    /// Tags added or used to replace base tags.
+    additions: SmallVec<[Tag; 4]>,
+    /// Bitset of flattened base indices that have been removed or shadowed.
+    removals: ContiguousBitSet,
+}
 
 /// A mutable set of tags, optionally backed by a [`SharedTagSet`] base.
 ///
 /// `TagSet` supports efficient mutation through an overlay approach: it wraps an immutable [`SharedTagSet`] base with a
 /// small set of additions and a bitset tracking which base tags have been removed. This avoids full materialization
 /// when only a few tags need to change.
+///
+/// # Memory layout
+///
+/// When no mutations have been made, `TagSet` is compact (base pointer + `None` overlay). The mutation state
+/// (additions and removals) is heap-allocated on demand only when `insert_tag`, `remove_tags`, or similar mutating
+/// methods are called.
 ///
 /// # Construction
 ///
@@ -27,11 +43,8 @@ use crate::tags::Tag;
 pub struct TagSet {
     /// Immutable base (structurally shared via Arc, never modified).
     base: SharedTagSet,
-    /// Tags added or used to replace base tags.
-    additions: SmallVec<[Tag; 4]>,
-    /// Bitset of flattened base indices that have been removed or shadowed.
-    /// Each bit corresponds to a tag position in the flattened base iteration order.
-    removals: ContiguousBitSet,
+    /// Lazily allocated mutation overlay. `None` when no mutations have been made.
+    overlay: Option<Box<TagSetOverlay>>,
 }
 
 impl TagSet {
@@ -39,19 +52,27 @@ impl TagSet {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             base: SharedTagSet::default(),
-            additions: SmallVec::with_capacity(capacity),
-            removals: ContiguousBitSet::new(),
+            overlay: Some(Box::new(TagSetOverlay {
+                additions: SmallVec::with_capacity(capacity),
+                removals: ContiguousBitSet::new(),
+            })),
         }
     }
 
     /// Returns `true` if the tag set is empty.
     pub fn is_empty(&self) -> bool {
-        self.additions.is_empty() && self.base_len_minus_removals() == 0
+        match &self.overlay {
+            None => self.base.is_empty(),
+            Some(overlay) => overlay.additions.is_empty() && self.base_len_minus_removals() == 0,
+        }
     }
 
     /// Returns the number of tags in the set.
     pub fn len(&self) -> usize {
-        self.base_len_minus_removals() + self.additions.len()
+        match &self.overlay {
+            None => self.base.len(),
+            Some(overlay) => self.base_len_minus_removals() + overlay.additions.len(),
+        }
     }
 
     /// Inserts a tag into the set.
@@ -66,18 +87,20 @@ impl TagSet {
         let tag = tag.into();
 
         // Check if the exact tag already exists in additions.
-        if self.additions.iter().any(|existing| existing == &tag) {
-            return;
+        if let Some(overlay) = &self.overlay {
+            if overlay.additions.iter().any(|existing| existing == &tag) {
+                return;
+            }
         }
 
         // Check if the exact tag exists in the base (and is not removed).
         let found_in_base = base_indexed_iter(&self.base)
-            .any(|(idx, base_tag)| !is_removed_in(&self.removals, idx) && base_tag == &tag);
+            .any(|(idx, base_tag)| !is_overlay_removed(&self.overlay, idx) && base_tag == &tag);
         if found_in_base {
             return;
         }
 
-        self.additions.push(tag);
+        self.ensure_overlay().additions.push(tag);
     }
 
     /// Removes all tags with the given name from the set.
@@ -91,26 +114,27 @@ impl TagSet {
         let mut removed = Vec::new();
 
         // Remove from additions.
-        let mut i = 0;
-        while i < self.additions.len() {
-            if self.additions[i].name() == tag_name {
-                removed.push(self.additions.remove(i));
-            } else {
-                i += 1;
+        if let Some(overlay) = &mut self.overlay {
+            let mut i = 0;
+            while i < overlay.additions.len() {
+                if overlay.additions[i].name() == tag_name {
+                    removed.push(overlay.additions.remove(i));
+                } else {
+                    i += 1;
+                }
             }
         }
 
-        // Mark matching base tags as removed: collect indices and tags first.
+        // Mark matching base tags as removed: collect indices first.
         let base_matches: SmallVec<[usize; 4]> = base_indexed_iter(&self.base)
-            .filter(|&(idx, base_tag)| !is_removed_in(&self.removals, idx) && base_tag.name() == tag_name)
+            .filter(|&(idx, base_tag)| !is_overlay_removed(&self.overlay, idx) && base_tag.name() == tag_name)
             .map(|(idx, _)| idx)
             .collect();
         for &idx in &base_matches {
-            // Clone the tag before we set the removal bit (base is immutable, so order doesn't matter).
             if let Some(tag) = self.base.get_by_flat_index(idx) {
                 removed.push(tag.clone());
             }
-            self.set_removed(idx);
+            self.ensure_overlay().removals.set(idx);
         }
 
         if removed.is_empty() {
@@ -130,13 +154,15 @@ impl TagSet {
         let tag = tag.as_ref();
 
         // Check additions first.
-        if self.additions.iter().any(|t| t.as_str() == tag) {
-            return true;
+        if let Some(overlay) = &self.overlay {
+            if overlay.additions.iter().any(|t| t.as_str() == tag) {
+                return true;
+            }
         }
 
         // Check base, skipping removed.
         for (idx, base_tag) in base_indexed_iter(&self.base) {
-            if !is_removed_in(&self.removals, idx) && base_tag.as_str() == tag {
+            if !is_overlay_removed(&self.overlay, idx) && base_tag.as_str() == tag {
                 return true;
             }
         }
@@ -156,13 +182,15 @@ impl TagSet {
         let tag_name = tag_name.as_ref();
 
         // Check additions first (they shadow base tags).
-        if let Some(tag) = self.additions.iter().find(|t| t.name() == tag_name) {
-            return Some(tag);
+        if let Some(overlay) = &self.overlay {
+            if let Some(tag) = overlay.additions.iter().find(|t| t.name() == tag_name) {
+                return Some(tag);
+            }
         }
 
         // Check base, skipping removed.
         for (idx, base_tag) in base_indexed_iter(&self.base) {
-            if !is_removed_in(&self.removals, idx) && base_tag.name() == tag_name {
+            if !is_overlay_removed(&self.overlay, idx) && base_tag.name() == tag_name {
                 return Some(base_tag);
             }
         }
@@ -178,15 +206,17 @@ impl TagSet {
         F: FnMut(&Tag) -> bool,
     {
         // Filter additions in-place.
-        self.additions.retain(|tag| f(tag));
+        if let Some(overlay) = &mut self.overlay {
+            overlay.additions.retain(|tag| f(tag));
+        }
 
         // Set removal bits for rejected base tags: collect indices first.
         let to_remove: SmallVec<[usize; 4]> = base_indexed_iter(&self.base)
-            .filter(|&(idx, base_tag)| !is_removed_in(&self.removals, idx) && !f(base_tag))
+            .filter(|&(idx, base_tag)| !is_overlay_removed(&self.overlay, idx) && !f(base_tag))
             .map(|(idx, _)| idx)
             .collect();
         for idx in to_remove {
-            self.set_removed(idx);
+            self.ensure_overlay().removals.set(idx);
         }
     }
 
@@ -206,9 +236,16 @@ impl TagSet {
         for tag in other {
             if !self.has_tag(tag.as_str()) {
                 // We know this tag doesn't exist, so we can push directly.
-                self.additions.push(tag.clone());
+                self.ensure_overlay().additions.push(tag.clone());
             }
         }
+    }
+
+    /// Merges the tags from a shared set into this set.
+    ///
+    /// This method does not attempt to avoid adding duplicate tags.
+    pub fn merge_shared(&mut self, other: &SharedTagSet) {
+        self.base.extend_from_shared(other);
     }
 
     /// Consumes this `TagSet` and returns a shared, read-only version of it.
@@ -216,7 +253,7 @@ impl TagSet {
     /// If no mutations have been made (no additions, no removals), the base `SharedTagSet` is
     /// returned as-is with zero cost.
     pub fn into_shared(self) -> SharedTagSet {
-        if !self.is_modified() {
+        if self.overlay.is_none() {
             return self.base;
         }
 
@@ -225,18 +262,36 @@ impl TagSet {
         SharedTagSet::from_tags(effective)
     }
 
-    /// Returns `true` if this `TagSet` has been modified from its base.
-    pub fn is_modified(&self) -> bool {
-        !self.additions.is_empty() || !self.removals.is_empty()
+    /// Returns the estimated size of the tag set, in bytes.
+    ///
+    /// This includes the size of the base `SharedTagSet`, additions, and removal tracking. The value returned is a rough
+    /// estimate and does not compensate for inlined, interned, or heap-allocated tags.
+    pub fn size_of(&self) -> usize {
+        let additions_size = self
+            .overlay
+            .as_ref()
+            .map_or(0, |o| o.additions.iter().map(|t| t.len()).sum::<usize>());
+        self.base.size_of() + additions_size
     }
 
-    fn set_removed(&mut self, index: usize) {
-        self.removals.set(index);
+    /// Returns `true` if this `TagSet` has been modified from its base.
+    pub fn is_modified(&self) -> bool {
+        self.overlay.is_some()
+    }
+
+    fn ensure_overlay(&mut self) -> &mut TagSetOverlay {
+        self.overlay.get_or_insert_with(|| {
+            Box::new(TagSetOverlay {
+                additions: SmallVec::new(),
+                removals: ContiguousBitSet::new(),
+            })
+        })
     }
 
     /// Returns the number of base tags minus the number of removed ones.
     fn base_len_minus_removals(&self) -> usize {
-        self.base.len() - self.removals.len()
+        let removal_count = self.overlay.as_ref().map_or(0, |o| o.removals.len());
+        self.base.len() - removal_count
     }
 }
 
@@ -256,19 +311,44 @@ impl PartialEq<TagSet> for TagSet {
     }
 }
 
+impl Eq for TagSet {}
+
+impl hash::Hash for TagSet {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+        for tag in self {
+            tag.hash(state);
+        }
+    }
+}
+
+impl Serialize for TagSet {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut seq = serializer.serialize_seq(Some(self.len()))?;
+        for tag in self {
+            seq.serialize_element(tag)?;
+        }
+        seq.end()
+    }
+}
+
 impl IntoIterator for TagSet {
     type Item = Tag;
     type IntoIter = TagSetIntoIter;
 
     fn into_iter(self) -> Self::IntoIter {
+        let (removals, additions) = match self.overlay {
+            Some(overlay) => (Some(overlay.removals), overlay.additions.into_iter()),
+            None => (None, SmallVec::new().into_iter()),
+        };
         TagSetIntoIter {
             base: self.base,
-            removals: self.removals,
-            // Flatten the base tag sets into a collected vec of (index, tag) pairs that aren't
-            // removed. We need to own the tags, so we clone from the Arc'd base.
+            removals,
             base_index: 0,
             base_phase_done: false,
-            additions: self.additions.into_iter(),
+            additions,
         }
     }
 }
@@ -276,7 +356,7 @@ impl IntoIterator for TagSet {
 /// Owned iterator over a `TagSet`.
 pub struct TagSetIntoIter {
     base: SharedTagSet,
-    removals: ContiguousBitSet,
+    removals: Option<ContiguousBitSet>,
     base_index: usize,
     base_phase_done: bool,
     additions: smallvec::IntoIter<[Tag; 4]>,
@@ -292,7 +372,8 @@ impl Iterator for TagSetIntoIter {
                 let idx = self.base_index;
                 if let Some(tag) = self.base.get_by_flat_index(idx) {
                     self.base_index += 1;
-                    if !self.removals.is_set(idx) {
+                    let removed = self.removals.as_ref().is_some_and(|r| r.is_set(idx));
+                    if !removed {
                         return Some(tag.clone());
                     }
                 } else {
@@ -315,8 +396,8 @@ impl<'a> IntoIterator for &'a TagSet {
         TagSetIter {
             base_iter: self.base.into_iter(),
             base_index: 0,
-            removals: &self.removals,
-            additions_iter: self.additions.iter(),
+            overlay: self.overlay.as_deref(),
+            additions_iter: self.overlay.as_ref().map_or([].iter(), |o| o.additions.iter()),
             base_phase_done: false,
         }
     }
@@ -326,7 +407,7 @@ impl<'a> IntoIterator for &'a TagSet {
 pub struct TagSetIter<'a> {
     base_iter: super::SharedTagSetIterator<'a>,
     base_index: usize,
-    removals: &'a ContiguousBitSet,
+    overlay: Option<&'a TagSetOverlay>,
     additions_iter: std::slice::Iter<'a, Tag>,
     base_phase_done: bool,
 }
@@ -341,7 +422,8 @@ impl<'a> Iterator for TagSetIter<'a> {
                 if let Some(tag) = self.base_iter.next() {
                     let idx = self.base_index;
                     self.base_index += 1;
-                    if !self.removals.is_set(idx) {
+                    let removed = self.overlay.is_some_and(|o| o.removals.is_set(idx));
+                    if !removed {
                         return Some(tag);
                     }
                 } else {
@@ -358,17 +440,27 @@ impl<'a> Iterator for TagSetIter<'a> {
 
 impl FromIterator<Tag> for TagSet {
     fn from_iter<I: IntoIterator<Item = Tag>>(iter: I) -> Self {
-        Self {
-            base: SharedTagSet::default(),
-            additions: iter.into_iter().collect(),
-            removals: ContiguousBitSet::new(),
+        let additions: SmallVec<[Tag; 4]> = iter.into_iter().collect();
+        if additions.is_empty() {
+            Self {
+                base: SharedTagSet::default(),
+                overlay: None,
+            }
+        } else {
+            Self {
+                base: SharedTagSet::default(),
+                overlay: Some(Box::new(TagSetOverlay {
+                    additions,
+                    removals: ContiguousBitSet::new(),
+                })),
+            }
         }
     }
 }
 
 impl Extend<Tag> for TagSet {
     fn extend<T: IntoIterator<Item = Tag>>(&mut self, iter: T) {
-        self.additions.extend(iter)
+        self.ensure_overlay().additions.extend(iter)
     }
 }
 
@@ -378,8 +470,10 @@ impl From<Tag> for TagSet {
         additions.push(tag);
         Self {
             base: SharedTagSet::default(),
-            additions,
-            removals: ContiguousBitSet::new(),
+            overlay: Some(Box::new(TagSetOverlay {
+                additions,
+                removals: ContiguousBitSet::new(),
+            })),
         }
     }
 }
@@ -388,8 +482,7 @@ impl From<SharedTagSet> for TagSet {
     fn from(shared: SharedTagSet) -> Self {
         Self {
             base: shared,
-            additions: SmallVec::new(),
-            removals: ContiguousBitSet::new(),
+            overlay: None,
         }
     }
 }
@@ -419,9 +512,9 @@ fn base_indexed_iter(base: &SharedTagSet) -> BaseIndexIter<'_> {
     }
 }
 
-/// Checks if a given flattened index is marked as removed in the bitset.
-fn is_removed_in(removals: &ContiguousBitSet, index: usize) -> bool {
-    removals.is_set(index)
+/// Checks if a given flattened index is marked as removed in the overlay's bitset.
+fn is_overlay_removed(overlay: &Option<Box<TagSetOverlay>>, index: usize) -> bool {
+    overlay.as_ref().is_some_and(|o| o.removals.is_set(index))
 }
 
 /// Helper iterator that pairs base tags with their flattened index.
@@ -466,6 +559,13 @@ mod tests {
         let mut tags: Vec<String> = ts.into_iter().map(|t| t.as_str().to_string()).collect();
         tags.sort();
         tags
+    }
+
+    // --- Size ---
+
+    #[test]
+    fn tagset_size_is_compact() {
+        assert_eq!(std::mem::size_of::<TagSet>(), 32);
     }
 
     // --- Construction ---
