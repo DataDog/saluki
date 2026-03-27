@@ -523,10 +523,18 @@ impl Runner {
         self.pending_probes.insert(component_id, duration);
     }
 
-    fn schedule_all_existing_components(&mut self) {
+    fn schedule_all_existing_components(&mut self, responses_rx: &mut mpsc::Receiver<LivenessResponse>) {
         // First, drain any pending components to avoid scheduling them twice.
         // This handles the case where components were registered before the runner started.
         let _pending = self.drain_pending_components();
+
+        // Drain any queued probe responses from the previous runner. These responses were sent by
+        // components before the runner shut down but weren't processed. Processing them now updates
+        // `last_response` timestamps, which affects the staleness check below — a response that
+        // arrived just before shutdown should count as fresh.
+        while let Ok(response) = responses_rx.try_recv() {
+            self.handle_component_probe_response(response);
+        }
 
         // Determine which components have stale probe results. Components whose last response is
         // within the probe timeout are considered fresh and their health state is preserved,
@@ -634,7 +642,7 @@ impl Runner {
         // Schedule probes for all existing components. This allows the runner to "pick up where it
         // left off" after a restart - any components that were registered before the runner was
         // restarted will be immediately probed.
-        self.schedule_all_existing_components();
+        self.schedule_all_existing_components(&mut responses_rx);
 
         // Pin the shutdown future so we can poll it in the select loop.
         let mut shutdown = std::pin::pin!(shutdown);
