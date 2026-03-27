@@ -3647,6 +3647,7 @@ dependencies = [
  "smallvec",
  "snafu",
  "stringtheory",
+ "tachyonix",
  "test-strategy",
  "tokio",
  "tonic",

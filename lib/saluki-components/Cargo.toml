@@ -80,4 +80,5 @@ url = { workspace = true }
 [dev-dependencies]
 proptest = { workspace = true }
 saluki-metrics = { workspace = true, features = ["test"] }
+tachyonix = { workspace = true }
 test-strategy = { workspace = true }

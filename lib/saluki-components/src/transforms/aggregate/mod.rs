@@ -813,7 +813,6 @@ mod tests {
         topology::{interconnect::Dispatcher, ComponentId, OutputName},
     };
     use saluki_metrics::test::TestRecorder;
-    use tokio::sync::mpsc;
 
     use super::config::HistogramStatistic;
     use super::*;
@@ -839,7 +838,7 @@ mod tests {
     }
 
     struct DispatcherReceiver {
-        receiver: mpsc::Receiver<EventsBuffer>,
+        receiver: tachyonix::Receiver<EventsBuffer>,
     }
 
     impl DispatcherReceiver {
@@ -864,7 +863,7 @@ mod tests {
         let component_id = ComponentId::try_from("test").expect("should not fail to create component ID");
         let mut dispatcher = Dispatcher::new(ComponentContext::transform(component_id));
 
-        let (buffer_tx, buffer_rx) = mpsc::channel(1);
+        let (buffer_tx, buffer_rx) = tachyonix::channel(1);
         dispatcher.add_output(OutputName::Default).unwrap();
         dispatcher
             .attach_sender_to_output(&OutputName::Default, buffer_tx)
