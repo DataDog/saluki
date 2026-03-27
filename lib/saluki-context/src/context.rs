@@ -115,6 +115,35 @@ impl Context {
         &self.inner.origin_tags
     }
 
+    /// Mutates the instrumented tags of this context via a closure.
+    ///
+    /// Uses copy-on-write semantics: if this context shares its inner data with other clones, the
+    /// inner data is cloned first so that mutations do not affect other holders. If this context is
+    /// the sole owner, the mutation happens in place.
+    ///
+    /// The context key is automatically recomputed after the closure returns.
+    pub fn with_tags_mut(&mut self, f: impl FnOnce(&mut TagSet)) {
+        self.mutate_inner(|inner| f(&mut inner.tags));
+    }
+
+    /// Mutates the origin tags of this context via a closure.
+    ///
+    /// Uses copy-on-write semantics: if this context shares its inner data with other clones, the
+    /// inner data is cloned first so that mutations do not affect other holders. If this context is
+    /// the sole owner, the mutation happens in place.
+    ///
+    /// The context key is automatically recomputed after the closure returns.
+    pub fn with_origin_tags_mut(&mut self, f: impl FnOnce(&mut TagSet)) {
+        self.mutate_inner(|inner| f(&mut inner.origin_tags));
+    }
+
+    fn mutate_inner(&mut self, f: impl FnOnce(&mut ContextInner)) {
+        let inner = Arc::make_mut(&mut self.inner);
+        f(inner);
+        let (key, _) = hash_context(&inner.name, &inner.tags, &inner.origin_tags);
+        inner.key = key;
+    }
+
     /// Returns the size of this context in bytes.
     ///
     /// A context's size is the sum of the sizes of its fields and the size of the `Context` struct itself, and
@@ -324,5 +353,73 @@ mod tests {
             context.size_of(),
             BASE_CONTEXT_SIZE + SIZE_OF_CONTEXT_NAME.len() + tags.size_of() + origin_tags.size_of()
         );
+    }
+
+    #[test]
+    fn with_tags_mut_clones_shared_context() {
+        let original = Context::from_static_parts("metric", &["env:prod"]);
+        let mut mutated = original.clone();
+
+        // They share the same Arc before mutation.
+        assert!(original.ptr_eq(&mutated));
+
+        mutated.with_tags_mut(|tags| {
+            tags.insert_tag(Tag::from("service:web"));
+        });
+
+        // After mutation, they no longer share the same inner.
+        assert!(!original.ptr_eq(&mutated));
+    }
+
+    #[test]
+    fn with_tags_mut_does_not_affect_original() {
+        let original = Context::from_static_parts("metric", &["env:prod"]);
+        let mut mutated = original.clone();
+
+        mutated.with_tags_mut(|tags| {
+            tags.insert_tag(Tag::from("service:web"));
+        });
+
+        // Original is unchanged.
+        assert_eq!(original.tags().len(), 1);
+        assert!(original.tags().has_tag("env:prod"));
+        assert!(!original.tags().has_tag("service:web"));
+
+        // Mutated has both tags.
+        assert_eq!(mutated.tags().len(), 2);
+        assert!(mutated.tags().has_tag("env:prod"));
+        assert!(mutated.tags().has_tag("service:web"));
+    }
+
+    #[test]
+    fn with_tags_mut_rehashes() {
+        // Build a context and mutate it to add a tag.
+        let mut mutated = Context::from_static_parts("metric", &["env:prod"]);
+        mutated.with_tags_mut(|tags| {
+            tags.insert_tag(Tag::from("service:web"));
+        });
+
+        // Build an equivalent context from scratch with both tags.
+        let expected = Context::from_static_parts("metric", &["env:prod", "service:web"]);
+
+        // The recomputed key should match a freshly-constructed context with the same state.
+        assert_eq!(mutated, expected);
+    }
+
+    #[test]
+    fn with_origin_tags_mut_clones_shared_context() {
+        let original = Context::from_static_name("metric");
+        let mut mutated = original.clone();
+
+        assert!(original.ptr_eq(&mutated));
+
+        mutated.with_origin_tags_mut(|tags| {
+            tags.insert_tag(Tag::from("origin:tag"));
+        });
+
+        assert!(!original.ptr_eq(&mutated));
+        assert!(original.origin_tags().is_empty());
+        assert_eq!(mutated.origin_tags().len(), 1);
+        assert!(mutated.origin_tags().has_tag("origin:tag"));
     }
 }
