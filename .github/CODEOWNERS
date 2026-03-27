@@ -1,5 +1,5 @@
-# Agent Metric Pipelines has default ownership over everything.
-* @DataDog/agent-metric-pipelines
+# Agent Data Plane has default ownership over everything.
+* @DataDog/agent-data-plane
 
 # We publish public standalone ADP container images based on CI triggered through this repository,
 # and the code ownership arrangement is to ensure that Agent Delivery has a stake in the configuration
