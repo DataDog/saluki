@@ -9,7 +9,7 @@
 <a href=#9 id=9 data-nosnippet>9</a><span class="kw">use </span>memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 <a href=#10 id=10 data-nosnippet>10</a><span class="kw">use </span>saluki_config::GenericConfiguration;
 <a href=#11 id=11 data-nosnippet>11</a><span class="kw">use </span>saluki_context::{
-<a href=#12 id=12 data-nosnippet>12</a>    tags::{SharedTagSet, Tag},
+<a href=#12 id=12 data-nosnippet>12</a>    tags::{SharedTagSet, Tag, TagSet},
 <a href=#13 id=13 data-nosnippet>13</a>    ContextResolver, ContextResolverBuilder,
 <a href=#14 id=14 data-nosnippet>14</a>};
 <a href=#15 id=15 data-nosnippet>15</a><span class="kw">use </span>saluki_core::{components::transforms::<span class="kw-2">*</span>, topology::EventsBuffer};
@@ -116,68 +116,75 @@
 <a href=#116 id=116 data-nosnippet>116</a>            <span class="kw">_ </span>=&gt; <span class="kw">return</span>,
 <a href=#117 id=117 data-nosnippet>117</a>        };
 <a href=#118 id=118 data-nosnippet>118</a>
-<a href=#119 id=119 data-nosnippet>119</a>        <span class="kw">let </span>tags = metric.context().tags().into_iter().chain(host_tags);
-<a href=#120 id=120 data-nosnippet>120</a>        <span class="kw">let </span>origin_tags = metric.context().origin_tags().clone();
-<a href=#121 id=121 data-nosnippet>121</a>
-<a href=#122 id=122 data-nosnippet>122</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(context) = resolver.resolve_with_origin_tags(metric.context().name(), tags, origin_tags) {
-<a href=#123 id=123 data-nosnippet>123</a>            <span class="kw-2">*</span>metric.context_mut() = context;
-<a href=#124 id=124 data-nosnippet>124</a>        }
-<a href=#125 id=125 data-nosnippet>125</a>    }
-<a href=#126 id=126 data-nosnippet>126</a>}
-<a href=#127 id=127 data-nosnippet>127</a>
-<a href=#128 id=128 data-nosnippet>128</a><span class="kw">impl </span>SynchronousTransform <span class="kw">for </span>HostTagsEnrichment {
-<a href=#129 id=129 data-nosnippet>129</a>    <span class="kw">fn </span>transform_buffer(<span class="kw-2">&amp;mut </span><span class="self">self</span>, event_buffer: <span class="kw-2">&amp;mut </span>EventsBuffer) {
-<a href=#130 id=130 data-nosnippet>130</a>        <span class="comment">// Skip adding host tags if duration has elapsed.
-<a href=#131 id=131 data-nosnippet>131</a>        </span><span class="kw">if </span><span class="self">self</span>.start.elapsed() &gt;= <span class="self">self</span>.expected_tags_duration {
-<a href=#132 id=132 data-nosnippet>132</a>            <span class="self">self</span>.context_resolver = <span class="prelude-val">None</span>;
-<a href=#133 id=133 data-nosnippet>133</a>            <span class="self">self</span>.host_tags = <span class="prelude-val">None</span>;
-<a href=#134 id=134 data-nosnippet>134</a>            <span class="kw">return</span>;
-<a href=#135 id=135 data-nosnippet>135</a>        }
-<a href=#136 id=136 data-nosnippet>136</a>
-<a href=#137 id=137 data-nosnippet>137</a>        <span class="kw">for </span>event <span class="kw">in </span>event_buffer {
-<a href=#138 id=138 data-nosnippet>138</a>            <span class="kw">if let </span><span class="prelude-val">Some</span>(metric) = event.try_as_metric_mut() {
-<a href=#139 id=139 data-nosnippet>139</a>                <span class="self">self</span>.enrich_metric(metric);
-<a href=#140 id=140 data-nosnippet>140</a>            }
-<a href=#141 id=141 data-nosnippet>141</a>        }
-<a href=#142 id=142 data-nosnippet>142</a>    }
-<a href=#143 id=143 data-nosnippet>143</a>}
-<a href=#144 id=144 data-nosnippet>144</a>
-<a href=#145 id=145 data-nosnippet>145</a><span class="attr">#[cfg(test)]
-<a href=#146 id=146 data-nosnippet>146</a></span><span class="kw">mod </span>tests {
-<a href=#147 id=147 data-nosnippet>147</a>    <span class="kw">use </span>std::time::{Duration, Instant};
-<a href=#148 id=148 data-nosnippet>148</a>
-<a href=#149 id=149 data-nosnippet>149</a>    <span class="kw">use </span>saluki_context::{Context, ContextResolverBuilder};
-<a href=#150 id=150 data-nosnippet>150</a>    <span class="kw">use </span>saluki_core::data_model::event::metric::Metric;
+<a href=#119 id=119 data-nosnippet>119</a>        <span class="comment">// TODO: use mutable tagsets to chain host tags on existing metric tags instead of allocating
+<a href=#120 id=120 data-nosnippet>120</a>        </span><span class="kw">let </span>tags = metric
+<a href=#121 id=121 data-nosnippet>121</a>            .context()
+<a href=#122 id=122 data-nosnippet>122</a>            .tags()
+<a href=#123 id=123 data-nosnippet>123</a>            .into_iter()
+<a href=#124 id=124 data-nosnippet>124</a>            .chain(host_tags)
+<a href=#125 id=125 data-nosnippet>125</a>            .cloned()
+<a href=#126 id=126 data-nosnippet>126</a>            .collect::&lt;TagSet&gt;();
+<a href=#127 id=127 data-nosnippet>127</a>        <span class="kw">let </span>origin_tags = metric.context().origin_tags().clone();
+<a href=#128 id=128 data-nosnippet>128</a>
+<a href=#129 id=129 data-nosnippet>129</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(context) = resolver.resolve_with_origin_tags(metric.context().name(), tags, origin_tags) {
+<a href=#130 id=130 data-nosnippet>130</a>            <span class="kw-2">*</span>metric.context_mut() = context;
+<a href=#131 id=131 data-nosnippet>131</a>        }
+<a href=#132 id=132 data-nosnippet>132</a>    }
+<a href=#133 id=133 data-nosnippet>133</a>}
+<a href=#134 id=134 data-nosnippet>134</a>
+<a href=#135 id=135 data-nosnippet>135</a><span class="kw">impl </span>SynchronousTransform <span class="kw">for </span>HostTagsEnrichment {
+<a href=#136 id=136 data-nosnippet>136</a>    <span class="kw">fn </span>transform_buffer(<span class="kw-2">&amp;mut </span><span class="self">self</span>, event_buffer: <span class="kw-2">&amp;mut </span>EventsBuffer) {
+<a href=#137 id=137 data-nosnippet>137</a>        <span class="comment">// Skip adding host tags if duration has elapsed.
+<a href=#138 id=138 data-nosnippet>138</a>        </span><span class="kw">if </span><span class="self">self</span>.start.elapsed() &gt;= <span class="self">self</span>.expected_tags_duration {
+<a href=#139 id=139 data-nosnippet>139</a>            <span class="self">self</span>.context_resolver = <span class="prelude-val">None</span>;
+<a href=#140 id=140 data-nosnippet>140</a>            <span class="self">self</span>.host_tags = <span class="prelude-val">None</span>;
+<a href=#141 id=141 data-nosnippet>141</a>            <span class="kw">return</span>;
+<a href=#142 id=142 data-nosnippet>142</a>        }
+<a href=#143 id=143 data-nosnippet>143</a>
+<a href=#144 id=144 data-nosnippet>144</a>        <span class="kw">for </span>event <span class="kw">in </span>event_buffer {
+<a href=#145 id=145 data-nosnippet>145</a>            <span class="kw">if let </span><span class="prelude-val">Some</span>(metric) = event.try_as_metric_mut() {
+<a href=#146 id=146 data-nosnippet>146</a>                <span class="self">self</span>.enrich_metric(metric);
+<a href=#147 id=147 data-nosnippet>147</a>            }
+<a href=#148 id=148 data-nosnippet>148</a>        }
+<a href=#149 id=149 data-nosnippet>149</a>    }
+<a href=#150 id=150 data-nosnippet>150</a>}
 <a href=#151 id=151 data-nosnippet>151</a>
-<a href=#152 id=152 data-nosnippet>152</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
-<a href=#153 id=153 data-nosnippet>153</a>
-<a href=#154 id=154 data-nosnippet>154</a>    <span class="attr">#[test]
-<a href=#155 id=155 data-nosnippet>155</a>    </span><span class="kw">fn </span>basic() {
-<a href=#156 id=156 data-nosnippet>156</a>        <span class="kw">let </span>context_resolver = ContextResolverBuilder::for_tests().build();
-<a href=#157 id=157 data-nosnippet>157</a>        <span class="kw">let </span>host_tags = SharedTagSet::from_iter(<span class="macro">vec!</span>[Tag::from(<span class="string">"hosttag1"</span>), Tag::from(<span class="string">"hosttag2"</span>)]);
-<a href=#158 id=158 data-nosnippet>158</a>        <span class="kw">let </span><span class="kw-2">mut </span>host_tags_enrichment = HostTagsEnrichment {
-<a href=#159 id=159 data-nosnippet>159</a>            start: Instant::now(),
-<a href=#160 id=160 data-nosnippet>160</a>            context_resolver: <span class="prelude-val">Some</span>(context_resolver),
-<a href=#161 id=161 data-nosnippet>161</a>            expected_tags_duration: Duration::from_secs(<span class="number">30</span>),
-<a href=#162 id=162 data-nosnippet>162</a>            host_tags: <span class="prelude-val">Some</span>(host_tags.clone()),
-<a href=#163 id=163 data-nosnippet>163</a>        };
-<a href=#164 id=164 data-nosnippet>164</a>
-<a href=#165 id=165 data-nosnippet>165</a>        <span class="comment">// Enrich a metric, and ensure the host tags are added.
-<a href=#166 id=166 data-nosnippet>166</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>metric1 = Metric::gauge(Context::from_static_parts(<span class="string">"test"</span>, <span class="kw-2">&amp;</span>[]), <span class="number">1.0</span>);
-<a href=#167 id=167 data-nosnippet>167</a>        host_tags_enrichment.enrich_metric(<span class="kw-2">&amp;mut </span>metric1);
-<a href=#168 id=168 data-nosnippet>168</a>        <span class="macro">assert_eq!</span>(metric1.context().tags().len(), host_tags.len());
-<a href=#169 id=169 data-nosnippet>169</a>        <span class="kw">for </span>tag <span class="kw">in </span><span class="kw-2">&amp;</span>host_tags {
-<a href=#170 id=170 data-nosnippet>170</a>            <span class="macro">assert!</span>(metric1.context().tags().has_tag(tag));
-<a href=#171 id=171 data-nosnippet>171</a>        }
-<a href=#172 id=172 data-nosnippet>172</a>
-<a href=#173 id=173 data-nosnippet>173</a>        <span class="comment">// Simulate exceeding our configured enrichment duration by clearing the context resolver and host tags.
-<a href=#174 id=174 data-nosnippet>174</a>        </span>host_tags_enrichment.context_resolver = <span class="prelude-val">None</span>;
-<a href=#175 id=175 data-nosnippet>175</a>        host_tags_enrichment.host_tags = <span class="prelude-val">None</span>;
-<a href=#176 id=176 data-nosnippet>176</a>
-<a href=#177 id=177 data-nosnippet>177</a>        <span class="comment">// We should no longer enrich the metric with host tags.
-<a href=#178 id=178 data-nosnippet>178</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>metric2 = Metric::gauge(Context::from_static_parts(<span class="string">"test"</span>, <span class="kw-2">&amp;</span>[]), <span class="number">1.0</span>);
-<a href=#179 id=179 data-nosnippet>179</a>        host_tags_enrichment.enrich_metric(<span class="kw-2">&amp;mut </span>metric2);
-<a href=#180 id=180 data-nosnippet>180</a>        <span class="macro">assert_eq!</span>(metric2.context().tags().len(), <span class="number">0</span>);
-<a href=#181 id=181 data-nosnippet>181</a>    }
-<a href=#182 id=182 data-nosnippet>182</a>}
+<a href=#152 id=152 data-nosnippet>152</a><span class="attr">#[cfg(test)]
+<a href=#153 id=153 data-nosnippet>153</a></span><span class="kw">mod </span>tests {
+<a href=#154 id=154 data-nosnippet>154</a>    <span class="kw">use </span>std::time::{Duration, Instant};
+<a href=#155 id=155 data-nosnippet>155</a>
+<a href=#156 id=156 data-nosnippet>156</a>    <span class="kw">use </span>saluki_context::{Context, ContextResolverBuilder};
+<a href=#157 id=157 data-nosnippet>157</a>    <span class="kw">use </span>saluki_core::data_model::event::metric::Metric;
+<a href=#158 id=158 data-nosnippet>158</a>
+<a href=#159 id=159 data-nosnippet>159</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
+<a href=#160 id=160 data-nosnippet>160</a>
+<a href=#161 id=161 data-nosnippet>161</a>    <span class="attr">#[test]
+<a href=#162 id=162 data-nosnippet>162</a>    </span><span class="kw">fn </span>basic() {
+<a href=#163 id=163 data-nosnippet>163</a>        <span class="kw">let </span>context_resolver = ContextResolverBuilder::for_tests().build();
+<a href=#164 id=164 data-nosnippet>164</a>        <span class="kw">let </span>host_tags = SharedTagSet::from_iter(<span class="macro">vec!</span>[Tag::from(<span class="string">"hosttag1"</span>), Tag::from(<span class="string">"hosttag2"</span>)]);
+<a href=#165 id=165 data-nosnippet>165</a>        <span class="kw">let </span><span class="kw-2">mut </span>host_tags_enrichment = HostTagsEnrichment {
+<a href=#166 id=166 data-nosnippet>166</a>            start: Instant::now(),
+<a href=#167 id=167 data-nosnippet>167</a>            context_resolver: <span class="prelude-val">Some</span>(context_resolver),
+<a href=#168 id=168 data-nosnippet>168</a>            expected_tags_duration: Duration::from_secs(<span class="number">30</span>),
+<a href=#169 id=169 data-nosnippet>169</a>            host_tags: <span class="prelude-val">Some</span>(host_tags.clone()),
+<a href=#170 id=170 data-nosnippet>170</a>        };
+<a href=#171 id=171 data-nosnippet>171</a>
+<a href=#172 id=172 data-nosnippet>172</a>        <span class="comment">// Enrich a metric, and ensure the host tags are added.
+<a href=#173 id=173 data-nosnippet>173</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>metric1 = Metric::gauge(Context::from_static_parts(<span class="string">"test"</span>, <span class="kw-2">&amp;</span>[]), <span class="number">1.0</span>);
+<a href=#174 id=174 data-nosnippet>174</a>        host_tags_enrichment.enrich_metric(<span class="kw-2">&amp;mut </span>metric1);
+<a href=#175 id=175 data-nosnippet>175</a>        <span class="macro">assert_eq!</span>(metric1.context().tags().len(), host_tags.len());
+<a href=#176 id=176 data-nosnippet>176</a>        <span class="kw">for </span>tag <span class="kw">in </span><span class="kw-2">&amp;</span>host_tags {
+<a href=#177 id=177 data-nosnippet>177</a>            <span class="macro">assert!</span>(metric1.context().tags().has_tag(tag));
+<a href=#178 id=178 data-nosnippet>178</a>        }
+<a href=#179 id=179 data-nosnippet>179</a>
+<a href=#180 id=180 data-nosnippet>180</a>        <span class="comment">// Simulate exceeding our configured enrichment duration by clearing the context resolver and host tags.
+<a href=#181 id=181 data-nosnippet>181</a>        </span>host_tags_enrichment.context_resolver = <span class="prelude-val">None</span>;
+<a href=#182 id=182 data-nosnippet>182</a>        host_tags_enrichment.host_tags = <span class="prelude-val">None</span>;
+<a href=#183 id=183 data-nosnippet>183</a>
+<a href=#184 id=184 data-nosnippet>184</a>        <span class="comment">// We should no longer enrich the metric with host tags.
+<a href=#185 id=185 data-nosnippet>185</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>metric2 = Metric::gauge(Context::from_static_parts(<span class="string">"test"</span>, <span class="kw-2">&amp;</span>[]), <span class="number">1.0</span>);
+<a href=#186 id=186 data-nosnippet>186</a>        host_tags_enrichment.enrich_metric(<span class="kw-2">&amp;mut </span>metric2);
+<a href=#187 id=187 data-nosnippet>187</a>        <span class="macro">assert_eq!</span>(metric2.context().tags().len(), <span class="number">0</span>);
+<a href=#188 id=188 data-nosnippet>188</a>    }
+<a href=#189 id=189 data-nosnippet>189</a>}
 </code></pre></div></section></main></body></html>

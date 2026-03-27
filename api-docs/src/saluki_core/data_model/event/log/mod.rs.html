@@ -2,7 +2,7 @@
 <a href=#2 id=2 data-nosnippet>2</a>
 <a href=#3 id=3 data-nosnippet>3</a></span><span class="kw">use </span>std::collections::HashMap;
 <a href=#4 id=4 data-nosnippet>4</a>
-<a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>saluki_context::tags::SharedTagSet;
+<a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>saluki_context::tags::TagSet;
 <a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span>serde_json::Value <span class="kw">as </span>JsonValue;
 <a href=#7 id=7 data-nosnippet>7</a><span class="kw">use </span>stringtheory::MetaString;
 <a href=#8 id=8 data-nosnippet>8</a>
@@ -20,7 +20,7 @@
 <a href=#20 id=20 data-nosnippet>20</a>    <span class="doccomment">/// Service associated with the log.
 <a href=#21 id=21 data-nosnippet>21</a>    </span>service: MetaString,
 <a href=#22 id=22 data-nosnippet>22</a>    <span class="doccomment">/// Tags of the log.
-<a href=#23 id=23 data-nosnippet>23</a>    </span>tags: SharedTagSet,
+<a href=#23 id=23 data-nosnippet>23</a>    </span>tags: TagSet,
 <a href=#24 id=24 data-nosnippet>24</a>    <span class="doccomment">/// Additional properties of the log.
 <a href=#25 id=25 data-nosnippet>25</a>    </span>additional_properties: HashMap&lt;MetaString, JsonValue&gt;,
 <a href=#26 id=26 data-nosnippet>26</a>}
@@ -74,7 +74,7 @@
 <a href=#74 id=74 data-nosnippet>74</a>            source: <span class="prelude-val">None</span>,
 <a href=#75 id=75 data-nosnippet>75</a>            hostname: MetaString::empty(),
 <a href=#76 id=76 data-nosnippet>76</a>            service: MetaString::empty(),
-<a href=#77 id=77 data-nosnippet>77</a>            tags: SharedTagSet::default(),
+<a href=#77 id=77 data-nosnippet>77</a>            tags: TagSet::default(),
 <a href=#78 id=78 data-nosnippet>78</a>            additional_properties: HashMap::new(),
 <a href=#79 id=79 data-nosnippet>79</a>        }
 <a href=#80 id=80 data-nosnippet>80</a>    }
@@ -104,8 +104,8 @@
 <a href=#104 id=104 data-nosnippet>104</a>    </span>}
 <a href=#105 id=105 data-nosnippet>105</a>
 <a href=#106 id=106 data-nosnippet>106</a>    <span class="doccomment">/// Sets the tags string.
-<a href=#107 id=107 data-nosnippet>107</a>    </span><span class="kw">pub fn </span>with_tags(<span class="kw-2">mut </span><span class="self">self</span>, tags: <span class="kw">impl </span>Into&lt;<span class="prelude-ty">Option</span>&lt;SharedTagSet&gt;&gt;) -&gt; <span class="self">Self </span>{
-<a href=#108 id=108 data-nosnippet>108</a>        <span class="self">self</span>.tags = tags.into().unwrap_or_else(SharedTagSet::default);
+<a href=#107 id=107 data-nosnippet>107</a>    </span><span class="kw">pub fn </span>with_tags(<span class="kw-2">mut </span><span class="self">self</span>, tags: <span class="kw">impl </span>Into&lt;<span class="prelude-ty">Option</span>&lt;TagSet&gt;&gt;) -&gt; <span class="self">Self </span>{
+<a href=#108 id=108 data-nosnippet>108</a>        <span class="self">self</span>.tags = tags.into().unwrap_or_else(TagSet::default);
 <a href=#109 id=109 data-nosnippet>109</a>        <span class="self">self
 <a href=#110 id=110 data-nosnippet>110</a>    </span>}
 <a href=#111 id=111 data-nosnippet>111</a>
@@ -143,7 +143,7 @@
 <a href=#143 id=143 data-nosnippet>143</a>    }
 <a href=#144 id=144 data-nosnippet>144</a>
 <a href=#145 id=145 data-nosnippet>145</a>    <span class="doccomment">/// Returns the tags, if set.
-<a href=#146 id=146 data-nosnippet>146</a>    </span><span class="kw">pub fn </span>tags(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>SharedTagSet {
+<a href=#146 id=146 data-nosnippet>146</a>    </span><span class="kw">pub fn </span>tags(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>TagSet {
 <a href=#147 id=147 data-nosnippet>147</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.tags
 <a href=#148 id=148 data-nosnippet>148</a>    }
 <a href=#149 id=149 data-nosnippet>149</a>

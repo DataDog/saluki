@@ -6,7 +6,7 @@
 <a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span>otlp_protos::opentelemetry::proto::common::v1 <span class="kw">as </span>otlp_common;
 <a href=#7 id=7 data-nosnippet>7</a><span class="kw">use </span>otlp_protos::opentelemetry::proto::logs::v1::LogRecord;
 <a href=#8 id=8 data-nosnippet>8</a><span class="kw">use </span>otlp_protos::opentelemetry::proto::resource::v1::Resource;
-<a href=#9 id=9 data-nosnippet>9</a><span class="kw">use </span>saluki_context::tags::{SharedTagSet, TagSet};
+<a href=#9 id=9 data-nosnippet>9</a><span class="kw">use </span>saluki_context::tags::TagSet;
 <a href=#10 id=10 data-nosnippet>10</a><span class="kw">use </span>saluki_core::data_model::event::log::{Log, LogStatus};
 <a href=#11 id=11 data-nosnippet>11</a><span class="kw">use </span>serde_json::Value <span class="kw">as </span>JsonValue;
 <a href=#12 id=12 data-nosnippet>12</a><span class="kw">use </span>stringtheory::MetaString;
@@ -196,7 +196,7 @@
 <a href=#196 id=196 data-nosnippet>196</a>
 <a href=#197 id=197 data-nosnippet>197</a><span class="kw">pub fn </span>transform_log_record(
 <a href=#198 id=198 data-nosnippet>198</a>    <span class="kw-2">mut </span>lr: LogRecord, resource: <span class="kw-2">&amp;</span>Resource, scope: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>otlp_common::InstrumentationScope&gt;,
-<a href=#199 id=199 data-nosnippet>199</a>    record_host: <span class="prelude-ty">Option</span>&lt;MetaString&gt;, record_service: <span class="prelude-ty">Option</span>&lt;MetaString&gt;, <span class="kw-2">mut </span>tags: SharedTagSet,
+<a href=#199 id=199 data-nosnippet>199</a>    record_host: <span class="prelude-ty">Option</span>&lt;MetaString&gt;, record_service: <span class="prelude-ty">Option</span>&lt;MetaString&gt;, <span class="kw-2">mut </span>tags: TagSet,
 <a href=#200 id=200 data-nosnippet>200</a>) -&gt; Log {
 <a href=#201 id=201 data-nosnippet>201</a>    <span class="comment">// Build additional properties map with resource, scope and record attributes
 <a href=#202 id=202 data-nosnippet>202</a>    </span><span class="kw">let </span><span class="kw-2">mut </span>additional_properties = HashMap::new();
@@ -265,124 +265,122 @@
 <a href=#265 id=265 data-nosnippet>265</a>            </span>k <span class="kw">if </span>k == DDTAGS_ATTR =&gt; {
 <a href=#266 id=266 data-nosnippet>266</a>                <span class="kw">if let </span><span class="prelude-val">Some</span>(av) = kv.value.as_ref() {
 <a href=#267 id=267 data-nosnippet>267</a>                    <span class="kw">if let </span><span class="prelude-val">Some</span>(OtlpStringValue(s)) = av.value.as_ref() {
-<a href=#268 id=268 data-nosnippet>268</a>                        <span class="kw">let </span><span class="kw-2">mut </span>extra = TagSet::default();
-<a href=#269 id=269 data-nosnippet>269</a>                        <span class="kw">for </span>raw <span class="kw">in </span>s.split(<span class="string">','</span>) {
-<a href=#270 id=270 data-nosnippet>270</a>                            <span class="kw">let </span>t = raw.trim();
-<a href=#271 id=271 data-nosnippet>271</a>                            <span class="kw">if </span>!t.is_empty() {
-<a href=#272 id=272 data-nosnippet>272</a>                                extra.insert_tag(t);
-<a href=#273 id=273 data-nosnippet>273</a>                            }
-<a href=#274 id=274 data-nosnippet>274</a>                        }
-<a href=#275 id=275 data-nosnippet>275</a>                        tags.extend_from_shared(<span class="kw-2">&amp;</span>extra.into_shared());
-<a href=#276 id=276 data-nosnippet>276</a>                    }
-<a href=#277 id=277 data-nosnippet>277</a>                }
-<a href=#278 id=278 data-nosnippet>278</a>            }
-<a href=#279 id=279 data-nosnippet>279</a>            <span class="comment">// Default: flatten map and insert safely
-<a href=#280 id=280 data-nosnippet>280</a>            </span><span class="kw">_ </span>=&gt; {
-<a href=#281 id=281 data-nosnippet>281</a>                <span class="kw">if let </span><span class="prelude-val">Some</span>(av) = kv.value.as_ref() {
-<a href=#282 id=282 data-nosnippet>282</a>                    <span class="kw">let </span>flattened: Vec&lt;(String, JsonValue)&gt; = flatten_attribute(<span class="kw-2">&amp;</span>kv.key, av, <span class="number">1</span>);
-<a href=#283 id=283 data-nosnippet>283</a>                    <span class="kw">for </span>(key, val) <span class="kw">in </span>flattened {
-<a href=#284 id=284 data-nosnippet>284</a>                        <span class="kw">if </span>!val.is_null() {
-<a href=#285 id=285 data-nosnippet>285</a>                            additional_properties.insert(key.into(), val);
-<a href=#286 id=286 data-nosnippet>286</a>                        }
-<a href=#287 id=287 data-nosnippet>287</a>                    }
-<a href=#288 id=288 data-nosnippet>288</a>                }
-<a href=#289 id=289 data-nosnippet>289</a>            }
-<a href=#290 id=290 data-nosnippet>290</a>        }
-<a href=#291 id=291 data-nosnippet>291</a>    }
-<a href=#292 id=292 data-nosnippet>292</a>
-<a href=#293 id=293 data-nosnippet>293</a>    <span class="comment">// Resource attributes
-<a href=#294 id=294 data-nosnippet>294</a>    </span><span class="kw">for </span>kv <span class="kw">in </span><span class="kw-2">&amp;</span>resource.attributes {
-<a href=#295 id=295 data-nosnippet>295</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(av) = kv.value.as_ref() {
-<a href=#296 id=296 data-nosnippet>296</a>            <span class="kw">let </span>val: JsonValue = <span class="kw">match </span>av.value.as_ref() {
-<a href=#297 id=297 data-nosnippet>297</a>                <span class="prelude-val">Some</span>(OtlpStringValue(s)) =&gt; JsonValue::String(s.clone()),
-<a href=#298 id=298 data-nosnippet>298</a>                <span class="kw">_ </span>=&gt; any_value_to_json(av),
-<a href=#299 id=299 data-nosnippet>299</a>            };
-<a href=#300 id=300 data-nosnippet>300</a>            <span class="kw">if </span>!val.is_null() {
-<a href=#301 id=301 data-nosnippet>301</a>                safe_insert(<span class="kw-2">&amp;mut </span>additional_properties, <span class="kw-2">&amp;</span>kv.key, val);
-<a href=#302 id=302 data-nosnippet>302</a>            }
-<a href=#303 id=303 data-nosnippet>303</a>        }
-<a href=#304 id=304 data-nosnippet>304</a>    }
-<a href=#305 id=305 data-nosnippet>305</a>
-<a href=#306 id=306 data-nosnippet>306</a>    <span class="comment">// Scope attributes
-<a href=#307 id=307 data-nosnippet>307</a>    </span><span class="kw">if let </span><span class="prelude-val">Some</span>(scope) = scope {
-<a href=#308 id=308 data-nosnippet>308</a>        <span class="kw">for </span>kv <span class="kw">in </span><span class="kw-2">&amp;</span>scope.attributes {
-<a href=#309 id=309 data-nosnippet>309</a>            <span class="kw">if let </span><span class="prelude-val">Some</span>(av) = kv.value.as_ref() {
-<a href=#310 id=310 data-nosnippet>310</a>                <span class="kw">let </span>val = <span class="kw">match </span>av.value.as_ref() {
-<a href=#311 id=311 data-nosnippet>311</a>                    <span class="prelude-val">Some</span>(OtlpStringValue(s)) =&gt; JsonValue::String(s.clone()),
-<a href=#312 id=312 data-nosnippet>312</a>                    <span class="kw">_ </span>=&gt; any_value_to_json(av),
-<a href=#313 id=313 data-nosnippet>313</a>                };
-<a href=#314 id=314 data-nosnippet>314</a>                <span class="kw">if </span>!val.is_null() {
-<a href=#315 id=315 data-nosnippet>315</a>                    safe_insert(<span class="kw-2">&amp;mut </span>additional_properties, <span class="kw-2">&amp;</span>kv.key, val);
-<a href=#316 id=316 data-nosnippet>316</a>                }
-<a href=#317 id=317 data-nosnippet>317</a>            }
-<a href=#318 id=318 data-nosnippet>318</a>        }
-<a href=#319 id=319 data-nosnippet>319</a>    }
-<a href=#320 id=320 data-nosnippet>320</a>
-<a href=#321 id=321 data-nosnippet>321</a>    <span class="kw">if </span>!lr.trace_id.iter().all(|<span class="kw-2">&amp;</span>b| b == <span class="number">0</span>) {
-<a href=#322 id=322 data-nosnippet>322</a>        <span class="kw">let </span>hex = bytes_to_hex_lowercase(<span class="kw-2">&amp;</span>lr.trace_id);
-<a href=#323 id=323 data-nosnippet>323</a>        additional_properties.insert(MetaString::from_static(<span class="string">"otel.trace_id"</span>), JsonValue::String(hex));
-<a href=#324 id=324 data-nosnippet>324</a>        <span class="kw">let </span>dd = u64_from_last_8(<span class="kw-2">&amp;</span>lr.trace_id);
-<a href=#325 id=325 data-nosnippet>325</a>        additional_properties.insert(
-<a href=#326 id=326 data-nosnippet>326</a>            MetaString::from_static(<span class="string">"dd.trace_id"</span>),
-<a href=#327 id=327 data-nosnippet>327</a>            JsonValue::String(dd.to_string()),
-<a href=#328 id=328 data-nosnippet>328</a>        );
-<a href=#329 id=329 data-nosnippet>329</a>    }
-<a href=#330 id=330 data-nosnippet>330</a>
-<a href=#331 id=331 data-nosnippet>331</a>    <span class="kw">if </span>!lr.span_id.iter().all(|<span class="kw-2">&amp;</span>b| b == <span class="number">0</span>) {
-<a href=#332 id=332 data-nosnippet>332</a>        <span class="kw">let </span>hex = bytes_to_hex_lowercase(<span class="kw-2">&amp;</span>lr.span_id);
-<a href=#333 id=333 data-nosnippet>333</a>        additional_properties.insert(MetaString::from_static(<span class="string">"otel.span_id"</span>), JsonValue::String(hex));
-<a href=#334 id=334 data-nosnippet>334</a>        <span class="kw">let </span>dd = u64_from_first_8(<span class="kw-2">&amp;</span>lr.span_id);
-<a href=#335 id=335 data-nosnippet>335</a>        additional_properties.insert(MetaString::from_static(<span class="string">"dd.span_id"</span>), JsonValue::String(dd.to_string()));
-<a href=#336 id=336 data-nosnippet>336</a>    }
-<a href=#337 id=337 data-nosnippet>337</a>
-<a href=#338 id=338 data-nosnippet>338</a>    <span class="comment">// Derive status once using attribute-provided status, severity text and number
-<a href=#339 id=339 data-nosnippet>339</a>    </span><span class="kw">let </span>status = derive_status(
-<a href=#340 id=340 data-nosnippet>340</a>        status_text_from_attrs.as_deref(),
-<a href=#341 id=341 data-nosnippet>341</a>        lr.severity_text.as_str(),
-<a href=#342 id=342 data-nosnippet>342</a>        lr.severity_number,
-<a href=#343 id=343 data-nosnippet>343</a>    );
-<a href=#344 id=344 data-nosnippet>344</a>
-<a href=#345 id=345 data-nosnippet>345</a>    <span class="kw">if </span>!lr.severity_text.is_empty() {
-<a href=#346 id=346 data-nosnippet>346</a>        additional_properties.insert(
-<a href=#347 id=347 data-nosnippet>347</a>            MetaString::from_static(<span class="string">"otel.severity_text"</span>),
-<a href=#348 id=348 data-nosnippet>348</a>            JsonValue::String(lr.severity_text.clone()),
-<a href=#349 id=349 data-nosnippet>349</a>        );
-<a href=#350 id=350 data-nosnippet>350</a>    }
-<a href=#351 id=351 data-nosnippet>351</a>    <span class="kw">if </span>lr.severity_number != <span class="number">0 </span>{
-<a href=#352 id=352 data-nosnippet>352</a>        additional_properties.insert(
-<a href=#353 id=353 data-nosnippet>353</a>            MetaString::from_static(<span class="string">"otel.severity_number"</span>),
-<a href=#354 id=354 data-nosnippet>354</a>            JsonValue::String(lr.severity_number.to_string()),
-<a href=#355 id=355 data-nosnippet>355</a>        );
-<a href=#356 id=356 data-nosnippet>356</a>    }
-<a href=#357 id=357 data-nosnippet>357</a>
-<a href=#358 id=358 data-nosnippet>358</a>    <span class="kw">if </span>lr.time_unix_nano != <span class="number">0 </span>{
-<a href=#359 id=359 data-nosnippet>359</a>        additional_properties.insert(
-<a href=#360 id=360 data-nosnippet>360</a>            MetaString::from_static(<span class="string">"otel.timestamp"</span>),
-<a href=#361 id=361 data-nosnippet>361</a>            JsonValue::String(lr.time_unix_nano.to_string()),
-<a href=#362 id=362 data-nosnippet>362</a>        );
-<a href=#363 id=363 data-nosnippet>363</a>
-<a href=#364 id=364 data-nosnippet>364</a>        <span class="kw">let </span>secs = (lr.time_unix_nano / <span class="number">1_000_000_000</span>) <span class="kw">as </span>i64;
-<a href=#365 id=365 data-nosnippet>365</a>        <span class="kw">let </span>subnsec = (lr.time_unix_nano % <span class="number">1_000_000_000</span>) <span class="kw">as </span>u32;
-<a href=#366 id=366 data-nosnippet>366</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(dt) = DateTime::from_timestamp(secs, subnsec) {
-<a href=#367 id=367 data-nosnippet>367</a>            <span class="comment">// Match pattern 2006-01-02T15:04:05.000Z
-<a href=#368 id=368 data-nosnippet>368</a>            </span><span class="kw">let </span>formatted = dt.format(<span class="string">"%Y-%m-%dT%H:%M:%S%.3fZ"</span>).to_string();
-<a href=#369 id=369 data-nosnippet>369</a>            additional_properties.insert(MetaString::from_static(<span class="string">"@timestamp"</span>), JsonValue::String(formatted));
-<a href=#370 id=370 data-nosnippet>370</a>        }
-<a href=#371 id=371 data-nosnippet>371</a>    }
-<a href=#372 id=372 data-nosnippet>372</a>
-<a href=#373 id=373 data-nosnippet>373</a>    <span class="comment">// Message: prefer attributes, else body
-<a href=#374 id=374 data-nosnippet>374</a>    </span><span class="kw">let </span>message = <span class="kw">match </span>msg_from_attrs {
-<a href=#375 id=375 data-nosnippet>375</a>        <span class="prelude-val">Some</span>(m) =&gt; m,
-<a href=#376 id=376 data-nosnippet>376</a>        <span class="prelude-val">None </span>=&gt; lr.body.as_ref().map(any_value_to_message_string).unwrap_or_default(),
-<a href=#377 id=377 data-nosnippet>377</a>    };
-<a href=#378 id=378 data-nosnippet>378</a>
-<a href=#379 id=379 data-nosnippet>379</a>    <span class="comment">// Build Log
-<a href=#380 id=380 data-nosnippet>380</a>    </span>Log::new(message)
-<a href=#381 id=381 data-nosnippet>381</a>        .with_status(status)
-<a href=#382 id=382 data-nosnippet>382</a>        .with_source(DEFAULT_SOURCE.clone())
-<a href=#383 id=383 data-nosnippet>383</a>        .with_hostname(record_host)
-<a href=#384 id=384 data-nosnippet>384</a>        .with_service(record_service)
-<a href=#385 id=385 data-nosnippet>385</a>        .with_tags(tags)
-<a href=#386 id=386 data-nosnippet>386</a>        .with_additional_properties(additional_properties)
-<a href=#387 id=387 data-nosnippet>387</a>}
+<a href=#268 id=268 data-nosnippet>268</a>                        <span class="kw">for </span>raw <span class="kw">in </span>s.split(<span class="string">','</span>) {
+<a href=#269 id=269 data-nosnippet>269</a>                            <span class="kw">let </span>t = raw.trim();
+<a href=#270 id=270 data-nosnippet>270</a>                            <span class="kw">if </span>!t.is_empty() {
+<a href=#271 id=271 data-nosnippet>271</a>                                tags.insert_tag(t);
+<a href=#272 id=272 data-nosnippet>272</a>                            }
+<a href=#273 id=273 data-nosnippet>273</a>                        }
+<a href=#274 id=274 data-nosnippet>274</a>                    }
+<a href=#275 id=275 data-nosnippet>275</a>                }
+<a href=#276 id=276 data-nosnippet>276</a>            }
+<a href=#277 id=277 data-nosnippet>277</a>            <span class="comment">// Default: flatten map and insert safely
+<a href=#278 id=278 data-nosnippet>278</a>            </span><span class="kw">_ </span>=&gt; {
+<a href=#279 id=279 data-nosnippet>279</a>                <span class="kw">if let </span><span class="prelude-val">Some</span>(av) = kv.value.as_ref() {
+<a href=#280 id=280 data-nosnippet>280</a>                    <span class="kw">let </span>flattened: Vec&lt;(String, JsonValue)&gt; = flatten_attribute(<span class="kw-2">&amp;</span>kv.key, av, <span class="number">1</span>);
+<a href=#281 id=281 data-nosnippet>281</a>                    <span class="kw">for </span>(key, val) <span class="kw">in </span>flattened {
+<a href=#282 id=282 data-nosnippet>282</a>                        <span class="kw">if </span>!val.is_null() {
+<a href=#283 id=283 data-nosnippet>283</a>                            additional_properties.insert(key.into(), val);
+<a href=#284 id=284 data-nosnippet>284</a>                        }
+<a href=#285 id=285 data-nosnippet>285</a>                    }
+<a href=#286 id=286 data-nosnippet>286</a>                }
+<a href=#287 id=287 data-nosnippet>287</a>            }
+<a href=#288 id=288 data-nosnippet>288</a>        }
+<a href=#289 id=289 data-nosnippet>289</a>    }
+<a href=#290 id=290 data-nosnippet>290</a>
+<a href=#291 id=291 data-nosnippet>291</a>    <span class="comment">// Resource attributes
+<a href=#292 id=292 data-nosnippet>292</a>    </span><span class="kw">for </span>kv <span class="kw">in </span><span class="kw-2">&amp;</span>resource.attributes {
+<a href=#293 id=293 data-nosnippet>293</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(av) = kv.value.as_ref() {
+<a href=#294 id=294 data-nosnippet>294</a>            <span class="kw">let </span>val: JsonValue = <span class="kw">match </span>av.value.as_ref() {
+<a href=#295 id=295 data-nosnippet>295</a>                <span class="prelude-val">Some</span>(OtlpStringValue(s)) =&gt; JsonValue::String(s.clone()),
+<a href=#296 id=296 data-nosnippet>296</a>                <span class="kw">_ </span>=&gt; any_value_to_json(av),
+<a href=#297 id=297 data-nosnippet>297</a>            };
+<a href=#298 id=298 data-nosnippet>298</a>            <span class="kw">if </span>!val.is_null() {
+<a href=#299 id=299 data-nosnippet>299</a>                safe_insert(<span class="kw-2">&amp;mut </span>additional_properties, <span class="kw-2">&amp;</span>kv.key, val);
+<a href=#300 id=300 data-nosnippet>300</a>            }
+<a href=#301 id=301 data-nosnippet>301</a>        }
+<a href=#302 id=302 data-nosnippet>302</a>    }
+<a href=#303 id=303 data-nosnippet>303</a>
+<a href=#304 id=304 data-nosnippet>304</a>    <span class="comment">// Scope attributes
+<a href=#305 id=305 data-nosnippet>305</a>    </span><span class="kw">if let </span><span class="prelude-val">Some</span>(scope) = scope {
+<a href=#306 id=306 data-nosnippet>306</a>        <span class="kw">for </span>kv <span class="kw">in </span><span class="kw-2">&amp;</span>scope.attributes {
+<a href=#307 id=307 data-nosnippet>307</a>            <span class="kw">if let </span><span class="prelude-val">Some</span>(av) = kv.value.as_ref() {
+<a href=#308 id=308 data-nosnippet>308</a>                <span class="kw">let </span>val = <span class="kw">match </span>av.value.as_ref() {
+<a href=#309 id=309 data-nosnippet>309</a>                    <span class="prelude-val">Some</span>(OtlpStringValue(s)) =&gt; JsonValue::String(s.clone()),
+<a href=#310 id=310 data-nosnippet>310</a>                    <span class="kw">_ </span>=&gt; any_value_to_json(av),
+<a href=#311 id=311 data-nosnippet>311</a>                };
+<a href=#312 id=312 data-nosnippet>312</a>                <span class="kw">if </span>!val.is_null() {
+<a href=#313 id=313 data-nosnippet>313</a>                    safe_insert(<span class="kw-2">&amp;mut </span>additional_properties, <span class="kw-2">&amp;</span>kv.key, val);
+<a href=#314 id=314 data-nosnippet>314</a>                }
+<a href=#315 id=315 data-nosnippet>315</a>            }
+<a href=#316 id=316 data-nosnippet>316</a>        }
+<a href=#317 id=317 data-nosnippet>317</a>    }
+<a href=#318 id=318 data-nosnippet>318</a>
+<a href=#319 id=319 data-nosnippet>319</a>    <span class="kw">if </span>!lr.trace_id.iter().all(|<span class="kw-2">&amp;</span>b| b == <span class="number">0</span>) {
+<a href=#320 id=320 data-nosnippet>320</a>        <span class="kw">let </span>hex = bytes_to_hex_lowercase(<span class="kw-2">&amp;</span>lr.trace_id);
+<a href=#321 id=321 data-nosnippet>321</a>        additional_properties.insert(MetaString::from_static(<span class="string">"otel.trace_id"</span>), JsonValue::String(hex));
+<a href=#322 id=322 data-nosnippet>322</a>        <span class="kw">let </span>dd = u64_from_last_8(<span class="kw-2">&amp;</span>lr.trace_id);
+<a href=#323 id=323 data-nosnippet>323</a>        additional_properties.insert(
+<a href=#324 id=324 data-nosnippet>324</a>            MetaString::from_static(<span class="string">"dd.trace_id"</span>),
+<a href=#325 id=325 data-nosnippet>325</a>            JsonValue::String(dd.to_string()),
+<a href=#326 id=326 data-nosnippet>326</a>        );
+<a href=#327 id=327 data-nosnippet>327</a>    }
+<a href=#328 id=328 data-nosnippet>328</a>
+<a href=#329 id=329 data-nosnippet>329</a>    <span class="kw">if </span>!lr.span_id.iter().all(|<span class="kw-2">&amp;</span>b| b == <span class="number">0</span>) {
+<a href=#330 id=330 data-nosnippet>330</a>        <span class="kw">let </span>hex = bytes_to_hex_lowercase(<span class="kw-2">&amp;</span>lr.span_id);
+<a href=#331 id=331 data-nosnippet>331</a>        additional_properties.insert(MetaString::from_static(<span class="string">"otel.span_id"</span>), JsonValue::String(hex));
+<a href=#332 id=332 data-nosnippet>332</a>        <span class="kw">let </span>dd = u64_from_first_8(<span class="kw-2">&amp;</span>lr.span_id);
+<a href=#333 id=333 data-nosnippet>333</a>        additional_properties.insert(MetaString::from_static(<span class="string">"dd.span_id"</span>), JsonValue::String(dd.to_string()));
+<a href=#334 id=334 data-nosnippet>334</a>    }
+<a href=#335 id=335 data-nosnippet>335</a>
+<a href=#336 id=336 data-nosnippet>336</a>    <span class="comment">// Derive status once using attribute-provided status, severity text and number
+<a href=#337 id=337 data-nosnippet>337</a>    </span><span class="kw">let </span>status = derive_status(
+<a href=#338 id=338 data-nosnippet>338</a>        status_text_from_attrs.as_deref(),
+<a href=#339 id=339 data-nosnippet>339</a>        lr.severity_text.as_str(),
+<a href=#340 id=340 data-nosnippet>340</a>        lr.severity_number,
+<a href=#341 id=341 data-nosnippet>341</a>    );
+<a href=#342 id=342 data-nosnippet>342</a>
+<a href=#343 id=343 data-nosnippet>343</a>    <span class="kw">if </span>!lr.severity_text.is_empty() {
+<a href=#344 id=344 data-nosnippet>344</a>        additional_properties.insert(
+<a href=#345 id=345 data-nosnippet>345</a>            MetaString::from_static(<span class="string">"otel.severity_text"</span>),
+<a href=#346 id=346 data-nosnippet>346</a>            JsonValue::String(lr.severity_text.clone()),
+<a href=#347 id=347 data-nosnippet>347</a>        );
+<a href=#348 id=348 data-nosnippet>348</a>    }
+<a href=#349 id=349 data-nosnippet>349</a>    <span class="kw">if </span>lr.severity_number != <span class="number">0 </span>{
+<a href=#350 id=350 data-nosnippet>350</a>        additional_properties.insert(
+<a href=#351 id=351 data-nosnippet>351</a>            MetaString::from_static(<span class="string">"otel.severity_number"</span>),
+<a href=#352 id=352 data-nosnippet>352</a>            JsonValue::String(lr.severity_number.to_string()),
+<a href=#353 id=353 data-nosnippet>353</a>        );
+<a href=#354 id=354 data-nosnippet>354</a>    }
+<a href=#355 id=355 data-nosnippet>355</a>
+<a href=#356 id=356 data-nosnippet>356</a>    <span class="kw">if </span>lr.time_unix_nano != <span class="number">0 </span>{
+<a href=#357 id=357 data-nosnippet>357</a>        additional_properties.insert(
+<a href=#358 id=358 data-nosnippet>358</a>            MetaString::from_static(<span class="string">"otel.timestamp"</span>),
+<a href=#359 id=359 data-nosnippet>359</a>            JsonValue::String(lr.time_unix_nano.to_string()),
+<a href=#360 id=360 data-nosnippet>360</a>        );
+<a href=#361 id=361 data-nosnippet>361</a>
+<a href=#362 id=362 data-nosnippet>362</a>        <span class="kw">let </span>secs = (lr.time_unix_nano / <span class="number">1_000_000_000</span>) <span class="kw">as </span>i64;
+<a href=#363 id=363 data-nosnippet>363</a>        <span class="kw">let </span>subnsec = (lr.time_unix_nano % <span class="number">1_000_000_000</span>) <span class="kw">as </span>u32;
+<a href=#364 id=364 data-nosnippet>364</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(dt) = DateTime::from_timestamp(secs, subnsec) {
+<a href=#365 id=365 data-nosnippet>365</a>            <span class="comment">// Match pattern 2006-01-02T15:04:05.000Z
+<a href=#366 id=366 data-nosnippet>366</a>            </span><span class="kw">let </span>formatted = dt.format(<span class="string">"%Y-%m-%dT%H:%M:%S%.3fZ"</span>).to_string();
+<a href=#367 id=367 data-nosnippet>367</a>            additional_properties.insert(MetaString::from_static(<span class="string">"@timestamp"</span>), JsonValue::String(formatted));
+<a href=#368 id=368 data-nosnippet>368</a>        }
+<a href=#369 id=369 data-nosnippet>369</a>    }
+<a href=#370 id=370 data-nosnippet>370</a>
+<a href=#371 id=371 data-nosnippet>371</a>    <span class="comment">// Message: prefer attributes, else body
+<a href=#372 id=372 data-nosnippet>372</a>    </span><span class="kw">let </span>message = <span class="kw">match </span>msg_from_attrs {
+<a href=#373 id=373 data-nosnippet>373</a>        <span class="prelude-val">Some</span>(m) =&gt; m,
+<a href=#374 id=374 data-nosnippet>374</a>        <span class="prelude-val">None </span>=&gt; lr.body.as_ref().map(any_value_to_message_string).unwrap_or_default(),
+<a href=#375 id=375 data-nosnippet>375</a>    };
+<a href=#376 id=376 data-nosnippet>376</a>
+<a href=#377 id=377 data-nosnippet>377</a>    <span class="comment">// Build Log
+<a href=#378 id=378 data-nosnippet>378</a>    </span>Log::new(message)
+<a href=#379 id=379 data-nosnippet>379</a>        .with_status(status)
+<a href=#380 id=380 data-nosnippet>380</a>        .with_source(DEFAULT_SOURCE.clone())
+<a href=#381 id=381 data-nosnippet>381</a>        .with_hostname(record_host)
+<a href=#382 id=382 data-nosnippet>382</a>        .with_service(record_service)
+<a href=#383 id=383 data-nosnippet>383</a>        .with_tags(tags)
+<a href=#384 id=384 data-nosnippet>384</a>        .with_additional_properties(additional_properties)
+<a href=#385 id=385 data-nosnippet>385</a>}
 </code></pre></div></section></main></body></html>

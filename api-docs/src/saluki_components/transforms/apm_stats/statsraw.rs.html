@@ -6,7 +6,7 @@
 <a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span>protobuf::Message;
 <a href=#7 id=7 data-nosnippet>7</a><span class="kw">use </span>rand::Rng <span class="kw">as _</span>;
 <a href=#8 id=8 data-nosnippet>8</a><span class="kw">use </span>saluki_common::collections::{FastHashMap, PrehashedHashMap};
-<a href=#9 id=9 data-nosnippet>9</a><span class="kw">use </span>saluki_context::tags::SharedTagSet;
+<a href=#9 id=9 data-nosnippet>9</a><span class="kw">use </span>saluki_context::tags::TagSet;
 <a href=#10 id=10 data-nosnippet>10</a><span class="kw">use </span>saluki_core::data_model::event::trace_stats::{ClientGroupedStats, ClientStatsBucket};
 <a href=#11 id=11 data-nosnippet>11</a><span class="kw">use </span>stringtheory::MetaString;
 <a href=#12 id=12 data-nosnippet>12</a><span class="kw">use </span>tracing::error;
@@ -97,7 +97,7 @@
 <a href=#97 id=97 data-nosnippet>97</a>    /// The full aggregation keys are stored in the shared `AggregationRegistry`.
 <a href=#98 id=98 data-nosnippet>98</a>    </span>data: FastHashMap&lt;AggregationKeyHash, GroupedStats&gt;,
 <a href=#99 id=99 data-nosnippet>99</a>    <span class="doccomment">/// Map of container ID to container tags.
-<a href=#100 id=100 data-nosnippet>100</a>    </span><span class="kw">pub</span>(<span class="kw">super</span>) container_tags_by_id: FastHashMap&lt;MetaString, SharedTagSet&gt;,
+<a href=#100 id=100 data-nosnippet>100</a>    </span><span class="kw">pub</span>(<span class="kw">super</span>) container_tags_by_id: FastHashMap&lt;MetaString, TagSet&gt;,
 <a href=#101 id=101 data-nosnippet>101</a>    <span class="doccomment">/// Map of process tags hash to process tags.
 <a href=#102 id=102 data-nosnippet>102</a>    </span><span class="kw">pub</span>(<span class="kw">super</span>) process_tags_by_hash: PrehashedHashMap&lt;u64, MetaString&gt;,
 <a href=#103 id=103 data-nosnippet>103</a>}
@@ -119,13 +119,13 @@
 <a href=#119 id=119 data-nosnippet>119</a>    }
 <a href=#120 id=120 data-nosnippet>120</a>
 <a href=#121 id=121 data-nosnippet>121</a>    <span class="doccomment">/// Store container tags for later export.
-<a href=#122 id=122 data-nosnippet>122</a>    </span><span class="kw">pub fn </span>set_container_tags(<span class="kw-2">&amp;mut </span><span class="self">self</span>, container_id: MetaString, tags: <span class="kw">impl </span>Into&lt;SharedTagSet&gt;) {
+<a href=#122 id=122 data-nosnippet>122</a>    </span><span class="kw">pub fn </span>set_container_tags(<span class="kw-2">&amp;mut </span><span class="self">self</span>, container_id: MetaString, tags: <span class="kw">impl </span>Into&lt;TagSet&gt;) {
 <a href=#123 id=123 data-nosnippet>123</a>        <span class="self">self</span>.container_tags_by_id.insert(container_id, tags.into());
 <a href=#124 id=124 data-nosnippet>124</a>    }
 <a href=#125 id=125 data-nosnippet>125</a>
 <a href=#126 id=126 data-nosnippet>126</a>    <span class="doccomment">/// Get container tags by container ID.
 <a href=#127 id=127 data-nosnippet>127</a>    </span><span class="attr">#[allow(unused)]
-<a href=#128 id=128 data-nosnippet>128</a>    </span><span class="kw">pub fn </span>get_container_tags(<span class="kw-2">&amp;</span><span class="self">self</span>, container_id: <span class="kw-2">&amp;</span>MetaString) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>SharedTagSet&gt; {
+<a href=#128 id=128 data-nosnippet>128</a>    </span><span class="kw">pub fn </span>get_container_tags(<span class="kw-2">&amp;</span><span class="self">self</span>, container_id: <span class="kw-2">&amp;</span>MetaString) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>TagSet&gt; {
 <a href=#129 id=129 data-nosnippet>129</a>        <span class="self">self</span>.container_tags_by_id.get(container_id)
 <a href=#130 id=130 data-nosnippet>130</a>    }
 <a href=#131 id=131 data-nosnippet>131</a>
@@ -217,7 +217,7 @@
 <a href=#217 id=217 data-nosnippet>217</a>
 <a href=#218 id=218 data-nosnippet>218</a><span class="kw">pub struct </span>ExportedBucket {
 <a href=#219 id=219 data-nosnippet>219</a>    <span class="kw">pub </span>data: FastHashMap&lt;PayloadAggregationKey, ClientStatsBucket&gt;,
-<a href=#220 id=220 data-nosnippet>220</a>    <span class="kw">pub </span>container_tags_by_id: FastHashMap&lt;MetaString, SharedTagSet&gt;,
+<a href=#220 id=220 data-nosnippet>220</a>    <span class="kw">pub </span>container_tags_by_id: FastHashMap&lt;MetaString, TagSet&gt;,
 <a href=#221 id=221 data-nosnippet>221</a>    <span class="kw">pub </span>process_tags_by_hash: PrehashedHashMap&lt;u64, MetaString&gt;,
 <a href=#222 id=222 data-nosnippet>222</a>}
 <a href=#223 id=223 data-nosnippet>223</a>

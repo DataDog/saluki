@@ -2,7 +2,7 @@
 <a href=#2 id=2 data-nosnippet>2</a>
 <a href=#3 id=3 data-nosnippet>3</a></span><span class="kw">use </span>std::{fmt, num::NonZeroU64};
 <a href=#4 id=4 data-nosnippet>4</a>
-<a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>saluki_context::tags::SharedTagSet;
+<a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>saluki_context::tags::TagSet;
 <a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span>serde::{Serialize, Serializer};
 <a href=#7 id=7 data-nosnippet>7</a><span class="kw">use </span>stringtheory::MetaString;
 <a href=#8 id=8 data-nosnippet>8</a>
@@ -132,8 +132,8 @@
 <a href=#132 id=132 data-nosnippet>132</a>    <span class="attr">#[serde(skip_serializing_if = <span class="string">"MetaString::is_empty"</span>)]
 <a href=#133 id=133 data-nosnippet>133</a>    </span>source_type_name: MetaString,
 <a href=#134 id=134 data-nosnippet>134</a>    alert_type: <span class="prelude-ty">Option</span>&lt;AlertType&gt;,
-<a href=#135 id=135 data-nosnippet>135</a>    tags: SharedTagSet,
-<a href=#136 id=136 data-nosnippet>136</a>    origin_tags: SharedTagSet,
+<a href=#135 id=135 data-nosnippet>135</a>    tags: TagSet,
+<a href=#136 id=136 data-nosnippet>136</a>    origin_tags: TagSet,
 <a href=#137 id=137 data-nosnippet>137</a>}
 <a href=#138 id=138 data-nosnippet>138</a>
 <a href=#139 id=139 data-nosnippet>139</a><span class="kw">impl </span>EventD {
@@ -192,12 +192,12 @@
 <a href=#192 id=192 data-nosnippet>192</a>    }
 <a href=#193 id=193 data-nosnippet>193</a>
 <a href=#194 id=194 data-nosnippet>194</a>    <span class="doccomment">/// Returns the tags associated with the event.
-<a href=#195 id=195 data-nosnippet>195</a>    </span><span class="kw">pub fn </span>tags(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>SharedTagSet {
+<a href=#195 id=195 data-nosnippet>195</a>    </span><span class="kw">pub fn </span>tags(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>TagSet {
 <a href=#196 id=196 data-nosnippet>196</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.tags
 <a href=#197 id=197 data-nosnippet>197</a>    }
 <a href=#198 id=198 data-nosnippet>198</a>
 <a href=#199 id=199 data-nosnippet>199</a>    <span class="doccomment">/// Returns the origin tags associated with the event.
-<a href=#200 id=200 data-nosnippet>200</a>    </span><span class="kw">pub fn </span>origin_tags(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>SharedTagSet {
+<a href=#200 id=200 data-nosnippet>200</a>    </span><span class="kw">pub fn </span>origin_tags(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>TagSet {
 <a href=#201 id=201 data-nosnippet>201</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.origin_tags
 <a href=#202 id=202 data-nosnippet>202</a>    }
 <a href=#203 id=203 data-nosnippet>203</a>
@@ -308,21 +308,21 @@
 <a href=#308 id=308 data-nosnippet>308</a>    <span class="doccomment">/// Set the tags of the event.
 <a href=#309 id=309 data-nosnippet>309</a>    ///
 <a href=#310 id=310 data-nosnippet>310</a>    /// This variant is specifically for use in builder-style APIs.
-<a href=#311 id=311 data-nosnippet>311</a>    </span><span class="kw">pub fn </span>with_tags(<span class="kw-2">mut </span><span class="self">self</span>, tags: <span class="kw">impl </span>Into&lt;SharedTagSet&gt;) -&gt; <span class="self">Self </span>{
+<a href=#311 id=311 data-nosnippet>311</a>    </span><span class="kw">pub fn </span>with_tags(<span class="kw-2">mut </span><span class="self">self</span>, tags: <span class="kw">impl </span>Into&lt;TagSet&gt;) -&gt; <span class="self">Self </span>{
 <a href=#312 id=312 data-nosnippet>312</a>        <span class="self">self</span>.tags = tags.into();
 <a href=#313 id=313 data-nosnippet>313</a>        <span class="self">self
 <a href=#314 id=314 data-nosnippet>314</a>    </span>}
 <a href=#315 id=315 data-nosnippet>315</a>
 <a href=#316 id=316 data-nosnippet>316</a>    <span class="doccomment">/// Set the tags of the event.
-<a href=#317 id=317 data-nosnippet>317</a>    </span><span class="kw">pub fn </span>set_tags(<span class="kw-2">&amp;mut </span><span class="self">self</span>, tags: <span class="kw">impl </span>Into&lt;<span class="prelude-ty">Option</span>&lt;SharedTagSet&gt;&gt;) {
+<a href=#317 id=317 data-nosnippet>317</a>    </span><span class="kw">pub fn </span>set_tags(<span class="kw-2">&amp;mut </span><span class="self">self</span>, tags: <span class="kw">impl </span>Into&lt;<span class="prelude-ty">Option</span>&lt;TagSet&gt;&gt;) {
 <a href=#318 id=318 data-nosnippet>318</a>        <span class="self">self</span>.tags = tags.into().unwrap_or_default();
 <a href=#319 id=319 data-nosnippet>319</a>    }
 <a href=#320 id=320 data-nosnippet>320</a>
 <a href=#321 id=321 data-nosnippet>321</a>    <span class="doccomment">/// Set the origin tags of the event.
 <a href=#322 id=322 data-nosnippet>322</a>    ///
 <a href=#323 id=323 data-nosnippet>323</a>    /// This variant is specifically for use in builder-style APIs.
-<a href=#324 id=324 data-nosnippet>324</a>    </span><span class="kw">pub fn </span>with_origin_tags(<span class="kw-2">mut </span><span class="self">self</span>, origin_tags: SharedTagSet) -&gt; <span class="self">Self </span>{
-<a href=#325 id=325 data-nosnippet>325</a>        <span class="self">self</span>.origin_tags = origin_tags;
+<a href=#324 id=324 data-nosnippet>324</a>    </span><span class="kw">pub fn </span>with_origin_tags(<span class="kw-2">mut </span><span class="self">self</span>, origin_tags: <span class="kw">impl </span>Into&lt;TagSet&gt;) -&gt; <span class="self">Self </span>{
+<a href=#325 id=325 data-nosnippet>325</a>        <span class="self">self</span>.origin_tags = origin_tags.into();
 <a href=#326 id=326 data-nosnippet>326</a>        <span class="self">self
 <a href=#327 id=327 data-nosnippet>327</a>    </span>}
 <a href=#328 id=328 data-nosnippet>328</a>
@@ -339,8 +339,8 @@
 <a href=#339 id=339 data-nosnippet>339</a>            priority: <span class="prelude-val">Some</span>(Priority::Normal),
 <a href=#340 id=340 data-nosnippet>340</a>            source_type_name: MetaString::empty(),
 <a href=#341 id=341 data-nosnippet>341</a>            alert_type: <span class="prelude-val">Some</span>(AlertType::Info),
-<a href=#342 id=342 data-nosnippet>342</a>            tags: SharedTagSet::default(),
-<a href=#343 id=343 data-nosnippet>343</a>            origin_tags: SharedTagSet::default(),
+<a href=#342 id=342 data-nosnippet>342</a>            tags: TagSet::default(),
+<a href=#343 id=343 data-nosnippet>343</a>            origin_tags: TagSet::default(),
 <a href=#344 id=344 data-nosnippet>344</a>        }
 <a href=#345 id=345 data-nosnippet>345</a>    }
 <a href=#346 id=346 data-nosnippet>346</a>}

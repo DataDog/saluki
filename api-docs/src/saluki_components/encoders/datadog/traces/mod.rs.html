@@ -16,7 +16,7 @@
 <a href=#16 id=16 data-nosnippet>16</a><span class="kw">use </span>saluki_common::strings::StringBuilder;
 <a href=#17 id=17 data-nosnippet>17</a><span class="kw">use </span>saluki_common::task::HandleExt <span class="kw">as _</span>;
 <a href=#18 id=18 data-nosnippet>18</a><span class="kw">use </span>saluki_config::GenericConfiguration;
-<a href=#19 id=19 data-nosnippet>19</a><span class="kw">use </span>saluki_context::tags::{SharedTagSet, TagSet};
+<a href=#19 id=19 data-nosnippet>19</a><span class="kw">use </span>saluki_context::tags::TagSet;
 <a href=#20 id=20 data-nosnippet>20</a><span class="kw">use </span>saluki_core::data_model::event::trace::{AttributeScalarValue, AttributeValue, Span <span class="kw">as </span>DdSpan};
 <a href=#21 id=21 data-nosnippet>21</a><span class="kw">use </span>saluki_core::topology::{EventsBuffer, PayloadsBuffer};
 <a href=#22 id=22 data-nosnippet>22</a><span class="kw">use </span>saluki_core::{
@@ -688,12 +688,12 @@
 <a href=#688 id=688 data-nosnippet>688</a>    <span class="prelude-val">Ok</span>(())
 <a href=#689 id=689 data-nosnippet>689</a>}
 <a href=#690 id=690 data-nosnippet>690</a>
-<a href=#691 id=691 data-nosnippet>691</a><span class="kw">fn </span>get_resource_tag_value&lt;<span class="lifetime">'a</span>&gt;(resource_tags: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>SharedTagSet, key: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'a </span>str&gt; {
+<a href=#691 id=691 data-nosnippet>691</a><span class="kw">fn </span>get_resource_tag_value&lt;<span class="lifetime">'a</span>&gt;(resource_tags: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>TagSet, key: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'a </span>str&gt; {
 <a href=#692 id=692 data-nosnippet>692</a>    resource_tags.get_single_tag(key).and_then(|t| t.value())
 <a href=#693 id=693 data-nosnippet>693</a>}
 <a href=#694 id=694 data-nosnippet>694</a>
 <a href=#695 id=695 data-nosnippet>695</a><span class="kw">fn </span>resolve_hostname&lt;<span class="lifetime">'a</span>&gt;(
-<a href=#696 id=696 data-nosnippet>696</a>    resource_tags: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>SharedTagSet, source: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'a </span>OtlpSource&gt;, default_hostname: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'a </span>str&gt;,
+<a href=#696 id=696 data-nosnippet>696</a>    resource_tags: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>TagSet, source: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'a </span>OtlpSource&gt;, default_hostname: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'a </span>str&gt;,
 <a href=#697 id=697 data-nosnippet>697</a>    ignore_missing_fields: bool,
 <a href=#698 id=698 data-nosnippet>698</a>) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'a </span>str&gt; {
 <a href=#699 id=699 data-nosnippet>699</a>    <span class="kw">let </span><span class="kw-2">mut </span>hostname = <span class="kw">match </span>source {
@@ -715,7 +715,7 @@
 <a href=#715 id=715 data-nosnippet>715</a>    hostname
 <a href=#716 id=716 data-nosnippet>716</a>}
 <a href=#717 id=717 data-nosnippet>717</a>
-<a href=#718 id=718 data-nosnippet>718</a><span class="kw">fn </span>resolve_env(resource_tags: <span class="kw-2">&amp;</span>SharedTagSet, ignore_missing_fields: bool) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>str&gt; {
+<a href=#718 id=718 data-nosnippet>718</a><span class="kw">fn </span>resolve_env(resource_tags: <span class="kw-2">&amp;</span>TagSet, ignore_missing_fields: bool) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>str&gt; {
 <a href=#719 id=719 data-nosnippet>719</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(value) = get_resource_tag_value(resource_tags, KEY_DATADOG_ENVIRONMENT) {
 <a href=#720 id=720 data-nosnippet>720</a>        <span class="kw">return </span><span class="prelude-val">Some</span>(value);
 <a href=#721 id=721 data-nosnippet>721</a>    }
@@ -728,7 +728,7 @@
 <a href=#728 id=728 data-nosnippet>728</a>    get_resource_tag_value(resource_tags, DEPLOYMENT_ENVIRONMENT_KEY)
 <a href=#729 id=729 data-nosnippet>729</a>}
 <a href=#730 id=730 data-nosnippet>730</a>
-<a href=#731 id=731 data-nosnippet>731</a><span class="kw">fn </span>resolve_container_id&lt;<span class="lifetime">'a</span>&gt;(resource_tags: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>SharedTagSet, first_span: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'a </span>DdSpan&gt;) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'a </span>str&gt; {
+<a href=#731 id=731 data-nosnippet>731</a><span class="kw">fn </span>resolve_container_id&lt;<span class="lifetime">'a</span>&gt;(resource_tags: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>TagSet, first_span: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'a </span>DdSpan&gt;) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'a </span>str&gt; {
 <a href=#732 id=732 data-nosnippet>732</a>    <span class="kw">for </span>key <span class="kw">in </span>[KEY_DATADOG_CONTAINER_ID, CONTAINER_ID, K8S_POD_UID] {
 <a href=#733 id=733 data-nosnippet>733</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(value) = get_resource_tag_value(resource_tags, key) {
 <a href=#734 id=734 data-nosnippet>734</a>            <span class="kw">return </span><span class="prelude-val">Some</span>(value);
@@ -746,7 +746,7 @@
 <a href=#746 id=746 data-nosnippet>746</a>    <span class="prelude-val">None
 <a href=#747 id=747 data-nosnippet>747</a></span>}
 <a href=#748 id=748 data-nosnippet>748</a>
-<a href=#749 id=749 data-nosnippet>749</a><span class="kw">fn </span>resolve_app_version(resource_tags: <span class="kw-2">&amp;</span>SharedTagSet) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>str&gt; {
+<a href=#749 id=749 data-nosnippet>749</a><span class="kw">fn </span>resolve_app_version(resource_tags: <span class="kw-2">&amp;</span>TagSet) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>str&gt; {
 <a href=#750 id=750 data-nosnippet>750</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(value) = get_resource_tag_value(resource_tags, KEY_DATADOG_VERSION) {
 <a href=#751 id=751 data-nosnippet>751</a>        <span class="kw">return </span><span class="prelude-val">Some</span>(value);
 <a href=#752 id=752 data-nosnippet>752</a>    }
@@ -754,7 +754,7 @@
 <a href=#754 id=754 data-nosnippet>754</a>}
 <a href=#755 id=755 data-nosnippet>755</a>
 <a href=#756 id=756 data-nosnippet>756</a><span class="kw">fn </span>resolve_container_tags(
-<a href=#757 id=757 data-nosnippet>757</a>    resource_tags: <span class="kw-2">&amp;</span>SharedTagSet, source: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>OtlpSource&gt;, ignore_missing_fields: bool,
+<a href=#757 id=757 data-nosnippet>757</a>    resource_tags: <span class="kw-2">&amp;</span>TagSet, source: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>OtlpSource&gt;, ignore_missing_fields: bool,
 <a href=#758 id=758 data-nosnippet>758</a>) -&gt; <span class="prelude-ty">Option</span>&lt;MetaString&gt; {
 <a href=#759 id=759 data-nosnippet>759</a>    <span class="comment">// TODO: some refactoring is probably needed to normalize this function, the tags should already be normalized
 <a href=#760 id=760 data-nosnippet>760</a>    // since we do so when we transform OTLP spans to DD spans however to make this class extensible for non otlp traces, we would
