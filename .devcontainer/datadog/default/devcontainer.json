@@ -1,0 +1,17 @@
+{
+  "name": "Saluki (ADP)",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "../../.."
+  },
+  "remoteUser": "saluki",
+  "onCreateCommand": "rustc --version",
+  "customizations": {
+    "vscode": {
+      "extensions": ["rust-lang.rust-analyzer", "vadimcn.vscode-lldb", "tamasfe.even-better-toml"],
+      "settings": {
+        "rust-analyzer.check.command": "clippy"
+      }
+    }
+  }
+}
