@@ -8,7 +8,7 @@ ARG RUST_VERSION=stable
 RUN apt-get update && \
     apt-get install --no-install-recommends -y \
     build-essential ca-certificates make cmake gcc g++ perl protobuf-compiler curl rustup
-RUN rustup default ${RUST_VERSION}
+RUN rustup set profile minimal && rustup default ${RUST_VERSION}
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Build datadog-intake.
