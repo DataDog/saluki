@@ -3,8 +3,6 @@ use std::{borrow::Cow, time::Instant};
 use saluki_common::collections::FastHashMap;
 use saluki_error::{generic_error, GenericError};
 use saluki_metrics::static_metrics;
-use tokio::sync::mpsc;
-
 use super::Dispatchable;
 use crate::{components::ComponentContext, topology::OutputName};
 
@@ -58,7 +56,7 @@ pub trait DispatchBuffer: Dispatchable + Default {
 
 struct DispatchTarget<T> {
     metrics: DispatcherMetrics,
-    senders: Vec<mpsc::Sender<T>>,
+    senders: Vec<tachyonix::Sender<T>>,
 }
 
 impl<T> DispatchTarget<T>
@@ -79,7 +77,7 @@ where
         }
     }
 
-    fn add_sender(&mut self, sender: mpsc::Sender<T>) {
+    fn add_sender(&mut self, sender: tachyonix::Sender<T>) {
         self.senders.push(sender);
     }
 
@@ -285,7 +283,7 @@ where
     ///
     /// If the output does not exist, an error is returned.
     pub fn attach_sender_to_output(
-        &mut self, output_name: &OutputName, sender: mpsc::Sender<T>,
+        &mut self, output_name: &OutputName, sender: tachyonix::Sender<T>,
     ) -> Result<(), GenericError> {
         let target = match output_name {
             OutputName::Default => self
@@ -479,7 +477,7 @@ mod tests {
     }
 
     fn add_dispatcher_default_output<T: Dispatchable, const N: usize>(
-        dispatcher: &mut Dispatcher<T>, senders: [mpsc::Sender<T>; N],
+        dispatcher: &mut Dispatcher<T>, senders: [tachyonix::Sender<T>; N],
     ) {
         dispatcher
             .add_output(OutputName::Default)
@@ -492,7 +490,7 @@ mod tests {
     }
 
     fn add_dispatcher_named_output<T: Dispatchable, const N: usize>(
-        dispatcher: &mut Dispatcher<T>, output_name: &'static str, senders: [mpsc::Sender<T>; N],
+        dispatcher: &mut Dispatcher<T>, output_name: &'static str, senders: [tachyonix::Sender<T>; N],
     ) {
         dispatcher
             .add_output(OutputName::Given(output_name.into()))
@@ -576,7 +574,7 @@ mod tests {
         // Create the dispatcher and wire up a sender to the default output.
         let mut dispatcher = unbuffered_dispatcher::<SingleEvent<usize>>();
 
-        let (tx, mut rx) = mpsc::channel(1);
+        let (tx, mut rx) = tachyonix::channel(1);
         add_dispatcher_default_output(&mut dispatcher, [tx]);
 
         // Create an item and roundtrip it through the dispatcher.
@@ -594,7 +592,7 @@ mod tests {
         let mut dispatcher = unbuffered_dispatcher::<SingleEvent<usize>>();
 
         let output_name = "special";
-        let (tx, mut rx) = mpsc::channel(1);
+        let (tx, mut rx) = tachyonix::channel(1);
         add_dispatcher_named_output(&mut dispatcher, output_name, [tx]);
 
         // Create an item and roundtrip it through the dispatcher.
@@ -611,8 +609,8 @@ mod tests {
         // Create the dispatcher and wire up two senders to the default output.
         let mut dispatcher = unbuffered_dispatcher::<SingleEvent<usize>>();
 
-        let (tx1, mut rx1) = mpsc::channel(1);
-        let (tx2, mut rx2) = mpsc::channel(1);
+        let (tx1, mut rx1) = tachyonix::channel(1);
+        let (tx2, mut rx2) = tachyonix::channel(1);
         add_dispatcher_default_output(&mut dispatcher, [tx1, tx2]);
 
         // Create an item and roundtrip it through the dispatcher.
@@ -632,8 +630,8 @@ mod tests {
         let mut dispatcher = unbuffered_dispatcher::<SingleEvent<usize>>();
 
         let output_name = "special";
-        let (tx1, mut rx1) = mpsc::channel(1);
-        let (tx2, mut rx2) = mpsc::channel(1);
+        let (tx1, mut rx1) = tachyonix::channel(1);
+        let (tx2, mut rx2) = tachyonix::channel(1);
         add_dispatcher_named_output(&mut dispatcher, output_name, [tx1, tx2]);
 
         // Create an item and roundtrip it through the dispatcher.
@@ -670,7 +668,7 @@ mod tests {
         // Create the dispatcher and wire up a sender to the default output, using a bufferable type.
         let mut dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
 
-        let (tx, mut rx) = mpsc::channel(1);
+        let (tx, mut rx) = tachyonix::channel(1);
         add_dispatcher_default_output(&mut dispatcher, [tx]);
 
         // Create an item and roundtrip it through the dispatcher.
@@ -693,7 +691,7 @@ mod tests {
         let mut dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
 
         let output_name = "buffered_partial";
-        let (tx, mut rx) = mpsc::channel(1);
+        let (tx, mut rx) = tachyonix::channel(1);
         add_dispatcher_named_output(&mut dispatcher, output_name, [tx]);
 
         // Create an item and roundtrip it through the dispatcher.
@@ -715,7 +713,7 @@ mod tests {
         // Create the dispatcher and wire up a sender to the default output, using a bufferable type.
         let mut dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
 
-        let (tx, mut rx) = mpsc::channel(2);
+        let (tx, mut rx) = tachyonix::channel(2);
         add_dispatcher_default_output(&mut dispatcher, [tx]);
 
         // Create multiple items and roundtrip them through the dispatcher.
@@ -748,7 +746,7 @@ mod tests {
         let mut dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
 
         let output_name = "buffered_overflow";
-        let (tx, mut rx) = mpsc::channel(2);
+        let (tx, mut rx) = tachyonix::channel(2);
         add_dispatcher_named_output(&mut dispatcher, output_name, [tx]);
 
         // Create multiple items and roundtrip them through the dispatcher.
@@ -780,8 +778,8 @@ mod tests {
         // Create the dispatcher and wire up two senders to the default output, using a bufferable type.
         let mut dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
 
-        let (tx1, mut rx1) = mpsc::channel(1);
-        let (tx2, mut rx2) = mpsc::channel(1);
+        let (tx1, mut rx1) = tachyonix::channel(1);
+        let (tx2, mut rx2) = tachyonix::channel(1);
         add_dispatcher_default_output(&mut dispatcher, [tx1, tx2]);
 
         // Create an item and roundtrip it through the dispatcher.
@@ -808,8 +806,8 @@ mod tests {
         let mut dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
 
         let output_name = "buffered_partial";
-        let (tx1, mut rx1) = mpsc::channel(1);
-        let (tx2, mut rx2) = mpsc::channel(1);
+        let (tx1, mut rx1) = tachyonix::channel(1);
+        let (tx2, mut rx2) = tachyonix::channel(1);
         add_dispatcher_named_output(&mut dispatcher, output_name, [tx1, tx2]);
 
         // Create an item and roundtrip it through the dispatcher.
@@ -980,7 +978,7 @@ mod tests {
         );
 
         // Add a sender to the default output - should return true
-        let (tx, _rx) = mpsc::channel(1);
+        let (tx, _rx) = tachyonix::channel(1);
         dispatcher
             .attach_sender_to_output(&OutputName::Default, tx)
             .expect("should be able to attach sender");
@@ -1011,7 +1009,7 @@ mod tests {
         );
 
         // Add a sender to the named output - should return true
-        let (tx, _rx) = mpsc::channel(1);
+        let (tx, _rx) = tachyonix::channel(1);
         dispatcher
             .attach_sender_to_output(&OutputName::Given(output_name.into()), tx)
             .expect("should be able to attach sender");

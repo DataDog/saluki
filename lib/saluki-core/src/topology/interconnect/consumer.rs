@@ -1,5 +1,4 @@
 use saluki_metrics::static_metrics;
-use tokio::sync::mpsc;
 
 use super::Dispatchable;
 use crate::components::ComponentContext;
@@ -24,7 +23,7 @@ impl ConsumerMetrics {
 ///
 /// This represents the receiving end of a component interconnect, where the sending end is [`Dispatcher<T>`][super::Dispatcher].
 pub struct Consumer<T> {
-    inner: mpsc::Receiver<T>,
+    inner: tachyonix::Receiver<T>,
     metrics: ConsumerMetrics,
 }
 
@@ -33,7 +32,7 @@ where
     T: Dispatchable,
 {
     /// Create a new `Consumer` for the given component context and inner receiver.
-    pub fn new(context: ComponentContext, inner: mpsc::Receiver<T>) -> Self {
+    pub fn new(context: ComponentContext, inner: tachyonix::Receiver<T>) -> Self {
         Self {
             inner,
             metrics: ConsumerMetrics::from_component_context(context),
@@ -45,12 +44,12 @@ where
     /// If the component (or components) connected to this consumer have stopped, `None` is returned.
     pub async fn next(&mut self) -> Option<T> {
         match self.inner.recv().await {
-            Some(item) => {
+            Ok(item) => {
                 self.metrics.events_received_total().increment(item.item_count() as u64);
                 self.metrics.events_received_size().record(item.item_count() as f64);
                 Some(item)
             }
-            None => None,
+            Err(_) => None,
         }
     }
 }
@@ -91,12 +90,12 @@ mod tests {
 
     fn create_consumer<T: Clone>(
         channel_size: usize,
-    ) -> (Consumer<DispatchableEvent<T>>, mpsc::Sender<DispatchableEvent<T>>) {
+    ) -> (Consumer<DispatchableEvent<T>>, tachyonix::Sender<DispatchableEvent<T>>) {
         let component_context = ComponentId::try_from("consumer_test")
             .map(ComponentContext::source)
             .expect("component ID should never be invalid");
 
-        let (tx, rx) = mpsc::channel(channel_size);
+        let (tx, rx) = tachyonix::channel(channel_size);
         let consumer = Consumer::new(component_context, rx);
 
         (consumer, tx)

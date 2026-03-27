@@ -7,10 +7,7 @@ use memory_accounting::{
 use saluki_common::task::JoinSetExt as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
-use tokio::{
-    sync::mpsc,
-    task::{AbortHandle, JoinSet},
-};
+use tokio::task::{AbortHandle, JoinSet};
 use tracing::{debug, error_span};
 
 use super::{
@@ -358,14 +355,14 @@ struct ComponentInterconnects {
     interconnect_capacity: NonZeroUsize,
     source_dispatchers: HashMap<ComponentId, EventsDispatcher>,
     relay_dispatchers: HashMap<ComponentId, PayloadsDispatcher>,
-    decoder_consumers: HashMap<ComponentId, (mpsc::Sender<PayloadsBuffer>, PayloadsConsumer)>,
+    decoder_consumers: HashMap<ComponentId, (tachyonix::Sender<PayloadsBuffer>, PayloadsConsumer)>,
     decoder_dispatchers: HashMap<ComponentId, EventsDispatcher>,
-    transform_consumers: HashMap<ComponentId, (mpsc::Sender<EventsBuffer>, EventsConsumer)>,
+    transform_consumers: HashMap<ComponentId, (tachyonix::Sender<EventsBuffer>, EventsConsumer)>,
     transform_dispatchers: HashMap<ComponentId, EventsDispatcher>,
-    destination_consumers: HashMap<ComponentId, (mpsc::Sender<EventsBuffer>, EventsConsumer)>,
-    encoder_consumers: HashMap<ComponentId, (mpsc::Sender<EventsBuffer>, EventsConsumer)>,
+    destination_consumers: HashMap<ComponentId, (tachyonix::Sender<EventsBuffer>, EventsConsumer)>,
+    encoder_consumers: HashMap<ComponentId, (tachyonix::Sender<EventsBuffer>, EventsConsumer)>,
     encoder_dispatchers: HashMap<ComponentId, PayloadsDispatcher>,
-    forwarder_consumers: HashMap<ComponentId, (mpsc::Sender<PayloadsBuffer>, PayloadsConsumer)>,
+    forwarder_consumers: HashMap<ComponentId, (tachyonix::Sender<PayloadsBuffer>, PayloadsConsumer)>,
 }
 
 impl ComponentInterconnects {
@@ -527,7 +524,7 @@ impl ComponentInterconnects {
         }
     }
 
-    fn get_or_create_events_sender(&mut self, component_id: TypedComponentId) -> mpsc::Sender<EventsBuffer> {
+    fn get_or_create_events_sender(&mut self, component_id: TypedComponentId) -> tachyonix::Sender<EventsBuffer> {
         let (component_id, component_type, component_context) = component_id.into_parts();
         let interconnect_capacity = self.interconnect_capacity;
 
@@ -568,7 +565,7 @@ impl ComponentInterconnects {
         }
     }
 
-    fn get_or_create_payloads_sender(&mut self, component_id: TypedComponentId) -> mpsc::Sender<PayloadsBuffer> {
+    fn get_or_create_payloads_sender(&mut self, component_id: TypedComponentId) -> tachyonix::Sender<PayloadsBuffer> {
         let (component_id, component_type, component_context) = component_id.into_parts();
         let interconnect_capacity = self.interconnect_capacity;
 
@@ -590,16 +587,16 @@ impl ComponentInterconnects {
 
 fn build_events_consumer_pair(
     component_context: ComponentContext, interconnect_capacity: NonZeroUsize,
-) -> (mpsc::Sender<EventsBuffer>, EventsConsumer) {
-    let (sender, receiver) = mpsc::channel(interconnect_capacity.get());
+) -> (tachyonix::Sender<EventsBuffer>, EventsConsumer) {
+    let (sender, receiver) = tachyonix::channel(interconnect_capacity.get());
     let consumer = EventsConsumer::new(component_context, receiver);
     (sender, consumer)
 }
 
 fn build_payloads_consumer_pair(
     component_context: ComponentContext, interconnect_capacity: NonZeroUsize,
-) -> (mpsc::Sender<PayloadsBuffer>, PayloadsConsumer) {
-    let (sender, receiver) = mpsc::channel(interconnect_capacity.get());
+) -> (tachyonix::Sender<PayloadsBuffer>, PayloadsConsumer) {
+    let (sender, receiver) = tachyonix::channel(interconnect_capacity.get());
     let consumer = PayloadsConsumer::new(component_context, receiver);
     (sender, consumer)
 }
