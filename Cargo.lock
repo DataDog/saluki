@@ -2978,9 +2978,9 @@ dependencies = [
 
 [[package]]
 name = "quick_cache"
-version = "0.6.18"
+version = "0.6.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ada44a88ef953a3294f6eb55d2007ba44646015e18613d2f213016379203ef3"
+checksum = "5a70b1b8b47e31d0498ecbc3c5470bb931399a8bfed1fd79d1717a61ce7f96e3"
 dependencies = [
  "equivalent",
  "hashbrown 0.16.1",
