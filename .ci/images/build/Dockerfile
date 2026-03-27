@@ -35,7 +35,7 @@ COPY .ci/install-vault.sh /
 RUN chmod +x /install-vault.sh && /install-vault.sh
 
 # Install Rust and common Cargo tooling that we depend on.
-RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain ${RUST_VERSION}
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain ${RUST_VERSION}
 ENV PATH="/root/.cargo/bin:${PATH}"
 RUN rustup toolchain add nightly && \
     rustup component add clippy
