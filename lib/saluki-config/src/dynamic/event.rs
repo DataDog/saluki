@@ -1,16 +1,16 @@
 //! Defines the event type for configuration changes.
 
-use serde_json::Value as JsonValue;
+use facet_value::Value;
 
 /// An event that occurs when the configuration changes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct ConfigChangeEvent {
     /// The key that changed.
     pub key: String,
     /// The previous value, if any.
-    pub old_value: Option<JsonValue>,
+    pub old_value: Option<Value>,
     /// The new value.
-    pub new_value: Option<JsonValue>,
+    pub new_value: Option<Value>,
 }
 
 /// An update message for the dynamic configuration state, sent from the config stream to the updater task.
@@ -19,7 +19,7 @@ pub enum ConfigUpdate {
     /// A complete snapshot of the configuration.
     ///
     /// The existing state should be replaced.
-    Snapshot(serde_json::Value),
+    Snapshot(Value),
     /// A partial update for a single key-value pair.
     ///
     /// This should be merged into the existing state.
@@ -27,6 +27,6 @@ pub enum ConfigUpdate {
         /// The key to update.
         key: String,
         /// The new value.
-        value: serde_json::Value,
+        value: Value,
     },
 }

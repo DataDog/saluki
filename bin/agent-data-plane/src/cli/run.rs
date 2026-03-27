@@ -100,7 +100,7 @@ pub async fn handle_run_command(
                 .from_yaml(&bootstrap_config_path)
                 .error_context("Failed to load Datadog Agent configuration file.")?
                 .with_dynamic_configuration(ra_bootstrap.create_config_stream())
-                .add_providers([DatadogRemapper::new()])
+                .add_layers([DatadogRemapper::new().into_value()])
                 .from_environment(crate::internal::platform::DATADOG_AGENT_ENV_VAR_PREFIX)?
                 .with_default_secrets_resolution()
                 .await?

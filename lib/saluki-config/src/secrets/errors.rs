@@ -49,7 +49,7 @@ pub enum Error {
     #[snafu(display("failed to deserialize response from backend: {source}"))]
     FailedToDeserializeResponse {
         /// Error source.
-        source: serde_json::Error,
+        source: saluki_error::GenericError,
     },
 
     /// Failed to resolve secrets.

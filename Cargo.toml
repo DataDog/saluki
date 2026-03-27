@@ -86,7 +86,10 @@ async-compression = { version = "0.4.13", default-features = false, features = [
   "zstd",
 ] }
 bitmask-enum = { version = "2.2", default-features = false }
-figment = { version = "0.10", default-features = false }
+facet = { version = "0.44", default-features = false, features = ["std"] }
+facet-json = { version = "0.44", default-features = false }
+facet-value = { version = "0.44", default-features = false, features = ["std"] }
+facet-yaml = { version = "0.44", default-features = false }
 foldhash = { version = "0.2", default-features = false, features = ["std"] }
 headers = { version = "0.4", default-features = false }
 http = { version = "1", default-features = false }

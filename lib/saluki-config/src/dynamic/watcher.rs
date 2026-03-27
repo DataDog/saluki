@@ -2,11 +2,13 @@
 
 use std::future::pending as pending_forever;
 
+use facet_value::{Value, ValueType};
 use serde::de::DeserializeOwned;
 use tokio::sync::broadcast;
 use tracing::warn;
 
 use crate::dynamic::ConfigChangeEvent;
+use crate::value_to_json;
 
 /// A watcher for a specific configuration key.
 ///
@@ -36,18 +38,21 @@ impl FieldUpdateWatcher {
         loop {
             match rx.recv().await {
                 Ok(event) if event.key == self.key => {
-                    let old_ref = event.old_value.as_ref();
-                    let new_ref = event.new_value.as_ref();
-
-                    let old_t = old_ref.and_then(|ov| serde_json::from_value::<T>(ov.clone()).ok());
-                    let new_t = new_ref.and_then(|nv| serde_json::from_value::<T>(nv.clone()).ok());
+                    let old_t = event
+                        .old_value
+                        .as_ref()
+                        .and_then(|ov| serde_json::from_value::<T>(value_to_json(ov)).ok());
+                    let new_t = event
+                        .new_value
+                        .as_ref()
+                        .and_then(|nv| serde_json::from_value::<T>(value_to_json(nv)).ok());
 
                     if new_t.is_some() || old_t.is_some() {
                         return (old_t, new_t);
                     }
 
                     // If a new value was present but failed to deserialize, warn so we don't silently hide updates.
-                    if let Some(new_ref) = new_ref {
+                    if let Some(new_ref) = &event.new_value {
                         warn!(
                             key = %self.key,
                             expected = %std::any::type_name::<T>(),
@@ -75,36 +80,35 @@ impl FieldUpdateWatcher {
     }
 }
 
-fn get_type_name(value: &serde_json::Value) -> &'static str {
-    match value {
-        serde_json::Value::Null => "null",
-        serde_json::Value::Bool(_) => "bool",
-        serde_json::Value::Number(_) => "number",
-        serde_json::Value::String(_) => "string",
-        serde_json::Value::Array(_) => "array",
-        serde_json::Value::Object(_) => "object",
+fn get_type_name(value: &Value) -> &'static str {
+    match value.value_type() {
+        ValueType::Null => "null",
+        ValueType::Bool => "bool",
+        ValueType::Number => "number",
+        ValueType::String => "string",
+        ValueType::Array => "array",
+        ValueType::Object => "object",
+        ValueType::Bytes => "bytes",
+        ValueType::DateTime => "datetime",
+        ValueType::QName => "qname",
+        ValueType::Uuid => "uuid",
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use facet_value::{value, Value};
+
     use crate::dynamic::event::ConfigUpdate;
     use crate::ConfigurationLoader;
 
     #[tokio::test]
     async fn test_basic_field_update_watcher() {
-        let (cfg, sender) = ConfigurationLoader::for_tests(
-            Some(serde_json::json!({ "foobar": { "a": false, "b": "c" } })),
-            None,
-            true,
-        )
-        .await;
+        let (cfg, sender) =
+            ConfigurationLoader::for_tests(Some(value!({ "foobar": { "a": false, "b": "c" } })), None, true).await;
         let sender = sender.expect("sender should exist");
 
-        sender
-            .send(ConfigUpdate::Snapshot(serde_json::json!({})))
-            .await
-            .unwrap();
+        sender.send(ConfigUpdate::Snapshot(value!({}))).await.unwrap();
         cfg.ready().await;
 
         let mut watcher = cfg.watch_for_updates("watched_key");
@@ -112,7 +116,7 @@ mod tests {
         sender
             .send(ConfigUpdate::Partial {
                 key: "watched_key".to_string(),
-                value: serde_json::json!("hello"),
+                value: Value::from("hello"),
             })
             .await
             .unwrap();
@@ -127,18 +131,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_field_update_watcher_nested_key() {
-        let (cfg, sender) = ConfigurationLoader::for_tests(
-            Some(serde_json::json!({ "foobar": { "a": false, "b": "c" } })),
-            None,
-            true,
-        )
-        .await;
+        let (cfg, sender) =
+            ConfigurationLoader::for_tests(Some(value!({ "foobar": { "a": false, "b": "c" } })), None, true).await;
         let sender = sender.expect("sender should exist");
 
-        sender
-            .send(ConfigUpdate::Snapshot(serde_json::json!({})))
-            .await
-            .unwrap();
+        sender.send(ConfigUpdate::Snapshot(value!({}))).await.unwrap();
         cfg.ready().await;
 
         let mut watcher = cfg.watch_for_updates("foobar.a");
@@ -147,7 +144,7 @@ mod tests {
         sender
             .send(ConfigUpdate::Partial {
                 key: "foobar.a".to_string(),
-                value: serde_json::json!(true),
+                value: Value::TRUE,
             })
             .await
             .unwrap();
@@ -166,18 +163,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_field_update_watcher_parent_update() {
-        let (cfg, sender) = ConfigurationLoader::for_tests(
-            Some(serde_json::json!({ "foobar": { "a": false, "b": "c" } })),
-            None,
-            true,
-        )
-        .await;
+        let (cfg, sender) =
+            ConfigurationLoader::for_tests(Some(value!({ "foobar": { "a": false, "b": "c" } })), None, true).await;
         let sender = sender.expect("sender should exist");
 
-        sender
-            .send(ConfigUpdate::Snapshot(serde_json::json!({})))
-            .await
-            .unwrap();
+        sender.send(ConfigUpdate::Snapshot(value!({}))).await.unwrap();
         cfg.ready().await;
 
         let mut watcher = cfg.watch_for_updates("foobar.a");
@@ -186,7 +176,7 @@ mod tests {
         sender
             .send(ConfigUpdate::Partial {
                 key: "foobar".to_string(),
-                value: serde_json::json!({ "a": true }),
+                value: value!({ "a": true }),
             })
             .await
             .unwrap();

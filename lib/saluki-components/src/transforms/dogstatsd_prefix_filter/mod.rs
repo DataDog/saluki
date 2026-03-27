@@ -281,7 +281,7 @@ impl Transform for DogStatsDPrefixFilter {
 }
 #[cfg(test)]
 mod tests {
-    use saluki_config::{dynamic::ConfigUpdate, ConfigurationLoader};
+    use saluki_config::{dynamic::ConfigUpdate, value::value, ConfigurationLoader};
 
     use super::*;
 
@@ -388,12 +388,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_metric_blocklist_dynamic_update() {
-        let (cfg, sender) = ConfigurationLoader::for_tests(Some(serde_json::json!({})), None, true).await;
+        let (cfg, sender) = ConfigurationLoader::for_tests(Some(value!({})), None, true).await;
         let sender = sender.expect("sender should exist");
-        sender
-            .send(ConfigUpdate::Snapshot(serde_json::json!({})))
-            .await
-            .unwrap();
+        sender.send(ConfigUpdate::Snapshot(value!({}))).await.unwrap();
 
         cfg.ready().await;
 
@@ -416,7 +413,7 @@ mod tests {
         sender
             .send(ConfigUpdate::Partial {
                 key: "statsd_metric_blocklist".to_string(),
-                value: serde_json::json!(["foo".to_string()]),
+                value: value!(["foo"]),
             })
             .await
             .unwrap();
@@ -447,7 +444,7 @@ mod tests {
         sender
             .send(ConfigUpdate::Partial {
                 key: "metric_filterlist".to_string(),
-                value: serde_json::json!(["baz".to_string()]),
+                value: value!(["baz"]),
             })
             .await
             .unwrap();
