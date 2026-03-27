@@ -537,6 +537,10 @@ impl<'a> Iterator for BaseIndexIter<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeSet, HashSet};
+
+    use proptest::{prelude::*, prop_oneof};
+
     use super::*;
 
     /// Helper: create a SharedTagSet from static tag strings.
@@ -878,15 +882,6 @@ mod tests {
         ts.insert_tag(Tag::from("c:3"));
         assert_eq!(ts.len(), 3);
     }
-}
-
-#[cfg(test)]
-mod proptests {
-    use std::collections::BTreeSet;
-
-    use proptest::prelude::*;
-
-    use super::*;
 
     /// Operations we can apply to a TagSet.
     #[derive(Clone, Debug)]
@@ -907,23 +902,23 @@ mod proptests {
 
     /// Strategy for generating a random operation.
     fn arb_op() -> impl Strategy<Value = Op> {
-        prop_oneof![arb_tag().prop_map(Op::Insert), arb_key().prop_map(Op::RemoveByName),]
+        prop_oneof![arb_tag().prop_map(Op::Insert), arb_key().prop_map(Op::RemoveByName)]
     }
 
     /// Strategy for generating a group of tags (for one FrozenTagSet in the chain).
     fn arb_tag_group() -> impl Strategy<Value = Vec<String>> {
-        prop::collection::vec(arb_tag(), 0..10)
+        proptest::collection::vec(arb_tag(), 0..10)
     }
 
     /// Strategy for generating a base with 1-3 chained tag groups.
     fn arb_base_groups() -> impl Strategy<Value = Vec<Vec<String>>> {
-        prop::collection::vec(arb_tag_group(), 1..4)
+        proptest::collection::vec(arb_tag_group(), 1..4)
     }
 
     /// Build a SharedTagSet from multiple groups (each becomes a chained FrozenTagSet).
     /// Deduplicates exact tags across groups to avoid cross-chain duplicates.
     fn build_chained_base(groups: &[Vec<String>]) -> SharedTagSet {
-        let mut seen_tags = std::collections::HashSet::new();
+        let mut seen_tags = HashSet::new();
 
         let mut shared = {
             let ts: TagSet = groups[0]
@@ -979,7 +974,7 @@ mod proptests {
 
         #[test]
         #[cfg_attr(miri, ignore)]
-        fn overlay_matches_reference(
+        fn property_test_overlay_matches_reference(
             base_groups in arb_base_groups(),
             ops in prop::collection::vec(arb_op(), 0..20),
         ) {
