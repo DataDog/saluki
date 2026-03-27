@@ -6,7 +6,7 @@ use otlp_common::any_value::Value::{ArrayValue, BoolValue, BytesValue, DoubleVal
 use otlp_protos::opentelemetry::proto::common::v1 as otlp_common;
 use otlp_protos::opentelemetry::proto::logs::v1::LogRecord;
 use otlp_protos::opentelemetry::proto::resource::v1::Resource;
-use saluki_context::tags::{SharedTagSet, TagSet};
+use saluki_context::tags::TagSet;
 use saluki_core::data_model::event::log::{Log, LogStatus};
 use serde_json::Value as JsonValue;
 use stringtheory::MetaString;
@@ -196,7 +196,7 @@ fn safe_insert(map: &mut HashMap<MetaString, JsonValue>, key: &str, value: JsonV
 
 pub fn transform_log_record(
     mut lr: LogRecord, resource: &Resource, scope: Option<&otlp_common::InstrumentationScope>,
-    record_host: Option<MetaString>, record_service: Option<MetaString>, mut tags: SharedTagSet,
+    record_host: Option<MetaString>, record_service: Option<MetaString>, mut tags: TagSet,
 ) -> Log {
     // Build additional properties map with resource, scope and record attributes
     let mut additional_properties = HashMap::new();
@@ -265,14 +265,12 @@ pub fn transform_log_record(
             k if k == DDTAGS_ATTR => {
                 if let Some(av) = kv.value.as_ref() {
                     if let Some(OtlpStringValue(s)) = av.value.as_ref() {
-                        let mut extra = TagSet::default();
                         for raw in s.split(',') {
                             let t = raw.trim();
                             if !t.is_empty() {
-                                extra.insert_tag(t);
+                                tags.insert_tag(t);
                             }
                         }
-                        tags.extend_from_shared(&extra.into_shared());
                     }
                 }
             }

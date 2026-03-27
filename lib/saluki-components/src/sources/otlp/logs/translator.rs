@@ -5,7 +5,7 @@ use otlp_protos::opentelemetry::proto::common::v1::InstrumentationScope;
 use otlp_protos::opentelemetry::proto::logs::v1::{LogRecord, ResourceLogs as OtlpResourceLogs, ScopeLogs};
 use otlp_protos::opentelemetry::proto::resource::v1::Resource;
 use saluki_context::origin::OriginTagsResolver;
-use saluki_context::tags::{SharedTagSet, Tag};
+use saluki_context::tags::{Tag, TagSet};
 use saluki_core::data_model::event::Event;
 use stringtheory::MetaString;
 
@@ -22,7 +22,7 @@ pub struct OtlpLogsTranslator {
     resource: Resource,
     host: Option<MetaString>,
     service: Option<MetaString>,
-    attribute_tags: SharedTagSet,
+    attribute_tags: TagSet,
     scope_logs: IntoIter<ScopeLogs>,
     current_scope_logs: Option<(Option<InstrumentationScope>, IntoIter<LogRecord>)>,
 }
@@ -43,18 +43,17 @@ impl OtlpLogsTranslator {
         let service = get_string_attribute(&resource.attributes, SERVICE_NAME).map(MetaString::from);
         let mut attribute_tags = tags_from_attributes(&resource.attributes);
         attribute_tags.insert_tag(OTEL_SOURCE_TAG.clone());
-        let mut shared_attribute_tags = attribute_tags.into_shared();
         let origin = raw_origin_from_attributes(&resource.attributes);
         if let Some(resolver) = origin_tag_resolver {
             let origin_tags = resolver.resolve_origin_tags(origin);
-            shared_attribute_tags.extend_from_shared(&origin_tags);
+            attribute_tags.merge_shared(&origin_tags);
         }
 
         Self {
             resource,
             host,
             service,
-            attribute_tags: shared_attribute_tags,
+            attribute_tags,
             scope_logs: resource_logs.scope_logs.into_iter(),
             current_scope_logs: None,
         }

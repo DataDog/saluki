@@ -1,7 +1,7 @@
 //! Span concentrator for APM stats computation.
 
 use saluki_common::collections::FastHashMap;
-use saluki_context::tags::SharedTagSet;
+use saluki_context::tags::TagSet;
 use saluki_core::data_model::event::trace::Span;
 use saluki_core::data_model::event::trace_stats::{ClientStatsBucket, ClientStatsPayload};
 use stringtheory::MetaString;
@@ -70,7 +70,7 @@ pub struct InfraTags {
     /// Container ID from the tracer payload.
     pub container_id: MetaString,
     /// Container tags resolved from the container runtime.
-    pub container_tags: SharedTagSet,
+    pub container_tags: TagSet,
     /// Hash of the process tags string.
     pub process_tags_hash: u64,
     /// Process tags string from the tracer payload.
@@ -79,7 +79,7 @@ pub struct InfraTags {
 
 impl InfraTags {
     pub fn new(
-        container_id: impl Into<MetaString>, container_tags: SharedTagSet, process_tags: impl Into<MetaString>,
+        container_id: impl Into<MetaString>, container_tags: TagSet, process_tags: impl Into<MetaString>,
     ) -> Self {
         let process_tags: MetaString = process_tags.into();
         let process_tags_hash = process_tags_hash(process_tags.as_ref());
@@ -173,7 +173,7 @@ impl SpanConcentrator {
 
     pub fn flush(&mut self, now: u64, force: bool) -> Vec<ClientStatsPayload> {
         let mut m = FastHashMap::<PayloadAggregationKey, Vec<ClientStatsBucket>>::default();
-        let mut container_tags_by_id = FastHashMap::<MetaString, SharedTagSet>::default();
+        let mut container_tags_by_id = FastHashMap::<MetaString, TagSet>::default();
         let mut process_tags_by_hash = FastHashMap::<u64, MetaString>::default();
 
         let timestamps: Vec<u64> = self.buckets.keys().copied().collect();

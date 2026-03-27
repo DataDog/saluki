@@ -9,7 +9,7 @@ use saluki_api::{
     APIHandler, StatusCode,
 };
 use saluki_common::time::get_coarse_unix_timestamp;
-use saluki_context::tags::SharedTagSet;
+use saluki_context::tags::TagSet;
 use saluki_core::{
     components::{
         destinations::{Destination, DestinationBuilder, DestinationContext},
@@ -195,7 +195,7 @@ impl Destination for DogStatsDStats {
 #[derive(Eq, Hash, PartialEq, Serialize)]
 struct ContextNoOrigin {
     name: MetaString,
-    tags: SharedTagSet,
+    tags: TagSet,
 }
 #[derive(Deserialize)]
 struct StatsQueryParams {
