@@ -377,9 +377,9 @@ impl HealthRegistry {
 
 /// A guard that returns the response receiver back to the registry when dropped.
 ///
-/// This allows the health registry runner to be restarted gracefully - when the runner stops
-/// (either due to shutdown or an error), the receiver is returned to the registry state so
-/// that a subsequent call to `spawn()` can succeed.
+/// This allows the health registry runner to be restarted gracefully: whenever the runner task
+/// finishes and this guard is dropped (for example, after a shutdown or task cancellation), the
+/// receiver is returned to the registry state so that a subsequent call to `spawn()` can succeed.
 struct RunnerGuard {
     registry: Arc<Mutex<RegistryState>>,
     responses_rx: Option<mpsc::Receiver<LivenessResponse>>,
@@ -388,7 +388,7 @@ struct RunnerGuard {
 impl Drop for RunnerGuard {
     fn drop(&mut self) {
         if let Some(rx) = self.responses_rx.take() {
-            let mut inner = self.registry.lock().unwrap();
+            let mut inner = self.registry.lock().expect("registry state poisoned");
             inner.responses_rx = Some(rx);
             debug!("Returned response receiver to registry state.");
         }
