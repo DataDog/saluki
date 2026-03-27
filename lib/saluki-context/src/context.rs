@@ -5,7 +5,7 @@ use stringtheory::MetaString;
 
 use crate::{
     hash::{hash_context, ContextKey},
-    tags::{SharedTagSet, TagSet},
+    tags::TagSet,
 };
 
 const BASE_CONTEXT_SIZE: usize = std::mem::size_of::<Context>() + std::mem::size_of::<ContextInner>();
@@ -19,8 +19,8 @@ pub struct Context {
 impl Context {
     /// Creates a new `Context` from the given static name.
     pub fn from_static_name(name: &'static str) -> Self {
-        let tags = SharedTagSet::default();
-        let origin_tags = SharedTagSet::default();
+        let tags = TagSet::default();
+        let origin_tags = TagSet::default();
 
         let (key, _) = hash_context(name, &tags, &origin_tags);
         Self {
@@ -41,13 +41,13 @@ impl Context {
             tag_set.insert_tag(MetaString::from_static(tag));
         }
 
-        let origin_tags = SharedTagSet::default();
+        let origin_tags = TagSet::default();
 
         let (key, _) = hash_context(name, tags, &origin_tags);
         Self {
             inner: Arc::new(ContextInner {
                 name: MetaString::from_static(name),
-                tags: tag_set.into_shared(),
+                tags: tag_set,
                 origin_tags,
                 key,
                 active_count: Gauge::noop(),
@@ -56,9 +56,10 @@ impl Context {
     }
 
     /// Creates a new `Context` from the given name and given tags.
-    pub fn from_parts<S: Into<MetaString>>(name: S, tags: SharedTagSet) -> Self {
+    pub fn from_parts<S: Into<MetaString>>(name: S, tags: impl Into<TagSet>) -> Self {
         let name = name.into();
-        let origin_tags = SharedTagSet::default();
+        let tags = tags.into();
+        let origin_tags = TagSet::default();
         let (key, _) = hash_context(&name, &tags, &origin_tags);
         Self {
             inner: Arc::new(ContextInner {
@@ -162,12 +163,12 @@ impl Context {
     }
 
     /// Returns the instrumented tags of this context.
-    pub fn tags(&self) -> &SharedTagSet {
+    pub fn tags(&self) -> &TagSet {
         &self.inner.tags
     }
 
     /// Returns the origin tags of this context.
-    pub fn origin_tags(&self) -> &SharedTagSet {
+    pub fn origin_tags(&self) -> &TagSet {
         &self.inner.origin_tags
     }
 
@@ -233,14 +234,14 @@ impl fmt::Display for Context {
 pub(super) struct ContextInner {
     key: ContextKey,
     name: MetaString,
-    tags: SharedTagSet,
-    origin_tags: SharedTagSet,
+    tags: TagSet,
+    origin_tags: TagSet,
     active_count: Gauge,
 }
 
 impl ContextInner {
     pub fn from_parts(
-        key: ContextKey, name: MetaString, tags: SharedTagSet, origin_tags: SharedTagSet, active_count: Gauge,
+        key: ContextKey, name: MetaString, tags: TagSet, origin_tags: TagSet, active_count: Gauge,
     ) -> Self {
         Self {
             key,
@@ -309,8 +310,8 @@ mod tests {
     const SIZE_OF_CONTEXT_TAGS: &[&str] = &["size_of_test_tag1", "size_of_test_tag2"];
     const SIZE_OF_CONTEXT_ORIGIN_TAGS: &[&str] = &["size_of_test_origin_tag1", "size_of_test_origin_tag2"];
 
-    fn tag_set(tags: &[&str]) -> SharedTagSet {
-        tags.iter().map(|s| Tag::from(*s)).collect::<TagSet>().into_shared()
+    fn tag_set(tags: &[&str]) -> TagSet {
+        tags.iter().map(|s| Tag::from(*s)).collect::<TagSet>()
     }
 
     #[test]

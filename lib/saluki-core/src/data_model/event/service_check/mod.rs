@@ -1,7 +1,7 @@
 //! Service checks.
 
 use saluki_common::iter::ReusableDeduplicator;
-use saluki_context::tags::SharedTagSet;
+use saluki_context::tags::TagSet;
 use serde::{ser::SerializeMap as _, Serialize, Serializer};
 use stringtheory::MetaString;
 
@@ -32,8 +32,8 @@ pub struct ServiceCheck {
     timestamp: Option<u64>,
     hostname: MetaString,
     message: MetaString,
-    tags: SharedTagSet,
-    origin_tags: SharedTagSet,
+    tags: TagSet,
+    origin_tags: TagSet,
 }
 
 impl ServiceCheck {
@@ -73,12 +73,12 @@ impl ServiceCheck {
     }
 
     /// Returns the tags associated with the check.
-    pub fn tags(&self) -> &SharedTagSet {
+    pub fn tags(&self) -> &TagSet {
         &self.tags
     }
 
     /// Returns the origin tags associated with the check.
-    pub fn origin_tags(&self) -> &SharedTagSet {
+    pub fn origin_tags(&self) -> &TagSet {
         &self.origin_tags
     }
 
@@ -90,8 +90,8 @@ impl ServiceCheck {
             timestamp: None,
             hostname: MetaString::empty(),
             message: MetaString::empty(),
-            tags: SharedTagSet::default(),
-            origin_tags: SharedTagSet::default(),
+            tags: TagSet::default(),
+            origin_tags: TagSet::default(),
         }
     }
 
@@ -119,7 +119,7 @@ impl ServiceCheck {
     /// Set the tags of the service check
     ///
     /// This variant is specifically for use in builder-style APIs.
-    pub fn with_tags(mut self, tags: impl Into<SharedTagSet>) -> Self {
+    pub fn with_tags(mut self, tags: impl Into<TagSet>) -> Self {
         self.tags = tags.into();
         self
     }
@@ -138,8 +138,8 @@ impl ServiceCheck {
     /// Set the origin tags of the service check
     ///
     /// This variant is specifically for use in builder-style APIs.
-    pub fn with_origin_tags(mut self, origin_tags: SharedTagSet) -> Self {
-        self.origin_tags = origin_tags;
+    pub fn with_origin_tags(mut self, origin_tags: impl Into<TagSet>) -> Self {
+        self.origin_tags = origin_tags.into();
         self
     }
 }
@@ -221,8 +221,8 @@ impl TryFrom<u8> for CheckStatus {
 
 // Helper type to let us serialize deduplicated tags.
 struct DeduplicatedTagsSerializable<'a> {
-    tags: &'a SharedTagSet,
-    origin_tags: &'a SharedTagSet,
+    tags: &'a TagSet,
+    origin_tags: &'a TagSet,
 }
 
 impl<'a> Serialize for DeduplicatedTagsSerializable<'a> {
