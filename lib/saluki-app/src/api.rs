@@ -107,9 +107,9 @@ impl APIBuilder {
     ///
     /// This will enable TLS for the server, and the server will only accept connections that are encrypted with TLS.
     pub fn with_self_signed_tls(self) -> Self {
-        let CertifiedKey { cert, key_pair } = generate_simple_self_signed(["localhost".to_owned()]).unwrap();
+        let CertifiedKey { cert, signing_key } = generate_simple_self_signed(["localhost".to_owned()]).unwrap();
         let cert_chain = vec![cert.der().clone()];
-        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_pair.serialize_der()));
+        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(signing_key.serialize_der()));
 
         let config = ServerConfig::builder()
             .with_no_client_auth()
