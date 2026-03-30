@@ -10,6 +10,7 @@ use otlp_protos::opentelemetry::proto::metrics::v1::{
     metric::Data as OtlpMetricData, AggregationTemporality, DataPointFlags,
     HistogramDataPoint as OtlpHistogramDataPoint, Metric as OtlpMetric, NumberDataPoint as OtlpNumberDataPoint,
     ResourceMetrics as OtlpResourceMetrics,
+    SummaryDataPoint as OtlpSummaryDataPoint
 };
 use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_context::{ContextResolver, ContextResolverBuilder};
@@ -293,8 +294,13 @@ impl OtlpMetricsTranslator {
                         }
                     }
                 }
+                OtlpMetricData::Summary(summary) => {
+                    
+                    self.map_summary_metrics(base_dims, summary.data_points, &context);
+                    Vec::new()
+                }
                 _ => {
-                    // TODO: Handle Summary, etc.
+                    // ExponentialHistogram and future data types.
                     Vec::new()
                 }
             }
@@ -329,6 +335,51 @@ impl OtlpMetricsTranslator {
         }
     }
 
+    fn map_summary_metrics(
+        &mut self, base_dims: Dimensions, data_points: Vec<OtlpSummaryDataPoint>,
+        context: &TranslationContext,
+    ) -> Vec<Event> {
+        let mut events = Vec::new();
+        for dp in data_points {
+            if dp.flags & (DataPointFlags::NoRecordedValueMask as u32) != 0 {
+                continue;
+            }
+
+            let point_dims = base_dims.with_attribute_map(&dp.attributes);
+            let count_dims = point_dims.with_suffix("count");
+            let (delta, is_first_point, should_drop_point) =
+            self.prev_pts.monotonic_diff(&count_dims, dp.start_time_unix_nano, dp.time_unix_nano, dp.count as f64);
+
+            let sum_dims = point_dims.with_suffix("sum");
+            let (delta, is_first_point, should_drop_point) =
+                self.prev_pts.monotonic_diff(&sum_dims, dp.start_time_unix_nano, dp.time_unix_nano, dp.sum);
+
+            if is_skippable(dp.sum) {
+                debug!(
+                    metric_name = point_dims.name,
+                    dp.sum, "Skipping metric with unsupported value (NaN or Infinity)."
+                );
+                continue;
+            }
+
+        let ts = dp.time_unix_nano;
+        self.record_metric_event(&count_dims, dp.count as f64, ts, DataType::Count, &mut events, context);
+        self.record_metric_event(&sum_dims, dp.sum, ts,DataType::Count, &mut events, context); 
+        for quantile_val in &dp.quantile_values {
+            let quantile_dims = point_dims.add_tags(&[format!("quantile:{}", quantile_val.quantile)]).with_suffix("quantile");
+            let value = quantile_val.value;
+            if is_skippable(value) {
+                debug!(
+                    metric_name = point_dims.name,
+                    dp.sum, "Skipping metric with unsupported value (NaN or Infinity)."
+                );
+                continue;
+            }
+            self.record_metric_event(&quantile_dims, quantile_val.value, ts, DataType::Gauge, &mut events, context);
+        }
+        }
+        events
+    }
     /// Maps a slice of OTLP numeric data points to Saluki `Event`s.
     fn map_number_metrics(
         &mut self, base_dims: Dimensions, data_points: Vec<OtlpNumberDataPoint>, data_type: DataType,
