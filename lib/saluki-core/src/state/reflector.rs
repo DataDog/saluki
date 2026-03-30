@@ -28,7 +28,7 @@ struct StoreInner<P: Processor> {
 /// Shared state based on a processor.
 ///
 /// `Store` acts as the glue between a processor and the data that it processes. It acts as the entrypoint for taking in
-/// a a group of items from a data source, running them through the configured processor, and then notifying callers
+/// a group of items from a data source, running them through the configured processor, and then notifying callers
 /// that an update has taken place.
 struct Store<P: Processor> {
     inner: Arc<StoreInner<P>>,

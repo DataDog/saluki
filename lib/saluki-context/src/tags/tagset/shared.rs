@@ -104,7 +104,7 @@ impl SharedTagSet {
     /// This includes the size of the vector holding any chained tagsets as well as each individual tag.
     ///
     /// Additionally, the value returned by this method does not compensate for externalities such as whether or not
-    /// tags are are inlined, interned, or heap allocated. This means that the value returned is essentially the
+    /// tags are inlined, interned, or heap allocated. This means that the value returned is essentially the
     /// worst-case usage, and should be used as a rough estimate.
     pub fn size_of(&self) -> usize {
         // Calculate the size of the SharedTagSet, which includes the size of the SmallVec and the size of each Arc.

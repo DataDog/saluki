@@ -32,7 +32,7 @@
 //! memory that the component should use, regardless of the workload.
 //!
 //! Providing firm limits does require some additional thought and care, as a component needs to be
-//! able to actually limit itself in order to adhere to those limits. While determining the the
+//! able to actually limit itself in order to adhere to those limits. While determining the
 //! bounds themselves is out of scope for this crate, our other two prongs are meant to pick up the
 //! slack where memory bounds fall off.
 //!

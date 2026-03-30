@@ -126,7 +126,7 @@ impl Context {
     /// when this method is first called.
     ///
     /// Additionally, the value returned by this method does not compensate for externalities such as origin tags
-    /// potentially being shared by multiple contexts, or whether or not tags are are inlined, interned, or heap
+    /// potentially being shared by multiple contexts, or whether or not tags are inlined, interned, or heap
     /// allocated. This means that the value returned is essentially the worst-case usage, and should be used as a rough
     /// estimate.
     pub fn size_of(&self) -> usize {
