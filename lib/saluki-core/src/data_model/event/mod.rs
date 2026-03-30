@@ -151,7 +151,7 @@ impl Event {
         }
     }
 
-    /// Returns the inner event value, if this event is a `EventD`.
+    /// Returns the inner event value, if this event is an `EventD`.
     ///
     /// Otherwise, `None` is returned and the original event is consumed.
     pub fn try_into_eventd(self) -> Option<EventD> {
@@ -202,27 +202,27 @@ impl Event {
     }
 
     #[allow(unused)]
-    /// Returns `true` if the event is a metric.
+    /// Returns `true` if the event is a `Metric`.
     pub fn is_metric(&self) -> bool {
         matches!(self, Event::Metric(_))
     }
 
-    /// Returns `true` if the event is a eventd.
+    /// Returns `true` if the event is an `EventD`.
     pub fn is_eventd(&self) -> bool {
         matches!(self, Event::EventD(_))
     }
 
-    /// Returns `true` if the event is a service check.
+    /// Returns `true` if the event is a `ServiceCheck`.
     pub fn is_service_check(&self) -> bool {
         matches!(self, Event::ServiceCheck(_))
     }
 
-    /// Returns `true` if the event is a log.
+    /// Returns `true` if the event is a `Log`.
     pub fn is_log(&self) -> bool {
         matches!(self, Event::Log(_))
     }
 
-    /// Returns `true` if the event is a trace.
+    /// Returns `true` if the event is a `Trace`.
     pub fn is_trace(&self) -> bool {
         matches!(self, Event::Trace(_))
     }

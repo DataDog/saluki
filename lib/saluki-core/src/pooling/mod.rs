@@ -26,7 +26,7 @@ pub trait Clearable {
 /// (Self::Data), and the data itself is the actual value which gets pooled and reused.
 ///
 /// While somewhat incestuous, what this unlocks is the ability to use wrapping types to hide away the complexity of
-/// ensuring that data which is given from an objext pool is eventully returned and not lost. Otherwise, trying to do
+/// ensuring that data which is given from an object pool is eventually returned and not lost. Otherwise, trying to do
 /// something like using drop logic to send `T` back to an object pool would involve _replacing_ the value of `T` with a
 /// new value, which is not always possible, at least not without incurring additional allocations, which would negate
 /// the use of an object pool in the first place.

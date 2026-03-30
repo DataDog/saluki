@@ -26,7 +26,6 @@ use span_context::{SpanFilterContext, SpanFilterFamily};
 /// Configuration for the OTTL filter processor, loaded from the data plane config.
 #[derive(Clone, Debug)]
 pub struct OttlFilterConfiguration {
-    /// Parsed filter config (error_mode, traces.span, etc.).
     config: OttlFilterConfig,
 }
 

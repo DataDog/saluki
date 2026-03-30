@@ -280,7 +280,7 @@ not is_error or severity == "critical"
 
 ## OTTL Grammar
 
-Dedailed EBNF notation is located at _./docs/ebnf/ottl.ebnf_
+Detailed EBNF notation is located at _./docs/ebnf/ottl.ebnf_
 
 ### Root Expression
 
