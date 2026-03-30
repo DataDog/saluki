@@ -3,6 +3,8 @@ syntax = "proto3";
 package datadog.checks.v1;
 
 import "checks/v1/event.proto";
+import "checks/v1/event_platform_event.proto";
+import "checks/v1/histogram.proto";
 import "checks/v1/log.proto";
 import "checks/v1/metric.proto";
 import "checks/v1/service_check.proto";
@@ -13,15 +15,7 @@ message CheckData {
         datadog.checks.v1.log.Log log = 2;
         datadog.checks.v1.service_check.ServiceCheck service_check = 3;
         datadog.checks.v1.event.Event event = 4;
+        datadog.checks.v1.histogram.Histogram histogram = 5;
+        datadog.checks.v1.event_platform_event.EventPlatformEvent event_platform_event = 6;
     }
-}
-
-message SendCheckPayloadRequest {
-    repeated CheckData data = 1;
-}
-
-message SendCheckPayloadResponse {}
-
-service Checks {
-    rpc SendCheckPayload(SendCheckPayloadRequest) returns (SendCheckPayloadResponse);
 }
