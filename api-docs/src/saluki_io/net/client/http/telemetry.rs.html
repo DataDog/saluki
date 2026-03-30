@@ -33,8 +33,8 @@
 <a href=#33 id=33 data-nosnippet>33</a>///   (see note below on how this is calculated)
 <a href=#34 id=34 data-nosnippet>34</a>/// - `network_http_requests_errors_total`: The total number of HTTP requests that had an error, either during the
 <a href=#35 id=35 data-nosnippet>35</a>///   sending of the request or in the response. This is further broken down by the `error_type` label.
-<a href=#36 id=36 data-nosnippet>36</a>///   - For all responses with a status code greater than 400, `error_type` will be `client_error` and `code` will be a
-<a href=#37 id=37 data-nosnippet>37</a>///     stringified version of the status code.
+<a href=#36 id=36 data-nosnippet>36</a>///   - For all responses with a status code greater than 400, `error_type` will be `client_error` and `code` will be the
+<a href=#37 id=37 data-nosnippet>37</a>///     string version of the status code.
 <a href=#38 id=38 data-nosnippet>38</a>///   - When there is an error during the sending of the request, `error_type` will be `send_failed`.
 <a href=#39 id=39 data-nosnippet>39</a>///
 <a href=#40 id=40 data-nosnippet>40</a>/// All metrics are emitted with two base tags:

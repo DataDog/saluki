@@ -233,7 +233,7 @@
 <a href=#233 id=233 data-nosnippet>233</a>///
 <a href=#234 id=234 data-nosnippet>234</a>/// TODO: We should probably move this into `Compressor` itself, because it will also make it easier to do
 <a href=#235 id=235 data-nosnippet>235</a>/// per-compression-algorithm tweaks to the estimation logic if that's a path we want to take, and it also would be
-<a href=#236 id=236 data-nosnippet>236</a>/// cleaner and let us avoid any footguns around forgetting to update the necessary estimator state, etc.
+<a href=#236 id=236 data-nosnippet>236</a>/// cleaner and let us make it more misuse-resistant, in terms of forgetting to update the necessary estimator state, etc.
 <a href=#237 id=237 data-nosnippet>237</a></span><span class="attr">#[derive(Debug, Default)]
 <a href=#238 id=238 data-nosnippet>238</a></span><span class="kw">pub struct </span>CompressionEstimator {
 <a href=#239 id=239 data-nosnippet>239</a>    in_flight_uncompressed_len: usize,

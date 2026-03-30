@@ -13,8 +13,8 @@ non-4xx/5xx status code)</li>
 <li><code>network_http_requests_errors_total</code>: The total number of HTTP requests that had an error, either during the
 sending of the request or in the response. This is further broken down by the <code>error_type</code> label.
 <ul>
-<li>For all responses with a status code greater than 400, <code>error_type</code> will be <code>client_error</code> and <code>code</code> will be a
-stringified version of the status code.</li>
+<li>For all responses with a status code greater than 400, <code>error_type</code> will be <code>client_error</code> and <code>code</code> will be the
+string version of the status code.</li>
 <li>When there is an error during the sending of the request, <code>error_type</code> will be <code>send_failed</code>.</li>
 </ul>
 </li>

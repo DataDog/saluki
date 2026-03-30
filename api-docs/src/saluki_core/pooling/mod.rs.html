@@ -26,7 +26,7 @@
 <a href=#26 id=26 data-nosnippet>26</a>/// (Self::Data), and the data itself is the actual value which gets pooled and reused.
 <a href=#27 id=27 data-nosnippet>27</a>///
 <a href=#28 id=28 data-nosnippet>28</a>/// While somewhat incestuous, what this unlocks is the ability to use wrapping types to hide away the complexity of
-<a href=#29 id=29 data-nosnippet>29</a>/// ensuring that data which is given from an objext pool is eventully returned and not lost. Otherwise, trying to do
+<a href=#29 id=29 data-nosnippet>29</a>/// ensuring that data which is given from an object pool is eventually returned and not lost. Otherwise, trying to do
 <a href=#30 id=30 data-nosnippet>30</a>/// something like using drop logic to send `T` back to an object pool would involve _replacing_ the value of `T` with a
 <a href=#31 id=31 data-nosnippet>31</a>/// new value, which is not always possible, at least not without incurring additional allocations, which would negate
 <a href=#32 id=32 data-nosnippet>32</a>/// the use of an object pool in the first place.

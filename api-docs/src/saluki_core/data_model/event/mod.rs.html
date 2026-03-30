@@ -151,7 +151,7 @@
 <a href=#151 id=151 data-nosnippet>151</a>        }
 <a href=#152 id=152 data-nosnippet>152</a>    }
 <a href=#153 id=153 data-nosnippet>153</a>
-<a href=#154 id=154 data-nosnippet>154</a>    <span class="doccomment">/// Returns the inner event value, if this event is a `EventD`.
+<a href=#154 id=154 data-nosnippet>154</a>    <span class="doccomment">/// Returns the inner event value, if this event is an `EventD`.
 <a href=#155 id=155 data-nosnippet>155</a>    ///
 <a href=#156 id=156 data-nosnippet>156</a>    /// Otherwise, `None` is returned and the original event is consumed.
 <a href=#157 id=157 data-nosnippet>157</a>    </span><span class="kw">pub fn </span>try_into_eventd(<span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;EventD&gt; {
@@ -202,27 +202,27 @@
 <a href=#202 id=202 data-nosnippet>202</a>    }
 <a href=#203 id=203 data-nosnippet>203</a>
 <a href=#204 id=204 data-nosnippet>204</a>    <span class="attr">#[allow(unused)]
-<a href=#205 id=205 data-nosnippet>205</a>    </span><span class="doccomment">/// Returns `true` if the event is a metric.
+<a href=#205 id=205 data-nosnippet>205</a>    </span><span class="doccomment">/// Returns `true` if the event is a `Metric`.
 <a href=#206 id=206 data-nosnippet>206</a>    </span><span class="kw">pub fn </span>is_metric(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; bool {
 <a href=#207 id=207 data-nosnippet>207</a>        <span class="macro">matches!</span>(<span class="self">self</span>, Event::Metric(<span class="kw">_</span>))
 <a href=#208 id=208 data-nosnippet>208</a>    }
 <a href=#209 id=209 data-nosnippet>209</a>
-<a href=#210 id=210 data-nosnippet>210</a>    <span class="doccomment">/// Returns `true` if the event is a eventd.
+<a href=#210 id=210 data-nosnippet>210</a>    <span class="doccomment">/// Returns `true` if the event is an `EventD`.
 <a href=#211 id=211 data-nosnippet>211</a>    </span><span class="kw">pub fn </span>is_eventd(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; bool {
 <a href=#212 id=212 data-nosnippet>212</a>        <span class="macro">matches!</span>(<span class="self">self</span>, Event::EventD(<span class="kw">_</span>))
 <a href=#213 id=213 data-nosnippet>213</a>    }
 <a href=#214 id=214 data-nosnippet>214</a>
-<a href=#215 id=215 data-nosnippet>215</a>    <span class="doccomment">/// Returns `true` if the event is a service check.
+<a href=#215 id=215 data-nosnippet>215</a>    <span class="doccomment">/// Returns `true` if the event is a `ServiceCheck`.
 <a href=#216 id=216 data-nosnippet>216</a>    </span><span class="kw">pub fn </span>is_service_check(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; bool {
 <a href=#217 id=217 data-nosnippet>217</a>        <span class="macro">matches!</span>(<span class="self">self</span>, Event::ServiceCheck(<span class="kw">_</span>))
 <a href=#218 id=218 data-nosnippet>218</a>    }
 <a href=#219 id=219 data-nosnippet>219</a>
-<a href=#220 id=220 data-nosnippet>220</a>    <span class="doccomment">/// Returns `true` if the event is a log.
+<a href=#220 id=220 data-nosnippet>220</a>    <span class="doccomment">/// Returns `true` if the event is a `Log`.
 <a href=#221 id=221 data-nosnippet>221</a>    </span><span class="kw">pub fn </span>is_log(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; bool {
 <a href=#222 id=222 data-nosnippet>222</a>        <span class="macro">matches!</span>(<span class="self">self</span>, Event::Log(<span class="kw">_</span>))
 <a href=#223 id=223 data-nosnippet>223</a>    }
 <a href=#224 id=224 data-nosnippet>224</a>
-<a href=#225 id=225 data-nosnippet>225</a>    <span class="doccomment">/// Returns `true` if the event is a trace.
+<a href=#225 id=225 data-nosnippet>225</a>    <span class="doccomment">/// Returns `true` if the event is a `Trace`.
 <a href=#226 id=226 data-nosnippet>226</a>    </span><span class="kw">pub fn </span>is_trace(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; bool {
 <a href=#227 id=227 data-nosnippet>227</a>        <span class="macro">matches!</span>(<span class="self">self</span>, Event::Trace(<span class="kw">_</span>))
 <a href=#228 id=228 data-nosnippet>228</a>    }

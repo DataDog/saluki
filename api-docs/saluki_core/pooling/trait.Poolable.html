@@ -10,7 +10,7 @@
 <p>This meta-trait is used to mark a type as being poolable, where the type itself wraps a piece of data
 (Self::Data), and the data itself is the actual value which gets pooled and reused.</p>
 <p>While somewhat incestuous, what this unlocks is the ability to use wrapping types to hide away the complexity of
-ensuring that data which is given from an objext pool is eventully returned and not lost. Otherwise, trying to do
+ensuring that data which is given from an object pool is eventually returned and not lost. Otherwise, trying to do
 something like using drop logic to send <code>T</code> back to an object pool would involve <em>replacing</em> the value of <code>T</code> with a
 new value, which is not always possible, at least not without incurring additional allocations, which would negate
 the use of an object pool in the first place.</p>
