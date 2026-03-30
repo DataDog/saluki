@@ -7,8 +7,8 @@ use serde::de::DeserializeOwned;
 use tokio::sync::broadcast;
 use tracing::warn;
 
+use crate::deserializer;
 use crate::dynamic::ConfigChangeEvent;
-use crate::value_to_json;
 
 /// A watcher for a specific configuration key.
 ///
@@ -41,11 +41,11 @@ impl FieldUpdateWatcher {
                     let old_t = event
                         .old_value
                         .as_ref()
-                        .and_then(|ov| serde_json::from_value::<T>(value_to_json(ov)).ok());
+                        .and_then(|ov| deserializer::from_value::<T>(ov).ok());
                     let new_t = event
                         .new_value
                         .as_ref()
-                        .and_then(|nv| serde_json::from_value::<T>(value_to_json(nv)).ok());
+                        .and_then(|nv| deserializer::from_value::<T>(nv).ok());
 
                     if new_t.is_some() || old_t.is_some() {
                         return (old_t, new_t);

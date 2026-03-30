@@ -3757,7 +3757,6 @@ dependencies = [
  "facet-yaml",
  "saluki-error",
  "serde",
- "serde_json",
  "snafu",
  "tempfile",
  "tokio",
