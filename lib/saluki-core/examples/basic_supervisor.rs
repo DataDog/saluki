@@ -143,7 +143,7 @@ impl Supervisable for MockWorker {
         let panic = self.panic;
         let shutdown_delay = self.shutdown_delay;
 
-        // This is where async initialization would happen, for example,:
+        // This is where async initialization would happen, for example:
         // let listener = TcpListener::bind(port).await
         //     .map_err(|e| InitializationError::Failed { source: e.into() })?;
 

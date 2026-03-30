@@ -10,9 +10,9 @@ doing so in a performant, reliable, and efficient way.
 
 In Saluki, users construct a **topology**, which is a collection of uniquely identified
 **components** connected together in a directed, acyclic graph. This just means that components send
-data to each other in a single direction, like a pipeline of Unix commands (for example, `cat messages |
-grep error | wc -l`), and that there can be no cycles between components (for example, componentA ->
-component B -> component A).
+data to each other in a single direction, like a pipeline of Unix commands (for example,
+`cat messages | grep error | wc -l`), and that there can be no cycles between components (for example,
+**componentA -> component B -> component A**).
 
 OK, so why does this matter? This structure allows components to be easily composed together, and it
 allow for a component to send data to multiple downstream components _or_ for a component to receive
