@@ -9,6 +9,11 @@
 //! - Delta encoding for index arrays to reduce payload size
 //! - Batch encoding - all metrics must be collected before serialization
 //! - Separate value columns for different numeric types (sint64, float32, float64)
+//!
+//! # Missing
+//!
+//! - Incrementally compressed blocks. This is a centerpiece of the implementation on the Agent side,
+//!   but we do this in a single shot as part of this initial implementation.
 
 mod constants;
 mod interner;
