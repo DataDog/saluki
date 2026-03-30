@@ -94,8 +94,9 @@ impl Context {
     /// Clones this context, and uses the given tags for the cloned context.
     ///
     /// The name and origin tags of this context are preserved.
-    pub fn with_tags(&self, tags: SharedTagSet) -> Self {
+    pub fn with_tags(&self, tags: impl Into<TagSet>) -> Self {
         let name = self.inner.name.clone();
+        let tags = tags.into();
         let origin_tags = self.inner.origin_tags.clone();
         let (key, _) = hash_context(&name, &tags, &origin_tags);
 
@@ -113,9 +114,10 @@ impl Context {
     /// Clones this context, and uses the given origin tags for the cloned context.
     ///
     /// The name and instrumented tags of this context are preserved.
-    pub fn with_origin_tags(&self, origin_tags: SharedTagSet) -> Self {
+    pub fn with_origin_tags(&self, origin_tags: impl Into<TagSet>) -> Self {
         let name = self.inner.name.clone();
         let tags = self.inner.tags.clone();
+        let origin_tags = origin_tags.into();
         let (key, _) = hash_context(&name, &tags, &origin_tags);
 
         Self {
@@ -133,8 +135,10 @@ impl Context {
     ///
     /// Preferred over two separate `with_tags` / `with_origin_tags` calls when both sets need to
     /// be replaced, as it halves the number of `Arc` allocations.
-    pub fn with_tags_and_origin_tags(&self, tags: SharedTagSet, origin_tags: SharedTagSet) -> Self {
+    pub fn with_tags_and_origin_tags(&self, tags: impl Into<TagSet>, origin_tags: impl Into<TagSet>) -> Self {
         let name = self.inner.name.clone();
+        let tags = tags.into();
+        let origin_tags = origin_tags.into();
         let (key, _) = hash_context(&name, &tags, &origin_tags);
 
         Self {
@@ -192,6 +196,17 @@ impl Context {
     /// The context key is automatically recomputed after the closure returns.
     pub fn with_origin_tags_mut(&mut self, f: impl FnOnce(&mut TagSet)) {
         self.mutate_inner(|inner| f(&mut inner.origin_tags));
+    }
+
+    /// Mutates both instrumented tags and origin tags via a single closure.
+    ///
+    /// Uses copy-on-write semantics: if this context shares its inner data with other clones, the
+    /// inner data is cloned first so that mutations do not affect other holders. If this context is
+    /// the sole owner, the mutation happens in place.
+    ///
+    /// The context key is recomputed once after the closure returns.
+    pub fn with_tag_sets_mut(&mut self, f: impl FnOnce(&mut TagSet, &mut TagSet)) {
+        self.mutate_inner(|inner| f(&mut inner.tags, &mut inner.origin_tags));
     }
 
     fn mutate_inner(&mut self, f: impl FnOnce(&mut ContextInner)) {
