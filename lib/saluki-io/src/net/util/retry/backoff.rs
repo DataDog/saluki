@@ -8,7 +8,7 @@ use rand::{rng, Rng as _, RngCore};
 
 #[derive(Clone)]
 pub enum BackoffRng {
-    /// A lazily-initialized, thread-local CSPRNG seeded by the operating system.
+    /// A lazily initialized, thread-local CSPRNG seeded by the operating system.
     ///
     /// Provided by [`rand::ThreadRng`][rand_threadrng].
     ///
@@ -102,7 +102,7 @@ impl ExponentialBackoff {
     /// Useful for testing purposes, where the RNG must be overridden to add determinism. The RNG is shared atomically
     /// behind a mutex, allowing it to be cloned, so care should be taken to never use this outside of tests.
     ///
-    /// Defaults to a lazily-initialized, thread-local CSPRNG seeded by the operating system.
+    /// Defaults to a lazily initialized, thread-local CSPRNG seeded by the operating system.
     pub fn with_rng<R>(self, rng: R) -> Self
     where
         R: RngCore + Send + Sync + 'static,
