@@ -4,13 +4,13 @@ The OTTL transform processor is a Saluki data-plane component that mutates span 
 
 ## How it works
 
-- The component runs as a **synchronous transform** in the pipeline: it receives an event buffer (e.g. traces) and mutates it in place.
+- The component runs as a **synchronous transform** in the pipeline: it receives an event buffer (for example, traces) and mutates it in place.
 - For each trace, it evaluates a list of OTTL **statements** against every span. Statements execute **sequentially**: later statements can read values set by earlier ones.
 - Currently the only supported editor function is **`set`**, which assigns a value to a span attribute. Statements may include an optional **`where`** clause; the editor runs only when the condition matches (or when the `where` clause is absent).
 - `attributes` (span-level) is **read-write**: `set` can create, overwrite, or remove attributes. `resource.attributes` (trace resource tags) is **read-only**: it can be used in `where` conditions but cannot be written to.
-- Setting an attribute to `Nil` (e.g. referencing a non-existent attribute) **removes** the key from the span.
+- Setting an attribute to `Nil` (for example, referencing a non-existent attribute) **removes** the key from the span.
 - Non-string values (integers, floats, booleans) are converted to their string representation when stored in span metadata.
-- When a statement fails to execute (e.g. type error, unsupported path), behavior is controlled by **`error_mode`**: `ignore` (log and continue), `silent` (continue without logging), or `propagate` (stop processing further statements for the span, and log an error).
+- When a statement fails to execute (for example, type error, unsupported path), behavior is controlled by **`error_mode`**: `ignore` (log and continue), `silent` (continue without logging), or `propagate` (stop processing further statements for the span, and log an error).
 
 ## Comparison with the OpenTelemetry transformprocessor
 
@@ -27,7 +27,7 @@ The OpenTelemetry Collector Contrib [transformprocessor](https://github.com/open
 | **`error_mode`** | `ignore`, `silent`, `propagate` (default: `propagate`) | **Supported** (same options and default) |
 | **Statement execution order** | Sequential, each statement sees prior mutations | **Same** |
 | **`where` clauses** | Supported | **Supported** |
-| **OTTL paths (span context)** | Full [Span](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/pkg/ottl/contexts/ottlspan/README.md) context (e.g. `name`, `attributes`, `resource.attributes`, timestamps, status, etc.) | **Subset**: `attributes` (read-write), `resource.attributes` (read-only). Other Span fields (e.g. `name`, `start_time`, `end_time`, `status`) are **not** exposed yet. |
+| **OTTL paths (span context)** | Full [Span](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/pkg/ottl/contexts/ottlspan/README.md) context (for example, `name`, `attributes`, `resource.attributes`, timestamps, status, etc.) | **Subset**: `attributes` (read-write), `resource.attributes` (read-only). Other Span fields (for example, `name`, `start_time`, `end_time`, `status`) are **not** exposed yet. |
 | **Config structure** | Nested (`context` + `statements` list) | Flat list of statement strings under `trace_statements` |
 
 In short: **supported** today are span-level transformations via `trace_statements`, the `set` editor function, `where` clauses, the same `error_mode` behavior, and sequential execution semantics. **Not supported** are span events, metrics, logs, editor functions other than `set`, converter functions, and the full Span OTTL context (only `attributes` and `resource.attributes` are available).
@@ -38,7 +38,7 @@ Configuration is read from the data-plane generic configuration. The OTTL transf
 
 ### Configuration key
 
-The component reads the transform config from the **`ottl_transform_config`** key at the top level of the data-plane configuration (e.g. in a Saluki or ADP config file).
+The component reads the transform config from the **`ottl_transform_config`** key at the top level of the data-plane configuration (for example, in a Saluki or ADP config file).
 
 ### Structure
 

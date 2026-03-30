@@ -11,7 +11,7 @@ use crate::canonical::error::ProtoConversionError;
 ///
 /// Use this store when:
 /// - You need bounded memory usage
-/// - Higher quantiles (e.g., p95, p99) are more important than lower quantiles
+/// - Higher quantiles (for example, p95, p99) are more important than lower quantiles
 /// - You're tracking latencies or other metrics where the tail matters most
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CollapsingLowestDenseStore {

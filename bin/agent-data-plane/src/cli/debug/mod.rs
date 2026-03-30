@@ -34,7 +34,7 @@ pub struct ResetLogLevelCommand {}
 #[derive(FromArgs, Debug)]
 #[argh(subcommand, name = "set-log-level")]
 pub struct SetLogLevelCommand {
-    /// filter directives to apply (e.g. `INFO`, `DEBUG`, `TRACE`, `WARN`, `ERROR`)
+    /// filter directives to apply (for example, `INFO`, `DEBUG`, `TRACE`, `WARN`, `ERROR`)
     #[argh(option)]
     pub filter_directives: String,
 
@@ -52,7 +52,7 @@ pub struct ResetMetricLevelCommand {}
 #[derive(FromArgs, Debug)]
 #[argh(subcommand, name = "set-metric-level")]
 pub struct SetMetricLevelCommand {
-    /// metric level filter to apply (e.g. `INFO`, `DEBUG`, `TRACE`, `WARN`, `ERROR`)
+    /// metric level filter to apply (for example, `INFO`, `DEBUG`, `TRACE`, `WARN`, `ERROR`)
     #[argh(option)]
     pub level: String,
 

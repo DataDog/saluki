@@ -13,7 +13,7 @@ pub use self::context::TransformContext;
 
 /// A transform.
 ///
-/// Transforms sit in the middle of a topology, where events can be manipulated (e.g. sampled, filtered, enriched)
+/// Transforms sit in the middle of a topology, where events can be manipulated (for example, sampled, filtered, enriched)
 /// before being sent to the next component(s) in the topology. Examples of typical transforms include origin
 /// enrichment, aggregation, and sampling.
 #[async_trait]

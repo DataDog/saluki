@@ -504,7 +504,7 @@ impl MetricsEndpointEncoder {
     ///
     /// These tags are added in a deduplicated fashion, the same as instrumented tags and origin tags. This is an
     /// optimized codepath for tag inclusion in high-volume scenarios, where creating new additional contexts
-    /// through the traditional means (e.g., `ContextResolver`) would be too expensive.
+    /// through the traditional means (for example, `ContextResolver`) would be too expensive.
     pub fn with_additional_tags(mut self, additional_tags: SharedTagSet) -> Self {
         self.additional_tags = additional_tags;
         self

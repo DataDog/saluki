@@ -120,7 +120,7 @@ pub struct EndpointConfiguration {
     /// The full URL base to send metrics to.
     ///
     /// This takes precedence over `site`, and is not altered in any way. This can be useful to specifying the exact
-    /// endpoint used, such as when looking to change the scheme (e.g. `http` vs `https`) or specifying a custom port,
+    /// endpoint used, such as when looking to change the scheme (for example, `http` vs `https`) or specifying a custom port,
     /// which are both useful when proxying traffic to an intermediate destination before forwarding to Datadog.
     ///
     /// Defaults to unset.
@@ -187,10 +187,10 @@ pub struct ResolvedEndpoint {
     endpoint: Url,
     api_key: String,
     config: Option<GenericConfiguration>,
-    /// Pre-computed logs intake authority (e.g., `agent-http-intake.logs.datadoghq.com`).
+    /// Pre-computed logs intake authority (for example, `agent-http-intake.logs.datadoghq.com`).
     /// This is derived from the endpoint host when it contains `.agent.` marker.
     logs_authority: Option<Authority>,
-    /// Pre-computed traces intake authority (e.g., `trace.agent.datadoghq.com`).
+    /// Pre-computed traces intake authority (for example, `trace.agent.datadoghq.com`).
     /// This is derived from the endpoint host when it contains `.agent.` marker.
     traces_authority: Option<Authority>,
 }
@@ -375,7 +375,7 @@ fn calculate_resolved_endpoint(
 
 /// Computes the logs intake authority from a resolved endpoint URL.
 ///
-/// If the endpoint host contains the `.agent.` marker (e.g., `7-52-0-adp.agent.datadoghq.com`),
+/// If the endpoint host contains the `.agent.` marker (for example, `7-52-0-adp.agent.datadoghq.com`),
 /// this extracts the site suffix and constructs the logs intake host in the form
 /// `agent-http-intake.logs.{site}`.
 ///

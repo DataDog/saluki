@@ -158,14 +158,14 @@ reference. Workspace crates use underscores in symbols but hyphens in `Cargo.tom
 - Check if heavy transitive deps are being pulled in: `cargo tree -i <crate>`
 - Check if unnecessary Cargo features are enabled: `cargo tree -p agent-data-plane -f '{p} {f}' | grep <crate>`
 - Research whether a lighter alternative crate exists
-- Check if feature flags could reduce scope (e.g., disabling default features)
+- Check if feature flags could reduce scope (for example, disabling default features)
 
 ### For workspace crates
 
 - Examine whether size comes from **monomorphized generics**: look for many instantiations of the
   same function with different type parameters in the symbol list. A tell-tale sign is seeing the
   same function name repeated with different type suffixes.
-- Check for **large inline code** or **embedded data** (e.g., HTML templates, lookup tables).
+- Check for **large inline code** or **embedded data** (for example, HTML templates, lookup tables).
 - For monomorphization issues: evaluate whether type-erasure (`dyn Trait`, `Box<dyn ...>`) or
   consolidating generic instantiations could reduce code size. Reference the recent work on
   `saluki-io` where `HttpClient` was refactored to use type-erased `ClientBody` to reduce

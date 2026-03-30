@@ -1,6 +1,6 @@
 //! Standard OTTL editor functions.
 //!
-//! Editors are callback functions invoked as top-level OTTL statements (e.g. `set(target, value)`).
+//! Editors are callback functions invoked as top-level OTTL statements (for example, `set(target, value)`).
 //! This module provides the set of editors defined by the
 //! [OpenTelemetry Transformation Language specification][ottl-funcs] so that integrators can
 //! bootstrap a [`CallbackMap`] without re-implementing common logic.

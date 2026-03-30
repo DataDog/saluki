@@ -116,7 +116,7 @@ enum StreamInner {
 /// A network stream.
 ///
 /// `Stream` provides an abstraction over connectionless and connection-oriented network sockets. In many cases, it is
-/// not required to know the exact socket family (e.g. TCP, UDP, Unix domain socket) that is being used, and it can be
+/// not required to know the exact socket family (for example, TCP, UDP, Unix domain socket) that is being used, and it can be
 /// beneficial to allow abstracting over the differences to facilitate simpler code.
 ///
 /// ## Connection-oriented mode

@@ -294,7 +294,7 @@ impl<M: IndexMapping + Default, S: Store + Default> Default for DDSketch<M, S> {
     }
 }
 
-/// A DDSketch optimized for positive-only values (e.g., latencies, durations).
+/// A DDSketch optimized for positive-only values (for example, latencies, durations).
 ///
 /// This is a memory-optimized variant of [`DDSketch`] that eliminates the negative value store,
 /// saving 48 bytes per sketch instance. Use this when you know all values will be non-negative,

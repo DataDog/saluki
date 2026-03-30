@@ -206,7 +206,7 @@ def demangle_symbol(symbol: str) -> str:
     Handles trait implementation symbols like:
     _$LT$figment..value..de..ConfiguredValueDe$LT$I$GT$$u20$as$u20$serde_core..de..Deserializer$GT$::...
 
-    Returns the normalized module path (e.g., figment::value::de::ConfiguredValueDe).
+    Returns the normalized module path (for example, figment::value::de::ConfiguredValueDe).
     """
     result = demangle_escape_sequences(symbol)
 

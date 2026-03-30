@@ -101,7 +101,7 @@ pub struct ValkeyObfuscationConfig {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct SqlObfuscationConfig {
-    /// DBMS type (e.g., "postgresql", "mysql", "mssql", "sqlite").
+    /// DBMS type (for example, "postgresql", "mysql", "mssql", "sqlite").
     #[serde(default)]
     pub(crate) dbms: String,
 

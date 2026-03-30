@@ -9,7 +9,7 @@ SMP tests measure ADP's performance characteristics under various workloads. Eac
 - **Target configuration**: How ADP is configured (environment variables, resource limits)
 - **Load generation**: What traffic is sent to ADP (via [lading](https://github.com/DataDog/lading))
 - **Optimization goal**: What metric to optimize for (`cpu`, `memory`, or `ingress_throughput`)
-- **Quality checks**: Optional bounds on metrics (e.g., memory usage limits)
+- **Quality checks**: Optional bounds on metrics (for example, memory usage limits)
 
 ## Directory Structure
 
@@ -112,7 +112,7 @@ Configuration is merged in order: `global` → `template` → `experiment`
 
 ### Generator Merging
 
-The `lading.generator` list uses type-aware merging. If both the template and experiment define a generator of the same type (e.g., `unix_datagram`), their configurations are merged:
+The `lading.generator` list uses type-aware merging. If both the template and experiment define a generator of the same type (for example, `unix_datagram`), their configurations are merged:
 
 ```yaml
 # Template defines full generator config
@@ -154,7 +154,7 @@ Use `optimization_goal` (singular) for a single goal, or `optimization_goals` (p
 
 ## Custom Target Files
 
-Experiments can specify custom files to place in the target directory (named after `target.name`, e.g., `agent-data-plane/`). Files can be specified with inline content or copied from shared files.
+Experiments can specify custom files to place in the target directory (named after `target.name`, for example, `agent-data-plane/`). Files can be specified with inline content or copied from shared files.
 
 ### Inline Content
 

@@ -45,7 +45,7 @@ pub struct OtlpMetricsTranslatorConfig {
     pub instrumentation_scope_metadata_as_tags: bool,
     pub instrumentation_library_metadata_as_tags: bool,
     // Reports whether certain metrics that are only available when using
-    // the Datadog Agent should be obtained by remapping from OTEL counterparts (e.g.
+    // the Datadog Agent should be obtained by remapping from OTEL counterparts (for example,
     // container.* and system.* metrics). This configuration also enables with_otel_prefix.
     pub with_remapping: bool,
     //  Reports whether some OpenTelemetry metrics (ex: host metrics) should be

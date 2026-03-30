@@ -77,7 +77,7 @@ struct RemoteAgentClientConfiguration {
     /// used to verify the TLS server certificate presented by the Agent, and the certificate and private key will be
     /// used together to provide client authentication _to_ the Agent.
     ///
-    /// Defaults to `ipc_cert.pem` in the same directory as the Agent authentication token file. (e.g., if
+    /// Defaults to `ipc_cert.pem` in the same directory as the Agent authentication token file. (for example, if
     /// `auth_token_file_path` is `/etc/datadog-agent/auth_token`, this will be `/etc/datadog-agent/ipc_cert.pem`.)
     #[serde(default)]
     ipc_cert_file_path: Option<PathBuf>,

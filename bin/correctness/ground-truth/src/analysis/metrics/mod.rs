@@ -48,7 +48,7 @@ impl MetricsAnalyzer {
         // Make sure both the baseline and comparison targets emitted the same unique set of metrics.
         //
         // We don't yet care about the _values_ of those metrics, just that both sides are emitting the same contexts.
-        // We check both context and type, so metrics with the same name but different types (e.g., Count vs Rate) are
+        // We check both context and type, so metrics with the same name but different types (for example, Count vs Rate) are
         // treated as different.
         let (baseline_only_pairs, comparison_only_pairs) =
             NormalizedMetrics::context_differences(&baseline_metrics, &comparison_metrics);

@@ -216,7 +216,7 @@ mod tests {
         assert_eq!(result.parent(), custom_auth_token_path.as_path().parent());
         assert_eq!(result.file_name().and_then(|s| s.to_str()), Some("ipc_cert.pem"));
 
-        // If the auth token file path is somehow unset or invalid (e.g., no parent directory), we should use the same
+        // If the auth token file path is somehow unset or invalid (for example, no parent directory), we should use the same
         // logic but with the default Datadog Agent configuration directory.
         let result = get_ipc_cert_file_path(None, &invalid_auth_token_path);
         assert_eq!(result.parent(), Some(Path::new("/etc/datadog-agent")));

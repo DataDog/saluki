@@ -1,7 +1,7 @@
 //! Helper utilities for OTTL integrators.
 //!
 //! This module provides functions that implement common behavior expected when
-//! integrating OTTL (e.g. implementing [`crate::PathAccessor`]). Index resolution
+//! integrating OTTL (for example, implementing [`crate::PathAccessor`]). Index resolution
 //! is the integrator's responsibility; this helper is provided for convenience
 //! in tests and reference implementations.
 

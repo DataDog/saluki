@@ -1628,7 +1628,7 @@ impl PathAccessor<UnitFamily> for GetAtOverrideAccessor {
 
 #[test]
 fn test_path_indexes_use_get() {
-    // When a path has indexes (e.g. items[0]), the evaluator calls PathAccessor::get.
+    // When a path has indexes (for example, items[0]), the evaluator calls PathAccessor::get.
     // This test uses an accessor that overrides get to return 12345 when indexes are present;
     // we then assert items[0] == 12345 so that the default (get + apply_indexes) is not used.
     let editors = CallbackMap::new();

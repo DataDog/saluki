@@ -653,7 +653,7 @@ unsafe impl Sync for Inner {}
 ///
 /// Normally, developers will work with either `String` (owned) or `&str` (borrowed) when dealing with strings. In some
 /// cases, though, it can be useful to work with strings that use alternative storage, such as those that are atomically
-/// shared (e.g. `InternedString`). While using those string types themselves isn't complex, using them and _also_
+/// shared (for example, `InternedString`). While using those string types themselves isn't complex, using them and _also_
 /// supporting normal string types can be complex.
 ///
 /// `MetaString` is an opinionated string type that abstracts over the normal string types like `String` and `&str`

@@ -27,7 +27,7 @@ const DEFAULT_MAX_TLS12_RESUMPTION_SESSIONS: usize = 8;
 /// A certificate verifier that accepts all server certificates without validation.
 ///
 /// This is inherently insecure and should only be used for local/development connections where the
-/// server's identity is already established through other means (e.g. connecting via Unix domain socket
+/// server's identity is already established through other means (for example, connecting via Unix domain socket
 /// to a local process).
 #[derive(Debug)]
 struct AcceptAllServerCertVerifier {
@@ -101,7 +101,7 @@ impl ClientTLSConfigBuilder {
     /// Disables server certificate verification entirely.
     ///
     /// This is inherently insecure and should only be used for local/development connections where
-    /// the server's identity is already established through other means (e.g. connecting via Unix
+    /// the server's identity is already established through other means (for example, connecting via Unix
     /// domain socket to a local process).
     pub fn danger_accept_invalid_certs(mut self) -> Self {
         self.danger_accept_invalid_certs = true;

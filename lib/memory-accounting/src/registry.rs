@@ -203,7 +203,7 @@ impl ComponentRegistry {
     ///
     /// A number of invalid conditions are checked and will cause an error to be returned:
     ///
-    /// - when a component has invalid bounds (e.g. minimum required bytes higher than firm limit)
+    /// - when a component has invalid bounds (for example, minimum required bytes higher than firm limit)
     /// - when the combined total of the firm limit for all components exceeds the effective limit
     pub fn verify_bounds(&self, initial_grant: MemoryGrant) -> Result<VerifiedBounds, VerifierError> {
         let bounds = self.inner.lock().unwrap().as_bounds();

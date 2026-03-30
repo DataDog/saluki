@@ -1,7 +1,7 @@
 //! OTTL evaluation context for the transform processor.
 //!
 //! Provides path accessors for span fields (`attributes`, `resource.attributes`) so OTTL
-//! statements (e.g. `set(attributes["key"], "value")`) can read and write span data.
+//! statements (for example, `set(attributes["key"], "value")`) can read and write span data.
 //!
 //! Uses the OTTL library's [`EvalContextFamily`] (GAT-based) design: the parser is
 //! parameterized by [`SpanTransformFamily`], and at execution time a short-lived
@@ -108,7 +108,7 @@ impl PathAccessor<SpanTransformFamily> for SpanAttributesAccessor {
             }
             Ok(())
         } else {
-            Err("set on attributes requires a string index, e.g. attributes[\"key\"]".into())
+            Err("set on attributes requires a string index, for example, attributes[\"key\"]".into())
         }
     }
 }
