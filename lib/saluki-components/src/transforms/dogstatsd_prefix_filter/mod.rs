@@ -22,7 +22,7 @@ use tracing::{debug, error};
 ///
 /// Checks if a metric name should be allowed.
 #[derive(Deserialize)]
-pub struct DogstatsDPrefixFilterConfiguration {
+pub struct DogStatsDPrefixFilterConfiguration {
     #[serde(default, rename = "statsd_metric_namespace")]
     metric_prefix: String,
 
@@ -123,7 +123,7 @@ impl MemoryBounds for DogStatsDPrefixFilterConfiguration {
         // Capture the size of the heap allocation when the component is built.
         builder
             .minimum()
-            .with_single_value::<DogstatsDPrefixFilter>("component struct");
+            .with_single_value::<DogStatsDPrefixFilter>("component struct");
     }
 }
 

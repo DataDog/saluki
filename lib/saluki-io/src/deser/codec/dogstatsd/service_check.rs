@@ -26,7 +26,7 @@ pub struct ServiceCheckPacket<'a> {
 }
 
 pub fn parse_dogstatsd_service_check<'a>(
-    input: &'a [u8], config: &DogStatsDCodec,
+    input: &'a [u8], config: &DogStatsDCodecConfiguration,
 ) -> IResult<&'a [u8], ServiceCheckPacket<'a>> {
     let (remaining, (name, raw_check_status)) = preceded(
         tag(SERVICE_CHECK_PREFIX),

@@ -432,12 +432,12 @@ impl SourceBuilder for DogStatsDConfiguration {
         let context_resolvers = ContextResolvers::new(self, &context, maybe_origin_tags_resolver)
             .error_context("Failed to create context resolvers.")?;
 
-        let codec_config = DogstatsdCodecConfiguration::default()
+        let codec_config = DogStatsDCodecConfiguration::default()
             .with_timestamps(self.no_aggregation_pipeline_support)
             .with_permissive_mode(self.permissive_decoding)
             .with_minimum_sample_rate(self.minimum_sample_rate);
 
-        let codec = DogstatsdCodec::from_configuration(codec_config);
+        let codec = DogStatsDCodec::from_configuration(codec_config);
 
         let enable_payloads_filter = EnablePayloadsFilter::default()
             .with_allow_series(self.enable_payloads_series)

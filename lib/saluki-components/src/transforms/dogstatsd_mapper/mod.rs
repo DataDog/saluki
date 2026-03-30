@@ -253,7 +253,7 @@ impl SynchronousTransformBuilder for DogStatsDMapperConfiguration {
         let metric_mapper = self
             .dogstatsd_mapper_profiles
             .build(context, self.context_string_interner_bytes)?;
-        Ok(Box::new(DogstatsDMapper { metric_mapper }))
+        Ok(Box::new(DogStatsDMapper { metric_mapper }))
     }
 }
 
