@@ -33,8 +33,8 @@ pub type EndpointNameFn = dyn Fn(&Uri) -> Option<MetaString> + Send + Sync;
 ///   (see note below on how this is calculated)
 /// - `network_http_requests_errors_total`: The total number of HTTP requests that had an error, either during the
 ///   sending of the request or in the response. This is further broken down by the `error_type` label.
-///   - For all responses with a status code greater than 400, `error_type` will be `client_error` and `code` will be a
-///     stringified version of the status code.
+///   - For all responses with a status code greater than 400, `error_type` will be `client_error` and `code` will be the
+///     string version of the status code.
 ///   - When there is an error during the sending of the request, `error_type` will be `send_failed`.
 ///
 /// All metrics are emitted with two base tags:

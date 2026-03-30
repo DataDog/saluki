@@ -29,7 +29,6 @@ use span_context::{SpanTransformContext, SpanTransformFamily};
 /// Configuration for the OTTL Transform processor, loaded from the data plane config.
 #[derive(Clone, Debug)]
 pub struct OttlTransformConfiguration {
-    /// Parsed Transform config (error_mode, trace_statements, etc.).
     config: OttlTransformConfig,
 }
 

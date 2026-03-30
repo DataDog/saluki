@@ -274,7 +274,7 @@ impl InternerStorage {
         self.capacity.get() - self.len
     }
 
-    /// Returns the total number of bytes of continguous, unoccupied space at the end of the data buffer.
+    /// Returns the total number of bytes of contiguous, unoccupied space at the end of the data buffer.
     fn available_unoccupied(&self) -> usize {
         self.capacity.get() - self.offset
     }

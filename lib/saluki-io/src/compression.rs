@@ -233,7 +233,7 @@ impl<W: AsyncWrite> WriteStatistics for Compressor<W> {
 ///
 /// TODO: We should probably move this into `Compressor` itself, because it will also make it easier to do
 /// per-compression-algorithm tweaks to the estimation logic if that's a path we want to take, and it also would be
-/// cleaner and let us avoid any footguns around forgetting to update the necessary estimator state, etc.
+/// cleaner and let us make it more misuse-resistant, in terms of forgetting to update the necessary estimator state, etc.
 #[derive(Debug, Default)]
 pub struct CompressionEstimator {
     in_flight_uncompressed_len: usize,
