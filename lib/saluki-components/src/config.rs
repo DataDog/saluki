@@ -21,10 +21,7 @@ pub const KEY_ALIASES: &[(&str, &str)] = &[
 /// Remappings from environment variable names to canonical config keys.
 ///
 /// Matching is case-insensitive.
-const ENV_REMAPPINGS: &[(&str, &str)] = &[
-    ("http_proxy", "proxy_http"),
-    ("https_proxy", "proxy_https"),
-];
+const ENV_REMAPPINGS: &[(&str, &str)] = &[("http_proxy", "proxy_http"), ("https_proxy", "proxy_https")];
 
 /// A Figment provider that remaps standard environment variable names to canonical config keys.
 ///

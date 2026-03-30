@@ -270,8 +270,7 @@ mod tests {
 
     #[test]
     fn yaml_alias_does_not_overwrite_existing_flat_key() {
-        let mut value: YamlValue =
-            serde_yaml::from_str("proxy:\n  http: from-nested\nproxy_http: from-flat").unwrap();
+        let mut value: YamlValue = serde_yaml::from_str("proxy:\n  http: from-nested\nproxy_http: from-flat").unwrap();
         apply_key_aliases_yaml(&mut value, &[("proxy.http", "proxy_http")]);
         assert_eq!(value["proxy_http"].as_str(), Some("from-flat"));
     }

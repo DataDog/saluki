@@ -155,7 +155,7 @@ mod tests {
             env_vars,
             false,
             KEY_ALIASES,
-            || DatadogRemapper::new(),
+            DatadogRemapper::new,
         )
         .await;
         ForwarderConfiguration::from_configuration(&cfg).expect("ForwarderConfiguration should deserialize")
@@ -169,11 +169,8 @@ mod tests {
 
     #[tokio::test]
     async fn proxy_set_via_yaml_nested_config() {
-        let config = forwarder_config_from(
-            config_with(serde_json::json!({ "proxy": { "http": PROXY_A } })),
-            None,
-        )
-        .await;
+        let config =
+            forwarder_config_from(config_with(serde_json::json!({ "proxy": { "http": PROXY_A } })), None).await;
 
         let proxies = config.proxy().as_ref().unwrap().build().unwrap();
         assert_eq!(proxies[0].uri().to_string(), PROXY_A_URI);

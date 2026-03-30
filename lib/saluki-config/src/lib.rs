@@ -513,8 +513,7 @@ impl ConfigurationLoader {
     /// environment provider.
     ///
     /// The factory is called after test environment variables have been set, so any env var reads it performs
-    /// (e.g. in [`DatadogRemapper`][saluki_components::config::DatadogRemapper]) are consistent with the
-    /// test's env setup.
+    /// (e.g. in `DatadogRemapper`) are consistent with the test's env setup.
     ///
     /// This is generally only useful for testing purposes, and is exposed publicly in order to be used in cross-crate testing scenarios.
     pub async fn for_tests_with_provider_factory<P, F>(
@@ -530,7 +529,9 @@ impl ConfigurationLoader {
         let json_to_write = file_values.unwrap_or(serde_json::json!({}));
         serde_json::to_writer(&json_file, &json_to_write).expect("should not fail to write to temp file.");
 
-        let mut loader = ConfigurationLoader::default().with_key_aliases(key_aliases).try_from_json(path);
+        let mut loader = ConfigurationLoader::default()
+            .with_key_aliases(key_aliases)
+            .try_from_json(path);
         let mut maybe_sender = None;
         if enable_dynamic_configuration {
             let (sender, receiver) = tokio::sync::mpsc::channel(1);
