@@ -431,7 +431,7 @@ impl AllocationGroupRegistry {
     /// Registers a new allocation group with the given name.
     ///
     /// Returns an `AllocationGroupToken` that can be used to attribute allocations and deallocations to the
-    /// newly-created allocation group.
+    /// newly created allocation group.
     pub fn register_allocation_group<S>(&self, name: S) -> AllocationGroupToken
     where
         S: AsRef<str>,
