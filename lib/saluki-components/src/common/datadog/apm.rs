@@ -140,7 +140,7 @@ pub struct ApmConfig {
     #[serde(default = "default_compute_stats_by_span_kind")]
     compute_stats_by_span_kind: bool,
 
-    /// Enables aggregation of peer related tags (e.g., `peer.service`, `db.instance`, etc.) in the Agent.
+    /// Enables aggregation of peer related tags (for example, `peer.service`, `db.instance`, etc.) in the Agent.
     ///
     /// Defaults to `true`.
     #[serde(default = "default_peer_tags_aggregation")]

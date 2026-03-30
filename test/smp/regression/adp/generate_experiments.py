@@ -43,7 +43,7 @@ def get_generator_type(generator_item: dict) -> str | None:
     Get the type key from a generator item.
 
     Generator items are dicts with a single key indicating the type,
-    e.g., {"unix_datagram": {...}}, {"grpc": {...}}, {"http": {...}}
+    for example, {"unix_datagram": {...}}, {"grpc": {...}}, {"http": {...}}
     """
     if isinstance(generator_item, dict) and len(generator_item) == 1:
         return next(iter(generator_item.keys()))
@@ -345,7 +345,7 @@ def write_target_files(target_dir: Path, files_config: dict, base_path: Path) ->
     Write target configuration files.
 
     Args:
-        target_dir: Directory to write files to (e.g., cases/exp/agent-data-plane/)
+        target_dir: Directory to write files to (for example, cases/exp/agent-data-plane/)
         files_config: Dict mapping filename to file spec (content or source)
         base_path: Base path for resolving relative source paths (directory containing experiments.yaml)
     """
@@ -394,7 +394,7 @@ def write_experiment(
     lading_yaml = build_lading_yaml(config)
     (lading_dir / "lading.yaml").write_text(dump_yaml(lading_yaml))
 
-    # Write target directory files (e.g., agent-data-plane/)
+    # Write target directory files (for example, agent-data-plane/)
     target_name = config["target"]["name"]
     target_dir = experiment_dir / target_name
     target_dir.mkdir(exist_ok=True)

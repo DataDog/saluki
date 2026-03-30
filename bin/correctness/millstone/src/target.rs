@@ -23,7 +23,7 @@ enum TargetBackend {
 
 struct GrpcBackend {
     channel: Channel,
-    /// The full gRPC service/method path (e.g., "/opentelemetry.proto.collector.metrics.v1.MetricsService/Export")
+    /// The full gRPC service/method path (for example, "/opentelemetry.proto.collector.metrics.v1.MetricsService/Export")
     service_method_path: String,
 }
 

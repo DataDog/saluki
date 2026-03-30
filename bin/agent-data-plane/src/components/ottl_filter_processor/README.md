@@ -4,10 +4,10 @@ The OTTL filter processor is a Saluki data-plane component that drops spans when
 
 ## How it works
 
-- The component runs as a **synchronous transform** in the pipeline: it receives an event buffer (e.g. traces) and mutates it in place.
+- The component runs as a **synchronous transform** in the pipeline: it receives an event buffer (for example, traces) and mutates it in place.
 - For each trace, it evaluates a list of OTTL **span** conditions. Conditions are combined with logical OR: if **any** condition evaluates to `true` for a span, that span is **dropped** (removed from the trace).
 - Evaluation is **read-only**: the OTTL context exposes span attributes and resource attributes for reading only; no telemetry is modified, only filtered out.
-- When a condition fails to evaluate (e.g. type error, missing path), behavior is controlled by **`error_mode`**: `ignore` (log and continue), `silent` (continue without logging), or `propagate` (treat as match and drop the span, and log an error).
+- When a condition fails to evaluate (for example, type error, missing path), behavior is controlled by **`error_mode`**: `ignore` (log and continue), `silent` (continue without logging), or `propagate` (treat as match and drop the span, and log an error).
 
 ## Comparison with the OpenTelemetry filterprocessor
 
@@ -22,7 +22,7 @@ The OpenTelemetry Collector Contrib [filterprocessor](https://github.com/open-te
 | **Profiles** | Supported (`profiles.profile`) | **Not supported** |
 | **`error_mode`** | `ignore`, `silent`, `propagate` (default: `propagate`) | **Supported** (same options and default) |
 | **Condition semantics** | Any condition true → drop (logical OR) | **Same** |
-| **OTTL paths (span context)** | Full [Span](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/pkg/ottl/contexts/ottlspan/README.md) context (e.g. `name`, `attributes`, `resource.attributes`, timestamps, status, etc.) | **Subset**: `attributes`, `resource.attributes` only. Other Span fields (e.g. `name`, `start_time`, `end_time`, `status`) are **not** exposed yet. |
+| **OTTL paths (span context)** | Full [Span](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/pkg/ottl/contexts/ottlspan/README.md) context (for example, `name`, `attributes`, `resource.attributes`, timestamps, status, etc.) | **Subset**: `attributes`, `resource.attributes` only. Other Span fields (for example, `name`, `start_time`, `end_time`, `status`) are **not** exposed yet. |
 | **OTTL functions** | Full converter and condition function set | Depends on the Rust OTTL library in use; not all OTel functions may be available. |
 
 In short: **supported** today are span-level filtering via `traces.span`, the same `error_mode` behavior, and the same OR semantics. **Not supported** are span events, metrics, logs, profiles, and the full Span OTTL context (only `attributes` and `resource.attributes` are available).
@@ -33,7 +33,7 @@ Configuration is read from the data-plane generic configuration. The OTTL filter
 
 ### Configuration key
 
-The component reads the filter config from the **`ottl_filter_config`** key at the top level of the data-plane configuration (e.g. in a Saluki or ADP config file). Other paths (such as `data_plane.otlp.filter` or a Collector-style `processors.filter/ottl`) may be supported in the future for compatibility.
+The component reads the filter config from the **`ottl_filter_config`** key at the top level of the data-plane configuration (for example, in a Saluki or ADP config file). Other paths (such as `data_plane.otlp.filter` or a Collector-style `processors.filter/ottl`) may be supported in the future for compatibility.
 
 ### Structure
 

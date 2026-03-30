@@ -79,8 +79,8 @@ When writing or updating documentation, follow these guidelines. For full detail
 
 - What the field controls and its impact on behavior
 - The default value (explicitly stated)
-- Edge cases and boundary values (e.g., "If set to `0`, X is disabled")
-- Guidance for who should change it (e.g., "high-throughput workloads may increase this")
+- Edge cases and boundary values (for example, "If set to `0`, X is disabled")
+- Guidance for who should change it (for example, "high-throughput workloads may increase this")
 
 **Trade-offs**: Name both sides explicitly, quantify when possible, acknowledge workload dependency
 

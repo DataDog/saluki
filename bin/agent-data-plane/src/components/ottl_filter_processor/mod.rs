@@ -206,7 +206,7 @@ mod tests {
         assert_eq!(span_count_in_buffer(&buffer), 1, "default config must not drop spans");
     }
 
-    /// When `ottl_filter_config` is present but invalid (e.g. unknown fields), `from_configuration` returns an error.
+    /// When `ottl_filter_config` is present but invalid (for example, unknown fields), `from_configuration` returns an error.
     #[tokio::test]
     async fn from_configuration_invalid_yaml_returns_error() {
         let invalid = serde_json::json!({
@@ -409,7 +409,7 @@ mod tests {
         );
     }
 
-    /// With `error_mode: ignore`, when condition evaluation errors (e.g. type mismatch), the span is kept.
+    /// With `error_mode: ignore`, when condition evaluation errors (for example, type mismatch), the span is kept.
     #[tokio::test]
     async fn error_mode_ignore_eval_error_keeps_span() {
         let cfg_json = serde_json::json!({

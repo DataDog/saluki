@@ -48,7 +48,7 @@ impl DatadogConfiguration {
 
     /// Overrides the default endpoint that payloads are sent to.
     ///
-    /// This overrides any existing endpoint configuration, and manually sets the base endpoint (e.g.,
+    /// This overrides any existing endpoint configuration, and manually sets the base endpoint (for example,
     /// `https://api.datad0g.com`) to be used for all payloads.
     ///
     /// This can be used to preserve other configuration settings (forwarder settings, retry, etc) while still allowing

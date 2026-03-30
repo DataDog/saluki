@@ -62,7 +62,7 @@ pub enum ProcessError {
 /// Initialization errors.
 ///
 /// Initialization errors are distinct from runtime errors: they indicate that a process could not be started at all
-/// (e.g., failed to bind a port, missing configuration). These errors do NOT trigger restart logic; instead, they
+/// (for example, failed to bind a port, missing configuration). These errors do NOT trigger restart logic; instead, they
 /// immediately propagate up and fail the supervisor.
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
@@ -331,7 +331,7 @@ impl Supervisor {
     /// This provides runtime isolation, which can be useful for:
     /// - CPU-bound work that shouldn't block the parent's runtime
     /// - Isolating failures in one part of the system
-    /// - Using different runtime configurations (e.g., single-threaded vs multi-threaded)
+    /// - Using different runtime configurations (for example, single-threaded vs multi-threaded)
     pub fn with_dedicated_runtime(mut self, config: RuntimeConfiguration) -> Self {
         self.runtime_mode = RuntimeMode::Dedicated(config);
         self

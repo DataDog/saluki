@@ -48,7 +48,7 @@ pub struct Config {
     pub otlp_direct_analysis_mode: bool,
 
     /// When analysis mode is traces: additional span field paths to ignore when diffing baseline vs comparison.
-    /// Merged with the built-in list (SSI metadata, deprecated fields). Use for OTel vs ADP differences (e.g. `agent_metadata.target_tps`, `metrics._top_level`, `metrics._dd.measured`).
+    /// Merged with the built-in list (SSI metadata, deprecated fields). Use for OTel vs ADP differences (for example, `agent_metadata.target_tps`, `metrics._top_level`, `metrics._dd.measured`).
     #[serde(default)]
     pub additional_span_ignore_fields: Vec<String>,
 

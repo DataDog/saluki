@@ -85,11 +85,11 @@ impl DogStatsDCodecConfiguration {
     ///
     /// In permissive mode, the codec will attempt to parse as much of the input as possible, relying solely on
     /// structural markers (specific delimiting characters) to determine the boundaries of different parts of the
-    /// payload. This allows for decoding payloads with invalid contents (e.g., characters that are valid UTF-8, but
+    /// payload. This allows for decoding payloads with invalid contents (for example, characters that are valid UTF-8, but
     /// aren't within ASCII bounds, etc) such that the data plane can attempt to process them further.
     ///
-    /// Permissive mode does not allow for decoding payloads with structural errors (e.g., missing delimiters, etc) or
-    /// that cannot be safely handled internally (e.g., invalid UTF-8 characters for the metric name or tags).
+    /// Permissive mode does not allow for decoding payloads with structural errors (for example, missing delimiters, etc) or
+    /// that cannot be safely handled internally (for example, invalid UTF-8 characters for the metric name or tags).
     ///
     /// Defaults to `false`.
     pub fn with_permissive_mode(mut self, permissive: bool) -> Self {

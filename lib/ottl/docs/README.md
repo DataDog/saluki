@@ -126,8 +126,8 @@ pub type PathResolverMap<C> = HashMap<String, PathResolver<C>>;
 
 Trait for accessing values by path. Per the [OTTL spec](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/pkg/ottl/LANGUAGE.md#paths), **path interpretation (including path indexes) is the integrator's responsibility**. The context type `C` is a type parameter so that no type erasure or `'static` is required.
 
-- **Path with indexes** (e.g. `resource.attributes["key"]`, `items[0]`): the evaluator calls PathAccessor::get or PathAccessor::set with the path string and the index list; the implementor resolves path and indexes. For a typical "get base value then apply indexes" implementation, use [`ottl::helpers::apply_indexes`](crate::helpers::apply_indexes).
-- **Converter/editor return value with indexes** (e.g. `Split("a,b,c", ",")[0]`): the library applies indexes to the function result; the integrator does not handle this.
+- **Path with indexes** (for example, `resource.attributes["key"]`, `items[0]`): the evaluator calls PathAccessor::get or PathAccessor::set with the path string and the index list; the implementor resolves path and indexes. For a typical "get base value then apply indexes" implementation, use [`ottl::helpers::apply_indexes`](crate::helpers::apply_indexes).
+- **Converter/editor return value with indexes** (for example, `Split("a,b,c", ",")[0]`): the library applies indexes to the function result; the integrator does not handle this.
 
 ```rust
 // Index expression: string key ["key"] or integer index [0]
@@ -141,7 +141,7 @@ pub trait PathAccessor<C>: fmt::Debug {
     /// For a typical "get base value then apply indexes" implementation, use `ottl::helpers::apply_indexes`.
     fn get(&self, ctx: &C, path: &str, indexes: &[IndexExpr]) -> Result<Value>;
 
-    /// Set at path with optional indexes (empty = set whole path; non-empty = e.g. `my.list[0] = x`).
+    /// Set at path with optional indexes (empty = set whole path; non-empty = for example, `my.list[0] = x`).
     /// Must be implemented by the integrator including indexes resolution and interpretation.
     fn set(&self, ctx: &mut C, path: &str, indexes: &[IndexExpr], value: &Value) -> Result<()>;
 }
@@ -153,7 +153,7 @@ pub trait PathAccessor<C>: fmt::Debug {
 
 ### Creating a Parser
 
-The parser is generic over the context type `C`. Choose a concrete context type (e.g. `MyContext`, or `()` for expressions that do not use paths).
+The parser is generic over the context type `C`. Choose a concrete context type (for example, `MyContext`, or `()` for expressions that do not use paths).
 
 ```rust
 use ottl::{Parser, OttlParser, CallbackMap, EnumMap, PathResolver, PathResolverMap};
@@ -216,7 +216,7 @@ pub trait OttlParser<C> {
 
 ```rust
 // OTTL: set(body, "modified") where status_code >= 400
-// C is your context type (e.g. MyContext)
+// C is your context type (for example, MyContext)
 
 let mut editors = CallbackMap::<MyContext>::new();
 editors.insert("set".to_string(), Arc::new(|args: &mut dyn ottl::Args<MyContext>| {
@@ -230,7 +230,7 @@ editors.insert("set".to_string(), Arc::new(|args: &mut dyn ottl::Args<MyContext>
 
 ```rust
 // OTTL: Concat(first_name, " ", last_name)
-// C is your context type (e.g. MyContext)
+// C is your context type (for example, MyContext)
 
 let mut converters = CallbackMap::<MyContext>::new();
 converters.insert("Concat".to_string(), Arc::new(|args: &mut dyn ottl::Args<MyContext>| {
@@ -309,7 +309,7 @@ LITERAL = STRING | INT | FLOAT | BYTES | BOOL | NIL
 INDEX = "[" (STRING_LITERAL | INT_LITERAL) "]"
 ```
 
-Path indexes (the `{INDEX}` part) are passed to `PathAccessor::get`; the integrator interprets them. Converter invocations may also have indexes (e.g. `Split(...)[0]`); those are applied by the library to the function return value.
+Path indexes (the `{INDEX}` part) are passed to `PathAccessor::get`; the integrator interprets them. Converter invocations may also have indexes (for example, `Split(...)[0]`); those are applied by the library to the function return value.
 
 ### Literal Types
 

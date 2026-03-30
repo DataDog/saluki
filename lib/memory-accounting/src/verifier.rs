@@ -101,7 +101,7 @@ impl BoundsVerifier {
     ///
     /// A number of invalid conditions are checked and will cause an error to be returned:
     ///
-    /// - when a component has invalid bounds (e.g. minimum required bytes higher than firm limit)
+    /// - when a component has invalid bounds (for example, minimum required bytes higher than firm limit)
     /// - when the combined total of the firm limit for all components exceeds the effective limit
     pub fn verify(self) -> Result<VerifiedBounds, VerifierError> {
         // Evaluate the total minimum required and firm limit bytes to make sure our memory grant is sufficient.

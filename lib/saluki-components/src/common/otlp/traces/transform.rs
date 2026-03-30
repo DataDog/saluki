@@ -674,7 +674,7 @@ fn get_otel_operation_name_v2(
     } else {
         span_kind
     };
-    // Use capitalized span kind name for operation  (e.g., "Internal", "Client", "Server")
+    // Use capitalized span kind name for operation  (for example, "Internal", "Client", "Server")
     MetaString::from_static(span_kind_name_capitalized(fallback_kind))
 }
 

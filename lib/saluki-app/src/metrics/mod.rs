@@ -16,7 +16,7 @@ pub use self::api::MetricsAPIHandler;
 /// Initializes the metrics subsystem for `metrics`.
 ///
 /// The given prefix is used to namespace all metrics that are emitted by the application, and is prepended to all
-/// metrics, followed by a period (e.g. `<prefix>.<metric name>`).
+/// metrics, followed by a period (for example, `<prefix>.<metric name>`).
 ///
 /// # Errors
 ///
