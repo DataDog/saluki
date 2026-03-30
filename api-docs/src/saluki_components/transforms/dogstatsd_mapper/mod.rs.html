@@ -30,10 +30,10 @@
 <a href=#30 id=30 data-nosnippet>30</a><span class="kw">const fn </span>default_context_string_interner_size() -&gt; ByteSize {
 <a href=#31 id=31 data-nosnippet>31</a>    ByteSize::kib(<span class="number">64</span>)
 <a href=#32 id=32 data-nosnippet>32</a>}
-<a href=#33 id=33 data-nosnippet>33</a><span class="doccomment">/// DogstatsD mapper transform.
+<a href=#33 id=33 data-nosnippet>33</a><span class="doccomment">/// DogStatsD mapper transform.
 <a href=#34 id=34 data-nosnippet>34</a></span><span class="attr">#[serde_as]
 <a href=#35 id=35 data-nosnippet>35</a>#[derive(Deserialize)]
-<a href=#36 id=36 data-nosnippet>36</a></span><span class="kw">pub struct </span>DogstatsDMapperConfiguration {
+<a href=#36 id=36 data-nosnippet>36</a></span><span class="kw">pub struct </span>DogStatsDMapperConfiguration {
 <a href=#37 id=37 data-nosnippet>37</a>    <span class="doccomment">/// Total size of the string interner used for contexts, in bytes.
 <a href=#38 id=38 data-nosnippet>38</a>    ///
 <a href=#39 id=39 data-nosnippet>39</a>    /// This controls the amount of memory that will be pre-allocated for the purpose
@@ -240,7 +240,7 @@
 <a href=#240 id=240 data-nosnippet>240</a>    </span>}
 <a href=#241 id=241 data-nosnippet>241</a>}
 <a href=#242 id=242 data-nosnippet>242</a>
-<a href=#243 id=243 data-nosnippet>243</a><span class="kw">impl </span>DogstatsDMapperConfiguration {
+<a href=#243 id=243 data-nosnippet>243</a><span class="kw">impl </span>DogStatsDMapperConfiguration {
 <a href=#244 id=244 data-nosnippet>244</a>    <span class="doccomment">/// Creates a new `DogstatsDMapperConfiguration` from the given configuration.
 <a href=#245 id=245 data-nosnippet>245</a>    </span><span class="kw">pub fn </span>from_configuration(config: <span class="kw-2">&amp;</span>GenericConfiguration) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, GenericError&gt; {
 <a href=#246 id=246 data-nosnippet>246</a>        <span class="prelude-val">Ok</span>(config.as_typed()<span class="question-mark">?</span>)
@@ -248,32 +248,32 @@
 <a href=#248 id=248 data-nosnippet>248</a>}
 <a href=#249 id=249 data-nosnippet>249</a>
 <a href=#250 id=250 data-nosnippet>250</a><span class="attr">#[async_trait]
-<a href=#251 id=251 data-nosnippet>251</a></span><span class="kw">impl </span>SynchronousTransformBuilder <span class="kw">for </span>DogstatsDMapperConfiguration {
+<a href=#251 id=251 data-nosnippet>251</a></span><span class="kw">impl </span>SynchronousTransformBuilder <span class="kw">for </span>DogStatsDMapperConfiguration {
 <a href=#252 id=252 data-nosnippet>252</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, context: ComponentContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>SynchronousTransform + Send&gt;, GenericError&gt; {
 <a href=#253 id=253 data-nosnippet>253</a>        <span class="kw">let </span>metric_mapper = <span class="self">self
 <a href=#254 id=254 data-nosnippet>254</a>            </span>.dogstatsd_mapper_profiles
 <a href=#255 id=255 data-nosnippet>255</a>            .build(context, <span class="self">self</span>.context_string_interner_bytes)<span class="question-mark">?</span>;
-<a href=#256 id=256 data-nosnippet>256</a>        <span class="prelude-val">Ok</span>(Box::new(DogstatsDMapper { metric_mapper }))
+<a href=#256 id=256 data-nosnippet>256</a>        <span class="prelude-val">Ok</span>(Box::new(DogStatsDMapper { metric_mapper }))
 <a href=#257 id=257 data-nosnippet>257</a>    }
 <a href=#258 id=258 data-nosnippet>258</a>}
 <a href=#259 id=259 data-nosnippet>259</a>
-<a href=#260 id=260 data-nosnippet>260</a><span class="kw">impl </span>MemoryBounds <span class="kw">for </span>DogstatsDMapperConfiguration {
+<a href=#260 id=260 data-nosnippet>260</a><span class="kw">impl </span>MemoryBounds <span class="kw">for </span>DogStatsDMapperConfiguration {
 <a href=#261 id=261 data-nosnippet>261</a>    <span class="kw">fn </span>specify_bounds(<span class="kw-2">&amp;</span><span class="self">self</span>, builder: <span class="kw-2">&amp;mut </span>MemoryBoundsBuilder) {
 <a href=#262 id=262 data-nosnippet>262</a>        builder
 <a href=#263 id=263 data-nosnippet>263</a>            .minimum()
 <a href=#264 id=264 data-nosnippet>264</a>            <span class="comment">// Capture the size of the heap allocation when the component is built.
-<a href=#265 id=265 data-nosnippet>265</a>            </span>.with_single_value::&lt;DogstatsDMapper&gt;(<span class="string">"component struct"</span>)
+<a href=#265 id=265 data-nosnippet>265</a>            </span>.with_single_value::&lt;DogStatsDMapper&gt;(<span class="string">"component struct"</span>)
 <a href=#266 id=266 data-nosnippet>266</a>            <span class="comment">// We also allocate the backing storage for the string interner up front, which is used by our context
 <a href=#267 id=267 data-nosnippet>267</a>            // resolver.
 <a href=#268 id=268 data-nosnippet>268</a>            </span>.with_fixed_amount(<span class="string">"string interner"</span>, <span class="self">self</span>.context_string_interner_bytes.as_u64() <span class="kw">as </span>usize);
 <a href=#269 id=269 data-nosnippet>269</a>    }
 <a href=#270 id=270 data-nosnippet>270</a>}
 <a href=#271 id=271 data-nosnippet>271</a>
-<a href=#272 id=272 data-nosnippet>272</a><span class="kw">pub struct </span>DogstatsDMapper {
+<a href=#272 id=272 data-nosnippet>272</a><span class="kw">pub struct </span>DogStatsDMapper {
 <a href=#273 id=273 data-nosnippet>273</a>    metric_mapper: MetricMapper,
 <a href=#274 id=274 data-nosnippet>274</a>}
 <a href=#275 id=275 data-nosnippet>275</a>
-<a href=#276 id=276 data-nosnippet>276</a><span class="kw">impl </span>SynchronousTransform <span class="kw">for </span>DogstatsDMapper {
+<a href=#276 id=276 data-nosnippet>276</a><span class="kw">impl </span>SynchronousTransform <span class="kw">for </span>DogStatsDMapper {
 <a href=#277 id=277 data-nosnippet>277</a>    <span class="kw">fn </span>transform_buffer(<span class="kw-2">&amp;mut </span><span class="self">self</span>, event_buffer: <span class="kw-2">&amp;mut </span>EventsBuffer) {
 <a href=#278 id=278 data-nosnippet>278</a>        <span class="kw">for </span>event <span class="kw">in </span>event_buffer {
 <a href=#279 id=279 data-nosnippet>279</a>            <span class="kw">if let </span><span class="prelude-val">Some</span>(metric) = event.try_as_metric_mut() {

@@ -53,7 +53,7 @@
 <a href=#53 id=53 data-nosnippet>53</a>                kind: e.code,
 <a href=#54 id=54 data-nosnippet>54</a>                data: String::from_utf8_lossy(e.input).to_string(),
 <a href=#55 id=55 data-nosnippet>55</a>            },
-<a href=#56 id=56 data-nosnippet>56</a>            nom::Err::Incomplete(<span class="kw">_</span>) =&gt; <span class="macro">unreachable!</span>(<span class="string">"dogstatsd codec only supports complete payloads"</span>),
+<a href=#56 id=56 data-nosnippet>56</a>            nom::Err::Incomplete(<span class="kw">_</span>) =&gt; <span class="macro">unreachable!</span>(<span class="string">"DogStatsD codec only supports complete payloads"</span>),
 <a href=#57 id=57 data-nosnippet>57</a>        }
 <a href=#58 id=58 data-nosnippet>58</a>    }
 <a href=#59 id=59 data-nosnippet>59</a>}
@@ -72,7 +72,7 @@
 <a href=#72 id=72 data-nosnippet>72</a>
 <a href=#73 id=73 data-nosnippet>73</a><span class="doccomment">/// DogStatsD codec configuration.
 <a href=#74 id=74 data-nosnippet>74</a></span><span class="attr">#[derive(Clone, Debug)]
-<a href=#75 id=75 data-nosnippet>75</a></span><span class="kw">pub struct </span>DogstatsdCodecConfiguration {
+<a href=#75 id=75 data-nosnippet>75</a></span><span class="kw">pub struct </span>DogStatsDCodecConfiguration {
 <a href=#76 id=76 data-nosnippet>76</a>    permissive: bool,
 <a href=#77 id=77 data-nosnippet>77</a>    maximum_tag_length: usize,
 <a href=#78 id=78 data-nosnippet>78</a>    maximum_tag_count: usize,
@@ -80,7 +80,7 @@
 <a href=#80 id=80 data-nosnippet>80</a>    minimum_sample_rate: f64,
 <a href=#81 id=81 data-nosnippet>81</a>}
 <a href=#82 id=82 data-nosnippet>82</a>
-<a href=#83 id=83 data-nosnippet>83</a><span class="kw">impl </span>DogstatsdCodecConfiguration {
+<a href=#83 id=83 data-nosnippet>83</a><span class="kw">impl </span>DogStatsDCodecConfiguration {
 <a href=#84 id=84 data-nosnippet>84</a>    <span class="doccomment">/// Sets whether or not the codec should operate in permissive mode.
 <a href=#85 id=85 data-nosnippet>85</a>    ///
 <a href=#86 id=86 data-nosnippet>86</a>    /// In permissive mode, the codec will attempt to parse as much of the input as possible, relying solely on
@@ -142,7 +142,7 @@
 <a href=#142 id=142 data-nosnippet>142</a>    </span>}
 <a href=#143 id=143 data-nosnippet>143</a>}
 <a href=#144 id=144 data-nosnippet>144</a>
-<a href=#145 id=145 data-nosnippet>145</a><span class="kw">impl </span>Default <span class="kw">for </span>DogstatsdCodecConfiguration {
+<a href=#145 id=145 data-nosnippet>145</a><span class="kw">impl </span>Default <span class="kw">for </span>DogStatsDCodecConfiguration {
 <a href=#146 id=146 data-nosnippet>146</a>    <span class="kw">fn </span>default() -&gt; <span class="self">Self </span>{
 <a href=#147 id=147 data-nosnippet>147</a>        <span class="self">Self </span>{
 <a href=#148 id=148 data-nosnippet>148</a>            maximum_tag_length: usize::MAX,
@@ -162,16 +162,16 @@
 <a href=#162 id=162 data-nosnippet>162</a>///
 <a href=#163 id=163 data-nosnippet>163</a>/// [dsd]: https://docs.datadoghq.com/developers/dogstatsd/
 <a href=#164 id=164 data-nosnippet>164</a></span><span class="attr">#[derive(Clone, Debug)]
-<a href=#165 id=165 data-nosnippet>165</a></span><span class="kw">pub struct </span>DogstatsdCodec {
-<a href=#166 id=166 data-nosnippet>166</a>    config: DogstatsdCodecConfiguration,
+<a href=#165 id=165 data-nosnippet>165</a></span><span class="kw">pub struct </span>DogStatsDCodec {
+<a href=#166 id=166 data-nosnippet>166</a>    config: DogStatsDCodecConfiguration,
 <a href=#167 id=167 data-nosnippet>167</a>}
 <a href=#168 id=168 data-nosnippet>168</a>
-<a href=#169 id=169 data-nosnippet>169</a><span class="kw">impl </span>DogstatsdCodec {
+<a href=#169 id=169 data-nosnippet>169</a><span class="kw">impl </span>DogStatsDCodec {
 <a href=#170 id=170 data-nosnippet>170</a>    <span class="doccomment">/// Sets the given configuration for the codec.
 <a href=#171 id=171 data-nosnippet>171</a>    ///
 <a href=#172 id=172 data-nosnippet>172</a>    /// Different aspects of the codec's behavior (such as tag length, tag count, and timestamp parsing) can be
-<a href=#173 id=173 data-nosnippet>173</a>    /// controlled through its configuration. See [`DogstatsdCodecConfiguration`] for more information.
-<a href=#174 id=174 data-nosnippet>174</a>    </span><span class="kw">pub fn </span>from_configuration(config: DogstatsdCodecConfiguration) -&gt; <span class="self">Self </span>{
+<a href=#173 id=173 data-nosnippet>173</a>    /// controlled through its configuration. See [`DogStatsDCodecConfiguration`] for more information.
+<a href=#174 id=174 data-nosnippet>174</a>    </span><span class="kw">pub fn </span>from_configuration(config: DogStatsDCodecConfiguration) -&gt; <span class="self">Self </span>{
 <a href=#175 id=175 data-nosnippet>175</a>        <span class="self">Self </span>{ config }
 <a href=#176 id=176 data-nosnippet>176</a>    }
 <a href=#177 id=177 data-nosnippet>177</a>

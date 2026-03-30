@@ -28,7 +28,7 @@
 <a href=#28 id=28 data-nosnippet>28</a><span class="doccomment">/// Shared state based on a processor.
 <a href=#29 id=29 data-nosnippet>29</a>///
 <a href=#30 id=30 data-nosnippet>30</a>/// `Store` acts as the glue between a processor and the data that it processes. It acts as the entrypoint for taking in
-<a href=#31 id=31 data-nosnippet>31</a>/// a a group of items from a data source, running them through the configured processor, and then notifying callers
+<a href=#31 id=31 data-nosnippet>31</a>/// a group of items from a data source, running them through the configured processor, and then notifying callers
 <a href=#32 id=32 data-nosnippet>32</a>/// that an update has taken place.
 <a href=#33 id=33 data-nosnippet>33</a></span><span class="kw">struct </span>Store&lt;P: Processor&gt; {
 <a href=#34 id=34 data-nosnippet>34</a>    inner: Arc&lt;StoreInner&lt;P&gt;&gt;,

@@ -16,13 +16,13 @@
 <a href=#16 id=16 data-nosnippet>16</a><span class="kw">use </span>tokio::select;
 <a href=#17 id=17 data-nosnippet>17</a><span class="kw">use </span>tracing::{debug, error};
 <a href=#18 id=18 data-nosnippet>18</a>
-<a href=#19 id=19 data-nosnippet>19</a><span class="doccomment">/// DogstatsD prefix filter transform.
+<a href=#19 id=19 data-nosnippet>19</a><span class="doccomment">/// DogStatsD prefix filter transform.
 <a href=#20 id=20 data-nosnippet>20</a>///
 <a href=#21 id=21 data-nosnippet>21</a>/// Appends a prefix to every metric if specified.
 <a href=#22 id=22 data-nosnippet>22</a>///
 <a href=#23 id=23 data-nosnippet>23</a>/// Checks if a metric name should be allowed.
 <a href=#24 id=24 data-nosnippet>24</a></span><span class="attr">#[derive(Deserialize)]
-<a href=#25 id=25 data-nosnippet>25</a></span><span class="kw">pub struct </span>DogstatsDPrefixFilterConfiguration {
+<a href=#25 id=25 data-nosnippet>25</a></span><span class="kw">pub struct </span>DogStatsDPrefixFilterConfiguration {
 <a href=#26 id=26 data-nosnippet>26</a>    <span class="attr">#[serde(default, rename = <span class="string">"statsd_metric_namespace"</span>)]
 <a href=#27 id=27 data-nosnippet>27</a>    </span>metric_prefix: String,
 <a href=#28 id=28 data-nosnippet>28</a>
@@ -74,17 +74,17 @@
 <a href=#74 id=74 data-nosnippet>74</a>    ]
 <a href=#75 id=75 data-nosnippet>75</a>}
 <a href=#76 id=76 data-nosnippet>76</a>
-<a href=#77 id=77 data-nosnippet>77</a><span class="kw">impl </span>DogstatsDPrefixFilterConfiguration {
-<a href=#78 id=78 data-nosnippet>78</a>    <span class="doccomment">/// Creates a new `DogstatsdPrefixFilterConfiguration` from the given configuration.
+<a href=#77 id=77 data-nosnippet>77</a><span class="kw">impl </span>DogStatsDPrefixFilterConfiguration {
+<a href=#78 id=78 data-nosnippet>78</a>    <span class="doccomment">/// Creates a new `DogStatsDPrefixFilterConfiguration` from the given configuration.
 <a href=#79 id=79 data-nosnippet>79</a>    </span><span class="kw">pub fn </span>from_configuration(config: <span class="kw-2">&amp;</span>GenericConfiguration) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, GenericError&gt; {
-<a href=#80 id=80 data-nosnippet>80</a>        <span class="kw">let </span><span class="kw-2">mut </span>typed_config: DogstatsDPrefixFilterConfiguration = config.as_typed()<span class="question-mark">?</span>;
+<a href=#80 id=80 data-nosnippet>80</a>        <span class="kw">let </span><span class="kw-2">mut </span>typed_config: DogStatsDPrefixFilterConfiguration = config.as_typed()<span class="question-mark">?</span>;
 <a href=#81 id=81 data-nosnippet>81</a>        typed_config.configuration = <span class="prelude-val">Some</span>(config.clone());
 <a href=#82 id=82 data-nosnippet>82</a>        <span class="prelude-val">Ok</span>(typed_config)
 <a href=#83 id=83 data-nosnippet>83</a>    }
 <a href=#84 id=84 data-nosnippet>84</a>}
 <a href=#85 id=85 data-nosnippet>85</a>
 <a href=#86 id=86 data-nosnippet>86</a><span class="attr">#[async_trait]
-<a href=#87 id=87 data-nosnippet>87</a></span><span class="kw">impl </span>TransformBuilder <span class="kw">for </span>DogstatsDPrefixFilterConfiguration {
+<a href=#87 id=87 data-nosnippet>87</a></span><span class="kw">impl </span>TransformBuilder <span class="kw">for </span>DogStatsDPrefixFilterConfiguration {
 <a href=#88 id=88 data-nosnippet>88</a>    <span class="kw">fn </span>input_event_type(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; EventType {
 <a href=#89 id=89 data-nosnippet>89</a>        EventType::Metric
 <a href=#90 id=90 data-nosnippet>90</a>    }
@@ -109,7 +109,7 @@
 <a href=#109 id=109 data-nosnippet>109</a>            (<span class="kw-2">&amp;</span><span class="self">self</span>.metric_blocklist, <span class="self">self</span>.metric_blocklist_match_prefix)
 <a href=#110 id=110 data-nosnippet>110</a>        };
 <a href=#111 id=111 data-nosnippet>111</a>
-<a href=#112 id=112 data-nosnippet>112</a>        <span class="prelude-val">Ok</span>(Box::new(DogstatsDPrefixFilter {
+<a href=#112 id=112 data-nosnippet>112</a>        <span class="prelude-val">Ok</span>(Box::new(DogStatsDPrefixFilter {
 <a href=#113 id=113 data-nosnippet>113</a>            metric_prefix,
 <a href=#114 id=114 data-nosnippet>114</a>            metric_prefix_blocklist: <span class="self">self</span>.metric_prefix_blocklist.clone(),
 <a href=#115 id=115 data-nosnippet>115</a>            blocklist: Blocklist::new(blocklist_metrics, blocklist_match_prefix),
@@ -118,12 +118,12 @@
 <a href=#118 id=118 data-nosnippet>118</a>    }
 <a href=#119 id=119 data-nosnippet>119</a>}
 <a href=#120 id=120 data-nosnippet>120</a>
-<a href=#121 id=121 data-nosnippet>121</a><span class="kw">impl </span>MemoryBounds <span class="kw">for </span>DogstatsDPrefixFilterConfiguration {
+<a href=#121 id=121 data-nosnippet>121</a><span class="kw">impl </span>MemoryBounds <span class="kw">for </span>DogStatsDPrefixFilterConfiguration {
 <a href=#122 id=122 data-nosnippet>122</a>    <span class="kw">fn </span>specify_bounds(<span class="kw-2">&amp;</span><span class="self">self</span>, builder: <span class="kw-2">&amp;mut </span>MemoryBoundsBuilder) {
 <a href=#123 id=123 data-nosnippet>123</a>        <span class="comment">// Capture the size of the heap allocation when the component is built.
 <a href=#124 id=124 data-nosnippet>124</a>        </span>builder
 <a href=#125 id=125 data-nosnippet>125</a>            .minimum()
-<a href=#126 id=126 data-nosnippet>126</a>            .with_single_value::&lt;DogstatsDPrefixFilter&gt;(<span class="string">"component struct"</span>);
+<a href=#126 id=126 data-nosnippet>126</a>            .with_single_value::&lt;DogStatsDPrefixFilter&gt;(<span class="string">"component struct"</span>);
 <a href=#127 id=127 data-nosnippet>127</a>    }
 <a href=#128 id=128 data-nosnippet>128</a>}
 <a href=#129 id=129 data-nosnippet>129</a>
@@ -177,14 +177,14 @@
 <a href=#177 id=177 data-nosnippet>177</a>}
 <a href=#178 id=178 data-nosnippet>178</a>
 <a href=#179 id=179 data-nosnippet>179</a><span class="attr">#[derive(Debug)]
-<a href=#180 id=180 data-nosnippet>180</a></span><span class="kw">pub struct </span>DogstatsDPrefixFilter {
+<a href=#180 id=180 data-nosnippet>180</a></span><span class="kw">pub struct </span>DogStatsDPrefixFilter {
 <a href=#181 id=181 data-nosnippet>181</a>    metric_prefix: String,
 <a href=#182 id=182 data-nosnippet>182</a>    metric_prefix_blocklist: Vec&lt;String&gt;,
 <a href=#183 id=183 data-nosnippet>183</a>    blocklist: Blocklist,
 <a href=#184 id=184 data-nosnippet>184</a>    configuration: <span class="prelude-ty">Option</span>&lt;GenericConfiguration&gt;,
 <a href=#185 id=185 data-nosnippet>185</a>}
 <a href=#186 id=186 data-nosnippet>186</a>
-<a href=#187 id=187 data-nosnippet>187</a><span class="kw">impl </span>DogstatsDPrefixFilter {
+<a href=#187 id=187 data-nosnippet>187</a><span class="kw">impl </span>DogStatsDPrefixFilter {
 <a href=#188 id=188 data-nosnippet>188</a>    <span class="kw">fn </span>process_metric(<span class="kw-2">&amp;</span><span class="self">self</span>, metric: <span class="kw-2">&amp;mut </span>Metric) -&gt; bool {
 <a href=#189 id=189 data-nosnippet>189</a>        <span class="kw">let </span>metric_name = metric.context().name().deref();
 <a href=#190 id=190 data-nosnippet>190</a>
@@ -230,7 +230,7 @@
 <a href=#230 id=230 data-nosnippet>230</a>}
 <a href=#231 id=231 data-nosnippet>231</a>
 <a href=#232 id=232 data-nosnippet>232</a><span class="attr">#[async_trait]
-<a href=#233 id=233 data-nosnippet>233</a></span><span class="kw">impl </span>Transform <span class="kw">for </span>DogstatsDPrefixFilter {
+<a href=#233 id=233 data-nosnippet>233</a></span><span class="kw">impl </span>Transform <span class="kw">for </span>DogStatsDPrefixFilter {
 <a href=#234 id=234 data-nosnippet>234</a>    <span class="kw">async fn </span>run(<span class="kw-2">mut </span><span class="self">self</span>: Box&lt;<span class="self">Self</span>&gt;, <span class="kw-2">mut </span>context: TransformContext) -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt; {
 <a href=#235 id=235 data-nosnippet>235</a>        <span class="kw">let </span><span class="kw-2">mut </span>health = context.take_health_handle();
 <a href=#236 id=236 data-nosnippet>236</a>        health.mark_ready();
@@ -287,7 +287,7 @@
 <a href=#287 id=287 data-nosnippet>287</a>
 <a href=#288 id=288 data-nosnippet>288</a>    <span class="attr">#[test]
 <a href=#289 id=289 data-nosnippet>289</a>    </span><span class="kw">fn </span>test_metric_prefix_add() {
-<a href=#290 id=290 data-nosnippet>290</a>        <span class="kw">let </span>filter = DogstatsDPrefixFilter {
+<a href=#290 id=290 data-nosnippet>290</a>        <span class="kw">let </span>filter = DogStatsDPrefixFilter {
 <a href=#291 id=291 data-nosnippet>291</a>            metric_prefix: <span class="string">"foo."</span>.to_string(),
 <a href=#292 id=292 data-nosnippet>292</a>            metric_prefix_blocklist: <span class="macro">vec!</span>[],
 <a href=#293 id=293 data-nosnippet>293</a>            blocklist: Blocklist::default(),
@@ -301,7 +301,7 @@
 <a href=#301 id=301 data-nosnippet>301</a>
 <a href=#302 id=302 data-nosnippet>302</a>    <span class="attr">#[test]
 <a href=#303 id=303 data-nosnippet>303</a>    </span><span class="kw">fn </span>test_metric_prefix_blocklist() {
-<a href=#304 id=304 data-nosnippet>304</a>        <span class="kw">let </span>filter = DogstatsDPrefixFilter {
+<a href=#304 id=304 data-nosnippet>304</a>        <span class="kw">let </span>filter = DogStatsDPrefixFilter {
 <a href=#305 id=305 data-nosnippet>305</a>            metric_prefix: <span class="string">"foo"</span>.to_string(),
 <a href=#306 id=306 data-nosnippet>306</a>            metric_prefix_blocklist: <span class="macro">vec!</span>[<span class="string">"foo"</span>.to_string(), <span class="string">"bar"</span>.to_string()],
 <a href=#307 id=307 data-nosnippet>307</a>            blocklist: Blocklist::default(),
@@ -315,7 +315,7 @@
 <a href=#315 id=315 data-nosnippet>315</a>
 <a href=#316 id=316 data-nosnippet>316</a>    <span class="attr">#[test]
 <a href=#317 id=317 data-nosnippet>317</a>    </span><span class="kw">fn </span>test_metric_blocklist() {
-<a href=#318 id=318 data-nosnippet>318</a>        <span class="kw">let </span>filter = DogstatsDPrefixFilter {
+<a href=#318 id=318 data-nosnippet>318</a>        <span class="kw">let </span>filter = DogStatsDPrefixFilter {
 <a href=#319 id=319 data-nosnippet>319</a>            metric_prefix: <span class="string">""</span>.to_string(),
 <a href=#320 id=320 data-nosnippet>320</a>            metric_prefix_blocklist: <span class="macro">vec!</span>[],
 <a href=#321 id=321 data-nosnippet>321</a>            blocklist: Blocklist::new(<span class="kw-2">&amp;</span>[<span class="string">"foobar"</span>.to_string(), <span class="string">"test"</span>.to_string()], <span class="bool-val">false</span>),
@@ -332,7 +332,7 @@
 <a href=#332 id=332 data-nosnippet>332</a>
 <a href=#333 id=333 data-nosnippet>333</a>    <span class="attr">#[test]
 <a href=#334 id=334 data-nosnippet>334</a>    </span><span class="kw">fn </span>test_metric_blocklist_with_metric_prefix() {
-<a href=#335 id=335 data-nosnippet>335</a>        <span class="kw">let </span>filter = DogstatsDPrefixFilter {
+<a href=#335 id=335 data-nosnippet>335</a>        <span class="kw">let </span>filter = DogStatsDPrefixFilter {
 <a href=#336 id=336 data-nosnippet>336</a>            metric_prefix: <span class="string">"foo."</span>.to_string(),
 <a href=#337 id=337 data-nosnippet>337</a>            metric_prefix_blocklist: <span class="macro">vec!</span>[],
 <a href=#338 id=338 data-nosnippet>338</a>            blocklist: Blocklist::new(<span class="kw-2">&amp;</span>[<span class="string">"foo.bar"</span>.to_string(), <span class="string">"test"</span>.to_string()], <span class="bool-val">false</span>),
@@ -342,7 +342,7 @@
 <a href=#342 id=342 data-nosnippet>342</a>        <span class="kw">let </span><span class="kw-2">mut </span>metric = Metric::gauge(<span class="string">"bar"</span>, <span class="number">1.0</span>);
 <a href=#343 id=343 data-nosnippet>343</a>        <span class="macro">assert!</span>(!filter.process_metric(<span class="kw-2">&amp;mut </span>metric));
 <a href=#344 id=344 data-nosnippet>344</a>
-<a href=#345 id=345 data-nosnippet>345</a>        <span class="kw">let </span>filter = DogstatsDPrefixFilter {
+<a href=#345 id=345 data-nosnippet>345</a>        <span class="kw">let </span>filter = DogStatsDPrefixFilter {
 <a href=#346 id=346 data-nosnippet>346</a>            metric_prefix: <span class="string">"foo."</span>.to_string(),
 <a href=#347 id=347 data-nosnippet>347</a>            metric_prefix_blocklist: <span class="macro">vec!</span>[<span class="string">"foo"</span>.to_string()],
 <a href=#348 id=348 data-nosnippet>348</a>            blocklist: Blocklist::default(),
@@ -356,7 +356,7 @@
 <a href=#356 id=356 data-nosnippet>356</a>
 <a href=#357 id=357 data-nosnippet>357</a>    <span class="attr">#[test]
 <a href=#358 id=358 data-nosnippet>358</a>    </span><span class="kw">fn </span>test_metric_match_prefix_without_added_prefix() {
-<a href=#359 id=359 data-nosnippet>359</a>        <span class="kw">let </span>filter = DogstatsDPrefixFilter {
+<a href=#359 id=359 data-nosnippet>359</a>        <span class="kw">let </span>filter = DogStatsDPrefixFilter {
 <a href=#360 id=360 data-nosnippet>360</a>            metric_prefix: <span class="string">""</span>.to_string(),
 <a href=#361 id=361 data-nosnippet>361</a>            metric_prefix_blocklist: <span class="macro">vec!</span>[],
 <a href=#362 id=362 data-nosnippet>362</a>            blocklist: Blocklist::new(<span class="kw-2">&amp;</span>[<span class="string">"b"</span>.to_string(), <span class="string">"test"</span>.to_string()], <span class="bool-val">true</span>),
@@ -374,7 +374,7 @@
 <a href=#374 id=374 data-nosnippet>374</a>
 <a href=#375 id=375 data-nosnippet>375</a>    <span class="attr">#[test]
 <a href=#376 id=376 data-nosnippet>376</a>    </span><span class="kw">fn </span>test_metric_match_prefix_with_added_prefix() {
-<a href=#377 id=377 data-nosnippet>377</a>        <span class="kw">let </span>filter = DogstatsDPrefixFilter {
+<a href=#377 id=377 data-nosnippet>377</a>        <span class="kw">let </span>filter = DogStatsDPrefixFilter {
 <a href=#378 id=378 data-nosnippet>378</a>            metric_prefix: <span class="string">"foo"</span>.to_string(),
 <a href=#379 id=379 data-nosnippet>379</a>            metric_prefix_blocklist: <span class="macro">vec!</span>[],
 <a href=#380 id=380 data-nosnippet>380</a>            blocklist: Blocklist::new(<span class="kw-2">&amp;</span>[<span class="string">"fo"</span>.to_string(), <span class="string">"test"</span>.to_string()], <span class="bool-val">true</span>),
@@ -397,7 +397,7 @@
 <a href=#397 id=397 data-nosnippet>397</a>
 <a href=#398 id=398 data-nosnippet>398</a>        cfg.ready().<span class="kw">await</span>;
 <a href=#399 id=399 data-nosnippet>399</a>
-<a href=#400 id=400 data-nosnippet>400</a>        <span class="kw">let </span><span class="kw-2">mut </span>filter = DogstatsDPrefixFilter {
+<a href=#400 id=400 data-nosnippet>400</a>        <span class="kw">let </span><span class="kw-2">mut </span>filter = DogStatsDPrefixFilter {
 <a href=#401 id=401 data-nosnippet>401</a>            metric_prefix: <span class="string">""</span>.to_string(),
 <a href=#402 id=402 data-nosnippet>402</a>            metric_prefix_blocklist: <span class="macro">vec!</span>[],
 <a href=#403 id=403 data-nosnippet>403</a>            blocklist: Blocklist::new(<span class="kw-2">&amp;</span>[<span class="string">"foobar"</span>.to_string(), <span class="string">"test"</span>.to_string()], <span class="bool-val">false</span>),

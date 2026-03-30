@@ -432,12 +432,12 @@
 <a href=#432 id=432 data-nosnippet>432</a>        <span class="kw">let </span>context_resolvers = ContextResolvers::new(<span class="self">self</span>, <span class="kw-2">&amp;</span>context, maybe_origin_tags_resolver)
 <a href=#433 id=433 data-nosnippet>433</a>            .error_context(<span class="string">"Failed to create context resolvers."</span>)<span class="question-mark">?</span>;
 <a href=#434 id=434 data-nosnippet>434</a>
-<a href=#435 id=435 data-nosnippet>435</a>        <span class="kw">let </span>codec_config = DogstatsdCodecConfiguration::default()
+<a href=#435 id=435 data-nosnippet>435</a>        <span class="kw">let </span>codec_config = DogStatsDCodecConfiguration::default()
 <a href=#436 id=436 data-nosnippet>436</a>            .with_timestamps(<span class="self">self</span>.no_aggregation_pipeline_support)
 <a href=#437 id=437 data-nosnippet>437</a>            .with_permissive_mode(<span class="self">self</span>.permissive_decoding)
 <a href=#438 id=438 data-nosnippet>438</a>            .with_minimum_sample_rate(<span class="self">self</span>.minimum_sample_rate);
 <a href=#439 id=439 data-nosnippet>439</a>
-<a href=#440 id=440 data-nosnippet>440</a>        <span class="kw">let </span>codec = DogstatsdCodec::from_configuration(codec_config);
+<a href=#440 id=440 data-nosnippet>440</a>        <span class="kw">let </span>codec = DogStatsDCodec::from_configuration(codec_config);
 <a href=#441 id=441 data-nosnippet>441</a>
 <a href=#442 id=442 data-nosnippet>442</a>        <span class="kw">let </span>enable_payloads_filter = EnablePayloadsFilter::default()
 <a href=#443 id=443 data-nosnippet>443</a>            .with_allow_series(<span class="self">self</span>.enable_payloads_series)
@@ -494,7 +494,7 @@
 <a href=#494 id=494 data-nosnippet>494</a></span><span class="kw">pub struct </span>DogStatsD {
 <a href=#495 id=495 data-nosnippet>495</a>    listeners: Vec&lt;Listener&gt;,
 <a href=#496 id=496 data-nosnippet>496</a>    io_buffer_pool: FixedSizeObjectPool&lt;BytesBuffer&gt;,
-<a href=#497 id=497 data-nosnippet>497</a>    codec: DogstatsdCodec,
+<a href=#497 id=497 data-nosnippet>497</a>    codec: DogStatsDCodec,
 <a href=#498 id=498 data-nosnippet>498</a>    context_resolvers: ContextResolvers,
 <a href=#499 id=499 data-nosnippet>499</a>    enabled_filter: EnablePayloadsFilter,
 <a href=#500 id=500 data-nosnippet>500</a>    additional_tags: Arc&lt;[String]&gt;,
@@ -504,7 +504,7 @@
 <a href=#504 id=504 data-nosnippet>504</a>    shutdown_handle: DynamicShutdownHandle,
 <a href=#505 id=505 data-nosnippet>505</a>    listener: Listener,
 <a href=#506 id=506 data-nosnippet>506</a>    io_buffer_pool: FixedSizeObjectPool&lt;BytesBuffer&gt;,
-<a href=#507 id=507 data-nosnippet>507</a>    codec: DogstatsdCodec,
+<a href=#507 id=507 data-nosnippet>507</a>    codec: DogStatsDCodec,
 <a href=#508 id=508 data-nosnippet>508</a>    context_resolvers: ContextResolvers,
 <a href=#509 id=509 data-nosnippet>509</a>    additional_tags: Arc&lt;[String]&gt;,
 <a href=#510 id=510 data-nosnippet>510</a>}
@@ -512,7 +512,7 @@
 <a href=#512 id=512 data-nosnippet>512</a><span class="kw">struct </span>HandlerContext {
 <a href=#513 id=513 data-nosnippet>513</a>    listen_addr: ListenAddress,
 <a href=#514 id=514 data-nosnippet>514</a>    framer: DsdFramer,
-<a href=#515 id=515 data-nosnippet>515</a>    codec: DogstatsdCodec,
+<a href=#515 id=515 data-nosnippet>515</a>    codec: DogStatsDCodec,
 <a href=#516 id=516 data-nosnippet>516</a>    io_buffer_pool: FixedSizeObjectPool&lt;BytesBuffer&gt;,
 <a href=#517 id=517 data-nosnippet>517</a>    metrics: Metrics,
 <a href=#518 id=518 data-nosnippet>518</a>    context_resolvers: ContextResolvers,
@@ -943,7 +943,7 @@
 <a href=#943 id=943 data-nosnippet>943</a>}
 <a href=#944 id=944 data-nosnippet>944</a>
 <a href=#945 id=945 data-nosnippet>945</a><span class="kw">fn </span>handle_frame(
-<a href=#946 id=946 data-nosnippet>946</a>    frame: <span class="kw-2">&amp;</span>[u8], codec: <span class="kw-2">&amp;</span>DogstatsdCodec, context_resolvers: <span class="kw-2">&amp;mut </span>ContextResolvers, source_metrics: <span class="kw-2">&amp;</span>Metrics,
+<a href=#946 id=946 data-nosnippet>946</a>    frame: <span class="kw-2">&amp;</span>[u8], codec: <span class="kw-2">&amp;</span>DogStatsDCodec, context_resolvers: <span class="kw-2">&amp;mut </span>ContextResolvers, source_metrics: <span class="kw-2">&amp;</span>Metrics,
 <a href=#947 id=947 data-nosnippet>947</a>    peer_addr: <span class="kw-2">&amp;</span>ConnectionAddress, enabled_filter: EnablePayloadsFilter, additional_tags: <span class="kw-2">&amp;</span>[String],
 <a href=#948 id=948 data-nosnippet>948</a>) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="prelude-ty">Option</span>&lt;Event&gt;, ParseError&gt; {
 <a href=#949 id=949 data-nosnippet>949</a>    <span class="kw">let </span>parsed = <span class="kw">match </span>codec.decode_packet(frame) {
@@ -1199,7 +1199,7 @@
 <a href=#1199 id=1199 data-nosnippet>1199</a>
 <a href=#1200 id=1200 data-nosnippet>1200</a>    <span class="kw">use </span>saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
 <a href=#1201 id=1201 data-nosnippet>1201</a>    <span class="kw">use </span>saluki_io::{
-<a href=#1202 id=1202 data-nosnippet>1202</a>        deser::codec::dogstatsd::{DogstatsdCodec, DogstatsdCodecConfiguration, ParsedPacket},
+<a href=#1202 id=1202 data-nosnippet>1202</a>        deser::codec::dogstatsd::{DogStatsDCodec, DogStatsDCodecConfiguration, ParsedPacket},
 <a href=#1203 id=1203 data-nosnippet>1203</a>        net::ConnectionAddress,
 <a href=#1204 id=1204 data-nosnippet>1204</a>    };
 <a href=#1205 id=1205 data-nosnippet>1205</a>
@@ -1214,7 +1214,7 @@
 <a href=#1214 id=1214 data-nosnippet>1214</a>        //
 <a href=#1215 id=1215 data-nosnippet>1215</a>        // We set our metric name to be longer than 31 bytes (the inlining limit) to ensure this.
 <a href=#1216 id=1216 data-nosnippet>1216</a>
-<a href=#1217 id=1217 data-nosnippet>1217</a>        </span><span class="kw">let </span>codec = DogstatsdCodec::from_configuration(DogstatsdCodecConfiguration::default());
+<a href=#1217 id=1217 data-nosnippet>1217</a>        </span><span class="kw">let </span>codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
 <a href=#1218 id=1218 data-nosnippet>1218</a>        <span class="kw">let </span>tags_resolver = TagsResolverBuilder::for_tests().build();
 <a href=#1219 id=1219 data-nosnippet>1219</a>        <span class="kw">let </span>context_resolver = ContextResolverBuilder::for_tests()
 <a href=#1220 id=1220 data-nosnippet>1220</a>            .with_heap_allocations(<span class="bool-val">false</span>)
@@ -1235,7 +1235,7 @@
 <a href=#1235 id=1235 data-nosnippet>1235</a>
 <a href=#1236 id=1236 data-nosnippet>1236</a>    <span class="attr">#[test]
 <a href=#1237 id=1237 data-nosnippet>1237</a>    </span><span class="kw">fn </span>metric_with_additional_tags() {
-<a href=#1238 id=1238 data-nosnippet>1238</a>        <span class="kw">let </span>codec = DogstatsdCodec::from_configuration(DogstatsdCodecConfiguration::default());
+<a href=#1238 id=1238 data-nosnippet>1238</a>        <span class="kw">let </span>codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
 <a href=#1239 id=1239 data-nosnippet>1239</a>        <span class="kw">let </span>tags_resolver = TagsResolverBuilder::for_tests().build();
 <a href=#1240 id=1240 data-nosnippet>1240</a>        <span class="kw">let </span>context_resolver = ContextResolverBuilder::for_tests()
 <a href=#1241 id=1241 data-nosnippet>1241</a>            .with_heap_allocations(<span class="bool-val">false</span>)

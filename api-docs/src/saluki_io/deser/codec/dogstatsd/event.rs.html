@@ -10,7 +10,7 @@
 <a href=#10 id=10 data-nosnippet>10</a><span class="kw">use </span>saluki_core::data_model::event::eventd::<span class="kw-2">*</span>;
 <a href=#11 id=11 data-nosnippet>11</a><span class="kw">use </span>stringtheory::MetaString;
 <a href=#12 id=12 data-nosnippet>12</a>
-<a href=#13 id=13 data-nosnippet>13</a><span class="kw">use </span>super::{helpers::<span class="kw-2">*</span>, DogstatsdCodecConfiguration};
+<a href=#13 id=13 data-nosnippet>13</a><span class="kw">use </span>super::{helpers::<span class="kw-2">*</span>, DogStatsDCodecConfiguration};
 <a href=#14 id=14 data-nosnippet>14</a>
 <a href=#15 id=15 data-nosnippet>15</a><span class="doccomment">/// A DogStatsD event packet.
 <a href=#16 id=16 data-nosnippet>16</a></span><span class="kw">pub struct </span>EventPacket&lt;<span class="lifetime">'a</span>&gt; {
@@ -30,7 +30,7 @@
 <a href=#30 id=30 data-nosnippet>30</a>
 <a href=#31 id=31 data-nosnippet>31</a><span class="attr">#[inline]
 <a href=#32 id=32 data-nosnippet>32</a></span><span class="kw">pub fn </span>parse_dogstatsd_event&lt;<span class="lifetime">'a</span>&gt;(
-<a href=#33 id=33 data-nosnippet>33</a>    input: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>[u8], config: <span class="kw-2">&amp;</span>DogstatsdCodecConfiguration,
+<a href=#33 id=33 data-nosnippet>33</a>    input: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>[u8], config: <span class="kw-2">&amp;</span>DogStatsDCodecConfiguration,
 <a href=#34 id=34 data-nosnippet>34</a>) -&gt; IResult&lt;<span class="kw-2">&amp;</span><span class="lifetime">'a </span>[u8], EventPacket&lt;<span class="lifetime">'a</span>&gt;&gt; {
 <a href=#35 id=35 data-nosnippet>35</a>    <span class="comment">// We parse the title length and text length from `_e{&lt;TITLE_UTF8_LENGTH&gt;,&lt;TEXT_UTF8_LENGTH&gt;}:`
 <a href=#36 id=36 data-nosnippet>36</a>    </span><span class="kw">let </span>(remaining, (title_len, text_len)) = delimited(
@@ -197,17 +197,17 @@
 <a href=#197 id=197 data-nosnippet>197</a>    <span class="kw">use </span>saluki_core::data_model::event::eventd::{AlertType, EventD, Priority};
 <a href=#198 id=198 data-nosnippet>198</a>    <span class="kw">use </span>stringtheory::MetaString;
 <a href=#199 id=199 data-nosnippet>199</a>
-<a href=#200 id=200 data-nosnippet>200</a>    <span class="kw">use </span>super::{parse_dogstatsd_event, DogstatsdCodecConfiguration};
+<a href=#200 id=200 data-nosnippet>200</a>    <span class="kw">use </span>super::{parse_dogstatsd_event, DogStatsDCodecConfiguration};
 <a href=#201 id=201 data-nosnippet>201</a>
 <a href=#202 id=202 data-nosnippet>202</a>    <span class="kw">type </span>NomResult&lt;<span class="lifetime">'input</span>, T&gt; = <span class="prelude-ty">Result</span>&lt;T, nom::Err&lt;nom::error::Error&lt;<span class="kw-2">&amp;</span><span class="lifetime">'input </span>[u8]&gt;&gt;&gt;;
 <a href=#203 id=203 data-nosnippet>203</a>
 <a href=#204 id=204 data-nosnippet>204</a>    <span class="kw">fn </span>parse_dsd_eventd(input: <span class="kw-2">&amp;</span>[u8]) -&gt; NomResult&lt;<span class="lifetime">'_</span>, EventD&gt; {
-<a href=#205 id=205 data-nosnippet>205</a>        <span class="kw">let </span>default_config = DogstatsdCodecConfiguration::default();
+<a href=#205 id=205 data-nosnippet>205</a>        <span class="kw">let </span>default_config = DogStatsDCodecConfiguration::default();
 <a href=#206 id=206 data-nosnippet>206</a>        parse_dsd_eventd_with_conf(input, <span class="kw-2">&amp;</span>default_config)
 <a href=#207 id=207 data-nosnippet>207</a>    }
 <a href=#208 id=208 data-nosnippet>208</a>
 <a href=#209 id=209 data-nosnippet>209</a>    <span class="kw">fn </span>parse_dsd_eventd_with_conf&lt;<span class="lifetime">'input</span>&gt;(
-<a href=#210 id=210 data-nosnippet>210</a>        input: <span class="kw-2">&amp;</span><span class="lifetime">'input </span>[u8], config: <span class="kw-2">&amp;</span>DogstatsdCodecConfiguration,
+<a href=#210 id=210 data-nosnippet>210</a>        input: <span class="kw-2">&amp;</span><span class="lifetime">'input </span>[u8], config: <span class="kw-2">&amp;</span>DogStatsDCodecConfiguration,
 <a href=#211 id=211 data-nosnippet>211</a>    ) -&gt; NomResult&lt;<span class="lifetime">'input</span>, EventD&gt; {
 <a href=#212 id=212 data-nosnippet>212</a>        <span class="kw">let </span>(remaining, eventd) = parse_dsd_eventd_direct(input, config)<span class="question-mark">?</span>;
 <a href=#213 id=213 data-nosnippet>213</a>        <span class="macro">assert!</span>(remaining.is_empty());
@@ -215,7 +215,7 @@
 <a href=#215 id=215 data-nosnippet>215</a>    }
 <a href=#216 id=216 data-nosnippet>216</a>
 <a href=#217 id=217 data-nosnippet>217</a>    <span class="kw">fn </span>parse_dsd_eventd_direct&lt;<span class="lifetime">'input</span>&gt;(
-<a href=#218 id=218 data-nosnippet>218</a>        input: <span class="kw-2">&amp;</span><span class="lifetime">'input </span>[u8], config: <span class="kw-2">&amp;</span>DogstatsdCodecConfiguration,
+<a href=#218 id=218 data-nosnippet>218</a>        input: <span class="kw-2">&amp;</span><span class="lifetime">'input </span>[u8], config: <span class="kw-2">&amp;</span>DogStatsDCodecConfiguration,
 <a href=#219 id=219 data-nosnippet>219</a>    ) -&gt; IResult&lt;<span class="kw-2">&amp;</span><span class="lifetime">'input </span>[u8], EventD&gt; {
 <a href=#220 id=220 data-nosnippet>220</a>        <span class="kw">let </span>(remaining, packet) = parse_dogstatsd_event(input, config)<span class="question-mark">?</span>;
 <a href=#221 id=221 data-nosnippet>221</a>        <span class="macro">assert!</span>(remaining.is_empty());
@@ -370,7 +370,7 @@
 <a href=#370 id=370 data-nosnippet>370</a>            .with_tags(shared_tag_set);
 <a href=#371 id=371 data-nosnippet>371</a>        check_basic_eventd_eq(expected, actual);
 <a href=#372 id=372 data-nosnippet>372</a>
-<a href=#373 id=373 data-nosnippet>373</a>        <span class="kw">let </span>config = DogstatsdCodecConfiguration::default();
+<a href=#373 id=373 data-nosnippet>373</a>        <span class="kw">let </span>config = DogStatsDCodecConfiguration::default();
 <a href=#374 id=374 data-nosnippet>374</a>        <span class="kw">let </span>(<span class="kw">_</span>, packet) = parse_dogstatsd_event(raw.as_bytes(), <span class="kw-2">&amp;</span>config).expect(<span class="string">"should not fail to parse"</span>);
 <a href=#375 id=375 data-nosnippet>375</a>        <span class="macro">assert_eq!</span>(packet.local_data, <span class="prelude-val">Some</span>(event_local_data));
 <a href=#376 id=376 data-nosnippet>376</a>        <span class="macro">assert_eq!</span>(packet.external_data, <span class="prelude-val">Some</span>(event_external_data));
@@ -381,7 +381,7 @@
 <a href=#381 id=381 data-nosnippet>381</a>    </span><span class="kw">fn </span>empty_structured_fields_treated_as_missing() {
 <a href=#382 id=382 data-nosnippet>382</a>        <span class="comment">// All optional stringy fields are empty — should parse successfully and treat them as missing.
 <a href=#383 id=383 data-nosnippet>383</a>        </span><span class="kw">let </span>raw = <span class="string">"_e{5,4}:title|text|h:|k:|s:|c:|e:|card:|#"</span>;
-<a href=#384 id=384 data-nosnippet>384</a>        <span class="kw">let </span>config = DogstatsdCodecConfiguration::default();
+<a href=#384 id=384 data-nosnippet>384</a>        <span class="kw">let </span>config = DogStatsDCodecConfiguration::default();
 <a href=#385 id=385 data-nosnippet>385</a>        <span class="kw">let </span>(<span class="kw">_</span>, packet) = parse_dogstatsd_event(raw.as_bytes(), <span class="kw-2">&amp;</span>config).expect(<span class="string">"should not fail to parse"</span>);
 <a href=#386 id=386 data-nosnippet>386</a>        <span class="macro">assert_eq!</span>(packet.hostname, <span class="prelude-val">None</span>);
 <a href=#387 id=387 data-nosnippet>387</a>        <span class="macro">assert_eq!</span>(packet.aggregation_key, <span class="prelude-val">None</span>);

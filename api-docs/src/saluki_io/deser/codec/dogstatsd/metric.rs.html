@@ -11,7 +11,7 @@
 <a href=#11 id=11 data-nosnippet>11</a><span class="kw">use </span>saluki_core::data_model::event::metric::<span class="kw-2">*</span>;
 <a href=#12 id=12 data-nosnippet>12</a><span class="kw">use </span>tracing::warn;
 <a href=#13 id=13 data-nosnippet>13</a>
-<a href=#14 id=14 data-nosnippet>14</a><span class="kw">use </span>super::{helpers::<span class="kw-2">*</span>, DogstatsdCodecConfiguration, NomParserError};
+<a href=#14 id=14 data-nosnippet>14</a><span class="kw">use </span>super::{helpers::<span class="kw-2">*</span>, DogStatsDCodecConfiguration, NomParserError};
 <a href=#15 id=15 data-nosnippet>15</a>
 <a href=#16 id=16 data-nosnippet>16</a><span class="kw">enum </span>MetricType {
 <a href=#17 id=17 data-nosnippet>17</a>    Count,
@@ -36,7 +36,7 @@
 <a href=#36 id=36 data-nosnippet>36</a>
 <a href=#37 id=37 data-nosnippet>37</a><span class="attr">#[inline]
 <a href=#38 id=38 data-nosnippet>38</a></span><span class="kw">pub fn </span>parse_dogstatsd_metric&lt;<span class="lifetime">'a</span>&gt;(
-<a href=#39 id=39 data-nosnippet>39</a>    input: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>[u8], config: <span class="kw-2">&amp;</span>DogstatsdCodecConfiguration,
+<a href=#39 id=39 data-nosnippet>39</a>    input: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>[u8], config: <span class="kw-2">&amp;</span>DogStatsDCodecConfiguration,
 <a href=#40 id=40 data-nosnippet>40</a>) -&gt; IResult&lt;<span class="kw-2">&amp;</span><span class="lifetime">'a </span>[u8], MetricPacket&lt;<span class="lifetime">'a</span>&gt;&gt; {
 <a href=#41 id=41 data-nosnippet>41</a>    <span class="comment">// We always parse the metric name and value(s) first, where value is both the kind (counter, gauge, etc) and the
 <a href=#42 id=42 data-nosnippet>42</a>    // actual value itself.
@@ -161,7 +161,7 @@
 <a href=#161 id=161 data-nosnippet>161</a>
 <a href=#162 id=162 data-nosnippet>162</a><span class="attr">#[inline]
 <a href=#163 id=163 data-nosnippet>163</a></span><span class="kw">fn </span>sample_rate&lt;<span class="lifetime">'a</span>&gt;(
-<a href=#164 id=164 data-nosnippet>164</a>    metric_name: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>str, config: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>DogstatsdCodecConfiguration,
+<a href=#164 id=164 data-nosnippet>164</a>    metric_name: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>str, config: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>DogStatsDCodecConfiguration,
 <a href=#165 id=165 data-nosnippet>165</a>) -&gt; <span class="kw">impl </span>Fn(f64) -&gt; <span class="prelude-ty">Result</span>&lt;SampleRate, <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str&gt; + <span class="lifetime">'a </span>{
 <a href=#166 id=166 data-nosnippet>166</a>    <span class="kw">let </span>minimum_sample_rate = config.minimum_sample_rate;
 <a href=#167 id=167 data-nosnippet>167</a>
@@ -265,17 +265,17 @@
 <a href=#265 id=265 data-nosnippet>265</a>    };
 <a href=#266 id=266 data-nosnippet>266</a>    <span class="kw">use </span>saluki_core::data_model::event::metric::<span class="kw-2">*</span>;
 <a href=#267 id=267 data-nosnippet>267</a>
-<a href=#268 id=268 data-nosnippet>268</a>    <span class="kw">use </span>super::{parse_dogstatsd_metric, DogstatsdCodecConfiguration};
+<a href=#268 id=268 data-nosnippet>268</a>    <span class="kw">use </span>super::{parse_dogstatsd_metric, DogStatsDCodecConfiguration};
 <a href=#269 id=269 data-nosnippet>269</a>
 <a href=#270 id=270 data-nosnippet>270</a>    <span class="kw">type </span>OptionalNomResult&lt;<span class="lifetime">'input</span>, T&gt; = <span class="prelude-ty">Result</span>&lt;<span class="prelude-ty">Option</span>&lt;T&gt;, nom::Err&lt;nom::error::Error&lt;<span class="kw-2">&amp;</span><span class="lifetime">'input </span>[u8]&gt;&gt;&gt;;
 <a href=#271 id=271 data-nosnippet>271</a>
 <a href=#272 id=272 data-nosnippet>272</a>    <span class="kw">fn </span>parse_dsd_metric(input: <span class="kw-2">&amp;</span>[u8]) -&gt; OptionalNomResult&lt;<span class="lifetime">'_</span>, Metric&gt; {
-<a href=#273 id=273 data-nosnippet>273</a>        <span class="kw">let </span>default_config = DogstatsdCodecConfiguration::default();
+<a href=#273 id=273 data-nosnippet>273</a>        <span class="kw">let </span>default_config = DogStatsDCodecConfiguration::default();
 <a href=#274 id=274 data-nosnippet>274</a>        parse_dsd_metric_with_conf(input, <span class="kw-2">&amp;</span>default_config)
 <a href=#275 id=275 data-nosnippet>275</a>    }
 <a href=#276 id=276 data-nosnippet>276</a>
 <a href=#277 id=277 data-nosnippet>277</a>    <span class="kw">fn </span>parse_dsd_metric_with_conf&lt;<span class="lifetime">'input</span>&gt;(
-<a href=#278 id=278 data-nosnippet>278</a>        input: <span class="kw-2">&amp;</span><span class="lifetime">'input </span>[u8], config: <span class="kw-2">&amp;</span>DogstatsdCodecConfiguration,
+<a href=#278 id=278 data-nosnippet>278</a>        input: <span class="kw-2">&amp;</span><span class="lifetime">'input </span>[u8], config: <span class="kw-2">&amp;</span>DogStatsDCodecConfiguration,
 <a href=#279 id=279 data-nosnippet>279</a>    ) -&gt; OptionalNomResult&lt;<span class="lifetime">'input</span>, Metric&gt; {
 <a href=#280 id=280 data-nosnippet>280</a>        <span class="kw">let </span>(remaining, packet) = parse_dogstatsd_metric(input, config)<span class="question-mark">?</span>;
 <a href=#281 id=281 data-nosnippet>281</a>        <span class="macro">assert!</span>(remaining.is_empty());
@@ -388,7 +388,7 @@
 <a href=#388 id=388 data-nosnippet>388</a>        <span class="kw">let </span>actual = parse_dsd_metric(raw.as_bytes()).expect(<span class="string">"should not fail to parse"</span>);
 <a href=#389 id=389 data-nosnippet>389</a>        check_basic_metric_eq(expected, actual);
 <a href=#390 id=390 data-nosnippet>390</a>
-<a href=#391 id=391 data-nosnippet>391</a>        <span class="kw">let </span>config = DogstatsdCodecConfiguration::default();
+<a href=#391 id=391 data-nosnippet>391</a>        <span class="kw">let </span>config = DogStatsDCodecConfiguration::default();
 <a href=#392 id=392 data-nosnippet>392</a>        <span class="kw">let </span>(<span class="kw">_</span>, packet) = parse_dogstatsd_metric(raw.as_bytes(), <span class="kw-2">&amp;</span>config).expect(<span class="string">"should not fail to parse"</span>);
 <a href=#393 id=393 data-nosnippet>393</a>        <span class="macro">assert_eq!</span>(packet.local_data, <span class="prelude-val">Some</span>(local_data));
 <a href=#394 id=394 data-nosnippet>394</a>    }
@@ -417,7 +417,7 @@
 <a href=#417 id=417 data-nosnippet>417</a>        <span class="kw">let </span>actual = parse_dsd_metric(raw.as_bytes()).expect(<span class="string">"should not fail to parse"</span>);
 <a href=#418 id=418 data-nosnippet>418</a>        check_basic_metric_eq(expected, actual);
 <a href=#419 id=419 data-nosnippet>419</a>
-<a href=#420 id=420 data-nosnippet>420</a>        <span class="kw">let </span>config = DogstatsdCodecConfiguration::default();
+<a href=#420 id=420 data-nosnippet>420</a>        <span class="kw">let </span>config = DogStatsDCodecConfiguration::default();
 <a href=#421 id=421 data-nosnippet>421</a>        <span class="kw">let </span>(<span class="kw">_</span>, packet) = parse_dogstatsd_metric(raw.as_bytes(), <span class="kw-2">&amp;</span>config).expect(<span class="string">"should not fail to parse"</span>);
 <a href=#422 id=422 data-nosnippet>422</a>        <span class="macro">assert_eq!</span>(packet.external_data, <span class="prelude-val">Some</span>(external_data));
 <a href=#423 id=423 data-nosnippet>423</a>    }
@@ -433,7 +433,7 @@
 <a href=#433 id=433 data-nosnippet>433</a>        <span class="kw">let </span>actual = parse_dsd_metric(raw.as_bytes()).expect(<span class="string">"should not fail to parse"</span>);
 <a href=#434 id=434 data-nosnippet>434</a>        check_basic_metric_eq(expected, actual);
 <a href=#435 id=435 data-nosnippet>435</a>
-<a href=#436 id=436 data-nosnippet>436</a>        <span class="kw">let </span>config = DogstatsdCodecConfiguration::default();
+<a href=#436 id=436 data-nosnippet>436</a>        <span class="kw">let </span>config = DogStatsDCodecConfiguration::default();
 <a href=#437 id=437 data-nosnippet>437</a>        <span class="kw">let </span>(<span class="kw">_</span>, packet) = parse_dogstatsd_metric(raw.as_bytes(), <span class="kw-2">&amp;</span>config).expect(<span class="string">"should not fail to parse"</span>);
 <a href=#438 id=438 data-nosnippet>438</a>        <span class="macro">assert_eq!</span>(packet.cardinality, <span class="prelude-val">Some</span>(OriginTagCardinality::High));
 <a href=#439 id=439 data-nosnippet>439</a>    }
@@ -477,7 +477,7 @@
 <a href=#477 id=477 data-nosnippet>477</a>        <span class="macro">assert_eq!</span>(values.len(), <span class="number">1</span>);
 <a href=#478 id=478 data-nosnippet>478</a>        <span class="macro">assert_eq!</span>(values[<span class="number">0</span>], (timestamp, value_sample_rate_adjusted));
 <a href=#479 id=479 data-nosnippet>479</a>
-<a href=#480 id=480 data-nosnippet>480</a>        <span class="kw">let </span>config = DogstatsdCodecConfiguration::default();
+<a href=#480 id=480 data-nosnippet>480</a>        <span class="kw">let </span>config = DogStatsDCodecConfiguration::default();
 <a href=#481 id=481 data-nosnippet>481</a>        <span class="kw">let </span>(<span class="kw">_</span>, packet) = parse_dogstatsd_metric(raw.as_bytes(), <span class="kw-2">&amp;</span>config).expect(<span class="string">"should not fail to parse"</span>);
 <a href=#482 id=482 data-nosnippet>482</a>        <span class="macro">assert_eq!</span>(packet.local_data, <span class="prelude-val">Some</span>(local_data));
 <a href=#483 id=483 data-nosnippet>483</a>        <span class="macro">assert_eq!</span>(packet.external_data, <span class="prelude-val">Some</span>(external_data));
@@ -530,7 +530,7 @@
 <a href=#530 id=530 data-nosnippet>530</a>
 <a href=#531 id=531 data-nosnippet>531</a>        <span class="kw">let </span>cases = [<span class="number">3</span>, <span class="number">2</span>, <span class="number">1</span>];
 <a href=#532 id=532 data-nosnippet>532</a>        <span class="kw">for </span>max_tag_count <span class="kw">in </span>cases {
-<a href=#533 id=533 data-nosnippet>533</a>            <span class="kw">let </span>config = DogstatsdCodecConfiguration::default().with_maximum_tag_count(max_tag_count);
+<a href=#533 id=533 data-nosnippet>533</a>            <span class="kw">let </span>config = DogStatsDCodecConfiguration::default().with_maximum_tag_count(max_tag_count);
 <a href=#534 id=534 data-nosnippet>534</a>
 <a href=#535 id=535 data-nosnippet>535</a>            <span class="kw">let </span>metric = parse_dsd_metric_with_conf(input, <span class="kw-2">&amp;</span>config)
 <a href=#536 id=536 data-nosnippet>536</a>                .expect(<span class="string">"should not fail to parse"</span>)
@@ -545,7 +545,7 @@
 <a href=#545 id=545 data-nosnippet>545</a>
 <a href=#546 id=546 data-nosnippet>546</a>        <span class="kw">let </span>cases = [<span class="number">6</span>, <span class="number">5</span>, <span class="number">4</span>];
 <a href=#547 id=547 data-nosnippet>547</a>        <span class="kw">for </span>max_tag_length <span class="kw">in </span>cases {
-<a href=#548 id=548 data-nosnippet>548</a>            <span class="kw">let </span>config = DogstatsdCodecConfiguration::default().with_maximum_tag_length(max_tag_length);
+<a href=#548 id=548 data-nosnippet>548</a>            <span class="kw">let </span>config = DogStatsDCodecConfiguration::default().with_maximum_tag_length(max_tag_length);
 <a href=#549 id=549 data-nosnippet>549</a>
 <a href=#550 id=550 data-nosnippet>550</a>            <span class="kw">let </span>metric = parse_dsd_metric_with_conf(input, <span class="kw-2">&amp;</span>config)
 <a href=#551 id=551 data-nosnippet>551</a>                .expect(<span class="string">"should not fail to parse"</span>)
@@ -560,7 +560,7 @@
 <a href=#560 id=560 data-nosnippet>560</a>    </span><span class="kw">fn </span>respects_read_timestamps() {
 <a href=#561 id=561 data-nosnippet>561</a>        <span class="kw">let </span>input = <span class="string">b"foo:1|c|T1234567890"</span>;
 <a href=#562 id=562 data-nosnippet>562</a>
-<a href=#563 id=563 data-nosnippet>563</a>        <span class="kw">let </span>config = DogstatsdCodecConfiguration::default().with_timestamps(<span class="bool-val">false</span>);
+<a href=#563 id=563 data-nosnippet>563</a>        <span class="kw">let </span>config = DogStatsDCodecConfiguration::default().with_timestamps(<span class="bool-val">false</span>);
 <a href=#564 id=564 data-nosnippet>564</a>
 <a href=#565 id=565 data-nosnippet>565</a>        <span class="kw">let </span>metric = parse_dsd_metric_with_conf(input, <span class="kw-2">&amp;</span>config)
 <a href=#566 id=566 data-nosnippet>566</a>            .expect(<span class="string">"should not fail to parse"</span>)
@@ -582,7 +582,7 @@
 <a href=#582 id=582 data-nosnippet>582</a>    </span><span class="kw">fn </span>permissive_mode() {
 <a href=#583 id=583 data-nosnippet>583</a>        <span class="kw">let </span>payload = <span class="string">b"codeheap 'non-nmethods'.usage:0.3054|g|#env:dev,service:foobar,datacenter:localhost.dev"</span>;
 <a href=#584 id=584 data-nosnippet>584</a>
-<a href=#585 id=585 data-nosnippet>585</a>        <span class="kw">let </span>config = DogstatsdCodecConfiguration::default().with_permissive_mode(<span class="bool-val">true</span>);
+<a href=#585 id=585 data-nosnippet>585</a>        <span class="kw">let </span>config = DogStatsDCodecConfiguration::default().with_permissive_mode(<span class="bool-val">true</span>);
 <a href=#586 id=586 data-nosnippet>586</a>        <span class="kw">match </span>parse_dsd_metric_with_conf(payload, <span class="kw-2">&amp;</span>config) {
 <a href=#587 id=587 data-nosnippet>587</a>            <span class="prelude-val">Ok</span>(result) =&gt; <span class="macro">assert!</span>(result.is_some(), <span class="string">"should not fail to materialize metric after decoding"</span>),
 <a href=#588 id=588 data-nosnippet>588</a>            <span class="prelude-val">Err</span>(e) =&gt; <span class="macro">panic!</span>(<span class="string">"should not have errored: {:?}"</span>, e),
@@ -593,7 +593,7 @@
 <a href=#593 id=593 data-nosnippet>593</a>    </span><span class="kw">fn </span>minimum_sample_rate() {
 <a href=#594 id=594 data-nosnippet>594</a>        <span class="comment">// Sample rate of 0.01 should lead to a count of 100 when handling a single value.
 <a href=#595 id=595 data-nosnippet>595</a>        </span><span class="kw">let </span>minimum_sample_rate = SampleRate::try_from(<span class="number">0.01</span>).unwrap();
-<a href=#596 id=596 data-nosnippet>596</a>        <span class="kw">let </span>config = DogstatsdCodecConfiguration::default().with_minimum_sample_rate(minimum_sample_rate.rate());
+<a href=#596 id=596 data-nosnippet>596</a>        <span class="kw">let </span>config = DogStatsDCodecConfiguration::default().with_minimum_sample_rate(minimum_sample_rate.rate());
 <a href=#597 id=597 data-nosnippet>597</a>
 <a href=#598 id=598 data-nosnippet>598</a>        <span class="kw">let </span>cases = [
 <a href=#599 id=599 data-nosnippet>599</a>            <span class="comment">// Worst case scenario: sample rate of zero, or "infinitely sampled".

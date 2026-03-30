@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["MessageType","ParsedPacket"],"fn":["parse_message_type"],"struct":["DogstatsdCodec","DogstatsdCodecConfiguration","EventPacket","MetricPacket","ParseError","ServiceCheckPacket"]};
+window.SIDEBAR_ITEMS = {"enum":["MessageType","ParsedPacket"],"fn":["parse_message_type"],"struct":["DogStatsDCodec","DogStatsDCodecConfiguration","EventPacket","MetricPacket","ParseError","ServiceCheckPacket"]};
