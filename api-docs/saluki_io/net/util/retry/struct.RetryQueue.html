@@ -42,7 +42,7 @@ error is returned.</p>
 error is returned.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.flush" class="method"><a class="src rightside" href="../../../../src/saluki_io/net/util/retry/queue/mod.rs.html#250-269">Source</a><h4 class="code-header">pub async fn <a href="#method.flush" class="fn">flush</a>(self) -&gt; <a class="enum" href="https://doc.rust-lang.org/nightly/core/result/enum.Result.html" title="enum core::result::Result">Result</a>&lt;<a class="struct" href="struct.PushResult.html" title="struct saluki_io::net::util::retry::PushResult">PushResult</a>, <a class="type" href="../../../../saluki_error/type.GenericError.html" title="type saluki_error::GenericError">GenericError</a>&gt;</h4></section></summary><div class="docblock"><p>Flushes all entries, potentially persisting them to disk.</p>
 <p>When disk persistence is configured, this will flush all in-memory entries to disk. Flushing to disk still obeys
-the normal limiting behavior in terms of maximum on-disk size. When disk persistence is not enabled, all
+the the normal limiting behavior in terms of maximum on-disk size. When disk persistence is not enabled, all
 in-memory entries will be dropped.</p>
 <h5 id="errors-3"><a class="doc-anchor" href="#errors-3">§</a>Errors</h5>
 <p>If an error occurs while persisting an entry to disk, an error is returned.</p>
