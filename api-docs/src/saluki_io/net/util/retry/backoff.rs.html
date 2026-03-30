@@ -8,7 +8,7 @@
 <a href=#8 id=8 data-nosnippet>8</a>
 <a href=#9 id=9 data-nosnippet>9</a><span class="attr">#[derive(Clone)]
 <a href=#10 id=10 data-nosnippet>10</a></span><span class="kw">pub enum </span>BackoffRng {
-<a href=#11 id=11 data-nosnippet>11</a>    <span class="doccomment">/// A lazily-initialized, thread-local CSPRNG seeded by the operating system.
+<a href=#11 id=11 data-nosnippet>11</a>    <span class="doccomment">/// A lazily initialized, thread-local CSPRNG seeded by the operating system.
 <a href=#12 id=12 data-nosnippet>12</a>    ///
 <a href=#13 id=13 data-nosnippet>13</a>    /// Provided by [`rand::ThreadRng`][rand_threadrng].
 <a href=#14 id=14 data-nosnippet>14</a>    ///
@@ -102,7 +102,7 @@
 <a href=#102 id=102 data-nosnippet>102</a>    /// Useful for testing purposes, where the RNG must be overridden to add determinism. The RNG is shared atomically
 <a href=#103 id=103 data-nosnippet>103</a>    /// behind a mutex, allowing it to be cloned, so care should be taken to never use this outside of tests.
 <a href=#104 id=104 data-nosnippet>104</a>    ///
-<a href=#105 id=105 data-nosnippet>105</a>    /// Defaults to a lazily-initialized, thread-local CSPRNG seeded by the operating system.
+<a href=#105 id=105 data-nosnippet>105</a>    /// Defaults to a lazily initialized, thread-local CSPRNG seeded by the operating system.
 <a href=#106 id=106 data-nosnippet>106</a>    </span><span class="kw">pub fn </span>with_rng&lt;R&gt;(<span class="self">self</span>, rng: R) -&gt; <span class="self">Self
 <a href=#107 id=107 data-nosnippet>107</a>    </span><span class="kw">where
 <a href=#108 id=108 data-nosnippet>108</a>        </span>R: RngCore + Send + Sync + <span class="lifetime">'static</span>,
