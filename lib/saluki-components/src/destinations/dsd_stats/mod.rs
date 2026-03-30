@@ -91,7 +91,7 @@ pub struct DogStatsDAPIHandlerState {
     tx: Arc<mpsc::Sender<(oneshot::Sender<StatsResponse>, u64)>>,
 }
 
-/// API handler for dogstatsd stats endpoint.
+/// API handler for DogStatsD statistics endpoint.
 #[derive(Clone)]
 pub struct DogStatsDAPIHandler {
     state: DogStatsDAPIHandlerState,

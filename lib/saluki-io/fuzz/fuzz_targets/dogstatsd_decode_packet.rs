@@ -1,11 +1,11 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use saluki_io::deser::codec::dogstatsd::{DogstatsdCodec, DogstatsdCodecConfiguration};
+use saluki_io::deser::codec::dogstatsd::{DogStatsDCodec, DogStatsDCodecConfiguration};
 
 fuzz_target!(|data: &[u8]| {
-    let config = DogstatsdCodecConfiguration::default();
-    let codec = DogstatsdCodec::from_configuration(config);
+    let config = DogStatsDCodecConfiguration::default();
+    let codec = DogStatsDCodec::from_configuration(config);
 
     // Try to parse the input.
     //

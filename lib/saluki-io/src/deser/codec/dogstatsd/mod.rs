@@ -53,7 +53,7 @@ impl<'a> From<NomParserError<'a>> for ParseError {
                 kind: e.code,
                 data: String::from_utf8_lossy(e.input).to_string(),
             },
-            nom::Err::Incomplete(_) => unreachable!("dogstatsd codec only supports complete payloads"),
+            nom::Err::Incomplete(_) => unreachable!("DogStatsD codec only supports complete payloads"),
         }
     }
 }
@@ -72,7 +72,7 @@ pub enum ParsedPacket<'a> {
 
 /// DogStatsD codec configuration.
 #[derive(Clone, Debug)]
-pub struct DogstatsdCodecConfiguration {
+pub struct DogStatsDCodecConfiguration {
     permissive: bool,
     maximum_tag_length: usize,
     maximum_tag_count: usize,
@@ -80,7 +80,7 @@ pub struct DogstatsdCodecConfiguration {
     minimum_sample_rate: f64,
 }
 
-impl DogstatsdCodecConfiguration {
+impl DogStatsDCodecConfiguration {
     /// Sets whether or not the codec should operate in permissive mode.
     ///
     /// In permissive mode, the codec will attempt to parse as much of the input as possible, relying solely on
@@ -142,7 +142,7 @@ impl DogstatsdCodecConfiguration {
     }
 }
 
-impl Default for DogstatsdCodecConfiguration {
+impl Default for DogStatsDCodecConfiguration {
     fn default() -> Self {
         Self {
             maximum_tag_length: usize::MAX,
@@ -162,16 +162,16 @@ impl Default for DogstatsdCodecConfiguration {
 ///
 /// [dsd]: https://docs.datadoghq.com/developers/dogstatsd/
 #[derive(Clone, Debug)]
-pub struct DogstatsdCodec {
-    config: DogstatsdCodecConfiguration,
+pub struct DogStatsDCodec {
+    config: DogStatsDCodecConfiguration,
 }
 
-impl DogstatsdCodec {
+impl DogStatsDCodec {
     /// Sets the given configuration for the codec.
     ///
     /// Different aspects of the codec's behavior (such as tag length, tag count, and timestamp parsing) can be
-    /// controlled through its configuration. See [`DogstatsdCodecConfiguration`] for more information.
-    pub fn from_configuration(config: DogstatsdCodecConfiguration) -> Self {
+    /// controlled through its configuration. See [`DogStatsDCodecConfiguration`] for more information.
+    pub fn from_configuration(config: DogStatsDCodecConfiguration) -> Self {
         Self { config }
     }
 

@@ -11,7 +11,7 @@ use saluki_context::{origin::OriginTagCardinality, tags::RawTags};
 use saluki_core::data_model::event::metric::*;
 use tracing::warn;
 
-use super::{helpers::*, DogstatsdCodecConfiguration, NomParserError};
+use super::{helpers::*, DogStatsDCodecConfiguration, NomParserError};
 
 enum MetricType {
     Count,
@@ -36,7 +36,7 @@ pub struct MetricPacket<'a> {
 
 #[inline]
 pub fn parse_dogstatsd_metric<'a>(
-    input: &'a [u8], config: &DogstatsdCodecConfiguration,
+    input: &'a [u8], config: &DogStatsDCodecConfiguration,
 ) -> IResult<&'a [u8], MetricPacket<'a>> {
     // We always parse the metric name and value(s) first, where value is both the kind (counter, gauge, etc) and the
     // actual value itself.
@@ -161,7 +161,7 @@ fn permissive_metric_name(input: &[u8]) -> IResult<&[u8], &str> {
 
 #[inline]
 fn sample_rate<'a>(
-    metric_name: &'a str, config: &'a DogstatsdCodecConfiguration,
+    metric_name: &'a str, config: &'a DogStatsDCodecConfiguration,
 ) -> impl Fn(f64) -> Result<SampleRate, &'static str> + 'a {
     let minimum_sample_rate = config.minimum_sample_rate;
 
@@ -265,17 +265,17 @@ mod tests {
     };
     use saluki_core::data_model::event::metric::*;
 
-    use super::{parse_dogstatsd_metric, DogstatsdCodecConfiguration};
+    use super::{parse_dogstatsd_metric, DogStatsDCodecConfiguration};
 
     type OptionalNomResult<'input, T> = Result<Option<T>, nom::Err<nom::error::Error<&'input [u8]>>>;
 
     fn parse_dsd_metric(input: &[u8]) -> OptionalNomResult<'_, Metric> {
-        let default_config = DogstatsdCodecConfiguration::default();
+        let default_config = DogStatsDCodecConfiguration::default();
         parse_dsd_metric_with_conf(input, &default_config)
     }
 
     fn parse_dsd_metric_with_conf<'input>(
-        input: &'input [u8], config: &DogstatsdCodecConfiguration,
+        input: &'input [u8], config: &DogStatsDCodecConfiguration,
     ) -> OptionalNomResult<'input, Metric> {
         let (remaining, packet) = parse_dogstatsd_metric(input, config)?;
         assert!(remaining.is_empty());
@@ -388,7 +388,7 @@ mod tests {
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
         check_basic_metric_eq(expected, actual);
 
-        let config = DogstatsdCodecConfiguration::default();
+        let config = DogStatsDCodecConfiguration::default();
         let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
         assert_eq!(packet.local_data, Some(local_data));
     }
@@ -417,7 +417,7 @@ mod tests {
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
         check_basic_metric_eq(expected, actual);
 
-        let config = DogstatsdCodecConfiguration::default();
+        let config = DogStatsDCodecConfiguration::default();
         let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
         assert_eq!(packet.external_data, Some(external_data));
     }
@@ -433,7 +433,7 @@ mod tests {
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
         check_basic_metric_eq(expected, actual);
 
-        let config = DogstatsdCodecConfiguration::default();
+        let config = DogStatsDCodecConfiguration::default();
         let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
         assert_eq!(packet.cardinality, Some(OriginTagCardinality::High));
     }
@@ -477,7 +477,7 @@ mod tests {
         assert_eq!(values.len(), 1);
         assert_eq!(values[0], (timestamp, value_sample_rate_adjusted));
 
-        let config = DogstatsdCodecConfiguration::default();
+        let config = DogStatsDCodecConfiguration::default();
         let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
         assert_eq!(packet.local_data, Some(local_data));
         assert_eq!(packet.external_data, Some(external_data));
@@ -530,7 +530,7 @@ mod tests {
 
         let cases = [3, 2, 1];
         for max_tag_count in cases {
-            let config = DogstatsdCodecConfiguration::default().with_maximum_tag_count(max_tag_count);
+            let config = DogStatsDCodecConfiguration::default().with_maximum_tag_count(max_tag_count);
 
             let metric = parse_dsd_metric_with_conf(input, &config)
                 .expect("should not fail to parse")
@@ -545,7 +545,7 @@ mod tests {
 
         let cases = [6, 5, 4];
         for max_tag_length in cases {
-            let config = DogstatsdCodecConfiguration::default().with_maximum_tag_length(max_tag_length);
+            let config = DogStatsDCodecConfiguration::default().with_maximum_tag_length(max_tag_length);
 
             let metric = parse_dsd_metric_with_conf(input, &config)
                 .expect("should not fail to parse")
@@ -560,7 +560,7 @@ mod tests {
     fn respects_read_timestamps() {
         let input = b"foo:1|c|T1234567890";
 
-        let config = DogstatsdCodecConfiguration::default().with_timestamps(false);
+        let config = DogStatsDCodecConfiguration::default().with_timestamps(false);
 
         let metric = parse_dsd_metric_with_conf(input, &config)
             .expect("should not fail to parse")
@@ -582,7 +582,7 @@ mod tests {
     fn permissive_mode() {
         let payload = b"codeheap 'non-nmethods'.usage:0.3054|g|#env:dev,service:foobar,datacenter:localhost.dev";
 
-        let config = DogstatsdCodecConfiguration::default().with_permissive_mode(true);
+        let config = DogStatsDCodecConfiguration::default().with_permissive_mode(true);
         match parse_dsd_metric_with_conf(payload, &config) {
             Ok(result) => assert!(result.is_some(), "should not fail to materialize metric after decoding"),
             Err(e) => panic!("should not have errored: {:?}", e),
@@ -593,7 +593,7 @@ mod tests {
     fn minimum_sample_rate() {
         // Sample rate of 0.01 should lead to a count of 100 when handling a single value.
         let minimum_sample_rate = SampleRate::try_from(0.01).unwrap();
-        let config = DogstatsdCodecConfiguration::default().with_minimum_sample_rate(minimum_sample_rate.rate());
+        let config = DogStatsDCodecConfiguration::default().with_minimum_sample_rate(minimum_sample_rate.rate());
 
         let cases = [
             // Worst case scenario: sample rate of zero, or "infinitely sampled".
