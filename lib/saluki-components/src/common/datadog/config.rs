@@ -119,3 +119,91 @@ impl ForwarderConfiguration {
         Duration::from_secs(self.connection_reset_interval_secs)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use saluki_config::ConfigurationLoader;
+
+    use super::*;
+    use crate::config::{DatadogRemapper, KEY_ALIASES};
+
+    // Two distinct proxy URLs to verify which one wins in precedence tests.
+    const PROXY_A: &str = "http://proxy-a.example.com:3128";
+    const PROXY_A_URI: &str = "http://proxy-a.example.com:3128/";
+    const PROXY_B: &str = "http://proxy-b.example.com:3128";
+    const PROXY_B_URI: &str = "http://proxy-b.example.com:3128/";
+
+    fn base_config() -> serde_json::Value {
+        serde_json::json!({ "api_key": "test-api-key" })
+    }
+
+    fn config_with(extra: serde_json::Value) -> serde_json::Value {
+        let mut base = base_config();
+        if let (Some(base_obj), Some(extra_obj)) = (base.as_object_mut(), extra.as_object()) {
+            for (k, v) in extra_obj {
+                base_obj.insert(k.clone(), v.clone());
+            }
+        }
+        base
+    }
+
+    async fn forwarder_config_from(
+        file_values: serde_json::Value, env_vars: Option<&[(String, String)]>,
+    ) -> ForwarderConfiguration {
+        let (cfg, _) = ConfigurationLoader::for_tests_with_provider_factory(
+            Some(file_values),
+            env_vars,
+            false,
+            KEY_ALIASES,
+            || DatadogRemapper::new(),
+        )
+        .await;
+        ForwarderConfiguration::from_configuration(&cfg).expect("ForwarderConfiguration should deserialize")
+    }
+
+    // Precedence chain: YAML (proxy.http nested) < HTTP_PROXY < DD_PROXY_HTTP
+    //
+    // The test helper exposes the DD_-prefix tier via PROXY_HTTP: it sets both PROXY_HTTP (raw)
+    // and TEST_PROXY_HTTP, and from_environment("TEST") reads TEST_PROXY_HTTP → proxy_http,
+    // mirroring how DD_PROXY_HTTP → proxy_http works in production.
+
+    #[tokio::test]
+    async fn proxy_set_via_yaml_nested_config() {
+        let config = forwarder_config_from(
+            config_with(serde_json::json!({ "proxy": { "http": PROXY_A } })),
+            None,
+        )
+        .await;
+
+        let proxies = config.proxy().as_ref().unwrap().build().unwrap();
+        assert_eq!(proxies[0].uri().to_string(), PROXY_A_URI);
+    }
+
+    #[tokio::test]
+    async fn http_proxy_env_var_overrides_yaml_nested_config() {
+        let env_vars = vec![("HTTP_PROXY".to_string(), PROXY_B.to_string())];
+        let config = forwarder_config_from(
+            config_with(serde_json::json!({ "proxy": { "http": PROXY_A } })),
+            Some(&env_vars),
+        )
+        .await;
+
+        let proxies = config.proxy().as_ref().unwrap().build().unwrap();
+        assert_eq!(proxies[0].uri().to_string(), PROXY_B_URI);
+    }
+
+    #[tokio::test]
+    async fn dd_proxy_http_env_var_overrides_http_proxy() {
+        // PROXY_HTTP simulates DD_PROXY_HTTP: the test helper sets TEST_PROXY_HTTP, which
+        // from_environment("TEST") reads as proxy_http — the same path DD_PROXY_HTTP takes
+        // in production.
+        let env_vars = vec![
+            ("HTTP_PROXY".to_string(), PROXY_A.to_string()),
+            ("PROXY_HTTP".to_string(), PROXY_B.to_string()),
+        ];
+        let config = forwarder_config_from(base_config(), Some(&env_vars)).await;
+
+        let proxies = config.proxy().as_ref().unwrap().build().unwrap();
+        assert_eq!(proxies[0].uri().to_string(), PROXY_B_URI);
+    }
+}

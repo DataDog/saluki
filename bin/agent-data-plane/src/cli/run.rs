@@ -10,6 +10,7 @@ use saluki_app::{
     metrics::emit_startup_metrics,
 };
 use saluki_components::{
+    config::{DatadogRemapper, KEY_ALIASES},
     decoders::otlp::OtlpDecoderConfiguration,
     destinations::DogStatsDStatisticsConfiguration,
     encoders::{
@@ -95,9 +96,11 @@ pub async fn handle_run_command(
             // configuration source, but with environment variables on top of that to allow for ADP-specific overriding: log
             // level, etc.
             let dynamic_config = ConfigurationLoader::default()
+                .with_key_aliases(KEY_ALIASES)
                 .from_yaml(&bootstrap_config_path)
                 .error_context("Failed to load Datadog Agent configuration file.")?
                 .with_dynamic_configuration(ra_bootstrap.create_config_stream())
+                .add_providers([DatadogRemapper::new()])
                 .from_environment(crate::internal::platform::DATADOG_AGENT_ENV_VAR_PREFIX)?
                 .with_default_secrets_resolution()
                 .await?

@@ -6,6 +6,10 @@
 #![deny(missing_docs)]
 
 mod common;
+
+/// Datadog-specific configuration providers and remappers.
+pub mod config;
+
 pub mod decoders;
 pub mod destinations;
 pub mod encoders;

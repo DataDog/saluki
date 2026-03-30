@@ -3558,6 +3558,7 @@ dependencies = [
  "datadog-protos",
  "ddsketch",
  "faster-hex",
+ "figment",
  "float-cmp",
  "fnv",
  "foldhash 0.2.0",
