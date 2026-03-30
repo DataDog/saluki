@@ -3,7 +3,7 @@
 //! `stringtheory` provides two main components: a sharing-optimized string type, `MetaString`, and string interning
 //! implementations (`FixedSizeInterner`, `GenericMapInterner`, etc). These components are meant to work in concert,
 //! allowing for using a single string type that can handle owned, shared, and interned strings, and providing a way to
-//! efficiently intern strings strings when possible.
+//! efficiently intern strings when possible.
 #![deny(warnings)]
 #![deny(missing_docs)]
 // We only support 64-bit little-endian platforms anyways, so there's no risk of our enum variants having their values truncated.

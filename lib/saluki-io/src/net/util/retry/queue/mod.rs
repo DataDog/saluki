@@ -241,7 +241,7 @@ where
     /// Flushes all entries, potentially persisting them to disk.
     ///
     /// When disk persistence is configured, this will flush all in-memory entries to disk. Flushing to disk still obeys
-    /// the the normal limiting behavior in terms of maximum on-disk size. When disk persistence is not enabled, all
+    /// the normal limiting behavior in terms of maximum on-disk size. When disk persistence is not enabled, all
     /// in-memory entries will be dropped.
     ///
     /// # Errors

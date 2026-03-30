@@ -34,7 +34,7 @@ supporting changes and then the final change that makes the component utilize th
 We generally require unit tests for bug fixes, as well as new features.
 
 Sometimes, this can be difficult to do depending on the type of code change: some areas of code don't have a great way
-to to be run independently and we often choose to not abstract code just to make it testable. This can sometimes
+to be run independently and we often choose to not abstract code just to make it testable. This can sometimes
 require a little more thought and creativity to test the code.
 
 A good rule of thumb to follow is that if you don't have to change the code to make it testable, then you should
