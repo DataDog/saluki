@@ -162,10 +162,8 @@ impl Supervisable for PrivilegedApiWorker {
     }
 
     async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
-        // Load our TLS configuration.
-        //
-        // TODO: should this need to happen during process init or could we do it once when creating
-        // `PrivilegedApiWorker` and simplify things?
+        // Load our TLS configuration on each initialization so that cert rotations are picked up on
+        // supervisor restart.
         let cert_path = get_cert_path_from_config(&self.config)?;
         let tls_config = build_datadog_agent_server_tls_config(cert_path).await?;
 

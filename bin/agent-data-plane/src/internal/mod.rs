@@ -33,6 +33,9 @@ pub fn create_internal_supervisor(
     health_registry: HealthRegistry, env_provider: ADPEnvironmentProvider,
     dsd_stats_config: DogStatsDStatisticsConfiguration, ra_bootstrap: Option<RemoteAgentBootstrap>,
 ) -> Result<Supervisor, GenericError> {
+    // The root supervisor runs in ambient mode (caller's runtime) since its children each have their own
+    // dedicated runtimes. The default restart strategy (one-for-one, 1 restart per 5s) applies to the child
+    // supervisors as units.
     let mut root = Supervisor::new("internal-sup")?;
 
     // Add control plane supervisor (dedicated single-threaded runtime)
