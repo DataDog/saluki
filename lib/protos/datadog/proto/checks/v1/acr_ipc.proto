@@ -1,0 +1,73 @@
+syntax = "proto3";
+
+package datadog.checks.v1;
+
+import "checks/v1/checks.proto";
+
+// Handshake: client -> server
+message Hello {
+  uint32 protocol_version = 1;
+  string client_id = 2;
+  string client_version = 3;
+}
+
+// Handshake: server -> client
+message HelloResp {
+  uint32 protocol_version = 1;
+  string server_id = 2;
+  bool accepted = 3;
+  string reject_reason = 4;
+}
+
+// Configuration: server -> client (unsolicited)
+message ConfigData {
+  EnrichmentData enrichment = 1;
+  repeated CheckInstance checks = 2;
+  map<string, string> agent_config = 3;
+}
+
+message EnrichmentData {
+  string hostname = 1;
+  map<string, string> host_tags = 2;
+  string cluster_name = 3;
+  string agent_version = 4;
+  map<string, bytes> config_values = 5;
+  uint64 process_start_time = 6;
+  K8sConnectionInfo k8s_connection_info = 7;
+}
+
+message K8sConnectionInfo {
+  string api_server_url = 1;
+  string bearer_token = 2;
+}
+
+message CheckInstance {
+  string check_name = 1;
+  string instance_name = 2;
+  string id = 3;
+  bytes config = 4;
+}
+
+// Check data: client -> server (batched)
+message CheckDataMsg {
+  uint64 sequence_id = 1;
+  string check_name = 2;
+  string instance_name = 3;
+  string check_id = 4;
+  repeated CheckData data = 5;
+}
+
+// Check data acknowledgement: server -> client
+message CheckDataAck {
+  uint64 sequence_id = 1;
+  bool success = 2;
+  string error = 3;
+}
+
+// Check result: client -> server
+message CheckResultMsg {
+  string check_name = 1;
+  string instance_name = 2;
+  string check_id = 3;
+  string error = 4;
+}

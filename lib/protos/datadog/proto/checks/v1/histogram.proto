@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package datadog.checks.v1.histogram;
+
+message Histogram {
+  string metric_name = 1;
+  int64 value = 2;
+  float lower_bound = 3;
+  float upper_bound = 4;
+  int32 monotonic = 5;
+  repeated string tags = 6;
+}
