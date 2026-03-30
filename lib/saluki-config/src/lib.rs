@@ -11,6 +11,7 @@ use snafu::{ResultExt as _, Snafu};
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use tracing::{debug, error};
 
+mod deserializer;
 pub mod dynamic;
 mod provider;
 mod secrets;
@@ -408,8 +409,7 @@ impl ConfigurationLoader {
         T: DeserializeOwned,
     {
         let merged = build_merged_value(&self.layer_sources);
-        let json = value_to_json(&merged);
-        serde_json::from_value(json).map_err(|e| ConfigurationError::Generic { source: e.into() })
+        deserializer::from_value(&merged).map_err(|e| ConfigurationError::Generic { source: e.into() })
     }
 
     /// Creates a bootstrap `GenericConfiguration` without consuming the loader.
@@ -853,8 +853,7 @@ impl GenericConfiguration {
         let config_guard = self.inner.config.read().unwrap();
         match extract_at_path(&config_guard, key) {
             Some(value) => {
-                let json = value_to_json(value);
-                serde_json::from_value(json).map_err(|e| from_serde_error(&self.inner.lookup_sources, key, e))
+                deserializer::from_value(value).map_err(|e| from_deser_error(&self.inner.lookup_sources, key, e))
             }
             None => {
                 // We might have been given a key that uses nested notation -- `foo.bar` -- but is only present in the
@@ -863,10 +862,8 @@ impl GenericConfiguration {
                 // separators (`.`) replaced with `_`, to match environment variables.
                 let fallback_key = key.replace('.', "_");
                 match extract_at_path(&config_guard, &fallback_key) {
-                    Some(value) => {
-                        let json = value_to_json(value);
-                        serde_json::from_value(json).map_err(|e| from_serde_error(&self.inner.lookup_sources, key, e))
-                    }
+                    Some(value) => deserializer::from_value(value)
+                        .map_err(|e| from_deser_error(&self.inner.lookup_sources, key, e)),
                     None => {
                         let help_text = build_missing_field_help(&self.inner.lookup_sources, key);
                         Err(ConfigurationError::MissingField {
@@ -944,8 +941,7 @@ impl GenericConfiguration {
         T: DeserializeOwned,
     {
         let config_guard = self.inner.config.read().unwrap();
-        let json = value_to_json(&config_guard);
-        serde_json::from_value(json).map_err(|e| from_serde_error(&self.inner.lookup_sources, "", e))
+        deserializer::from_value(&config_guard).map_err(|e| from_deser_error(&self.inner.lookup_sources, "", e))
     }
 
     /// Subscribes for updates to the configuration.
@@ -974,7 +970,9 @@ fn build_missing_field_help(lookup_sources: &HashSet<LookupSource>, key: &str) -
     format!("Try setting `{}`.", valid_keys.join("` or `"))
 }
 
-fn from_serde_error(lookup_sources: &HashSet<LookupSource>, key: &str, e: serde_json::Error) -> ConfigurationError {
+fn from_deser_error(
+    lookup_sources: &HashSet<LookupSource>, key: &str, e: impl std::error::Error + Send + Sync + 'static,
+) -> ConfigurationError {
     let error_str = e.to_string();
 
     // Try to detect missing field errors from the error message
@@ -987,43 +985,6 @@ fn from_serde_error(lookup_sources: &HashSet<LookupSource>, key: &str, e: serde_
     }
 
     ConfigurationError::Generic { source: e.into() }
-}
-
-/// Converts a `facet_value::Value` to a `serde_json::Value`.
-///
-/// This is public within the crate so that the watcher module can use it.
-///
-/// This is used as a bridge to allow types that implement `serde::Deserialize` (but not yet `Facet`)
-/// to be extracted from the facet-based configuration store.
-pub(crate) fn value_to_json(value: &Value) -> serde_json::Value {
-    if value.is_null() {
-        serde_json::Value::Null
-    } else if let Some(b) = value.as_bool() {
-        serde_json::Value::Bool(b)
-    } else if let Some(n) = value.as_number() {
-        if let Some(i) = n.to_i64() {
-            serde_json::Value::Number(i.into())
-        } else if let Some(f) = n.to_f64() {
-            serde_json::Number::from_f64(f)
-                .map(serde_json::Value::Number)
-                .unwrap_or(serde_json::Value::Null)
-        } else {
-            serde_json::Value::Null
-        }
-    } else if let Some(s) = value.as_string() {
-        serde_json::Value::String(s.as_str().to_string())
-    } else if let Some(arr) = value.as_array() {
-        serde_json::Value::Array(arr.iter().map(value_to_json).collect())
-    } else if let Some(obj) = value.as_object() {
-        let map: serde_json::Map<String, serde_json::Value> = obj
-            .iter()
-            .map(|(k, v)| (k.as_str().to_string(), value_to_json(v)))
-            .collect();
-        serde_json::Value::Object(map)
-    } else {
-        // For other facet_value types (bytes, datetime, etc.), convert to string representation.
-        serde_json::Value::Null
-    }
 }
 
 fn has_valid_secret_backend_command(configuration: &Value) -> bool {
