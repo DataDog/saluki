@@ -494,7 +494,7 @@ impl MemoryBounds for DogStatsDConfiguration {
 pub struct DogStatsD {
     listeners: Vec<Listener>,
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
-    codec: DogstatsdCodec,
+    codec: DogStatsDCodec,
     context_resolvers: ContextResolvers,
     enabled_filter: EnablePayloadsFilter,
     additional_tags: Arc<[String]>,
@@ -504,7 +504,7 @@ struct ListenerContext {
     shutdown_handle: DynamicShutdownHandle,
     listener: Listener,
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
-    codec: DogstatsdCodec,
+    codec: DogStatsDCodec,
     context_resolvers: ContextResolvers,
     additional_tags: Arc<[String]>,
 }
@@ -512,7 +512,7 @@ struct ListenerContext {
 struct HandlerContext {
     listen_addr: ListenAddress,
     framer: DsdFramer,
-    codec: DogstatsdCodec,
+    codec: DogStatsDCodec,
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
     metrics: Metrics,
     context_resolvers: ContextResolvers,
@@ -943,7 +943,7 @@ async fn drive_stream(
 }
 
 fn handle_frame(
-    frame: &[u8], codec: &DogstatsdCodec, context_resolvers: &mut ContextResolvers, source_metrics: &Metrics,
+    frame: &[u8], codec: &DogStatsDCodec, context_resolvers: &mut ContextResolvers, source_metrics: &Metrics,
     peer_addr: &ConnectionAddress, enabled_filter: EnablePayloadsFilter, additional_tags: &[String],
 ) -> Result<Option<Event>, ParseError> {
     let parsed = match codec.decode_packet(frame) {
@@ -1199,7 +1199,7 @@ mod tests {
 
     use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
     use saluki_io::{
-        deser::codec::dogstatsd::{DogstatsdCodec, DogstatsdCodecConfiguration, ParsedPacket},
+        deser::codec::dogstatsd::{DogStatsDCodec, DogStatsDCodecConfiguration, ParsedPacket},
         net::ConnectionAddress,
     };
 
@@ -1214,7 +1214,7 @@ mod tests {
         //
         // We set our metric name to be longer than 31 bytes (the inlining limit) to ensure this.
 
-        let codec = DogstatsdCodec::from_configuration(DogstatsdCodecConfiguration::default());
+        let codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
         let tags_resolver = TagsResolverBuilder::for_tests().build();
         let context_resolver = ContextResolverBuilder::for_tests()
             .with_heap_allocations(false)
@@ -1235,7 +1235,7 @@ mod tests {
 
     #[test]
     fn metric_with_additional_tags() {
-        let codec = DogstatsdCodec::from_configuration(DogstatsdCodecConfiguration::default());
+        let codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
         let tags_resolver = TagsResolverBuilder::for_tests().build();
         let context_resolver = ContextResolverBuilder::for_tests()
             .with_heap_allocations(false)

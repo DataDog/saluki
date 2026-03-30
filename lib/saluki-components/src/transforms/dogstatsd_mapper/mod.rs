@@ -30,10 +30,10 @@ static ALLOWED_WILDCARD_MATCH_PATTERN: LazyLock<Regex> =
 const fn default_context_string_interner_size() -> ByteSize {
     ByteSize::kib(64)
 }
-/// DogstatsD mapper transform.
+/// DogStatsD mapper transform.
 #[serde_as]
 #[derive(Deserialize)]
-pub struct DogstatsDMapperConfiguration {
+pub struct DogStatsDMapperConfiguration {
     /// Total size of the string interner used for contexts, in bytes.
     ///
     /// This controls the amount of memory that will be pre-allocated for the purpose
@@ -240,7 +240,7 @@ impl MetricMapper {
     }
 }
 
-impl DogstatsDMapperConfiguration {
+impl DogStatsDMapperConfiguration {
     /// Creates a new `DogstatsDMapperConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(config.as_typed()?)
@@ -248,7 +248,7 @@ impl DogstatsDMapperConfiguration {
 }
 
 #[async_trait]
-impl SynchronousTransformBuilder for DogstatsDMapperConfiguration {
+impl SynchronousTransformBuilder for DogStatsDMapperConfiguration {
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         let metric_mapper = self
             .dogstatsd_mapper_profiles
@@ -257,23 +257,23 @@ impl SynchronousTransformBuilder for DogstatsDMapperConfiguration {
     }
 }
 
-impl MemoryBounds for DogstatsDMapperConfiguration {
+impl MemoryBounds for DogStatsDMapperConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         builder
             .minimum()
             // Capture the size of the heap allocation when the component is built.
-            .with_single_value::<DogstatsDMapper>("component struct")
+            .with_single_value::<DogStatsDMapper>("component struct")
             // We also allocate the backing storage for the string interner up front, which is used by our context
             // resolver.
             .with_fixed_amount("string interner", self.context_string_interner_bytes.as_u64() as usize);
     }
 }
 
-pub struct DogstatsDMapper {
+pub struct DogStatsDMapper {
     metric_mapper: MetricMapper,
 }
 
-impl SynchronousTransform for DogstatsDMapper {
+impl SynchronousTransform for DogStatsDMapper {
     fn transform_buffer(&mut self, event_buffer: &mut EventsBuffer) {
         for event in event_buffer {
             if let Some(metric) = event.try_as_metric_mut() {

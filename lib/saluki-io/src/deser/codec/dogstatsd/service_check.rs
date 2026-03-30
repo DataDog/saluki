@@ -10,7 +10,7 @@ use saluki_context::{origin::OriginTagCardinality, tags::RawTags};
 use saluki_core::data_model::event::service_check::*;
 use stringtheory::MetaString;
 
-use super::{helpers::*, DogstatsdCodecConfiguration};
+use super::{helpers::*, DogStatsDCodecConfiguration};
 
 /// A DogStatsD service check packet.
 pub struct ServiceCheckPacket<'a> {
@@ -26,7 +26,7 @@ pub struct ServiceCheckPacket<'a> {
 }
 
 pub fn parse_dogstatsd_service_check<'a>(
-    input: &'a [u8], config: &DogstatsdCodecConfiguration,
+    input: &'a [u8], config: &DogStatsDCodec,
 ) -> IResult<&'a [u8], ServiceCheckPacket<'a>> {
     let (remaining, (name, raw_check_status)) = preceded(
         tag(SERVICE_CHECK_PREFIX),
@@ -129,17 +129,17 @@ mod tests {
     use saluki_core::data_model::event::service_check::{CheckStatus, ServiceCheck};
     use stringtheory::MetaString;
 
-    use super::{parse_dogstatsd_service_check, DogstatsdCodecConfiguration};
+    use super::{parse_dogstatsd_service_check, DogStatsDCodecConfiguration};
 
     type NomResult<'input, T> = Result<T, nom::Err<nom::error::Error<&'input [u8]>>>;
 
     fn parse_dsd_service_check(input: &[u8]) -> NomResult<'_, ServiceCheck> {
-        let default_config = DogstatsdCodecConfiguration::default();
+        let default_config = DogStatsDCodecConfiguration::default();
         parse_dsd_service_check_with_conf(input, &default_config)
     }
 
     fn parse_dsd_service_check_with_conf<'input>(
-        input: &'input [u8], config: &DogstatsdCodecConfiguration,
+        input: &'input [u8], config: &DogStatsDCodecConfiguration,
     ) -> NomResult<'input, ServiceCheck> {
         let (remaining, service_check) = parse_dsd_service_check_direct(input, config)?;
         assert!(remaining.is_empty());
@@ -148,7 +148,7 @@ mod tests {
     }
 
     fn parse_dsd_service_check_direct<'input>(
-        input: &'input [u8], config: &DogstatsdCodecConfiguration,
+        input: &'input [u8], config: &DogStatsDCodecConfiguration,
     ) -> IResult<&'input [u8], ServiceCheck> {
         let (remaining, packet) = parse_dogstatsd_service_check(input, config)?;
         assert!(remaining.is_empty());
@@ -245,7 +245,7 @@ mod tests {
             .with_tags(shared_tag_set);
         check_basic_service_check_eq(expected, result);
 
-        let config = DogstatsdCodecConfiguration::default();
+        let config = DogStatsDCodecConfiguration::default();
         let (_, packet) = parse_dogstatsd_service_check(raw.as_bytes(), &config).expect("should not fail to parse");
         assert_eq!(packet.local_data, Some(sc_local_data));
         assert_eq!(packet.external_data, Some(sc_external_data));
@@ -283,7 +283,7 @@ mod tests {
             .with_message(sc_message);
         check_basic_service_check_eq(expected, actual);
 
-        let config = DogstatsdCodecConfiguration::default();
+        let config = DogStatsDCodecConfiguration::default();
         let (_, packet) = parse_dogstatsd_service_check(raw.as_bytes(), &config).expect("should not fail to parse");
         assert_eq!(packet.local_data, Some(sc_local_data));
         assert_eq!(packet.external_data, Some(sc_external_data));
