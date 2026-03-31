@@ -3619,6 +3619,7 @@ dependencies = [
  "saluki-error",
  "saluki-metrics",
  "serde",
+ "serde_json",
  "serde_with",
  "sha3",
  "smallvec",

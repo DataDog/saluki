@@ -16,8 +16,10 @@ use serde_with::DeserializeAs;
 /// This helper module allows deserializing a `bool` from a number of possible data types:
 ///
 /// - `true` or `false` as a native boolean
-/// - `"true"` or `"false"` as a string (case insensitive)
 /// - `1` or `0` as an integer (signed, unsigned, or floating point)
+/// - any of the following strings (matching Go's `strconv.ParseBool`):
+///   - truthy: `"1"`, `"t"`, `"T"`, `"TRUE"`, `"true"`, `"True"`
+///   - falsy: `"0"`, `"f"`, `"F"`, `"FALSE"`, `"false"`, `"False"`
 pub struct PermissiveBool;
 
 impl<'de> DeserializeAs<'de, bool> for PermissiveBool {
@@ -45,12 +47,13 @@ impl<'de> DeserializeAs<'de, bool> for PermissiveBool {
             where
                 E: Error,
             {
-                match value.to_lowercase().as_str() {
-                    "true" => Ok(true),
-                    "false" => Ok(false),
+                // Accept the same set of strings as Go's strconv.ParseBool.
+                match value {
+                    "1" | "t" | "T" | "TRUE" | "true" | "True" => Ok(true),
+                    "0" | "f" | "F" | "FALSE" | "false" | "False" => Ok(false),
                     _ => Err(Error::invalid_value(
                         Unexpected::Str(value),
-                        &"\"true\" or \"false\" (case insensitive)",
+                        &"a boolean string (\"1\", \"t\", \"T\", \"TRUE\", \"true\", \"True\", \"0\", \"f\", \"F\", \"FALSE\", \"false\", \"False\")",
                     )),
                 }
             }
@@ -90,5 +93,125 @@ impl<'de> DeserializeAs<'de, bool> for PermissiveBool {
         }
 
         deserializer.deserialize_any(Visitor)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde::Deserialize;
+    use serde_with::serde_as;
+
+    use super::PermissiveBool;
+
+    #[serde_as]
+    #[derive(Deserialize)]
+    struct Wrapper {
+        #[serde_as(as = "PermissiveBool")]
+        value: bool,
+    }
+
+    fn parse(s: &str) -> Result<bool, serde_json::Error> {
+        let json = format!("{{\"value\": {}}}", s);
+        let w: Wrapper = serde_json::from_str(&json)?;
+        Ok(w.value)
+    }
+
+    fn parse_str(s: &str) -> Result<bool, serde_json::Error> {
+        let json = format!("{{\"value\": \"{}\"}}", s);
+        let w: Wrapper = serde_json::from_str(&json)?;
+        Ok(w.value)
+    }
+
+    // Native boolean
+    #[test]
+    fn native_true() {
+        assert_eq!(parse("true").unwrap(), true);
+    }
+
+    #[test]
+    fn native_false() {
+        assert_eq!(parse("false").unwrap(), false);
+    }
+
+    // Truthy strings
+    #[test]
+    fn str_1() {
+        assert_eq!(parse_str("1").unwrap(), true);
+    }
+
+    #[test]
+    fn str_t_lower() {
+        assert_eq!(parse_str("t").unwrap(), true);
+    }
+
+    #[test]
+    fn str_t_upper() {
+        assert_eq!(parse_str("T").unwrap(), true);
+    }
+
+    #[test]
+    fn str_true_all_caps() {
+        assert_eq!(parse_str("TRUE").unwrap(), true);
+    }
+
+    #[test]
+    fn str_true_lower() {
+        assert_eq!(parse_str("true").unwrap(), true);
+    }
+
+    #[test]
+    fn str_true_title() {
+        assert_eq!(parse_str("True").unwrap(), true);
+    }
+
+    // Falsy strings
+    #[test]
+    fn str_0() {
+        assert_eq!(parse_str("0").unwrap(), false);
+    }
+
+    #[test]
+    fn str_f_lower() {
+        assert_eq!(parse_str("f").unwrap(), false);
+    }
+
+    #[test]
+    fn str_f_upper() {
+        assert_eq!(parse_str("F").unwrap(), false);
+    }
+
+    #[test]
+    fn str_false_all_caps() {
+        assert_eq!(parse_str("FALSE").unwrap(), false);
+    }
+
+    #[test]
+    fn str_false_lower() {
+        assert_eq!(parse_str("false").unwrap(), false);
+    }
+
+    #[test]
+    fn str_false_title() {
+        assert_eq!(parse_str("False").unwrap(), false);
+    }
+
+    // Invalid string
+    #[test]
+    fn str_invalid_rejected() {
+        assert!(parse_str("yes").is_err());
+        assert!(parse_str("no").is_err());
+        assert!(parse_str("2").is_err());
+        assert!(parse_str("").is_err());
+    }
+
+    // Integer variants
+    #[test]
+    fn int_1_true() {
+        assert_eq!(parse("1").unwrap(), true);
+    }
+
+    #[test]
+    fn int_0_false() {
+        assert_eq!(parse("0").unwrap(), false);
     }
 }

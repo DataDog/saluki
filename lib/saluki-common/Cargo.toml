@@ -33,4 +33,5 @@ tracing = { workspace = true }
 [dev-dependencies]
 http-body-util = { workspace = true }
 proptest = { workspace = true }
+serde_json = { workspace = true }
 tokio-test = { workspace = true }
