@@ -205,9 +205,25 @@ impl TagSet {
     where
         F: FnMut(&Tag) -> bool,
     {
+        let _ = self.retain_count_removed(|tag| f(tag));
+    }
+
+    /// Retains only the tags specified by the predicate and returns how many tags were removed.
+    ///
+    /// In other words, remove all tags `t` for which `f(&t)` returns `false`, and return the
+    /// number of removed tags. This method scans the tag set once and only allocates mutation
+    /// state when at least one tag is rejected.
+    pub fn retain_count_removed<F>(&mut self, mut f: F) -> usize
+    where
+        F: FnMut(&Tag) -> bool,
+    {
+        let mut removed = 0;
+
         // Filter additions in-place.
         if let Some(overlay) = &mut self.overlay {
+            let before = overlay.additions.len();
             overlay.additions.retain(|tag| f(tag));
+            removed += before - overlay.additions.len();
         }
 
         // Set removal bits for rejected base tags: collect indices first.
@@ -215,9 +231,15 @@ impl TagSet {
             .filter(|&(idx, base_tag)| !is_overlay_removed(&self.overlay, idx) && !f(base_tag))
             .map(|(idx, _)| idx)
             .collect();
-        for idx in to_remove {
-            self.ensure_overlay().removals.set(idx);
+        removed += to_remove.len();
+        if !to_remove.is_empty() {
+            let overlay = self.ensure_overlay();
+            for idx in to_remove {
+                overlay.removals.set(idx);
+            }
         }
+
+        removed
     }
 
     /// Merges the tags from another set into this set.

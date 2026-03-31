@@ -13,7 +13,7 @@ use foldhash::fast::RandomState as FoldHashState;
 use hashbrown::{HashMap, HashSet};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
-use saluki_context::tags::{Tag, TagSet};
+use saluki_context::tags::Tag;
 use saluki_core::{
     components::{
         transforms::{Transform, TransformBuilder, TransformContext},
@@ -210,50 +210,52 @@ fn should_keep_tag(tag: &Tag, is_exclude: bool, names: &HashSet<String, FoldHash
     is_exclude != names.contains(tag.name())
 }
 
-#[inline]
-fn count_removed_tags(tags: &TagSet, is_exclude: bool, names: &HashSet<String, FoldHashState>) -> usize {
-    tags.into_iter()
-        .filter(|tag| !should_keep_tag(tag, is_exclude, names))
-        .count()
-}
-
 /// Filter the tags of a distribution metric according to the compiled filter table.
 ///
 /// Both instrumented tags and origin tags are filtered using the same tag key list.
 /// If the metric name is not present in `filters`, the metric is left unchanged.
-/// If filtering would not change any tags, the metric context is left untouched (zero allocations).
+/// If filtering would not change any tags, the metric is reported as unchanged and the tag sets
+/// remain semantically identical.
 #[inline]
 pub fn filter_metric_tags(metric: &mut Metric, filters: &CompiledFilters) -> FilterMetricTagsOutcome {
     let Some((is_exclude, tag_names)) = filters.get(metric.context().name().as_ref()) else {
         return FilterMetricTagsOutcome::RuleMiss;
     };
 
-    let removed_tags = count_removed_tags(metric.context().tags(), *is_exclude, tag_names);
-    let removed_origin_tags = count_removed_tags(metric.context().origin_tags(), *is_exclude, tag_names);
-    let total_removed = removed_tags + removed_origin_tags;
-
-    if total_removed == 0 {
-        return FilterMetricTagsOutcome::NoChange;
+    let removed_tags;
+    let removed_origin_tags;
+    if metric.context().origin_tags().is_empty() {
+        let mut removed = 0;
+        metric.context_mut().with_tags_mut(|tags| {
+            removed = tags.retain_count_removed(|tag| should_keep_tag(tag, *is_exclude, tag_names));
+        });
+        removed_tags = removed;
+        removed_origin_tags = 0;
+    } else {
+        let mut removed_primary = 0;
+        let mut removed_origin = 0;
+        metric.context_mut().with_tag_sets_mut(|tags, origin_tags| {
+            removed_primary = tags.retain_count_removed(|tag| should_keep_tag(tag, *is_exclude, tag_names));
+            removed_origin = origin_tags.retain_count_removed(|tag| should_keep_tag(tag, *is_exclude, tag_names));
+        });
+        removed_tags = removed_primary;
+        removed_origin_tags = removed_origin;
     }
 
-    metric.context_mut().with_tag_sets_mut(|tags, origin_tags| {
-        if removed_tags > 0 {
-            tags.retain(|tag| should_keep_tag(tag, *is_exclude, tag_names));
+    let total_removed = removed_tags + removed_origin_tags;
+    if total_removed == 0 {
+        FilterMetricTagsOutcome::NoChange
+    } else {
+        FilterMetricTagsOutcome::Modified {
+            removed_tags: total_removed,
         }
-        if removed_origin_tags > 0 {
-            origin_tags.retain(|tag| should_keep_tag(tag, *is_exclude, tag_names));
-        }
-    });
-
-    FilterMetricTagsOutcome::Modified {
-        removed_tags: total_removed,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use saluki_config::{dynamic::ConfigUpdate, ConfigurationLoader};
-    use saluki_context::{tags::Tag, Context};
+    use saluki_context::{tags::{Tag, TagSet}, Context};
     use saluki_core::data_model::event::metric::Metric;
     use saluki_metrics::{test::TestRecorder, MetricsBuilder};
 
