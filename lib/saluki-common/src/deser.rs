@@ -58,7 +58,7 @@ impl<'de> DeserializeAs<'de, bool> for PermissiveBool {
                         "false" => Ok(false),
                         _ => Err(Error::invalid_value(
                             Unexpected::Str(value),
-                            &"a boolean string (Go strconv.ParseBool set, or any case-insensitive variant of \"true\"/\"false\")",
+                            &"a boolean string (\"true\" or \"false\", case insensitive, or short forms: \"1\", \"t\", \"T\", \"0\", \"f\", \"F\")",
                         )),
                     },
                 }
