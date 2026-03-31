@@ -72,7 +72,7 @@ CI: `.gitlab/e2e.yml` — `e2e` stage, 10 min timeout, retry 2.
 
 Integration tests run a containerized ADP instance and assert high-level invariants: process stability, expected log
 output, port availability, exit behavior. They catch regressions from enabling new features or settings that cause
-crashes or early exits. They do not test output correctness. This type of test is often known as a "smoke test". For
+crashes or early exits. They do not test output correctness. This type of test is often known as a "smoke test." For
 integration tests that check system output, see [correctness tests](#correctness-tests-ground-truth) above.
 
 ### Running
@@ -118,7 +118,7 @@ development, lean on CI.
 ## Fuzzing
 
 A fifth type of testing is fuzzing. We aren't doing a lot with fuzzing right now, but what we have uses `cargo-fuzz` and
-operates at the function-level. There is likely more of this to come in the future.
+operates at the function-level. More fuzzing coverage will likely come in the future.
 
 ## Directory Index
 
