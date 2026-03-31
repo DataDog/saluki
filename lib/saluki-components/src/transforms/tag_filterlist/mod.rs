@@ -207,14 +207,12 @@ impl Transform for TagFilterlist {
 
 #[inline]
 fn should_keep_tag(tag: &Tag, is_exclude: bool, names: &HashSet<String, FoldHashState>) -> bool {
-    is_exclude != names.contains(tag.name())
+    is_exclude != names.contains(tag.as_borrowed().name())
 }
 
 #[inline]
-fn count_removed_tags(tags: &TagSet, is_exclude: bool, names: &HashSet<String, FoldHashState>) -> usize {
-    tags.into_iter()
-        .filter(|tag| !should_keep_tag(tag, is_exclude, names))
-        .count()
+fn has_removable_tags(tags: &TagSet, is_exclude: bool, names: &HashSet<String, FoldHashState>) -> bool {
+    tags.into_iter().any(|tag| !should_keep_tag(tag, is_exclude, names))
 }
 
 /// Filter the tags of a distribution metric according to the compiled filter table.
@@ -228,20 +226,29 @@ pub fn filter_metric_tags(metric: &mut Metric, filters: &CompiledFilters) -> Fil
         return FilterMetricTagsOutcome::RuleMiss;
     };
 
-    let removed_tags = count_removed_tags(metric.context().tags(), *is_exclude, tag_names);
-    let removed_origin_tags = count_removed_tags(metric.context().origin_tags(), *is_exclude, tag_names);
-    let total_removed = removed_tags + removed_origin_tags;
+    let is_exclude = *is_exclude;
 
-    if total_removed == 0 {
+    // Quick read-only check: avoids CoW clone + hash_context recomputation when nothing changes.
+    // any() short-circuits on the first removable tag.
+    let has_tag_removals = has_removable_tags(metric.context().tags(), is_exclude, tag_names);
+    let has_origin_removals = has_removable_tags(metric.context().origin_tags(), is_exclude, tag_names);
+
+    if !has_tag_removals && !has_origin_removals {
         return FilterMetricTagsOutcome::NoChange;
     }
 
+    // Single-pass mutation: use len() before/after retain() to count removals.
+    let mut total_removed = 0;
     metric.context_mut().with_tag_sets_mut(|tags, origin_tags| {
-        if removed_tags > 0 {
-            tags.retain(|tag| should_keep_tag(tag, *is_exclude, tag_names));
+        if has_tag_removals {
+            let before = tags.len();
+            tags.retain(|tag| should_keep_tag(tag, is_exclude, tag_names));
+            total_removed += before - tags.len();
         }
-        if removed_origin_tags > 0 {
-            origin_tags.retain(|tag| should_keep_tag(tag, *is_exclude, tag_names));
+        if has_origin_removals {
+            let before = origin_tags.len();
+            origin_tags.retain(|tag| should_keep_tag(tag, is_exclude, tag_names));
+            total_removed += before - origin_tags.len();
         }
     });
 
