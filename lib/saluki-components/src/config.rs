@@ -1,3 +1,4 @@
+//! Datadog-specific configuration providers and remappers.
 use figment::{
     providers::Serialized,
     value::{Dict, Map},
@@ -80,10 +81,11 @@ impl Provider for DatadogRemapper {
 mod tests {
     use super::*;
 
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn env_var_remapped_case_insensitively() {
-        static ENV_MUTEX: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-        let _guard = ENV_MUTEX.get_or_init(|| std::sync::Mutex::new(())).lock().unwrap();
+        let _guard = ENV_MUTEX.lock().unwrap();
 
         std::env::set_var("HTTP_PROXY", "http://proxy.example.com");
         let remapper = DatadogRemapper::new();
@@ -97,8 +99,7 @@ mod tests {
 
     #[test]
     fn env_var_not_remapped_when_absent() {
-        static ENV_MUTEX: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-        let _guard = ENV_MUTEX.get_or_init(|| std::sync::Mutex::new(())).lock().unwrap();
+        let _guard = ENV_MUTEX.lock().unwrap();
 
         std::env::remove_var("HTTP_PROXY");
         std::env::remove_var("http_proxy");
