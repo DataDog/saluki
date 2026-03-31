@@ -125,25 +125,25 @@ mod tests {
     // Native boolean
     #[test]
     fn native_true() {
-        assert_eq!(parse_bool(true).unwrap(), true);
+        assert!(parse_bool(true).unwrap());
     }
 
     #[test]
     fn native_false() {
-        assert_eq!(parse_bool(false).unwrap(), false);
+        assert!(!parse_bool(false).unwrap());
     }
 
     // String variants — one representative truthy and one falsy, including case-insensitive fallback
     #[test]
     fn str_truthy() {
-        assert_eq!(parse_str("True").unwrap(), true); // Go set
-        assert_eq!(parse_str("tRuE").unwrap(), true); // case-insensitive fallback
+        assert!(parse_str("True").unwrap()); // Go set
+        assert!(parse_str("tRuE").unwrap()); // case-insensitive fallback
     }
 
     #[test]
     fn str_falsy() {
-        assert_eq!(parse_str("False").unwrap(), false); // Go set
-        assert_eq!(parse_str("fAlSe").unwrap(), false); // case-insensitive fallback
+        assert!(!parse_str("False").unwrap()); // Go set
+        assert!(!parse_str("fAlSe").unwrap()); // case-insensitive fallback
     }
 
     // Invalid string
@@ -158,11 +158,11 @@ mod tests {
     // Integer variants
     #[test]
     fn int_true() {
-        assert_eq!(parse_int(1).unwrap(), true);
+        assert!(parse_int(1).unwrap());
     }
 
     #[test]
     fn int_false() {
-        assert_eq!(parse_int(0).unwrap(), false);
+        assert!(!parse_int(0).unwrap());
     }
 }
