@@ -17,10 +17,8 @@ use serde_with::DeserializeAs;
 ///
 /// - `true` or `false` as a native boolean
 /// - `1` or `0` as an integer (signed, unsigned, or floating point)
-/// - any of the following strings (matching Go's `strconv.ParseBool`):
-///   - truthy: `"1"`, `"t"`, `"T"`, `"TRUE"`, `"true"`, `"True"`
-///   - falsy: `"0"`, `"f"`, `"F"`, `"FALSE"`, `"false"`, `"False"`
-/// - `"true"` or `"false"` as a string, case insensitive (for example `"tRuE"`)
+/// - `"true"` or `"false"` as a string, case insensitive
+/// - `"1"`, `"t"`, or `"T"` as truthy strings; `"0"`, `"f"`, or `"F"` as falsy strings
 pub struct PermissiveBool;
 
 impl<'de> DeserializeAs<'de, bool> for PermissiveBool {
@@ -48,11 +46,10 @@ impl<'de> DeserializeAs<'de, bool> for PermissiveBool {
             where
                 E: Error,
             {
-                // First check exact strings from Go's strconv.ParseBool, then fall back to
-                // case-insensitive matching for "true"/"false" to preserve prior behavior.
+                // Check short forms first, then fall back to case-insensitive "true"/"false".
                 match value {
-                    "1" | "t" | "T" | "TRUE" | "true" | "True" => Ok(true),
-                    "0" | "f" | "F" | "FALSE" | "false" | "False" => Ok(false),
+                    "1" | "t" | "T" => Ok(true),
+                    "0" | "f" | "F" => Ok(false),
                     _ => match value.to_lowercase().as_str() {
                         "true" => Ok(true),
                         "false" => Ok(false),
