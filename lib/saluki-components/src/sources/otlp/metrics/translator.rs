@@ -295,9 +295,7 @@ impl OtlpMetricsTranslator {
                     }
                 }
                 OtlpMetricData::Summary(summary) => {
-                    
-                    self.map_summary_metrics(base_dims, summary.data_points, &context);
-                    Vec::new()
+                    self.map_summary_metrics(base_dims, summary.data_points, &context)
                 }
                 _ => {
                     // ExponentialHistogram and future data types.
@@ -347,13 +345,18 @@ impl OtlpMetricsTranslator {
 
             let point_dims = base_dims.with_attribute_map(&dp.attributes);
             let count_dims = point_dims.with_suffix("count");
-            let (delta, is_first_point, should_drop_point) =
+            
+            let (count_delta, is_first_point, should_drop_point) =
             self.prev_pts.monotonic_diff(&count_dims, dp.start_time_unix_nano, dp.time_unix_nano, dp.count as f64);
+            let ts = dp.time_unix_nano;
 
-            let sum_dims = point_dims.with_suffix("sum");
-            let (delta, is_first_point, should_drop_point) =
-                self.prev_pts.monotonic_diff(&sum_dims, dp.start_time_unix_nano, dp.time_unix_nano, dp.sum);
+            if should_drop_point {
+                continue;
+            }
 
+            if !is_first_point {
+                self.record_metric_event(&count_dims, count_delta, ts, DataType::Count, &mut events, context);
+            }
             if is_skippable(dp.sum) {
                 debug!(
                     metric_name = point_dims.name,
@@ -362,16 +365,25 @@ impl OtlpMetricsTranslator {
                 continue;
             }
 
-        let ts = dp.time_unix_nano;
-        self.record_metric_event(&count_dims, dp.count as f64, ts, DataType::Count, &mut events, context);
-        self.record_metric_event(&sum_dims, dp.sum, ts,DataType::Count, &mut events, context); 
+            let sum_dims = point_dims.with_suffix("sum");
+            let (sum_delta, is_first_point, should_drop_point) =
+                self.prev_pts.monotonic_diff(&sum_dims, dp.start_time_unix_nano, dp.time_unix_nano, dp.sum);
+
+            if should_drop_point {
+                continue;
+            }   
+
+            if !is_first_point {
+                self.record_metric_event(&sum_dims, sum_delta, ts, DataType::Count, &mut events, context);
+            }
+
         for quantile_val in &dp.quantile_values {
-            let quantile_dims = point_dims.add_tags(&[format!("quantile:{}", quantile_val.quantile)]).with_suffix("quantile");
+            let quantile_dims = point_dims.add_tags(&[format!("quantile:{}", quantile_val.quantile)]);
             let value = quantile_val.value;
             if is_skippable(value) {
                 debug!(
                     metric_name = point_dims.name,
-                    dp.sum, "Skipping metric with unsupported value (NaN or Infinity)."
+                    value, "Skipping metric with unsupported value (NaN or Infinity)."
                 );
                 continue;
             }
