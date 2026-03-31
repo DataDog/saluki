@@ -1,11 +1,11 @@
 use std::{fmt, hash, sync::Arc};
 
 use metrics::Gauge;
-use saluki_common::collections::ContiguousBitSet;
+use saluki_common::collections::PrehashedHashSet;
 use stringtheory::MetaString;
 
 use crate::{
-    hash::{hash_context, ContextKey},
+    hash::{hash_context, hash_context_with_seen, ContextKey},
     tags::{Tag, TagSet},
 };
 
@@ -295,14 +295,15 @@ impl fmt::Display for Context {
 
 /// Reusable scratch space for [`TagSetMutView`] operations.
 ///
-/// Holding a long-lived instance across calls amortizes bitset allocations. The bitsets are
+/// Holding a long-lived instance across calls amortizes vector allocations. The vectors are
 /// cleared automatically when the associated [`TagSetMutView`] is dropped.
 #[derive(Debug, Default)]
 pub struct TagSetMutViewState {
-    tag_base_removals: ContiguousBitSet,
-    tag_addition_removals: ContiguousBitSet,
-    origin_base_removals: ContiguousBitSet,
-    origin_addition_removals: ContiguousBitSet,
+    tag_base_removals: Vec<usize>,
+    tag_addition_removals: Vec<usize>,
+    origin_base_removals: Vec<usize>,
+    origin_addition_removals: Vec<usize>,
+    hash_seen: PrehashedHashSet<u64>,
 }
 
 impl TagSetMutViewState {
@@ -312,10 +313,11 @@ impl TagSetMutViewState {
     }
 
     fn clear(&mut self) {
-        self.tag_base_removals.clear_all();
-        self.tag_addition_removals.clear_all();
-        self.origin_base_removals.clear_all();
-        self.origin_addition_removals.clear_all();
+        self.tag_base_removals.clear();
+        self.tag_addition_removals.clear();
+        self.origin_base_removals.clear();
+        self.origin_addition_removals.clear();
+        self.hash_seen.clear();
     }
 }
 
@@ -359,8 +361,6 @@ impl<'a, 'b> TagSetMutView<'a, 'b> {
     /// If no changes were recorded, this is a no-op: no `Arc` clone, no rehash, returns 0.
     /// Otherwise, triggers `Arc::make_mut` on the context, applies the changes to both tag sets,
     /// and recomputes the context key.
-    ///
-    /// Returns the number of tags removed.
     pub fn finish(self) -> usize {
         let total_tags = self.state.tag_base_removals.len() + self.state.tag_addition_removals.len();
         let total_origin = self.state.origin_base_removals.len() + self.state.origin_addition_removals.len();
@@ -383,7 +383,7 @@ impl<'a, 'b> TagSetMutView<'a, 'b> {
                 .apply_removals(&self.state.origin_base_removals, &self.state.origin_addition_removals);
         }
 
-        let (key, _) = hash_context(&inner.name, &inner.tags, &inner.origin_tags);
+        let (key, _) = hash_context_with_seen(&inner.name, &inner.tags, &inner.origin_tags, &mut self.state.hash_seen);
         inner.key = key;
 
         total
