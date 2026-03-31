@@ -212,8 +212,7 @@ fn should_keep_tag(tag: &Tag, is_exclude: bool, names: &HashSet<String, FoldHash
 
 #[inline]
 fn has_removable_tags(tags: &TagSet, is_exclude: bool, names: &HashSet<String, FoldHashState>) -> bool {
-    tags.into_iter()
-        .any(|tag| !should_keep_tag(tag, is_exclude, names))
+    tags.into_iter().any(|tag| !should_keep_tag(tag, is_exclude, names))
 }
 
 /// Filter the tags of a distribution metric according to the compiled filter table.
