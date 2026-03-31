@@ -112,3 +112,50 @@ where
 
     deserializer.deserialize_any(SpaceSeparatedOrSeq)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn deserialize_no_proxy(json: serde_json::Value) -> Vec<String> {
+        serde_json::from_value::<ProxyConfiguration>(json)
+            .expect("should deserialize")
+            .no_proxy
+    }
+
+    #[test]
+    fn no_proxy_from_space_separated_string() {
+        let config = serde_json::json!({ "proxy_no_proxy": "host1.example.com host2.example.com" });
+        assert_eq!(deserialize_no_proxy(config), vec!["host1.example.com", "host2.example.com"]);
+    }
+
+    #[test]
+    fn no_proxy_from_sequence() {
+        let config = serde_json::json!({ "proxy_no_proxy": ["host1.example.com", "host2.example.com"] });
+        assert_eq!(deserialize_no_proxy(config), vec!["host1.example.com", "host2.example.com"]);
+    }
+
+    #[test]
+    fn no_proxy_empty_string_gives_empty_vec() {
+        let config = serde_json::json!({ "proxy_no_proxy": "" });
+        assert_eq!(deserialize_no_proxy(config), Vec::<String>::new());
+    }
+
+    #[test]
+    fn no_proxy_empty_sequence_gives_empty_vec() {
+        let config = serde_json::json!({ "proxy_no_proxy": [] });
+        assert_eq!(deserialize_no_proxy(config), Vec::<String>::new());
+    }
+
+    #[test]
+    fn no_proxy_absent_gives_empty_vec() {
+        let config = serde_json::json!({});
+        assert_eq!(deserialize_no_proxy(config), Vec::<String>::new());
+    }
+
+    #[test]
+    fn no_proxy_string_trims_extra_whitespace() {
+        let config = serde_json::json!({ "proxy_no_proxy": "  host1.example.com   host2.example.com  " });
+        assert_eq!(deserialize_no_proxy(config), vec!["host1.example.com", "host2.example.com"]);
+    }
+}
