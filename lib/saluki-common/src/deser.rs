@@ -130,17 +130,19 @@ mod tests {
         assert!(!parse_bool(false).unwrap());
     }
 
-    // String variants — one representative truthy and one falsy, including case-insensitive fallback
+    // String variants
     #[test]
     fn str_truthy() {
-        assert!(parse_str("True").unwrap()); // Go set
-        assert!(parse_str("tRuE").unwrap()); // case-insensitive fallback
+        for s in &["1", "t", "T", "true", "True", "tRuE"] {
+            assert!(parse_str(s).unwrap(), "expected {s:?} to be truthy");
+        }
     }
 
     #[test]
     fn str_falsy() {
-        assert!(!parse_str("False").unwrap()); // Go set
-        assert!(!parse_str("fAlSe").unwrap()); // case-insensitive fallback
+        for s in &["0", "f", "F", "false", "False", "fAlSe"] {
+            assert!(!parse_str(s).unwrap(), "expected {s:?} to be falsy");
+        }
     }
 
     // Invalid string
