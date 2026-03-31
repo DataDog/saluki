@@ -17,13 +17,14 @@ CI: `.gitlab/test.yml` — runs on both Linux (amd64/arm64) and macOS (amd64/arm
 
 ## Correctness Tests (ground-truth)
 
-These tests serve to answer the question: *Does ADP produce the same output as the Datadog agent for a given workload?*
+These tests serve to answer the question: *Does ADP produce the same output as the Datadog Agent for a given workload?*
 
-To answer this question, a correctness test runs ADP and the agent side-by-side in containers and compares their output
-for a given input. The output comparison is semantic, not a simple byte-by-byte comparison, thus heuristics are used to
-assert correctness.
+To answer this question, a correctness test runs ADP and the Datadog Agent side-by-side in containers and compares their
+output for a given input. The output comparison is semantic, not a simple byte-by-byte comparison, thus heuristics are
+used to assert correctness.
 
-**Terminology Note:** Correctness tests __*are integration tests*__ in the sense that they run the entire system. However, in our repo, *integration tests* refer to a specific set of smoke tests [below](#integration-tests-panoramic).
+**Terminology Note:** Correctness tests ***are integration tests*** in the sense that they run the entire system.
+However, in our repo, *integration tests* refer to a specific set of smoke tests [below](#integration-tests-panoramic).
 
 Correctness test cases are specified by YAML configuration files found in `test/correctness`.
 
@@ -46,9 +47,9 @@ Test case configs live in `test/correctness/` (e.g. `test/correctness/dsd-plain/
 talks to containerd via gRPC) and asserts the correctness of the output. It:
 - reads the test configuration files
 - starts two sets of containers
-  - millstone -> adp -> datadog-intake
-  - millstone -> datadog-agent -> datadog-intake
-- takes the output from `datadog-intake` and asserts that ADP and Datadog agent behavior were equivalent
+  - `millstone` -> ADP -> `datadog-intake`
+  - `millstone` -> Datadog Agent -> `datadog-intake`
+- takes the output from `datadog-intake` and asserts that ADP and Datadog Agent behavior were equivalent
 
 ### Running
 
@@ -71,8 +72,8 @@ CI: `.gitlab/e2e.yml` — `e2e` stage, 10 min timeout, retry 2.
 
 Integration tests run a containerized ADP instance and assert high-level invariants: process stability, expected log
 output, port availability, exit behavior. They catch regressions from enabling new features or settings that cause
-crashes or early exits. They do not test output correctness. This type of test is often known as a "smoke test" but our
-original naming stuck even though correctness tests [above](#correctness-tests-ground-truth)
+crashes or early exits. They do not test output correctness. This type of test is often known as a "smoke test". For
+integration tests that check system output, see [correctness tests](#correctness-tests-ground-truth) above.
 
 ### Running
 
@@ -94,7 +95,7 @@ CI: `.gitlab/e2e.yml` — same file as correctness, `e2e` stage, 10 min timeout,
 
 ## Benchmark Tests: Single Machine Performance (SMP)
 
-SMP is a system that runs on internal, dedicated infrastructure to check the agent for performance regressions. It runs
+SMP is a system that runs on internal, dedicated infrastructure to check the Agent for performance regressions. It runs
 experiments across multiple replicates with statistical analysis and posts reports to PRs. Maps to the `benchmark` stage
 in GitLab CI (`.gitlab/benchmark.yml`).
 
@@ -110,9 +111,9 @@ config).
 
 CI compares current branch against merge-base of main — purely "has your change regressed or improved?"
 
-You can run experiments locally with `smp local run` to debug experiment configs without waiting for CI (single replicate,
-no statistical analysis). This is mainly useful when iterating on a new or broken experiment — for normal development,
-lean on CI.
+You can run experiments locally with `smp local-run` to debug experiment configs without waiting for CI (single
+replicate, no statistical analysis). This is mainly useful when iterating on a new or broken experiment — for normal
+development, lean on CI.
 
 ## Fuzzing
 
