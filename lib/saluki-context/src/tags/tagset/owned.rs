@@ -220,6 +220,58 @@ impl TagSet {
         }
     }
 
+    /// Scans this tag set and collects the indices of tags that should be removed according to the predicate.
+    ///
+    /// Tags for which `f` returns `false` will have their indices appended to the provided vectors.
+    /// `base_removals` receives flattened base indices. `addition_removals` receives indices into
+    /// the additions overlay.
+    ///
+    /// This is a read-only scan: no mutation occurs. Use [`apply_removals`][TagSet::apply_removals]
+    /// to apply the collected indices.
+    pub(crate) fn collect_removals<F>(
+        &self, mut f: F, base_removals: &mut Vec<usize>, addition_removals: &mut Vec<usize>,
+    ) where
+        F: FnMut(&Tag) -> bool,
+    {
+        // Scan additions.
+        if let Some(overlay) = &self.overlay {
+            for (i, tag) in overlay.additions.iter().enumerate() {
+                if !f(tag) {
+                    addition_removals.push(i);
+                }
+            }
+        }
+
+        // Scan base tags.
+        for (idx, base_tag) in base_indexed_iter(&self.base) {
+            if !is_overlay_removed(&self.overlay, idx) && !f(base_tag) {
+                base_removals.push(idx);
+            }
+        }
+    }
+
+    /// Applies previously collected removal indices from [`collect_removals`][TagSet::collect_removals].
+    ///
+    /// `base_removals` contains flattened base indices to mark as removed.
+    /// `addition_removals` contains indices into the additions overlay to remove (must be sorted ascending).
+    pub(crate) fn apply_removals(&mut self, base_removals: &[usize], addition_removals: &[usize]) {
+        // Apply addition removals in reverse order to maintain index validity.
+        if !addition_removals.is_empty() {
+            let overlay = self.ensure_overlay();
+            for &i in addition_removals.iter().rev() {
+                overlay.additions.remove(i);
+            }
+        }
+
+        // Apply base removals.
+        if !base_removals.is_empty() {
+            let overlay = self.ensure_overlay();
+            for &idx in base_removals {
+                overlay.removals.set(idx);
+            }
+        }
+    }
+
     /// Merges the tags from another set into this set.
     ///
     /// If a tag from `other` is already present in this set, it will not be added.

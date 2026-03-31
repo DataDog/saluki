@@ -5,7 +5,7 @@ use stringtheory::MetaString;
 
 use crate::{
     hash::{hash_context, ContextKey},
-    tags::TagSet,
+    tags::{Tag, TagSet},
 };
 
 const BASE_CONTEXT_SIZE: usize = std::mem::size_of::<Context>() + std::mem::size_of::<ContextInner>();
@@ -148,6 +148,19 @@ impl Context {
         inner.key = key;
     }
 
+    /// Creates a lazy copy-on-write mutable view over this context's tag sets.
+    ///
+    /// The returned view supports mutations (e.g. [`retain_tags`][TagSetMutView::retain_tags])
+    /// without immediately triggering an `Arc` clone. The actual clone, mutation, and context key
+    /// recomputation only happen when [`TagSetMutView::finish`] is called, and only if changes
+    /// were actually recorded.
+    ///
+    /// `state` provides reusable scratch space for tracking pending changes. Holding a
+    /// long-lived [`TagSetMutViewState`] across calls amortizes any vector allocations.
+    pub fn tags_mut_view<'a, 'b>(&'a mut self, state: &'b mut TagSetMutViewState) -> TagSetMutView<'a, 'b> {
+        TagSetMutView { context: self, state }
+    }
+
     /// Returns the size of this context in bytes.
     ///
     /// A context's size is the sum of the sizes of its fields and the size of the `Context` struct itself, and
@@ -204,6 +217,107 @@ impl fmt::Display for Context {
         }
 
         Ok(())
+    }
+}
+
+/// Reusable scratch space for [`TagSetMutView`] operations.
+///
+/// Holding a long-lived instance across calls amortizes vector allocations. The vectors are
+/// cleared automatically when the associated [`TagSetMutView`] is dropped.
+#[derive(Debug, Default)]
+pub struct TagSetMutViewState {
+    tag_base_removals: Vec<usize>,
+    tag_addition_removals: Vec<usize>,
+    origin_base_removals: Vec<usize>,
+    origin_addition_removals: Vec<usize>,
+}
+
+impl TagSetMutViewState {
+    /// Creates a new, empty state.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn clear(&mut self) {
+        self.tag_base_removals.clear();
+        self.tag_addition_removals.clear();
+        self.origin_base_removals.clear();
+        self.origin_addition_removals.clear();
+    }
+}
+
+/// A lazy copy-on-write mutable view over a [`Context`]'s tag sets.
+///
+/// Operations on this view (e.g. [`retain_tags`][Self::retain_tags]) are recorded but not
+/// applied immediately. The actual `Arc` clone, mutation, and context key recomputation only
+/// occur when [`finish`][Self::finish] is called, and only if changes were recorded.
+pub struct TagSetMutView<'a, 'b> {
+    context: &'a mut Context,
+    state: &'b mut TagSetMutViewState,
+}
+
+impl<'a, 'b> TagSetMutView<'a, 'b> {
+    /// Scan instrumented tags with the given predicate.
+    ///
+    /// Tags for which `f` returns `false` are flagged for removal. This is a read-only scan;
+    /// no mutation occurs until [`finish`][Self::finish] is called.
+    pub fn retain_tags(&mut self, f: impl FnMut(&Tag) -> bool) {
+        self.context.inner.tags.collect_removals(
+            f,
+            &mut self.state.tag_base_removals,
+            &mut self.state.tag_addition_removals,
+        );
+    }
+
+    /// Scan origin tags with the given predicate.
+    ///
+    /// Tags for which `f` returns `false` are flagged for removal. This is a read-only scan;
+    /// no mutation occurs until [`finish`][Self::finish] is called.
+    pub fn retain_origin_tags(&mut self, f: impl FnMut(&Tag) -> bool) {
+        self.context.inner.origin_tags.collect_removals(
+            f,
+            &mut self.state.origin_base_removals,
+            &mut self.state.origin_addition_removals,
+        );
+    }
+
+    /// Apply all recorded changes and return the total number of tags affected.
+    ///
+    /// If no changes were recorded, this is a no-op: no `Arc` clone, no rehash, returns 0.
+    /// Otherwise, triggers `Arc::make_mut` on the context, applies the changes to both tag sets,
+    /// and recomputes the context key.
+    pub fn finish(self) -> usize {
+        let total_tags = self.state.tag_base_removals.len() + self.state.tag_addition_removals.len();
+        let total_origin = self.state.origin_base_removals.len() + self.state.origin_addition_removals.len();
+        let total = total_tags + total_origin;
+
+        if total == 0 {
+            return 0;
+        }
+
+        let inner = Arc::make_mut(&mut self.context.inner);
+
+        if total_tags > 0 {
+            inner
+                .tags
+                .apply_removals(&self.state.tag_base_removals, &self.state.tag_addition_removals);
+        }
+        if total_origin > 0 {
+            inner
+                .origin_tags
+                .apply_removals(&self.state.origin_base_removals, &self.state.origin_addition_removals);
+        }
+
+        let (key, _) = hash_context(&inner.name, &inner.tags, &inner.origin_tags);
+        inner.key = key;
+
+        total
+    }
+}
+
+impl Drop for TagSetMutView<'_, '_> {
+    fn drop(&mut self) {
+        self.state.clear();
     }
 }
 
