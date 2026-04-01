@@ -24,9 +24,9 @@ pub const KEY_ALIASES: &[(&str, &str)] = &[
 /// Matching is case-insensitive.
 const ENV_REMAPPINGS: &[(&str, &str)] = &[("http_proxy", "proxy_http"), ("https_proxy", "proxy_https")];
 
-/// A Figment provider that remaps standard environment variable names to canonical config keys.
+/// A Figment provider that remaps canonical environment variable names to our desired config keys.
 ///
-/// Reads environment variables case-insensitively and maps them to canonical config keys (e.g. `HTTP_PROXY` →
+/// Reads environment variables case-insensitively and maps them to config keys (e.g. `HTTP_PROXY` →
 /// `proxy_http`). Values are snapshotted at construction time.
 ///
 /// Add this provider to a [`ConfigurationLoader`][saluki_config::ConfigurationLoader] *after* file-based
