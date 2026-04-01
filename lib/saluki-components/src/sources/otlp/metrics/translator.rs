@@ -17,6 +17,8 @@ use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_context::{ContextResolver, ContextResolverBuilder};
 use saluki_core::data_model::event::metric::{Metric, MetricMetadata, MetricValues};
 use saluki_core::data_model::event::Event;
+use saluki_core::topology::interconnect::Consumer;
+use saluki_env::autodiscovery::Data;
 use saluki_error::GenericError;
 use tracing::{debug, warn};
 
@@ -400,7 +402,6 @@ impl OtlpMetricsTranslator {
                     if ok {
                         self.record_metric_event(&sum_dims, sum_delta, ts, DataType::Count, &mut events, context); 
                     }
-
                 }
                 
             }
@@ -414,7 +415,6 @@ impl OtlpMetricsTranslator {
                     }
                     let quantile_dims = base_quantile_dims.add_tags(&[Self::get_quantile_tag(quantile.quantile)]);
                     self.record_metric_event(&quantile_dims, quantile.value, ts, DataType::Gauge, &mut events, context);
-
                 }
             }
         }
@@ -533,6 +533,40 @@ impl OtlpMetricsTranslator {
         events
     }
 
+    fn get_bounds(explicit_bounds: &[f64], idx: usize) -> (f64, f64) {
+        let lower = if idx > 0 { explicit_bounds[idx - 1] } else { f64::NEG_INFINITY };
+        let upper = if idx < explicit_bounds.len() { explicit_bounds[idx] } else { f64::INFINITY };
+        (lower, upper)
+    }
+
+    fn get_legacy_buckets(
+        &mut self,
+        context: &TranslationContext, 
+        point_dims: Dimensions,
+        p: OtlpHistogramDataPoint,
+        delta: bool,
+        events: &mut Vec<Event>,  
+        ) -> (){
+        let start_ts = p.start_time_unix_nano;
+        let ts = p.time_unix_nano;
+
+        let base_bucket_dims = &point_dims.with_suffix("bucket");
+        for idx in 0..=p.bucket_counts.len() {
+            let (lower_bound, upper_bound) = Self::get_bounds(&p.explicit_bounds, idx);
+            let bucket_dims = base_bucket_dims.add_tags(
+    &["lower_bound".to_string() + Self::format_float(lower_bound).as_str(),
+                "upper_bound".to_string() + Self::format_float(upper_bound).as_str()]
+            );
+            let count = p.bucket_counts[idx];
+            let (dx, ok) = self.prev_pts.diff(&bucket_dims, start_ts, ts, count as f64);
+            if delta {
+                self.record_metric_event(&bucket_dims, count as f64, ts, DataType::Count, events, context);
+            } else if ok {
+                self.record_metric_event(&bucket_dims,dx, ts, DataType::Count, events, context);
+            }
+        }
+    }
+
     fn map_histogram_metrics(
         &mut self, base_dims: Dimensions, data_points: Vec<OtlpHistogramDataPoint>, delta: bool,
         context: &TranslationContext,
@@ -544,12 +578,11 @@ impl OtlpMetricsTranslator {
                 continue;
             }
 
+            let point_dims = base_dims.with_attribute_map(&dp.attributes);
             let mut hist_info = HistogramInfo {
                 ok: true,
                 ..Default::default()
             };
-
-            let point_dims = base_dims.with_attribute_map(&dp.attributes);
 
             let count_dims = point_dims.with_suffix("count");
             let sum_dims = point_dims.with_suffix("sum");
@@ -640,6 +673,7 @@ impl OtlpMetricsTranslator {
                 }
                 HistogramMode::Counters => {
                     // TODO: Implement legacy bucket conversion as counters.
+                    self.get_legacy_buckets(context, point_dims, dp, delta, &mut events);
                 }
                 HistogramMode::Distributions => {
                     // TODO: Implement bucket-to-sketch conversion.
