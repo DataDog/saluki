@@ -298,6 +298,36 @@ experiments:
         empty.yaml:
           source: shared/tagfilter_100metrics.yaml
 
+  - name: tagfilter_10000metrics
+    extends: tagfilter_base
+    optimization_goal: cpu
+    lading:
+      generator:
+        - unix_datagram:
+            variant:
+              dogstatsd:
+                metric_names:
+                  - metricname_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa{{0-9999}}
+    target:
+      files:
+        empty.yaml:
+          source: shared/tagfilter_10000metrics.yaml
+
+  - name: tagfilter_15000metrics
+    extends: tagfilter_base
+    optimization_goal: cpu
+    lading:
+      generator:
+        - unix_datagram:
+            variant:
+              dogstatsd:
+                metric_names:
+                  - metricname_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa{{0-14999}}
+    target:
+      files:
+        empty.yaml:
+          source: shared/tagfilter_15000metrics.yaml
+
   - name: tagfilter_500metrics
     extends: tagfilter_base
     optimization_goal: cpu
