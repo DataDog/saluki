@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["decoders","destinations","encoders","forwarders","relays","sources","transforms"]};
+window.SIDEBAR_ITEMS = {"mod":["config","decoders","destinations","encoders","forwarders","relays","sources","transforms"]};
