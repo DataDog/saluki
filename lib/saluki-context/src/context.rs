@@ -5,7 +5,7 @@ use stringtheory::MetaString;
 
 use crate::{
     hash::{hash_context, ContextKey},
-    tags::{SharedTagSet, TagSet},
+    tags::TagSet,
 };
 
 const BASE_CONTEXT_SIZE: usize = std::mem::size_of::<Context>() + std::mem::size_of::<ContextInner>();
@@ -19,8 +19,8 @@ pub struct Context {
 impl Context {
     /// Creates a new `Context` from the given static name.
     pub fn from_static_name(name: &'static str) -> Self {
-        let tags = SharedTagSet::default();
-        let origin_tags = SharedTagSet::default();
+        let tags = TagSet::default();
+        let origin_tags = TagSet::default();
 
         let (key, _) = hash_context(name, &tags, &origin_tags);
         Self {
@@ -41,13 +41,13 @@ impl Context {
             tag_set.insert_tag(MetaString::from_static(tag));
         }
 
-        let origin_tags = SharedTagSet::default();
+        let origin_tags = TagSet::default();
 
         let (key, _) = hash_context(name, tags, &origin_tags);
         Self {
             inner: Arc::new(ContextInner {
                 name: MetaString::from_static(name),
-                tags: tag_set.into_shared(),
+                tags: tag_set,
                 origin_tags,
                 key,
                 active_count: Gauge::noop(),
@@ -56,9 +56,10 @@ impl Context {
     }
 
     /// Creates a new `Context` from the given name and given tags.
-    pub fn from_parts<S: Into<MetaString>>(name: S, tags: SharedTagSet) -> Self {
+    pub fn from_parts<S: Into<MetaString>>(name: S, tags: impl Into<TagSet>) -> Self {
         let name = name.into();
-        let origin_tags = SharedTagSet::default();
+        let tags = tags.into();
+        let origin_tags = TagSet::default();
         let (key, _) = hash_context(&name, &tags, &origin_tags);
         Self {
             inner: Arc::new(ContextInner {
@@ -105,13 +106,46 @@ impl Context {
     }
 
     /// Returns the instrumented tags of this context.
-    pub fn tags(&self) -> &SharedTagSet {
+    pub fn tags(&self) -> &TagSet {
         &self.inner.tags
     }
 
     /// Returns the origin tags of this context.
-    pub fn origin_tags(&self) -> &SharedTagSet {
+    pub fn origin_tags(&self) -> &TagSet {
         &self.inner.origin_tags
+    }
+
+    /// Mutates the instrumented tags of this context via a closure.
+    ///
+    /// Uses copy-on-write semantics: if this context shares its inner data with other clones, the
+    /// inner data is cloned first so that mutations do not affect other holders. If this context is
+    /// the sole owner, the mutation happens in place.
+    ///
+    /// The context key is automatically recomputed after the closure returns.
+    pub fn mutate_tags(&mut self, f: impl FnOnce(&mut TagSet)) {
+        self.mutate_inner(|inner| f(&mut inner.tags));
+    }
+
+    /// Mutates the origin tags of this context via a closure.
+    ///
+    /// Uses copy-on-write semantics: if this context shares its inner data with other clones, the
+    /// inner data is cloned first so that mutations do not affect other holders. If this context is
+    /// the sole owner, the mutation happens in place.
+    ///
+    /// The context key is automatically recomputed after the closure returns.
+    pub fn mutate_origin_tags(&mut self, f: impl FnOnce(&mut TagSet)) {
+        self.mutate_inner(|inner| f(&mut inner.origin_tags));
+    }
+
+    /// Runs the given closure on the inner context data, recomputing the context key afterwards.
+    ///
+    /// When the inner context state is shared (we aren't the only ones with a strong reference), we clone the inner
+    /// data first to have our own copy. Otherwise, we modify the inner data in place.
+    fn mutate_inner(&mut self, f: impl FnOnce(&mut ContextInner)) {
+        let inner = Arc::make_mut(&mut self.inner);
+        f(inner);
+        let (key, _) = hash_context(&inner.name, &inner.tags, &inner.origin_tags);
+        inner.key = key;
     }
 
     /// Returns the size of this context in bytes.
@@ -125,7 +159,7 @@ impl Context {
     /// when this method is first called.
     ///
     /// Additionally, the value returned by this method does not compensate for externalities such as origin tags
-    /// potentially being shared by multiple contexts, or whether or not tags are are inlined, interned, or heap
+    /// potentially being shared by multiple contexts, or whether or not tags are inlined, interned, or heap
     /// allocated. This means that the value returned is essentially the worst-case usage, and should be used as a rough
     /// estimate.
     pub fn size_of(&self) -> usize {
@@ -176,14 +210,14 @@ impl fmt::Display for Context {
 pub(super) struct ContextInner {
     key: ContextKey,
     name: MetaString,
-    tags: SharedTagSet,
-    origin_tags: SharedTagSet,
+    tags: TagSet,
+    origin_tags: TagSet,
     active_count: Gauge,
 }
 
 impl ContextInner {
     pub fn from_parts(
-        key: ContextKey, name: MetaString, tags: SharedTagSet, origin_tags: SharedTagSet, active_count: Gauge,
+        key: ContextKey, name: MetaString, tags: TagSet, origin_tags: TagSet, active_count: Gauge,
     ) -> Self {
         Self {
             key,
@@ -252,8 +286,8 @@ mod tests {
     const SIZE_OF_CONTEXT_TAGS: &[&str] = &["size_of_test_tag1", "size_of_test_tag2"];
     const SIZE_OF_CONTEXT_ORIGIN_TAGS: &[&str] = &["size_of_test_origin_tag1", "size_of_test_origin_tag2"];
 
-    fn tag_set(tags: &[&str]) -> SharedTagSet {
-        tags.iter().map(|s| Tag::from(*s)).collect::<TagSet>().into_shared()
+    fn tag_set(tags: &[&str]) -> TagSet {
+        tags.iter().map(|s| Tag::from(*s)).collect::<TagSet>()
     }
 
     #[test]
@@ -323,5 +357,80 @@ mod tests {
             context.size_of(),
             BASE_CONTEXT_SIZE + SIZE_OF_CONTEXT_NAME.len() + tags.size_of() + origin_tags.size_of()
         );
+    }
+
+    #[test]
+    fn with_tags_mut_clones_shared_context() {
+        let original = Context::from_static_parts("metric", &["env:prod"]);
+        let mut mutated = original.clone();
+
+        // They share the same Arc before mutation.
+        assert!(original.ptr_eq(&mutated));
+
+        mutated.mutate_tags(|tags| {
+            tags.insert_tag(Tag::from("service:web"));
+        });
+
+        // After mutation, they no longer share the same inner.
+        assert!(!original.ptr_eq(&mutated));
+    }
+
+    #[test]
+    fn with_tags_mut_does_not_affect_original() {
+        let original = Context::from_static_parts("metric", &["env:prod"]);
+        let mut mutated = original.clone();
+
+        mutated.mutate_tags(|tags| {
+            tags.insert_tag(Tag::from("service:web"));
+        });
+
+        // Original is unchanged.
+        assert_eq!(original.tags().len(), 1);
+        assert!(original.tags().has_tag("env:prod"));
+        assert!(!original.tags().has_tag("service:web"));
+
+        // Mutated has both tags.
+        assert_eq!(mutated.tags().len(), 2);
+        assert!(mutated.tags().has_tag("env:prod"));
+        assert!(mutated.tags().has_tag("service:web"));
+    }
+
+    #[test]
+    fn with_tags_mut_rehashes() {
+        // Build a context and mutate it to add a tag.
+        let mut mutated = Context::from_static_parts("metric", &["env:prod"]);
+        mutated.mutate_tags(|tags| {
+            tags.insert_tag(Tag::from("service:web"));
+        });
+
+        // Build an equivalent context from scratch with both tags.
+        let expected = Context::from_static_parts("metric", &["env:prod", "service:web"]);
+
+        // The recomputed key should match a freshly-constructed context with the same state.
+        assert_eq!(mutated, expected);
+
+        // Modify a tag on the mutated context that _isn't_ shared with `expected` to ensure that there's no asymmetric
+        // equality logic.
+        mutated.mutate_tags(|tags| {
+            tags.insert_tag(Tag::from("cluster:foo"));
+        });
+        assert_ne!(mutated, expected);
+    }
+
+    #[test]
+    fn with_origin_tags_mut_clones_shared_context() {
+        let original = Context::from_static_name("metric");
+        let mut mutated = original.clone();
+
+        assert!(original.ptr_eq(&mutated));
+
+        mutated.mutate_origin_tags(|tags| {
+            tags.insert_tag(Tag::from("origin:tag"));
+        });
+
+        assert!(!original.ptr_eq(&mutated));
+        assert!(original.origin_tags().is_empty());
+        assert_eq!(mutated.origin_tags().len(), 1);
+        assert!(mutated.origin_tags().has_tag("origin:tag"));
     }
 }

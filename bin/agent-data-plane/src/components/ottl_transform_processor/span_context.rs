@@ -1,7 +1,7 @@
 //! OTTL evaluation context for the transform processor.
 //!
 //! Provides path accessors for span fields (`attributes`, `resource.attributes`) so OTTL
-//! statements (e.g. `set(attributes["key"], "value")`) can read and write span data.
+//! statements (for example, `set(attributes["key"], "value")`) can read and write span data.
 //!
 //! Uses the OTTL library's [`EvalContextFamily`] (GAT-based) design: the parser is
 //! parameterized by [`SpanTransformFamily`], and at execution time a short-lived
@@ -9,13 +9,13 @@
 //! immutable reference to the resource tags.
 //!
 //! `attributes` supports both read and write via [`SpanAttributesAccessor`].
-//! `resource.attributes` is read-only because [`SharedTagSet`] does not expose mutable access.
+//! `resource.attributes` is read-only because [`TagSet`] does not expose mutable access.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use ottl::{EvalContextFamily, Field, IndexExpr, PathAccessor, PathResolverMap, Value};
-use saluki_context::tags::SharedTagSet;
+use saluki_context::tags::TagSet;
 use saluki_core::data_model::event::trace::Span;
 use stringtheory::MetaString;
 
@@ -40,13 +40,13 @@ pub struct SpanTransformContext<'a> {
     /// Mutable reference to the span being transformed.
     pub(super) span: &'a mut Span,
     /// Reference to the trace's resource-level tags (read-only).
-    pub(super) resource_tags: &'a SharedTagSet,
+    pub(super) resource_tags: &'a TagSet,
 }
 
 impl<'a> SpanTransformContext<'a> {
     /// Creates a context from a mutable span reference and immutable resource tags.
     #[inline]
-    pub fn new(span: &'a mut Span, resource_tags: &'a SharedTagSet) -> Self {
+    pub fn new(span: &'a mut Span, resource_tags: &'a TagSet) -> Self {
         Self { span, resource_tags }
     }
 }
@@ -108,14 +108,14 @@ impl PathAccessor<SpanTransformFamily> for SpanAttributesAccessor {
             }
             Ok(())
         } else {
-            Err("set on attributes requires a string index, e.g. attributes[\"key\"]".into())
+            Err("set on attributes requires a string index, for example, attributes[\"key\"]".into())
         }
     }
 }
 
 /// Path accessor for `resource.attributes` (trace resource tags).
 ///
-/// Read-only: [`SharedTagSet`] does not expose mutable access, so `set` returns an error.
+/// Read-only: [`TagSet`] does not expose mutable access, so `set` returns an error.
 #[derive(Debug)]
 pub struct ResourceAttributesAccessor;
 
@@ -136,13 +136,13 @@ impl PathAccessor<SpanTransformFamily> for ResourceAttributesAccessor {
         Ok(value)
     }
 
-    /// Always returns an error: `SharedTagSet` is an Arc-based immutable type and `Trace`
+    /// Always returns an error: `TagSet` is an Arc-based immutable type and `Trace`
     /// does not expose yet mutable way to access resource_tags, so there is no way to write changes
     /// back to the trace's resource tags.
     fn set<'a>(&self, _ctx: &mut SpanTransformContext<'a>, fields: &[Field], _value: &Value) -> ottl::Result<()> {
         let path_str: String = fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(".");
         Err(format!(
-            "resource.attributes is read-only; setting path `{}` is not supported because SharedTagSet does not expose mutable access",
+            "resource.attributes is read-only; setting path `{}` is not supported because TagSet does not expose mutable access",
             path_str
         )
         .into())

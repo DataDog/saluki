@@ -203,7 +203,7 @@ impl ComponentRegistry {
     ///
     /// A number of invalid conditions are checked and will cause an error to be returned:
     ///
-    /// - when a component has invalid bounds (e.g. minimum required bytes higher than firm limit)
+    /// - when a component has invalid bounds (for example, minimum required bytes higher than firm limit)
     /// - when the combined total of the firm limit for all components exceeds the effective limit
     pub fn verify_bounds(&self, initial_grant: MemoryGrant) -> Result<VerifiedBounds, VerifierError> {
         let bounds = self.inner.lock().unwrap().as_bounds();
@@ -377,7 +377,7 @@ impl<'a, S: BoundsMutator> BoundsBuilder<'a, S> {
     /// Accounts for an item container of the given length.
     ///
     /// This can be used to track the expected memory usage of generalized containers like `Vec<T>`, where items are
-    /// homogenous and allocated contiguously.
+    /// homogeneous and allocated contiguously.
     pub fn with_array<T>(&mut self, name: impl Into<String>, len: usize) -> &mut Self {
         S::add_usage(
             &mut self.inner.bounds,

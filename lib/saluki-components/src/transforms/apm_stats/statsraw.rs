@@ -6,7 +6,7 @@ use ddsketch::canonical::PositiveOnlyDDSketch;
 use protobuf::Message;
 use rand::Rng as _;
 use saluki_common::collections::{FastHashMap, PrehashedHashMap};
-use saluki_context::tags::SharedTagSet;
+use saluki_context::tags::TagSet;
 use saluki_core::data_model::event::trace_stats::{ClientGroupedStats, ClientStatsBucket};
 use stringtheory::MetaString;
 use tracing::error;
@@ -97,7 +97,7 @@ pub struct RawBucket {
     /// The full aggregation keys are stored in the shared `AggregationRegistry`.
     data: FastHashMap<AggregationKeyHash, GroupedStats>,
     /// Map of container ID to container tags.
-    pub(super) container_tags_by_id: FastHashMap<MetaString, SharedTagSet>,
+    pub(super) container_tags_by_id: FastHashMap<MetaString, TagSet>,
     /// Map of process tags hash to process tags.
     pub(super) process_tags_by_hash: PrehashedHashMap<u64, MetaString>,
 }
@@ -119,13 +119,13 @@ impl RawBucket {
     }
 
     /// Store container tags for later export.
-    pub fn set_container_tags(&mut self, container_id: MetaString, tags: impl Into<SharedTagSet>) {
+    pub fn set_container_tags(&mut self, container_id: MetaString, tags: impl Into<TagSet>) {
         self.container_tags_by_id.insert(container_id, tags.into());
     }
 
     /// Get container tags by container ID.
     #[allow(unused)]
-    pub fn get_container_tags(&self, container_id: &MetaString) -> Option<&SharedTagSet> {
+    pub fn get_container_tags(&self, container_id: &MetaString) -> Option<&TagSet> {
         self.container_tags_by_id.get(container_id)
     }
 
@@ -217,7 +217,7 @@ impl RawBucket {
 
 pub struct ExportedBucket {
     pub data: FastHashMap<PayloadAggregationKey, ClientStatsBucket>,
-    pub container_tags_by_id: FastHashMap<MetaString, SharedTagSet>,
+    pub container_tags_by_id: FastHashMap<MetaString, TagSet>,
     pub process_tags_by_hash: PrehashedHashMap<u64, MetaString>,
 }
 

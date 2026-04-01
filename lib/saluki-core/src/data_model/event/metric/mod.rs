@@ -23,7 +23,7 @@ pub use self::value::{
 ///
 /// A metric is composed of three parts: the context, the value, and the metadata.
 ///
-/// The context represents the "full" name of the metric, which includes not only the name (e.g. `http_requests_total`),
+/// The context represents the "full" name of the metric, which includes not only the name (for example, `http_requests_total`),
 /// but the tags as well. Effectively, a context is meant to be a unique name for a metric.
 ///
 /// The value is precisely what it sounds like: the value of the metric. The value holds both the metric type and the

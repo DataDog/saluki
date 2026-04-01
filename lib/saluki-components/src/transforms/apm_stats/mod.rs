@@ -11,10 +11,7 @@ use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use opentelemetry_semantic_conventions::resource::{CONTAINER_ID, K8S_POD_UID};
 use saluki_config::GenericConfiguration;
-use saluki_context::{
-    origin::OriginTagCardinality,
-    tags::{SharedTagSet, TagSet},
-};
+use saluki_context::{origin::OriginTagCardinality, tags::TagSet};
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     data_model::event::{
@@ -184,7 +181,7 @@ impl ApmStats {
         let resource_tags = trace.resource_tags();
         let container_id = resolve_container_id(resource_tags);
         let mut container_tags = if container_id.is_empty() {
-            SharedTagSet::default()
+            TagSet::default()
         } else {
             extract_container_tags(resource_tags)
         };
@@ -194,7 +191,7 @@ impl ApmStats {
             if let Some(workload_provider) = &self.workload_provider {
                 let entity_id = EntityId::Container(container_id.clone());
                 if let Some(tags) = workload_provider.get_tags_for_entity(&entity_id, OriginTagCardinality::Low) {
-                    container_tags.extend_from_shared(&tags);
+                    container_tags.merge_shared(&tags);
                 }
             }
         }
@@ -425,7 +422,7 @@ fn now_nanos() -> u64 {
 }
 
 /// Resolves container ID from OTLP resource tags.
-fn resolve_container_id(resource_tags: &SharedTagSet) -> MetaString {
+fn resolve_container_id(resource_tags: &TagSet) -> MetaString {
     for key in [KEY_DATADOG_CONTAINER_ID, CONTAINER_ID, K8S_POD_UID] {
         if let Some(tag) = resource_tags.get_single_tag(key) {
             if let Some(value) = tag.value() {
@@ -440,11 +437,11 @@ fn resolve_container_id(resource_tags: &SharedTagSet) -> MetaString {
 }
 
 /// Extracts container tags from OTLP resource tags.
-fn extract_container_tags(resource_tags: &SharedTagSet) -> SharedTagSet {
+fn extract_container_tags(resource_tags: &TagSet) -> TagSet {
     let mut container_tags_set = TagSet::default();
     extract_container_tags_from_resource_tagset(resource_tags, &mut container_tags_set);
 
-    container_tags_set.into_shared()
+    container_tags_set
 }
 
 /// Extracts process tags from trace.

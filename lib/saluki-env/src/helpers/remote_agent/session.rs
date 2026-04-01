@@ -53,7 +53,7 @@ struct SessionIdHandleInner {
     change_notify: Notify,
 }
 
-/// A handle for a dynamically-updated session ID.
+/// A handle for a dynamically updated session ID.
 ///
 /// This handle allows sharing a session ID across multiple components while allowing it to be centrally updated in the
 /// case of refresh/re-registration.

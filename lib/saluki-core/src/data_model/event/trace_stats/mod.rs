@@ -1,6 +1,6 @@
 //! Trace stats.
 
-use saluki_context::tags::SharedTagSet;
+use saluki_context::tags::TagSet;
 use stringtheory::MetaString;
 
 /// Trace statistics output from the APM Stats transform.
@@ -47,7 +47,7 @@ pub struct ClientStatsPayload {
     agent_aggregation: MetaString,
     service: MetaString,
     container_id: MetaString,
-    tags: SharedTagSet,
+    tags: TagSet,
     git_commit_sha: MetaString,
     image_tag: MetaString,
     process_tags_hash: u64,
@@ -114,7 +114,7 @@ impl ClientStatsPayload {
     }
 
     /// Sets the orchestrator tags.
-    pub fn with_tags(mut self, tags: impl Into<SharedTagSet>) -> Self {
+    pub fn with_tags(mut self, tags: impl Into<TagSet>) -> Self {
         self.tags = tags.into();
         self
     }
@@ -199,7 +199,7 @@ impl ClientStatsPayload {
     }
 
     /// Returns the orchestrator tags.
-    pub fn tags(&self) -> &SharedTagSet {
+    pub fn tags(&self) -> &TagSet {
         &self.tags
     }
 

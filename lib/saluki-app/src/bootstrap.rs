@@ -19,7 +19,7 @@ pub struct BootstrapGuard {
 /// Early application initialization.
 ///
 /// This helper type is used to configure the various low-level shared resources required by the application, such as
-/// the logging and metrics subsystems. It allows for programatic configuration through the use of environment
+/// the logging and metrics subsystems. It allows for programmatic configuration through the use of environment
 /// variables.
 pub struct AppBootstrapper {
     logging_config: LoggingConfiguration,

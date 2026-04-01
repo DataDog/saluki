@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use ottl::{CallbackMap, EnumMap, OttlParser};
 use saluki_config::GenericConfiguration;
-use saluki_context::tags::SharedTagSet;
+use saluki_context::tags::TagSet;
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     data_model::event::trace::Span,
@@ -29,7 +29,6 @@ use span_context::{SpanTransformContext, SpanTransformFamily};
 /// Configuration for the OTTL Transform processor, loaded from the data plane config.
 #[derive(Clone, Debug)]
 pub struct OttlTransformConfiguration {
-    /// Parsed Transform config (error_mode, trace_statements, etc.).
     config: OttlTransformConfig,
 }
 
@@ -107,7 +106,7 @@ impl OttlTransform {
     /// Each statement is executed in order. For editor statements (e.g. `set`), the `where`
     /// clause is evaluated first; if it matches (or is absent), the editor function runs.
     /// Errors are handled according to `error_mode`.
-    fn transform_span(&self, span: &mut Span, resource_tags: &SharedTagSet) {
+    fn transform_span(&self, span: &mut Span, resource_tags: &TagSet) {
         let mut ctx = SpanTransformContext::new(span, resource_tags);
 
         for parser in &self.span_parsers {

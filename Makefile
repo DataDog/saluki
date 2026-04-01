@@ -237,8 +237,8 @@ endif
 		test/build/dd-agent-benchmarks/docker/proxy-dumper
 
 .PHONY: build-dsd-client
-build-dsd-client: ## Builds the Dogstatsd client (used for sending DSD payloads)
-	@echo "[*] Building Dogstatsd client..."
+build-dsd-client: ## Builds the DogStatsD client (used for sending DSD payloads)
+	@echo "[*] Building DogStatsD client..."
 	@go build -C tooling/dogstatsd_client -o ../bin/dogstatsd_client .
 
 .PHONY: check-rust-build-tools

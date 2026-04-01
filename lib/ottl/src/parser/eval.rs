@@ -11,7 +11,7 @@ use crate::{Args, BoxError, EvalContextFamily, Result, Value};
 // Evaluation Helpers
 // =====================================================================================================================
 
-/// Apply indexes to a value. Used only for converter/editor return value indexing (e.g. Split(...)[0]).
+/// Apply indexes to a value. Used only for converter/editor return value indexing (for example, Split(...)[0]).
 #[inline]
 pub(crate) fn apply_indexes(value: Value, indexes: &[IndexExpr]) -> Result<Value> {
     let mut current = value;

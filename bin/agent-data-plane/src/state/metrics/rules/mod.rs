@@ -1,4 +1,4 @@
-use saluki_context::{tags::SharedTagSet, Context};
+use saluki_context::{tags::TagSet, Context};
 use stringtheory::MetaString;
 
 mod aggregation;
@@ -125,7 +125,7 @@ impl RemapperRule {
     }
 
     /// Builds the remapped tags for a matched metric.
-    fn build_remapped_tags(&self, metric_tags: &SharedTagSet) -> Vec<MetaString> {
+    fn build_remapped_tags(&self, metric_tags: &TagSet) -> Vec<MetaString> {
         let mut new_tags = vec![];
 
         for (original_tag_name, new_tag_name) in &self.remapped_tags {

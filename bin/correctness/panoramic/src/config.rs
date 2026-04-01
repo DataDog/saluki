@@ -129,7 +129,7 @@ pub struct ContainerConfig {
     #[serde(default)]
     pub files: Vec<String>,
 
-    /// Ports to expose (port/protocol format, e.g., "8125/udp").
+    /// Ports to expose (port/protocol format, for example, "8125/udp").
     #[serde(default)]
     pub exposed_ports: Vec<String>,
 }
@@ -307,7 +307,7 @@ pub fn discover_tests<P: AsRef<Path>>(base_path: P) -> Result<Vec<TestCase>, Gen
     Ok(test_cases)
 }
 
-/// Parse a port specification (e.g., "8125/udp") into port number and protocol.
+/// Parse a port specification (for example, "8125/udp") into port number and protocol.
 pub fn parse_port_spec(spec: &str) -> Result<(u16, &str), GenericError> {
     let parts: Vec<&str> = spec.split('/').collect();
     if parts.len() != 2 {
@@ -332,7 +332,7 @@ pub fn parse_port_spec(spec: &str) -> Result<(u16, &str), GenericError> {
     Ok((port, protocol))
 }
 
-/// Parse a file mount specification (e.g., "host_path:container_path").
+/// Parse a file mount specification (for example, "host_path:container_path").
 pub fn parse_file_spec(spec: &str) -> Result<(&str, &str), GenericError> {
     let parts: Vec<&str> = spec.splitn(2, ':').collect();
     if parts.len() != 2 {

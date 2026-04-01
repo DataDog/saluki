@@ -74,7 +74,7 @@ macro_rules! register_metric {
     };
 }
 
-/// Creates statically-defined metrics within a dedicated container struct.
+/// Creates statically defined metrics within a dedicated container struct.
 ///
 /// In some cases, the metrics needed for a component are well-established and do not require a high-level of dynamism:
 /// perhaps only a single label is needed for all metrics, and the value is known ahead of time. In these cases, it can

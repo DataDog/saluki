@@ -10,9 +10,9 @@ doing so in a performant, reliable, and efficient way.
 
 In Saluki, users construct a **topology**, which is a collection of uniquely identified
 **components** connected together in a directed, acyclic graph. This just means that components send
-data to each other in a single direction, like a pipeline of Unix commands (e.g., `cat messages |
-grep error | wc -l`), and that there can be no cycles between components (e.g., componentA ->
-component B -> component A).
+data to each other in a single direction, like a pipeline of Unix commands (for example,
+`cat messages | grep error | wc -l`), and that there can be no cycles between components (for example,
+**componentA -> component B -> component A**).
 
 OK, so why does this matter? This structure allows components to be easily composed together, and it
 allow for a component to send data to multiple downstream components _or_ for a component to receive
@@ -92,8 +92,8 @@ Examples of sources (some of which do not currently exist):
 
 Transforms are the group of components used to process data within a topology.
 
-Broadly speaking, transforms are used to either combine data (e.g., aggregation), modify data (e.g.,
-enrichment, conversion) or filter data (e.g., dropping, sampling). Transforms are always in the
+Broadly speaking, transforms are used to either combine data (for example, aggregation), modify data (for example,
+enrichment, conversion) or filter data (for example, dropping, sampling). Transforms are always in the
 "middle" of a topology, as they don't generate data themselves.
 
 Examples of transforms (some of which do not currently exist):

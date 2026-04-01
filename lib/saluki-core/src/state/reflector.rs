@@ -28,7 +28,7 @@ struct StoreInner<P: Processor> {
 /// Shared state based on a processor.
 ///
 /// `Store` acts as the glue between a processor and the data that it processes. It acts as the entrypoint for taking in
-/// a a group of items from a data source, running them through the configured processor, and then notifying callers
+/// a group of items from a data source, running them through the configured processor, and then notifying callers
 /// that an update has taken place.
 struct Store<P: Processor> {
     inner: Arc<StoreInner<P>>,
@@ -99,7 +99,7 @@ impl<P: Processor> Reflector<P> {
     /// A task will be spawned that drives consumption of the data source and processes the items, feeding them into the
     /// reflector state, which can be queried from the returned `Reflector.`
     ///
-    /// `Reflector` is cheaply cloneable and can either be cloned for each caller or shared between them (e.g., via
+    /// `Reflector` is cheaply cloneable and can either be cloned for each caller or shared between them (for example, via
     /// `Arc<T>`).
     pub async fn new<S, I>(mut source: S, processor: P) -> Self
     where

@@ -140,7 +140,7 @@ pub(super) fn normalize_service_into<I>(service: &str, out: &mut StringBuilder<I
     out.clear();
 
     // TODO: add fall back service for languages
-    // e.g. https://github.com/DataDog/datadog-agent/blob/instrument-otlp-traffic/pkg/trace/traceutil/normalize/normalize.go#L124
+    // for example, https://github.com/DataDog/datadog-agent/blob/instrument-otlp-traffic/pkg/trace/traceutil/normalize/normalize.go#L124
     if service.is_empty() {
         let _ = out.push_str(DEFAULT_SERVICE_NAME.as_ref());
         return;

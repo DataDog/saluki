@@ -2,7 +2,7 @@
 
 use std::{fmt, num::NonZeroU64};
 
-use saluki_context::tags::SharedTagSet;
+use saluki_context::tags::TagSet;
 use serde::{Serialize, Serializer};
 use stringtheory::MetaString;
 
@@ -132,8 +132,8 @@ pub struct EventD {
     #[serde(skip_serializing_if = "MetaString::is_empty")]
     source_type_name: MetaString,
     alert_type: Option<AlertType>,
-    tags: SharedTagSet,
-    origin_tags: SharedTagSet,
+    tags: TagSet,
+    origin_tags: TagSet,
 }
 
 impl EventD {
@@ -192,12 +192,12 @@ impl EventD {
     }
 
     /// Returns the tags associated with the event.
-    pub fn tags(&self) -> &SharedTagSet {
+    pub fn tags(&self) -> &TagSet {
         &self.tags
     }
 
     /// Returns the origin tags associated with the event.
-    pub fn origin_tags(&self) -> &SharedTagSet {
+    pub fn origin_tags(&self) -> &TagSet {
         &self.origin_tags
     }
 
@@ -308,21 +308,21 @@ impl EventD {
     /// Set the tags of the event.
     ///
     /// This variant is specifically for use in builder-style APIs.
-    pub fn with_tags(mut self, tags: impl Into<SharedTagSet>) -> Self {
+    pub fn with_tags(mut self, tags: impl Into<TagSet>) -> Self {
         self.tags = tags.into();
         self
     }
 
     /// Set the tags of the event.
-    pub fn set_tags(&mut self, tags: impl Into<Option<SharedTagSet>>) {
+    pub fn set_tags(&mut self, tags: impl Into<Option<TagSet>>) {
         self.tags = tags.into().unwrap_or_default();
     }
 
     /// Set the origin tags of the event.
     ///
     /// This variant is specifically for use in builder-style APIs.
-    pub fn with_origin_tags(mut self, origin_tags: SharedTagSet) -> Self {
-        self.origin_tags = origin_tags;
+    pub fn with_origin_tags(mut self, origin_tags: impl Into<TagSet>) -> Self {
+        self.origin_tags = origin_tags.into();
         self
     }
 
@@ -339,8 +339,8 @@ impl EventD {
             priority: Some(Priority::Normal),
             source_type_name: MetaString::empty(),
             alert_type: Some(AlertType::Info),
-            tags: SharedTagSet::default(),
-            origin_tags: SharedTagSet::default(),
+            tags: TagSet::default(),
+            origin_tags: TagSet::default(),
         }
     }
 }

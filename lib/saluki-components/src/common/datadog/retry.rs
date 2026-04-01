@@ -44,7 +44,7 @@ const fn default_storage_max_disk_ratio() -> f64 {
 pub struct RetryConfiguration {
     /// The minimum backoff factor to use when retrying requests.
     ///
-    /// Controls the the interval range that a calculated backoff duration can fall within, such that with a minimum
+    /// Controls the interval range that a calculated backoff duration can fall within, such that with a minimum
     /// backoff factor of 2.0, calculated backoff durations will fall between `d/2` and `d`, where `d` is the calculated
     /// backoff duration using a purely exponential growth strategy.
     ///
