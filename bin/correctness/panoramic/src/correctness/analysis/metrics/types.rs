@@ -193,7 +193,7 @@ impl NormalizedMetrics {
 
         let metrics = aggregated_context_values
             .into_iter()
-            .map(|((context, _type), values)| NormalizedMetric::try_from_values(context, values))
+            .map(|((context, _type), values)| NormalizedMetric::try_from_normalized_values(context, values))
             .try_fold(Vec::new(), |mut metrics, maybe_metric| {
                 metrics.push(maybe_metric?);
                 Ok::<_, GenericError>(metrics)
@@ -316,4 +316,43 @@ fn try_normalize_values(raw_values: &[(u64, MetricValue)]) -> Result<MetricValue
     }
 
     Ok(current_value)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use stele::Metric;
+
+    use super::NormalizedMetrics;
+
+    fn metric(name: &str, tags: &[&str], points: &[(u64, f64)]) -> Metric {
+        serde_json::from_value(json!({
+            "context": {
+                "name": name,
+                "tags": tags,
+            },
+            "values": points
+                .iter()
+                .map(|(ts, value)| json!([ts, {"mtype": "Count", "value": value}]))
+                .collect::<Vec<_>>(),
+        }))
+        .expect("metric should deserialize")
+    }
+
+    #[test]
+    fn normalizes_context_order_before_grouping_metrics() {
+        let metrics = vec![
+            metric("tagfilter.miss", &["pod:pod-a", "env:prod"], &[(10, 2.0)]),
+            metric("tagfilter.miss", &["env:prod", "pod:pod-a"], &[(20, 3.0)]),
+        ];
+
+        let normalized = NormalizedMetrics::try_from_stele_metrics(&metrics).expect("metrics should normalize");
+
+        assert_eq!(normalized.len(), 1);
+        assert_eq!(
+            normalized.metrics()[0].context().to_string(),
+            "tagfilter.miss[env:prod, pod:pod-a]"
+        );
+        assert_eq!(normalized.metrics()[0].raw_values().len(), 2);
+    }
 }

@@ -1,0 +1,38 @@
+# Using a fixed hostname is both required to avoid errors, and also ensures
+# consistent tags between the baseline Agent and the ADP comparison target.
+hostname: "correctness-testing"
+
+# Dummy API key.
+api_key: dummy-api-key-correctness-testing
+
+# We have to specifically configure the health port to use.
+health_port: 5555
+
+# Point ourselves at the datadog-intake service.
+dd_url: "http://datadog-intake:2049"
+
+# Turn off UDP and listen on a UDS socket instead.
+dogstatsd_port: 0
+dogstatsd_socket: /airlock/metrics.sock
+
+# Keep origin detection enabled to stay closer to real DogStatsD behavior.
+#
+# Note: the current corpus still primarily exercises instrumented-tag filtering;
+# enabling origin detection did not change the final comparable metric set in the
+# latest parity run.
+dogstatsd_origin_detection: true
+
+# Gauges can be processed out-of-order when multiple workers are used, while ADP
+# does not use multiple workers. Keep worker count at 1 to remove that
+# difference from this parity test.
+dogstatsd_workers_count: 1
+
+metric_tag_filterlist:
+  - metric_name: tagfilter.exclude
+    action: exclude
+    tags:
+      - pod
+  - metric_name: tagfilter.include
+    action: include
+    tags:
+      - env
