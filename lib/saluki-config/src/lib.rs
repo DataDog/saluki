@@ -154,11 +154,46 @@ impl LookupSource {
 /// - environment variables (must be prefixed; see [`from_environment`][Self::from_environment])
 #[derive(Clone, Default)]
 pub struct ConfigurationLoader {
+    key_aliases: &'static [(&'static str, &'static str)],
     lookup_sources: HashSet<LookupSource>,
     provider_sources: Vec<ProviderSource>,
 }
 
 impl ConfigurationLoader {
+    /// Sets key aliases to apply when loading file-based configuration sources.
+    ///
+    /// Each entry is `(nested_path, flat_key)`. When a YAML or JSON file contains a value at `nested_path`
+    /// (dot-separated), that value is also emitted under `flat_key` at the top level — but only if `flat_key`
+    /// is not already explicitly set at the top level. This ensures that both YAML nested format and flat env var
+    /// format produce the same Figment key, so source precedence (env vars > file) works correctly.
+    ///
+    /// Must be called before any file-loading methods ([`from_yaml`][Self::from_yaml], etc.) to take effect.
+    pub fn with_key_aliases(mut self, aliases: &'static [(&'static str, &'static str)]) -> Self {
+        self.key_aliases = aliases;
+        self
+    }
+
+    /// Appends one or more providers to the configuration chain.
+    ///
+    /// Sources are merged in the order they are added: later sources take precedence over earlier ones. Call
+    /// this method after any file-loading methods and before [`from_environment`][Self::from_environment] to
+    /// place the added providers at the correct intermediate precedence level:
+    ///
+    /// ```text
+    /// file providers  <  add_providers(...)  <  from_environment(...)
+    /// ```
+    pub fn add_providers<P, I>(mut self, providers: I) -> Self
+    where
+        P: Provider + Send + Sync + 'static,
+        I: IntoIterator<Item = P>,
+    {
+        for p in providers {
+            self.provider_sources
+                .push(ProviderSource::Static(ArcProvider(Arc::new(p))));
+        }
+        self
+    }
+
     /// Loads the given YAML configuration file.
     ///
     /// # Errors
@@ -168,7 +203,7 @@ impl ConfigurationLoader {
     where
         P: AsRef<std::path::Path>,
     {
-        let resolved_provider = ResolvedProvider::from_yaml(&path)?;
+        let resolved_provider = ResolvedProvider::from_yaml(&path, self.key_aliases)?;
         self.provider_sources
             .push(ProviderSource::Static(ArcProvider(Arc::new(resolved_provider))));
         Ok(self)
@@ -181,7 +216,7 @@ impl ConfigurationLoader {
     where
         P: AsRef<std::path::Path>,
     {
-        match ResolvedProvider::from_yaml(&path) {
+        match ResolvedProvider::from_yaml(&path, self.key_aliases) {
             Ok(resolved_provider) => {
                 self.provider_sources
                     .push(ProviderSource::Static(ArcProvider(Arc::new(resolved_provider))));
@@ -206,7 +241,7 @@ impl ConfigurationLoader {
     where
         P: AsRef<std::path::Path>,
     {
-        let resolved_provider = ResolvedProvider::from_json(&path)?;
+        let resolved_provider = ResolvedProvider::from_json(&path, self.key_aliases)?;
         self.provider_sources
             .push(ProviderSource::Static(ArcProvider(Arc::new(resolved_provider))));
         Ok(self)
@@ -219,7 +254,7 @@ impl ConfigurationLoader {
     where
         P: AsRef<std::path::Path>,
     {
-        match ResolvedProvider::from_json(&path) {
+        match ResolvedProvider::from_json(&path, self.key_aliases) {
             Ok(resolved_provider) => {
                 self.provider_sources
                     .push(ProviderSource::Static(ArcProvider(Arc::new(resolved_provider))));
@@ -237,10 +272,12 @@ impl ConfigurationLoader {
 
     /// Loads configuration from environment variables.
     ///
-    /// The prefix given will have an underscore appended to it if it does not already end with one. For example, with a
-    /// prefix of `app`, any environment variable starting with `app_` would be matched.
+    /// The prefix given will have an underscore appended to it if it does not already end with one. For
+    /// example, with a prefix of `app`, any environment variable starting with `app_` would be matched. The
+    /// prefix is case-insensitive.
     ///
-    /// The prefix is case-insensitive.
+    /// Sources are merged in the order they are added, with later sources taking precedence over earlier ones.
+    /// Sources added after this call will have higher precedence than environment variables.
     ///
     /// # Errors
     ///
@@ -465,12 +502,36 @@ impl ConfigurationLoader {
         file_values: Option<serde_json::Value>, env_vars: Option<&[(String, String)]>,
         enable_dynamic_configuration: bool,
     ) -> (GenericConfiguration, Option<tokio::sync::mpsc::Sender<ConfigUpdate>>) {
+        Self::for_tests_with_provider_factory(file_values, env_vars, enable_dynamic_configuration, &[], || {
+            Serialized::defaults(serde_json::json!({}))
+        })
+        .await
+    }
+
+    /// Like [`for_tests`][Self::for_tests], but applies `key_aliases` during file loading and calls
+    /// `provider_factory` to build an additional provider inserted between the file provider and the
+    /// environment provider.
+    ///
+    /// The factory is called after test environment variables have been set, so any env var reads it performs
+    /// (e.g. in `DatadogRemapper`) are consistent with the test's env setup.
+    ///
+    /// This is generally only useful for testing purposes, and is exposed publicly in order to be used in cross-crate testing scenarios.
+    pub async fn for_tests_with_provider_factory<P, F>(
+        file_values: Option<serde_json::Value>, env_vars: Option<&[(String, String)]>,
+        enable_dynamic_configuration: bool, key_aliases: &'static [(&'static str, &'static str)], provider_factory: F,
+    ) -> (GenericConfiguration, Option<tokio::sync::mpsc::Sender<ConfigUpdate>>)
+    where
+        P: Provider + Send + Sync + 'static,
+        F: FnOnce() -> P,
+    {
         let json_file = tempfile::NamedTempFile::new().expect("should not fail to create temp file.");
         let path = &json_file.path();
         let json_to_write = file_values.unwrap_or(serde_json::json!({}));
         serde_json::to_writer(&json_file, &json_to_write).expect("should not fail to write to temp file.");
 
-        let mut loader = ConfigurationLoader::default().try_from_json(path);
+        let mut loader = ConfigurationLoader::default()
+            .with_key_aliases(key_aliases)
+            .try_from_json(path);
         let mut maybe_sender = None;
         if enable_dynamic_configuration {
             let (sender, receiver) = tokio::sync::mpsc::channel(1);
@@ -484,19 +545,27 @@ impl ConfigurationLoader {
 
         if let Some(pairs) = env_vars.as_ref() {
             for (k, v) in pairs.iter() {
+                // Set under both the raw name and the TEST_ prefix:
+                //   - Raw name: available to any env-reading providers (e.g. DatadogRemapper)
+                //   - TEST_ prefix: read by from_environment("TEST") (simulates DD_ prefix)
+                std::env::set_var(k, v);
                 std::env::set_var(format!("TEST_{}", k), v);
             }
         }
+
+        // Build and insert the extra provider while env vars are set so it can snapshot them.
+        let loader = loader.add_providers([provider_factory()]);
 
         // Add environment provider last so it has the highest precedence.
         let loader = loader
             .from_environment("TEST")
             .expect("should not fail to add environment provider");
 
-        // Remove only the test-provided env vars after snapshotting.
+        // Clean up test-provided env vars now that all providers have been built.
         if let Some(pairs) = env_vars.as_ref() {
             for (k, _) in pairs.iter() {
                 std::env::remove_var(k);
+                std::env::remove_var(format!("TEST_{}", k));
             }
         }
 
