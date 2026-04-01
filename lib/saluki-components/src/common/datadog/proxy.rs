@@ -19,8 +19,23 @@ pub struct ProxyConfiguration {
 
     /// List of hosts that should bypass the proxy.
     ///
-    /// In YAML this is a sequence under `proxy.no_proxy`. As an environment variable (`DD_PROXY_NO_PROXY`),
-    /// values are space-separated.
+    /// In YAML this is a sequence under `proxy.no_proxy`. As an environment variable
+    /// (`DD_PROXY_NO_PROXY`), values are space-separated.
+    ///
+    /// Each entry can be one of:
+    ///
+    /// - An exact IP address: `192.168.1.1` or `::1`. An optional port suffix (`192.168.1.1:8080`)
+    ///   restricts the match to that port only; without a port, all ports match.
+    /// - A CIDR range: `192.168.0.0/24` or `2001:db8::/32`. Only used when
+    ///   `no_proxy_nonexact_match` is true; ignored in exact mode.
+    /// - A domain name: `example.com`. In exact mode, only the literal hostname matches. In
+    ///   nonexact mode, the domain and all its subdomains match (e.g. `example.com` also matches
+    ///   `sub.example.com`). An optional port suffix (`example.com:443`) restricts the match to
+    ///   that port.
+    /// - A leading-dot domain: `.example.com`. Only used in nonexact mode; matches subdomains
+    ///   only, not the domain itself (e.g. `.example.com` matches `sub.example.com` but not
+    ///   `example.com`).
+    /// - A wildcard `*`: bypasses the proxy for all destinations. Only used in nonexact mode.
     #[serde(
         default,
         rename = "proxy_no_proxy",
