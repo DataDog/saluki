@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use core::f64;
 use std::collections::HashSet;
 use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -333,62 +334,89 @@ impl OtlpMetricsTranslator {
         }
     }
 
+    fn format_float(
+        f: f64
+    ) -> String {
+        if f == f64::INFINITY {
+            return "inf".to_string();
+        } else if f == f64::NEG_INFINITY {
+            return "-inf".to_string();
+        } else if f.is_nan(){
+            return "nan".to_string();
+        } else if f == 0.0 {
+            return "0".to_string();
+        }
+
+        let s = format!("{f}");
+        if f == f.floor() {
+            format!("{s}.0")
+        } else {
+            s
+        }
+    }
+
+
+    fn get_quantile_tag(
+        quantile: f64
+    ) -> String {
+        "quantile:".to_string() + Self::format_float(quantile).as_str()
+    }
+
+    // Maps a monotonic OTLP Summary metric to Saluki 'Event's. 
     fn map_summary_metrics(
         &mut self, base_dims: Dimensions, data_points: Vec<OtlpSummaryDataPoint>,
         context: &TranslationContext,
     ) -> Vec<Event> {
         let mut events = Vec::new();
-        for dp in data_points {
+        for (i, dp) in data_points.iter().enumerate(){
             if dp.flags & (DataPointFlags::NoRecordedValueMask as u32) != 0 {
                 continue;
             }
 
-            let point_dims = base_dims.with_attribute_map(&dp.attributes);
-            let count_dims = point_dims.with_suffix("count");
-            
-            let (count_delta, is_first_point, should_drop_point) =
-            self.prev_pts.monotonic_diff(&count_dims, dp.start_time_unix_nano, dp.time_unix_nano, dp.count as f64);
+            let start_ts = dp.start_time_unix_nano;
             let ts = dp.time_unix_nano;
+            let point_dims = base_dims.with_attribute_map(&dp.attributes);
+            //Count will be treated as a cumulative monotonic metric 
+            {
+                let count_dims = point_dims.with_suffix("count");
+                let val = dp.count as f64;
+                
+                let (count_delta, is_first_point, should_drop_point) =
+                self.prev_pts.monotonic_diff(&count_dims, start_ts, ts, val);
 
-            if should_drop_point {
-                continue;
+                if !should_drop_point && !is_skippable(val){
+                    if !is_first_point {
+                        self.record_metric_event(&count_dims, count_delta, ts, DataType::Count, &mut events, context);
+                    } else if i == 0 && self.should_consume_initial_value(start_ts, ts){
+                        self.record_metric_event(&count_dims, val, ts, DataType::Count, &mut events, context);
+
+                    }
+                }
+            }
+            {
+                let sum_dims = point_dims.with_suffix("sum");
+                if !is_skippable(dp.sum) {
+                    let (sum_delta, ok) = self.prev_pts.diff(&sum_dims, start_ts, ts, dp.sum);
+                    if ok {
+                        self.record_metric_event(&sum_dims, sum_delta, ts, DataType::Count, &mut events, context); 
+                    }
+
+                }
+                
             }
 
-            if !is_first_point {
-                self.record_metric_event(&count_dims, count_delta, ts, DataType::Count, &mut events, context);
-            }
-            if is_skippable(dp.sum) {
-                debug!(
-                    metric_name = point_dims.name,
-                    dp.sum, "Skipping metric with unsupported value (NaN or Infinity)."
-                );
-                continue;
-            }
+            if self.config.quantiles {
+                let base_quantile_dims = point_dims.with_suffix("quantile");
+                let quantiles = &dp.quantile_values;
+                for quantile in quantiles {
+                    if is_skippable(quantile.value) {
+                        continue;
+                    }
+                    let quantile_dims = base_quantile_dims.add_tags(&[Self::get_quantile_tag(quantile.quantile)]);
+                    self.record_metric_event(&quantile_dims, quantile.value, ts, DataType::Gauge, &mut events, context);
 
-            let sum_dims = point_dims.with_suffix("sum");
-            let (sum_delta, is_first_point, should_drop_point) =
-                self.prev_pts.monotonic_diff(&sum_dims, dp.start_time_unix_nano, dp.time_unix_nano, dp.sum);
-
-            if should_drop_point {
-                continue;
-            }   
-
-            if !is_first_point {
-                self.record_metric_event(&sum_dims, sum_delta, ts, DataType::Count, &mut events, context);
+                }
             }
-
-        for quantile_val in &dp.quantile_values {
-            let quantile_dims = point_dims.add_tags(&[format!("quantile:{}", quantile_val.quantile)]);
-            let value = quantile_val.value;
-            if is_skippable(value) {
-                debug!(
-                    metric_name = point_dims.name,
-                    value, "Skipping metric with unsupported value (NaN or Infinity)."
-                );
-                continue;
-            }
-            self.record_metric_event(&quantile_dims, quantile_val.value, ts, DataType::Gauge, &mut events, context);
-        }
         }
         events
     }

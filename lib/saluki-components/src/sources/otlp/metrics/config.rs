@@ -52,6 +52,7 @@ pub struct OtlpMetricsTranslatorConfig {
     // renamed with the `otel.` prefix. This prevents the Collector and Datadog
     // Agent from computing metrics with the same names.
     pub with_otel_prefix: bool,
+    pub quantiles: bool,
     // Points cache settings
     pub delta_ttl: Duration,
     pub sweep_interval: Duration,
@@ -128,6 +129,7 @@ impl Default for OtlpMetricsTranslatorConfig {
             instrumentation_library_metadata_as_tags: false,
             with_remapping: false,
             with_otel_prefix: false,
+            quantiles: true,
             delta_ttl: DEFAULT_DELTA_TTL,
             sweep_interval: DEFAULT_SWEEP_INTERVAL,
         }
