@@ -126,6 +126,71 @@ templates:
                   histogram: 1
             maximum_prebuild_cache_size_bytes: "500 Mb"
 
+  # Base template for tag filterlist DogStatsD experiments mirroring the Agent tag-aggregation SMP
+  # cases: high-rate UDS traffic, fixed high cardinality, long metric/tag names, and distributions
+  # only.
+  tagfilter_base:
+    target:
+      memory_allotment: 3200MiB
+      environment:
+        DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+        DD_DOGSTATSD_PORT: "0"
+        DD_DOGSTATSD_SOCKET: /tmp/dsd.socket
+        DD_DOGSTATSD_ORIGIN_DETECTION: "true"
+        # Keep the aggregate transform from dropping contexts under the higher-cardinality load.
+        DD_AGGREGATE_CONTEXT_LIMIT: "80000"
+    checks:
+      - name: memory_usage
+        description: "Memory usage quality gate. This puts a bound on the total ADP memory usage."
+        bounds:
+          series: total_rss_bytes
+          upper_bound: "900.0 MiB"
+
+    lading:
+      blackhole:
+        - http:
+            binding_addr: "127.0.0.1:9091"
+        - http:
+            binding_addr: "127.0.0.1:9092"
+      generator:
+        - unix_datagram:
+            seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
+            path: "/tmp/dsd.socket"
+            bytes_per_second: "250 MiB"
+            maximum_prebuild_cache_size_bytes: "500 MiB"
+            variant:
+              dogstatsd:
+                contexts:
+                  inclusive:
+                    min: 78000
+                    max: 78000
+                tags_per_msg:
+                  inclusive:
+                    min: 54
+                    max: 54
+                multivalue_count:
+                  inclusive:
+                    min: 2
+                    max: 32
+                multivalue_pack_probability: 0.08
+                kind_weights:
+                  metric: 90
+                  event: 0
+                  service_check: 0
+                metric_weights:
+                  count: 0
+                  gauge: 0
+                  timer: 0
+                  distribution: 5
+                  set: 0
+                  histogram: 0
+                metric_names:
+                  - metricname_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa{{0-499}}
+                tag_names:
+                  - tagname_aaaaaaaaaaaaaaaaaaaaaa_{{0-54}}
+                tag_values:
+                  - value{{0-9}}
+
   # Base template for OTLP experiments
   otlp_base:
     target:
@@ -213,6 +278,43 @@ experiments:
   # ============================================================================
   # DogStatsD: basic regression (CPU, memory, throughput)
   # ============================================================================
+
+  - name: tagfilter_0tags
+    extends: tagfilter_base
+    optimization_goal: cpu
+
+  - name: tagfilter_100metrics
+    extends: tagfilter_base
+    optimization_goal: cpu
+    lading:
+      generator:
+        - unix_datagram:
+            variant:
+              dogstatsd:
+                metric_names:
+                  - metricname_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa{{0-99}}
+    target:
+      files:
+        empty.yaml:
+          source: shared/tagfilter_100metrics.yaml
+
+  - name: tagfilter_500metrics
+    extends: tagfilter_base
+    optimization_goal: cpu
+    target:
+      files:
+        empty.yaml:
+          source: shared/tagfilter_500metrics.yaml
+
+  - name: tagfilter_500metrics_notraffic
+    extends: tagfilter_base
+    optimization_goal: cpu
+    lading:
+      generator: []
+    target:
+      files:
+        empty.yaml:
+          source: shared/tagfilter_500metrics.yaml
 
   - name: dsd_uds_512kb_3k_contexts
     extends: dsd_base
