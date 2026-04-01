@@ -1,0 +1,25 @@
+load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//cargo:defs.bzl", "cargo_build_script")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+cargo_build_script(
+    name = "build_script",
+    srcs = ["build.rs"],
+    build_script_env = {
+        "APP_FULL_NAME": "agent-data-plane",
+        "APP_SHORT_NAME": "adp",
+        "APP_IDENTIFIER": "agent-data-plane",
+    },
+)
+
+rust_library(
+    name = "saluki-metadata",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    crate_name = "saluki_metadata",
+    deps = all_crate_deps(normal = True) + [
+        ":build_script",
+    ],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+)

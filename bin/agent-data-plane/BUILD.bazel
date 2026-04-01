@@ -1,0 +1,31 @@
+load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+rust_binary(
+    name = "agent-data-plane",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    compile_data = ["src/sizing_guide_template.html"],
+    crate_name = "agent_data_plane",
+    deps = all_crate_deps(normal = True) + [
+        "//lib/ddsketch",
+        "//lib/memory-accounting",
+        "//lib/ottl",
+        "//lib/prometheus-exposition",
+        "//lib/protos/datadog:datadog-protos",
+        "//lib/saluki-app",
+        "//lib/saluki-common",
+        "//lib/saluki-components",
+        "//lib/saluki-config",
+        "//lib/saluki-context",
+        "//lib/saluki-core",
+        "//lib/saluki-env",
+        "//lib/saluki-error",
+        "//lib/saluki-health",
+        "//lib/saluki-io",
+        "//lib/saluki-metadata",
+        "//lib/stringtheory",
+    ],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+)

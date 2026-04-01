@@ -1,0 +1,29 @@
+load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+rust_library(
+    name = "saluki-components",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    crate_name = "saluki_components",
+    deps = all_crate_deps(normal = True) + [
+        "//lib/ddsketch",
+        "//lib/memory-accounting",
+        "//lib/prometheus-exposition",
+        "//lib/protos/datadog:datadog-protos",
+        "//lib/protos/otlp:otlp-protos",
+        "//lib/saluki-api",
+        "//lib/saluki-common",
+        "//lib/saluki-config",
+        "//lib/saluki-context",
+        "//lib/saluki-core",
+        "//lib/saluki-env",
+        "//lib/saluki-error",
+        "//lib/saluki-io",
+        "//lib/saluki-metadata",
+        "//lib/saluki-metrics",
+        "//lib/stringtheory",
+    ],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+)

@@ -1,0 +1,21 @@
+load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//cargo:defs.bzl", "cargo_build_script")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+cargo_build_script(
+    name = "build_script",
+    srcs = ["build.rs"],
+)
+
+rust_library(
+    name = "ddsketch",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    crate_name = "ddsketch",
+    deps = all_crate_deps(normal = True) + [
+        ":build_script",
+        "//lib/protos/datadog:datadog-protos",
+    ],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+)

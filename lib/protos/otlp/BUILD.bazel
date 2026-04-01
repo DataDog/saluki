@@ -1,0 +1,26 @@
+load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//cargo:defs.bzl", "cargo_build_script")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+cargo_build_script(
+    name = "build_script",
+    srcs = ["build.rs"],
+    build_script_env = {
+        "PROTOC": "$(execpath @protobuf//:protoc)",
+    },
+    data = glob(["proto/**"]),
+    deps = all_crate_deps(build = True),
+    tools = ["@protobuf//:protoc"],
+)
+
+rust_library(
+    name = "otlp-protos",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    crate_name = "otlp_protos",
+    deps = all_crate_deps(normal = True) + [
+        ":build_script",
+    ],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+)

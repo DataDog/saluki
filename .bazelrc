@@ -1,0 +1,9 @@
+# Enable Bzlmod (default in Bazel 8+, but explicit for clarity)
+common --enable_bzlmod
+
+# Rust flags (match .cargo/config.toml)
+build --@rules_rust//:extra_rustc_flag=--cfg=tokio_unstable
+
+# Release build configuration (match Cargo optimized-release profile)
+build:release --compilation_mode=opt
+build:release --@rules_rust//:extra_rustc_flags=-Clto=fat,-Ccodegen-units=1,-Cembed-bitcode=yes

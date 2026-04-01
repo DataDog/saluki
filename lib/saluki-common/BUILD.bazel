@@ -1,0 +1,17 @@
+load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+rust_library(
+    name = "saluki-common",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    crate_name = "saluki_common",
+    deps = all_crate_deps(normal = True) + [
+        "//lib/memory-accounting",
+        "//lib/saluki-error",
+        "//lib/saluki-metrics",
+        "//lib/stringtheory",
+    ],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+)

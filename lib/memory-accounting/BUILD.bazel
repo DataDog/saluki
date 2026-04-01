@@ -1,0 +1,15 @@
+load("@crates//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+rust_library(
+    name = "memory-accounting",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    crate_name = "memory_accounting",
+    deps = all_crate_deps(normal = True) + [
+        "//lib/process-memory",
+        "//lib/saluki-api",
+    ],
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+)
