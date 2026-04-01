@@ -103,6 +103,11 @@ test-correctness-dsd-origin-detection:
   variables:
     CORRECTNESS_TEST_CASE: dsd-origin-detection
 
+test-correctness-dsd-tag-filterlist:
+  extends: [.build-common-variables, .test-correctness-definition]
+  variables:
+    CORRECTNESS_TEST_CASE: dsd-tag-filterlist
+
 test-correctness-otlp-metrics:
   extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-baseline]
   variables:
