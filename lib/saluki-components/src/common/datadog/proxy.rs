@@ -307,7 +307,7 @@ where
 {
     use std::fmt;
 
-    use serde::de::{SeqAccess, Visitor};
+    use serde::de::{self, SeqAccess, Visitor};
 
     struct SpaceSeparatedOrSeq;
 
@@ -318,13 +318,13 @@ where
             formatter.write_str("a sequence or a space-separated string")
         }
 
-        fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Vec<String>, E> {
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Vec<String>, E> {
             Ok(v.split_whitespace().map(str::to_owned).collect())
         }
 
         fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<String>, A::Error> {
             let mut values = Vec::new();
-            while let Some(v) = seq.next_element::<String>()? {
+            while let Some(v) = seq.next_element()? {
                 values.push(v);
             }
             Ok(values)
