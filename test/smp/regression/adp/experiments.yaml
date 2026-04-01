@@ -187,7 +187,7 @@ templates:
                 metric_names:
                   - metricname_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa{{0-499}}
                 tag_names:
-                  - tagname_aaaaaaaaaaaaaaaaaaaaaa_{{0-54}}
+                  - tagname_aaaaaaaaaaaaaaaaaaaaaa_{{0-57}}
                 tag_values:
                   - value{{0-9}}
 
@@ -279,9 +279,16 @@ experiments:
   # DogStatsD: basic regression (CPU, memory, throughput)
   # ============================================================================
 
-  - name: tagfilter_0tags
+  - name: tagfilter_0metrics
     extends: tagfilter_base
     optimization_goal: cpu
+    lading:
+      generator:
+        - unix_datagram:
+            variant:
+              dogstatsd:
+                metric_names:
+                  - metricname_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa{{0-14999}}
 
   - name: tagfilter_100metrics
     extends: tagfilter_base
@@ -305,6 +312,38 @@ experiments:
       files:
         empty.yaml:
           source: shared/tagfilter_500metrics.yaml
+
+  - name: tagfilter_10000metrics
+    extends: tagfilter_base
+    optimization_goal: cpu
+    lading:
+      generator:
+        - unix_datagram:
+            variant:
+              dogstatsd:
+                metric_names:
+                  - metricname_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa{{0-9999}}
+    target:
+      memory_allotment: 6400MiB
+      files:
+        empty.yaml:
+          source: shared/tagfilter_10000metrics.yaml
+
+  - name: tagfilter_15000metrics
+    extends: tagfilter_base
+    optimization_goal: cpu
+    lading:
+      generator:
+        - unix_datagram:
+            variant:
+              dogstatsd:
+                metric_names:
+                  - metricname_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa{{0-14999}}
+    target:
+      memory_allotment: 6200MiB
+      files:
+        empty.yaml:
+          source: shared/tagfilter_15000metrics.yaml
 
   - name: tagfilter_500metrics_notraffic
     extends: tagfilter_base
