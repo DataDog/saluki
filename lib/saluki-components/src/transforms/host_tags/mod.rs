@@ -83,7 +83,7 @@ impl HostTagsEnrichment {
             None => return,
         };
 
-        metric.context_mut().with_tags_mut(|tags| tags.merge_shared(host_tags));
+        metric.context_mut().mutate_tags(|tags| tags.merge_shared(host_tags));
     }
 }
 

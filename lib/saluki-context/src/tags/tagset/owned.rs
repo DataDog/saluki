@@ -539,7 +539,7 @@ impl<'a> Iterator for BaseIndexIter<'a> {
 mod tests {
     use std::collections::{BTreeSet, HashSet};
 
-    use proptest::{prelude::*, prop_oneof};
+    use proptest::{collection::vec as arb_vec, prelude::*, prop_oneof};
 
     use super::*;
 
@@ -907,12 +907,12 @@ mod tests {
 
     /// Strategy for generating a group of tags (for one FrozenTagSet in the chain).
     fn arb_tag_group() -> impl Strategy<Value = Vec<String>> {
-        proptest::collection::vec(arb_tag(), 0..10)
+        arb_vec(arb_tag(), 0..10)
     }
 
     /// Strategy for generating a base with 1-3 chained tag groups.
     fn arb_base_groups() -> impl Strategy<Value = Vec<Vec<String>>> {
-        proptest::collection::vec(arb_tag_group(), 1..4)
+        arb_vec(arb_tag_group(), 1..4)
     }
 
     /// Build a SharedTagSet from multiple groups (each becomes a chained FrozenTagSet).
@@ -976,7 +976,7 @@ mod tests {
         #[cfg_attr(miri, ignore)]
         fn property_test_overlay_matches_reference(
             base_groups in arb_base_groups(),
-            ops in prop::collection::vec(arb_op(), 0..20),
+            ops in arb_vec(arb_op(), 0..20),
         ) {
             let base = build_chained_base(&base_groups);
 

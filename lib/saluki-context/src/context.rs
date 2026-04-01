@@ -122,7 +122,7 @@ impl Context {
     /// the sole owner, the mutation happens in place.
     ///
     /// The context key is automatically recomputed after the closure returns.
-    pub fn with_tags_mut(&mut self, f: impl FnOnce(&mut TagSet)) {
+    pub fn mutate_tags(&mut self, f: impl FnOnce(&mut TagSet)) {
         self.mutate_inner(|inner| f(&mut inner.tags));
     }
 
@@ -133,10 +133,14 @@ impl Context {
     /// the sole owner, the mutation happens in place.
     ///
     /// The context key is automatically recomputed after the closure returns.
-    pub fn with_origin_tags_mut(&mut self, f: impl FnOnce(&mut TagSet)) {
+    pub fn mutate_origin_tags(&mut self, f: impl FnOnce(&mut TagSet)) {
         self.mutate_inner(|inner| f(&mut inner.origin_tags));
     }
 
+    /// Runs the given closure on the inner context data, recomputing the context key afterwards.
+    ///
+    /// When the inner context state is shared (we aren't the only ones with a strong reference), we clone the inner
+    /// data first to have our own copy. Otherwise, we modify the inner data in place.
     fn mutate_inner(&mut self, f: impl FnOnce(&mut ContextInner)) {
         let inner = Arc::make_mut(&mut self.inner);
         f(inner);
@@ -363,7 +367,7 @@ mod tests {
         // They share the same Arc before mutation.
         assert!(original.ptr_eq(&mutated));
 
-        mutated.with_tags_mut(|tags| {
+        mutated.mutate_tags(|tags| {
             tags.insert_tag(Tag::from("service:web"));
         });
 
@@ -376,7 +380,7 @@ mod tests {
         let original = Context::from_static_parts("metric", &["env:prod"]);
         let mut mutated = original.clone();
 
-        mutated.with_tags_mut(|tags| {
+        mutated.mutate_tags(|tags| {
             tags.insert_tag(Tag::from("service:web"));
         });
 
@@ -395,7 +399,7 @@ mod tests {
     fn with_tags_mut_rehashes() {
         // Build a context and mutate it to add a tag.
         let mut mutated = Context::from_static_parts("metric", &["env:prod"]);
-        mutated.with_tags_mut(|tags| {
+        mutated.mutate_tags(|tags| {
             tags.insert_tag(Tag::from("service:web"));
         });
 
@@ -404,6 +408,13 @@ mod tests {
 
         // The recomputed key should match a freshly-constructed context with the same state.
         assert_eq!(mutated, expected);
+
+        // Modify a tag on the mutated context that _isn't_ shared with `expected` to ensure that there's no asymmetric
+        // equality logic.
+        mutated.mutate_tags(|tags| {
+            tags.insert_tag(Tag::from("cluster:foo"));
+        });
+        assert_ne!(mutated, expected);
     }
 
     #[test]
@@ -413,7 +424,7 @@ mod tests {
 
         assert!(original.ptr_eq(&mutated));
 
-        mutated.with_origin_tags_mut(|tags| {
+        mutated.mutate_origin_tags(|tags| {
             tags.insert_tag(Tag::from("origin:tag"));
         });
 
