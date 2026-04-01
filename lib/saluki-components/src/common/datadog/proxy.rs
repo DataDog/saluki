@@ -74,7 +74,7 @@ impl ProxyConfiguration {
         if let Some(url) = &self.http_server {
             let m = Arc::clone(&matcher);
             let intercept = Intercept::from(move |scheme: Option<&str>, host: Option<&str>, port: Option<u16>| {
-                scheme == Some("http") && !host.map_or(false, |h| m.matches(h, port))
+                scheme == Some("http") && !host.is_some_and(|h| m.matches(h, port))
             });
             proxies.push(new_proxy(url, intercept)?);
         }
@@ -82,7 +82,7 @@ impl ProxyConfiguration {
         if let Some(url) = &self.https_server {
             let m = Arc::clone(&matcher);
             let intercept = Intercept::from(move |scheme: Option<&str>, host: Option<&str>, port: Option<u16>| {
-                scheme == Some("https") && !host.map_or(false, |h| m.matches(h, port))
+                scheme == Some("https") && !host.is_some_and(|h| m.matches(h, port))
             });
             proxies.push(new_proxy(url, intercept)?);
         }
@@ -126,8 +126,8 @@ impl NoProxyEntry {
             NoProxyEntry::Wildcard => nonexact,
 
             NoProxyEntry::IpExact { addr, port: entry_port } => {
-                let host_matches = host.parse::<IpAddr>().map_or(false, |h| h == *addr);
-                let port_matches = entry_port.map_or(true, |ep| port == Some(ep));
+                let host_matches = host.parse::<IpAddr>() == Ok(*addr);
+                let port_matches = entry_port.is_none_or(|ep| port == Some(ep));
                 host_matches && port_matches
             }
 
@@ -136,7 +136,7 @@ impl NoProxyEntry {
                     return false;
                 }
                 host.parse::<IpAddr>()
-                    .map_or(false, |h| ip_in_cidr(*addr, *prefix_len, h))
+                    .is_ok_and(|h| ip_in_cidr(*addr, *prefix_len, h))
             }
 
             NoProxyEntry::Domain {
@@ -144,7 +144,7 @@ impl NoProxyEntry {
                 port: entry_port,
                 suffix_only,
             } => {
-                let port_matches = entry_port.map_or(true, |ep| port == Some(ep));
+                let port_matches = entry_port.is_none_or(|ep| port == Some(ep));
                 if !port_matches {
                     return false;
                 }
@@ -291,8 +291,9 @@ fn deserialize_space_separated_or_seq<'de, D>(deserializer: D) -> Result<Vec<Str
 where
     D: Deserializer<'de>,
 {
-    use serde::de::{SeqAccess, Visitor};
     use std::fmt;
+
+    use serde::de::{SeqAccess, Visitor};
 
     struct SpaceSeparatedOrSeq;
 
@@ -603,10 +604,8 @@ mod tests {
     fn init_tls() {
         static INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
         INIT.get_or_init(|| {
-            saluki_tls::initialize_default_crypto_provider()
-                .expect("failed to initialize TLS crypto provider");
-            saluki_tls::load_platform_root_certificates()
-                .expect("failed to load platform root certificates");
+            saluki_tls::initialize_default_crypto_provider().expect("failed to initialize TLS crypto provider");
+            saluki_tls::load_platform_root_certificates().expect("failed to load platform root certificates");
         });
     }
 
@@ -700,9 +699,7 @@ mod tests {
                         {
                             let _ = tx.send(target.to_string()).await;
                         }
-                        let _ = stream
-                            .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
-                            .await;
+                        let _ = stream.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n").await;
                     }
                     // Hold the connection open briefly so the client can read the 200 before
                     // the stream is dropped and the connection closes.
