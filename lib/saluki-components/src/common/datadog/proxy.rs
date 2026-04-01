@@ -135,8 +135,7 @@ impl NoProxyEntry {
                 if !nonexact {
                     return false;
                 }
-                host.parse::<IpAddr>()
-                    .is_ok_and(|h| ip_in_cidr(*addr, *prefix_len, h))
+                host.parse::<IpAddr>().is_ok_and(|h| ip_in_cidr(*addr, *prefix_len, h))
             }
 
             NoProxyEntry::Domain {
@@ -694,9 +693,7 @@ mod tests {
                     if let Ok(n) = stream.read(&mut buf).await {
                         let req = String::from_utf8_lossy(&buf[..n]);
                         // "CONNECT host:port HTTP/1.1\r\n..."
-                        if let Some(target) =
-                            req.strip_prefix("CONNECT ").and_then(|s| s.split_whitespace().next())
-                        {
+                        if let Some(target) = req.strip_prefix("CONNECT ").and_then(|s| s.split_whitespace().next()) {
                             let _ = tx.send(target.to_string()).await;
                         }
                         let _ = stream.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n").await;
