@@ -594,4 +594,195 @@ mod tests {
             .intercept()
             .matches(&"http://100.100.100.200/".parse::<hyper::Uri>().unwrap()));
     }
+
+    // --- end-to-end routing tests ---
+    //
+    // These tests spin up a mock HTTP server acting as a proxy and verify that the
+    // HttpClient actually routes (or bypasses) traffic correctly based on ProxyConfiguration.
+
+    fn init_tls() {
+        static INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        INIT.get_or_init(|| {
+            saluki_tls::initialize_default_crypto_provider()
+                .expect("failed to initialize TLS crypto provider");
+            saluki_tls::load_platform_root_certificates()
+                .expect("failed to load platform root certificates");
+        });
+    }
+
+    async fn start_mock_http_server(status: http::StatusCode) -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let router = axum::Router::new().fallback(move || async move { status });
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        port
+    }
+
+    fn proxy_config_for_routing(proxy_http: &str, no_proxy: &[&str]) -> ProxyConfiguration {
+        serde_json::from_value::<ProxyConfiguration>(serde_json::json!({
+            "proxy_http": proxy_http,
+            "proxy_no_proxy": no_proxy,
+        }))
+        .expect("should deserialize")
+    }
+
+    #[tokio::test]
+    async fn http_request_routed_through_proxy() {
+        init_tls();
+        // The mock proxy returns 418; a direct connection to doesnotexist.example.com would fail.
+        // Getting 418 back confirms the request reached our mock proxy.
+        let proxy_port = start_mock_http_server(http::StatusCode::IM_A_TEAPOT).await;
+        let config = proxy_config_for_routing(&format!("http://127.0.0.1:{proxy_port}"), &[]);
+        let proxies = config.build().unwrap();
+
+        let mut client = saluki_io::net::client::http::HttpClient::builder()
+            .with_proxies(proxies)
+            .build()
+            .unwrap();
+
+        let req = http::Request::builder()
+            .uri("http://doesnotexist.example.com/")
+            .body(http_body_util::Empty::<bytes::Bytes>::new())
+            .unwrap();
+        let resp = client.send(req).await.unwrap();
+        assert_eq!(resp.status(), http::StatusCode::IM_A_TEAPOT);
+    }
+
+    #[tokio::test]
+    async fn no_proxy_host_bypasses_proxy() {
+        init_tls();
+        // The mock proxy returns 418; the direct server returns 200.
+        // Getting 200 back confirms the request bypassed the proxy and went directly.
+        let proxy_port = start_mock_http_server(http::StatusCode::IM_A_TEAPOT).await;
+        let direct_port = start_mock_http_server(http::StatusCode::OK).await;
+        let config = proxy_config_for_routing(
+            &format!("http://127.0.0.1:{proxy_port}"),
+            &[&format!("127.0.0.1:{direct_port}")],
+        );
+        let proxies = config.build().unwrap();
+
+        let mut client = saluki_io::net::client::http::HttpClient::builder()
+            .with_proxies(proxies)
+            .build()
+            .unwrap();
+
+        let req = http::Request::builder()
+            .uri(format!("http://127.0.0.1:{direct_port}/"))
+            .body(http_body_util::Empty::<bytes::Bytes>::new())
+            .unwrap();
+        let resp = client.send(req).await.unwrap();
+        assert_eq!(resp.status(), http::StatusCode::OK);
+    }
+
+    /// Starts a minimal raw TCP server that handles a single HTTP CONNECT request per connection.
+    ///
+    /// Returns the listening port and a channel receiver that yields the `host:port` target from
+    /// each CONNECT request received. The server runs until the tokio test runtime is dropped.
+    async fn start_mock_connect_proxy() -> (u16, tokio::sync::mpsc::Receiver<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = tokio::sync::mpsc::channel(10);
+
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    if let Ok(n) = stream.read(&mut buf).await {
+                        let req = String::from_utf8_lossy(&buf[..n]);
+                        // "CONNECT host:port HTTP/1.1\r\n..."
+                        if let Some(target) =
+                            req.strip_prefix("CONNECT ").and_then(|s| s.split_whitespace().next())
+                        {
+                            let _ = tx.send(target.to_string()).await;
+                        }
+                        let _ = stream
+                            .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                            .await;
+                    }
+                    // Hold the connection open briefly so the client can read the 200 before
+                    // the stream is dropped and the connection closes.
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                });
+            }
+        });
+
+        (port, rx)
+    }
+
+    #[tokio::test]
+    async fn https_request_routed_through_proxy() {
+        init_tls();
+        // The mock CONNECT proxy records the target from each CONNECT request. The TLS
+        // handshake will fail after the tunnel is established (no real server behind it), but
+        // receiving the CONNECT confirms the request was routed through the proxy.
+        let (proxy_port, mut rx) = start_mock_connect_proxy().await;
+        let config = serde_json::from_value::<ProxyConfiguration>(serde_json::json!({
+            "proxy_https": format!("http://127.0.0.1:{proxy_port}"),
+        }))
+        .expect("should deserialize");
+        let proxies = config.build().unwrap();
+
+        let mut client = saluki_io::net::client::http::HttpClient::builder()
+            .with_proxies(proxies)
+            .with_tls_config(|b| b.danger_accept_invalid_certs())
+            .build()
+            .unwrap();
+
+        let req = http::Request::builder()
+            .uri("https://doesnotexist.example.com/")
+            .body(http_body_util::Empty::<bytes::Bytes>::new())
+            .unwrap();
+        // TLS will fail after the CONNECT tunnel is established; ignore the error.
+        let _ = client.send(req).await;
+
+        // Verify the proxy received a CONNECT request for our target.
+        let connect_target = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .expect("timed out waiting for CONNECT request")
+            .expect("channel closed unexpectedly");
+        assert!(
+            connect_target.starts_with("doesnotexist.example.com:"),
+            "unexpected CONNECT target: {connect_target}"
+        );
+    }
+
+    #[tokio::test]
+    async fn https_no_proxy_host_bypasses_proxy() {
+        init_tls();
+        // For a no_proxy host, the client connects directly rather than sending a CONNECT to
+        // the proxy. We verify this by asserting the proxy receives no CONNECT request.
+        let (proxy_port, mut rx) = start_mock_connect_proxy().await;
+        let direct_port = start_mock_http_server(http::StatusCode::OK).await;
+        let config = serde_json::from_value::<ProxyConfiguration>(serde_json::json!({
+            "proxy_https": format!("http://127.0.0.1:{proxy_port}"),
+            "proxy_no_proxy": [format!("127.0.0.1:{direct_port}")],
+        }))
+        .expect("should deserialize");
+        let proxies = config.build().unwrap();
+
+        let mut client = saluki_io::net::client::http::HttpClient::builder()
+            .with_proxies(proxies)
+            .with_tls_config(|b| b.danger_accept_invalid_certs())
+            .build()
+            .unwrap();
+
+        let req = http::Request::builder()
+            .uri(format!("https://127.0.0.1:{direct_port}/"))
+            .body(http_body_util::Empty::<bytes::Bytes>::new())
+            .unwrap();
+        // Direct connection: TLS fails (plain HTTP server), but the proxy should not be
+        // contacted. Ignore the error.
+        let _ = client.send(req).await;
+
+        // Verify the proxy received no CONNECT requests.
+        assert!(
+            rx.try_recv().is_err(),
+            "proxy should not have been contacted for a no_proxy host"
+        );
+    }
 }
