@@ -13,7 +13,6 @@ use otlp_protos::opentelemetry::proto::metrics::v1::{
     ResourceMetrics as OtlpResourceMetrics,
     SummaryDataPoint as OtlpSummaryDataPoint
 };
-use datadog_protos::metrics::Dogsketch;
 use proptest::string::Error;
 use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_context::{ContextResolver, ContextResolverBuilder};
@@ -545,6 +544,20 @@ impl OtlpMetricsTranslator {
         (lower, upper)
     }
 
+    fn infer_delta_interval(start_ts: u64, ts: u64) -> i64 {
+        if start_ts == 0 || start_ts > ts {
+            return 0;
+        }
+        let delta = (ts - start_ts) as f64/1e9;
+        let rounded_delta = f64::round(delta);
+
+        if f64::abs(rounded_delta-delta) < 0.05 {
+            return rounded_delta as i64;
+        }
+        return 0;
+
+    }
+
     fn get_sketch_buckets(
         &mut self,
         context: &TranslationContext, 
@@ -593,12 +606,12 @@ impl OtlpMetricsTranslator {
 
             let (dx, ok) = self.prev_pts.diff(&bucket_dims, start_ts, ts, count as f64); 
 
-            let mut non_zero_bucket: bool = false;  
+            let non_zero_bucket: bool;  
             if delta {
                 non_zero_bucket = count > 0u64;
                 buckets.push(Bucket{upper_limit: upper_bound, count});
-            } else if ok {
-                non_zero_bucket = dx > 0f64;
+            } else {
+                non_zero_bucket = ok && dx > 0f64;
                 if ok {
                     buckets.push(Bucket{upper_limit: upper_bound, count: dx as u64});
                 }
@@ -645,7 +658,11 @@ impl OtlpMetricsTranslator {
             qa.set_max(f64::min(max, qa.max().unwrap()));
         }
 
-        self.record_sketch_event(&point_dims, qa, ts, events, context);
+        let mut interval: i64 = 0; 
+        if self.config.infer_delta_interval && delta {
+            interval = Self::infer_delta_interval(start_ts, ts);
+        }
+        self.record_sketch_event(&point_dims, qa, ts, events, context, interval);
 
         return Ok(());
 
@@ -658,6 +675,7 @@ impl OtlpMetricsTranslator {
         timestamp_ns: u64,
         events: &mut Vec<Event>,
         context: &TranslationContext,
+        interval: i64
     ) {
         context.metrics.metrics_received().increment(1);
         let ts = timestamp_ns / 1_000_000_000;
@@ -666,7 +684,7 @@ impl OtlpMetricsTranslator {
             Some(resolved_context) => {
                 let values = MetricValues::distribution((ts, sketch)); 
                 let metric = Metric::from_parts(resolved_context, values,
-    MetricMetadata::default());
+                    MetricMetadata::default().with_interval(if interval != 0 { Some(interval) } else { None }));
                 events.push(Event::Metric(metric));
             }
             None => {
@@ -689,7 +707,7 @@ impl OtlpMetricsTranslator {
 
         let base_bucket_dims = &point_dims.with_suffix("bucket");
         for idx in 0..p.bucket_counts.len() {
-            let (lower_bound, upper_bound) = Self::get_bounds(&p.explicit_bounds, idx);;
+            let (lower_bound, upper_bound) = Self::get_bounds(&p.explicit_bounds, idx);
 
             let bucket_dims = base_bucket_dims.add_tags(
     &["lower_bound".to_string() + Self::format_float(lower_bound).as_str(),
