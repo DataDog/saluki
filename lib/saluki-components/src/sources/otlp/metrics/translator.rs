@@ -13,13 +13,18 @@ use otlp_protos::opentelemetry::proto::metrics::v1::{
     ResourceMetrics as OtlpResourceMetrics,
     SummaryDataPoint as OtlpSummaryDataPoint
 };
+use datadog_protos::metrics::Dogsketch;
+use proptest::string::Error;
 use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_context::{ContextResolver, ContextResolverBuilder};
 use saluki_core::data_model::event::metric::{Metric, MetricMetadata, MetricValues};
 use saluki_core::data_model::event::Event;
 use saluki_core::topology::interconnect::Consumer;
 use saluki_env::autodiscovery::Data;
+
+use ddsketch::{DDSketch, Bucket};
 use saluki_error::GenericError;
+use tonic::transport::Error;
 use tracing::{debug, warn};
 
 use super::cache::PointsCache;
@@ -31,6 +36,7 @@ use super::runtime_metrics::{RuntimeMetricMapping, RUNTIME_METRICS_MAPPINGS};
 use crate::common::otlp::attributes::raw_origin_from_attributes;
 use crate::common::otlp::attributes::translator::AttributeTranslator;
 use crate::common::otlp::util::{Source, SourceKind};
+use crate::sources::dogstatsd::DogStatsD;
 use crate::sources::otlp::metrics::config::InitialCumulMonoValueMode;
 use crate::sources::otlp::Metrics;
 
@@ -539,6 +545,134 @@ impl OtlpMetricsTranslator {
         (lower, upper)
     }
 
+    fn get_sketch_buckets(
+        &mut self,
+        context: &TranslationContext, 
+        point_dims: Dimensions,
+        p: &OtlpHistogramDataPoint,
+        delta: bool,
+        events: &mut Vec<Event>,  
+        hist_info: HistogramInfo,
+    ) ->  Result<(), &'static str>{
+        let start_ts = p.start_time_unix_nano;
+        let ts = p.time_unix_nano;
+
+        let mut qa = DDSketch::default();
+        let mut bucket_counts = p.bucket_counts.clone();
+        let mut explicit_bounds = p.explicit_bounds.clone();
+
+        if bucket_counts.len() == 0 && hist_info.ok {
+            bucket_counts = Vec::new();
+            explicit_bounds = Vec::new();
+
+            if hist_info.has_min_from_last_time_window {
+                bucket_counts.push(0);
+                explicit_bounds.push(p.min.unwrap_or(0.0));
+            }
+
+            bucket_counts.push(hist_info.count);
+
+            if hist_info.has_max_from_last_time_window {
+                bucket_counts.push(0);
+                explicit_bounds.push(p.max.unwrap_or(0.0));
+            }
+        } 
+
+        let (mut min_bound, mut max_bound) = (0.0, 0.0); 
+        let mut min_bound_set: bool = false;
+        let mut buckets: Vec<Bucket> = Vec::new();
+        for j in 0..bucket_counts.len() {
+            let (lower_bound, upper_bound) = Self::get_bounds(&explicit_bounds, j);
+            let (original_lower_bound, original_upper_bound) = (lower_bound, upper_bound);
+            let count = bucket_counts[j];
+
+            let non_zero_bucket: bool;  
+            if delta {
+                non_zero_bucket = count > 0u64;
+                buckets.push(Bucket{upper_limit: upper_bound, count});
+            } else {
+                let bucket_dims = point_dims.add_tags(&[
+                    "lower_bound:".to_string()+Self::format_float(lower_bound).as_str(),
+                    "upper_bound:".to_string()+Self::format_float(upper_bound).as_str(),
+                ]);
+                let (dx, ok) = self.prev_pts.diff(&bucket_dims, start_ts, ts, count as f64);
+                non_zero_bucket = dx > 0f64;
+                if ok {
+                    buckets.push(Bucket{upper_limit: upper_bound, count: dx as u64});
+                }
+            }
+
+            if non_zero_bucket {
+                if !min_bound_set {
+                    min_bound = original_lower_bound;
+                    min_bound_set = true;
+                }
+                max_bound = original_upper_bound
+            }
+        }
+        qa.insert_interpolate_buckets(buckets)?;
+
+        let mut dogsketch = Dogsketch::default();
+        qa.merge_to_dogsketch(&mut dogsketch);
+
+        if hist_info.ok {
+            dogsketch.set_cnt(hist_info.count as i64);
+            dogsketch.set_sum(hist_info.sum);
+            dogsketch.set_avg(hist_info.sum / hist_info.count as f64);
+        }
+        
+        if min_bound_set {
+            if !min_bound.is_infinite() {
+                dogsketch.min = min_bound;
+            }
+            if !max_bound.is_infinite() {
+                dogsketch.max = max_bound;
+            }
+        }
+
+        if hist_info.has_min_from_last_time_window {
+            dogsketch.min = p.min.unwrap_or(0.0);
+        } else if let Some(min) = p.min {
+            dogsketch.set_min(f64::max(min, dogsketch.min))
+        }
+
+        if hist_info.has_max_from_last_time_window {
+            dogsketch.max = p.max.unwrap_or(0.0);
+        } else if let Some(max) = p.max {
+            dogsketch.set_max(f64::min(max, dogsketch.max))
+        }
+
+        self.record_sketch_event(&point_dims, dogsketch, ts, events, context);
+
+        return Ok(());
+
+    }
+
+    fn record_sketch_event(
+        &mut self,
+        dims: &Dimensions,
+        sketch: DDSketch,
+        timestamp_ns: u64,
+        events: &mut Vec<Event>,
+        context: &TranslationContext,
+    ) {
+        context.metrics.metrics_received().increment(1);
+        let ts = timestamp_ns / 1_000_000_000;
+        let raw_origin = raw_origin_from_attributes(context.resource_attributes);
+        match self.context_resolver.resolve(&dims.name, &dims.tags, Some(raw_origin)) {
+            Some(resolved_context) => {
+                let values = MetricValues::distribution((ts, sketch)); 
+                let metric = Metric::from_parts(resolved_context, values,
+    MetricMetadata::default());
+                events.push(Event::Metric(metric));
+            }
+            None => {
+                warn!("Failed to resolve context for metric: {}", dims.name);
+            }
+        }
+    }
+  
+    
     fn get_legacy_buckets(
         &mut self,
         context: &TranslationContext, 
@@ -551,8 +685,9 @@ impl OtlpMetricsTranslator {
         let ts = p.time_unix_nano;
 
         let base_bucket_dims = &point_dims.with_suffix("bucket");
-        for idx in 0..=p.bucket_counts.len() {
-            let (lower_bound, upper_bound) = Self::get_bounds(&p.explicit_bounds, idx);
+        for idx in 0..p.bucket_counts.len() {
+            let (lower_bound, upper_bound) = Self::get_bounds(&p.explicit_bounds, idx);;
+
             let bucket_dims = base_bucket_dims.add_tags(
     &["lower_bound".to_string() + Self::format_float(lower_bound).as_str(),
                 "upper_bound".to_string() + Self::format_float(upper_bound).as_str()]
