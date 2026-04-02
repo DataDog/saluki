@@ -92,10 +92,16 @@ struct HistogramInfo {
 impl OtlpMetricsTranslator {
     /// Creates a new, empty `OtlpMetricsTranslator`.
     pub fn new(config: OtlpMetricsTranslatorConfig, context_resolver: ContextResolver) -> Self {
+
+        if let Err(e) = config.validate() {
+            panic!("{}", e);
+        }
+
         let process_start_time_ns = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("System time is before the UNIX epoch, this should not happen.")
             .as_nanos() as u64;
+
 
         Self {
             config,
@@ -710,8 +716,8 @@ impl OtlpMetricsTranslator {
             let (lower_bound, upper_bound) = Self::get_bounds(&p.explicit_bounds, idx);
 
             let bucket_dims = base_bucket_dims.add_tags(
-    &["lower_bound".to_string() + Self::format_float(lower_bound).as_str(),
-                "upper_bound".to_string() + Self::format_float(upper_bound).as_str()]
+    &["lower_bound:".to_string() + Self::format_float(lower_bound).as_str(),
+                "upper_bound:".to_string() + Self::format_float(upper_bound).as_str()]
             );
             let count = p.bucket_counts[idx];
             let (dx, ok) = self.prev_pts.diff(&bucket_dims, start_ts, ts, count as f64);
@@ -826,13 +832,15 @@ impl OtlpMetricsTranslator {
             match self.config.hist_mode {
                 HistogramMode::NoBuckets => {
                     // Do nothing for buckets.
+                    continue
                 }
                 HistogramMode::Counters => {
-                    // TODO: Implement legacy bucket conversion as counters.
+                    // Implement legacy bucket conversion as counters.
                     self.get_legacy_buckets(context, point_dims, dp, delta, &mut events);
                 }
                 HistogramMode::Distributions => {
-                    // TODO: Implement bucket-to-sketch conversion.
+                    // Implement bucket-to-sketch conversion.
+                    self.get_sketch_buckets(context, point_dims, &dp, delta, &mut events, hist_info);
                 }
             }
         }
