@@ -56,6 +56,7 @@ pub struct OtlpMetricsTranslatorConfig {
     // Points cache settings
     pub delta_ttl: Duration,
     pub sweep_interval: Duration,
+    pub infer_delta_interval: bool,
 }
 
 #[allow(dead_code)]
@@ -95,6 +96,12 @@ impl OtlpMetricsTranslatorConfig {
         self
     }
 
+
+    pub fn with_infer_delta_interval (mut self, infer_delta_interval: bool) -> Self {
+        self.infer_delta_interval = infer_delta_interval;
+        self
+    }
+
     pub fn with_instrumentation_scope_metadata_as_tags(mut self, instrumentation_scope_metadata_as_tags: bool) -> Self {
         self.instrumentation_scope_metadata_as_tags = instrumentation_scope_metadata_as_tags;
         self
@@ -130,6 +137,7 @@ impl Default for OtlpMetricsTranslatorConfig {
             with_remapping: false,
             with_otel_prefix: false,
             quantiles: true,
+            infer_delta_interval: false,
             delta_ttl: DEFAULT_DELTA_TTL,
             sweep_interval: DEFAULT_SWEEP_INTERVAL,
         }
