@@ -4,6 +4,7 @@ use std::{
 };
 
 use argh::FromArgs;
+use futures::FutureExt as _;
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::{
     memory::{initialize_memory_bounds, MemoryBoundsConfiguration},
@@ -161,7 +162,7 @@ pub async fn handle_run_command(
 
     // Create shutdown channel for the internal supervisor - we'll drive it in the main select loop
     let (internal_shutdown_tx, internal_shutdown_rx) = tokio::sync::oneshot::channel();
-    let internal_supervisor_fut = internal_supervisor.run_with_shutdown(internal_shutdown_rx);
+    let internal_supervisor_fut = internal_supervisor.run_with_shutdown(internal_shutdown_rx).fuse();
     tokio::pin!(internal_supervisor_fut);
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
