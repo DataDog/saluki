@@ -14,7 +14,7 @@ dispatched items as well as the latency of sending them.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.attach_sender_to_output" class="method"><a class="src rightside" href="../../../src/saluki_core/topology/interconnect/dispatcher.rs.html#287-303">Source</a><h4 class="code-header">pub fn <a href="#method.attach_sender_to_output" class="fn">attach_sender_to_output</a>(
     &amp;mut self,
     output_name: &amp;<a class="enum" href="../enum.OutputName.html" title="enum saluki_core::topology::OutputName">OutputName</a>,
-    sender: <a class="struct" href="https://docs.rs/tokio/1.49.0/tokio/sync/mpsc/bounded/struct.Sender.html" title="struct tokio::sync::mpsc::bounded::Sender">Sender</a>&lt;T&gt;,
+    sender: <a class="struct" href="https://docs.rs/tokio/1.50.0/tokio/sync/mpsc/bounded/struct.Sender.html" title="struct tokio::sync::mpsc::bounded::Sender">Sender</a>&lt;T&gt;,
 ) -&gt; <a class="enum" href="https://doc.rust-lang.org/nightly/core/result/enum.Result.html" title="enum core::result::Result">Result</a>&lt;<a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.unit.html">()</a>, GenericError&gt;</h4></section></summary><div class="docblock"><p>Attaches a sender to the given output.</p>
 <h5 id="errors-1"><a class="doc-anchor" href="#errors-1">§</a>Errors</h5>
 <p>If the output does not exist, an error is returned.</p>
