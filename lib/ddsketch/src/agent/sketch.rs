@@ -688,6 +688,9 @@ fn trim_left(bins: &mut SmallVec<[Bin; 4]>, bin_limit: u16) {
     // above (when collapsed counts exceed MAX_BIN_WIDTH) are prepended before bins_end, and together the
     // combined slice is capped at bin_limit. This may discard some higher-key bins from bins_end when
     // overflow is large, which is the expected precision trade-off for a bounded sketch.
+    //
+    // As of April 2026, this is an intentional divergence from the Datadog Agent implementation,
+    // which does not truncate bins to stay under a limit.
     overflow.truncate(bin_limit);
 
     mem::swap(bins, &mut overflow);
