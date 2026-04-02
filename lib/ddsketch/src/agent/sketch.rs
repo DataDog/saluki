@@ -681,13 +681,14 @@ fn trim_left(bins: &mut SmallVec<[Bin; 4]>, bin_limit: u16) {
         generate_bins(&mut overflow, bin_remove.k, missing);
     }
 
-    let overflow_len = overflow.len();
     let (_, bins_end) = bins.split_at(num_to_remove);
     overflow.extend_from_slice(bins_end);
 
-    // I still don't yet understand how this works, since you'd think bin limit should be the overall limit of the
-    // number of bins, but we're allowing more than that.. :thinkies:
-    overflow.truncate(bin_limit + overflow_len);
+    // Truncate to bin_limit so the total bin count stays within the configured limit. Overflow bins created
+    // above (when collapsed counts exceed MAX_BIN_WIDTH) are prepended before bins_end, and together the
+    // combined slice is capped at bin_limit. This may discard some higher-key bins from bins_end when
+    // overflow is large, which is the expected precision trade-off for a bounded sketch.
+    overflow.truncate(bin_limit);
 
     mem::swap(bins, &mut overflow);
 }
@@ -709,6 +710,49 @@ fn generate_bins(bins: &mut SmallVec<[Bin; 4]>, k: i16, n: u64) {
 
         for _ in 0..(n / u64::from(MAX_BIN_WIDTH)) {
             bins.push(Bin { k, n: MAX_BIN_WIDTH });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test for trim_left bin count explosion with large per-sample weights.
+    ///
+    /// When a sample weight exceeds MAX_BIN_WIDTH (65535), a single `insert_n` call generates
+    /// multiple bins with the same key (one per 65535 units of count). Before the fix,
+    /// `trim_left` accumulated these overflow bins into its output without truncating to
+    /// `bin_limit`, causing the bin count to grow without bound across insertions. After
+    /// enough inserts the sketch could have millions of bins rather than the expected 4096,
+    /// eventually producing a serialized payload that exceeded the encoder's compressed size
+    /// limit and triggering a panic in the request builder.
+    ///
+    /// This test inserts several values with a weight representative of what ADP receives when
+    /// clamping an incoming sample rate of 3e-9 to its minimum of 3.845e-9 (~260M per sample),
+    /// then asserts the bin count never exceeds DDSKETCH_CONF_BIN_LIMIT.
+    #[test]
+    fn trim_left_respects_bin_limit_with_large_weights() {
+        // Weight corresponding to ADP's minimum safe sample rate (1 / 3.845e-9 ≈ 260_078_024).
+        // Each insert_n call with this weight generates ceil(260_078_024 / 65535) = 3969 bins
+        // for a single key, enough to trigger trim_left after just two distinct values.
+        let weight: u64 = 260_078_024;
+        let bin_limit = usize::from(DDSKETCH_CONF_BIN_LIMIT);
+
+        let mut sketch = DDSketch::default();
+
+        // Insert enough distinct values to repeatedly trigger trim_left.  Ten values is more
+        // than sufficient; two already exceed the bin limit without the fix.
+        for i in 1..=10_i32 {
+            sketch.insert_n(f64::from(i), weight);
+            assert!(
+                sketch.bins().len() <= bin_limit,
+                "bin count {} exceeded limit {} after inserting {} value(s) at weight {}",
+                sketch.bins().len(),
+                bin_limit,
+                i,
+                weight,
+            );
         }
     }
 }

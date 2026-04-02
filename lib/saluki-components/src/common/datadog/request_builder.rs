@@ -104,6 +104,15 @@ where
         encoded_len: usize,
         uncompressed_len_limit: usize,
     },
+    #[snafu(display(
+        "input encoded size ({} bytes) exceeds compressed payload limit ({} bytes) and can never fit",
+        encoded_len,
+        compressed_len_limit
+    ))]
+    InputExceedsCompressedSizeLimit {
+        encoded_len: usize,
+        compressed_len_limit: usize,
+    },
     #[snafu(display("input was invalid for request builder: {:?}'", input))]
     InvalidInput { input: E::Input },
     #[snafu(display("failed to encode/write payload: {}", source))]
@@ -330,6 +339,16 @@ where
             return Err(RequestBuilderError::InputExceedsUncompressedLimit {
                 encoded_len: self.scratch_buf.len(),
                 uncompressed_len_limit: self.uncompressed_len_limit,
+            });
+        }
+
+        // If the input's encoded size already exceeds the compressed payload limit, it can never fit regardless of
+        // what else is in the payload, so there is no point in asking the caller to flush and retry. Return an error
+        // so the input is dropped rather than looping forever.
+        if self.scratch_buf.len() > self.compressed_len_limit {
+            return Err(RequestBuilderError::InputExceedsCompressedSizeLimit {
+                encoded_len: self.scratch_buf.len(),
+                compressed_len_limit: self.compressed_len_limit,
             });
         }
 
@@ -945,6 +964,40 @@ mod tests {
         // Since we know we could fit the same three inputs in the first request builder when there was no limit on the
         // number of inputs per payload, we know we're not being instructed to flush here due to hitting (un)compressed
         // size limits.
+    }
+
+    #[tokio::test]
+    async fn input_exceeds_compressed_size_limit() {
+        // Regression test: when a single input's encoded size exceeds the compressed payload limit, the request
+        // builder previously returned Ok(Some(input)) (signalling "flush and retry"), but since the builder
+        // was empty there was nothing to flush. The caller (run_request_builder in the metrics encoder) would
+        // then panic because flush() returned an empty vec on a supposedly non-empty builder.
+        //
+        // The fix returns Err(InputExceedsCompressedSizeLimit) instead, letting the caller drop the metric
+        // and continue rather than entering an unresolvable flush loop.
+        let compressed_limit = 64;
+        let encoder = TestEncoder::new(compressed_limit, usize::MAX, "/submit");
+        let mut request_builder = create_no_compression_request_builder(encoder).await;
+
+        // This input encodes to more bytes than the compressed limit, so it can never fit.
+        let oversized_input = "x".repeat(compressed_limit + 1);
+
+        match request_builder.encode(oversized_input).await {
+            Err(RequestBuilderError::InputExceedsCompressedSizeLimit {
+                encoded_len,
+                compressed_len_limit,
+            }) => {
+                assert_eq!(encoded_len, compressed_limit + 1);
+                assert_eq!(compressed_len_limit, compressed_limit);
+            }
+            other => panic!("expected InputExceedsCompressedSizeLimit, got: {:?}", other),
+        }
+
+        // The builder should still be empty and usable after the error.
+        assert!(request_builder.flush().await.is_empty());
+
+        let small_input = "hello".to_string();
+        assert_eq!(None, request_builder.encode(small_input).await.unwrap());
     }
 
     #[tokio::test]
