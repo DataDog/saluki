@@ -586,16 +586,18 @@ impl OtlpMetricsTranslator {
             let (original_lower_bound, original_upper_bound) = (lower_bound, upper_bound);
             let count = bucket_counts[j];
 
-            let non_zero_bucket: bool;  
+            let bucket_dims = point_dims.add_tags(&[
+                "lower_bound:".to_string()+Self::format_float(lower_bound).as_str(),
+                "upper_bound:".to_string()+Self::format_float(upper_bound).as_str(),
+            ]);
+
+            let (dx, ok) = self.prev_pts.diff(&bucket_dims, start_ts, ts, count as f64); 
+
+            let mut non_zero_bucket: bool = false;  
             if delta {
                 non_zero_bucket = count > 0u64;
                 buckets.push(Bucket{upper_limit: upper_bound, count});
-            } else {
-                let bucket_dims = point_dims.add_tags(&[
-                    "lower_bound:".to_string()+Self::format_float(lower_bound).as_str(),
-                    "upper_bound:".to_string()+Self::format_float(upper_bound).as_str(),
-                ]);
-                let (dx, ok) = self.prev_pts.diff(&bucket_dims, start_ts, ts, count as f64);
+            } else if ok {
                 non_zero_bucket = dx > 0f64;
                 if ok {
                     buckets.push(Bucket{upper_limit: upper_bound, count: dx as u64});
@@ -612,37 +614,38 @@ impl OtlpMetricsTranslator {
         }
         qa.insert_interpolate_buckets(buckets)?;
 
-        let mut dogsketch = Dogsketch::default();
-        qa.merge_to_dogsketch(&mut dogsketch);
+        if qa.is_empty(){
+            return Ok(());
+        }
 
         if hist_info.ok {
-            dogsketch.set_cnt(hist_info.count as i64);
-            dogsketch.set_sum(hist_info.sum);
-            dogsketch.set_avg(hist_info.sum / hist_info.count as f64);
+            qa.set_count(hist_info.count);
+            qa.set_sum(hist_info.sum);
+            qa.set_avg(hist_info.sum / hist_info.count as f64);
         }
         
         if min_bound_set {
             if !min_bound.is_infinite() {
-                dogsketch.min = min_bound;
+                qa.set_min(min_bound);
             }
             if !max_bound.is_infinite() {
-                dogsketch.max = max_bound;
+                qa.set_max(max_bound);
             }
         }
 
         if hist_info.has_min_from_last_time_window {
-            dogsketch.min = p.min.unwrap_or(0.0);
+            qa.set_min(p.min.unwrap_or(0.0));
         } else if let Some(min) = p.min {
-            dogsketch.set_min(f64::max(min, dogsketch.min))
+            qa.set_min(f64::max(min, qa.min().unwrap()));
         }
 
         if hist_info.has_max_from_last_time_window {
-            dogsketch.max = p.max.unwrap_or(0.0);
+            qa.set_max(p.max.unwrap_or(0.0));
         } else if let Some(max) = p.max {
-            dogsketch.set_max(f64::min(max, dogsketch.max))
+            qa.set_max(f64::min(max, qa.max().unwrap()));
         }
 
-        self.record_sketch_event(&point_dims, dogsketch, ts, events, context);
+        self.record_sketch_event(&point_dims, qa, ts, events, context);
 
         return Ok(());
 
