@@ -4987,8 +4987,7 @@ dependencies = [
 [[package]]
 name = "trie-hard"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d370e60398049ec1af98c64da635dc8bc43e1b5501e53f97079cd261864b7487"
+source = "git+https://github.com/tobz/trie-hard.git?branch=tobz%2Foptimize#eba00122573bfc69bbb25061b9d92daa2895d7d0"
 dependencies = [
  "phf_codegen",
 ]
