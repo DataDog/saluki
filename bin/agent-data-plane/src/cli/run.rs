@@ -216,13 +216,14 @@ pub async fn handle_run_command(
         info!(ready_time_ms = started.elapsed().as_millis(), "Topology healthy.");
     });
 
-    let mut finished_with_error = false;
+    let mut topology_failed = false;
+    let mut internal_supervisor_failed = false;
     select! {
         result = &mut internal_supervisor_fut => {
             match result {
                 Err(SupervisorError::FailedToInitialize { child_name, source }) => {
                     error!(child_name, "Internal supervisor failed to initialize: {}. Shutting down...", source);
-                    finished_with_error = true;
+                    internal_supervisor_failed = true;
                 }
                 // If we haven't hit an initialization error -- which implies an error we can't really recover from --
                 // then just log for now, until we fully migrate everything over to the supervisor-based approach and
@@ -240,8 +241,8 @@ pub async fn handle_run_command(
             }
         }
         _ = running_topology.wait_for_unexpected_finish() => {
-            error!("Component unexpectedly finished. Shutting down...");
-            finished_with_error = true;
+            error!("Topology component unexpectedly finished. Shutting down...");
+            topology_failed = true;
         },
         _ = tokio::signal::ctrl_c() => {
             info!("Received SIGINT, shutting down...");
@@ -257,14 +258,23 @@ pub async fn handle_run_command(
     let _ = internal_shutdown_tx.send(());
     let _ = internal_supervisor_fut.await;
 
+    // Figure out the final "result" of this run: did something fail? did we stop cleanly?
+    //
+    // We prefer to return errors from the topology failing over the internal supervisor failing, since that matters
+    // more in terms of understanding the state of the process when it exited.
     match topology_result {
         Ok(()) => {
-            if finished_with_error {
-                warn!("Topology shutdown complete despite error(s).")
+            if topology_failed {
+                warn!("Topology shutdown complete despite error(s).");
             } else {
-                info!("Topology shutdown successfully.")
+                info!("Topology shutdown successfully.");
             }
-            Ok(())
+
+            if internal_supervisor_failed {
+                Err(generic_error!("Internal supervisor failed to initialize."))
+            } else {
+                Ok(())
+            }
         }
         Err(e) => Err(e),
     }
