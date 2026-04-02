@@ -40,6 +40,7 @@ export default defineConfig({
                     { text: "Common Language", link: "/development/common-language" },
                     { text: "Contributing", link: "/development/contributing" },
                     { text: "Style Guide", link: "/development/style-guide" },
+                    { text: "Testing", link: "/development/testing" },
                 ],
             },
             {
