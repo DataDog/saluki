@@ -771,35 +771,38 @@ mod tests {
         assert_eq!(total_before, total_after);
     }
 
-    /// When collapsed mass overflows u16::MAX, generate_bins is called with the first kept bin's
-    /// key — not the keys of the removed bins. This is the core correctness property: all mass,
-    /// including overflow, is attributed to the first kept key.
+    /// When collapsed mass overflows u16::MAX, all overflow is attributed to the first kept bin's
+    /// key, and the first kept bin absorbs the maximum possible count before drain.
     ///
-    /// The old code pushed overflow bins with `bin.k` (the removed bin's key) during accumulation,
-    /// which would leave bins with removed keys in the output. This test verifies that every bin
-    /// in the output has a key >= the first kept key before trimming.
+    /// The old code subtracted MAX_BIN_WIDTH from `missing` during the accumulation loop and
+    /// stashed it in a wrong-key overflow bin. Even though that bin was later drained, the
+    /// subtraction meant less mass reached `bin_remove.increment(...)`, leaving the first kept
+    /// bin with a lower `n` than it should have.
     ///
     /// Input:  [(0,50000), (1,50000), (2,1)]  limit=1  →  remove 2 bins
     /// missing = 50000 + 50000 = 100000
     /// first_kept_k = 2; bins[2].increment(100000): n → 65535, returns 34466
-    /// generate_bins(k=2, 34466): overflow = [(2, 34466)]
-    /// overflow + bins_end = [(2,34466), (2,65535)]  →  2 bins > limit=1
-    /// drain 1 from front: [(2, 65535)]
-    /// All output keys must be 2; no keys 0 or 1 may appear.
+    /// generate_bins(k=2, 34466): overflow = [(2,34466)]
+    /// overflow + bins_end = [(2,34466),(2,65535)]  →  2 bins > limit=1
+    /// drain 1 from front: [(2,65535)]
+    ///
+    /// Old code: loop emits {k=1,n=65535} and reduces missing to 34465; bins[2].increment(34465)
+    /// gives n=34466. After drain the result is [(2,34466)] — correct key but wrong (lower) count.
     #[test]
-    fn trim_left_overflow_uses_first_kept_key_not_removed_keys() {
+    fn trim_left_overflow_maximizes_mass_in_first_kept_bin() {
         let mut bins = make_bins(&[(0, 50000), (1, 50000), (2, 1)]);
         trim_left(&mut bins, 1);
-        // Every bin in the output must have k == 2 (the first kept key before trim).
-        // The old buggy code would produce a bin with k=1 here.
-        for bin in bins.iter() {
-            assert_eq!(
-                bin.k, 2,
-                "expected all output bins to have key 2 (first kept key), got key {}",
-                bin.k
-            );
-        }
-        assert!(bins.len() <= 1);
+        assert_eq!(bins.len(), 1);
+        assert_eq!(bins[0].k, 2);
+        // The first kept bin must be saturated at MAX_BIN_WIDTH (65535).
+        // Old code gave 34466 here because 65535 of mass was incorrectly drained.
+        assert_eq!(
+            bins[0].n,
+            MAX_BIN_WIDTH,
+            "expected first kept bin to be saturated at {}, got {}",
+            MAX_BIN_WIDTH,
+            bins[0].n
+        );
     }
 
     /// When already at or under the limit, trim_left is a no-op.
