@@ -1114,5 +1114,31 @@
 <a href=#1114 id=1114 data-nosnippet>1114</a>
 <a href=#1115 id=1115 data-nosnippet>1115</a>        <span class="macro">prop_assert_eq!</span>(original_inputs_len, flushed_inputs_len);
 <a href=#1116 id=1116 data-nosnippet>1116</a>    }
-<a href=#1117 id=1117 data-nosnippet>1117</a>}
+<a href=#1117 id=1117 data-nosnippet>1117</a>
+<a href=#1118 id=1118 data-nosnippet>1118</a>    <span class="attr">#[tokio::test]
+<a href=#1119 id=1119 data-nosnippet>1119</a>    </span><span class="kw">async fn </span>first_input_larger_than_compressed_limit_does_not_panic() {
+<a href=#1120 id=1120 data-nosnippet>1120</a>        <span class="comment">// Regression test for a panic triggered when the very first metric's uncompressed encoded
+<a href=#1121 id=1121 data-nosnippet>1121</a>        // size exceeded the configured compressed size limit.
+<a href=#1122 id=1122 data-nosnippet>1122</a>        //
+<a href=#1123 id=1123 data-nosnippet>1123</a>        // Previously, `CompressionEstimator::would_write_exceed_threshold` had an early exit that
+<a href=#1124 id=1124 data-nosnippet>1124</a>        // returned `true` when `len &gt; threshold`, even before any compressed data had been written.
+<a href=#1125 id=1125 data-nosnippet>1125</a>        // This caused `encode_inner` to return `Ok(false)` (signal to flush), but since nothing had
+<a href=#1126 id=1126 data-nosnippet>1126</a>        // been written, `flush()` returned an empty vec, hitting:
+<a href=#1127 id=1127 data-nosnippet>1127</a>        //   panic!("builder told us to flush, but gave us nothing")
+<a href=#1128 id=1128 data-nosnippet>1128</a>        //
+<a href=#1129 id=1129 data-nosnippet>1129</a>        // The fix removes that early exit. When no compressed data has been written yet, the
+<a href=#1130 id=1130 data-nosnippet>1130</a>        // estimator returns `false` (allow the write), so the large input proceeds to the compressor
+<a href=#1131 id=1131 data-nosnippet>1131</a>        // rather than triggering a premature flush of an empty builder.
+<a href=#1132 id=1132 data-nosnippet>1132</a>        </span><span class="kw">let </span>large_input = <span class="string">"x"</span>.repeat(<span class="number">10_000</span>);
+<a href=#1133 id=1133 data-nosnippet>1133</a>
+<a href=#1134 id=1134 data-nosnippet>1134</a>        <span class="comment">// Compressed limit set below the uncompressed input length to trigger the old bug.
+<a href=#1135 id=1135 data-nosnippet>1135</a>        </span><span class="kw">let </span>encoder = TestEncoder::new(<span class="number">1_000</span>, usize::MAX, <span class="string">"/submit"</span>);
+<a href=#1136 id=1136 data-nosnippet>1136</a>        <span class="kw">let </span><span class="kw-2">mut </span>request_builder = create_zstd_compression_request_builder(encoder).<span class="kw">await</span>;
+<a href=#1137 id=1137 data-nosnippet>1137</a>
+<a href=#1138 id=1138 data-nosnippet>1138</a>        <span class="comment">// This must not panic. The input may produce an oversized payload on flush, but that is
+<a href=#1139 id=1139 data-nosnippet>1139</a>        // handled gracefully — the important invariant is that encode itself does not panic.
+<a href=#1140 id=1140 data-nosnippet>1140</a>        </span><span class="kw">let </span>result = request_builder.encode(large_input).<span class="kw">await</span>;
+<a href=#1141 id=1141 data-nosnippet>1141</a>        <span class="macro">assert!</span>(result.is_ok(), <span class="string">"encode returned an error: {:?}"</span>, result.err());
+<a href=#1142 id=1142 data-nosnippet>1142</a>    }
+<a href=#1143 id=1143 data-nosnippet>1143</a>}
 </code></pre></div></section></main></body></html>
