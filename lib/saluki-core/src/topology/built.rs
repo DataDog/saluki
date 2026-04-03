@@ -14,6 +14,28 @@ use tokio::{
 };
 use tracing::{debug, error_span};
 
+/// Configuration for the worker pool used by the topology.
+///
+/// Controls how and where topology component tasks are spawned.
+pub enum WorkerPoolConfiguration {
+    /// Use the ambient tokio runtime (i.e., `Handle::current()`).
+    ///
+    /// Component tasks are spawned on whatever runtime is currently active.
+    /// Useful when the topology is embedded in an application that already
+    /// manages its own runtime, such as a Lambda extension.
+    Ambient,
+
+    /// Create a dedicated multi-threaded tokio runtime with 8 worker threads.
+    ///
+    /// This is the default behavior.
+    Dedicated,
+
+    /// Use a specific, externally-provided runtime handle.
+    ///
+    /// Component tasks are spawned on the runtime associated with the given handle.
+    Explicit(Handle),
+}
+
 use super::{
     graph::Graph, running::RunningTopology, shutdown::ComponentShutdownCoordinator, ComponentId, EventsBuffer,
     EventsConsumer, OutputName, PayloadsConsumer, RegisteredComponent, TypedComponentId,
@@ -50,6 +72,7 @@ pub struct BuiltTopology {
     forwarders: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Forwarder + Send>>>>,
     component_token: AllocationGroupToken,
     interconnect_capacity: NonZeroUsize,
+    worker_pool_config: WorkerPoolConfiguration,
 }
 
 impl BuiltTopology {
@@ -77,10 +100,56 @@ impl BuiltTopology {
             forwarders,
             component_token,
             interconnect_capacity,
+            worker_pool_config: WorkerPoolConfiguration::Dedicated,
         }
     }
 
-    /// Spawns the topology, creating a dedicated multi-threaded tokio runtime.
+    /// Configures the topology to use the ambient tokio runtime.
+    ///
+    /// Component tasks will be spawned on whatever runtime is currently active
+    /// when `spawn` is called. This avoids creating a dedicated thread pool,
+    /// which is useful for resource-constrained environments like Lambda.
+    pub fn with_ambient_worker_pool(mut self) -> Self {
+        self.worker_pool_config = WorkerPoolConfiguration::Ambient;
+        self
+    }
+
+    /// Configures the topology to use a specific, externally-provided runtime handle.
+    ///
+    /// Component tasks will be spawned on the runtime associated with the given handle.
+    pub fn with_explicit_worker_pool(mut self, handle: Handle) -> Self {
+        self.worker_pool_config = WorkerPoolConfiguration::Explicit(handle);
+        self
+    }
+
+    fn resolve_worker_pool_handle(&self) -> Result<Handle, GenericError> {
+        match &self.worker_pool_config {
+            WorkerPoolConfiguration::Ambient => Ok(Handle::current()),
+            WorkerPoolConfiguration::Dedicated => {
+                let thread_pool = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(8)
+                    .enable_all()
+                    .build()
+                    .error_context("Failed to build asynchronous thread pool runtime.")?;
+                let handle = thread_pool.handle().clone();
+
+                std::thread::spawn(move || {
+                    thread_pool.block_on(std::future::pending::<()>());
+                });
+
+                Ok(handle)
+            }
+            WorkerPoolConfiguration::Explicit(handle) => Ok(handle.clone()),
+        }
+    }
+
+    /// Spawns the topology.
+    ///
+    /// The worker pool used for component tasks is determined by the configured
+    /// [`WorkerPoolConfiguration`]. By default, a dedicated 8-thread runtime is created.
+    /// Use [`with_ambient_worker_pool`][Self::with_ambient_worker_pool] or
+    /// [`with_explicit_worker_pool`][Self::with_explicit_worker_pool] to change this
+    /// before calling `spawn`.
     ///
     /// A handle is returned that can be used to trigger the topology to shutdown.
     ///
@@ -90,40 +159,11 @@ impl BuiltTopology {
     pub async fn spawn(
         self, health_registry: &HealthRegistry, memory_limiter: MemoryLimiter,
     ) -> Result<RunningTopology, GenericError> {
-        let thread_pool = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(8)
-            .enable_all()
-            .build()
-            .error_context("Failed to build asynchronous thread pool runtime.")?;
-        let thread_pool_handle = thread_pool.handle().clone();
-
-        std::thread::spawn(move || {
-            thread_pool.block_on(std::future::pending::<()>());
-        });
-
-        self.spawn_with_handle(health_registry, memory_limiter, thread_pool_handle)
-            .await
-    }
-
-    /// Spawns the topology on an existing tokio runtime.
-    ///
-    /// This is useful when embedding Saluki components in an application that already has its own
-    /// tokio runtime, such as a Lambda extension or sidecar process, avoiding the overhead of
-    /// creating an additional thread pool.
-    ///
-    /// A handle is returned that can be used to trigger the topology to shutdown.
-    ///
-    /// ## Errors
-    ///
-    /// If an error occurs while spawning the topology, an error is returned.
-    pub async fn spawn_with_handle(
-        self, health_registry: &HealthRegistry, memory_limiter: MemoryLimiter,
-        thread_pool_handle: Handle,
-    ) -> Result<RunningTopology, GenericError> {
         let root_component_name = format!("topology.{}", self.name);
 
         let _guard = self.component_token.enter();
 
+        let thread_pool_handle = self.resolve_worker_pool_handle()?;
         let topology_context = TopologyContext::new(memory_limiter, health_registry.clone(), thread_pool_handle);
 
         let mut component_tasks = JoinSet::new();
