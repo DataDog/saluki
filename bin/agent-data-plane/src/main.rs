@@ -46,7 +46,7 @@ async fn main() -> Result<(), GenericError> {
         .with_key_aliases(KEY_ALIASES)
         .from_yaml(&bootstrap_config_path)
         .error_context("Failed to load Datadog Agent configuration file during bootstrap.")?
-        .add_providers([DatadogRemapper::new()])
+        .add_layers([DatadogRemapper::new().into_value()])
         .from_environment(PlatformSettings::get_env_var_prefix())
         .error_context("Environment variable prefix should not be empty.")?
         .with_default_secrets_resolution()

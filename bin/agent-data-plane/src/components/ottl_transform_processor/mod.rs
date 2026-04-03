@@ -152,7 +152,7 @@ mod tests {
     use std::collections::HashMap;
 
     use saluki_common::collections::FastHashMap;
-    use saluki_config::ConfigurationLoader;
+    use saluki_config::{value::value, ConfigurationLoader};
     use saluki_context::tags::TagSet;
     use saluki_core::{
         components::{transforms::*, ComponentContext},
@@ -199,7 +199,7 @@ mod tests {
             .and_then(|span| span.meta().get(key).map(|v| v.as_ref().to_string()))
     }
 
-    async fn build_transform(cfg_json: Option<serde_json::Value>) -> Box<dyn SynchronousTransform + Send> {
+    async fn build_transform(cfg_json: Option<saluki_config::value::Value>) -> Box<dyn SynchronousTransform + Send> {
         let (config, _) = ConfigurationLoader::for_tests(cfg_json, None, false).await;
         let ottl_config = OttlTransformConfiguration::from_configuration(&config).expect("config should parse");
         let ctx = ComponentContext::transform(ComponentId::try_from("ottl_transform").unwrap());
@@ -225,7 +225,7 @@ mod tests {
 
     #[tokio::test]
     async fn from_configuration_invalid_yaml_returns_error() {
-        let invalid = serde_json::json!({
+        let invalid = value!({
             "ottl_transform_config": {
                 "unknown_field": 1
             }
@@ -237,7 +237,7 @@ mod tests {
 
     #[tokio::test]
     async fn build_invalid_statement_returns_error() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_transform_config": {
                 "trace_statements": ["syntax error !!"]
             }
@@ -251,7 +251,7 @@ mod tests {
 
     #[tokio::test]
     async fn build_empty_and_whitespace_statements_skipped() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_transform_config": {
                 "trace_statements": ["", "   ", "\t"]
             }
@@ -273,7 +273,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_new_attribute() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_transform_config": {
                 "trace_statements": ["set(attributes[\"newkey\"], \"newval\")"]
             }
@@ -289,7 +289,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_overwrite_existing_attribute() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_transform_config": {
                 "trace_statements": ["set(attributes[\"key\"], \"new\")"]
             }
@@ -305,7 +305,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_nil_removes_attribute() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_transform_config": {
                 "trace_statements": ["set(attributes[\"gone\"], attributes[\"nonexistent\"])"]
             }
@@ -327,7 +327,7 @@ mod tests {
     async fn set_int_value_converts_to_string() {
         //"The answer to the Ultimate Question of Life, the Universe, and Everything"
         //The Hitchhiker's Guide to the Galaxy ;)
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_transform_config": {
                 "trace_statements": ["set(attributes[\"num\"], 42)"]
             }
@@ -343,7 +343,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_float_value_converts_to_string() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_transform_config": {
                 "trace_statements": ["set(attributes[\"not_pi\"], 6.14)"]
             }
@@ -359,7 +359,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_bool_value_converts_to_string() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_transform_config": {
                 "trace_statements": ["set(attributes[\"flag\"], true)"]
             }
@@ -375,7 +375,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_from_another_attribute() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_transform_config": {
                 "trace_statements": ["set(attributes[\"dst\"], attributes[\"src\"])"]
             }
@@ -393,7 +393,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_with_where_clause_matching() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_transform_config": {
                 "trace_statements": ["set(attributes[\"x\"], \"v\") where attributes[\"env\"] == \"prod\""]
             }
@@ -409,7 +409,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_with_where_clause_not_matching() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_transform_config": {
                 "trace_statements": ["set(attributes[\"x\"], \"v\") where attributes[\"env\"] == \"prod\""]
             }
@@ -429,7 +429,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_with_where_clause_on_resource_attributes() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_transform_config": {
                 "trace_statements": [
                     "set(attributes[\"x\"], \"v\") where resource.attributes[\"host.name\"] == \"localhost\""
@@ -449,7 +449,7 @@ mod tests {
 
     #[tokio::test]
     async fn multiple_statements_execute_in_order() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_transform_config": {
                 "trace_statements": [
                     "set(attributes[\"a\"], \"1\")",
@@ -469,7 +469,7 @@ mod tests {
 
     #[tokio::test]
     async fn later_statement_sees_earlier_mutation() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_transform_config": {
                 "trace_statements": [
                     "set(attributes[\"a\"], \"1\")",
@@ -492,7 +492,7 @@ mod tests {
 
     #[tokio::test]
     async fn where_clause_sees_earlier_mutation() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_transform_config": {
                 "trace_statements": [
                     "set(attributes[\"env\"], \"prod\")",
@@ -517,7 +517,7 @@ mod tests {
 
     #[tokio::test]
     async fn error_mode_ignore_continues_processing() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_transform_config": {
                 "error_mode": "ignore",
                 "trace_statements": [
@@ -541,7 +541,7 @@ mod tests {
 
     #[tokio::test]
     async fn error_mode_silent_continues_processing() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_transform_config": {
                 "error_mode": "silent",
                 "trace_statements": [
@@ -565,7 +565,7 @@ mod tests {
 
     #[tokio::test]
     async fn error_mode_propagate_stops_span_processing() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_transform_config": {
                 "error_mode": "propagate",
                 "trace_statements": [
@@ -591,7 +591,7 @@ mod tests {
 
     #[tokio::test]
     async fn transform_buffer_applies_to_all_spans() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_transform_config": {
                 "trace_statements": ["set(attributes[\"added\"], \"yes\")"]
             }
@@ -618,7 +618,7 @@ mod tests {
 
     #[tokio::test]
     async fn transform_buffer_each_span_independent() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_transform_config": {
                 "trace_statements": ["set(attributes[\"x\"], \"v\") where attributes[\"env\"] == \"prod\""]
             }
@@ -652,7 +652,7 @@ mod tests {
 
     #[tokio::test]
     async fn transform_buffer_multiple_traces() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_transform_config": {
                 "trace_statements": ["set(attributes[\"tagged\"], \"yes\")"]
             }
@@ -678,7 +678,7 @@ mod tests {
 
     #[tokio::test]
     async fn transform_buffer_empty_statements_noop() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_transform_config": {
                 "trace_statements": []
             }
@@ -700,7 +700,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_resource_attributes_returns_error() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_transform_config": {
                 "error_mode": "ignore",
                 "trace_statements": ["set(resource.attributes[\"key\"], \"value\")"]
@@ -735,7 +735,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_empty_string_value() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_transform_config": {
                 "trace_statements": ["set(attributes[\"key\"], \"\")"]
             }
@@ -755,7 +755,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_attribute_with_dots_in_key() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_transform_config": {
                 "trace_statements": ["set(attributes[\"service.name\"], \"foo\")"]
             }
@@ -771,7 +771,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_attribute_with_special_characters() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_transform_config": {
                 "trace_statements": ["set(attributes[\"key with spaces\"], \"value with ñ and 日本語\")"]
             }
@@ -790,7 +790,7 @@ mod tests {
 
     #[tokio::test]
     async fn transform_buffer_non_trace_events_ignored() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_transform_config": {
                 "trace_statements": ["set(attributes[\"x\"], \"y\")"]
             }
@@ -844,7 +844,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "performance test; run with: cargo test -- --ignored --nocapture perf_throughput"]
     async fn perf_throughput_set_all() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_transform_config": {
                 "trace_statements": ["set(attributes[\"tag\"], \"value\")"]
             }
@@ -874,7 +874,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "performance test; run with: cargo test -- --ignored --nocapture perf_throughput"]
     async fn perf_throughput_set_half() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_transform_config": {
                 "trace_statements": ["set(attributes[\"tag\"], \"value\") where attributes[\"half\"] == \"yes\""]
             }
@@ -907,7 +907,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "performance test; run with: cargo test -- --ignored --nocapture perf_throughput"]
     async fn perf_throughput_set_none() {
-        let cfg_json = serde_json::json!({
+        let cfg_json = value!({
             "ottl_transform_config": {
                 "trace_statements": ["set(attributes[\"tag\"], \"value\") where attributes[\"nomatch\"] == \"yes\""]
             }

@@ -133,6 +133,11 @@ mod tests {
     const PROXY_B: &str = "http://proxy-b.example.com:3128";
     const PROXY_B_URI: &str = "http://proxy-b.example.com:3128/";
 
+    fn serde_to_facet(v: serde_json::Value) -> facet_value::Value {
+        let s = serde_json::to_string(&v).unwrap();
+        facet_json::from_str(&s).unwrap()
+    }
+
     fn base_config() -> serde_json::Value {
         serde_json::json!({ "api_key": "test-api-key" })
     }
@@ -150,12 +155,12 @@ mod tests {
     async fn forwarder_config_from(
         file_values: serde_json::Value, env_vars: Option<&[(String, String)]>,
     ) -> ForwarderConfiguration {
-        let (cfg, _) = ConfigurationLoader::for_tests_with_provider_factory(
-            Some(file_values),
+        let (cfg, _) = ConfigurationLoader::for_tests_with_layer_factory(
+            Some(serde_to_facet(file_values)),
             env_vars,
             false,
             KEY_ALIASES,
-            DatadogRemapper::new,
+            || DatadogRemapper::new().into_value(),
         )
         .await;
         ForwarderConfiguration::from_configuration(&cfg).expect("ForwarderConfiguration should deserialize")

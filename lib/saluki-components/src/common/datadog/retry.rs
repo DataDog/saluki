@@ -190,8 +190,7 @@ impl RetryConfiguration {
 
 #[cfg(test)]
 mod tests {
-    use saluki_config::ConfigurationLoader;
-    use serde_json::json;
+    use saluki_config::{value::value, ConfigurationLoader};
 
     use super::*;
 
@@ -200,7 +199,7 @@ mod tests {
         const RUN_PATH: &str = "/my/little/run_path";
 
         // Create a base configuration with only `run_path` set.
-        let base_config_values = json!({ "run_path": RUN_PATH });
+        let base_config_values = value!({ "run_path": RUN_PATH });
         let (config, _) = ConfigurationLoader::for_tests(Some(base_config_values), None, false).await;
 
         // Read our retry configuration, and make sure we start out with the expected empty `storage_path`.
@@ -221,7 +220,7 @@ mod tests {
         const FORWARDER_STORAGE_PATH: &str = "/custom/path/to/storage";
 
         // Create a base configuration with both `run_path` and `forwarder_storage_path` set.
-        let base_config_values = json!({ "run_path": RUN_PATH, "forwarder_storage_path": FORWARDER_STORAGE_PATH });
+        let base_config_values = value!({ "run_path": RUN_PATH, "forwarder_storage_path": FORWARDER_STORAGE_PATH });
         let (config, _) = ConfigurationLoader::for_tests(Some(base_config_values), None, false).await;
 
         // Read our retry configuration, and make sure we see the storage path that we initially set.
@@ -265,13 +264,13 @@ mod tests {
         );
 
         // When only the deprecated field is set, uses it.
-        let values = json!({ "forwarder_retry_queue_max_size": OVERRIDE_FALLBACK_SIZE_BYTES });
+        let values = value!({ "forwarder_retry_queue_max_size": OVERRIDE_FALLBACK_SIZE_BYTES });
         let (config, _) = ConfigurationLoader::for_tests(Some(values), None, false).await;
         let retry_config: RetryConfiguration = config.as_typed().expect("should deserialize");
         assert_eq!(retry_config.queue_max_size_bytes(), OVERRIDE_FALLBACK_SIZE_BYTES);
 
         // When both fields are set, the newer field takes priority.
-        let values = json!({
+        let values = value!({
             "forwarder_retry_queue_payloads_max_size": OVERRIDE_PRIMARY_SIZE_BYTES,
             "forwarder_retry_queue_max_size": OVERRIDE_FALLBACK_SIZE_BYTES,
         });

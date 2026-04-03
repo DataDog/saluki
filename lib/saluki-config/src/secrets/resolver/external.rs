@@ -1,7 +1,7 @@
 use std::{collections::HashMap, path::PathBuf, process::Stdio, time::Duration};
 
-use figment::Source;
-use serde::{Deserialize, Serialize};
+use facet::Facet;
+use saluki_error::GenericError;
 use snafu::ResultExt as _;
 use tokio::{io::AsyncWriteExt as _, process::Command, time::timeout};
 use tracing::debug;
@@ -13,7 +13,8 @@ const fn default_secret_backend_timeout() -> u64 {
     30
 }
 
-#[derive(Debug, Serialize)]
+/// The JSON request sent to the secrets backend process.
+#[derive(Debug, Facet)]
 struct ResolveRequest {
     version: String,
     secrets: Vec<String>,
@@ -28,23 +29,32 @@ impl ResolveRequest {
     }
 }
 
-#[derive(Debug, Deserialize)]
+/// A single resolved secret from the backend response.
+#[derive(Debug, Facet)]
 struct ResolvedSecret {
+    #[facet(default)]
     value: Option<String>,
+    #[facet(default)]
     error: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct ResolveResponse(HashMap<String, ResolvedSecret>);
-
 /// External process resolver configuration.
-#[derive(Deserialize)]
+#[derive(Facet)]
 pub struct ExternalProcessResolverConfiguration {
-    #[serde(default)]
+    #[facet(default)]
     secret_backend_command: PathBuf,
 
-    #[serde(default = "default_secret_backend_timeout")]
+    #[facet(default)]
     secret_backend_timeout: u64,
+}
+
+impl Default for ExternalProcessResolverConfiguration {
+    fn default() -> Self {
+        Self {
+            secret_backend_command: PathBuf::new(),
+            secret_backend_timeout: default_secret_backend_timeout(),
+        }
+    }
 }
 
 /// A secrets resolver based on an external process.
@@ -70,13 +80,6 @@ impl ExternalProcessResolver {
 }
 
 impl Resolver for ExternalProcessResolver {
-    fn source(&self) -> Source {
-        Source::Custom(format!(
-            "secrets[external-process]:{}",
-            self.config.secret_backend_command.display()
-        ))
-    }
-
     async fn resolve(&self, secrets: HashMap<KeyPath, String>) -> Result<HashMap<KeyPath, String>, Error> {
         // Extract a list of the secret refs that we need to resolve.
         let mut secret_refs = Vec::new();
@@ -87,7 +90,9 @@ impl Resolver for ExternalProcessResolver {
 
         // Generate our resolve request and serialize it.
         let request = ResolveRequest::new(secret_refs);
-        let request = serde_json::to_vec(&request).expect("should never fail to serialize secret resolve request");
+        let request_json = facet_json::to_string(&request)
+            .map_err(GenericError::from)
+            .context(FailedToDeserializeResponse)?;
 
         // Spawn the backend command as a subprocess, and write the serialized request to it.
         let mut command = Command::new(&self.config.secret_backend_command)
@@ -103,7 +108,10 @@ impl Resolver for ExternalProcessResolver {
             .stdin
             .as_mut()
             .expect("should always be able to acquire stdin for backend command process");
-        command_stdin.write_all(&request).await.context(FailedToCallBackend)?;
+        command_stdin
+            .write_all(request_json.as_bytes())
+            .await
+            .context(FailedToCallBackend)?;
 
         debug!(backend_command = ?self.config.secret_backend_command, "Wrote resolve request to subprocess, waiting for response...");
 
@@ -129,13 +137,18 @@ impl Resolver for ExternalProcessResolver {
 
         debug!(backend_command = ?self.config.secret_backend_command, "Resolve response received.");
 
-        let parsed_output: ResolveResponse =
-            serde_json::from_slice(&output.stdout).context(FailedToDeserializeResponse)?;
+        let response_str = std::str::from_utf8(&output.stdout)
+            .map_err(GenericError::from)
+            .context(FailedToDeserializeResponse)?;
+
+        let parsed_output: HashMap<String, ResolvedSecret> = facet_json::from_str(response_str)
+            .map_err(GenericError::from)
+            .context(FailedToDeserializeResponse)?;
 
         let mut resolved_secrets = HashMap::new();
 
         for (source_key, secret_ref) in secrets {
-            let resolved_secret = match parsed_output.0.get(secret_ref.as_str()) {
+            let resolved_secret = match parsed_output.get(secret_ref.as_str()) {
                 Some(resolved) => {
                     if let Some(error) = resolved.error.clone() {
                         Err(Error::FailedToResolve { secret_ref, error })
