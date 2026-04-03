@@ -679,14 +679,14 @@ fn trim_left(bins: &mut SmallVec<[Bin; 4]>, bin_limit: u16) {
 #[allow(clippy::cast_possible_truncation)]
 fn generate_bins(bins: &mut SmallVec<[Bin; 4]>, k: i16, n: u64) {
     if n < u64::from(MAX_BIN_WIDTH) {
-        // SAFETY: Cannot truncate `n`, as it's less than a u32 value.
+        // SAFETY: `n < MAX_BIN_WIDTH = u32::MAX`, so it fits in u32.
         bins.push(Bin { k, n: n as u32 });
     } else {
         let overflow = n % u64::from(MAX_BIN_WIDTH);
         if overflow != 0 {
             bins.push(Bin {
                 k,
-                // SAFETY: Cannot truncate `overflow`, as it's modulo'd by a u32 value.
+                // SAFETY: `overflow = n % u32::MAX`, so overflow <= u32::MAX - 1, which fits in u32.
                 n: overflow as u32,
             });
         }
@@ -806,5 +806,50 @@ mod tests {
                 weight,
             );
         }
+    }
+
+    /// When the accumulated missing mass plus the first kept bin's existing count exceeds
+    /// u32::MAX, increment saturates at u32::MAX and the remainder is discarded.
+    ///
+    /// Input:  [(0, u32::MAX), (1, 1)]  limit=1  →  remove 1 bin
+    /// missing = u32::MAX; bins[1].increment(u32::MAX): next = u32::MAX+1 > u32::MAX
+    /// → n = u32::MAX, remainder = 1 (discarded)
+    /// Final: [(1, u32::MAX)] — 1 observation lost
+    #[test]
+    fn trim_left_saturates_first_kept_bin_and_discards_remainder() {
+        let mut bins = make_bins(&[(0, u32::MAX), (1, 1)]);
+        trim_left(&mut bins, 1);
+        assert_eq!(bins.len(), 1);
+        assert_eq!(bins[0].k, 1);
+        assert_eq!(bins[0].n, u32::MAX);
+    }
+
+    /// Collapsing works correctly with negative bin keys. The highest key always survives;
+    /// lower (more negative) keys collapse into the first kept key.
+    /// Adapted from TestAddIntDatasets in sketches-go which covers negative indices.
+    ///
+    /// Input:  [(-3,5), (-2,3), (-1,2), (0,1)]  limit=2  →  remove 2 bins
+    /// missing = 5+3=8; bins[-1].increment(8): 2+8=10 < u32::MAX → n=10
+    /// Final: [(-1,10), (0,1)]
+    #[test]
+    fn trim_left_collapses_negative_keys_correctly() {
+        let mut bins = make_bins(&[(-3, 5), (-2, 3), (-1, 2), (0, 1)]);
+        trim_left(&mut bins, 2);
+        assert_eq!(to_pairs(&bins), vec![(-1, 10), (0, 1)]);
+    }
+
+    /// Monotonic ascending sequence: inserting keys 0..N where N > limit collapses the
+    /// lowest keys into the first kept key, with their total mass summed there.
+    /// Adapted from TestAddMonotonous in sketches-go.
+    ///
+    /// Input:  [(0,1),(1,1),(2,1),(3,1),(4,1),(5,1),(6,1),(7,1),(8,1),(9,1)]  limit=4
+    /// num_to_remove=6; missing=6; bins[6].increment(6): 1+6=7 → n=7
+    /// Final: [(6,7),(7,1),(8,1),(9,1)]  — only top 4 keys kept, collapsed mass in first
+    #[test]
+    fn trim_left_monotonic_ascending_keeps_top_keys() {
+        let pairs: Vec<(i16, u32)> = (0..10).map(|i| (i, 1)).collect();
+        let mut bins = make_bins(&pairs);
+        trim_left(&mut bins, 4);
+        assert_eq!(to_pairs(&bins), vec![(6, 7), (7, 1), (8, 1), (9, 1)]);
     }
 }
