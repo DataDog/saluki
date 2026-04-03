@@ -853,3 +853,134 @@ mod tests {
         assert_eq!(to_pairs(&bins), vec![(6, 7), (7, 1), (8, 1), (9, 1)]);
     }
 }
+
+/// Property-based tests for trim_left, adapted from TestAddFuzzy / TestAddIntFuzzy /
+/// TestMergeFuzzy in sketches-go/ddsketch/store/store_test.go.
+///
+/// The sketches-go suite generates random (index, count) inputs, passes them through
+/// CollapsingLowestDenseStore, and asserts structural invariants using the `collapsingLowest`
+/// oracle transform. We do the same here: generate random sorted distinct-key bins, run
+/// trim_left, and check the same invariants.
+#[cfg(test)]
+mod property_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Strategy: a non-empty sorted vec of distinct (k: i16, n: u32) pairs.
+    /// Keys are drawn from i16 without repetition; counts are 1..=u32::MAX.
+    fn arb_bins(max_len: usize) -> impl Strategy<Value = SmallVec<[Bin; 4]>> {
+        proptest::collection::btree_map(any::<i16>(), 1u32..=u32::MAX, 1..=max_len)
+            .prop_map(|map| map.into_iter().map(|(k, n)| Bin { k, n }).collect())
+    }
+
+    /// Strategy: a bin_limit in 1..=32 (small enough to exercise collapsing frequently).
+    fn arb_limit() -> impl Strategy<Value = u16> {
+        1u16..=32
+    }
+
+    proptest! {
+        /// After trim_left, the bin count must never exceed bin_limit.
+        ///
+        /// Mirrors the core bin-count invariant checked throughout the sketches-go suite:
+        /// every store operation must leave the store within its configured capacity.
+        #[test]
+        fn prop_bin_count_never_exceeds_limit(
+            mut bins in arb_bins(64),
+            limit in arb_limit(),
+        ) {
+            trim_left(&mut bins, limit);
+            prop_assert!(
+                bins.len() <= limit as usize,
+                "bin count {} exceeded limit {}",
+                bins.len(),
+                limit,
+            );
+        }
+
+        /// After trim_left, bins must remain sorted by key with no duplicate keys.
+        ///
+        /// trim_left only drains a prefix and modifies bins[num_to_remove].n in place;
+        /// it must not disturb the ordering of the surviving bins.
+        #[test]
+        fn prop_output_bins_are_sorted_and_distinct(
+            mut bins in arb_bins(64),
+            limit in arb_limit(),
+        ) {
+            trim_left(&mut bins, limit);
+            for window in bins.windows(2) {
+                prop_assert!(
+                    window[0].k < window[1].k,
+                    "bins not strictly sorted after trim_left: {:?} >= {:?}",
+                    window[0].k,
+                    window[1].k,
+                );
+            }
+        }
+
+        /// When bins.len() <= limit, trim_left is a no-op: bins is unchanged.
+        #[test]
+        fn prop_no_op_when_within_limit(
+            bins in arb_bins(16),
+            extra in 0u16..=16,
+        ) {
+            let limit = bins.len() as u16 + extra;
+            let original = bins.clone();
+            let mut bins = bins;
+            trim_left(&mut bins, limit);
+            prop_assert_eq!(bins, original);
+        }
+
+        /// Total count is preserved exactly when no u32 overflow occurs.
+        ///
+        /// This is the key invariant from sketches-go's assertEncodeBins:
+        /// store.TotalCount() must equal the sum of all inserted counts.
+        /// We restrict counts to keep the collapsed sum safely below u32::MAX
+        /// (sketches-go never loses mass because it uses float64; we match that
+        /// guarantee for all inputs where the collapsed bin doesn't overflow u32).
+        ///
+        /// Strategy: counts capped at 1000 so that even if all 64 bins collapse
+        /// into one the sum (≤ 64_000) is far below u32::MAX.
+        #[test]
+        fn prop_total_count_preserved_when_no_overflow(
+            mut bins in proptest::collection::btree_map(any::<i16>(), 1u32..=1000, 1..=64usize)
+                .prop_map(|map| -> SmallVec<[Bin; 4]> {
+                    map.into_iter().map(|(k, n)| Bin { k, n }).collect()
+                }),
+            limit in arb_limit(),
+        ) {
+            let total_before: u64 = bins.iter().map(|b| u64::from(b.n)).sum();
+            trim_left(&mut bins, limit);
+            let total_after: u64 = bins.iter().map(|b| u64::from(b.n)).sum();
+            prop_assert_eq!(
+                total_before, total_after,
+                "total count changed: before={}, after={}",
+                total_before, total_after,
+            );
+        }
+
+        /// The surviving bins are always the bin_limit highest-key bins from the input.
+        ///
+        /// This is the direct encoding of the collapsingLowest oracle from sketches-go:
+        /// minCollapsedIndex = maxIndex - limit + 1; all bins with key < minCollapsedIndex
+        /// are removed (their mass folds into minCollapsedIndex). The output keys must
+        /// exactly match the top min(len, limit) keys of the input.
+        #[test]
+        fn prop_output_keys_are_highest_from_input(
+            mut bins in arb_bins(64),
+            limit in arb_limit(),
+        ) {
+            let all_keys: Vec<i16> = bins.iter().map(|b| b.k).collect();
+            let expected_len = all_keys.len().min(limit as usize);
+            let expected_keys: Vec<i16> = all_keys[all_keys.len() - expected_len..].to_vec();
+
+            trim_left(&mut bins, limit);
+
+            let actual_keys: Vec<i16> = bins.iter().map(|b| b.k).collect();
+            prop_assert_eq!(
+                actual_keys, expected_keys,
+                "output keys don't match top {} keys of input",
+                limit,
+            );
+        }
+    }
+}
