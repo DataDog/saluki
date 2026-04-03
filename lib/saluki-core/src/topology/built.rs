@@ -16,23 +16,25 @@ use tracing::{debug, error_span};
 
 /// Configuration for the worker pool used by the topology.
 ///
-/// Controls how and where topology component tasks are spawned.
+/// This controls where tasks spawned by components themselves are executed. When components
+/// have heavy, compute-bound tasks that they need to execute, they should generally be spawned on the worker pool (also known as the "global thread pool") to
+/// avoid scheduling contention/starvation with the core component tasks.
 pub enum WorkerPoolConfiguration {
-    /// Use the ambient tokio runtime (i.e., `Handle::current()`).
+    /// Use the ambient Tokio runtime (that is, `Handle::current()`).
     ///
-    /// Component tasks are spawned on whatever runtime is currently active.
+    /// Component subtasks are spawned on whatever runtime is currently active.
     /// Useful when the topology is embedded in an application that already
     /// manages its own runtime, such as a Lambda extension.
     Ambient,
 
-    /// Create a dedicated multi-threaded tokio runtime with 8 worker threads.
+    /// Create a dedicated, multi-threaded Tokio runtime with 8 worker threads.
     ///
     /// This is the default behavior.
     Dedicated,
 
-    /// Use a specific, externally-provided runtime handle.
+    /// Use an externally provided runtime.
     ///
-    /// Component tasks are spawned on the runtime associated with the given handle.
+    /// Component subtasks are spawned on the runtime associated with the given handle.
     Explicit(Handle),
 }
 
@@ -104,9 +106,9 @@ impl BuiltTopology {
         }
     }
 
-    /// Configures the topology to use the ambient tokio runtime.
+    /// Configures the topology to use the ambient Tokio runtime.
     ///
-    /// Component tasks will be spawned on whatever runtime is currently active
+    /// Component subtasks will be spawned on whatever runtime is currently active
     /// when `spawn` is called. This avoids creating a dedicated thread pool,
     /// which is useful for resource-constrained environments like Lambda.
     pub fn with_ambient_worker_pool(mut self) -> Self {
@@ -114,9 +116,9 @@ impl BuiltTopology {
         self
     }
 
-    /// Configures the topology to use a specific, externally-provided runtime handle.
+    /// Configures the topology to use an externally provided Tokio runtime.
     ///
-    /// Component tasks will be spawned on the runtime associated with the given handle.
+    /// Component subtasks will be spawned on the runtime associated with the given handle.
     pub fn with_explicit_worker_pool(mut self, handle: Handle) -> Self {
         self.worker_pool_config = WorkerPoolConfiguration::Explicit(handle);
         self
@@ -145,9 +147,9 @@ impl BuiltTopology {
 
     /// Spawns the topology.
     ///
-    /// The worker pool used for component tasks is determined by the configured
-    /// [`WorkerPoolConfiguration`]. By default, a dedicated 8-thread runtime is created.
-    /// Use [`with_ambient_worker_pool`][Self::with_ambient_worker_pool] or
+    /// By default, a dedicated, multi-threaded Tokio runtime (8 threads) is created for
+    /// components to spawn compute-heavy subtasks on. Use
+    /// [`with_ambient_worker_pool`][Self::with_ambient_worker_pool] or
     /// [`with_explicit_worker_pool`][Self::with_explicit_worker_pool] to change this
     /// before calling `spawn`.
     ///
