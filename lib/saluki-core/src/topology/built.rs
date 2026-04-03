@@ -8,6 +8,7 @@ use saluki_common::task::JoinSetExt as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
 use tokio::{
+    runtime::Handle,
     sync::mpsc,
     task::{AbortHandle, JoinSet},
 };
@@ -79,7 +80,7 @@ impl BuiltTopology {
         }
     }
 
-    /// Spawns the topology.
+    /// Spawns the topology, creating a dedicated multi-threaded tokio runtime.
     ///
     /// A handle is returned that can be used to trigger the topology to shutdown.
     ///
@@ -89,10 +90,6 @@ impl BuiltTopology {
     pub async fn spawn(
         self, health_registry: &HealthRegistry, memory_limiter: MemoryLimiter,
     ) -> Result<RunningTopology, GenericError> {
-        let root_component_name = format!("topology.{}", self.name);
-
-        let _guard = self.component_token.enter();
-
         let thread_pool = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(8)
             .enable_all()
@@ -103,6 +100,29 @@ impl BuiltTopology {
         std::thread::spawn(move || {
             thread_pool.block_on(std::future::pending::<()>());
         });
+
+        self.spawn_with_handle(health_registry, memory_limiter, thread_pool_handle)
+            .await
+    }
+
+    /// Spawns the topology on an existing tokio runtime.
+    ///
+    /// This is useful when embedding Saluki components in an application that already has its own
+    /// tokio runtime, such as a Lambda extension or sidecar process, avoiding the overhead of
+    /// creating an additional thread pool.
+    ///
+    /// A handle is returned that can be used to trigger the topology to shutdown.
+    ///
+    /// ## Errors
+    ///
+    /// If an error occurs while spawning the topology, an error is returned.
+    pub async fn spawn_with_handle(
+        self, health_registry: &HealthRegistry, memory_limiter: MemoryLimiter,
+        thread_pool_handle: Handle,
+    ) -> Result<RunningTopology, GenericError> {
+        let root_component_name = format!("topology.{}", self.name);
+
+        let _guard = self.component_token.enter();
 
         let topology_context = TopologyContext::new(memory_limiter, health_registry.clone(), thread_pool_handle);
 
