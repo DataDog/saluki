@@ -863,8 +863,9 @@ mod tests {
 /// trim_left, and check the same invariants.
 #[cfg(test)]
 mod property_tests {
-    use super::*;
     use proptest::prelude::*;
+
+    use super::*;
 
     /// Strategy: a non-empty sorted vec of distinct (k: i16, n: u32) pairs.
     /// Keys are drawn from i16 without repetition; counts are 1..=u32::MAX.
