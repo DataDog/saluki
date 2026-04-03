@@ -547,4 +547,272 @@ mod tests {
         assert_eq!(mutated.origin_tags().len(), 1);
         assert!(mutated.origin_tags().has_tag("origin:tag"));
     }
+
+    // --- Helper for contexts with origin tags ---
+
+    fn context_with_origin(name: &'static str, tags: &[&'static str], origin_tags: &[&'static str]) -> Context {
+        let (key, _) = hash_context(name, tags, origin_tags);
+        Context::from_inner(ContextInner {
+            key,
+            name: MetaString::from_static(name),
+            tags: tag_set(tags),
+            origin_tags: tag_set(origin_tags),
+            active_count: Gauge::noop(),
+        })
+    }
+
+    // --- TagSetMutView ---
+
+    #[test]
+    fn mut_view_retain_tags_removes_matching() {
+        let mut ctx = Context::from_static_parts("metric", &["env:prod", "service:web", "region:us"]);
+        let mut state = TagSetMutViewState::new();
+
+        let mut view = ctx.tags_mut_view(&mut state);
+        view.retain_tags(|tag| tag.name() == "env");
+        let removed = view.finish();
+
+        assert_eq!(removed, 2);
+        assert_eq!(ctx.tags().len(), 1);
+        assert!(ctx.tags().has_tag("env:prod"));
+        assert!(!ctx.tags().has_tag("service:web"));
+        assert!(!ctx.tags().has_tag("region:us"));
+    }
+
+    #[test]
+    fn mut_view_retain_origin_tags_removes_matching() {
+        let mut ctx = context_with_origin("metric", &[], &["origin:a", "origin:b", "origin:c"]);
+        let mut state = TagSetMutViewState::new();
+
+        let mut view = ctx.tags_mut_view(&mut state);
+        view.retain_origin_tags(|tag| tag.as_str() == "origin:a");
+        let removed = view.finish();
+
+        assert_eq!(removed, 2);
+        assert_eq!(ctx.origin_tags().len(), 1);
+        assert!(ctx.origin_tags().has_tag("origin:a"));
+        assert!(!ctx.origin_tags().has_tag("origin:b"));
+        assert!(!ctx.origin_tags().has_tag("origin:c"));
+    }
+
+    #[test]
+    fn mut_view_retain_both_tag_sets() {
+        let mut ctx = context_with_origin("metric", &["env:prod", "service:web"], &["origin:a", "origin:b"]);
+        let mut state = TagSetMutViewState::new();
+
+        let mut view = ctx.tags_mut_view(&mut state);
+        view.retain_tags(|tag| tag.name() == "env");
+        view.retain_origin_tags(|tag| tag.as_str() == "origin:a");
+        let removed = view.finish();
+
+        assert_eq!(removed, 2);
+        assert_eq!(ctx.tags().len(), 1);
+        assert!(ctx.tags().has_tag("env:prod"));
+        assert!(!ctx.tags().has_tag("service:web"));
+        assert_eq!(ctx.origin_tags().len(), 1);
+        assert!(ctx.origin_tags().has_tag("origin:a"));
+        assert!(!ctx.origin_tags().has_tag("origin:b"));
+    }
+
+    #[test]
+    fn mut_view_retain_all_is_noop() {
+        let original = Context::from_static_parts("metric", &["env:prod", "service:web"]);
+        let mut ctx = original.clone();
+        let mut state = TagSetMutViewState::new();
+
+        let mut view = ctx.tags_mut_view(&mut state);
+        view.retain_tags(|_| true);
+        let removed = view.finish();
+
+        assert_eq!(removed, 0);
+        assert!(ctx.ptr_eq(&original));
+    }
+
+    #[test]
+    fn mut_view_retain_none_removes_all() {
+        let mut ctx = Context::from_static_parts("metric", &["env:prod", "service:web", "region:us"]);
+        let mut state = TagSetMutViewState::new();
+
+        let mut view = ctx.tags_mut_view(&mut state);
+        view.retain_tags(|_| false);
+        let removed = view.finish();
+
+        assert_eq!(removed, 3);
+        assert!(ctx.tags().is_empty());
+    }
+
+    #[test]
+    fn mut_view_finish_returns_correct_count() {
+        let mut ctx = context_with_origin("metric", &["a:1", "b:2", "c:3"], &["origin:x", "origin:y"]);
+        let mut state = TagSetMutViewState::new();
+
+        let mut view = ctx.tags_mut_view(&mut state);
+        // Remove b:2 and c:3 (keep a:1).
+        view.retain_tags(|tag| tag.name() == "a");
+        // Remove origin:y (keep origin:x).
+        view.retain_origin_tags(|tag| tag.as_str() == "origin:x");
+        let removed = view.finish();
+
+        assert_eq!(removed, 3);
+        assert_eq!(ctx.tags().len(), 1);
+        assert_eq!(ctx.origin_tags().len(), 1);
+    }
+
+    #[test]
+    fn mut_view_equivalent_to_direct_mutate_tags() {
+        let base = Context::from_static_parts("metric", &["env:prod", "service:web", "region:us"]);
+        let predicate = |tag: &Tag| tag.name() == "env";
+
+        // Path A: direct mutation.
+        let mut direct = base.clone();
+        direct.mutate_tags(|tags| tags.retain(predicate));
+
+        // Path B: mut view.
+        let mut via_view = base.clone();
+        let mut state = TagSetMutViewState::new();
+        let mut view = via_view.tags_mut_view(&mut state);
+        view.retain_tags(predicate);
+        view.finish();
+
+        assert_eq!(direct, via_view);
+        assert_eq!(direct.tags().len(), via_view.tags().len());
+        assert!(via_view.tags().has_tag("env:prod"));
+        assert!(!via_view.tags().has_tag("service:web"));
+    }
+
+    #[test]
+    fn mut_view_equivalent_to_direct_mutate_origin_tags() {
+        let base = context_with_origin("metric", &["env:prod"], &["origin:a", "origin:b", "origin:c"]);
+        let predicate = |tag: &Tag| tag.as_str() == "origin:a";
+
+        // Path A: direct mutation.
+        let mut direct = base.clone();
+        direct.mutate_origin_tags(|tags| tags.retain(predicate));
+
+        // Path B: mut view.
+        let mut via_view = base.clone();
+        let mut state = TagSetMutViewState::new();
+        let mut view = via_view.tags_mut_view(&mut state);
+        view.retain_origin_tags(predicate);
+        view.finish();
+
+        assert_eq!(direct, via_view);
+        assert_eq!(direct.origin_tags().len(), via_view.origin_tags().len());
+    }
+
+    #[test]
+    fn mut_view_does_not_affect_cloned_context() {
+        let original = Context::from_static_parts("metric", &["env:prod", "service:web"]);
+        let mut mutated = original.clone();
+        let mut state = TagSetMutViewState::new();
+
+        let mut view = mutated.tags_mut_view(&mut state);
+        view.retain_tags(|tag| tag.name() == "env");
+        view.finish();
+
+        // Original is unchanged.
+        assert_eq!(original.tags().len(), 2);
+        assert!(original.tags().has_tag("env:prod"));
+        assert!(original.tags().has_tag("service:web"));
+
+        // Mutated has only the retained tag.
+        assert_eq!(mutated.tags().len(), 1);
+        assert!(!original.ptr_eq(&mutated));
+    }
+
+    #[test]
+    fn mut_view_drop_without_finish_discards_changes() {
+        let original = Context::from_static_parts("metric", &["env:prod", "service:web"]);
+        let mut ctx = original.clone();
+        let mut state = TagSetMutViewState::new();
+
+        {
+            let mut view = ctx.tags_mut_view(&mut state);
+            view.retain_tags(|_| false); // Flag all for removal.
+                                         // Drop without calling finish().
+        }
+
+        // Nothing changed.
+        assert_eq!(ctx.tags().len(), 2);
+        assert!(ctx.ptr_eq(&original));
+    }
+
+    #[test]
+    fn mut_view_state_reuse_across_operations() {
+        let mut state = TagSetMutViewState::new();
+
+        // First operation.
+        let mut ctx1 = Context::from_static_parts("metric1", &["a:1", "b:2"]);
+        let mut view1 = ctx1.tags_mut_view(&mut state);
+        view1.retain_tags(|tag| tag.name() == "a");
+        let removed1 = view1.finish();
+
+        assert_eq!(removed1, 1);
+        assert_eq!(ctx1.tags().len(), 1);
+        assert!(ctx1.tags().has_tag("a:1"));
+
+        // Second operation reusing the same state.
+        let mut ctx2 = Context::from_static_parts("metric2", &["x:1", "y:2", "z:3"]);
+        let mut view2 = ctx2.tags_mut_view(&mut state);
+        view2.retain_tags(|tag| tag.name() == "z");
+        let removed2 = view2.finish();
+
+        assert_eq!(removed2, 2);
+        assert_eq!(ctx2.tags().len(), 1);
+        assert!(ctx2.tags().has_tag("z:3"));
+    }
+
+    #[test]
+    fn mut_view_retain_tags_with_additions() {
+        // Start with a base tag, then add one via mutation to create an overlay.
+        let mut ctx = Context::from_static_parts("metric", &["base:tag"]);
+        ctx.mutate_tags(|tags| {
+            tags.insert_tag(Tag::from("added:tag"));
+        });
+        assert_eq!(ctx.tags().len(), 2);
+
+        let mut state = TagSetMutViewState::new();
+        let mut view = ctx.tags_mut_view(&mut state);
+        view.retain_tags(|tag| tag.name() == "added");
+        let removed = view.finish();
+
+        assert_eq!(removed, 1);
+        assert_eq!(ctx.tags().len(), 1);
+        assert!(ctx.tags().has_tag("added:tag"));
+        assert!(!ctx.tags().has_tag("base:tag"));
+    }
+
+    #[test]
+    fn mut_view_retain_tags_removes_only_additions() {
+        let mut ctx = Context::from_static_parts("metric", &["base:tag"]);
+        ctx.mutate_tags(|tags| {
+            tags.insert_tag(Tag::from("added:tag"));
+        });
+
+        let mut state = TagSetMutViewState::new();
+        let mut view = ctx.tags_mut_view(&mut state);
+        view.retain_tags(|tag| tag.name() == "base");
+        let removed = view.finish();
+
+        assert_eq!(removed, 1);
+        assert_eq!(ctx.tags().len(), 1);
+        assert!(ctx.tags().has_tag("base:tag"));
+        assert!(!ctx.tags().has_tag("added:tag"));
+    }
+
+    #[test]
+    fn mut_view_retain_tags_removes_base_and_additions() {
+        let mut ctx = Context::from_static_parts("metric", &["base:tag"]);
+        ctx.mutate_tags(|tags| {
+            tags.insert_tag(Tag::from("added:tag"));
+        });
+
+        let mut state = TagSetMutViewState::new();
+        let mut view = ctx.tags_mut_view(&mut state);
+        view.retain_tags(|_| false);
+        let removed = view.finish();
+
+        assert_eq!(removed, 2);
+        assert!(ctx.tags().is_empty());
+    }
 }
