@@ -8,8 +8,8 @@ use saluki_context::{
     origin::{OriginTagCardinality, RawOrigin},
     tags::SharedTagSet,
 };
+use saluki_core::health::{Health, HealthRegistry};
 use saluki_error::{generic_error, GenericError};
-use saluki_health::{Health, HealthRegistry};
 use stringtheory::interning::GenericMapInterner;
 
 #[cfg(target_os = "linux")]

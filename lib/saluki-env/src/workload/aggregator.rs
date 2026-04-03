@@ -1,5 +1,5 @@
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_health::Health;
+use saluki_core::health::Health;
 use tokio::{select, sync::mpsc};
 use tracing::debug;
 
