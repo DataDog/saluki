@@ -291,20 +291,10 @@ impl CompressionEstimator {
 
     /// Estimates if writing `len` bytes to the compressor would cause the final compressed size to exceed `threshold`
     /// bytes.
-    ///
-    /// This is a hint only: it intentionally allows writes when no compressed data has been seen yet (since we have no
-    /// compression ratio to estimate with), which means a caller must handle the possibility of an oversized payload on
-    /// flush. The benefit is avoiding a false-positive block on the very first write, which previously caused a panic
-    /// when the builder was empty and asked to flush.
     pub fn would_write_exceed_threshold(&self, len: usize, threshold: usize) -> bool {
         // If we have yet to see any compressed data, we can't make a meaningful estimate, and this likely means that
         // the compressor is still actively able to compress more data into the first block, which when eventually
         // written, should never exceed the compressed size limit... so we choose to not block writes in this case.
-        //
-        // Importantly, we do not use `len > threshold` as an early exit here: the uncompressed length of the input
-        // may legitimately exceed the compressed size limit (e.g. a sketch with thousands of nearly-identical bins
-        // compresses very well), and short-circuiting before the first write causes a panic because the builder
-        // would be told to flush when it has nothing buffered.
         if self.total_compressed_len == 0 {
             return false;
         }
