@@ -40,7 +40,7 @@ use tracing::{error, info, warn};
 use crate::{
     components::{
         apm_onboarding::ApmOnboardingConfiguration, ottl_filter_processor::OttlFilterConfiguration,
-        ottl_transform_processor::OttlTransformConfiguration,
+        ottl_transform_processor::OttlTransformConfiguration, tag_filterlist::TagFilterlistConfiguration,
     },
     internal::{create_internal_supervisor, remote_agent::RemoteAgentBootstrap},
 };
@@ -462,6 +462,8 @@ async fn add_dsd_pipeline_to_blueprint(
     let dsd_mapper_config = DogStatsDMapperConfiguration::from_configuration(config)?;
     let dsd_enrich_config =
         ChainedConfiguration::default().with_transform_builder("dogstatsd_mapper", dsd_mapper_config);
+    let dsd_tag_filterlist_config = TagFilterlistConfiguration::from_configuration(config)
+        .error_context("Failed to configure metric tag filterlist transform.")?;
     let dsd_agg_config =
         AggregateConfiguration::from_configuration(config).error_context("Failed to configure aggregate transform.")?;
     let dd_events_config = DatadogEventsConfiguration::from_configuration(config)
@@ -476,6 +478,7 @@ async fn add_dsd_pipeline_to_blueprint(
         .add_source("dsd_in", dsd_config)?
         .add_transform("dsd_prefix_filter", dsd_prefix_filter_configuration)?
         .add_transform("dsd_enrich", dsd_enrich_config)?
+        .add_transform("dsd_tag_filterlist", dsd_tag_filterlist_config)?
         .add_transform("dsd_agg", dsd_agg_config)?
         .add_encoder("dd_events_encode", dd_events_config)?
         .add_encoder("dd_service_checks_encode", dd_service_checks_config)?
@@ -483,7 +486,8 @@ async fn add_dsd_pipeline_to_blueprint(
         // Metrics.
         .connect_component("dsd_prefix_filter", ["dsd_in.metrics"])?
         .connect_component("dsd_enrich", ["dsd_prefix_filter"])?
-        .connect_component("dsd_agg", ["dsd_enrich"])?
+        .connect_component("dsd_tag_filterlist", ["dsd_enrich"])?
+        .connect_component("dsd_agg", ["dsd_tag_filterlist"])?
         .connect_component("metrics_enrich", ["dsd_agg"])?
         .connect_component("dd_service_checks_encode", ["dsd_in.service_checks"])?
         .connect_component("dd_events_encode", ["dsd_in.events"])?
