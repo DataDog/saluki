@@ -9,7 +9,7 @@
 //! # Missing
 //!
 //! add trace metrics: datadog-agent/pkg/trace/sampler/metrics.go
-//! adding missing samplers (priority, nopriority, rare)
+//! adding missing samplers (priority, nopriority)
 //! add error tracking standalone mode
 
 use async_trait::async_trait;
@@ -33,6 +33,7 @@ mod core_sampler;
 mod errors;
 mod priority_sampler;
 mod probabilistic;
+mod rare_sampler;
 mod score_sampler;
 mod signature;
 
@@ -103,6 +104,12 @@ impl SynchronousTransformBuilder for TraceSamplerConfiguration {
                 self.apm_config.target_traces_per_second(),
                 ERROR_SAMPLE_RATE,
             ),
+            rare_sampler: rare_sampler::RareSampler::new(
+                self.apm_config.rare_sampler_enabled(),
+                self.apm_config.rare_sampler_tps(),
+                std::time::Duration::from_secs_f64(self.apm_config.rare_sampler_cooldown_period_secs()),
+                self.apm_config.rare_sampler_cardinality(),
+            ),
         };
 
         Ok(Box::new(sampler))
@@ -124,6 +131,7 @@ pub struct TraceSampler {
     error_sampler: errors::ErrorsSampler,
     priority_sampler: priority_sampler::PrioritySampler,
     no_priority_sampler: score_sampler::NoPrioritySampler,
+    rare_sampler: rare_sampler::RareSampler,
 }
 
 impl TraceSampler {
@@ -292,23 +300,33 @@ impl TraceSampler {
             return (false, PRIORITY_AUTO_DROP, "", None);
         };
 
+        // Run the rare sampler early, before all other samplers. This mirrors the Go agent behavior
+        // where the rare sampler runs first to catch traces that would otherwise be dropped entirely.
+        // logic taken from: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/agent.go#L1078
+        let rare = self.rare_sampler.sample(trace, root_span_idx);
+
         // Modern path: ProbabilisticSamplerEnabled = true
         if self.probabilistic_sampler_enabled {
             let mut prob_keep = false;
             let mut decision_maker = "";
 
-            // Run probabilistic sampler - use root span's trace ID
-            let root_trace_id = trace.spans()[root_span_idx].trace_id();
-            if self.sample_probabilistic(root_trace_id) {
-                decision_maker = DECISION_MAKER_PROBABILISTIC; // probabilistic sampling
+            if rare {
+                // Rare sampler wins over probabilistic sampling.
                 prob_keep = true;
+            } else {
+                // Run probabilistic sampler - use root span's trace ID
+                let root_trace_id = trace.spans()[root_span_idx].trace_id();
+                if self.sample_probabilistic(root_trace_id) {
+                    decision_maker = DECISION_MAKER_PROBABILISTIC; // probabilistic sampling
+                    prob_keep = true;
 
-                if let Some(root_span) = trace.spans_mut().get_mut(root_span_idx) {
-                    let metrics = root_span.metrics_mut();
-                    metrics.insert(MetaString::from(PROB_RATE_KEY), self.sampling_rate);
+                    if let Some(root_span) = trace.spans_mut().get_mut(root_span_idx) {
+                        let metrics = root_span.metrics_mut();
+                        metrics.insert(MetaString::from(PROB_RATE_KEY), self.sampling_rate);
+                    }
+                } else if self.error_sampling_enabled && contains_error {
+                    prob_keep = self.error_sampler.sample_error(now, trace, root_span_idx);
                 }
-            } else if self.error_sampling_enabled && contains_error {
-                prob_keep = self.error_sampler.sample_error(now, trace, root_span_idx);
             }
 
             let priority = if prob_keep {
@@ -327,7 +345,13 @@ impl TraceSampler {
                 return (false, priority, "", Some(root_span_idx));
             }
 
+            if rare {
+                return (true, PRIORITY_AUTO_KEEP, "", Some(root_span_idx));
+            }
+
             if self.priority_sampler.sample(now, trace, root_span_idx, priority, 0.0) {
+                // Notify the rare sampler so it doesn't re-sample commonly-seen signatures.
+                self.rare_sampler.record_priority_trace(trace, root_span_idx);
                 return (true, priority, "", Some(root_span_idx));
             }
         } else if self.is_otlp_trace(trace, root_span_idx) {
@@ -344,8 +368,13 @@ impl TraceSampler {
                     Some(root_span_idx),
                 );
             }
-        } else if self.no_priority_sampler.sample(now, trace, root_span_idx) {
-            return (true, PRIORITY_AUTO_KEEP, "", Some(root_span_idx));
+        } else {
+            if rare {
+                return (true, PRIORITY_AUTO_KEEP, "", Some(root_span_idx));
+            }
+            if self.no_priority_sampler.sample(now, trace, root_span_idx) {
+                return (true, PRIORITY_AUTO_KEEP, "", Some(root_span_idx));
+            }
         }
 
         if self.error_sampling_enabled && contains_error {
@@ -477,6 +506,7 @@ mod tests {
             error_sampler: errors::ErrorsSampler::new(10.0, 1.0),
             priority_sampler: priority_sampler::PrioritySampler::new(MetaString::from("agent-env"), 1.0, 10.0),
             no_priority_sampler: score_sampler::NoPrioritySampler::new(10.0, 1.0),
+            rare_sampler: rare_sampler::RareSampler::new(false, 5.0, std::time::Duration::from_secs(300), 200),
         }
     }
 
