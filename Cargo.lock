@@ -1019,6 +1019,7 @@ dependencies = [
  "noisy_float",
  "num-traits",
  "ordered-float",
+ "proptest",
  "protobuf",
  "rand 0.9.2",
  "rand_distr",

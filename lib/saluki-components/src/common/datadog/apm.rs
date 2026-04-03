@@ -27,6 +27,22 @@ const fn default_error_tracking_standalone_enabled() -> bool {
 const fn default_probabilistic_sampling_enabled() -> bool {
     false
 }
+const fn default_rare_sampler_enabled() -> bool {
+    false
+}
+
+const fn default_rare_sampler_tps() -> f64 {
+    5.0
+}
+
+const fn default_rare_sampler_cooldown_period_secs() -> f64 {
+    300.0 // 5 minutes
+}
+
+const fn default_rare_sampler_cardinality() -> usize {
+    200
+}
+
 const fn default_peer_tags_aggregation() -> bool {
     true
 }
@@ -37,6 +53,48 @@ const fn default_compute_stats_by_span_kind() -> bool {
 
 fn default_env() -> MetaString {
     MetaString::from("none")
+}
+
+/// Rare sampler configuration.
+#[derive(Clone, Debug, Deserialize)]
+struct RareSamplerConfig {
+    /// Enables the rare sampler.
+    ///
+    /// When enabled, the rare sampler catches traces for (env, service, name, resource, error type, http status)
+    /// combinations that are not seen by the priority sampler.
+    ///
+    /// Defaults to `false`.
+    #[serde(default = "default_rare_sampler_enabled")]
+    enabled: bool,
+
+    /// Target traces per second for the rare sampler.
+    ///
+    /// Defaults to 5.0.
+    #[serde(default = "default_rare_sampler_tps")]
+    tps: f64,
+
+    /// Cooldown period in seconds before a rare signature can be sampled again.
+    ///
+    /// Defaults to 300.0 (5 minutes).
+    #[serde(default = "default_rare_sampler_cooldown_period_secs")]
+    cooldown_period_secs: f64,
+
+    /// Max number of span signatures tracked per (env, service) shard before shrinking.
+    ///
+    /// Defaults to 200.
+    #[serde(default = "default_rare_sampler_cardinality")]
+    cardinality: usize,
+}
+
+impl Default for RareSamplerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_rare_sampler_enabled(),
+            tps: default_rare_sampler_tps(),
+            cooldown_period_secs: default_rare_sampler_cooldown_period_secs(),
+            cardinality: default_rare_sampler_cardinality(),
+        }
+    }
 }
 
 /// APM configuration.
@@ -165,6 +223,12 @@ pub struct ApmConfig {
     #[serde(skip)]
     hostname: MetaString,
 
+    /// Rare sampler configuration.
+    ///
+    /// Defaults to disabled.
+    #[serde(default)]
+    rare_sampler: RareSamplerConfig,
+
     /// Obfuscation configuration for trace data.
     #[serde(default)]
     obfuscation: ObfuscationConfig,
@@ -238,6 +302,26 @@ impl ApmConfig {
         }
     }
 
+    /// Returns whether the rare sampler is enabled.
+    pub const fn rare_sampler_enabled(&self) -> bool {
+        self.rare_sampler.enabled
+    }
+
+    /// Returns the rare sampler target traces per second.
+    pub const fn rare_sampler_tps(&self) -> f64 {
+        self.rare_sampler.tps
+    }
+
+    /// Returns the rare sampler cooldown period in seconds.
+    pub const fn rare_sampler_cooldown_period_secs(&self) -> f64 {
+        self.rare_sampler.cooldown_period_secs
+    }
+
+    /// Returns the rare sampler cardinality limit per shard.
+    pub const fn rare_sampler_cardinality(&self) -> usize {
+        self.rare_sampler.cardinality
+    }
+
     /// Returns the obfuscation configuration.
     pub fn obfuscation(&self) -> &ObfuscationConfig {
         &self.obfuscation
@@ -257,6 +341,7 @@ impl Default for ApmConfig {
             peer_tags: Vec::new(),
             default_env: default_env(),
             hostname: MetaString::default(),
+            rare_sampler: RareSamplerConfig::default(),
             obfuscation: ObfuscationConfig::default(),
         }
     }
