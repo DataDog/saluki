@@ -17,6 +17,7 @@ pub const KEY_ALIASES: &[(&str, &str)] = &[
     // so without this alias env var precedence over YAML is silently broken for proxy config.
     ("proxy.http", "proxy_http"),
     ("proxy.https", "proxy_https"),
+    ("proxy.no_proxy", "proxy_no_proxy"),
 ];
 
 /// Remappings from environment variable names to canonical config keys.
