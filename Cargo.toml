@@ -78,7 +78,7 @@ serde = { version = "1", default-features = false, features = [
   "std",
 ] }
 snafu = { version = "0.9", default-features = false, features = ["std"] }
-tokio = { version = "1.49", default-features = false }
+tokio = { version = "1.50", default-features = false }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 async-compression = { version = "0.4.13", default-features = false, features = [
   "gzip",
@@ -137,12 +137,12 @@ url = { version = "2", default-features = false }
 ndarray = { version = "0.16", default-features = false }
 ndarray-stats = { version = "0.6", default-features = false }
 noisy_float = { version = "0.2", default-features = false }
-libc = { version = "0.2.169", default-features = false }
+libc = { version = "0.2.183", default-features = false }
 socket2 = { version = "0.6", default-features = false }
 tonic-prost-build = { version = "0.14", default-features = false }
 tonic-prost = { version = "0.14", default-features = false }
 tonic = { version = "0.14", default-features = false }
-arc-swap = { version = "1.7.1", default-features = false }
+arc-swap = { version = "1.9.0", default-features = false }
 async-stream = { version = "0.3.5", default-features = false }
 futures = { version = "0.3.30", default-features = false }
 prost-types = { version = "0.14", default-features = false }
