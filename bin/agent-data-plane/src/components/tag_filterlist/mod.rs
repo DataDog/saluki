@@ -8,10 +8,11 @@
 
 mod telemetry;
 
+use std::collections::hash_map::Entry;
+
 use async_trait::async_trait;
-use foldhash::fast::RandomState as FoldHashState;
-use hashbrown::{HashMap, HashSet};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_common::collections::{FastHashMap, FastHashSet};
 use saluki_config::GenericConfiguration;
 use saluki_context::{tags::Tag, TagSetMutViewState};
 use saluki_core::{
@@ -28,6 +29,7 @@ use saluki_metrics::MetricsBuilder;
 use serde::{de::Deserializer, Deserialize};
 use tokio::select;
 use tracing::{debug, warn};
+use trie_hard::TrieHard;
 
 use self::telemetry::Telemetry;
 
@@ -74,8 +76,48 @@ pub struct MetricTagFilterEntry {
     pub tags: Vec<String>,
 }
 
-/// Compiled filter table: metric name → (is_exclude, set of tag key names).
-pub type CompiledFilters = HashMap<String, (bool, HashSet<String, FoldHashState>), FoldHashState>;
+/// A set of tag key names backed by a trie for fast membership checks.
+struct TagNameSet {
+    _names: Vec<String>,
+    trie: Option<TrieHard<'static, ()>>,
+}
+
+impl TagNameSet {
+    fn new(names: Vec<String>) -> Self {
+        let values = names
+            .iter()
+            .map(|s| {
+                // SAFETY: The `'static` references created here are never exposed to callers: we simply depend on
+                // them to allow holding a `TrieHard` internally without a user-controlled lifetime parameter.
+                //
+                // Our `Drop` implementation ensures that we drop `trie` first before `_names`, so that we never have
+                // a dangling reference to any string residing in `_names`.
+                let bytes: &'static [u8] = unsafe { &*(s.as_bytes() as *const [u8]) };
+                (bytes, ())
+            })
+            .collect();
+        Self {
+            _names: names,
+            trie: Some(TrieHard::new(values)),
+        }
+    }
+
+    #[inline]
+    fn contains(&self, key: &str) -> bool {
+        self.trie.as_ref().unwrap().get(key).is_some()
+    }
+}
+
+impl Drop for TagNameSet {
+    fn drop(&mut self) {
+        // Ensure we drop `trie` first before `_names`, so that we never have a dangling reference to any string
+        // residing in `_names`.
+        drop(self.trie.take());
+    }
+}
+
+/// Compiled filter table: metric name → (is_exclude, trie of tag key names).
+type CompiledFilters = FastHashMap<String, (bool, TagNameSet)>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// Outcome of attempting to apply `metric_tag_filterlist` rules to a metric.
@@ -96,23 +138,23 @@ pub enum FilterMetricTagsOutcome {
 /// Merge rules:
 /// - Same metric name + same action → union of tag key sets.
 /// - Same metric name + conflicting actions → `exclude` wins.
-pub fn compile_filters(entries: &[MetricTagFilterEntry]) -> CompiledFilters {
-    let mut filters: CompiledFilters = HashMap::with_hasher(FoldHashState::default());
-
+fn compile_filters(entries: &[MetricTagFilterEntry]) -> CompiledFilters {
+    // Pass 1: merge tag names using HashSets (supports union + replace semantics).
+    let mut merged: FastHashMap<String, (bool, FastHashSet<String>)> = FastHashMap::default();
     for entry in entries {
         if entry.metric_name.is_empty() {
             continue;
         }
 
         let is_exclude = entry.action == FilterAction::Exclude;
-        let mut tag_set = HashSet::with_capacity_and_hasher(entry.tags.len(), FoldHashState::default());
+        let mut tag_set = FastHashSet::default();
         tag_set.extend(entry.tags.iter().cloned());
 
-        match filters.entry(entry.metric_name.clone()) {
-            hashbrown::hash_map::Entry::Vacant(e) => {
+        match merged.entry(entry.metric_name.clone()) {
+            Entry::Vacant(e) => {
                 e.insert((is_exclude, tag_set));
             }
-            hashbrown::hash_map::Entry::Occupied(mut e) => {
+            Entry::Occupied(mut e) => {
                 let (existing_is_exclude, existing_tags) = e.get_mut();
                 if *existing_is_exclude == is_exclude {
                     existing_tags.extend(tag_set);
@@ -122,6 +164,13 @@ pub fn compile_filters(entries: &[MetricTagFilterEntry]) -> CompiledFilters {
                 }
             }
         }
+    }
+
+    // Pass 2: convert each merged HashSet into a TagNameSet (trie).
+    let mut filters: CompiledFilters = FastHashMap::default();
+    for (metric_name, (is_exclude, tag_set)) in merged {
+        let names: Vec<String> = tag_set.into_iter().collect();
+        filters.insert(metric_name, (is_exclude, TagNameSet::new(names)));
     }
 
     filters
@@ -231,20 +280,17 @@ impl Transform for TagFilterlist {
 }
 
 #[inline]
-fn should_keep_tag(tag: &Tag, is_exclude: bool, names: &HashSet<String, FoldHashState>) -> bool {
+fn should_keep_tag(tag: &Tag, is_exclude: bool, names: &TagNameSet) -> bool {
     is_exclude != names.contains(tag.as_borrowed().name())
 }
 
 /// Filter the tags of a distribution metric according to the compiled filter table.
 ///
-/// Both instrumented tags and origin tags are filtered using the same tag key list.
-/// If the metric name is not present in `filters`, the metric is left unchanged.
-/// If filtering would not change any tags, the metric context is left untouched (zero allocations).
-///
-/// Uses a lazy copy-on-write view to scan tags in a single read-only pass and defer the
-/// `Arc` clone + context key recomputation until tags are actually removed.
+/// Both instrumented tags and origin tags are filtered using the same tag key list. If the metric name is not present
+/// in `filters`, the metric is left unchanged. If filtering would not change any tags, the metric context is left
+/// untouched (zero allocations).
 #[inline]
-pub fn filter_metric_tags(
+fn filter_metric_tags(
     metric: &mut Metric, filters: &CompiledFilters, view_state: &mut TagSetMutViewState,
 ) -> FilterMetricTagsOutcome {
     let Some((is_exclude, tag_names)) = filters.get(metric.context().name().as_ref()) else {
