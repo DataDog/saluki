@@ -345,6 +345,16 @@ experiments:
         empty.yaml:
           source: shared/tagfilter_15000metrics.yaml
 
+  - name: tagfilter_100metrics_notraffic
+    extends: tagfilter_base
+    optimization_goal: cpu
+    lading:
+      generator: []
+    target:
+      files:
+        empty.yaml:
+          source: shared/tagfilter_100metrics.yaml
+
   - name: tagfilter_500metrics_notraffic
     extends: tagfilter_base
     optimization_goal: cpu
@@ -354,6 +364,26 @@ experiments:
       files:
         empty.yaml:
           source: shared/tagfilter_500metrics.yaml
+
+  - name: tagfilter_10000metrics_notraffic
+    extends: tagfilter_base
+    optimization_goal: cpu
+    lading:
+      generator: []
+    target:
+      files:
+        empty.yaml:
+          source: shared/tagfilter_10000metrics.yaml
+
+  - name: tagfilter_15000metrics_notraffic
+    extends: tagfilter_base
+    optimization_goal: cpu
+    lading:
+      generator: []
+    target:
+      files:
+        empty.yaml:
+          source: shared/tagfilter_15000metrics.yaml
 
   - name: dsd_uds_512kb_3k_contexts
     extends: dsd_base
