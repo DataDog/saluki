@@ -81,4 +81,6 @@ url = { workspace = true }
 [dev-dependencies]
 proptest = { workspace = true }
 saluki-metrics = { workspace = true, features = ["test"] }
+saluki-tls = { workspace = true }
 test-strategy = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
