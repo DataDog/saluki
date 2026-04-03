@@ -3,7 +3,7 @@
 #![deny(missing_docs)]
 
 mod context;
-pub use self::context::{Context, TagSetMutViewState, TagSetMutView};
+pub use self::context::{Context, TagSetMutView, TagSetMutViewState};
 
 mod hash;
 
