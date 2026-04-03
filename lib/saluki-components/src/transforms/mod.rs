@@ -1,7 +1,7 @@
 //! Transform implementations.
 
 mod aggregate;
-pub use self::aggregate::AggregateConfiguration;
+pub use self::aggregate::{AggregateConfiguration, AggregatorHandle};
 
 mod chained;
 pub use self::chained::ChainedConfiguration;
