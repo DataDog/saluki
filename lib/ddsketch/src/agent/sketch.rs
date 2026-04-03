@@ -1,6 +1,6 @@
 //! Agent-specific DDSketch implementation.
 
-use std::{cmp::Ordering, mem};
+use std::cmp::Ordering;
 
 use datadog_protos::metrics::Dogsketch;
 use ordered_float::OrderedFloat;
@@ -661,46 +661,19 @@ fn trim_left(bins: &mut SmallVec<[Bin; 4]>, bin_limit: u16) {
     let mut missing: u64 = 0;
 
     // Sum all mass from the bins being removed. Per CollapsingLowestDenseStore in sketches-go,
-    // all removed mass collapses into the first kept bin (the new minimum index). We accumulate
-    // here without creating intermediate bins so that the overflow key is correct below.
+    // all removed mass collapses into the first kept bin (the new minimum index).
     for bin in bins.iter().take(num_to_remove) {
         missing += u64::from(bin.n);
     }
 
     // Fold the accumulated mass into the first kept bin, matching Go's `bins[newMinIndex] += n`.
-    let bin_remove = &mut bins[num_to_remove];
-    let first_kept_k = bin_remove.k;
-    missing = bin_remove.increment(missing);
+    // Any remainder that overflows u32::MAX is discarded — this requires >4B observations in a
+    // single collapsed bin and is an intentional divergence from the Datadog Agent (which uses
+    // float64 counts and never loses mass).
+    bins[num_to_remove].increment(missing);
 
-    // Any mass that overflows the first kept bin's u32 counter generates additional bins at
-    // first_kept_k — the same key as the first kept bin, not the keys of the removed bins.
-    let mut overflow = SmallVec::<[Bin; 4]>::new();
-    if missing > 0 {
-        generate_bins(&mut overflow, first_kept_k, missing);
-    }
-
-    let (_, bins_end) = bins.split_at(num_to_remove);
-    overflow.reserve(bins_end.len());
-    overflow.extend_from_slice(bins_end);
-
-    // Cap at `bin_limit` by dropping from the front so we keep the suffix (higher keys in `bins_end`).
-    //
-    // This can make `sum(bin.n)` smaller than the sketch's logical `count` (inserts still update `count`, min/max,
-    // sum, avg). `quantile` ranks against `count` while walking bin masses, so results are approximate when those
-    // diverge — the same class of issue as any hard cap that drops bins without rewriting aggregate stats.
-    //
-    // Even though we fold all removed mass into first_kept_k above, `generate_bins` may require more than
-    // `bin_limit` bins for a single key when total weight is huge (u32 per bin), so "preserve all mass in-bounds"
-    // is not always achievable; a plain prefix drop keeps the cap and favors retaining the tail keys.
-    //
-    // As of April 2026, this is an intentional divergence from the Datadog Agent implementation,
-    // which does not truncate bins to stay under a limit.
-    if overflow.len() > bin_limit {
-        let drop_len = overflow.len() - bin_limit;
-        overflow.drain(0..drop_len);
-    }
-
-    mem::swap(bins, &mut overflow);
+    // Drop the removed prefix, leaving exactly bin_limit bins.
+    bins.drain(0..num_to_remove);
 }
 
 #[allow(clippy::cast_possible_truncation)]
@@ -773,8 +746,8 @@ mod tests {
     /// without saturation for typical weights, fully preserving the total count.
     ///
     /// Input:  [(0,50000), (1,50000), (2,1)]  limit=1  →  remove 2 bins
-    /// missing = 100000; bins[2].increment(100000): 100001 < u32::MAX → n=100001, returns 0
-    /// No overflow bins generated. Final: [(2,100001)], all mass preserved.
+    /// missing = 100000; bins[2].increment(100000): 100001 < u32::MAX → n=100001
+    /// bins.drain(0..2). Final: [(2,100001)], all mass preserved.
     ///
     /// With the old u16 layout, this same input would have saturated at 65535 and discarded
     /// 34466 observations. u32 eliminates that loss for any per-bin count below ~4.3 billion.
