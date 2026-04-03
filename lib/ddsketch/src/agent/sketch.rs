@@ -654,44 +654,52 @@ fn trim_left(bins: &mut SmallVec<[Bin; 4]>, bin_limit: u16) {
     // We won't ever support Vector running on anything other than a 32-bit platform and above, I imagine, so this
     // should always be safe.
     let bin_limit = bin_limit as usize;
-    if bin_limit == 0 || bins.len() < bin_limit {
+    if bin_limit == 0 || bins.len() <= bin_limit {
         return;
     }
 
     let num_to_remove = bins.len() - bin_limit;
-    let mut missing = 0;
-    let mut overflow = SmallVec::<[Bin; 4]>::new();
+    let mut missing: u64 = 0;
 
+    // Sum all mass from the bins being removed. Per CollapsingLowestDenseStore in sketches-go,
+    // all removed mass collapses into the first kept bin (the new minimum index). We accumulate
+    // here without creating intermediate bins so that the overflow key is correct below.
     for bin in bins.iter().take(num_to_remove) {
         missing += u64::from(bin.n);
-
-        if missing > u64::from(MAX_BIN_WIDTH) {
-            overflow.push(Bin {
-                k: bin.k,
-                n: MAX_BIN_WIDTH,
-            });
-
-            missing -= u64::from(MAX_BIN_WIDTH);
-        }
     }
 
+    // Fold the accumulated mass into the first kept bin, matching Go's `bins[newMinIndex] += n`.
     let bin_remove = &mut bins[num_to_remove];
+    let first_kept_k = bin_remove.k;
     missing = bin_remove.increment(missing);
+
+    // Any mass that overflows the first kept bin's u16 counter generates additional bins at
+    // first_kept_k — the same key as the first kept bin, not the keys of the removed bins.
+    let mut overflow = SmallVec::<[Bin; 4]>::new();
     if missing > 0 {
-        generate_bins(&mut overflow, bin_remove.k, missing);
+        generate_bins(&mut overflow, first_kept_k, missing);
     }
 
     let (_, bins_end) = bins.split_at(num_to_remove);
+    overflow.reserve(bins_end.len());
     overflow.extend_from_slice(bins_end);
 
-    // Truncate to bin_limit so the total bin count stays within the configured limit. Overflow bins created
-    // above (when collapsed counts exceed MAX_BIN_WIDTH) are prepended before bins_end, and together the
-    // combined slice is capped at bin_limit. This may discard some higher-key bins from bins_end when
-    // overflow is large, which is the expected precision trade-off for a bounded sketch.
+    // Cap at `bin_limit` by dropping from the front so we keep the suffix (higher keys in `bins_end`).
+    //
+    // This can make `sum(bin.n)` smaller than the sketch's logical `count` (inserts still update `count`, min/max,
+    // sum, avg). `quantile` ranks against `count` while walking bin masses, so results are approximate when those
+    // diverge — the same class of issue as any hard cap that drops bins without rewriting aggregate stats.
+    //
+    // Even though we fold all removed mass into first_kept_k above, `generate_bins` may require more than
+    // `bin_limit` bins for a single key when total weight is huge (u16 per bin), so "preserve all mass in-bounds"
+    // is not always achievable; a plain prefix drop keeps the cap and favors retaining the tail keys.
     //
     // As of April 2026, this is an intentional divergence from the Datadog Agent implementation,
     // which does not truncate bins to stay under a limit.
-    overflow.truncate(bin_limit);
+    if overflow.len() > bin_limit {
+        let drop_len = overflow.len() - bin_limit;
+        overflow.drain(0..drop_len);
+    }
 
     mem::swap(bins, &mut overflow);
 }
@@ -720,6 +728,90 @@ fn generate_bins(bins: &mut SmallVec<[Bin; 4]>, k: i16, n: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Helper: build a SmallVec<[Bin; 4]> from (k, n) pairs. Assumes input is already sorted by k.
+    fn make_bins(pairs: &[(i16, u16)]) -> SmallVec<[Bin; 4]> {
+        pairs.iter().map(|&(k, n)| Bin { k, n }).collect()
+    }
+
+    // Helper: extract (k, n) pairs from a SmallVec for easy assertion.
+    fn to_pairs(bins: &SmallVec<[Bin; 4]>) -> Vec<(i16, u16)> {
+        bins.iter().map(|b| (b.k, b.n)).collect()
+    }
+
+    /// Basic collapse: when bins exceed the limit, the mass from removed bins is merged
+    /// into the first kept bin (lowest surviving key). This mirrors the CollapsingLowestDenseStore
+    /// semantics from sketches-go: all bins with index < (maxIndex - limit + 1) collapse into
+    /// the bin at (maxIndex - limit + 1).
+    ///
+    /// Input:  [(0,2), (1,3), (2,4), (3,5)]  limit=2  →  remove 2 bins
+    /// missing = n[0] + n[1] = 2 + 3 = 5
+    /// first kept bin: k=2, n=4 → increment by 5 → n=9
+    /// Result: [(2,9), (3,5)]
+    #[test]
+    fn trim_left_collapses_removed_mass_into_first_kept_bin() {
+        let mut bins = make_bins(&[(0, 2), (1, 3), (2, 4), (3, 5)]);
+        trim_left(&mut bins, 2);
+        assert_eq!(to_pairs(&bins), vec![(2, 9), (3, 5)]);
+    }
+
+    /// Total count is preserved exactly when the collapse does not overflow u16 and no
+    /// drain is needed. The sum of n across all output bins must equal the sum across input bins.
+    ///
+    /// Input:  [(10,5), (20,3), (30,7)]  limit=2  →  remove 1 bin
+    /// missing = 5; first kept bin k=20, n=3 → n=8
+    /// Result: [(20,8), (30,7)], total=15 == 5+3+7
+    #[test]
+    fn trim_left_preserves_total_count_when_no_overflow() {
+        let mut bins = make_bins(&[(10, 5), (20, 3), (30, 7)]);
+        let total_before: u32 = bins.iter().map(|b| u32::from(b.n)).sum();
+        trim_left(&mut bins, 2);
+        let total_after: u32 = bins.iter().map(|b| u32::from(b.n)).sum();
+        assert_eq!(to_pairs(&bins), vec![(20, 8), (30, 7)]);
+        assert_eq!(total_before, total_after);
+    }
+
+    /// When collapsed mass overflows u16::MAX, generate_bins is called with the first kept bin's
+    /// key — not the keys of the removed bins. This is the core correctness property: all mass,
+    /// including overflow, is attributed to the first kept key.
+    ///
+    /// The old code pushed overflow bins with `bin.k` (the removed bin's key) during accumulation,
+    /// which would leave bins with removed keys in the output. This test verifies that every bin
+    /// in the output has a key >= the first kept key before trimming.
+    ///
+    /// Input:  [(0,50000), (1,50000), (2,1)]  limit=1  →  remove 2 bins
+    /// missing = 50000 + 50000 = 100000
+    /// first_kept_k = 2; bins[2].increment(100000): n → 65535, returns 34466
+    /// generate_bins(k=2, 34466): overflow = [(2, 34466)]
+    /// overflow + bins_end = [(2,34466), (2,65535)]  →  2 bins > limit=1
+    /// drain 1 from front: [(2, 65535)]
+    /// All output keys must be 2; no keys 0 or 1 may appear.
+    #[test]
+    fn trim_left_overflow_uses_first_kept_key_not_removed_keys() {
+        let mut bins = make_bins(&[(0, 50000), (1, 50000), (2, 1)]);
+        trim_left(&mut bins, 1);
+        // Every bin in the output must have k == 2 (the first kept key before trim).
+        // The old buggy code would produce a bin with k=1 here.
+        for bin in bins.iter() {
+            assert_eq!(
+                bin.k, 2,
+                "expected all output bins to have key 2 (first kept key), got key {}",
+                bin.k
+            );
+        }
+        assert!(bins.len() <= 1);
+    }
+
+    /// When already at or under the limit, trim_left is a no-op.
+    #[test]
+    fn trim_left_no_op_when_within_limit() {
+        let original = make_bins(&[(5, 10), (6, 20)]);
+        let mut bins = original.clone();
+        trim_left(&mut bins, 2);
+        assert_eq!(to_pairs(&bins), to_pairs(&original));
+        trim_left(&mut bins, 3);
+        assert_eq!(to_pairs(&bins), to_pairs(&original));
+    }
 
     /// Regression test for trim_left bin count explosion with large per-sample weights.
     ///
