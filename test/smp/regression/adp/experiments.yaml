@@ -313,6 +313,23 @@ experiments:
         empty.yaml:
           source: shared/tagfilter_500metrics.yaml
 
+  - name: tagfilter_500metrics_drop25
+    extends: tagfilter_base
+    optimization_goal: cpu
+    lading:
+      generator:
+        - unix_datagram:
+            variant:
+              dogstatsd:
+                # Keep the allowlist at 54 tags (00..53) and widen the emitted tag-name pool to 72
+                # tags so the expected filtered fraction is roughly 25%.
+                tag_names:
+                  - tagname_aaaaaaaaaaaaaaaaaaaaaa_{{0-71}}
+    target:
+      files:
+        empty.yaml:
+          source: shared/tagfilter_500metrics.yaml
+
   - name: tagfilter_10000metrics
     extends: tagfilter_base
     optimization_goal: cpu
