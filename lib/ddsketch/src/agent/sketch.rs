@@ -21,7 +21,7 @@ static SKETCH_CONFIG: Config = Config::new(
     DDSKETCH_CONF_NORM_MIN,
     DDSKETCH_CONF_NORM_BIAS,
 );
-const MAX_BIN_WIDTH: u16 = u16::MAX;
+const MAX_BIN_WIDTH: u32 = u32::MAX;
 
 /// [DDSketch][ddsketch] implementation based on the [Datadog Agent][ddagent].
 ///
@@ -451,7 +451,7 @@ impl DDSketch {
     /// Used only for unit testing so that we can create a sketch with an exact layout, which allows testing around the
     /// resulting bins when feeding in specific values, as well as generating explicitly bad layouts for testing.
     #[allow(dead_code)]
-    pub(crate) fn insert_raw_bin(&mut self, k: i16, n: u16) {
+    pub(crate) fn insert_raw_bin(&mut self, k: i16, n: u32) {
         let v = SKETCH_CONFIG.bin_lower_bound(k);
         self.adjust_basic_stats(v, u64::from(n));
         self.bins.push(Bin { k, n });
@@ -557,7 +557,7 @@ impl DDSketch {
 
         for bin in &self.bins {
             k.push(i32::from(bin.k));
-            n.push(u32::from(bin.n));
+            n.push(bin.n);
         }
 
         dogsketch.set_k(k);
@@ -620,7 +620,6 @@ impl TryFrom<Dogsketch> for DDSketch {
 
         for (k, n) in k.into_iter().zip(n.into_iter()) {
             let k = i16::try_from(k).map_err(|_| "bin key overflows i16")?;
-            let n = u16::try_from(n).map_err(|_| "bin count overflows u16")?;
 
             sketch.bins.push(Bin { k, n });
         }
@@ -673,7 +672,7 @@ fn trim_left(bins: &mut SmallVec<[Bin; 4]>, bin_limit: u16) {
     let first_kept_k = bin_remove.k;
     missing = bin_remove.increment(missing);
 
-    // Any mass that overflows the first kept bin's u16 counter generates additional bins at
+    // Any mass that overflows the first kept bin's u32 counter generates additional bins at
     // first_kept_k — the same key as the first kept bin, not the keys of the removed bins.
     let mut overflow = SmallVec::<[Bin; 4]>::new();
     if missing > 0 {
@@ -691,7 +690,7 @@ fn trim_left(bins: &mut SmallVec<[Bin; 4]>, bin_limit: u16) {
     // diverge — the same class of issue as any hard cap that drops bins without rewriting aggregate stats.
     //
     // Even though we fold all removed mass into first_kept_k above, `generate_bins` may require more than
-    // `bin_limit` bins for a single key when total weight is huge (u16 per bin), so "preserve all mass in-bounds"
+    // `bin_limit` bins for a single key when total weight is huge (u32 per bin), so "preserve all mass in-bounds"
     // is not always achievable; a plain prefix drop keeps the cap and favors retaining the tail keys.
     //
     // As of April 2026, this is an intentional divergence from the Datadog Agent implementation,
@@ -707,15 +706,15 @@ fn trim_left(bins: &mut SmallVec<[Bin; 4]>, bin_limit: u16) {
 #[allow(clippy::cast_possible_truncation)]
 fn generate_bins(bins: &mut SmallVec<[Bin; 4]>, k: i16, n: u64) {
     if n < u64::from(MAX_BIN_WIDTH) {
-        // SAFETY: Cannot truncate `n`, as it's less than a u16 value.
-        bins.push(Bin { k, n: n as u16 });
+        // SAFETY: Cannot truncate `n`, as it's less than a u32 value.
+        bins.push(Bin { k, n: n as u32 });
     } else {
         let overflow = n % u64::from(MAX_BIN_WIDTH);
         if overflow != 0 {
             bins.push(Bin {
                 k,
-                // SAFETY: Cannot truncate `overflow`, as it's modulo'd by a u16 value.
-                n: overflow as u16,
+                // SAFETY: Cannot truncate `overflow`, as it's modulo'd by a u32 value.
+                n: overflow as u32,
             });
         }
 
@@ -730,12 +729,12 @@ mod tests {
     use super::*;
 
     // Helper: build a SmallVec<[Bin; 4]> from (k, n) pairs. Assumes input is already sorted by k.
-    fn make_bins(pairs: &[(i16, u16)]) -> SmallVec<[Bin; 4]> {
+    fn make_bins(pairs: &[(i16, u32)]) -> SmallVec<[Bin; 4]> {
         pairs.iter().map(|&(k, n)| Bin { k, n }).collect()
     }
 
     // Helper: extract (k, n) pairs from a SmallVec for easy assertion.
-    fn to_pairs(bins: &SmallVec<[Bin; 4]>) -> Vec<(i16, u16)> {
+    fn to_pairs(bins: &SmallVec<[Bin; 4]>) -> Vec<(i16, u32)> {
         bins.iter().map(|b| (b.k, b.n)).collect()
     }
 
@@ -755,8 +754,7 @@ mod tests {
         assert_eq!(to_pairs(&bins), vec![(2, 9), (3, 5)]);
     }
 
-    /// Total count is preserved exactly when the collapse does not overflow u16 and no
-    /// drain is needed. The sum of n across all output bins must equal the sum across input bins.
+    /// Total count is preserved exactly when the collapse fits within a single u32 bin.
     ///
     /// Input:  [(10,5), (20,3), (30,7)]  limit=2  →  remove 1 bin
     /// missing = 5; first kept bin k=20, n=3 → n=8
@@ -764,45 +762,32 @@ mod tests {
     #[test]
     fn trim_left_preserves_total_count_when_no_overflow() {
         let mut bins = make_bins(&[(10, 5), (20, 3), (30, 7)]);
-        let total_before: u32 = bins.iter().map(|b| u32::from(b.n)).sum();
+        let total_before: u64 = bins.iter().map(|b| u64::from(b.n)).sum();
         trim_left(&mut bins, 2);
-        let total_after: u32 = bins.iter().map(|b| u32::from(b.n)).sum();
+        let total_after: u64 = bins.iter().map(|b| u64::from(b.n)).sum();
         assert_eq!(to_pairs(&bins), vec![(20, 8), (30, 7)]);
         assert_eq!(total_before, total_after);
     }
 
-    /// When collapsed mass overflows u16::MAX, all overflow is attributed to the first kept bin's
-    /// key, and the first kept bin absorbs the maximum possible count before drain.
-    ///
-    /// The old code subtracted MAX_BIN_WIDTH from `missing` during the accumulation loop and
-    /// stashed it in a wrong-key overflow bin. Even though that bin was later drained, the
-    /// subtraction meant less mass reached `bin_remove.increment(...)`, leaving the first kept
-    /// bin with a lower `n` than it should have.
+    /// With u32 bin counts, collapsed mass from multiple removed bins fits in a single bin
+    /// without saturation for typical weights, fully preserving the total count.
     ///
     /// Input:  [(0,50000), (1,50000), (2,1)]  limit=1  →  remove 2 bins
-    /// missing = 50000 + 50000 = 100000
-    /// first_kept_k = 2; bins[2].increment(100000): n → 65535, returns 34466
-    /// generate_bins(k=2, 34466): overflow = [(2,34466)]
-    /// overflow + bins_end = [(2,34466),(2,65535)]  →  2 bins > limit=1
-    /// drain 1 from front: [(2,65535)]
+    /// missing = 100000; bins[2].increment(100000): 100001 < u32::MAX → n=100001, returns 0
+    /// No overflow bins generated. Final: [(2,100001)], all mass preserved.
     ///
-    /// Old code: loop emits {k=1,n=65535} and reduces missing to 34465; bins[2].increment(34465)
-    /// gives n=34466. After drain the result is [(2,34466)] — correct key but wrong (lower) count.
+    /// With the old u16 layout, this same input would have saturated at 65535 and discarded
+    /// 34466 observations. u32 eliminates that loss for any per-bin count below ~4.3 billion.
     #[test]
-    fn trim_left_overflow_maximizes_mass_in_first_kept_bin() {
+    fn trim_left_preserves_exact_count_with_u32_bins() {
         let mut bins = make_bins(&[(0, 50000), (1, 50000), (2, 1)]);
+        let total_before: u64 = bins.iter().map(|b| u64::from(b.n)).sum();
         trim_left(&mut bins, 1);
+        let total_after: u64 = bins.iter().map(|b| u64::from(b.n)).sum();
         assert_eq!(bins.len(), 1);
         assert_eq!(bins[0].k, 2);
-        // The first kept bin must be saturated at MAX_BIN_WIDTH (65535).
-        // Old code gave 34466 here because 65535 of mass was incorrectly drained.
-        assert_eq!(
-            bins[0].n,
-            MAX_BIN_WIDTH,
-            "expected first kept bin to be saturated at {}, got {}",
-            MAX_BIN_WIDTH,
-            bins[0].n
-        );
+        assert_eq!(bins[0].n, 100001);
+        assert_eq!(total_before, total_after, "all mass must be preserved with u32 bins");
     }
 
     /// When already at or under the limit, trim_left is a no-op.
@@ -816,15 +801,12 @@ mod tests {
         assert_eq!(to_pairs(&bins), to_pairs(&original));
     }
 
-    /// Regression test for trim_left bin count explosion with large per-sample weights.
+    /// Regression test for trim_left bin count with large per-sample weights.
     ///
-    /// When a sample weight exceeds MAX_BIN_WIDTH (65535), a single `insert_n` call generates
-    /// multiple bins with the same key (one per 65535 units of count). Before the fix,
-    /// `trim_left` accumulated these overflow bins into its output without truncating to
-    /// `bin_limit`, causing the bin count to grow without bound across insertions. After
-    /// enough inserts the sketch could have millions of bins rather than the expected 4096,
-    /// eventually producing a serialized payload that exceeded the encoder's compressed size
-    /// limit and triggering a panic in the request builder.
+    /// With the old u16 layout, a sample weight of ~260M would generate ceil(260M / 65535) = 3969
+    /// bins per key, causing bin count explosion and an encoder panic. With u32, the same weight
+    /// fits in a single bin (260M < u32::MAX ≈ 4.3B), so one insert_n call produces exactly one
+    /// bin per key and the bin limit is trivially respected.
     ///
     /// This test inserts several values with a weight representative of what ADP receives when
     /// clamping an incoming sample rate of 3e-9 to its minimum of 3.845e-9 (~260M per sample),
@@ -832,8 +814,7 @@ mod tests {
     #[test]
     fn trim_left_respects_bin_limit_with_large_weights() {
         // Weight corresponding to ADP's minimum safe sample rate (1 / 3.845e-9 ≈ 260_078_024).
-        // Each insert_n call with this weight generates ceil(260_078_024 / 65535) = 3969 bins
-        // for a single key, enough to trigger trim_left after just two distinct values.
+        // With u32 bins, this fits in a single bin per key (260_078_024 < u32::MAX).
         let weight: u64 = 260_078_024;
         let bin_limit = usize::from(DDSKETCH_CONF_BIN_LIMIT);
 
