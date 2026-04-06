@@ -35,12 +35,6 @@ pub struct TraceSampling {
     /// This corresponds to the `_dd.otlp_sr` tag and represents the effective sampling rate
     /// from the OTLP ingest path.
     pub otlp_sampling_rate: Option<f64>,
-
-    /// Whether this trace was kept by Error Tracking Standalone mode.
-    ///
-    /// When true, the encoder emits `_dd.error_tracking_standalone.error = "true"` as a chunk
-    /// tag, signalling to the backend that the trace was sampled under ETS rules.
-    pub ets_error: bool,
 }
 
 impl TraceSampling {
@@ -53,7 +47,6 @@ impl TraceSampling {
             priority,
             decision_maker,
             otlp_sampling_rate,
-            ets_error: false,
         }
     }
 }
@@ -156,11 +149,6 @@ impl Trace {
     /// Returns a reference to the trace-level sampling metadata, if present.
     pub fn sampling(&self) -> Option<&TraceSampling> {
         self.sampling.as_ref()
-    }
-
-    /// Returns a mutable reference to the trace-level sampling metadata, if present.
-    pub fn sampling_mut(&mut self) -> Option<&mut TraceSampling> {
-        self.sampling.as_mut()
     }
 
     /// Sets the trace-level sampling metadata.
