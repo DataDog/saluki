@@ -22,7 +22,7 @@ use rustls_pki_types::PrivatePkcs8KeyDer;
 use saluki_api::{DynamicRoute, EndpointProtocol, EndpointType};
 use saluki_common::collections::FastIndexMap;
 use saluki_core::runtime::{
-    state::{AssertionUpdate, DataspaceRegistry, Handle, Subscription},
+    state::{AssertionUpdate, DataspaceRegistry, Identifier, IdentifierFilter, Subscription},
     InitializationError, ProcessShutdown, Supervisable, SupervisorFuture,
 };
 use saluki_error::GenericError;
@@ -57,19 +57,15 @@ pub struct DynamicAPIBuilder {
     endpoint_type: EndpointType,
     listen_address: ListenAddress,
     tls_config: Option<ServerConfig>,
-    dataspace_registry: DataspaceRegistry,
 }
 
 impl DynamicAPIBuilder {
     /// Creates a new `DynamicAPIBuilder` for the given endpoint type.
-    pub fn new(
-        endpoint_type: EndpointType, listen_address: ListenAddress, dataspace_registry: DataspaceRegistry,
-    ) -> Self {
+    pub fn new(endpoint_type: EndpointType, listen_address: ListenAddress) -> Self {
         Self {
             endpoint_type,
             listen_address,
             tls_config: None,
-            dataspace_registry,
         }
     }
 
@@ -81,9 +77,9 @@ impl DynamicAPIBuilder {
 
     /// Sets the TLS configuration for the server based on a dynamically generated self-signed certificate.
     pub fn with_self_signed_tls(self) -> Self {
-        let CertifiedKey { cert, key_pair } = generate_simple_self_signed(["localhost".to_owned()]).unwrap();
+        let CertifiedKey { cert, signing_key } = generate_simple_self_signed(["localhost".to_owned()]).unwrap();
         let cert_chain = vec![cert.der().clone()];
-        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_pair.serialize_der()));
+        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(signing_key.serialize_der()));
 
         let config = ServerConfig::builder()
             .with_no_client_auth()
@@ -109,7 +105,7 @@ impl Supervisable for DynamicAPIBuilder {
         let (inner_grpc, outer_grpc) = create_dynamic_router();
 
         // Subscribe to all dynamic route assertions.
-        let route_assertions = self.dataspace_registry.subscribe_all::<DynamicRoute>();
+        let route_assertions = DataspaceRegistry::current().subscribe::<DynamicRoute>(IdentifierFilter::All);
 
         // Bind the HTTP listener immediately so we fail fast on bind errors.
         let listener = ConnectionOrientedListener::from_listen_address(self.listen_address.clone())
@@ -216,34 +212,34 @@ async fn run_event_loop(
                 let mut rebuild_grpc = false;
 
                 match update {
-                    AssertionUpdate::Asserted(handle, route) => {
+                    AssertionUpdate::Asserted(id, route) => {
                         if route.endpoint_type() != endpoint_type {
                             continue;
                         }
 
                         match route.endpoint_protocol() {
                             EndpointProtocol::Http => {
-                                debug!(?handle, "Registering dynamic HTTP handler.");
-                                http_handlers.insert(handle, route.into_router());
+                                debug!(?id, "Registering dynamic HTTP handler.");
+                                http_handlers.insert(id, route.into_router());
 
                                 rebuild_http = true;
                             },
                             EndpointProtocol::Grpc => {
-                                debug!(?handle, "Registering dynamic gRPC handler.");
-                                grpc_handlers.insert(handle, route.into_router());
+                                debug!(?id, "Registering dynamic gRPC handler.");
+                                grpc_handlers.insert(id, route.into_router());
 
                                 rebuild_grpc = true;
                             },
                         }
                     }
-                    AssertionUpdate::Retracted(handle) => {
-                        if http_handlers.swap_remove(&handle).is_some() {
-                            debug!(?handle, "Withdrawing dynamic HTTP handler.");
+                    AssertionUpdate::Retracted(id) => {
+                        if http_handlers.swap_remove(&id).is_some() {
+                            debug!(?id, "Withdrawing dynamic HTTP handler.");
                             rebuild_http = true;
                         }
 
-                        if grpc_handlers.swap_remove(&handle).is_some() {
-                            debug!(?handle, "Withdrawing dynamic gRPC handler.");
+                        if grpc_handlers.swap_remove(&id).is_some() {
+                            debug!(?id, "Withdrawing dynamic gRPC handler.");
                             rebuild_grpc = true;
                         }
                     }
@@ -271,7 +267,7 @@ fn create_dynamic_router() -> (Arc<ArcSwap<Router>>, Router) {
 }
 
 /// Rebuilds the merged inner router from all currently-registered handlers and stores it in the [`ArcSwap`].
-fn rebuild_router(inner_router: &Arc<ArcSwap<Router>>, handlers: &FastIndexMap<Handle, Router>) {
+fn rebuild_router(inner_router: &Arc<ArcSwap<Router>>, handlers: &FastIndexMap<Identifier, Router>) {
     let mut merged = Router::new();
     for router in handlers.values() {
         merged = merged.merge(router.clone());
