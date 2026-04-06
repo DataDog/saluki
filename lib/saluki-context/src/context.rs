@@ -287,6 +287,8 @@ impl<'a, 'b> TagSetMutView<'a, 'b> {
     /// If no changes were recorded, this is a no-op: no `Arc` clone, no rehash, returns 0.
     /// Otherwise, triggers `Arc::make_mut` on the context, applies the changes to both tag sets,
     /// and recomputes the context key.
+    ///
+    /// Returns the number of tags removed.
     pub fn finish(self) -> usize {
         let total_tags = self.state.tag_base_removals.len() + self.state.tag_addition_removals.len();
         let total_origin = self.state.origin_base_removals.len() + self.state.origin_addition_removals.len();
