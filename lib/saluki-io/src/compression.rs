@@ -292,11 +292,6 @@ impl CompressionEstimator {
     /// Estimates if writing `len` bytes to the compressor would cause the final compressed size to exceed `threshold`
     /// bytes.
     pub fn would_write_exceed_threshold(&self, len: usize, threshold: usize) -> bool {
-        // If the length of the data to be written exceeds the threshold, then it obviously would exceed the threshold.
-        if len > threshold {
-            return true;
-        }
-
         // If we have yet to see any compressed data, we can't make a meaningful estimate, and this likely means that
         // the compressor is still actively able to compress more data into the first block, which when eventually
         // written, should never exceed the compressed size limit... so we choose to not block writes in this case.
@@ -362,8 +357,12 @@ mod tests {
     fn compression_estimator_no_output() {
         let estimator = CompressionEstimator::default();
 
+        // Without any compressed data, we cannot estimate whether a write would exceed the threshold,
+        // so we always return false to allow the write. This includes the case where the uncompressed
+        // size exceeds the threshold, because many inputs compress significantly (e.g. sketches with
+        // many near-identical bins).
         assert!(!estimator.would_write_exceed_threshold(10, 100));
-        assert!(estimator.would_write_exceed_threshold(100, 90));
+        assert!(!estimator.would_write_exceed_threshold(100, 90));
     }
 
     #[test]

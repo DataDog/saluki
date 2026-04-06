@@ -1,6 +1,6 @@
 //! Sketch bin representation.
 
-const MAX_BIN_WIDTH: u16 = u16::MAX;
+const MAX_BIN_WIDTH: u32 = u32::MAX;
 
 /// A sketch bin.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -10,7 +10,7 @@ pub struct Bin {
     pub(crate) k: i16,
 
     /// The number of observations within the bin.
-    pub(crate) n: u16,
+    pub(crate) n: u32,
 }
 
 impl Bin {
@@ -21,7 +21,7 @@ impl Bin {
 
     /// Returns the number of observations within the bin.
     pub fn count(&self) -> u32 {
-        self.n as u32
+        self.n
     }
 
     #[allow(clippy::cast_possible_truncation)]
@@ -33,8 +33,8 @@ impl Bin {
         }
 
         // SAFETY: We already know `next` is less than or equal to `MAX_BIN_WIDTH` if we got here, and `MAX_BIN_WIDTH`
-        // is u16, so next can't possibly be larger than a u16.
-        self.n = next as u16;
+        // is u32, so next can't possibly be larger than a u32.
+        self.n = next as u32;
         0
     }
 }

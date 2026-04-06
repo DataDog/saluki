@@ -1114,4 +1114,30 @@ mod tests {
 
         prop_assert_eq!(original_inputs_len, flushed_inputs_len);
     }
+
+    #[tokio::test]
+    async fn first_input_larger_than_compressed_limit_does_not_panic() {
+        // Regression test for a panic triggered when the very first metric's uncompressed encoded
+        // size exceeded the configured compressed size limit.
+        //
+        // Previously, `CompressionEstimator::would_write_exceed_threshold` had an early exit that
+        // returned `true` when `len > threshold`, even before any compressed data had been written.
+        // This caused `encode_inner` to return `Ok(false)` (signal to flush), but since nothing had
+        // been written, `flush()` returned an empty vec, hitting:
+        //   panic!("builder told us to flush, but gave us nothing")
+        //
+        // The fix removes that early exit. When no compressed data has been written yet, the
+        // estimator returns `false` (allow the write), so the large input proceeds to the compressor
+        // rather than triggering a premature flush of an empty builder.
+        let large_input = "x".repeat(10_000);
+
+        // Compressed limit set below the uncompressed input length to trigger the old bug.
+        let encoder = TestEncoder::new(1_000, usize::MAX, "/submit");
+        let mut request_builder = create_zstd_compression_request_builder(encoder).await;
+
+        // This must not panic. The input may produce an oversized payload on flush, but that is
+        // handled gracefully — the important invariant is that encode itself does not panic.
+        let result = request_builder.encode(large_input).await;
+        assert!(result.is_ok(), "encode returned an error: {:?}", result.err());
+    }
 }

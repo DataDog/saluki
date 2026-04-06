@@ -1,6 +1,6 @@
 //! Agent-specific DDSketch implementation.
 
-use std::{cmp::Ordering, mem};
+use std::cmp::Ordering;
 
 use datadog_protos::metrics::Dogsketch;
 use ordered_float::OrderedFloat;
@@ -21,7 +21,7 @@ static SKETCH_CONFIG: Config = Config::new(
     DDSKETCH_CONF_NORM_MIN,
     DDSKETCH_CONF_NORM_BIAS,
 );
-const MAX_BIN_WIDTH: u16 = u16::MAX;
+const MAX_BIN_WIDTH: u32 = u32::MAX;
 
 /// [DDSketch][ddsketch] implementation based on the [Datadog Agent][ddagent].
 ///
@@ -451,7 +451,7 @@ impl DDSketch {
     /// Used only for unit testing so that we can create a sketch with an exact layout, which allows testing around the
     /// resulting bins when feeding in specific values, as well as generating explicitly bad layouts for testing.
     #[allow(dead_code)]
-    pub(crate) fn insert_raw_bin(&mut self, k: i16, n: u16) {
+    pub(crate) fn insert_raw_bin(&mut self, k: i16, n: u32) {
         let v = SKETCH_CONFIG.bin_lower_bound(k);
         self.adjust_basic_stats(v, u64::from(n));
         self.bins.push(Bin { k, n });
@@ -557,7 +557,7 @@ impl DDSketch {
 
         for bin in &self.bins {
             k.push(i32::from(bin.k));
-            n.push(u32::from(bin.n));
+            n.push(bin.n);
         }
 
         dogsketch.set_k(k);
@@ -620,7 +620,6 @@ impl TryFrom<Dogsketch> for DDSketch {
 
         for (k, n) in k.into_iter().zip(n.into_iter()) {
             let k = i16::try_from(k).map_err(|_| "bin key overflows i16")?;
-            let n = u16::try_from(n).map_err(|_| "bin count overflows u16")?;
 
             sketch.bins.push(Bin { k, n });
         }
@@ -654,61 +653,335 @@ fn trim_left(bins: &mut SmallVec<[Bin; 4]>, bin_limit: u16) {
     // We won't ever support Vector running on anything other than a 32-bit platform and above, I imagine, so this
     // should always be safe.
     let bin_limit = bin_limit as usize;
-    if bin_limit == 0 || bins.len() < bin_limit {
+    if bin_limit == 0 || bins.len() <= bin_limit {
         return;
     }
 
     let num_to_remove = bins.len() - bin_limit;
-    let mut missing = 0;
-    let mut overflow = SmallVec::<[Bin; 4]>::new();
+    let mut missing: u64 = 0;
 
+    // Sum all mass from the bins being removed. Per CollapsingLowestDenseStore in sketches-go,
+    // all removed mass collapses into the first kept bin (the new minimum index).
     for bin in bins.iter().take(num_to_remove) {
         missing += u64::from(bin.n);
-
-        if missing > u64::from(MAX_BIN_WIDTH) {
-            overflow.push(Bin {
-                k: bin.k,
-                n: MAX_BIN_WIDTH,
-            });
-
-            missing -= u64::from(MAX_BIN_WIDTH);
-        }
     }
 
-    let bin_remove = &mut bins[num_to_remove];
-    missing = bin_remove.increment(missing);
-    if missing > 0 {
-        generate_bins(&mut overflow, bin_remove.k, missing);
-    }
+    // Fold the accumulated mass into the first kept bin, matching Go's `bins[newMinIndex] += n`.
+    // Any remainder that overflows u32::MAX is discarded — this requires >4B observations in a
+    // single collapsed bin and is an intentional divergence from the Datadog Agent (which uses
+    // float64 counts and never loses mass).
+    bins[num_to_remove].increment(missing);
 
-    let overflow_len = overflow.len();
-    let (_, bins_end) = bins.split_at(num_to_remove);
-    overflow.extend_from_slice(bins_end);
-
-    // I still don't yet understand how this works, since you'd think bin limit should be the overall limit of the
-    // number of bins, but we're allowing more than that.. :thinkies:
-    overflow.truncate(bin_limit + overflow_len);
-
-    mem::swap(bins, &mut overflow);
+    // Drop the removed prefix, leaving exactly bin_limit bins.
+    bins.drain(0..num_to_remove);
 }
 
 #[allow(clippy::cast_possible_truncation)]
 fn generate_bins(bins: &mut SmallVec<[Bin; 4]>, k: i16, n: u64) {
     if n < u64::from(MAX_BIN_WIDTH) {
-        // SAFETY: Cannot truncate `n`, as it's less than a u16 value.
-        bins.push(Bin { k, n: n as u16 });
+        // SAFETY: `n < MAX_BIN_WIDTH = u32::MAX`, so it fits in u32.
+        bins.push(Bin { k, n: n as u32 });
     } else {
         let overflow = n % u64::from(MAX_BIN_WIDTH);
         if overflow != 0 {
             bins.push(Bin {
                 k,
-                // SAFETY: Cannot truncate `overflow`, as it's modulo'd by a u16 value.
-                n: overflow as u16,
+                // SAFETY: `overflow = n % u32::MAX`, so overflow <= u32::MAX - 1, which fits in u32.
+                n: overflow as u32,
             });
         }
 
         for _ in 0..(n / u64::from(MAX_BIN_WIDTH)) {
             bins.push(Bin { k, n: MAX_BIN_WIDTH });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Helper: build a SmallVec<[Bin; 4]> from (k, n) pairs. Assumes input is already sorted by k.
+    fn make_bins(pairs: &[(i16, u32)]) -> SmallVec<[Bin; 4]> {
+        pairs.iter().map(|&(k, n)| Bin { k, n }).collect()
+    }
+
+    // Helper: extract (k, n) pairs from a SmallVec for easy assertion.
+    fn to_pairs(bins: &SmallVec<[Bin; 4]>) -> Vec<(i16, u32)> {
+        bins.iter().map(|b| (b.k, b.n)).collect()
+    }
+
+    /// Basic collapse: when bins exceed the limit, the mass from removed bins is merged
+    /// into the first kept bin (lowest surviving key). This mirrors the CollapsingLowestDenseStore
+    /// semantics from sketches-go: all bins with index < (maxIndex - limit + 1) collapse into
+    /// the bin at (maxIndex - limit + 1).
+    ///
+    /// Input:  [(0,2), (1,3), (2,4), (3,5)]  limit=2  →  remove 2 bins
+    /// missing = n[0] + n[1] = 2 + 3 = 5
+    /// first kept bin: k=2, n=4 → increment by 5 → n=9
+    /// Result: [(2,9), (3,5)]
+    #[test]
+    fn trim_left_collapses_removed_mass_into_first_kept_bin() {
+        let mut bins = make_bins(&[(0, 2), (1, 3), (2, 4), (3, 5)]);
+        trim_left(&mut bins, 2);
+        assert_eq!(to_pairs(&bins), vec![(2, 9), (3, 5)]);
+    }
+
+    /// Total count is preserved exactly when the collapse fits within a single u32 bin.
+    ///
+    /// Input:  [(10,5), (20,3), (30,7)]  limit=2  →  remove 1 bin
+    /// missing = 5; first kept bin k=20, n=3 → n=8
+    /// Result: [(20,8), (30,7)], total=15 == 5+3+7
+    #[test]
+    fn trim_left_preserves_total_count_when_no_overflow() {
+        let mut bins = make_bins(&[(10, 5), (20, 3), (30, 7)]);
+        let total_before: u64 = bins.iter().map(|b| u64::from(b.n)).sum();
+        trim_left(&mut bins, 2);
+        let total_after: u64 = bins.iter().map(|b| u64::from(b.n)).sum();
+        assert_eq!(to_pairs(&bins), vec![(20, 8), (30, 7)]);
+        assert_eq!(total_before, total_after);
+    }
+
+    /// With u32 bin counts, collapsed mass from multiple removed bins fits in a single bin
+    /// without saturation for typical weights, fully preserving the total count.
+    ///
+    /// Input:  [(0,50000), (1,50000), (2,1)]  limit=1  →  remove 2 bins
+    /// missing = 100000; bins[2].increment(100000): 100001 < u32::MAX → n=100001
+    /// bins.drain(0..2). Final: [(2,100001)], all mass preserved.
+    ///
+    /// With the old u16 layout, this same input would have saturated at 65535 and discarded
+    /// 34466 observations. u32 eliminates that loss for any per-bin count below ~4.3 billion.
+    #[test]
+    fn trim_left_preserves_exact_count_with_u32_bins() {
+        let mut bins = make_bins(&[(0, 50000), (1, 50000), (2, 1)]);
+        let total_before: u64 = bins.iter().map(|b| u64::from(b.n)).sum();
+        trim_left(&mut bins, 1);
+        let total_after: u64 = bins.iter().map(|b| u64::from(b.n)).sum();
+        assert_eq!(bins.len(), 1);
+        assert_eq!(bins[0].k, 2);
+        assert_eq!(bins[0].n, 100001);
+        assert_eq!(total_before, total_after, "all mass must be preserved with u32 bins");
+    }
+
+    /// When already at or under the limit, trim_left is a no-op.
+    #[test]
+    fn trim_left_no_op_when_within_limit() {
+        let original = make_bins(&[(5, 10), (6, 20)]);
+        let mut bins = original.clone();
+        trim_left(&mut bins, 2);
+        assert_eq!(to_pairs(&bins), to_pairs(&original));
+        trim_left(&mut bins, 3);
+        assert_eq!(to_pairs(&bins), to_pairs(&original));
+    }
+
+    /// Regression test for trim_left bin count with large per-sample weights.
+    ///
+    /// With the old u16 layout, a sample weight of ~260M would generate ceil(260M / 65535) = 3969
+    /// bins per key, causing bin count explosion and an encoder panic. With u32, the same weight
+    /// fits in a single bin (260M < u32::MAX ≈ 4.3B), so one insert_n call produces exactly one
+    /// bin per key and the bin limit is trivially respected.
+    ///
+    /// This test inserts several values with a weight representative of what ADP receives when
+    /// clamping an incoming sample rate of 3e-9 to its minimum of 3.845e-9 (~260M per sample),
+    /// then asserts the bin count never exceeds DDSKETCH_CONF_BIN_LIMIT.
+    #[test]
+    fn trim_left_respects_bin_limit_with_large_weights() {
+        // Weight corresponding to ADP's minimum safe sample rate (1 / 3.845e-9 ≈ 260_078_024).
+        // With u32 bins, this fits in a single bin per key (260_078_024 < u32::MAX).
+        let weight: u64 = 260_078_024;
+        let bin_limit = usize::from(DDSKETCH_CONF_BIN_LIMIT);
+
+        let mut sketch = DDSketch::default();
+
+        // Insert enough distinct values to repeatedly trigger trim_left.  Ten values is more
+        // than sufficient; two already exceed the bin limit without the fix.
+        for i in 1..=10_i32 {
+            sketch.insert_n(f64::from(i), weight);
+            assert!(
+                sketch.bins().len() <= bin_limit,
+                "bin count {} exceeded limit {} after inserting {} value(s) at weight {}",
+                sketch.bins().len(),
+                bin_limit,
+                i,
+                weight,
+            );
+        }
+    }
+
+    /// When the accumulated missing mass plus the first kept bin's existing count exceeds
+    /// u32::MAX, increment saturates at u32::MAX and the remainder is discarded.
+    ///
+    /// Input:  [(0, u32::MAX), (1, 1)]  limit=1  →  remove 1 bin
+    /// missing = u32::MAX; bins[1].increment(u32::MAX): next = u32::MAX+1 > u32::MAX
+    /// → n = u32::MAX, remainder = 1 (discarded)
+    /// Final: [(1, u32::MAX)] — 1 observation lost
+    #[test]
+    fn trim_left_saturates_first_kept_bin_and_discards_remainder() {
+        let mut bins = make_bins(&[(0, u32::MAX), (1, 1)]);
+        trim_left(&mut bins, 1);
+        assert_eq!(bins.len(), 1);
+        assert_eq!(bins[0].k, 1);
+        assert_eq!(bins[0].n, u32::MAX);
+    }
+
+    /// Collapsing works correctly with negative bin keys. The highest key always survives;
+    /// lower (more negative) keys collapse into the first kept key.
+    /// Adapted from TestAddIntDatasets in sketches-go which covers negative indices.
+    ///
+    /// Input:  [(-3,5), (-2,3), (-1,2), (0,1)]  limit=2  →  remove 2 bins
+    /// missing = 5+3=8; bins[-1].increment(8): 2+8=10 < u32::MAX → n=10
+    /// Final: [(-1,10), (0,1)]
+    #[test]
+    fn trim_left_collapses_negative_keys_correctly() {
+        let mut bins = make_bins(&[(-3, 5), (-2, 3), (-1, 2), (0, 1)]);
+        trim_left(&mut bins, 2);
+        assert_eq!(to_pairs(&bins), vec![(-1, 10), (0, 1)]);
+    }
+
+    /// Monotonic ascending sequence: inserting keys 0..N where N > limit collapses the
+    /// lowest keys into the first kept key, with their total mass summed there.
+    /// Adapted from TestAddMonotonous in sketches-go.
+    ///
+    /// Input:  [(0,1),(1,1),(2,1),(3,1),(4,1),(5,1),(6,1),(7,1),(8,1),(9,1)]  limit=4
+    /// num_to_remove=6; missing=6; bins[6].increment(6): 1+6=7 → n=7
+    /// Final: [(6,7),(7,1),(8,1),(9,1)]  — only top 4 keys kept, collapsed mass in first
+    #[test]
+    fn trim_left_monotonic_ascending_keeps_top_keys() {
+        let pairs: Vec<(i16, u32)> = (0..10).map(|i| (i, 1)).collect();
+        let mut bins = make_bins(&pairs);
+        trim_left(&mut bins, 4);
+        assert_eq!(to_pairs(&bins), vec![(6, 7), (7, 1), (8, 1), (9, 1)]);
+    }
+}
+
+/// Property-based tests for trim_left, adapted from TestAddFuzzy / TestAddIntFuzzy /
+/// TestMergeFuzzy in sketches-go/ddsketch/store/store_test.go.
+///
+/// The sketches-go suite generates random (index, count) inputs, passes them through
+/// CollapsingLowestDenseStore, and asserts structural invariants using the `collapsingLowest`
+/// oracle transform. We do the same here: generate random sorted distinct-key bins, run
+/// trim_left, and check the same invariants.
+#[cfg(test)]
+mod property_tests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    /// Strategy: a non-empty sorted vec of distinct (k: i16, n: u32) pairs.
+    /// Keys are drawn from i16 without repetition; counts are 1..=u32::MAX.
+    fn arb_bins(max_len: usize) -> impl Strategy<Value = SmallVec<[Bin; 4]>> {
+        proptest::collection::btree_map(any::<i16>(), 1u32..=u32::MAX, 1..=max_len)
+            .prop_map(|map| map.into_iter().map(|(k, n)| Bin { k, n }).collect())
+    }
+
+    /// Strategy: a bin_limit in 1..=32 (small enough to exercise collapsing frequently).
+    fn arb_limit() -> impl Strategy<Value = u16> {
+        1u16..=32
+    }
+
+    proptest! {
+        /// After trim_left, the bin count must never exceed bin_limit.
+        ///
+        /// Mirrors the core bin-count invariant checked throughout the sketches-go suite:
+        /// every store operation must leave the store within its configured capacity.
+        #[test]
+        fn prop_bin_count_never_exceeds_limit(
+            mut bins in arb_bins(64),
+            limit in arb_limit(),
+        ) {
+            trim_left(&mut bins, limit);
+            prop_assert!(
+                bins.len() <= limit as usize,
+                "bin count {} exceeded limit {}",
+                bins.len(),
+                limit,
+            );
+        }
+
+        /// After trim_left, bins must remain sorted by key with no duplicate keys.
+        ///
+        /// trim_left only drains a prefix and modifies bins[num_to_remove].n in place;
+        /// it must not disturb the ordering of the surviving bins.
+        #[test]
+        fn prop_output_bins_are_sorted_and_distinct(
+            mut bins in arb_bins(64),
+            limit in arb_limit(),
+        ) {
+            trim_left(&mut bins, limit);
+            for window in bins.windows(2) {
+                prop_assert!(
+                    window[0].k < window[1].k,
+                    "bins not strictly sorted after trim_left: {:?} >= {:?}",
+                    window[0].k,
+                    window[1].k,
+                );
+            }
+        }
+
+        /// When bins.len() <= limit, trim_left is a no-op: bins is unchanged.
+        #[test]
+        fn prop_no_op_when_within_limit(
+            bins in arb_bins(16),
+            extra in 0u16..=16,
+        ) {
+            let limit = bins.len() as u16 + extra;
+            let original = bins.clone();
+            let mut bins = bins;
+            trim_left(&mut bins, limit);
+            prop_assert_eq!(bins, original);
+        }
+
+        /// Total count is preserved exactly when no u32 overflow occurs.
+        ///
+        /// This is the key invariant from sketches-go's assertEncodeBins:
+        /// store.TotalCount() must equal the sum of all inserted counts.
+        /// We restrict counts to keep the collapsed sum safely below u32::MAX
+        /// (sketches-go never loses mass because it uses float64; we match that
+        /// guarantee for all inputs where the collapsed bin doesn't overflow u32).
+        ///
+        /// Strategy: counts capped at 1000 so that even if all 64 bins collapse
+        /// into one the sum (≤ 64_000) is far below u32::MAX.
+        #[test]
+        fn prop_total_count_preserved_when_no_overflow(
+            mut bins in proptest::collection::btree_map(any::<i16>(), 1u32..=1000, 1..=64usize)
+                .prop_map(|map| -> SmallVec<[Bin; 4]> {
+                    map.into_iter().map(|(k, n)| Bin { k, n }).collect()
+                }),
+            limit in arb_limit(),
+        ) {
+            let total_before: u64 = bins.iter().map(|b| u64::from(b.n)).sum();
+            trim_left(&mut bins, limit);
+            let total_after: u64 = bins.iter().map(|b| u64::from(b.n)).sum();
+            prop_assert_eq!(
+                total_before, total_after,
+                "total count changed: before={}, after={}",
+                total_before, total_after,
+            );
+        }
+
+        /// The surviving bins are always the bin_limit highest-key bins from the input.
+        ///
+        /// This is the direct encoding of the collapsingLowest oracle from sketches-go:
+        /// minCollapsedIndex = maxIndex - limit + 1; all bins with key < minCollapsedIndex
+        /// are removed (their mass folds into minCollapsedIndex). The output keys must
+        /// exactly match the top min(len, limit) keys of the input.
+        #[test]
+        fn prop_output_keys_are_highest_from_input(
+            mut bins in arb_bins(64),
+            limit in arb_limit(),
+        ) {
+            let all_keys: Vec<i16> = bins.iter().map(|b| b.k).collect();
+            let expected_len = all_keys.len().min(limit as usize);
+            let expected_keys: Vec<i16> = all_keys[all_keys.len() - expected_len..].to_vec();
+
+            trim_left(&mut bins, limit);
+
+            let actual_keys: Vec<i16> = bins.iter().map(|b| b.k).collect();
+            prop_assert_eq!(
+                actual_keys, expected_keys,
+                "output keys don't match top {} keys of input",
+                limit,
+            );
         }
     }
 }
