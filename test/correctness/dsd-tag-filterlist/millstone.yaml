@@ -15,12 +15,18 @@ corpus:
       tag_names:
         - "env"
         - "pod"
+        - "service"
+        - "version"
       tag_values:
         - "prod"
         - "staging"
         - "pod-a"
         - "pod-b"
         - "pod-c"
+        - "api"
+        - "worker"
+        - "v1"
+        - "v2"
       name_length:
         inclusive:
           min: 1
@@ -30,7 +36,7 @@ corpus:
           min: 3
           max: 16
       tags_per_msg:
-        constant: 2
+        constant: 4
       unique_tag_ratio: 1.0
       value:
         float_probability: 0.5
