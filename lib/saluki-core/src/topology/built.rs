@@ -8,10 +8,35 @@ use saluki_common::task::JoinSetExt as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
 use tokio::{
+    runtime::Handle,
     sync::mpsc,
     task::{AbortHandle, JoinSet},
 };
 use tracing::{debug, error_span};
+
+/// Configuration for the worker pool used by the topology.
+///
+/// This controls where tasks spawned by components themselves are executed. When components
+/// have heavy, compute-bound tasks that they need to execute, they should generally be spawned on the worker pool (also known as the "global thread pool") to
+/// avoid scheduling contention/starvation with the core component tasks.
+pub enum WorkerPoolConfiguration {
+    /// Use the ambient Tokio runtime (that is, `Handle::current()`).
+    ///
+    /// Component subtasks are spawned on whatever runtime is currently active.
+    /// Useful when the topology is embedded in an application that already
+    /// manages its own runtime, such as a Lambda extension.
+    Ambient,
+
+    /// Create a dedicated, multi-threaded Tokio runtime with 8 worker threads.
+    ///
+    /// This is the default behavior.
+    Dedicated,
+
+    /// Use an externally provided runtime.
+    ///
+    /// Component subtasks are spawned on the runtime associated with the given handle.
+    Explicit(Handle),
+}
 
 use super::{
     graph::Graph, running::RunningTopology, shutdown::ComponentShutdownCoordinator, ComponentId, EventsBuffer,
@@ -49,6 +74,7 @@ pub struct BuiltTopology {
     forwarders: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Forwarder + Send>>>>,
     component_token: AllocationGroupToken,
     interconnect_capacity: NonZeroUsize,
+    worker_pool_config: WorkerPoolConfiguration,
 }
 
 impl BuiltTopology {
@@ -76,10 +102,56 @@ impl BuiltTopology {
             forwarders,
             component_token,
             interconnect_capacity,
+            worker_pool_config: WorkerPoolConfiguration::Dedicated,
+        }
+    }
+
+    /// Configures the topology to use the ambient Tokio runtime.
+    ///
+    /// Component subtasks will be spawned on whatever runtime is currently active
+    /// when `spawn` is called. This avoids creating a dedicated thread pool,
+    /// which is useful for resource-constrained environments like Lambda.
+    pub fn with_ambient_worker_pool(mut self) -> Self {
+        self.worker_pool_config = WorkerPoolConfiguration::Ambient;
+        self
+    }
+
+    /// Configures the topology to use an externally provided Tokio runtime.
+    ///
+    /// Component subtasks will be spawned on the runtime associated with the given handle.
+    pub fn with_explicit_worker_pool(mut self, handle: Handle) -> Self {
+        self.worker_pool_config = WorkerPoolConfiguration::Explicit(handle);
+        self
+    }
+
+    fn resolve_worker_pool_handle(&self) -> Result<Handle, GenericError> {
+        match &self.worker_pool_config {
+            WorkerPoolConfiguration::Ambient => Ok(Handle::current()),
+            WorkerPoolConfiguration::Dedicated => {
+                let thread_pool = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(8)
+                    .enable_all()
+                    .build()
+                    .error_context("Failed to build asynchronous thread pool runtime.")?;
+                let handle = thread_pool.handle().clone();
+
+                std::thread::spawn(move || {
+                    thread_pool.block_on(std::future::pending::<()>());
+                });
+
+                Ok(handle)
+            }
+            WorkerPoolConfiguration::Explicit(handle) => Ok(handle.clone()),
         }
     }
 
     /// Spawns the topology.
+    ///
+    /// By default, a dedicated, multi-threaded Tokio runtime (8 threads) is created for
+    /// components to spawn compute-heavy subtasks on. Use
+    /// [`with_ambient_worker_pool`][Self::with_ambient_worker_pool] or
+    /// [`with_explicit_worker_pool`][Self::with_explicit_worker_pool] to change this
+    /// before calling `spawn`.
     ///
     /// A handle is returned that can be used to trigger the topology to shutdown.
     ///
@@ -93,17 +165,7 @@ impl BuiltTopology {
 
         let _guard = self.component_token.enter();
 
-        let thread_pool = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(8)
-            .enable_all()
-            .build()
-            .error_context("Failed to build asynchronous thread pool runtime.")?;
-        let thread_pool_handle = thread_pool.handle().clone();
-
-        std::thread::spawn(move || {
-            thread_pool.block_on(std::future::pending::<()>());
-        });
-
+        let thread_pool_handle = self.resolve_worker_pool_handle()?;
         let topology_context = TopologyContext::new(memory_limiter, health_registry.clone(), thread_pool_handle);
 
         let mut component_tasks = JoinSet::new();
