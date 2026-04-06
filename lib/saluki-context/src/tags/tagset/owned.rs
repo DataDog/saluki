@@ -222,30 +222,31 @@ impl TagSet {
 
     /// Scans this tag set and collects the indices of tags that should be removed according to the predicate.
     ///
-    /// Tags for which `f` returns `false` will have their indices appended to the provided vectors.
+    /// Tags for which `f` returns `false` have their indices recorded in the provided bitsets.
     /// `base_removals` receives flattened base indices. `addition_removals` receives indices into
     /// the additions overlay.
     ///
     /// This is a read-only scan: no mutation occurs. Use [`apply_removals`][TagSet::apply_removals]
-    /// to apply the collected indices.
+    /// to apply the collected indices. Multiple calls accumulate correctly because bitset sets are
+    /// idempotent; tags already flagged for removal are skipped.
     pub(crate) fn collect_removals<F>(
-        &self, mut f: F, base_removals: &mut Vec<usize>, addition_removals: &mut Vec<usize>,
+        &self, mut f: F, base_removals: &mut ContiguousBitSet, addition_removals: &mut ContiguousBitSet,
     ) where
         F: FnMut(&Tag) -> bool,
     {
-        // Scan additions.
+        // Scan additions, skipping those already flagged.
         if let Some(overlay) = &self.overlay {
             for (i, tag) in overlay.additions.iter().enumerate() {
-                if !f(tag) {
-                    addition_removals.push(i);
+                if !addition_removals.is_set(i) && !f(tag) {
+                    addition_removals.set(i);
                 }
             }
         }
 
-        // Scan base tags.
+        // Scan base tags, skipping those already removed (by the overlay) or already flagged.
         for (idx, base_tag) in base_indexed_iter(&self.base) {
-            if !is_overlay_removed(&self.overlay, idx) && !f(base_tag) {
-                base_removals.push(idx);
+            if !is_overlay_removed(&self.overlay, idx) && !base_removals.is_set(idx) && !f(base_tag) {
+                base_removals.set(idx);
             }
         }
     }
@@ -253,21 +254,21 @@ impl TagSet {
     /// Applies previously collected removal indices from [`collect_removals`][TagSet::collect_removals].
     ///
     /// `base_removals` contains flattened base indices to mark as removed.
-    /// `addition_removals` contains indices into the additions overlay to remove (must be sorted ascending).
-    pub(crate) fn apply_removals(&mut self, base_removals: &[usize], addition_removals: &[usize]) {
-        // Apply addition removals in reverse order to maintain index validity.
+    /// `addition_removals` contains indices of additions to remove.
+    pub(crate) fn apply_removals(&mut self, base_removals: &ContiguousBitSet, addition_removals: &ContiguousBitSet) {
+        // Apply addition removals in descending order to maintain index validity.
         if !addition_removals.is_empty() {
             let overlay = self.ensure_overlay();
-            for &i in addition_removals.iter().rev() {
+            for i in addition_removals.into_iter().rev() {
                 overlay.additions.remove(i);
             }
         }
 
-        // Apply base removals.
+        // Apply base removals by setting the corresponding bits in the overlay.
         if !base_removals.is_empty() {
             let overlay = self.ensure_overlay();
-            for &idx in base_removals {
-                overlay.removals.set(idx);
+            for i in base_removals {
+                overlay.removals.set(i);
             }
         }
     }

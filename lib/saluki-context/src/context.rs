@@ -1,6 +1,7 @@
 use std::{fmt, hash, sync::Arc};
 
 use metrics::Gauge;
+use saluki_common::collections::ContiguousBitSet;
 use stringtheory::MetaString;
 
 use crate::{
@@ -222,14 +223,14 @@ impl fmt::Display for Context {
 
 /// Reusable scratch space for [`TagSetMutView`] operations.
 ///
-/// Holding a long-lived instance across calls amortizes vector allocations. The vectors are
+/// Holding a long-lived instance across calls amortizes bitset allocations. The bitsets are
 /// cleared automatically when the associated [`TagSetMutView`] is dropped.
 #[derive(Debug, Default)]
 pub struct TagSetMutViewState {
-    tag_base_removals: Vec<usize>,
-    tag_addition_removals: Vec<usize>,
-    origin_base_removals: Vec<usize>,
-    origin_addition_removals: Vec<usize>,
+    tag_base_removals: ContiguousBitSet,
+    tag_addition_removals: ContiguousBitSet,
+    origin_base_removals: ContiguousBitSet,
+    origin_addition_removals: ContiguousBitSet,
 }
 
 impl TagSetMutViewState {
@@ -239,10 +240,10 @@ impl TagSetMutViewState {
     }
 
     fn clear(&mut self) {
-        self.tag_base_removals.clear();
-        self.tag_addition_removals.clear();
-        self.origin_base_removals.clear();
-        self.origin_addition_removals.clear();
+        self.tag_base_removals.clear_all();
+        self.tag_addition_removals.clear_all();
+        self.origin_base_removals.clear_all();
+        self.origin_addition_removals.clear_all();
     }
 }
 
@@ -814,5 +815,74 @@ mod tests {
 
         assert_eq!(removed, 2);
         assert!(ctx.tags().is_empty());
+    }
+
+    #[test]
+    fn mut_view_multiple_retain_calls_deduplicates() {
+        // Two retain calls that both reject the same addition tag must not panic.
+        // Semantics: a tag survives only if ALL predicates accept it.
+        let mut ctx = Context::from_static_parts("metric", &["base:tag"]);
+        ctx.mutate_tags(|tags| {
+            tags.insert_tag(Tag::from("added:a"));
+            tags.insert_tag(Tag::from("added:b"));
+        });
+        assert_eq!(ctx.tags().len(), 3);
+
+        let mut state = TagSetMutViewState::new();
+        let mut view = ctx.tags_mut_view(&mut state);
+        // First predicate removes "added:a" (keeps base:tag and added:b).
+        view.retain_tags(|tag| tag.as_str() != "added:a");
+        // Second predicate removes "base:tag" (keeps added:a and added:b).
+        // Combined effect: only "added:b" survives both predicates.
+        // "added:a" is flagged by both calls -- its duplicate index must be deduplicated.
+        view.retain_tags(|tag| tag.name() != "base");
+        let removed = view.finish();
+
+        assert_eq!(removed, 2);
+        assert_eq!(ctx.tags().len(), 1);
+        assert!(ctx.tags().has_tag("added:b"));
+    }
+
+    #[test]
+    fn mut_view_multiple_retain_origin_calls_deduplicates() {
+        let mut ctx = context_with_origin("metric", &[], &["origin:a", "origin:b", "origin:c"]);
+        let mut state = TagSetMutViewState::new();
+
+        let mut view = ctx.tags_mut_view(&mut state);
+        // Both predicates reject "origin:c".
+        view.retain_origin_tags(|tag| tag.as_str() != "origin:c");
+        view.retain_origin_tags(|tag| tag.as_str() == "origin:a");
+        let removed = view.finish();
+
+        assert_eq!(removed, 2);
+        assert_eq!(ctx.origin_tags().len(), 1);
+        assert!(ctx.origin_tags().has_tag("origin:a"));
+    }
+
+    #[test]
+    fn mut_view_multiple_retain_equivalent_to_combined_predicate() {
+        let base = Context::from_static_parts("metric", &["env:prod", "service:web", "region:us", "cluster:main"]);
+
+        // Path A: two separate retain calls.
+        let mut via_two = base.clone();
+        let mut state = TagSetMutViewState::new();
+        let mut view = via_two.tags_mut_view(&mut state);
+        view.retain_tags(|tag| tag.name() != "region");
+        view.retain_tags(|tag| tag.name() != "cluster");
+        view.finish();
+
+        // Path B: single combined predicate.
+        let mut via_one = base.clone();
+        let mut state2 = TagSetMutViewState::new();
+        let mut view2 = via_one.tags_mut_view(&mut state2);
+        view2.retain_tags(|tag| tag.name() != "region" && tag.name() != "cluster");
+        view2.finish();
+
+        // Path C: direct mutation.
+        let mut via_direct = base.clone();
+        via_direct.mutate_tags(|tags| tags.retain(|tag| tag.name() != "region" && tag.name() != "cluster"));
+
+        assert_eq!(via_two, via_one);
+        assert_eq!(via_two, via_direct);
     }
 }

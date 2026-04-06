@@ -61,6 +61,97 @@ impl ContiguousBitSet {
         let bit = index % 64;
         self.words.get(word).is_some_and(|w| w & (1 << bit) != 0)
     }
+
+    /// Clears all bits, resetting the bitset to its initial empty state.
+    ///
+    /// All existing capacity is retained.
+    pub fn clear_all(&mut self) {
+        for w in &mut self.words {
+            *w = 0;
+        }
+    }
+}
+
+impl<'a> IntoIterator for &'a ContiguousBitSet {
+    type Item = usize;
+    type IntoIter = Iter<'a>;
+
+    fn into_iter(self) -> Iter<'a> {
+        let len = self.words.len();
+        Iter {
+            words: &self.words,
+            front: 0,
+            back: len,
+            front_bits: self.words.first().copied().unwrap_or(0),
+            back_bits: if len > 1 { self.words[len - 1] } else { 0 },
+        }
+    }
+}
+
+/// Iterator over set bit indices of a [`ContiguousBitSet`].
+///
+/// Indices are yielded in ascending order: lowest to highest.
+pub struct Iter<'a> {
+    words: &'a [u64],
+    front: usize,
+    back: usize,
+    front_bits: u64,
+    back_bits: u64,
+}
+
+impl Iterator for Iter<'_> {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<usize> {
+        loop {
+            if self.front_bits != 0 {
+                let bit = self.front_bits.trailing_zeros() as usize;
+                self.front_bits &= self.front_bits - 1; // Clear lowest set bit.
+                return Some(self.front * 64 + bit);
+            }
+            self.front += 1;
+            if self.front >= self.back {
+                return None;
+            }
+            self.front_bits = if self.front == self.back - 1 {
+                // Reached back's word -- take its remaining bits.
+                std::mem::take(&mut self.back_bits)
+            } else {
+                self.words[self.front]
+            };
+        }
+    }
+}
+
+impl DoubleEndedIterator for Iter<'_> {
+    fn next_back(&mut self) -> Option<usize> {
+        loop {
+            if self.back <= self.front {
+                return None;
+            }
+            if self.back > self.front + 1 {
+                // Back is at a separate word from front.
+                if self.back_bits != 0 {
+                    let bit = 63 - self.back_bits.leading_zeros() as usize;
+                    self.back_bits &= !(1u64 << bit); // Clear highest set bit.
+                    return Some((self.back - 1) * 64 + bit);
+                }
+                self.back -= 1;
+                if self.back > self.front + 1 {
+                    self.back_bits = self.words[self.back - 1];
+                }
+                // Otherwise back == front + 1: fall through to front_bits on next iteration.
+                continue;
+            }
+            // back == front + 1: same word as front. Consume from front_bits (high end).
+            if self.front_bits != 0 {
+                let bit = 63 - self.front_bits.leading_zeros() as usize;
+                self.front_bits &= !(1u64 << bit); // Clear highest set bit.
+                return Some(self.front * 64 + bit);
+            }
+            return None;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -143,5 +234,71 @@ mod tests {
         assert!(!bs.is_set(10));
         assert!(cloned.is_set(5));
         assert!(cloned.is_set(10));
+    }
+
+    #[test]
+    fn iter_ascending() {
+        let mut bs = ContiguousBitSet::new();
+        bs.set(3);
+        bs.set(0);
+        bs.set(127);
+        bs.set(64);
+
+        let items: Vec<usize> = bs.into_iter().collect();
+        assert_eq!(items, vec![0, 3, 64, 127]);
+    }
+
+    #[test]
+    fn iter_descending() {
+        let mut bs = ContiguousBitSet::new();
+        bs.set(3);
+        bs.set(0);
+        bs.set(127);
+        bs.set(64);
+
+        let items: Vec<usize> = bs.into_iter().rev().collect();
+        assert_eq!(items, vec![127, 64, 3, 0]);
+    }
+
+    #[test]
+    fn iter_interleaved_single_word() {
+        let mut bs = ContiguousBitSet::new();
+        bs.set(1);
+        bs.set(3);
+        bs.set(5);
+        bs.set(7);
+
+        let mut iter = bs.into_iter();
+        assert_eq!(iter.next(), Some(1));
+        assert_eq!(iter.next_back(), Some(7));
+        assert_eq!(iter.next(), Some(3));
+        assert_eq!(iter.next_back(), Some(5));
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next_back(), None);
+    }
+
+    #[test]
+    fn iter_interleaved_multi_word() {
+        let mut bs = ContiguousBitSet::new();
+        bs.set(0);
+        bs.set(63);
+        bs.set(64);
+        bs.set(127);
+
+        let mut iter = bs.into_iter();
+        assert_eq!(iter.next(), Some(0));
+        assert_eq!(iter.next_back(), Some(127));
+        assert_eq!(iter.next(), Some(63));
+        assert_eq!(iter.next_back(), Some(64));
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next_back(), None);
+    }
+
+    #[test]
+    fn iter_empty() {
+        let bs = ContiguousBitSet::new();
+        let items: Vec<usize> = bs.into_iter().collect();
+        assert!(items.is_empty());
+        assert_eq!(bs.into_iter().next_back(), None);
     }
 }
