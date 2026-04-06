@@ -91,4 +91,5 @@ jobs:
             stringtheory
             tls
             trace obfuscation transform
+            trace sampler
             trace sampler transform
