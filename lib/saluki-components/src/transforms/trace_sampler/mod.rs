@@ -138,7 +138,7 @@ impl TraceSampler {
     // TODO: merge this with the other duplicate "find root span of trace" functions
     /// Find the root span index of a trace.
     fn get_root_span_index(&self, trace: &Trace) -> Option<usize> {
-        // logic taken from here: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/traceutil/trace.go#L36
+        // logic taken from here: https://github.com/DataDog/datadog-agent/blob/be33ac1490c4a34602cbc65a211406b73ad6d00b/pkg/trace/traceutil/trace.go#L36
         let spans = trace.spans();
         if spans.is_empty() {
             return None;
@@ -289,7 +289,7 @@ impl TraceSampler {
     /// Return a tuple containing whether or not the trace should be kept, the decision maker tag (which sampler is responsible),
     /// and the index of the root span used for evaluation.
     fn run_samplers(&mut self, trace: &mut Trace) -> (bool, i32, &'static str, Option<usize>) {
-        // logic taken from: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/agent.go#L1066
+        // logic taken from: https://github.com/DataDog/datadog-agent/blob/be33ac1490c4a34602cbc65a211406b73ad6d00b/pkg/trace/agent/agent.go#L1066
         // Empty trace check
         if trace.spans().is_empty() {
             return (false, PRIORITY_AUTO_DROP, "", None);
@@ -301,7 +301,7 @@ impl TraceSampler {
         };
 
         // ETS: only sample traces containing errors (including exception span events); skip all other samplers.
-        // logic taken from: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/agent.go#L1068
+        // logic taken from: https://github.com/DataDog/datadog-agent/blob/be33ac1490c4a34602cbc65a211406b73ad6d00b/pkg/trace/agent/agent.go#L1068
         if self.error_tracking_standalone {
             if self.trace_contains_error(trace, true) {
                 let keep = self.error_sampler.sample_error(now, trace, root_span_idx);
@@ -315,7 +315,7 @@ impl TraceSampler {
 
         // Run the rare sampler early, before all other samplers. This mirrors the Go agent behavior
         // where the rare sampler runs first to catch traces that would otherwise be dropped entirely.
-        // logic taken from: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/agent.go#L1078
+        // logic taken from: https://github.com/DataDog/datadog-agent/blob/be33ac1490c4a34602cbc65a211406b73ad6d00b/pkg/trace/agent/agent.go#L1078
         let rare = self.rare_sampler.sample(trace, root_span_idx);
 
         // Modern path: ProbabilisticSamplerEnabled = true
@@ -366,7 +366,7 @@ impl TraceSampler {
                 return (true, priority, "", Some(root_span_idx));
             }
         } else if self.is_otlp_trace(trace, root_span_idx) {
-            // some sampling happens upstream in the otlp receiver in the agent: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/api/otlp.go#L572
+            // some sampling happens upstream in the otlp receiver in the agent: https://github.com/DataDog/datadog-agent/blob/be33ac1490c4a34602cbc65a211406b73ad6d00b/pkg/trace/api/otlp.go#L572
             let root_trace_id = trace.spans()[root_span_idx].trace_id();
             if sample_by_rate(root_trace_id, self.otlp_sampling_rate) {
                 if let Some(root_span) = trace.spans_mut().get_mut(root_span_idx) {
@@ -459,12 +459,12 @@ impl TraceSampler {
         }
 
         // ETS: suppress single span sampling and analytics events for dropped traces.
-        // logic taken from: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/agent.go#L976
+        // logic taken from: https://github.com/DataDog/datadog-agent/blob/be33ac1490c4a34602cbc65a211406b73ad6d00b/pkg/trace/agent/agent.go#L976
         if self.error_tracking_standalone {
             return false;
         }
 
-        // logic taken from here: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/agent.go#L980-L990
+        // logic taken from here: https://github.com/DataDog/datadog-agent/blob/be33ac1490c4a34602cbc65a211406b73ad6d00b/pkg/trace/agent/agent.go#L980-L990
         // try single span sampling (keeps spans marked for sampling when trace would be dropped)
         let modified = self.single_span_sampling(trace);
         if !modified {
