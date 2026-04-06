@@ -453,14 +453,15 @@ impl TraceEndpointEncoder {
         let app_version = resolve_app_version(resource_tags);
 
         // Resolve sampling metadata.
-        let (priority, dropped_trace, decision_maker, otlp_sr) = match trace.sampling() {
+        let (priority, dropped_trace, decision_maker, otlp_sr, ets_error) = match trace.sampling() {
             Some(sampling) => (
                 sampling.priority.unwrap_or(DEFAULT_CHUNK_PRIORITY),
                 sampling.dropped_trace,
                 sampling.decision_maker.as_deref(),
                 sampling.otlp_sampling_rate.unwrap_or(sampling_rate),
+                sampling.ets_error,
             ),
-            None => (DEFAULT_CHUNK_PRIORITY, false, None, sampling_rate),
+            None => (DEFAULT_CHUNK_PRIORITY, false, None, sampling_rate, false),
         };
 
         // Now incrementally build the payload.
@@ -560,6 +561,9 @@ impl TraceEndpointEncoder {
                     let mut tags = chunk.tags();
                     if let Some(dm) = decision_maker {
                         tags.write_entry(TAG_DECISION_MAKER, dm)?;
+                    }
+                    if ets_error {
+                        tags.write_entry("_dd.error_tracking_standalone.error", "true")?;
                     }
 
                     self.string_builder.clear();
