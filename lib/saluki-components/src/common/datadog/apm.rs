@@ -35,7 +35,7 @@ const fn default_rare_sampler_tps() -> f64 {
     5.0
 }
 
-const fn default_rare_sampler_cooldown_period_secs() -> f64 {
+const fn default_rare_sampler_cooldown_secs() -> f64 {
     300.0 // 5 minutes
 }
 
@@ -55,18 +55,12 @@ fn default_env() -> MetaString {
     MetaString::from("none")
 }
 
-/// Rare sampler configuration.
+/// Rare sampler tuning configuration (`apm_config.rare_sampler.*`).
+///
+/// The enabled flag lives separately at `apm_config.enable_rare_sampler` to match the Datadog
+/// Agent's config layout and allow `DD_APM_ENABLE_RARE_SAMPLER` env var override.
 #[derive(Clone, Debug, Deserialize)]
 struct RareSamplerConfig {
-    /// Enables the rare sampler.
-    ///
-    /// When enabled, the rare sampler catches traces for (env, service, name, resource, error type, http status)
-    /// combinations that are not seen by the priority sampler.
-    ///
-    /// Defaults to `false`.
-    #[serde(default = "default_rare_sampler_enabled")]
-    enabled: bool,
-
     /// Target traces per second for the rare sampler.
     ///
     /// Defaults to 5.0.
@@ -76,8 +70,8 @@ struct RareSamplerConfig {
     /// Cooldown period in seconds before a rare signature can be sampled again.
     ///
     /// Defaults to 300.0 (5 minutes).
-    #[serde(default = "default_rare_sampler_cooldown_period_secs")]
-    cooldown_period_secs: f64,
+    #[serde(default = "default_rare_sampler_cooldown_secs")]
+    cooldown: f64,
 
     /// Max number of span signatures tracked per (env, service) shard before shrinking.
     ///
@@ -89,9 +83,8 @@ struct RareSamplerConfig {
 impl Default for RareSamplerConfig {
     fn default() -> Self {
         Self {
-            enabled: default_rare_sampler_enabled(),
             tps: default_rare_sampler_tps(),
-            cooldown_period_secs: default_rare_sampler_cooldown_period_secs(),
+            cooldown: default_rare_sampler_cooldown_secs(),
             cardinality: default_rare_sampler_cardinality(),
         }
     }
@@ -223,9 +216,19 @@ pub struct ApmConfig {
     #[serde(skip)]
     hostname: MetaString,
 
-    /// Rare sampler configuration.
+    /// Enables the rare sampler.
     ///
-    /// Defaults to disabled.
+    /// Corresponds to YAML `apm_config.enable_rare_sampler` and env var `DD_APM_ENABLE_RARE_SAMPLER`.
+    /// The enabled flag is a top-level `apm_config` key (not nested under `rare_sampler`) to match
+    /// the Datadog Agent's config layout.
+    ///
+    /// Defaults to `false`.
+    #[serde(default = "default_rare_sampler_enabled")]
+    enable_rare_sampler: bool,
+
+    /// Rare sampler tuning parameters (`apm_config.rare_sampler.*`).
+    ///
+    /// Defaults to Go agent defaults (5 TPS, 5-minute cooldown, 200 cardinality).
     #[serde(default)]
     rare_sampler: RareSamplerConfig,
 
@@ -237,7 +240,14 @@ pub struct ApmConfig {
 impl ApmConfig {
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let wrapper = config.as_typed::<ApmConfiguration>()?;
-        Ok(wrapper.apm_config)
+        let mut apm_config = wrapper.apm_config;
+        // `DD_APM_ENABLE_RARE_SAMPLER` maps to the flat figment key `apm_enable_rare_sampler`,
+        // which is separate from the nested serde path `apm_config.enable_rare_sampler`. Read it
+        // explicitly so the env var can override the YAML value (env vars take higher precedence).
+        if let Ok(Some(v)) = config.try_get_typed::<bool>("apm_enable_rare_sampler") {
+            apm_config.enable_rare_sampler = v;
+        }
+        Ok(apm_config)
     }
 
     /// Returns the target traces per second for priority sampling.
@@ -304,7 +314,7 @@ impl ApmConfig {
 
     /// Returns whether the rare sampler is enabled.
     pub const fn rare_sampler_enabled(&self) -> bool {
-        self.rare_sampler.enabled
+        self.enable_rare_sampler
     }
 
     /// Returns the rare sampler target traces per second.
@@ -314,7 +324,7 @@ impl ApmConfig {
 
     /// Returns the rare sampler cooldown period in seconds.
     pub const fn rare_sampler_cooldown_period_secs(&self) -> f64 {
-        self.rare_sampler.cooldown_period_secs
+        self.rare_sampler.cooldown
     }
 
     /// Returns the rare sampler cardinality limit per shard.
@@ -341,6 +351,7 @@ impl Default for ApmConfig {
             peer_tags: Vec::new(),
             default_env: default_env(),
             hostname: MetaString::default(),
+            enable_rare_sampler: default_rare_sampler_enabled(),
             rare_sampler: RareSamplerConfig::default(),
             obfuscation: ObfuscationConfig::default(),
         }
