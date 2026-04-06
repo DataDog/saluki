@@ -103,12 +103,16 @@ impl SynchronousTransformBuilder for TraceSamplerConfiguration {
                 self.apm_config.target_traces_per_second(),
                 ERROR_SAMPLE_RATE,
             ),
-            rare_sampler: rare_sampler::RareSampler::new(
-                self.apm_config.rare_sampler_enabled(),
-                self.apm_config.rare_sampler_tps(),
-                std::time::Duration::from_secs_f64(self.apm_config.rare_sampler_cooldown_period_secs()),
-                self.apm_config.rare_sampler_cardinality(),
-            ),
+            rare_sampler: {
+                let mut rs = rare_sampler::RareSampler::new(
+                    self.apm_config.rare_sampler_enabled(),
+                    self.apm_config.rare_sampler_tps(),
+                    std::time::Duration::from_secs_f64(self.apm_config.rare_sampler_cooldown_period_secs()),
+                    self.apm_config.rare_sampler_cardinality(),
+                );
+                rs.set_metrics(&metrics_builder);
+                rs
+            },
             sampler_metrics: SamplerMetrics::new(metrics_builder),
         };
 
@@ -542,6 +546,11 @@ impl SynchronousTransform for TraceSampler {
             Event::Trace(trace) => !self.process_trace(trace),
             _ => false,
         });
+        self.sampler_metrics.report_sizes(
+            self.priority_sampler.size(),
+            self.no_priority_sampler.size(),
+            self.error_sampler.size(),
+        );
     }
 }
 

@@ -3,19 +3,23 @@
 //! Mirrors the `Metrics` / `MetricsKey` types from
 //! [`datadog-agent/pkg/trace/sampler/metrics.go`](https://github.com/DataDog/datadog-agent/blob/be33ac1490c4a34602cbc65a211406b73ad6d00b/pkg/trace/sampler/metrics.go).
 //!
-//! For each sampling decision, two counters are emitted:
+//! Per-decision counters (updated inline on every trace):
 //! - `datadog.trace_agent.sampler.seen` — every trace that passed through the sampler
 //! - `datadog.trace_agent.sampler.kept` — traces that were kept
 //!
 //! Both are tagged with `sampler`, `target_service`, and (when relevant) `target_env` and
 //! `sampling_priority`.
+//!
+//! Per-sampler gauges (updated after each batch in `transform_buffer`):
+//! - `datadog.trace_agent.sampler.size` — current signature-table size for priority/no_priority/error samplers
 
-use metrics::Counter;
+use metrics::{Counter, Gauge};
 use saluki_common::collections::FastHashMap;
 use saluki_metrics::MetricsBuilder;
 
 const METRIC_SEEN: &str = "datadog.trace_agent.sampler.seen";
 const METRIC_KEPT: &str = "datadog.trace_agent.sampler.kept";
+const METRIC_SIZE: &str = "datadog.trace_agent.sampler.size";
 
 /// The sampler that made a sampling decision.
 ///
@@ -73,22 +77,41 @@ struct CounterKey {
     sampling_priority: Option<i32>,
 }
 
-/// Tracks `datadog.trace_agent.sampler.seen` and `datadog.trace_agent.sampler.kept` per
-/// `(sampler, service, env, priority)` combination.
+/// Tracks all sampler metrics:
+/// - `datadog.trace_agent.sampler.seen` / `kept` per `(sampler, service, env, priority)` combination
+/// - `datadog.trace_agent.sampler.size` gauges for priority, no_priority, and error samplers
 ///
 /// Counter handles are lazily registered and cached so that the hot path — `record()` — pays only
 /// a hash-map lookup after the first observation of a given key combination.
 pub(super) struct SamplerMetrics {
     counters: FastHashMap<CounterKey, (Counter, Counter)>,
+    priority_size: Gauge,
+    no_priority_size: Gauge,
+    error_size: Gauge,
     builder: MetricsBuilder,
 }
 
 impl SamplerMetrics {
     pub(super) fn new(builder: MetricsBuilder) -> Self {
+        let priority_size = builder.register_gauge_with_tags(METRIC_SIZE, ["sampler:priority"]);
+        let no_priority_size = builder.register_gauge_with_tags(METRIC_SIZE, ["sampler:no_priority"]);
+        let error_size = builder.register_gauge_with_tags(METRIC_SIZE, ["sampler:error"]);
         Self {
             counters: FastHashMap::default(),
+            priority_size,
+            no_priority_size,
+            error_size,
             builder,
         }
+    }
+
+    /// Updates the `sampler.size` gauges for the three score-based samplers.
+    ///
+    /// Should be called after each `transform_buffer` batch.
+    pub(super) fn report_sizes(&self, priority: i64, no_priority: i64, error: i64) {
+        self.priority_size.set(priority as f64);
+        self.no_priority_size.set(no_priority as f64);
+        self.error_size.set(error as f64);
     }
 
     /// Records a sampling decision.

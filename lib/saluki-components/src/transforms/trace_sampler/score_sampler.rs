@@ -56,6 +56,10 @@ impl NoPrioritySampler {
     pub(super) fn sample(&mut self, now: SystemTime, trace: &mut Trace, root_idx: usize) -> bool {
         self.score_sampler.sample(now, trace, root_idx)
     }
+
+    pub(super) fn size(&self) -> i64 {
+        self.score_sampler.size()
+    }
 }
 
 impl ScoreSampler {
@@ -142,6 +146,10 @@ impl ScoreSampler {
         // Map to a limited set of signatures to bound cardinality and force
         // new signatures to share the same bucket and TPS computation.
         Signature(sig.0 % (SHRINK_CARDINALITY as u64 / 2))
+    }
+
+    pub(super) fn size(&self) -> i64 {
+        self.sampler.size()
     }
 
     /// Set the sampling rate metric on a span.
