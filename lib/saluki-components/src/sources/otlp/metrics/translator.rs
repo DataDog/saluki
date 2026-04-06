@@ -6,12 +6,22 @@ use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec::IntoIter;
 
+use ddsketch::canonical::mapping::LogarithmicMapping;
+
+
+use::ddsketch::canonical::mapping::IndexMapping;
+use datadog_protos::sketches::Store;
+
+use ddsketch::canonical::DDSketch as CanonicalDDSketch;
 use otlp_protos::opentelemetry::proto::common::v1::KeyValue as OtlpKeyValue;
+use otlp_protos::opentelemetry::proto::metrics::v1::exponential_histogram_data_point;
 use otlp_protos::opentelemetry::proto::metrics::v1::{
+    exponential_histogram_data_point::Buckets as OtlpExponentialHistogramBuckets,
     metric::Data as OtlpMetricData, AggregationTemporality, DataPointFlags,
+    ExponentialHistogramDataPoint as OtlpExponentialHistogramDataPoint,
     HistogramDataPoint as OtlpHistogramDataPoint, Metric as OtlpMetric, NumberDataPoint as OtlpNumberDataPoint,
     ResourceMetrics as OtlpResourceMetrics,
-    SummaryDataPoint as OtlpSummaryDataPoint
+    SummaryDataPoint as OtlpSummaryDataPoint,
 };
 use proptest::string::Error;
 use saluki_context::tags::{SharedTagSet, TagSet};
@@ -22,6 +32,9 @@ use saluki_core::topology::interconnect::Consumer;
 use saluki_env::autodiscovery::Data;
 
 use ddsketch::{DDSketch, Bucket};
+use ddsketch::canonical::Store as DdStore;
+
+use ddsketch::canonical::store::DenseStore;
 use saluki_error::GenericError;
 use tonic::transport::Error;
 use tracing::{debug, warn};
@@ -311,9 +324,13 @@ impl OtlpMetricsTranslator {
                 OtlpMetricData::Summary(summary) => {
                     self.map_summary_metrics(base_dims, summary.data_points, &context)
                 }
-                _ => {
-                    // ExponentialHistogram and future data types.
-                    Vec::new()
+                OtlpMetricData::ExponentialHistogram(exponential_histogram) => {
+                    match AggregationTemporality::try_from(exponential_histogram.aggregation_temporality) {
+                        Ok(AggregationTemporality::Delta) => {
+                            self.map_exponential_histogram_metrics(base_dims, exponential_histogram.data_points, true, &context)
+                        }
+                        _ => Vec::new()
+                    }
                 }
             }
         } else {
@@ -542,6 +559,40 @@ impl OtlpMetricsTranslator {
             }
         }
         events
+    }
+
+
+    fn to_store(b: &OtlpExponentialHistogramBuckets) -> DenseStore {
+        let offset = b.offset; 
+        let bucket_counts = &b.bucket_counts;
+
+        let mut store = DenseStore::new();
+        for (j, &count) in bucket_counts.iter().enumerate(){
+            let index = offset + j as i32; 
+            store.add(index, count);
+        }
+        store
+    }
+
+    fn exponential_histogram_to_ddsketch(
+        dp: &OtlpExponentialHistogramDataPoint,
+        delta: bool
+    )-> Result<CanonicalDDSketch<LogarithmicMapping, DenseStore>, String> {
+        if !delta {
+            return Err("cumulative exponential histograms are not supported".to_string());
+        }
+
+        let positive_store = Self::to_store(dp.positive.as_ref().unwrap_or(&Default::default()));
+        let negative_store = Self::to_store(dp.negative.as_ref().unwrap_or(&Default::default()));
+
+        let gamma = 2_f64.powf(2_f64.powi(-dp.scale));
+        let mapping = LogarithmicMapping::new_with_gamma(gamma)
+            .map_err(|e| format!("couldn't create LogarithmicMapping for DDSketch: {e}"))?;
+
+        let mut sketch= CanonicalDDSketch::new(mapping,positive_store,negative_store);
+        sketch.add_n(0.0, dp.zero_count);
+
+        Ok(sketch)
     }
 
     fn get_bounds(explicit_bounds: &[f64], idx: usize) -> (f64, f64) {
@@ -845,6 +896,172 @@ impl OtlpMetricsTranslator {
             }
         }
         events
+    }
+
+    fn map_exponential_histogram_metrics(
+        &mut self, base_dims: Dimensions, data_points: Vec<OtlpExponentialHistogramDataPoint>, delta: bool,
+        context: &TranslationContext,
+    )-> Vec<Event> {
+        let mut events = Vec::new();
+        for dp in data_points.iter() {
+            let start_ts = dp.start_time_unix_nano;
+            let ts = dp.time_unix_nano;
+            let point_dims = base_dims.with_attribute_map(&dp.attributes);
+
+            let mut hist_info = HistogramInfo {
+                ok: true,
+                ..Default::default()
+            };
+
+            let count_dims = point_dims.with_suffix("count");
+
+            let count_val = dp.count as f64;
+
+            if delta {
+                hist_info.count = dp.count;
+            } else {
+                let (delta, ok) =
+                    self.prev_pts
+                        .diff(&count_dims, start_ts, ts, count_val);
+
+                if ok {
+                    hist_info.count = delta as u64;
+                } else {
+                    hist_info.ok = false;
+                }
+            }
+            
+            let sum_dims = point_dims.with_suffix("sum");
+
+            if let Some(sum) = dp.sum {
+                if !is_skippable(sum) {
+                    if delta {
+                        hist_info.sum = sum;
+                    } else {
+                        let (delta, ok) =
+                            self.prev_pts
+                                .diff(&sum_dims, dp.start_time_unix_nano, dp.time_unix_nano, sum);
+                        if ok {
+                            hist_info.sum = delta;
+                        } else {
+                            hist_info.ok = false;
+                        }
+                    }
+                } else {
+                    hist_info.ok = false;
+                }
+            } else {
+                hist_info.ok = false;
+            }
+
+        let min_dims = point_dims.with_suffix("min");
+        let max_dims = point_dims.with_suffix("max");
+      
+        if self.config.send_histogram_aggregations && hist_info.ok {
+            self.record_metric_event(
+                &count_dims,
+                hist_info.count as f64,
+                ts,
+                DataType::Count,
+                &mut events,
+                context,
+            );
+      
+            self.record_metric_event(
+                &sum_dims,
+                hist_info.sum,
+                ts,
+                DataType::Count,
+                &mut events,
+                context,
+            );
+      
+            if delta {
+                if let Some(min) = dp.min {
+                    self.record_metric_event(&min_dims, min, ts, DataType::Gauge, &mut events, context);
+                }
+      
+                if let Some(max) = dp.max {
+                    self.record_metric_event(&max_dims, max, ts, DataType::Gauge, &mut events, context);
+                }
+            }
+        }
+
+        let exp_hist_dd_sketch = match Self::exponential_histogram_to_ddsketch(dp, delta) {
+            Ok(sketch) => sketch, 
+            Err(e)=>{
+                debug!(metric_name = base_dims.name, error = e, "Failed to convert ExponentialHistogram into DDSketch");
+                continue;
+            }
+        };
+
+        let mut agent_sketch = Self::convert_ddsketch_into_sketch(exp_hist_dd_sketch);
+
+        if hist_info.ok {
+            agent_sketch.set_count(hist_info.count);
+            agent_sketch.set_sum(hist_info.sum);
+            agent_sketch.set_avg(if hist_info.count > 0 { hist_info.sum / hist_info.count as f64 } else { 0.0 });
+
+            if hist_info.count == 1 {
+                agent_sketch.set_min(hist_info.sum);
+                agent_sketch.set_max(hist_info.sum);
+            }
+
+        }
+
+        if delta {
+            if let Some(min) = dp.min { agent_sketch.set_min(min); }
+            if let Some(max) = dp.max { agent_sketch.set_max(max); }
+        }
+
+        let mut interval: i64 = 0;
+        if self.config.infer_delta_interval && delta {
+            interval = Self::infer_delta_interval(start_ts, ts);
+        }
+
+        self.record_sketch_event(&point_dims, agent_sketch, ts, &mut events, context, interval);
+        }
+        events
+    }
+
+    fn remap_bins_to_agent_space(store: &DenseStore, mapping: &LogarithmicMapping, negate: bool) -> Vec<(f64, u64)>{
+        let mut res = Vec::new();
+        let proto_store = store.to_proto();
+
+        for (i, &count) in proto_store.contiguousBinCounts.iter().enumerate() {
+            let logical_index = proto_store.contiguousBinIndexOffset + i as i32;
+
+            if count == 0.0 {
+                continue;
+            }
+
+            let mut value = mapping.value(logical_index);
+            if negate {
+                value *= -1.0;
+            } 
+
+            res.push((value, count as u64));
+        }
+        res 
+    }
+
+    fn convert_ddsketch_into_sketch(canonical: CanonicalDDSketch<LogarithmicMapping, DenseStore>) -> DDSketch {
+        let mut agent_sketch = DDSketch::default();
+
+        let mapping = canonical.mapping();
+
+        let positive_bins = Self::remap_bins_to_agent_space(canonical.positive_store(), mapping, false);
+        let negative_bins = Self::remap_bins_to_agent_space(canonical.negative_store(), mapping, true);
+
+        if canonical.zero_count() > 0 {
+            agent_sketch.insert_n(0.0, canonical.zero_count());
+        }
+
+        for (value, count) in positive_bins.into_iter().chain(negative_bins.into_iter()) {
+            agent_sketch.insert_n(value,count);
+        }
+
+        agent_sketch
     }
 
     /// Determines if the initial value of a cumulative monotonic metric should be consumed.
