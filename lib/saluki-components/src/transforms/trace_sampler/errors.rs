@@ -33,6 +33,10 @@ impl ErrorsSampler {
         // Use the score sampler to make the sampling decision
         self.score_sampler.sample(now, trace, root_idx)
     }
+
+    pub(super) fn size(&self) -> i64 {
+        self.score_sampler.size()
+    }
 }
 
 #[cfg(test)]

@@ -14,12 +14,24 @@
 
 use std::time::{Duration, Instant};
 
+use metrics::{Counter, Gauge};
 use saluki_common::{collections::FastHashMap, rate::TokenBucket};
 use saluki_core::data_model::event::trace::{Span, Trace};
+use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
 
 use super::signature::{span_hash_for_rare, ServiceSignature, Signature};
 use crate::common::datadog::get_trace_env;
+
+const METRIC_RARE_HITS: &str = "datadog.trace_agent.sampler.rare.hits";
+const METRIC_RARE_MISSES: &str = "datadog.trace_agent.sampler.rare.misses";
+const METRIC_RARE_SHRINKS: &str = "datadog.trace_agent.sampler.rare.shrinks";
+
+struct RareSamplerMetrics {
+    hits: Counter,
+    misses: Counter,
+    shrinks: Gauge,
+}
 
 /// The burst size for the token bucket rate limiter. Matches the Go agent default.
 const RARE_SAMPLER_BURST: usize = 50;
@@ -65,23 +77,25 @@ impl SeenSpans {
         }
     }
 
-    /// Record an expiry for a span signature.
+    /// Record an expiry for a span signature. Returns `true` if a shrink was triggered.
     ///
     /// Skips the update if the stored entry is still live and the new expiry is not meaningfully
     /// later (within `TTL_RENEWAL_PERIOD`). If the stored entry is already expired, always updates.
     /// This mirrors the Go agent's `ttlRenewalPeriod` check, which assumes `TTL > TTL_RENEWAL_PERIOD`.
-    fn add(&mut self, now: Instant, expire: Instant, span_hash: u32) {
+    fn add(&mut self, now: Instant, expire: Instant, span_hash: u32) -> bool {
         let sig = self.sign(span_hash);
         if let Some(&stored) = self.expires.get(&sig) {
             // Only skip if the stored entry is still live and the new expiry isn't meaningfully later.
             if stored > now && expire.duration_since(stored) < TTL_RENEWAL_PERIOD {
-                return;
+                return false;
             }
         }
         self.expires.insert(sig, expire);
         if self.expires.len() > self.cardinality {
             self.shrink();
+            return true;
         }
+        false
     }
 
     /// Returns the stored expiry for a span signature, if any.
@@ -112,6 +126,9 @@ pub(super) struct RareSampler {
     cardinality: usize,
     /// Keyed by (env, service) shard signature.
     seen: FastHashMap<Signature, SeenSpans>,
+    /// Cumulative count of shard shrinks, for the shrinks gauge.
+    shrink_count: f64,
+    metrics: Option<RareSamplerMetrics>,
 }
 
 impl RareSampler {
@@ -122,7 +139,18 @@ impl RareSampler {
             ttl,
             cardinality,
             seen: FastHashMap::default(),
+            shrink_count: 0.0,
+            metrics: None,
         }
+    }
+
+    /// Attach metrics counters/gauges to this sampler. Called once during component construction.
+    pub(super) fn set_metrics(&mut self, builder: &MetricsBuilder) {
+        self.metrics = Some(RareSamplerMetrics {
+            hits: builder.register_counter(METRIC_RARE_HITS),
+            misses: builder.register_counter(METRIC_RARE_MISSES),
+            shrinks: builder.register_gauge(METRIC_RARE_SHRINKS),
+        });
     }
 
     /// Sample a trace. Returns `true` if the trace should be kept by the rare sampler.
@@ -133,7 +161,15 @@ impl RareSampler {
         if !self.enabled {
             return false;
         }
-        self.handle_trace(trace, root_span_idx)
+        let kept = self.handle_trace(trace, root_span_idx);
+        if let Some(m) = &self.metrics {
+            if kept {
+                m.hits.increment(1);
+            } else {
+                m.misses.increment(1);
+            }
+        }
+        kept
     }
 
     fn handle_trace(&mut self, trace: &mut Trace, root_span_idx: usize) -> bool {
@@ -192,7 +228,12 @@ impl RareSampler {
                 .seen
                 .entry(shard_sig)
                 .or_insert_with(|| SeenSpans::new(self.cardinality));
-            seen.add(now, expire, span_hash);
+            if seen.add(now, expire, span_hash) {
+                self.shrink_count += 1.0;
+                if let Some(m) = &self.metrics {
+                    m.shrinks.set(self.shrink_count);
+                }
+            }
         }
     }
 }

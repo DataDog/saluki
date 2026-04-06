@@ -44,6 +44,10 @@ impl PrioritySampler {
         self.sampler.target_tps()
     }
 
+    pub(super) fn size(&self) -> i64 {
+        self.sampler.size()
+    }
+
     /// Sample a trace that already has a sampling priority set.
     ///
     /// The decision is based on the priority value; the sampler only updates
