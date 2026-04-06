@@ -336,3 +336,75 @@ impl Default for ApmConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use saluki_config::ConfigurationLoader;
+
+    use super::*;
+    use crate::config::{DatadogRemapper, KEY_ALIASES};
+
+    async fn apm_config_from(
+        file_values: Option<serde_json::Value>, env_vars: Option<&[(String, String)]>,
+    ) -> ApmConfig {
+        let (cfg, _) = ConfigurationLoader::for_tests_with_provider_factory(
+            file_values,
+            env_vars,
+            false,
+            KEY_ALIASES,
+            DatadogRemapper::new,
+        )
+        .await;
+        ApmConfig::from_configuration(&cfg).expect("ApmConfig should deserialize")
+    }
+
+    #[tokio::test]
+    async fn rare_sampler_disabled_by_default() {
+        let config = apm_config_from(None, None).await;
+        assert!(!config.rare_sampler_enabled());
+    }
+
+    #[tokio::test]
+    async fn rare_sampler_enabled_via_yaml() {
+        let config = apm_config_from(
+            Some(serde_json::json!({ "apm_config": { "enable_rare_sampler": true } })),
+            None,
+        )
+        .await;
+        assert!(config.rare_sampler_enabled());
+    }
+
+    #[tokio::test]
+    async fn rare_sampler_enabled_via_env_var() {
+        let env_vars = vec![("APM_ENABLE_RARE_SAMPLER".to_string(), "true".to_string())];
+        let config = apm_config_from(None, Some(&env_vars)).await;
+        assert!(config.rare_sampler_enabled());
+    }
+
+    #[tokio::test]
+    async fn rare_sampler_env_var_overrides_yaml() {
+        let env_vars = vec![("APM_ENABLE_RARE_SAMPLER".to_string(), "true".to_string())];
+        let config = apm_config_from(
+            Some(serde_json::json!({ "apm_config": { "enable_rare_sampler": false } })),
+            Some(&env_vars),
+        )
+        .await;
+        assert!(config.rare_sampler_enabled());
+    }
+
+    #[tokio::test]
+    async fn rare_sampler_tuning_via_yaml() {
+        let config = apm_config_from(
+            Some(serde_json::json!({
+                "apm_config": {
+                    "rare_sampler": { "tps": 10, "cooldown": 60, "cardinality": 100 }
+                }
+            })),
+            None,
+        )
+        .await;
+        assert_eq!(config.rare_sampler_tps(), 10.0);
+        assert_eq!(config.rare_sampler_cooldown_period_secs(), 60.0);
+        assert_eq!(config.rare_sampler_cardinality(), 100);
+    }
+}
