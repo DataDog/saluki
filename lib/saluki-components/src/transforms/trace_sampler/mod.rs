@@ -290,11 +290,12 @@ impl TraceSampler {
     /// and the index of the root span used for evaluation.
     fn run_samplers(&mut self, trace: &mut Trace) -> (bool, i32, &'static str, Option<usize>) {
         // logic taken from: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/agent.go#L1066
-        let now = std::time::SystemTime::now();
         // Empty trace check
         if trace.spans().is_empty() {
             return (false, PRIORITY_AUTO_DROP, "", None);
         }
+
+        let now = std::time::SystemTime::now();
         let contains_error = self.trace_contains_error(trace, false);
         let Some(root_span_idx) = self.get_root_span_index(trace) else {
             return (false, PRIORITY_AUTO_DROP, "", None);
@@ -350,8 +351,6 @@ impl TraceSampler {
             }
 
             if self.priority_sampler.sample(now, trace, root_span_idx, priority, 0.0) {
-                // Notify the rare sampler so it doesn't re-sample commonly-seen signatures.
-                self.rare_sampler.record_priority_trace(trace, root_span_idx);
                 return (true, priority, "", Some(root_span_idx));
             }
         } else if self.is_otlp_trace(trace, root_span_idx) {
