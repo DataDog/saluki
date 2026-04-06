@@ -14,7 +14,7 @@
 
 use std::time::{Duration, Instant};
 
-use saluki_common::collections::FastHashMap;
+use saluki_common::{collections::FastHashMap, rate::TokenBucket};
 use saluki_core::data_model::event::trace::{Span, Trace};
 use stringtheory::MetaString;
 
@@ -36,42 +36,6 @@ const KEY_TOP_LEVEL: &str = "_top_level";
 
 /// Metric key indicating a span is explicitly marked for stats computation.
 const KEY_MEASURED: &str = "_dd.measured";
-
-/// Token bucket rate limiter.
-///
-/// Provides a `rate` tokens-per-second refill up to `capacity`, and allows consuming one token at a
-/// time via `allow()`. This mirrors `golang.org/x/time/rate.Limiter`.
-struct TokenBucket {
-    capacity: f64,
-    tokens: f64,
-    last_refill: Instant,
-    rate: f64,
-}
-
-impl TokenBucket {
-    fn new(rate: f64, burst: usize) -> Self {
-        Self {
-            capacity: burst as f64,
-            tokens: burst as f64,
-            last_refill: Instant::now(),
-            rate,
-        }
-    }
-
-    /// Attempt to consume one token. Returns `true` if a token was available.
-    fn allow(&mut self) -> bool {
-        let now = Instant::now();
-        let elapsed = now.duration_since(self.last_refill).as_secs_f64();
-        self.tokens = (self.tokens + elapsed * self.rate).min(self.capacity);
-        self.last_refill = now;
-        if self.tokens >= 1.0 {
-            self.tokens -= 1.0;
-            true
-        } else {
-            false
-        }
-    }
-}
 
 /// Tracks the set of span signatures seen within a single (env, service) shard.
 struct SeenSpans {
