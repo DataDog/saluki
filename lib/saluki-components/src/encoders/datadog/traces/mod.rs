@@ -7,7 +7,7 @@ use datadog_protos::traces::builders::{
     attribute_any_value::AttributeAnyValueType, attribute_array_value::AttributeArrayValueType, AgentPayloadBuilder,
     AttributeAnyValueBuilder, AttributeArrayValueBuilder,
 };
-use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
+use http::{uri::PathAndQuery, HeaderName, HeaderValue, Method, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use opentelemetry_semantic_conventions::resource::{
     CONTAINER_ID, DEPLOYMENT_ENVIRONMENT_NAME, K8S_POD_UID, SERVICE_VERSION,
@@ -409,12 +409,21 @@ struct TraceEndpointEncoder {
     apm_config: ApmConfig,
     otlp_traces: TracesConfig,
     string_builder: StringBuilder,
+    extra_headers: Vec<(HeaderName, HeaderValue)>,
 }
 
 impl TraceEndpointEncoder {
     fn new(
         default_hostname: MetaString, version: String, env: String, apm_config: ApmConfig, otlp_traces: TracesConfig,
     ) -> Self {
+        let extra_headers = if apm_config.error_tracking_standalone_enabled() {
+            vec![(
+                HeaderName::from_static("x-datadog-error-tracking-standalone"),
+                HeaderValue::from_static("true"),
+            )]
+        } else {
+            Vec::new()
+        };
         Self {
             scratch: ScratchWriter::new(Vec::with_capacity(8192)),
             agent_hostname: default_hostname.as_ref().to_string(),
@@ -424,6 +433,7 @@ impl TraceEndpointEncoder {
             apm_config,
             otlp_traces,
             string_builder: StringBuilder::new(),
+            extra_headers,
         }
     }
 
@@ -641,6 +651,10 @@ impl EndpointEncoder for TraceEndpointEncoder {
 
     fn content_type(&self) -> HeaderValue {
         CONTENT_TYPE_PROTOBUF.clone()
+    }
+
+    fn additional_headers(&self) -> &[(HeaderName, HeaderValue)] {
+        &self.extra_headers
     }
 }
 
