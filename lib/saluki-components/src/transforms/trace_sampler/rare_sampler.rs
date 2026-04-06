@@ -85,8 +85,8 @@ impl SeenSpans {
     }
 
     /// Returns the stored expiry for a span signature, if any.
-    fn get_expire(&self, sig: u32) -> Option<Instant> {
-        self.expires.get(&sig).copied()
+    fn get_expire(&self, sig: u32) -> Option<&Instant> {
+        self.expires.get(&sig)
     }
 
     /// Shrink the map to cap cardinality. Signatures are collapsed into `cardinality` buckets via
@@ -138,29 +138,23 @@ impl RareSampler {
 
     fn handle_trace(&mut self, trace: &mut Trace, root_span_idx: usize) -> bool {
         let now = Instant::now();
-        let env = get_trace_env(trace, root_span_idx)
-            .map(|e| e.as_ref().to_owned())
-            .unwrap_or_default();
+        let env = get_trace_env(trace, root_span_idx).map(|e| e.as_ref()).unwrap_or("");
 
-        // Find the index of the first top-level or measured span with an expired/unseen signature.
-        let sampled_span_idx = self.find_rare_span(trace, &env, now);
-
-        let Some(sampled_idx) = sampled_span_idx else {
+        let Some(sampled_idx) = self.find_rare_span(trace, env, now) else {
             return false;
         };
 
-        // Attempt to consume a rate-limiter token.
         if !self.token_bucket.allow() {
             return false;
         }
 
-        // Mark the sampled span with _dd.rare = 1.
+        // Update TTLs first (last use of env — NLL ends the borrow of trace here).
+        self.record_all_top_level_spans(trace, env, now, now + self.ttl);
+
+        // Now safe to mutably borrow trace.
         if let Some(span) = trace.spans_mut().get_mut(sampled_idx) {
             span.metrics_mut().insert(MetaString::from_static(RARE_KEY), 1.0);
         }
-
-        // Update TTLs for all top-level/measured spans in the trace to prevent re-sampling within TTL.
-        self.record_all_top_level_spans(trace, &env, now, now + self.ttl);
 
         true
     }
@@ -179,10 +173,7 @@ impl RareSampler {
                 .entry(shard_sig)
                 .or_insert_with(|| SeenSpans::new(self.cardinality));
             let sig = seen.sign(span_hash);
-            let expired = match seen.get_expire(sig) {
-                Some(expire) => now > expire,
-                None => true,
-            };
+            let expired = seen.get_expire(sig).is_none_or(|expire| now > *expire);
             if expired {
                 return Some(i);
             }
@@ -208,8 +199,8 @@ impl RareSampler {
 
 /// Returns `true` if the span is top-level (`_top_level = 1`) or measured (`_dd.measured = 1`).
 fn is_top_level_or_measured(span: &Span) -> bool {
-    span.metrics().get(KEY_TOP_LEVEL).copied().unwrap_or(0.0) == 1.0
-        || span.metrics().get(KEY_MEASURED).copied().unwrap_or(0.0) == 1.0
+    span.metrics().get(KEY_TOP_LEVEL).is_some_and(|v| *v == 1.0)
+        || span.metrics().get(KEY_MEASURED).is_some_and(|v| *v == 1.0)
 }
 
 #[cfg(test)]
