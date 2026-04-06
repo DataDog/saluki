@@ -226,21 +226,6 @@ impl RareSampler {
         None
     }
 
-    /// Notify the rare sampler that a trace was kept by the priority sampler.
-    ///
-    /// Updates TTLs for all top-level/measured spans so that signatures actively covered by the
-    /// priority sampler don't consume rare sampler tokens on future encounters.
-    pub(super) fn record_priority_trace(&mut self, trace: &Trace, root_span_idx: usize) {
-        if !self.enabled {
-            return;
-        }
-        let now = Instant::now();
-        let env = get_trace_env(trace, root_span_idx)
-            .map(|e| e.as_ref().to_owned())
-            .unwrap_or_default();
-        self.record_all_top_level_spans(trace, &env, now, now + self.ttl);
-    }
-
     fn record_all_top_level_spans(&mut self, trace: &Trace, env: &str, now: Instant, expire: Instant) {
         for span in trace.spans() {
             if !is_top_level_or_measured(span) {
@@ -408,35 +393,16 @@ mod tests {
     }
 
     #[test]
-    fn record_priority_trace_suppresses_rare() {
-        // Simulates the feedback loop: when the priority sampler keeps a trace, it should notify
-        // the rare sampler so those signatures are not re-sampled within the TTL window.
-        let mut sampler = RareSampler::new(true, 100.0, Duration::from_secs(300), 200);
-
-        let trace = make_trace(vec![make_top_level_span("svc", "op", "res")]);
-        sampler.record_priority_trace(&trace, 0);
-
-        // Same signature should now be suppressed — the priority sampler already covers it.
-        let mut trace2 = make_trace(vec![make_top_level_span("svc", "op", "res")]);
-        assert!(!sampler.sample(&mut trace2, 0));
-    }
-
-    #[test]
     fn cardinality_limit_shrinks_shard() {
         // Fill a shard beyond its cardinality limit and verify the map stays bounded.
         let cardinality = 10usize;
         let mut sampler = RareSampler::new(true, 1000.0, Duration::from_secs(300), cardinality);
 
-        // Insert cardinality+5 distinct signatures into the same (service, env) shard.
         for i in 0..(cardinality + 5) {
             let mut trace = make_trace(vec![make_top_level_span("svc", "op", &format!("res-{}", i))]);
-            // record_priority_trace writes to seen without consuming tokens, so we can fill freely.
-            sampler.record_priority_trace(&trace, 0);
-            // Also sample to trigger the shard creation path.
             let _ = sampler.sample(&mut trace, 0);
         }
 
-        // After shrinking, every shard must be at or below cardinality.
         for seen in sampler.seen.values() {
             assert!(seen.expires.len() <= cardinality);
         }
