@@ -412,6 +412,7 @@ struct TraceEndpointEncoder {
     apm_config: ApmConfig,
     otlp_traces: TracesConfig,
     string_builder: StringBuilder,
+    error_tracking_standalone: bool,
     extra_headers: Vec<(HeaderName, HeaderValue)>,
 }
 
@@ -419,7 +420,8 @@ impl TraceEndpointEncoder {
     fn new(
         default_hostname: MetaString, version: String, env: String, apm_config: ApmConfig, otlp_traces: TracesConfig,
     ) -> Self {
-        let extra_headers = if apm_config.error_tracking_standalone_enabled() {
+        let error_tracking_standalone = apm_config.error_tracking_standalone_enabled();
+        let extra_headers = if error_tracking_standalone {
             vec![(
                 HeaderName::from_static("x-datadog-error-tracking-standalone"),
                 HeaderValue::from_static("true"),
@@ -436,6 +438,7 @@ impl TraceEndpointEncoder {
             apm_config,
             otlp_traces,
             string_builder: StringBuilder::new(),
+            error_tracking_standalone,
             extra_headers,
         }
     }
@@ -574,7 +577,7 @@ impl TraceEndpointEncoder {
                     if let Some(dm) = decision_maker {
                         tags.write_entry(TAG_DECISION_MAKER, dm)?;
                     }
-                    if self.apm_config.error_tracking_standalone_enabled() {
+                    if self.error_tracking_standalone {
                         tags.write_entry("_dd.error_tracking_standalone.error", "true")?;
                     }
 
