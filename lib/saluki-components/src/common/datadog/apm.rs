@@ -85,6 +85,10 @@ impl Default for RareSamplerConfig {
 struct ApmConfiguration {
     #[serde(default)]
     apm_config: ApmConfig,
+
+    /// Enables the rare sampler. This needs to live up here rather than nested
+    /// within `apm_config` so that we can remap the environment variable path
+    /// using the ConfigurationLoader::with_key_aliases.
     #[serde(default = "default_rare_sampler_enabled", rename = "apm_enable_rare_sampler")]
     enable_rare_sampler: bool,
 }
