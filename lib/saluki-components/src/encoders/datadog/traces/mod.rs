@@ -832,3 +832,114 @@ fn append_tags(target: &mut String, tags: &str) {
     }
     target.push_str(tags);
 }
+
+#[cfg(test)]
+mod tests {
+    use datadog_protos::traces::AgentPayload;
+    use protobuf::Message as _;
+    use saluki_config::ConfigurationLoader;
+    use saluki_context::tags::TagSet;
+    use saluki_core::data_model::event::trace::{Span as DdSpan, Trace, TraceSampling};
+    use stringtheory::MetaString;
+
+    use super::*;
+    use crate::common::datadog::apm::ApmConfig;
+    use crate::common::otlp::config::TracesConfig;
+    use crate::config::{DatadogRemapper, KEY_ALIASES};
+
+    async fn make_encoder(ets_enabled: bool) -> TraceEndpointEncoder {
+        let env_vars: Vec<(String, String)> = if ets_enabled {
+            vec![("APM_ERROR_TRACKING_STANDALONE".to_string(), "true".to_string())]
+        } else {
+            vec![]
+        };
+        let (cfg, _) = ConfigurationLoader::for_tests_with_provider_factory(
+            None,
+            Some(&env_vars),
+            false,
+            KEY_ALIASES,
+            DatadogRemapper::new,
+        )
+        .await;
+        let apm_config = ApmConfig::from_configuration(&cfg).expect("ApmConfig should deserialize");
+        TraceEndpointEncoder::new(
+            MetaString::from("test-host"),
+            "0.0.0".to_string(),
+            "none".to_string(),
+            apm_config,
+            TracesConfig::default(),
+        )
+    }
+
+    fn make_trace() -> Trace {
+        let span = DdSpan::new(
+            MetaString::from("svc"),
+            MetaString::from("op"),
+            MetaString::from("res"),
+            MetaString::from("web"),
+            1,
+            1,
+            0,
+            0,
+            1000,
+            0,
+        );
+        let mut trace = Trace::new(vec![span], TagSet::default());
+        trace.set_sampling(Some(TraceSampling::new(false, Some(1), None, None)));
+        trace
+    }
+
+    #[tokio::test]
+    async fn ets_header_present_when_enabled() {
+        let encoder = make_encoder(true).await;
+        let headers = encoder.additional_headers();
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers[0].0.as_str(), "x-datadog-error-tracking-standalone");
+        assert_eq!(headers[0].1, "true");
+    }
+
+    #[tokio::test]
+    async fn ets_header_absent_when_disabled() {
+        let encoder = make_encoder(false).await;
+        assert!(encoder.additional_headers().is_empty());
+    }
+
+    #[tokio::test]
+    async fn ets_chunk_tag_present_when_enabled() {
+        let mut encoder = make_encoder(true).await;
+        let trace = make_trace();
+        let mut buf = Vec::new();
+        encoder.encode(&trace, &mut buf).expect("encode should succeed");
+        let payload = AgentPayload::parse_from_bytes(&buf).expect("should parse AgentPayload");
+        let tag_value = payload
+            .tracerPayloads
+            .iter()
+            .flat_map(|tp| tp.chunks.iter())
+            .find_map(|chunk| {
+                chunk
+                    .tags
+                    .get("_dd.error_tracking_standalone.error")
+                    .map(|v| v.as_str())
+            });
+        assert_eq!(
+            tag_value,
+            Some("true"),
+            "ETS chunk tag should be present when ETS is enabled"
+        );
+    }
+
+    #[tokio::test]
+    async fn ets_chunk_tag_absent_when_disabled() {
+        let mut encoder = make_encoder(false).await;
+        let trace = make_trace();
+        let mut buf = Vec::new();
+        encoder.encode(&trace, &mut buf).expect("encode should succeed");
+        let payload = AgentPayload::parse_from_bytes(&buf).expect("should parse AgentPayload");
+        let has_tag = payload
+            .tracerPayloads
+            .iter()
+            .flat_map(|tp| tp.chunks.iter())
+            .any(|chunk| chunk.tags.contains_key("_dd.error_tracking_standalone.error"));
+        assert!(!has_tag, "ETS chunk tag should be absent when ETS is disabled");
+    }
+}
