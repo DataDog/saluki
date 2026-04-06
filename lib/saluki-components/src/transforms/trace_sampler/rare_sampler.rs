@@ -129,7 +129,7 @@ impl SeenSpans {
     /// modular hashing. Matches the Go agent's shrink behavior.
     fn shrink(&mut self) {
         let cardinality = self.cardinality;
-        let old = std::mem::replace(&mut self.expires, FastHashMap::default());
+        let old = std::mem::take(&mut self.expires);
         self.expires.reserve(cardinality);
         for (h, expire) in old {
             self.expires.insert(h % cardinality as u32, expire);
