@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["origin","tags"],"struct":["Context","ContextResolver","ContextResolverBuilder","TagsResolver","TagsResolverBuilder"]};
+window.SIDEBAR_ITEMS = {"mod":["origin","tags"],"struct":["Context","ContextResolver","ContextResolverBuilder","TagSetMutView","TagSetMutViewState","TagsResolver","TagsResolverBuilder"]};
