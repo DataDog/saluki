@@ -56,26 +56,14 @@ fn default_env() -> MetaString {
 }
 
 /// Rare sampler tuning configuration (`apm_config.rare_sampler.*`).
-///
-/// The enabled flag lives separately at `apm_config.enable_rare_sampler` to match the Datadog
-/// Agent's config layout and allow `DD_APM_ENABLE_RARE_SAMPLER` env var override.
 #[derive(Clone, Debug, Deserialize)]
 struct RareSamplerConfig {
-    /// Target traces per second for the rare sampler.
-    ///
-    /// Defaults to 5.0.
     #[serde(default = "default_rare_sampler_tps")]
     tps: f64,
 
-    /// Cooldown period in seconds before a rare signature can be sampled again.
-    ///
-    /// Defaults to 300.0 (5 minutes).
     #[serde(default = "default_rare_sampler_cooldown_secs")]
     cooldown: f64,
 
-    /// Max number of span signatures tracked per (env, service) shard before shrinking.
-    ///
-    /// Defaults to 200.
     #[serde(default = "default_rare_sampler_cardinality")]
     cardinality: usize,
 }
@@ -216,19 +204,9 @@ pub struct ApmConfig {
     #[serde(skip)]
     hostname: MetaString,
 
-    /// Enables the rare sampler.
-    ///
-    /// Corresponds to YAML `apm_config.enable_rare_sampler` and env var `DD_APM_ENABLE_RARE_SAMPLER`.
-    /// The enabled flag is a top-level `apm_config` key (not nested under `rare_sampler`) to match
-    /// the Datadog Agent's config layout.
-    ///
-    /// Defaults to `false`.
     #[serde(default = "default_rare_sampler_enabled")]
     enable_rare_sampler: bool,
 
-    /// Rare sampler tuning parameters (`apm_config.rare_sampler.*`).
-    ///
-    /// Defaults to Go agent defaults (5 TPS, 5-minute cooldown, 200 cardinality).
     #[serde(default)]
     rare_sampler: RareSamplerConfig,
 
@@ -241,9 +219,8 @@ impl ApmConfig {
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let wrapper = config.as_typed::<ApmConfiguration>()?;
         let mut apm_config = wrapper.apm_config;
-        // `DD_APM_ENABLE_RARE_SAMPLER` maps to the flat figment key `apm_enable_rare_sampler`,
-        // which is separate from the nested serde path `apm_config.enable_rare_sampler`. Read it
-        // explicitly so the env var can override the YAML value (env vars take higher precedence).
+        // DD_APM_ENABLE_RARE_SAMPLER maps to the flat key `apm_enable_rare_sampler`, not the nested
+        // serde path, so read it explicitly to let the env var override the YAML value.
         if let Ok(Some(v)) = config.try_get_typed::<bool>("apm_enable_rare_sampler") {
             apm_config.enable_rare_sampler = v;
         }

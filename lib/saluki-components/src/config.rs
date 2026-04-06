@@ -18,10 +18,6 @@ pub const KEY_ALIASES: &[(&str, &str)] = &[
     ("proxy.http", "proxy_http"),
     ("proxy.https", "proxy_https"),
     ("proxy.no_proxy", "proxy_no_proxy"),
-    // `apm_config.enable_rare_sampler` (YAML) and `DD_APM_ENABLE_RARE_SAMPLER` (env var, which
-    // maps to the flat key `apm_enable_rare_sampler`) refer to the same setting. The alias
-    // ensures that when the YAML value is present it is also visible under the flat key, so
-    // `ApmConfig::from_configuration` can read a single consistent key regardless of source.
     ("apm_config.enable_rare_sampler", "apm_enable_rare_sampler"),
 ];
 
