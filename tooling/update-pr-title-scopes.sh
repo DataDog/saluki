@@ -75,9 +75,7 @@ generate_component_scopes() {
             comp_name="$(basename "${comp_dir}")"
 
             # Convert underscores to spaces.
-            local scope_name="${comp_name//_/ }"
-
-            echo "${scope_name} ${singular}"
+            echo "${comp_name//_/ }"
         done
     done
 }
