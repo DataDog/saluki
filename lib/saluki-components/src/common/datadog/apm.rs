@@ -85,6 +85,8 @@ impl Default for RareSamplerConfig {
 struct ApmConfiguration {
     #[serde(default)]
     apm_config: ApmConfig,
+    #[serde(default = "default_rare_sampler_enabled", rename = "apm_enable_rare_sampler")]
+    enable_rare_sampler: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -204,7 +206,7 @@ pub struct ApmConfig {
     #[serde(skip)]
     hostname: MetaString,
 
-    #[serde(default = "default_rare_sampler_enabled")]
+    #[serde(skip)]
     enable_rare_sampler: bool,
 
     #[serde(default)]
@@ -219,11 +221,7 @@ impl ApmConfig {
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let wrapper = config.as_typed::<ApmConfiguration>()?;
         let mut apm_config = wrapper.apm_config;
-        // DD_APM_ENABLE_RARE_SAMPLER maps to the flat key `apm_enable_rare_sampler`, not the nested
-        // serde path, so read it explicitly to let the env var override the YAML value.
-        if let Ok(Some(v)) = config.try_get_typed::<bool>("apm_enable_rare_sampler") {
-            apm_config.enable_rare_sampler = v;
-        }
+        apm_config.enable_rare_sampler = wrapper.enable_rare_sampler;
         Ok(apm_config)
     }
 
