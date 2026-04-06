@@ -31,8 +31,15 @@ const TTL_RENEWAL_PERIOD: Duration = Duration::from_secs(60);
 /// Metric key set on the root span of a rare-sampled trace.
 pub(super) const RARE_KEY: &str = "_dd.rare";
 
-/// Metric key indicating a span is a top-level span.
+/// Metric key indicating a span is a top-level span (legacy, set by the agent).
 const KEY_TOP_LEVEL: &str = "_top_level";
+
+/// Metric key indicating a span is a top-level span, set directly by tracers/SDKs.
+///
+/// Modern Datadog tracers set this key instead of (or in addition to) `_top_level`. The Go agent
+/// normalizes it into `_top_level` via `UpdateTracerTopLevel` when `ClientComputedTopLevel` is
+/// true, but ADP does not run that normalization pass, so we check both keys directly.
+const KEY_TRACER_TOP_LEVEL: &str = "_dd.top_level";
 
 /// Metric key indicating a span is explicitly marked for stats computation.
 const KEY_MEASURED: &str = "_dd.measured";
@@ -197,9 +204,13 @@ impl RareSampler {
     }
 }
 
-/// Returns `true` if the span is top-level (`_top_level = 1`) or measured (`_dd.measured = 1`).
+/// Returns `true` if the span is top-level or measured.
+///
+/// Checks `_top_level` (agent-set), `_dd.top_level` (tracer-set), and `_dd.measured`, mirroring
+/// `HasTopLevel` + `IsMeasured` in the Go agent's `traceutil` package.
 fn is_top_level_or_measured(span: &Span) -> bool {
     span.metrics().get(KEY_TOP_LEVEL).is_some_and(|v| *v == 1.0)
+        || span.metrics().get(KEY_TRACER_TOP_LEVEL).is_some_and(|v| *v == 1.0)
         || span.metrics().get(KEY_MEASURED).is_some_and(|v| *v == 1.0)
 }
 
@@ -212,7 +223,7 @@ mod tests {
     use saluki_core::data_model::event::trace::{Span as DdSpan, Trace};
     use stringtheory::MetaString;
 
-    use super::{RareSampler, KEY_MEASURED, KEY_TOP_LEVEL, RARE_KEY};
+    use super::{RareSampler, KEY_MEASURED, KEY_TOP_LEVEL, KEY_TRACER_TOP_LEVEL, RARE_KEY};
 
     fn make_span_with_metrics(
         service: &str, name: &str, resource: &str, metrics: FastHashMap<MetaString, f64>,
@@ -370,6 +381,7 @@ mod tests {
         type Case = (&'static str, &'static [(&'static str, f64)], bool);
         let cases: &[Case] = &[
             ("top-level", &[(KEY_TOP_LEVEL, 1.0)], true),
+            ("tracer-top-level", &[(KEY_TRACER_TOP_LEVEL, 1.0)], true),
             ("measured", &[(KEY_MEASURED, 1.0)], true),
             ("plain", &[], false),
         ];
