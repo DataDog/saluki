@@ -354,6 +354,11 @@ impl TraceSampler {
                 return (true, priority, "", Some(root_span_idx));
             }
         } else if self.is_otlp_trace(trace, root_span_idx) {
+            // Rare check mirrors agent behavior: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/agent.go#L1129-L1140
+            if rare {
+                return (true, PRIORITY_AUTO_KEEP, "", Some(root_span_idx));
+            }
+
             // some sampling happens upstream in the otlp receiver in the agent: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/api/otlp.go#L572
             let root_trace_id = trace.spans()[root_span_idx].trace_id();
             if sample_by_rate(root_trace_id, self.otlp_sampling_rate) {
@@ -1059,5 +1064,39 @@ mod tests {
         let (keep, priority, _, _) = sampler.run_samplers(&mut trace);
         assert!(!keep);
         assert_eq!(priority, PRIORITY_AUTO_DROP);
+    }
+
+    /// Rare sampler should catch OTLP traces without a sampling priority on their first occurrence,
+    /// matching the Go agent behavior: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/agent.go#L1129-L1140
+    #[test]
+    fn rare_sampler_catches_otlp_no_priority_trace() {
+        let mut sampler = create_sampler_with_rare_enabled();
+        sampler.probabilistic_sampler_enabled = false;
+        sampler.error_sampling_enabled = false;
+        sampler.otlp_sampling_rate = 0.0;
+
+        let mut meta = saluki_common::collections::FastHashMap::default();
+        meta.insert(
+            MetaString::from_static(OTEL_TRACE_ID_META_KEY),
+            MetaString::from("00000000000000000000000000000001"),
+        );
+        let span = create_top_level_span(888, 1).with_meta(meta);
+        let mut trace = create_test_trace(vec![span]);
+
+        let (keep, priority, decision_maker, root_idx) = sampler.run_samplers(&mut trace);
+        assert!(
+            keep,
+            "rare sampler should keep OTLP trace with no priority on first occurrence"
+        );
+        assert_eq!(priority, PRIORITY_AUTO_KEEP);
+        assert_eq!(decision_maker, "");
+        assert_eq!(
+            trace.spans()[root_idx.unwrap()]
+                .metrics()
+                .get(rare_sampler::RARE_KEY)
+                .copied(),
+            Some(1.0),
+            "_dd.rare should be set to 1 on first occurrence"
+        );
     }
 }
