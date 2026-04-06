@@ -18,9 +18,8 @@ use saluki_common::collections::FastHashMap;
 use saluki_core::data_model::event::trace::{Span, Trace};
 use stringtheory::MetaString;
 
-use crate::common::datadog::get_trace_env;
-
 use super::signature::{span_hash_for_rare, ServiceSignature, Signature};
+use crate::common::datadog::get_trace_env;
 
 /// The burst size for the token bucket rate limiter. Matches the Go agent default.
 const RARE_SAMPLER_BURST: usize = 50;
