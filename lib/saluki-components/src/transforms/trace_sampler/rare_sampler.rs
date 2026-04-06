@@ -409,36 +409,58 @@ mod tests {
     }
 
     #[test]
-    fn multiple_top_level_spans_rare_flag_on_first_new_signature() {
-        // Mirrors TestMultipleTopeLevels from the Go agent.
-        // Trace 1: only r1 → r1 is rare, gets _dd.rare=1.
-        // Trace 2 (at r1's TTL boundary): r1 is within TTL but r2 is new → r2 gets _dd.rare=1, r1 does not.
-        //   Sampling trace 2 also refreshes r1's TTL.
-        // Trace 3 (after original TTL): r1 was refreshed in trace 2, so it's still within TTL → not sampled.
-        let ttl = Duration::from_millis(20);
-        let mut sampler = RareSampler::new(true, 100.0, ttl, 200);
+    fn span_eligibility() {
+        // Mirrors TestConsideredSpans from the Go agent.
+        // Use distinct service names so each case gets a fresh shard with no prior state.
+        type Case = (&'static str, &'static [(&'static str, f64)], bool);
+        let cases: &[Case] = &[
+            ("top-level", &[(KEY_TOP_LEVEL, 1.0)], true),
+            ("measured", &[(KEY_MEASURED, 1.0)], true),
+            ("plain", &[], false),
+        ];
 
-        // Trace 1: single span r1.
+        let mut sampler = RareSampler::new(true, 100.0, Duration::from_secs(300), 200);
+        for &(service, metrics, expected) in cases {
+            let mut m = FastHashMap::default();
+            for &(k, v) in metrics {
+                m.insert(MetaString::from(k), v);
+            }
+            let mut trace = make_trace(vec![make_span_with_metrics(service, "op", "res", m)]);
+            assert_eq!(sampler.sample(&mut trace, 0), expected, "case: {service}");
+        }
+    }
+
+    #[test]
+    fn multiple_top_level_spans_rare_flag_on_first_new_signature() {
+        // Mirrors TestMultipleTopeLevels from the Go agent exactly.
+        // r1 and r2 are in the same service shard.
+        //
+        // Trace 1 [r1]:       r1 new → kept, r1 gets _dd.rare=1. r1 TTL set.
+        // Trace 2 [r1, r2]:   r1 within TTL (skipped), r2 new → kept, r2 gets _dd.rare=1.
+        //                     Sampling trace 2 refreshes both r1 and r2 TTLs.
+        // Trace 3 [r1]:       r1 TTL was refreshed by trace 2 → dropped.
+        let mut sampler = RareSampler::new(true, 100.0, Duration::from_secs(300), 200);
+
         let mut trace1 = make_trace(vec![make_top_level_span("s1", "op", "r1")]);
         assert!(sampler.sample(&mut trace1, 0));
         assert_eq!(trace1.spans()[0].metrics().get(RARE_KEY).copied(), Some(1.0));
-
-        // Wait for r1's TTL to expire, then sample a trace with r1+r2.
-        // r1 is now expired (rare again), but r2 hasn't been seen at all.
-        // The sampler finds r1 first and would mark it — but actually the Go test relies on
-        // r1 being suppressed because of the earlier priority-trace recording.
-        // In our case we just verify that the first unseen/expired span gets the flag.
-        std::thread::sleep(ttl + Duration::from_millis(5));
 
         let mut trace2 = make_trace(vec![
             make_top_level_span("s1", "op", "r1"),
             make_top_level_span("s1", "op", "r2"),
         ]);
-        // r1 is expired at this point, so trace2 is sampled; r1 gets the rare flag (first expired).
         assert!(sampler.sample(&mut trace2, 0));
+        assert_eq!(
+            trace2.spans()[0].metrics().get(RARE_KEY).copied(),
+            None,
+            "r1 should not get rare flag"
+        );
+        assert_eq!(
+            trace2.spans()[1].metrics().get(RARE_KEY).copied(),
+            Some(1.0),
+            "r2 should get rare flag"
+        );
 
-        // After sampling trace2, both r1 and r2 TTLs are refreshed.
-        // Immediately sampling trace1 (r1 only) should be suppressed.
         let mut trace3 = make_trace(vec![make_top_level_span("s1", "op", "r1")]);
         assert!(!sampler.sample(&mut trace3, 0));
     }
