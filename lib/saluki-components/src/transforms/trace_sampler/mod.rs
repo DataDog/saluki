@@ -455,12 +455,6 @@ impl TraceSampler {
             if let Some(root_idx) = root_span_idx {
                 self.apply_sampling_metadata(trace, keep, priority, decision_maker, root_idx);
             }
-            // ETS: mark kept error traces so the encoder emits the _dd.error_tracking_standalone.error chunk tag.
-            if self.error_tracking_standalone {
-                if let Some(sampling) = trace.sampling_mut() {
-                    sampling.ets_error = true;
-                }
-            }
             return true;
         }
 
@@ -1131,22 +1125,6 @@ mod tests {
 
         let kept = sampler.process_trace(&mut trace);
         assert!(!kept, "ETS should suppress SSS for non-error traces");
-    }
-
-    /// ETS enabled + trace with error → `ets_error` flag set on sampling metadata.
-    #[test]
-    fn ets_sets_ets_error_flag_on_kept_trace() {
-        let mut sampler = create_sampler_with_ets();
-
-        let span = create_test_span(103, 1, 1); // error=1
-        let mut trace = create_test_trace(vec![span]);
-
-        let kept = sampler.process_trace(&mut trace);
-        assert!(kept);
-        assert!(
-            trace.sampling().is_some_and(|s| s.ets_error),
-            "ets_error should be set on kept ETS traces"
-        );
     }
 
     /// ETS enabled + trace with exception span event → kept (exception events count as errors in ETS).
