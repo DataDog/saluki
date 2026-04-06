@@ -10,8 +10,10 @@ use std::{
 };
 
 use memory_accounting::allocator::{AllocationGroupRegistry, AllocationGroupToken, Track as _, Tracked};
-use pin_project::pin_project;
+use pin_project::{pin_project, pinned_drop};
 use tracing::{debug_span, instrument::Instrumented, Instrument as _};
+
+use super::state::{DataspaceRegistry, CURRENT_DATASPACE};
 
 static GLOBAL_PROCESS_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
 
@@ -24,7 +26,7 @@ static GLOBAL_PROCESS_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
 pub struct Id(usize);
 
 tokio::task_local! {
-    static CURRENT_PROCESS_ID: Id;
+    pub(crate) static CURRENT_PROCESS_ID: Id;
 }
 
 impl Id {
@@ -44,7 +46,8 @@ impl Id {
         CURRENT_PROCESS_ID.try_with(|id| *id).unwrap_or(Self::ROOT)
     }
 
-    fn as_usize(&self) -> usize {
+    /// Returns the raw numeric value of this identifier.
+    pub fn as_usize(&self) -> usize {
         self.0
     }
 }
@@ -100,6 +103,7 @@ pub struct Process {
     id: Id,
     name: Name,
     alloc_group_token: AllocationGroupToken,
+    dataspace: DataspaceRegistry,
 }
 
 impl Process {
@@ -108,25 +112,50 @@ impl Process {
             .and_then(|p| Name::scoped(&p.name, &name))
             .or_else(|| Name::root(name))?;
         let alloc_group_token = AllocationGroupRegistry::global().register_allocation_group(&*name);
-        Some(Self::from_parts(Id::new(), name, alloc_group_token))
+        let dataspace = parent.map(|p| p.dataspace.clone()).unwrap_or_default();
+        Some(Self::from_parts(Id::new(), name, alloc_group_token, dataspace))
+    }
+
+    pub(crate) fn supervisor_with_dataspace<N: AsRef<str>>(
+        name: N, parent: Option<&Process>, dataspace: Option<DataspaceRegistry>,
+    ) -> Option<Self> {
+        let name = parent
+            .and_then(|p| Name::scoped(&p.name, &name))
+            .or_else(|| Name::root(name))?;
+        let alloc_group_token = AllocationGroupRegistry::global().register_allocation_group(&*name);
+        let dataspace = dataspace
+            .or_else(|| parent.map(|p| p.dataspace.clone()))
+            .unwrap_or_default();
+        Some(Self::from_parts(Id::new(), name, alloc_group_token, dataspace))
     }
 
     pub(crate) fn worker<N: AsRef<str>>(name: N, parent: &Process) -> Option<Self> {
         let name = Name::scoped(&parent.name, name)?;
-        Some(Self::from_parts(Id::new(), name, parent.alloc_group_token))
+        Some(Self::from_parts(
+            Id::new(),
+            name,
+            parent.alloc_group_token,
+            parent.dataspace.clone(),
+        ))
     }
 
-    fn from_parts(id: Id, name: Name, alloc_group_token: AllocationGroupToken) -> Self {
+    fn from_parts(id: Id, name: Name, alloc_group_token: AllocationGroupToken, dataspace: DataspaceRegistry) -> Self {
         Self {
             id,
             name,
             alloc_group_token,
+            dataspace,
         }
     }
 
     /// Returns the process identifier.
     pub fn id(&self) -> &Id {
         &self.id
+    }
+
+    /// Returns the dataspace registry associated with this process.
+    pub(crate) fn dataspace(&self) -> &DataspaceRegistry {
+        &self.dataspace
     }
 
     pub fn into_instrumented<F>(self, inner: F) -> InstrumentedProcess<F>
@@ -138,9 +167,10 @@ impl Process {
 }
 
 /// An instrumented process.
-#[pin_project]
+#[pin_project(PinnedDrop)]
 pub struct InstrumentedProcess<F> {
     process_id: Id,
+    dataspace: DataspaceRegistry,
     #[pin]
     inner: Instrumented<Tracked<F>>,
 }
@@ -157,9 +187,14 @@ where
         );
 
         let process_id = process.id;
+        let dataspace = process.dataspace.clone();
         let inner = inner.track_allocations(process.alloc_group_token).instrument(span);
 
-        Self { process_id, inner }
+        Self {
+            process_id,
+            dataspace,
+            inner,
+        }
     }
 }
 
@@ -171,7 +206,17 @@ where
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
-        CURRENT_PROCESS_ID.sync_scope(*this.process_id, || this.inner.poll(cx))
+        CURRENT_PROCESS_ID.sync_scope(*this.process_id, || {
+            CURRENT_DATASPACE.sync_scope(this.dataspace.clone(), || this.inner.poll(cx))
+        })
+    }
+}
+
+#[pinned_drop]
+impl<F> PinnedDrop for InstrumentedProcess<F> {
+    fn drop(self: Pin<&mut Self>) {
+        let this = self.project();
+        this.dataspace.retract_all_for_process(*this.process_id);
     }
 }
 

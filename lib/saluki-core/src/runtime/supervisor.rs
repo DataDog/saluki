@@ -15,7 +15,10 @@ use super::{
     restart::{RestartAction, RestartMode, RestartState, RestartStrategy},
     shutdown::{ProcessShutdown, ShutdownHandle},
 };
-use crate::runtime::process::{Process, ProcessExt as _};
+use crate::runtime::{
+    process::{Process, ProcessExt as _},
+    state::DataspaceRegistry,
+};
 
 /// A `Future` that represents the execution of a supervised process.
 pub type SupervisorFuture = Pin<Box<dyn Future<Output = Result<(), GenericError>> + Send>>;
@@ -248,13 +251,16 @@ impl ChildSpecification {
                         Ok(sup.as_nested_process(process, process_shutdown))
                     }
                     RuntimeMode::Dedicated(config) => {
-                        // Spawn in a dedicated runtime on a new OS thread.
+                        // Spawn in a dedicated runtime on a new OS thread, passing the parent's
+                        // dataspace so the nested supervisor inherits it across the thread boundary.
                         let child_name = sup.supervisor_id.to_string();
-                        let handle = spawn_dedicated_runtime(sup.inner_clone(), config.clone(), process_shutdown)
-                            .map_err(|e| SupervisorError::FailedToInitialize {
-                                child_name,
-                                source: e.into(),
-                            })?;
+                        let dataspace = process.dataspace().clone();
+                        let handle =
+                            spawn_dedicated_runtime(sup.inner_clone(), config.clone(), process_shutdown, dataspace)
+                                .map_err(|e| SupervisorError::FailedToInitialize {
+                                    child_name,
+                                    source: e.into(),
+                                })?;
 
                         Ok(Box::pin(async move { handle.await.map_err(WorkerError::from) }))
                     }
@@ -540,7 +546,7 @@ impl Supervisor {
     /// If the supervisor exceeds its restart limits, or fails to initialize a child process, an error is returned.
     pub async fn run_with_shutdown<F: Future + Send + 'static>(&mut self, shutdown: F) -> Result<(), SupervisorError> {
         let process_shutdown = ProcessShutdown::wrapped(shutdown);
-        self.run_with_process_shutdown(process_shutdown).await
+        self.run_with_process_shutdown(process_shutdown, None).await
     }
 
     /// Runs the supervisor until the given `ProcessShutdown` signal is received.
@@ -548,15 +554,19 @@ impl Supervisor {
     /// This is an internal variant of `run_with_shutdown` that takes a `ProcessShutdown` directly, used when spawning
     /// supervisors in dedicated runtimes where the shutdown signal is already wrapped in a `ProcessShutdown`.
     ///
+    /// If `dataspace` is provided, the supervisor will use it instead of creating a new one. This is used to propagate
+    /// the parent's dataspace across OS thread boundaries for dedicated runtimes.
+    ///
     /// # Errors
     ///
     /// If the supervisor exceeds its restart limits, or fails to initialize a child process, an error is returned.
     pub(crate) async fn run_with_process_shutdown(
-        &mut self, process_shutdown: ProcessShutdown,
+        &mut self, process_shutdown: ProcessShutdown, dataspace: Option<DataspaceRegistry>,
     ) -> Result<(), SupervisorError> {
-        let process = Process::supervisor(&self.supervisor_id, None).context(InvalidName {
-            name: self.supervisor_id.to_string(),
-        })?;
+        let process =
+            Process::supervisor_with_dataspace(&self.supervisor_id, None, dataspace).context(InvalidName {
+                name: self.supervisor_id.to_string(),
+            })?;
 
         debug!(supervisor_id = %self.supervisor_id, "Supervisor starting.");
         self.run_inner(process.clone(), process_shutdown)
