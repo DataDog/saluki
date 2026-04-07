@@ -256,26 +256,42 @@ impl DataspaceRegistry {
     ///
     /// The assertion is automatically tracked against the current process (via [`Id::current`]). When the process exits,
     /// all of its outstanding assertions are automatically retracted via [`retract_all_for_process`].
+    ///
+    /// If an assertion already exists for the given type and identifier, only the owning process may update it. If the
+    /// calling process does not own the existing assertion, the update is silently ignored (with a `debug_assert`
+    /// failure in debug builds).
     pub fn assert<T>(&self, value: T, id: impl Into<Identifier>)
     where
         T: Clone + Send + Sync + 'static,
     {
         let id = id.into();
         let key = StorageKey::new::<T>(id.clone());
-        let owner = Id::current();
+        let caller = Id::current();
         let mut state = self.inner.state.lock().unwrap();
+
+        // If an assertion already exists for this key, only the owning process may update it.
+        if let Some(existing) = state.current_values.get(&key) {
+            debug_assert_eq!(
+                existing.owner, caller,
+                "process {caller:?} attempted to update assertion owned by {:?}",
+                existing.owner
+            );
+            if existing.owner != caller {
+                return;
+            }
+        }
 
         // Store the current value for future subscribers, along with the owning process.
         state.current_values.insert(
             key.clone(),
             StoredValue {
                 value: Box::new(value.clone()),
-                owner,
+                owner: caller,
             },
         );
 
         // Track this assertion against the owning process.
-        state.process_assertions.entry(owner).or_default().insert(key.clone());
+        state.process_assertions.entry(caller).or_default().insert(key.clone());
 
         // Notify exact-match subscribers.
         if let Some(ch) = state.channels.get(&key) {
@@ -299,21 +315,40 @@ impl DataspaceRegistry {
     ///
     /// The stored value for the given type and identifier is removed. The retraction is delivered to every active
     /// [`Subscription`] whose filter matches the given identifier.
+    ///
+    /// Only the process that originally asserted the value may retract it. If the calling process does not own the
+    /// assertion, the retraction is silently ignored (with a `debug_assert` failure in debug builds). If no value
+    /// exists for the given type and identifier, this is a no-op.
     pub fn retract<T>(&self, id: impl Into<Identifier>)
     where
         T: Clone + Send + Sync + 'static,
     {
         let id = id.into();
         let key = StorageKey::new::<T>(id.clone());
+        let caller = Id::current();
         let mut state = self.inner.state.lock().unwrap();
 
+        // Check that the assertion exists and is owned by the calling process.
+        let Some(stored) = state.current_values.get(&key) else {
+            return;
+        };
+
+        debug_assert_eq!(
+            stored.owner, caller,
+            "process {caller:?} attempted to retract assertion owned by {:?}",
+            stored.owner
+        );
+        if stored.owner != caller {
+            return;
+        }
+
         // Remove the stored value and clean up process tracking.
-        if let Some(stored) = state.current_values.remove(&key) {
-            if let Some(keys) = state.process_assertions.get_mut(&stored.owner) {
-                keys.remove(&key);
-                if keys.is_empty() {
-                    state.process_assertions.remove(&stored.owner);
-                }
+        state.current_values.remove(&key);
+
+        if let Some(keys) = state.process_assertions.get_mut(&caller) {
+            keys.remove(&key);
+            if keys.is_empty() {
+                state.process_assertions.remove(&caller);
             }
         }
 
@@ -603,8 +638,19 @@ mod tests {
         let mut sub1 = registry.subscribe::<u32>(IdentifierFilter::exact(id.clone()));
         let mut sub2 = registry.subscribe::<u32>(IdentifierFilter::exact(id.clone()));
 
+        registry.assert(42u32, id.clone());
         registry.retract::<u32>(id.clone());
 
+        // Drain assertion notifications.
+        let mut recv1 = test_spawn(sub1.recv());
+        assert_ready_eq!(recv1.poll(), Some(AssertionUpdate::Asserted(id.clone(), 42)));
+        drop(recv1);
+
+        let mut recv2 = test_spawn(sub2.recv());
+        assert_ready_eq!(recv2.poll(), Some(AssertionUpdate::Asserted(id.clone(), 42)));
+        drop(recv2);
+
+        // Check retraction notifications.
         let mut recv1 = test_spawn(sub1.recv());
         assert_ready_eq!(recv1.poll(), Some(AssertionUpdate::Retracted(id.clone())));
 
@@ -998,8 +1044,10 @@ mod tests {
             registry.assert(42u32, id.clone());
         });
 
-        // Manually retract.
-        registry.retract::<u32>(id.clone());
+        // Manually retract (must be from the owning process).
+        crate::runtime::process::CURRENT_PROCESS_ID.sync_scope(process_id, || {
+            registry.retract::<u32>(id.clone());
+        });
 
         // Drain the assertion and retraction.
         let mut recv = test_spawn(sub.recv());
@@ -1163,5 +1211,109 @@ mod tests {
         assert!(recv_str.is_woken());
         assert_ready_eq!(recv_u32.poll(), Some(AssertionUpdate::Retracted(id_num.into())));
         assert_ready_eq!(recv_str.poll(), Some(AssertionUpdate::Retracted(id_str.into())));
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn retract_from_non_owner_is_ignored() {
+        let registry = DataspaceRegistry::new();
+        let pid_a = Id::new();
+        let pid_b = Id::new();
+        let id = Identifier::named("owned_by_a");
+
+        // Assert as process A.
+        crate::runtime::process::CURRENT_PROCESS_ID.sync_scope(pid_a, || {
+            registry.assert(42u32, id.clone());
+        });
+
+        // Attempt to retract as process B -- should be silently ignored.
+        crate::runtime::process::CURRENT_PROCESS_ID.sync_scope(pid_b, || {
+            registry.retract::<u32>(id.clone());
+        });
+
+        // Value should still be present for new subscribers.
+        let mut sub = registry.subscribe::<u32>(IdentifierFilter::exact(id.clone()));
+        let mut recv = test_spawn(sub.recv());
+        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Asserted(id.clone(), 42)));
+        drop(recv);
+
+        // Retract as process A -- should succeed.
+        crate::runtime::process::CURRENT_PROCESS_ID.sync_scope(pid_a, || {
+            registry.retract::<u32>(id.clone());
+        });
+
+        // Subscriber should receive the retraction.
+        let mut recv = test_spawn(sub.recv());
+        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Retracted(id)));
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "attempted to retract assertion owned by")]
+    fn retract_from_non_owner_panics_in_debug() {
+        let registry = DataspaceRegistry::new();
+        let pid_a = Id::new();
+        let pid_b = Id::new();
+        let id = Identifier::named("owned_by_a");
+
+        crate::runtime::process::CURRENT_PROCESS_ID.sync_scope(pid_a, || {
+            registry.assert(42u32, id.clone());
+        });
+
+        crate::runtime::process::CURRENT_PROCESS_ID.sync_scope(pid_b, || {
+            registry.retract::<u32>(id.clone());
+        });
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn reassert_from_non_owner_is_ignored() {
+        let registry = DataspaceRegistry::new();
+        let pid_a = Id::new();
+        let pid_b = Id::new();
+        let id = Identifier::named("owned_by_a");
+
+        // Assert as process A.
+        crate::runtime::process::CURRENT_PROCESS_ID.sync_scope(pid_a, || {
+            registry.assert(42u32, id.clone());
+        });
+
+        // Attempt to overwrite as process B -- should be silently ignored.
+        crate::runtime::process::CURRENT_PROCESS_ID.sync_scope(pid_b, || {
+            registry.assert(99u32, id.clone());
+        });
+
+        // Value should still be the original.
+        let mut sub = registry.subscribe::<u32>(IdentifierFilter::exact(id.clone()));
+        let mut recv = test_spawn(sub.recv());
+        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Asserted(id.clone(), 42)));
+        drop(recv);
+
+        // Update as process A -- should succeed.
+        crate::runtime::process::CURRENT_PROCESS_ID.sync_scope(pid_a, || {
+            registry.assert(100u32, id.clone());
+        });
+
+        // Subscriber should receive the update.
+        let mut recv = test_spawn(sub.recv());
+        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Asserted(id, 100)));
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "attempted to update assertion owned by")]
+    fn reassert_from_non_owner_panics_in_debug() {
+        let registry = DataspaceRegistry::new();
+        let pid_a = Id::new();
+        let pid_b = Id::new();
+        let id = Identifier::named("owned_by_a");
+
+        crate::runtime::process::CURRENT_PROCESS_ID.sync_scope(pid_a, || {
+            registry.assert(42u32, id.clone());
+        });
+
+        crate::runtime::process::CURRENT_PROCESS_ID.sync_scope(pid_b, || {
+            registry.assert(99u32, id.clone());
+        });
     }
 }
