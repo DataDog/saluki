@@ -137,14 +137,14 @@ impl Default for OtlpMetricsTranslatorConfig {
     fn default() -> Self {
         Self {
             hist_mode: HistogramMode::default(),
-            send_histogram_aggregations: true,
+            send_histogram_aggregations: false,
             number_mode: NumberMode::default(),
             initial_cumul_mono_value_mode: InitialCumulMonoValueMode::default(),
             instrumentation_scope_metadata_as_tags: true,
             instrumentation_library_metadata_as_tags: false,
             with_remapping: false,
             with_otel_prefix: false,
-            quantiles: true,
+            quantiles: false,
             infer_delta_interval: false,
             delta_ttl: DEFAULT_DELTA_TTL,
             sweep_interval: DEFAULT_SWEEP_INTERVAL,
