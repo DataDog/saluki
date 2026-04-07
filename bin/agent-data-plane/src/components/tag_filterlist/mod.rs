@@ -8,12 +8,17 @@
 
 mod telemetry;
 
+use std::{num::NonZeroUsize, time::Duration};
+
 use async_trait::async_trait;
 use foldhash::fast::RandomState as FoldHashState;
 use hashbrown::{HashMap, HashSet};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
-use saluki_context::tags::{Tag, TagSet};
+use saluki_context::{
+    tags::{Tag, TagSet},
+    ContextResolver, ContextResolverBuilder,
+};
 use saluki_core::{
     components::{
         transforms::{Transform, TransformBuilder, TransformContext},
@@ -127,6 +132,14 @@ pub fn compile_filters(entries: &[MetricTagFilterEntry]) -> CompiledFilters {
     filters
 }
 
+/// Default number of filtered contexts to retain in the local resolver cache.
+fn default_context_resolver_limit() -> usize {
+    5000
+}
+
+const DEFAULT_TAG_FILTERLIST_INTERNER_CAPACITY_BYTES: usize = 64 * 1024;
+const TAG_FILTERLIST_RESOLVER_IDLE_EXPIRATION: Duration = Duration::from_secs(30);
+
 /// Metric Tag Filterlist transform.
 ///
 /// Removes or retains specific tags from distribution metrics based on per-metric configuration.
@@ -135,6 +148,13 @@ pub fn compile_filters(entries: &[MetricTagFilterEntry]) -> CompiledFilters {
 pub struct TagFilterlistConfiguration {
     #[serde(default, rename = "metric_tag_filterlist")]
     entries: Vec<MetricTagFilterEntry>,
+
+    /// Maximum number of filtered contexts to cache in the local resolver.
+    ///
+    /// This generally tracks `aggregate_context_limit` so the filter cache can retain roughly one
+    /// filtered context per distinct aggregated context. Defaults to `5000`.
+    #[serde(rename = "aggregate_context_limit", default = "default_context_resolver_limit")]
+    context_resolver_limit: usize,
 
     #[serde(skip)]
     configuration: Option<GenericConfiguration>,
@@ -162,6 +182,17 @@ impl TransformBuilder for TagFilterlistConfiguration {
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(&context);
+        let context_resolver_limit =
+            NonZeroUsize::new(self.context_resolver_limit.max(1)).expect("context_resolver_limit is always >= 1");
+        let context_resolver =
+            ContextResolverBuilder::from_name(format!("{}/tag_filterlist/primary", context.component_id()))?
+                .with_cached_contexts_limit(context_resolver_limit.get())
+                .with_idle_context_expiration(TAG_FILTERLIST_RESOLVER_IDLE_EXPIRATION)
+                .with_interner_capacity_bytes(
+                    NonZeroUsize::new(DEFAULT_TAG_FILTERLIST_INTERNER_CAPACITY_BYTES)
+                        .expect("tag filter interner capacity is non-zero"),
+                )
+                .build();
 
         Ok(Box::new(TagFilterlist {
             filters: compile_filters(&self.entries),
@@ -170,13 +201,20 @@ impl TransformBuilder for TagFilterlistConfiguration {
                 .clone()
                 .expect("configuration must be set via from_configuration"),
             telemetry: Telemetry::new(&metrics_builder),
+            context_resolver,
         }))
     }
 }
 
 impl MemoryBounds for TagFilterlistConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
-        builder.minimum().with_single_value::<TagFilterlist>("component struct");
+        builder
+            .minimum()
+            .with_single_value::<TagFilterlist>("component struct")
+            .with_fixed_amount(
+                "tag filter context resolver string interner",
+                DEFAULT_TAG_FILTERLIST_INTERNER_CAPACITY_BYTES,
+            );
     }
 }
 
@@ -184,6 +222,7 @@ struct TagFilterlist {
     filters: CompiledFilters,
     configuration: GenericConfiguration,
     telemetry: Telemetry,
+    context_resolver: ContextResolver,
 }
 
 #[async_trait]
@@ -204,7 +243,8 @@ impl Transform for TagFilterlist {
                         for event in &mut events {
                             if let Some(metric) = event.try_as_metric_mut() {
                                 if metric.values().is_sketch() {
-                                    let outcome = filter_metric_tags(metric, &self.filters);
+                                    let outcome =
+                                        filter_metric_tags_with_resolver(metric, &self.filters, &mut self.context_resolver);
                                     self.telemetry.record(outcome);
                                 }
                             }
@@ -243,14 +283,30 @@ fn has_removable_tags(tags: &TagSet, is_exclude: bool, names: &HashSet<String, F
 /// Both instrumented tags and origin tags are filtered using the same tag key list.
 /// If the metric name is not present in `filters`, the metric is left unchanged.
 /// If filtering would not change any tags, the metric context is left untouched (zero allocations).
+#[cfg(test)]
 #[inline]
-pub fn filter_metric_tags(metric: &mut Metric, filters: &CompiledFilters) -> FilterMetricTagsOutcome {
+fn filter_metric_tags(metric: &mut Metric, filters: &CompiledFilters) -> FilterMetricTagsOutcome {
+    filter_metric_tags_impl(metric, filters, None)
+}
+
+/// Filters a metric and resolves changed outputs through a local resolver so repeated filtered
+/// contexts can be reused across metrics.
+#[inline]
+fn filter_metric_tags_with_resolver(
+    metric: &mut Metric, filters: &CompiledFilters, context_resolver: &mut ContextResolver,
+) -> FilterMetricTagsOutcome {
+    filter_metric_tags_impl(metric, filters, Some(context_resolver))
+}
+
+#[inline]
+fn filter_metric_tags_impl(
+    metric: &mut Metric, filters: &CompiledFilters, context_resolver: Option<&mut ContextResolver>,
+) -> FilterMetricTagsOutcome {
     let Some((is_exclude, tag_names)) = filters.get(metric.context().name().as_ref()) else {
         return FilterMetricTagsOutcome::RuleMiss;
     };
 
     let is_exclude = *is_exclude;
-
     let has_tag_removals = has_removable_tags(metric.context().tags(), is_exclude, tag_names);
     let has_origin_removals = has_removable_tags(metric.context().origin_tags(), is_exclude, tag_names);
 
@@ -272,6 +328,16 @@ pub fn filter_metric_tags(metric: &mut Metric, filters: &CompiledFilters) -> Fil
         }
     });
 
+    if let Some(resolver) = context_resolver {
+        if let Some(context) = resolver.resolve_with_origin_tags(
+            metric.context().name(),
+            metric.context().tags(),
+            metric.context().origin_tags().clone(),
+        ) {
+            *metric.context_mut() = context;
+        }
+    }
+
     FilterMetricTagsOutcome::Modified {
         removed_tags: total_removed,
     }
@@ -280,7 +346,7 @@ pub fn filter_metric_tags(metric: &mut Metric, filters: &CompiledFilters) -> Fil
 #[cfg(test)]
 mod tests {
     use saluki_config::{dynamic::ConfigUpdate, ConfigurationLoader};
-    use saluki_context::{tags::Tag, Context};
+    use saluki_context::{tags::Tag, Context, ContextResolverBuilder};
     use saluki_core::data_model::event::metric::Metric;
     use saluki_metrics::{test::TestRecorder, MetricsBuilder};
     use serde_json::json;
@@ -653,6 +719,29 @@ mod tests {
         );
         filter_metric_tags(&mut metric, &filters);
 
+        assert_eq!(tag_names(&metric), vec!["service:web"]);
+        assert_eq!(origin_tag_names(&metric), vec!["region:us-east-1"]);
+    }
+
+    #[test]
+    fn resolver_path_matches_normal_filtering() {
+        let entries = vec![MetricTagFilterEntry {
+            metric_name: "my.dist".to_string(),
+            action: FilterAction::Exclude,
+            tags: vec!["env".to_string(), "host".to_string()],
+        }];
+        let filters = compile_filters(&entries);
+
+        let mut metric = distribution_metric_with_origin_tags(
+            "my.dist",
+            &["env:prod", "service:web", "host:h1"],
+            &["env:prod", "host:h1", "region:us-east-1"],
+        );
+        let mut resolver = ContextResolverBuilder::for_tests().build();
+
+        let outcome = filter_metric_tags_with_resolver(&mut metric, &filters, &mut resolver);
+
+        assert_eq!(outcome, FilterMetricTagsOutcome::Modified { removed_tags: 4 });
         assert_eq!(tag_names(&metric), vec!["service:web"]);
         assert_eq!(origin_tag_names(&metric), vec!["region:us-east-1"]);
     }
