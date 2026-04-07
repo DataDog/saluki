@@ -12,8 +12,8 @@ use saluki_config::GenericConfiguration;
 use saluki_core::{
     health::HealthRegistry,
     runtime::{
-        state::DataspaceRegistry, InitializationError, ProcessShutdown, RestartStrategy, RuntimeConfiguration,
-        Supervisable, Supervisor, SupervisorFuture,
+        InitializationError, ProcessShutdown, RestartStrategy, RuntimeConfiguration, Supervisable, Supervisor,
+        SupervisorFuture,
     },
 };
 use saluki_error::{ErrorContext as _, GenericError};
@@ -147,7 +147,6 @@ pub async fn create_control_plane_supervisor(
     supervisor.add_worker(DynamicAPIBuilder::new(
         EndpointType::Unprivileged,
         dp_config.api_listen_address().clone(),
-        DataspaceRegistry::global(),
     ));
     supervisor.add_worker(
         PrivilegedApiWorker::new(
