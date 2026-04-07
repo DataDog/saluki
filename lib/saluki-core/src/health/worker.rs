@@ -2,10 +2,7 @@ use async_trait::async_trait;
 use saluki_api::{DynamicRoute, EndpointType};
 
 use super::HealthRegistry;
-use crate::runtime::{
-    state::{DataspaceRegistry, Handle},
-    InitializationError, ProcessShutdown, Supervisable, SupervisorFuture,
-};
+use crate::runtime::{state::DataspaceRegistry, InitializationError, ProcessShutdown, Supervisable, SupervisorFuture};
 
 /// A worker that runs the health registry.
 ///
@@ -34,15 +31,10 @@ impl Supervisable for HealthRegistryWorker {
         let health_routes = DynamicRoute::http(EndpointType::Unprivileged, self.health_registry.api_handler());
 
         Ok(Box::pin(async move {
-            // Publish our health endpoint route and retract it after the registry task completes,
-            // regardless of whether it failed or not.
-            let dataspace_registry = DataspaceRegistry::global();
-            dataspace_registry.assert(health_routes, Handle::current_process());
+            // Register our API routes before we actually stsrt running.
+            DataspaceRegistry::current().assert(health_routes, "health-registry-api");
 
             runner.run(process_shutdown).await;
-
-            // TODO: OK, yeah, this is clunky. We should just make it a drop guard.
-            dataspace_registry.retract::<DynamicRoute>(Handle::current_process());
 
             Ok(())
         }))
