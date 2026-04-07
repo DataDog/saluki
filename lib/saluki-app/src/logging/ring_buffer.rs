@@ -160,7 +160,10 @@ impl<'a> CondensedEvent<'a> {
     /// Returns an iterator over the decoded field key-value pairs.
     #[allow(dead_code)] // Will be used by the read API; exercised in tests.
     pub fn iter_fields(&self) -> FieldIter<'_> {
-        FieldIter { buf: &self.fields, idx: 0 }
+        FieldIter {
+            buf: &self.fields,
+            idx: 0,
+        }
     }
 }
 
@@ -665,7 +668,7 @@ mod tests {
 
         // With a 128-byte threshold, we should have flushed at least one segment.
         assert!(
-            state.compressed_segments.segments.len() > 0,
+            !state.compressed_segments.segments.is_empty(),
             "expected at least one compressed segment"
         );
     }
