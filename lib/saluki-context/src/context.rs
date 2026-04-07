@@ -319,6 +319,13 @@ impl TagSetMutViewState {
         self.origin_addition_removals.clear();
         self.hash_seen.clear();
     }
+
+    fn normalize(&mut self) {
+        normalize_removals(&mut self.tag_base_removals);
+        normalize_removals(&mut self.tag_addition_removals);
+        normalize_removals(&mut self.origin_base_removals);
+        normalize_removals(&mut self.origin_addition_removals);
+    }
 }
 
 /// A lazy copy-on-write mutable view over a [`Context`]'s tag sets.
@@ -362,6 +369,8 @@ impl<'a, 'b> TagSetMutView<'a, 'b> {
     /// Otherwise, triggers `Arc::make_mut` on the context, applies the changes to both tag sets,
     /// and recomputes the context key.
     pub fn finish(self) -> usize {
+        self.state.normalize();
+
         let total_tags = self.state.tag_base_removals.len() + self.state.tag_addition_removals.len();
         let total_origin = self.state.origin_base_removals.len() + self.state.origin_addition_removals.len();
         let total = total_tags + total_origin;
@@ -388,6 +397,11 @@ impl<'a, 'b> TagSetMutView<'a, 'b> {
 
         total
     }
+}
+
+fn normalize_removals(removals: &mut Vec<usize>) {
+    removals.sort_unstable();
+    removals.dedup();
 }
 
 impl Drop for TagSetMutView<'_, '_> {
