@@ -69,7 +69,7 @@ impl LogarithmicMapping {
             return Err("gamma must be greater than 1");
         }
         let multiplier = 1.0 / gamma.ln();
-        return Ok(Self {gamma, multiplier});
+        return Ok(Self { gamma, multiplier });
     }
 }
 
