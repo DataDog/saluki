@@ -601,7 +601,7 @@ impl OtlpMetricsTranslator {
         if f64::abs(rounded_delta - delta) < 0.05 {
             return rounded_delta as i64;
         }
-        return 0;
+        0
     }
 
     fn get_sketch_buckets(
@@ -615,7 +615,7 @@ impl OtlpMetricsTranslator {
         let mut bucket_counts = p.bucket_counts.clone();
         let mut explicit_bounds = p.explicit_bounds.clone();
 
-        if bucket_counts.len() == 0 && hist_info.ok {
+        if bucket_counts.is_empty() && hist_info.ok {
             bucket_counts = Vec::new();
             explicit_bounds = Vec::new();
 
@@ -635,10 +635,9 @@ impl OtlpMetricsTranslator {
         let (mut min_bound, mut max_bound) = (0.0, 0.0);
         let mut min_bound_set: bool = false;
         let mut buckets: Vec<Bucket> = Vec::new();
-        for j in 0..bucket_counts.len() {
+        for (j, &count) in bucket_counts.iter().enumerate() {
             let (lower_bound, upper_bound) = Self::get_bounds(&explicit_bounds, j);
             let (original_lower_bound, original_upper_bound) = (lower_bound, upper_bound);
-            let count = bucket_counts[j];
 
             let bucket_dims = point_dims.add_tags(&[
                 "lower_bound:".to_string() + Self::format_float(lower_bound).as_str(),
@@ -711,7 +710,7 @@ impl OtlpMetricsTranslator {
         }
         self.record_sketch_event(&point_dims, qa, ts, events, context, interval);
 
-        return Ok(());
+        Ok(())
     }
 
     fn record_sketch_event(
@@ -740,7 +739,7 @@ impl OtlpMetricsTranslator {
     fn get_legacy_buckets(
         &mut self, context: &TranslationContext, point_dims: Dimensions, p: OtlpHistogramDataPoint, delta: bool,
         events: &mut Vec<Event>,
-    ) -> () {
+    ) {
         let start_ts = p.start_time_unix_nano;
         let ts = p.time_unix_nano;
 
