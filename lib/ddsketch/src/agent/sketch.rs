@@ -90,27 +90,27 @@ impl DDSketch {
     }
 
     /// Overrides the sample count tracked by this sketch.
-    pub fn set_count(&mut self, count: u64) -> () {
+    pub fn set_count(&mut self, count: u64) {
         self.count = count;
     }
 
     /// Overrides the sum of all values tracked by this sketch.
-    pub fn set_sum(&mut self, sum: f64) -> () {
+    pub fn set_sum(&mut self, sum: f64) {
         self.sum = sum;
     }
 
     /// Overrides the average value tracked by this sketch.
-    pub fn set_avg(&mut self, avg: f64) -> () {
+    pub fn set_avg(&mut self, avg: f64) {
         self.avg = avg;
     }
 
     /// Overrides the minimum value tracked by this sketch.
-    pub fn set_min(&mut self, min: f64) -> () {
+    pub fn set_min(&mut self, min: f64) {
         self.min = min;
     }
 
     /// Overrides the maximum value tracked by this sketch.
-    pub fn set_max(&mut self, max: f64) -> () {
+    pub fn set_max(&mut self, max: f64) {
         self.max = max;
     }
 
