@@ -61,14 +61,13 @@ pub struct OtlpMetricsTranslatorConfig {
 
 #[allow(dead_code)]
 impl OtlpMetricsTranslatorConfig {
-
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.hist_mode == HistogramMode::NoBuckets && !self.send_histogram_aggregations{
+        if self.hist_mode == HistogramMode::NoBuckets && !self.send_histogram_aggregations {
             return Err("no buckets mode and no send count sum are incompatible");
         }
         Ok(())
     }
-    
+
     pub fn with_remapping(mut self, with_remapping: bool) -> Self {
         self.with_remapping = with_remapping;
         if with_remapping {
@@ -104,8 +103,7 @@ impl OtlpMetricsTranslatorConfig {
         self
     }
 
-
-    pub fn with_infer_delta_interval (mut self, infer_delta_interval: bool) -> Self {
+    pub fn with_infer_delta_interval(mut self, infer_delta_interval: bool) -> Self {
         self.infer_delta_interval = infer_delta_interval;
         self
     }
