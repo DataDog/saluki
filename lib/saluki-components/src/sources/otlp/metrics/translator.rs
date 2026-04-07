@@ -10,11 +10,8 @@ use ddsketch::canonical::mapping::LogarithmicMapping;
 
 
 use::ddsketch::canonical::mapping::IndexMapping;
-use datadog_protos::sketches::Store;
-
 use ddsketch::canonical::DDSketch as CanonicalDDSketch;
 use otlp_protos::opentelemetry::proto::common::v1::KeyValue as OtlpKeyValue;
-use otlp_protos::opentelemetry::proto::metrics::v1::exponential_histogram_data_point;
 use otlp_protos::opentelemetry::proto::metrics::v1::{
     exponential_histogram_data_point::Buckets as OtlpExponentialHistogramBuckets,
     metric::Data as OtlpMetricData, AggregationTemporality, DataPointFlags,
@@ -23,20 +20,16 @@ use otlp_protos::opentelemetry::proto::metrics::v1::{
     ResourceMetrics as OtlpResourceMetrics,
     SummaryDataPoint as OtlpSummaryDataPoint,
 };
-use proptest::string::Error;
 use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_context::{ContextResolver, ContextResolverBuilder};
 use saluki_core::data_model::event::metric::{Metric, MetricMetadata, MetricValues};
 use saluki_core::data_model::event::Event;
-use saluki_core::topology::interconnect::Consumer;
-use saluki_env::autodiscovery::Data;
 
 use ddsketch::{DDSketch, Bucket};
 use ddsketch::canonical::Store as DdStore;
 
 use ddsketch::canonical::store::DenseStore;
 use saluki_error::GenericError;
-use tonic::transport::Error;
 use tracing::{debug, warn};
 
 use super::cache::PointsCache;
@@ -48,7 +41,6 @@ use super::runtime_metrics::{RuntimeMetricMapping, RUNTIME_METRICS_MAPPINGS};
 use crate::common::otlp::attributes::raw_origin_from_attributes;
 use crate::common::otlp::attributes::translator::AttributeTranslator;
 use crate::common::otlp::util::{Source, SourceKind};
-use crate::sources::dogstatsd::DogStatsD;
 use crate::sources::otlp::metrics::config::InitialCumulMonoValueMode;
 use crate::sources::otlp::Metrics;
 
@@ -891,7 +883,10 @@ impl OtlpMetricsTranslator {
                 }
                 HistogramMode::Distributions => {
                     // Implement bucket-to-sketch conversion.
-                    self.get_sketch_buckets(context, point_dims, &dp, delta, &mut events, hist_info);
+                    if let Err(e) = self.get_sketch_buckets(context, point_dims, &dp, delta, &mut events, hist_info) {
+                        warn!(error = %e, "Failed to convert histogram buckets to sketch, dropping data point.");
+
+                    }
                 }
             }
         }
