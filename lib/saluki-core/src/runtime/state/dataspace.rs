@@ -88,12 +88,12 @@ trait AnyChannel: Send + Sync {
 
 /// Concrete implementation of [`AnyChannel`] that wraps a `broadcast::Sender<AssertionUpdate<T>>`.
 struct TypedChannel<T: Clone + Send + Sync + 'static> {
-    sender: broadcast::Sender<AssertionUpdate<T>>,
+    tx: broadcast::Sender<AssertionUpdate<T>>,
 }
 
 impl<T: Clone + Send + Sync + 'static> AnyChannel for TypedChannel<T> {
     fn send_retraction(&self, id: &Identifier) {
-        let _ = self.sender.send(AssertionUpdate::Retracted(id.clone()));
+        let _ = self.tx.send(AssertionUpdate::Retracted(id.clone()));
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -152,15 +152,17 @@ impl RegistryState {
     {
         let channel = self.channels.entry(key).or_insert_with(|| {
             let (tx, _) = broadcast::channel::<AssertionUpdate<T>>(self.channel_capacity);
-            Box::new(TypedChannel { sender: tx })
+            Box::new(TypedChannel { tx })
         });
 
         let typed = channel
             .as_any()
             .downcast_ref::<TypedChannel<T>>()
-            .expect("type mismatch in dataspace registry");
+            // `StorageKey` includes `TypeId::of::<T>()`, so a channel stored under a
+            // given key is always a `TypedChannel<T>` for the same `T`.
+            .unwrap_or_else(|| unreachable!("type mismatch in dataspace registry"));
 
-        typed.sender.subscribe()
+        typed.tx.subscribe()
     }
 
     /// Creates a new filtered subscription channel, returning a new receiver.
@@ -173,7 +175,7 @@ impl RegistryState {
         self.filtered_channels.push(FilteredChannel {
             type_id: TypeId::of::<T>(),
             filter,
-            sender: Box::new(TypedChannel { sender: tx }),
+            sender: Box::new(TypedChannel { tx }),
         });
 
         rx
@@ -222,17 +224,6 @@ impl DataspaceRegistry {
     /// Creates a new empty registry with the default channel capacity.
     pub fn new() -> Self {
         Self::with_channel_capacity(DEFAULT_CHANNEL_CAPACITY)
-    }
-
-    /// Returns the dataspace registry for the current supervision tree.
-    ///
-    /// # Panics
-    ///
-    /// Panics if called outside of a supervision tree context (i.e., not within a supervised process).
-    pub fn current() -> Self {
-        CURRENT_DATASPACE
-            .try_with(|ds| ds.clone())
-            .expect("no dataspace registry in the current context; must be called within a supervision tree")
     }
 
     /// Returns the dataspace registry for the current supervision tree, if one exists.
@@ -296,7 +287,7 @@ impl DataspaceRegistry {
         // Notify exact-match subscribers.
         if let Some(ch) = state.channels.get(&key) {
             if let Some(typed) = ch.as_any().downcast_ref::<TypedChannel<T>>() {
-                let _ = typed.sender.send(AssertionUpdate::Asserted(id.clone(), value.clone()));
+                let _ = typed.tx.send(AssertionUpdate::Asserted(id.clone(), value.clone()));
             }
         }
 
@@ -305,7 +296,7 @@ impl DataspaceRegistry {
         for channel in &state.filtered_channels {
             if channel.type_id == type_id && channel.filter.matches(&id) {
                 if let Some(typed) = channel.sender.as_any().downcast_ref::<TypedChannel<T>>() {
-                    let _ = typed.sender.send(AssertionUpdate::Asserted(id.clone(), value.clone()));
+                    let _ = typed.tx.send(AssertionUpdate::Asserted(id.clone(), value.clone()));
                 }
             }
         }
@@ -1088,8 +1079,10 @@ mod tests {
         assert_pending!(recv_fut.poll());
 
         // Create an instrumented future that asserts a value, then completes.
-        let mut worker = test_spawn(process.into_instrumented(async {
-            DataspaceRegistry::current().assert(42u32, "from_worker");
+        let mut worker = test_spawn(process.into_process_future(async {
+            DataspaceRegistry::try_current()
+                .expect("dataspace registry should be available")
+                .assert(42u32, "from_worker");
         }));
 
         // Poll the worker to completion — the assertion happens during this poll.
@@ -1128,8 +1121,10 @@ mod tests {
         assert_pending!(recv_fut.poll());
 
         // Create an instrumented future that asserts a value, then pends forever.
-        let mut worker = test_spawn(process.into_instrumented(async {
-            DataspaceRegistry::current().assert(42u32, "from_worker");
+        let mut worker = test_spawn(process.into_process_future(async {
+            DataspaceRegistry::try_current()
+                .expect("dataspace registry should be available")
+                .assert(42u32, "from_worker");
             pending::<()>().await;
         }));
 
@@ -1174,8 +1169,8 @@ mod tests {
         assert_pending!(recv_str_fut.poll());
 
         // Create an instrumented future that asserts values of two different types.
-        let mut worker = test_spawn(process.into_instrumented(async {
-            let ds = DataspaceRegistry::current();
+        let mut worker = test_spawn(process.into_process_future(async {
+            let ds = DataspaceRegistry::try_current().expect("dataspace registry should be available");
             ds.assert(42u32, id_num);
             ds.assert("hello".to_string(), id_str);
             pending::<()>().await;

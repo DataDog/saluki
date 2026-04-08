@@ -532,7 +532,7 @@ impl Supervisor {
 
         debug!(supervisor_id = %self.supervisor_id, "Supervisor starting.");
         self.run_inner(process.clone(), process_shutdown)
-            .into_instrumented(process)
+            .into_process_future(process)
             .await
     }
 
@@ -570,7 +570,7 @@ impl Supervisor {
 
         debug!(supervisor_id = %self.supervisor_id, "Supervisor starting.");
         self.run_inner(process.clone(), process_shutdown)
-            .into_instrumented(process)
+            .into_process_future(process)
             .await
     }
 
@@ -614,7 +614,7 @@ impl WorkerState {
         let process = child_spec.create_process(&self.process)?;
         let worker_future = child_spec.create_worker_future(process.clone(), process_shutdown)?;
         let shutdown_strategy = child_spec.shutdown_strategy();
-        let abort_handle = self.worker_tasks.spawn(worker_future.into_instrumented(process));
+        let abort_handle = self.worker_tasks.spawn(worker_future.into_process_future(process));
         self.worker_map.insert(
             abort_handle.id(),
             ProcessState {

@@ -158,24 +158,27 @@ impl Process {
         &self.dataspace
     }
 
-    pub fn into_instrumented<F>(self, inner: F) -> InstrumentedProcess<F>
+    pub fn into_process_future<F>(self, inner: F) -> ProcessFuture<F>
     where
         F: Future,
     {
-        InstrumentedProcess::new(self, inner)
+        ProcessFuture::new(self, inner)
     }
 }
 
-/// An instrumented process.
+/// A process future.
+///
+/// Wraps a [`Future`] with process-specific instrumentation and globals. This ensures that processes have properly scoped tracing and
+/// allocation tracking behavior, as well as access to supervisor/runtime-specific globals, such as the dataspace registry.
 #[pin_project(PinnedDrop)]
-pub struct InstrumentedProcess<F> {
+pub struct ProcessFuture<F> {
     process_id: Id,
     dataspace: DataspaceRegistry,
     #[pin]
     inner: Instrumented<Tracked<F>>,
 }
 
-impl<F> InstrumentedProcess<F>
+impl<F> ProcessFuture<F>
 where
     F: Future,
 {
@@ -198,7 +201,7 @@ where
     }
 }
 
-impl<F> Future for InstrumentedProcess<F>
+impl<F> Future for ProcessFuture<F>
 where
     F: Future,
 {
@@ -213,17 +216,17 @@ where
 }
 
 #[pinned_drop]
-impl<F> PinnedDrop for InstrumentedProcess<F> {
+impl<F> PinnedDrop for ProcessFuture<F> {
     fn drop(self: Pin<&mut Self>) {
         let this = self.project();
         this.dataspace.retract_all_for_process(*this.process_id);
     }
 }
 
-/// Helper trait for running process futures with instrumentation.
+/// Helper trait for running process futures.
 pub trait ProcessExt {
-    /// Converts the process future into an instrumented future.
-    fn into_instrumented(self, process: Process) -> InstrumentedProcess<Self>
+    /// Converts the future into a process future.
+    fn into_process_future(self, process: Process) -> ProcessFuture<Self>
     where
         Self: Future + Sized;
 }
@@ -232,11 +235,11 @@ impl<F> ProcessExt for F
 where
     F: Future,
 {
-    fn into_instrumented(self, process: Process) -> InstrumentedProcess<Self>
+    fn into_process_future(self, process: Process) -> ProcessFuture<Self>
     where
         Self: Future + Sized,
     {
-        process.into_instrumented(self)
+        process.into_process_future(self)
     }
 }
 
