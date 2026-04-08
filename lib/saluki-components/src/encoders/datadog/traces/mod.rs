@@ -7,6 +7,7 @@ use datadog_protos::traces::builders::{
     attribute_any_value::AttributeAnyValueType, attribute_array_value::AttributeArrayValueType, AgentPayloadBuilder,
     AttributeAnyValueBuilder, AttributeArrayValueBuilder,
 };
+use facet::Facet;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use opentelemetry_semantic_conventions::resource::{
@@ -85,7 +86,7 @@ fn default_env() -> String {
 /// This encoder converts trace events into Datadog's TracerPayload protobuf format and sends them
 /// to the Datadog traces intake endpoint (`/api/v0.2/traces`). It handles batching, compression,
 /// and enrichment with metadata such as hostname, environment, and container tags.
-#[derive(Deserialize)]
+#[derive(Deserialize, Facet)]
 pub struct DatadogTraceConfiguration {
     #[serde(
         rename = "serializer_compressor_kind",  // renames the field in the user_configuration from "serializer_compressor_kind" to "compressor_kind".
@@ -116,9 +117,11 @@ pub struct DatadogTraceConfiguration {
     version: String,
 
     #[serde(skip)]
+    #[facet(opaque)]
     apm_config: ApmConfig,
 
     #[serde(skip)]
+    #[facet(opaque)]
     otlp_traces: TracesConfig,
 
     #[serde(default = "default_env")]

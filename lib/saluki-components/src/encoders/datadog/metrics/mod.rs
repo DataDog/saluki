@@ -3,6 +3,7 @@ use std::{num::NonZeroU64, time::Duration};
 use async_trait::async_trait;
 use datadog_protos::metrics as proto;
 use ddsketch::DDSketch;
+use facet::Facet;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use protobuf::{rt::WireType, CodedOutputStream, Enum as _};
@@ -100,7 +101,7 @@ const fn default_zstd_compressor_level() -> i32 {
 /// Datadog Metrics encoder.
 ///
 /// Generates Datadog metrics payloads for the Datadog platform.
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Facet)]
 #[allow(dead_code)]
 pub struct DatadogMetricsConfiguration {
     /// Maximum number of input metrics to encode into a single request payload.
@@ -146,6 +147,7 @@ pub struct DatadogMetricsConfiguration {
 
     /// Additional tags to apply to all forwarded metrics.
     #[serde(default, skip)]
+    #[facet(opaque)]
     additional_tags: Option<SharedTagSet>,
 }
 

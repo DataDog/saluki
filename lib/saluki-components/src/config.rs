@@ -18,6 +18,7 @@ pub const KEY_ALIASES: &[(&str, &str)] = &[
     ("proxy.http", "proxy_http"),
     ("proxy.https", "proxy_https"),
     ("proxy.no_proxy", "proxy_no_proxy"),
+    ("apm_config.enable_rare_sampler", "apm_enable_rare_sampler"),
 ];
 
 /// Remappings from environment variable names to canonical config keys.

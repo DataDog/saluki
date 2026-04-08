@@ -97,7 +97,15 @@ pub(super) fn compute_signature_with_root_and_env(trace: &Trace, root_idx: usize
     Signature(trace_hash as u64)
 }
 
-fn compute_span_hash(span: &Span, env: &str, with_resource: bool) -> u32 {
+/// Compute a span hash for use in the rare sampler.
+///
+/// This uses `env=""` (the env is already encoded in the shard key via `ServiceSignature`) and
+/// `with_resource=true` to maximize signature uniqueness.
+pub(super) fn span_hash_for_rare(span: &Span) -> u32 {
+    compute_span_hash(span, "", true)
+}
+
+pub(super) fn compute_span_hash(span: &Span, env: &str, with_resource: bool) -> u32 {
     let mut h = OFFSET_32;
     h = write_hash(h, env.as_bytes());
     h = write_hash(h, span.service().as_bytes());

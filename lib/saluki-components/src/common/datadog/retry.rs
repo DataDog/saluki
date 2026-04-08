@@ -3,6 +3,7 @@ use std::{
     time::Duration,
 };
 
+use facet::Facet;
 use saluki_config::GenericConfiguration;
 use saluki_io::net::util::retry::{DefaultHttpRetryPolicy, ExponentialBackoff};
 use serde::Deserialize;
@@ -40,7 +41,7 @@ const fn default_storage_max_disk_ratio() -> f64 {
 }
 
 /// Datadog Agent-specific forwarder retry configuration.
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Facet)]
 pub struct RetryConfiguration {
     /// The minimum backoff factor to use when retrying requests.
     ///

@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use facet::Facet;
 use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
 use serde::Deserialize;
@@ -26,7 +27,7 @@ const fn default_forwarder_connection_reset_interval() -> u64 {
 /// This adapter provides a simple way to utilize the existing configuration values that are passed to the Datadog
 /// Agent, which are used to control the behavior of its forwarder, such as retries and concurrency, in conjunction with
 /// with existing primitives, as such retry policies in [`saluki_io::util::retry`].
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Facet)]
 pub struct ForwarderConfiguration {
     /// Maximum number of concurrent requests for an individual endpoint.
     ///
