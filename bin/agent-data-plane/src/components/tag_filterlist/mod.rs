@@ -9,7 +9,6 @@
 mod telemetry;
 
 use async_trait::async_trait;
-use facet::Facet;
 use foldhash::fast::RandomState as FoldHashState;
 use hashbrown::{HashMap, HashSet};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -33,7 +32,7 @@ use tracing::{debug, warn};
 use self::telemetry::Telemetry;
 
 /// Action applied to the configured tag list: keep only listed tags, or remove listed tags.
-#[derive(Clone, Copy, Debug, Default, Facet, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum FilterAction {
     /// Keep only the tags whose key appears in the configured list.
     Include,
@@ -64,7 +63,7 @@ impl<'de> Deserialize<'de> for FilterAction {
 }
 
 /// A single metric tag filter entry.
-#[derive(Clone, Debug, Deserialize, Facet)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct MetricTagFilterEntry {
     /// The exact metric name this entry applies to.
     pub metric_name: String,
@@ -132,13 +131,12 @@ pub fn compile_filters(entries: &[MetricTagFilterEntry]) -> CompiledFilters {
 ///
 /// Removes or retains specific tags from distribution metrics based on per-metric configuration.
 /// Configuration is read from `metric_tag_filterlist` and supports runtime updates via Remote Config.
-#[derive(Deserialize, Facet)]
+#[derive(Deserialize)]
 pub struct TagFilterlistConfiguration {
     #[serde(default, rename = "metric_tag_filterlist")]
     entries: Vec<MetricTagFilterEntry>,
 
     #[serde(skip)]
-    #[facet(opaque)]
     configuration: Option<GenericConfiguration>,
 }
 

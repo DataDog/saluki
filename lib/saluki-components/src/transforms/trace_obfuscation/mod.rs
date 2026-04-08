@@ -20,6 +20,7 @@ use saluki_core::{
     topology::EventsBuffer,
 };
 use saluki_error::GenericError;
+use serde::Deserialize;
 use stringtheory::MetaString;
 
 pub use self::obfuscator::{tags, ObfuscationConfig, Obfuscator};
