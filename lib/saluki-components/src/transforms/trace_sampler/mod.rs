@@ -88,6 +88,8 @@ impl TraceSamplerConfiguration {
 #[async_trait]
 impl SynchronousTransformBuilder for TraceSamplerConfiguration {
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
+        // TODO: Need to support remote configuration changing these at runtime
+        // See https://github.com/DataDog/saluki/issues/1326
         let sampler = TraceSampler {
             sampling_rate: self.apm_config.probabilistic_sampler_sampling_percentage() / 100.0,
             error_sampling_enabled: self.apm_config.error_sampling_enabled(),
