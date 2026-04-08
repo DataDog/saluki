@@ -23,7 +23,7 @@ use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_context::{ContextResolver, ContextResolverBuilder};
 use saluki_core::data_model::event::metric::{Metric, MetricMetadata, MetricValues};
 use saluki_core::data_model::event::Event;
-use saluki_error::GenericError;
+use saluki_error::{GenericError, generic_error, ErrorContext};
 use tracing::{debug, warn};
 
 use super::cache::PointsCache;
@@ -88,25 +88,150 @@ struct HistogramInfo {
     ok: bool,
 }
 
+fn get_bounds(explicit_bounds: &[f64], idx: usize) -> (f64, f64) {
+    let lower = if idx > 0 {
+        explicit_bounds[idx - 1]
+    } else {
+        f64::NEG_INFINITY
+    };
+    let upper = if idx < explicit_bounds.len() {
+        explicit_bounds[idx]
+    } else {
+        f64::INFINITY
+    };
+    (lower, upper)
+}
+
+fn infer_delta_interval(start_ts: u64, ts: u64) -> i64 {
+    if start_ts == 0 || start_ts > ts {
+        return 0;
+    }
+    let delta = (ts - start_ts) as f64 / 1e9;
+    let rounded_delta = f64::round(delta);
+
+    if f64::abs(rounded_delta - delta) < 0.05 {
+        return rounded_delta as i64;
+    }
+    0
+}
+
+fn format_float(f: f64) -> String {
+    if f == f64::INFINITY {
+        return "inf".to_string();
+    } else if f == f64::NEG_INFINITY {
+        return "-inf".to_string();
+    } else if f.is_nan() {
+        return "nan".to_string();
+    } else if f == 0.0 {
+        return "0".to_string();
+    }
+
+    let s = format!("{f}");
+    if f == f.floor() {
+        format!("{s}.0")
+    } else {
+        s
+    }
+}
+
+fn get_quantile_tag(quantile: f64) -> String {
+    "quantile:".to_string() + format_float(quantile).as_str()
+}
+
+
+fn to_store(b: Option<&OtlpExponentialHistogramBuckets>) -> DenseStore {
+    let mut store = DenseStore::new();
+    if let Some(buckets) = b {
+        let offset = buckets.offset;
+        let bucket_counts = &buckets.bucket_counts;
+
+        for (j, &count) in bucket_counts.iter().enumerate() {
+            let index = offset + j as i32;
+            store.add(index, count);
+        }
+    }
+    store
+}
+
+fn exponential_histogram_to_ddsketch(
+    dp: &OtlpExponentialHistogramDataPoint, delta: bool,
+) -> Result<CanonicalDDSketch<LogarithmicMapping, DenseStore>, GenericError> {
+    if !delta {
+        return Err(generic_error!("cumulative exponential histograms are not supported".to_string()));
+    }
+
+    let positive_store = to_store(dp.positive.as_ref());
+    let negative_store = to_store(dp.negative.as_ref());
+
+    let gamma = 2_f64.powf(2_f64.powi(-dp.scale));
+    let mapping = LogarithmicMapping::new_with_gamma(gamma)
+        .map_err(|e| generic_error!(e)) 
+        .error_context("Failed to create index mapping for DDSketch.")?;
+
+    let mut sketch = CanonicalDDSketch::new(mapping, positive_store, negative_store);
+    sketch.add_n(0.0, dp.zero_count);
+
+    Ok(sketch)
+}
+
+fn remap_bins_to_agent_space(store: &DenseStore, mapping: &LogarithmicMapping, negate: bool) -> Vec<(f64, u64)> {
+    let mut res = Vec::new();
+    let proto_store = store.to_proto();
+
+    for (i, &count) in proto_store.contiguousBinCounts.iter().enumerate() {
+        let logical_index = proto_store.contiguousBinIndexOffset + i as i32;
+
+        if count == 0.0 {
+            continue;
+        }
+
+        let mut value = mapping.value(logical_index);
+        if negate {
+            value *= -1.0;
+        }
+
+        res.push((value, count as u64));
+    }
+    res
+}
+
+fn convert_ddsketch_into_sketch(canonical: CanonicalDDSketch<LogarithmicMapping, DenseStore>) -> DDSketch {
+    let mut agent_sketch = DDSketch::default();
+
+    let mapping = canonical.mapping();
+
+    let positive_bins = remap_bins_to_agent_space(canonical.positive_store(), mapping, false);
+    let negative_bins = remap_bins_to_agent_space(canonical.negative_store(), mapping, true);
+
+    if canonical.zero_count() > 0 {
+        agent_sketch.insert_n(0.0, canonical.zero_count());
+    }
+
+    for (value, count) in positive_bins.into_iter().chain(negative_bins.into_iter()) {
+        agent_sketch.insert_n(value, count);
+    }
+
+    agent_sketch
+}
+
 impl OtlpMetricsTranslator {
     /// Creates a new, empty `OtlpMetricsTranslator`.
-    pub fn new(config: OtlpMetricsTranslatorConfig, context_resolver: ContextResolver) -> Self {
-        if let Err(e) = config.validate() {
-            panic!("{}", e);
-        }
+    pub fn new(config: OtlpMetricsTranslatorConfig, context_resolver: ContextResolver) -> Result<Self, GenericError> {
+
+        config.validate().map_err(|e| generic_error!("invalid OTLP metrics translator config: {}", e));
 
         let process_start_time_ns = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("System time is before the UNIX epoch, this should not happen.")
             .as_nanos() as u64;
 
-        Self {
+        Ok(Self {
             config,
             context_resolver,
             prev_pts: PointsCache::from_config(config),
             process_start_time_ns,
             attribute_translator: AttributeTranslator::new(),
-        }
+        })
     }
 
     /// Translates a batch of OTLP `ResourceMetrics` into Saluki `Event`s.
@@ -349,29 +474,6 @@ impl OtlpMetricsTranslator {
         }
     }
 
-    fn format_float(f: f64) -> String {
-        if f == f64::INFINITY {
-            return "inf".to_string();
-        } else if f == f64::NEG_INFINITY {
-            return "-inf".to_string();
-        } else if f.is_nan() {
-            return "nan".to_string();
-        } else if f == 0.0 {
-            return "0".to_string();
-        }
-
-        let s = format!("{f}");
-        if f == f.floor() {
-            format!("{s}.0")
-        } else {
-            s
-        }
-    }
-
-    fn get_quantile_tag(quantile: f64) -> String {
-        "quantile:".to_string() + Self::format_float(quantile).as_str()
-    }
-
     // Maps a monotonic OTLP Summary metric to Saluki 'Event's.
     fn map_summary_metrics(
         &mut self, base_dims: Dimensions, data_points: Vec<OtlpSummaryDataPoint>, context: &TranslationContext,
@@ -418,7 +520,7 @@ impl OtlpMetricsTranslator {
                     if is_skippable(quantile.value) {
                         continue;
                     }
-                    let quantile_dims = base_quantile_dims.add_tags(&[Self::get_quantile_tag(quantile.quantile)]);
+                    let quantile_dims = base_quantile_dims.add_tags(&[get_quantile_tag(quantile.quantile)]);
                     self.record_metric_event(
                         &quantile_dims,
                         quantile.value,
@@ -545,65 +647,6 @@ impl OtlpMetricsTranslator {
         events
     }
 
-    fn to_store(b: &OtlpExponentialHistogramBuckets) -> DenseStore {
-        let offset = b.offset;
-        let bucket_counts = &b.bucket_counts;
-
-        let mut store = DenseStore::new();
-        for (j, &count) in bucket_counts.iter().enumerate() {
-            let index = offset + j as i32;
-            store.add(index, count);
-        }
-        store
-    }
-
-    fn exponential_histogram_to_ddsketch(
-        dp: &OtlpExponentialHistogramDataPoint, delta: bool,
-    ) -> Result<CanonicalDDSketch<LogarithmicMapping, DenseStore>, String> {
-        if !delta {
-            return Err("cumulative exponential histograms are not supported".to_string());
-        }
-
-        let positive_store = Self::to_store(dp.positive.as_ref().unwrap_or(&Default::default()));
-        let negative_store = Self::to_store(dp.negative.as_ref().unwrap_or(&Default::default()));
-
-        let gamma = 2_f64.powf(2_f64.powi(-dp.scale));
-        let mapping = LogarithmicMapping::new_with_gamma(gamma)
-            .map_err(|e| format!("couldn't create LogarithmicMapping for DDSketch: {e}"))?;
-
-        let mut sketch = CanonicalDDSketch::new(mapping, positive_store, negative_store);
-        sketch.add_n(0.0, dp.zero_count);
-
-        Ok(sketch)
-    }
-
-    fn get_bounds(explicit_bounds: &[f64], idx: usize) -> (f64, f64) {
-        let lower = if idx > 0 {
-            explicit_bounds[idx - 1]
-        } else {
-            f64::NEG_INFINITY
-        };
-        let upper = if idx < explicit_bounds.len() {
-            explicit_bounds[idx]
-        } else {
-            f64::INFINITY
-        };
-        (lower, upper)
-    }
-
-    fn infer_delta_interval(start_ts: u64, ts: u64) -> i64 {
-        if start_ts == 0 || start_ts > ts {
-            return 0;
-        }
-        let delta = (ts - start_ts) as f64 / 1e9;
-        let rounded_delta = f64::round(delta);
-
-        if f64::abs(rounded_delta - delta) < 0.05 {
-            return rounded_delta as i64;
-        }
-        0
-    }
-
     fn get_sketch_buckets(
         &mut self, context: &TranslationContext, point_dims: Dimensions, p: &OtlpHistogramDataPoint, delta: bool,
         events: &mut Vec<Event>, hist_info: HistogramInfo,
@@ -636,12 +679,12 @@ impl OtlpMetricsTranslator {
         let mut min_bound_set: bool = false;
         let mut buckets: Vec<Bucket> = Vec::new();
         for (j, &count) in bucket_counts.iter().enumerate() {
-            let (lower_bound, upper_bound) = Self::get_bounds(&explicit_bounds, j);
+            let (lower_bound, upper_bound) = get_bounds(&explicit_bounds, j);
             let (original_lower_bound, original_upper_bound) = (lower_bound, upper_bound);
 
             let bucket_dims = point_dims.add_tags(&[
-                "lower_bound:".to_string() + Self::format_float(lower_bound).as_str(),
-                "upper_bound:".to_string() + Self::format_float(upper_bound).as_str(),
+                "lower_bound:".to_string() + format_float(lower_bound).as_str(),
+                "upper_bound:".to_string() + format_float(upper_bound).as_str(),
             ]);
 
             let (dx, ok) = self.prev_pts.diff(&bucket_dims, start_ts, ts, count as f64);
@@ -706,7 +749,7 @@ impl OtlpMetricsTranslator {
 
         let mut interval: i64 = 0;
         if self.config.infer_delta_interval && delta {
-            interval = Self::infer_delta_interval(start_ts, ts);
+            interval = infer_delta_interval(start_ts, ts);
         }
         self.record_sketch_event(&point_dims, qa, ts, events, context, interval);
 
@@ -745,11 +788,11 @@ impl OtlpMetricsTranslator {
 
         let base_bucket_dims = &point_dims.with_suffix("bucket");
         for idx in 0..p.bucket_counts.len() {
-            let (lower_bound, upper_bound) = Self::get_bounds(&p.explicit_bounds, idx);
+            let (lower_bound, upper_bound) = get_bounds(&p.explicit_bounds, idx);
 
             let bucket_dims = base_bucket_dims.add_tags(&[
-                "lower_bound:".to_string() + Self::format_float(lower_bound).as_str(),
-                "upper_bound:".to_string() + Self::format_float(upper_bound).as_str(),
+                "lower_bound:".to_string() + format_float(lower_bound).as_str(),
+                "upper_bound:".to_string() + format_float(upper_bound).as_str(),
             ]);
             let count = p.bucket_counts[idx];
             let (dx, ok) = self.prev_pts.diff(&bucket_dims, start_ts, ts, count as f64);
@@ -863,15 +906,12 @@ impl OtlpMetricsTranslator {
             // TODO: Implement bucket-to-sketch conversion.
             match self.config.hist_mode {
                 HistogramMode::NoBuckets => {
-                    // Do nothing for buckets.
                     continue;
                 }
                 HistogramMode::Counters => {
-                    // Implement legacy bucket conversion as counters.
                     self.get_legacy_buckets(context, point_dims, dp, delta, &mut events);
                 }
                 HistogramMode::Distributions => {
-                    // Implement bucket-to-sketch conversion.
                     if let Err(e) = self.get_sketch_buckets(context, point_dims, &dp, delta, &mut events, hist_info) {
                         warn!(error = %e, "Failed to convert histogram buckets to sketch, dropping data point.");
                     }
@@ -961,19 +1001,19 @@ impl OtlpMetricsTranslator {
                 }
             }
 
-            let exp_hist_dd_sketch = match Self::exponential_histogram_to_ddsketch(dp, delta) {
+            let exp_hist_dd_sketch = match exponential_histogram_to_ddsketch(dp, delta) {
                 Ok(sketch) => sketch,
                 Err(e) => {
                     debug!(
                         metric_name = base_dims.name,
-                        error = e,
+                        error = %e,
                         "Failed to convert ExponentialHistogram into DDSketch"
                     );
                     continue;
                 }
             };
 
-            let mut agent_sketch = Self::convert_ddsketch_into_sketch(exp_hist_dd_sketch);
+            let mut agent_sketch = convert_ddsketch_into_sketch(exp_hist_dd_sketch);
 
             if hist_info.ok {
                 agent_sketch.set_count(hist_info.count);
@@ -1001,52 +1041,12 @@ impl OtlpMetricsTranslator {
 
             let mut interval: i64 = 0;
             if self.config.infer_delta_interval && delta {
-                interval = Self::infer_delta_interval(start_ts, ts);
+                interval = infer_delta_interval(start_ts, ts);
             }
 
             self.record_sketch_event(&point_dims, agent_sketch, ts, &mut events, context, interval);
         }
         events
-    }
-
-    fn remap_bins_to_agent_space(store: &DenseStore, mapping: &LogarithmicMapping, negate: bool) -> Vec<(f64, u64)> {
-        let mut res = Vec::new();
-        let proto_store = store.to_proto();
-
-        for (i, &count) in proto_store.contiguousBinCounts.iter().enumerate() {
-            let logical_index = proto_store.contiguousBinIndexOffset + i as i32;
-
-            if count == 0.0 {
-                continue;
-            }
-
-            let mut value = mapping.value(logical_index);
-            if negate {
-                value *= -1.0;
-            }
-
-            res.push((value, count as u64));
-        }
-        res
-    }
-
-    fn convert_ddsketch_into_sketch(canonical: CanonicalDDSketch<LogarithmicMapping, DenseStore>) -> DDSketch {
-        let mut agent_sketch = DDSketch::default();
-
-        let mapping = canonical.mapping();
-
-        let positive_bins = Self::remap_bins_to_agent_space(canonical.positive_store(), mapping, false);
-        let negative_bins = Self::remap_bins_to_agent_space(canonical.negative_store(), mapping, true);
-
-        if canonical.zero_count() > 0 {
-            agent_sketch.insert_n(0.0, canonical.zero_count());
-        }
-
-        for (value, count) in positive_bins.into_iter().chain(negative_bins.into_iter()) {
-            agent_sketch.insert_n(value, count);
-        }
-
-        agent_sketch
     }
 
     /// Determines if the initial value of a cumulative monotonic metric should be consumed.
