@@ -347,7 +347,7 @@ impl TraceSampler {
             }
 
             if rare {
-                return (true, PRIORITY_AUTO_KEEP, "", Some(root_span_idx));
+                return (true, priority, "", Some(root_span_idx));
             }
 
             if self.priority_sampler.sample(now, trace, root_span_idx, priority, 0.0) {
@@ -1013,7 +1013,8 @@ mod tests {
         assert_eq!(priority, PRIORITY_AUTO_DROP);
     }
 
-    /// Rare + non-probabilistic path (priority path): rare catches `PriorityAutoDrop` on first occurrence.
+    /// Rare + non-probabilistic path (priority path): rare catches `PriorityAutoDrop` on first
+    /// occurrence, preserving the tracer-set priority rather than upgrading to AutoKeep.
     #[test]
     fn rare_sampler_catches_priority_auto_drop_in_legacy_path() {
         let mut sampler = create_sampler_with_rare_enabled();
@@ -1030,8 +1031,26 @@ mod tests {
 
         let (keep, priority, decision_maker, _) = sampler.run_samplers(&mut trace);
         assert!(keep, "rare sampler should catch PriorityAutoDrop on first occurrence");
-        assert_eq!(priority, PRIORITY_AUTO_KEEP);
+        assert_eq!(priority, PRIORITY_AUTO_DROP, "tracer-set priority should be preserved");
         assert_eq!(decision_maker, "");
+    }
+
+    /// Rare + non-probabilistic path (priority path): UserKeep priority is preserved, not
+    /// downgraded to AutoKeep. Mirrors Go agent behavior at agent.go#L1129-1131.
+    #[test]
+    fn rare_sampler_preserves_user_keep_priority_in_legacy_path() {
+        let mut sampler = create_sampler_with_rare_enabled();
+        sampler.probabilistic_sampler_enabled = false;
+
+        let mut metrics = saluki_common::collections::FastHashMap::default();
+        metrics.insert(MetaString::from("_top_level"), 1.0);
+        metrics.insert(MetaString::from(SAMPLING_PRIORITY_METRIC_KEY), 2.0); // UserKeep
+        let span = create_test_span(556, 1, 0).with_metrics(metrics);
+        let mut trace = create_test_trace(vec![span]);
+
+        let (keep, priority, _, _) = sampler.run_samplers(&mut trace);
+        assert!(keep);
+        assert_eq!(priority, 2, "UserKeep priority must not be downgraded to AutoKeep");
     }
 
     /// Probabilistic path with 100% rate and rare disabled: keep with `_dd.p.dm = "-9"`.
