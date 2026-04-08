@@ -10,7 +10,7 @@ use metrics::gauge;
 use saluki_common::time::get_unix_timestamp_nanos;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use thingbuf::mpsc;
-use tracing::{Event, Subscriber};
+use tracing::{Event, Metadata, Subscriber};
 use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
 
 const DEFAULT_MIN_UNCOMPRESSED_SEGMENT_SIZE_BYTES: usize = 128 * 1024;
@@ -187,9 +187,37 @@ fn write_length_prefixed(buf: &mut Vec<u8>, data: &[u8]) {
     buf.extend_from_slice(data);
 }
 
-/// A condensed, serializable representation of a log event.
+/// A log event captured from the tracing layer, ready for encoding into the ring buffer.
+///
+/// This is the write-path representation that travels through the thingbuf channel from the writer
+/// thread to the processor thread. It stores a reference to the event's static callsite
+/// [`Metadata`] rather than copying individual metadata fields, making hydration cheaper (one
+/// pointer store vs four field copies) and the struct smaller.
+#[derive(Clone, Default)]
+struct CondensedEvent {
+    /// Unix timestamp when the event was logged, in nanoseconds.
+    timestamp_nanos: u128,
+
+    /// Static callsite metadata (level, target, file, line). Set by the hydrator; `None` only in
+    /// the default-initialized thingbuf arena slots before first use.
+    metadata: Option<&'static Metadata<'static>>,
+
+    /// The main log message.
+    message: String,
+
+    /// Additional structured fields, stored as sequential varint-length-prefixed key-value pairs.
+    ///
+    /// Each field is encoded as: `varint(key_len) key_bytes varint(value_len) value_bytes`.
+    fields: Vec<u8>,
+}
+
+/// A decoded log event reconstructed from a compressed segment.
+///
+/// This is the read-path representation returned by [`CompressedSegmentReader::next`]. Since
+/// decoded events do not originate from a tracing callsite, they carry individual metadata fields
+/// rather than a [`Metadata`] pointer.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct CondensedEvent<'a> {
+pub struct DecodedEvent<'a> {
     /// Unix timestamp when the event was logged, in nanoseconds.
     pub timestamp_nanos: u128,
 
@@ -214,12 +242,10 @@ pub struct CondensedEvent<'a> {
     pub line: Option<u32>,
 }
 
-impl<'a> CondensedEvent<'a> {
+impl<'a> DecodedEvent<'a> {
     /// Returns the number of bytes that this event occupies in memory.
     #[allow(dead_code)] // Useful for diagnostics; exercised in tests.
     pub fn size_bytes(&self) -> usize {
-        // We use the _capacity_ of the backing buffers to account for the actual memory allocated
-        // rather than just the amount of it that we're _using_.
         std::mem::size_of::<Self>() + self.message.capacity() + self.fields.capacity()
     }
 
@@ -238,6 +264,12 @@ impl<'a> CondensedEvent<'a> {
 pub struct FieldIter<'a> {
     buf: &'a [u8],
     idx: usize,
+}
+
+impl<'a> FieldIter<'a> {
+    pub const fn from_buf(buf: &'a [u8]) -> Self {
+        Self { buf, idx: 0 }
+    }
 }
 
 impl<'a> Iterator for FieldIter<'a> {
@@ -266,26 +298,20 @@ impl<'a> Iterator for FieldIter<'a> {
     }
 }
 
-/// Wrapper that pairs a `CondensedEvent` with a reusable scratch buffer for `Visit` field
-/// formatting. The scratch buffer lives here (not in `CondensedEvent`) so the event struct stays
-/// serialization-clean.
+/// Wrapper that pairs a [`CondensedEvent`] with a reusable scratch buffer for `Visit` field
+/// formatting.
 struct EventHydrator<'a> {
-    event: &'a mut CondensedEvent<'static>,
+    event: &'a mut CondensedEvent,
     value_buf: &'a mut String,
 }
 
 impl<'a> EventHydrator<'a> {
-    fn hydrate(event: &'a mut CondensedEvent<'static>, value_buf: &'a mut String, tracing_event: &Event<'_>) {
+    fn hydrate(event: &'a mut CondensedEvent, value_buf: &'a mut String, tracing_event: &Event<'_>) {
         event.message.clear();
         event.fields.clear();
 
         event.timestamp_nanos = get_unix_timestamp_nanos();
-
-        let metadata = tracing_event.metadata();
-        event.level = metadata.level().as_str();
-        event.target = metadata.target();
-        event.file = metadata.file();
-        event.line = metadata.line();
+        event.metadata = Some(tracing_event.metadata());
 
         let mut hydrator = EventHydrator { event, value_buf };
         tracing_event.record(&mut hydrator);
@@ -297,10 +323,8 @@ impl tracing::field::Visit for EventHydrator<'_> {
         if field.name() == "message" {
             let _ = write!(self.event.message, "{:?}", value);
         } else {
-            // Write key.
             write_length_prefixed(&mut self.event.fields, field.name().as_bytes());
 
-            // Format value into the scratch buffer, then write it length-prefixed.
             self.value_buf.clear();
             let _ = write!(self.value_buf, "{:?}", value);
             write_length_prefixed(&mut self.event.fields, self.value_buf.as_bytes());
@@ -404,25 +428,43 @@ fn rle_decode(buf: &[u8], idx: &mut usize) -> Option<Vec<usize>> {
     Some(values)
 }
 
-/// Columnar event buffer that stores each field in a separate column for better compression.
+/// Columnar event buffer that accumulates log events into per-field column buffers.
 ///
-/// Segment layout on flush:
-///   [string_table]
-///   [varint(event_count)]
-///   [col: timestamps]      -- varint-delta-encoded
-///   [col: levels]          -- RLE-encoded
-///   [col: target_indices]  -- RLE-encoded
-///   [col: messages]        -- varint-length-prefixed strings concatenated
-///   [col: fields]          -- per-event: varint(num_fields) [varint(key_idx) varint(val_len) val ...]
-///   [col: file_indices]    -- RLE-encoded (usize::MAX sentinel for None)
-///   [col: lines]           -- varint-encoded (0 sentinel for None, actual values stored as line+1)
+/// On flush, the columns are serialized into two payloads (metadata + content) and compressed as separate zstd
+/// frames. See [`CompressedRingBuffer`] for the full architecture description.
+///
+/// ## Metadata payload layout
+///
+/// ```text
+/// [string_table]                  -- varint(count) [varint(len) bytes ...]
+/// [varint(event_count)]
+/// [col: timestamps]               -- length-prefixed blob of varint-delta-encoded nanosecond deltas
+/// [col: levels]                   -- RLE: varint(num_runs) [varint(run_len) varint(level_u8) ...]
+/// [col: target_indices]           -- RLE of string table indices
+/// [col: file_indices]             -- RLE of string table indices (usize::MAX = None)
+/// [col: lines]                    -- length-prefixed blob of varints (0 = None, line+1 = Some)
+/// [col: field_counts]             -- RLE of per-event field counts
+/// [col: field_key_indices]        -- length-prefixed blob of varint string table indices
+/// [col: msg_template_indices]     -- RLE of string table indices for message skeletons
+/// ```
+///
+/// ## Content payload layout
+///
+/// ```text
+/// [col: msg_variables]            -- length-prefixed blob: per-event varint(var_count) [varint(len) bytes ...]
+/// [col: field_values]             -- concatenated varint-length-prefixed value byte strings
+/// ```
 struct EventBuffer {
     // Column accumulators.
     col_timestamps: Vec<u8>,
     col_levels: Vec<usize>,
     col_target_indices: Vec<usize>,
-    col_messages: Vec<u8>,
-    col_fields: Vec<u8>,
+    col_msg_template_indices: Vec<usize>,
+    col_msg_variables: Vec<u8>,
+    msg_skeleton_buf: String,
+    col_field_counts: Vec<usize>,
+    col_field_key_indices: Vec<u8>,
+    col_field_values: Vec<u8>,
     col_file_indices: Vec<usize>,
     col_lines: Vec<u8>,
 
@@ -440,8 +482,12 @@ impl EventBuffer {
             col_timestamps: Vec::new(),
             col_levels: Vec::new(),
             col_target_indices: Vec::new(),
-            col_messages: Vec::new(),
-            col_fields: Vec::new(),
+            col_msg_template_indices: Vec::new(),
+            col_msg_variables: Vec::new(),
+            msg_skeleton_buf: String::new(),
+            col_field_counts: Vec::new(),
+            col_field_key_indices: Vec::new(),
+            col_field_values: Vec::new(),
             col_file_indices: Vec::new(),
             col_lines: Vec::new(),
             event_count: 0,
@@ -458,8 +504,9 @@ impl EventBuffer {
         // RLE is typically a small fraction of the element count. We estimate ~1 byte per
         // element as a rough upper bound, since most runs are longer than 1.
         self.col_timestamps.len()
-            + self.col_messages.len()
-            + self.col_fields.len()
+            + self.col_msg_variables.len()
+            + self.col_field_key_indices.len()
+            + self.col_field_values.len()
             + self.col_lines.len()
             + self.col_levels.len()
             + self.col_target_indices.len()
@@ -474,8 +521,11 @@ impl EventBuffer {
         self.col_timestamps.clear();
         self.col_levels.clear();
         self.col_target_indices.clear();
-        self.col_messages.clear();
-        self.col_fields.clear();
+        self.col_msg_template_indices.clear();
+        self.col_msg_variables.clear();
+        self.col_field_counts.clear();
+        self.col_field_key_indices.clear();
+        self.col_field_values.clear();
         self.col_file_indices.clear();
         self.col_lines.clear();
         self.event_count = 0;
@@ -483,40 +533,77 @@ impl EventBuffer {
         self.string_table.clear();
     }
 
-    fn encode_event(&mut self, event: &CondensedEvent<'_>) -> Result<(), GenericError> {
+    fn encode_event(&mut self, event: &CondensedEvent) -> Result<(), GenericError> {
+        let meta = event
+            .metadata
+            .expect("metadata must be set on events passed to encode_event");
+
         // Timestamps: delta-encoded varints.
         let ts_delta = event.timestamp_nanos.saturating_sub(self.last_timestamp);
         self.last_timestamp = event.timestamp_nanos;
         encode_varint_u128(ts_delta, &mut self.col_timestamps);
 
         // Level: stored as usize for RLE, encoded on flush.
-        self.col_levels.push(encode_level(event.level) as usize);
+        self.col_levels.push(encode_level(meta.level().as_str()) as usize);
 
         // Target: interned index, stored for RLE.
-        let target_idx = self.string_table.intern(event.target);
+        let target_idx = self.string_table.intern(meta.target());
         self.col_target_indices.push(target_idx);
 
-        // Message: varint-length-prefixed into message column.
-        write_length_prefixed(&mut self.col_messages, event.message.as_bytes());
+        // Message: extract template skeleton + variable tokens.
+        // Tokens containing digits are "variables"; everything else is "static".
+        self.msg_skeleton_buf.clear();
+        let mut var_count: usize = 0;
+        // We need to collect variables first, then write them, since we need the count upfront.
+        // Use a simple two-pass: first build skeleton and count, then write variables.
+        let mut first = true;
+        for token in event.message.split_ascii_whitespace() {
+            if !first {
+                self.msg_skeleton_buf.push(' ');
+            }
+            first = false;
+            if token.bytes().any(|b| b.is_ascii_digit()) {
+                self.msg_skeleton_buf.push('\x00'); // placeholder for variable
+                var_count += 1;
+            } else {
+                self.msg_skeleton_buf.push_str(token);
+            }
+        }
+        let tpl_idx = self.string_table.intern(&self.msg_skeleton_buf);
+        self.col_msg_template_indices.push(tpl_idx);
+        // Write variable tokens: varint(count) [varint-len-prefixed token ...].
+        encode_varint(var_count, &mut self.col_msg_variables);
+        if var_count > 0 {
+            for token in event.message.split_ascii_whitespace() {
+                if token.bytes().any(|b| b.is_ascii_digit()) {
+                    write_length_prefixed(&mut self.col_msg_variables, token.as_bytes());
+                }
+            }
+        }
 
-        // Fields: re-encode with interned keys into fields column.
-        let field_count = FieldIter { buf: &event.fields, idx: 0 }.count();
-        encode_varint(field_count, &mut self.col_fields);
-        let mut field_iter = FieldIter { buf: &event.fields, idx: 0 };
-        while let Some((key, val)) = field_iter.next() {
+        // Fields: split into count (RLE-able), key indices (low-entropy), and values (high-entropy).
+        let field_count = FieldIter {
+            buf: &event.fields,
+            idx: 0,
+        }
+        .count();
+        self.col_field_counts.push(field_count);
+
+        let field_iter = FieldIter::from_buf(&event.fields);
+        for (key, val) in field_iter {
             let key_idx = self.string_table.intern(key);
-            encode_varint(key_idx, &mut self.col_fields);
-            write_length_prefixed(&mut self.col_fields, val.as_bytes());
+            encode_varint(key_idx, &mut self.col_field_key_indices);
+            write_length_prefixed(&mut self.col_field_values, val.as_bytes());
         }
 
         // File: interned index or sentinel, stored for RLE.
-        match event.file {
+        match meta.file() {
             Some(file) => self.col_file_indices.push(self.string_table.intern(file)),
             None => self.col_file_indices.push(FILE_INDEX_NONE),
         }
 
         // Line: varint with 0 = None, line+1 = Some(line).
-        match event.line {
+        match meta.line() {
             Some(line) => encode_varint(line as usize + 1, &mut self.col_lines),
             None => encode_varint(0, &mut self.col_lines),
         }
@@ -527,47 +614,54 @@ impl EventBuffer {
     }
 
     fn flush(&mut self) -> Result<CompressedSegment, GenericError> {
-        // Build columnar payload.
-        let mut payload = Vec::with_capacity(self.size_bytes() + 256);
+        // Build two separate payloads for split compression:
+        //   1. Metadata: string table, event count, timestamps, levels, targets, files, lines
+        //   2. Content: messages, fields (high-entropy text data)
+        // This lets zstd build optimal coding tables for each data distribution.
 
-        // String table header.
-        self.string_table.encode(&mut payload);
+        // --- Metadata payload ---
+        let mut meta = Vec::with_capacity(4096);
+        self.string_table.encode(&mut meta);
+        encode_varint(self.event_count, &mut meta);
+        write_length_prefixed(&mut meta, &self.col_timestamps);
+        rle_encode(&self.col_levels, &mut meta);
+        rle_encode(&self.col_target_indices, &mut meta);
+        rle_encode(&self.col_file_indices, &mut meta);
+        write_length_prefixed(&mut meta, &self.col_lines);
+        // Field counts (RLE) and key indices go in meta (low-entropy).
+        rle_encode(&self.col_field_counts, &mut meta);
+        write_length_prefixed(&mut meta, &self.col_field_key_indices);
+        // Message template indices (RLE, low-entropy).
+        rle_encode(&self.col_msg_template_indices, &mut meta);
 
-        // Event count.
-        encode_varint(self.event_count, &mut payload);
+        // --- Content payload ---
+        let mut content = Vec::with_capacity(self.col_msg_variables.len() + self.col_field_values.len() + 16);
+        // Message variables.
+        write_length_prefixed(&mut content, &self.col_msg_variables);
+        // Field values.
+        content.extend_from_slice(&self.col_field_values);
 
-        // Column: timestamps (already varint-delta-encoded).
-        write_length_prefixed(&mut payload, &self.col_timestamps);
+        let uncompressed_size = meta.len() + content.len();
 
-        // Column: levels (RLE-encoded).
-        rle_encode(&self.col_levels, &mut payload);
+        // Compress each payload independently.
+        let compress = |data: &[u8], level: i32| -> Result<Vec<u8>, GenericError> {
+            let mut encoder = zstd::Encoder::new(Vec::new(), level).error_context("Failed to create ZSTD encoder.")?;
+            encoder.write_all(data).error_context("Failed to compress.")?;
+            encoder.finish().error_context("Failed to finalize ZSTD encoder.")
+        };
 
-        // Column: target indices (RLE-encoded).
-        rle_encode(&self.col_target_indices, &mut payload);
+        let meta_compressed = compress(&meta, self.compression_level)?;
+        let content_compressed = compress(&content, self.compression_level)?;
 
-        // Column: messages (already varint-length-prefixed).
-        write_length_prefixed(&mut payload, &self.col_messages);
-
-        // Column: fields (already encoded per-event).
-        write_length_prefixed(&mut payload, &self.col_fields);
-
-        // Column: file indices (RLE-encoded).
-        rle_encode(&self.col_file_indices, &mut payload);
-
-        // Column: lines (already varint-encoded).
-        write_length_prefixed(&mut payload, &self.col_lines);
-
-        // Compress.
-        let mut encoder =
-            zstd::Encoder::new(Vec::new(), self.compression_level).error_context("Failed to create ZSTD encoder.")?;
-        encoder
-            .write_all(&payload)
-            .error_context("Failed to compress columnar payload.")?;
-        let compressed_data = encoder.finish().error_context("Failed to finalize ZSTD encoder.")?;
+        // Pack both frames into compressed_data: varint(meta_len) meta_bytes content_bytes.
+        let mut compressed_data = Vec::with_capacity(8 + meta_compressed.len() + content_compressed.len());
+        encode_varint(meta_compressed.len(), &mut compressed_data);
+        compressed_data.extend_from_slice(&meta_compressed);
+        compressed_data.extend_from_slice(&content_compressed);
 
         let compressed_segment = CompressedSegment {
             event_count: self.event_count,
-            uncompressed_size: payload.len(),
+            uncompressed_size,
             compressed_data,
         };
 
@@ -598,67 +692,81 @@ impl CompressedSegment {
     /// Returns a reader that can read every event in the segment.
     #[allow(dead_code)] // Will be used by the read API; exercised in tests.
     fn events(&self) -> Result<CompressedSegmentReader, GenericError> {
-        let mut decompressed = Vec::with_capacity(self.uncompressed_size);
-        let mut decoder = zstd::Decoder::with_buffer(&self.compressed_data[..])?;
-        decoder.read_to_end(&mut decompressed)?;
+        // Split compressed_data: varint(meta_len) meta_compressed content_compressed.
+        let (meta_len, consumed) = decode_varint(&self.compressed_data, 0)
+            .ok_or_else(|| generic_error!("Failed to decode meta frame length"))?;
+        let meta_start = consumed;
+        let content_start = meta_start + meta_len;
 
-        CompressedSegmentReader::new(decompressed)
+        // Decompress metadata frame.
+        let mut meta_decompressed = Vec::new();
+        let mut decoder = zstd::Decoder::with_buffer(&self.compressed_data[meta_start..content_start])?;
+        decoder.read_to_end(&mut meta_decompressed)?;
+
+        // Decompress content frame.
+        let mut content_decompressed = Vec::new();
+        let mut decoder = zstd::Decoder::with_buffer(&self.compressed_data[content_start..])?;
+        decoder.read_to_end(&mut content_decompressed)?;
+
+        CompressedSegmentReader::new(meta_decompressed, content_decompressed)
     }
 }
 
 /// Columnar compressed segment reader.
 ///
-/// Decodes all columns from the segment payload, then yields events one at a time by indexing
-/// across the decoded columns.
+/// Decodes columns from two separate buffers (metadata + content), then yields events one at a
+/// time by reading across the decoded columns.
 #[allow(dead_code)] // Will be used by the read API; exercised in tests.
 struct CompressedSegmentReader {
-    buf: Vec<u8>,
+    // Metadata buffer: string table, timestamps, levels, targets, files, lines.
+    meta: Vec<u8>,
     string_table_ranges: Vec<(usize, usize)>,
 
-    // Decoded column state.
+    // Content buffer: messages, fields.
+    content: Vec<u8>,
+
     event_count: usize,
     event_idx: usize,
 
-    // Column cursors into `buf`.
+    // Cursors into `meta`.
     ts_cursor: usize,
-    ts_end: usize,
     last_timestamp: u128,
-
     levels: Vec<usize>,
     target_indices: Vec<usize>,
-
-    msg_cursor: usize,
-    msg_end: usize,
-
-    fields_cursor: usize,
-    fields_end: usize,
-
     file_indices: Vec<usize>,
-
     line_cursor: usize,
-    line_end: usize,
+
+    // Field sub-columns (from meta).
+    field_counts: Vec<usize>,
+    field_keys_cursor: usize,
+    // Message template sub-columns (from meta).
+    msg_template_indices: Vec<usize>,
+
+    // Cursors into `content`.
+    msg_vars_cursor: usize,
+    field_values_cursor: usize,
 }
 
 #[allow(dead_code)] // Will be used by the read API; exercised in tests.
 impl CompressedSegmentReader {
-    fn new(buf: Vec<u8>) -> Result<Self, GenericError> {
+    fn new(meta: Vec<u8>, content: Vec<u8>) -> Result<Self, GenericError> {
         let mut reader = Self {
-            buf,
+            meta,
             string_table_ranges: Vec::new(),
+            content,
             event_count: 0,
             event_idx: 0,
             ts_cursor: 0,
-            ts_end: 0,
             last_timestamp: 0,
             levels: Vec::new(),
             target_indices: Vec::new(),
-            msg_cursor: 0,
-            msg_end: 0,
-            fields_cursor: 0,
-            fields_end: 0,
             file_indices: Vec::new(),
             line_cursor: 0,
-            line_end: 0,
+            field_counts: Vec::new(),
+            field_keys_cursor: 0,
+            msg_template_indices: Vec::new(),
+            msg_vars_cursor: 0,
+            field_values_cursor: 0,
         };
         reader.decode_header()?;
         Ok(reader)
@@ -667,16 +775,16 @@ impl CompressedSegmentReader {
     fn decode_header(&mut self) -> Result<(), GenericError> {
         let mut idx = 0;
 
-        // String table.
-        let (count, consumed) = decode_varint(&self.buf, idx)
-            .ok_or_else(|| generic_error!("Failed to decode string table count"))?;
+        // String table (in meta).
+        let (count, consumed) =
+            decode_varint(&self.meta, idx).ok_or_else(|| generic_error!("Failed to decode string table count"))?;
         idx += consumed;
         self.string_table_ranges.reserve(count);
         for _ in 0..count {
-            let (len, consumed) = decode_varint(&self.buf, idx)
+            let (len, consumed) = decode_varint(&self.meta, idx)
                 .ok_or_else(|| generic_error!("Failed to decode string table entry length"))?;
             idx += consumed;
-            if idx + len > self.buf.len() {
+            if idx + len > self.meta.len() {
                 return Err(generic_error!("String table entry exceeds buffer"));
             }
             self.string_table_ranges.push((idx, idx + len));
@@ -684,128 +792,174 @@ impl CompressedSegmentReader {
         }
 
         // Event count.
-        let (event_count, consumed) = decode_varint(&self.buf, idx)
-            .ok_or_else(|| generic_error!("Failed to decode event count"))?;
+        let (event_count, consumed) =
+            decode_varint(&self.meta, idx).ok_or_else(|| generic_error!("Failed to decode event count"))?;
         idx += consumed;
         self.event_count = event_count;
 
-        // Timestamps column (length-prefixed blob).
-        let (ts_len, consumed) = decode_varint(&self.buf, idx)
+        // Timestamps column.
+        let (ts_len, consumed) = decode_varint(&self.meta, idx)
             .ok_or_else(|| generic_error!("Failed to decode timestamps column length"))?;
         idx += consumed;
         self.ts_cursor = idx;
-        self.ts_end = idx + ts_len;
         idx += ts_len;
 
         // Levels column (RLE).
-        self.levels = rle_decode(&self.buf, &mut idx)
-            .ok_or_else(|| generic_error!("Failed to decode levels column"))?;
+        self.levels =
+            rle_decode(&self.meta, &mut idx).ok_or_else(|| generic_error!("Failed to decode levels column"))?;
 
         // Target indices column (RLE).
-        self.target_indices = rle_decode(&self.buf, &mut idx)
-            .ok_or_else(|| generic_error!("Failed to decode target indices column"))?;
-
-        // Messages column (length-prefixed blob).
-        let (msg_len, consumed) = decode_varint(&self.buf, idx)
-            .ok_or_else(|| generic_error!("Failed to decode messages column length"))?;
-        idx += consumed;
-        self.msg_cursor = idx;
-        self.msg_end = idx + msg_len;
-        idx += msg_len;
-
-        // Fields column (length-prefixed blob).
-        let (fields_len, consumed) = decode_varint(&self.buf, idx)
-            .ok_or_else(|| generic_error!("Failed to decode fields column length"))?;
-        idx += consumed;
-        self.fields_cursor = idx;
-        self.fields_end = idx + fields_len;
-        idx += fields_len;
+        self.target_indices =
+            rle_decode(&self.meta, &mut idx).ok_or_else(|| generic_error!("Failed to decode target indices column"))?;
 
         // File indices column (RLE).
-        self.file_indices = rle_decode(&self.buf, &mut idx)
-            .ok_or_else(|| generic_error!("Failed to decode file indices column"))?;
+        self.file_indices =
+            rle_decode(&self.meta, &mut idx).ok_or_else(|| generic_error!("Failed to decode file indices column"))?;
 
-        // Lines column (length-prefixed blob).
-        let (lines_len, consumed) = decode_varint(&self.buf, idx)
-            .ok_or_else(|| generic_error!("Failed to decode lines column length"))?;
+        // Lines column.
+        let (lines_len, consumed) =
+            decode_varint(&self.meta, idx).ok_or_else(|| generic_error!("Failed to decode lines column length"))?;
         idx += consumed;
         self.line_cursor = idx;
-        self.line_end = idx + lines_len;
+        let _ = lines_len; // cursor advances during iteration
+        idx += lines_len;
+
+        // Field counts (RLE, in meta).
+        self.field_counts =
+            rle_decode(&self.meta, &mut idx).ok_or_else(|| generic_error!("Failed to decode field counts column"))?;
+
+        // Field key indices (length-prefixed blob, in meta).
+        let (fk_len, consumed) = decode_varint(&self.meta, idx)
+            .ok_or_else(|| generic_error!("Failed to decode field key indices column length"))?;
+        idx += consumed;
+        self.field_keys_cursor = idx;
+        idx += fk_len;
+
+        // Message template indices (RLE, in meta).
+        self.msg_template_indices = rle_decode(&self.meta, &mut idx)
+            .ok_or_else(|| generic_error!("Failed to decode message template indices column"))?;
+
+        // Content buffer: message variables (length-prefixed blob) then field values (rest of buffer).
+        let mut cidx = 0;
+        let (mv_len, consumed) = decode_varint(&self.content, cidx)
+            .ok_or_else(|| generic_error!("Failed to decode message variables column length"))?;
+        cidx += consumed;
+        self.msg_vars_cursor = cidx;
+        cidx += mv_len;
+        self.field_values_cursor = cidx;
 
         Ok(())
     }
 
-    fn next(&mut self) -> Result<Option<CondensedEvent<'_>>, GenericError> {
+    fn next(&mut self) -> Result<Option<DecodedEvent<'_>>, GenericError> {
         if self.event_idx >= self.event_count {
             return Ok(None);
         }
         let i = self.event_idx;
         self.event_idx += 1;
 
-        // Timestamp: read next varint delta from timestamp column.
-        let (ts_delta, consumed) = decode_varint_u128(&self.buf, self.ts_cursor)
+        // Timestamp (from meta).
+        let (ts_delta, consumed) = decode_varint_u128(&self.meta, self.ts_cursor)
             .ok_or_else(|| generic_error!("Failed to decode timestamp delta for event {}", i))?;
         self.ts_cursor += consumed;
         let timestamp_nanos = self.last_timestamp + ts_delta;
         self.last_timestamp = timestamp_nanos;
 
-        // Level: index into pre-decoded RLE vector.
+        // Level (pre-decoded RLE).
         let level = decode_level(self.levels[i] as u8);
 
-        // Target: index into pre-decoded RLE vector, then look up string table.
+        // Target (pre-decoded RLE → string table in meta).
         let target_idx = self.target_indices[i];
-        let &(t_start, t_end) = self.string_table_ranges.get(target_idx).ok_or_else(|| {
-            generic_error!("Target string table index {} out of range", target_idx)
-        })?;
-        let target = std::str::from_utf8(&self.buf[t_start..t_end])
+        let &(t_start, t_end) = self
+            .string_table_ranges
+            .get(target_idx)
+            .ok_or_else(|| generic_error!("Target string table index {} out of range", target_idx))?;
+        let target = std::str::from_utf8(&self.meta[t_start..t_end])
             .map_err(|e| generic_error!("Invalid UTF-8 in target: {}", e))?;
 
-        // Message: read next varint-length-prefixed string from message column.
-        let (msg_len, consumed) = decode_varint(&self.buf, self.msg_cursor)
-            .ok_or_else(|| generic_error!("Failed to decode message length for event {}", i))?;
-        self.msg_cursor += consumed;
-        let message = std::str::from_utf8(&self.buf[self.msg_cursor..self.msg_cursor + msg_len])
-            .map_err(|e| generic_error!("Invalid UTF-8 in message: {}", e))?
-            .to_string();
-        self.msg_cursor += msg_len;
+        // Message: reconstruct from template (meta) + variables (content).
+        let tpl_idx = self.msg_template_indices[i];
+        let &(tpl_start, tpl_end) = self
+            .string_table_ranges
+            .get(tpl_idx)
+            .ok_or_else(|| generic_error!("Message template index {} out of range", tpl_idx))?;
+        let template = std::str::from_utf8(&self.meta[tpl_start..tpl_end])
+            .map_err(|e| generic_error!("Invalid UTF-8 in message template: {}", e))?;
 
-        // Fields: read next field group from fields column.
-        let (field_count, consumed) = decode_varint(&self.buf, self.fields_cursor)
-            .ok_or_else(|| generic_error!("Failed to decode field count for event {}", i))?;
-        self.fields_cursor += consumed;
+        // Read variable count and tokens.
+        let (var_count, consumed) = decode_varint(&self.content, self.msg_vars_cursor)
+            .ok_or_else(|| generic_error!("Failed to decode message variable count for event {}", i))?;
+        self.msg_vars_cursor += consumed;
+
+        let message = if var_count == 0 {
+            template.to_string()
+        } else {
+            // Collect variable tokens.
+            let mut vars = Vec::with_capacity(var_count);
+            for _ in 0..var_count {
+                let (vlen, consumed) = decode_varint(&self.content, self.msg_vars_cursor)
+                    .ok_or_else(|| generic_error!("Failed to decode message variable"))?;
+                self.msg_vars_cursor += consumed;
+                let v = std::str::from_utf8(&self.content[self.msg_vars_cursor..self.msg_vars_cursor + vlen])
+                    .map_err(|e| generic_error!("Invalid UTF-8 in message variable: {}", e))?;
+                self.msg_vars_cursor += vlen;
+                vars.push(v);
+            }
+            // Reconstruct: replace each \x00 placeholder with the next variable.
+            let mut result = String::with_capacity(template.len() + 32);
+            let mut var_idx = 0;
+            for part in template.split('\x00') {
+                result.push_str(part);
+                if var_idx < vars.len() {
+                    result.push_str(vars[var_idx]);
+                    var_idx += 1;
+                }
+            }
+            result
+        };
+
+        // Fields: count from pre-decoded RLE, keys from meta, values from content.
+        let field_count = self.field_counts[i];
         let mut fields = Vec::new();
         for _ in 0..field_count {
-            let (key_idx, consumed) = decode_varint(&self.buf, self.fields_cursor)
+            // Key index from meta.
+            let (key_idx, consumed) = decode_varint(&self.meta, self.field_keys_cursor)
                 .ok_or_else(|| generic_error!("Failed to decode field key index"))?;
-            self.fields_cursor += consumed;
-            let &(k_start, k_end) = self.string_table_ranges.get(key_idx).ok_or_else(|| {
-                generic_error!("Field key string table index {} out of range", key_idx)
-            })?;
-            write_length_prefixed(&mut fields, &self.buf[k_start..k_end]);
+            self.field_keys_cursor += consumed;
+            let &(k_start, k_end) = self
+                .string_table_ranges
+                .get(key_idx)
+                .ok_or_else(|| generic_error!("Field key string table index {} out of range", key_idx))?;
+            write_length_prefixed(&mut fields, &self.meta[k_start..k_end]);
 
-            let (val_len, consumed) = decode_varint(&self.buf, self.fields_cursor)
+            // Value from content.
+            let (val_len, consumed) = decode_varint(&self.content, self.field_values_cursor)
                 .ok_or_else(|| generic_error!("Failed to decode field value length"))?;
-            self.fields_cursor += consumed;
-            write_length_prefixed(&mut fields, &self.buf[self.fields_cursor..self.fields_cursor + val_len]);
-            self.fields_cursor += val_len;
+            self.field_values_cursor += consumed;
+            write_length_prefixed(
+                &mut fields,
+                &self.content[self.field_values_cursor..self.field_values_cursor + val_len],
+            );
+            self.field_values_cursor += val_len;
         }
 
-        // File: index into pre-decoded RLE vector.
+        // File (pre-decoded RLE → string table in meta).
         let file_idx = self.file_indices[i];
         let file = if file_idx == FILE_INDEX_NONE {
             None
         } else {
-            let &(f_start, f_end) = self.string_table_ranges.get(file_idx).ok_or_else(|| {
-                generic_error!("File string table index {} out of range", file_idx)
-            })?;
+            let &(f_start, f_end) = self
+                .string_table_ranges
+                .get(file_idx)
+                .ok_or_else(|| generic_error!("File string table index {} out of range", file_idx))?;
             Some(
-                std::str::from_utf8(&self.buf[f_start..f_end])
+                std::str::from_utf8(&self.meta[f_start..f_end])
                     .map_err(|e| generic_error!("Invalid UTF-8 in file: {}", e))?,
             )
         };
 
-        // Line: read next varint from lines column (0 = None, n = Some(n-1)).
-        let (line_enc, consumed) = decode_varint(&self.buf, self.line_cursor)
+        // Line (from meta).
+        let (line_enc, consumed) = decode_varint(&self.meta, self.line_cursor)
             .ok_or_else(|| generic_error!("Failed to decode line for event {}", i))?;
         self.line_cursor += consumed;
         let line = if line_enc == 0 {
@@ -814,7 +968,7 @@ impl CompressedSegmentReader {
             Some((line_enc - 1) as u32)
         };
 
-        Ok(Some(CondensedEvent {
+        Ok(Some(DecodedEvent {
             timestamp_nanos,
             level,
             target,
@@ -933,7 +1087,7 @@ impl ProcessorState {
         self.compressed_segments.size_bytes() + self.event_buffer.size_bytes()
     }
 
-    fn add_event(&mut self, event: &CondensedEvent<'static>) -> Result<(), GenericError> {
+    fn add_event(&mut self, event: &CondensedEvent) -> Result<(), GenericError> {
         // Encode the event into our event buffer.
         self.event_buffer.encode_event(event)?;
         self.metrics.events_total += 1;
@@ -974,7 +1128,7 @@ impl ProcessorState {
 
 /// Shared state for the write side of the ring buffer.
 struct WriterState {
-    events_tx: mpsc::blocking::Sender<CondensedEvent<'static>>,
+    events_tx: mpsc::blocking::Sender<CondensedEvent>,
     events_tx_closed: AtomicBool,
 }
 
@@ -1002,14 +1156,69 @@ impl WriterState {
 
 /// A `Layer` that stores a sliding window of compressed log events.
 ///
-/// This layer is designed to allow for storing a sliding window of log events in an efficient manner by chunking them
-/// into "segments", which are then compressed and stored in a ring buffer. Given a configurable upper bound on the total
-/// in-memory size of all log events, the layer will drop the oldest compressed segment if storing new log events would
-/// cause the total size to exceed the limit.
+/// This layer captures log events and stores them in a memory-bounded ring buffer using columnar encoding and zstd
+/// compression. It is designed for capturing verbose (e.g. DEBUG-level) events for potential post-mortem collection
+/// without emitting them as part of the normal log output, while ensuring the collection does not consume excessive
+/// memory.
 ///
-/// This effectively allows for storing more verbose log events for potential collection (such as when debugging an issue)
-/// without having to emit them as part of the normal log output, while ensuring that the collection does not consume an
-/// excessive amount of memory.
+/// # Architecture
+///
+/// The ring buffer is split across two threads connected by a bounded MPSC channel:
+///
+/// - **Writer thread** (the application's logging thread): Hydrates incoming [`tracing::Event`]s into condensed
+///   event structs and sends them through the channel. This path is non-blocking -- if the channel is full,
+///   events are dropped.
+///
+/// - **Processor thread** (a dedicated background thread): Receives events and manages the two-tier storage:
+///
+///   1. **Event buffer**: Accumulates incoming events into columnar storage. Each event field (timestamps,
+///      levels, targets, messages, structured fields, source locations) is appended to a separate column buffer,
+///      enabling specialized per-column encoding. The buffer also maintains a per-segment string intern table for
+///      deduplicating repeated strings (targets, file paths, and field keys).
+///
+///   2. **Compressed segments**: A FIFO queue of zstd-compressed segment payloads. When the total ring buffer
+///      size exceeds the configured maximum _and_ the event buffer has accumulated at least
+///      `min_uncompressed_segment_size_bytes`, the event buffer is flushed: its columns are serialized and
+///      compressed into a segment, which is pushed onto the queue. If the total size still exceeds the limit,
+///      the oldest segments are dropped.
+///
+/// # Columnar Encoding
+///
+/// Rather than serializing events row-by-row, the event buffer stores each field as a separate column. This
+/// groups similar data together, enabling specialized lightweight encoding before general-purpose compression:
+///
+/// - **Timestamps**: Delta-encoded as variable-length integers (LEB128). Each event stores only the nanosecond
+///   delta from the previous event rather than the full 128-bit absolute timestamp.
+///
+/// - **Levels, target indices, file indices, field counts, message template indices**: Run-length encoded (RLE).
+///   These columns have few distinct values and tend to appear in runs (e.g. a burst of DEBUG events from the
+///   same module), so RLE compresses them dramatically.
+///
+/// - **Messages**: Decomposed into a _template skeleton_ and _variable tokens_. Tokens containing digits are
+///   extracted as variables (e.g. `"Processed 1234 events in 56ms"` becomes skeleton
+///   `"Processed \0 events in \0"` plus variables `["1234", "56ms"]`). Skeletons are interned in the string
+///   table and their indices are RLE-encoded; variable tokens are stored separately as length-prefixed bytes.
+///
+/// - **Structured fields**: Split into three sub-columns: field counts (RLE), field key indices (varint, with
+///   keys interned in the string table), and field values (length-prefixed bytes).
+///
+/// # Split Compression
+///
+/// On flush, the columnar data is divided into two payloads that are compressed as separate zstd frames:
+///
+/// - **Metadata frame**: String table, event count, timestamps, levels, targets, files, lines, field counts,
+///   field key indices, and message template indices. This data is low-entropy and highly structured.
+///
+/// - **Content frame**: Message variable tokens and field values. This data is high-entropy and mostly unique.
+///
+/// Compressing these separately allows zstd to build optimal Huffman tables and match-finding strategies for
+/// each distribution, yielding better overall compression ratios than a single combined frame.
+///
+/// # Memory Management
+///
+/// The total memory footprint is bounded by `max_ring_buffer_size_bytes` (default 1 MiB, typically configured
+/// to 2 MiB in production). This budget covers both the uncompressed event buffer and all compressed segments.
+/// When the budget is exceeded, the oldest compressed segments are evicted in FIFO order.
 pub struct CompressedRingBuffer {
     writer_state: WriterState,
 }
@@ -1056,7 +1265,7 @@ fn create_and_spawn_processor(config: RingBufferConfig) -> WriterState {
     writer_state
 }
 
-fn run_processor(events_rx: mpsc::blocking::Receiver<CondensedEvent<'static>>, mut processor_state: ProcessorState) {
+fn run_processor(events_rx: mpsc::blocking::Receiver<CondensedEvent>, mut processor_state: ProcessorState) {
     use thingbuf::mpsc::errors::RecvTimeoutError;
 
     loop {
@@ -1079,8 +1288,36 @@ fn run_processor(events_rx: mpsc::blocking::Receiver<CondensedEvent<'static>>, m
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rand::{rngs::SmallRng, Rng, SeedableRng};
+
+    use super::*;
+
+    /// Declares a `static` [`Metadata`] and returns `&'static Metadata<'static>`.
+    ///
+    /// Usage: `test_metadata!(target: "my::target", level: tracing::Level::INFO, file: "foo.rs", line: 42)`
+    macro_rules! test_metadata {
+        (target: $target:expr, level: $level:expr, file: $file:expr, line: $line:expr) => {{
+            use tracing::callsite;
+            struct TestCallsite;
+            static META: tracing::Metadata<'static> = tracing::Metadata::new(
+                "test",
+                $target,
+                $level,
+                Some($file),
+                Some($line),
+                Some($target),
+                tracing::field::FieldSet::new(&[], tracing::callsite::Identifier(&TestCallsite)),
+                tracing::metadata::Kind::EVENT,
+            );
+            impl callsite::Callsite for TestCallsite {
+                fn set_interest(&self, _: tracing::subscriber::Interest) {}
+                fn metadata(&self) -> &tracing::Metadata<'_> {
+                    &META
+                }
+            }
+            &META
+        }};
+    }
 
     const BENCH_TARGETS: &[&str] = &[
         "saluki_components::sources::dogstatsd",
@@ -1146,36 +1383,86 @@ mod tests {
         "src/internal/remote_agent.rs",
     ];
 
+    const BENCH_LEVELS: &[tracing::Level] = &[
+        tracing::Level::DEBUG,
+        tracing::Level::INFO,
+        tracing::Level::WARN,
+        tracing::Level::ERROR,
+    ];
+
+    /// Builds a leaked `&'static Metadata<'static>` for benchmark use with the given target and
+    /// level. File/line are set to a representative value; in production these come from the
+    /// callsite and are not varied per-event.
+    fn bench_metadata(target: &'static str, level: tracing::Level, file: &'static str) -> &'static Metadata<'static> {
+        // Intentionally leak: benchmark metadata lives for the process lifetime.
+        &*Box::leak(Box::new(tracing::Metadata::new(
+            "bench",
+            target,
+            level,
+            Some(file),
+            Some(1),
+            Some(target),
+            tracing::field::FieldSet::new(
+                &[],
+                tracing::callsite::Identifier(
+                    // Each leaked Metadata gets its own unique leaked callsite so that
+                    // Identifier uniqueness is satisfied.
+                    &*Box::leak(Box::new(BenchCallsite)),
+                ),
+            ),
+            tracing::metadata::Kind::EVENT,
+        )))
+    }
+
+    struct BenchCallsite;
+    impl tracing::callsite::Callsite for BenchCallsite {
+        fn set_interest(&self, _: tracing::subscriber::Interest) {}
+        fn metadata(&self) -> &Metadata<'_> {
+            unimplemented!("bench callsite metadata should never be called")
+        }
+    }
+
     struct EventGenerator {
         rng: SmallRng,
         timestamp_nanos: u128,
+        metadata_table: Vec<&'static Metadata<'static>>,
     }
 
     impl EventGenerator {
         fn new(seed: u64) -> Self {
+            // Pre-build a metadata entry for each (target, level) combination.
+            let mut metadata_table = Vec::new();
+            for &target in BENCH_TARGETS {
+                let file = BENCH_FILES[metadata_table.len() % BENCH_FILES.len()];
+                for &level in BENCH_LEVELS {
+                    metadata_table.push(bench_metadata(target, level, file));
+                }
+            }
             Self {
                 rng: SmallRng::seed_from_u64(seed),
                 timestamp_nanos: 1_700_000_000_000_000_000, // ~Nov 2023
+                metadata_table,
             }
         }
 
-        fn next_event(&mut self) -> CondensedEvent<'static> {
+        fn next_event(&mut self) -> CondensedEvent {
             // Advance timestamp by 1-50ms.
             self.timestamp_nanos += self.rng.random_range(1_000_000u128..50_000_000u128);
 
             // Weighted level distribution: 40% DEBUG, 30% INFO, 20% WARN, 10% ERROR.
             let level_roll: u32 = self.rng.random_range(0..100);
-            let level = if level_roll < 40 {
-                "DEBUG"
+            let level_idx = if level_roll < 40 {
+                0 // DEBUG
             } else if level_roll < 70 {
-                "INFO"
+                1 // INFO
             } else if level_roll < 90 {
-                "WARN"
+                2 // WARN
             } else {
-                "ERROR"
+                3 // ERROR
             };
 
-            let target = BENCH_TARGETS[self.rng.random_range(0..BENCH_TARGETS.len())];
+            let target_idx = self.rng.random_range(0..BENCH_TARGETS.len());
+            let metadata = self.metadata_table[target_idx * BENCH_LEVELS.len() + level_idx];
 
             // 60% short static messages, 40% formatted with numbers.
             let message = if self.rng.random_range(0..100u32) < 60 {
@@ -1237,17 +1524,11 @@ mod tests {
                 write_length_prefixed(&mut fields, value.as_bytes());
             }
 
-            let file = Some(BENCH_FILES[self.rng.random_range(0..BENCH_FILES.len())]);
-            let line = Some(self.rng.random_range(1u32..500));
-
             CondensedEvent {
                 timestamp_nanos: self.timestamp_nanos,
-                level,
-                target,
+                metadata: Some(metadata),
                 message,
                 fields,
-                file,
-                line,
             }
         }
     }
@@ -1291,8 +1572,7 @@ mod tests {
             })
             .collect();
 
-        let events_retained =
-            state.compressed_segments.event_count() + state.event_buffer.event_count();
+        let events_retained = state.compressed_segments.event_count() + state.event_buffer.event_count();
 
         BenchmarkResult {
             config_desc: config_desc.to_string(),
@@ -1340,10 +1620,7 @@ mod tests {
         println!();
         println!("=== Ring Buffer Capacity Benchmark ===");
         println!("Config: {}", result.config_desc);
-        println!(
-            "Seed: 0x{:X} | Events fed: {}",
-            result.seed, result.events_fed
-        );
+        println!("Seed: 0x{:X} | Events fed: {}", result.seed, result.events_fed);
         println!();
         println!("--- Summary ---");
         println!("Events retained:          {}", result.events_retained);
@@ -1404,15 +1681,9 @@ mod tests {
         let seed = 0xDEAD_BEEF_CAFE;
         let num_events = 500_000;
 
-        let config = RingBufferConfig::default()
-            .with_max_ring_buffer_size_bytes(2 * 1024 * 1024);
+        let config = RingBufferConfig::default().with_max_ring_buffer_size_bytes(2 * 1024 * 1024);
 
-        let result = run_benchmark(
-            config,
-            "max=2MiB, min_segment=128KiB, zstd_level=19",
-            seed,
-            num_events,
-        );
+        let result = run_benchmark(config, "max=2MiB, min_segment=128KiB, zstd_level=19", seed, num_events);
         print_report(&result);
     }
 
@@ -1425,8 +1696,7 @@ mod tests {
         let configs: Vec<(&str, RingBufferConfig)> = vec![
             (
                 "default: max=2MiB, min_segment=128KiB, zstd=19",
-                RingBufferConfig::default()
-                    .with_max_ring_buffer_size_bytes(2 * 1024 * 1024),
+                RingBufferConfig::default().with_max_ring_buffer_size_bytes(2 * 1024 * 1024),
             ),
             (
                 "zstd=3: max=2MiB, min_segment=128KiB, zstd=3",
@@ -1498,15 +1768,17 @@ mod tests {
         buf
     }
 
-    fn make_test_event(message: &str) -> CondensedEvent<'static> {
+    fn make_test_event(message: &str) -> CondensedEvent {
         CondensedEvent {
             timestamp_nanos: 1_000_000_000,
-            level: "INFO",
-            target: "test::target",
+            metadata: Some(test_metadata!(
+                target: "test::target",
+                level: tracing::Level::INFO,
+                file: "test.rs",
+                line: 42
+            )),
             message: message.to_string(),
             fields: encode_test_fields(&[("key1", "value1"), ("key2", "value2")]),
-            file: Some("test.rs"),
-            line: Some(42),
         }
     }
 
@@ -1522,16 +1794,17 @@ mod tests {
         assert_eq!(segment.event_count(), 1);
         assert!(segment.size_bytes() > 0);
 
+        let meta = event.metadata.unwrap();
         let mut reader = segment.events().unwrap();
         let decoded = reader.next().unwrap().expect("should have one event");
 
         assert_eq!(decoded.timestamp_nanos, event.timestamp_nanos);
-        assert_eq!(decoded.level, event.level);
-        assert_eq!(decoded.target, event.target);
+        assert_eq!(decoded.level, meta.level().as_str());
+        assert_eq!(decoded.target, meta.target());
         assert_eq!(decoded.message, event.message);
         assert_eq!(decoded.fields, event.fields);
-        assert_eq!(decoded.file, event.file);
-        assert_eq!(decoded.line, event.line);
+        assert_eq!(decoded.file, meta.file());
+        assert_eq!(decoded.line, meta.line());
 
         // No more events.
         assert!(reader.next().unwrap().is_none());
@@ -1625,30 +1898,36 @@ mod tests {
 
     #[test]
     fn reader_empty_buffer() {
-        // Build a valid columnar segment with 0 events.
-        let mut buf = Vec::new();
-        encode_varint(0, &mut buf); // string table: 0 entries
-        encode_varint(0, &mut buf); // event count: 0
-        encode_varint(0, &mut buf); // timestamps column: 0 bytes
-        rle_encode(&[], &mut buf);  // levels: empty RLE
-        rle_encode(&[], &mut buf);  // target_indices: empty RLE
-        encode_varint(0, &mut buf); // messages column: 0 bytes
-        encode_varint(0, &mut buf); // fields column: 0 bytes
-        rle_encode(&[], &mut buf);  // file_indices: empty RLE
-        encode_varint(0, &mut buf); // lines column: 0 bytes
-        let mut reader = CompressedSegmentReader::new(buf).unwrap();
+        // Build a valid columnar segment with 0 events (split into meta + content).
+        let mut meta = Vec::new();
+        encode_varint(0, &mut meta); // string table: 0 entries
+        encode_varint(0, &mut meta); // event count: 0
+        encode_varint(0, &mut meta); // timestamps column: 0 bytes
+        rle_encode(&[], &mut meta); // levels: empty RLE
+        rle_encode(&[], &mut meta); // target_indices: empty RLE
+        rle_encode(&[], &mut meta); // file_indices: empty RLE
+        encode_varint(0, &mut meta); // lines column: 0 bytes
+        rle_encode(&[], &mut meta); // field_counts: empty RLE
+        encode_varint(0, &mut meta); // field_key_indices: 0 bytes
+        rle_encode(&[], &mut meta); // msg_template_indices: empty RLE
+
+        let mut content = Vec::new();
+        encode_varint(0, &mut content); // message variables: 0 bytes
+                                        // field values: empty (rest of buffer)
+
+        let mut reader = CompressedSegmentReader::new(meta, content).unwrap();
         assert!(reader.next().unwrap().is_none());
     }
 
     #[test]
     fn reader_truncated_framing_returns_error() {
         // A header that claims 100 events but has no column data.
-        let mut buf = Vec::new();
-        encode_varint(0, &mut buf);   // string table: 0 entries
-        encode_varint(100, &mut buf); // event count: 100
-        // Missing all columns -- should fail during header decode.
+        let mut meta = Vec::new();
+        encode_varint(0, &mut meta); // string table: 0 entries
+        encode_varint(100, &mut meta); // event count: 100
+                                       // Missing all columns -- should fail during header decode.
         assert!(
-            CompressedSegmentReader::new(buf).is_err(),
+            CompressedSegmentReader::new(meta, Vec::new()).is_err(),
             "expected error on truncated data"
         );
     }
@@ -1667,7 +1946,7 @@ mod tests {
     #[test]
     fn field_encoding_round_trip() {
         let fields = encode_test_fields(&[("key1", "value1"), ("key2", "value2")]);
-        let event = CondensedEvent {
+        let event = DecodedEvent {
             fields,
             ..Default::default()
         };
@@ -1683,7 +1962,7 @@ mod tests {
             ("json", "{\"key\": \"val\"}"),
             ("empty", ""),
         ]);
-        let event = CondensedEvent {
+        let event = DecodedEvent {
             fields,
             ..Default::default()
         };

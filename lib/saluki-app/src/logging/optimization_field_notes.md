@@ -220,3 +220,244 @@ thread and doesn't block the application. With columnar layout:
 - zstd=11: 108,856 events (-7.1%)
 - zstd=3:  103,524 events (-11.7%)
 If CPU budget is tight, zstd=11 is still +58.4% over the original baseline.
+
+---
+
+## Further Optimization Research (Web Search)
+
+### Approach A: Bit-Packing for Integer Columns (Parquet/DuckDB-style)
+
+**Source**: Apache Parquet DELTA_BINARY_PACKED encoding, DuckDB lightweight compression.
+
+Our timestamps column is currently varint-delta-encoded. Parquet goes further with
+DELTA_BINARY_PACKED: divide the delta column into blocks of N values, compute the
+min-delta per block (Frame of Reference), subtract it out, then bit-pack the residuals
+at the minimum required bit width per miniblock.
+
+**Example**: If a block of 32 timestamp deltas are all in the range 25,000,000..26,000,000
+(25-26ms), the FOR base is 25,000,000 and the residuals are 0..1,000,000 which fit in
+20 bits. Instead of varint-encoding each delta (4 bytes), we store 20 bits each = 2.5 bytes.
+
+**Applicability**: Our timestamp deltas are 1-50ms in nanoseconds (1M-50M), varint-encoded
+as 4 bytes each. FOR+bit-packing could reduce this to 2-3 bytes, saving ~1-2 bytes/event.
+Moderate gain, moderate complexity. The lines column (1-500) could also benefit.
+
+**Key insight from DuckDB**: Bit-packing works per miniblock (e.g., 32 values), with a
+separate bit-width per miniblock. This adapts to local value ranges rather than using
+a global worst-case width.
+
+### Approach B: Zstd Dictionary Compression
+
+**Source**: Facebook zstd documentation, Cassandra CEP-54, OpenTelemetry collector issue #9707.
+
+Train a zstd dictionary on representative uncompressed segment payloads and embed it as
+a static constant. The dictionary provides "past data" that the compressor can reference
+from the start of each segment. Benefits are most pronounced for the first few KB of data.
+
+**Applicability**: Our segments are ~120-130KiB uncompressed. Zstd dictionaries help most
+with small data (<32KiB). At our segment sizes, the compressor already has plenty of
+context from earlier in the segment. Expected gain: small (maybe 2-5%).
+
+**Implementation**: Train dictionary from first N segments' data using `zstd::dict::from_samples`,
+embed as `static DICT: &[u8]`, use `EncoderDictionary::new(DICT, level)` and
+`DecoderDictionary::new(DICT)`. The dictionary must be stored alongside the compressed
+data or embedded in the binary.
+
+**Trade-off**: Dictionary size (typically 32-112KiB) counts against the ring buffer memory
+budget if stored in-process. An alternative is to train at startup and amortize across all
+segments, but this adds complexity and the dictionary may not match the actual workload.
+
+**Verdict**: Likely small gain for our segment sizes. Worth trying but unlikely to be a
+top-tier optimization. Would be more impactful if we moved to smaller segments.
+
+### Approach C: Log Template Extraction (LogShrink / LogFold-style)
+
+**Source**: LogShrink (ICSE 2024), LogFold (2025), LogPrism (2025).
+
+These academic systems achieve 16-356% better compression than general-purpose compressors
+by exploiting the structure of log data:
+
+1. **Template extraction**: Parse log messages to separate the static template ("Processed
+   {} events in {}ms") from the variable parts ("1234", "56"). Store templates once in a
+   dictionary; store only template ID + variable values per event.
+
+2. **Variable matrix**: Group variables by template ID into a matrix (rows = events,
+   columns = variable slots). Apply column-specific encoding: delta for monotonic counters,
+   dictionary for repeated values, plain for high-entropy strings.
+
+3. **Column-oriented storage**: LogShrink reports that column-oriented storage reduces
+   compressed size by 36-103% compared to row-oriented storage (we already do this).
+
+**Applicability**: High potential. Our messages column is currently the largest and highest-
+entropy column. Many messages follow templates with repeated static text and a few variable
+numeric values. Extracting templates would:
+- Eliminate repeated static text entirely (stored once per template)
+- Enable numeric-specific encoding for extracted variables
+- Further reduce what zstd needs to compress
+
+**Complexity**: Significant. Requires a log parser / template extractor, a template
+dictionary, a variable encoding system, and corresponding decoder logic. The template
+extractor could either be heuristic (simple pattern matching) or statistical.
+
+**Simplified version**: Rather than full template extraction, we could:
+- Separate messages into "message template ID" (interned) + "variable parts" columns
+- Use a simple heuristic: split on whitespace, classify tokens as static (all alpha)
+  vs variable (contains digits), intern the static skeleton
+
+### Approach D: Cascaded Compression (BtrBlocks-style)
+
+**Source**: BtrBlocks (SIGMOD 2023), SpiralDB.
+
+BtrBlocks chains multiple lightweight encodings, each fast and preserving random access:
+RLE → bit-packing → general compressor. The key insight is that **the output of one
+encoding becomes the input to the next**.
+
+**Applicability**: We already do RLE on levels/targets/files before zstd. We could extend
+this to a cascade:
+1. RLE on levels → produces (count, value) pairs
+2. The counts column from RLE could itself be delta-encoded or bit-packed
+3. The entire result then goes to zstd
+
+For our data, the marginal gain of cascading on already-RLE'd data is likely small since
+zstd is very good at compressing the resulting RLE output. More useful would be applying
+bit-packing to the timestamp deltas and line numbers before zstd sees them.
+
+### Approach E: Separate Compression per Column
+
+**Source**: General columnar database design, Apache ORC.
+
+Instead of compressing the entire segment payload as one zstd frame, compress each column
+independently. This lets zstd build optimal Huffman tables and match finders for each
+column's data distribution rather than trying to find a single strategy that works across
+heterogeneous columns.
+
+**Applicability**: Potentially high. Our payload mixes:
+- Very low entropy: RLE-encoded levels (maybe 50 bytes)
+- Medium entropy: delta-encoded timestamps, line numbers
+- High entropy: messages, field values
+
+Zstd's internal state is shared across all this data. Compressing each column separately
+would let the compressor specialize. However, each separate zstd frame has ~18 bytes of
+overhead (magic + frame header), so for very small columns (levels RLE = ~50 bytes) the
+overhead could negate the gains.
+
+**Hybrid approach**: Compress low-entropy columns (timestamps, levels, targets, files, lines)
+together as one zstd frame, and high-entropy columns (messages, fields) as a separate frame.
+This gives the compressor two distinct contexts without excessive frame overhead.
+
+### Approach F: Field Value Column Splitting
+
+**Source**: LogShrink variable matrix concept.
+
+Our fields column currently stores all field key-value pairs sequentially. We could split
+it into sub-columns:
+- Field key indices column (already interned, small varint values)
+- Field value bytes column (the actual values)
+- Field count per event (small integer)
+
+Separating the interned key indices from the raw value bytes would improve compression
+since the key indices are very repetitive and the values are not.
+
+### Approach G: Numeric Field Value Specialization
+
+**Source**: "Unlocking the Power of Numbers: Log Compression via Numeric Token Parsing" (ASE 2024).
+
+Many field values are numeric strings ("1234", "127.0.0.1", "56ms"). Parsing these into
+binary integers/floats and storing them as typed columns would dramatically reduce size:
+- "1234" (4 bytes UTF-8) → varint (2 bytes)
+- "127.0.0.1" (11 bytes UTF-8) → 4 bytes (IPv4 packed)
+- "1048576" (7 bytes UTF-8) → varint (3 bytes)
+
+This requires type detection at encode time and is only applicable to field values, not
+messages. The complexity is moderate but the per-event savings could be meaningful.
+
+### Priority Assessment
+
+| Approach | Expected Gain | Complexity | Risk |
+|----------|--------------|------------|------|
+| C: Template extraction (simplified) | High (10-25%) | High | Medium |
+| E: Separate compression per column | Medium (5-15%) | Low | Low |
+| F: Field value column splitting | Medium (5-10%) | Low | Low |
+| A: Bit-packing for integers | Low-Med (3-8%) | Medium | Low |
+| B: Zstd dictionary | Low (2-5%) | Low | Low |
+| D: Cascaded compression | Low (1-3%) | Medium | Low |
+| G: Numeric specialization | Low-Med (3-8%) | High | Medium |
+
+---
+
+## Trial E: Split compression (meta vs content frames)
+
+**Approach**: Compress the segment as two separate zstd frames:
+1. **Meta frame**: string table, event count, timestamps, levels, targets, files, lines, field counts, field key indices, message template indices (low-entropy, highly structured)
+2. **Content frame**: message variables, field values (high-entropy, mostly unique text)
+
+This lets zstd build optimal Huffman tables and match finders for each data distribution.
+
+**Result**: **122,821 events** (+4.8% over single-frame columnar, +78.8% over original baseline)
+- Compression ratio: 4.08x (up from 3.87x)
+- Avg compressed bytes/event: 15.8
+
+---
+
+## Trial F: Field column splitting (on top of Trial E)
+
+**Approach**: Split the fields column into three sub-columns:
+- Field counts → `Vec<usize>` for RLE (meta frame)
+- Field key indices → varint column (meta frame)
+- Field values → varint-length-prefixed bytes (content frame)
+
+**Result**: **130,366 events** (+6.1% over Trial E, +89.7% over original baseline)
+- Compression ratio: 4.29x
+- Avg compressed bytes/event: 15.2
+
+---
+
+## Trial C: Simplified message template extraction (on top of E+F)
+
+**Approach**: Inspired by LogShrink (ICSE 2024). Split each message into a "skeleton"
+(static tokens) and "variables" (tokens containing digits):
+1. Tokenize message by whitespace
+2. If a token contains any ASCII digit, replace it with `\x00` placeholder and store as variable
+3. Intern the skeleton in the string table
+4. Store skeleton index in meta (RLE-encoded), variable tokens in content
+
+Example: "Processed 1234 events in 56ms" → skeleton "Processed \x00 events in \x00", variables ["1234", "56ms"]
+
+**Result**: **137,259 events** (+5.3% over Trial F, **+99.8% over original baseline** -- 2x capacity)
+- Compression ratio: 3.08x
+- Avg compressed bytes/event: 14.5
+
+Sweep results:
+| Config                              | Retained | Rate  | Ratio | B/evt |
+|-------------------------------------|----------|-------|-------|-------|
+| 128k segments, zstd=19 (default)   | **137,259** | 27.5% | 3.08x | 14.5 |
+| 64k segments, zstd=19              | 134,936 | 27.0% | 3.01x | 14.9 |
+| 256k segments, zstd=19             | 133,807 | 26.8% | 3.15x | 13.9 |
+| 128k segments, zstd=11             | 123,431 | 24.7% | 2.83x | 15.4 |
+| 128k segments, zstd=3              | 119,098 | 23.8% | 2.72x | 16.4 |
+
+---
+
+## Trial A: Bit-packing / FOR encoding -- SKIPPED
+
+**Rationale**: At 14.5 compressed bytes/event and 3.08x compression ratio, the timestamp
+and line columns account for ~5-6 pre-compression bytes per event. Bit-packing would save
+~1-2 bytes there, translating to ~0.3-0.6 compressed bytes after zstd -- roughly 2-4%.
+The implementation complexity (miniblocks, bit-width tracking, bitstream packing) is
+significant for a small gain. Skipped in favor of diminishing returns.
+
+---
+
+## Final Summary
+
+| Stage | Events Retained | vs Baseline |
+|-------|----------------|-------------|
+| Original baseline (musli + row-oriented) | 68,708 | -- |
+| Custom compact encoding | 79,391 | +15.5% |
+| + String table dedup | 89,896 | +30.8% |
+| + Field key interning | 95,966 | +39.7% |
+| + Config tuning (128KiB + zstd=19) | 99,038 | +44.1% |
+| + Columnar layout + RLE | 117,210 | +70.6% |
+| + Split compression (meta/content frames) | 122,821 | +78.8% |
+| + Field column splitting | 130,366 | +89.7% |
+| + Message template extraction | **137,259** | **+99.8%** |
