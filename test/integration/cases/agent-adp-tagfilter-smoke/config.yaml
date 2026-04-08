@@ -3,7 +3,7 @@ description: "Verifies the converged Agent+ADP image starts in non-standalone mo
 timeout: 90s
 
 container:
-  image: "saluki-images/datadog-agent:stephen-tagfilter-adp"
+  image: "saluki-images/datadog-agent:testing-devel"
   env:
     DD_API_KEY: "test-api-key"
     DD_HOSTNAME: "integration-test-agent-adp-tagfilter"

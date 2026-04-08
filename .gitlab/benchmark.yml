@@ -181,7 +181,6 @@ build-agent-adp-baseline-image:
         - lib/**/*
         - test/smp/regression/agent-adp-tagfilter/config.yaml
         - test/smp/regression/agent-adp-tagfilter/**/*
-      when: manual
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
@@ -221,7 +220,6 @@ build-agent-adp-comparison-image:
         - lib/**/*
         - test/smp/regression/agent-adp-tagfilter/config.yaml
         - test/smp/regression/agent-adp-tagfilter/**/*
-      when: manual
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs:
     - build-adp-comparison-image
@@ -271,7 +269,6 @@ run-benchmarks-agent-adp:
         - lib/**/*
         - test/smp/regression/agent-adp-tagfilter/config.yaml
         - test/smp/regression/agent-adp-tagfilter/**/*
-      when: manual
   timeout: 1h
   needs:
     - build-agent-adp-baseline-image
