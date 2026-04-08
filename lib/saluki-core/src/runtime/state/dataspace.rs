@@ -79,7 +79,7 @@ impl StorageKey {
 
 /// A type-erased broadcast channel that supports sending retraction notifications without knowing `T`.
 trait AnyChannel: Send + Sync {
-    /// Sends a retraction for the given identifier..
+    /// Sends a retraction for the given identifier.
     fn send_retraction(&self, id: &Identifier);
 
     /// Returns a downcasted reference to `self` that can be fallibly upcasted back to the original type.
