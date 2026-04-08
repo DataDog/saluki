@@ -3,9 +3,10 @@ use std::{
     fmt::Write as _,
     io::{Read as _, Write},
     sync::atomic::{AtomicBool, Ordering::AcqRel},
+    time::{Duration, Instant},
 };
 
-use metrics::{counter, gauge};
+use metrics::gauge;
 use musli::{Decode, Encode};
 use saluki_common::time::get_unix_timestamp_nanos;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -13,15 +14,18 @@ use thingbuf::mpsc;
 use tracing::{Event, Subscriber};
 use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
 
-const DEFAULT_MAX_UNCOMPRESSED_SEGMENT_SIZE_BYTES: usize = 256 * 1024;
-const DEFAULT_COMPRESSION_LEVEL: i32 = zstd::DEFAULT_COMPRESSION_LEVEL;
+const DEFAULT_MIN_UNCOMPRESSED_SEGMENT_SIZE_BYTES: usize = 256 * 1024;
+const DEFAULT_COMPRESSION_LEVEL: i32 = 11; //zstd::DEFAULT_COMPRESSION_LEVEL;
 const DEFAULT_MAX_RING_BUFFER_SIZE_BYTES: usize = 1024 * 1024;
 
 /// Ring buffer configuration.
 #[derive(Clone, Debug)]
 pub struct RingBufferConfig {
-    /// Maximum size of an uncompressed segment, in bytes, before compression is triggered.
-    max_uncompressed_segment_size_bytes: usize,
+    /// Minimum size of an uncompressed segment, in bytes, before compression is allowed.
+    ///
+    /// Compression is only triggered when the total ring buffer size exceeds the maximum ring buffer size _and_ the
+    /// event buffer has reached at least this size.
+    min_uncompressed_segment_size_bytes: usize,
 
     /// Compression level.
     ///
@@ -33,11 +37,14 @@ pub struct RingBufferConfig {
 }
 
 impl RingBufferConfig {
-    /// Sets the maximum size of an uncompressed segment, in bytes, before compression is triggered.
+    /// Sets the minimum size of an uncompressed segment, in bytes, before compression is allowed.
+    ///
+    /// Compression is only triggered when the total ring buffer size exceeds the configured maximum _and_ the event
+    /// buffer has reached at least this size. This allows segments to grow larger for better compression ratios.
     ///
     /// Defaults to 256KiB.
-    pub fn with_max_uncompressed_segment_size_bytes(mut self, max_uncompressed_segment_size_bytes: usize) -> Self {
-        self.max_uncompressed_segment_size_bytes = max_uncompressed_segment_size_bytes;
+    pub fn with_min_uncompressed_segment_size_bytes(mut self, min_uncompressed_segment_size_bytes: usize) -> Self {
+        self.min_uncompressed_segment_size_bytes = min_uncompressed_segment_size_bytes;
         self
     }
 
@@ -67,7 +74,7 @@ impl RingBufferConfig {
 impl Default for RingBufferConfig {
     fn default() -> Self {
         Self {
-            max_uncompressed_segment_size_bytes: DEFAULT_MAX_UNCOMPRESSED_SEGMENT_SIZE_BYTES,
+            min_uncompressed_segment_size_bytes: DEFAULT_MIN_UNCOMPRESSED_SEGMENT_SIZE_BYTES,
             compression_level: DEFAULT_COMPRESSION_LEVEL,
             max_ring_buffer_size_bytes: DEFAULT_MAX_RING_BUFFER_SIZE_BYTES,
         }
@@ -393,6 +400,7 @@ struct CompressedSegments {
     segments: VecDeque<CompressedSegment>,
     total_compressed_size_bytes: usize,
     event_count: usize,
+    segments_dropped_total: u64,
 }
 
 impl CompressedSegments {
@@ -401,6 +409,7 @@ impl CompressedSegments {
             segments: VecDeque::new(),
             total_compressed_size_bytes: 0,
             event_count: 0,
+            segments_dropped_total: 0,
         }
     }
 
@@ -416,20 +425,57 @@ impl CompressedSegments {
         self.total_compressed_size_bytes += segment.size_bytes();
         self.event_count += segment.event_count();
         self.segments.push_back(segment);
-
-        counter!("compressed_ring_buffer_segments_compressed_total").increment(1);
-        gauge!("compressed_ring_buffer_compressed_bytes").set(self.total_compressed_size_bytes as f64);
-        gauge!("compressed_ring_buffer_segment_count").set(self.segments.len() as f64);
     }
 
     fn drop_oldest_segment(&mut self) {
         if let Some(segment) = self.segments.pop_front() {
             self.total_compressed_size_bytes -= segment.size_bytes();
             self.event_count -= segment.event_count();
+            self.segments_dropped_total += 1;
+        }
+    }
+}
 
-            counter!("compressed_ring_buffer_segments_dropped_total").increment(1);
-            gauge!("compressed_ring_buffer_compressed_bytes").set(self.total_compressed_size_bytes as f64);
-            gauge!("compressed_ring_buffer_segment_count").set(self.segments.len() as f64);
+const METRICS_PUBLISH_INTERVAL: Duration = Duration::from_secs(1);
+
+struct Metrics {
+    // Locally tracked values.
+    events_total: u64,
+    events_live: u64,
+    segments_live: u64,
+    segments_dropped_total: u64,
+    compressed_bytes_live: u64,
+    bytes_live: u64,
+
+    last_publish: Instant,
+}
+
+impl Metrics {
+    fn new() -> Self {
+        Self {
+            events_total: 0,
+            events_live: 0,
+            segments_live: 0,
+            segments_dropped_total: 0,
+            compressed_bytes_live: 0,
+            bytes_live: 0,
+            last_publish: Instant::now(),
+        }
+    }
+
+    fn publish(&mut self) {
+        gauge!("crb_events_total").set(self.events_total as f64);
+        gauge!("crb_events_live").set(self.events_live as f64);
+        gauge!("crb_segments_live").set(self.segments_live as f64);
+        gauge!("crb_segments_dropped_total").set(self.segments_dropped_total as f64);
+        gauge!("crb_compressed_bytes_live").set(self.compressed_bytes_live as f64);
+        gauge!("crb_bytes_live").set(self.bytes_live as f64);
+        self.last_publish = Instant::now();
+    }
+
+    fn publish_if_elapsed(&mut self) {
+        if self.last_publish.elapsed() >= METRICS_PUBLISH_INTERVAL {
+            self.publish();
         }
     }
 }
@@ -439,6 +485,7 @@ struct ProcessorState {
     config: RingBufferConfig,
     compressed_segments: CompressedSegments,
     event_buffer: EventBuffer,
+    metrics: Metrics,
 }
 
 impl ProcessorState {
@@ -448,6 +495,7 @@ impl ProcessorState {
             config,
             compressed_segments: CompressedSegments::new(),
             event_buffer,
+            metrics: Metrics::new(),
         }
     }
 
@@ -458,9 +506,14 @@ impl ProcessorState {
     fn add_event(&mut self, event: &CondensedEvent<'static>) -> Result<(), GenericError> {
         // Encode the event into our event buffer.
         self.event_buffer.encode_event(event)?;
+        self.metrics.events_total += 1;
 
-        // If the event buffer now exceeds the segment size limit, flush and compress it.
-        if self.event_buffer.size_bytes() > self.config.max_uncompressed_segment_size_bytes {
+        // If the total ring buffer size exceeds the maximum and the event buffer has reached the minimum segment
+        // size, flush and compress it. This lets segments grow as large as possible for better compression ratios,
+        // only compressing when we're actually under memory pressure.
+        if self.total_size_bytes() > self.config.max_ring_buffer_size_bytes
+            && self.event_buffer.size_bytes() >= self.config.min_uncompressed_segment_size_bytes
+        {
             let compressed_segment = self.event_buffer.flush()?;
             self.compressed_segments.add_segment(compressed_segment);
         }
@@ -468,8 +521,11 @@ impl ProcessorState {
         // Ensure that we're under our configured size limits by potentially dropping old segments.
         self.ensure_size_limits()?;
 
-        let events_live = self.compressed_segments.event_count() + self.event_buffer.event_count();
-        gauge!("compressed_ring_buffer_events_live").set(events_live as f64);
+        self.metrics.events_live = (self.compressed_segments.event_count() + self.event_buffer.event_count()) as u64;
+        self.metrics.segments_live = self.compressed_segments.segments.len() as u64;
+        self.metrics.segments_dropped_total = self.compressed_segments.segments_dropped_total;
+        self.metrics.compressed_bytes_live = self.compressed_segments.size_bytes() as u64;
+        self.metrics.bytes_live = self.total_size_bytes() as u64;
 
         Ok(())
     }
@@ -571,11 +627,24 @@ fn create_and_spawn_processor(config: RingBufferConfig) -> WriterState {
 }
 
 fn run_processor(events_rx: mpsc::blocking::Receiver<CondensedEvent<'static>>, mut processor_state: ProcessorState) {
-    while let Some(event) = events_rx.recv_ref() {
-        if let Err(e) = processor_state.add_event(&event) {
-            eprintln!("Failed to process event in compressed ring buffer: {}", e);
+    use thingbuf::mpsc::errors::RecvTimeoutError;
+
+    loop {
+        match events_rx.recv_ref_timeout(METRICS_PUBLISH_INTERVAL) {
+            Ok(event) => {
+                if let Err(e) = processor_state.add_event(&event) {
+                    eprintln!("Failed to process event in compressed ring buffer: {}", e);
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Closed) | Err(_) => break,
         }
+
+        processor_state.metrics.publish_if_elapsed();
     }
+
+    // Final publish to capture any remaining state.
+    processor_state.metrics.publish();
 }
 
 #[cfg(test)]
@@ -654,19 +723,19 @@ mod tests {
     #[test]
     fn segment_flush_on_size_threshold() {
         let config = RingBufferConfig::default()
-            .with_max_uncompressed_segment_size_bytes(128) // Very small to trigger flush quickly.
-            .with_max_ring_buffer_size_bytes(1024 * 1024);
+            .with_min_uncompressed_segment_size_bytes(128) // Very small minimum segment size.
+            .with_max_ring_buffer_size_bytes(256); // Small ring buffer to trigger pressure quickly.
 
         let mut state = ProcessorState::new(config);
         assert_eq!(state.compressed_segments.segments.len(), 0);
 
-        // Add events until a segment is flushed.
+        // Add events until the ring buffer is under pressure and a segment is flushed.
         for i in 0..50 {
             let event = make_test_event(&format!("event number {}", i));
             state.add_event(&event).unwrap();
         }
 
-        // With a 128-byte threshold, we should have flushed at least one segment.
+        // With a 128-byte min segment size and 256-byte ring buffer, we should have flushed at least one segment.
         assert!(
             !state.compressed_segments.segments.is_empty(),
             "expected at least one compressed segment"
@@ -676,7 +745,7 @@ mod tests {
     #[test]
     fn ring_buffer_eviction() {
         let config = RingBufferConfig::default()
-            .with_max_uncompressed_segment_size_bytes(64) // Tiny segments.
+            .with_min_uncompressed_segment_size_bytes(64) // Tiny minimum segment size.
             .with_max_ring_buffer_size_bytes(256); // Very small ring buffer.
 
         let mut state = ProcessorState::new(config);
@@ -701,7 +770,7 @@ mod tests {
         // Regression test: ensure_size_limits must not infinite-loop when the event buffer
         // alone exceeds max_ring_buffer_size_bytes and there are no compressed segments to drop.
         let config = RingBufferConfig::default()
-            .with_max_uncompressed_segment_size_bytes(1024 * 1024) // Large, so no flush happens.
+            .with_min_uncompressed_segment_size_bytes(1024 * 1024) // Large, so no flush happens.
             .with_max_ring_buffer_size_bytes(1); // Tiny limit -- event buffer will exceed this.
 
         let mut state = ProcessorState::new(config);
