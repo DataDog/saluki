@@ -146,8 +146,8 @@ fn main() {
         .expect("Failed to build gRPC service definitions for Datadog Agent.");
 
     tonic_prost_build::configure()
-        .build_server(false)
-        .build_client(false)
+        .build_server(true)
+        .build_client(true)
         .include_file("checks.mod.rs")
         .compile_protos(
             &[
