@@ -1145,6 +1145,13 @@ fn status_to_error(
             if let Some(http_text) = meta.get("http.status_text") {
                 message.push(' ');
                 message.push_str(http_text.as_ref());
+            } else if let Ok(status_code) = http_code.as_ref().parse::<u16>() {
+                if let Ok(status) = http::StatusCode::from_u16(status_code) {
+                    if let Some(reason) = status.canonical_reason() {
+                        message.push(' ');
+                        message.push_str(reason);
+                    }
+                }
             }
             meta.insert(MetaString::from_static("error.msg"), message.into());
         }
