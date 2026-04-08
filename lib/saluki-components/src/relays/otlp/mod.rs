@@ -2,6 +2,7 @@ use std::sync::LazyLock;
 
 use async_trait::async_trait;
 use axum::body::Bytes;
+use facet::Facet;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::buf::FrozenChunkedBytesBuffer;
 use saluki_config::GenericConfiguration;
@@ -24,14 +25,14 @@ use crate::common::otlp::{
 };
 
 /// Configuration for the OTLP relay.
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, Facet)]
 pub struct OtlpRelayConfiguration {
     #[serde(default)]
     otlp_config: OtlpRelayConfig,
 }
 
 /// OTLP configuration for the relay.
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, Facet)]
 pub struct OtlpRelayConfig {
     #[serde(default)]
     receiver: Receiver,

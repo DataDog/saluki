@@ -1,13 +1,14 @@
 use std::net::IpAddr;
 use std::sync::Arc;
 
+use facet::Facet;
 use headers::Authorization;
 use hyper_http_proxy::{Intercept, Proxy};
 use saluki_error::GenericError;
 use serde::{Deserialize, Deserializer};
 use url::Url;
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Facet)]
 pub struct ProxyConfiguration {
     /// The proxy server for HTTP requests.
     #[serde(rename = "proxy_http")]

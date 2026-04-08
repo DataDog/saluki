@@ -1,6 +1,7 @@
 use std::ops::Deref;
 
 use async_trait::async_trait;
+use facet::Facet;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_core::data_model::event::{metric::Metric, EventType};
@@ -21,7 +22,7 @@ use tracing::{debug, error};
 /// Appends a prefix to every metric if specified.
 ///
 /// Checks if a metric name should be allowed.
-#[derive(Deserialize)]
+#[derive(Deserialize, Facet)]
 pub struct DogStatsDPrefixFilterConfiguration {
     #[serde(default, rename = "statsd_metric_namespace")]
     metric_prefix: String,
@@ -45,6 +46,7 @@ pub struct DogStatsDPrefixFilterConfiguration {
     metric_blocklist_match_prefix: bool,
 
     #[serde(skip)]
+    #[facet(opaque)]
     configuration: Option<GenericConfiguration>,
 }
 
