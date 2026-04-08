@@ -6,11 +6,11 @@
 //! - Error-based sampling as a safety net
 //! - OTLP trace ingestion with proper sampling decision handling
 //!
-//! # Missing
+//! TODO:
 //!
-//! add trace metrics: datadog-agent/pkg/trace/sampler/metrics.go
-//! adding missing samplers (priority, nopriority, rare)
-//! add error tracking standalone mode
+//! - add trace metrics: datadog-agent/pkg/trace/sampler/metrics.go
+//! - adding missing samplers (priority, nopriority)
+//! - add error tracking standalone mode
 
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -33,6 +33,7 @@ mod core_sampler;
 mod errors;
 mod priority_sampler;
 mod probabilistic;
+mod rare_sampler;
 mod score_sampler;
 mod signature;
 
@@ -87,6 +88,8 @@ impl TraceSamplerConfiguration {
 #[async_trait]
 impl SynchronousTransformBuilder for TraceSamplerConfiguration {
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
+        // TODO: Need to support remote configuration changing these at runtime
+        // See https://github.com/DataDog/saluki/issues/1326
         let sampler = TraceSampler {
             sampling_rate: self.apm_config.probabilistic_sampler_sampling_percentage() / 100.0,
             error_sampling_enabled: self.apm_config.error_sampling_enabled(),
@@ -102,6 +105,12 @@ impl SynchronousTransformBuilder for TraceSamplerConfiguration {
             no_priority_sampler: score_sampler::NoPrioritySampler::new(
                 self.apm_config.target_traces_per_second(),
                 ERROR_SAMPLE_RATE,
+            ),
+            rare_sampler: rare_sampler::RareSampler::new(
+                self.apm_config.rare_sampler_enabled(),
+                self.apm_config.rare_sampler_tps(),
+                std::time::Duration::from_secs_f64(self.apm_config.rare_sampler_cooldown_period_secs()),
+                self.apm_config.rare_sampler_cardinality(),
             ),
         };
 
@@ -124,6 +133,7 @@ pub struct TraceSampler {
     error_sampler: errors::ErrorsSampler,
     priority_sampler: priority_sampler::PrioritySampler,
     no_priority_sampler: score_sampler::NoPrioritySampler,
+    rare_sampler: rare_sampler::RareSampler,
 }
 
 impl TraceSampler {
@@ -282,33 +292,44 @@ impl TraceSampler {
     /// and the index of the root span used for evaluation.
     fn run_samplers(&mut self, trace: &mut Trace) -> (bool, i32, &'static str, Option<usize>) {
         // logic taken from: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/agent.go#L1066
-        let now = std::time::SystemTime::now();
         // Empty trace check
         if trace.spans().is_empty() {
             return (false, PRIORITY_AUTO_DROP, "", None);
         }
+
+        let now = std::time::SystemTime::now();
         let contains_error = self.trace_contains_error(trace, false);
         let Some(root_span_idx) = self.get_root_span_index(trace) else {
             return (false, PRIORITY_AUTO_DROP, "", None);
         };
+
+        // Run the rare sampler early, before all other samplers. This mirrors the Go agent behavior
+        // where the rare sampler runs first to catch traces that would otherwise be dropped entirely.
+        // logic taken from: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/agent.go#L1078
+        let rare = self.rare_sampler.sample(trace, root_span_idx);
 
         // Modern path: ProbabilisticSamplerEnabled = true
         if self.probabilistic_sampler_enabled {
             let mut prob_keep = false;
             let mut decision_maker = "";
 
-            // Run probabilistic sampler - use root span's trace ID
-            let root_trace_id = trace.spans()[root_span_idx].trace_id();
-            if self.sample_probabilistic(root_trace_id) {
-                decision_maker = DECISION_MAKER_PROBABILISTIC; // probabilistic sampling
+            if rare {
+                // Rare sampler wins over probabilistic sampling.
                 prob_keep = true;
+            } else {
+                // Run probabilistic sampler - use root span's trace ID
+                let root_trace_id = trace.spans()[root_span_idx].trace_id();
+                if self.sample_probabilistic(root_trace_id) {
+                    decision_maker = DECISION_MAKER_PROBABILISTIC; // probabilistic sampling
+                    prob_keep = true;
 
-                if let Some(root_span) = trace.spans_mut().get_mut(root_span_idx) {
-                    let metrics = root_span.metrics_mut();
-                    metrics.insert(MetaString::from(PROB_RATE_KEY), self.sampling_rate);
+                    if let Some(root_span) = trace.spans_mut().get_mut(root_span_idx) {
+                        let metrics = root_span.metrics_mut();
+                        metrics.insert(MetaString::from(PROB_RATE_KEY), self.sampling_rate);
+                    }
+                } else if self.error_sampling_enabled && contains_error {
+                    prob_keep = self.error_sampler.sample_error(now, trace, root_span_idx);
                 }
-            } else if self.error_sampling_enabled && contains_error {
-                prob_keep = self.error_sampler.sample_error(now, trace, root_span_idx);
             }
 
             let priority = if prob_keep {
@@ -327,10 +348,19 @@ impl TraceSampler {
                 return (false, priority, "", Some(root_span_idx));
             }
 
+            if rare {
+                return (true, priority, "", Some(root_span_idx));
+            }
+
             if self.priority_sampler.sample(now, trace, root_span_idx, priority, 0.0) {
                 return (true, priority, "", Some(root_span_idx));
             }
         } else if self.is_otlp_trace(trace, root_span_idx) {
+            // Rare check mirrors agent behavior: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/agent.go#L1129-L1140
+            if rare {
+                return (true, PRIORITY_AUTO_KEEP, "", Some(root_span_idx));
+            }
+
             // some sampling happens upstream in the otlp receiver in the agent: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/api/otlp.go#L572
             let root_trace_id = trace.spans()[root_span_idx].trace_id();
             if sample_by_rate(root_trace_id, self.otlp_sampling_rate) {
@@ -344,8 +374,13 @@ impl TraceSampler {
                     Some(root_span_idx),
                 );
             }
-        } else if self.no_priority_sampler.sample(now, trace, root_span_idx) {
-            return (true, PRIORITY_AUTO_KEEP, "", Some(root_span_idx));
+        } else {
+            if rare {
+                return (true, PRIORITY_AUTO_KEEP, "", Some(root_span_idx));
+            }
+            if self.no_priority_sampler.sample(now, trace, root_span_idx) {
+                return (true, PRIORITY_AUTO_KEEP, "", Some(root_span_idx));
+            }
         }
 
         if self.error_sampling_enabled && contains_error {
@@ -477,6 +512,7 @@ mod tests {
             error_sampler: errors::ErrorsSampler::new(10.0, 1.0),
             priority_sampler: priority_sampler::PrioritySampler::new(MetaString::from("agent-env"), 1.0, 10.0),
             no_priority_sampler: score_sampler::NoPrioritySampler::new(10.0, 1.0),
+            rare_sampler: rare_sampler::RareSampler::new(false, 5.0, std::time::Duration::from_secs(300), 200),
         }
     }
 
@@ -871,5 +907,276 @@ mod tests {
                 &MetaString::from(DECISION_MAKER_PROBABILISTIC)
             );
         }
+    }
+
+    // ── Rare-sampler interaction tests ──────────────────────────────────────────
+    // Adapted from datadog-agent/pkg/trace/agent/agent_test.go TestSampling cases:
+    // "rare-sampler-catch-unsampled", "rare-sampler-catch-sampled",
+    // "rare-sampler-disabled", and related probabilistic path interactions.
+
+    /// Create a top-level span eligible for rare sampling.
+    ///
+    /// The rare sampler only considers spans that have `_top_level=1` or `_dd.measured=1`.
+    /// This helper sets `_top_level=1` so that the rare sampler can consider the span.
+    fn create_top_level_span(trace_id: u64, span_id: u64) -> DdSpan {
+        let mut metrics = saluki_common::collections::FastHashMap::default();
+        metrics.insert(MetaString::from("_top_level"), 1.0);
+        create_test_span(trace_id, span_id, 0).with_metrics(metrics)
+    }
+
+    /// Create a `TraceSampler` with the rare sampler enabled and a very high TPS limit so it
+    /// freely samples first occurrences, plus a long TTL so second occurrences stay within TTL.
+    fn create_sampler_with_rare_enabled() -> TraceSampler {
+        TraceSampler {
+            rare_sampler: rare_sampler::RareSampler::new(true, 1000.0, std::time::Duration::from_secs(300), 200),
+            ..create_test_sampler()
+        }
+    }
+
+    /// Adapted from Go "rare-sampler-catch-unsampled":
+    ///
+    /// Rare is enabled + probabilistic would drop → rare catches it (first occurrence).
+    #[test]
+    fn rare_sampler_catches_unsampled_trace() {
+        let mut sampler = create_sampler_with_rare_enabled();
+        sampler.sampling_rate = 0.0; // probabilistic drops everything
+        sampler.probabilistic_sampler_enabled = true;
+
+        let span = create_top_level_span(111, 1);
+        let mut trace = create_test_trace(vec![span]);
+
+        let (keep, priority, decision_maker, _) = sampler.run_samplers(&mut trace);
+        assert!(keep, "rare sampler should catch first occurrence");
+        assert_eq!(priority, PRIORITY_AUTO_KEEP);
+        assert_eq!(decision_maker, "", "rare sampler does not set _dd.p.dm");
+    }
+
+    /// Adapted from Go "rare-sampler-catch-sampled" (first trace):
+    ///
+    /// Rare is enabled, first occurrence — trace is kept and `_dd.rare` is set on the span.
+    #[test]
+    fn rare_sampler_sets_rare_metric_on_first_occurrence() {
+        let mut sampler = create_sampler_with_rare_enabled();
+        sampler.sampling_rate = 0.0;
+        sampler.probabilistic_sampler_enabled = true;
+
+        let span = create_top_level_span(222, 1);
+        let mut trace = create_test_trace(vec![span]);
+
+        let (keep, _, _, root_idx) = sampler.run_samplers(&mut trace);
+        assert!(keep);
+        let root = &trace.spans()[root_idx.unwrap()];
+        assert_eq!(
+            root.metrics().get(rare_sampler::RARE_KEY).copied(),
+            Some(1.0),
+            "_dd.rare should be 1 on first occurrence"
+        );
+    }
+
+    /// Adapted from Go "rare-sampler-catch-sampled" (second trace same signature):
+    ///
+    /// Within the TTL, the same signature is no longer "rare" and rare does not re-sample it.
+    /// With probabilistic at 0%, the trace should be dropped.
+    #[test]
+    fn rare_sampler_does_not_resample_within_ttl() {
+        let mut sampler = create_sampler_with_rare_enabled();
+        sampler.sampling_rate = 0.0;
+        sampler.probabilistic_sampler_enabled = true;
+
+        // First trace: rare catches it.
+        let span1 = create_top_level_span(333, 1);
+        let mut trace1 = create_test_trace(vec![span1]);
+        let (keep1, _, _, _) = sampler.run_samplers(&mut trace1);
+        assert!(keep1, "first occurrence should be kept by rare sampler");
+
+        // Second trace: same signature (same service/operation/resource on the top-level span),
+        // still within TTL → rare won't catch it; probabilistic at 0% drops it.
+        let span2 = create_top_level_span(333, 2);
+        let mut trace2 = create_test_trace(vec![span2]);
+        let (keep2, priority2, _, _) = sampler.run_samplers(&mut trace2);
+        assert!(!keep2, "second occurrence within TTL should be dropped");
+        assert_eq!(priority2, PRIORITY_AUTO_DROP);
+    }
+
+    /// Adapted from Go "rare-sampler-disabled":
+    ///
+    /// Rare is disabled + probabilistic at 0% → trace is dropped.
+    #[test]
+    fn rare_sampler_disabled_does_not_catch_unsampled() {
+        let mut sampler = create_test_sampler(); // rare disabled by default
+        sampler.sampling_rate = 0.0;
+        sampler.probabilistic_sampler_enabled = true;
+
+        let span = create_top_level_span(444, 1);
+        let mut trace = create_test_trace(vec![span]);
+
+        let (keep, priority, _, _) = sampler.run_samplers(&mut trace);
+        assert!(!keep, "rare disabled should not catch the trace");
+        assert_eq!(priority, PRIORITY_AUTO_DROP);
+    }
+
+    /// Rare + non-probabilistic path (priority path): rare catches `PriorityAutoDrop` on first
+    /// occurrence, preserving the tracer-set priority rather than upgrading to AutoKeep.
+    #[test]
+    fn rare_sampler_catches_priority_auto_drop_in_legacy_path() {
+        let mut sampler = create_sampler_with_rare_enabled();
+        sampler.probabilistic_sampler_enabled = false;
+
+        let mut metrics = saluki_common::collections::FastHashMap::default();
+        metrics.insert(MetaString::from("_top_level"), 1.0);
+        metrics.insert(
+            MetaString::from(SAMPLING_PRIORITY_METRIC_KEY),
+            PRIORITY_AUTO_DROP as f64,
+        );
+        let span = create_test_span(555, 1, 0).with_metrics(metrics);
+        let mut trace = create_test_trace(vec![span]);
+
+        let (keep, priority, decision_maker, _) = sampler.run_samplers(&mut trace);
+        assert!(keep, "rare sampler should catch PriorityAutoDrop on first occurrence");
+        assert_eq!(priority, PRIORITY_AUTO_DROP, "tracer-set priority should be preserved");
+        assert_eq!(decision_maker, "");
+    }
+
+    /// Rare + non-probabilistic path (priority path): UserKeep priority is preserved, not
+    /// downgraded to AutoKeep. Mirrors Go agent behavior at agent.go#L1129-1131.
+    #[test]
+    fn rare_sampler_preserves_user_keep_priority_in_legacy_path() {
+        let mut sampler = create_sampler_with_rare_enabled();
+        sampler.probabilistic_sampler_enabled = false;
+
+        let mut metrics = saluki_common::collections::FastHashMap::default();
+        metrics.insert(MetaString::from("_top_level"), 1.0);
+        metrics.insert(MetaString::from(SAMPLING_PRIORITY_METRIC_KEY), 2.0); // UserKeep
+        let span = create_test_span(556, 1, 0).with_metrics(metrics);
+        let mut trace = create_test_trace(vec![span]);
+
+        let (keep, priority, _, _) = sampler.run_samplers(&mut trace);
+        assert!(keep);
+        assert_eq!(priority, 2, "UserKeep priority must not be downgraded to AutoKeep");
+    }
+
+    /// Probabilistic path with 100% rate and rare disabled: keep with `_dd.p.dm = "-9"`.
+    #[test]
+    fn probabilistic_100_percent_keeps_trace_with_decision_maker() {
+        let mut sampler = create_test_sampler(); // rare disabled
+        sampler.sampling_rate = 1.0;
+        sampler.probabilistic_sampler_enabled = true;
+
+        let span = create_top_level_span(666, 1);
+        let mut trace = create_test_trace(vec![span]);
+
+        let (keep, priority, decision_maker, _) = sampler.run_samplers(&mut trace);
+        assert!(keep);
+        assert_eq!(priority, PRIORITY_AUTO_KEEP);
+        assert_eq!(decision_maker, DECISION_MAKER_PROBABILISTIC);
+    }
+
+    /// Probabilistic path with 0% rate and rare disabled: drop.
+    #[test]
+    fn probabilistic_0_percent_drops_trace() {
+        let mut sampler = create_test_sampler(); // rare disabled
+        sampler.sampling_rate = 0.0;
+        sampler.probabilistic_sampler_enabled = true;
+        sampler.error_sampling_enabled = false;
+
+        let span = create_top_level_span(777, 1);
+        let mut trace = create_test_trace(vec![span]);
+
+        let (keep, priority, _, _) = sampler.run_samplers(&mut trace);
+        assert!(!keep);
+        assert_eq!(priority, PRIORITY_AUTO_DROP);
+    }
+
+    /// Rare sampler should catch OTLP traces without a sampling priority on their first occurrence,
+    /// matching the Go agent behavior: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/agent.go#L1129-L1140
+    #[test]
+    fn rare_sampler_catches_otlp_no_priority_trace() {
+        let mut sampler = create_sampler_with_rare_enabled();
+        sampler.probabilistic_sampler_enabled = false;
+        sampler.error_sampling_enabled = false;
+        sampler.otlp_sampling_rate = 0.0;
+
+        let mut meta = saluki_common::collections::FastHashMap::default();
+        meta.insert(
+            MetaString::from_static(OTEL_TRACE_ID_META_KEY),
+            MetaString::from("00000000000000000000000000000001"),
+        );
+        let span = create_top_level_span(888, 1).with_meta(meta);
+        let mut trace = create_test_trace(vec![span]);
+
+        let (keep, priority, decision_maker, root_idx) = sampler.run_samplers(&mut trace);
+        assert!(
+            keep,
+            "rare sampler should keep OTLP trace with no priority on first occurrence"
+        );
+        assert_eq!(priority, PRIORITY_AUTO_KEEP);
+        assert_eq!(decision_maker, "");
+        assert_eq!(
+            trace.spans()[root_idx.unwrap()]
+                .metrics()
+                .get(rare_sampler::RARE_KEY)
+                .copied(),
+            Some(1.0),
+            "_dd.rare should be set to 1 on first occurrence"
+        );
+    }
+
+    /// Adapted from Go "probabilistic-rare-100":
+    ///
+    /// Rare fires before probabilistic is consulted, so even at 100% sampling rate the decision
+    /// maker tag is not set — the trace is attributed to rare, not probabilistic.
+    #[test]
+    fn rare_wins_over_probabilistic_no_decision_maker_tag() {
+        let mut sampler = create_sampler_with_rare_enabled();
+        sampler.sampling_rate = 1.0;
+        sampler.probabilistic_sampler_enabled = true;
+
+        let span = create_top_level_span(901, 1);
+        let mut trace = create_test_trace(vec![span]);
+
+        let (keep, priority, decision_maker, _) = sampler.run_samplers(&mut trace);
+        assert!(keep);
+        assert_eq!(priority, PRIORITY_AUTO_KEEP);
+        assert_eq!(decision_maker, "", "rare takes precedence — _dd.p.dm must not be set");
+    }
+
+    /// Adapted from Go "error-sampled-prio-unsampled":
+    ///
+    /// Rare fires before the error sampler is reached. A no-priority error trace on its first
+    /// occurrence is kept by rare, not by the error sampler.
+    #[test]
+    fn rare_catches_error_trace_before_error_sampler() {
+        let mut sampler = create_sampler_with_rare_enabled();
+        sampler.probabilistic_sampler_enabled = false;
+        sampler.error_sampling_enabled = true;
+
+        let span = create_top_level_span(902, 1);
+        let error_span = create_test_span(902, 2, 1); // error=1
+        let mut trace = create_test_trace(vec![span, error_span]);
+
+        let (keep, priority, decision_maker, _) = sampler.run_samplers(&mut trace);
+        assert!(keep, "rare should catch the trace before the error sampler");
+        assert_eq!(priority, PRIORITY_AUTO_KEEP);
+        assert_eq!(decision_maker, "");
+    }
+
+    /// Adapted from Go manual-drop short-circuit behavior:
+    ///
+    /// UserDrop (-1) priority is checked before rare runs in the priority path. A UserDrop trace
+    /// must be dropped even when rare is enabled and would otherwise match.
+    #[test]
+    fn manual_drop_short_circuits_before_rare() {
+        let mut sampler = create_sampler_with_rare_enabled();
+        sampler.probabilistic_sampler_enabled = false;
+
+        let mut metrics = saluki_common::collections::FastHashMap::default();
+        metrics.insert(MetaString::from("_top_level"), 1.0);
+        metrics.insert(MetaString::from(SAMPLING_PRIORITY_METRIC_KEY), -1.0); // UserDrop
+        let span = create_test_span(903, 1, 0).with_metrics(metrics);
+        let mut trace = create_test_trace(vec![span]);
+
+        let (keep, priority, _, _) = sampler.run_samplers(&mut trace);
+        assert!(!keep, "UserDrop must be dropped even when rare would match");
+        assert_eq!(priority, -1);
     }
 }
