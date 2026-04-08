@@ -1,0 +1,9 @@
+metric_tag_filterlist:
+  - metric_name: "tagfilter.exclude"
+    action: "exclude"
+    tags:
+      - "pod"
+  - metric_name: "tagfilter.include"
+    action: "include"
+    tags:
+      - "env"

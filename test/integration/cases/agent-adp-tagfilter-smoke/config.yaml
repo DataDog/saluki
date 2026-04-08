@@ -1,0 +1,49 @@
+name: "agent-adp-tagfilter-smoke"
+description: "Verifies the converged Agent+ADP image starts in non-standalone mode with metric_tag_filterlist configured"
+timeout: 90s
+
+container:
+  image: "saluki-images/datadog-agent:stephen-tagfilter-adp"
+  env:
+    DD_API_KEY: "test-api-key"
+    DD_HOSTNAME: "integration-test-agent-adp-tagfilter"
+    DD_DATA_PLANE_ENABLED: "true"
+    DD_DATA_PLANE_STANDALONE_MODE: "false"
+    DD_DATA_PLANE_REMOTE_AGENT_ENABLED: "true"
+    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+    DD_DOGSTATSD_PORT: "8125"
+    DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
+    ADP_DD_DATA_PLANE_TELEMETRY_ENABLED: "true"
+    ADP_DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR: "tcp://0.0.0.0:5102"
+  files:
+    - "datadog.yaml:/etc/datadog-agent/datadog.yaml"
+  exposed_ports:
+    - "8125/udp"
+    - "5102/tcp"
+
+assertions:
+  - type: log_contains
+    pattern: "Successfully registered with the Datadog Agent."
+    timeout: 20s
+  - parallel:
+      - type: process_stable_for
+        duration: 10s
+      - type: log_contains
+        pattern: "Topology healthy"
+        timeout: 20s
+      - type: port_listening
+        port: 8125
+        protocol: udp
+        timeout: 20s
+      - type: port_listening
+        port: 5102
+        protocol: tcp
+        timeout: 20s
+      - type: health_check
+        endpoint: "http://localhost:5102/metrics"
+        expected_status: 200
+        timeout: 20s
+      - type: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s
