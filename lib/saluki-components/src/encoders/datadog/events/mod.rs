@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use datadog_protos::events as proto;
+use facet::Facet;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use protobuf::{rt::WireType, CodedOutputStream};
@@ -45,7 +46,7 @@ const fn default_zstd_compressor_level() -> i32 {
 /// Datadog Events incremental encoder.
 ///
 /// Generates Datadog Events payloads for the Datadog platform.
-#[derive(Deserialize)]
+#[derive(Deserialize, Facet)]
 pub struct DatadogEventsConfiguration {
     /// Compression kind to use for the request payloads.
     ///

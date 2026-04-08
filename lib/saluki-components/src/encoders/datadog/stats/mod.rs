@@ -7,6 +7,7 @@ use datadog_protos::traces::{
     ClientGroupedStats as ProtoClientGroupedStats, ClientStatsBucket as ProtoClientStatsBucket,
     ClientStatsPayload as ProtoClientStatsPayload, StatsPayload as ProtoStatsPayload, Trilean,
 };
+use facet::Facet;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::task::HandleExt as _;
@@ -55,7 +56,7 @@ fn default_env() -> String {
 }
 
 /// Configuration for the Datadog APM Stats encoder.
-#[derive(Deserialize)]
+#[derive(Deserialize, Facet)]
 pub struct DatadogApmStatsEncoderConfiguration {
     /// Flush timeout for pending requests, in seconds.
     ///

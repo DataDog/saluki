@@ -1,6 +1,7 @@
 //! Shared OTLP receiver configuration.
 
 use bytesize::ByteSize;
+use facet::Facet;
 use serde::Deserialize;
 
 fn default_grpc_endpoint() -> String {
@@ -26,7 +27,7 @@ pub(crate) const fn default_traces_string_interner_size() -> ByteSize {
 /// Receiver configuration for OTLP endpoints.
 ///
 /// This follows the Datadog Agent `otlp_config.receiver` structure.
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Debug, Default, Facet)]
 pub struct Receiver {
     /// Protocol-specific receiver configuration.
     #[serde(default)]
@@ -34,7 +35,7 @@ pub struct Receiver {
 }
 
 /// Protocol configuration for OTLP receiver.
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Debug, Default, Facet)]
 pub struct Protocols {
     /// gRPC protocol configuration.
     #[serde(default)]
@@ -46,7 +47,7 @@ pub struct Protocols {
 }
 
 /// gRPC receiver configuration.
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Facet)]
 pub struct GrpcConfig {
     /// The gRPC endpoint to listen on for OTLP requests.
     ///
@@ -68,7 +69,7 @@ pub struct GrpcConfig {
 }
 
 /// HTTP receiver configuration.
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Facet)]
 pub struct HttpConfig {
     /// The HTTP endpoint to listen on for OTLP requests.
     ///
