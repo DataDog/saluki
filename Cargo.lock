@@ -2445,44 +2445,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
-name = "musli"
-version = "0.0.149"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f7d1824ac6e17853c4eabc4d952122aecc1454c0e22bbfd3a44f43c1a46c1af3"
-dependencies = [
- "loom",
- "musli-core",
- "serde",
- "simdutf8",
-]
-
-[[package]]
-name = "musli-core"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a89a1338c2da9f8cbf8b60c4e3edaab4eb0809d52fc2d7f69ac4da58d9050953"
-dependencies = [
- "musli-macros",
-]
-
-[[package]]
-name = "musli-macros"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff6dea70dccfc68fd441c128bdaf31c454542676f750f095465640367fd94118"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "mutants"
-version = "0.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc0287524726960e07b119cebd01678f852f147742ae0d925e6a520dca956126"
-
-[[package]]
 name = "ndarray"
 version = "0.17.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3698,7 +3660,7 @@ dependencies = [
  "itoa",
  "memory-accounting",
  "metrics",
- "musli",
+ "rand 0.9.2",
  "rcgen",
  "rustls",
  "rustls-pki-types",
