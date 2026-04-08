@@ -34,6 +34,7 @@ use saluki_core::topology::TopologyBlueprint;
 use saluki_env::EnvironmentProvider as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_health::HealthRegistry;
+use serde_json::Value;
 use tokio::{select, time::interval};
 use tracing::{error, info, warn};
 
@@ -53,6 +54,18 @@ pub struct RunCommand {
     /// path to the PID file
     #[argh(option, short = 'p', long = "pidfile")]
     pub pid_file: Option<PathBuf>,
+}
+
+fn config_value_type(value: Option<Value>) -> &'static str {
+    match value {
+        Some(Value::Null) => "null",
+        Some(Value::Bool(_)) => "bool",
+        Some(Value::Number(_)) => "number",
+        Some(Value::String(_)) => "string",
+        Some(Value::Array(_)) => "array",
+        Some(Value::Object(_)) => "object",
+        None => "missing",
+    }
 }
 
 /// Entrypoint for the `run` commands.
@@ -81,6 +94,14 @@ pub async fn handle_run_command(
     let remote_agent_enabled = bootstrap_dp_config.remote_agent_enabled();
     let use_new_config_stream_endpoint = bootstrap_dp_config.use_new_config_stream_endpoint();
     let should_bootstrap_remote_agent = !in_standalone_mode && (remote_agent_enabled || use_new_config_stream_endpoint);
+
+    info!(
+        standalone_mode = in_standalone_mode,
+        remote_agent_enabled,
+        use_new_config_stream_endpoint,
+        should_bootstrap_remote_agent,
+        "Agent Data Plane bootstrap mode."
+    );
 
     let ra_bootstrap = if should_bootstrap_remote_agent {
         let ra_bootstrap = RemoteAgentBootstrap::from_configuration(&bootstrap_config, &bootstrap_dp_config)
@@ -305,6 +326,22 @@ async fn create_topology(
         || dp_config.logs_pipeline_required()
         || dp_config.traces_pipeline_required()
     {
+        let api_key_env = std::env::var("DD_API_KEY").ok();
+        let api_key = config.try_get_typed::<Value>("api_key")?;
+        let dd_url = config.try_get_typed::<Value>("dd_url")?;
+        let site = config.try_get_typed::<Value>("site")?;
+        let additional_endpoints = config.try_get_typed::<Value>("additional_endpoints")?;
+
+        info!(
+            dd_api_key_env_present = api_key_env.is_some(),
+            dd_api_key_env_len = api_key_env.as_ref().map(String::len),
+            api_key_type = config_value_type(api_key),
+            dd_url_type = config_value_type(dd_url),
+            site_type = config_value_type(site),
+            additional_endpoints_type = config_value_type(additional_endpoints),
+            "Forwarder configuration field types."
+        );
+
         let dd_forwarder_config =
             DatadogConfiguration::from_configuration(config).error_context("Failed to configure Datadog forwarder.")?;
         blueprint.add_forwarder("dd_out", dd_forwarder_config)?;
