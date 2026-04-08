@@ -71,3 +71,22 @@ message CheckResultMsg {
   string check_id = 3;
   string error = 4;
 }
+
+// Trivial request/response types for RPCs that don't need a body.
+message StreamConfigRequest {}
+message SendCheckResultResponse {}
+
+// gRPC service for ACR <-> ADP IPC.
+service AcrIpc {
+  // Handshake — first call after connecting.
+  rpc Handshake(Hello) returns (HelloResp);
+
+  // Check data submission with acknowledgement.
+  rpc SendCheckData(CheckDataMsg) returns (CheckDataAck);
+
+  // Check result reporting.
+  rpc SendCheckResult(CheckResultMsg) returns (SendCheckResultResponse);
+
+  // Server pushes config updates to the client as a stream.
+  rpc StreamConfig(StreamConfigRequest) returns (stream ConfigData);
+}
