@@ -1118,4 +1118,63 @@ mod tests {
             "_dd.rare should be set to 1 on first occurrence"
         );
     }
+
+    /// Adapted from Go "probabilistic-rare-100":
+    ///
+    /// Rare fires before probabilistic is consulted, so even at 100% sampling rate the decision
+    /// maker tag is not set — the trace is attributed to rare, not probabilistic.
+    #[test]
+    fn rare_wins_over_probabilistic_no_decision_maker_tag() {
+        let mut sampler = create_sampler_with_rare_enabled();
+        sampler.sampling_rate = 1.0;
+        sampler.probabilistic_sampler_enabled = true;
+
+        let span = create_top_level_span(901, 1);
+        let mut trace = create_test_trace(vec![span]);
+
+        let (keep, priority, decision_maker, _) = sampler.run_samplers(&mut trace);
+        assert!(keep);
+        assert_eq!(priority, PRIORITY_AUTO_KEEP);
+        assert_eq!(decision_maker, "", "rare takes precedence — _dd.p.dm must not be set");
+    }
+
+    /// Adapted from Go "error-sampled-prio-unsampled":
+    ///
+    /// Rare fires before the error sampler is reached. A no-priority error trace on its first
+    /// occurrence is kept by rare, not by the error sampler.
+    #[test]
+    fn rare_catches_error_trace_before_error_sampler() {
+        let mut sampler = create_sampler_with_rare_enabled();
+        sampler.probabilistic_sampler_enabled = false;
+        sampler.error_sampling_enabled = true;
+
+        let span = create_top_level_span(902, 1);
+        let error_span = create_test_span(902, 2, 1); // error=1
+        let mut trace = create_test_trace(vec![span, error_span]);
+
+        let (keep, priority, decision_maker, _) = sampler.run_samplers(&mut trace);
+        assert!(keep, "rare should catch the trace before the error sampler");
+        assert_eq!(priority, PRIORITY_AUTO_KEEP);
+        assert_eq!(decision_maker, "");
+    }
+
+    /// Adapted from Go manual-drop short-circuit behavior:
+    ///
+    /// UserDrop (-1) priority is checked before rare runs in the priority path. A UserDrop trace
+    /// must be dropped even when rare is enabled and would otherwise match.
+    #[test]
+    fn manual_drop_short_circuits_before_rare() {
+        let mut sampler = create_sampler_with_rare_enabled();
+        sampler.probabilistic_sampler_enabled = false;
+
+        let mut metrics = saluki_common::collections::FastHashMap::default();
+        metrics.insert(MetaString::from("_top_level"), 1.0);
+        metrics.insert(MetaString::from(SAMPLING_PRIORITY_METRIC_KEY), -1.0); // UserDrop
+        let span = create_test_span(903, 1, 0).with_metrics(metrics);
+        let mut trace = create_test_trace(vec![span]);
+
+        let (keep, priority, _, _) = sampler.run_samplers(&mut trace);
+        assert!(!keep, "UserDrop must be dropped even when rare would match");
+        assert_eq!(priority, -1);
+    }
 }
