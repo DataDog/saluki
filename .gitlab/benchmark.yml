@@ -179,6 +179,7 @@ build-agent-adp-baseline-image:
         - docker/s6-services/**/*
         - bin/agent-data-plane/**/*
         - lib/**/*
+        - test/smp/regression/agent-adp-tagfilter/config.yaml
         - test/smp/regression/agent-adp-tagfilter/**/*
       when: manual
   image: "${SALUKI_SMP_CI_IMAGE}"
@@ -218,6 +219,7 @@ build-agent-adp-comparison-image:
         - docker/s6-services/**/*
         - bin/agent-data-plane/**/*
         - lib/**/*
+        - test/smp/regression/agent-adp-tagfilter/config.yaml
         - test/smp/regression/agent-adp-tagfilter/**/*
       when: manual
   image: "${SALUKI_SMP_CI_IMAGE}"
@@ -267,6 +269,7 @@ run-benchmarks-agent-adp:
         - docker/s6-services/**/*
         - bin/agent-data-plane/**/*
         - lib/**/*
+        - test/smp/regression/agent-adp-tagfilter/config.yaml
         - test/smp/regression/agent-adp-tagfilter/**/*
       when: manual
   timeout: 1h
