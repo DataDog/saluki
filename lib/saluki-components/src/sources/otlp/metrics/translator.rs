@@ -23,8 +23,8 @@ use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_context::{ContextResolver, ContextResolverBuilder};
 use saluki_core::data_model::event::metric::{Metric, MetricMetadata, MetricValues};
 use saluki_core::data_model::event::Event;
-use saluki_error::{GenericError, generic_error, ErrorContext};
-use tracing::{debug, warn};
+use saluki_error::{generic_error, GenericError};
+use tracing::{debug, trace, warn};
 
 use super::cache::PointsCache;
 use super::config::{HistogramMode, NumberMode, OtlpMetricsTranslatorConfig};
@@ -138,7 +138,6 @@ fn get_quantile_tag(quantile: f64) -> String {
     "quantile:".to_string() + format_float(quantile).as_str()
 }
 
-
 fn to_store(b: Option<&OtlpExponentialHistogramBuckets>) -> DenseStore {
     let mut store = DenseStore::new();
     if let Some(buckets) = b {
@@ -157,7 +156,9 @@ fn exponential_histogram_to_ddsketch(
     dp: &OtlpExponentialHistogramDataPoint, delta: bool,
 ) -> Result<CanonicalDDSketch<LogarithmicMapping, DenseStore>, GenericError> {
     if !delta {
-        return Err(generic_error!("cumulative exponential histograms are not supported".to_string()));
+        return Err(generic_error!(
+            "cumulative exponential histograms are not supported".to_string()
+        ));
     }
 
     let positive_store = to_store(dp.positive.as_ref());
@@ -165,8 +166,7 @@ fn exponential_histogram_to_ddsketch(
 
     let gamma = 2_f64.powf(2_f64.powi(-dp.scale));
     let mapping = LogarithmicMapping::new_with_gamma(gamma)
-        .map_err(|e| generic_error!(e)) 
-        .error_context("Failed to create index mapping for DDSketch.")?;
+        .map_err(|e| generic_error!("Failed to create index mapping for DDSketch: {}", e))?;
 
     let mut sketch = CanonicalDDSketch::new(mapping, positive_store, negative_store);
     sketch.add_n(0.0, dp.zero_count);
@@ -174,8 +174,7 @@ fn exponential_histogram_to_ddsketch(
     Ok(sketch)
 }
 
-fn remap_bins_to_agent_space(store: &DenseStore, mapping: &LogarithmicMapping, negate: bool) -> Vec<(f64, u64)> {
-    let mut res = Vec::new();
+fn remap_bins_to_agent_space(sketch: &mut DDSketch, store: &DenseStore, mapping: &LogarithmicMapping, negate: bool) {
     let proto_store = store.to_proto();
 
     for (i, &count) in proto_store.contiguousBinCounts.iter().enumerate() {
@@ -190,9 +189,8 @@ fn remap_bins_to_agent_space(store: &DenseStore, mapping: &LogarithmicMapping, n
             value *= -1.0;
         }
 
-        res.push((value, count as u64));
+        sketch.insert_n(value, count as u64);
     }
-    res
 }
 
 fn convert_ddsketch_into_sketch(canonical: CanonicalDDSketch<LogarithmicMapping, DenseStore>) -> DDSketch {
@@ -200,15 +198,11 @@ fn convert_ddsketch_into_sketch(canonical: CanonicalDDSketch<LogarithmicMapping,
 
     let mapping = canonical.mapping();
 
-    let positive_bins = remap_bins_to_agent_space(canonical.positive_store(), mapping, false);
-    let negative_bins = remap_bins_to_agent_space(canonical.negative_store(), mapping, true);
+    remap_bins_to_agent_space(&mut agent_sketch, canonical.positive_store(), mapping, false);
+    remap_bins_to_agent_space(&mut agent_sketch, canonical.negative_store(), mapping, true);
 
     if canonical.zero_count() > 0 {
         agent_sketch.insert_n(0.0, canonical.zero_count());
-    }
-
-    for (value, count) in positive_bins.into_iter().chain(negative_bins.into_iter()) {
-        agent_sketch.insert_n(value, count);
     }
 
     agent_sketch
@@ -217,13 +211,11 @@ fn convert_ddsketch_into_sketch(canonical: CanonicalDDSketch<LogarithmicMapping,
 impl OtlpMetricsTranslator {
     /// Creates a new, empty `OtlpMetricsTranslator`.
     pub fn new(config: OtlpMetricsTranslatorConfig, context_resolver: ContextResolver) -> Result<Self, GenericError> {
+        config
+            .validate()
+            .map_err(|e| generic_error!("invalid OTLP metrics translator config: {}", e))?;
 
-        config.validate().map_err(|e| generic_error!("invalid OTLP metrics translator config: {}", e));
-
-        let process_start_time_ns = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("System time is before the UNIX epoch, this should not happen.")
-            .as_nanos() as u64;
+        let process_start_time_ns = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos() as u64;
 
         Ok(Self {
             config,
@@ -650,7 +642,7 @@ impl OtlpMetricsTranslator {
     fn get_sketch_buckets(
         &mut self, context: &TranslationContext, point_dims: Dimensions, p: &OtlpHistogramDataPoint, delta: bool,
         events: &mut Vec<Event>, hist_info: HistogramInfo,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), GenericError> {
         let start_ts = p.start_time_unix_nano;
         let ts = p.time_unix_nano;
 
@@ -659,9 +651,6 @@ impl OtlpMetricsTranslator {
         let mut explicit_bounds = p.explicit_bounds.clone();
 
         if bucket_counts.is_empty() && hist_info.ok {
-            bucket_counts = Vec::new();
-            explicit_bounds = Vec::new();
-
             if hist_info.has_min_from_last_time_window {
                 bucket_counts.push(0);
                 explicit_bounds.push(p.min.unwrap_or(0.0));
@@ -714,7 +703,8 @@ impl OtlpMetricsTranslator {
                 max_bound = original_upper_bound
             }
         }
-        qa.insert_interpolate_buckets(buckets)?;
+        qa.insert_interpolate_buckets(buckets)
+            .map_err(|e| generic_error!("Failed to insert interpolated buckets: {}", e))?;
 
         if qa.is_empty() {
             return Ok(());
@@ -765,6 +755,13 @@ impl OtlpMetricsTranslator {
         let raw_origin = raw_origin_from_attributes(context.resource_attributes);
         match self.context_resolver.resolve(&dims.name, &dims.tags, Some(raw_origin)) {
             Some(resolved_context) => {
+                if interval != 0 {
+                    trace!(
+                        metric = %dims.name,
+                        interval,
+                        "Ignoring custom interval for OTLP metric."
+                    );
+                }
                 let values = MetricValues::distribution((ts, sketch));
                 let metric = Metric::from_parts(
                     resolved_context,

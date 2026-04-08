@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use saluki_error::{generic_error, GenericError};
+
 const DEFAULT_DELTA_TTL: Duration = Duration::from_secs(3600);
 const DEFAULT_SWEEP_INTERVAL: Duration = Duration::from_secs(1800);
 
@@ -61,9 +63,9 @@ pub struct OtlpMetricsTranslatorConfig {
 
 #[allow(dead_code)]
 impl OtlpMetricsTranslatorConfig {
-    pub fn validate(&self) -> Result<(), &'static str> {
+    pub fn validate(&self) -> Result<(), GenericError> {
         if self.hist_mode == HistogramMode::NoBuckets && !self.send_histogram_aggregations {
-            return Err("no buckets mode and no send count sum are incompatible");
+            return Err(generic_error!("no buckets mode and no send count sum are incompatible"));
         }
         Ok(())
     }
@@ -100,6 +102,11 @@ impl OtlpMetricsTranslatorConfig {
 
     pub fn with_send_histogram_aggregations(mut self, send_histogram_aggregations: bool) -> Self {
         self.send_histogram_aggregations = send_histogram_aggregations;
+        self
+    }
+
+    pub fn with_quantiles(mut self, quantiles: bool) -> Self {
+        self.quantiles = quantiles;
         self
     }
 
