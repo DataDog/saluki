@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use chrono::{SecondsFormat, Utc};
+use facet::Facet;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::iter::ReusableDeduplicator;
@@ -42,7 +43,7 @@ const fn default_zstd_compressor_level() -> i32 {
 }
 
 /// Datadog Logs incremental encoder.
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Facet)]
 pub struct DatadogLogsConfiguration {
     /// Compression kind for Logs payloads. Defaults to `zstd`.
     #[serde(

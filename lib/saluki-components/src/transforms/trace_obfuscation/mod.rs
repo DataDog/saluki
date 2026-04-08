@@ -11,6 +11,7 @@ mod sql_filters;
 mod sql_tokenizer;
 
 use async_trait::async_trait;
+use facet::Facet;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_core::{
@@ -27,7 +28,7 @@ use crate::common::datadog::apm::ApmConfig;
 const TEXT_NON_PARSABLE_SQL: &str = "Non-parsable SQL query";
 
 /// Trace obfuscation configuration.
-#[derive(serde::Deserialize)]
+#[derive(Deserialize, Facet)]
 pub struct TraceObfuscationConfiguration {
     /// Obfuscator configuration.
     #[serde(default)]
