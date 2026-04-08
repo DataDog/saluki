@@ -101,8 +101,7 @@ pub(crate) async fn initialize_logging(config: &LoggingConfiguration) -> Result<
         configured_layers.push(build_formatting_layer(config, nb_appender));
     }
 
-    let ring_buffer_config = RingBufferConfig::default()
-        .with_max_ring_buffer_size_bytes(2_048_576);
+    let ring_buffer_config = RingBufferConfig::default().with_max_ring_buffer_size_bytes(2_048_576);
     let ring_buffer = CompressedRingBuffer::with_config(ring_buffer_config);
 
     // `tracing` accepts a `Vec<L>` where `L` implements `Layer<S>`, which acts as a fanout.. and then we're applying

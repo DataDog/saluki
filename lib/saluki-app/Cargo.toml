@@ -64,6 +64,4 @@ hyper = { workspace = true }
 hyper-util = { workspace = true, features = ["client", "client-legacy", "http1", "tokio"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 zstd = { workspace = true }
-
-[dev-dependencies]
 rand = { workspace = true, features = ["small_rng"] }
