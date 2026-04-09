@@ -25,11 +25,6 @@ pub struct MetricMetadata {
     /// The metric origin.
     // TODO: only optional so we can default? seems like we always have one
     pub origin: Option<MetricOrigin>,
-
-    /// The interval in seconds over which the metric was collected.
-    ///
-    /// Used for delta histograms/sketches to indicate the time window. Mirrors the Go agent's `ConsumeSketch` interval.
-    pub interval: Option<i64>,
 }
 
 impl MetricMetadata {
@@ -98,14 +93,6 @@ impl MetricMetadata {
     /// itself that emitted it.
     pub fn set_origin(&mut self, origin: impl Into<Option<MetricOrigin>>) {
         self.origin = origin.into();
-    }
-
-    /// Set the interval in seconds over which the metric was collected.
-    ///
-    /// This variant is specifically for use in builder-style APIs.
-    pub fn with_interval(mut self, interval: impl Into<Option<i64>>) -> Self {
-        self.interval = interval.into();
-        self
     }
 }
 
