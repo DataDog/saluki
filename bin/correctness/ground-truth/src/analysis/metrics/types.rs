@@ -299,8 +299,6 @@ fn try_normalize_values(raw_values: &[(u64, MetricValue)]) -> Result<MetricValue
                 },
             ) => {
                 if interval_a != interval_b {
-                    println!("current metric value: {:?}", current_value);
-                    println!("new metric value: {:?}", new_value);
                     return Err(generic_error!("Cannot normalize rate values with different intervals."));
                 }
 

@@ -10,8 +10,7 @@ use super::constants::*;
 use super::interner::Interner;
 use super::types::{value_type_for_values, V3MetricType, V3ValueType};
 
-const METRIC_TYPE_DEFAULT: i32 = 0;
-const METRIC_TYPE_AGENT_HIDDEN: i32 = 9;
+const FLAG_NO_INDEX: u64 = 0x100;
 
 /// Encoded V3 payload data ready for protobuf serialization.
 ///
@@ -65,7 +64,7 @@ pub struct V3Writer {
     resource_str_interner: Interner<String>,
     resource_interner: Interner<Vec<(i64, i64)>>,
     source_type_interner: Interner<String>,
-    origin_interner: Interner<(i32, i32, i32, i32)>,
+    origin_interner: Interner<(i32, i32, i32)>,
 
     // Dictionary encoded bytes
     dict_name_bytes: Vec<u8>,
@@ -118,6 +117,7 @@ impl V3Writer {
         let name_id = self.intern_name(name);
         let metric_idx = self.types.len();
         let point_start_idx = self.vals_float64.len();
+        let sint64_start_idx = self.vals_sint64.len();
 
         // Initialize the per-metric columns with default values
         self.types.push(metric_type.as_u64());
@@ -132,6 +132,7 @@ impl V3Writer {
         V3MetricBuilder {
             writer: self,
             point_start_idx,
+            sint64_start_idx,
             metric_idx,
         }
     }
@@ -349,21 +350,16 @@ impl V3Writer {
         id
     }
 
-    fn intern_origin(&mut self, product: i32, category: i32, service: i32, no_index: bool) -> i64 {
+    fn intern_origin(&mut self, product: i32, category: i32, service: i32) -> i64 {
         if product == 0 && category == 0 && service == 0 {
             return 0;
         }
 
-        let metric_type = get_origin_metric_type(no_index);
-
-        let (id, is_new) = self
-            .origin_interner
-            .get_or_insert(&(product, category, service, metric_type));
+        let (id, is_new) = self.origin_interner.get_or_insert(&(product, category, service));
         if is_new {
             self.dict_origin_info.push(product);
             self.dict_origin_info.push(category);
             self.dict_origin_info.push(service);
-            self.dict_origin_info.push(metric_type);
         }
         id
     }
@@ -376,6 +372,7 @@ impl V3Writer {
 pub struct V3MetricBuilder<'a> {
     writer: &'a mut V3Writer,
     point_start_idx: usize,
+    sint64_start_idx: usize,
     metric_idx: usize,
 }
 
@@ -419,8 +416,11 @@ impl<'a> V3MetricBuilder<'a> {
     pub fn set_origin(&mut self, product: u32, category: u32, service: u32, no_index: bool) {
         let id = self
             .writer
-            .intern_origin(product as i32, category as i32, service as i32, no_index);
+            .intern_origin(product as i32, category as i32, service as i32);
         self.writer.origin_infos[self.metric_idx] = id;
+        if no_index {
+            self.writer.types[self.metric_idx] |= FLAG_NO_INDEX;
+        }
     }
 
     /// Adds a data point to this metric.
@@ -488,8 +488,24 @@ impl<'a> V3MetricBuilder<'a> {
                 self.writer.vals_float64.truncate(start);
             }
             V3ValueType::Sint64 => {
-                for i in start..end {
-                    self.writer.vals_sint64.push(self.writer.vals_float64[i] as i64);
+                let is_sketch = (self.writer.types[self.metric_idx] & 0x0F) == V3MetricType::Sketch as u64;
+                if is_sketch {
+                    // For sketches, vals_sint64 already has one count per point (pushed by add_sketch),
+                    // and vals_float64 has 3 values per point (sum, min, max). When compacting to Sint64,
+                    // we need to interleave them as: sum, min, max, cnt per point.
+                    let counts: Vec<i64> = self.writer.vals_sint64[self.sint64_start_idx..].to_vec();
+                    self.writer.vals_sint64.truncate(self.sint64_start_idx);
+                    for (i, cnt) in counts.into_iter().enumerate() {
+                        let f_off = start + i * 3;
+                        self.writer.vals_sint64.push(self.writer.vals_float64[f_off] as i64);
+                        self.writer.vals_sint64.push(self.writer.vals_float64[f_off + 1] as i64);
+                        self.writer.vals_sint64.push(self.writer.vals_float64[f_off + 2] as i64);
+                        self.writer.vals_sint64.push(cnt);
+                    }
+                } else {
+                    for i in start..end {
+                        self.writer.vals_sint64.push(self.writer.vals_float64[i] as i64);
+                    }
                 }
                 self.writer.vals_float64.truncate(start);
             }
@@ -537,14 +553,6 @@ fn delta_encode_i32(s: &mut [i32]) {
     }
     for i in (1..s.len()).rev() {
         s[i] -= s[i - 1];
-    }
-}
-
-const fn get_origin_metric_type(no_index: bool) -> i32 {
-    if no_index {
-        METRIC_TYPE_AGENT_HIDDEN
-    } else {
-        METRIC_TYPE_DEFAULT
     }
 }
 
