@@ -25,7 +25,7 @@ use saluki_core::runtime::{
     state::{AssertionUpdate, DataspaceRegistry, Identifier, IdentifierFilter, Subscription},
     InitializationError, ProcessShutdown, Supervisable, SupervisorFuture,
 };
-use saluki_error::GenericError;
+use saluki_error::{generic_error, GenericError};
 use saluki_io::net::{
     listener::ConnectionOrientedListener,
     server::{
@@ -105,7 +105,9 @@ impl Supervisable for DynamicAPIBuilder {
         let (inner_grpc, outer_grpc) = create_dynamic_router();
 
         // Subscribe to all dynamic route assertions.
-        let route_assertions = DataspaceRegistry::current().subscribe::<DynamicRoute>(IdentifierFilter::All);
+        let route_assertions = DataspaceRegistry::try_current()
+            .ok_or_else(|| generic_error!("Dataspace not available."))?
+            .subscribe::<DynamicRoute>(IdentifierFilter::All);
 
         // Bind the HTTP listener immediately so we fail fast on bind errors.
         let listener = ConnectionOrientedListener::from_listen_address(self.listen_address.clone())
