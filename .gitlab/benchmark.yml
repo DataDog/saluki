@@ -245,6 +245,8 @@ build-agent-adp-comparison-image:
       --build-arg DD_DATA_PLANE_STANDALONE_MODE=false
       --build-arg DD_DATA_PLANE_REMOTE_AGENT_ENABLED=true
       --build-arg DD_DATA_PLANE_DOGSTATSD_ENABLED=true
+      --build-arg ADP_DD_DATA_PLANE_TELEMETRY_ENABLED=true
+      --build-arg ADP_DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
       --label git.commit=${CI_COMMIT_SHA}
