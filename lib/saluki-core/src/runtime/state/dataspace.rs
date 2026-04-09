@@ -29,7 +29,7 @@
 //!
 //! // Receive the assertion:
 //! let value = sub.recv().await;
-//! assert_eq!(value, Some(AssertionUpdate::Asserted(id, 42))); #
+//! assert_eq!(value, Some(AssertionUpdate::Asserted(id, 42)));
 //! # }
 //! ```
 
