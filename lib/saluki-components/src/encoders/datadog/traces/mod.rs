@@ -578,7 +578,16 @@ impl TraceEndpointEncoder {
                         tags.write_entry(TAG_DECISION_MAKER, dm)?;
                     }
                     if self.error_tracking_standalone {
-                        tags.write_entry("_dd.error_tracking_standalone.error", "true")?;
+                        let trace_has_error = trace.spans().iter().any(|span| {
+                            span.error() != 0
+                                || span
+                                    .meta()
+                                    .get("_dd.span_events.has_exception")
+                                    .is_some_and(|v| v == "true")
+                        });
+                        if trace_has_error {
+                            tags.write_entry("_dd.error_tracking_standalone.error", "true")?;
+                        }
                     }
 
                     self.string_builder.clear();
@@ -889,6 +898,24 @@ mod tests {
         trace
     }
 
+    fn make_error_trace() -> Trace {
+        let span = DdSpan::new(
+            MetaString::from("svc"),
+            MetaString::from("op"),
+            MetaString::from("res"),
+            MetaString::from("web"),
+            1,    // trace_id
+            1,    // span_id
+            0,    // parent_id
+            0,    // start
+            1000, // duration
+            1,    // error
+        );
+        let mut trace = Trace::new(vec![span], TagSet::default());
+        trace.set_sampling(Some(TraceSampling::new(false, Some(1), None, None)));
+        trace
+    }
+
     #[tokio::test]
     async fn ets_header_present_when_enabled() {
         let encoder = make_encoder(true).await;
@@ -905,9 +932,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ets_chunk_tag_present_when_enabled() {
+    async fn ets_chunk_tag_present_for_error_trace() {
         let mut encoder = make_encoder(true).await;
-        let trace = make_trace();
+        let trace = make_error_trace();
         let mut buf = Vec::new();
         encoder.encode(&trace, &mut buf).expect("encode should succeed");
         let payload = AgentPayload::parse_from_bytes(&buf).expect("should parse AgentPayload");
@@ -924,8 +951,23 @@ mod tests {
         assert_eq!(
             tag_value,
             Some("true"),
-            "ETS chunk tag should be present when ETS is enabled"
+            "ETS chunk tag should be present for error traces when ETS is enabled"
         );
+    }
+
+    #[tokio::test]
+    async fn ets_chunk_tag_absent_for_non_error_trace() {
+        let mut encoder = make_encoder(true).await;
+        let trace = make_trace(); // no error
+        let mut buf = Vec::new();
+        encoder.encode(&trace, &mut buf).expect("encode should succeed");
+        let payload = AgentPayload::parse_from_bytes(&buf).expect("should parse AgentPayload");
+        let has_tag = payload
+            .tracerPayloads
+            .iter()
+            .flat_map(|tp| tp.chunks.iter())
+            .any(|chunk| chunk.tags.contains_key("_dd.error_tracking_standalone.error"));
+        assert!(!has_tag, "ETS chunk tag should be absent for non-error traces");
     }
 
     #[tokio::test]

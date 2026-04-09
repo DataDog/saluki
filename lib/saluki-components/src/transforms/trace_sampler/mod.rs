@@ -465,10 +465,12 @@ impl TraceSampler {
             return true;
         }
 
-        // ETS: suppress single span sampling and analytics events for dropped traces.
-        // logic taken from: https://github.com/DataDog/datadog-agent/blob/be33ac1490c4a34602cbc65a211406b73ad6d00b/pkg/trace/agent/agent.go#L976
+        // ETS: forward dropped traces with DroppedTrace=true, suppressing SSS/analytics.
         if self.error_tracking_standalone {
-            return false;
+            if let Some(root_idx) = root_span_idx {
+                self.apply_sampling_metadata(trace, false, priority, decision_maker, root_idx);
+            }
+            return true;
         }
 
         // logic taken from here: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/agent/agent.go#L980-L990
@@ -1231,19 +1233,23 @@ mod tests {
         assert_eq!(priority, PRIORITY_AUTO_DROP);
     }
 
-    /// ETS enabled + trace without error → SSS and analytics events are suppressed.
+    /// ETS enabled + non-error trace → forwarded with DroppedTrace=true; SSS/analytics suppressed.
     #[test]
-    fn ets_suppresses_sss_for_dropped_trace() {
+    fn ets_forwards_dropped_trace_with_dropped_flag() {
         let mut sampler = create_sampler_with_ets();
 
-        // Span with SSS metric — would normally trigger single span sampling.
+        // Span with SSS metric — would trigger single span sampling in non-ETS mode.
         let mut metrics = saluki_common::collections::FastHashMap::default();
         metrics.insert(MetaString::from(KEY_SPAN_SAMPLING_MECHANISM), 8.0);
         let span = create_test_span(102, 1, 0).with_metrics(metrics);
         let mut trace = create_test_trace(vec![span]);
 
-        let kept = sampler.process_trace(&mut trace);
-        assert!(!kept, "ETS should suppress SSS for non-error traces");
+        let forwarded = sampler.process_trace(&mut trace);
+        assert!(forwarded, "ETS should forward non-error traces to intake");
+        assert!(
+            trace.sampling().is_some_and(|s| s.dropped_trace),
+            "non-error ETS trace should have DroppedTrace=true"
+        );
     }
 
     /// ETS enabled + trace with exception span event → kept (exception events count as errors in ETS).
