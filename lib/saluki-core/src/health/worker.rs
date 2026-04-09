@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use saluki_api::{DynamicRoute, EndpointType};
+use saluki_error::generic_error;
 
 use super::HealthRegistry;
 use crate::runtime::{state::DataspaceRegistry, InitializationError, ProcessShutdown, Supervisable, SupervisorFuture};
@@ -32,7 +33,9 @@ impl Supervisable for HealthRegistryWorker {
 
         Ok(Box::pin(async move {
             // Register our API routes before we actually stsrt running.
-            DataspaceRegistry::current().assert(health_routes, "health-registry-api");
+            DataspaceRegistry::try_current()
+                .ok_or_else(|| generic_error!("Dataspace not available."))?
+                .assert(health_routes, "health-registry-api");
 
             runner.run(process_shutdown).await;
 
