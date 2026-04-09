@@ -849,7 +849,7 @@ mod tests {
 
     async fn make_encoder(ets_enabled: bool) -> TraceEndpointEncoder {
         let env_vars: Vec<(String, String)> = if ets_enabled {
-            vec![("APM_ERROR_TRACKING_STANDALONE".to_string(), "true".to_string())]
+            vec![("APM_ERROR_TRACKING_STANDALONE_ENABLED".to_string(), "true".to_string())]
         } else {
             vec![]
         };
