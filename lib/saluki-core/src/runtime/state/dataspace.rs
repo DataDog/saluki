@@ -1,10 +1,10 @@
 //! A type-erased, async-aware dataspace registry for inter-process coordination.
 //!
-//! The [`DataspaceRegistry`] allows processes to assert and retract typed values by identifier, and subscribe to receive
-//! notifications of those assertions and retractions. Multiple subscribers can observe the same updates.
+//! The [`DataspaceRegistry`] allows processes to assert and retract typed values by identifier, and subscribe to
+//! receive notifications of those assertions and retractions. Multiple subscribers can observe the same updates.
 //!
-//! - **Assertion**: a value of type `T` becomes available, associated with a given identifier.
-//! - **Retraction**: the value of type `T` associated with a given identifier is withdrawn.
+//! - **Assertion**: a value of type `T` becomes available, associated with a given identifier. - **Retraction**: the
+//! value of type `T` associated with a given identifier is withdrawn.
 //!
 //! Subscribers can listen for updates matching a specific identifier, a prefix, or all identifiers for a given type.
 //!
@@ -21,15 +21,15 @@
 //! let registry = DataspaceRegistry::new();
 //! let id = Identifier::named("my_value");
 //!
-//! // Subscribe before asserting
+//! // Subscribe before asserting:
 //! let mut sub = registry.subscribe::<u32>(IdentifierFilter::exact(id.clone()));
 //!
-//! // Assert a value
+//! // Assert a value:
 //! registry.assert(42u32, id.clone());
 //!
-//! // Receive the assertion
+//! // Receive the assertion:
 //! let value = sub.recv().await;
-//! assert_eq!(value, Some(AssertionUpdate::Asserted(id, 42)));
+//! assert_eq!(value, Some(AssertionUpdate::Asserted(id, 42))); #
 //! # }
 //! ```
 
@@ -208,7 +208,7 @@ struct DataspaceRegistryInner {
 ///
 /// # Thread Safety
 ///
-/// `DataspaceRegistry` is `Clone` and can be safely shared across threads and tasks. All operations are thread-safe.
+/// `DataspaceRegistry` is `Clone` and can be safely shared across threadVs and tasks. All operations are thread-safe.
 #[derive(Clone)]
 pub struct DataspaceRegistry {
     inner: Arc<DataspaceRegistryInner>,
@@ -242,15 +242,9 @@ impl DataspaceRegistry {
 
     /// Asserts a value with the given identifier, notifying all matching subscribers.
     ///
-    /// The value is stored so that future subscribers can receive the current state when they subscribe. The assertion
-    /// is also delivered to every active [`Subscription`] whose filter matches the given identifier.
-    ///
-    /// The assertion is automatically tracked against the current process (via [`Id::current`]). When the process exits,
-    /// all of its outstanding assertions are automatically retracted via [`retract_all_for_process`].
-    ///
-    /// If an assertion already exists for the given type and identifier, only the owning process may update it. If the
-    /// calling process does not own the existing assertion, the update is silently ignored (with a `debug_assert`
-    /// failure in debug builds).
+    /// The assertion is automatically associated with the current process, and will be automatically retracted when
+    /// that process exists. Only the owning process may update an existing assertion for a given type/identifier
+    /// combination.
     pub fn assert<T>(&self, value: T, id: impl Into<Identifier>)
     where
         T: Clone + Send + Sync + 'static,
@@ -304,12 +298,7 @@ impl DataspaceRegistry {
 
     /// Retracts the value of the given type and identifier, notifying all matching subscribers.
     ///
-    /// The stored value for the given type and identifier is removed. The retraction is delivered to every active
-    /// [`Subscription`] whose filter matches the given identifier.
-    ///
-    /// Only the process that originally asserted the value may retract it. If the calling process does not own the
-    /// assertion, the retraction is silently ignored (with a `debug_assert` failure in debug builds). If no value
-    /// exists for the given type and identifier, this is a no-op.
+    /// Only the process that originally asserted the value may retract it.
     pub fn retract<T>(&self, id: impl Into<Identifier>)
     where
         T: Clone + Send + Sync + 'static,
@@ -348,7 +337,7 @@ impl DataspaceRegistry {
 
     /// Retracts all assertions made by the given process.
     ///
-    /// This is called automatically when a process exits (via [`InstrumentedProcess`] drop) to ensure that no stale
+    /// This is called automatically when a process exits (via [`FutureProcess`] drop) to ensure that no stale
     /// assertions remain in the registry after the owning process is gone.
     pub(crate) fn retract_all_for_process(&self, process_id: Id) {
         let mut state = self.inner.state.lock().unwrap();
@@ -365,12 +354,8 @@ impl DataspaceRegistry {
 
     /// Subscribes to assertion and retraction updates matching the given filter.
     ///
-    /// Returns a [`Subscription`] that can be used to asynchronously receive updates.
-    ///
-    /// - For [`IdentifierFilter::Exact`]: subscribes to a specific (type, identifier) pair. If a value has already been
-    ///   asserted, the subscription will immediately yield the current value.
-    /// - For [`IdentifierFilter::All`] or [`IdentifierFilter::Prefix`]: subscribes to all matching identifiers. All
-    ///   currently asserted values that match the filter are replayed before future updates.
+    /// Returns a [`Subscription`] that can be used to asynchronously receive updates. Any assertions that match the
+    /// filter at the time of subscribing will be immediately yielded.
     pub fn subscribe<T>(&self, filter: IdentifierFilter) -> Subscription<T>
     where
         T: Clone + Send + Sync + 'static,
@@ -416,13 +401,7 @@ impl DataspaceRegistry {
     }
 }
 
-/// A subscription to updates for a specific type from a [`DataspaceRegistry`].
-///
-/// Created by calling [`DataspaceRegistry::subscribe`]. Use [`recv`](Subscription::recv) to asynchronously wait for the
-/// next update.
-///
-/// If values have already been asserted for the subscribed type when this subscription was created, the first calls to
-/// [`recv`](Subscription::recv) will return those values before any subsequent broadcast updates.
+/// A subscription to updates for a specific type/identifier combination.
 pub struct Subscription<T> {
     pending: VecDeque<AssertionUpdate<T>>,
     rx: broadcast::Receiver<AssertionUpdate<T>>,
@@ -438,6 +417,8 @@ where
     /// dropped). If messages were missed due to the subscriber falling behind, the missed messages are skipped and the
     /// next available update is returned.
     pub async fn recv(&mut self) -> Option<AssertionUpdate<T>> {
+        // TODO: Switch to bounded MPSC channels for delivering assertion/retraction updates.
+
         if let Some(value) = self.pending.pop_front() {
             return Some(value);
         }
