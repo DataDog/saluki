@@ -1,11 +1,11 @@
 use std::{fmt, hash, sync::Arc};
 
 use metrics::Gauge;
-use saluki_common::collections::ContiguousBitSet;
+use saluki_common::collections::{ContiguousBitSet, PrehashedHashSet};
 use stringtheory::MetaString;
 
 use crate::{
-    hash::{hash_context, ContextKey},
+    hash::{hash_context, hash_context_with_seen, ContextKey},
     tags::{Tag, TagSet},
 };
 
@@ -303,6 +303,7 @@ pub struct TagSetMutViewState {
     tag_addition_removals: ContiguousBitSet,
     origin_base_removals: ContiguousBitSet,
     origin_addition_removals: ContiguousBitSet,
+    hash_seen: PrehashedHashSet<u64>,
 }
 
 impl TagSetMutViewState {
@@ -383,7 +384,7 @@ impl<'a, 'b> TagSetMutView<'a, 'b> {
                 .apply_removals(&self.state.origin_base_removals, &self.state.origin_addition_removals);
         }
 
-        let (key, _) = hash_context(&inner.name, &inner.tags, &inner.origin_tags);
+        let (key, _) = hash_context_with_seen(&inner.name, &inner.tags, &inner.origin_tags, &mut self.state.hash_seen);
         inner.key = key;
 
         total
