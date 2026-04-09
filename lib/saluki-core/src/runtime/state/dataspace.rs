@@ -3,8 +3,8 @@
 //! The [`DataspaceRegistry`] allows processes to assert and retract typed values by identifier, and subscribe to
 //! receive notifications of those assertions and retractions. Multiple subscribers can observe the same updates.
 //!
-//! - **Assertion**: a value of type `T` becomes available, associated with a given identifier. - **Retraction**: the
-//! value of type `T` associated with a given identifier is withdrawn.
+//! - **Assertion**: a value of type `T` becomes available, associated with a given identifier.
+//! - **Retraction**: the value of type `T` associated with a given identifier is withdrawn.
 //!
 //! Subscribers can listen for updates matching a specific identifier, a prefix, or all identifiers for a given type.
 //!
