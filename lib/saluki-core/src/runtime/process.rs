@@ -10,25 +10,44 @@ use std::{
 };
 
 use memory_accounting::allocator::{AllocationGroupRegistry, AllocationGroupToken, Track as _, Tracked};
-use pin_project::pin_project;
+use pin_project::{pin_project, pinned_drop};
 use tracing::{debug_span, instrument::Instrumented, Instrument as _};
 
-static GLOBAL_PROCESS_ID_COUNTER: AtomicUsize = AtomicUsize::new(0);
+use super::state::{DataspaceRegistry, CURRENT_DATASPACE};
+
+static GLOBAL_PROCESS_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
 
 /// Process identifier.
 ///
 /// A simple, numeric identifier that uniquely identifies a process.
+///
+/// Guaranteed to be unique.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Id(usize);
 
+tokio::task_local! {
+    pub(crate) static CURRENT_PROCESS_ID: Id;
+}
+
 impl Id {
+    /// The root process identifier, representing the global/unnamed process context.
+    pub const ROOT: Self = Self(0);
+
     /// Creates a new process identifier.
     pub fn new() -> Self {
         let id = GLOBAL_PROCESS_ID_COUNTER.fetch_add(1, Relaxed);
         Self(id)
     }
 
-    fn as_usize(&self) -> usize {
+    /// Returns the process identifier for the currently executing process.
+    ///
+    /// If called outside of a process context, returns `Id::ROOT`.
+    pub fn current() -> Self {
+        CURRENT_PROCESS_ID.try_with(|id| *id).unwrap_or(Self::ROOT)
+    }
+
+    /// Returns the raw numeric value of this identifier.
+    pub fn as_usize(&self) -> usize {
         self.0
     }
 }
@@ -84,6 +103,7 @@ pub struct Process {
     id: Id,
     name: Name,
     alloc_group_token: AllocationGroupToken,
+    dataspace: DataspaceRegistry,
 }
 
 impl Process {
@@ -92,19 +112,39 @@ impl Process {
             .and_then(|p| Name::scoped(&p.name, &name))
             .or_else(|| Name::root(name))?;
         let alloc_group_token = AllocationGroupRegistry::global().register_allocation_group(&*name);
-        Some(Self::from_parts(Id::new(), name, alloc_group_token))
+        let dataspace = parent.map(|p| p.dataspace.clone()).unwrap_or_default();
+        Some(Self::from_parts(Id::new(), name, alloc_group_token, dataspace))
+    }
+
+    pub(crate) fn supervisor_with_dataspace<N: AsRef<str>>(
+        name: N, parent: Option<&Process>, dataspace: Option<DataspaceRegistry>,
+    ) -> Option<Self> {
+        let name = parent
+            .and_then(|p| Name::scoped(&p.name, &name))
+            .or_else(|| Name::root(name))?;
+        let alloc_group_token = AllocationGroupRegistry::global().register_allocation_group(&*name);
+        let dataspace = dataspace
+            .or_else(|| parent.map(|p| p.dataspace.clone()))
+            .unwrap_or_default();
+        Some(Self::from_parts(Id::new(), name, alloc_group_token, dataspace))
     }
 
     pub(crate) fn worker<N: AsRef<str>>(name: N, parent: &Process) -> Option<Self> {
         let name = Name::scoped(&parent.name, name)?;
-        Some(Self::from_parts(Id::new(), name, parent.alloc_group_token))
+        Some(Self::from_parts(
+            Id::new(),
+            name,
+            parent.alloc_group_token,
+            parent.dataspace.clone(),
+        ))
     }
 
-    fn from_parts(id: Id, name: Name, alloc_group_token: AllocationGroupToken) -> Self {
+    fn from_parts(id: Id, name: Name, alloc_group_token: AllocationGroupToken, dataspace: DataspaceRegistry) -> Self {
         Self {
             id,
             name,
             alloc_group_token,
+            dataspace,
         }
     }
 
@@ -113,22 +153,32 @@ impl Process {
         &self.id
     }
 
-    pub fn into_instrumented<F>(self, inner: F) -> InstrumentedProcess<F>
+    /// Returns the dataspace registry associated with this process.
+    pub(crate) fn dataspace(&self) -> &DataspaceRegistry {
+        &self.dataspace
+    }
+
+    pub fn into_process_future<F>(self, inner: F) -> ProcessFuture<F>
     where
         F: Future,
     {
-        InstrumentedProcess::new(self, inner)
+        ProcessFuture::new(self, inner)
     }
 }
 
-/// An instrumented process.
-#[pin_project]
-pub struct InstrumentedProcess<F> {
+/// A process future.
+///
+/// Wraps a [`Future`] with process-specific instrumentation and globals. This ensures that processes have properly scoped tracing and
+/// allocation tracking behavior, as well as access to supervisor/runtime-specific globals, such as the dataspace registry.
+#[pin_project(PinnedDrop)]
+pub struct ProcessFuture<F> {
+    process_id: Id,
+    dataspace: DataspaceRegistry,
     #[pin]
     inner: Instrumented<Tracked<F>>,
 }
 
-impl<F> InstrumentedProcess<F>
+impl<F> ProcessFuture<F>
 where
     F: Future,
 {
@@ -139,27 +189,44 @@ where
             process_name = &*process.name,
         );
 
+        let process_id = process.id;
+        let dataspace = process.dataspace.clone();
         let inner = inner.track_allocations(process.alloc_group_token).instrument(span);
 
-        Self { inner }
+        Self {
+            process_id,
+            dataspace,
+            inner,
+        }
     }
 }
 
-impl<F> Future for InstrumentedProcess<F>
+impl<F> Future for ProcessFuture<F>
 where
     F: Future,
 {
     type Output = F::Output;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.project().inner.poll(cx)
+        let this = self.project();
+        CURRENT_PROCESS_ID.sync_scope(*this.process_id, || {
+            CURRENT_DATASPACE.sync_scope(this.dataspace.clone(), || this.inner.poll(cx))
+        })
     }
 }
 
-/// Helper trait for running process futures with instrumentation.
+#[pinned_drop]
+impl<F> PinnedDrop for ProcessFuture<F> {
+    fn drop(self: Pin<&mut Self>) {
+        let this = self.project();
+        this.dataspace.retract_all_for_process(*this.process_id);
+    }
+}
+
+/// Helper trait for running process futures.
 pub trait ProcessExt {
-    /// Converts the process future into an instrumented future.
-    fn into_instrumented(self, process: Process) -> InstrumentedProcess<Self>
+    /// Converts the future into a process future.
+    fn into_process_future(self, process: Process) -> ProcessFuture<Self>
     where
         Self: Future + Sized;
 }
@@ -168,11 +235,11 @@ impl<F> ProcessExt for F
 where
     F: Future,
 {
-    fn into_instrumented(self, process: Process) -> InstrumentedProcess<Self>
+    fn into_process_future(self, process: Process) -> ProcessFuture<Self>
     where
         Self: Future + Sized,
     {
-        process.into_instrumented(self)
+        process.into_process_future(self)
     }
 }
 
