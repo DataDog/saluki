@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["AssertionUpdate","Identifier","IdentifierFilter"],"struct":["DataspaceRegistry","Subscription"]};
