@@ -21,7 +21,7 @@ pub const KEY_ALIASES: &[(&str, &str)] = &[
     ("apm_config.enable_rare_sampler", "apm_enable_rare_sampler"),
     (
         "apm_config.error_tracking_standalone.enabled",
-        "apm_error_tracking_standalone",
+        "apm_error_tracking_standalone_enabled",
     ),
 ];
 

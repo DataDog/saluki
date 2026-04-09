@@ -93,11 +93,11 @@ struct ApmConfiguration {
     enable_rare_sampler: bool,
 
     /// Enables Error Tracking Standalone mode. Lives here (rather than nested within `apm_config`)
-    /// so that the env var path (`DD_APM_ERROR_TRACKING_STANDALONE` → `apm_error_tracking_standalone`)
+    /// so that the env var path (`DD_APM_ERROR_TRACKING_STANDALONE_ENABLED` → `apm_error_tracking_standalone_enabled`)
     /// can be remapped via ConfigurationLoader::with_key_aliases.
     #[serde(
         default = "default_error_tracking_standalone_enabled",
-        rename = "apm_error_tracking_standalone"
+        rename = "apm_error_tracking_standalone_enabled"
     )]
     enable_error_tracking_standalone: bool,
 }
@@ -397,14 +397,14 @@ mod tests {
 
     #[tokio::test]
     async fn ets_enabled_via_env_var() {
-        let env_vars = vec![("APM_ERROR_TRACKING_STANDALONE".to_string(), "true".to_string())];
+        let env_vars = vec![("APM_ERROR_TRACKING_STANDALONE_ENABLED".to_string(), "true".to_string())];
         let config = apm_config_from(None, Some(&env_vars)).await;
         assert!(config.error_tracking_standalone_enabled());
     }
 
     #[tokio::test]
     async fn ets_env_var_overrides_yaml() {
-        let env_vars = vec![("APM_ERROR_TRACKING_STANDALONE".to_string(), "true".to_string())];
+        let env_vars = vec![("APM_ERROR_TRACKING_STANDALONE_ENABLED".to_string(), "true".to_string())];
         let config = apm_config_from(
             Some(serde_json::json!({ "apm_config": { "error_tracking_standalone": { "enabled": false } } })),
             Some(&env_vars),
