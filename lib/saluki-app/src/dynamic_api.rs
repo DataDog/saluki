@@ -1,8 +1,8 @@
 //! Dynamic API server.
 //!
 //! Unlike [`APIBuilder`][crate::api::APIBuilder], which constructs its route set once at build time,
-//! `DynamicAPIBuilder` subscribes to runtime notifications via the dataspace registry and hot-swaps the inner HTTP and
-//! gRPC routers behind [`ArcSwap`]s as routes are asserted or retracted.
+//! `DynamicAPIBuilder` subscribes to runtime notifications via the dataspace registry and dynamically registers and
+//! unregisters routes as they're asserted and retracted.
 
 use std::{
     convert::Infallible,
@@ -41,18 +41,17 @@ use tracing::{debug, info, warn};
 
 /// A dynamic API server that can add and remove routes at runtime.
 ///
-/// `DynamicAPIBuilder` serves HTTP and gRPC on a given address, multiplexing both protocols on a single port. A
-/// background event loop subscribes to the [`DataspaceRegistry`] for [`DynamicHttpRoute`] and [`DynamicGrpcRoute`]
-/// assertions and retractions, and atomically swaps the inner routers as handlers are added or removed.
+/// `DynamicAPIBuilder` serves HTTP and gRPC on a given address, multiplexing both protocols on a single port. Route
+/// additions and removals are handled by subscribing to assertions/retractions of [`DynamicRoute`] in the
+/// [`DataspaceRegistry`].
 ///
-/// ## Publisher protocol
+/// ## Adding and removing routes
 ///
-/// Any process that wants to dynamically register API routes must:
+/// Any process that wants to dynamically register API routes can simply assert a [`DynamicRoute`] in the
+/// [`DataspaceRegistry`]. Retracting the assertion will remove the route, either when retracted manually
+/// or when the process owning the route assertions exits.
 ///
-/// 1. Build a `Router<()>` (for HTTP, or via `tonic::Routes::into_axum_router()` for gRPC).
-/// 2. Assert a [`DynamicHttpRoute`] or [`DynamicGrpcRoute`] in the [`DataspaceRegistry`] under a [`Handle`].
-///
-/// To withdraw routes, retract the assertion from the [`DataspaceRegistry`].
+/// If the dynamic API server is restarted, it will re-register any routes that were previously asserted.
 pub struct DynamicAPIBuilder {
     endpoint_type: EndpointType,
     listen_address: ListenAddress,
@@ -60,7 +59,7 @@ pub struct DynamicAPIBuilder {
 }
 
 impl DynamicAPIBuilder {
-    /// Creates a new `DynamicAPIBuilder` for the given endpoint type.
+    /// Creates a new `DynamicAPIBuilder` for the given endpoint type and listen address.
     pub fn new(endpoint_type: EndpointType, listen_address: ListenAddress) -> Self {
         Self {
             endpoint_type,
@@ -75,7 +74,7 @@ impl DynamicAPIBuilder {
         self
     }
 
-    /// Sets the TLS configuration for the server based on a dynamically generated self-signed certificate.
+    /// Sets the TLS configuration for the server based on a dynamically generated, self-signed certificate.
     pub fn with_self_signed_tls(self) -> Self {
         let CertifiedKey { cert, signing_key } = generate_simple_self_signed(["localhost".to_owned()]).unwrap();
         let cert_chain = vec![cert.der().clone()];
