@@ -12,10 +12,6 @@ target:
   environment:
     DD_API_KEY: "a0000001"
     DD_HOSTNAME: smp-regression
-    DD_DATA_PLANE_ENABLED: "true"
-    DD_DATA_PLANE_STANDALONE_MODE: "false"
-    DD_DATA_PLANE_REMOTE_AGENT_ENABLED: "true"
-    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
 
   profiling_environment:
     DD_INTERNAL_PROFILING_BLOCK_PROFILE_RATE: 10000

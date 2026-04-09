@@ -241,6 +241,10 @@ build-agent-adp-comparison-image:
       --tag ${COMPARISON_AGENT_IMG}
       --build-arg DD_AGENT_IMAGE=${STEPHEN_AGENT_IMG}
       --build-arg ADP_IMAGE=${COMPARISON_ADP_IMG}
+      --build-arg DD_DATA_PLANE_ENABLED=true
+      --build-arg DD_DATA_PLANE_STANDALONE_MODE=false
+      --build-arg DD_DATA_PLANE_REMOTE_AGENT_ENABLED=true
+      --build-arg DD_DATA_PLANE_DOGSTATSD_ENABLED=true
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
       --label git.commit=${CI_COMMIT_SHA}

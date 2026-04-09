@@ -1,12 +1,21 @@
 ARG DD_AGENT_VERSION=7.77.2-jmx
 ARG DD_AGENT_IMAGE=registry.datadoghq.com/agent:${DD_AGENT_VERSION}
 ARG ADP_IMAGE=saluki-images/agent-data-plane:testing-devel
+ARG DD_DATA_PLANE_ENABLED=
+ARG DD_DATA_PLANE_STANDALONE_MODE=
+ARG DD_DATA_PLANE_REMOTE_AGENT_ENABLED=
+ARG DD_DATA_PLANE_DOGSTATSD_ENABLED=
 
 # Reference the ADP image so we can copy the relevant bits out of it.
 FROM ${ADP_IMAGE} AS adp
 
 # Build off of the official Datadog Agent image.
 FROM ${DD_AGENT_IMAGE}
+
+ENV DD_DATA_PLANE_ENABLED=${DD_DATA_PLANE_ENABLED} \
+    DD_DATA_PLANE_STANDALONE_MODE=${DD_DATA_PLANE_STANDALONE_MODE} \
+    DD_DATA_PLANE_REMOTE_AGENT_ENABLED=${DD_DATA_PLANE_REMOTE_AGENT_ENABLED} \
+    DD_DATA_PLANE_DOGSTATSD_ENABLED=${DD_DATA_PLANE_DOGSTATSD_ENABLED}
 
 # Copy the ADP binary and all of the required licensing bits.
 COPY --from=adp /usr/local/bin/agent-data-plane /opt/datadog-agent/embedded/bin/agent-data-plane
