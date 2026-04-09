@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-use core::f64;
 use std::collections::HashSet;
 use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -23,7 +22,7 @@ use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_context::{ContextResolver, ContextResolverBuilder};
 use saluki_core::data_model::event::metric::{Metric, MetricMetadata, MetricValues};
 use saluki_core::data_model::event::Event;
-use saluki_error::{generic_error, GenericError};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tracing::{debug, trace, warn};
 
 use super::cache::PointsCache;
@@ -156,9 +155,7 @@ fn exponential_histogram_to_ddsketch(
     dp: &OtlpExponentialHistogramDataPoint, delta: bool,
 ) -> Result<CanonicalDDSketch<LogarithmicMapping, DenseStore>, GenericError> {
     if !delta {
-        return Err(generic_error!(
-            "cumulative exponential histograms are not supported".to_string()
-        ));
+        return Err(generic_error!("cumulative exponential histograms are not supported"));
     }
 
     let positive_store = to_store(dp.positive.as_ref());
@@ -175,21 +172,13 @@ fn exponential_histogram_to_ddsketch(
 }
 
 fn remap_bins_to_agent_space(sketch: &mut DDSketch, store: &DenseStore, mapping: &LogarithmicMapping, negate: bool) {
-    let proto_store = store.to_proto();
-
-    for (i, &count) in proto_store.contiguousBinCounts.iter().enumerate() {
-        let logical_index = proto_store.contiguousBinIndexOffset + i as i32;
-
-        if count == 0.0 {
-            continue;
-        }
-
+    for (logical_index, count) in store.iter_non_zero_bins() {
         let mut value = mapping.value(logical_index);
         if negate {
             value *= -1.0;
         }
 
-        sketch.insert_n(value, count as u64);
+        sketch.insert_n(value, count);
     }
 }
 
@@ -213,7 +202,7 @@ impl OtlpMetricsTranslator {
     pub fn new(config: OtlpMetricsTranslatorConfig, context_resolver: ContextResolver) -> Result<Self, GenericError> {
         config
             .validate()
-            .map_err(|e| generic_error!("invalid OTLP metrics translator config: {}", e))?;
+            .error_context("Failed to validate OTLP metrics translator configuration.")?;
 
         let process_start_time_ns = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos() as u64;
 
@@ -431,7 +420,14 @@ impl OtlpMetricsTranslator {
                             true,
                             &context,
                         ),
-                        _ => Vec::new(),
+                        _ => {
+                            warn!(
+                                metric_name = base_dims.name,
+                                temporality = exponential_histogram.aggregation_temporality,
+                                "Unknown or unsupported aggregation temporality"
+                            );
+                            Vec::new()
+                        }
                     }
                 }
             }
@@ -759,15 +755,11 @@ impl OtlpMetricsTranslator {
                     trace!(
                         metric = %dims.name,
                         interval,
-                        "Ignoring custom interval for OTLP metric."
+                        "Inferred delta interval for OTLP metric."
                     );
                 }
                 let values = MetricValues::distribution((ts, sketch));
-                let metric = Metric::from_parts(
-                    resolved_context,
-                    values,
-                    MetricMetadata::default().with_interval(if interval != 0 { Some(interval) } else { None }),
-                );
+                let metric = Metric::from_parts(resolved_context, values, MetricMetadata::default());
                 events.push(Event::Metric(metric));
             }
             None => {
