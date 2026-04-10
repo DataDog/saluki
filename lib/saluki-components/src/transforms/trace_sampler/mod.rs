@@ -302,34 +302,34 @@ impl TraceSampler {
             return (false, PRIORITY_AUTO_DROP, "", None);
         };
 
+        // OTLP pre-sampling: mirrors DDA's OTLPReceiver.createChunks which runs before runSamplersV1.
+        // When the probabilistic sampler is disabled, pre-assign dm and priority for OTLP traces so
+        // those values are present regardless of which sampler path short-circuits.
+        // See: https://github.com/DataDog/datadog-agent/blob/be33ac1490c4a34602cbc65a211406b73ad6d00b/pkg/trace/api/otlp.go#L561-L585
+        let otlp_pre_sample = if !self.probabilistic_sampler_enabled && self.is_otlp_trace(trace, root_span_idx) {
+            let (priority, dm) = if let Some(user_priority) = self.get_user_priority(trace, root_span_idx) {
+                (user_priority, DECISION_MAKER_MANUAL)
+            } else {
+                let root_trace_id = trace.spans()[root_span_idx].trace_id();
+                if sample_by_rate(root_trace_id, self.otlp_sampling_rate) {
+                    (PRIORITY_AUTO_KEEP, DECISION_MAKER_PROBABILISTIC)
+                } else {
+                    (PRIORITY_AUTO_DROP, DECISION_MAKER_PROBABILISTIC)
+                }
+            };
+            if priority == PRIORITY_AUTO_KEEP {
+                if let Some(root_span) = trace.spans_mut().get_mut(root_span_idx) {
+                    root_span.metrics_mut().remove(PROB_RATE_KEY);
+                }
+            }
+            Some((priority, dm))
+        } else {
+            None
+        };
+
         // ETS: only sample traces containing errors (including exception span events); skip all other samplers.
         // logic taken from: https://github.com/DataDog/datadog-agent/blob/be33ac1490c4a34602cbc65a211406b73ad6d00b/pkg/trace/agent/agent.go#L1068
         if self.error_tracking_standalone {
-            // For OTLP traces without the probabilistic sampler path, pre-compute dm/priority before
-            // returning early. This mirrors DDA's OTLPReceiver.createChunks which runs before
-            // runSamplersV1, so those values are set even when ETS short-circuits.
-            // See: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/api/otlp.go#L561-L585
-            let otlp_pre_sample = if !self.probabilistic_sampler_enabled && self.is_otlp_trace(trace, root_span_idx) {
-                let (priority, dm) = if let Some(user_priority) = self.get_user_priority(trace, root_span_idx) {
-                    (user_priority, DECISION_MAKER_MANUAL)
-                } else {
-                    let root_trace_id = trace.spans()[root_span_idx].trace_id();
-                    if sample_by_rate(root_trace_id, self.otlp_sampling_rate) {
-                        (PRIORITY_AUTO_KEEP, DECISION_MAKER_PROBABILISTIC)
-                    } else {
-                        (PRIORITY_AUTO_DROP, DECISION_MAKER_PROBABILISTIC)
-                    }
-                };
-                if priority == PRIORITY_AUTO_KEEP {
-                    if let Some(root_span) = trace.spans_mut().get_mut(root_span_idx) {
-                        root_span.metrics_mut().remove(PROB_RATE_KEY);
-                    }
-                }
-                Some((priority, dm))
-            } else {
-                None
-            };
-
             if self.trace_contains_error(trace, true) {
                 let keep = self.error_sampler.sample_error(now, trace, root_span_idx);
                 let default_priority = if keep { PRIORITY_AUTO_KEEP } else { PRIORITY_AUTO_DROP };
