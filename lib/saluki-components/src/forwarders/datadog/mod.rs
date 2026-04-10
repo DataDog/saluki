@@ -17,6 +17,7 @@ use tracing::debug;
 use crate::common::datadog::{
     config::ForwarderConfiguration,
     io::TransactionForwarder,
+    protocol::MetricsPayloadInfo,
     telemetry::ComponentTelemetry,
     transaction::{Metadata, Transaction},
     DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT,
@@ -150,7 +151,10 @@ impl Forwarder for Datadog {
                 maybe_payload = context.payloads().next() => match maybe_payload {
                     Some(payload) => if let Some(http_payload) = payload.try_into_http_payload() {
                         let (payload_meta, request) = http_payload.into_parts();
-                        let transaction_meta = Metadata::from_event_count(payload_meta.event_count());
+                        let transaction_meta = Metadata::new(
+                            payload_meta.event_count(),
+                            payload_meta.get::<MetricsPayloadInfo>().copied(),
+                        );
                         let transaction = Transaction::from_original(transaction_meta, request);
 
                         forwarder.send_transaction(transaction).await?;
@@ -177,6 +181,8 @@ fn get_dd_endpoint_name(uri: &Uri) -> Option<MetaString> {
         "/api/v1/check_run" => Some(MetaString::from_static("check_run_v1")),
         "/api/v1/events_batch" => Some(MetaString::from_static("events_batch_v1")),
         "/api/v0.2/traces" => Some(MetaString::from_static("traces_v0.2")),
+        "/api/intake/metrics/v3/series" => Some(MetaString::from_static("series_v3")),
+        "/api/intake/metrics/v3/sketches" => Some(MetaString::from_static("sketches_v3")),
         _ => None,
     }
 }

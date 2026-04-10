@@ -10,6 +10,8 @@ use pin_project::pin_project;
 use saluki_io::net::util::retry::{EventContainer, Retryable};
 use serde::{ser::SerializeSeq as _, Deserialize, Serialize, Serializer};
 
+use super::protocol::MetricsPayloadInfo;
+
 /// Data type for the body of `TransactionBody<B>`.
 pub enum TransactionBodyData<B>
 where
@@ -174,12 +176,30 @@ impl<B> From<Vec<u8>> for TransactionBody<B> {
 pub struct Metadata {
     /// Number of events represented by this transaction.
     pub event_count: usize,
+
+    /// Payload info containing protocol version and metric type, if applicable.
+    ///
+    /// This is `Some` for metrics payloads and `None` for non-metrics payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload_info: Option<MetricsPayloadInfo>,
 }
 
 impl Metadata {
     /// Create a new `Metadata` instance with the given event count.
+    #[cfg(test)]
     pub const fn from_event_count(event_count: usize) -> Self {
-        Self { event_count }
+        Self {
+            event_count,
+            payload_info: None,
+        }
+    }
+
+    /// Create a new `Metadata` instance with the given event count and payload info.
+    pub const fn new(event_count: usize, payload_info: Option<MetricsPayloadInfo>) -> Self {
+        Self {
+            event_count,
+            payload_info,
+        }
     }
 }
 
@@ -220,6 +240,11 @@ where
     /// Reassembles a `Transaction` from a decomposed `Transaction<B>`.
     pub fn reassemble(metadata: Metadata, request: Request<TransactionBody<B>>) -> Self {
         Self { metadata, request }
+    }
+
+    /// Returns a reference to the transaction metadata.
+    pub fn metadata(&self) -> &Metadata {
+        &self.metadata
     }
 
     /// Consumes the `Transaction` and returns the transaction metadata and original request.
