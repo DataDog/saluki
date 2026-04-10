@@ -1,0 +1,339 @@
+//! Resource accounting and telemetry.
+
+use std::{
+    collections::{HashMap, VecDeque},
+    env, fs,
+    sync::atomic::{AtomicBool, Ordering::Relaxed},
+    time::Duration,
+};
+
+use bytesize::ByteSize;
+use memory_accounting::{
+    allocator::{ResourceGroupRegistry, ResourceStats, ResourceStatsSnapshot},
+    ComponentBounds, ComponentRegistry, MemoryGrant, MemoryLimiter,
+};
+use metrics::{counter, gauge, Counter, Gauge, Level};
+use saluki_common::task::spawn_traced_named;
+use saluki_config::GenericConfiguration;
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use serde::Deserialize;
+use tokio::time::sleep;
+use tracing::{error, info, warn};
+
+const fn default_memory_slop_factor() -> f64 {
+    0.25
+}
+
+const fn default_enable_global_limiter() -> bool {
+    true
+}
+
+/// Configuration for memory bounds.
+#[derive(Deserialize)]
+pub struct MemoryBoundsConfiguration {
+    /// The memory limit to adhere to.
+    ///
+    /// This should be the overall memory limit for the entire process. The value can either be an integer for
+    /// specifying the limit in bytes, or a string that uses SI byte prefixes (case-insensitive) such as `1mb` or `1GB`.
+    ///
+    /// If not specified, no memory bounds verification will be performed.
+    #[serde(default)]
+    memory_limit: Option<ByteSize>,
+
+    /// The slop factor to apply to the given memory limit.
+    ///
+    /// Memory bounds are inherently fuzzy, as components are required to manually define their bounds, and as such, can
+    /// only account for memory usage that they know about. The slop factor is applied as a reduction to the overall
+    /// memory limit, such that we account for the "known unknowns" -- memory that hasn't yet been accounted for -- by
+    /// simply ensuring that we can fit within a portion of the overall limit.
+    ///
+    /// Values between 0 to 1 are allowed, and represent the percentage of `memory_limit` that is held back. This means
+    /// that a slop factor of 0.25, for example, will cause 25% of `memory_limit` to be withheld. If `memory_limit` was
+    /// 100MB, we would then verify that the memory bounds can fit within 75MB (100MB * (1 - 0.25) => 75MB).
+    #[serde(default = "default_memory_slop_factor")]
+    memory_slop_factor: f64,
+
+    /// Whether or not to enable the global memory limiter.
+    ///
+    /// When set to `false`, the global memory limiter will operate in a no-op mode. All calls to use it will never exert
+    /// backpressure, and only the inherent memory bounds of the running components will influence memory usage.
+    ///
+    /// Defaults to `true`.
+    #[serde(default = "default_enable_global_limiter")]
+    enable_global_limiter: bool,
+}
+
+impl MemoryBoundsConfiguration {
+    /// Attempts to read memory bounds configuration from the provided configuration.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs during deserialization, an error will be returned.
+    pub fn try_from_config(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        let mut config = config
+            .as_typed::<Self>()
+            .error_context("Failed to parse memory bounds configuration.")?;
+
+        if config.memory_limit.is_none() {
+            // Try to pull configured memory limit from Cgroup if running in a containerized environment.
+            if let Ok(value) = env::var("DOCKER_DD_AGENT") {
+                if !value.is_empty() {
+                    let cgroup_memory_reader = CgroupMemoryParser;
+                    if let Some(memory) = cgroup_memory_reader.parse() {
+                        info!(
+                            "Setting memory limit to {} based on detected cgroups limit.",
+                            memory.display().si()
+                        );
+                        config.memory_limit = Some(memory);
+                    }
+                }
+            }
+        }
+
+        // Try constructing the initial grant based on the configuration as a smoke test to validate the values.
+        if let Some(limit) = config.memory_limit {
+            let _ = MemoryGrant::with_slop_factor(limit.as_u64() as usize, config.memory_slop_factor)
+                .error_context("Given memory limit and/or slop factor invalid.")?;
+        }
+
+        Ok(config)
+    }
+
+    /// Gets the initial memory grant based on the configuration.
+    pub fn get_initial_grant(&self) -> Option<MemoryGrant> {
+        self.memory_limit.map(|limit| {
+            MemoryGrant::with_slop_factor(limit.as_u64() as usize, self.memory_slop_factor)
+                .expect("memory limit should be valid")
+        })
+    }
+}
+
+/// Initializes the memory bounds system and verifies any configured bounds.
+///
+/// If no memory limit is configured, or if the populated memory bounds fit within the configured memory limit,
+/// `Ok(MemoryLimiter)` is returned. The memory limiter can be used as a global limiter for the process, allowing
+/// callers to cooperatively participate in staying within the configured memory bounds by blocking when used memory
+/// exceeds the configured limit, until it returns below the limit. The limiter uses the effective memory limit, based
+/// on the configured slop factor.
+///
+/// # Errors
+///
+/// If the bounds could not be validated, an error is returned.
+pub fn initialize_memory_bounds(
+    configuration: MemoryBoundsConfiguration, component_registry: &ComponentRegistry,
+) -> Result<MemoryLimiter, GenericError> {
+    let initial_grant = match configuration.memory_limit {
+        Some(limit) => MemoryGrant::with_slop_factor(limit.as_u64() as usize, configuration.memory_slop_factor)?,
+        None => {
+            info!("No memory limit set for the process. Skipping memory bounds verification.");
+            return Ok(MemoryLimiter::noop());
+        }
+    };
+
+    let verified_bounds = match component_registry.verify_bounds(initial_grant) {
+        Ok(verified_bounds) => verified_bounds,
+        Err(e) => {
+            error!("Failed to verify memory bounds: {}.", e);
+
+            let bounds = component_registry.as_bounds();
+            print_bounds(&bounds);
+
+            return Err(generic_error!(
+                "Configured memory limit is insufficient for the current configuration."
+            ));
+        }
+    };
+
+    let limiter = if configuration.enable_global_limiter {
+        MemoryLimiter::new(initial_grant)
+            .ok_or_else(|| generic_error!("Memory statistics cannot be gathered on this system."))
+    } else {
+        Ok(MemoryLimiter::noop())
+    }?;
+
+    info!(
+		"Verified memory bounds. Minimum memory requirement of {}, with a calculated firm memory bound of {} out of {} available, from an initial {} grant.",
+		bytes_to_si_string(verified_bounds.total_minimum_required_bytes()),
+		bytes_to_si_string(verified_bounds.total_firm_limit_bytes()),
+		bytes_to_si_string(verified_bounds.total_available_bytes()),
+		bytes_to_si_string(initial_grant.initial_limit_bytes()),
+	);
+
+    print_bounds(verified_bounds.bounds());
+
+    Ok(limiter)
+}
+
+fn print_bounds(bounds: &ComponentBounds) {
+    info!("Breakdown of verified bounds:");
+    info!(
+        "- (root): {} minimum, {} firm",
+        bytes_to_si_string(bounds.total_minimum_required_bytes()),
+        bytes_to_si_string(bounds.total_firm_limit_bytes()),
+    );
+
+    let mut to_visit = VecDeque::new();
+    to_visit.extend(
+        bounds
+            .subcomponents()
+            .into_iter()
+            .map(|(name, bounds)| (1, name, bounds)),
+    );
+
+    while let Some((depth, component_name, component_bounds)) = to_visit.pop_front() {
+        info!(
+            "{:indent$}- {}: {} minimum, {} firm",
+            "",
+            component_name,
+            bytes_to_si_string(component_bounds.total_minimum_required_bytes()),
+            bytes_to_si_string(component_bounds.total_firm_limit_bytes()),
+            indent = depth * 2
+        );
+
+        let mut subcomponents = component_bounds.subcomponents().into_iter().collect::<Vec<_>>();
+        while let Some((subcomponent_name, subcomponent_bounds)) = subcomponents.pop() {
+            to_visit.push_front((depth + 1, subcomponent_name, subcomponent_bounds));
+        }
+    }
+
+    info!("");
+}
+
+struct ResourceGroupMetrics {
+    totals: ResourceStatsSnapshot,
+    allocated_bytes_total: Counter,
+    allocated_bytes_live: Gauge,
+    allocated_objects_total: Counter,
+    allocated_objects_live: Gauge,
+    deallocated_bytes_total: Counter,
+    deallocated_objects_total: Counter,
+    cpu_time_nanos_total: Counter,
+    cpu_time_nanos: Gauge,
+}
+
+impl ResourceGroupMetrics {
+    fn new(group_name: &str) -> Self {
+        Self {
+            totals: ResourceStatsSnapshot::empty(),
+            allocated_bytes_total: counter!(level: Level::DEBUG, "group_allocated_bytes_total", "group_id" => group_name.to_string()),
+            allocated_bytes_live: gauge!(level: Level::DEBUG, "group_allocated_bytes_live", "group_id" => group_name.to_string()),
+            allocated_objects_total: counter!(level: Level::DEBUG, "group_allocated_objects_total", "group_id" => group_name.to_string()),
+            allocated_objects_live: gauge!(level: Level::DEBUG, "group_allocated_objects_live", "group_id" => group_name.to_string()),
+            deallocated_bytes_total: counter!(level: Level::DEBUG, "group_deallocated_bytes_total", "group_id" => group_name.to_string()),
+            deallocated_objects_total: counter!(level: Level::DEBUG, "group_deallocated_objects_total", "group_id" => group_name.to_string()),
+            cpu_time_nanos_total: counter!(level: Level::DEBUG, "group_cpu_time_nanos_total", "group_id" => group_name.to_string()),
+            cpu_time_nanos: gauge!(level: Level::DEBUG, "group_cpu_time_nanos", "group_id" => group_name.to_string()),
+        }
+    }
+
+    fn update(&mut self, stats: &ResourceStats) {
+        let delta = stats.snapshot_delta(&self.totals);
+
+        self.allocated_bytes_total.increment(delta.allocated_bytes as u64);
+        self.allocated_objects_total.increment(delta.allocated_objects as u64);
+        self.deallocated_bytes_total.increment(delta.deallocated_bytes as u64);
+        self.deallocated_objects_total
+            .increment(delta.deallocated_objects as u64);
+        self.cpu_time_nanos_total.increment(delta.cpu_time_nanos);
+
+        self.totals.merge(&delta);
+        self.allocated_bytes_live
+            .set((self.totals.allocated_bytes - self.totals.deallocated_bytes) as f64);
+        self.allocated_objects_live
+            .set((self.totals.allocated_objects - self.totals.deallocated_objects) as f64);
+        self.cpu_time_nanos.set(self.totals.cpu_time_nanos as f64);
+    }
+}
+
+/// Initializes the resource telemetry subsystem.
+///
+/// This spawns a background task that will periodically collect resource usage statistics (memory allocations and CPU
+/// time), reporting which components are responsible for which portion of resource consumption as internal telemetry.
+///
+/// # Errors
+///
+/// If the resource telemetry subsystem has already been initialized, an error will be returned.
+pub(crate) async fn initialize_resource_telemetry() -> Result<(), GenericError> {
+    // Simple initialization guard to prevent multiple calls to this function.
+    static INIT: AtomicBool = AtomicBool::new(false);
+    if INIT.swap(true, Relaxed) {
+        return Err(generic_error!("Resource telemetry subsystem already initialized."));
+    }
+
+    // We can't enforce, at compile-time, that the tracking allocator must be installed if a caller is trying to
+    // initialize the allocator's reporting infrastructure... but we can at least warn them if we detect it's not
+    // installed here at runtime.
+    if !ResourceGroupRegistry::allocator_installed() {
+        warn!("Tracking allocator not installed. Memory telemetry will not be available.");
+    }
+
+    // Spawn the background task that will periodically collect resource usage statistics.
+    spawn_traced_named("resource-telemetry-collector", async {
+        let mut metrics = HashMap::new();
+
+        loop {
+            sleep(Duration::from_secs(1)).await;
+
+            ResourceGroupRegistry::global().visit_resource_groups(|group_name, stats| {
+                let group_metrics = match metrics.get_mut(group_name) {
+                    Some(group_metrics) => group_metrics,
+                    None => metrics
+                        .entry(group_name.to_string())
+                        .or_insert_with(|| ResourceGroupMetrics::new(group_name)),
+                };
+
+                group_metrics.update(stats);
+            });
+        }
+    });
+
+    Ok(())
+}
+
+struct CgroupMemoryParser;
+
+impl CgroupMemoryParser {
+    /// Parse memory limit from memory controller.
+    ///
+    /// Returns `None` if memory limit is set to max or if an error is encountered while parsing.
+    fn parse(self) -> Option<ByteSize> {
+        let contents = fs::read_to_string("/proc/self/cgroup").ok()?;
+        let parts: Vec<&str> = contents.trim().split("\n").collect();
+        // CgroupV2 has unified controllers.
+        if parts.len() == 1 {
+            return self.parse_controller_v2(parts[0]);
+        }
+        for line in parts {
+            if line.contains(":memory:") {
+                return self.parse_controller_v1(line);
+            }
+        }
+        None
+    }
+
+    fn parse_controller_v1(self, controller: &str) -> Option<ByteSize> {
+        let path = controller.split(":").nth(2)?;
+        let memory_path = format!("/sys/fs/cgroup/memory{}/memory.limit_in_bytes", path);
+        let raw_memory_limit = fs::read_to_string(memory_path).ok()?;
+        self.convert_to_bytesize(&raw_memory_limit)
+    }
+
+    fn parse_controller_v2(self, controller: &str) -> Option<ByteSize> {
+        let path = controller.split(":").nth(2)?;
+        let memory_path = format!("/sys/fs/cgroup{}/memory.max", path);
+        let raw_memory_limit = fs::read_to_string(memory_path).ok()?;
+        self.convert_to_bytesize(&raw_memory_limit)
+    }
+
+    fn convert_to_bytesize(self, s: &str) -> Option<ByteSize> {
+        let memory = s.trim().to_string();
+        if memory == "max" {
+            return None;
+        }
+        memory.parse::<ByteSize>().ok()
+    }
+}
+
+fn bytes_to_si_string(bytes: usize) -> bytesize::Display {
+    ByteSize::b(bytes as u64).display().si()
+}
