@@ -364,7 +364,7 @@ impl TraceSampler {
                 // Run probabilistic sampler - use root span's trace ID
                 let root_trace_id = trace.spans()[root_span_idx].trace_id();
                 if self.sample_probabilistic(root_trace_id) {
-                    decision_maker = DECISION_MAKER_PROBABILISTIC; // probabilistic sampling
+                    decision_maker = DECISION_MAKER_PROBABILISTIC;
                     prob_keep = true;
 
                     if let Some(root_span) = trace.spans_mut().get_mut(root_span_idx) {
@@ -464,7 +464,11 @@ impl TraceSampler {
         };
 
         let meta = root_span_value.meta_mut();
-        if priority > 0 {
+        // When the APM-level probabilistic sampler is used with OTLP traces, the DD Agent writes
+        // _dd.p.dm to trace chunk tags only (not span meta). For the legacy OTLP sampling path,
+        // it is written to both. We match that behavior by skipping the span meta write only when
+        // both conditions hold; the DM value still flows through TraceSampling to the encoder.
+        if priority > 0 && !(is_otlp && self.probabilistic_sampler_enabled) {
             if let Some(dm) = decision_maker_meta.as_ref() {
                 meta.insert(MetaString::from(TAG_DECISION_MAKER), dm.clone());
             }
