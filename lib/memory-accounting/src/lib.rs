@@ -1,15 +1,17 @@
-//! Building blocks for declaring and enforcing memory bounds for components.
+//! Building blocks for process-level resource accounting, including memory bounds enforcement and
+//! CPU usage tracking.
 //!
 //! ## Overview
 //!
-//! This crate provides a three-pronged approach to memory accounting:
+//! This crate provides a four-pronged approach to process accounting:
 //!
 //! - memory bounds (components declare their _expected_ memory usage)
 //! - allocation tracking (tracking _actual_ memory usage)
 //! - memory limiting (enforcing _maximum_ memory usage)
+//! - CPU tracking (tracking per-component CPU time consumption)
 //!
 //! Through this approach, data planes can be vastly more resilient to memory exhaustion or
-//! exceeding externally-applied memory limits.
+//! exceeding externally-applied memory limits, and gain visibility into per-component CPU usage.
 //!
 //! ## Memory bounds
 //!
@@ -53,13 +55,23 @@
 //!
 //! ## Memory limiting
 //!
-//! Memory limiting is the final prong in our approach to memory accounting.
+//! Memory limiting is the final prong in our approach to process accounting.
 //!
 //! When the application is approaching its configured memory limit, or is exceeding the limit, a
 //! mechanism is needed to slow down the rate of memory growth. The global memory limiter is a
 //! mechanism for cooperatively applying backpressure in order to limit the rate of work, and
 //! thereby limit the rate of allocations. Components participate by utilizing the global memory
 //! limiter, which conditionally applies small delays in order to artificially generate backpressure.
+//!
+//! ## CPU tracking
+//!
+//! CPU tracking provides per-component visibility into CPU time consumption. Using the
+//! `CLOCK_THREAD_CPUTIME_ID` clock on Linux, the [`Tracked`][allocator::Tracked] future wrapper
+//! measures the thread CPU time consumed during each poll of the inner future, and attributes it
+//! to the component's resource group.
+//!
+//! This allows operators to understand which components are consuming the most CPU time, aiding in
+//! capacity planning and performance optimization. On non-Linux platforms, CPU tracking is a no-op.
 #![deny(warnings)]
 #![deny(missing_docs)]
 
@@ -71,6 +83,7 @@ use std::collections::HashMap;
 pub mod test_util;
 
 pub mod allocator;
+pub(crate) mod cpu;
 mod api;
 pub use self::api::MemoryAPIHandler;
 

@@ -18,7 +18,7 @@ where
     F: Future<Output = T> + Send + 'static,
     T: Send + 'static,
 {
-    tokio::spawn(f.in_current_span().in_current_allocation_group())
+    tokio::spawn(f.in_current_span().in_current_resource_group())
 }
 
 /// Helper trait for providing traced spawning when using `JoinSet<T>`.
@@ -40,7 +40,7 @@ impl<T> JoinSetExt<T> for JoinSet<T> {
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
-        self.spawn(f.in_current_span().in_current_allocation_group())
+        self.spawn(f.in_current_span().in_current_resource_group())
     }
 }
 
@@ -63,6 +63,6 @@ impl<T> HandleExt<T> for Handle {
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
-        self.spawn(f.in_current_span().in_current_allocation_group())
+        self.spawn(f.in_current_span().in_current_resource_group())
     }
 }

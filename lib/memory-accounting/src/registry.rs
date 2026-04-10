@@ -6,7 +6,7 @@ use std::{
 
 use crate::UsageExpr;
 use crate::{
-    allocator::{AllocationGroupRegistry, AllocationGroupToken},
+    allocator::{ResourceGroupRegistry, ResourceGroupToken},
     api::MemoryAPIHandler,
     BoundsVerifier, ComponentBounds, MemoryBounds, MemoryGrant, VerifiedBounds, VerifierError,
 };
@@ -14,7 +14,7 @@ use crate::{
 pub(crate) struct ComponentMetadata {
     full_name: Option<String>,
     bounds: ComponentBounds,
-    token: Option<AllocationGroupToken>,
+    token: Option<ResourceGroupToken>,
     subcomponents: HashMap<String, Arc<Mutex<ComponentMetadata>>>,
 }
 
@@ -82,18 +82,18 @@ impl ComponentMetadata {
         }
     }
 
-    fn token(&mut self) -> AllocationGroupToken {
+    fn token(&mut self) -> ResourceGroupToken {
         match self.token {
             Some(token) => token,
             None => match self.full_name.as_deref() {
                 Some(full_name) => {
-                    let allocator_component_registry = AllocationGroupRegistry::global();
-                    let token = allocator_component_registry.register_allocation_group(full_name);
+                    let allocator_component_registry = ResourceGroupRegistry::global();
+                    let token = allocator_component_registry.register_resource_group(full_name);
                     self.token = Some(token);
 
                     token
                 }
-                None => AllocationGroupToken::root(),
+                None => ResourceGroupToken::root(),
             },
         }
     }
@@ -151,7 +151,7 @@ impl ComponentMetadata {
 ///
 /// ## Allocation tracking
 ///
-/// Every component is also able to be registered with its own allocation group when using the tracking allocator
+/// Every component is also able to be registered with its own resource group when using the tracking allocator
 /// implementation. This is done on demand when the component's token is requested, which avoids polluting the tracking
 /// allocator with components that are never actually used, such as those used for organizational/aesthetic purposes.
 pub struct ComponentRegistry {
@@ -189,7 +189,7 @@ impl ComponentRegistry {
     ///
     /// If the component is the root component (has no name), the root allocation token is returned.  Otherwise, the
     /// component is registered (using its full name) if it hasn't already been, and that token is returned.
-    pub fn token(&mut self) -> AllocationGroupToken {
+    pub fn token(&mut self) -> ResourceGroupToken {
         let mut inner = self.inner.lock().unwrap();
         inner.token()
     }

@@ -395,13 +395,13 @@ impl TopologyBlueprint {
             let component_context = ComponentContext::source(id.clone());
             let source = builder
                 .build(component_context)
-                .track_allocations(allocation_token)
+                .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build source '{}'.", id))?;
 
             sources.insert(
                 id,
-                RegisteredComponent::new(source.track_allocations(allocation_token), component_registry),
+                RegisteredComponent::new(source.track_resources(allocation_token), component_registry),
             );
         }
 
@@ -413,13 +413,13 @@ impl TopologyBlueprint {
             let component_context = ComponentContext::relay(id.clone());
             let relay = builder
                 .build(component_context)
-                .track_allocations(allocation_token)
+                .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build relay '{}'.", id))?;
 
             relays.insert(
                 id,
-                RegisteredComponent::new(relay.track_allocations(allocation_token), component_registry),
+                RegisteredComponent::new(relay.track_resources(allocation_token), component_registry),
             );
         }
 
@@ -431,13 +431,13 @@ impl TopologyBlueprint {
             let component_context = ComponentContext::decoder(id.clone());
             let decoder = builder
                 .build(component_context)
-                .track_allocations(allocation_token)
+                .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build decoder '{}'.", id))?;
 
             decoders.insert(
                 id,
-                RegisteredComponent::new(decoder.track_allocations(allocation_token), component_registry),
+                RegisteredComponent::new(decoder.track_resources(allocation_token), component_registry),
             );
         }
 
@@ -449,13 +449,13 @@ impl TopologyBlueprint {
             let component_context = ComponentContext::transform(id.clone());
             let transform = builder
                 .build(component_context)
-                .track_allocations(allocation_token)
+                .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build transform '{}'.", id))?;
 
             transforms.insert(
                 id,
-                RegisteredComponent::new(transform.track_allocations(allocation_token), component_registry),
+                RegisteredComponent::new(transform.track_resources(allocation_token), component_registry),
             );
         }
 
@@ -467,13 +467,13 @@ impl TopologyBlueprint {
             let component_context = ComponentContext::destination(id.clone());
             let destination = builder
                 .build(component_context)
-                .track_allocations(allocation_token)
+                .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build destination '{}'.", id))?;
 
             destinations.insert(
                 id,
-                RegisteredComponent::new(destination.track_allocations(allocation_token), component_registry),
+                RegisteredComponent::new(destination.track_resources(allocation_token), component_registry),
             );
         }
 
@@ -485,13 +485,13 @@ impl TopologyBlueprint {
             let component_context = ComponentContext::encoder(id.clone());
             let encoder = builder
                 .build(component_context)
-                .track_allocations(allocation_token)
+                .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build encoder '{}'.", id))?;
 
             encoders.insert(
                 id,
-                RegisteredComponent::new(encoder.track_allocations(allocation_token), component_registry),
+                RegisteredComponent::new(encoder.track_resources(allocation_token), component_registry),
             );
         }
 
@@ -503,13 +503,13 @@ impl TopologyBlueprint {
             let component_context = ComponentContext::forwarder(id.clone());
             let forwarder = builder
                 .build(component_context)
-                .track_allocations(allocation_token)
+                .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build forwarder '{}'.", id))?;
 
             forwarders.insert(
                 id,
-                RegisteredComponent::new(forwarder.track_allocations(allocation_token), component_registry),
+                RegisteredComponent::new(forwarder.track_resources(allocation_token), component_registry),
             );
         }
 

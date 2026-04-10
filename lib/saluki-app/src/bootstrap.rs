@@ -4,8 +4,8 @@ use saluki_config::GenericConfiguration;
 use saluki_error::{ErrorContext as _, GenericError};
 
 use crate::{
+    accounting::initialize_resource_telemetry,
     logging::{initialize_logging, LoggingConfiguration, LoggingGuard},
-    memory::initialize_allocator_telemetry,
     metrics::initialize_metrics,
     tls::initialize_tls,
 };
@@ -72,9 +72,9 @@ impl AppBootstrapper {
 
         // Initialize everything else.
         initialize_tls().error_context("Failed to initialize TLS subsystem.")?;
-        initialize_allocator_telemetry()
+        initialize_resource_telemetry()
             .await
-            .error_context("Failed to initialize allocator telemetry subsystem.")?;
+            .error_context("Failed to initialize resource telemetry subsystem.")?;
         initialize_metrics(self.metrics_config)
             .await
             .error_context("Failed to initialize metrics subsystem.")?;
