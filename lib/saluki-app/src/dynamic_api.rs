@@ -8,6 +8,7 @@ use std::{
     convert::Infallible,
     future::Future,
     net::SocketAddr,
+    panic::{catch_unwind, AssertUnwindSafe},
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -285,14 +286,54 @@ fn create_dynamic_router() -> (Arc<ArcSwap<Router>>, Router) {
     (inner, outer)
 }
 
+/// Attempts to merge `other` into `base`, returning the merged router on success.
+///
+/// `Router::merge` panics when two routers define overlapping routes (same path and HTTP method) and axum exposes no
+/// fallible alternative. Since `Router` is opaque -- there is no public API to inspect which paths/methods a router
+/// carries -- we cannot detect conflicts ahead of time.
+///
+/// To recover from the panic without losing the accumulated router state, we clone `base` before the merge attempt.
+/// The clone is passed into `catch_unwind`: if the merge panics, only the clone is in a partially-mutated state and it
+/// is simply dropped. The original `base` remains intact and is returned as-is. `AssertUnwindSafe` is sound here
+/// because:
+///
+/// - The closure captures only the clone (`candidate`) and a clone of `other`. Neither aliases mutable state that
+///   outlives the closure.
+/// - The panic originates from a deterministic format string in axum's `panic_on_err!` macro -- no locks are held and
+///   no resources are leaked in the panic path.
+/// - On panic, `candidate` is dropped without further use, so any internal inconsistency is irrelevant.
+fn try_merge_router(base: &Router, id: &Identifier, other: &Router) -> Result<Router, String> {
+    let candidate = base.clone();
+    match catch_unwind(AssertUnwindSafe(|| candidate.merge(other.clone()))) {
+        Ok(merged) => Ok(merged),
+        Err(payload) => {
+            let reason = payload
+                .downcast_ref::<String>()
+                .map(|s| s.as_str())
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("unknown");
+            Err(format!("failed to merge dynamic handler {id:?}: {reason}"))
+        }
+    }
+}
+
 /// Rebuilds the merged inner router from all currently-registered handlers and stores it in the [`ArcSwap`].
 fn rebuild_router(inner_router: &Arc<ArcSwap<Router>>, handlers: &FastIndexMap<Identifier, Router>) {
     let mut merged = Router::new();
-    for router in handlers.values() {
-        merged = merged.merge(router.clone());
+    let mut skipped = 0usize;
+
+    for (id, router) in handlers.iter() {
+        match try_merge_router(&merged, id, router) {
+            Ok(new_merged) => merged = new_merged,
+            Err(reason) => {
+                warn!(%reason, "Skipping dynamic handler due to overlapping route.");
+                skipped += 1;
+            }
+        }
     }
+
     inner_router.store(Arc::new(merged));
-    debug!(handler_count = handlers.len(), "Rebuilt inner router.");
+    debug!(handler_count = handlers.len(), skipped, "Rebuilt inner router.");
 }
 
 #[cfg(test)]
@@ -604,5 +645,103 @@ mod tests {
 
         let body = assert_status_eventually(harness.addr, "/secret", StatusCode::OK).await;
         assert_eq!(body, "not secret");
+    }
+
+    #[tokio::test]
+    async fn overlapping_routes_do_not_crash_server() {
+        let harness = setup_test_harness(EndpointType::Unprivileged).await;
+
+        // Assert a route at /health with identifier "health-1".
+        let route_1 = DynamicRoute::http(
+            EndpointType::Unprivileged,
+            SimpleHandler {
+                path: "/health",
+                body: "health-1",
+            },
+        );
+        harness.assert_route("health-1", route_1).await;
+        let body = assert_status_eventually(harness.addr, "/health", StatusCode::OK).await;
+        assert_eq!(body, "health-1");
+
+        // Assert a DIFFERENT identifier with the SAME path/method. Previously this caused a panic
+        // in rebuild_router. The server should remain alive with first-writer-wins semantics.
+        let route_2 = DynamicRoute::http(
+            EndpointType::Unprivileged,
+            SimpleHandler {
+                path: "/health",
+                body: "health-2",
+            },
+        );
+        harness.assert_route("health-2", route_2).await;
+
+        // Give the event loop time to process and rebuild.
+        sleep(Duration::from_millis(200)).await;
+
+        // Server is still alive; first handler wins.
+        let (status, body) = http_get(harness.addr, "/health").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, "health-1");
+
+        // Non-overlapping routes are unaffected.
+        let route_info = DynamicRoute::http(
+            EndpointType::Unprivileged,
+            SimpleHandler {
+                path: "/info",
+                body: "info",
+            },
+        );
+        harness.assert_route("info", route_info).await;
+        let body = assert_status_eventually(harness.addr, "/info", StatusCode::OK).await;
+        assert_eq!(body, "info");
+
+        // Retract the first /health handler -- the previously-skipped second handler should now
+        // become active since the conflict no longer exists.
+        harness.retract_route("health-1").await;
+        let body = assert_status_eventually(harness.addr, "/health", StatusCode::OK).await;
+        assert_eq!(body, "health-2");
+    }
+
+    #[tokio::test]
+    async fn overlapping_route_retraction_then_reassertion() {
+        let harness = setup_test_harness(EndpointType::Unprivileged).await;
+
+        // Assert two overlapping handlers.
+        let route_a = DynamicRoute::http(
+            EndpointType::Unprivileged,
+            SimpleHandler {
+                path: "/overlap",
+                body: "a",
+            },
+        );
+        let route_b = DynamicRoute::http(
+            EndpointType::Unprivileged,
+            SimpleHandler {
+                path: "/overlap",
+                body: "b",
+            },
+        );
+        harness.assert_route("ov-a", route_a).await;
+        harness.assert_route("ov-b", route_b).await;
+
+        // Server alive; first writer wins.
+        let body = assert_status_eventually(harness.addr, "/overlap", StatusCode::OK).await;
+        assert_eq!(body, "a");
+
+        // Retract both.
+        harness.retract_route("ov-a").await;
+        harness.retract_route("ov-b").await;
+        assert_status_eventually(harness.addr, "/overlap", StatusCode::NOT_FOUND).await;
+
+        // Re-assert a single handler -- should work cleanly.
+        let route_c = DynamicRoute::http(
+            EndpointType::Unprivileged,
+            SimpleHandler {
+                path: "/overlap",
+                body: "c",
+            },
+        );
+        harness.assert_route("ov-c", route_c).await;
+        let body = assert_status_eventually(harness.addr, "/overlap", StatusCode::OK).await;
+        assert_eq!(body, "c");
     }
 }
