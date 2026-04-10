@@ -68,15 +68,15 @@ impl Metrics {
 }
 
 /// Internal state for the processor.
-pub(super) struct ProcessorState {
+pub struct ProcessorState {
     config: RingBufferConfig,
-    pub(super) compressed_segments: CompressedSegments,
-    pub(super) event_buffer: EventBuffer,
+    pub compressed_segments: CompressedSegments,
+    pub event_buffer: EventBuffer,
     metrics: Metrics,
 }
 
 impl ProcessorState {
-    pub(super) fn new(config: RingBufferConfig) -> Self {
+    pub fn new(config: RingBufferConfig) -> Self {
         let event_buffer = EventBuffer::from_compression_level(config.compression_level);
         Self {
             config,
@@ -86,11 +86,11 @@ impl ProcessorState {
         }
     }
 
-    pub(super) fn total_size_bytes(&self) -> usize {
+    pub fn total_size_bytes(&self) -> usize {
         self.compressed_segments.size_bytes() + self.event_buffer.size_bytes()
     }
 
-    pub(super) fn add_event(&mut self, event: &CondensedEvent) -> Result<(), GenericError> {
+    pub fn add_event(&mut self, event: &CondensedEvent) -> Result<(), GenericError> {
         // Encode the event into our event buffer.
         self.event_buffer.encode_event(event)?;
         self.metrics.events_total += 1;
@@ -142,13 +142,13 @@ impl ProcessorState {
 }
 
 /// Shared state for the write side of the ring buffer.
-pub(super) struct WriterState {
+pub struct WriterState {
     events_tx: mpsc::blocking::Sender<CondensedEvent>,
     events_tx_closed: AtomicBool,
 }
 
 impl WriterState {
-    pub(super) fn add_event(&self, event: &Event<'_>) {
+    pub fn add_event(&self, event: &Event<'_>) {
         thread_local! {
             static VALUE_BUF: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
         }
@@ -169,7 +169,7 @@ impl WriterState {
     }
 }
 
-pub(super) fn create_and_spawn_processor(config: RingBufferConfig) -> WriterState {
+pub fn create_and_spawn_processor(config: RingBufferConfig) -> WriterState {
     let (events_tx, events_rx) = mpsc::blocking::channel(1024);
     let writer_state = WriterState {
         events_tx,

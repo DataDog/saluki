@@ -12,21 +12,21 @@ use super::codec::{decode_varint, write_length_prefixed};
 /// [`Metadata`] rather than copying individual metadata fields, making hydration cheaper (one
 /// pointer store vs four field copies) and the struct smaller.
 #[derive(Clone, Default)]
-pub(super) struct CondensedEvent {
+pub struct CondensedEvent {
     /// Unix timestamp when the event was logged, in nanoseconds.
-    pub(super) timestamp_nanos: u128,
+    pub timestamp_nanos: u128,
 
     /// Static callsite metadata (level, target, file, line). Set by the hydrator; `None` only in
     /// the default-initialized thingbuf arena slots before first use.
-    pub(super) metadata: Option<&'static Metadata<'static>>,
+    pub metadata: Option<&'static Metadata<'static>>,
 
     /// The main log message.
-    pub(super) message: String,
+    pub message: String,
 
     /// Additional structured fields, stored as sequential varint-length-prefixed key-value pairs.
     ///
     /// Each field is encoded as: `varint(key_len) key_bytes varint(value_len) value_bytes`.
-    pub(super) fields: Vec<u8>,
+    pub fields: Vec<u8>,
 }
 
 /// A decoded log event reconstructed from a compressed segment.
@@ -60,15 +60,14 @@ pub struct DecodedEvent<'a> {
     pub line: Option<u32>,
 }
 
+#[allow(dead_code)]
 impl<'a> DecodedEvent<'a> {
     /// Returns the number of bytes that this event occupies in memory.
-    #[allow(dead_code)] // Useful for diagnostics; exercised in tests.
     pub fn size_bytes(&self) -> usize {
         std::mem::size_of::<Self>() + self.message.capacity() + self.fields.capacity()
     }
 
     /// Returns an iterator over the decoded field key-value pairs.
-    #[allow(dead_code)] // Will be used by the read API; exercised in tests.
     pub fn iter_fields(&self) -> FieldIter<'_> {
         FieldIter {
             buf: &self.fields,
@@ -78,10 +77,10 @@ impl<'a> DecodedEvent<'a> {
 }
 
 /// Iterator over varint-length-prefixed field key-value pairs.
-#[allow(dead_code)] // Will be used by the read API; exercised in tests.
+#[allow(dead_code)]
 pub struct FieldIter<'a> {
-    pub(super) buf: &'a [u8],
-    pub(super) idx: usize,
+    pub buf: &'a [u8],
+    pub idx: usize,
 }
 
 impl<'a> FieldIter<'a> {
@@ -118,13 +117,13 @@ impl<'a> Iterator for FieldIter<'a> {
 
 /// Wrapper that pairs a [`CondensedEvent`] with a reusable scratch buffer for `Visit` field
 /// formatting.
-pub(super) struct EventHydrator<'a> {
+pub struct EventHydrator<'a> {
     event: &'a mut CondensedEvent,
     value_buf: &'a mut String,
 }
 
 impl<'a> EventHydrator<'a> {
-    pub(super) fn hydrate(event: &'a mut CondensedEvent, value_buf: &'a mut String, tracing_event: &Event<'_>) {
+    pub fn hydrate(event: &'a mut CondensedEvent, value_buf: &'a mut String, tracing_event: &Event<'_>) {
         event.message.clear();
         event.fields.clear();
 
