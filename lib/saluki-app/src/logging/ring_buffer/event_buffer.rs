@@ -8,7 +8,7 @@ use super::segment::CompressedSegment;
 use super::skeleton::SkeletonParser;
 use super::string_table::StringTable;
 
-pub(super) const FILE_INDEX_NONE: usize = usize::MAX;
+pub const FILE_INDEX_NONE: usize = usize::MAX;
 
 /// Columnar event buffer that accumulates log events into per-field column buffers.
 ///
@@ -36,7 +36,7 @@ pub(super) const FILE_INDEX_NONE: usize = usize::MAX;
 /// [col: msg_variables]            -- length-prefixed blob: per-event varint(var_count) [varint(len) bytes ...]
 /// [col: field_values]             -- concatenated varint-length-prefixed value byte strings
 /// ```
-pub(super) struct EventBuffer {
+pub struct EventBuffer {
     // Column accumulators.
     col_timestamps: Vec<u8>,
     col_levels: Vec<usize>,
@@ -58,7 +58,7 @@ pub(super) struct EventBuffer {
 }
 
 impl EventBuffer {
-    pub(super) fn from_compression_level(compression_level: i32) -> Self {
+    pub fn from_compression_level(compression_level: i32) -> Self {
         EventBuffer {
             col_timestamps: Vec::new(),
             col_levels: Vec::new(),
@@ -80,7 +80,7 @@ impl EventBuffer {
         }
     }
 
-    pub(super) fn size_bytes(&self) -> usize {
+    pub fn size_bytes(&self) -> usize {
         // Estimate the serialized payload size (pre-compression). The byte-based columns
         // (timestamps, messages, fields, lines) are already in their serialized form.
         // RLE-encoded columns (levels, targets, files) compress dramatically -- the serialized
@@ -96,7 +96,7 @@ impl EventBuffer {
             + self.col_file_indices.len()
     }
 
-    pub(super) fn event_count(&self) -> usize {
+    pub fn event_count(&self) -> usize {
         self.event_count
     }
 
@@ -121,7 +121,7 @@ impl EventBuffer {
         self.string_table.clear();
     }
 
-    pub(super) fn encode_event(&mut self, event: &CondensedEvent) -> Result<(), GenericError> {
+    pub fn encode_event(&mut self, event: &CondensedEvent) -> Result<(), GenericError> {
         let meta = event
             .metadata
             .expect("metadata must be set on events passed to encode_event");
@@ -184,7 +184,7 @@ impl EventBuffer {
         Ok(())
     }
 
-    pub(super) fn flush(&mut self) -> Result<CompressedSegment, GenericError> {
+    pub fn flush(&mut self) -> Result<CompressedSegment, GenericError> {
         // Build two separate payloads for split compression:
         //   1. Metadata: string table, event count, timestamps, levels, targets, files, lines
         //   2. Content: messages, fields (high-entropy text data)

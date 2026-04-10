@@ -1,5 +1,5 @@
 /// Encodes a `usize` as a variable-length integer (LEB128) into `buf`.
-pub(super) fn encode_varint(mut value: usize, buf: &mut Vec<u8>) {
+pub fn encode_varint(mut value: usize, buf: &mut Vec<u8>) {
     loop {
         let mut byte = (value & 0x7F) as u8;
         value >>= 7;
@@ -14,7 +14,7 @@ pub(super) fn encode_varint(mut value: usize, buf: &mut Vec<u8>) {
 }
 
 /// Encodes a `u128` as a variable-length integer (LEB128) into `buf`.
-pub(super) fn encode_varint_u128(mut value: u128, buf: &mut Vec<u8>) {
+pub fn encode_varint_u128(mut value: u128, buf: &mut Vec<u8>) {
     loop {
         let mut byte = (value & 0x7F) as u8;
         value >>= 7;
@@ -32,7 +32,7 @@ pub(super) fn encode_varint_u128(mut value: u128, buf: &mut Vec<u8>) {
 ///
 /// Returns `(value, bytes_consumed)`, or `None` if the buffer is too short or the varint is
 /// malformed.
-pub(super) fn decode_varint(buf: &[u8], mut idx: usize) -> Option<(usize, usize)> {
+pub fn decode_varint(buf: &[u8], mut idx: usize) -> Option<(usize, usize)> {
     let start = idx;
     let mut value: usize = 0;
     let mut shift = 0;
@@ -54,7 +54,7 @@ pub(super) fn decode_varint(buf: &[u8], mut idx: usize) -> Option<(usize, usize)
 }
 
 /// Decodes a `u128` variable-length integer (LEB128) from `buf` starting at `idx`.
-pub(super) fn decode_varint_u128(buf: &[u8], mut idx: usize) -> Option<(u128, usize)> {
+pub fn decode_varint_u128(buf: &[u8], mut idx: usize) -> Option<(u128, usize)> {
     let start = idx;
     let mut value: u128 = 0;
     let mut shift = 0;
@@ -76,7 +76,7 @@ pub(super) fn decode_varint_u128(buf: &[u8], mut idx: usize) -> Option<(u128, us
 }
 
 /// Encodes a log level as a single byte.
-pub(super) fn encode_level(level: &str) -> u8 {
+pub fn encode_level(level: &str) -> u8 {
     match level {
         "TRACE" => 0,
         "DEBUG" => 1,
@@ -88,7 +88,7 @@ pub(super) fn encode_level(level: &str) -> u8 {
 }
 
 /// Decodes a log level byte back to a static string.
-pub(super) fn decode_level(byte: u8) -> &'static str {
+pub fn decode_level(byte: u8) -> &'static str {
     match byte {
         0 => "TRACE",
         1 => "DEBUG",
@@ -100,13 +100,13 @@ pub(super) fn decode_level(byte: u8) -> &'static str {
 }
 
 /// Writes a varint-length-prefixed byte slice into `buf`.
-pub(super) fn write_length_prefixed(buf: &mut Vec<u8>, data: &[u8]) {
+pub fn write_length_prefixed(buf: &mut Vec<u8>, data: &[u8]) {
     encode_varint(data.len(), buf);
     buf.extend_from_slice(data);
 }
 
 /// RLE-encodes a column of small integers: varint(num_runs) [varint(run_len) varint(value) ...].
-pub(super) fn rle_encode(values: &[usize], buf: &mut Vec<u8>) {
+pub fn rle_encode(values: &[usize], buf: &mut Vec<u8>) {
     if values.is_empty() {
         encode_varint(0, buf);
         return;
@@ -135,7 +135,7 @@ pub(super) fn rle_encode(values: &[usize], buf: &mut Vec<u8>) {
 }
 
 /// Decodes an RLE-encoded column into a Vec of values.
-pub(super) fn rle_decode(buf: &[u8], idx: &mut usize) -> Option<Vec<usize>> {
+pub fn rle_decode(buf: &[u8], idx: &mut usize) -> Option<Vec<usize>> {
     let (num_runs, consumed) = decode_varint(buf, *idx)?;
     *idx += consumed;
 

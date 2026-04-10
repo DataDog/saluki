@@ -9,19 +9,7 @@ mod segment;
 mod skeleton;
 mod string_table;
 
-// Re-exports for the test module. These make `use super::*` in tests.rs pull in the
-// types and functions needed across all submodules.
-#[cfg(test)]
-use self::codec::*;
-#[cfg(test)]
-use self::event::*;
-#[cfg(test)]
-use self::event_buffer::*;
-#[cfg(test)]
-use self::processor::ProcessorState;
 use self::processor::{create_and_spawn_processor, WriterState};
-#[cfg(test)]
-use self::segment::*;
 
 const DEFAULT_MIN_UNCOMPRESSED_SEGMENT_SIZE_BYTES: usize = 128 * 1024;
 const DEFAULT_COMPRESSION_LEVEL: i32 = 19;
@@ -189,4 +177,275 @@ where
 }
 
 #[cfg(test)]
-mod tests;
+mod benchmarks;
+
+#[cfg(test)]
+mod tests {
+    use super::codec::*;
+    use super::event::*;
+    use super::event_buffer::*;
+    use super::processor::ProcessorState;
+    use super::segment::*;
+    use super::RingBufferConfig;
+
+    /// Declares a `static` [`Metadata`] and returns `&'static Metadata<'static>`.
+    ///
+    /// Usage: `test_metadata!(target: "my::target", level: tracing::Level::INFO, file: "foo.rs", line: 42)`
+    macro_rules! test_metadata {
+        (target: $target:expr, level: $level:expr, file: $file:expr, line: $line:expr) => {{
+            use tracing::callsite;
+            struct TestCallsite;
+            static META: tracing::Metadata<'static> = tracing::Metadata::new(
+                "test",
+                $target,
+                $level,
+                Some($file),
+                Some($line),
+                Some($target),
+                tracing::field::FieldSet::new(&[], tracing::callsite::Identifier(&TestCallsite)),
+                tracing::metadata::Kind::EVENT,
+            );
+            impl callsite::Callsite for TestCallsite {
+                fn set_interest(&self, _: tracing::subscriber::Interest) {}
+                fn metadata(&self) -> &tracing::Metadata<'_> {
+                    &META
+                }
+            }
+            &META
+        }};
+    }
+
+    fn encode_test_fields(pairs: &[(&str, &str)]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        for (key, value) in pairs {
+            write_length_prefixed(&mut buf, key.as_bytes());
+            write_length_prefixed(&mut buf, value.as_bytes());
+        }
+        buf
+    }
+
+    fn make_test_event(message: &str) -> CondensedEvent {
+        CondensedEvent {
+            timestamp_nanos: 1_000_000_000,
+            metadata: Some(test_metadata!(
+                target: "test::target",
+                level: tracing::Level::INFO,
+                file: "test.rs",
+                line: 42
+            )),
+            message: message.to_string(),
+            fields: encode_test_fields(&[("key1", "value1"), ("key2", "value2")]),
+        }
+    }
+
+    #[test]
+    fn round_trip_encode_decode() {
+        let event = make_test_event("hello world");
+
+        let mut buffer = EventBuffer::from_compression_level(zstd::DEFAULT_COMPRESSION_LEVEL);
+        buffer.encode_event(&event).unwrap();
+        assert_eq!(buffer.event_count(), 1);
+
+        let segment = buffer.flush().unwrap();
+        assert_eq!(segment.event_count(), 1);
+        assert!(segment.size_bytes() > 0);
+
+        let meta = event.metadata.unwrap();
+        let mut reader = segment.events().unwrap();
+        let decoded = reader.next().unwrap().expect("should have one event");
+
+        assert_eq!(decoded.timestamp_nanos, event.timestamp_nanos);
+        assert_eq!(decoded.level, meta.level().as_str());
+        assert_eq!(decoded.target, meta.target());
+        assert_eq!(decoded.message, event.message);
+        assert_eq!(decoded.fields, event.fields);
+        assert_eq!(decoded.file, meta.file());
+        assert_eq!(decoded.line, meta.line());
+
+        // No more events.
+        assert!(reader.next().unwrap().is_none());
+    }
+
+    #[test]
+    fn round_trip_multiple_events() {
+        let mut buffer = EventBuffer::from_compression_level(zstd::DEFAULT_COMPRESSION_LEVEL);
+
+        for i in 0..10 {
+            let event = make_test_event(&format!("message {}", i));
+            buffer.encode_event(&event).unwrap();
+        }
+        assert_eq!(buffer.event_count(), 10);
+
+        let segment = buffer.flush().unwrap();
+        assert_eq!(segment.event_count(), 10);
+
+        let mut reader = segment.events().unwrap();
+        for i in 0..10 {
+            let decoded = reader.next().unwrap().expect("should have event");
+            assert_eq!(decoded.message, format!("message {}", i));
+        }
+        assert!(reader.next().unwrap().is_none());
+    }
+
+    #[test]
+    fn segment_flush_on_size_threshold() {
+        let config = RingBufferConfig::default()
+            .with_min_uncompressed_segment_size_bytes(128) // Very small minimum segment size.
+            .with_max_ring_buffer_size_bytes(256); // Small ring buffer to trigger pressure quickly.
+
+        let mut state = ProcessorState::new(config);
+        assert_eq!(state.compressed_segments.segment_count(), 0);
+
+        // Add events until the ring buffer is under pressure and a segment is flushed.
+        for i in 0..50 {
+            let event = make_test_event(&format!("event number {}", i));
+            state.add_event(&event).unwrap();
+        }
+
+        // With a 128-byte min segment size and 256-byte ring buffer, we should have flushed at least one segment.
+        assert!(
+            state.compressed_segments.segment_count() > 0,
+            "expected at least one compressed segment"
+        );
+    }
+
+    #[test]
+    fn ring_buffer_eviction() {
+        let config = RingBufferConfig::default()
+            .with_min_uncompressed_segment_size_bytes(64) // Tiny minimum segment size.
+            .with_max_ring_buffer_size_bytes(256); // Very small ring buffer.
+
+        let mut state = ProcessorState::new(config);
+
+        // Add enough events to fill and overflow the ring buffer.
+        for i in 0..200 {
+            let event = make_test_event(&format!("event {}", i));
+            state.add_event(&event).unwrap();
+        }
+
+        // The total size should respect the limit (compressed segments + event buffer).
+        // The compressed segments alone should be within the limit.
+        assert!(
+            state.compressed_segments.size_bytes() <= 256,
+            "compressed segments size {} exceeds limit 256",
+            state.compressed_segments.size_bytes()
+        );
+    }
+
+    #[test]
+    fn ensure_size_limits_does_not_hang_when_event_buffer_exceeds_limit() {
+        // Regression test: ensure_size_limits must not infinite-loop when the event buffer
+        // alone exceeds max_ring_buffer_size_bytes and there are no compressed segments to drop.
+        let config = RingBufferConfig::default()
+            .with_min_uncompressed_segment_size_bytes(1024 * 1024) // Large, so no flush happens.
+            .with_max_ring_buffer_size_bytes(1); // Tiny limit -- event buffer will exceed this.
+
+        let mut state = ProcessorState::new(config);
+        let event = make_test_event("this event will exceed the ring buffer limit");
+
+        // This must return without hanging.
+        state.add_event(&event).unwrap();
+
+        // The event buffer should have the event even though it exceeds the limit,
+        // since there are no compressed segments to evict.
+        assert_eq!(state.event_buffer.event_count(), 1);
+        assert_eq!(state.compressed_segments.segment_count(), 0);
+    }
+
+    #[test]
+    fn reader_empty_buffer() {
+        // Build a valid columnar segment with 0 events (split into meta + content).
+        let mut meta = Vec::new();
+        encode_varint(0, &mut meta); // string table: 0 entries
+        encode_varint(0, &mut meta); // event count: 0
+        encode_varint(0, &mut meta); // timestamps column: 0 bytes
+        rle_encode(&[], &mut meta); // levels: empty RLE
+        rle_encode(&[], &mut meta); // target_indices: empty RLE
+        rle_encode(&[], &mut meta); // file_indices: empty RLE
+        encode_varint(0, &mut meta); // lines column: 0 bytes
+        rle_encode(&[], &mut meta); // field_counts: empty RLE
+        encode_varint(0, &mut meta); // field_key_indices: 0 bytes
+        rle_encode(&[], &mut meta); // msg_template_indices: empty RLE
+
+        let mut content = Vec::new();
+        encode_varint(0, &mut content); // message variables: 0 bytes
+                                        // field values: empty (rest of buffer)
+
+        let mut reader = CompressedSegmentReader::new(meta, content).unwrap();
+        assert!(reader.next().unwrap().is_none());
+    }
+
+    #[test]
+    fn reader_truncated_framing_returns_error() {
+        // A header that claims 100 events but has no column data.
+        let mut meta = Vec::new();
+        encode_varint(0, &mut meta); // string table: 0 entries
+        encode_varint(100, &mut meta); // event count: 100
+                                       // Missing all columns -- should fail during header decode.
+        assert!(
+            CompressedSegmentReader::new(meta, Vec::new()).is_err(),
+            "expected error on truncated data"
+        );
+    }
+
+    #[test]
+    fn varint_round_trip() {
+        for &value in &[0, 1, 127, 128, 255, 256, 16383, 16384, usize::MAX >> 1] {
+            let mut buf = Vec::new();
+            encode_varint(value, &mut buf);
+            let (decoded, consumed) = decode_varint(&buf, 0).expect("should decode");
+            assert_eq!(decoded, value, "varint round-trip failed for {}", value);
+            assert_eq!(consumed, buf.len());
+        }
+    }
+
+    #[test]
+    fn field_encoding_round_trip() {
+        let fields = encode_test_fields(&[("key1", "value1"), ("key2", "value2")]);
+        let event = DecodedEvent {
+            fields,
+            ..Default::default()
+        };
+
+        let pairs: Vec<_> = event.iter_fields().collect();
+        assert_eq!(pairs, vec![("key1", "value1"), ("key2", "value2")]);
+    }
+
+    #[test]
+    fn field_values_with_newlines_and_special_chars() {
+        let fields = encode_test_fields(&[
+            ("msg", "line1\nline2\nline3"),
+            ("json", "{\"key\": \"val\"}"),
+            ("empty", ""),
+        ]);
+        let event = DecodedEvent {
+            fields,
+            ..Default::default()
+        };
+
+        let pairs: Vec<_> = event.iter_fields().collect();
+        assert_eq!(pairs[0], ("msg", "line1\nline2\nline3"));
+        assert_eq!(pairs[1], ("json", "{\"key\": \"val\"}"));
+        assert_eq!(pairs[2], ("empty", ""));
+    }
+
+    #[test]
+    fn field_encoding_survives_compression_round_trip() {
+        let mut event = make_test_event("hello");
+        // Add a field with newlines to verify it survives the full pipeline.
+        write_length_prefixed(&mut event.fields, b"multiline");
+        write_length_prefixed(&mut event.fields, b"line1\nline2\nline3");
+
+        let mut buffer = EventBuffer::from_compression_level(zstd::DEFAULT_COMPRESSION_LEVEL);
+        buffer.encode_event(&event).unwrap();
+
+        let segment = buffer.flush().unwrap();
+        let mut reader = segment.events().unwrap();
+        let decoded = reader.next().unwrap().expect("should have event");
+
+        let pairs: Vec<_> = decoded.iter_fields().collect();
+        assert_eq!(pairs[0], ("key1", "value1"));
+        assert_eq!(pairs[1], ("key2", "value2"));
+        assert_eq!(pairs[2], ("multiline", "line1\nline2\nline3"));
+    }
+}
