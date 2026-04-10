@@ -485,17 +485,12 @@ impl TraceSampler {
         // decision_maker is the tag that indicates the decision maker (probabilistic, error, etc.)
         // root_span_idx is the index of the root span of the trace
         let (keep, priority, decision_maker, root_span_idx) = self.run_samplers(trace);
-        if keep {
+
+        // Apply sampling metadata and forward if kept, or if ETS (dropped non-error traces are
+        // forwarded with DroppedTrace=true, suppressing SSS/analytics).
+        if keep || self.error_tracking_standalone {
             if let Some(root_idx) = root_span_idx {
                 self.apply_sampling_metadata(trace, keep, priority, decision_maker, root_idx);
-            }
-            return true;
-        }
-
-        // ETS: forward dropped traces with DroppedTrace=true, suppressing SSS/analytics.
-        if self.error_tracking_standalone {
-            if let Some(root_idx) = root_span_idx {
-                self.apply_sampling_metadata(trace, false, priority, decision_maker, root_idx);
             }
             return true;
         }
