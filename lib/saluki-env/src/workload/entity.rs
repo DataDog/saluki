@@ -54,7 +54,7 @@ impl EntityId {
     /// - If the input starts with `cid-`, we treat it as a container ID.
     /// - If none of the above conditions are met, we assume the entire input is a container ID.
     ///
-    /// If the input fails to be parsed in a valid fashion (e.g., `in-` prefix but the remainder is not a valid
+    /// If the input fails to be parsed in a valid fashion (for example, `in-` prefix but the remainder is not a valid
     /// integer), or is empty, `None` is returned.
     pub fn from_local_data<S>(raw_local_data: S) -> Option<Self>
     where

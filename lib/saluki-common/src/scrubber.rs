@@ -29,7 +29,7 @@ pub struct Replacer {
     pub hints: Option<Vec<String>>,
 
     /// `repl` is the byte slice to replace the substring matching `regex`. It can use
-    /// the `regex` crate's replacement-string syntax (e.g., `$1` to refer to the
+    /// the `regex` crate's replacement-string syntax (for example, `$1` to refer to the
     /// first capture group).
     pub repl: Option<Vec<u8>>,
 
@@ -106,7 +106,7 @@ impl Default for Scrubber {
             repl_func: None,
         };
 
-        // Replacer for URI passwords (e.g., protocol://user:password@host)
+        // Replacer for URI passwords (for example, protocol://user:password@host)
         let uri_password_replacer = Replacer {
             regex: Some(Regex::new(r#"(?i)([a-z][a-z0-9+-.]+://|\b)([^:\s]+):([^\s|"]+)@"#).unwrap()),
             repl: Some(b"$1$2:********@".to_vec()),

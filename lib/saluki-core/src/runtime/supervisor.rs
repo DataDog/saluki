@@ -2,7 +2,7 @@ use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use saluki_common::collections::FastIndexMap;
-use saluki_error::{ErrorContext as _, GenericError};
+use saluki_error::GenericError;
 use snafu::{OptionExt as _, Snafu};
 use tokio::{
     pin, select,
@@ -15,7 +15,10 @@ use super::{
     restart::{RestartAction, RestartMode, RestartState, RestartStrategy},
     shutdown::{ProcessShutdown, ShutdownHandle},
 };
-use crate::runtime::process::{Process, ProcessExt as _};
+use crate::runtime::{
+    process::{Process, ProcessExt as _},
+    state::DataspaceRegistry,
+};
 
 /// A `Future` that represents the execution of a supervised process.
 pub type SupervisorFuture = Pin<Box<dyn Future<Output = Result<(), GenericError>> + Send>>;
@@ -34,10 +37,32 @@ type WorkerFuture = Pin<Box<dyn Future<Output = Result<(), WorkerError>> + Send>
 #[derive(Debug)]
 enum WorkerError {
     /// The worker failed during async initialization.
-    Initialization(InitializationError),
+    ///
+    /// The optional `child_name` carries the name of the original failing child when the error originates from a
+    /// nested supervisor. This allows the parent to include it in its own `FailedToInitialize` error for better
+    /// diagnostics across supervision tree levels.
+    Initialization {
+        child_name: Option<String>,
+        source: InitializationError,
+    },
 
     /// The worker failed during runtime execution.
     Runtime(GenericError),
+}
+
+impl From<SupervisorError> for WorkerError {
+    fn from(err: SupervisorError) -> Self {
+        match err {
+            // Propagate initialization failures so the parent supervisor does NOT attempt to restart.
+            // Preserve the original child name so the parent can include it in diagnostics.
+            SupervisorError::FailedToInitialize { child_name, source } => WorkerError::Initialization {
+                child_name: Some(child_name),
+                source,
+            },
+            // All other supervisor errors (shutdown, no children, invalid name) are runtime-level.
+            other => WorkerError::Runtime(other.into()),
+        }
+    }
 }
 
 /// Process errors.
@@ -62,7 +87,7 @@ pub enum ProcessError {
 /// Initialization errors.
 ///
 /// Initialization errors are distinct from runtime errors: they indicate that a process could not be started at all
-/// (e.g., failed to bind a port, missing configuration). These errors do NOT trigger restart logic; instead, they
+/// (for example, failed to bind a port, missing configuration). These errors do NOT trigger restart logic; instead, they
 /// immediately propagate up and fail the supervisor.
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
@@ -73,12 +98,12 @@ pub enum InitializationError {
         /// The underlying error that caused initialization to fail.
         source: GenericError,
     },
+}
 
-    /// The process is permanently unavailable and cannot be initialized.
-    ///
-    /// This is for cases where initialization is structurally impossible, not due to a transient error.
-    #[snafu(display("Process is permanently unavailable"))]
-    PermanentlyUnavailable,
+impl From<GenericError> for InitializationError {
+    fn from(source: GenericError) -> Self {
+        Self::Failed { source }
+    }
 }
 
 /// Strategy for shutting down a process.
@@ -106,6 +131,10 @@ pub trait Supervisable: Send + Sync {
     /// During initialization, any resources or configuration for the process can be created asynchronously, and the
     /// same runtime that is used for running the process is used for initialization. The resulting future is expected
     /// to complete as soon as reasonably possible after `process_shutdown` resolves.
+    ///
+    /// **Important:** The `process_shutdown` signal must be moved into the returned [`SupervisorFuture`] so the
+    /// worker can respond to supervisor-initiated shutdown. If `process_shutdown` is dropped during initialization,
+    /// the worker will be unable to shut down gracefully and will be forcefully aborted after the shutdown timeout.
     ///
     /// # Errors
     ///
@@ -204,10 +233,14 @@ impl ChildSpecification {
             Self::Worker(worker) => {
                 let worker = Arc::clone(worker);
                 Ok(Box::pin(async move {
-                    let run_future = worker
-                        .initialize(process_shutdown)
-                        .await
-                        .map_err(WorkerError::Initialization)?;
+                    let run_future =
+                        worker
+                            .initialize(process_shutdown)
+                            .await
+                            .map_err(|source| WorkerError::Initialization {
+                                child_name: None,
+                                source,
+                            })?;
                     run_future.await.map_err(WorkerError::Runtime)
                 }))
             }
@@ -218,15 +251,18 @@ impl ChildSpecification {
                         Ok(sup.as_nested_process(process, process_shutdown))
                     }
                     RuntimeMode::Dedicated(config) => {
-                        // Spawn in a dedicated runtime on a new OS thread.
+                        // Spawn in a dedicated runtime on a new OS thread, passing the parent's
+                        // dataspace so the nested supervisor inherits it across the thread boundary.
                         let child_name = sup.supervisor_id.to_string();
-                        let handle = spawn_dedicated_runtime(sup.inner_clone(), config.clone(), process_shutdown)
-                            .map_err(|e| SupervisorError::FailedToInitialize {
-                                child_name,
-                                source: InitializationError::Failed { source: e },
-                            })?;
+                        let dataspace = process.dataspace().clone();
+                        let handle =
+                            spawn_dedicated_runtime(sup.inner_clone(), config.clone(), process_shutdown, dataspace)
+                                .map_err(|e| SupervisorError::FailedToInitialize {
+                                    child_name,
+                                    source: e.into(),
+                                })?;
 
-                        Ok(Box::pin(async move { handle.await.map_err(WorkerError::Runtime) }))
+                        Ok(Box::pin(async move { handle.await.map_err(WorkerError::from) }))
                     }
                 }
             }
@@ -331,7 +367,7 @@ impl Supervisor {
     /// This provides runtime isolation, which can be useful for:
     /// - CPU-bound work that shouldn't block the parent's runtime
     /// - Isolating failures in one part of the system
-    /// - Using different runtime configurations (e.g., single-threaded vs multi-threaded)
+    /// - Using different runtime configurations (for example, single-threaded vs multi-threaded)
     pub fn with_dedicated_runtime(mut self, config: RuntimeConfiguration) -> Self {
         self.runtime_mode = RuntimeMode::Dedicated(config);
         self
@@ -416,12 +452,19 @@ impl Supervisor {
                         let child_spec = self.get_child_spec(child_spec_idx);
 
                         // Initialization failures are not eligible for restart -- they propagate immediately.
-                        if let Err(WorkerError::Initialization(e)) = worker_result {
-                            error!(supervisor_id = %self.supervisor_id, worker_name = child_spec.name(), "Child process failed to initialize: {}", e);
+                        if let Err(WorkerError::Initialization { child_name, source }) = worker_result {
+                            // If the error came from a nested supervisor, include the original child name
+                            // to make the error chain more informative (e.g., "ctrl-pln/privileged-api").
+                            let full_name = match child_name {
+                                Some(inner) => format!("{}/{}", child_spec.name(), inner),
+                                None => child_spec.name().to_string(),
+                            };
+
+                            error!(supervisor_id = %self.supervisor_id, worker_name = full_name, "Child process failed to initialize: {}", source);
                             worker_state.shutdown_workers().await;
                             return Err(SupervisorError::FailedToInitialize {
-                                child_name: child_spec.name().to_string(),
-                                source: e,
+                                child_name: full_name,
+                                source,
                             });
                         }
 
@@ -429,7 +472,7 @@ impl Supervisor {
                         let worker_result = worker_result
                             .map_err(|e| match e {
                                 WorkerError::Runtime(e) => ProcessError::Terminated { source: e },
-                                WorkerError::Initialization(_) => unreachable!("handled above"),
+                                WorkerError::Initialization { .. } => unreachable!("handled above"),
                             });
 
                         match restart_state.evaluate_restart() {
@@ -470,8 +513,7 @@ impl Supervisor {
         Box::pin(async move {
             sup.run_inner(process, process_shutdown)
                 .await
-                .error_context("Nested supervisor failed to exit cleanly.")
-                .map_err(WorkerError::Runtime)
+                .map_err(WorkerError::from)
         })
     }
 
@@ -490,7 +532,7 @@ impl Supervisor {
 
         debug!(supervisor_id = %self.supervisor_id, "Supervisor starting.");
         self.run_inner(process.clone(), process_shutdown)
-            .into_instrumented(process)
+            .into_process_future(process)
             .await
     }
 
@@ -504,7 +546,7 @@ impl Supervisor {
     /// If the supervisor exceeds its restart limits, or fails to initialize a child process, an error is returned.
     pub async fn run_with_shutdown<F: Future + Send + 'static>(&mut self, shutdown: F) -> Result<(), SupervisorError> {
         let process_shutdown = ProcessShutdown::wrapped(shutdown);
-        self.run_with_process_shutdown(process_shutdown).await
+        self.run_with_process_shutdown(process_shutdown, None).await
     }
 
     /// Runs the supervisor until the given `ProcessShutdown` signal is received.
@@ -512,19 +554,23 @@ impl Supervisor {
     /// This is an internal variant of `run_with_shutdown` that takes a `ProcessShutdown` directly, used when spawning
     /// supervisors in dedicated runtimes where the shutdown signal is already wrapped in a `ProcessShutdown`.
     ///
+    /// If `dataspace` is provided, the supervisor will use it instead of creating a new one. This is used to propagate
+    /// the parent's dataspace across OS thread boundaries for dedicated runtimes.
+    ///
     /// # Errors
     ///
     /// If the supervisor exceeds its restart limits, or fails to initialize a child process, an error is returned.
     pub(crate) async fn run_with_process_shutdown(
-        &mut self, process_shutdown: ProcessShutdown,
+        &mut self, process_shutdown: ProcessShutdown, dataspace: Option<DataspaceRegistry>,
     ) -> Result<(), SupervisorError> {
-        let process = Process::supervisor(&self.supervisor_id, None).context(InvalidName {
-            name: self.supervisor_id.to_string(),
-        })?;
+        let process =
+            Process::supervisor_with_dataspace(&self.supervisor_id, None, dataspace).context(InvalidName {
+                name: self.supervisor_id.to_string(),
+            })?;
 
         debug!(supervisor_id = %self.supervisor_id, "Supervisor starting.");
         self.run_inner(process.clone(), process_shutdown)
-            .into_instrumented(process)
+            .into_process_future(process)
             .await
     }
 
@@ -568,7 +614,7 @@ impl WorkerState {
         let process = child_spec.create_process(&self.process)?;
         let worker_future = child_spec.create_worker_future(process.clone(), process_shutdown)?;
         let shutdown_strategy = child_spec.shutdown_strategy();
-        let abort_handle = self.worker_tasks.spawn(worker_future.into_instrumented(process));
+        let abort_handle = self.worker_tasks.spawn(worker_future.into_process_future(process));
         self.worker_map.insert(
             abort_handle.id(),
             ProcessState {

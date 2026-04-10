@@ -46,7 +46,7 @@ pub struct Tui {
 /// A formatted line ready to print.
 struct FormattedLine {
     timestamp: String,
-    /// Optional colored prefix (e.g., "PASS", "FAIL").
+    /// Optional colored prefix (for example, "PASS", "FAIL").
     prefix: Option<(String, LineColor)>,
     /// Main text content (always white).
     text: String,

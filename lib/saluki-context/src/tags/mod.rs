@@ -44,7 +44,7 @@ impl Tag {
 
     /// Gets the name of the tag.
     ///
-    /// For bare tags (e.g. `production`), this is simply the tag value itself. For key/value-style tags (e.g.
+    /// For bare tags (for example, `production`), this is simply the tag value itself. For key/value-style tags (for example,
     /// `service:web`), this is the key part of the tag, or `service` based on the example.
     pub fn name(&self) -> &str {
         let s = self.0.deref();
@@ -56,7 +56,7 @@ impl Tag {
 
     /// Gets the value of the tag.
     ///
-    /// For bare tags (e.g. `production`), this always returns `None`. For key/value-style tags (e.g. `service:web`),
+    /// For bare tags (for example, `production`), this always returns `None`. For key/value-style tags (for example, `service:web`),
     /// this is the value part of the tag, or `web` based on the example.
     pub fn value(&self) -> Option<&str> {
         self.0.deref().split_once(':').map(|(_, value)| value)
@@ -136,7 +136,7 @@ impl<'a> BorrowedTag<'a> {
 
     /// Gets the name of the tag.
     ///
-    /// For bare tags (e.g. `production`), this is simply the tag value itself. For key/value-style tags (e.g.
+    /// For bare tags (for example, `production`), this is simply the tag value itself. For key/value-style tags (for example,
     /// `service:web`), this is the key part of the tag, or `service` based on the example.
     pub fn name(&self) -> &'a str {
         match self.separator {
@@ -147,7 +147,7 @@ impl<'a> BorrowedTag<'a> {
 
     /// Gets the value of the tag.
     ///
-    /// For bare tags (e.g. `production`), this always returns `None`. For key/value-style tags (e.g. `service:web`),
+    /// For bare tags (for example, `production`), this always returns `None`. For key/value-style tags (for example, `service:web`),
     /// this is the value part of the tag, or `web` based on the example.
     pub fn value(&self) -> Option<&'a str> {
         match self.separator {
@@ -158,7 +158,7 @@ impl<'a> BorrowedTag<'a> {
 
     /// Gets the name and value of the tag.
     ///
-    /// For bare tags (e.g. `production`), this always returns `(Some(...), None)`.
+    /// For bare tags (for example, `production`), this always returns `(Some(...), None)`.
     pub fn name_and_value(&self) -> (&'a str, Option<&'a str>) {
         match self.separator {
             Some(idx) => (&self.raw[..idx], Some(&self.raw[idx + 1..])),

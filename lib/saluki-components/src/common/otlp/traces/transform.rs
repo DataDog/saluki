@@ -674,7 +674,7 @@ fn get_otel_operation_name_v2(
     } else {
         span_kind
     };
-    // Use capitalized span kind name for operation  (e.g., "Internal", "Client", "Server")
+    // Use capitalized span kind name for operation  (for example, "Internal", "Client", "Server")
     MetaString::from_static(span_kind_name_capitalized(fallback_kind))
 }
 
@@ -1145,6 +1145,13 @@ fn status_to_error(
             if let Some(http_text) = meta.get("http.status_text") {
                 message.push(' ');
                 message.push_str(http_text.as_ref());
+            } else if let Ok(status_code) = http_code.as_ref().parse::<u16>() {
+                if let Ok(status) = http::StatusCode::from_u16(status_code) {
+                    if let Some(reason) = status.canonical_reason() {
+                        message.push(' ');
+                        message.push_str(reason);
+                    }
+                }
             }
             meta.insert(MetaString::from_static("error.msg"), message.into());
         }

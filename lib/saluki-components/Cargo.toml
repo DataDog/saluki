@@ -20,7 +20,9 @@ bytesize = { workspace = true }
 chrono = { workspace = true }
 datadog-protos = { workspace = true }
 ddsketch = { workspace = true }
+facet = { workspace = true }
 faster-hex = { workspace = true }
+figment = { workspace = true }
 float-cmp = { workspace = true, features = ["ratio"] }
 fnv = { workspace = true }
 foldhash = { workspace = true }
@@ -80,4 +82,6 @@ url = { workspace = true }
 [dev-dependencies]
 proptest = { workspace = true }
 saluki-metrics = { workspace = true, features = ["test"] }
+saluki-tls = { workspace = true }
 test-strategy = { workspace = true }
+tokio = { workspace = true, features = ["time"] }

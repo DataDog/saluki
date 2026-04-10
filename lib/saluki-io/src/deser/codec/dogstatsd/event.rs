@@ -10,7 +10,7 @@ use saluki_context::{origin::OriginTagCardinality, tags::RawTags};
 use saluki_core::data_model::event::eventd::*;
 use stringtheory::MetaString;
 
-use super::{helpers::*, DogstatsdCodecConfiguration};
+use super::{helpers::*, DogStatsDCodecConfiguration};
 
 /// A DogStatsD event packet.
 pub struct EventPacket<'a> {
@@ -30,7 +30,7 @@ pub struct EventPacket<'a> {
 
 #[inline]
 pub fn parse_dogstatsd_event<'a>(
-    input: &'a [u8], config: &DogstatsdCodecConfiguration,
+    input: &'a [u8], config: &DogStatsDCodecConfiguration,
 ) -> IResult<&'a [u8], EventPacket<'a>> {
     // We parse the title length and text length from `_e{<TITLE_UTF8_LENGTH>,<TEXT_UTF8_LENGTH>}:`
     let (remaining, (title_len, text_len)) = delimited(
@@ -197,17 +197,17 @@ mod tests {
     use saluki_core::data_model::event::eventd::{AlertType, EventD, Priority};
     use stringtheory::MetaString;
 
-    use super::{parse_dogstatsd_event, DogstatsdCodecConfiguration};
+    use super::{parse_dogstatsd_event, DogStatsDCodecConfiguration};
 
     type NomResult<'input, T> = Result<T, nom::Err<nom::error::Error<&'input [u8]>>>;
 
     fn parse_dsd_eventd(input: &[u8]) -> NomResult<'_, EventD> {
-        let default_config = DogstatsdCodecConfiguration::default();
+        let default_config = DogStatsDCodecConfiguration::default();
         parse_dsd_eventd_with_conf(input, &default_config)
     }
 
     fn parse_dsd_eventd_with_conf<'input>(
-        input: &'input [u8], config: &DogstatsdCodecConfiguration,
+        input: &'input [u8], config: &DogStatsDCodecConfiguration,
     ) -> NomResult<'input, EventD> {
         let (remaining, eventd) = parse_dsd_eventd_direct(input, config)?;
         assert!(remaining.is_empty());
@@ -215,7 +215,7 @@ mod tests {
     }
 
     fn parse_dsd_eventd_direct<'input>(
-        input: &'input [u8], config: &DogstatsdCodecConfiguration,
+        input: &'input [u8], config: &DogStatsDCodecConfiguration,
     ) -> IResult<&'input [u8], EventD> {
         let (remaining, packet) = parse_dogstatsd_event(input, config)?;
         assert!(remaining.is_empty());
@@ -370,7 +370,7 @@ mod tests {
             .with_tags(shared_tag_set);
         check_basic_eventd_eq(expected, actual);
 
-        let config = DogstatsdCodecConfiguration::default();
+        let config = DogStatsDCodecConfiguration::default();
         let (_, packet) = parse_dogstatsd_event(raw.as_bytes(), &config).expect("should not fail to parse");
         assert_eq!(packet.local_data, Some(event_local_data));
         assert_eq!(packet.external_data, Some(event_external_data));
@@ -381,7 +381,7 @@ mod tests {
     fn empty_structured_fields_treated_as_missing() {
         // All optional stringy fields are empty — should parse successfully and treat them as missing.
         let raw = "_e{5,4}:title|text|h:|k:|s:|c:|e:|card:|#";
-        let config = DogstatsdCodecConfiguration::default();
+        let config = DogStatsDCodecConfiguration::default();
         let (_, packet) = parse_dogstatsd_event(raw.as_bytes(), &config).expect("should not fail to parse");
         assert_eq!(packet.hostname, None);
         assert_eq!(packet.aggregation_key, None);

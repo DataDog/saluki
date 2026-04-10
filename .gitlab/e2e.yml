@@ -24,7 +24,7 @@
     - target/release/ground-truth ./test/correctness/${CORRECTNESS_TEST_CASE}/config.yaml
 
 # Mixin for correctness tests where baseline is the CI-built bundled ADP image.
-# Tests with a different baseline (e.g. DDOT) should NOT extend this and instead
+# Tests with a different baseline (for example, DDOT) should NOT extend this and instead
 # let config.yaml specify the baseline image directly.
 .test-correctness-adp-baseline:
   variables:

@@ -105,7 +105,7 @@ pub enum Value {
     Float(f64),
     /// String value (Arc for cheap clone)
     String(Arc<str>),
-    /// Bytes literal (e.g., 0xC0FFEE) - Arc for cheap clone
+    /// Bytes literal (for example, 0xC0FFEE) - Arc for cheap clone
     Bytes(Arc<[u8]>),
     /// List of values
     List(Vec<Value>),
@@ -162,7 +162,7 @@ pub trait PathAccessor<F: EvalContextFamily>: fmt::Debug + Send + Sync {
     /// Get the value at this path.
     ///
     /// `fields` contains the structured path segments with per-field index keys.
-    /// Path interpretation, including indexing (e.g. `["key"]`, `[0]`), is **not** implemented by
+    /// Path interpretation, including indexing (for example, `["key"]`, `[0]`), is **not** implemented by
     /// OTTL; the integrator must implement this method. For applying index keys to a value, use
     /// [`crate::helpers::apply_indexes`].
     fn get<'a>(&self, ctx: &F::Context<'a>, fields: &[Field]) -> Result<Value>;
@@ -276,7 +276,7 @@ pub trait OttlParser<F: EvalContextFamily> {
     /// # Returns
     ///   * `Ok(Value)` - The result of evaluating the expression. If expression has no
     ///     return value, returns `Value::Nil`.
-    ///   * `Err(BoxError)` - An error if evaluation fails (e.g., type mismatch,
+    ///   * `Err(BoxError)` - An error if evaluation fails (for example, type mismatch,
     ///     missing path, callback error).
     fn execute<'a>(&self, ctx: &mut F::Context<'a>) -> Result<Value>;
 }

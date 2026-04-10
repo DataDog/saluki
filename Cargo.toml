@@ -78,7 +78,7 @@ serde = { version = "1", default-features = false, features = [
   "std",
 ] }
 snafu = { version = "0.9", default-features = false, features = ["std"] }
-tokio = { version = "1.49", default-features = false }
+tokio = { version = "1.50", default-features = false }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 async-compression = { version = "0.4.13", default-features = false, features = [
   "gzip",
@@ -86,6 +86,7 @@ async-compression = { version = "0.4.13", default-features = false, features = [
   "zstd",
 ] }
 bitmask-enum = { version = "2.2", default-features = false }
+facet = { version = "0.44.3", default-features = false, features = ["std"] }
 figment = { version = "0.10", default-features = false }
 foldhash = { version = "0.2", default-features = false, features = ["std"] }
 headers = { version = "0.4", default-features = false }
@@ -137,12 +138,12 @@ url = { version = "2", default-features = false }
 ndarray = { version = "0.16", default-features = false }
 ndarray-stats = { version = "0.6", default-features = false }
 noisy_float = { version = "0.2", default-features = false }
-libc = { version = "0.2.169", default-features = false }
+libc = { version = "0.2.183", default-features = false }
 socket2 = { version = "0.6", default-features = false }
 tonic-prost-build = { version = "0.14", default-features = false }
 tonic-prost = { version = "0.14", default-features = false }
 tonic = { version = "0.14", default-features = false }
-arc-swap = { version = "1.7.1", default-features = false }
+arc-swap = { version = "1.9.1", default-features = false }
 async-stream = { version = "0.3.5", default-features = false }
 futures = { version = "0.3.30", default-features = false }
 prost-types = { version = "0.14", default-features = false }
@@ -171,7 +172,7 @@ smallvec = { version = "1.13", default-features = false, features = [
   "drain_filter",
   "union",
 ] }
-windows-sys = { version = "0.59", default-features = false }
+windows-sys = { version = "0.61", default-features = false }
 rustls-native-certs = { version = "0.8", default-features = false }
 hashbrown = { version = "0.16", default-features = false }
 quick_cache = { version = "0.6", default-features = false }
@@ -192,7 +193,7 @@ chrono-tz = { version = "0.10", default-features = false }
 iana-time-zone = { version = "0.1", default-features = false }
 backon = { version = "1", default-features = false }
 http-serde-ext = { version = "1", default-features = false }
-uuid = { version = "1.13", default-features = false }
+uuid = { version = "1.23", default-features = false }
 rcgen = { version = "0.14", default-features = false }
 tikv-jemallocator = { version = "0.6", default-features = false }
 axum-extra = { version = "0.10", default-features = false }

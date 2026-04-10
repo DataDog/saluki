@@ -27,6 +27,22 @@ const fn default_error_tracking_standalone_enabled() -> bool {
 const fn default_probabilistic_sampling_enabled() -> bool {
     false
 }
+const fn default_rare_sampler_enabled() -> bool {
+    false
+}
+
+const fn default_rare_sampler_tps() -> f64 {
+    5.0
+}
+
+const fn default_rare_sampler_cooldown_secs() -> f64 {
+    300.0 // 5 minutes
+}
+
+const fn default_rare_sampler_cardinality() -> usize {
+    200
+}
+
 const fn default_peer_tags_aggregation() -> bool {
     true
 }
@@ -39,6 +55,29 @@ fn default_env() -> MetaString {
     MetaString::from("none")
 }
 
+/// Rare sampler tuning configuration (`apm_config.rare_sampler.*`).
+#[derive(Clone, Debug, Deserialize)]
+struct RareSamplerConfig {
+    #[serde(default = "default_rare_sampler_tps")]
+    tps: f64,
+
+    #[serde(default = "default_rare_sampler_cooldown_secs")]
+    cooldown: f64,
+
+    #[serde(default = "default_rare_sampler_cardinality")]
+    cardinality: usize,
+}
+
+impl Default for RareSamplerConfig {
+    fn default() -> Self {
+        Self {
+            tps: default_rare_sampler_tps(),
+            cooldown: default_rare_sampler_cooldown_secs(),
+            cardinality: default_rare_sampler_cardinality(),
+        }
+    }
+}
+
 /// APM configuration.
 ///
 /// This configuration mirrors the Agent's trace agent configuration..
@@ -46,6 +85,12 @@ fn default_env() -> MetaString {
 struct ApmConfiguration {
     #[serde(default)]
     apm_config: ApmConfig,
+
+    /// Enables the rare sampler. This needs to live up here rather than nested
+    /// within `apm_config` so that we can remap the environment variable path
+    /// using the ConfigurationLoader::with_key_aliases.
+    #[serde(default = "default_rare_sampler_enabled", rename = "apm_enable_rare_sampler")]
+    enable_rare_sampler: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -140,7 +185,7 @@ pub struct ApmConfig {
     #[serde(default = "default_compute_stats_by_span_kind")]
     compute_stats_by_span_kind: bool,
 
-    /// Enables aggregation of peer related tags (e.g., `peer.service`, `db.instance`, etc.) in the Agent.
+    /// Enables aggregation of peer related tags (for example, `peer.service`, `db.instance`, etc.) in the Agent.
     ///
     /// Defaults to `true`.
     #[serde(default = "default_peer_tags_aggregation")]
@@ -165,6 +210,12 @@ pub struct ApmConfig {
     #[serde(skip)]
     hostname: MetaString,
 
+    #[serde(skip)]
+    enable_rare_sampler: bool,
+
+    #[serde(default)]
+    rare_sampler: RareSamplerConfig,
+
     /// Obfuscation configuration for trace data.
     #[serde(default)]
     obfuscation: ObfuscationConfig,
@@ -173,7 +224,9 @@ pub struct ApmConfig {
 impl ApmConfig {
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let wrapper = config.as_typed::<ApmConfiguration>()?;
-        Ok(wrapper.apm_config)
+        let mut apm_config = wrapper.apm_config;
+        apm_config.enable_rare_sampler = wrapper.enable_rare_sampler;
+        Ok(apm_config)
     }
 
     /// Returns the target traces per second for priority sampling.
@@ -238,6 +291,26 @@ impl ApmConfig {
         }
     }
 
+    /// Returns whether the rare sampler is enabled.
+    pub const fn rare_sampler_enabled(&self) -> bool {
+        self.enable_rare_sampler
+    }
+
+    /// Returns the rare sampler target traces per second.
+    pub const fn rare_sampler_tps(&self) -> f64 {
+        self.rare_sampler.tps
+    }
+
+    /// Returns the rare sampler cooldown period in seconds.
+    pub const fn rare_sampler_cooldown_period_secs(&self) -> f64 {
+        self.rare_sampler.cooldown
+    }
+
+    /// Returns the rare sampler cardinality limit per shard.
+    pub const fn rare_sampler_cardinality(&self) -> usize {
+        self.rare_sampler.cardinality
+    }
+
     /// Returns the obfuscation configuration.
     pub fn obfuscation(&self) -> &ObfuscationConfig {
         &self.obfuscation
@@ -257,7 +330,81 @@ impl Default for ApmConfig {
             peer_tags: Vec::new(),
             default_env: default_env(),
             hostname: MetaString::default(),
+            enable_rare_sampler: default_rare_sampler_enabled(),
+            rare_sampler: RareSamplerConfig::default(),
             obfuscation: ObfuscationConfig::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use saluki_config::ConfigurationLoader;
+
+    use super::*;
+    use crate::config::{DatadogRemapper, KEY_ALIASES};
+
+    async fn apm_config_from(
+        file_values: Option<serde_json::Value>, env_vars: Option<&[(String, String)]>,
+    ) -> ApmConfig {
+        let (cfg, _) = ConfigurationLoader::for_tests_with_provider_factory(
+            file_values,
+            env_vars,
+            false,
+            KEY_ALIASES,
+            DatadogRemapper::new,
+        )
+        .await;
+        ApmConfig::from_configuration(&cfg).expect("ApmConfig should deserialize")
+    }
+
+    #[tokio::test]
+    async fn rare_sampler_disabled_by_default() {
+        let config = apm_config_from(None, None).await;
+        assert!(!config.rare_sampler_enabled());
+    }
+
+    #[tokio::test]
+    async fn rare_sampler_enabled_via_yaml() {
+        let config = apm_config_from(
+            Some(serde_json::json!({ "apm_config": { "enable_rare_sampler": true } })),
+            None,
+        )
+        .await;
+        assert!(config.rare_sampler_enabled());
+    }
+
+    #[tokio::test]
+    async fn rare_sampler_enabled_via_env_var() {
+        let env_vars = vec![("APM_ENABLE_RARE_SAMPLER".to_string(), "true".to_string())];
+        let config = apm_config_from(None, Some(&env_vars)).await;
+        assert!(config.rare_sampler_enabled());
+    }
+
+    #[tokio::test]
+    async fn rare_sampler_env_var_overrides_yaml() {
+        let env_vars = vec![("APM_ENABLE_RARE_SAMPLER".to_string(), "true".to_string())];
+        let config = apm_config_from(
+            Some(serde_json::json!({ "apm_config": { "enable_rare_sampler": false } })),
+            Some(&env_vars),
+        )
+        .await;
+        assert!(config.rare_sampler_enabled());
+    }
+
+    #[tokio::test]
+    async fn rare_sampler_tuning_via_yaml() {
+        let config = apm_config_from(
+            Some(serde_json::json!({
+                "apm_config": {
+                    "rare_sampler": { "tps": 10, "cooldown": 60, "cardinality": 100 }
+                }
+            })),
+            None,
+        )
+        .await;
+        assert_eq!(config.rare_sampler_tps(), 10.0);
+        assert_eq!(config.rare_sampler_cooldown_period_secs(), 60.0);
+        assert_eq!(config.rare_sampler_cardinality(), 100);
     }
 }

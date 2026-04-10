@@ -61,7 +61,7 @@ impl ListenAddress {
     /// Returns a socket address that can be used to connect to the configured listen address with a bias for local clients.
     ///
     /// When the listen address is a TCP or UDP address, this method returns a socket address that can be used to
-    /// connect to the listener bound to this listen addresss, such that if the listen address is unspecified
+    /// connect to the listener bound to this listen address, such that if the listen address is unspecified
     /// (`0.0.0.0`), the client will connect locally using "localhost". When the listen address is not "unspecified" or
     /// already uses "localhost", this method returns the listen address as-is.
     ///

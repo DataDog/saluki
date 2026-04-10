@@ -220,6 +220,59 @@ impl TagSet {
         }
     }
 
+    /// Scans this tag set and collects the indices of tags that should be removed according to the predicate.
+    ///
+    /// Tags for which `f` returns `false` have their indices recorded in the provided bitsets.
+    /// `base_removals` receives flattened base indices. `addition_removals` receives indices into
+    /// the additions overlay.
+    ///
+    /// This is a read-only scan: no mutation occurs. Use [`apply_removals`][TagSet::apply_removals]
+    /// to apply the collected indices. Multiple calls accumulate correctly because bitset sets are
+    /// idempotent; tags already flagged for removal are skipped.
+    pub(crate) fn collect_removals<F>(
+        &self, mut f: F, base_removals: &mut ContiguousBitSet, addition_removals: &mut ContiguousBitSet,
+    ) where
+        F: FnMut(&Tag) -> bool,
+    {
+        // Scan additions, skipping those already flagged.
+        if let Some(overlay) = &self.overlay {
+            for (i, tag) in overlay.additions.iter().enumerate() {
+                if !addition_removals.is_set(i) && !f(tag) {
+                    addition_removals.set(i);
+                }
+            }
+        }
+
+        // Scan base tags, skipping those already removed (by the overlay) or already flagged.
+        for (idx, base_tag) in base_indexed_iter(&self.base) {
+            if !is_overlay_removed(&self.overlay, idx) && !base_removals.is_set(idx) && !f(base_tag) {
+                base_removals.set(idx);
+            }
+        }
+    }
+
+    /// Applies previously collected removal indices from [`collect_removals`][TagSet::collect_removals].
+    ///
+    /// `base_removals` contains flattened base indices to mark as removed.
+    /// `addition_removals` contains indices of additions to remove.
+    pub(crate) fn apply_removals(&mut self, base_removals: &ContiguousBitSet, addition_removals: &ContiguousBitSet) {
+        // Apply addition removals in descending order to maintain index validity.
+        if !addition_removals.is_empty() {
+            let overlay = self.ensure_overlay();
+            for i in addition_removals.into_iter().rev() {
+                overlay.additions.remove(i);
+            }
+        }
+
+        // Apply base removals by setting the corresponding bits in the overlay.
+        if !base_removals.is_empty() {
+            let overlay = self.ensure_overlay();
+            for i in base_removals {
+                overlay.removals.set(i);
+            }
+        }
+    }
+
     /// Merges the tags from another set into this set.
     ///
     /// If a tag from `other` is already present in this set, it will not be added.
@@ -537,6 +590,10 @@ impl<'a> Iterator for BaseIndexIter<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeSet, HashSet};
+
+    use proptest::{collection::vec as arb_vec, prelude::*, prop_oneof};
+
     use super::*;
 
     /// Helper: create a SharedTagSet from static tag strings.
@@ -878,15 +935,6 @@ mod tests {
         ts.insert_tag(Tag::from("c:3"));
         assert_eq!(ts.len(), 3);
     }
-}
-
-#[cfg(test)]
-mod proptests {
-    use std::collections::BTreeSet;
-
-    use proptest::prelude::*;
-
-    use super::*;
 
     /// Operations we can apply to a TagSet.
     #[derive(Clone, Debug)]
@@ -907,23 +955,23 @@ mod proptests {
 
     /// Strategy for generating a random operation.
     fn arb_op() -> impl Strategy<Value = Op> {
-        prop_oneof![arb_tag().prop_map(Op::Insert), arb_key().prop_map(Op::RemoveByName),]
+        prop_oneof![arb_tag().prop_map(Op::Insert), arb_key().prop_map(Op::RemoveByName)]
     }
 
     /// Strategy for generating a group of tags (for one FrozenTagSet in the chain).
     fn arb_tag_group() -> impl Strategy<Value = Vec<String>> {
-        prop::collection::vec(arb_tag(), 0..10)
+        arb_vec(arb_tag(), 0..10)
     }
 
     /// Strategy for generating a base with 1-3 chained tag groups.
     fn arb_base_groups() -> impl Strategy<Value = Vec<Vec<String>>> {
-        prop::collection::vec(arb_tag_group(), 1..4)
+        arb_vec(arb_tag_group(), 1..4)
     }
 
     /// Build a SharedTagSet from multiple groups (each becomes a chained FrozenTagSet).
     /// Deduplicates exact tags across groups to avoid cross-chain duplicates.
     fn build_chained_base(groups: &[Vec<String>]) -> SharedTagSet {
-        let mut seen_tags = std::collections::HashSet::new();
+        let mut seen_tags = HashSet::new();
 
         let mut shared = {
             let ts: TagSet = groups[0]
@@ -979,9 +1027,9 @@ mod proptests {
 
         #[test]
         #[cfg_attr(miri, ignore)]
-        fn overlay_matches_reference(
+        fn property_test_overlay_matches_reference(
             base_groups in arb_base_groups(),
-            ops in prop::collection::vec(arb_op(), 0..20),
+            ops in arb_vec(arb_op(), 0..20),
         ) {
             let base = build_chained_base(&base_groups);
 

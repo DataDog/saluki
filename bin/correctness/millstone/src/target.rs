@@ -23,7 +23,7 @@ enum TargetBackend {
 
 struct GrpcBackend {
     channel: Channel,
-    /// The full gRPC service/method path (e.g., "/opentelemetry.proto.collector.metrics.v1.MetricsService/Export")
+    /// The full gRPC service/method path (for example, "/opentelemetry.proto.collector.metrics.v1.MetricsService/Export")
     service_method_path: String,
 }
 
@@ -90,7 +90,7 @@ impl TargetSender {
 
     /// Sends a single payload to the target.
     ///
-    /// Attempts to send the entire payload to the the target, but may only partially write a payload if the underlying
+    /// Attempts to send the entire payload to the target, but may only partially write a payload if the underlying
     /// target transport does not support ordered delivery of messages and fragmented sends cannot be achieved.
     ///
     /// On success, `Ok(n)` is returned, where `n` is the number of bytes sent.

@@ -4,12 +4,14 @@ use std::{
 };
 
 use argh::FromArgs;
+use futures::FutureExt as _;
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::{
     memory::{initialize_memory_bounds, MemoryBoundsConfiguration},
     metrics::emit_startup_metrics,
 };
 use saluki_components::{
+    config::{DatadogRemapper, KEY_ALIASES},
     decoders::otlp::OtlpDecoderConfiguration,
     destinations::DogStatsDStatisticsConfiguration,
     encoders::{
@@ -21,12 +23,13 @@ use saluki_components::{
     relays::otlp::OtlpRelayConfiguration,
     sources::{DogStatsDConfiguration, OtlpConfiguration},
     transforms::{
-        AggregateConfiguration, ApmStatsTransformConfiguration, ChainedConfiguration, DogstatsDMapperConfiguration,
-        DogstatsDPrefixFilterConfiguration, HostEnrichmentConfiguration, HostTagsConfiguration,
+        AggregateConfiguration, ApmStatsTransformConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
+        DogStatsDPrefixFilterConfiguration, HostEnrichmentConfiguration, HostTagsConfiguration,
         TraceObfuscationConfiguration, TraceSamplerConfiguration,
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
+use saluki_core::runtime::SupervisorError;
 use saluki_core::topology::TopologyBlueprint;
 use saluki_env::EnvironmentProvider as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -37,9 +40,9 @@ use tracing::{error, info, warn};
 use crate::{
     components::{
         apm_onboarding::ApmOnboardingConfiguration, ottl_filter_processor::OttlFilterConfiguration,
-        ottl_transform_processor::OttlTransformConfiguration,
+        ottl_transform_processor::OttlTransformConfiguration, tag_filterlist::TagFilterlistConfiguration,
     },
-    internal::{remote_agent::RemoteAgentBootstrap, spawn_control_plane, spawn_internal_observability_topology},
+    internal::{create_internal_supervisor, remote_agent::RemoteAgentBootstrap},
 };
 use crate::{config::DataPlaneConfiguration, env_provider::ADPEnvironmentProvider};
 
@@ -95,9 +98,11 @@ pub async fn handle_run_command(
             // configuration source, but with environment variables on top of that to allow for ADP-specific overriding: log
             // level, etc.
             let dynamic_config = ConfigurationLoader::default()
+                .with_key_aliases(KEY_ALIASES)
                 .from_yaml(&bootstrap_config_path)
                 .error_context("Failed to load Datadog Agent configuration file.")?
                 .with_dynamic_configuration(ra_bootstrap.create_config_stream())
+                .add_providers([DatadogRemapper::new()])
                 .from_environment(crate::internal::platform::DATADOG_AGENT_ENV_VAR_PREFIX)?
                 .with_default_secrets_resolution()
                 .await?
@@ -143,9 +148,8 @@ pub async fn handle_run_command(
     )
     .await?;
 
-    spawn_internal_observability_topology(&dp_config, &component_registry, health_registry.clone())
-        .error_context("Failed to spawn internal observability topology.")?;
-    spawn_control_plane(
+    // Create the internal supervisor (control plane + observability)
+    let mut internal_supervisor = create_internal_supervisor(
         &config,
         &dp_config,
         &component_registry,
@@ -155,7 +159,12 @@ pub async fn handle_run_command(
         ra_bootstrap,
     )
     .await
-    .error_context("Failed to spawn control plane.")?;
+    .error_context("Failed to create internal supervisor.")?;
+
+    // Create shutdown channel for the internal supervisor - we'll drive it in the main select loop
+    let (internal_shutdown_tx, internal_shutdown_rx) = tokio::sync::oneshot::channel();
+    let internal_supervisor_fut = internal_supervisor.run_with_shutdown(internal_shutdown_rx).fuse();
+    tokio::pin!(internal_supervisor_fut);
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
     let bounds_config = MemoryBoundsConfiguration::try_from_config(&config)?;
@@ -208,25 +217,65 @@ pub async fn handle_run_command(
         info!(ready_time_ms = started.elapsed().as_millis(), "Topology healthy.");
     });
 
-    let mut finished_with_error = false;
+    let mut topology_failed = false;
+    let mut internal_supervisor_failed = false;
     select! {
+        result = &mut internal_supervisor_fut => {
+            match result {
+                Err(SupervisorError::FailedToInitialize { child_name, source }) => {
+                    error!(child_name, "Internal supervisor failed to initialize: {}. Shutting down...", source);
+                    internal_supervisor_failed = true;
+                }
+                // If we haven't hit an initialization error -- which implies an error we can't really recover from --
+                // then just log for now, until we fully migrate everything over to the supervisor-based approach and
+                // can dial in our supervisor configuration.
+                //
+                // For right now, this matches the previous behavior where the process would exit if we couldn't
+                // configure/spawn the control plane or internal observability pipeline, but the process is unaffected
+                // if either of those components fail at _runtime_.
+                Err(e) => {
+                    warn!("Internal supervisor exited: {}", e);
+                }
+                Ok(()) => {
+                    warn!("Internal supervisor exited unexpectedly.");
+                }
+            }
+        }
         _ = running_topology.wait_for_unexpected_finish() => {
-            error!("Component unexpectedly finished. Shutting down...");
-            finished_with_error = true;
+            error!("Topology component unexpectedly finished. Shutting down...");
+            topology_failed = true;
         },
         _ = tokio::signal::ctrl_c() => {
             info!("Received SIGINT, shutting down...");
         }
     }
 
-    match running_topology.shutdown_with_timeout(Duration::from_secs(30)).await {
+    // Shutdown the primary topology
+    let topology_result = running_topology.shutdown_with_timeout(Duration::from_secs(30)).await;
+
+    // Signal the internal supervisor to shutdown (if still running) and drive it to completion.
+    // If the supervisor already exited (i.e., the select! above matched its branch), both the send
+    // and await resolve immediately — the send is a no-op and the future is already complete.
+    let _ = internal_shutdown_tx.send(());
+    let _ = internal_supervisor_fut.await;
+
+    // Figure out the final "result" of this run: did something fail? did we stop cleanly?
+    //
+    // We prefer to return errors from the topology failing over the internal supervisor failing, since that matters
+    // more in terms of understanding the state of the process when it exited.
+    match topology_result {
         Ok(()) => {
-            if finished_with_error {
-                warn!("Topology shutdown complete despite error(s).")
+            if topology_failed {
+                warn!("Topology shutdown complete despite error(s).");
             } else {
-                info!("Topology shutdown successfully.")
+                info!("Topology shutdown successfully.");
             }
-            Ok(())
+
+            if internal_supervisor_failed {
+                Err(generic_error!("Internal supervisor failed to initialize."))
+            } else {
+                Ok(())
+            }
         }
         Err(e) => Err(e),
     }
@@ -410,10 +459,12 @@ async fn add_dsd_pipeline_to_blueprint(
     let dsd_config = DogStatsDConfiguration::from_configuration(config)
         .error_context("Failed to configure DogStatsD source.")?
         .with_workload_provider(env_provider.workload().clone());
-    let dsd_prefix_filter_configuration = DogstatsDPrefixFilterConfiguration::from_configuration(config)?;
-    let dsd_mapper_config = DogstatsDMapperConfiguration::from_configuration(config)?;
+    let dsd_prefix_filter_configuration = DogStatsDPrefixFilterConfiguration::from_configuration(config)?;
+    let dsd_mapper_config = DogStatsDMapperConfiguration::from_configuration(config)?;
     let dsd_enrich_config =
         ChainedConfiguration::default().with_transform_builder("dogstatsd_mapper", dsd_mapper_config);
+    let dsd_tag_filterlist_config = TagFilterlistConfiguration::from_configuration(config)
+        .error_context("Failed to configure metric tag filterlist transform.")?;
     let dsd_agg_config =
         AggregateConfiguration::from_configuration(config).error_context("Failed to configure aggregate transform.")?;
     let dd_events_config = DatadogEventsConfiguration::from_configuration(config)
@@ -428,6 +479,7 @@ async fn add_dsd_pipeline_to_blueprint(
         .add_source("dsd_in", dsd_config)?
         .add_transform("dsd_prefix_filter", dsd_prefix_filter_configuration)?
         .add_transform("dsd_enrich", dsd_enrich_config)?
+        .add_transform("dsd_tag_filterlist", dsd_tag_filterlist_config)?
         .add_transform("dsd_agg", dsd_agg_config)?
         .add_encoder("dd_events_encode", dd_events_config)?
         .add_encoder("dd_service_checks_encode", dd_service_checks_config)?
@@ -435,7 +487,8 @@ async fn add_dsd_pipeline_to_blueprint(
         // Metrics.
         .connect_component("dsd_prefix_filter", ["dsd_in.metrics"])?
         .connect_component("dsd_enrich", ["dsd_prefix_filter"])?
-        .connect_component("dsd_agg", ["dsd_enrich"])?
+        .connect_component("dsd_tag_filterlist", ["dsd_enrich"])?
+        .connect_component("dsd_agg", ["dsd_tag_filterlist"])?
         .connect_component("metrics_enrich", ["dsd_agg"])?
         .connect_component("dd_service_checks_encode", ["dsd_in.service_checks"])?
         .connect_component("dd_events_encode", ["dsd_in.events"])?

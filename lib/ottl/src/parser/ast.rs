@@ -52,7 +52,7 @@ pub enum IndexExpr {
 pub struct Field {
     /// Identifier for this field segment.
     pub name: String,
-    /// Index keys attached to this field (e.g. `["key"]`, `[0]`).
+    /// Index keys attached to this field (for example, `["key"]`, `[0]`).
     pub keys: Vec<IndexExpr>,
 }
 
@@ -239,12 +239,12 @@ pub enum ArenaRootExpr {
 // Original AST Node Types (used during parsing, then converted to arena)
 // =====================================================================================================================
 
-/// Path expression (e.g., `resource.attributes["key"]`).
+/// Path expression (for example, `resource.attributes["key"]`).
 ///
 /// Each dot-separated segment is a [`Field`] with its own index keys.
 #[derive(Debug, Clone)]
 pub struct PathExpr {
-    /// Ordered fields of the path (e.g., `[Field("resource", []), Field("attributes", ["key"])]`).
+    /// Ordered fields of the path (for example, `[Field("resource", []), Field("attributes", ["key"])]`).
     pub fields: Vec<Field>,
 }
 

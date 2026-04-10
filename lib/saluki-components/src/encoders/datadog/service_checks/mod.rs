@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use facet::Facet;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
@@ -40,7 +41,7 @@ const fn default_zstd_compressor_level() -> i32 {
 /// Datadog Service Checks incremental encoder.
 ///
 /// Generates Datadog Service Checks payloads for the Datadog platform.
-#[derive(Deserialize)]
+#[derive(Deserialize, Facet)]
 pub struct DatadogServiceChecksConfiguration {
     /// Compression kind to use for the request payloads.
     ///

@@ -9,7 +9,7 @@ use nom::{
 };
 use saluki_context::{origin::OriginTagCardinality, tags::RawTags};
 
-use super::DogstatsdCodecConfiguration;
+use super::DogStatsDCodecConfiguration;
 
 /// DogStatsD message type.
 #[derive(Eq, PartialEq)]
@@ -105,7 +105,7 @@ pub fn ascii_alphanum_and_seps(input: &[u8]) -> IResult<&[u8], &str> {
 ///
 /// If the input slice is not at least one byte long, or if it is not valid UTF-8, an error is returned.
 #[inline]
-pub fn tags(config: &DogstatsdCodecConfiguration) -> impl Fn(&[u8]) -> IResult<&[u8], RawTags<'_>> {
+pub fn tags(config: &DogStatsDCodecConfiguration) -> impl Fn(&[u8]) -> IResult<&[u8], RawTags<'_>> {
     let max_tag_count = config.maximum_tag_count;
     let max_tag_len = config.maximum_tag_length;
 

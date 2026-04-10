@@ -127,10 +127,10 @@ pub enum MetricOrigin {
 
     /// Originated from a specific product, category, and/or service.
     OriginMetadata {
-        /// Product that emitted the metric.
+        /// Product.
         product: u32,
 
-        /// Subproduct that emitted the metric.
+        /// Subproduct.
         ///
         /// Previously known as "category".
         subproduct: u32,

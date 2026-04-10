@@ -10,11 +10,11 @@ use bytes::{buf::UninitSlice, Buf, BufMut, Bytes, BytesMut};
 use http_body::{Body, Frame, SizeHint};
 use tokio::io::AsyncWrite;
 
-/// A bytes buffer that write dynamically-sized payloads across multiple fixed-size chunks.
+/// A bytes buffer that writes dynamically sized payloads across multiple fixed-size chunks.
 ///
 /// As callers write data to `ChunkedBytesBuffer`, it will allocate additional chunks as needed, and write the data
 /// across these chunks. This allows for predictable memory usage by avoiding reallocations that overestimate the
-/// necessary additional capacity, and provides mechnical sympathy to the allocator by using consistently-sized chunks.
+/// necessary additional capacity, and provides mechanical sympathy to the allocator by using consistently sized chunks.
 ///
 /// `ChunkedBytesBuffer` implements [`AsyncWrite`] and [`Body`], allowing it to be asynchronously written to and used as
 /// the body of an HTTP request without any additional allocations and copying/merging of data into a single buffer.

@@ -84,9 +84,9 @@ enum ListenerInner {
 ///
 /// ## Connection-oriented vs connectionless listeners
 ///
-/// For listeners on connection-oriented address families (e.g. TCP, Unix domain sockets in stream mode), the listener
+/// For listeners on connection-oriented address families (for example, TCP, Unix domain sockets in stream mode), the listener
 /// will listen for an accept new connections in the typical fashion. However, for connectionless address families
-/// (e.g. UDP, Unix domain sockets in datagram mode), there is no concept of a "connection" and so nothing to be
+/// (for example, UDP, Unix domain sockets in datagram mode), there is no concept of a "connection" and so nothing to be
 /// continually "accepted". Instead, `Listener` will emit a single `Stream` that can be used to send and receive data
 /// from multiple remote peers.
 ///

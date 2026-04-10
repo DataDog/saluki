@@ -1258,7 +1258,7 @@ mod test {
 
     #[test]
     fn decoder_only_has_default_output() {
-        // Attempt to use named output on Decoder (e.g., "decoder.errors")
+        // Attempt to use named output on Decoder (for example, "decoder.errors")
         // Should fail with NonexistentComponentOutputId error
         let mut graph = Graph::default();
         graph

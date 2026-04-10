@@ -8,6 +8,7 @@
 use std::{path::PathBuf, time::Instant};
 
 use saluki_app::bootstrap::AppBootstrapper;
+use saluki_components::config::{DatadogRemapper, KEY_ALIASES};
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_error::{ErrorContext as _, GenericError};
 use tracing::{error, info, warn};
@@ -42,8 +43,10 @@ async fn main() -> Result<(), GenericError> {
     // initialize basic subsystems before executing the given subcommand.
     let bootstrap_config_path = cli.config_file.unwrap_or_else(PlatformSettings::get_config_file_path);
     let bootstrap_config = ConfigurationLoader::default()
+        .with_key_aliases(KEY_ALIASES)
         .from_yaml(&bootstrap_config_path)
         .error_context("Failed to load Datadog Agent configuration file during bootstrap.")?
+        .add_providers([DatadogRemapper::new()])
         .from_environment(PlatformSettings::get_env_var_prefix())
         .error_context("Environment variable prefix should not be empty.")?
         .with_default_secrets_resolution()

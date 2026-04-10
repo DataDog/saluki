@@ -10,13 +10,13 @@ mod host_enrichment;
 pub use self::host_enrichment::HostEnrichmentConfiguration;
 
 mod dogstatsd_prefix_filter;
-pub use self::dogstatsd_prefix_filter::DogstatsDPrefixFilterConfiguration;
+pub use self::dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration;
 
 mod host_tags;
 pub use self::host_tags::HostTagsConfiguration;
 
 mod dogstatsd_mapper;
-pub use self::dogstatsd_mapper::DogstatsDMapperConfiguration;
+pub use self::dogstatsd_mapper::DogStatsDMapperConfiguration;
 
 mod metric_router;
 pub use self::metric_router::MetricRouterConfiguration;

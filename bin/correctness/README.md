@@ -7,7 +7,7 @@ consists of the following components:
 - `airlock`: helper library for running containerized applications in "isolated" groups, to allow for spawning
   supporting applications alongside a system under test (SUT) without colliding with other concurrent tests
 - `ground-truth`: a test runner designed specifically to drive an identical, deterministic telemetry workload into a
-  baseline and comparison target (e.g., Datadog Agent vs ADP), and compare the outputs they forward to their configured
+  baseline and comparison target (for example, Datadog Agent vs ADP), and compare the outputs they forward to their configured
   intake, highlighting any discrepancies
 - `datadog-intake`: a mock intake in the spirit of [`fakeintake`][fakeintake_gh] that provides a more ergonomic
   approach to dumping the captured data

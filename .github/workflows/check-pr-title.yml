@@ -36,15 +36,14 @@ jobs:
 
           scopes: |
             agent-data-plane
-            aggregate transform
+            aggregate
             airlock
             api
-            apm stats transform
+            apm stats
             app
-            blackhole destination
-            buffered incremental encoder
-            chained transform
-            checks source
+            blackhole
+            buffered incremental
+            chained
             ci
             common
             components
@@ -52,43 +51,40 @@ jobs:
             containerd-protos
             context
             core
-            datadog encoder
-            datadog forwarder
+            datadog
             datadog-intake
             datadog-protos
             ddsketch
             deps
             dev
             docs
-            dogstatsd mapper transform
-            dogstatsd prefix filter transform
-            dogstatsd source
-            dsd stats destination
+            dogstatsd
+            dogstatsd mapper
+            dogstatsd prefix filter
+            dsd stats
             env
             error
             ground-truth
             health
-            heartbeat source
-            host enrichment transform
-            host tags transform
-            internal metrics source
+            heartbeat
+            host enrichment
+            host tags
+            internal metrics
             io
             memory-accounting
             metadata
-            metric router transform
+            metric router
             metrics
             millstone
-            otlp decoder
-            otlp forwarder
+            otlp
             otlp-protos
-            otlp relay
-            otlp source
             ottl
             panoramic
             process-memory
-            prometheus destination
+            prometheus
+            prometheus-exposition
             stele
             stringtheory
             tls
-            trace obfuscation transform
-            trace sampler transform
+            trace obfuscation
+            trace sampler

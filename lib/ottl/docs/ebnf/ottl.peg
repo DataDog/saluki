@@ -171,7 +171,7 @@ MapEntry <- StringLiteral WS ':' WS Value
 #   FloatLiteral before IntLiteral — '3.14' starts with digits; IntLiteral
 #     would greedily match '3' and leave '.14' unconsumed.
 #   BoolLiteral and NilLiteral use !IdentChar to prevent matching prefixes
-#     of longer identifiers (e.g. 'true_value').
+#     of longer identifiers (for example, 'true_value').
 #
 # The lexer tokens for floats and ints carry no sign.  Signs are handled
 # as unary operators in MathFactor.  Literals here are always unsigned.
@@ -229,7 +229,7 @@ BooleanPrimary <- '(' WS BooleanExpression WS ')' / BooleanValue
 #   Comparison first — so that 'true == false' is parsed as a comparison
 #     rather than consuming just 'true' as a BoolLiteral.
 #   ConstExpr next — catches bare 'true'/'false' and converter calls
-#     (e.g. IsMatch(...)) returning boolean.
+#     (for example, IsMatch(...)) returning boolean.
 #
 # Note: bare paths are NOT valid as boolean values.  The test
 # `{condition: "animal", wantErr: true}` confirms this.

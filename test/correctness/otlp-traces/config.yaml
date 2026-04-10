@@ -1,6 +1,4 @@
 analysis_mode: traces
-additional_span_ignore_fields:
-  - meta.error.msg
 millstone:
   image: saluki-images/millstone:latest
   config_path: millstone.yaml

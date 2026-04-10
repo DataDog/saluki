@@ -182,7 +182,7 @@ pub struct Span {
     meta: FastHashMap<MetaString, MetaString>,
     /// Numeric-valued tags attached to this span.
     metrics: FastHashMap<MetaString, f64>,
-    /// Span type classification (e.g., web, db, lambda).
+    /// Span type classification (for example, web, db, lambda).
     span_type: MetaString,
     /// Structured metadata payloads.
     meta_struct: FastHashMap<MetaString, Vec<u8>>,
@@ -269,7 +269,7 @@ impl Span {
         self
     }
 
-    /// Sets the span type (e.g., web, db, lambda).
+    /// Sets the span type (for example, web, db, lambda).
     pub fn with_span_type(mut self, span_type: impl Into<MetaString>) -> Self {
         self.span_type = span_type.into();
         self
