@@ -2340,6 +2340,7 @@ name = "memory-accounting"
 version = "0.1.0"
 dependencies = [
  "bytesize",
+ "libc",
  "metrics",
  "ordered-float",
  "pin-project",

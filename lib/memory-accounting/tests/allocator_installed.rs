@@ -5,12 +5,12 @@
 
 use std::alloc::System;
 
-use memory_accounting::allocator::{AllocationGroupRegistry, TrackingAllocator};
+use memory_accounting::allocator::{ResourceGroupRegistry, TrackingAllocator};
 
 #[global_allocator]
 static ALLOC: TrackingAllocator<System> = TrackingAllocator::new(System);
 
 #[test]
 fn detects_allocator_installed() {
-    assert!(AllocationGroupRegistry::allocator_installed());
+    assert!(ResourceGroupRegistry::allocator_installed());
 }
