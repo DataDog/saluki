@@ -1,4 +1,5 @@
 analysis_mode: traces
+otlp_direct_analysis_mode: true
 millstone:
   image: saluki-images/millstone:latest
   config_path: millstone.yaml
