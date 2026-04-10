@@ -39,8 +39,8 @@ mod signature;
 
 use self::probabilistic::PROB_RATE_KEY;
 use crate::common::datadog::{
-    apm::ApmConfig, sample_by_rate, DECISION_MAKER_PROBABILISTIC, OTEL_TRACE_ID_META_KEY, SAMPLING_PRIORITY_METRIC_KEY,
-    TAG_DECISION_MAKER,
+    apm::ApmConfig, sample_by_rate, DECISION_MAKER_MANUAL, DECISION_MAKER_PROBABILISTIC, OTEL_TRACE_ID_META_KEY,
+    SAMPLING_PRIORITY_METRIC_KEY, TAG_DECISION_MAKER,
 };
 use crate::common::otlp::config::TracesConfig;
 
@@ -305,12 +305,39 @@ impl TraceSampler {
         // ETS: only sample traces containing errors (including exception span events); skip all other samplers.
         // logic taken from: https://github.com/DataDog/datadog-agent/blob/be33ac1490c4a34602cbc65a211406b73ad6d00b/pkg/trace/agent/agent.go#L1068
         if self.error_tracking_standalone {
+            // For OTLP traces without the probabilistic sampler path, pre-compute dm/priority before
+            // returning early. This mirrors DDA's OTLPReceiver.createChunks which runs before
+            // runSamplersV1, so those values are set even when ETS short-circuits.
+            // See: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/api/otlp.go#L561-L585
+            let otlp_pre_sample = if !self.probabilistic_sampler_enabled && self.is_otlp_trace(trace, root_span_idx) {
+                let (priority, dm) = if let Some(user_priority) = self.get_user_priority(trace, root_span_idx) {
+                    (user_priority, DECISION_MAKER_MANUAL)
+                } else {
+                    let root_trace_id = trace.spans()[root_span_idx].trace_id();
+                    if sample_by_rate(root_trace_id, self.otlp_sampling_rate) {
+                        (PRIORITY_AUTO_KEEP, DECISION_MAKER_PROBABILISTIC)
+                    } else {
+                        (PRIORITY_AUTO_DROP, DECISION_MAKER_PROBABILISTIC)
+                    }
+                };
+                if priority == PRIORITY_AUTO_KEEP {
+                    if let Some(root_span) = trace.spans_mut().get_mut(root_span_idx) {
+                        root_span.metrics_mut().remove(PROB_RATE_KEY);
+                    }
+                }
+                Some((priority, dm))
+            } else {
+                None
+            };
+
             if self.trace_contains_error(trace, true) {
                 let keep = self.error_sampler.sample_error(now, trace, root_span_idx);
-                let priority = if keep { PRIORITY_AUTO_KEEP } else { PRIORITY_AUTO_DROP };
-                return (keep, priority, "", Some(root_span_idx));
+                let default_priority = if keep { PRIORITY_AUTO_KEEP } else { PRIORITY_AUTO_DROP };
+                let (priority, dm) = otlp_pre_sample.unwrap_or((default_priority, ""));
+                return (keep, priority, dm, Some(root_span_idx));
             }
-            return (false, PRIORITY_AUTO_DROP, "", Some(root_span_idx));
+            let (pre_priority, pre_dm) = otlp_pre_sample.unwrap_or((PRIORITY_AUTO_DROP, ""));
+            return (false, pre_priority, pre_dm, Some(root_span_idx));
         }
 
         let contains_error = self.trace_contains_error(trace, false);
@@ -1283,5 +1310,109 @@ mod tests {
         let (keep, _, decision_maker, _) = sampler.run_samplers(&mut trace);
         assert!(keep, "normal probabilistic sampling should keep the trace");
         assert_eq!(decision_maker, DECISION_MAKER_PROBABILISTIC);
+    }
+
+    // ── ETS + OTLP pre-sampling tests ────────────────────────────────────────────
+    // These mirror DDA's OTLPReceiver.createChunks behavior which pre-assigns
+    // priority/dm before runSamplersV1, so ETS sees those values even when it
+    // short-circuits. See: pkg/trace/api/otlp.go#L561-L585.
+
+    fn create_otlp_test_span(trace_id: u64, span_id: u64, error: i32) -> DdSpan {
+        let mut meta = saluki_common::collections::FastHashMap::default();
+        meta.insert(
+            MetaString::from_static(OTEL_TRACE_ID_META_KEY),
+            MetaString::from("0000000000000000deadbeefcafebabe"),
+        );
+        create_test_span(trace_id, span_id, error).with_meta(meta)
+    }
+
+    fn create_sampler_with_ets_legacy() -> TraceSampler {
+        TraceSampler {
+            error_tracking_standalone: true,
+            probabilistic_sampler_enabled: false,
+            otlp_sampling_rate: 1.0,
+            ..create_test_sampler()
+        }
+    }
+
+    /// ETS + OTLP non-error trace (legacy sampler path): pre-sampling sets priority=AutoKeep and dm="-9".
+    /// Mirrors DDA OTLPReceiver assigning priority=1 + dm=-9 before ETS returns early.
+    #[test]
+    fn ets_otlp_non_error_gets_presample_priority_and_dm() {
+        let mut sampler = create_sampler_with_ets_legacy();
+
+        let span = create_otlp_test_span(200, 1, 0); // no error
+        let mut trace = create_test_trace(vec![span]);
+
+        let (keep, priority, dm, _) = sampler.run_samplers(&mut trace);
+        assert!(!keep, "ETS should drop non-error OTLP traces");
+        assert_eq!(
+            priority, PRIORITY_AUTO_KEEP,
+            "OTLP pre-sampling sets priority=AutoKeep even for ETS-dropped traces"
+        );
+        assert_eq!(dm, DECISION_MAKER_PROBABILISTIC, "OTLP pre-sampling sets dm=-9");
+    }
+
+    /// ETS + OTLP error trace (legacy sampler path): pre-sampling sets priority=AutoKeep and dm="-9".
+    #[test]
+    fn ets_otlp_error_gets_presample_priority_and_dm() {
+        let mut sampler = create_sampler_with_ets_legacy();
+
+        let span = create_otlp_test_span(201, 1, 1); // error=1
+        let mut trace = create_test_trace(vec![span]);
+
+        let (keep, priority, dm, _) = sampler.run_samplers(&mut trace);
+        assert!(keep, "ETS should keep error OTLP traces");
+        assert_eq!(priority, PRIORITY_AUTO_KEEP, "OTLP pre-sampling sets priority=AutoKeep");
+        assert_eq!(dm, DECISION_MAKER_PROBABILISTIC, "OTLP pre-sampling sets dm=-9");
+    }
+
+    /// ETS + OTLP + probabilistic_sampler_enabled=true: OTLPReceiver defers, no pre-sampling.
+    /// DDA's OTLPReceiver sets PriorityNone and skips when ProbabilisticSamplerEnabled.
+    #[test]
+    fn ets_otlp_probabilistic_path_skips_presample() {
+        let mut sampler = create_sampler_with_ets_legacy();
+        sampler.probabilistic_sampler_enabled = true; // override to prob path
+
+        let span = create_otlp_test_span(202, 1, 0); // no error
+        let mut trace = create_test_trace(vec![span]);
+
+        let (keep, priority, dm, _) = sampler.run_samplers(&mut trace);
+        assert!(!keep, "ETS should drop non-error traces");
+        assert_eq!(
+            priority, PRIORITY_AUTO_DROP,
+            "no pre-sampling when probabilistic path active"
+        );
+        assert_eq!(dm, "", "no dm when probabilistic path active");
+    }
+
+    /// ETS + non-OTLP trace (legacy sampler path): behavior unchanged — no pre-sampling.
+    #[test]
+    fn ets_non_otlp_unaffected_by_presample() {
+        let mut sampler = create_sampler_with_ets_legacy();
+
+        let span = create_test_span(203, 1, 0); // no error, no OTLP meta
+        let mut trace = create_test_trace(vec![span]);
+
+        let (keep, priority, dm, _) = sampler.run_samplers(&mut trace);
+        assert!(!keep, "ETS should drop non-error non-OTLP traces");
+        assert_eq!(priority, PRIORITY_AUTO_DROP, "non-OTLP traces use default ETS priority");
+        assert_eq!(dm, "", "non-OTLP traces get no dm");
+    }
+
+    /// ETS + OTLP trace with user-set priority: dm="-4" (manual sampling), matching DDA.
+    #[test]
+    fn ets_otlp_user_priority_gets_manual_dm() {
+        let mut sampler = create_sampler_with_ets_legacy();
+
+        let mut metrics = saluki_common::collections::FastHashMap::default();
+        metrics.insert(MetaString::from(SAMPLING_PRIORITY_METRIC_KEY), 2.0); // UserKeep
+        let span = create_otlp_test_span(204, 1, 0).with_metrics(metrics); // no error
+        let mut trace = create_test_trace(vec![span]);
+
+        let (keep, priority, dm, _) = sampler.run_samplers(&mut trace);
+        assert!(!keep, "ETS drops non-error traces regardless of user priority");
+        assert_eq!(priority, PRIORITY_USER_KEEP, "user priority is preserved");
+        assert_eq!(dm, DECISION_MAKER_MANUAL, "user-set priority gets dm=-4");
     }
 }
