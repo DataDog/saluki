@@ -113,6 +113,11 @@ test-correctness-otlp-traces:
   variables:
     CORRECTNESS_TEST_CASE: otlp-traces
 
+test-correctness-otlp-traces-ets:
+  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-baseline]
+  variables:
+    CORRECTNESS_TEST_CASE: otlp-traces-ets
+
 test-correctness-otlp-traces-ottl-filtering:
   extends: [.build-common-variables, .test-correctness-definition]
   variables:
