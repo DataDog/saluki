@@ -82,6 +82,14 @@ pub async fn handle_run_command(
     let use_new_config_stream_endpoint = bootstrap_dp_config.use_new_config_stream_endpoint();
     let should_bootstrap_remote_agent = !in_standalone_mode && (remote_agent_enabled || use_new_config_stream_endpoint);
 
+    info!(
+        standalone_mode = in_standalone_mode,
+        remote_agent_enabled,
+        use_new_config_stream_endpoint,
+        should_bootstrap_remote_agent,
+        "Agent Data Plane bootstrap mode."
+    );
+
     let ra_bootstrap = if should_bootstrap_remote_agent {
         let ra_bootstrap = RemoteAgentBootstrap::from_configuration(&bootstrap_config, &bootstrap_dp_config)
             .await
