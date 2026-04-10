@@ -534,7 +534,7 @@ test-all: test test-property test-docs test-miri test-loom
 
 .PHONY: test-correctness
 test-correctness: ## Runs the complete correctness suite
-test-correctness: test-correctness-dsd-plain test-correctness-dsd-origin-detection test-correctness-otlp-metrics test-correctness-otlp-traces test-correctness-otlp-traces-ets test-correctness-otlp-traces-ottl-filtering test-correctness-otlp-traces-ottl-transform
+test-correctness: test-correctness-dsd-plain test-correctness-dsd-origin-detection test-correctness-otlp-metrics test-correctness-otlp-traces test-correctness-otlp-traces-ets test-correctness-otlp-traces-ottl-filtering test-correctness-otlp-traces-ottl-transform test-correctness-otlp-traces-probabilistic
 
 .PHONY: test-correctness-dsd-plain
 test-correctness-dsd-plain: build-ground-truth
@@ -577,6 +577,12 @@ test-correctness-otlp-traces-ottl-transform: build-ground-truth
 test-correctness-otlp-traces-ottl-transform: ## Runs the 'otlp-traces-ottl-transform' E2E test (OTel Collector + OTTL transform vs ADP + OTTL transform)
 	@echo "[*] Running 'otlp-traces-ottl-transform' correctness test case..."
 	@target/release/ground-truth $(shell pwd)/test/correctness/otlp-traces-ottl-transform/config.yaml
+
+.PHONY: test-correctness-otlp-traces-probabilistic
+test-correctness-otlp-traces-probabilistic: build-ground-truth
+test-correctness-otlp-traces-probabilistic: ## Runs the 'otlp-traces-probabilistic' correctness test (probabilistic sampler at 50%)
+	@echo "[*] Running 'otlp-traces-probabilistic' correctness test case..."
+	@target/release/ground-truth $(shell pwd)/test/correctness/otlp-traces-probabilistic/config.yaml
 
 .PHONY: build-panoramic
 build-panoramic: check-rust-build-tools
