@@ -8,12 +8,15 @@
 
 mod telemetry;
 
+use std::{num::NonZeroUsize, time::Duration};
+
 use async_trait::async_trait;
 use foldhash::fast::RandomState as FoldHashState;
 use hashbrown::{HashMap, HashSet};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_common::cache::{Cache, CacheBuilder};
 use saluki_config::GenericConfiguration;
-use saluki_context::{tags::Tag, TagSetMutViewState};
+use saluki_context::{tags::Tag, Context, TagSetMutViewState};
 use saluki_core::{
     components::{
         transforms::{Transform, TransformBuilder, TransformContext},
@@ -27,7 +30,11 @@ use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
 use serde::{de::Deserializer, Deserialize};
 use tokio::select;
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
+
+const CONTEXT_CACHE_CAPACITY: usize = 100_000;
+const CONTEXT_CACHE_TTI: Duration = Duration::from_secs(30);
+const CONTEXT_CACHE_EXPIRATION_INTERVAL: Duration = Duration::from_secs(1);
 
 use self::telemetry::Telemetry;
 
@@ -170,6 +177,7 @@ impl TransformBuilder for TagFilterlistConfiguration {
                 .clone()
                 .expect("configuration must be set via from_configuration"),
             telemetry: Telemetry::new(&metrics_builder),
+            context_cache: build_context_cache(),
         }))
     }
 }
@@ -177,6 +185,10 @@ impl TransformBuilder for TagFilterlistConfiguration {
 impl MemoryBounds for TagFilterlistConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
         builder.minimum().with_single_value::<TagFilterlist>("component struct");
+
+        builder
+            .firm()
+            .with_fixed_amount("context cache", CONTEXT_CACHE_CAPACITY * 64);
     }
 }
 
@@ -184,6 +196,16 @@ struct TagFilterlist {
     filters: CompiledFilters,
     configuration: GenericConfiguration,
     telemetry: Telemetry,
+    context_cache: Cache<Context, Option<(Context, usize)>>,
+}
+
+fn build_context_cache() -> Cache<Context, Option<(Context, usize)>> {
+    CacheBuilder::from_identifier("tag_filterlist/context_cache")
+        .expect("identifier cannot be empty")
+        .with_capacity(NonZeroUsize::new(CONTEXT_CACHE_CAPACITY).unwrap())
+        .with_time_to_idle(Some(CONTEXT_CACHE_TTI))
+        .with_expiration_interval(CONTEXT_CACHE_EXPIRATION_INTERVAL)
+        .build()
 }
 
 #[async_trait]
@@ -206,19 +228,45 @@ impl Transform for TagFilterlist {
                         for event in &mut events {
                             if let Some(metric) = event.try_as_metric_mut() {
                                 if metric.values().is_sketch() {
-                                    let outcome = filter_metric_tags(metric, &mut view_state, &self.filters);
-                                    self.telemetry.record(outcome);
+                                    let original_context = metric.context().clone();
+
+                                    if let Some(cached) = self.context_cache.get(&original_context) {
+                                        match cached {
+                                            None => self.telemetry.record(FilterMetricTagsOutcome::NoChange),
+                                            Some((filtered_ctx, removed_tags)) => {
+                                                *metric.context_mut() = filtered_ctx;
+                                                self.telemetry.record(FilterMetricTagsOutcome::Modified { removed_tags });
+                                            }
+                                        }
+                                    } else {
+                                        let outcome = filter_metric_tags(metric, &mut view_state, &self.filters);
+                                        self.telemetry.record(outcome);
+
+                                        match outcome {
+                                            FilterMetricTagsOutcome::RuleMiss => {}
+                                            FilterMetricTagsOutcome::NoChange => {
+                                                self.context_cache.insert(original_context, None);
+                                            }
+                                            FilterMetricTagsOutcome::Modified { removed_tags } => {
+                                                self.context_cache.insert(
+                                                    original_context,
+                                                    Some((metric.context().clone(), removed_tags)),
+                                                );
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
                         if let Err(e) = context.dispatcher().dispatch(events).await {
-                            tracing::error!(error = %e, "Failed to dispatch events.");
+                            error!(error = %e, "Failed to dispatch events.");
                         }
                     }
                     None => break,
                 },
                 (_, new_entries) = watcher.changed::<Vec<MetricTagFilterEntry>>() => {
                     self.filters = compile_filters(new_entries.as_deref().unwrap_or(&[]));
+                    self.context_cache = build_context_cache();
                     debug!("Updated metric tag filterlist.");
                 },
             }
