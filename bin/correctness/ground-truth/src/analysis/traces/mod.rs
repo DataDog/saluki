@@ -299,14 +299,17 @@ impl TracesAnalyzer {
         }
 
         // Ensure that we observe at least one span on each side where Single Step Instrumentation-related metadata is
-        // present (when not in OTLP-direct mode).
-        if !self.options.otlp_direct_analysis_mode && !self.baseline_ssi_metadata_present {
-            error!("No Single Step Instrumentation metadata found in baseline spans.");
-            error_count += 1;
-        }
-        if !self.comparison_ssi_metadata_present {
-            error!("No Single Step Instrumentation metadata found in comparison spans.");
-            error_count += 1;
+        // present (when not in OTLP-direct mode). In OTLP-direct mode, probabilistic sampling may legitimately drop
+        // the first-per-service spans that SSI metadata is attached to, so the check is skipped on both sides.
+        if !self.options.otlp_direct_analysis_mode {
+            if !self.baseline_ssi_metadata_present {
+                error!("No Single Step Instrumentation metadata found in baseline spans.");
+                error_count += 1;
+            }
+            if !self.comparison_ssi_metadata_present {
+                error!("No Single Step Instrumentation metadata found in comparison spans.");
+                error_count += 1;
+            }
         }
 
         if error_count > 0 {
