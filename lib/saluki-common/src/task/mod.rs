@@ -24,7 +24,7 @@ where
 {
     tokio::task::spawn(
         f.in_current_span()
-            .in_current_allocation_group()
+            .in_current_resource_group()
             .with_task_instrumentation(get_caller_location_as_string()),
     )
 }
@@ -41,7 +41,7 @@ where
 {
     tokio::task::spawn(
         f.in_current_span()
-            .in_current_allocation_group()
+            .in_current_resource_group()
             .with_task_instrumentation(name.into()),
     )
 }
@@ -78,7 +78,7 @@ impl<T> JoinSetExt<T> for JoinSet<T> {
     {
         self.spawn(
             f.in_current_span()
-                .in_current_allocation_group()
+                .in_current_resource_group()
                 .with_task_instrumentation(get_caller_location_as_string()),
         )
     }
@@ -91,7 +91,7 @@ impl<T> JoinSetExt<T> for JoinSet<T> {
     {
         self.spawn(
             f.in_current_span()
-                .in_current_allocation_group()
+                .in_current_resource_group()
                 .with_task_instrumentation(name.into()),
         )
     }
@@ -129,7 +129,7 @@ impl<T> HandleExt<T> for Handle {
     {
         self.spawn(
             f.in_current_span()
-                .in_current_allocation_group()
+                .in_current_resource_group()
                 .with_task_instrumentation(get_caller_location_as_string()),
         )
     }
@@ -142,7 +142,7 @@ impl<T> HandleExt<T> for Handle {
     {
         self.spawn(
             f.in_current_span()
-                .in_current_allocation_group()
+                .in_current_resource_group()
                 .with_task_instrumentation(name.into()),
         )
     }

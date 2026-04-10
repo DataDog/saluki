@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 
-use memory_accounting::allocator::AllocationGroupToken;
+use memory_accounting::allocator::ResourceGroupToken;
 use pin_project::pin_project;
 use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore},
@@ -111,7 +111,7 @@ struct ElasticStrategy<T: Poolable> {
     on_demand_allocs: AtomicUsize,
     min_capacity: usize,
     max_capacity: usize,
-    alloc_group: AllocationGroupToken,
+    resource_group: ResourceGroupToken,
     metrics: PoolMetrics,
 }
 
@@ -140,7 +140,7 @@ impl<T: Poolable> ElasticStrategy<T> {
             on_demand_allocs: AtomicUsize::new(0),
             min_capacity,
             max_capacity,
-            alloc_group: AllocationGroupToken::current(),
+            resource_group: ResourceGroupToken::current(),
             metrics,
         }
     }
@@ -249,7 +249,7 @@ where
             trace!("Updated active count. Allocating on demand.");
 
             let new_item = {
-                let _entered = strategy.alloc_group.enter();
+                let _entered = strategy.resource_group.enter();
                 (strategy.builder)()
             };
 

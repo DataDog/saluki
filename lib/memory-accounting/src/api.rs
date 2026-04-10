@@ -12,7 +12,7 @@ use saluki_api::{
 use serde::Serialize;
 
 use crate::{
-    allocator::{AllocationGroupRegistry, AllocationStatsSnapshot},
+    allocator::{ResourceGroupRegistry, ResourceStatsSnapshot},
     registry::ComponentMetadata,
 };
 
@@ -31,36 +31,36 @@ pub struct MemoryRegistryState {
 
 impl MemoryRegistryState {
     fn get_response(&self) -> String {
-        // The component registry is a nested structure, whereas the allocation registry is a flat structure. We can
-        // only iterate via closure with the allocation registry, so we do that, and for each entry, we look for it in
-        // the component registry. Luckily, the components in the allocation registry use the same naming structure as
+        // The component registry is a nested structure, whereas the resource registry is a flat structure. We can
+        // only iterate via closure with the resource registry, so we do that, and for each entry, we look for it in
+        // the component registry. Luckily, the components in the resource registry use the same naming structure as
         // the component registry supports for doing nested lookups in a single call, so we can just use that.
 
         // TODO: This is only going to show components which have taken a token, which means some components in the
         // registry, the ones whose bounds _are_ display when we verify bounds at startup, won't have an entry here
         // because they don't use a token... _and_ even if we made sure to include all components in the registry, even
-        // if they didn't have an allocation group associated, their usage might just be attributed to the root
-        // allocation group so then you end up with components that say they have a minimum usage, etc, but show a
+        // if they didn't have an resource group associated, their usage might just be attributed to the root
+        // resource group so then you end up with components that say they have a minimum usage, etc, but show a
         // current usage of zero bytes, etc.
         //
         // One option we could try is:
         // - get the total minimum/firm bounds by rolling up all components
-        // - as we iterate over each allocation group, we subtract the bounds of that component from the totals we
+        // - as we iterate over each resource group, we subtract the bounds of that component from the totals we
         //   calculated before
         // - at the end, we assign the remaining total bounds to the root component
         //
         // Essentially, because the memory usage for component with bounds that _don't_ use a token will inherently be
-        // attributed to the root allocation group anyways, this would allow at least capturing those bounds for
+        // attributed to the root resource group anyways, this would allow at least capturing those bounds for
         // comparison against the otherwise-unattributed usage.
         //
         // Realistically, we _should_ still have our code set up to track all allocations for components that declare
         // bounds, but this could be a reasonable stopgap.
-        let empty_snapshot = AllocationStatsSnapshot::empty();
+        let empty_snapshot = ResourceStatsSnapshot::empty();
 
         let mut component_usage = BTreeMap::new();
 
         let mut inner = self.inner.lock().unwrap();
-        AllocationGroupRegistry::global().visit_allocation_groups(|component_name, component_stats| {
+        ResourceGroupRegistry::global().visit_resource_groups(|component_name, component_stats| {
             let component_meta = inner.get_or_create(component_name);
             let component_meta = component_meta.lock().unwrap();
             let bounds = component_meta.self_bounds();

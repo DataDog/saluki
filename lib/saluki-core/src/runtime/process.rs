@@ -9,7 +9,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use memory_accounting::allocator::{AllocationGroupRegistry, AllocationGroupToken, Track as _, Tracked};
+use memory_accounting::allocator::{ResourceGroupRegistry, ResourceGroupToken, Track as _, Tracked};
 use pin_project::{pin_project, pinned_drop};
 use tracing::{debug_span, instrument::Instrumented, Instrument as _};
 
@@ -102,7 +102,7 @@ impl Deref for Name {
 pub struct Process {
     id: Id,
     name: Name,
-    alloc_group_token: AllocationGroupToken,
+    resource_group_token: ResourceGroupToken,
     dataspace: DataspaceRegistry,
 }
 
@@ -111,9 +111,9 @@ impl Process {
         let name = parent
             .and_then(|p| Name::scoped(&p.name, &name))
             .or_else(|| Name::root(name))?;
-        let alloc_group_token = AllocationGroupRegistry::global().register_allocation_group(&*name);
+        let resource_group_token = ResourceGroupRegistry::global().register_resource_group(&*name);
         let dataspace = parent.map(|p| p.dataspace.clone()).unwrap_or_default();
-        Some(Self::from_parts(Id::new(), name, alloc_group_token, dataspace))
+        Some(Self::from_parts(Id::new(), name, resource_group_token, dataspace))
     }
 
     pub(crate) fn supervisor_with_dataspace<N: AsRef<str>>(
@@ -122,11 +122,11 @@ impl Process {
         let name = parent
             .and_then(|p| Name::scoped(&p.name, &name))
             .or_else(|| Name::root(name))?;
-        let alloc_group_token = AllocationGroupRegistry::global().register_allocation_group(&*name);
+        let resource_group_token = ResourceGroupRegistry::global().register_resource_group(&*name);
         let dataspace = dataspace
             .or_else(|| parent.map(|p| p.dataspace.clone()))
             .unwrap_or_default();
-        Some(Self::from_parts(Id::new(), name, alloc_group_token, dataspace))
+        Some(Self::from_parts(Id::new(), name, resource_group_token, dataspace))
     }
 
     pub(crate) fn worker<N: AsRef<str>>(name: N, parent: &Process) -> Option<Self> {
@@ -134,16 +134,16 @@ impl Process {
         Some(Self::from_parts(
             Id::new(),
             name,
-            parent.alloc_group_token,
+            parent.resource_group_token,
             parent.dataspace.clone(),
         ))
     }
 
-    fn from_parts(id: Id, name: Name, alloc_group_token: AllocationGroupToken, dataspace: DataspaceRegistry) -> Self {
+    fn from_parts(id: Id, name: Name, resource_group_token: ResourceGroupToken, dataspace: DataspaceRegistry) -> Self {
         Self {
             id,
             name,
-            alloc_group_token,
+            resource_group_token,
             dataspace,
         }
     }
@@ -191,7 +191,7 @@ where
 
         let process_id = process.id;
         let dataspace = process.dataspace.clone();
-        let inner = inner.track_allocations(process.alloc_group_token).instrument(span);
+        let inner = inner.track_resources(process.resource_group_token).instrument(span);
 
         Self {
             process_id,

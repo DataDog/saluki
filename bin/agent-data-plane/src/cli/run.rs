@@ -7,8 +7,8 @@ use argh::FromArgs;
 use datadog_agent_commons::platform::PlatformSettings;
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::{
+    accounting::{initialize_memory_bounds, MemoryBoundsConfiguration},
     bootstrap::BootstrapGuard,
-    memory::{initialize_memory_bounds, MemoryBoundsConfiguration},
     metrics::emit_startup_metrics,
 };
 use saluki_components::config_registry::{ConfigClassifier, Severity, SupportLevel};

@@ -1,7 +1,7 @@
 use std::{collections::HashMap, future::Future, num::NonZeroUsize};
 
 use memory_accounting::{
-    allocator::{AllocationGroupToken, Tracked},
+    allocator::{ResourceGroupToken, Tracked},
     MemoryLimiter,
 };
 use saluki_common::task::JoinSetExt as _;
@@ -72,7 +72,7 @@ pub struct BuiltTopology {
     destinations: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Destination + Send>>>>,
     encoders: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Encoder + Send>>>>,
     forwarders: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Forwarder + Send>>>>,
-    component_token: AllocationGroupToken,
+    component_token: ResourceGroupToken,
     interconnect_capacity: NonZeroUsize,
     worker_pool_config: WorkerPoolConfiguration,
 }
@@ -88,7 +88,7 @@ impl BuiltTopology {
         destinations: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Destination + Send>>>>,
         encoders: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Encoder + Send>>>>,
         forwarders: HashMap<ComponentId, RegisteredComponent<Tracked<Box<dyn Forwarder + Send>>>>,
-        component_token: AllocationGroupToken, interconnect_capacity: NonZeroUsize,
+        component_token: ResourceGroupToken, interconnect_capacity: NonZeroUsize,
     ) -> Self {
         Self {
             name,
@@ -668,7 +668,7 @@ fn build_payloads_consumer_pair(
 
 fn spawn_component<F>(
     join_set: &mut JoinSet<Result<(), GenericError>>, context: ComponentContext,
-    allocation_group_token: AllocationGroupToken, component_future: F,
+    resource_group_token: ResourceGroupToken, component_future: F,
 ) -> AbortHandle
 where
     F: Future<Output = Result<(), GenericError>> + Send + 'static,
@@ -680,7 +680,7 @@ where
     );
 
     let _span = component_span.enter();
-    let _guard = allocation_group_token.enter();
+    let _guard = resource_group_token.enter();
 
     let component_task_name = format!(
         "topology-{}-{}",

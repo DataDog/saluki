@@ -6,6 +6,7 @@ use saluki_core::runtime::Supervisor;
 use saluki_error::{ErrorContext as _, GenericError};
 
 use crate::{
+    accounting::initialize_resource_telemetry,
     logging::{initialize_logging, LoggingConfiguration, LoggingGuard},
     metrics::initialize_metrics,
     tls::initialize_tls,
@@ -122,6 +123,9 @@ impl AppBootstrapper {
 
         // Initialize everything else.
         initialize_tls().error_context("Failed to initialize TLS subsystem.")?;
+        initialize_resource_telemetry()
+            .await
+            .error_context("Failed to initialize resource telemetry subsystem.")?;
         let metrics_workers = initialize_metrics(self.metrics_prefix, self.metrics_default_level)
             .await
             .error_context("Failed to initialize metrics subsystem.")?;

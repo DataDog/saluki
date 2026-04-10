@@ -3,7 +3,7 @@ use std::{
     sync::Arc,
 };
 
-use memory_accounting::allocator::AllocationGroupToken;
+use memory_accounting::allocator::ResourceGroupToken;
 
 use super::{Clearable, ObjectPool, PoolMetrics, Poolable, ReclaimStrategy};
 
@@ -70,7 +70,7 @@ where
 
 struct OnDemandStrategy<T: Poolable> {
     builder: Box<dyn Fn() -> T::Data + Send + Sync>,
-    alloc_group: AllocationGroupToken,
+    resource_group: ResourceGroupToken,
     metrics: PoolMetrics,
 }
 
@@ -87,7 +87,7 @@ impl<T: Poolable> OnDemandStrategy<T> {
 
         Self {
             builder,
-            alloc_group: AllocationGroupToken::current(),
+            resource_group: ResourceGroupToken::current(),
             metrics,
         }
     }
@@ -96,7 +96,7 @@ impl<T: Poolable> OnDemandStrategy<T> {
         self.metrics.created().increment(1);
         self.metrics.in_use().increment(1.0);
 
-        let _ = self.alloc_group.enter();
+        let _ = self.resource_group.enter();
         (self.builder)()
     }
 }
