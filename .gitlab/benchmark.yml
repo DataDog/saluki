@@ -243,6 +243,7 @@ build-agent-adp-comparison-image:
       --build-arg ADP_IMAGE=${COMPARISON_ADP_IMG}
       --build-arg DD_DATA_PLANE_ENABLED=true
       --build-arg DD_DATA_PLANE_STANDALONE_MODE=false
+      --build-arg DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT=true
       --build-arg DD_DATA_PLANE_REMOTE_AGENT_ENABLED=true
       --build-arg DD_DATA_PLANE_DOGSTATSD_ENABLED=true
       --build-arg ADP_DD_DATA_PLANE_TELEMETRY_ENABLED=true
