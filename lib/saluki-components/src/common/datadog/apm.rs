@@ -226,7 +226,7 @@ impl ApmConfig {
         self.errors_per_second
     }
 
-    /// Returns if probabilistic sampling is enabled.
+    /// Returns `true` if probabilistic sampling is enabled.
     pub const fn probabilistic_sampler_enabled(&self) -> bool {
         self.probabilistic_sampler.enabled
     }
@@ -236,22 +236,22 @@ impl ApmConfig {
         self.probabilistic_sampler.sampling_percentage
     }
 
-    /// Returns if error sampling is enabled.
+    /// Returns `true` if error sampling is enabled.
     pub const fn error_sampling_enabled(&self) -> bool {
         self.error_sampling_enabled
     }
 
-    /// Returns if error tracking standalone mode is enabled.
+    /// Returns `true` if error tracking standalone mode is enabled.
     pub const fn error_tracking_standalone_enabled(&self) -> bool {
         self.error_tracking_standalone
     }
 
-    /// Returns if stats computation by span kind is enabled.
+    /// Returns `true` if stats computation by span kind is enabled.
     pub const fn compute_stats_by_span_kind(&self) -> bool {
         self.compute_stats_by_span_kind
     }
 
-    /// Returns if peer tags aggregation is enabled.
+    /// Returns `true` if peer tags aggregation is enabled.
     pub const fn peer_tags_aggregation(&self) -> bool {
         self.peer_tags_aggregation
     }
@@ -278,7 +278,7 @@ impl ApmConfig {
         }
     }
 
-    /// Returns whether the rare sampler is enabled.
+    /// Returns `true` if the rare sampler is enabled.
     pub const fn rare_sampler_enabled(&self) -> bool {
         self.enable_rare_sampler
     }
