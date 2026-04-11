@@ -4,8 +4,8 @@ use saluki_error::{ErrorContext as _, GenericError};
 
 use super::codec::{encode_level, encode_varint, encode_varint_u128, rle_encode, write_length_prefixed};
 use super::event::{CondensedEvent, FieldIter};
+use super::pattern_cluster::ClusterManager;
 use super::segment::CompressedSegment;
-use super::skeleton::SkeletonParser;
 use super::string_table::StringTable;
 
 pub const FILE_INDEX_NONE: usize = usize::MAX;
@@ -43,7 +43,7 @@ pub struct EventBuffer {
     col_target_indices: Vec<usize>,
     col_msg_template_indices: Vec<usize>,
     col_msg_variables: Vec<u8>,
-    skeleton_parser: SkeletonParser,
+    cluster_manager: ClusterManager,
     col_field_counts: Vec<usize>,
     col_field_key_indices: Vec<u8>,
     col_field_values: Vec<u8>,
@@ -65,7 +65,7 @@ impl EventBuffer {
             col_target_indices: Vec::new(),
             col_msg_template_indices: Vec::new(),
             col_msg_variables: Vec::new(),
-            skeleton_parser: SkeletonParser::default(),
+            cluster_manager: ClusterManager::default(),
             col_field_counts: Vec::new(),
             col_field_key_indices: Vec::new(),
             col_field_values: Vec::new(),
@@ -142,13 +142,13 @@ impl EventBuffer {
         let target_idx = self.string_table.intern(meta.target());
         self.col_target_indices.push(target_idx);
 
-        // Message: extract template skeleton + variable tokens.
-        let (skeleton, var_count) = self.skeleton_parser.extract(&event.message);
+        // Message: extract template skeleton + variable tokens via Drain-inspired clustering.
+        let (skeleton, var_count) = self.cluster_manager.extract(&event.message, meta);
         let tpl_idx = self.string_table.intern(skeleton);
         self.col_msg_template_indices.push(tpl_idx);
         // Write variable tokens: varint(count) [varint-len-prefixed token ...].
         encode_varint(var_count, &mut self.col_msg_variables);
-        for token in self.skeleton_parser.variable_tokens(&event.message) {
+        for token in self.cluster_manager.variable_tokens(&event.message) {
             write_length_prefixed(&mut self.col_msg_variables, token.as_bytes());
         }
 

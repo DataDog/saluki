@@ -448,6 +448,55 @@ significant for a small gain. Skipped in favor of diminishing returns.
 
 ---
 
+## Trial D: Drain-Inspired Pattern Clustering (on top of E+F+C)
+
+**Hypothesis**: The current skeleton extraction only wildcards tokens containing
+digits. Pure-word tokens that vary (hostnames, service names, endpoints like
+"dogstatsd" vs "topology_runner") produce different skeletons. A Drain-inspired
+clustering approach that learns to wildcard pure-word positions through
+observation should produce fewer unique templates, improving RLE compression
+on the template index column.
+
+**Approach**: Replaced the naive SkeletonParser with a stateful ClusterManager
+implementing the algorithm from the Datadog Agent log pattern extraction design
+(sections 1-2). Key components:
+
+1. **Typed tokenization**: Classify whitespace-delimited tokens as SeverityLevel
+   (never wildcarded), Numeric (immediately wildcarded), or Word (potential wildcard).
+2. **Signature-based clustering**: Hash the token-type sequence + first Word value
+   (first-word protection). Messages with different first words or type sequences
+   hash to different clusters.
+3. **Pattern merging**: On match, compare token values. Same type + different value
+   → wildcard. Different types → conflict (no merge). SeverityLevel never wildcards.
+4. **Hot-pattern cache**: MRU entry per cluster for O(tokens) steady-state matching.
+5. **Saturation scoring**: After 50 consecutive identical merges, skip the CanMerge
+   pre-check (single O(tokens) pass instead of two).
+6. **Callsite acceleration**: Use `&'static Metadata` pointer identity as a cache key.
+   Three-tier: Learning (route to cached cluster), Converged (skip tokenization,
+   extract wildcards by position), Unstable (skip cache entirely).
+
+**Result**: **155,715 events** (+13.4% over Trial C, **+126.6% over original baseline**)
+- Compression ratio: 3.48x (up from 3.08x)
+- Avg compressed bytes/event: 12.9 (down from 14.5)
+
+Sweep results:
+| Config                              | Retained | Rate  | Ratio | B/evt |
+|-------------------------------------|----------|-------|-------|-------|
+| 128k segments, zstd=19 (default)   | **155,715** | 31.1% | 3.48x | 12.9 |
+| 64k segments, zstd=19              | 152,737 | 30.5% | 3.39x | 13.2 |
+| 256k segments, zstd=19             | 150,914 | 30.2% | 3.55x | 12.4 |
+| 128k segments, zstd=11             | 141,364 | 28.3% | 3.18x | 14.1 |
+| 128k segments, zstd=3              | 135,558 | 27.1% | 3.04x | 14.6 |
+
+**Why it helps**: The benchmark generates 4 formatted message types where the
+last argument comes from a static pool of 8 values (e.g., "dogstatsd",
+"topology_runner", "/var/run/datadog/apm.socket"). The naive heuristic treats
+non-digit values like "dogstatsd" as static text, producing 8 different skeletons
+per message type where the Drain approach collapses them to 1. Fewer unique
+templates → better RLE on the template index column → less metadata frame overhead.
+
+---
+
 ## Final Summary
 
 | Stage | Events Retained | vs Baseline |
@@ -460,4 +509,5 @@ significant for a small gain. Skipped in favor of diminishing returns.
 | + Columnar layout + RLE | 117,210 | +70.6% |
 | + Split compression (meta/content frames) | 122,821 | +78.8% |
 | + Field column splitting | 130,366 | +89.7% |
-| + Message template extraction | **137,259** | **+99.8%** |
+| + Message template extraction (naive) | 137,259 | +99.8% |
+| + Drain-inspired pattern clustering | **155,715** | **+126.6%** |

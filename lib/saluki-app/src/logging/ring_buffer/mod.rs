@@ -1,9 +1,11 @@
+#![allow(dead_code)]
 use tracing::{Event, Subscriber};
 use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
 
 mod codec;
 mod event;
 mod event_buffer;
+mod pattern_cluster;
 mod processor;
 mod segment;
 mod skeleton;
