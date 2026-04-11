@@ -1,6 +1,7 @@
 use memory_accounting::MemoryLimiter;
-use saluki_health::HealthRegistry;
 use tokio::runtime::Handle;
+
+use crate::health::HealthRegistry;
 
 /// Topology context.
 #[derive(Clone)]

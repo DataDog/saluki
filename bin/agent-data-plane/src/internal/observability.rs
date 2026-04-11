@@ -3,6 +3,7 @@ use std::{num::NonZeroUsize, time::Duration};
 use async_trait::async_trait;
 use memory_accounting::{ComponentRegistry, MemoryLimiter};
 use saluki_components::{destinations::PrometheusConfiguration, sources::InternalMetricsConfiguration};
+use saluki_core::health::HealthRegistry;
 use saluki_core::{
     runtime::{
         InitializationError, ProcessShutdown, RestartStrategy, RuntimeConfiguration, Supervisable, Supervisor,
@@ -11,7 +12,6 @@ use saluki_core::{
     topology::TopologyBlueprint,
 };
 use saluki_error::{generic_error, GenericError};
-use saluki_health::HealthRegistry;
 use tracing::info;
 
 use crate::config::DataPlaneConfiguration;
