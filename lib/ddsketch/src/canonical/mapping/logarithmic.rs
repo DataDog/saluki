@@ -48,6 +48,29 @@ impl LogarithmicMapping {
 
         Ok(Self { gamma, multiplier })
     }
+
+    /// Creates a new `LogarithmicMapping` from an explicit logarithmic base.
+    ///
+    /// This constructor is useful when the caller already knows the desired `gamma`
+    /// and wants to build the mapping directly instead of deriving it from relative
+    /// accuracy.
+    ///
+    /// `gamma` must be greater than `1.0`, otherwise the logarithmic mapping is
+    /// invalid.
+    ///
+    /// Note: `index_offset` is currently ignored by `LogarithmicMapping`, which
+    /// always uses an offset of `0.0`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `gamma <= 1.0`.
+    pub fn new_with_gamma(gamma: f64) -> Result<Self, &'static str> {
+        if gamma <= 1.0 {
+            return Err("gamma must be greater than 1");
+        }
+        let multiplier = 1.0 / gamma.ln();
+        Ok(Self { gamma, multiplier })
+    }
 }
 
 impl IndexMapping for LogarithmicMapping {

@@ -61,6 +61,17 @@ impl DenseStore {
     fn bin_index(&self, index: i32) -> usize {
         (index - self.offset) as usize
     }
+
+    /// Iterates through all non-zero bins in the store, yielding `(index,count)` pairs.
+    pub fn iter_non_zero_bins(&self) -> impl Iterator<Item = (i32, u64)> + '_ {
+        self.bins.iter().enumerate().filter_map(|(i, &count)| {
+            if count == 0 {
+                None
+            } else {
+                Some((self.offset + i as i32, count))
+            }
+        })
+    }
 }
 
 impl Store for DenseStore {
@@ -231,6 +242,22 @@ mod tests {
         assert_eq!(store.total_count(), 6);
         assert_eq!(store.min_index(), Some(3));
         assert_eq!(store.max_index(), Some(10));
+    }
+
+    #[test]
+    fn test_iter_non_zero_bins_empty() {
+        let store = DenseStore::new();
+
+        assert_eq!(store.iter_non_zero_bins().collect::<Vec<_>>(), Vec::new());
+    }
+
+    #[test]
+    fn test_iter_non_zero_bins_skips_zero_counts_and_applies_offset() {
+        let mut store = DenseStore::new();
+        store.add(10, 3);
+        store.add(12, 5);
+
+        assert_eq!(store.iter_non_zero_bins().collect::<Vec<_>>(), vec![(10, 3), (12, 5)]);
     }
 
     #[test]

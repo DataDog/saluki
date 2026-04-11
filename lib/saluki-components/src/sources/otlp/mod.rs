@@ -249,7 +249,7 @@ impl Source for Otlp {
 
         let mut converter_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
-        let metrics_translator = OtlpMetricsTranslator::new(metrics_translator_config, context_resolver);
+        let metrics_translator = OtlpMetricsTranslator::new(metrics_translator_config, context_resolver)?;
 
         let thread_pool_handle = context.topology_context().global_thread_pool().clone();
 
