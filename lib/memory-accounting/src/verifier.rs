@@ -1,7 +1,24 @@
-use bytesize::ByteSize;
 use snafu::Snafu;
 
 use crate::{ComponentBounds, MemoryGrant};
+
+const SI_UNITS: &[(u64, &str)] = &[
+    (1_000_000_000_000_000, "PB"),
+    (1_000_000_000_000, "TB"),
+    (1_000_000_000, "GB"),
+    (1_000_000, "MB"),
+    (1_000, "kB"),
+];
+
+fn format_si_bytes(bytes: usize) -> String {
+    let bytes = bytes as u64;
+    for &(threshold, suffix) in SI_UNITS {
+        if bytes >= threshold {
+            return format!("{:.1} {}", bytes as f64 / threshold as f64, suffix);
+        }
+    }
+    format!("{} B", bytes)
+}
 
 /// A verification error.
 #[derive(Debug, Eq, PartialEq, Snafu)]
@@ -19,8 +36,8 @@ pub enum VerifierError {
     /// Insufficient memory available to meet the minimum required memory for all components.
     #[snafu(display(
         "minimum require memory ({}) exceeds available memory ({})",
-        ByteSize::b(*minimum_required_bytes as u64).display().si(),
-        ByteSize::b(*available_bytes as u64).display().si(),
+        format_si_bytes(*minimum_required_bytes),
+        format_si_bytes(*available_bytes),
     ))]
     InsufficientMinimumMemory {
         /// Total number of bytes available.
@@ -33,8 +50,8 @@ pub enum VerifierError {
     /// Insufficient memory available to meet the firm limit for all components.
     #[snafu(display(
         "firm limit ({}) exceeds available memory ({})",
-        ByteSize::b(*firm_limit_bytes as u64).display().si(),
-        ByteSize::b(*available_bytes as u64).display().si(),
+        format_si_bytes(*firm_limit_bytes),
+        format_si_bytes(*available_bytes),
     ))]
     FirmLimitExceedsAvailable {
         /// Total number of bytes available.
