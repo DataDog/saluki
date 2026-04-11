@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["extract","response","routing"],"struct":["StatusCode"],"trait":["APIHandler"]};
+window.SIDEBAR_ITEMS = {"enum":["EndpointProtocol","EndpointType"],"mod":["extract","response","routing"],"struct":["DynamicRoute","StatusCode"],"trait":["APIHandler"]};
