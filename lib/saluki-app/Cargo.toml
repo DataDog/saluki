@@ -12,11 +12,14 @@ workspace = true
 tls-fips = ["saluki-tls/fips"]
 
 [dependencies]
+arc-swap = { workspace = true }
+async-trait = { workspace = true }
 axum = { workspace = true }
 bytesize = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
 http = { workspace = true }
+hyper = { workspace = true }
 iana-time-zone = { workspace = true }
 itoa = { workspace = true }
 memory-accounting = { workspace = true }
@@ -53,3 +56,9 @@ tracing-subscriber = { workspace = true, features = [
   "std",
   "tracing-log",
 ] }
+
+[dev-dependencies]
+http-body-util = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true, features = ["client", "client-legacy", "http1", "tokio"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
