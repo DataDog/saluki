@@ -7,13 +7,12 @@ use std::{
     time::Duration,
 };
 
-use bytesize::ByteSize;
 use memory_accounting::{
     allocator::{AllocationGroupRegistry, AllocationStats, AllocationStatsSnapshot},
     ComponentBounds, ComponentRegistry, MemoryGrant, MemoryLimiter,
 };
 use metrics::{counter, gauge, Counter, Gauge, Level};
-use saluki_common::task::spawn_traced_named;
+use saluki_common::{quantities::ByteSize, task::spawn_traced_named};
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
@@ -80,10 +79,7 @@ impl MemoryBoundsConfiguration {
                 if !value.is_empty() {
                     let cgroup_memory_reader = CgroupMemoryParser;
                     if let Some(memory) = cgroup_memory_reader.parse() {
-                        info!(
-                            "Setting memory limit to {} based on detected cgroups limit.",
-                            memory.display().si()
-                        );
+                        info!("Setting memory limit to {} based on detected cgroups limit.", memory);
                         config.memory_limit = Some(memory);
                     }
                 }
@@ -328,6 +324,6 @@ impl CgroupMemoryParser {
     }
 }
 
-fn bytes_to_si_string(bytes: usize) -> bytesize::Display {
-    ByteSize::b(bytes as u64).display().si()
+fn bytes_to_si_string(bytes: usize) -> ByteSize {
+    ByteSize::b(bytes as u64)
 }

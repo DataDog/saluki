@@ -3,10 +3,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::{Buf, BufMut};
-use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use metrics::{Counter, Gauge, Histogram};
-use saluki_common::task::spawn_traced_named;
+use saluki_common::{quantities::ByteSize, task::spawn_traced_named};
 use saluki_config::GenericConfiguration;
 use saluki_context::{
     tags::{RawTags, RawTagsFilter},

@@ -16,7 +16,6 @@ async-trait = { workspace = true }
 axum = { workspace = true }
 base64 = { workspace = true, features = ["std"] }
 bytes = { workspace = true }
-bytesize = { workspace = true }
 chrono = { workspace = true }
 datadog-protos = { workspace = true }
 ddsketch = { workspace = true }

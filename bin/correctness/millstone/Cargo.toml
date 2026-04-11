@@ -10,10 +10,10 @@ workspace = true
 
 [dependencies]
 bytes = { workspace = true }
-bytesize = { workspace = true, features = ["serde"] }
 lading-payload = { workspace = true }
 prost = { workspace = true }
 rand = { workspace = true }
+saluki-common = { workspace = true }
 saluki-error = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }

@@ -35,7 +35,6 @@ byte-unit,https://github.com/magiclen/byte-unit,MIT,Magic Len <len@magiclen.org>
 bytemuck,https://github.com/Lokathor/bytemuck,Zlib OR Apache-2.0 OR MIT,Lokathor <zefria@gmail.com>
 byteorder,https://github.com/BurntSushi/byteorder,Unlicense OR MIT,Andrew Gallant <jamslam@gmail.com>
 bytes,https://github.com/tokio-rs/bytes,MIT,"Carl Lerche <me@carllerche.com>, Sean McArthur <sean@seanmonstar.com>"
-bytesize,https://github.com/bytesize-rs/bytesize,Apache-2.0,"Hyunsik Choi <hyunsik.choi@gmail.com>, MrCroxx <mrcroxx@outlook.com>, Rob Ede <robjtede@icloud.com>"
 cast,https://github.com/japaric/cast.rs,MIT OR Apache-2.0,Jorge Aparicio <jorge@japaric.io>
 cc,https://github.com/rust-lang/cc-rs,MIT OR Apache-2.0,Alex Crichton <alex@alexcrichton.com>
 cesu8,https://github.com/emk/cesu8-rs,Apache-2.0 OR MIT,Eric Kidd <git@randomhacks.net>

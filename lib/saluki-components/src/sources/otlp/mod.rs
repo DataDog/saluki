@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use axum::body::Bytes;
-use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use otlp_protos::opentelemetry::proto::collector::logs::v1::ExportLogsServiceRequest;
 use otlp_protos::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest;
@@ -13,6 +12,7 @@ use otlp_protos::opentelemetry::proto::logs::v1::ResourceLogs as OtlpResourceLog
 use otlp_protos::opentelemetry::proto::metrics::v1::ResourceMetrics as OtlpResourceMetrics;
 use otlp_protos::opentelemetry::proto::trace::v1::ResourceSpans as OtlpResourceSpans;
 use prost::Message;
+use saluki_common::quantities::ByteSize;
 use saluki_common::task::HandleExt as _;
 use saluki_config::GenericConfiguration;
 use saluki_context::ContextResolver;

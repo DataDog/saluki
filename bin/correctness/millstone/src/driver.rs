@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use bytesize::ByteSize;
+use saluki_common::quantities::ByteSize;
 use saluki_error::{ErrorContext as _, GenericError};
 use tracing::{info, trace};
 
@@ -91,18 +91,13 @@ impl Driver {
         }
 
         let send_duration = start.elapsed();
-        let throughput_bps = ByteSize((payload_bytes_sent as f64 / send_duration.as_secs_f64()) as u64);
+        let throughput_bps = ByteSize::b((payload_bytes_sent as f64 / send_duration.as_secs_f64()) as u64);
 
-        let payload_bytes_sent_human = ByteSize(payload_bytes_sent);
+        let payload_bytes_sent_human = ByteSize::b(payload_bytes_sent);
         let pct_partial_sends = (partial_sends as f64 / payloads_sent as f64) * 100.0;
         info!(
             "Sent {} payloads ({}), with {} partial sends ({}% of total), over {:?} ({}/s).",
-            payloads_sent,
-            payload_bytes_sent_human.display().si(),
-            partial_sends,
-            pct_partial_sends,
-            send_duration,
-            throughput_bps.display().si()
+            payloads_sent, payload_bytes_sent_human, partial_sends, pct_partial_sends, send_duration, throughput_bps
         );
 
         Ok(())
