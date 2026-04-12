@@ -3663,17 +3663,23 @@ dependencies = [
  "axum",
  "axum-extra",
  "http",
+ "tonic",
 ]
 
 [[package]]
 name = "saluki-app"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
+ "async-trait",
  "axum",
  "bytesize",
  "chrono",
  "chrono-tz",
  "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "iana-time-zone",
  "itoa",
  "memory-accounting",

@@ -1,5 +1,5 @@
 //! Network listeners.
-use std::{future::pending, io};
+use std::{future::pending, io, net::SocketAddr};
 
 use snafu::{ResultExt as _, Snafu};
 use tokio::net::{TcpListener, UdpSocket};
@@ -296,6 +296,22 @@ impl ConnectionOrientedListener {
     /// Gets a reference to the listen address.
     pub fn listen_address(&self) -> &ListenAddress {
         &self.listen_address
+    }
+
+    /// Returns the actual local socket address this listener is bound to.
+    ///
+    /// This is useful when binding to port `0` to discover the ephemeral port assigned by the OS.
+    pub fn local_addr(&self) -> Result<SocketAddr, ListenerError> {
+        match &self.inner {
+            ConnectionOrientedListenerInner::Tcp(tcp) => tcp.local_addr().context(FailedToConfigureListener {
+                address: self.listen_address.clone(),
+                setting: "local_addr",
+            }),
+            #[cfg(unix)]
+            ConnectionOrientedListenerInner::Unix(_) => Err(ListenerError::InvalidConfiguration {
+                reason: "local_addr is not supported for Unix listeners",
+            }),
+        }
     }
 
     /// Accepts a new connection from the listener.
