@@ -249,6 +249,7 @@ build-agent-adp-comparison-image:
       --build-arg ADP_DD_DATA_PLANE_TELEMETRY_ENABLED=true
       --build-arg ADP_DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102
       --build-arg ADP_DD_AGGREGATE_CONTEXT_LIMIT=80000
+      --build-arg ADP_DD_DOGSTATSD_STRING_INTERNER_SIZE=2097152
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
       --label git.commit=${CI_COMMIT_SHA}
