@@ -1,5 +1,4 @@
-use bytesize::ByteSize;
-use saluki_common::deser::PermissiveBool;
+use saluki_common::{deser::PermissiveBool, quantities::ByteSize};
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;

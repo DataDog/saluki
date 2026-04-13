@@ -15,7 +15,6 @@ tls-fips = ["saluki-tls/fips"]
 arc-swap = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
-bytesize = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
 http = { workspace = true }

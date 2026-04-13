@@ -5,9 +5,9 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use regex::Regex;
+use saluki_common::quantities::ByteSize;
 use saluki_config::GenericConfiguration;
 use saluki_context::{Context, ContextResolver, ContextResolverBuilder};
 use saluki_core::{
@@ -288,7 +288,7 @@ impl SynchronousTransform for DogStatsDMapper {
 #[cfg(test)]
 mod tests {
 
-    use bytesize::ByteSize;
+    use saluki_common::quantities::ByteSize;
     use saluki_context::Context;
     use saluki_core::{components::ComponentContext, data_model::event::metric::Metric, topology::ComponentId};
     use saluki_error::GenericError;

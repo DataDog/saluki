@@ -1,9 +1,9 @@
 use std::num::NonZeroUsize;
 
 use bytes::{BufMut as _, Bytes, BytesMut};
-use bytesize::ByteSize;
 use lading_payload::{opentelemetry::metric::OpentelemetryMetrics, DogStatsD, OpentelemetryTraces};
 use rand::{rngs::StdRng, Rng, SeedableRng as _};
+use saluki_common::quantities::ByteSize;
 use saluki_error::{generic_error, GenericError};
 use tracing::info;
 
@@ -32,7 +32,7 @@ impl Corpus {
         info!(
             "Generated test corpus with {} payloads ({}) in {} format.",
             payloads.len(),
-            total_size_bytes.display().si(),
+            total_size_bytes,
             payload_name
         );
         Ok(Self { payloads })
@@ -95,7 +95,7 @@ where
     if payloads.is_empty() {
         Err(generic_error!("No payloads were generated."))
     } else {
-        Ok((payloads, ByteSize(total_size)))
+        Ok((payloads, ByteSize::b(total_size)))
     }
 }
 

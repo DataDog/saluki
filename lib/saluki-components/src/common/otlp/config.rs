@@ -1,7 +1,7 @@
 //! Shared OTLP receiver configuration.
 
-use bytesize::ByteSize;
 use facet::Facet;
+use saluki_common::quantities::ByteSize;
 use serde::Deserialize;
 
 fn default_grpc_endpoint() -> String {
