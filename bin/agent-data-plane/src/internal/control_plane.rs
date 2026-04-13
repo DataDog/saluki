@@ -2,9 +2,8 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 use memory_accounting::ComponentRegistry;
-use saluki_api::EndpointType;
 use saluki_app::{
-    api::APIBuilder, config::ConfigAPIHandler, dynamic_api::DynamicAPIBuilder, logging::acquire_logging_api_handler,
+    api::APIBuilder, config::ConfigAPIHandler, logging::acquire_logging_api_handler,
     metrics::acquire_metrics_api_handler,
 };
 use saluki_components::destinations::DogStatsDStatisticsConfiguration;
@@ -42,6 +41,46 @@ fn get_cert_path_from_config(config: &GenericConfiguration) -> Result<PathBuf, G
         ipc_cert_file_path.as_ref(),
         &auth_token_file_path,
     ))
+}
+
+/// A worker that serves the unprivileged HTTP API.
+pub struct UnprivilegedApiWorker {
+    dp_config: DataPlaneConfiguration,
+    health_registry: HealthRegistry,
+    component_registry: ComponentRegistry,
+}
+
+impl UnprivilegedApiWorker {
+    /// Creates a new `UnprivilegedApiWorker`.
+    pub fn new(
+        dp_config: DataPlaneConfiguration, health_registry: HealthRegistry, component_registry: ComponentRegistry,
+    ) -> Self {
+        Self {
+            dp_config,
+            health_registry,
+            component_registry,
+        }
+    }
+}
+
+#[async_trait]
+impl Supervisable for UnprivilegedApiWorker {
+    fn name(&self) -> &str {
+        "unprivileged-api"
+    }
+
+    async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
+        let api_builder = APIBuilder::new()
+            .with_handler(self.health_registry.api_handler())
+            .with_handler(self.component_registry.api_handler());
+
+        let listen_address = self.dp_config.api_listen_address().clone();
+
+        Ok(Box::pin(async move {
+            info!("Serving unprivileged API on {}.", listen_address);
+            api_builder.serve(listen_address, process_shutdown).await
+        }))
+    }
 }
 
 /// A worker that serves the privileged HTTP API with TLS.
@@ -140,11 +179,14 @@ pub async fn create_control_plane_supervisor(
 
     supervisor.add_worker(health_registry.worker());
 
-    let unprivileged_api = DynamicAPIBuilder::new(EndpointType::Unprivileged, dp_config.api_listen_address().clone())
-        .with_fixed_http_handler(component_registry.api_handler())
-        .error_context("Failed to add component registry API routes to unprivileged API endpoint.")?;
-
-    supervisor.add_worker(unprivileged_api);
+    // TODO: Just make the API handler for `ComponentRegistry` cloneable so we can create/hold on to it in
+    // `UnprivilegedApiWorker` without having to create a scoped one here just to maintain the ownership necessary
+    let scoped_registry = component_registry.get_or_create("control-plane");
+    supervisor.add_worker(UnprivilegedApiWorker::new(
+        dp_config.clone(),
+        health_registry,
+        scoped_registry,
+    ));
     supervisor.add_worker(
         PrivilegedApiWorker::new(
             config.clone(),
