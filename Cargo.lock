@@ -1504,6 +1504,7 @@ version = "0.1.0"
 dependencies = [
  "airlock",
  "argh",
+ "futures",
  "rand 0.9.3",
  "rand_distr",
  "reqwest",

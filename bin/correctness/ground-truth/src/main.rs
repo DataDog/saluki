@@ -3,11 +3,11 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
-use std::{path::PathBuf, sync::Arc};
+use std::path::PathBuf;
 
 use argh::FromArgs;
+use futures::stream::{self, StreamExt as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use tokio::sync::Semaphore;
 use tracing::{error, info};
 use tracing_subscriber::{filter::LevelFilter, EnvFilter};
 
@@ -53,8 +53,8 @@ struct RunAllCommand {
     #[argh(option, short = 'd')]
     test_dir: PathBuf,
 
-    /// number of test cases to run in parallel (default: 2)
-    #[argh(option, short = 'p', default = "2")]
+    /// number of test cases to run in parallel (default: 4)
+    #[argh(option, short = 'p', default = "4")]
     parallelism: usize,
 }
 
@@ -157,13 +157,10 @@ fn discover_configs(test_dir: &PathBuf) -> Result<Vec<(String, Config)>, Generic
 
 /// Run all discovered test cases in parallel, returning the number of failures.
 async fn run_all(configs: Vec<(String, Config)>, parallelism: usize) -> usize {
-    let semaphore = Arc::new(Semaphore::new(parallelism.max(1)));
-    let mut handles = Vec::new();
+    let parallelism = parallelism.max(1);
 
-    for (name, config) in configs {
-        let semaphore = semaphore.clone();
-        let handle = tokio::spawn(async move {
-            let _permit = semaphore.acquire().await.unwrap();
+    let failures: Vec<bool> = stream::iter(configs)
+        .map(|(name, config)| async move {
             info!(test_case = %name, "Starting test case.");
             match run_single(config).await {
                 Ok(()) => {
@@ -175,23 +172,12 @@ async fn run_all(configs: Vec<(String, Config)>, parallelism: usize) -> usize {
                     true
                 }
             }
-        });
-        handles.push(handle);
-    }
+        })
+        .buffer_unordered(parallelism)
+        .collect()
+        .await;
 
-    let mut failed = 0;
-    for handle in handles {
-        match handle.await {
-            Ok(true) => failed += 1,
-            Ok(false) => {}
-            Err(e) => {
-                error!("Test case task panicked: {}", e);
-                failed += 1;
-            }
-        }
-    }
-
-    failed
+    failures.into_iter().filter(|&failed| failed).count()
 }
 
 async fn run_single(config: Config) -> Result<(), GenericError> {
