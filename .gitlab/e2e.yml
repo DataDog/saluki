@@ -21,7 +21,7 @@
     GROUND_TRUTH_COMPARISON__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
   script:
     - make build-ground-truth
-    - target/release/ground-truth ./test/correctness/${CORRECTNESS_TEST_CASE}/config.yaml
+    - target/release/ground-truth run ./test/correctness/${CORRECTNESS_TEST_CASE}/config.yaml
 
 # Mixin for correctness tests where baseline is the CI-built bundled ADP image.
 # Tests with a different baseline (for example, DDOT) should NOT extend this and instead
