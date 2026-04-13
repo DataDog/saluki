@@ -40,7 +40,6 @@ dependencies = [
  "papaya",
  "prometheus-exposition",
  "prost-types",
- "saluki-api",
  "saluki-app",
  "saluki-common",
  "saluki-components",
