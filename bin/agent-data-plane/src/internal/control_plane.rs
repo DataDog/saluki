@@ -138,16 +138,13 @@ pub async fn create_control_plane_supervisor(
         .with_dedicated_runtime(RuntimeConfiguration::single_threaded())
         .with_restart_strategy(RestartStrategy::one_to_one());
 
-    // TODO: just make the API handler for `ComponentRegistry` cloneable so we can create/hold on to it in `UnprivilegedApiWorker`
-    // without having to create a scoped one here just to maintain the ownership necessary
-    let _scoped_registry = component_registry.get_or_create("control-plane");
-
     supervisor.add_worker(health_registry.worker());
 
-    supervisor.add_worker(DynamicAPIBuilder::new(
-        EndpointType::Unprivileged,
-        dp_config.api_listen_address().clone(),
-    ));
+    let unprivileged_api = DynamicAPIBuilder::new(EndpointType::Unprivileged, dp_config.api_listen_address().clone())
+        .with_fixed_http_handler(component_registry.api_handler())
+        .error_context("Failed to add component registry API routes to unprivileged API endpoint.")?;
+
+    supervisor.add_worker(unprivileged_api);
     supervisor.add_worker(
         PrivilegedApiWorker::new(
             config.clone(),
