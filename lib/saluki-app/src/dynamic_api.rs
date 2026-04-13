@@ -21,7 +21,7 @@ use http::Response;
 use rcgen::{generate_simple_self_signed, CertifiedKey};
 use rustls::{pki_types::PrivateKeyDer, ServerConfig};
 use rustls_pki_types::PrivatePkcs8KeyDer;
-use saluki_api::{APIHandler, DynamicRoute, EndpointProtocol, EndpointType};
+use saluki_api::{DynamicRoute, EndpointProtocol, EndpointType};
 use saluki_common::collections::FastIndexMap;
 use saluki_core::runtime::{
     state::{AssertionUpdate, DataspaceRegistry, Identifier, IdentifierFilter, Subscription},
@@ -69,7 +69,6 @@ pub struct DynamicAPIBuilder {
     endpoint_type: EndpointType,
     listen_address: ListenAddress,
     tls_config: Option<ServerConfig>,
-    static_http_router: Router,
 }
 
 impl DynamicAPIBuilder {
@@ -79,25 +78,7 @@ impl DynamicAPIBuilder {
             endpoint_type,
             listen_address,
             tls_config: None,
-            static_http_router: Router::new(),
         }
-    }
-
-    /// Adds a fixed HTTP route handler that is always present regardless of dynamic assertions.
-    ///
-    /// # Errors
-    ///
-    /// If the handler exposes routes that overlap with routes from a previously added HTTP handler, an error is
-    /// returned.
-    pub fn with_fixed_http_handler<H>(mut self, handler: H) -> Result<Self, GenericError>
-    where
-        H: APIHandler,
-    {
-        let id = Identifier::named(std::any::type_name::<H>());
-        let handler_router = handler.generate_routes().with_state(handler.generate_initial_state());
-        self.static_http_router =
-            try_merge_router(&self.static_http_router, &id, &handler_router).map_err(|e| generic_error!("{e}"))?;
-        Ok(self)
     }
 
     /// Sets the TLS configuration for the server.
@@ -161,7 +142,6 @@ impl Supervisable for DynamicAPIBuilder {
 
         let endpoint_type = self.endpoint_type;
         let listen_address = self.listen_address.clone();
-        let static_http_router = self.static_http_router.clone();
 
         Ok(Box::pin(async move {
             info!("Serving {} API on {}.", endpoint_type.name(), listen_address);
@@ -169,7 +149,6 @@ impl Supervisable for DynamicAPIBuilder {
             run_event_loop(
                 inner_http,
                 inner_grpc,
-                static_http_router,
                 route_assertions,
                 endpoint_type,
                 process_shutdown,
@@ -217,17 +196,12 @@ impl Service<http::Request<AxumBody>> for DynamicRouterService {
 
 /// Runs the event loop that listens for route assertions/retractions and hot-swaps the inner routers.
 async fn run_event_loop(
-    inner_http: Arc<ArcSwap<Router>>, inner_grpc: Arc<ArcSwap<Router>>, static_http_router: Router,
+    inner_http: Arc<ArcSwap<Router>>, inner_grpc: Arc<ArcSwap<Router>>,
     mut route_assertions: Subscription<DynamicRoute>, endpoint_type: EndpointType,
     mut process_shutdown: ProcessShutdown, shutdown_handle: ShutdownHandle, error_handle: ErrorHandle,
 ) -> Result<(), GenericError> {
-    // Store the static HTTP router so it is always included as the base when rebuilding.
-    let static_grpc_router = Router::new();
     let mut http_handlers = FastIndexMap::default();
     let mut grpc_handlers = FastIndexMap::default();
-
-    // Perform the initial build so that static routes are available immediately.
-    rebuild_router(&inner_http, &static_http_router, &http_handlers);
 
     let shutdown = process_shutdown.wait_for_shutdown();
     pin!(shutdown);
@@ -292,11 +266,11 @@ async fn run_event_loop(
                 }
 
                 if rebuild_http {
-                    rebuild_router(&inner_http, &static_http_router, &http_handlers);
+                    rebuild_router(&inner_http, &http_handlers);
                 }
 
                 if rebuild_grpc {
-                    rebuild_router(&inner_grpc, &static_grpc_router, &grpc_handlers);
+                    rebuild_router(&inner_grpc, &grpc_handlers);
                 }
             }
         }
@@ -344,11 +318,8 @@ fn try_merge_router(base: &Router, id: &Identifier, other: &Router) -> Result<Ro
 }
 
 /// Rebuilds the merged inner router from all currently-registered handlers and stores it in the [`ArcSwap`].
-///
-/// Static routes from `base` are always included. Dynamic handlers are merged on top, with overlapping dynamic
-/// handlers skipped (first-writer-wins).
-fn rebuild_router(inner_router: &Arc<ArcSwap<Router>>, base: &Router, handlers: &FastIndexMap<Identifier, Router>) {
-    let mut merged = base.clone();
+fn rebuild_router(inner_router: &Arc<ArcSwap<Router>>, handlers: &FastIndexMap<Identifier, Router>) {
+    let mut merged = Router::new();
     let mut skipped = 0usize;
 
     for (id, router) in handlers.iter() {
@@ -513,14 +484,10 @@ mod tests {
     }
 
     async fn setup_test_harness(endpoint_type: EndpointType) -> TestHarness {
-        setup_test_harness_with_builder(DynamicAPIBuilder::new(endpoint_type, ListenAddress::any_tcp(0))).await
-    }
-
-    async fn setup_test_harness_with_builder(api_builder: DynamicAPIBuilder) -> TestHarness {
-        let endpoint_type = api_builder.endpoint_type;
         let (commands_tx, commands_rx) = mpsc::channel(16);
         let (addr_tx, addr_rx) = oneshot::channel();
 
+        let api_builder = DynamicAPIBuilder::new(endpoint_type, ListenAddress::any_tcp(0));
         let route_asserter = RouteAsserter {
             commands_rx: std::sync::Mutex::new(Some(commands_rx)),
             addr_tx: std::sync::Mutex::new(Some(addr_tx)),
@@ -776,80 +743,5 @@ mod tests {
         harness.assert_route("ov-c", route_c).await;
         let body = assert_status_eventually(harness.addr, "/overlap", StatusCode::OK).await;
         assert_eq!(body, "c");
-    }
-
-    #[tokio::test]
-    async fn static_route_always_present() {
-        let builder = DynamicAPIBuilder::new(EndpointType::Unprivileged, ListenAddress::any_tcp(0))
-            .with_fixed_http_handler(SimpleHandler {
-                path: "/static",
-                body: "always here",
-            })
-            .unwrap();
-        let harness = setup_test_harness_with_builder(builder).await;
-
-        // Static route is available immediately without any dynamic assertions.
-        let body = assert_status_eventually(harness.addr, "/static", StatusCode::OK).await;
-        assert_eq!(body, "always here");
-
-        // Assert then retract a dynamic route -- static route remains unaffected.
-        let route = DynamicRoute::http(
-            EndpointType::Unprivileged,
-            SimpleHandler {
-                path: "/dynamic",
-                body: "temporary",
-            },
-        );
-        harness.assert_route("dyn", route).await;
-        assert_status_eventually(harness.addr, "/dynamic", StatusCode::OK).await;
-
-        harness.retract_route("dyn").await;
-        assert_status_eventually(harness.addr, "/dynamic", StatusCode::NOT_FOUND).await;
-
-        // Static route is still present.
-        let (status, body) = http_get(harness.addr, "/static").await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, "always here");
-    }
-
-    #[tokio::test]
-    async fn static_and_dynamic_routes_coexist() {
-        let builder = DynamicAPIBuilder::new(EndpointType::Unprivileged, ListenAddress::any_tcp(0))
-            .with_fixed_http_handler(SimpleHandler {
-                path: "/static",
-                body: "static",
-            })
-            .unwrap();
-        let harness = setup_test_harness_with_builder(builder).await;
-
-        let route = DynamicRoute::http(
-            EndpointType::Unprivileged,
-            SimpleHandler {
-                path: "/dynamic",
-                body: "dynamic",
-            },
-        );
-        harness.assert_route("dyn", route).await;
-
-        let body = assert_status_eventually(harness.addr, "/static", StatusCode::OK).await;
-        assert_eq!(body, "static");
-
-        let body = assert_status_eventually(harness.addr, "/dynamic", StatusCode::OK).await;
-        assert_eq!(body, "dynamic");
-    }
-
-    #[test]
-    fn static_route_conflict_returns_error() {
-        let result = DynamicAPIBuilder::new(EndpointType::Unprivileged, ListenAddress::any_tcp(0))
-            .with_fixed_http_handler(SimpleHandler {
-                path: "/dup",
-                body: "first",
-            })
-            .unwrap()
-            .with_fixed_http_handler(SimpleHandler {
-                path: "/dup",
-                body: "second",
-            });
-        assert!(result.is_err());
     }
 }

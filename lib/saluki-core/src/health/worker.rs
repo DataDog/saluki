@@ -32,7 +32,7 @@ impl Supervisable for HealthRegistryWorker {
         let health_routes = DynamicRoute::http(EndpointType::Unprivileged, self.health_registry.api_handler());
 
         Ok(Box::pin(async move {
-            // Register our API routes before we actually stsrt running.
+            // Register our API routes before we actually start running.
             DataspaceRegistry::try_current()
                 .ok_or_else(|| generic_error!("Dataspace not available."))?
                 .assert(health_routes, "health-registry-api");
