@@ -41,7 +41,7 @@ build-adp-baseline-image:
     - docker buildx build
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${BASELINE_ADP_IMG}
-      --build-arg BUILD_PROFILE=optimized-release
+      --build-arg BUILD_PROFILE=release
       --build-arg BUILD_TARGET=x86_64-unknown-linux-musl
       --build-arg BUILD_IMAGE=${ADP_PUBLIC_BASE_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
@@ -89,7 +89,7 @@ build-adp-comparison-image:
     - docker buildx build
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${COMPARISON_ADP_IMG}
-      --build-arg BUILD_PROFILE=optimized-release
+      --build-arg BUILD_PROFILE=release
       --build-arg BUILD_TARGET=x86_64-unknown-linux-musl
       --build-arg BUILD_IMAGE=${ADP_PUBLIC_BASE_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
