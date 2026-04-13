@@ -1,0 +1,24 @@
+analysis_mode: metrics
+millstone:
+  image: saluki-images/millstone:latest
+  config_path: millstone.yaml
+datadog_intake:
+  image: saluki-images/datadog-intake:latest
+  config_path: ../datadog-intake.yaml
+baseline:
+  image: docker.io/datadog/agent-dev:7ed0f1b6-py3-jmx
+  files:
+    - datadog.yaml:/etc/datadog-agent/datadog.yaml
+  additional_env_vars:
+    - DD_API_KEY=correctness-test
+comparison:
+  image: saluki-images/datadog-agent:stephen-tagfilter-adp
+  files:
+    - datadog.yaml:/etc/datadog-agent/datadog.yaml
+  additional_env_vars:
+    - DD_API_KEY=correctness-test
+    - DD_DATA_PLANE_ENABLED=true
+    - DD_DATA_PLANE_STANDALONE_MODE=false
+    - DD_DATA_PLANE_REMOTE_AGENT_ENABLED=true
+    - DD_DATA_PLANE_DOGSTATSD_ENABLED=true
+    - DD_AGGREGATE_CONTEXT_LIMIT=500000

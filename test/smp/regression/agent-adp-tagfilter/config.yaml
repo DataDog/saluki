@@ -1,0 +1,6 @@
+lading:
+  version: sha-0bae8521d48563fddd7fd0589783c12d3f737afc
+
+target:
+  ddprof_replicas: 1
+  internal_profiling_replicas: 1
