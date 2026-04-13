@@ -250,10 +250,6 @@ where
         };
 
         // If expiration is enabled, spawn a background task to actually drive expiration.
-        //
-        // NOTE: Tasks receive Arc<RawCache> and OwnedNotified rather than a Cache clone, so they
-        // do not hold a strong reference to InnerCache. When the last Cache instance is dropped,
-        // InnerCache::drop fires and notifies the tasks to shut down.
         if let Some(expiration_interval) = self.expiration_interval {
             let expiration = expiration.clone();
 
