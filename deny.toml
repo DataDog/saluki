@@ -5,6 +5,11 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "warn"
 ignore = [
   { id = "RUSTSEC-2024-0436", reason = "paste is a stable crate and we do not consider it being unmaintained as a security risk" },
+  # rand 0.8.5 is a transitive dev-only dependency via ndarray-stats (ddsketch dev-deps). ndarray-stats 0.7.0
+  # is the latest release and has not migrated off rand 0.8. rand 0.9.x is updated to 0.9.3+ above. The
+  # unsoundness requires a custom logger that calls rand::rng() during reseeding, which cannot occur in
+  # our test code or production code paths.
+  { id = "RUSTSEC-2026-0097", reason = "rand 0.9.x updated to 0.9.3+; remaining 0.8.5 is a dev-only transitive dep via ndarray-stats where the unsoundness trigger conditions do not apply" },
 ]
 
 [bans]
