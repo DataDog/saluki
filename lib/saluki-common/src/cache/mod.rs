@@ -3,6 +3,7 @@ use std::{marker::PhantomData, num::NonZeroUsize, sync::Arc, time::Duration};
 use saluki_error::GenericError;
 use saluki_metrics::static_metrics;
 use tokio::time::sleep;
+use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::debug;
 
 use crate::{hash::FastBuildHasher, task::spawn_traced};
@@ -13,7 +14,7 @@ use self::expiry::{Expiration, ExpirationBuilder, ExpiryCapableLifecycle};
 pub mod weight;
 use self::weight::{ItemCountWeighter, Weighter, WrappedWeighter};
 
-type InnerCache<K, V, W, H> = quick_cache::sync::Cache<K, V, WrappedWeighter<W>, H, ExpiryCapableLifecycle<K>>;
+type RawCache<K, V, W, H> = quick_cache::sync::Cache<K, V, WrappedWeighter<W>, H, ExpiryCapableLifecycle<K>>;
 
 static_metrics! {
     name => Telemetry,
@@ -30,6 +31,11 @@ static_metrics! {
         counter(items_expired_total),
         trace_histogram(items_expired_batch_size),
     ],
+}
+
+struct InnerCache<K, V, W, H> {
+    cache: Arc<RawCache<K, V, W, H>>,
+    _task_shutdown_guard: DropGuard,
 }
 
 /// Builder for creating a [`Cache`].
@@ -224,15 +230,21 @@ where
         }
         let (expiration, expiry_lifecycle) = expiration_builder.build();
 
-        // Create the underlying cache.
+        // Create the underlying cache and shutdown signal.
+        let shutdown_token = CancellationToken::new();
+        let raw_cache = Arc::new(RawCache::with(
+            capacity,
+            capacity as u64,
+            WrappedWeighter::from(self.weighter),
+            H::default(),
+            expiry_lifecycle,
+        ));
+
         let cache = Cache {
-            inner: Arc::new(InnerCache::with(
-                capacity,
-                capacity as u64,
-                WrappedWeighter::from(self.weighter),
-                H::default(),
-                expiry_lifecycle,
-            )),
+            inner: Arc::new(InnerCache {
+                cache: Arc::clone(&raw_cache),
+                _task_shutdown_guard: shutdown_token.clone().drop_guard(),
+            }),
             expiration: expiration.clone(),
             telemetry: telemetry.clone(),
         };
@@ -242,16 +254,17 @@ where
             let expiration = expiration.clone();
 
             spawn_traced(drive_expiration(
-                cache.clone(),
+                Arc::clone(&raw_cache),
                 telemetry.clone(),
                 expiration,
                 expiration_interval,
+                shutdown_token.clone(),
             ));
         }
 
         // If telemetry is enabled, spawn a background task to drive telemetry reporting.
         if self.telemetry_enabled {
-            spawn_traced(drive_telemetry(cache.clone(), telemetry));
+            spawn_traced(drive_telemetry(Arc::clone(&raw_cache), telemetry, shutdown_token));
         }
 
         cache
@@ -275,17 +288,17 @@ where
 {
     /// Returns `true` if the cache is empty.
     pub fn is_empty(&self) -> bool {
-        self.inner.is_empty()
+        self.inner.cache.is_empty()
     }
 
     /// Returns the number of items currently in the cache.
     pub fn len(&self) -> usize {
-        self.inner.len()
+        self.inner.cache.len()
     }
 
     /// Returns the total weight of all items in the cache.
     pub fn weight(&self) -> u64 {
-        self.inner.weight()
+        self.inner.cache.weight()
     }
 
     /// Inserts an item into the cache with the given key and value.
@@ -294,7 +307,7 @@ where
     /// cache is full, one or more items will be evicted to make room for the new item, based on the configured item
     /// weighter and the weight of the new item.
     pub fn insert(&self, key: K, value: V) {
-        self.inner.insert(key.clone(), value);
+        self.inner.cache.insert(key.clone(), value);
         self.expiration.mark_entry_accessed(key);
         self.telemetry.items_inserted_total().increment(1);
     }
@@ -303,7 +316,7 @@ where
     ///
     /// If the item is found, it is cloned and `Some(value)` is returned. Otherwise, `None` is returned.
     pub fn get(&self, key: &K) -> Option<V> {
-        let value = self.inner.get(key);
+        let value = self.inner.cache.get(key);
         if value.is_some() {
             self.expiration.mark_entry_accessed(key.clone());
             self.telemetry.hits_total().increment(1);
@@ -315,14 +328,15 @@ where
 
     /// Removes an item from the cache by its key.
     pub fn remove(&self, key: &K) {
-        self.inner.remove(key);
+        self.inner.cache.remove(key);
         self.expiration.mark_entry_removed(key.clone());
         self.telemetry.items_removed_total().increment(1);
     }
 }
 
 async fn drive_expiration<K, V, W, H>(
-    cache: Cache<K, V, W, H>, telemetry: Telemetry, expiration: Expiration<K>, expiration_interval: Duration,
+    cache: Arc<RawCache<K, V, W, H>>, telemetry: Telemetry, expiration: Expiration<K>, expiration_interval: Duration,
+    shutdown: CancellationToken,
 ) where
     K: Eq + std::hash::Hash + Clone,
     V: Clone,
@@ -332,7 +346,10 @@ async fn drive_expiration<K, V, W, H>(
     let mut expired_item_keys = Vec::new();
 
     loop {
-        sleep(expiration_interval).await;
+        tokio::select! {
+            _ = shutdown.cancelled() => break,
+            _ = sleep(expiration_interval) => {}
+        }
 
         // Drain all expired items that have been queued up for the cache.
         expiration.drain_expired_items(&mut expired_item_keys);
@@ -347,21 +364,27 @@ async fn drive_expiration<K, V, W, H>(
 
         for item_key in expired_item_keys.drain(..) {
             cache.remove(&item_key);
+            telemetry.items_removed_total().increment(1);
+            expiration.mark_entry_removed(item_key);
         }
 
         debug!(num_expired_items, "Removed expired items.");
     }
 }
 
-async fn drive_telemetry<K, V, W, H>(cache: Cache<K, V, W, H>, telemetry: Telemetry)
-where
+async fn drive_telemetry<K, V, W, H>(
+    cache: Arc<RawCache<K, V, W, H>>, telemetry: Telemetry, shutdown: CancellationToken,
+) where
     K: Eq + std::hash::Hash + Clone,
     V: Clone,
     W: Weighter<K, V> + Clone,
     H: std::hash::BuildHasher + Clone,
 {
     loop {
-        sleep(Duration::from_secs(1)).await;
+        tokio::select! {
+            _ = shutdown.cancelled() => break,
+            _ = sleep(Duration::from_secs(1)) => {}
+        }
 
         telemetry.current_items().set(cache.len() as f64);
         telemetry.current_weight().set(cache.weight() as f64);
@@ -490,5 +513,32 @@ mod tests {
         assert_eq!(cache.get(&2), None);
         assert_eq!(cache.get(&3), None);
         assert_eq!(cache.get(&4), Some(CAPACITY - 1));
+    }
+
+    #[tokio::test]
+    async fn tasks_stop_when_cache_dropped() {
+        let cache = CacheBuilder::<u64, u64>::from_identifier("test-drop")
+            .expect("valid identifier")
+            .with_time_to_idle(Some(Duration::from_secs(60)))
+            .with_expiration_interval(Duration::from_millis(50))
+            .build();
+
+        // Grab a weak reference to the raw cache data held by the background tasks.
+        let weak_cache = Arc::downgrade(&cache.inner.cache);
+
+        drop(cache);
+
+        // When `InnerCache` is dropped, the cancellation token's drop guard is also dropped, which triggers
+        // cancellation, so both tasks should wake up immediately and exit, releasing their Arc<RawCache> references.
+        //
+        // TODO: There's no good way to assert the tasks have shutdown besides sleeping and checking the weak cache is
+        // gone. It would be nice if there was a way to asynchronously _and_ fallibly shutdown the runtime with a
+        // timeout, such that we could detect if they shutdown cleanly... but alas.
+        sleep(Duration::from_millis(100)).await;
+
+        assert!(
+            weak_cache.upgrade().is_none(),
+            "raw cache should be released after background tasks exit"
+        );
     }
 }
