@@ -8,7 +8,7 @@ use datadog_protos::traces::builders::{
     AttributeAnyValueBuilder, AttributeArrayValueBuilder,
 };
 use facet::Facet;
-use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
+use http::{uri::PathAndQuery, HeaderName, HeaderValue, Method, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use opentelemetry_semantic_conventions::resource::{
     CONTAINER_ID, DEPLOYMENT_ENVIRONMENT_NAME, K8S_POD_UID, SERVICE_VERSION,
@@ -412,12 +412,23 @@ struct TraceEndpointEncoder {
     apm_config: ApmConfig,
     otlp_traces: TracesConfig,
     string_builder: StringBuilder,
+    error_tracking_standalone: bool,
+    extra_headers: Vec<(HeaderName, HeaderValue)>,
 }
 
 impl TraceEndpointEncoder {
     fn new(
         default_hostname: MetaString, version: String, env: String, apm_config: ApmConfig, otlp_traces: TracesConfig,
     ) -> Self {
+        let error_tracking_standalone = apm_config.error_tracking_standalone_enabled();
+        let extra_headers = if error_tracking_standalone {
+            vec![(
+                HeaderName::from_static("x-datadog-error-tracking-standalone"),
+                HeaderValue::from_static("true"),
+            )]
+        } else {
+            Vec::new()
+        };
         Self {
             scratch: ScratchWriter::new(Vec::with_capacity(8192)),
             agent_hostname: default_hostname.as_ref().to_string(),
@@ -427,6 +438,8 @@ impl TraceEndpointEncoder {
             apm_config,
             otlp_traces,
             string_builder: StringBuilder::new(),
+            error_tracking_standalone,
+            extra_headers,
         }
     }
 
@@ -564,6 +577,18 @@ impl TraceEndpointEncoder {
                     if let Some(dm) = decision_maker {
                         tags.write_entry(TAG_DECISION_MAKER, dm)?;
                     }
+                    if self.error_tracking_standalone {
+                        let trace_has_error = trace.spans().iter().any(|span| {
+                            span.error() != 0
+                                || span
+                                    .meta()
+                                    .get("_dd.span_events.has_exception")
+                                    .is_some_and(|v| v == "true")
+                        });
+                        if trace_has_error {
+                            tags.write_entry("_dd.error_tracking_standalone.error", "true")?;
+                        }
+                    }
 
                     self.string_builder.clear();
                     write!(&mut self.string_builder, "{:.2}", otlp_sr)
@@ -640,6 +665,10 @@ impl EndpointEncoder for TraceEndpointEncoder {
 
     fn content_type(&self) -> HeaderValue {
         CONTENT_TYPE_PROTOBUF.clone()
+    }
+
+    fn additional_headers(&self) -> &[(HeaderName, HeaderValue)] {
+        &self.extra_headers
     }
 }
 
@@ -811,4 +840,148 @@ fn append_tags(target: &mut String, tags: &str) {
         target.push(',');
     }
     target.push_str(tags);
+}
+
+#[cfg(test)]
+mod tests {
+    use datadog_protos::traces::AgentPayload;
+    use protobuf::Message as _;
+    use saluki_config::ConfigurationLoader;
+    use saluki_context::tags::TagSet;
+    use saluki_core::data_model::event::trace::{Span as DdSpan, Trace, TraceSampling};
+    use stringtheory::MetaString;
+
+    use super::*;
+    use crate::common::datadog::apm::ApmConfig;
+    use crate::common::otlp::config::TracesConfig;
+    use crate::config::{DatadogRemapper, KEY_ALIASES};
+
+    async fn make_encoder(ets_enabled: bool) -> TraceEndpointEncoder {
+        let env_vars: Vec<(String, String)> = if ets_enabled {
+            vec![("APM_ERROR_TRACKING_STANDALONE_ENABLED".to_string(), "true".to_string())]
+        } else {
+            vec![]
+        };
+        let (cfg, _) = ConfigurationLoader::for_tests_with_provider_factory(
+            None,
+            Some(&env_vars),
+            false,
+            KEY_ALIASES,
+            DatadogRemapper::new,
+        )
+        .await;
+        let apm_config = ApmConfig::from_configuration(&cfg).expect("ApmConfig should deserialize");
+        TraceEndpointEncoder::new(
+            MetaString::from("test-host"),
+            "0.0.0".to_string(),
+            "none".to_string(),
+            apm_config,
+            TracesConfig::default(),
+        )
+    }
+
+    fn make_trace() -> Trace {
+        let span = DdSpan::new(
+            MetaString::from("svc"),
+            MetaString::from("op"),
+            MetaString::from("res"),
+            MetaString::from("web"),
+            1,
+            1,
+            0,
+            0,
+            1000,
+            0,
+        );
+        let mut trace = Trace::new(vec![span], TagSet::default());
+        trace.set_sampling(Some(TraceSampling::new(false, Some(1), None, None)));
+        trace
+    }
+
+    fn make_error_trace() -> Trace {
+        let span = DdSpan::new(
+            MetaString::from("svc"),
+            MetaString::from("op"),
+            MetaString::from("res"),
+            MetaString::from("web"),
+            1,    // trace_id
+            1,    // span_id
+            0,    // parent_id
+            0,    // start
+            1000, // duration
+            1,    // error
+        );
+        let mut trace = Trace::new(vec![span], TagSet::default());
+        trace.set_sampling(Some(TraceSampling::new(false, Some(1), None, None)));
+        trace
+    }
+
+    #[tokio::test]
+    async fn ets_header_present_when_enabled() {
+        let encoder = make_encoder(true).await;
+        let headers = encoder.additional_headers();
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers[0].0.as_str(), "x-datadog-error-tracking-standalone");
+        assert_eq!(headers[0].1, "true");
+    }
+
+    #[tokio::test]
+    async fn ets_header_absent_when_disabled() {
+        let encoder = make_encoder(false).await;
+        assert!(encoder.additional_headers().is_empty());
+    }
+
+    #[tokio::test]
+    async fn ets_chunk_tag_present_for_error_trace() {
+        let mut encoder = make_encoder(true).await;
+        let trace = make_error_trace();
+        let mut buf = Vec::new();
+        encoder.encode(&trace, &mut buf).expect("encode should succeed");
+        let payload = AgentPayload::parse_from_bytes(&buf).expect("should parse AgentPayload");
+        let tag_value = payload
+            .tracerPayloads
+            .iter()
+            .flat_map(|tp| tp.chunks.iter())
+            .find_map(|chunk| {
+                chunk
+                    .tags
+                    .get("_dd.error_tracking_standalone.error")
+                    .map(|v| v.as_str())
+            });
+        assert_eq!(
+            tag_value,
+            Some("true"),
+            "ETS chunk tag should be present for error traces when ETS is enabled"
+        );
+    }
+
+    #[tokio::test]
+    async fn ets_chunk_tag_absent_for_non_error_trace() {
+        let mut encoder = make_encoder(true).await;
+        let trace = make_trace(); // no error
+        let mut buf = Vec::new();
+        encoder.encode(&trace, &mut buf).expect("encode should succeed");
+        let payload = AgentPayload::parse_from_bytes(&buf).expect("should parse AgentPayload");
+        let has_tag = payload
+            .tracerPayloads
+            .iter()
+            .flat_map(|tp| tp.chunks.iter())
+            .any(|chunk| chunk.tags.contains_key("_dd.error_tracking_standalone.error"));
+        assert!(!has_tag, "ETS chunk tag should be absent for non-error traces");
+    }
+
+    #[tokio::test]
+    async fn ets_chunk_tag_absent_when_disabled() {
+        let mut encoder = make_encoder(false).await;
+        let trace = make_trace();
+        let mut buf = Vec::new();
+        encoder.encode(&trace, &mut buf).expect("encode should succeed");
+        let payload = AgentPayload::parse_from_bytes(&buf).expect("should parse AgentPayload");
+        let has_tag = payload
+            .tracerPayloads
+            .iter()
+            .flat_map(|tp| tp.chunks.iter())
+            .any(|chunk| chunk.tags.contains_key("_dd.error_tracking_standalone.error"));
+        assert!(!has_tag, "ETS chunk tag should be absent when ETS is disabled");
+    }
 }

@@ -91,6 +91,15 @@ struct ApmConfiguration {
     /// using the ConfigurationLoader::with_key_aliases.
     #[serde(default = "default_rare_sampler_enabled", rename = "apm_enable_rare_sampler")]
     enable_rare_sampler: bool,
+
+    /// Enables Error Tracking Standalone mode. Lives here (rather than nested within `apm_config`)
+    /// so that the env var path (`DD_APM_ERROR_TRACKING_STANDALONE_ENABLED` → `apm_error_tracking_standalone_enabled`)
+    /// can be remapped via ConfigurationLoader::with_key_aliases.
+    #[serde(
+        default = "default_error_tracking_standalone_enabled",
+        rename = "apm_error_tracking_standalone_enabled"
+    )]
+    enable_error_tracking_standalone: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -124,26 +133,6 @@ impl Default for ProbabilisticSamplerConfig {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-struct ErrorTrackingStandaloneConfig {
-    /// Enables Error Tracking Standalone mode.
-    ///
-    /// When enabled, error tracking standalone mode suppresses single-span sampling and analytics
-    /// events for dropped traces.
-    ///
-    /// Defaults to `false`.
-    #[serde(default = "default_error_tracking_standalone_enabled")]
-    enabled: bool,
-}
-
-impl Default for ErrorTrackingStandaloneConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_error_tracking_standalone_enabled(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize)]
 pub struct ApmConfig {
     /// Target traces per second for priority sampling.
     ///
@@ -172,11 +161,8 @@ pub struct ApmConfig {
     #[serde(default = "default_error_sampling_enabled")]
     error_sampling_enabled: bool,
 
-    /// Error Tracking Standalone configuration.
-    ///
-    /// Defaults to disabled.
-    #[serde(default)]
-    error_tracking_standalone: ErrorTrackingStandaloneConfig,
+    #[serde(skip)]
+    error_tracking_standalone: bool,
 
     /// Enables an additional stats computation check on spans to see if they have an eligible `span.kind` (server, consumer, client, producer).
     /// If enabled, a span with an eligible `span.kind` will have stats computed. If disabled, only top-level and measured spans will have stats computed.
@@ -226,6 +212,7 @@ impl ApmConfig {
         let wrapper = config.as_typed::<ApmConfiguration>()?;
         let mut apm_config = wrapper.apm_config;
         apm_config.enable_rare_sampler = wrapper.enable_rare_sampler;
+        apm_config.error_tracking_standalone = wrapper.enable_error_tracking_standalone;
         Ok(apm_config)
     }
 
@@ -239,7 +226,7 @@ impl ApmConfig {
         self.errors_per_second
     }
 
-    /// Returns if probabilistic sampling is enabled.
+    /// Returns `true` if probabilistic sampling is enabled.
     pub const fn probabilistic_sampler_enabled(&self) -> bool {
         self.probabilistic_sampler.enabled
     }
@@ -249,22 +236,22 @@ impl ApmConfig {
         self.probabilistic_sampler.sampling_percentage
     }
 
-    /// Returns if error sampling is enabled.
+    /// Returns `true` if error sampling is enabled.
     pub const fn error_sampling_enabled(&self) -> bool {
         self.error_sampling_enabled
     }
 
-    /// Returns if error tracking standalone mode is enabled.
+    /// Returns `true` if error tracking standalone mode is enabled.
     pub const fn error_tracking_standalone_enabled(&self) -> bool {
-        self.error_tracking_standalone.enabled
+        self.error_tracking_standalone
     }
 
-    /// Returns if stats computation by span kind is enabled.
+    /// Returns `true` if stats computation by span kind is enabled.
     pub const fn compute_stats_by_span_kind(&self) -> bool {
         self.compute_stats_by_span_kind
     }
 
-    /// Returns if peer tags aggregation is enabled.
+    /// Returns `true` if peer tags aggregation is enabled.
     pub const fn peer_tags_aggregation(&self) -> bool {
         self.peer_tags_aggregation
     }
@@ -291,7 +278,7 @@ impl ApmConfig {
         }
     }
 
-    /// Returns whether the rare sampler is enabled.
+    /// Returns `true` if the rare sampler is enabled.
     pub const fn rare_sampler_enabled(&self) -> bool {
         self.enable_rare_sampler
     }
@@ -324,7 +311,7 @@ impl Default for ApmConfig {
             errors_per_second: default_errors_per_second(),
             probabilistic_sampler: ProbabilisticSamplerConfig::default(),
             error_sampling_enabled: default_error_sampling_enabled(),
-            error_tracking_standalone: ErrorTrackingStandaloneConfig::default(),
+            error_tracking_standalone: default_error_tracking_standalone_enabled(),
             compute_stats_by_span_kind: default_compute_stats_by_span_kind(),
             peer_tags_aggregation: default_peer_tags_aggregation(),
             peer_tags: Vec::new(),
@@ -390,6 +377,40 @@ mod tests {
         )
         .await;
         assert!(config.rare_sampler_enabled());
+    }
+
+    #[tokio::test]
+    async fn ets_disabled_by_default() {
+        let config = apm_config_from(None, None).await;
+        assert!(!config.error_tracking_standalone_enabled());
+    }
+
+    #[tokio::test]
+    async fn ets_enabled_via_yaml() {
+        let config = apm_config_from(
+            Some(serde_json::json!({ "apm_config": { "error_tracking_standalone": { "enabled": true } } })),
+            None,
+        )
+        .await;
+        assert!(config.error_tracking_standalone_enabled());
+    }
+
+    #[tokio::test]
+    async fn ets_enabled_via_env_var() {
+        let env_vars = vec![("APM_ERROR_TRACKING_STANDALONE_ENABLED".to_string(), "true".to_string())];
+        let config = apm_config_from(None, Some(&env_vars)).await;
+        assert!(config.error_tracking_standalone_enabled());
+    }
+
+    #[tokio::test]
+    async fn ets_env_var_overrides_yaml() {
+        let env_vars = vec![("APM_ERROR_TRACKING_STANDALONE_ENABLED".to_string(), "true".to_string())];
+        let config = apm_config_from(
+            Some(serde_json::json!({ "apm_config": { "error_tracking_standalone": { "enabled": false } } })),
+            Some(&env_vars),
+        )
+        .await;
+        assert!(config.error_tracking_standalone_enabled());
     }
 
     #[tokio::test]
