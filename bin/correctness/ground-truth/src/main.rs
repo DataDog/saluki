@@ -3,7 +3,11 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
-use saluki_error::{ErrorContext as _, GenericError};
+use std::{path::PathBuf, sync::Arc};
+
+use argh::FromArgs;
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use tokio::sync::Semaphore;
 use tracing::{error, info};
 use tracing_subscriber::{filter::LevelFilter, EnvFilter};
 
@@ -18,6 +22,42 @@ use self::runner::TestRunner;
 
 mod sync;
 
+/// Ground truth: correctness test runner for Agent Data Plane.
+#[derive(FromArgs)]
+struct Cli {
+    #[argh(subcommand)]
+    command: Command,
+}
+
+#[derive(FromArgs)]
+#[argh(subcommand)]
+enum Command {
+    Run(RunCommand),
+    RunAll(RunAllCommand),
+}
+
+/// Run a single correctness test case.
+#[derive(FromArgs)]
+#[argh(subcommand, name = "run")]
+struct RunCommand {
+    /// path to the test case config.yaml file
+    #[argh(positional)]
+    config_path: PathBuf,
+}
+
+/// Run all correctness test cases discovered in a directory.
+#[derive(FromArgs)]
+#[argh(subcommand, name = "run-all")]
+struct RunAllCommand {
+    /// path to the directory containing test case subdirectories
+    #[argh(option, short = 'd')]
+    test_dir: PathBuf,
+
+    /// number of test cases to run in parallel (default: 2)
+    #[argh(option, short = 'p', default = "2")]
+    parallelism: usize,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), GenericError> {
     tracing_subscriber::fmt()
@@ -31,26 +71,130 @@ async fn main() -> Result<(), GenericError> {
         .with_target(true)
         .init();
 
-    // Load our configuration.
-    //
-    // The first argument passed to `ground-truth` should be the path to the configuration file in YAML format.
-    let config_path = std::env::args().nth(1).expect("Missing configuration file path.");
-    let config = Config::from_yaml(&config_path).error_context("Failed to load configuration file.")?;
+    let cli: Cli = argh::from_env();
 
-    info!("Loaded test case configuration from '{}'.", config_path);
+    match cli.command {
+        Command::Run(cmd) => {
+            let config_path = cmd.config_path.to_string_lossy().into_owned();
+            let config = Config::from_yaml(&config_path).error_context("Failed to load configuration file.")?;
 
-    match run(config).await {
-        Ok(()) => info!("ground-truth stopped."),
-        Err(e) => {
-            error!("{:?}", e);
-            std::process::exit(1);
+            info!("Loaded test case configuration from '{}'.", config_path);
+
+            match run_single(config).await {
+                Ok(()) => info!("ground-truth stopped."),
+                Err(e) => {
+                    error!("{:?}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Command::RunAll(cmd) => {
+            let configs = discover_configs(&cmd.test_dir)?;
+            if configs.is_empty() {
+                error!("No test cases found in '{}'.", cmd.test_dir.display());
+                std::process::exit(1);
+            }
+
+            info!(
+                "Discovered {} test case(s) in '{}'. Running with parallelism={}.",
+                configs.len(),
+                cmd.test_dir.display(),
+                cmd.parallelism
+            );
+
+            let failed = run_all(configs, cmd.parallelism).await;
+            if failed > 0 {
+                error!("{} test case(s) failed.", failed);
+                std::process::exit(1);
+            }
+
+            info!("All test cases passed.");
         }
     }
 
     Ok(())
 }
 
-async fn run(config: Config) -> Result<(), GenericError> {
+/// Discover all `config.yaml` files in subdirectories of `test_dir`.
+fn discover_configs(test_dir: &PathBuf) -> Result<Vec<(String, Config)>, GenericError> {
+    if !test_dir.is_dir() {
+        return Err(generic_error!("Test directory does not exist: {}", test_dir.display()));
+    }
+
+    let mut entries: Vec<_> = std::fs::read_dir(test_dir)
+        .error_context(format!("Failed to read test directory: {}", test_dir.display()))?
+        .collect::<Result<_, _>>()
+        .error_context("Failed to read directory entry")?;
+
+    entries.sort_by_key(|e| e.file_name());
+
+    let mut configs = Vec::new();
+    for entry in entries {
+        let path = entry.path();
+        if path.is_dir() {
+            let config_path = path.join("config.yaml");
+            if config_path.exists() {
+                let config_path_str = config_path.to_string_lossy().into_owned();
+                match Config::from_yaml(&config_path_str) {
+                    Ok(config) => {
+                        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                        configs.push((name, config));
+                    }
+                    Err(e) => {
+                        error!(
+                            "Failed to load test case config '{}', skipping: {:?}",
+                            config_path.display(),
+                            e
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(configs)
+}
+
+/// Run all discovered test cases in parallel, returning the number of failures.
+async fn run_all(configs: Vec<(String, Config)>, parallelism: usize) -> usize {
+    let semaphore = Arc::new(Semaphore::new(parallelism.max(1)));
+    let mut handles = Vec::new();
+
+    for (name, config) in configs {
+        let semaphore = semaphore.clone();
+        let handle = tokio::spawn(async move {
+            let _permit = semaphore.acquire().await.unwrap();
+            info!(test_case = %name, "Starting test case.");
+            match run_single(config).await {
+                Ok(()) => {
+                    info!(test_case = %name, "Test case passed.");
+                    false
+                }
+                Err(e) => {
+                    error!(test_case = %name, error = ?e, "Test case failed.");
+                    true
+                }
+            }
+        });
+        handles.push(handle);
+    }
+
+    let mut failed = 0;
+    for handle in handles {
+        match handle.await {
+            Ok(true) => failed += 1,
+            Ok(false) => {}
+            Err(e) => {
+                error!("Test case task panicked: {}", e);
+                failed += 1;
+            }
+        }
+    }
+
+    failed
+}
+
+async fn run_single(config: Config) -> Result<(), GenericError> {
     info!("Test run starting...");
 
     let test_runner = TestRunner::from_config(&config).await?;
