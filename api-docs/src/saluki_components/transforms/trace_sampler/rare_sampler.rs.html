@@ -324,112 +324,113 @@
 <a href=#324 id=324 data-nosnippet>324</a>
 <a href=#325 id=325 data-nosnippet>325</a>    <span class="attr">#[test]
 <a href=#326 id=326 data-nosnippet>326</a>    </span><span class="kw">fn </span>rate_limit_drops_excess_rare_traces() {
-<a href=#327 id=327 data-nosnippet>327</a>        <span class="comment">// Use TPS=1000 but create 60 distinct signatures to exceed the burst of 50.
-<a href=#328 id=328 data-nosnippet>328</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>sampler = RareSampler::new(<span class="bool-val">true</span>, <span class="number">1000.0</span>, Duration::from_secs(<span class="number">300</span>), <span class="number">200</span>);
-<a href=#329 id=329 data-nosnippet>329</a>
-<a href=#330 id=330 data-nosnippet>330</a>        <span class="kw">let </span><span class="kw-2">mut </span>kept = <span class="number">0usize</span>;
-<a href=#331 id=331 data-nosnippet>331</a>        <span class="kw">for </span>i <span class="kw">in </span><span class="number">0</span>..<span class="number">60usize </span>{
-<a href=#332 id=332 data-nosnippet>332</a>            <span class="comment">// Each trace has a unique resource so they're all distinct signatures.
-<a href=#333 id=333 data-nosnippet>333</a>            </span><span class="kw">let </span><span class="kw-2">mut </span>trace = make_trace(<span class="macro">vec!</span>[make_top_level_span(<span class="string">"svc"</span>, <span class="string">"op"</span>, <span class="kw-2">&amp;</span><span class="macro">format!</span>(<span class="string">"res-{}"</span>, i))]);
-<a href=#334 id=334 data-nosnippet>334</a>            <span class="kw">if </span>sampler.sample(<span class="kw-2">&amp;mut </span>trace, <span class="number">0</span>) {
-<a href=#335 id=335 data-nosnippet>335</a>                kept += <span class="number">1</span>;
-<a href=#336 id=336 data-nosnippet>336</a>            }
-<a href=#337 id=337 data-nosnippet>337</a>        }
-<a href=#338 id=338 data-nosnippet>338</a>
-<a href=#339 id=339 data-nosnippet>339</a>        <span class="comment">// We have a burst of 50, so exactly 50 should be kept.
-<a href=#340 id=340 data-nosnippet>340</a>        </span><span class="macro">assert_eq!</span>(kept, <span class="number">50</span>);
-<a href=#341 id=341 data-nosnippet>341</a>    }
-<a href=#342 id=342 data-nosnippet>342</a>
-<a href=#343 id=343 data-nosnippet>343</a>    <span class="attr">#[test]
-<a href=#344 id=344 data-nosnippet>344</a>    </span><span class="kw">fn </span>ttl_expiration_allows_resampling() {
-<a href=#345 id=345 data-nosnippet>345</a>        <span class="comment">// Use a very short TTL so we can observe expiry in a test.
-<a href=#346 id=346 data-nosnippet>346</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>sampler = RareSampler::new(<span class="bool-val">true</span>, <span class="number">100.0</span>, Duration::from_millis(<span class="number">10</span>), <span class="number">200</span>);
-<a href=#347 id=347 data-nosnippet>347</a>
-<a href=#348 id=348 data-nosnippet>348</a>        <span class="kw">let </span><span class="kw-2">mut </span>trace1 = make_trace(<span class="macro">vec!</span>[make_top_level_span(<span class="string">"svc"</span>, <span class="string">"op"</span>, <span class="string">"res"</span>)]);
-<a href=#349 id=349 data-nosnippet>349</a>        <span class="macro">assert!</span>(sampler.sample(<span class="kw-2">&amp;mut </span>trace1, <span class="number">0</span>));
-<a href=#350 id=350 data-nosnippet>350</a>
-<a href=#351 id=351 data-nosnippet>351</a>        <span class="comment">// Within TTL: dropped.
-<a href=#352 id=352 data-nosnippet>352</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>trace2 = make_trace(<span class="macro">vec!</span>[make_top_level_span(<span class="string">"svc"</span>, <span class="string">"op"</span>, <span class="string">"res"</span>)]);
-<a href=#353 id=353 data-nosnippet>353</a>        <span class="macro">assert!</span>(!sampler.sample(<span class="kw-2">&amp;mut </span>trace2, <span class="number">0</span>));
-<a href=#354 id=354 data-nosnippet>354</a>
-<a href=#355 id=355 data-nosnippet>355</a>        <span class="comment">// Wait for TTL to expire, then the same signature should be rare again.
-<a href=#356 id=356 data-nosnippet>356</a>        </span>std::thread::sleep(Duration::from_millis(<span class="number">20</span>));
-<a href=#357 id=357 data-nosnippet>357</a>        <span class="kw">let </span><span class="kw-2">mut </span>trace3 = make_trace(<span class="macro">vec!</span>[make_top_level_span(<span class="string">"svc"</span>, <span class="string">"op"</span>, <span class="string">"res"</span>)]);
-<a href=#358 id=358 data-nosnippet>358</a>        <span class="macro">assert!</span>(sampler.sample(<span class="kw-2">&amp;mut </span>trace3, <span class="number">0</span>));
-<a href=#359 id=359 data-nosnippet>359</a>    }
-<a href=#360 id=360 data-nosnippet>360</a>
-<a href=#361 id=361 data-nosnippet>361</a>    <span class="attr">#[test]
-<a href=#362 id=362 data-nosnippet>362</a>    </span><span class="kw">fn </span>cardinality_limit_shrinks_shard() {
-<a href=#363 id=363 data-nosnippet>363</a>        <span class="comment">// Fill a shard beyond its cardinality limit and verify the map stays bounded.
-<a href=#364 id=364 data-nosnippet>364</a>        </span><span class="kw">let </span>cardinality = <span class="number">10usize</span>;
-<a href=#365 id=365 data-nosnippet>365</a>        <span class="kw">let </span><span class="kw-2">mut </span>sampler = RareSampler::new(<span class="bool-val">true</span>, <span class="number">1000.0</span>, Duration::from_secs(<span class="number">300</span>), cardinality);
-<a href=#366 id=366 data-nosnippet>366</a>
-<a href=#367 id=367 data-nosnippet>367</a>        <span class="kw">for </span>i <span class="kw">in </span><span class="number">0</span>..(cardinality + <span class="number">5</span>) {
-<a href=#368 id=368 data-nosnippet>368</a>            <span class="kw">let </span><span class="kw-2">mut </span>trace = make_trace(<span class="macro">vec!</span>[make_top_level_span(<span class="string">"svc"</span>, <span class="string">"op"</span>, <span class="kw-2">&amp;</span><span class="macro">format!</span>(<span class="string">"res-{}"</span>, i))]);
-<a href=#369 id=369 data-nosnippet>369</a>            <span class="kw">let _ </span>= sampler.sample(<span class="kw-2">&amp;mut </span>trace, <span class="number">0</span>);
-<a href=#370 id=370 data-nosnippet>370</a>        }
-<a href=#371 id=371 data-nosnippet>371</a>
-<a href=#372 id=372 data-nosnippet>372</a>        <span class="kw">for </span>seen <span class="kw">in </span>sampler.seen.values() {
-<a href=#373 id=373 data-nosnippet>373</a>            <span class="macro">assert!</span>(seen.expires.len() &lt;= cardinality);
-<a href=#374 id=374 data-nosnippet>374</a>        }
-<a href=#375 id=375 data-nosnippet>375</a>    }
-<a href=#376 id=376 data-nosnippet>376</a>
-<a href=#377 id=377 data-nosnippet>377</a>    <span class="attr">#[test]
-<a href=#378 id=378 data-nosnippet>378</a>    </span><span class="kw">fn </span>span_eligibility() {
-<a href=#379 id=379 data-nosnippet>379</a>        <span class="comment">// Mirrors TestConsideredSpans from the Go agent.
-<a href=#380 id=380 data-nosnippet>380</a>        // Use distinct service names so each case gets a fresh shard with no prior state.
-<a href=#381 id=381 data-nosnippet>381</a>        </span><span class="kw">type </span>Case = (<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, <span class="kw-2">&amp;</span><span class="lifetime">'static </span>[(<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, f64)], bool);
-<a href=#382 id=382 data-nosnippet>382</a>        <span class="kw">let </span>cases: <span class="kw-2">&amp;</span>[Case] = <span class="kw-2">&amp;</span>[
-<a href=#383 id=383 data-nosnippet>383</a>            (<span class="string">"top-level"</span>, <span class="kw-2">&amp;</span>[(KEY_TOP_LEVEL, <span class="number">1.0</span>)], <span class="bool-val">true</span>),
-<a href=#384 id=384 data-nosnippet>384</a>            (<span class="string">"tracer-top-level"</span>, <span class="kw-2">&amp;</span>[(KEY_TRACER_TOP_LEVEL, <span class="number">1.0</span>)], <span class="bool-val">true</span>),
-<a href=#385 id=385 data-nosnippet>385</a>            (<span class="string">"measured"</span>, <span class="kw-2">&amp;</span>[(KEY_MEASURED, <span class="number">1.0</span>)], <span class="bool-val">true</span>),
-<a href=#386 id=386 data-nosnippet>386</a>            (<span class="string">"plain"</span>, <span class="kw-2">&amp;</span>[], <span class="bool-val">false</span>),
-<a href=#387 id=387 data-nosnippet>387</a>        ];
-<a href=#388 id=388 data-nosnippet>388</a>
-<a href=#389 id=389 data-nosnippet>389</a>        <span class="kw">let </span><span class="kw-2">mut </span>sampler = RareSampler::new(<span class="bool-val">true</span>, <span class="number">100.0</span>, Duration::from_secs(<span class="number">300</span>), <span class="number">200</span>);
-<a href=#390 id=390 data-nosnippet>390</a>        <span class="kw">for </span><span class="kw-2">&amp;</span>(service, metrics, expected) <span class="kw">in </span>cases {
-<a href=#391 id=391 data-nosnippet>391</a>            <span class="kw">let </span><span class="kw-2">mut </span>m = FastHashMap::default();
-<a href=#392 id=392 data-nosnippet>392</a>            <span class="kw">for </span><span class="kw-2">&amp;</span>(k, v) <span class="kw">in </span>metrics {
-<a href=#393 id=393 data-nosnippet>393</a>                m.insert(MetaString::from(k), v);
-<a href=#394 id=394 data-nosnippet>394</a>            }
-<a href=#395 id=395 data-nosnippet>395</a>            <span class="kw">let </span><span class="kw-2">mut </span>trace = make_trace(<span class="macro">vec!</span>[make_span_with_metrics(service, <span class="string">"op"</span>, <span class="string">"res"</span>, m)]);
-<a href=#396 id=396 data-nosnippet>396</a>            <span class="macro">assert_eq!</span>(sampler.sample(<span class="kw-2">&amp;mut </span>trace, <span class="number">0</span>), expected, <span class="string">"case: {service}"</span>);
-<a href=#397 id=397 data-nosnippet>397</a>        }
-<a href=#398 id=398 data-nosnippet>398</a>    }
-<a href=#399 id=399 data-nosnippet>399</a>
-<a href=#400 id=400 data-nosnippet>400</a>    <span class="attr">#[test]
-<a href=#401 id=401 data-nosnippet>401</a>    </span><span class="kw">fn </span>multiple_top_level_spans_rare_flag_on_first_new_signature() {
-<a href=#402 id=402 data-nosnippet>402</a>        <span class="comment">// Mirrors TestMultipleTopeLevels from the Go agent exactly.
-<a href=#403 id=403 data-nosnippet>403</a>        // r1 and r2 are in the same service shard.
-<a href=#404 id=404 data-nosnippet>404</a>        //
-<a href=#405 id=405 data-nosnippet>405</a>        // Trace 1 [r1]:       r1 new → kept, r1 gets _dd.rare=1. r1 TTL set.
-<a href=#406 id=406 data-nosnippet>406</a>        // Trace 2 [r1, r2]:   r1 within TTL (skipped), r2 new → kept, r2 gets _dd.rare=1.
-<a href=#407 id=407 data-nosnippet>407</a>        //                     Sampling trace 2 refreshes both r1 and r2 TTLs.
-<a href=#408 id=408 data-nosnippet>408</a>        // Trace 3 [r1]:       r1 TTL was refreshed by trace 2 → dropped.
-<a href=#409 id=409 data-nosnippet>409</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>sampler = RareSampler::new(<span class="bool-val">true</span>, <span class="number">100.0</span>, Duration::from_secs(<span class="number">300</span>), <span class="number">200</span>);
-<a href=#410 id=410 data-nosnippet>410</a>
-<a href=#411 id=411 data-nosnippet>411</a>        <span class="kw">let </span><span class="kw-2">mut </span>trace1 = make_trace(<span class="macro">vec!</span>[make_top_level_span(<span class="string">"s1"</span>, <span class="string">"op"</span>, <span class="string">"r1"</span>)]);
-<a href=#412 id=412 data-nosnippet>412</a>        <span class="macro">assert!</span>(sampler.sample(<span class="kw-2">&amp;mut </span>trace1, <span class="number">0</span>));
-<a href=#413 id=413 data-nosnippet>413</a>        <span class="macro">assert_eq!</span>(trace1.spans()[<span class="number">0</span>].metrics().get(RARE_KEY).copied(), <span class="prelude-val">Some</span>(<span class="number">1.0</span>));
-<a href=#414 id=414 data-nosnippet>414</a>
-<a href=#415 id=415 data-nosnippet>415</a>        <span class="kw">let </span><span class="kw-2">mut </span>trace2 = make_trace(<span class="macro">vec!</span>[
-<a href=#416 id=416 data-nosnippet>416</a>            make_top_level_span(<span class="string">"s1"</span>, <span class="string">"op"</span>, <span class="string">"r1"</span>),
-<a href=#417 id=417 data-nosnippet>417</a>            make_top_level_span(<span class="string">"s1"</span>, <span class="string">"op"</span>, <span class="string">"r2"</span>),
-<a href=#418 id=418 data-nosnippet>418</a>        ]);
-<a href=#419 id=419 data-nosnippet>419</a>        <span class="macro">assert!</span>(sampler.sample(<span class="kw-2">&amp;mut </span>trace2, <span class="number">0</span>));
-<a href=#420 id=420 data-nosnippet>420</a>        <span class="macro">assert_eq!</span>(
-<a href=#421 id=421 data-nosnippet>421</a>            trace2.spans()[<span class="number">0</span>].metrics().get(RARE_KEY).copied(),
-<a href=#422 id=422 data-nosnippet>422</a>            <span class="prelude-val">None</span>,
-<a href=#423 id=423 data-nosnippet>423</a>            <span class="string">"r1 should not get rare flag"
-<a href=#424 id=424 data-nosnippet>424</a>        </span>);
-<a href=#425 id=425 data-nosnippet>425</a>        <span class="macro">assert_eq!</span>(
-<a href=#426 id=426 data-nosnippet>426</a>            trace2.spans()[<span class="number">1</span>].metrics().get(RARE_KEY).copied(),
-<a href=#427 id=427 data-nosnippet>427</a>            <span class="prelude-val">Some</span>(<span class="number">1.0</span>),
-<a href=#428 id=428 data-nosnippet>428</a>            <span class="string">"r2 should get rare flag"
-<a href=#429 id=429 data-nosnippet>429</a>        </span>);
-<a href=#430 id=430 data-nosnippet>430</a>
-<a href=#431 id=431 data-nosnippet>431</a>        <span class="kw">let </span><span class="kw-2">mut </span>trace3 = make_trace(<span class="macro">vec!</span>[make_top_level_span(<span class="string">"s1"</span>, <span class="string">"op"</span>, <span class="string">"r1"</span>)]);
-<a href=#432 id=432 data-nosnippet>432</a>        <span class="macro">assert!</span>(!sampler.sample(<span class="kw-2">&amp;mut </span>trace3, <span class="number">0</span>));
-<a href=#433 id=433 data-nosnippet>433</a>    }
-<a href=#434 id=434 data-nosnippet>434</a>}
+<a href=#327 id=327 data-nosnippet>327</a>        <span class="comment">// Use a very low TPS so the bucket doesn't refill during the loop, then create 60 distinct
+<a href=#328 id=328 data-nosnippet>328</a>        // signatures to exceed the burst of 50. We're testing the burst cap, not the refill rate.
+<a href=#329 id=329 data-nosnippet>329</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>sampler = RareSampler::new(<span class="bool-val">true</span>, <span class="number">0.000_000_001</span>, Duration::from_secs(<span class="number">300</span>), <span class="number">200</span>);
+<a href=#330 id=330 data-nosnippet>330</a>
+<a href=#331 id=331 data-nosnippet>331</a>        <span class="kw">let </span><span class="kw-2">mut </span>kept = <span class="number">0usize</span>;
+<a href=#332 id=332 data-nosnippet>332</a>        <span class="kw">for </span>i <span class="kw">in </span><span class="number">0</span>..<span class="number">60usize </span>{
+<a href=#333 id=333 data-nosnippet>333</a>            <span class="comment">// Each trace has a unique resource so they're all distinct signatures.
+<a href=#334 id=334 data-nosnippet>334</a>            </span><span class="kw">let </span><span class="kw-2">mut </span>trace = make_trace(<span class="macro">vec!</span>[make_top_level_span(<span class="string">"svc"</span>, <span class="string">"op"</span>, <span class="kw-2">&amp;</span><span class="macro">format!</span>(<span class="string">"res-{}"</span>, i))]);
+<a href=#335 id=335 data-nosnippet>335</a>            <span class="kw">if </span>sampler.sample(<span class="kw-2">&amp;mut </span>trace, <span class="number">0</span>) {
+<a href=#336 id=336 data-nosnippet>336</a>                kept += <span class="number">1</span>;
+<a href=#337 id=337 data-nosnippet>337</a>            }
+<a href=#338 id=338 data-nosnippet>338</a>        }
+<a href=#339 id=339 data-nosnippet>339</a>
+<a href=#340 id=340 data-nosnippet>340</a>        <span class="comment">// We have a burst of 50, so exactly 50 should be kept.
+<a href=#341 id=341 data-nosnippet>341</a>        </span><span class="macro">assert_eq!</span>(kept, <span class="number">50</span>);
+<a href=#342 id=342 data-nosnippet>342</a>    }
+<a href=#343 id=343 data-nosnippet>343</a>
+<a href=#344 id=344 data-nosnippet>344</a>    <span class="attr">#[test]
+<a href=#345 id=345 data-nosnippet>345</a>    </span><span class="kw">fn </span>ttl_expiration_allows_resampling() {
+<a href=#346 id=346 data-nosnippet>346</a>        <span class="comment">// Use a very short TTL so we can observe expiry in a test.
+<a href=#347 id=347 data-nosnippet>347</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>sampler = RareSampler::new(<span class="bool-val">true</span>, <span class="number">100.0</span>, Duration::from_millis(<span class="number">10</span>), <span class="number">200</span>);
+<a href=#348 id=348 data-nosnippet>348</a>
+<a href=#349 id=349 data-nosnippet>349</a>        <span class="kw">let </span><span class="kw-2">mut </span>trace1 = make_trace(<span class="macro">vec!</span>[make_top_level_span(<span class="string">"svc"</span>, <span class="string">"op"</span>, <span class="string">"res"</span>)]);
+<a href=#350 id=350 data-nosnippet>350</a>        <span class="macro">assert!</span>(sampler.sample(<span class="kw-2">&amp;mut </span>trace1, <span class="number">0</span>));
+<a href=#351 id=351 data-nosnippet>351</a>
+<a href=#352 id=352 data-nosnippet>352</a>        <span class="comment">// Within TTL: dropped.
+<a href=#353 id=353 data-nosnippet>353</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>trace2 = make_trace(<span class="macro">vec!</span>[make_top_level_span(<span class="string">"svc"</span>, <span class="string">"op"</span>, <span class="string">"res"</span>)]);
+<a href=#354 id=354 data-nosnippet>354</a>        <span class="macro">assert!</span>(!sampler.sample(<span class="kw-2">&amp;mut </span>trace2, <span class="number">0</span>));
+<a href=#355 id=355 data-nosnippet>355</a>
+<a href=#356 id=356 data-nosnippet>356</a>        <span class="comment">// Wait for TTL to expire, then the same signature should be rare again.
+<a href=#357 id=357 data-nosnippet>357</a>        </span>std::thread::sleep(Duration::from_millis(<span class="number">20</span>));
+<a href=#358 id=358 data-nosnippet>358</a>        <span class="kw">let </span><span class="kw-2">mut </span>trace3 = make_trace(<span class="macro">vec!</span>[make_top_level_span(<span class="string">"svc"</span>, <span class="string">"op"</span>, <span class="string">"res"</span>)]);
+<a href=#359 id=359 data-nosnippet>359</a>        <span class="macro">assert!</span>(sampler.sample(<span class="kw-2">&amp;mut </span>trace3, <span class="number">0</span>));
+<a href=#360 id=360 data-nosnippet>360</a>    }
+<a href=#361 id=361 data-nosnippet>361</a>
+<a href=#362 id=362 data-nosnippet>362</a>    <span class="attr">#[test]
+<a href=#363 id=363 data-nosnippet>363</a>    </span><span class="kw">fn </span>cardinality_limit_shrinks_shard() {
+<a href=#364 id=364 data-nosnippet>364</a>        <span class="comment">// Fill a shard beyond its cardinality limit and verify the map stays bounded.
+<a href=#365 id=365 data-nosnippet>365</a>        </span><span class="kw">let </span>cardinality = <span class="number">10usize</span>;
+<a href=#366 id=366 data-nosnippet>366</a>        <span class="kw">let </span><span class="kw-2">mut </span>sampler = RareSampler::new(<span class="bool-val">true</span>, <span class="number">1000.0</span>, Duration::from_secs(<span class="number">300</span>), cardinality);
+<a href=#367 id=367 data-nosnippet>367</a>
+<a href=#368 id=368 data-nosnippet>368</a>        <span class="kw">for </span>i <span class="kw">in </span><span class="number">0</span>..(cardinality + <span class="number">5</span>) {
+<a href=#369 id=369 data-nosnippet>369</a>            <span class="kw">let </span><span class="kw-2">mut </span>trace = make_trace(<span class="macro">vec!</span>[make_top_level_span(<span class="string">"svc"</span>, <span class="string">"op"</span>, <span class="kw-2">&amp;</span><span class="macro">format!</span>(<span class="string">"res-{}"</span>, i))]);
+<a href=#370 id=370 data-nosnippet>370</a>            <span class="kw">let _ </span>= sampler.sample(<span class="kw-2">&amp;mut </span>trace, <span class="number">0</span>);
+<a href=#371 id=371 data-nosnippet>371</a>        }
+<a href=#372 id=372 data-nosnippet>372</a>
+<a href=#373 id=373 data-nosnippet>373</a>        <span class="kw">for </span>seen <span class="kw">in </span>sampler.seen.values() {
+<a href=#374 id=374 data-nosnippet>374</a>            <span class="macro">assert!</span>(seen.expires.len() &lt;= cardinality);
+<a href=#375 id=375 data-nosnippet>375</a>        }
+<a href=#376 id=376 data-nosnippet>376</a>    }
+<a href=#377 id=377 data-nosnippet>377</a>
+<a href=#378 id=378 data-nosnippet>378</a>    <span class="attr">#[test]
+<a href=#379 id=379 data-nosnippet>379</a>    </span><span class="kw">fn </span>span_eligibility() {
+<a href=#380 id=380 data-nosnippet>380</a>        <span class="comment">// Mirrors TestConsideredSpans from the Go agent.
+<a href=#381 id=381 data-nosnippet>381</a>        // Use distinct service names so each case gets a fresh shard with no prior state.
+<a href=#382 id=382 data-nosnippet>382</a>        </span><span class="kw">type </span>Case = (<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, <span class="kw-2">&amp;</span><span class="lifetime">'static </span>[(<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, f64)], bool);
+<a href=#383 id=383 data-nosnippet>383</a>        <span class="kw">let </span>cases: <span class="kw-2">&amp;</span>[Case] = <span class="kw-2">&amp;</span>[
+<a href=#384 id=384 data-nosnippet>384</a>            (<span class="string">"top-level"</span>, <span class="kw-2">&amp;</span>[(KEY_TOP_LEVEL, <span class="number">1.0</span>)], <span class="bool-val">true</span>),
+<a href=#385 id=385 data-nosnippet>385</a>            (<span class="string">"tracer-top-level"</span>, <span class="kw-2">&amp;</span>[(KEY_TRACER_TOP_LEVEL, <span class="number">1.0</span>)], <span class="bool-val">true</span>),
+<a href=#386 id=386 data-nosnippet>386</a>            (<span class="string">"measured"</span>, <span class="kw-2">&amp;</span>[(KEY_MEASURED, <span class="number">1.0</span>)], <span class="bool-val">true</span>),
+<a href=#387 id=387 data-nosnippet>387</a>            (<span class="string">"plain"</span>, <span class="kw-2">&amp;</span>[], <span class="bool-val">false</span>),
+<a href=#388 id=388 data-nosnippet>388</a>        ];
+<a href=#389 id=389 data-nosnippet>389</a>
+<a href=#390 id=390 data-nosnippet>390</a>        <span class="kw">let </span><span class="kw-2">mut </span>sampler = RareSampler::new(<span class="bool-val">true</span>, <span class="number">100.0</span>, Duration::from_secs(<span class="number">300</span>), <span class="number">200</span>);
+<a href=#391 id=391 data-nosnippet>391</a>        <span class="kw">for </span><span class="kw-2">&amp;</span>(service, metrics, expected) <span class="kw">in </span>cases {
+<a href=#392 id=392 data-nosnippet>392</a>            <span class="kw">let </span><span class="kw-2">mut </span>m = FastHashMap::default();
+<a href=#393 id=393 data-nosnippet>393</a>            <span class="kw">for </span><span class="kw-2">&amp;</span>(k, v) <span class="kw">in </span>metrics {
+<a href=#394 id=394 data-nosnippet>394</a>                m.insert(MetaString::from(k), v);
+<a href=#395 id=395 data-nosnippet>395</a>            }
+<a href=#396 id=396 data-nosnippet>396</a>            <span class="kw">let </span><span class="kw-2">mut </span>trace = make_trace(<span class="macro">vec!</span>[make_span_with_metrics(service, <span class="string">"op"</span>, <span class="string">"res"</span>, m)]);
+<a href=#397 id=397 data-nosnippet>397</a>            <span class="macro">assert_eq!</span>(sampler.sample(<span class="kw-2">&amp;mut </span>trace, <span class="number">0</span>), expected, <span class="string">"case: {service}"</span>);
+<a href=#398 id=398 data-nosnippet>398</a>        }
+<a href=#399 id=399 data-nosnippet>399</a>    }
+<a href=#400 id=400 data-nosnippet>400</a>
+<a href=#401 id=401 data-nosnippet>401</a>    <span class="attr">#[test]
+<a href=#402 id=402 data-nosnippet>402</a>    </span><span class="kw">fn </span>multiple_top_level_spans_rare_flag_on_first_new_signature() {
+<a href=#403 id=403 data-nosnippet>403</a>        <span class="comment">// Mirrors TestMultipleTopeLevels from the Go agent exactly.
+<a href=#404 id=404 data-nosnippet>404</a>        // r1 and r2 are in the same service shard.
+<a href=#405 id=405 data-nosnippet>405</a>        //
+<a href=#406 id=406 data-nosnippet>406</a>        // Trace 1 [r1]:       r1 new → kept, r1 gets _dd.rare=1. r1 TTL set.
+<a href=#407 id=407 data-nosnippet>407</a>        // Trace 2 [r1, r2]:   r1 within TTL (skipped), r2 new → kept, r2 gets _dd.rare=1.
+<a href=#408 id=408 data-nosnippet>408</a>        //                     Sampling trace 2 refreshes both r1 and r2 TTLs.
+<a href=#409 id=409 data-nosnippet>409</a>        // Trace 3 [r1]:       r1 TTL was refreshed by trace 2 → dropped.
+<a href=#410 id=410 data-nosnippet>410</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>sampler = RareSampler::new(<span class="bool-val">true</span>, <span class="number">100.0</span>, Duration::from_secs(<span class="number">300</span>), <span class="number">200</span>);
+<a href=#411 id=411 data-nosnippet>411</a>
+<a href=#412 id=412 data-nosnippet>412</a>        <span class="kw">let </span><span class="kw-2">mut </span>trace1 = make_trace(<span class="macro">vec!</span>[make_top_level_span(<span class="string">"s1"</span>, <span class="string">"op"</span>, <span class="string">"r1"</span>)]);
+<a href=#413 id=413 data-nosnippet>413</a>        <span class="macro">assert!</span>(sampler.sample(<span class="kw-2">&amp;mut </span>trace1, <span class="number">0</span>));
+<a href=#414 id=414 data-nosnippet>414</a>        <span class="macro">assert_eq!</span>(trace1.spans()[<span class="number">0</span>].metrics().get(RARE_KEY).copied(), <span class="prelude-val">Some</span>(<span class="number">1.0</span>));
+<a href=#415 id=415 data-nosnippet>415</a>
+<a href=#416 id=416 data-nosnippet>416</a>        <span class="kw">let </span><span class="kw-2">mut </span>trace2 = make_trace(<span class="macro">vec!</span>[
+<a href=#417 id=417 data-nosnippet>417</a>            make_top_level_span(<span class="string">"s1"</span>, <span class="string">"op"</span>, <span class="string">"r1"</span>),
+<a href=#418 id=418 data-nosnippet>418</a>            make_top_level_span(<span class="string">"s1"</span>, <span class="string">"op"</span>, <span class="string">"r2"</span>),
+<a href=#419 id=419 data-nosnippet>419</a>        ]);
+<a href=#420 id=420 data-nosnippet>420</a>        <span class="macro">assert!</span>(sampler.sample(<span class="kw-2">&amp;mut </span>trace2, <span class="number">0</span>));
+<a href=#421 id=421 data-nosnippet>421</a>        <span class="macro">assert_eq!</span>(
+<a href=#422 id=422 data-nosnippet>422</a>            trace2.spans()[<span class="number">0</span>].metrics().get(RARE_KEY).copied(),
+<a href=#423 id=423 data-nosnippet>423</a>            <span class="prelude-val">None</span>,
+<a href=#424 id=424 data-nosnippet>424</a>            <span class="string">"r1 should not get rare flag"
+<a href=#425 id=425 data-nosnippet>425</a>        </span>);
+<a href=#426 id=426 data-nosnippet>426</a>        <span class="macro">assert_eq!</span>(
+<a href=#427 id=427 data-nosnippet>427</a>            trace2.spans()[<span class="number">1</span>].metrics().get(RARE_KEY).copied(),
+<a href=#428 id=428 data-nosnippet>428</a>            <span class="prelude-val">Some</span>(<span class="number">1.0</span>),
+<a href=#429 id=429 data-nosnippet>429</a>            <span class="string">"r2 should get rare flag"
+<a href=#430 id=430 data-nosnippet>430</a>        </span>);
+<a href=#431 id=431 data-nosnippet>431</a>
+<a href=#432 id=432 data-nosnippet>432</a>        <span class="kw">let </span><span class="kw-2">mut </span>trace3 = make_trace(<span class="macro">vec!</span>[make_top_level_span(<span class="string">"s1"</span>, <span class="string">"op"</span>, <span class="string">"r1"</span>)]);
+<a href=#433 id=433 data-nosnippet>433</a>        <span class="macro">assert!</span>(!sampler.sample(<span class="kw-2">&amp;mut </span>trace3, <span class="number">0</span>));
+<a href=#434 id=434 data-nosnippet>434</a>    }
+<a href=#435 id=435 data-nosnippet>435</a>}
 </code></pre></div></section></main></body></html>
