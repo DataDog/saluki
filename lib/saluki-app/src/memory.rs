@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use bytesize::ByteSize;
 use memory_accounting::{
     allocator::{AllocationGroupRegistry, AllocationStats, AllocationStatsSnapshot},
-    ComponentBounds, ComponentRegistryHandle, MemoryGrant, MemoryLimiter,
+    ComponentBounds, ComponentRegistry, ComponentRegistryHandle, MemoryGrant, MemoryLimiter,
 };
 use metrics::{counter, gauge, Counter, Gauge, Level};
 use saluki_api::{DynamicRoute, EndpointType};
@@ -247,13 +247,15 @@ impl AllocationGroupMetrics {
 /// Additionally, asserts the memory API routes from the given [`ComponentRegistry`] as a [`DynamicRoute`] on the
 /// unprivileged API endpoint.
 pub struct AllocationTelemetryWorker {
-    component_registry: ComponentRegistry,
+    component_registry: ComponentRegistryHandle,
 }
 
 impl AllocationTelemetryWorker {
     /// Creates a new `AllocationTelemetryWorker` for the given component registry.
-    pub fn new(component_registry: ComponentRegistry) -> Self {
-        Self { component_registry }
+    pub fn new(component_registry: &ComponentRegistry) -> Self {
+        Self {
+            component_registry: component_registry.root(),
+        }
     }
 }
 

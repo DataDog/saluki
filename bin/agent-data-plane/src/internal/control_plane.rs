@@ -53,12 +53,12 @@ pub struct UnprivilegedApiWorker {
 impl UnprivilegedApiWorker {
     /// Creates a new `UnprivilegedApiWorker`.
     pub fn new(
-        dp_config: DataPlaneConfiguration, health_registry: HealthRegistry, component_registry: ComponentRegistryHandle,
+        dp_config: DataPlaneConfiguration, health_registry: HealthRegistry, component_registry: &ComponentRegistry,
     ) -> Self {
         Self {
             dp_config,
             health_registry,
-            component_registry,
+            component_registry: component_registry.root(),
         }
     }
 }
@@ -178,14 +178,12 @@ pub async fn create_control_plane_supervisor(
         .with_restart_strategy(RestartStrategy::one_to_one());
 
     supervisor.add_worker(health_registry.worker());
-    supervisor.add_worker(AllocationTelemetryWorker::new(
-        component_registry.get_or_create("alloc-telemetry"),
-    ));
+    supervisor.add_worker(AllocationTelemetryWorker::new(component_registry));
 
     supervisor.add_worker(UnprivilegedApiWorker::new(
         dp_config.clone(),
         health_registry,
-        component_registry.root(),
+        component_registry,
     ));
     supervisor.add_worker(
         PrivilegedApiWorker::new(
