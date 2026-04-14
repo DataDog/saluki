@@ -8,12 +8,14 @@ use saluki_app::{
 };
 use saluki_components::destinations::DogStatsDStatisticsConfiguration;
 use saluki_config::GenericConfiguration;
-use saluki_core::runtime::{
-    InitializationError, ProcessShutdown, RestartStrategy, RuntimeConfiguration, Supervisable, Supervisor,
-    SupervisorFuture,
+use saluki_core::{
+    health::HealthRegistry,
+    runtime::{
+        InitializationError, ProcessShutdown, RestartStrategy, RuntimeConfiguration, Supervisable, Supervisor,
+        SupervisorFuture,
+    },
 };
-use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use saluki_health::HealthRegistry;
+use saluki_error::{ErrorContext as _, GenericError};
 use saluki_io::net::{build_datadog_agent_server_tls_config, get_ipc_cert_file_path, ServerConfig};
 use tracing::info;
 
@@ -39,39 +41,6 @@ fn get_cert_path_from_config(config: &GenericConfiguration) -> Result<PathBuf, G
         ipc_cert_file_path.as_ref(),
         &auth_token_file_path,
     ))
-}
-
-/// A worker that runs the health registry.
-pub struct HealthRegistryWorker {
-    health_registry: HealthRegistry,
-}
-
-impl HealthRegistryWorker {
-    /// Creates a new `HealthRegistryWorker`.
-    pub fn new(health_registry: HealthRegistry) -> Self {
-        Self { health_registry }
-    }
-}
-
-#[async_trait]
-impl Supervisable for HealthRegistryWorker {
-    fn name(&self) -> &str {
-        "health-registry"
-    }
-
-    async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
-        // Spawn the health registry runner with the shutdown signal. The runner will exit gracefully when the shutdown
-        // signal is received, and the response receiver will be returned to the registry state so that a subsequent
-        // spawn can succeed if the supervisor restarts this worker.
-        let handle = self.health_registry.clone().spawn(process_shutdown).await?;
-
-        Ok(Box::pin(async move {
-            match handle.await {
-                Ok(()) => Ok(()),
-                Err(e) => Err(generic_error!("Health registry task panicked: {}", e)),
-            }
-        }))
-    }
 }
 
 /// A worker that serves the unprivileged HTTP API.
@@ -208,11 +177,11 @@ pub async fn create_control_plane_supervisor(
         .with_dedicated_runtime(RuntimeConfiguration::single_threaded())
         .with_restart_strategy(RestartStrategy::one_to_one());
 
-    // TODO: just make the API handler for `ComponentRegistry` cloneable so we can create/hold on to it in
+    supervisor.add_worker(health_registry.worker());
+
+    // TODO: Just make the API handler for `ComponentRegistry` cloneable so we can create/hold on to it in
     // `UnprivilegedApiWorker` without having to create a scoped one here just to maintain the ownership necessary
     let scoped_registry = component_registry.get_or_create("control-plane");
-
-    supervisor.add_worker(HealthRegistryWorker::new(health_registry.clone()));
     supervisor.add_worker(UnprivilegedApiWorker::new(
         dp_config.clone(),
         health_registry,

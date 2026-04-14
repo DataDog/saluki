@@ -21,10 +21,10 @@ metrics-util = { workspace = true, features = ["recency", "registry"] }
 ordered-float = { workspace = true }
 paste = { workspace = true }
 pin-project = { workspace = true }
+saluki-api = { workspace = true }
 saluki-common = { workspace = true }
 saluki-context = { workspace = true }
 saluki-error = { workspace = true }
-saluki-health = { workspace = true }
 saluki-metrics = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
