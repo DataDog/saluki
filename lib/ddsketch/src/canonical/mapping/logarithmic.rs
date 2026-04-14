@@ -13,6 +13,9 @@ pub struct LogarithmicMapping {
     /// The base of the logarithm, determines bin widths.
     gamma: f64,
 
+    /// Constant shift applied to all computed indices.
+    index_offset: f64,
+
     /// Precomputed 1/ln(gamma) for performance.
     multiplier: f64,
 }
@@ -46,7 +49,11 @@ impl LogarithmicMapping {
 
         let multiplier = 1.0 / gamma.ln();
 
-        Ok(Self { gamma, multiplier })
+        Ok(Self {
+            gamma,
+            index_offset: 0.0,
+            multiplier,
+        })
     }
 
     /// Creates a new `LogarithmicMapping` from an explicit logarithmic base.
@@ -58,24 +65,37 @@ impl LogarithmicMapping {
     /// `gamma` must be greater than `1.0`, otherwise the logarithmic mapping is
     /// invalid.
     ///
-    /// Note: `index_offset` is currently ignored by `LogarithmicMapping`, which
-    /// always uses an offset of `0.0`.
-    ///
     /// # Errors
     ///
     /// Returns an error if `gamma <= 1.0`.
     pub fn new_with_gamma(gamma: f64) -> Result<Self, &'static str> {
+        Self::new_with_gamma_and_offset(gamma, 0.0)
+    }
+
+    /// Creates a new `LogarithmicMapping` from an explicit logarithmic base and index offset.
+    ///
+    /// `gamma` must be greater than `1.0`, otherwise the logarithmic mapping is
+    /// invalid.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `gamma <= 1.0`.
+    pub fn new_with_gamma_and_offset(gamma: f64, index_offset: f64) -> Result<Self, &'static str> {
         if gamma <= 1.0 {
             return Err("gamma must be greater than 1");
         }
         let multiplier = 1.0 / gamma.ln();
-        Ok(Self { gamma, multiplier })
+        Ok(Self {
+            gamma,
+            index_offset,
+            multiplier,
+        })
     }
 }
 
 impl IndexMapping for LogarithmicMapping {
     fn index(&self, value: f64) -> i32 {
-        let index = value.ln() * self.multiplier;
+        let index = value.ln() * self.multiplier + self.index_offset;
         if index >= 0.0 {
             index as i32
         } else {
@@ -88,7 +108,7 @@ impl IndexMapping for LogarithmicMapping {
     }
 
     fn lower_bound(&self, index: i32) -> f64 {
-        (index as f64 / self.multiplier).exp()
+        ((index as f64 - self.index_offset) / self.multiplier).exp()
     }
 
     fn relative_accuracy(&self) -> f64 {
@@ -96,11 +116,11 @@ impl IndexMapping for LogarithmicMapping {
     }
 
     fn min_indexable_value(&self) -> f64 {
-        f64::MIN_POSITIVE.max(self.gamma.powf(i32::MIN as f64 + 1.0))
+        f64::MIN_POSITIVE.max((((i32::MIN as f64) - self.index_offset) / self.multiplier + 1.0).exp())
     }
 
     fn max_indexable_value(&self) -> f64 {
-        self.gamma.powf(i32::MAX as f64 - 1.0).min(f64::MAX / self.gamma)
+        ((((i32::MAX as f64) - self.index_offset) / self.multiplier - 1.0).exp()).min(f64::MAX / self.gamma)
     }
 
     fn gamma(&self) -> f64 {
@@ -108,7 +128,7 @@ impl IndexMapping for LogarithmicMapping {
     }
 
     fn index_offset(&self) -> f64 {
-        0.0
+        self.index_offset
     }
 
     fn interpolation(&self) -> Interpolation {
@@ -124,8 +144,8 @@ impl IndexMapping for LogarithmicMapping {
             });
         }
 
-        // Check indexOffset is 0.0 (LogarithmicMapping doesn't use offset)
-        if proto.indexOffset != 0.0 {
+        // Check indexOffset matches (with floating-point tolerance)
+        if !float_eq(proto.indexOffset, self.index_offset) {
             return Err(ProtoConversionError::NonZeroIndexOffset {
                 actual: proto.indexOffset,
             });
@@ -145,7 +165,7 @@ impl IndexMapping for LogarithmicMapping {
     fn to_proto(&self) -> ProtoIndexMapping {
         let mut proto = ProtoIndexMapping::new();
         proto.gamma = self.gamma;
-        proto.indexOffset = 0.0;
+        proto.indexOffset = self.index_offset;
         proto.interpolation = protobuf::EnumOrUnknown::new(Interpolation::NONE);
         proto
     }

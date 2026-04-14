@@ -184,7 +184,9 @@ impl SourceBuilder for OtlpConfiguration {
         let maybe_origin_tags_resolver = self.workload_provider.clone().map(OtlpOriginTagResolver::new);
 
         let context_resolver = build_context_resolver(self, &context, maybe_origin_tags_resolver.clone())?;
-        let metrics_translator_config = metrics::config::OtlpMetricsTranslatorConfig::default().with_remapping(true);
+        let metrics_translator_config = metrics::config::OtlpMetricsTranslatorConfig::default()
+            .with_remapping(true)
+            .with_quantiles(true);
         let traces_interner_size =
             std::num::NonZeroUsize::new(self.otlp_config.traces.string_interner_bytes.as_u64() as usize)
                 .ok_or_else(|| generic_error!("otlp_config.traces.string_interner_size must be greater than 0"))?;
