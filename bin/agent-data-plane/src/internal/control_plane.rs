@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use async_trait::async_trait;
-use memory_accounting::ComponentRegistry;
+use memory_accounting::{ComponentRegistry, ComponentRegistryHandle};
 use saluki_app::{
     api::APIBuilder, config::ConfigAPIHandler, logging::acquire_logging_api_handler,
     metrics::acquire_metrics_api_handler,
@@ -47,13 +47,13 @@ fn get_cert_path_from_config(config: &GenericConfiguration) -> Result<PathBuf, G
 pub struct UnprivilegedApiWorker {
     dp_config: DataPlaneConfiguration,
     health_registry: HealthRegistry,
-    component_registry: ComponentRegistry,
+    component_registry: ComponentRegistryHandle,
 }
 
 impl UnprivilegedApiWorker {
     /// Creates a new `UnprivilegedApiWorker`.
     pub fn new(
-        dp_config: DataPlaneConfiguration, health_registry: HealthRegistry, component_registry: ComponentRegistry,
+        dp_config: DataPlaneConfiguration, health_registry: HealthRegistry, component_registry: ComponentRegistryHandle,
     ) -> Self {
         Self {
             dp_config,
@@ -179,13 +179,10 @@ pub async fn create_control_plane_supervisor(
 
     supervisor.add_worker(health_registry.worker());
 
-    // TODO: Just make the API handler for `ComponentRegistry` cloneable so we can create/hold on to it in
-    // `UnprivilegedApiWorker` without having to create a scoped one here just to maintain the ownership necessary
-    let scoped_registry = component_registry.get_or_create("control-plane");
     supervisor.add_worker(UnprivilegedApiWorker::new(
         dp_config.clone(),
         health_registry,
-        scoped_registry,
+        component_registry.root(),
     ));
     supervisor.add_worker(
         PrivilegedApiWorker::new(

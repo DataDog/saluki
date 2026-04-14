@@ -168,7 +168,7 @@ pub async fn handle_run_command(
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
     let bounds_config = MemoryBoundsConfiguration::try_from_config(&config)?;
-    let memory_limiter = initialize_memory_bounds(bounds_config, &component_registry)?;
+    let memory_limiter = initialize_memory_bounds(bounds_config, component_registry.root())?;
 
     if let Ok(val) = std::env::var("DD_ADP_WRITE_SIZING_GUIDE") {
         if val != "false" {
