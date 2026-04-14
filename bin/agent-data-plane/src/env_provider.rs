@@ -1,5 +1,6 @@
 use memory_accounting::ComponentRegistry;
 use saluki_config::GenericConfiguration;
+use saluki_core::health::HealthRegistry;
 use saluki_env::{
     autodiscovery::providers::BoxedAutodiscoveryProvider,
     host::providers::{BoxedHostProvider, FixedHostProvider, RemoteAgentHostProvider},
@@ -7,7 +8,6 @@ use saluki_env::{
     EnvironmentProvider,
 };
 use saluki_error::GenericError;
-use saluki_health::HealthRegistry;
 use tracing::{debug, warn};
 
 use crate::config::DataPlaneConfiguration;

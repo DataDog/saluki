@@ -1,5 +1,9 @@
 # Testing
 
+> **Note for developing on macOS**: Docker typically runs inside a Linux VM and the socket may not be at the standard
+> `/var/run/docker.sock` path. The test tooling automatically searches common non-standard socket locations when the
+> standard path is absent. If auto-detection does not find your socket, set the `DOCKER_HOST` environment variable.
+
 The Saluki testing strategy consists of four main pillars:
 
 1. Unit Tests (Rust/cargo)

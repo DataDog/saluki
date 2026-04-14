@@ -48,7 +48,6 @@ dependencies = [
  "saluki-core",
  "saluki-env",
  "saluki-error",
- "saluki-health",
  "saluki-io",
  "saluki-metadata",
  "saluki-metrics",
@@ -90,6 +89,7 @@ version = "0.1.0"
 dependencies = [
  "bollard",
  "futures",
+ "home",
  "saluki-error",
  "tokio",
  "tracing",
@@ -3843,10 +3843,10 @@ dependencies = [
  "paste",
  "pin-project",
  "proptest",
+ "saluki-api",
  "saluki-common",
  "saluki-context",
  "saluki-error",
- "saluki-health",
  "saluki-metrics",
  "serde",
  "serde_json",
@@ -3885,8 +3885,8 @@ dependencies = [
  "saluki-common",
  "saluki-config",
  "saluki-context",
+ "saluki-core",
  "saluki-error",
- "saluki-health",
  "saluki-io",
  "saluki-metadata",
  "saluki-metrics",
@@ -3909,24 +3909,6 @@ name = "saluki-error"
 version = "0.1.0"
 dependencies = [
  "anyhow",
-]
-
-[[package]]
-name = "saluki-health"
-version = "0.1.0"
-dependencies = [
- "futures",
- "saluki-api",
- "saluki-common",
- "saluki-error",
- "saluki-metrics",
- "serde",
- "serde_json",
- "stringtheory",
- "tokio",
- "tokio-test",
- "tokio-util",
- "tracing",
 ]
 
 [[package]]

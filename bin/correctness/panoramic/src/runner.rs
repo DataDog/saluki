@@ -13,7 +13,7 @@ use std::{
 };
 
 use airlock::driver::{Driver, DriverConfig, DriverDetails};
-use bollard::{container::LogOutput, Docker};
+use bollard::container::LogOutput;
 use futures::{
     future,
     stream::{self, StreamExt as _},
@@ -343,7 +343,7 @@ impl TestRunner {
         let container_name = details.container_name().to_string();
         let container_name_for_exit = container_name.clone();
         let exit_handle = tokio::spawn(async move {
-            let docker = match Docker::connect_with_defaults() {
+            let docker = match airlock::docker::connect() {
                 Ok(d) => d,
                 Err(_) => return,
             };
@@ -507,7 +507,7 @@ impl TestRunner {
     }
 
     async fn start_log_capture(&self, container_name: &str) -> Result<(), GenericError> {
-        let docker = Docker::connect_with_defaults()?;
+        let docker = airlock::docker::connect()?;
         let log_buffer = self.log_buffer.clone();
         let container_name = container_name.to_string();
 

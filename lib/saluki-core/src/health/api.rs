@@ -9,7 +9,7 @@ use saluki_api::{
 use saluki_common::collections::FastHashMap;
 use serde::Serialize;
 
-use crate::RegistryState;
+use super::RegistryState;
 
 #[derive(Serialize)]
 struct SimpleComponentState {
@@ -84,7 +84,7 @@ pub struct HealthAPIHandler {
 }
 
 impl HealthAPIHandler {
-    pub(crate) fn from_state(inner: Arc<Mutex<RegistryState>>) -> Self {
+    pub(super) fn from_state(inner: Arc<Mutex<RegistryState>>) -> Self {
         Self {
             state: HealthRegistryState { inner },
         }

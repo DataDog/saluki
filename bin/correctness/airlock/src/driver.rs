@@ -289,7 +289,7 @@ impl Driver {
     ///
     /// If the Docker client cannot be created/configured, an error will be returned.
     pub fn from_config(isolation_group_id: String, config: DriverConfig) -> Result<Self, GenericError> {
-        let docker = Docker::connect_with_defaults()?;
+        let docker = crate::docker::connect()?;
 
         Ok(Self {
             isolation_group_name: format!("airlock-{}", isolation_group_id),
@@ -327,7 +327,7 @@ impl Driver {
     /// If the Docker client cannot be created/configured, or there is an error when finding or removing any of the
     /// related resources, an error will be returned.
     pub async fn clean_related_resources(isolation_group_id: String) -> Result<(), GenericError> {
-        let docker = Docker::connect_with_defaults()?;
+        let docker = crate::docker::connect()?;
 
         let isolation_group_name = format!("airlock-{}", isolation_group_id);
         let isolation_group_label = format!("airlock-isolation-group={}", isolation_group_id);
