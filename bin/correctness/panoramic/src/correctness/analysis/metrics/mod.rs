@@ -95,7 +95,7 @@ fn compare_metric_values(
         let baseline_value = baseline_metric.normalized_value();
         let comparison_value = comparison_metric.normalized_value();
 
-        if baseline_value == comparison_value {
+        if baseline_value != comparison_value {
             mismatched_count += 1;
 
             error!("Found mismatched metric '{}':", baseline_metric.context());
