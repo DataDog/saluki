@@ -6,42 +6,42 @@
 <a href=#6 id=6 data-nosnippet>6</a>};
 <a href=#7 id=7 data-nosnippet>7</a><span class="kw">use </span>saluki_common::task::JoinSetExt <span class="kw">as _</span>;
 <a href=#8 id=8 data-nosnippet>8</a><span class="kw">use </span>saluki_error::{generic_error, ErrorContext <span class="kw">as _</span>, GenericError};
-<a href=#9 id=9 data-nosnippet>9</a><span class="kw">use </span>saluki_health::HealthRegistry;
-<a href=#10 id=10 data-nosnippet>10</a><span class="kw">use </span>tokio::{
-<a href=#11 id=11 data-nosnippet>11</a>    runtime::Handle,
-<a href=#12 id=12 data-nosnippet>12</a>    sync::mpsc,
-<a href=#13 id=13 data-nosnippet>13</a>    task::{AbortHandle, JoinSet},
-<a href=#14 id=14 data-nosnippet>14</a>};
-<a href=#15 id=15 data-nosnippet>15</a><span class="kw">use </span>tracing::{debug, error_span};
-<a href=#16 id=16 data-nosnippet>16</a>
-<a href=#17 id=17 data-nosnippet>17</a><span class="doccomment">/// Configuration for the worker pool used by the topology.
-<a href=#18 id=18 data-nosnippet>18</a>///
-<a href=#19 id=19 data-nosnippet>19</a>/// This controls where tasks spawned by components themselves are executed. When components
-<a href=#20 id=20 data-nosnippet>20</a>/// have heavy, compute-bound tasks that they need to execute, they should generally be spawned on the worker pool (also known as the "global thread pool") to
-<a href=#21 id=21 data-nosnippet>21</a>/// avoid scheduling contention/starvation with the core component tasks.
-<a href=#22 id=22 data-nosnippet>22</a></span><span class="kw">pub enum </span>WorkerPoolConfiguration {
-<a href=#23 id=23 data-nosnippet>23</a>    <span class="doccomment">/// Use the ambient Tokio runtime (that is, `Handle::current()`).
-<a href=#24 id=24 data-nosnippet>24</a>    ///
-<a href=#25 id=25 data-nosnippet>25</a>    /// Component subtasks are spawned on whatever runtime is currently active.
-<a href=#26 id=26 data-nosnippet>26</a>    /// Useful when the topology is embedded in an application that already
-<a href=#27 id=27 data-nosnippet>27</a>    /// manages its own runtime, such as a Lambda extension.
-<a href=#28 id=28 data-nosnippet>28</a>    </span>Ambient,
-<a href=#29 id=29 data-nosnippet>29</a>
-<a href=#30 id=30 data-nosnippet>30</a>    <span class="doccomment">/// Create a dedicated, multi-threaded Tokio runtime with 8 worker threads.
-<a href=#31 id=31 data-nosnippet>31</a>    ///
-<a href=#32 id=32 data-nosnippet>32</a>    /// This is the default behavior.
-<a href=#33 id=33 data-nosnippet>33</a>    </span>Dedicated,
-<a href=#34 id=34 data-nosnippet>34</a>
-<a href=#35 id=35 data-nosnippet>35</a>    <span class="doccomment">/// Use an externally provided runtime.
-<a href=#36 id=36 data-nosnippet>36</a>    ///
-<a href=#37 id=37 data-nosnippet>37</a>    /// Component subtasks are spawned on the runtime associated with the given handle.
-<a href=#38 id=38 data-nosnippet>38</a>    </span>Explicit(Handle),
-<a href=#39 id=39 data-nosnippet>39</a>}
-<a href=#40 id=40 data-nosnippet>40</a>
-<a href=#41 id=41 data-nosnippet>41</a><span class="kw">use </span>super::{
-<a href=#42 id=42 data-nosnippet>42</a>    graph::Graph, running::RunningTopology, shutdown::ComponentShutdownCoordinator, ComponentId, EventsBuffer,
-<a href=#43 id=43 data-nosnippet>43</a>    EventsConsumer, OutputName, PayloadsConsumer, RegisteredComponent, TypedComponentId,
-<a href=#44 id=44 data-nosnippet>44</a>};
+<a href=#9 id=9 data-nosnippet>9</a><span class="kw">use </span>tokio::{
+<a href=#10 id=10 data-nosnippet>10</a>    runtime::Handle,
+<a href=#11 id=11 data-nosnippet>11</a>    sync::mpsc,
+<a href=#12 id=12 data-nosnippet>12</a>    task::{AbortHandle, JoinSet},
+<a href=#13 id=13 data-nosnippet>13</a>};
+<a href=#14 id=14 data-nosnippet>14</a><span class="kw">use </span>tracing::{debug, error_span};
+<a href=#15 id=15 data-nosnippet>15</a>
+<a href=#16 id=16 data-nosnippet>16</a><span class="doccomment">/// Configuration for the worker pool used by the topology.
+<a href=#17 id=17 data-nosnippet>17</a>///
+<a href=#18 id=18 data-nosnippet>18</a>/// This controls where tasks spawned by components themselves are executed. When components
+<a href=#19 id=19 data-nosnippet>19</a>/// have heavy, compute-bound tasks that they need to execute, they should generally be spawned on the worker pool (also known as the "global thread pool") to
+<a href=#20 id=20 data-nosnippet>20</a>/// avoid scheduling contention/starvation with the core component tasks.
+<a href=#21 id=21 data-nosnippet>21</a></span><span class="kw">pub enum </span>WorkerPoolConfiguration {
+<a href=#22 id=22 data-nosnippet>22</a>    <span class="doccomment">/// Use the ambient Tokio runtime (that is, `Handle::current()`).
+<a href=#23 id=23 data-nosnippet>23</a>    ///
+<a href=#24 id=24 data-nosnippet>24</a>    /// Component subtasks are spawned on whatever runtime is currently active.
+<a href=#25 id=25 data-nosnippet>25</a>    /// Useful when the topology is embedded in an application that already
+<a href=#26 id=26 data-nosnippet>26</a>    /// manages its own runtime, such as a Lambda extension.
+<a href=#27 id=27 data-nosnippet>27</a>    </span>Ambient,
+<a href=#28 id=28 data-nosnippet>28</a>
+<a href=#29 id=29 data-nosnippet>29</a>    <span class="doccomment">/// Create a dedicated, multi-threaded Tokio runtime with 8 worker threads.
+<a href=#30 id=30 data-nosnippet>30</a>    ///
+<a href=#31 id=31 data-nosnippet>31</a>    /// This is the default behavior.
+<a href=#32 id=32 data-nosnippet>32</a>    </span>Dedicated,
+<a href=#33 id=33 data-nosnippet>33</a>
+<a href=#34 id=34 data-nosnippet>34</a>    <span class="doccomment">/// Use an externally provided runtime.
+<a href=#35 id=35 data-nosnippet>35</a>    ///
+<a href=#36 id=36 data-nosnippet>36</a>    /// Component subtasks are spawned on the runtime associated with the given handle.
+<a href=#37 id=37 data-nosnippet>37</a>    </span>Explicit(Handle),
+<a href=#38 id=38 data-nosnippet>38</a>}
+<a href=#39 id=39 data-nosnippet>39</a>
+<a href=#40 id=40 data-nosnippet>40</a><span class="kw">use </span>super::{
+<a href=#41 id=41 data-nosnippet>41</a>    graph::Graph, running::RunningTopology, shutdown::ComponentShutdownCoordinator, ComponentId, EventsBuffer,
+<a href=#42 id=42 data-nosnippet>42</a>    EventsConsumer, OutputName, PayloadsConsumer, RegisteredComponent, TypedComponentId,
+<a href=#43 id=43 data-nosnippet>43</a>};
+<a href=#44 id=44 data-nosnippet>44</a><span class="kw">use </span><span class="kw">crate</span>::health::HealthRegistry;
 <a href=#45 id=45 data-nosnippet>45</a><span class="kw">use </span>crate::{
 <a href=#46 id=46 data-nosnippet>46</a>    components::{
 <a href=#47 id=47 data-nosnippet>47</a>        decoders::{Decoder, DecoderContext},

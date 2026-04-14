@@ -10,7 +10,7 @@ which is useful for resource-constrained environments like Lambda.</p>
 <p>Component subtasks will be spawned on the runtime associated with the given handle.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.spawn" class="method"><a class="src rightside" href="../../src/saluki_core/topology/built.rs.html#161-416">Source</a><h4 class="code-header">pub async fn <a href="#method.spawn" class="fn">spawn</a>(
     self,
-    health_registry: &amp;HealthRegistry,
+    health_registry: &amp;<a class="struct" href="../health/struct.HealthRegistry.html" title="struct saluki_core::health::HealthRegistry">HealthRegistry</a>,
     memory_limiter: MemoryLimiter,
 ) -&gt; <a class="enum" href="https://doc.rust-lang.org/nightly/core/result/enum.Result.html" title="enum core::result::Result">Result</a>&lt;<a class="struct" href="struct.RunningTopology.html" title="struct saluki_core::topology::RunningTopology">RunningTopology</a>, GenericError&gt;</h4></section></summary><div class="docblock"><p>Spawns the topology.</p>
 <p>By default, a dedicated, multi-threaded Tokio runtime (8 threads) is created for
