@@ -67,8 +67,8 @@ impl TracesAnalyzer {
         let mut comparison_spans = HashMap::new();
         let mut comparison_ssi_metadata_present = false;
 
-        for span in baseline_data.spans().iter() {
-            if Span::get_meta_field(span, "_dd.install.id").is_some() {
+        for span in baseline_data.spans() {
+            if span.get_meta_field("_dd.install.id").is_some() {
                 baseline_ssi_metadata_present = true;
             }
 
@@ -81,8 +81,8 @@ impl TracesAnalyzer {
             }
         }
 
-        for span in comparison_data.spans().iter() {
-            if Span::get_meta_field(span, "_dd.install.id").is_some() {
+        for span in comparison_data.spans() {
+            if span.get_meta_field("_dd.install.id").is_some() {
                 comparison_ssi_metadata_present = true;
             }
 
