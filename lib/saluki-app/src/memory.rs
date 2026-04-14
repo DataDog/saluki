@@ -274,10 +274,10 @@ impl Supervisable for AllocationTelemetryWorker {
         let memory_routes = DynamicRoute::http(EndpointType::Unprivileged, self.component_registry.api_handler());
 
         Ok(Box::pin(async move {
-            // Assert our API routes into the dataspace so the dynamic API server picks them up.
+            // Register our API routes before we actually start running.
             DataspaceRegistry::try_current()
                 .ok_or_else(|| generic_error!("Dataspace not available."))?
-                .assert(memory_routes, "memory-api");
+                .assert(memory_routes, "alloc-telemetry-api");
 
             let mut metrics = HashMap::new();
 
