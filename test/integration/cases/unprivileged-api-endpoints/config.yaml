@@ -1,5 +1,5 @@
-name: "health-endpoints"
-description: "Verifies the /ready and /live health endpoints are accessible on the unprivileged API"
+name: "unprivileged-api-endpoints"
+description: "Verifies the /ready, /live, and /memory/status endpoints are accessible on the unprivileged API"
 timeout: 60s
 
 container:
@@ -23,6 +23,10 @@ assertions:
         timeout: 10s
       - type: health_check
         endpoint: "http://localhost:5100/live"
+        expected_status: 200
+        timeout: 10s
+      - type: health_check
+        endpoint: "http://localhost:5100/memory/status"
         expected_status: 200
         timeout: 10s
       - type: log_not_contains
