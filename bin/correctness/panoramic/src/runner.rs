@@ -86,23 +86,10 @@ async fn run_fail_fast(
 
         let _permit = semaphore.acquire().await.unwrap();
         let name = test_case.name().to_string();
-        let timeout = test_case.timeout();
 
         let _ = event_tx.send(TestEvent::TestStarted { name: name.clone() });
 
-        let result = tokio::select! {
-            r = run_single_test(test_case, &log_dir) => r,
-            _ = tokio::time::sleep(timeout) => {
-                TestResult {
-                    name,
-                    passed: false,
-                    duration: timeout,
-                    assertion_results: vec![],
-                    error: Some(format!("Test timed out after {:?}.", timeout)),
-                    phase_timings: vec![],
-                }
-            }
-        };
+        let result = run_with_timeout(test_case, name, &log_dir).await;
 
         let failed = !result.passed;
         let _ = event_tx.send(TestEvent::TestCompleted { result: result.clone() });
@@ -148,23 +135,10 @@ async fn run_parallel(
                 }
 
                 let name = test_case.name().to_string();
-                let timeout = test_case.timeout();
 
                 let _ = event_tx.send(TestEvent::TestStarted { name: name.clone() });
 
-                let result = tokio::select! {
-                    r = run_single_test(test_case, &log_dir) => r,
-                    _ = tokio::time::sleep(timeout) => {
-                        TestResult {
-                            name,
-                            passed: false,
-                            duration: timeout,
-                            assertion_results: vec![],
-                            error: Some(format!("Test timed out after {:?}.", timeout)),
-                            phase_timings: vec![],
-                        }
-                    }
-                };
+                let result = run_with_timeout(test_case, name, &log_dir).await;
 
                 let _ = event_tx.send(TestEvent::TestCompleted { result: result.clone() });
 
@@ -175,6 +149,32 @@ async fn run_parallel(
         .filter_map(|r| async { r })
         .collect()
         .await
+}
+
+/// Run a single test with an appropriate timeout.
+///
+/// Integration tests handle their own timeout internally, so no outer timeout is applied.
+/// Correctness tests have no built-in timeout, so a 20-minute outer timeout is applied.
+async fn run_with_timeout(test_case: DiscoveredTest, name: String, log_dir: &Arc<Option<PathBuf>>) -> TestResult {
+    match &test_case {
+        DiscoveredTest::Integration(_) => run_single_test(test_case, log_dir).await,
+        DiscoveredTest::Correctness { .. } => {
+            let timeout = test_case.timeout();
+            tokio::select! {
+                r = run_single_test(test_case, log_dir) => r,
+                _ = tokio::time::sleep(timeout) => {
+                    TestResult {
+                        name,
+                        passed: false,
+                        duration: timeout,
+                        assertion_results: vec![],
+                        error: Some(format!("Test timed out after {:?}.", timeout)),
+                        phase_timings: vec![],
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Run a single test, dispatching to the appropriate runner based on test type.

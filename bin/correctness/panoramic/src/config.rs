@@ -350,9 +350,10 @@ pub fn discover_tests(dirs: &[PathBuf]) -> Result<Vec<DiscoveredTest>, GenericEr
 /// then correctness schema.
 fn try_load_test(config_path: &Path, dir_path: &Path) -> Result<DiscoveredTest, GenericError> {
     // Try panoramic TestCase first.
-    if let Ok(test_case) = TestCase::from_yaml(config_path) {
-        return Ok(DiscoveredTest::Integration(test_case));
-    }
+    let integration_err = match TestCase::from_yaml(config_path) {
+        Ok(test_case) => return Ok(DiscoveredTest::Integration(test_case)),
+        Err(e) => e,
+    };
 
     // Try correctness Config.
     let config_path_str = config_path
@@ -369,7 +370,8 @@ fn try_load_test(config_path: &Path, dir_path: &Path) -> Result<DiscoveredTest, 
             Ok(DiscoveredTest::Correctness { name, config })
         }
         Err(correctness_err) => Err(generic_error!(
-            "Config did not match integration or correctness schema: {}",
+            "Config did not match integration schema ({}) or correctness schema ({})",
+            integration_err,
             correctness_err
         )),
     }
