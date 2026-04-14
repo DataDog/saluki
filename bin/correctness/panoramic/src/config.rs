@@ -114,6 +114,14 @@ impl DiscoveredTest {
             DiscoveredTest::Correctness { .. } => Duration::from_secs(20 * 60),
         }
     }
+
+    /// Returns the description of the test, if any.
+    pub fn description(&self) -> Option<&str> {
+        match self {
+            DiscoveredTest::Integration(tc) => tc.description.as_deref(),
+            DiscoveredTest::Correctness { .. } => None,
+        }
+    }
 }
 
 /// Root test case configuration.
@@ -124,7 +132,6 @@ pub struct TestCase {
 
     /// Optional description of what the test verifies.
     #[serde(default)]
-    #[allow(dead_code)]
     pub description: Option<String>,
 
     /// Overall timeout for the test case.

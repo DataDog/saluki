@@ -298,7 +298,11 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
     println!();
 
     for test_case in &test_cases {
-        println!("  {} (timeout: {:?})", test_case.name(), test_case.timeout());
+        println!("  {}", test_case.name());
+        if let Some(description) = test_case.description() {
+            println!("    {}", description);
+        }
+        println!("    Timeout: {:?}", test_case.timeout());
         println!();
     }
 
