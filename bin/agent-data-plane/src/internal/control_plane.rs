@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use memory_accounting::{ComponentRegistry, ComponentRegistryHandle};
 use saluki_app::{
-    api::APIBuilder, config::ConfigAPIHandler, logging::acquire_logging_api_handler,
+    api::APIBuilder, config::ConfigAPIHandler, logging::acquire_logging_api_handler, memory::AllocationTelemetryWorker,
     metrics::acquire_metrics_api_handler,
 };
 use saluki_components::destinations::DogStatsDStatisticsConfiguration;
@@ -53,12 +53,12 @@ pub struct UnprivilegedApiWorker {
 impl UnprivilegedApiWorker {
     /// Creates a new `UnprivilegedApiWorker`.
     pub fn new(
-        dp_config: DataPlaneConfiguration, health_registry: HealthRegistry, component_registry: ComponentRegistryHandle,
+        dp_config: DataPlaneConfiguration, health_registry: HealthRegistry, component_registry: &ComponentRegistry,
     ) -> Self {
         Self {
             dp_config,
             health_registry,
-            component_registry,
+            component_registry: component_registry.root(),
         }
     }
 }
@@ -178,11 +178,12 @@ pub async fn create_control_plane_supervisor(
         .with_restart_strategy(RestartStrategy::one_to_one());
 
     supervisor.add_worker(health_registry.worker());
+    supervisor.add_worker(AllocationTelemetryWorker::new(component_registry));
 
     supervisor.add_worker(UnprivilegedApiWorker::new(
         dp_config.clone(),
         health_registry,
-        component_registry.root(),
+        component_registry,
     ));
     supervisor.add_worker(
         PrivilegedApiWorker::new(
