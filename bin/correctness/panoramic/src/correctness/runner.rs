@@ -4,7 +4,7 @@ use std::{
     path::PathBuf,
     pin::Pin,
     task::{ready, Context, Poll},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use airlock::{
@@ -18,7 +18,109 @@ use tokio::{select, task::JoinHandle, time::sleep};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, info_span, Instrument as _, Span};
 
-use crate::{analysis::CollectedData, config::Config, sync::Coordinator};
+use super::{
+    analysis::{AnalysisMode, AnalysisRunner, CollectedData, TracesAnalysisOptions},
+    config::Config,
+    sync::Coordinator,
+};
+use crate::{
+    assertions::AssertionResult,
+    reporter::{PhaseTiming, TestResult},
+};
+
+/// Run a single correctness test and return a panoramic `TestResult`.
+pub async fn run_correctness_test(name: String, config: Config) -> TestResult {
+    let started = Instant::now();
+
+    // Phase 1: spawn containers
+    let spawn_start = Instant::now();
+    let test_runner = match TestRunner::from_config(&config).await {
+        Ok(r) => r,
+        Err(e) => return make_error_result(name, started, "spawn_containers", e),
+    };
+    let spawn_duration = spawn_start.elapsed();
+
+    // Phase 2: collect data
+    let collect_start = Instant::now();
+    let (baseline_data, comparison_data) = match test_runner.run().await {
+        Ok(data) => data,
+        Err(e) => return make_error_result(name, started, "collect_data", e),
+    };
+    let collect_duration = collect_start.elapsed();
+
+    // Phase 3: analysis
+    let analysis_start = Instant::now();
+    let traces_options = match config.analysis_mode {
+        AnalysisMode::Traces => Some(TracesAnalysisOptions {
+            otlp_direct_analysis_mode: config.otlp_direct_analysis_mode,
+            additional_span_ignore_fields: config.additional_span_ignore_fields.clone(),
+        }),
+        AnalysisMode::Metrics => None,
+    };
+    let analysis_runner = AnalysisRunner::new(config.analysis_mode, baseline_data, comparison_data, traces_options);
+    let analysis_result = analysis_runner.run_analysis();
+    let analysis_duration = analysis_start.elapsed();
+
+    let total_duration = started.elapsed();
+
+    let phase_timings = vec![
+        PhaseTiming {
+            phase: "spawn_containers".to_string(),
+            duration: spawn_duration,
+        },
+        PhaseTiming {
+            phase: "collect_data".to_string(),
+            duration: collect_duration,
+        },
+        PhaseTiming {
+            phase: "analysis".to_string(),
+            duration: analysis_duration,
+        },
+    ];
+
+    match analysis_result {
+        Ok(()) => TestResult {
+            name,
+            passed: true,
+            duration: total_duration,
+            assertion_results: vec![AssertionResult {
+                name: "telemetry matches".to_string(),
+                passed: true,
+                message: "No difference detected between baseline and comparison.".to_string(),
+                duration: analysis_duration,
+            }],
+            error: None,
+            phase_timings,
+        },
+        Err(e) => TestResult {
+            name,
+            passed: false,
+            duration: total_duration,
+            assertion_results: vec![AssertionResult {
+                name: "telemetry matches".to_string(),
+                passed: false,
+                message: format!("{:?}", e),
+                duration: analysis_duration,
+            }],
+            error: Some(format!("{:?}", e)),
+            phase_timings,
+        },
+    }
+}
+
+fn make_error_result(name: String, started: Instant, phase: &str, e: GenericError) -> TestResult {
+    TestResult {
+        name,
+        passed: false,
+        duration: started.elapsed(),
+        assertion_results: vec![],
+        error: Some(format!("{:?}", e)),
+        phase_timings: vec![PhaseTiming {
+            phase: phase.to_string(),
+            duration: started.elapsed(),
+        }],
+    }
+}
 
 pub struct TestRunner {
     datadog_intake_config: DatadogIntakeConfig,
@@ -41,7 +143,7 @@ impl TestRunner {
             cancel_token: CancellationToken::new(),
             baseline_coordinator: Coordinator::new(),
             comparison_coordinator: Coordinator::new(),
-            log_base_dir: PathBuf::from("/tmp/ground-truth"),
+            log_base_dir: PathBuf::from("/tmp/panoramic-correctness"),
         })
     }
 

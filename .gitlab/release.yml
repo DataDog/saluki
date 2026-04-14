@@ -10,7 +10,7 @@
     - unit-tests-miri-linux-arm64
     - check-deny
     - check-licenses
-    - run-ground-truth
+    - test-correctness-dsd-plain
   trigger:
     project: DataDog/public-images
     branch: main
@@ -33,7 +33,7 @@
     - unit-tests-miri-linux-arm64
     - check-deny
     - check-licenses
-    - run-ground-truth
+    - test-correctness-dsd-plain
   image: ${DOCKER_BUILD_IMAGE}
   variables:
     TARGET_BUCKET_PATH: "s3://binaries-ddbuild-io-prod/saluki/"

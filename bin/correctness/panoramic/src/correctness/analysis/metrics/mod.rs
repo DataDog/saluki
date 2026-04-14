@@ -4,7 +4,7 @@ use tracing::{error, info, warn};
 
 mod types;
 use self::types::{NormalizedMetric, NormalizedMetrics};
-use crate::analysis::collected::CollectedData;
+use super::collected::CollectedData;
 
 /// Analyzes metrics for correctness.
 pub struct MetricsAnalyzer {

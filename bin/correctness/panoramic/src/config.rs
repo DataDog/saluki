@@ -7,6 +7,8 @@ use std::{
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
 
+use crate::correctness::config::Config as CorrectnessConfig;
+
 /// A duration that can be parsed from human-readable strings like "10s", "1m", "500ms".
 #[derive(Clone, Debug)]
 pub struct HumanDuration(pub Duration);
@@ -83,6 +85,37 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
     Ok(total)
 }
 
+/// A discovered test, either an integration test or a correctness test.
+pub enum DiscoveredTest {
+    /// An integration test case (panoramic schema).
+    Integration(TestCase),
+    /// A correctness test case.
+    Correctness {
+        /// Name of the test (derived from directory name).
+        name: String,
+        /// The correctness test configuration.
+        config: CorrectnessConfig,
+    },
+}
+
+impl DiscoveredTest {
+    /// Returns the name of the test.
+    pub fn name(&self) -> &str {
+        match self {
+            DiscoveredTest::Integration(tc) => &tc.name,
+            DiscoveredTest::Correctness { name, .. } => name,
+        }
+    }
+
+    /// Returns the timeout for the test.
+    pub fn timeout(&self) -> Duration {
+        match self {
+            DiscoveredTest::Integration(tc) => tc.timeout.0,
+            DiscoveredTest::Correctness { .. } => Duration::from_secs(20 * 60),
+        }
+    }
+}
+
 /// Root test case configuration.
 #[derive(Clone, Debug, Deserialize)]
 pub struct TestCase {
@@ -91,6 +124,7 @@ pub struct TestCase {
 
     /// Optional description of what the test verifies.
     #[serde(default)]
+    #[allow(dead_code)]
     pub description: Option<String>,
 
     /// Overall timeout for the test case.
@@ -268,43 +302,77 @@ impl TestCase {
     }
 }
 
-/// Discover all test cases in a directory.
-pub fn discover_tests<P: AsRef<Path>>(base_path: P) -> Result<Vec<TestCase>, GenericError> {
-    let base_path = base_path.as_ref();
-    let mut test_cases = Vec::new();
+/// Discover all test cases across one or more directories.
+///
+/// For each subdirectory containing a `config.yaml`, the file is first tried as a panoramic
+/// `TestCase` (integration test). If that fails, it is tried as a correctness `Config`.
+/// If both fail, a warning is logged and the directory is skipped.
+pub fn discover_tests(dirs: &[PathBuf]) -> Result<Vec<DiscoveredTest>, GenericError> {
+    let mut tests = Vec::new();
 
-    if !base_path.is_dir() {
-        return Err(generic_error!("Test directory does not exist: {}", base_path.display()));
-    }
+    for base_path in dirs {
+        if !base_path.is_dir() {
+            return Err(generic_error!("Test directory does not exist: {}", base_path.display()));
+        }
 
-    let entries = std::fs::read_dir(base_path)
-        .error_context(format!("Failed to read test directory: {}", base_path.display()))?;
+        let entries = std::fs::read_dir(base_path)
+            .error_context(format!("Failed to read test directory: {}", base_path.display()))?;
 
-    for entry in entries {
-        let entry = entry.error_context("Failed to read directory entry")?;
-        let path = entry.path();
+        for entry in entries {
+            let entry = entry.error_context("Failed to read directory entry")?;
+            let path = entry.path();
 
-        if path.is_dir() {
-            let config_path = path.join("config.yaml");
-            if config_path.exists() {
-                match TestCase::from_yaml(&config_path) {
-                    Ok(test_case) => test_cases.push(test_case),
-                    Err(e) => {
-                        tracing::warn!(
-                            path = %config_path.display(),
-                            error = %e,
-                            "Failed to load test case, skipping"
-                        );
+            if path.is_dir() {
+                let config_path = path.join("config.yaml");
+                if config_path.exists() {
+                    match try_load_test(&config_path, &path) {
+                        Ok(test) => tests.push(test),
+                        Err(e) => {
+                            tracing::warn!(
+                                path = %config_path.display(),
+                                error = %e,
+                                "Failed to load test case, skipping"
+                            );
+                        }
                     }
                 }
             }
         }
     }
 
-    // Sort by name for deterministic ordering
-    test_cases.sort_by(|a, b| a.name.cmp(&b.name));
+    // Sort by name for deterministic ordering.
+    tests.sort_by(|a, b| a.name().cmp(b.name()));
 
-    Ok(test_cases)
+    Ok(tests)
+}
+
+/// Try to load a test case from a config file, attempting integration (panoramic) schema first,
+/// then correctness schema.
+fn try_load_test(config_path: &Path, dir_path: &Path) -> Result<DiscoveredTest, GenericError> {
+    // Try panoramic TestCase first.
+    if let Ok(test_case) = TestCase::from_yaml(config_path) {
+        return Ok(DiscoveredTest::Integration(test_case));
+    }
+
+    // Try correctness Config.
+    let config_path_str = config_path
+        .to_str()
+        .ok_or_else(|| generic_error!("Invalid UTF-8 in config path: {}", config_path.display()))?;
+
+    match CorrectnessConfig::from_yaml(config_path_str) {
+        Ok(config) => {
+            let name = dir_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            Ok(DiscoveredTest::Correctness { name, config })
+        }
+        Err(correctness_err) => Err(generic_error!(
+            "Config did not match integration or correctness schema: {}",
+            correctness_err
+        )),
+    }
 }
 
 /// Parse a port specification (for example, "8125/udp") into port number and protocol.

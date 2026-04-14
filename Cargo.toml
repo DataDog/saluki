@@ -3,7 +3,6 @@ members = [
   "bin/agent-data-plane",
   "bin/correctness/airlock",
   "bin/correctness/datadog-intake",
-  "bin/correctness/ground-truth",
   "bin/correctness/millstone",
   "bin/correctness/panoramic",
   "bin/correctness/stele",

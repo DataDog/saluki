@@ -1499,27 +1499,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
-name = "ground-truth"
-version = "0.1.0"
-dependencies = [
- "airlock",
- "rand 0.9.3",
- "rand_distr",
- "reqwest",
- "saluki-common",
- "saluki-config",
- "saluki-error",
- "serde",
- "serde_json",
- "stele",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "treediff",
-]
-
-[[package]]
 name = "h2"
 version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2732,15 +2711,21 @@ dependencies = [
  "crossterm",
  "futures",
  "rand 0.9.3",
+ "rand_distr",
  "regex",
+ "reqwest",
+ "saluki-common",
+ "saluki-config",
  "saluki-error",
  "serde",
  "serde_json",
  "serde_yaml",
+ "stele",
  "tokio",
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "treediff",
  "url",
 ]
 

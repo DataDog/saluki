@@ -3,7 +3,7 @@
 The Saluki testing strategy consists of four main pillars:
 
 1. Unit Tests (Rust/cargo)
-2. Correctness Tests (ground-truth)
+2. Correctness Tests (panoramic)
 3. Integration Tests (panoramic)
 4. Performance Tests (SMP)
 
@@ -15,7 +15,7 @@ skipped or compiled-out for platforms they are incompatible with.
 
 CI: `.gitlab/test.yml` — runs on both Linux (amd64/arm64) and macOS (amd64/arm64).
 
-## Correctness Tests (ground-truth)
+## Correctness Tests (panoramic)
 
 These tests serve to answer the question: *Does ADP produce the same output as the Datadog Agent for a given workload?*
 
@@ -34,7 +34,7 @@ All binaries live under `bin/correctness/`:
 
 | Binary             | Purpose                                                                                  |
 |--------------------|------------------------------------------------------------------------------------------|
-| **ground-truth**   | Test runner and analyzer. Orchestrates containers, collects outputs and asserts outputs. |
+| **panoramic**      | Unified test runner for both correctness and integration tests.                          |
 | **millstone**      | Deterministic load generator.                                                            |
 | **datadog-intake** | Mock Datadog API: receives test output                                                   |
 | **airlock**        | Library for running containers in isolated groups.                                       |
@@ -43,8 +43,8 @@ Test case configs live in `test/correctness/` (e.g. `test/correctness/dsd-plain/
 
 ### Program Flow
 
-**ground-truth** is the entry-point for running a test. It orchestrates the containers using the airlock library (which
-talks to containerd via gRPC) and asserts the correctness of the output. It:
+**panoramic** is the entry-point for running a test. When given a correctness test config, it orchestrates the
+containers using the airlock library (which talks to containerd via gRPC) and asserts the correctness of the output. It:
 - reads the test configuration files
 - starts two sets of containers
   - `millstone` -> ADP -> `datadog-intake`
@@ -63,7 +63,7 @@ make build-datadog-intake-image build-millstone-image build-datadog-agent-image
 make test-correctness
 
 # run a single test case
-make test-correctness-dsd-plain
+make test-correctness-case CASE=dsd-plain
 ```
 
 CI: `.gitlab/e2e.yml` — `e2e` stage, 10 min timeout, retry 2.
@@ -73,7 +73,7 @@ CI: `.gitlab/e2e.yml` — `e2e` stage, 10 min timeout, retry 2.
 Integration tests run a containerized ADP instance and assert high-level invariants: process stability, expected log
 output, port availability, exit behavior. They catch regressions from enabling new features or settings that cause
 crashes or early exits. They do not test output correctness. This type of test is often known as a "smoke test." For
-integration tests that check system output, see [correctness tests](#correctness-tests-ground-truth) above.
+integration tests that check system output, see [correctness tests](#correctness-tests-panoramic) above.
 
 ### Running
 
@@ -131,10 +131,9 @@ operates at the function-level. More fuzzing coverage will likely come in the fu
 
 # custom test tooling
 bin/correctness/
-├── ground-truth/          : test orchestrator
+├── panoramic/             : unified test runner (correctness + integration)
 ├── millstone/             : load generator
 ├── datadog-intake/        : mock Datadog API
-├── panoramic/             : integration test runner
 ├── airlock/               : container isolation lib
 └── stele/                 : telemetry data types
 

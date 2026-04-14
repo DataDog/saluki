@@ -25,7 +25,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     assertions::{create_assertion, AssertionContext, AssertionResult, LogBuffer},
-    config::{parse_file_spec, parse_port_spec, AssertionStep, TestCase},
+    config::{parse_file_spec, parse_port_spec, AssertionStep, DiscoveredTest, TestCase},
     events::TestEvent,
     reporter::{PhaseTiming, TestResult},
 };
@@ -40,7 +40,7 @@ use crate::{
 /// TUI and plain output modes. The caller is responsible for spawning an appropriate
 /// consumer to handle the emitted events.
 pub async fn run_tests(
-    test_cases: Vec<TestCase>, parallelism: usize, fail_fast: bool, log_dir: Option<PathBuf>,
+    test_cases: Vec<DiscoveredTest>, parallelism: usize, fail_fast: bool, log_dir: Option<PathBuf>,
     event_tx: mpsc::UnboundedSender<TestEvent>, cancel_token: CancellationToken,
 ) -> Vec<TestResult> {
     // Emit run started event.
@@ -73,7 +73,7 @@ pub async fn run_tests(
 
 /// Run tests sequentially, stopping at the first failure.
 async fn run_fail_fast(
-    test_cases: Vec<TestCase>, semaphore: Arc<Semaphore>, event_tx: Arc<mpsc::UnboundedSender<TestEvent>>,
+    test_cases: Vec<DiscoveredTest>, semaphore: Arc<Semaphore>, event_tx: Arc<mpsc::UnboundedSender<TestEvent>>,
     log_dir: Arc<Option<PathBuf>>, cancel_token: CancellationToken,
 ) -> Vec<TestResult> {
     let mut results = Vec::new();
@@ -85,15 +85,24 @@ async fn run_fail_fast(
         }
 
         let _permit = semaphore.acquire().await.unwrap();
-        let name = test_case.name.clone();
+        let name = test_case.name().to_string();
+        let timeout = test_case.timeout();
 
-        let _ = event_tx.send(TestEvent::TestStarted { name });
+        let _ = event_tx.send(TestEvent::TestStarted { name: name.clone() });
 
-        let mut runner = TestRunner::new(test_case);
-        if let Some(ref dir) = *log_dir {
-            runner = runner.with_log_dir(dir.clone());
-        }
-        let result = runner.run().await;
+        let result = tokio::select! {
+            r = run_single_test(test_case, &log_dir) => r,
+            _ = tokio::time::sleep(timeout) => {
+                TestResult {
+                    name,
+                    passed: false,
+                    duration: timeout,
+                    assertion_results: vec![],
+                    error: Some(format!("Test timed out after {:?}.", timeout)),
+                    phase_timings: vec![],
+                }
+            }
+        };
 
         let failed = !result.passed;
         let _ = event_tx.send(TestEvent::TestCompleted { result: result.clone() });
@@ -109,7 +118,7 @@ async fn run_fail_fast(
 
 /// Run tests in parallel up to the parallelism limit.
 async fn run_parallel(
-    test_cases: Vec<TestCase>, parallelism: usize, semaphore: Arc<Semaphore>,
+    test_cases: Vec<DiscoveredTest>, parallelism: usize, semaphore: Arc<Semaphore>,
     event_tx: Arc<mpsc::UnboundedSender<TestEvent>>, log_dir: Arc<Option<PathBuf>>, cancel_token: CancellationToken,
 ) -> Vec<TestResult> {
     let cancel = cancel_token.clone();
@@ -138,14 +147,24 @@ async fn run_parallel(
                     return None;
                 }
 
-                let name = test_case.name.clone();
-                let _ = event_tx.send(TestEvent::TestStarted { name });
+                let name = test_case.name().to_string();
+                let timeout = test_case.timeout();
 
-                let mut runner = TestRunner::new(test_case);
-                if let Some(ref dir) = *log_dir {
-                    runner = runner.with_log_dir(dir.clone());
-                }
-                let result = runner.run().await;
+                let _ = event_tx.send(TestEvent::TestStarted { name: name.clone() });
+
+                let result = tokio::select! {
+                    r = run_single_test(test_case, &log_dir) => r,
+                    _ = tokio::time::sleep(timeout) => {
+                        TestResult {
+                            name,
+                            passed: false,
+                            duration: timeout,
+                            assertion_results: vec![],
+                            error: Some(format!("Test timed out after {:?}.", timeout)),
+                            phase_timings: vec![],
+                        }
+                    }
+                };
 
                 let _ = event_tx.send(TestEvent::TestCompleted { result: result.clone() });
 
@@ -156,6 +175,22 @@ async fn run_parallel(
         .filter_map(|r| async { r })
         .collect()
         .await
+}
+
+/// Run a single test, dispatching to the appropriate runner based on test type.
+async fn run_single_test(test_case: DiscoveredTest, log_dir: &Arc<Option<PathBuf>>) -> TestResult {
+    match test_case {
+        DiscoveredTest::Integration(tc) => {
+            let mut runner = TestRunner::new(tc);
+            if let Some(ref dir) = **log_dir {
+                runner = runner.with_log_dir(dir.clone());
+            }
+            runner.run().await
+        }
+        DiscoveredTest::Correctness { name, config } => {
+            crate::correctness::runner::run_correctness_test(name, config).await
+        }
+    }
 }
 
 // ----------------------------------------------------------------------------

@@ -944,7 +944,7 @@ fn get_alpine_container_image() -> String {
     // Rather than threading through this information from the top level, we simply look for an override environment
     // variable here.. which lets us specify the right image reference to use in CI, while allowing normal users to just
     // grab it from Docker Hub when running locally.
-    std::env::var("GROUND_TRUTH_ALPINE_IMAGE").unwrap_or_else(|_| "alpine:latest".to_string())
+    std::env::var("PANORAMIC_ALPINE_IMAGE").unwrap_or_else(|_| "alpine:latest".to_string())
 }
 
 fn get_default_airlock_labels(isolation_group_id: &str) -> HashMap<String, String> {

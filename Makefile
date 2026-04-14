@@ -192,11 +192,6 @@ build-gen-statsd-image: ## Builds the gen-statsd container image ('latest' tag)
 		--file ./docker/Dockerfile.gen-statsd \
 		.
 
-.PHONY: build-ground-truth
-build-ground-truth: check-rust-build-tools
-build-ground-truth: ## Builds the ground-truth binary in debug mode
-	@echo "[*] Building ground-truth locally..."
-	@cargo build --profile release --package ground-truth
 
 .PHONY: build-datadog-intake-image
 build-datadog-intake-image: ## Builds the datadog-intake container image in release mode ('latest' tag)
@@ -533,56 +528,16 @@ test-all: ## Test everything
 test-all: test test-property test-docs test-miri test-loom
 
 .PHONY: test-correctness
-test-correctness: ## Runs the complete correctness suite
-test-correctness: test-correctness-dsd-plain test-correctness-dsd-origin-detection test-correctness-otlp-metrics test-correctness-otlp-traces test-correctness-otlp-traces-ets test-correctness-otlp-traces-ottl-filtering test-correctness-otlp-traces-ottl-transform test-correctness-otlp-traces-probabilistic
+test-correctness: build-panoramic
+test-correctness: ## Runs the complete correctness suite (all test cases in parallel)
+	@echo "[*] Running correctness test suite..."
+	@target/release/panoramic run -d $(shell pwd)/test/correctness $(if $(PANORAMIC_PARALLELISM),-p $(PANORAMIC_PARALLELISM))
 
-.PHONY: test-correctness-dsd-plain
-test-correctness-dsd-plain: build-ground-truth
-test-correctness-dsd-plain: ## Runs the 'dsd-plain' correctness test case
-	@echo "[*] Running 'dsd-plain' correctness test case..."
-	@target/release/ground-truth $(shell pwd)/test/correctness/dsd-plain/config.yaml
-
-.PHONY: test-correctness-dsd-origin-detection
-test-correctness-dsd-origin-detection: build-ground-truth
-test-correctness-dsd-origin-detection: ## Runs the 'dsd-origin-detection' correctness test case
-	@echo "[*] Running 'dsd-origin-detection' correctness test case..."
-	@target/release/ground-truth $(shell pwd)/test/correctness/dsd-origin-detection/config.yaml
-
-.PHONY: test-correctness-otlp-metrics
-test-correctness-otlp-metrics: build-ground-truth
-test-correctness-otlp-metrics: ## Runs the 'otlp-metrics' correctness test case
-	@echo "[*] Running 'otlp-metrics' correctness test case..."
-	@target/release/ground-truth $(shell pwd)/test/correctness/otlp-metrics/config.yaml
-
-.PHONY: test-correctness-otlp-traces
-test-correctness-otlp-traces: build-ground-truth
-test-correctness-otlp-traces: ## Runs the 'otlp-traces' correctness test case
-	@echo "[*] Running 'otlp-traces' correctness test case..."
-	@target/release/ground-truth $(shell pwd)/test/correctness/otlp-traces/config.yaml
-
-.PHONY: test-correctness-otlp-traces-ets
-test-correctness-otlp-traces-ets: build-ground-truth
-test-correctness-otlp-traces-ets: ## Runs the 'otlp-traces-ets' correctness test case (Error Tracking Standalone mode)
-	@echo "[*] Running 'otlp-traces-ets' correctness test case..."
-	@target/release/ground-truth $(shell pwd)/test/correctness/otlp-traces-ets/config.yaml
-
-.PHONY: test-correctness-otlp-traces-ottl-filtering
-test-correctness-otlp-traces-ottl-filtering: build-ground-truth
-test-correctness-otlp-traces-ottl-filtering: ## Runs the 'otlp-traces-ottl-filtering' E2E test (OTel Collector + OTTL vs ADP + OTTL)
-	@echo "[*] Running 'otlp-traces-ottl-filtering' correctness test case..."
-	@target/release/ground-truth $(shell pwd)/test/correctness/otlp-traces-ottl-filtering/config.yaml
-
-.PHONY: test-correctness-otlp-traces-ottl-transform
-test-correctness-otlp-traces-ottl-transform: build-ground-truth
-test-correctness-otlp-traces-ottl-transform: ## Runs the 'otlp-traces-ottl-transform' E2E test (OTel Collector + OTTL transform vs ADP + OTTL transform)
-	@echo "[*] Running 'otlp-traces-ottl-transform' correctness test case..."
-	@target/release/ground-truth $(shell pwd)/test/correctness/otlp-traces-ottl-transform/config.yaml
-
-.PHONY: test-correctness-otlp-traces-probabilistic
-test-correctness-otlp-traces-probabilistic: build-ground-truth
-test-correctness-otlp-traces-probabilistic: ## Runs the 'otlp-traces-probabilistic' correctness test (probabilistic sampler at 50%)
-	@echo "[*] Running 'otlp-traces-probabilistic' correctness test case..."
-	@target/release/ground-truth $(shell pwd)/test/correctness/otlp-traces-probabilistic/config.yaml
+.PHONY: test-correctness-case
+test-correctness-case: build-panoramic
+test-correctness-case: ## Runs a single correctness test case by name (usage: make test-correctness-case CASE=dsd-plain)
+	@echo "[*] Running '$(CASE)' correctness test case..."
+	@target/release/panoramic run -d $(shell pwd)/test/correctness -t $(CASE)
 
 .PHONY: build-panoramic
 build-panoramic: check-rust-build-tools
