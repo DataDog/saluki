@@ -83,8 +83,8 @@ struct LocalCheckConfig {
     instances: Vec<BTreeMap<String, serde_yaml::Value>>,
 }
 
-/// Parse a YAML file into a Config object
-async fn parse_config_file(path: &PathBuf) -> Result<(String, CheckConfig), GenericError> {
+/// Parse a YAML file into a Config object.
+async fn parse_config_file(path: &PathBuf, check_name: &str) -> Result<(String, CheckConfig), GenericError> {
     let content = fs::read_to_string(path).await?;
 
     let check_config: LocalCheckConfig = match serde_yaml::from_str(&content) {
@@ -121,7 +121,7 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, CheckConfig), Gene
 
     // Create a Config
     let config = Config {
-        name: MetaString::from(path.file_stem().unwrap().to_string_lossy().to_string()),
+        name: MetaString::from(check_name),
         init_config,
         instances,
         metric_config: Data::default(),
@@ -144,7 +144,50 @@ async fn parse_config_file(path: &PathBuf) -> Result<(String, CheckConfig), Gene
     Ok((config_id, check_config))
 }
 
-/// Scan and emit events based on configuration files in the directory
+/// Process a single YAML config file and record it in the tracking structures, emitting events as
+/// needed.
+async fn process_yaml_file(
+    path: PathBuf, check_name: &str, found_configs: &mut HashSet<String>, known_configs: &mut HashSet<String>,
+    sender: &Sender<AutodiscoveryEvent>, configs: &mut BTreeMap<String, CheckConfig>,
+) {
+    match parse_config_file(&path, check_name).await {
+        Ok((config_id, config)) => {
+            found_configs.insert(config_id.clone());
+
+            if !known_configs.contains(&config_id) {
+                debug!("New configuration found: {}", config_id);
+                let event = AutodiscoveryEvent::CheckSchedule { config: config.clone() };
+                let _ = sender.send(event);
+                known_configs.insert(config_id.clone());
+                configs.insert(config_id, config);
+            } else {
+                // Config ID exists, but the content might have changed
+                let existing_config = configs.get(&config_id).unwrap();
+                if *existing_config != config {
+                    configs.insert(config_id.clone(), config.clone());
+                    debug!("Configuration updated: {}", config_id);
+                    let event = AutodiscoveryEvent::CheckSchedule { config };
+                    let _ = sender.send(event);
+                }
+            }
+        }
+        Err(e) => {
+            warn!("Failed to parse config file {}: {}", path.display(), e);
+        }
+    }
+}
+
+/// Returns true if the path has a YAML extension (`yaml` or `yml`).
+fn is_yaml_file(path: &Path) -> bool {
+    matches!(path.extension().and_then(|e| e.to_str()), Some("yaml") | Some("yml"))
+}
+
+/// Scan and emit events based on configuration files in the directory.
+///
+/// Supports two layouts:
+/// - `<search-path>/<check-name>.yaml` — flat YAML files.
+/// - `<search-path>/<check-name>.d/*.yaml` — directory-based configs; the check name is derived
+///   from the directory stem (the `.d` suffix is stripped).
 async fn scan_and_emit_events(
     paths: &[PathBuf], known_configs: &mut HashSet<String>, sender: &Sender<AutodiscoveryEvent>,
     configs: &mut BTreeMap<String, CheckConfig>,
@@ -156,35 +199,23 @@ async fn scan_and_emit_events(
         while let Ok(Some(entry)) = entries.next_entry().await {
             let path = entry.path();
 
-            // Only process YAML files
-            if let Some(ext) = path.extension() {
-                if ext == "yaml" || ext == "yml" {
-                    // Process the file if it's a valid configuration
-                    match parse_config_file(&path).await {
-                        Ok((config_id, config)) => {
-                            found_configs.insert(config_id.clone());
-
-                            // Check if this is a new or updated configuration
-                            if !known_configs.contains(&config_id) {
-                                debug!("New configuration found: {}", config_id);
-
-                                let event = AutodiscoveryEvent::CheckSchedule { config: config.clone() };
-                                let _ = sender.send(event);
-                                known_configs.insert(config_id.clone());
-                                configs.insert(config_id.clone(), config);
-                            } else {
-                                // Config ID exists, but the content might have changed
-                                let existing_config = configs.get(&config_id).unwrap();
-                                if *existing_config != config {
-                                    configs.insert(config_id.clone(), config.clone());
-                                    debug!("Configuration updated: {}", config_id);
-                                    let event = AutodiscoveryEvent::CheckSchedule { config };
-                                    let _ = sender.send(event);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            warn!("Failed to parse config file {}: {}", path.display(), e);
+            if is_yaml_file(&path) {
+                // Flat YAML file: <check-name>.yaml
+                let check_name = path.file_stem().unwrap().to_string_lossy().into_owned();
+                process_yaml_file(path, &check_name, &mut found_configs, known_configs, sender, configs).await;
+            } else if path.is_dir() {
+                // Directory: only process if it matches the `<check-name>.d` convention
+                let dir_name = path.file_name().unwrap_or_default().to_string_lossy();
+                if let Some(check_name) = dir_name.strip_suffix(".d") {
+                    let Ok(mut sub_entries) = fs::read_dir(&path).await else {
+                        warn!("Failed to read directory {}", path.display());
+                        continue;
+                    };
+                    while let Ok(Some(sub_entry)) = sub_entries.next_entry().await {
+                        let sub_path = sub_entry.path();
+                        if is_yaml_file(&sub_path) {
+                            process_yaml_file(sub_path, check_name, &mut found_configs, known_configs, sender, configs)
+                                .await;
                         }
                     }
                 }
@@ -245,6 +276,20 @@ mod tests {
             .join("test_data")
     }
 
+    // Copy a `<check>.d` directory from test_data into the temp directory, preserving the structure.
+    async fn copy_test_check_dir(check_dir_name: &str, temp_dir: &Path) {
+        let source_dir = test_data_path().join(check_dir_name);
+        let target_dir = temp_dir.join(check_dir_name);
+        fs::create_dir_all(&target_dir).await.unwrap();
+
+        let mut entries = fs::read_dir(&source_dir).await.unwrap();
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            fs::copy(entry.path(), target_dir.join(entry.file_name()))
+                .await
+                .unwrap();
+        }
+    }
+
     // Copy a file from test_data to the temp directory
     async fn copy_test_file(source_name: &str, temp_dir: &Path) -> PathBuf {
         let source_path = test_data_path().join(source_name);
@@ -264,7 +309,7 @@ mod tests {
     async fn test_parse_config_file() {
         let test_file = test_data_path().join("test-config.yaml");
 
-        let (id, config) = parse_config_file(&test_file).await.unwrap();
+        let (id, config) = parse_config_file(&test_file, "test-config").await.unwrap();
 
         assert!(id.contains("saluki-env_src_autodiscovery_providers_test_data_test-config.yaml"));
         assert_eq!(config.name, "test-config");
@@ -279,7 +324,7 @@ mod tests {
     async fn test_parse_minimal_config_file() {
         let test_file = test_data_path().join("test-minimal-config.yaml");
 
-        let (_, config) = parse_config_file(&test_file).await.unwrap();
+        let (_, config) = parse_config_file(&test_file, "test-minimal-config").await.unwrap();
 
         // Parsing a config without `init_config` yields an empty hash map for that field.
         assert!(config.init_config.value.is_empty());
@@ -352,6 +397,32 @@ mod tests {
 
         let event = receiver.try_recv().unwrap();
         assert!(matches!(event, AutodiscoveryEvent::CheckUnscheduled { config } if config.name == "removed-config"));
+
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_scan_and_emit_events_check_dir() {
+        let dir = tempdir().unwrap();
+        copy_test_check_dir("test-check.d", dir.path()).await;
+
+        let mut known_configs = HashSet::new();
+        let mut configs = BTreeMap::new();
+        let (sender, mut receiver) = broadcast::channel::<AutodiscoveryEvent>(10);
+
+        scan_and_emit_events(&[dir.path().to_path_buf()], &mut known_configs, &sender, &mut configs)
+            .await
+            .unwrap();
+
+        // One config file inside test-check.d/
+        assert_eq!(known_configs.len(), 1);
+
+        let event = receiver.try_recv().unwrap();
+        assert!(
+            matches!(&event, AutodiscoveryEvent::CheckSchedule { config } if config.name == "test-check"),
+            "expected check name 'test-check', got: {:?}",
+            event
+        );
 
         assert!(receiver.try_recv().is_err());
     }
