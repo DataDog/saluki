@@ -30,7 +30,6 @@ serde_yaml = { workspace = true }
 stele = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
 tokio-util = { workspace = true }
-treediff = { workspace = true, features = ["with-serde-json"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = [
   "ansi",
@@ -41,4 +40,5 @@ tracing-subscriber = { workspace = true, features = [
   "std",
   "tracing-log",
 ] }
+treediff = { workspace = true, features = ["with-serde-json"] }
 url = { workspace = true }
