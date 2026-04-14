@@ -10,7 +10,7 @@ use std::{
 use bytesize::ByteSize;
 use memory_accounting::{
     allocator::{AllocationGroupRegistry, AllocationStats, AllocationStatsSnapshot},
-    ComponentBounds, ComponentRegistry, MemoryGrant, MemoryLimiter,
+    ComponentBounds, ComponentRegistryHandle, MemoryGrant, MemoryLimiter,
 };
 use metrics::{counter, gauge, Counter, Gauge, Level};
 use saluki_common::task::spawn_traced_named;
@@ -120,7 +120,7 @@ impl MemoryBoundsConfiguration {
 ///
 /// If the bounds could not be validated, an error is returned.
 pub fn initialize_memory_bounds(
-    configuration: MemoryBoundsConfiguration, component_registry: &ComponentRegistry,
+    configuration: MemoryBoundsConfiguration, component_registry: ComponentRegistryHandle,
 ) -> Result<MemoryLimiter, GenericError> {
     let initial_grant = match configuration.memory_limit {
         Some(limit) => MemoryGrant::with_slop_factor(limit.as_u64() as usize, configuration.memory_slop_factor)?,
