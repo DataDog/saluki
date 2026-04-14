@@ -1,4 +1,4 @@
-//! Memory management.
+//! Resource accounting and telemetry.
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -9,7 +9,7 @@ use std::{
 
 use bytesize::ByteSize;
 use memory_accounting::{
-    allocator::{AllocationGroupRegistry, AllocationStats, AllocationStatsSnapshot},
+    allocator::{ResourceGroupRegistry, ResourceStats, ResourceStatsSnapshot},
     ComponentBounds, ComponentRegistry, MemoryGrant, MemoryLimiter,
 };
 use metrics::{counter, gauge, Counter, Gauge, Level};
@@ -199,30 +199,34 @@ fn print_bounds(bounds: &ComponentBounds) {
     info!("");
 }
 
-struct AllocationGroupMetrics {
-    totals: AllocationStatsSnapshot,
+struct ResourceGroupMetrics {
+    totals: ResourceStatsSnapshot,
     allocated_bytes_total: Counter,
     allocated_bytes_live: Gauge,
     allocated_objects_total: Counter,
     allocated_objects_live: Gauge,
     deallocated_bytes_total: Counter,
     deallocated_objects_total: Counter,
+    cpu_time_nanos_total: Counter,
+    cpu_time_nanos: Gauge,
 }
 
-impl AllocationGroupMetrics {
+impl ResourceGroupMetrics {
     fn new(group_name: &str) -> Self {
         Self {
-            totals: AllocationStatsSnapshot::empty(),
+            totals: ResourceStatsSnapshot::empty(),
             allocated_bytes_total: counter!(level: Level::DEBUG, "group_allocated_bytes_total", "group_id" => group_name.to_string()),
             allocated_bytes_live: gauge!(level: Level::DEBUG, "group_allocated_bytes_live", "group_id" => group_name.to_string()),
             allocated_objects_total: counter!(level: Level::DEBUG, "group_allocated_objects_total", "group_id" => group_name.to_string()),
             allocated_objects_live: gauge!(level: Level::DEBUG, "group_allocated_objects_live", "group_id" => group_name.to_string()),
             deallocated_bytes_total: counter!(level: Level::DEBUG, "group_deallocated_bytes_total", "group_id" => group_name.to_string()),
             deallocated_objects_total: counter!(level: Level::DEBUG, "group_deallocated_objects_total", "group_id" => group_name.to_string()),
+            cpu_time_nanos_total: counter!(level: Level::DEBUG, "group_cpu_time_nanos_total", "group_id" => group_name.to_string()),
+            cpu_time_nanos: gauge!(level: Level::DEBUG, "group_cpu_time_nanos", "group_id" => group_name.to_string()),
         }
     }
 
-    fn update(&mut self, stats: &AllocationStats) {
+    fn update(&mut self, stats: &ResourceStats) {
         let delta = stats.snapshot_delta(&self.totals);
 
         self.allocated_bytes_total.increment(delta.allocated_bytes as u64);
@@ -230,50 +234,52 @@ impl AllocationGroupMetrics {
         self.deallocated_bytes_total.increment(delta.deallocated_bytes as u64);
         self.deallocated_objects_total
             .increment(delta.deallocated_objects as u64);
+        self.cpu_time_nanos_total.increment(delta.cpu_time_nanos);
 
         self.totals.merge(&delta);
         self.allocated_bytes_live
             .set((self.totals.allocated_bytes - self.totals.deallocated_bytes) as f64);
         self.allocated_objects_live
             .set((self.totals.allocated_objects - self.totals.deallocated_objects) as f64);
+        self.cpu_time_nanos.set(self.totals.cpu_time_nanos as f64);
     }
 }
 
-/// Initializes the memory allocator telemetry subsystem.
+/// Initializes the resource telemetry subsystem.
 ///
-/// This spawns a background task that will periodically collect memory usage statistics, such as which components are
-/// responsible for which portion of the live heap, and report them as internal telemetry.
+/// This spawns a background task that will periodically collect resource usage statistics (memory allocations and CPU
+/// time), reporting which components are responsible for which portion of resource consumption as internal telemetry.
 ///
 /// # Errors
 ///
-/// If the memory allocator subsystem has already been initialized, an error will be returned.
-pub(crate) async fn initialize_allocator_telemetry() -> Result<(), GenericError> {
+/// If the resource telemetry subsystem has already been initialized, an error will be returned.
+pub(crate) async fn initialize_resource_telemetry() -> Result<(), GenericError> {
     // Simple initialization guard to prevent multiple calls to this function.
     static INIT: AtomicBool = AtomicBool::new(false);
     if INIT.swap(true, Relaxed) {
-        return Err(generic_error!("Memory allocator subsystem already initialized."));
+        return Err(generic_error!("Resource telemetry subsystem already initialized."));
     }
 
     // We can't enforce, at compile-time, that the tracking allocator must be installed if a caller is trying to
     // initialize the allocator's reporting infrastructure... but we can at least warn them if we detect it's not
     // installed here at runtime.
-    if !AllocationGroupRegistry::allocator_installed() {
+    if !ResourceGroupRegistry::allocator_installed() {
         warn!("Tracking allocator not installed. Memory telemetry will not be available.");
     }
 
-    // Spawn the background task that will periodically collect memory usage statistics.
-    spawn_traced_named("allocator-telemetry-collector", async {
+    // Spawn the background task that will periodically collect resource usage statistics.
+    spawn_traced_named("resource-telemetry-collector", async {
         let mut metrics = HashMap::new();
 
         loop {
             sleep(Duration::from_secs(1)).await;
 
-            AllocationGroupRegistry::global().visit_allocation_groups(|group_name, stats| {
+            ResourceGroupRegistry::global().visit_resource_groups(|group_name, stats| {
                 let group_metrics = match metrics.get_mut(group_name) {
                     Some(group_metrics) => group_metrics,
                     None => metrics
                         .entry(group_name.to_string())
-                        .or_insert_with(|| AllocationGroupMetrics::new(group_name)),
+                        .or_insert_with(|| ResourceGroupMetrics::new(group_name)),
                 };
 
                 group_metrics.update(stats);

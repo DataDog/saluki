@@ -7,7 +7,7 @@ use argh::FromArgs;
 use futures::FutureExt as _;
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::{
-    memory::{initialize_memory_bounds, MemoryBoundsConfiguration},
+    accounting::{initialize_memory_bounds, MemoryBoundsConfiguration},
     metrics::emit_startup_metrics,
 };
 use saluki_components::{
