@@ -262,6 +262,18 @@ impl ComponentRegistryHandle {
     }
 }
 
+impl ComponentRegistry {
+    #[cfg(test)]
+    fn inner_ptr_eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
+    #[cfg(test)]
+    fn root_ptr_eq(&self, handle: &ComponentRegistryHandle) -> bool {
+        Arc::ptr_eq(&self.get_root(), &handle.inner)
+    }
+}
+
 impl Default for ComponentRegistry {
     fn default() -> Self {
         Self {
@@ -452,5 +464,61 @@ impl<'a, S: BoundsMutator> BoundsBuilder<'a, S> {
     pub fn with_expr(&mut self, expr: UsageExpr) -> &mut Self {
         S::add_usage(&mut self.inner.bounds, expr);
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn root_handle_from_root_registry_points_to_root() {
+        let registry = ComponentRegistry::default();
+        let handle = registry.root();
+
+        assert!(registry.root_ptr_eq(&handle));
+    }
+
+    #[test]
+    fn root_handle_from_subcomponent_points_to_root() {
+        let registry = ComponentRegistry::default();
+        let child = registry.get_or_create("child");
+
+        let handle = child.root();
+
+        assert!(registry.root_ptr_eq(&handle));
+        assert!(!child.inner_ptr_eq(&registry));
+    }
+
+    #[test]
+    fn root_handle_from_deeply_nested_subcomponent_points_to_root() {
+        let registry = ComponentRegistry::default();
+        let grandchild = registry.get_or_create("child").get_or_create("grandchild");
+
+        let handle = grandchild.root();
+
+        assert!(registry.root_ptr_eq(&handle));
+    }
+
+    #[test]
+    fn root_handle_from_dotted_path_subcomponent_points_to_root() {
+        let registry = ComponentRegistry::default();
+        let nested = registry.get_or_create("a.b.c");
+
+        let handle = nested.root();
+
+        assert!(registry.root_ptr_eq(&handle));
+    }
+
+    #[test]
+    fn cloned_handle_points_to_root() {
+        let registry = ComponentRegistry::default();
+        let child = registry.get_or_create("child");
+
+        let handle = child.root();
+        let cloned = handle.clone();
+
+        assert!(Arc::ptr_eq(&handle.inner, &cloned.inner));
+        assert!(registry.root_ptr_eq(&cloned));
     }
 }
