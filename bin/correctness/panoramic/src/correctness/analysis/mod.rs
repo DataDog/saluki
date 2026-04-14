@@ -1,7 +1,7 @@
 use saluki_error::GenericError;
 use serde::Deserialize;
 
-pub(crate) mod collected;
+mod collected;
 pub use self::collected::CollectedData;
 
 mod metrics;

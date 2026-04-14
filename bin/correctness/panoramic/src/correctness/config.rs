@@ -11,7 +11,7 @@ use saluki_config::ConfigurationLoader;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
 
-use super::analysis::AnalysisMode;
+use crate::correctness::analysis::AnalysisMode;
 
 fn default_millstone_binary_path() -> String {
     "/usr/local/bin/millstone".to_string()

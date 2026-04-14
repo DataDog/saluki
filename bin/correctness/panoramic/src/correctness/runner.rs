@@ -18,7 +18,7 @@ use tokio::{select, task::JoinHandle, time::sleep};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, info_span, Instrument as _, Span};
 
-use super::{
+use crate::correctness::{
     analysis::{AnalysisMode, AnalysisRunner, CollectedData, TracesAnalysisOptions},
     config::Config,
     sync::Coordinator,
