@@ -289,7 +289,7 @@
 <a href=#289 id=289 data-nosnippet>289</a>    ///
 <a href=#290 id=290 data-nosnippet>290</a>    /// If the Docker client cannot be created/configured, an error will be returned.
 <a href=#291 id=291 data-nosnippet>291</a>    </span><span class="kw">pub fn </span>from_config(isolation_group_id: String, config: DriverConfig) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, GenericError&gt; {
-<a href=#292 id=292 data-nosnippet>292</a>        <span class="kw">let </span>docker = Docker::connect_with_defaults()<span class="question-mark">?</span>;
+<a href=#292 id=292 data-nosnippet>292</a>        <span class="kw">let </span>docker = <span class="kw">crate</span>::docker::connect()<span class="question-mark">?</span>;
 <a href=#293 id=293 data-nosnippet>293</a>
 <a href=#294 id=294 data-nosnippet>294</a>        <span class="prelude-val">Ok</span>(<span class="self">Self </span>{
 <a href=#295 id=295 data-nosnippet>295</a>            isolation_group_name: <span class="macro">format!</span>(<span class="string">"airlock-{}"</span>, isolation_group_id),
@@ -327,7 +327,7 @@
 <a href=#327 id=327 data-nosnippet>327</a>    /// If the Docker client cannot be created/configured, or there is an error when finding or removing any of the
 <a href=#328 id=328 data-nosnippet>328</a>    /// related resources, an error will be returned.
 <a href=#329 id=329 data-nosnippet>329</a>    </span><span class="kw">pub async fn </span>clean_related_resources(isolation_group_id: String) -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt; {
-<a href=#330 id=330 data-nosnippet>330</a>        <span class="kw">let </span>docker = Docker::connect_with_defaults()<span class="question-mark">?</span>;
+<a href=#330 id=330 data-nosnippet>330</a>        <span class="kw">let </span>docker = <span class="kw">crate</span>::docker::connect()<span class="question-mark">?</span>;
 <a href=#331 id=331 data-nosnippet>331</a>
 <a href=#332 id=332 data-nosnippet>332</a>        <span class="kw">let </span>isolation_group_name = <span class="macro">format!</span>(<span class="string">"airlock-{}"</span>, isolation_group_id);
 <a href=#333 id=333 data-nosnippet>333</a>        <span class="kw">let </span>isolation_group_label = <span class="macro">format!</span>(<span class="string">"airlock-isolation-group={}"</span>, isolation_group_id);
