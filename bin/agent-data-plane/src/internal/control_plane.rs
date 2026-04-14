@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use memory_accounting::{ComponentRegistry, ComponentRegistryHandle};
 use saluki_app::{
-    api::APIBuilder, config::ConfigAPIHandler, logging::acquire_logging_api_handler,
+    api::APIBuilder, config::ConfigAPIHandler, logging::acquire_logging_api_handler, memory::AllocationTelemetryWorker,
     metrics::acquire_metrics_api_handler,
 };
 use saluki_components::destinations::DogStatsDStatisticsConfiguration;
@@ -178,6 +178,9 @@ pub async fn create_control_plane_supervisor(
         .with_restart_strategy(RestartStrategy::one_to_one());
 
     supervisor.add_worker(health_registry.worker());
+    supervisor.add_worker(AllocationTelemetryWorker::new(
+        component_registry.get_or_create("alloc-telemetry"),
+    ));
 
     supervisor.add_worker(UnprivilegedApiWorker::new(
         dp_config.clone(),
