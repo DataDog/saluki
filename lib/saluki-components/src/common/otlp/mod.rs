@@ -179,11 +179,15 @@ impl OtlpServerBuilder {
         let grpc_listener = tokio::net::TcpListener::bind(grpc_socket_addr)
             .await
             .map_err(|e| generic_error!("Failed to bind OTLP gRPC listener on '{}': {}", grpc_socket_addr, e))?;
+        let grpc_bound_addr = grpc_listener
+            .local_addr()
+            .map_err(|e| generic_error!("Failed to get local address for OTLP gRPC listener: {}", e))?;
         let grpc_incoming = tonic::transport::server::TcpIncoming::from(grpc_listener);
         thread_pool_handle.spawn_traced_named(
             "otlp-grpc-server",
             grpc_server.serve_with_incoming(grpc_incoming),
         );
+        tracing::info!(listen_addr = %grpc_bound_addr, "OTLP gRPC server listening.");
 
         // Create and spawn the HTTP server.
         let service = TowerToHyperService::new(

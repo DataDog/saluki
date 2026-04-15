@@ -34,7 +34,7 @@ use serde::Deserialize;
 use tokio::select;
 use tokio::sync::mpsc;
 use tokio::time::{interval, MissedTickBehavior};
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 use crate::common::otlp::config::OtlpConfig;
 use crate::common::otlp::{build_metrics, Metrics, OtlpHandler, OtlpServerBuilder};
@@ -268,6 +268,11 @@ impl Source for Otlp {
         );
 
         let handler = SourceHandler::new(tx);
+        info!(
+            grpc_endpoint = %grpc_endpoint,
+            http_endpoint = %http_endpoint,
+            "Starting OTLP source..."
+        );
         let server_builder = OtlpServerBuilder::new(http_endpoint, grpc_endpoint, grpc_max_recv_msg_size_bytes);
 
         let (http_shutdown, mut http_error) = server_builder
@@ -275,7 +280,7 @@ impl Source for Otlp {
             .await?;
 
         health.mark_ready();
-        debug!("OTLP source started.");
+        info!("OTLP source started and ready to accept connections.");
 
         // Wait for the global shutdown signal, then notify converter to shutdown.
         loop {

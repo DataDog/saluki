@@ -9,6 +9,7 @@ use std::{
 use prost::bytes::Bytes;
 use saluki_error::{ErrorContext as _, GenericError};
 use tonic::{client::Grpc, transport::Channel};
+use tracing::{debug, info, warn};
 
 use crate::config::{Config, TargetAddress};
 
@@ -136,20 +137,22 @@ fn send_grpc_payload(
     runtime.block_on(async move {
         let mut grpc_client = Grpc::new(channel);
 
-        grpc_client
-            .ready()
-            .await
-            .map_err(|e| saluki_error::generic_error!("gRPC client not ready: {}", e))?;
+        debug!(service_method = %service_method_path, payload_bytes = payload.len(), "Waiting for gRPC channel to be ready...");
+
+        grpc_client.ready().await.map_err(|e| {
+            warn!(service_method = %service_method_path, error = %e, "gRPC channel failed to become ready — server may be unavailable or connection was lost.");
+            saluki_error::generic_error!("gRPC client not ready: {}", e)
+        })?;
 
         let codec = NoopCodec {};
         let request = tonic::Request::new(Bytes::copy_from_slice(payload));
         let path = tonic::codegen::http::uri::PathAndQuery::try_from(service_method_path)
             .map_err(|e| saluki_error::generic_error!("Invalid gRPC path: {}", e))?;
 
-        grpc_client
-            .unary(request, path, codec)
-            .await
-            .map_err(|e| saluki_error::generic_error!("gRPC call failed: {}", e))?;
+        grpc_client.unary(request, path, codec).await.map_err(|e| {
+            warn!(service_method = %service_method_path, status_code = %e.code(), message = %e.message(), "gRPC call failed — server returned an error status.");
+            saluki_error::generic_error!("gRPC call failed: {}", e)
+        })?;
 
         Ok(())
     })
@@ -172,6 +175,8 @@ fn create_grpc_client(url: &str) -> Result<(TargetBackend, Option<tokio::runtime
     let runtime = tokio::runtime::Runtime::new().error_context("Failed to create tokio runtime for gRPC client.")?;
     let endpoint = format!("http://{}", host_and_port);
 
+    info!(endpoint = %endpoint, service_method = %service_method_path, "Connecting to gRPC target...");
+
     let channel = runtime
         .block_on(async {
             Channel::from_shared(endpoint.clone())
@@ -181,6 +186,8 @@ fn create_grpc_client(url: &str) -> Result<(TargetBackend, Option<tokio::runtime
                 .map_err(|e| saluki_error::generic_error!("Failed to connect to gRPC endpoint: {}", e))
         })
         .with_error_context(|| format!("Failed to connect to gRPC target '{}'.", endpoint))?;
+
+    info!(endpoint = %endpoint, "gRPC connection established.");
 
     let backend = GrpcBackend {
         channel,
