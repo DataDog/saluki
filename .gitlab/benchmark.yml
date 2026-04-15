@@ -19,6 +19,15 @@ build-adp-baseline-image:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - if: !reference [.on_development_branch, rules, if]
+      changes:
+        - .gitlab/benchmark.yml
+        - docker/Dockerfile.agent-data-plane
+        - bin/agent-data-plane/**/*
+        - lib/**/*
+        - test/smp/regression/adp/config.yaml
+        - test/smp/regression/adp/**/*
+        - test/smp/regression/adp-tagfilter/config.yaml
+        - test/smp/regression/adp-tagfilter/**/*
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
@@ -70,6 +79,15 @@ build-adp-comparison-image:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - if: !reference [.on_development_branch, rules, if]
+      changes:
+        - .gitlab/benchmark.yml
+        - docker/Dockerfile.agent-data-plane
+        - bin/agent-data-plane/**/*
+        - lib/**/*
+        - test/smp/regression/adp/config.yaml
+        - test/smp/regression/adp/**/*
+        - test/smp/regression/adp-tagfilter/config.yaml
+        - test/smp/regression/adp-tagfilter/**/*
   image: "${SALUKI_SMP_CI_IMAGE}"
   needs: []
   retry: 2
@@ -116,6 +134,13 @@ run-benchmarks-adp:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - if: !reference [.on_development_branch, rules, if]
+      changes:
+        - .gitlab/benchmark.yml
+        - docker/Dockerfile.agent-data-plane
+        - bin/agent-data-plane/**/*
+        - lib/**/*
+        - test/smp/regression/adp/config.yaml
+        - test/smp/regression/adp/**/*
   timeout: 1h
   needs:
     - build-adp-baseline-image
@@ -160,6 +185,60 @@ run-benchmarks-adp:
     # Post the report to the linked PR.
     - cat outputs/report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Agent Data Plane)"
     # Finally, exit 1 if the job signals a regression else 0.
+    - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
+      job result
+      --submission-metadata submission_metadata
+
+run-benchmarks-adp-tagfilter:
+  stage: benchmark
+  rules:
+    - if: !reference [.on_mq_branch, rules, if]
+      when: never
+    - if: !reference [.on_development_branch, rules, if]
+      changes:
+        - .gitlab/benchmark.yml
+        - docker/Dockerfile.agent-data-plane
+        - bin/agent-data-plane/**/*
+        - lib/**/*
+        - test/smp/regression/adp-tagfilter/config.yaml
+        - test/smp/regression/adp-tagfilter/**/*
+  timeout: 1h
+  needs:
+    - build-adp-baseline-image
+    - build-adp-comparison-image
+  image: "${SALUKI_BUILD_CI_IMAGE}"
+  before_script:
+    - *setup-smp-env
+  artifacts:
+    expire_in: 1 weeks
+    paths:
+      - submission_metadata
+      - outputs/report.md
+      - outputs/report.html
+    when: always
+  script:
+    - mkdir outputs && touch outputs/report.md outputs/report.html
+    - ./test/smp/configure-smp-aws-credentials.sh
+    - aws --profile ${AWS_NAMED_PROFILE} s3 cp s3://smp-cli-releases/v${SMP_VERSION}/x86_64-unknown-linux-musl/smp smp && chmod +x smp
+    - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
+      job submit
+      --warmup-seconds 0
+      --baseline-image ${BASELINE_ADP_IMG}
+      --comparison-image ${COMPARISON_ADP_IMG}
+      --baseline-sha ${BASELINE_ADP_SHA}
+      --comparison-sha ${COMPARISON_ADP_SHA}
+      --target-config-dir ./test/smp/regression/adp-tagfilter/
+      --submission-metadata submission_metadata
+    - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
+      job status
+      --wait
+      --wait-delay-seconds 60
+      --submission-metadata submission_metadata
+    - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
+      job sync
+      --submission-metadata submission_metadata
+      --output-path outputs
+    - cat outputs/report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (ADP Tag Filtering)"
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job result
       --submission-metadata submission_metadata
