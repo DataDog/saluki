@@ -170,7 +170,18 @@ impl OtlpServerBuilder {
             ListenAddress::Tcp(addr) => addr,
             _ => return Err(generic_error!("OTLP gRPC endpoint must be a TCP address.")),
         };
-        thread_pool_handle.spawn_traced_named("otlp-grpc-server", grpc_server.serve(grpc_socket_addr));
+
+        // Bind the gRPC socket eagerly so the port is guaranteed to be accepting
+        // connections before build() returns. Spawning serve() fire-and-forget would
+        // delay binding until the task is scheduled, creating a race where callers
+        // that connect immediately (e.g. millstone in correctness tests) get
+        // connection-refused even though the server is nominally "ready".
+        let grpc_incoming = tonic::transport::server::TcpIncoming::bind(grpc_socket_addr)
+            .map_err(|e| generic_error!("Failed to bind OTLP gRPC listener on '{}': {}", grpc_socket_addr, e))?;
+        thread_pool_handle.spawn_traced_named(
+            "otlp-grpc-server",
+            grpc_server.serve_with_incoming(grpc_incoming),
+        );
 
         // Create and spawn the HTTP server.
         let service = TowerToHyperService::new(
