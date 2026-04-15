@@ -4,9 +4,8 @@ use async_trait::async_trait;
 use memory_accounting::ComponentRegistry;
 use saluki_api::EndpointType;
 use saluki_app::{
-    api::APIBuilder, config::ConfigAPIHandler, dynamic_api::DynamicAPIBuilder,
-    logging::acquire_logging_api_handler, memory::AllocationTelemetryWorker,
-    metrics::acquire_metrics_api_handler,
+    api::APIBuilder, config::ConfigAPIHandler, dynamic_api::DynamicAPIBuilder, logging::acquire_logging_api_handler,
+    memory::AllocationTelemetryWorker, metrics::acquire_metrics_api_handler,
 };
 use saluki_components::destinations::DogStatsDStatisticsConfiguration;
 use saluki_config::GenericConfiguration;
