@@ -189,8 +189,8 @@ build-agent-adp-baseline-image:
     - *setup-smp-env
   script:
     - ./test/smp/configure-smp-aws-credentials.sh
-    - export STEPHEN_AGENT_SHA=7ed0f1b671
-    - export STEPHEN_AGENT_IMG=docker.io/datadog/agent-dev:7ed0f1b6-py3-jmx
+    - export STEPHEN_AGENT_SHA=d88bacd9
+    - export STEPHEN_AGENT_IMG=docker.io/datadog/agent-dev:d88bacd9-py3-jmx
     - export AGENT_ADP_IMG_BASE="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:agent-adp-${CI_PIPELINE_ID}"
     - export BASELINE_AGENT_IMG="${AGENT_ADP_IMG_BASE}-baseline-${STEPHEN_AGENT_SHA}"
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
@@ -229,7 +229,7 @@ build-agent-adp-comparison-image:
     - *setup-smp-env
   script:
     - ./test/smp/configure-smp-aws-credentials.sh
-    - export STEPHEN_AGENT_IMG=docker.io/datadog/agent-dev:7ed0f1b6-py3-jmx
+    - export STEPHEN_AGENT_IMG=docker.io/datadog/agent-dev:d88bacd9-py3-jmx
     - export AGENT_ADP_IMG_BASE="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:agent-adp-${CI_PIPELINE_ID}"
     - export COMPARISON_AGENT_SHA=${CI_COMMIT_SHA}
     - export COMPARISON_AGENT_IMG="${AGENT_ADP_IMG_BASE}-comparison-${COMPARISON_AGENT_SHA}"
