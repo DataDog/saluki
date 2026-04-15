@@ -189,9 +189,8 @@ fn remap_store_bins_to_agent_space(
         let input_upper_bound = source_mapping.lower_bound(index + 1);
         let input_size = input_upper_bound - input_lower_bound;
         let mut output_index = target_mapping.index(input_lower_bound);
-        let last_output_index = target_mapping.index(input_upper_bound);
 
-        while output_index <= last_output_index {
+        while target_mapping.lower_bound(output_index) < input_upper_bound {
             if output_index >= MAX_AGENT_INDEX {
                 return Err(generic_error!(
                     "index value {} exceeds the maximum supported index value ({})",
@@ -615,9 +614,10 @@ impl OtlpMetricsTranslator {
         let raw_origin = raw_origin_from_attributes(context.resource_attributes);
         match self.context_resolver.resolve(&dims.name, &dims.tags, Some(raw_origin)) {
             Some(resolved_context) => {
+                let timestamp_s = timestamp_ns / 1_000_000_000;
                 let values = match data_type {
-                    DataType::Gauge => MetricValues::gauge((timestamp_ns, value)),
-                    DataType::Count => MetricValues::counter((timestamp_ns, value)),
+                    DataType::Gauge => MetricValues::gauge((timestamp_s, value)),
+                    DataType::Count => MetricValues::counter((timestamp_s, value)),
                 };
 
                 let metric = Metric::from_parts(resolved_context, values, MetricMetadata::default());
@@ -925,7 +925,8 @@ impl OtlpMetricsTranslator {
                         "Inferred delta interval for OTLP metric."
                     );
                 }
-                let values = MetricValues::distribution((timestamp_ns, sketch));
+                let timestamp_s = timestamp_ns / 1_000_000_000;
+                let values = MetricValues::distribution((timestamp_s, sketch));
                 let metric = Metric::from_parts(resolved_context, values, MetricMetadata::default());
                 events.push(Event::Metric(metric));
             }
