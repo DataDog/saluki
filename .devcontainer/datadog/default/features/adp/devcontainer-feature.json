@@ -1,0 +1,12 @@
+{
+    "id": "adp",
+    "version": "1.0.0",
+    "name": "ADP (Agent Data Plane) Development Tools",
+    "description": "Installs Rust toolchain and cargo tools for ADP development.",
+    "installsAfter": [
+        "registry.ddbuild.io/workspaces/features/base"
+    ],
+    "postCreateCommand": {
+        "adp-cargo-tools": "make cargo-preinstall"
+    }
+}
