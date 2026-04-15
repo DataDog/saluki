@@ -176,8 +176,10 @@ impl OtlpServerBuilder {
         // delay binding until the task is scheduled, creating a race where callers
         // that connect immediately (e.g. millstone in correctness tests) get
         // connection-refused even though the server is nominally "ready".
-        let grpc_incoming = tonic::transport::server::TcpIncoming::bind(grpc_socket_addr)
+        let grpc_listener = tokio::net::TcpListener::bind(grpc_socket_addr)
+            .await
             .map_err(|e| generic_error!("Failed to bind OTLP gRPC listener on '{}': {}", grpc_socket_addr, e))?;
+        let grpc_incoming = tonic::transport::server::TcpIncoming::from(grpc_listener);
         thread_pool_handle.spawn_traced_named(
             "otlp-grpc-server",
             grpc_server.serve_with_incoming(grpc_incoming),
