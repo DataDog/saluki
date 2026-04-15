@@ -41,7 +41,9 @@ impl TestRunner {
             cancel_token: CancellationToken::new(),
             baseline_coordinator: Coordinator::new(),
             comparison_coordinator: Coordinator::new(),
-            log_base_dir: PathBuf::from("/tmp/ground-truth"),
+            log_base_dir: std::env::var("GROUND_TRUTH_LOG_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("/tmp/ground-truth")),
         })
     }
 
