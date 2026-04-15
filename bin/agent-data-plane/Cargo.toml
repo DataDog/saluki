@@ -32,6 +32,7 @@ ottl = { workspace = true }
 papaya = { workspace = true }
 prometheus-exposition = { workspace = true }
 prost-types = { workspace = true }
+saluki-api = { workspace = true }
 saluki-app = { workspace = true }
 saluki-common = { workspace = true }
 saluki-components = { workspace = true }
