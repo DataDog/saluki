@@ -344,7 +344,10 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         ChainedConfiguration::default().with_transform_builder("host_enrichment", host_enrichment_config);
 
     if !dp_config.standalone_mode() {
+        info!("Connecting to Datadog Agent API for host tags (may block until Agent IPC is ready)...");
+        let t = Instant::now();
         let host_tags_config = HostTagsConfiguration::from_configuration(config).await?;
+        info!(elapsed_ms = t.elapsed().as_millis(), "Connected to Datadog Agent API for host tags.");
         metrics_enrich_config = metrics_enrich_config.with_transform_builder("host_tags", host_tags_config);
     }
 

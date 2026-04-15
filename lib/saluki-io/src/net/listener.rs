@@ -1,6 +1,8 @@
 //! Network listeners.
 use std::{future::pending, io, net::SocketAddr};
 
+use tracing::info;
+
 use snafu::{ResultExt as _, Snafu};
 use tokio::net::{TcpListener, UdpSocket};
 
@@ -144,6 +146,7 @@ impl Listener {
                         setting: "read/write permissions",
                     })?;
 
+                info!(path = %addr.display(), "Unix datagram socket created and ready.");
                 listener
             }
             #[cfg(unix)]

@@ -3,6 +3,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use tracing::info;
+
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
@@ -27,7 +29,10 @@ const DEFAULT_EXPECTED_TAGS_DURATION: u64 = 0;
 impl HostTagsConfiguration {
     /// Creates a new `HostTagsConfiguration` from the given configuration.
     pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        info!("Waiting for Datadog Agent IPC connection (host tags)...");
+        let t = Instant::now();
         let client = RemoteAgentClient::from_configuration(config).await?;
+        info!(elapsed_ms = t.elapsed().as_millis(), "Datadog Agent IPC connection established (host tags).");
         let expected_tags_duration = config
             .try_get_typed::<u64>("expected_tags_duration")?
             .unwrap_or(DEFAULT_EXPECTED_TAGS_DURATION);
