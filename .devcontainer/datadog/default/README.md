@@ -30,6 +30,9 @@ ADP workspaces come pre-setup with:
 - `Dockerfile` -- GBI Ubuntu 24.04 base image with system packages and protoc
 - `features/adp/` -- local devcontainer feature that installs Rust and cargo
   tools as the `bits` user
+  - `install.sh` -- bakes rustup + cargo-binstall into the image
+  - `lifecycle/postCreate.sh` -- runs after repo clone; installs the pinned
+    Rust toolchain (`rustup show`) and cargo tools (`make cargo-preinstall`)
 - `devcontainer.json` -- ties it all together with Workspaces `base` and
   `claude-code` features
 
@@ -46,7 +49,7 @@ devcontainer build --config .devcontainer/datadog/default/devcontainer.json .
 If this builds, you can explore the container with:
 
 ```sh
-docker run -it --rm --user=bits <image-id> /bin/bash
+docker run -it --rm --user=bits <image-id> /bin/bash -l
 ```
 
 Verify inside the container:
@@ -55,8 +58,17 @@ Verify inside the container:
 whoami            # should be "bits"
 protoc --version  # should be libprotoc 29.3
 rustc --version   # should show stable
-cargo nextest --version
 ```
+
+For a fuller test including the `postCreateCommand` (cargo tools installation),
+use `devcontainer run`:
+
+```sh
+devcontainer run --config .devcontainer/datadog/default/devcontainer.json .
+```
+
+This will start the container, run the lifecycle commands (including
+`make cargo-preinstall`), and keep it running. Press `^C` to stop.
 
 ### Troubleshooting
 

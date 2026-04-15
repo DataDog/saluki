@@ -7,6 +7,6 @@
         "registry.ddbuild.io/workspaces/features/base"
     ],
     "postCreateCommand": {
-        "adp-cargo-tools": "make cargo-preinstall"
+        "adp": "/opt/doghome/devcontainer/features/adp/lifecycle/postCreate.sh"
     }
 }
