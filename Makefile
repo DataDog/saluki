@@ -502,13 +502,13 @@ sync-docs-config: ## Synchronizes the Vale configuration, updating configured st
 test: check-rust-build-tools cargo-install-cargo-nextest
 test: ## Runs all unit tests
 	@echo "[*] Running unit tests..."
-	cargo nextest run --lib -E 'not test(/property_test_*/)'
+	cargo nextest run --lib --bins --no-fail-fast -E 'not test(/property_test_*/)'
 
 .PHONY: test-property
 test-property: check-rust-build-tools cargo-install-cargo-nextest
 test-property: ## Runs all property tests
 	@echo "[*] Running property tests..."
-	cargo nextest run --lib --release -E 'test(/property_test_*/)'
+	cargo nextest run --lib --bins --no-fail-fast --release -E 'test(/property_test_*/)'
 
 .PHONY: test-docs
 test-docs: check-rust-build-tools
