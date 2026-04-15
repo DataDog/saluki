@@ -332,7 +332,10 @@ mod tests {
         .await;
 
         let dp_config = DataPlaneConfiguration::from_configuration(&config).unwrap();
-        assert!(!dp_config.enabled(), "data_plane.enabled=false should disable ADP regardless of dogstatsd flag");
+        assert!(
+            !dp_config.enabled(),
+            "data_plane.enabled=false should disable ADP regardless of dogstatsd flag"
+        );
     }
 
     #[tokio::test]
