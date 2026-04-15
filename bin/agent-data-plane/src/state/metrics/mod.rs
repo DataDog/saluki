@@ -492,8 +492,8 @@ mod tests {
         let output = render_rar_telemetry(&state, &rules, &mut renderer);
 
         // Matched metrics should appear with remapped names.
-        assert!(output.contains("dogstatsd__packet_pool_get"));
-        assert!(output.contains("dogstatsd__packet_pool{"));
+        assert!(output.contains("dogstatsd__packet_pool_get "));
+        assert!(output.contains("dogstatsd__packet_pool "));
 
         // Unmatched metrics should NOT appear.
         assert!(!output.contains("some_unrelated_metric"));
