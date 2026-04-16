@@ -25,7 +25,7 @@ use tokio::{
     select,
     time::{interval, interval_at},
 };
-use tracing::{debug, error, trace};
+use tracing::{debug, error, info, trace, warn};
 
 mod telemetry;
 use self::telemetry::Telemetry;
@@ -44,7 +44,7 @@ const fn default_primary_flush_interval() -> Duration {
 }
 
 const fn default_context_limit() -> usize {
-    5000
+    1_000_000
 }
 
 const fn default_counter_expiry_seconds() -> Option<u64> {
@@ -108,7 +108,7 @@ pub struct AggregateConfiguration {
     /// When the maximum number of contexts is reached in the current aggregation window, additional metrics are dropped
     /// until the next window starts.
     ///
-    /// Defaults to 1000.
+    /// Defaults to 1,000,000.
     #[serde(rename = "aggregate_context_limit", default = "default_context_limit")]
     context_limit: usize,
 
@@ -306,12 +306,20 @@ impl Transform for Aggregate {
 
                         let should_flush_open_windows = final_primary_flush && self.flush_open_windows;
 
+                        // Remember if the context limit had been surpassed before this flush.
+                        let was_breached = self.state.context_limit_breached();
+
                         let mut dispatcher = context.dispatcher().buffered().expect("default output should always exist");
                         if let Err(e) = self.state.flush(get_unix_timestamp(), should_flush_open_windows, &mut dispatcher).await {
                             error!(error = %e, "Failed to flush aggregation state.");
                         }
 
                         self.telemetry.increment_flushes();
+
+                        // If flush recovered us from a breach, log the recovery.
+                        if was_breached && !self.state.context_limit_breached() {
+                            info!("Context limit no longer exceeded, metrics are being accepted again.");
+                        }
 
                         match dispatcher.flush().await {
                             Ok(aggregated_events) => debug!(aggregated_events, "Dispatched events."),
@@ -358,8 +366,14 @@ impl Transform for Aggregate {
                                     metric
                                 };
 
+                                let was_breached = self.state.context_limit_breached();
                                 if !self.state.insert(current_time, metric) {
                                     trace!("Dropping metric due to context limit.");
+                                    if !was_breached {
+                                        // First drop since the last recovery — emit a single warning.
+                                        warn!(context_limit = self.state.context_limit, "Context limit reached, \
+                                        dropping metrics. Consider increasing `aggregate_context_limit`.");
+                                    }
                                     self.telemetry.increment_events_dropped();
                                 }
                             }
@@ -514,6 +528,9 @@ struct AggregationState {
     last_flush: u64,
     hist_config: HistogramConfiguration,
     telemetry: Telemetry,
+    /// Tracks whether the context limit has been breached. Starts out as `false`. Set to `true` on the first dropped
+    /// metric. Reset to `false` when the context count drops below the limit during flush.
+    context_limit_breached: bool,
 }
 
 impl AggregationState {
@@ -532,6 +549,7 @@ impl AggregationState {
             last_flush: 0,
             hist_config,
             telemetry,
+            context_limit_breached: false,
         }
     }
 
@@ -542,6 +560,7 @@ impl AggregationState {
     fn insert(&mut self, timestamp: u64, metric: Metric) -> bool {
         // If we haven't seen this context yet, and it would put us over the limit to insert it, then return early.
         if !self.contexts.contains_key(metric.context()) && self.contexts.len() >= self.context_limit {
+            self.context_limit_breached = true;
             return false;
         }
 
@@ -686,9 +705,17 @@ impl AggregationState {
         let target_contexts_capacity = contexts_len_after.saturating_add(contexts_delta / 2);
         self.contexts.shrink_to(target_contexts_capacity);
 
+        if self.context_limit_breached && self.contexts.len() < self.context_limit {
+            self.context_limit_breached = false;
+        }
+
         self.last_flush = current_time;
 
         Ok(())
+    }
+
+    fn context_limit_breached(&self) -> bool {
+        self.context_limit_breached
     }
 }
 
@@ -1030,16 +1057,24 @@ mod tests {
             Metric::gauge("metric4", 4.0),
         ];
 
+        assert!(!state.context_limit_breached());
+
         assert!(state.insert(insert_ts(1), input_metrics[0].clone()));
         assert!(state.insert(insert_ts(1), input_metrics[1].clone()));
-        assert!(!state.insert(insert_ts(1), input_metrics[2].clone()));
-        assert!(!state.insert(insert_ts(1), input_metrics[3].clone()));
+        assert!(!state.context_limit_breached());
 
-        // We should only see the first two gauges after flushing.
+        assert!(!state.insert(insert_ts(1), input_metrics[2].clone()));
+        assert!(state.context_limit_breached());
+        assert!(!state.insert(insert_ts(1), input_metrics[3].clone()));
+        assert!(state.context_limit_breached());
+
+        // We should only see the first two gauges after flushing. The flush should also clear the breached flag since
+        // contexts drop below the limit.
         let flushed_metrics = get_flushed_metrics(flush_ts(1), &mut state).await;
         assert_eq!(flushed_metrics.len(), 2);
         assert_eq!(input_metrics[0].context(), flushed_metrics[0].context());
         assert_eq!(input_metrics[1].context(), flushed_metrics[1].context());
+        assert!(!state.context_limit_breached());
 
         // We should be able to insert the third and fourth gauges now as the first two have been flushed, and along
         // with them, their contexts should no longer be tracked in the aggregation state:
