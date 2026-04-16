@@ -137,6 +137,8 @@ pub async fn handle_run_command(
 
     let dsd_stats_config = DogStatsDStatisticsConfiguration::new();
 
+    info!("Environment provider initialized. Starting topology construction...");
+
     // Create our primary data topology and spawn any internal processes, which will ensure all relevant components are
     // registered and accounted for in terms of memory usage.
     let blueprint = create_topology(

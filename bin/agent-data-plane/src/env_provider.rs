@@ -8,7 +8,8 @@ use saluki_env::{
     EnvironmentProvider,
 };
 use saluki_error::GenericError;
-use tracing::{debug, warn};
+use std::time::Instant;
+use tracing::{debug, info, warn};
 
 use crate::config::DataPlaneConfiguration;
 
@@ -52,7 +53,10 @@ impl ADPEnvironmentProvider {
             debug!("Using fixed host provider due to standalone mode. Hostname must be set via `hostname` configuration setting.");
             BoxedHostProvider::from_provider(FixedHostProvider::from_configuration(config)?)
         } else {
+            info!("Connecting to Datadog Agent API for host provider (may block until Agent IPC is ready)...");
+            let t = Instant::now();
             let provider = RemoteAgentHostProvider::from_configuration(config).await?;
+            info!(elapsed_ms = t.elapsed().as_millis(), "Connected to Datadog Agent API for host provider.");
             provider_component.bounds_builder().with_subcomponent("host", &provider);
 
             BoxedHostProvider::from_provider(provider)
@@ -62,8 +66,11 @@ impl ADPEnvironmentProvider {
             debug!("Using no-op workload provider due to standalone mode. Origin detection/enrichment will not be available.");
             None
         } else {
+            info!("Connecting to Datadog Agent API for workload provider (may block until Agent IPC is ready)...");
+            let t = Instant::now();
             let component = component_registry.get_or_create("workload");
             let provider = RemoteAgentWorkloadProvider::from_configuration(config, component, health_registry).await?;
+            info!(elapsed_ms = t.elapsed().as_millis(), "Connected to Datadog Agent API for workload provider.");
             Some(provider)
         };
 

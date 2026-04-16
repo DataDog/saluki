@@ -355,6 +355,15 @@ impl DataCollector {
         if let ExitStatus::Failed { code, error } = self.millstone_handle.wait().await {
             return Err(generic_error!("Failed to drive millstone to completion; process exited with non-zero exit code ({}). Error message: {}", code, error));
         }
+
+        // When GROUND_TRUTH_RACE_TEST is set, exit immediately after millstone succeeds.
+        // This skips the flush wait and analysis, letting a tight repro loop run faster:
+        // a successful millstone means the startup race did NOT trigger this iteration.
+        if std::env::var("GROUND_TRUTH_RACE_TEST").is_ok() {
+            info!("GROUND_TRUTH_RACE_TEST: millstone succeeded — startup race did not trigger. Exiting early.");
+            std::process::exit(0);
+        }
+
         debug!(
             "Millstone container stopped successfully. Waiting for flush interval to elapse before dumping metrics..."
         );
