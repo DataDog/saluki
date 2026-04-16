@@ -50,7 +50,7 @@ Workspaces campaigner to build a new image and open a follow-up PR on that
 branch updating the SHA in `devcontainer.json`. Merge the campaigner PR before
 merging the branch. Monitor `#workspaces-ops` for build failures.
 
-### Testing devcontainer changes
+#### Testing prebuilt devcontainer changes
 
 In a workspace:
 
@@ -71,7 +71,7 @@ Verify inside the container:
 ```sh
 whoami            # should be "bits"
 protoc --version  # should be libprotoc 29.3
-rustc --version   # should show stable
+rustup show       # no errors, no installed toolchains
 ```
 
 ### Testing the full workspace flow
@@ -82,19 +82,24 @@ After the campaigner PR updates `devcontainer.json` with the real SHA:
 workspaces create --devcontainer-config .devcontainer/datadog/default/devcontainer.json
 ```
 
-### Checklist in a new workspace
+#### Checklist in a new workspace
 
 ```sh
 whoami
 protoc --version
-rustc --version
 
 cd ~/dd/saluki
+
+rustup show     # matches the version in rust-toolchain.toml
+rustc --version
+cargo --version
+
 # following steps should be no-ops
 # (they were already done at postCreate)
 make check-rust-build-tools
 make cargo-preinstall
-# check that it does compile
+
+# check that code does compile
 cargo build
 ```
 
