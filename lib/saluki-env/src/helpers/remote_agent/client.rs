@@ -173,8 +173,25 @@ impl RemoteAgentClient {
         let client = AgentClient::new(service.clone());
         let mut secure_client = AgentSecureClient::new(service);
 
-        // Try and do a basic health check to make sure we can connect and that our authentication token is valid.
-        try_query_agent_api(&mut secure_client).await?;
+        // Verify the Agent API is responsive and our token is valid. The tagger may not be
+        // ready immediately after the channel is established, so retry with the same backoff
+        // as the connection setup above.
+        let mut attempts = 0;
+        loop {
+            match try_query_agent_api(&mut secure_client).await {
+                Ok(()) => break,
+                Err(e) if attempts < config.connect_retry_attempts => {
+                    warn!(error = %e, "");
+                    warn!("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+                    warn!("!!! DATADOG AGENT API NOT YET READY (attempt {}/{}) — retrying in {:?} !!!", attempts + 1, config.connect_retry_attempts, config.connect_retry_backoff);
+                    warn!("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+                    warn!("");
+                    tokio::time::sleep(config.connect_retry_backoff).await;
+                    attempts += 1;
+                }
+                Err(e) => return Err(e).error_context("Failed to verify Datadog Agent API."),
+            }
+        }
 
         Ok(Self { client, secure_client })
     }
@@ -383,7 +400,9 @@ async fn try_query_agent_api(
         }),
         cardinality: TagCardinality::High.into(),
     };
-    match client.tagger_fetch_entity(noop_fetch_request).await {
+    let mut request = tonic::Request::new(noop_fetch_request);
+    request.set_timeout(Duration::from_secs(2));
+    match client.tagger_fetch_entity(request).await {
         Ok(_) => Ok(()),
         Err(e) => match e.code() {
             Code::Unauthenticated => Err(generic_error!(
