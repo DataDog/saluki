@@ -171,11 +171,6 @@ impl OtlpServerBuilder {
             _ => return Err(generic_error!("OTLP gRPC endpoint must be a TCP address.")),
         };
 
-        // Bind the gRPC socket eagerly so the port is guaranteed to be accepting
-        // connections before build() returns. Spawning serve() fire-and-forget would
-        // delay binding until the task is scheduled, creating a race where callers
-        // that connect immediately (e.g. millstone in correctness tests) get
-        // connection-refused even though the server is nominally "ready".
         let grpc_listener = tokio::net::TcpListener::bind(grpc_socket_addr)
             .await
             .map_err(|e| generic_error!("Failed to bind OTLP gRPC listener on '{}': {}", grpc_socket_addr, e))?;
