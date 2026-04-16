@@ -776,6 +776,12 @@ sync-licenses: ## Synchronizes the third-party license file with the current cra
 	@echo "[*] Synchronizing third-party license file to current dependencies..."
 	@$(HOME)/.cargo/bin/dd-rust-license-tool write
 
+.PHONY: setup-hooks
+setup-hooks: ## Configure Git to use the committed hooks in .githooks/
+	@git config core.hooksPath .githooks
+	@echo "[*] Git hooks configured. Pre-commit checks will run on each commit."
+	@echo "[*] To skip hooks on a specific commit, use: git commit --no-verify"
+
 .PHONY: cargo-preinstall
 cargo-preinstall: cargo-install-dd-rust-license-tool cargo-install-cargo-deny cargo-install-cargo-hack
 cargo-preinstall: cargo-install-cargo-nextest cargo-install-cargo-autoinherit cargo-install-cargo-sort
