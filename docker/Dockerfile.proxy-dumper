@@ -13,6 +13,8 @@ RUN go build -o ./target/proxy-dumper ./cmd/
 # Re-package proxy-dumper into a slightly _bigger_ image, one which has basic file utilities and what not for debugging.
 FROM ${APP_IMAGE}
 
+RUN sed -i 's|http://archive.ubuntu.com|http://mirrors.edge.kernel.org|g; s|http://security.ubuntu.com|http://mirrors.edge.kernel.org|g' /etc/apt/sources.list 2>/dev/null || true
+
 # Only install ca-certificates if the directory doesn't exist.
 #
 # We do this because we don't want to set the user to `root` in the application image, but we need `root` to use
