@@ -53,7 +53,6 @@ impl RuntimeConfiguration {
         } else {
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
-                .enable_eager_driver_handoff()
                 .enable_alt_timer()
                 .worker_threads(self.worker_threads)
                 .thread_name_fn(move || {
