@@ -233,6 +233,7 @@ endif
 		--tag local.dev/saluki-images/proxy-dumper:testing \
 		--build-arg BUILD_IMAGE=$(GO_BUILD_IMAGE) \
 		--build-arg APP_IMAGE=$(GO_APP_IMAGE) \
+		--build-context repo=. \
 		--file ./docker/Dockerfile.proxy-dumper \
 		test/build/dd-agent-benchmarks/docker/proxy-dumper
 

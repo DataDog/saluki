@@ -1,7 +1,8 @@
 FROM registry.ddbuild.io/docker:20.10-py3
 
 # Redirect to a reliable US mirror in case archive.ubuntu.com is unavailable.
-RUN sed -i 's|http://archive.ubuntu.com|http://mirrors.edge.kernel.org|g; s|http://security.ubuntu.com|http://mirrors.edge.kernel.org|g' /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
+RUN --mount=type=bind,source=.ci/configure-apt-mirror.sh,target=/tmp/configure-apt-mirror.sh \
+    sh /tmp/configure-apt-mirror.sh
 
 # Install datadog-ci.
 RUN set -x \
