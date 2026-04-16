@@ -1,6 +1,5 @@
 FROM registry.ddbuild.io/docker:20.10-py3
 
-# Redirect to a reliable US mirror in case archive.ubuntu.com is unavailable.
 RUN --mount=type=bind,source=.ci/configure-apt-mirror.sh,target=/tmp/configure-apt-mirror.sh \
     sh /tmp/configure-apt-mirror.sh
 

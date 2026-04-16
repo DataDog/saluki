@@ -3,7 +3,6 @@ FROM registry.ddbuild.io/images/docker:27.3.1
 ARG RUST_VERSION=1.93.0
 ARG TARGETARCH
 
-# Redirect to a reliable US mirror in case archive.ubuntu.com is unavailable.
 RUN --mount=type=bind,source=.ci/configure-apt-mirror.sh,target=/tmp/configure-apt-mirror.sh \
     sh /tmp/configure-apt-mirror.sh
 

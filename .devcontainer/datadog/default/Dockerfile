@@ -7,7 +7,6 @@ ARG USER_GID=${USER_UID}
 # Avoid interactive prompts during package installation.
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Redirect to a reliable US mirror in case archive.ubuntu.com is unavailable.
 RUN --mount=type=bind,source=.ci/configure-apt-mirror.sh,target=/tmp/configure-apt-mirror.sh \
     sh /tmp/configure-apt-mirror.sh
 

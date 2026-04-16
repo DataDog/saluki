@@ -3,7 +3,6 @@ FROM registry.ddbuild.io/docker:24.0.4-jammy
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Etc/UTC
 
-# Redirect to a reliable US mirror in case archive.ubuntu.com is unavailable.
 RUN --mount=type=bind,source=.ci/configure-apt-mirror.sh,target=/tmp/configure-apt-mirror.sh \
     sh /tmp/configure-apt-mirror.sh
 

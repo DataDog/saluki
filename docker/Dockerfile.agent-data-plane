@@ -24,7 +24,6 @@ ENV APP_GIT_HASH=${APP_GIT_HASH}
 ENV APP_VERSION=${APP_VERSION}
 ENV APP_BUILD_TIME=${APP_BUILD_TIME}
 
-# Redirect to a reliable US mirror in case archive.ubuntu.com is unavailable.
 RUN --mount=type=bind,source=.ci/configure-apt-mirror.sh,target=/tmp/configure-apt-mirror.sh \
     sh /tmp/configure-apt-mirror.sh
 
