@@ -13,9 +13,6 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 export PATH="$HOME/.cargo/bin:$PATH"
 
 # Install cargo-binstall by downloading the pre-built binary directly.
-# This avoids compilation issues with pinned source versions vs changing Rust
-# toolchains. Version should be kept in sync with CARGO_TOOL_VERSION_cargo-binstall
-# in the Makefile.
 BINSTALL_VERSION="1.17.7"
 BINSTALL_ARCH="$(uname -m)"
 BINSTALL_TARBALL="cargo-binstall-${BINSTALL_ARCH}-unknown-linux-musl.tgz"

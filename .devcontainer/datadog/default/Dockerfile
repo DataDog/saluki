@@ -24,6 +24,6 @@ RUN apt-get update \
         unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Install protoc v29.3 from GitHub releases (the apt protobuf-compiler is too old).
+# Install protoc as in CI
 COPY .ci/install-protoc.sh /tmp/install-protoc.sh
 RUN chmod +x /tmp/install-protoc.sh && /tmp/install-protoc.sh && rm /tmp/install-protoc.sh

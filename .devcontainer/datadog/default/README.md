@@ -8,7 +8,7 @@ This devcontainer is designed to work with [Datadog Workspaces](https://datadogh
 
 The simplest way to create a workspace is:
 
-```
+```sh
 workspaces create {WORKSPACE_NAME} --repo Datadog/saluki
 ```
 
@@ -17,6 +17,7 @@ This defaults to using the `.devcontainer/datadog/default` dev container.
 ### Tooling
 
 ADP workspaces come pre-setup with:
+
 - Rust stable toolchain (exact version pinned in `rust-toolchain.toml`)
 - protoc v29.3
 - Cargo tools: cargo-binstall, cargo-deny, cargo-hack, cargo-nextest,
@@ -70,14 +71,33 @@ devcontainer run --config .devcontainer/datadog/default/devcontainer.json .
 This will start the container, run the lifecycle commands (including
 `make cargo-preinstall`), and keep it running. Press `^C` to stop.
 
+### Checklist in a new workspace
+
+```sh
+whoami
+protoc --version
+rustc --version
+
+cd ~/dd/saluki
+# following steps should be no-ops
+# (they were already done at postCreate)
+make check-rust-build-tools
+make cargo-preinstall
+# check that it does compile
+cargo build
+```
+
 ### Troubleshooting
 
-**"Complete the login via your OIDC provider" and the build hangs**
+#### "Complete the login via your OIDC provider" and the build hangs
 
 The build is stuck because the workspace is not authorized to access our registry.
+
 - Stop the build
 - Trigger interactive authorization:
+
 ```sh
 docker pull registry.ddbuild.io/images/base/gbi-ubuntu_2404:release
 ```
+
 - Follow the browser instructions, then restart the build
