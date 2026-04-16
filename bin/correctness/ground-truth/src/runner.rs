@@ -349,7 +349,7 @@ impl DataCollector {
     }
 
     async fn wait_for_data(self) -> Result<CollectedData, GenericError> {
-        debug!("Waiting for millstone container to complete...");
+        info!("Millstone started. Waiting for it to complete...");
 
         // Wait for millstone to complete, since that signals that all metrics have been _sent_ to the target.
         if let ExitStatus::Failed { code, error } = self.millstone_handle.wait().await {
@@ -460,14 +460,15 @@ async fn spawn_driver_with_details(
     mut driver: Driver, coordinator: &mut Coordinator, cancel_token: CancellationToken,
 ) -> Result<DriverHandle, GenericError> {
     let driver_id = driver.driver_id();
-    debug!(driver_id, "Starting container...");
+    let t = std::time::Instant::now();
+    info!(driver_id, "Starting container...");
 
     // Start the container and wait for it to become healthy.
     let details = driver.start().await?;
-    debug!(driver_id, "Container started. Waiting for it to become healthy...");
+    info!(driver_id, elapsed_ms = t.elapsed().as_millis(), "Container started. Waiting for health check...");
 
     driver.wait_for_container_healthy().await?;
-    debug!(driver_id, "Container is healthy. Proceeding...");
+    info!(driver_id, elapsed_ms = t.elapsed().as_millis(), "Container healthy. Proceeding.");
 
     // Spawn a management task that will ensure the container runs until the shutdown signal is received, or the
     // container stops, whichever comes first.

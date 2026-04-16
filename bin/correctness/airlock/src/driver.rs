@@ -21,7 +21,7 @@ use tokio::{
     io::{AsyncWriteExt as _, BufWriter},
     time::sleep,
 };
-use tracing::{debug, error, trace};
+use tracing::{debug, error, info, trace};
 
 use crate::config::{DatadogIntakeConfig, MillstoneConfig, TargetConfig};
 
@@ -713,6 +713,7 @@ impl Driver {
     ///
     /// If there is an error while inspecting the container, it will be returned.
     pub async fn wait_for_container_healthy(&mut self) -> Result<(), GenericError> {
+        let started_waiting = Instant::now();
         loop {
             // Inspect the container, and see if it even has any health checks defined. If not, then we can return early.
             let response = self.docker.inspect_container(&self.container_name, None).await?;
@@ -736,9 +737,10 @@ impl Driver {
                 match health_status {
                     // No healthcheck defined, or healthy, so we're good to go.
                     HealthStatusEnum::EMPTY | HealthStatusEnum::NONE | HealthStatusEnum::HEALTHY => {
-                        debug!(
+                        info!(
                             driver_id = self.config.driver_id,
-                            "Container '{}' healthy or no healthcheck defined. Proceeding.", &self.container_name
+                            elapsed_ms = started_waiting.elapsed().as_millis(),
+                            "Container '{}' ready.", &self.container_name
                         );
                         return Ok(());
                     }
@@ -752,9 +754,10 @@ impl Driver {
                     }
                 }
             } else {
-                debug!(
+                info!(
                     driver_id = self.config.driver_id,
-                    "Container '{}' has no healthcheck defined. Proceeding.", &self.container_name
+                    elapsed_ms = started_waiting.elapsed().as_millis(),
+                    "Container '{}' ready (no healthcheck).", &self.container_name
                 );
                 return Ok(());
             }
