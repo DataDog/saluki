@@ -25,7 +25,7 @@ ENV APP_VERSION=${APP_VERSION}
 ENV APP_BUILD_TIME=${APP_BUILD_TIME}
 
 # Redirect to a reliable US mirror in case archive.ubuntu.com is unavailable.
-RUN sed -i 's|http://archive.ubuntu.com|http://mirrors.edge.kernel.org|g; s|http://security.ubuntu.com|http://mirrors.edge.kernel.org|g' /etc/apt/sources.list 2>/dev/null || true
+RUN sed -i 's|http://archive.ubuntu.com|http://mirrors.edge.kernel.org|g; s|http://security.ubuntu.com|http://mirrors.edge.kernel.org|g' /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
 
 # Install Rust and other build dependencies.
 RUN apt-get update && \
@@ -71,7 +71,7 @@ RUN if [ "${INTERNAL_BUILD}" = "true" ]; then \
 # Calculate the necessary licenses that we need to include in the final image.
 FROM ${BUILD_IMAGE} AS license-builder
 
-RUN sed -i 's|http://archive.ubuntu.com|http://mirrors.edge.kernel.org|g; s|http://security.ubuntu.com|http://mirrors.edge.kernel.org|g' /etc/apt/sources.list 2>/dev/null || true
+RUN sed -i 's|http://archive.ubuntu.com|http://mirrors.edge.kernel.org|g; s|http://security.ubuntu.com|http://mirrors.edge.kernel.org|g' /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
 RUN apt-get update && apt-get install -y curl
 
 # Pull down the latest SPDX licenses archive.
@@ -98,7 +98,7 @@ FROM ${APP_IMAGE}
 # For local builds, the regular Ubuntu application image needs to have the CA certificates installed, but it also uses
 # the `root` user, so we can install them without issue.
 USER root
-RUN sed -i 's|http://archive.ubuntu.com|http://mirrors.edge.kernel.org|g; s|http://security.ubuntu.com|http://mirrors.edge.kernel.org|g' /etc/apt/sources.list 2>/dev/null || true
+RUN sed -i 's|http://archive.ubuntu.com|http://mirrors.edge.kernel.org|g; s|http://security.ubuntu.com|http://mirrors.edge.kernel.org|g' /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
 RUN test -d /usr/share/ca-certificates || (apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates=20240203 && \
     apt-get clean && rm -rf /var/lib/apt/lists)
