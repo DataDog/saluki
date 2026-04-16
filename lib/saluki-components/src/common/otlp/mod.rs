@@ -175,10 +175,7 @@ impl OtlpServerBuilder {
             .await
             .map_err(|e| generic_error!("Failed to bind OTLP gRPC listener on '{}': {}", grpc_socket_addr, e))?;
         let grpc_incoming = tonic::transport::server::TcpIncoming::from(grpc_listener);
-        thread_pool_handle.spawn_traced_named(
-            "otlp-grpc-server",
-            grpc_server.serve_with_incoming(grpc_incoming),
-        );
+        thread_pool_handle.spawn_traced_named("otlp-grpc-server", grpc_server.serve_with_incoming(grpc_incoming));
 
         // Create and spawn the HTTP server.
         let service = TowerToHyperService::new(
