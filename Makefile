@@ -540,7 +540,9 @@ test-correctness: test-correctness-dsd-plain test-correctness-dsd-origin-detecti
 test-correctness-dsd-plain: build-ground-truth
 test-correctness-dsd-plain: ## Runs the 'dsd-plain' correctness test case
 	@echo "[*] Running 'dsd-plain' correctness test case..."
-	@target/release/ground-truth $(shell pwd)/test/correctness/dsd-plain/config.yaml
+	@target/release/ground-truth $(shell pwd)/test/correctness/dsd-plain/config.yaml; \
+	docker ps -aq --filter name=airlock | xargs docker rm -f 2>/dev/null; \
+	docker network ls --filter name=airlock --format "{{.ID}}" | xargs docker network rm 2>/dev/null; true
 
 .PHONY: test-correctness-dsd-origin-detection
 test-correctness-dsd-origin-detection: build-ground-truth
