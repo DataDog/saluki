@@ -159,7 +159,7 @@ impl RemoteAgentClient {
 
                 let ipc_cert_file_path =
                     get_ipc_cert_file_path(config.ipc_cert_file_path.as_ref(), &config.auth_token_file_path);
-                tracing::info!(elapsed_ms = t.elapsed().as_millis(), "service_builder: building TLS config");
+                tracing::info!(elapsed_ms = t.elapsed().as_millis(), cert_path = %ipc_cert_file_path.display(), "service_builder: building TLS config (reading cert)");
                 let client_tls_config = build_datadog_agent_client_ipc_tls_config(ipc_cert_file_path).await?;
                 tracing::info!(elapsed_ms = t.elapsed().as_millis(), "service_builder: TLS config built");
 

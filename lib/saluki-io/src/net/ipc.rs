@@ -4,6 +4,8 @@ use std::{
     time::Duration,
 };
 
+use tracing::info;
+
 use rustls::{
     client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
     crypto::CryptoProvider,
@@ -167,10 +169,18 @@ async fn read_cert_file(cert_path: &Path, timeout: Duration, interval: Duration)
 
     let start_time = std::time::Instant::now();
     let mut last_error: String = String::new();
+    let mut attempt = 0u32;
     while start_time.elapsed() < timeout {
+        attempt += 1;
         match tokio::fs::read(cert_path).await {
-            Ok(data) => return Ok(data),
+            Ok(data) => {
+                if attempt > 1 {
+                    info!(elapsed_ms = start_time.elapsed().as_millis(), attempts = attempt, path = %cert_path.display(), "read_cert_file: cert available after polling");
+                }
+                return Ok(data);
+            }
             Err(e) => {
+                info!(elapsed_ms = start_time.elapsed().as_millis(), attempt, error = %e, path = %cert_path.display(), "read_cert_file: cert not available yet, retrying...");
                 last_error = e.to_string();
                 tokio::time::sleep(interval).await;
             }
