@@ -21,3 +21,7 @@ fuzz/artifacts/
 fuzz/coverage/
 fuzz/corpus/
 heaptrack.*
+
+# coverage stuff
+*.profraw
+htmlcoverage/

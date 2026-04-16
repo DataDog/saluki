@@ -1,0 +1,11 @@
+api_key: "test-key"
+dd_url: "http://localhost:2049"
+dogstatsd_port: 8125
+dogstatsd_non_local_traffic: true
+hostname: castor
+data_plane:
+  enabled: true
+  standalone_mode: true
+  dogstatsd:
+    enabled: true
+

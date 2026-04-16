@@ -10,7 +10,7 @@ baseline:
   files:
     - datadog.yaml:/etc/datadog-agent/datadog.yaml
   additional_env_vars:
-    - DD_API_KEY=correctness-test
+    - DD_API_KEY=correctness-test # grexplain: why duplicate setup of API keys ?
 comparison:
   image: saluki-images/datadog-agent:testing-release
   files:
