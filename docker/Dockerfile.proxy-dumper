@@ -13,6 +13,9 @@ RUN go build -o ./target/proxy-dumper ./cmd/
 # Re-package proxy-dumper into a slightly _bigger_ image, one which has basic file utilities and what not for debugging.
 FROM ${APP_IMAGE}
 
+RUN --mount=type=bind,from=repo,source=.ci/configure-apt-mirror.sh,target=/tmp/configure-apt-mirror.sh \
+    sh /tmp/configure-apt-mirror.sh
+
 # Only install ca-certificates if the directory doesn't exist.
 #
 # We do this because we don't want to set the user to `root` in the application image, but we need `root` to use

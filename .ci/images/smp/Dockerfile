@@ -3,6 +3,9 @@ FROM registry.ddbuild.io/docker:24.0.4-jammy
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Etc/UTC
 
+RUN --mount=type=bind,source=.ci/configure-apt-mirror.sh,target=/tmp/configure-apt-mirror.sh \
+    sh /tmp/configure-apt-mirror.sh
+
 # Install basic utilities and an updated compiler/binutils toolchain, which is necessary for compiling.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl ca-certificates awscli lsb-release git jq bc bzip2 && \
