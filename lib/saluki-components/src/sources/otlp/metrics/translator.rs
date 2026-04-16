@@ -107,6 +107,7 @@ fn infer_delta_interval(start_ts: u64, ts: u64) -> i64 {
     if start_ts == 0 || start_ts > ts {
         return 0;
     }
+    // Convert OTLP nanosecond timestamps to seconds because Datadog interval inference operates on whole-second intervals.
     let delta = (ts - start_ts) as f64 / 1e9;
     let rounded_delta = f64::round(delta);
 
@@ -135,7 +136,7 @@ fn format_float(f: f64) -> String {
     }
 }
 
-fn get_quantile_tag(quantile: f64) -> String {
+fn format_quantile_tag(quantile: f64) -> String {
     "quantile:".to_string() + format_float(quantile).as_str()
 }
 
@@ -675,7 +676,7 @@ impl OtlpMetricsTranslator {
                     if is_skippable(quantile.value) {
                         continue;
                     }
-                    let quantile_dims = base_quantile_dims.add_tags(&[get_quantile_tag(quantile.quantile)]);
+                    let quantile_dims = base_quantile_dims.add_tags(&[format_quantile_tag(quantile.quantile)]);
                     self.record_metric_event(
                         &quantile_dims,
                         quantile.value,
@@ -1001,22 +1002,21 @@ impl OtlpMetricsTranslator {
             }
 
             // Handle the histogram's total sum.
-            if let Some(sum) = dp.sum {
-                if !is_skippable(sum) {
-                    if delta {
-                        hist_info.sum = sum;
-                    } else {
-                        let (delta, ok) =
-                            self.prev_pts
-                                .diff(&sum_dims, dp.start_time_unix_nano, dp.time_unix_nano, sum);
-                        if ok {
-                            hist_info.sum = delta;
-                        } else {
-                            hist_info.ok = false;
-                        }
-                    }
+            let sum = dp.sum.unwrap_or(0.0);
+
+            if !is_skippable(sum) {
+                if delta {
+                    hist_info.sum = sum;
                 } else {
-                    hist_info.ok = false;
+                    let (delta, ok) = self
+                        .prev_pts
+                        .diff(&sum_dims, dp.start_time_unix_nano, dp.time_unix_nano, sum);
+
+                    if ok {
+                        hist_info.sum = delta;
+                    } else {
+                        hist_info.ok = false;
+                    }
                 }
             } else {
                 hist_info.ok = false;
@@ -1111,22 +1111,21 @@ impl OtlpMetricsTranslator {
 
             let sum_dims = point_dims.with_suffix("sum");
 
-            if let Some(sum) = dp.sum {
-                if !is_skippable(sum) {
-                    if delta {
-                        hist_info.sum = sum;
-                    } else {
-                        let (delta, ok) =
-                            self.prev_pts
-                                .diff(&sum_dims, dp.start_time_unix_nano, dp.time_unix_nano, sum);
-                        if ok {
-                            hist_info.sum = delta;
-                        } else {
-                            hist_info.ok = false;
-                        }
-                    }
+            let sum = dp.sum.unwrap_or(0.0);
+
+            if !is_skippable(sum) {
+                if delta {
+                    hist_info.sum = sum;
                 } else {
-                    hist_info.ok = false;
+                    let (delta, ok) = self
+                        .prev_pts
+                        .diff(&sum_dims, dp.start_time_unix_nano, dp.time_unix_nano, sum);
+
+                    if ok {
+                        hist_info.sum = delta;
+                    } else {
+                        hist_info.ok = false;
+                    }
                 }
             } else {
                 hist_info.ok = false;
