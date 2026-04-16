@@ -1,0 +1,41 @@
+{
+  // Our implementation does not support all of the schema below
+  // cf https://datadoghq.atlassian.net/wiki/spaces/DEVX/pages/3241345905/Custom+Dev+Containerss
+  "$schema": "https://raw.githubusercontent.com/devcontainers/spec/main/schemas/devContainer.schema.json",
+
+  // trigger build: 2026-04-16
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "../../..",
+    "target": "base"
+  },
+  "remoteUser": "bits",
+  // Necessary since the gbi image changes the default user to one that cannot
+  // successfully launch the needed daemon processes.  May be skipped on specific
+  // base images or when using docker files that override this.
+  "containerUser": "root",
+  // Port 22 is required by workspaces and will be validated. Others can be supplied
+  // as needed by specific devcontainers.  For ports supported by remote workspaces, see
+  // https://datadoghq.atlassian.net/wiki/spaces/DEVX/pages/3012362251/Workspaces+-+Architecture#Available-Workspace-Ports
+  "forwardPorts": [22],
+  "features": {
+    // The key indicator that should make this devcontainer into a viable workspace.
+    "registry.ddbuild.io/workspaces/features/base:0.4.106685526": {},
+    "registry.ddbuild.io/workspaces/features/claude-code:0.1.91882121": {},
+    // ADP-specific setup
+    "./features/adp": {}
+  },
+  "waitFor": "postStartCommand",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "vadimcn.vscode-lldb",
+        "tamasfe.even-better-toml"
+      ],
+      "settings": {
+        "rust-analyzer.check.command": "clippy"
+      }
+    }
+  }
+}

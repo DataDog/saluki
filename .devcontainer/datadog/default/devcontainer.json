@@ -1,36 +1,5 @@
-// Please reach out in #workspaces if you encounter any issues with this devcontainer
+// This devcontainer directs workspaces to use a pre-built image.  To make
+// configuration changes, edit prebuild-devcontainer.json in this folder instead
 {
-  "$schema": "https://raw.githubusercontent.com/devcontainers/spec/main/schemas/devContainer.schema.json",
-  "name": "Saluki (ADP)",
-  "build": {
-    "dockerfile": "Dockerfile",
-    "context": "../../..",
-    "target": "base"
-  },
-  "remoteUser": "bits",
-  "containerUser": "root",
-  // Port 22 is required by workspaces and will be validated. Others can be supplied
-  // as needed by specific devcontainers.  For ports supported by remote workspaces, see
-  // https://datadoghq.atlassian.net/wiki/spaces/DEVX/pages/3012362251/Workspaces+-+Architecture#Available-Workspace-Ports
-  "forwardPorts": [22],
-  "features": {
-    // The key indicator that should make this devcontainer into a viable workspace.
-    "registry.ddbuild.io/workspaces/features/base:0.4.106685526": {},
-    "registry.ddbuild.io/workspaces/features/claude-code:0.1.91882121": {},
-    // ADP-specific setup
-    "./features/adp": {}
-  },
-  "waitFor": "postStartCommand",
-  "customizations": {
-    "vscode": {
-      "extensions": [
-        "rust-lang.rust-analyzer",
-        "vadimcn.vscode-lldb",
-        "tamasfe.even-better-toml"
-      ],
-      "settings": {
-        "rust-analyzer.check.command": "clippy"
-      }
-    }
-  }
+    "image": "placeholder"
 }

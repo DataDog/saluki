@@ -34,8 +34,21 @@ ADP workspaces come pre-setup with:
   - `install.sh` -- bakes rustup + cargo-binstall into the image
   - `lifecycle/postCreate.sh` -- runs after repo clone; installs the pinned
     Rust toolchain (`rustup show`) and cargo tools (`make cargo-preinstall`)
-- `devcontainer.json` -- ties it all together with Workspaces `base` and
-  `claude-code` features
+- `prebuild-devcontainer.json` -- full build configuration (edit this to make changes)
+- `devcontainer.json` -- points to the pre-built image SHA; updated automatically
+  by the Workspaces campaigner after each change to `prebuild-devcontainer.json`
+
+### Devcontainer pre-building
+
+`devcontainer.json` references a pre-built image rather than building from
+source at workspace-creation time. This avoids the 10-minute Workspaces
+creation timeout. For more information, see the
+[documentation](https://datadoghq.atlassian.net/wiki/spaces/DEVX/pages/4194009834/Creating+Specialized+Dev+Containers+and+Features#How-Can-a-Dev-Container-Launch-Faster).
+
+Any branch push that touches `prebuild-devcontainer.json` triggers the
+Workspaces campaigner to build a new image and open a follow-up PR on that
+branch updating the SHA in `devcontainer.json`. Merge the campaigner PR before
+merging the branch. Monitor `#workspaces-ops` for build failures.
 
 ### Testing devcontainer changes
 
@@ -43,7 +56,7 @@ In a workspace:
 
 ```sh
 cd ~/dd/saluki
-devcontainer build --config .devcontainer/datadog/default/devcontainer.json .
+devcontainer build --config .devcontainer/datadog/default/prebuild-devcontainer.json --config-file-override prebuild-devcontainer.json
 # at the end, it will print the sha of the generated container image
 ```
 
@@ -61,15 +74,13 @@ protoc --version  # should be libprotoc 29.3
 rustc --version   # should show stable
 ```
 
-For a fuller test including the `postCreateCommand` (cargo tools installation),
-use `devcontainer run`:
+### Testing the full workspace flow
+
+After the campaigner PR updates `devcontainer.json` with the real SHA:
 
 ```sh
-devcontainer run --config .devcontainer/datadog/default/devcontainer.json .
+workspaces create --devcontainer-config .devcontainer/datadog/default/devcontainer.json
 ```
-
-This will start the container, run the lifecycle commands (including
-`make cargo-preinstall`), and keep it running. Press `^C` to stop.
 
 ### Checklist in a new workspace
 

@@ -4,18 +4,12 @@
 # postCreateCommand (once the repo is available).
 set -o xtrace -o errexit -o nounset
 
-# Install rustup with the stable toolchain.
-# The exact version (+ clippy/rustfmt) is pinned in rust-toolchain.toml and
-# will be installed automatically on first cargo invocation in the workspace.
+# Install rustup
+# The rust version is pinned in rust-toolchain.toml
+# and will be installed by `rustup show` in postCreate
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-    | sh -s -- --no-modify-path --default-toolchain stable -y
+    | sh -s -- --no-modify-path --default-toolchain none -y
 
 export PATH="$HOME/.cargo/bin:$PATH"
 
-# Install cargo-binstall by downloading the pre-built binary directly.
-BINSTALL_VERSION="1.17.7"
-BINSTALL_ARCH="$(uname -m)"
-BINSTALL_TARBALL="cargo-binstall-${BINSTALL_ARCH}-unknown-linux-musl.tgz"
-curl -L --proto '=https' --tlsv1.2 -sSf \
-    "https://github.com/cargo-bins/cargo-binstall/releases/download/v${BINSTALL_VERSION}/${BINSTALL_TARBALL}" \
-    | tar -xz -C "$HOME/.cargo/bin"
+
