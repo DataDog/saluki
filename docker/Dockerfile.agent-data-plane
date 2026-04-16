@@ -24,6 +24,9 @@ ENV APP_GIT_HASH=${APP_GIT_HASH}
 ENV APP_VERSION=${APP_VERSION}
 ENV APP_BUILD_TIME=${APP_BUILD_TIME}
 
+# Redirect to a reliable US mirror in case archive.ubuntu.com is unavailable.
+RUN sed -i 's|http://archive.ubuntu.com|http://mirrors.edge.kernel.org|g; s|http://security.ubuntu.com|http://mirrors.edge.kernel.org|g' /etc/apt/sources.list 2>/dev/null || true
+
 # Install Rust and other build dependencies.
 RUN apt-get update && \
     apt-get install --no-install-recommends -y \

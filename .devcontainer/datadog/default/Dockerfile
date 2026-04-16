@@ -7,6 +7,9 @@ ARG USER_GID=${USER_UID}
 # Avoid interactive prompts during package installation.
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Redirect to a reliable US mirror in case archive.ubuntu.com is unavailable.
+RUN sed -i 's|http://archive.ubuntu.com|http://mirrors.edge.kernel.org|g; s|http://security.ubuntu.com|http://mirrors.edge.kernel.org|g' /etc/apt/sources.list 2>/dev/null || true
+
 # Install system-level build dependencies.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
