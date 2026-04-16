@@ -146,37 +146,40 @@ impl RemoteAgentClient {
         // We could potentially just use a retry middleware, but Tonic does have its own reconnection logic, so we'd
         // have to test it out to make sure it behaves sensibly.
         let service_builder = || async {
-            let auth_interceptor = BearerAuthInterceptor::from_file(&config.auth_token_file_path).await?;
-            let ipc_cert_file_path =
-                get_ipc_cert_file_path(config.ipc_cert_file_path.as_ref(), &config.auth_token_file_path);
-            let client_tls_config = build_datadog_agent_client_ipc_tls_config(ipc_cert_file_path).await?;
-            let https_connector = HttpsCapableConnectorBuilder::default().build(client_tls_config)?;
-            let channel = Endpoint::from(config.ipc_endpoint.clone())
-                .connect_timeout(Duration::from_secs(2))
-                .connect_with_connector(https_connector)
-                .await
-                .with_error_context(|| {
-                    format!("Failed to connect to Datadog Agent API at '{}'.", config.ipc_endpoint)
-                })?;
+            // Wrap the entire connection + verification sequence in a single timeout so that
+            // any hang at any layer (TCP connect, HTTP/2 SETTINGS handshake, tagger probe)
+            // fails fast and lets the backon retry above try again with fresh state.
+            tokio::time::timeout(Duration::from_secs(4), async {
+                let auth_interceptor = BearerAuthInterceptor::from_file(&config.auth_token_file_path).await?;
+                let ipc_cert_file_path =
+                    get_ipc_cert_file_path(config.ipc_cert_file_path.as_ref(), &config.auth_token_file_path);
+                let client_tls_config = build_datadog_agent_client_ipc_tls_config(ipc_cert_file_path).await?;
+                let https_connector = HttpsCapableConnectorBuilder::default().build(client_tls_config)?;
+                let channel = Endpoint::from(config.ipc_endpoint.clone())
+                    .connect_timeout(Duration::from_secs(2))
+                    .connect_with_connector(https_connector)
+                    .await
+                    .with_error_context(|| {
+                        format!("Failed to connect to Datadog Agent API at '{}'.", config.ipc_endpoint)
+                    })?;
 
-            let service = InterceptedService::new(channel, auth_interceptor);
+                let service = InterceptedService::new(channel, auth_interceptor);
 
-            // Verify the tagger is responsive before returning the service. Included here so
-            // that the retry above covers both channel setup and tagger readiness as a unit.
-            let mut verify_client = AgentSecureClient::new(service.clone());
-            try_query_agent_api(&mut verify_client).await?;
+                // Verify the tagger is responsive before returning the service. Included here so
+                // that the retry above covers both channel setup and tagger readiness as a unit.
+                let mut verify_client = AgentSecureClient::new(service.clone());
+                try_query_agent_api(&mut verify_client).await?;
 
-            Ok::<_, GenericError>(service)
+                Ok::<_, GenericError>(service)
+            })
+            .await
+            .map_err(|_| generic_error!("Timed out connecting to Datadog Agent API (4s)."))?
         };
 
         let service = service_builder
             .retry(&config)
             .notify(|e, delay| {
-                warn!(error = %e, "");
-                warn!("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-                warn!("!!! DATADOG AGENT API NOT YET READY — retrying in {:?} !!!", delay);
-                warn!("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-                warn!("");
+                warn!(error = %e, "Failed to create Datadog Agent API client. Retrying in {:?}...", delay);
             })
             .await
             .error_context("Failed to create Datadog Agent API client.")?;
@@ -399,6 +402,13 @@ async fn try_query_agent_api(
             )),
             _ => Err(e.into()),
         },
-        Err(_elapsed) => Err(generic_error!("Timed out waiting for Datadog Agent tagger API to respond.")),
+        Err(_elapsed) => {
+            warn!("");
+            warn!("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+            warn!("!!! DATADOG AGENT TAGGER NOT RESPONDING — timed out after 2s !!!");
+            warn!("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+            warn!("");
+            Err(generic_error!("Timed out waiting for Datadog Agent tagger API to respond."))
+        }
     }
 }
