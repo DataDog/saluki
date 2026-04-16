@@ -159,39 +159,30 @@ impl RemoteAgentClient {
                     format!("Failed to connect to Datadog Agent API at '{}'.", config.ipc_endpoint)
                 })?;
 
-            Ok::<_, GenericError>(InterceptedService::new(channel, auth_interceptor))
+            let service = InterceptedService::new(channel, auth_interceptor);
+
+            // Verify the tagger is responsive before returning the service. Included here so
+            // that the retry above covers both channel setup and tagger readiness as a unit.
+            let mut verify_client = AgentSecureClient::new(service.clone());
+            try_query_agent_api(&mut verify_client).await?;
+
+            Ok::<_, GenericError>(service)
         };
 
         let service = service_builder
             .retry(&config)
             .notify(|e, delay| {
-                warn!(error = %e, "Failed to create Datadog Agent API client. Retrying in {:?}...", delay);
+                warn!(error = %e, "");
+                warn!("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+                warn!("!!! DATADOG AGENT API NOT YET READY — retrying in {:?} !!!", delay);
+                warn!("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+                warn!("");
             })
             .await
             .error_context("Failed to create Datadog Agent API client.")?;
 
         let client = AgentClient::new(service.clone());
-        let mut secure_client = AgentSecureClient::new(service);
-
-        // Verify the Agent API is responsive and our token is valid. The tagger may not be
-        // ready immediately after the channel is established, so retry with the same backoff
-        // as the connection setup above.
-        let mut attempts = 0;
-        loop {
-            match try_query_agent_api(&mut secure_client).await {
-                Ok(()) => break,
-                Err(e) if attempts < config.connect_retry_attempts => {
-                    warn!(error = %e, "");
-                    warn!("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-                    warn!("!!! DATADOG AGENT API NOT YET READY (attempt {}/{}) — retrying in {:?} !!!", attempts + 1, config.connect_retry_attempts, config.connect_retry_backoff);
-                    warn!("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-                    warn!("");
-                    tokio::time::sleep(config.connect_retry_backoff).await;
-                    attempts += 1;
-                }
-                Err(e) => return Err(e).error_context("Failed to verify Datadog Agent API."),
-            }
-        }
+        let secure_client = AgentSecureClient::new(service);
 
         Ok(Self { client, secure_client })
     }
@@ -400,15 +391,14 @@ async fn try_query_agent_api(
         }),
         cardinality: TagCardinality::High.into(),
     };
-    let mut request = tonic::Request::new(noop_fetch_request);
-    request.set_timeout(Duration::from_secs(2));
-    match client.tagger_fetch_entity(request).await {
-        Ok(_) => Ok(()),
-        Err(e) => match e.code() {
+    match tokio::time::timeout(Duration::from_secs(2), client.tagger_fetch_entity(noop_fetch_request)).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(e)) => match e.code() {
             Code::Unauthenticated => Err(generic_error!(
                 "Failed to authenticate to Datadog Agent API. Check that the configured authentication token is correct."
             )),
             _ => Err(e.into()),
         },
+        Err(_elapsed) => Err(generic_error!("Timed out waiting for Datadog Agent tagger API to respond.")),
     }
 }
