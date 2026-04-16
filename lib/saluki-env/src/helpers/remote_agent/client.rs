@@ -149,12 +149,22 @@ impl RemoteAgentClient {
             // Wrap the entire connection + verification sequence in a single timeout so that
             // any hang at any layer (TCP connect, HTTP/2 SETTINGS handshake, tagger probe)
             // fails fast and lets the backon retry above try again with fresh state.
-            tokio::time::timeout(Duration::from_secs(4), async {
+            let t = std::time::Instant::now();
+            tracing::debug!(endpoint = %config.ipc_endpoint, "service_builder: attempt starting");
+
+            let result = tokio::time::timeout(Duration::from_secs(4), async {
+                tracing::debug!("service_builder: reading bearer token from '{}'", config.auth_token_file_path.display());
                 let auth_interceptor = BearerAuthInterceptor::from_file(&config.auth_token_file_path).await?;
+                tracing::debug!(elapsed_ms = t.elapsed().as_millis(), "service_builder: bearer token read");
+
                 let ipc_cert_file_path =
                     get_ipc_cert_file_path(config.ipc_cert_file_path.as_ref(), &config.auth_token_file_path);
+                tracing::debug!(elapsed_ms = t.elapsed().as_millis(), "service_builder: building TLS config");
                 let client_tls_config = build_datadog_agent_client_ipc_tls_config(ipc_cert_file_path).await?;
+                tracing::debug!(elapsed_ms = t.elapsed().as_millis(), "service_builder: TLS config built");
+
                 let https_connector = HttpsCapableConnectorBuilder::default().build(client_tls_config)?;
+                tracing::debug!(elapsed_ms = t.elapsed().as_millis(), endpoint = %config.ipc_endpoint, "service_builder: connecting (TCP + HTTP/2 handshake)...");
                 let channel = Endpoint::from(config.ipc_endpoint.clone())
                     .connect_timeout(Duration::from_secs(2))
                     .connect_with_connector(https_connector)
@@ -162,18 +172,33 @@ impl RemoteAgentClient {
                     .with_error_context(|| {
                         format!("Failed to connect to Datadog Agent API at '{}'.", config.ipc_endpoint)
                     })?;
+                tracing::debug!(elapsed_ms = t.elapsed().as_millis(), "service_builder: channel established (TCP + HTTP/2 ready)");
 
                 let service = InterceptedService::new(channel, auth_interceptor);
 
-                // Verify the tagger is responsive before returning the service. Included here so
-                // that the retry above covers both channel setup and tagger readiness as a unit.
+                tracing::debug!(elapsed_ms = t.elapsed().as_millis(), "service_builder: verifying tagger responsiveness...");
                 let mut verify_client = AgentSecureClient::new(service.clone());
                 try_query_agent_api(&mut verify_client).await?;
+                tracing::debug!(elapsed_ms = t.elapsed().as_millis(), "service_builder: tagger verified");
 
                 Ok::<_, GenericError>(service)
             })
-            .await
-            .map_err(|_| generic_error!("Timed out connecting to Datadog Agent API (4s)."))?
+            .await;
+
+            match result {
+                Ok(Ok(service)) => {
+                    tracing::debug!(elapsed_ms = t.elapsed().as_millis(), "service_builder: attempt succeeded");
+                    Ok(service)
+                }
+                Ok(Err(e)) => {
+                    tracing::debug!(elapsed_ms = t.elapsed().as_millis(), error = %e, "service_builder: attempt failed");
+                    Err(e)
+                }
+                Err(_elapsed) => {
+                    tracing::warn!(elapsed_ms = t.elapsed().as_millis(), "service_builder: attempt timed out after 4s");
+                    Err(generic_error!("Timed out connecting to Datadog Agent API (4s)."))
+                }
+            }
         };
 
         let service = service_builder
