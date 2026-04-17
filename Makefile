@@ -533,6 +533,41 @@ test-loom: ## Runs all Loom-specific unit tests
 test-all: ## Test everything
 test-all: test test-property test-docs test-miri test-loom
 
+# Throughput benchmark: local OTLP ingest using millstone against a live ADP binary.
+# Builds release binaries, runs warm-up, then records N measurement runs.
+#
+# Single-version run:
+#   make bench-otlp-ingest
+#   make bench-otlp-ingest WARMUP=5 RUNS=20
+#
+# Two-version comparison (rebuilds between versions):
+#   make bench-otlp-ingest-compare TOKIO_A=1.50.0 TOKIO_B=1.51.0
+
+BENCH_WARMUP ?= 3
+BENCH_RUNS   ?= 10
+TOKIO_A      ?= 1.50.0
+TOKIO_B      ?= 1.51.0
+
+.PHONY: bench-otlp-ingest
+bench-otlp-ingest: ## Runs the OTLP ingest throughput benchmark against the current build
+	@test/bench/otlp-ingest.sh --warmup $(BENCH_WARMUP) --runs $(BENCH_RUNS)
+
+.PHONY: bench-otlp-ingest-compare
+bench-otlp-ingest-compare: ## Compares OTLP ingest throughput between two tokio versions (TOKIO_A and TOKIO_B)
+	@echo "### tokio $(TOKIO_A) ###"
+	@sed -i '' 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_A)"/' Cargo.toml
+	@cargo update tokio --precise $(TOKIO_A) -q
+	@test/bench/otlp-ingest.sh --warmup $(BENCH_WARMUP) --runs $(BENCH_RUNS)
+	@echo ""
+	@echo "### tokio $(TOKIO_B) ###"
+	@sed -i '' 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_B)"/' Cargo.toml
+	@cargo update tokio --precise $(TOKIO_B) -q
+	@test/bench/otlp-ingest.sh --warmup $(BENCH_WARMUP) --runs $(BENCH_RUNS)
+	@echo ""
+	@echo "(restoring $(TOKIO_A))"
+	@sed -i '' 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_A)"/' Cargo.toml
+	@cargo update tokio --precise $(TOKIO_A) -q
+
 .PHONY: test-correctness
 test-correctness: ## Runs the complete correctness suite
 test-correctness: test-correctness-dsd-plain test-correctness-dsd-origin-detection test-correctness-otlp-metrics test-correctness-otlp-traces test-correctness-otlp-traces-ets test-correctness-otlp-traces-ottl-filtering test-correctness-otlp-traces-ottl-transform test-correctness-otlp-traces-probabilistic

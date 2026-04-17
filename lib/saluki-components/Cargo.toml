@@ -91,3 +91,7 @@ tonic = { workspace = true, features = ["transport"] }
 [[bench]]
 name = "otlp_traces"
 harness = false
+
+[[bench]]
+name = "scheduler"
+harness = false
