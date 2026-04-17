@@ -37,7 +37,7 @@ static ALLOC: memory_accounting::allocator::TrackingAllocator<std::alloc::System
 fn main() -> Result<(), GenericError> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .enable_alt_timer()
+        .enable_eager_driver_handoff()
         .build()
         .error_context("Failed to build Tokio runtime.")?;
 
