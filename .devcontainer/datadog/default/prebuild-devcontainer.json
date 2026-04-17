@@ -1,3 +1,4 @@
+// trigger build: 2026-04-17
 {
   // DD implementation does not support all of the schema below
   // cf https://datadoghq.atlassian.net/wiki/spaces/DEVX/pages/3241345905/Custom+Dev+Containerss
