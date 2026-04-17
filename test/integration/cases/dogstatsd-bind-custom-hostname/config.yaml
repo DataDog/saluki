@@ -1,0 +1,52 @@
+# Issue #1331: bind_host support — hostname resolution test
+#
+# The core agent passes `bind_host` through net.ResolveUDPAddr, which accepts
+# either an IP literal or a hostname (resolved via /etc/hosts + DNS). ADP must
+# match this: bind_host="agent.internal" should resolve via DNS at startup and
+# bind to the resolved IP.
+#
+# This test proves the hostname path works end-to-end:
+#   1. PANORAMIC_DYNAMIC_CUSTOM_HOSTNAME adds an entry to /etc/hosts mapping
+#      "foo.local" to the container's eth0 IP, then returns "foo.local" as its
+#      value (captured to /airlock/dynamic/CUSTOM_HOSTNAME).
+#   2. DD_BIND_HOST is templated to {{PANORAMIC_DYNAMIC_CUSTOM_HOSTNAME}},
+#      which resolves to "foo.local" — a hostname, not an IP.
+#   3. ADP's resolve_bind_host calls lookup_host, which consults /etc/hosts
+#      and gets the eth0 IP.
+#   4. The listener binds to that IP, logged as listen_addr.
+#   5. The assertion substitutes {{PANORAMIC_DYNAMIC_CONTAINER_IP}} (same
+#      eth0 IP) and matches.
+#
+# If bind_host were only accepting IP literals, the test would fail at step 3
+# because "foo.local" doesn't parse as an IP.
+
+type: integration
+name: "dogstatsd-bind-custom-hostname"
+description: "Verifies DogStatsD resolves a custom hostname in bind_host via DNS"
+timeout: 60s
+
+container:
+  image: "saluki-images/datadog-agent:testing-devel"
+  env:
+    DD_API_KEY: "test-api-key"
+    DD_HOSTNAME: "integration-test-dsd-bind-host-hostname"
+    DD_DATA_PLANE_ENABLED: "true"
+    DD_DATA_PLANE_STANDALONE_MODE: "true"
+    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+    PANORAMIC_DYNAMIC_CONTAINER_IP: "hostname -i | awk '{print $1}'"
+    # Side-effect: add "foo.local -> eth0 IP" to /etc/hosts, then echo the
+    # hostname as the captured value (used below to template DD_BIND_HOST).
+    PANORAMIC_DYNAMIC_CUSTOM_HOSTNAME: "echo \"$(hostname -i | awk '{print $1}') foo.local\" >> /etc/hosts; echo foo.local"
+    DD_BIND_HOST: "{{PANORAMIC_DYNAMIC_CUSTOM_HOSTNAME}}"
+
+assertions:
+  - type: log_contains
+    pattern: 'listen_addr:"udp://{{PANORAMIC_DYNAMIC_CONTAINER_IP}}:8125"'
+    timeout: 15s
+  - parallel:
+      - type: process_stable_for
+        duration: 10s
+      - type: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s
