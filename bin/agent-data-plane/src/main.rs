@@ -34,8 +34,17 @@ static ALLOC: memory_accounting::allocator::TrackingAllocator<tikv_jemallocator:
 static ALLOC: memory_accounting::allocator::TrackingAllocator<std::alloc::System> =
     memory_accounting::allocator::TrackingAllocator::new(std::alloc::System);
 
-#[tokio::main]
-async fn main() -> Result<(), GenericError> {
+fn main() -> Result<(), GenericError> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .enable_alt_timer()
+        .build()
+        .error_context("Failed to build Tokio runtime.")?;
+
+    runtime.block_on(_main())
+}
+
+async fn _main() -> Result<(), GenericError> {
     let started = Instant::now();
     let cli: Cli = argh::from_env();
 
