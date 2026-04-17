@@ -555,17 +555,17 @@ bench-otlp-ingest: ## Runs the OTLP ingest throughput benchmark against the curr
 .PHONY: bench-otlp-ingest-compare
 bench-otlp-ingest-compare: ## Compares OTLP ingest throughput between two tokio versions (TOKIO_A and TOKIO_B)
 	@echo "### tokio $(TOKIO_A) ###"
-	@sed -i '' 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_A)"/' Cargo.toml
+	@sed -i$(if $(filter Darwin,$(shell uname)),  '') 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_A)"/' Cargo.toml
 	@cargo update tokio --precise $(TOKIO_A) -q
 	@test/bench/otlp-ingest.sh --warmup $(BENCH_WARMUP) --runs $(BENCH_RUNS)
 	@echo ""
 	@echo "### tokio $(TOKIO_B) ###"
-	@sed -i '' 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_B)"/' Cargo.toml
+	@sed -i$(if $(filter Darwin,$(shell uname)),  '') 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_B)"/' Cargo.toml
 	@cargo update tokio --precise $(TOKIO_B) -q
 	@test/bench/otlp-ingest.sh --warmup $(BENCH_WARMUP) --runs $(BENCH_RUNS)
 	@echo ""
 	@echo "(restoring $(TOKIO_A))"
-	@sed -i '' 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_A)"/' Cargo.toml
+	@sed -i$(if $(filter Darwin,$(shell uname)),  '') 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_A)"/' Cargo.toml
 	@cargo update tokio --precise $(TOKIO_A) -q
 
 .PHONY: test-correctness
