@@ -1,8 +1,13 @@
 use std::num::NonZeroUsize;
 
+use async_trait::async_trait;
 use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
 use otlp_protos::opentelemetry::proto::{
-    collector::trace::v1::ExportTraceServiceRequest,
+    collector::trace::v1::{
+        trace_service_client::TraceServiceClient,
+        trace_service_server::{TraceService, TraceServiceServer},
+        ExportTraceServiceRequest, ExportTraceServiceResponse,
+    },
     common::v1::{any_value::Value, AnyValue, InstrumentationScope, KeyValue},
     resource::v1::Resource,
     trace::v1::{span::SpanKind, status::StatusCode, ResourceSpans, ScopeSpans, Span, Status},
@@ -10,6 +15,7 @@ use otlp_protos::opentelemetry::proto::{
 use prost::Message;
 use saluki_components::common::otlp::{config::TracesConfig, traces::translator::OtlpTracesTranslator, Metrics};
 use tokio::sync::mpsc;
+use tonic::{transport::Server, Request, Response, Status as TonicStatus};
 
 fn kv(key: &str, val: &str) -> KeyValue {
     KeyValue {
@@ -218,11 +224,121 @@ fn bench_async_pipeline(c: &mut Criterion) {
     group.finish();
 }
 
+// Minimal gRPC TraceService that mirrors the real source handler:
+//   tonic decode → encode_to_vec → prost decode → MPSC send → response
+// This is the same re-encode/re-decode round-trip the real OtlpSource does.
+struct BenchTraceHandler {
+    tx: mpsc::Sender<ResourceSpans>,
+}
+
+#[async_trait]
+impl TraceService for BenchTraceHandler {
+    async fn export(
+        &self, request: Request<ExportTraceServiceRequest>,
+    ) -> Result<Response<ExportTraceServiceResponse>, TonicStatus> {
+        // Mirror sources/otlp/mod.rs: re-encode then re-decode to raw bytes,
+        // then send each ResourceSpans through the MPSC channel.
+        let raw = request.into_inner().encode_to_vec();
+        let decoded =
+            ExportTraceServiceRequest::decode(raw.as_slice()).map_err(|e| TonicStatus::internal(e.to_string()))?;
+        for rs in decoded.resource_spans {
+            self.tx
+                .send(rs)
+                .await
+                .map_err(|_| TonicStatus::internal("channel closed"))?;
+        }
+        Ok(Response::new(ExportTraceServiceResponse { partial_success: None }))
+    }
+}
+
+fn bench_grpc_ingest(c: &mut Criterion) {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let span_count = 50;
+    let requests_per_iter = 100;
+    let request_payload = ExportTraceServiceRequest {
+        resource_spans: vec![make_resource_spans(span_count)],
+    };
+
+    // Bind to a random loopback port, start the gRPC server.
+    let (addr, rx) = rt.block_on(async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = mpsc::channel::<ResourceSpans>(1024);
+        let incoming = tonic::transport::server::TcpIncoming::from(listener);
+        tokio::spawn(
+            Server::builder()
+                .add_service(TraceServiceServer::new(BenchTraceHandler { tx }))
+                .serve_with_incoming(incoming),
+        );
+        (addr, rx)
+    });
+
+    // Drain received ResourceSpans and translate them — keeps the ingest channel
+    // from filling up and mirrors the converter task in the real pipeline.
+    rt.spawn(async move {
+        let metrics = Metrics::noop();
+        let mut translator = OtlpTracesTranslator::new(TracesConfig::default(), NonZeroUsize::new(512 * 1024).unwrap());
+        let mut rx = rx;
+        while let Some(rs) = rx.recv().await {
+            let _ = translator.translate_spans(rs, &metrics).count();
+        }
+    });
+
+    // Connect a single client — matches `parallel_connections: 1` in the SMP config.
+    let channel = rt
+        .block_on(
+            tonic::transport::Channel::from_shared(format!("http://{}", addr))
+                .unwrap()
+                .connect(),
+        )
+        .unwrap();
+    let mut client: TraceServiceClient<tonic::transport::Channel> = TraceServiceClient::new(channel);
+
+    let total_spans = requests_per_iter * span_count;
+    let mut group = c.benchmark_group("otlp_traces/grpc_ingest");
+    group.throughput(Throughput::Elements(total_spans as u64));
+
+    // Sequential requests over one connection — closest to Lading's single-connection model.
+    group.bench_function("sequential", |b| {
+        b.iter(|| {
+            rt.block_on(async {
+                for _ in 0..requests_per_iter {
+                    client.export(Request::new(request_payload.clone())).await.unwrap();
+                }
+            })
+        })
+    });
+
+    // Concurrent requests multiplexed over the same HTTP/2 connection.
+    group.bench_function("concurrent", |b| {
+        b.iter(|| {
+            rt.block_on(async {
+                let futs: Vec<_> = (0..requests_per_iter)
+                    .map(|_| {
+                        let mut c = client.clone();
+                        let req = request_payload.clone();
+                        async move { c.export(Request::new(req)).await.unwrap() }
+                    })
+                    .collect();
+                futures::future::join_all(futs).await;
+            })
+        })
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_decode,
     bench_translate,
     bench_decode_and_translate,
-    bench_async_pipeline
+    bench_async_pipeline,
+    bench_grpc_ingest
 );
 criterion_main!(benches);
