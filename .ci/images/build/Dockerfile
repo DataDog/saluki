@@ -55,10 +55,14 @@ RUN CI=true make cargo-preinstall && \
     rm -rf /root/.cargo/registry /tmp/Makefile /tmp/bin
 
 # Final sweep: remove anything leftover in /tmp, apt metadata, docs/man pages, and ephemeral caches.
+# The nightly toolchain's rust-std (in lib/rustlib/*/lib) is only used when compiling Rust code;
+# since we only use nightly to run rustfmt, we can drop it. rustfmt itself still links dynamically
+# against libLLVM / librustc_driver in lib/, so only the rustlib subtree is safe to remove.
 RUN find /tmp -mindepth 1 -delete && \
     rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb && \
     rm -rf /root/.cache && \
     rm -rf /root/.cargo/registry && \
+    rm -rf /root/.rustup/toolchains/nightly-*/lib/rustlib/*/lib && \
     rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/locale/*
 
 COPY .ci/images/build/entrypoint.sh /
