@@ -1,0 +1,40 @@
+# Issue #1331: bind_host support — test 2 of 3 (bind_host is used)
+#
+# The core agent reads `bind_host` from config to determine which address
+# DogStatsD binds to. When bind_host is set and non_local_traffic is false,
+# the core agent binds to the specified address instead of localhost.
+#
+# ADP must match this behavior. This test sets bind_host to the container's
+# eth0 IP (resolved at runtime via PANORAMIC_DYNAMIC_CONTAINER_IP) and
+# verifies the listener binds to that address. The eth0 IP is guaranteed
+# to be neither 127.0.0.1 nor 0.0.0.0, which proves bind_host was actually
+# read from config and used — not just coincidentally matching a hardcoded
+# default.
+
+type: integration
+name: "dogstatsd-bind-host"
+description: "Verifies DogStatsD binds to the address specified by bind_host"
+timeout: 60s
+
+container:
+  image: "saluki-images/datadog-agent:testing-devel"
+  env:
+    DD_API_KEY: "test-api-key"
+    DD_HOSTNAME: "integration-test-dsd-bind-host"
+    DD_DATA_PLANE_ENABLED: "true"
+    DD_DATA_PLANE_STANDALONE_MODE: "true"
+    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+    PANORAMIC_DYNAMIC_CONTAINER_IP: "hostname -i | awk '{print $1}'"
+    DD_BIND_HOST: "{{PANORAMIC_DYNAMIC_CONTAINER_IP}}"
+
+assertions:
+  - type: log_contains
+    pattern: 'listen_addr:"udp://{{PANORAMIC_DYNAMIC_CONTAINER_IP}}:8125"'
+    timeout: 15s
+  - parallel:
+      - type: process_stable_for
+        duration: 10s
+      - type: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s
