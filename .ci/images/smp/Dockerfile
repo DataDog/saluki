@@ -8,7 +8,8 @@ RUN --mount=type=bind,source=.ci/configure-apt-mirror.sh,target=/tmp/configure-a
 
 # Install basic utilities and an updated compiler/binutils toolchain, which is necessary for compiling.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl ca-certificates awscli lsb-release git jq bc bzip2 python3 binutils && \
+    apt-get install -y --no-install-recommends curl ca-certificates awscli lsb-release git jq bc bzip2 python3 binutils \
+      cmake ninja-build g++ && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
