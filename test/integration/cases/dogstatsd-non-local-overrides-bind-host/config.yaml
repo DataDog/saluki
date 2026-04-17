@@ -1,0 +1,42 @@
+# Issue #1331: bind_host support — precedence test
+#
+# The core agent reads `bind_host` from config to determine which address
+# DogStatsD binds to. But when dogstatsd_non_local_traffic is true, the
+# core agent ignores bind_host entirely and binds to 0.0.0.0.
+#
+# ADP must match this precedence. This test sets bind_host to an arbitrary
+# value (10.9.8.7 — intentionally arbitrary) alongside non_local_traffic=true.
+#
+# Without this test, an implementation could incorrectly let bind_host
+# override non_local_traffic, breaking the core agent's contract.
+
+type: integration
+name: "dogstatsd-non-local-overrides-bind-host"
+description: "Verifies dogstatsd_non_local_traffic takes precedence over bind_host"
+timeout: 60s
+
+container:
+  image: "saluki-images/datadog-agent:testing-devel"
+  env:
+    DD_API_KEY: "test-api-key"
+    DD_HOSTNAME: "integration-test-dsd-non-local-override"
+    DD_DATA_PLANE_ENABLED: "true"
+    DD_DATA_PLANE_STANDALONE_MODE: "true"
+    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+    DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
+    # Arbitrary, unreachable IP: non_local_traffic=true wins over bind_host,
+    # so the value is ignored. Using something obviously-not-a-real-binding
+    # address makes the "the value doesn't matter" intent unmistakable.
+    DD_BIND_HOST: "10.9.8.7"
+
+assertions:
+  - type: log_contains
+    pattern: 'listen_addr:"udp://0.0.0.0:8125"'
+    timeout: 15s
+  - parallel:
+      - type: process_stable_for
+        duration: 10s
+      - type: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s
