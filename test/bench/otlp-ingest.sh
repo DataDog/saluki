@@ -48,8 +48,11 @@ ADP_PID=""
 INTAKE_PID=""
 
 cleanup() {
-    [[ -n "$ADP_PID"     ]] && kill "$ADP_PID"     2>/dev/null || true
-    [[ -n "$INTAKE_PID"  ]] && kill "$INTAKE_PID"  2>/dev/null || true
+    [[ -n "$ADP_PID"    ]] && kill "$ADP_PID"    2>/dev/null || true
+    [[ -n "$INTAKE_PID" ]] && kill "$INTAKE_PID" 2>/dev/null || true
+    # Belt-and-suspenders: free the ports in case PIDs already exited
+    fuser -k 4317/tcp 2>/dev/null || true
+    fuser -k 2049/tcp 2>/dev/null || true
 }
 trap cleanup EXIT
 
