@@ -68,6 +68,16 @@ cargo build --profile release --bin agent-data-plane --bin millstone -q
 TOKIO_VER=$(grep -A2 'name = "tokio"' "$ROOT/Cargo.lock" | grep 'version' | head -1 | awk '{print $3}' | tr -d '"')
 echo "tokio $TOKIO_VER"
 
+# ── IPC cert ─────────────────────────────────────────────────────────────────
+# ADP requires an IPC cert file for its privileged API even in standalone mode.
+# Generate a self-signed dummy cert if one doesn't already exist.
+
+IPC_CERT_FILE="/tmp/adp-bench-ipc-cert.pem"
+if [[ ! -f "$IPC_CERT_FILE" ]]; then
+    openssl req -x509 -newkey rsa:2048 -keyout "$IPC_CERT_FILE" -out "$IPC_CERT_FILE" \
+        -days 3650 -nodes -subj "/CN=adp-bench" 2>/dev/null
+fi
+
 # ── Fake intake ───────────────────────────────────────────────────────────────
 # Absorbs forwarded traces so ADP's pipeline doesn't back up on a closed socket.
 
@@ -77,6 +87,7 @@ sleep 0.5
 
 # ── Start ADP ─────────────────────────────────────────────────────────────────
 
+DD_IPC_CERT_FILE_PATH="$IPC_CERT_FILE" \
 "$ADP_BIN" -c "$BENCH_DIR/adp-otlp.yaml" run > /tmp/adp-bench.log 2>&1 &
 ADP_PID=$!
 

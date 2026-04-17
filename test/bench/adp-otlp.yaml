@@ -2,6 +2,8 @@ hostname: "bench-host"
 api_key: dummy-api-key-bench
 log_level: warn
 
+ipc_cert_file_path: /tmp/adp-bench-ipc-cert.pem
+
 data_plane:
   standalone_mode: true
   otlp:
