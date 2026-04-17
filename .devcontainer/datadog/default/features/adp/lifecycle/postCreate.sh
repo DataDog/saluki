@@ -7,7 +7,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 cd "$HOME/dd/saluki"
 
 # Install the exact Rust toolchain pinned in rust-toolchain.toml.
-rustup show
+rustup toolchain install
 
 # Install all cargo helper tools
 make check-rust-build-tools
