@@ -17,6 +17,8 @@ mod correctness;
 use self::cli::{Cli, Command};
 
 mod config;
+mod dynamic_vars;
+mod mounts;
 use self::config::discover_tests;
 
 mod events;
@@ -158,6 +160,7 @@ async fn run_tests(mut cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         cmd.parallelism,
         cmd.fail_fast,
         log_dir.clone(),
+        cmd.mounts_dir.clone(),
         tx,
         cancel_token.clone(),
     ));

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use argh::FromArgs;
 
@@ -56,6 +56,18 @@ pub struct RunCommand {
     /// skip writing container logs to disk
     #[argh(switch)]
     pub no_logs: bool,
+
+    /// directory whose contents are read-only bind mounted into every target container
+    /// panoramic launches (not millstone or datadog-intake). The directory is treated as
+    /// the container root: `<mounts-dir>/etc/foo` maps to `/etc/foo`. Defaults to
+    /// `bin/correctness/panoramic/mounts/` in the Saluki workspace where this binary was
+    /// compiled.
+    #[argh(option, default = "default_mounts_dir()")]
+    pub mounts_dir: PathBuf,
+}
+
+fn default_mounts_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("mounts")
 }
 
 /// List available integration tests.
