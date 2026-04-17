@@ -41,7 +41,7 @@ use crate::{
 /// consumer to handle the emitted events.
 pub async fn run_tests(
     test_cases: Vec<DiscoveredTest>, parallelism: usize, fail_fast: bool, log_dir: Option<PathBuf>,
-    event_tx: mpsc::UnboundedSender<TestEvent>, cancel_token: CancellationToken,
+    mounts_dir: PathBuf, event_tx: mpsc::UnboundedSender<TestEvent>, cancel_token: CancellationToken,
 ) -> Vec<TestResult> {
     // Emit run started event.
     let _ = event_tx.send(TestEvent::RunStarted {
@@ -52,9 +52,18 @@ pub async fn run_tests(
     let semaphore = Arc::new(Semaphore::new(parallelism));
     let event_tx = Arc::new(event_tx);
     let log_dir = Arc::new(log_dir);
+    let mounts_dir = Arc::new(mounts_dir);
 
     let results = if fail_fast {
-        run_fail_fast(test_cases, semaphore, event_tx.clone(), log_dir, cancel_token).await
+        run_fail_fast(
+            test_cases,
+            semaphore,
+            event_tx.clone(),
+            log_dir,
+            mounts_dir,
+            cancel_token,
+        )
+        .await
     } else {
         run_parallel(
             test_cases,
@@ -62,6 +71,7 @@ pub async fn run_tests(
             semaphore,
             event_tx.clone(),
             log_dir,
+            mounts_dir,
             cancel_token,
         )
         .await
@@ -74,7 +84,7 @@ pub async fn run_tests(
 /// Run tests sequentially, stopping at the first failure.
 async fn run_fail_fast(
     test_cases: Vec<DiscoveredTest>, semaphore: Arc<Semaphore>, event_tx: Arc<mpsc::UnboundedSender<TestEvent>>,
-    log_dir: Arc<Option<PathBuf>>, cancel_token: CancellationToken,
+    log_dir: Arc<Option<PathBuf>>, mounts_dir: Arc<PathBuf>, cancel_token: CancellationToken,
 ) -> Vec<TestResult> {
     let mut results = Vec::new();
 
@@ -89,7 +99,7 @@ async fn run_fail_fast(
 
         let _ = event_tx.send(TestEvent::TestStarted { name: name.clone() });
 
-        let result = run_with_timeout(test_case, name, &log_dir).await;
+        let result = run_with_timeout(test_case, name, &log_dir, &mounts_dir).await;
 
         let failed = !result.passed;
         let _ = event_tx.send(TestEvent::TestCompleted { result: result.clone() });
@@ -106,7 +116,8 @@ async fn run_fail_fast(
 /// Run tests in parallel up to the parallelism limit.
 async fn run_parallel(
     test_cases: Vec<DiscoveredTest>, parallelism: usize, semaphore: Arc<Semaphore>,
-    event_tx: Arc<mpsc::UnboundedSender<TestEvent>>, log_dir: Arc<Option<PathBuf>>, cancel_token: CancellationToken,
+    event_tx: Arc<mpsc::UnboundedSender<TestEvent>>, log_dir: Arc<Option<PathBuf>>, mounts_dir: Arc<PathBuf>,
+    cancel_token: CancellationToken,
 ) -> Vec<TestResult> {
     let cancel = cancel_token.clone();
 
@@ -120,6 +131,7 @@ async fn run_parallel(
             let event_tx = event_tx.clone();
             let cancel = cancel_token.clone();
             let log_dir = log_dir.clone();
+            let mounts_dir = mounts_dir.clone();
 
             async move {
                 // Check for cancellation before acquiring permit.
@@ -138,7 +150,7 @@ async fn run_parallel(
 
                 let _ = event_tx.send(TestEvent::TestStarted { name: name.clone() });
 
-                let result = run_with_timeout(test_case, name, &log_dir).await;
+                let result = run_with_timeout(test_case, name, &log_dir, &mounts_dir).await;
 
                 let _ = event_tx.send(TestEvent::TestCompleted { result: result.clone() });
 
@@ -155,14 +167,16 @@ async fn run_parallel(
 ///
 /// Integration tests handle their own timeout internally, so no outer timeout is applied.
 /// Correctness tests have no built-in timeout, so a 20-minute outer timeout is applied.
-async fn run_with_timeout(test_case: DiscoveredTest, name: String, log_dir: &Arc<Option<PathBuf>>) -> TestResult {
+async fn run_with_timeout(
+    test_case: DiscoveredTest, name: String, log_dir: &Arc<Option<PathBuf>>, mounts_dir: &Arc<PathBuf>,
+) -> TestResult {
     match &test_case {
-        DiscoveredTest::Integration(_) => run_single_test(test_case, log_dir).await,
+        DiscoveredTest::Integration(_) => run_single_test(test_case, log_dir, mounts_dir).await,
         DiscoveredTest::Correctness { .. } => {
             let timeout = test_case.timeout();
             let correctness_log_dir = (**log_dir).as_ref().map(|d| d.join("correctness").join(&name));
             tokio::select! {
-                r = run_single_test(test_case, log_dir) => r,
+                r = run_single_test(test_case, log_dir, mounts_dir) => r,
                 _ = tokio::time::sleep(timeout) => {
                     TestResult {
                         name,
@@ -181,11 +195,13 @@ async fn run_with_timeout(test_case: DiscoveredTest, name: String, log_dir: &Arc
 }
 
 /// Run a single test, dispatching to the appropriate runner based on test type.
-async fn run_single_test(test_case: DiscoveredTest, log_dir: &Arc<Option<PathBuf>>) -> TestResult {
+async fn run_single_test(
+    test_case: DiscoveredTest, log_dir: &Arc<Option<PathBuf>>, mounts_dir: &Arc<PathBuf>,
+) -> TestResult {
     match test_case {
         DiscoveredTest::Integration(tc) => {
             let test_log_dir = (**log_dir).as_ref().map(|d| d.join("integration").join(&tc.name));
-            let mut runner = TestRunner::new(tc);
+            let mut runner = TestRunner::new(tc, (**mounts_dir).clone());
             if let Some(ref dir) = **log_dir {
                 runner = runner.with_log_dir(dir.join("integration"));
             }
@@ -196,7 +212,13 @@ async fn run_single_test(test_case: DiscoveredTest, log_dir: &Arc<Option<PathBuf
         }
         DiscoveredTest::Correctness { name, config } => {
             let correctness_log_dir = (**log_dir).as_ref().map(|d| d.join("correctness").join(&name));
-            let result = crate::correctness::runner::run_correctness_test(name, config, correctness_log_dir).await;
+            let result = crate::correctness::runner::run_correctness_test(
+                name,
+                config,
+                correctness_log_dir,
+                (**mounts_dir).clone(),
+            )
+            .await;
             write_result_log(&result);
             result
         }
@@ -231,17 +253,19 @@ struct TestRunner {
     cancel_token: CancellationToken,
     log_buffer: Arc<RwLock<LogBuffer>>,
     log_dir: Option<PathBuf>,
+    mounts_dir: PathBuf,
 }
 
 impl TestRunner {
     /// Create a new test runner for the given test case.
-    fn new(test_case: TestCase) -> Self {
+    fn new(test_case: TestCase, mounts_dir: PathBuf) -> Self {
         Self {
             test_case,
             isolation_group_id: generate_isolation_group_id(),
             cancel_token: CancellationToken::new(),
             log_buffer: Arc::new(RwLock::new(LogBuffer::default())),
             log_dir: None,
+            mounts_dir,
         }
     }
 
@@ -373,6 +397,97 @@ impl TestRunner {
         // Build port mappings for assertions.
         let port_mappings = self.build_port_mappings(&details);
 
+        // Resolve dynamic variables if any PANORAMIC_DYNAMIC_* env vars are defined.
+        if crate::dynamic_vars::has_dynamic_vars(&self.test_case) {
+            let phase_start = Instant::now();
+            debug!(test = %test_name, "Resolving dynamic variables...");
+
+            match crate::dynamic_vars::read_resolved_vars(&driver).await {
+                Ok(vars) => {
+                    // Fail on empty values — indicates the init script command failed.
+                    for (key, value) in &vars {
+                        if value.is_empty() {
+                            error!(test = %test_name, key = key, "Dynamic variable resolved to empty string.");
+                            phase_timings.push(PhaseTiming {
+                                phase: "dynamic_vars".to_string(),
+                                duration: phase_start.elapsed(),
+                            });
+                            let _ = self.cleanup(&driver).await;
+                            return TestResult {
+                                name: test_name,
+                                passed: false,
+                                duration: started.elapsed(),
+                                assertion_results: vec![],
+                                error: Some(format!(
+                                    "Dynamic variable PANORAMIC_DYNAMIC_{} resolved to an empty string. \
+                                     The shell command in the test config likely failed.",
+                                    key
+                                )),
+                                phase_timings,
+                                log_dir: None,
+                                assertion_details: vec![],
+                            };
+                        }
+                    }
+
+                    info!(
+                        test = %test_name,
+                        variable_count = vars.len(),
+                        "Resolved dynamic variables."
+                    );
+                    self.test_case.resolve_dynamic_vars(&vars);
+
+                    // Fail if any placeholders remain unresolved after substitution.
+                    let unresolved = self.test_case.unresolved_placeholders();
+                    if !unresolved.is_empty() {
+                        error!(test = %test_name, unresolved = ?unresolved, "Unresolved dynamic variable placeholders.");
+                        phase_timings.push(PhaseTiming {
+                            phase: "dynamic_vars".to_string(),
+                            duration: phase_start.elapsed(),
+                        });
+                        let _ = self.cleanup(&driver).await;
+                        return TestResult {
+                            name: test_name,
+                            passed: false,
+                            duration: started.elapsed(),
+                            assertion_results: vec![],
+                            error: Some(format!(
+                                "Unresolved dynamic variable placeholders in assertions: {}. \
+                                 Check that matching PANORAMIC_DYNAMIC_* env vars are defined.",
+                                unresolved.join(", ")
+                            )),
+                            phase_timings,
+                            log_dir: None,
+                            assertion_details: vec![],
+                        };
+                    }
+                }
+                Err(e) => {
+                    error!(test = %test_name, error = %e, "Failed to resolve dynamic variables.");
+                    phase_timings.push(PhaseTiming {
+                        phase: "dynamic_vars".to_string(),
+                        duration: phase_start.elapsed(),
+                    });
+                    let _ = self.cleanup(&driver).await;
+                    return TestResult {
+                        name: test_name,
+                        passed: false,
+                        duration: started.elapsed(),
+                        assertion_results: vec![],
+                        error: Some(format!("Failed to resolve dynamic variables: {}", e)),
+                        phase_timings,
+                        log_dir: None,
+                        assertion_details: vec![],
+                    };
+                }
+            }
+
+            phase_timings.push(PhaseTiming {
+                phase: "dynamic_vars".to_string(),
+                duration: phase_start.elapsed(),
+            });
+        }
+
         // Run assertions with overall timeout.
         info!(
             test = %test_name,
@@ -478,6 +593,9 @@ impl TestRunner {
         };
 
         let mut config = DriverConfig::target("target", target_config).await?;
+
+        // Apply panoramic's read-only file overlays before any test-specific bind mounts.
+        config = crate::mounts::apply_target_mounts(config, &self.mounts_dir)?;
 
         // Add file mounts.
         for file_spec in &container.files {
