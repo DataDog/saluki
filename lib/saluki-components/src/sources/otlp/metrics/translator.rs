@@ -128,6 +128,23 @@ fn format_float(f: f64) -> String {
         return "0".to_string();
     }
 
+    // Mirror Go's strconv.FormatFloat(f, 'g', -1, 64): switch to scientific
+    // notation below 1e-4, with a zero-padded two-digit signed exponent.
+    if f.abs() < 1e-4 {
+        let s = format!("{f:e}");
+        let (mantissa, exp_part) = s.split_once('e').expect("{:e} always contains 'e'");
+        let (sign, digits) = if let Some(d) = exp_part.strip_prefix('-') {
+            ("-", d)
+        } else {
+            ("+", exp_part.strip_prefix('+').unwrap_or(exp_part))
+        };
+        return if digits.len() < 2 {
+            format!("{mantissa}e{sign}0{digits}")
+        } else {
+            format!("{mantissa}e{sign}{digits}")
+        };
+    }
+
     let s = format!("{f}");
     if f == f.floor() {
         format!("{s}.0")
