@@ -26,6 +26,8 @@ static BASE_IGNORED_FIELDS_DIFF: &[&str] = &[
 
 static CUSTOM_FIELD_COMPARATORS: &[(&str, &dyn FieldComparator)] = &[("start", &check_start_diff)];
 
+const SAMPLE_MISMATCH_LIMIT: usize = 5;
+
 trait FieldComparator: Sync {
     fn compare(&self, baseline: &Value, comparison: &Value) -> Result<(), String>;
 }
@@ -129,6 +131,8 @@ impl TracesAnalyzer {
     pub fn run_analysis(self) -> Result<(), GenericError> {
         let mut error_count = 0;
         let mut diff_recorder = DifferenceRecorder::new(self.ignored_fields);
+        let mut span_samples: Vec<String> = Vec::new();
+        let mut stats_samples: Vec<String> = Vec::new();
 
         // We should have an identical number of traces and spans.
         if self.baseline_total_traces != self.comparison_total_traces {
@@ -191,6 +195,17 @@ impl TracesAnalyzer {
                         error!("");
 
                         error_count += 1;
+
+                        if span_samples.len() < SAMPLE_MISMATCH_LIMIT {
+                            let diffs = diff_recorder
+                                .diffs()
+                                .iter()
+                                .take(3)
+                                .map(|d| format!("    {}", d))
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            span_samples.push(format!("  span {}:\n{}", baseline_span_id, diffs));
+                        }
                     }
                 }
                 None => {
@@ -285,6 +300,17 @@ impl TracesAnalyzer {
                             error!("");
 
                             error_count += 1;
+
+                            if stats_samples.len() < SAMPLE_MISMATCH_LIMIT {
+                                let diffs = diff_recorder
+                                    .diffs()
+                                    .iter()
+                                    .take(3)
+                                    .map(|d| format!("    {}", d))
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
+                                stats_samples.push(format!("  stats group {}:\n{}", baseline_aggegation_key, diffs));
+                            }
                         }
                     }
                     None => {
@@ -312,9 +338,33 @@ impl TracesAnalyzer {
         }
 
         if error_count > 0 {
-            Err(GenericError::msg(
-                "Detected mismatched spans between baseline and comparison targets.",
-            ))
+            let mut msg = format!(
+                "{} mismatched span(s)/stats group(s) between baseline and comparison.",
+                error_count
+            );
+            if !span_samples.is_empty() {
+                msg.push_str(&format!(
+                    "\n  (showing {} of {} mismatched span(s))",
+                    span_samples.len(),
+                    error_count
+                ));
+                for sample in span_samples {
+                    msg.push('\n');
+                    msg.push_str(&sample);
+                }
+            }
+            if !stats_samples.is_empty() {
+                msg.push_str(&format!(
+                    "\n  (showing {} of {} mismatched stats group(s))",
+                    stats_samples.len(),
+                    error_count
+                ));
+                for sample in stats_samples {
+                    msg.push('\n');
+                    msg.push_str(&sample);
+                }
+            }
+            Err(generic_error!("{}", msg))
         } else {
             Ok(())
         }
