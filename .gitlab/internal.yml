@@ -1,4 +1,4 @@
-generate-build-ci-image:
+.generate-ci-image-definition:
   stage: internal
   image: ${DOCKER_BUILD_IMAGE}
   id_tokens:
@@ -11,88 +11,48 @@ generate-build-ci-image:
       allow_failure: true
     - if: $CI_PIPELINE_SOURCE == "schedule" && $BUILD_HELPER_IMAGES == "true"
       allow_failure: true
+  script:
+    - export IMAGE_REF=${SALUKI_IMAGE_REPO_BASE}/${IMAGE_NAME}:v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}
+    - docker buildx build
+      --platform linux/amd64,linux/arm64
+      --tag ${IMAGE_REF}
+      --label git.repository=${CI_PROJECT_NAME}
+      --label git.branch=${CI_COMMIT_REF_NAME}
+      --label git.commit=${CI_COMMIT_SHA}
+      --label ci.pipeline_id=${CI_PIPELINE_ID}
+      --label ci.job_id=${CI_JOB_ID}
+      ${BUILD_ARGS}
+      --push
+      --metadata-file ./build.metadata
+      --file ${DOCKERFILE}
+      .
+    # Now flatten the image, realizing any space savings from duplicate layers, cleaned up cruft, etc.
+    - crane flatten --tag ${IMAGE_REF} ${IMAGE_REF}
+    # Tag this as `latest` so we can immediately take advatange of it.
+    - crane tag ${IMAGE_REF} latest
+    # Recalculate the image digest post-flattening and update the build metadata so we can sign the flattened image.
+    - NEW_DIGEST=$(crane digest ${IMAGE_REF})
+    - jq --arg d "$NEW_DIGEST" '.["containerimage.digest"] = $d' build.metadata > build.metadata.new && mv build.metadata.new build.metadata
+    - ddsign sign ${IMAGE_REF} --docker-metadata-file ./build.metadata
+
+generate-build-ci-image:
+  extends: [.generate-ci-image-definition]
   before_script:
     - export RUST_VERSION=$(grep channel rust-toolchain.toml | cut -d '"' -f 2)
     - echo RUST_VERSION=${RUST_VERSION}
-  script:
-    - docker buildx build
-      --platform linux/amd64,linux/arm64
-      --tag ${SALUKI_IMAGE_REPO_BASE}/build-ci:v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}
-      --tag ${SALUKI_IMAGE_REPO_BASE}/build-ci:latest
-      --label git.repository=${CI_PROJECT_NAME}
-      --label git.branch=${CI_COMMIT_REF_NAME}
-      --label git.commit=${CI_COMMIT_SHA}
-      --label ci.pipeline_id=${CI_PIPELINE_ID}
-      --label ci.job_id=${CI_JOB_ID}
-      --build-arg CI=true
-      --build-arg RUST_VERSION=${RUST_VERSION}
-      --build-arg DD_AGENT_IMAGE=registry.datadoghq.com/agent:latest-jmx
-      --squash
-      --push
-      --metadata-file ./build-ci-metadata
-      --file .ci/images/build/Dockerfile
-      .
-    - ddsign sign ${SALUKI_IMAGE_REPO_BASE}/build-ci:v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}
-      --docker-metadata-file ./build-ci-metadata
+    - export BUILD_ARGS="--build-arg RUST_VERSION=${RUST_VERSION}"
+  variables:
+    IMAGE_NAME: build-ci
+    DOCKERFILE: .ci/images/build/Dockerfile
 
 generate-general-ci-image:
-  stage: internal
-  image: ${DOCKER_BUILD_IMAGE}
-  id_tokens:
-    DDSIGN_ID_TOKEN:
-      aud: image-integrity
-  needs: []
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "web"
-      when: manual
-      allow_failure: true
-    - if: $CI_PIPELINE_SOURCE == "schedule" && $BUILD_HELPER_IMAGES == "true"
-      allow_failure: true
-  script:
-    - docker buildx build
-      --platform linux/amd64,linux/arm64
-      --tag ${SALUKI_IMAGE_REPO_BASE}/general-ci:v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}
-      --tag ${SALUKI_IMAGE_REPO_BASE}/general-ci:latest
-      --label git.repository=${CI_PROJECT_NAME}
-      --label git.branch=${CI_COMMIT_REF_NAME}
-      --label git.commit=${CI_COMMIT_SHA}
-      --label ci.pipeline_id=${CI_PIPELINE_ID}
-      --label ci.job_id=${CI_JOB_ID}
-      --squash
-      --push
-      --metadata-file ./general-ci-metadata
-      --file .ci/images/general/Dockerfile
-      .
-    - ddsign sign ${SALUKI_IMAGE_REPO_BASE}/general-ci:v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}
-      --docker-metadata-file ./general-ci-metadata
+  extends: [.generate-ci-image-definition]
+  variables:
+    IMAGE_NAME: general-ci
+    DOCKERFILE: .ci/images/general/Dockerfile
 
 generate-smp-ci-image:
-  stage: internal
-  image: ${DOCKER_BUILD_IMAGE}
-  id_tokens:
-    DDSIGN_ID_TOKEN:
-      aud: image-integrity
-  needs: []
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "web"
-      when: manual
-      allow_failure: true
-    - if: $CI_PIPELINE_SOURCE == "schedule" && $BUILD_HELPER_IMAGES == "true"
-      allow_failure: true
-  script:
-    - docker buildx build
-      --platform linux/amd64,linux/arm64
-      --tag ${SALUKI_IMAGE_REPO_BASE}/smp-ci:v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}
-      --tag ${SALUKI_IMAGE_REPO_BASE}/smp-ci:latest
-      --label git.repository=${CI_PROJECT_NAME}
-      --label git.branch=${CI_COMMIT_REF_NAME}
-      --label git.commit=${CI_COMMIT_SHA}
-      --label ci.pipeline_id=${CI_PIPELINE_ID}
-      --label ci.job_id=${CI_JOB_ID}
-      --squash
-      --push
-      --metadata-file ./smp-ci-metadata
-      --file .ci/images/smp/Dockerfile
-      .
-    - ddsign sign ${SALUKI_IMAGE_REPO_BASE}/smp-ci:v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}
-      --docker-metadata-file ./smp-ci-metadata
+  extends: [.generate-ci-image-definition]
+  variables:
+    IMAGE_NAME: smp-ci
+    DOCKERFILE: .ci/images/smp/Dockerfile
