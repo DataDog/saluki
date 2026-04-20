@@ -5,7 +5,8 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
-mod common;
+#[doc(hidden)]
+pub mod common;
 
 pub mod config;
 pub mod decoders;

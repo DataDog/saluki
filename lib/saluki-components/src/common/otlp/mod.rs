@@ -76,15 +76,20 @@ impl Metrics {
         &self.bytes_received
     }
 
-    /// Test-only helper to construct a `Metrics` instance.
-    #[cfg(test)]
-    pub fn for_tests() -> Self {
+    /// Constructs a `Metrics` instance with all counters as no-ops, for use in tests and benchmarks.
+    pub fn noop() -> Self {
         Metrics {
             metrics_received: Counter::noop(),
             logs_received: Counter::noop(),
             bytes_received: Counter::noop(),
             spans_received: Counter::noop(),
         }
+    }
+
+    /// Test-only helper to construct a `Metrics` instance.
+    #[cfg(test)]
+    pub fn for_tests() -> Self {
+        Self::noop()
     }
 }
 

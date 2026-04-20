@@ -1,0 +1,32 @@
+hostname: "bench-host"
+api_key: dummy-api-key-bench
+log_level: warn
+
+ipc_cert_file_path: /tmp/adp-bench-ipc-cert.pem
+
+data_plane:
+  standalone_mode: true
+  otlp:
+    enabled: true
+
+process_config:
+  process_collection:
+    enabled: false
+  container_collection:
+    enabled: false
+
+dd_url: "http://127.0.0.1:2049"
+
+apm_config:
+  enabled: true
+  apm_dd_url: "http://127.0.0.1:2049"
+  target_traces_per_second: 1000000
+  features: ["enable_otlp_compute_top_level_by_span_kind"]
+
+otlp_config:
+  receiver:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+  traces:
+    enable_otlp_compute_top_level_by_span_kind: true
