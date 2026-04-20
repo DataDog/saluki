@@ -548,6 +548,10 @@ BENCH_RUNS   ?= 10
 TOKIO_A      ?= 1.50.0
 TOKIO_B      ?= 1.51.0
 
+.PHONY: bench-tokio-regression
+bench-tokio-regression: ## Reproduces the tokio 1.51 OTLP ingest regression from PR #7431 (LIFO slot stealing)
+	@test/bench/bench-tokio-regression.sh
+
 .PHONY: bench-otlp-ingest
 bench-otlp-ingest: ## Runs the OTLP ingest throughput benchmark against the current build
 	@test/bench/otlp-ingest.sh --warmup $(BENCH_WARMUP) --runs $(BENCH_RUNS)
