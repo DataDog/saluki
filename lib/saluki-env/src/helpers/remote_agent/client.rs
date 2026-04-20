@@ -376,8 +376,8 @@ impl<T> Stream for StreamingResponse<T> {
                     Err(status) => Outcome::Terminate(Some(Err(status))),
                 },
                 StreamingResponseProj::Streaming { stream } => match ready!(stream.poll_next(cx)) {
-                    Some(Ok(item)) => Outcome::Yield(Some(Ok(item))),
-                    other => Outcome::Terminate(other),
+                    Some(maybe_item) => Outcome::Yield(Some(maybe_item)),
+                    None => Outcome::Terminate(None),
                 },
                 StreamingResponseProj::Terminated => Outcome::Yield(None),
             };
