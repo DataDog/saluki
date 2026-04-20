@@ -9,12 +9,13 @@
   timeout: 10m
   image: "${SALUKI_BUILD_CI_IMAGE}"
   artifacts:
-    expire_in: 1 weeks
+    expire_in: 1 week
     paths:
-      - /tmp/panoramic-correctness/
+      - panoramic-logs/
     when: always
   variables:
     DD_LOG_LEVEL: "panoramic=debug,info"
+    PANORAMIC_LOG_DIR: "panoramic-logs"
     PANORAMIC_ALPINE_IMAGE: registry.ddbuild.io/alpine:latest
     PANORAMIC_MILLSTONE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
     PANORAMIC_DATADOG_INTAKE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/datadog-intake:${CI_COMMIT_SHA}

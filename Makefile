@@ -33,7 +33,7 @@ export CARGO_BINSTALL_STRATEGIES ?= crate-meta-data,compile
 ifeq ($(CI),true)
 	override CARGO_BINSTALL_STRATEGIES = compile
 endif
-export CARGO_TOOL_VERSION_cargo-binstall ?= 1.17.7
+export CARGO_TOOL_VERSION_cargo-binstall ?= 1.18.1
 export CARGO_TOOL_VERSION_dd-rust-license-tool ?= 1.0.3
 export CARGO_TOOL_VERSION_cargo-deny ?= 0.18.9
 export CARGO_TOOL_VERSION_cargo-hack ?= 0.6.30
@@ -228,6 +228,7 @@ endif
 		--tag local.dev/saluki-images/proxy-dumper:testing \
 		--build-arg BUILD_IMAGE=$(GO_BUILD_IMAGE) \
 		--build-arg APP_IMAGE=$(GO_APP_IMAGE) \
+		--build-context repo=. \
 		--file ./docker/Dockerfile.proxy-dumper \
 		test/build/dd-agent-benchmarks/docker/proxy-dumper
 
@@ -497,13 +498,13 @@ sync-docs-config: ## Synchronizes the Vale configuration, updating configured st
 test: check-rust-build-tools cargo-install-cargo-nextest
 test: ## Runs all unit tests
 	@echo "[*] Running unit tests..."
-	cargo nextest run --lib -E 'not test(/property_test_*/)'
+	cargo nextest run --lib --bins --no-fail-fast -E 'not test(/property_test_*/)'
 
 .PHONY: test-property
 test-property: check-rust-build-tools cargo-install-cargo-nextest
 test-property: ## Runs all property tests
 	@echo "[*] Running property tests..."
-	cargo nextest run --lib --release -E 'test(/property_test_*/)'
+	cargo nextest run --lib --bins --no-fail-fast --release -E 'test(/property_test_*/)'
 
 .PHONY: test-docs
 test-docs: check-rust-build-tools
@@ -729,6 +730,12 @@ sync-licenses: check-rust-build-tools cargo-install-dd-rust-license-tool
 sync-licenses: ## Synchronizes the third-party license file with the current crate dependencies
 	@echo "[*] Synchronizing third-party license file to current dependencies..."
 	@$(HOME)/.cargo/bin/dd-rust-license-tool write
+
+.PHONY: setup-hooks
+setup-hooks: ## Configure Git to use the committed hooks in .githooks/
+	@git config core.hooksPath .githooks
+	@echo "[*] Git hooks configured. Pre-commit checks will run on each commit."
+	@echo "[*] To skip hooks on a specific commit, use: git commit --no-verify"
 
 .PHONY: cargo-preinstall
 cargo-preinstall: cargo-install-dd-rust-license-tool cargo-install-cargo-deny cargo-install-cargo-hack

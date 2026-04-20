@@ -143,7 +143,9 @@ impl TestRunner {
             cancel_token: CancellationToken::new(),
             baseline_coordinator: Coordinator::new(),
             comparison_coordinator: Coordinator::new(),
-            log_base_dir: PathBuf::from("/tmp/panoramic-correctness"),
+            log_base_dir: std::env::var("PANORAMIC_LOG_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("/tmp/panoramic")),
         })
     }
 

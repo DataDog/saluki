@@ -107,9 +107,15 @@ const fn default_no_aggregation_pipeline_support() -> bool {
     true
 }
 
-const fn default_context_string_interner_size() -> ByteSize {
-    ByteSize::mib(2)
+const fn default_context_string_interner_entry_count() -> u64 {
+    4096
 }
+
+/// Baseline byte cost per interner entry, used to convert the Core Agent's entry-count-based
+/// `dogstatsd_string_interner_size` to a byte size.
+///
+/// 4096 entries × 512 bytes = 2 MiB, matching ADP's previous default.
+const INTERNER_BASELINE_BYTES_PER_ENTRY: u64 = 512;
 
 const fn default_cached_contexts_limit() -> usize {
     500_000
@@ -238,16 +244,26 @@ pub struct DogStatsDConfiguration {
     )]
     no_aggregation_pipeline_support: bool,
 
-    /// Total size of the string interner used for contexts.
+    /// Number of entries for the string interner, as interpreted by the Core Datadog Agent.
     ///
-    /// This controls the amount of memory that can be used to intern metric names and tags. If the interner is full,
-    /// metrics with contexts that have not already been resolved may or may not be dropped, depending on the value of
-    /// `allow_context_heap_allocations`.
+    /// When `dogstatsd_string_interner_size_bytes` is not set, this value is multiplied by 512 bytes per entry to
+    /// derive the interner byte size. This provides backwards compatibility for customers migrating configurations
+    /// from the Core Agent, where this setting represents an entry count rather than a byte size.
+    ///
+    /// Defaults to 4096 entries, which yields 2 MiB when converted.
     #[serde(
         rename = "dogstatsd_string_interner_size",
-        default = "default_context_string_interner_size"
+        default = "default_context_string_interner_entry_count"
     )]
-    context_string_interner_bytes: ByteSize,
+    context_string_interner_entry_count: u64,
+
+    /// Total size of the string interner used for contexts, in bytes.
+    ///
+    /// When set, this takes priority over `dogstatsd_string_interner_size`. This controls the amount of memory that
+    /// can be used to intern metric names and tags. If the interner is full, metrics with contexts that have not
+    /// already been resolved may or may not be dropped, depending on the value of `allow_context_heap_allocations`.
+    #[serde(rename = "dogstatsd_string_interner_size_bytes", default)]
+    context_string_interner_size_bytes: Option<ByteSize>,
 
     /// The maximum number of cached contexts to allow.
     ///
@@ -340,6 +356,18 @@ impl DogStatsDConfiguration {
     /// Creates a new `DogStatsDConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(config.as_typed()?)
+    }
+
+    /// Returns the effective string interner size in bytes.
+    ///
+    /// If `dogstatsd_string_interner_size_bytes` is set, it is used directly. Otherwise,
+    /// `dogstatsd_string_interner_size` (an entry count) is multiplied by 512 bytes per entry to derive the byte
+    /// size.
+    fn effective_context_string_interner_bytes(&self) -> ByteSize {
+        match self.context_string_interner_size_bytes {
+            Some(explicit_bytes) => explicit_bytes,
+            None => ByteSize::b(self.context_string_interner_entry_count * INTERNER_BASELINE_BYTES_PER_ENTRY),
+        }
     }
 
     /// Sets the workload provider to use for configuring origin detection/enrichment.
@@ -484,8 +512,8 @@ impl MemoryBounds for DogStatsDConfiguration {
             // We also allocate the backing storage for the string interner up front, which is used by our context
             // resolver.
             .with_expr(UsageExpr::config(
-                "dogstatsd_string_interner_size",
-                self.context_string_interner_bytes.as_u64() as usize,
+                "dogstatsd_string_interner_size_bytes",
+                self.effective_context_string_interner_bytes().as_u64() as usize,
             ));
     }
 }
@@ -1197,13 +1225,14 @@ const fn get_adjusted_buffer_size(buffer_size: usize) -> usize {
 mod tests {
     use std::net::SocketAddr;
 
+    use bytesize::ByteSize;
     use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
     use saluki_io::{
         deser::codec::dogstatsd::{DogStatsDCodec, DogStatsDCodecConfiguration, ParsedPacket},
         net::ConnectionAddress,
     };
 
-    use super::{handle_metric_packet, ContextResolvers};
+    use super::{handle_metric_packet, ContextResolvers, DogStatsDConfiguration};
 
     #[test]
     fn no_metrics_when_interner_full_allocations_disallowed() {
@@ -1270,5 +1299,44 @@ mod tests {
         for tag in additional_tags {
             assert!(context.tags().has_tag(tag));
         }
+    }
+
+    fn deser_config(json: &str) -> DogStatsDConfiguration {
+        serde_json::from_str(json).expect("failed to deserialize config")
+    }
+
+    #[test]
+    fn interner_size_defaults_to_2mib() {
+        let config = deser_config("{}");
+        assert_eq!(config.effective_context_string_interner_bytes(), ByteSize::mib(2));
+    }
+
+    #[test]
+    fn interner_size_from_entry_count() {
+        // A Core Agent migration config with entry count 4096 should yield 2 MiB, not 4096 bytes.
+        let config = deser_config(r#"{"dogstatsd_string_interner_size": 4096}"#);
+        assert_eq!(config.effective_context_string_interner_bytes(), ByteSize::mib(2));
+    }
+
+    #[test]
+    fn interner_size_from_explicit_bytes() {
+        let config = deser_config(r#"{"dogstatsd_string_interner_size_bytes": 4194304}"#);
+        assert_eq!(config.effective_context_string_interner_bytes(), ByteSize::b(4194304));
+    }
+
+    #[test]
+    fn interner_size_explicit_bytes_takes_priority() {
+        let config = deser_config(
+            r#"{"dogstatsd_string_interner_size": 4096, "dogstatsd_string_interner_size_bytes": 8388608}"#,
+        );
+        // The _bytes key (8 MiB) takes priority over the entry count.
+        assert_eq!(config.effective_context_string_interner_bytes(), ByteSize::b(8388608));
+    }
+
+    #[test]
+    fn interner_size_custom_entry_count() {
+        let config = deser_config(r#"{"dogstatsd_string_interner_size": 8192}"#);
+        // 8192 entries * 512 bytes = 4 MiB
+        assert_eq!(config.effective_context_string_interner_bytes(), ByteSize::mib(4));
     }
 }

@@ -3,6 +3,9 @@ FROM registry.ddbuild.io/images/docker:27.3.1
 ARG RUST_VERSION=1.93.0
 ARG TARGETARCH
 
+RUN --mount=type=bind,source=.ci/configure-apt-mirror.sh,target=/tmp/configure-apt-mirror.sh \
+    sh /tmp/configure-apt-mirror.sh
+
 # Install the basics for building and compiling software projects.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends build-essential software-properties-common curl ca-certificates git gnupg2 \
