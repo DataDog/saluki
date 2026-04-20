@@ -49,16 +49,16 @@ echo "│  OTLP trace ingest via gRPC — $RUNS runs each, $WARMUP warmup       
 echo "└─────────────────────────────────────────────────────────┘"
 echo ""
 
-echo "▶ tokio $TOKIO_A"
+echo "▶ tokio $TOKIO_A  (building + running $WARMUP warmup + $RUNS measured...)"
 OUTPUT_A=$(run_version "$TOKIO_A")
-echo "$OUTPUT_A" | grep -E "run [0-9]+:|n=[0-9]"
 MEDIAN_A=$(echo "$OUTPUT_A" | grep "median=" | grep -oE 'median=[0-9.]+' | cut -d= -f2)
+echo "$OUTPUT_A" | grep "n=[0-9]"
 
 echo ""
-echo "▶ tokio $TOKIO_B"
+echo "▶ tokio $TOKIO_B  (building + running $WARMUP warmup + $RUNS measured...)"
 OUTPUT_B=$(run_version "$TOKIO_B")
-echo "$OUTPUT_B" | grep -E "run [0-9]+:|n=[0-9]"
 MEDIAN_B=$(echo "$OUTPUT_B" | grep "median=" | grep -oE 'median=[0-9.]+' | cut -d= -f2)
+echo "$OUTPUT_B" | grep "n=[0-9]"
 
 # Compute regression %
 REGRESSION=$(python3 -c "
