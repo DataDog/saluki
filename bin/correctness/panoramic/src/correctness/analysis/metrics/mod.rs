@@ -80,10 +80,13 @@ impl MetricsAnalyzer {
     }
 }
 
+const SAMPLE_MISMATCH_LIMIT: usize = 5;
+
 fn compare_metric_values(
     baseline_metrics: &NormalizedMetrics, comparison_metrics: &NormalizedMetrics,
 ) -> Result<(), GenericError> {
     let mut mismatched_count = 0;
+    let mut samples: Vec<String> = Vec::new();
 
     // We can safely assume that the metrics are sorted and deduplicated at this point, so we can simply iterate over
     // them in lockstep.
@@ -107,16 +110,31 @@ fn compare_metric_values(
                 "  Comparison: {}",
                 get_formatted_metric_values(comparison_metric, comparison_value)
             );
+
+            if samples.len() < SAMPLE_MISMATCH_LIMIT {
+                samples.push(format!(
+                    "  {}\n    baseline:    {}\n    comparison:  {}",
+                    baseline_metric.context(),
+                    get_formatted_metric_values(baseline_metric, baseline_value),
+                    get_formatted_metric_values(comparison_metric, comparison_value),
+                ));
+            }
         }
     }
 
     if mismatched_count == 0 {
         Ok(())
     } else {
-        Err(generic_error!(
+        let mut msg = format!(
             "{} metrics from baseline and comparison did not match.",
             mismatched_count
-        ))
+        );
+        msg.push_str(&format!("\n  (showing {} of {})", samples.len(), mismatched_count));
+        for sample in samples {
+            msg.push('\n');
+            msg.push_str(&sample);
+        }
+        Err(generic_error!("{}", msg))
     }
 }
 

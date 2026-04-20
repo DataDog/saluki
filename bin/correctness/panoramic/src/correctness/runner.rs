@@ -29,14 +29,14 @@ use crate::{
 };
 
 /// Run a single correctness test and return a panoramic `TestResult`.
-pub async fn run_correctness_test(name: String, config: Config) -> TestResult {
+pub async fn run_correctness_test(name: String, config: Config, log_dir: Option<PathBuf>) -> TestResult {
     let started = Instant::now();
 
     // Phase 1: spawn containers
     let spawn_start = Instant::now();
-    let test_runner = match TestRunner::from_config(&config).await {
+    let test_runner = match TestRunner::from_config(&config, log_dir.clone()).await {
         Ok(r) => r,
-        Err(e) => return make_error_result(name, started, "spawn_containers", e),
+        Err(e) => return make_error_result(name, started, "spawn_containers", e, log_dir),
     };
     let spawn_duration = spawn_start.elapsed();
 
@@ -44,7 +44,7 @@ pub async fn run_correctness_test(name: String, config: Config) -> TestResult {
     let collect_start = Instant::now();
     let (baseline_data, comparison_data) = match test_runner.run().await {
         Ok(data) => data,
-        Err(e) => return make_error_result(name, started, "collect_data", e),
+        Err(e) => return make_error_result(name, started, "collect_data", e, log_dir),
     };
     let collect_duration = collect_start.elapsed();
 
@@ -91,24 +91,32 @@ pub async fn run_correctness_test(name: String, config: Config) -> TestResult {
             }],
             error: None,
             phase_timings,
+            log_dir,
         },
-        Err(e) => TestResult {
-            name,
-            passed: false,
-            duration: total_duration,
-            assertion_results: vec![AssertionResult {
-                name: "telemetry matches".to_string(),
+        Err(e) => {
+            let full_message = format!("{:?}", e);
+            let summary = full_message.lines().next().unwrap_or(&full_message).to_string();
+            TestResult {
+                name,
                 passed: false,
-                message: format!("{:?}", e),
-                duration: analysis_duration,
-            }],
-            error: Some(format!("{:?}", e)),
-            phase_timings,
-        },
+                duration: total_duration,
+                assertion_results: vec![AssertionResult {
+                    name: "telemetry matches".to_string(),
+                    passed: false,
+                    message: full_message,
+                    duration: analysis_duration,
+                }],
+                error: Some(summary),
+                phase_timings,
+                log_dir,
+            }
+        }
     }
 }
 
-fn make_error_result(name: String, started: Instant, phase: &str, e: GenericError) -> TestResult {
+fn make_error_result(
+    name: String, started: Instant, phase: &str, e: GenericError, log_dir: Option<PathBuf>,
+) -> TestResult {
     TestResult {
         name,
         passed: false,
@@ -119,6 +127,7 @@ fn make_error_result(name: String, started: Instant, phase: &str, e: GenericErro
             phase: phase.to_string(),
             duration: started.elapsed(),
         }],
+        log_dir,
     }
 }
 
@@ -134,7 +143,7 @@ pub struct TestRunner {
 }
 
 impl TestRunner {
-    pub async fn from_config(config: &Config) -> Result<Self, GenericError> {
+    pub async fn from_config(config: &Config, log_dir: Option<PathBuf>) -> Result<Self, GenericError> {
         Ok(Self {
             datadog_intake_config: config.datadog_intake_config(),
             millstone_config: config.millstone_config(),
@@ -143,9 +152,7 @@ impl TestRunner {
             cancel_token: CancellationToken::new(),
             baseline_coordinator: Coordinator::new(),
             comparison_coordinator: Coordinator::new(),
-            log_base_dir: std::env::var("PANORAMIC_LOG_DIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from("/tmp/panoramic")),
+            log_base_dir: log_dir.unwrap_or_else(|| PathBuf::from("/tmp/panoramic")),
         })
     }
 
@@ -334,7 +341,7 @@ impl GroupRunner {
         isolation_group_id: String, test_id: &'static str, log_base_dir: PathBuf, coordinator: Coordinator,
         cancel_token: CancellationToken,
     ) -> Self {
-        let runner_log_dir = log_base_dir.join(isolation_group_id.clone());
+        let runner_log_dir = log_base_dir.join(test_id);
 
         info!(
             "Creating test group runner for target '{}'. Logs will be saved to {}",

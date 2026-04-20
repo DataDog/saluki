@@ -130,7 +130,10 @@ async fn run_tests(mut cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     } else {
         let dir = cmd.log_dir.take().unwrap_or_else(|| {
             let timestamp = Local::now().format("%Y%m%d-%H%M%S");
-            std::env::temp_dir().join(format!("panoramic-{}", timestamp))
+            let base = std::env::var("PANORAMIC_LOG_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| std::env::temp_dir());
+            base.join(format!("panoramic-{}", timestamp))
         });
         match std::fs::create_dir_all(&dir) {
             Ok(()) => Some(dir),

@@ -160,6 +160,7 @@ async fn run_with_timeout(test_case: DiscoveredTest, name: String, log_dir: &Arc
         DiscoveredTest::Integration(_) => run_single_test(test_case, log_dir).await,
         DiscoveredTest::Correctness { .. } => {
             let timeout = test_case.timeout();
+            let correctness_log_dir = log_dir.as_ref().as_ref().map(|d| d.join(&name));
             tokio::select! {
                 r = run_single_test(test_case, log_dir) => r,
                 _ = tokio::time::sleep(timeout) => {
@@ -170,6 +171,7 @@ async fn run_with_timeout(test_case: DiscoveredTest, name: String, log_dir: &Arc
                         assertion_results: vec![],
                         error: Some(format!("Test timed out after {:?}.", timeout)),
                         phase_timings: vec![],
+                        log_dir: correctness_log_dir,
                     }
                 }
             }
@@ -188,7 +190,8 @@ async fn run_single_test(test_case: DiscoveredTest, log_dir: &Arc<Option<PathBuf
             runner.run().await
         }
         DiscoveredTest::Correctness { name, config } => {
-            crate::correctness::runner::run_correctness_test(name, config).await
+            let correctness_log_dir = log_dir.as_ref().as_ref().map(|d| d.join(&name));
+            crate::correctness::runner::run_correctness_test(name, config, correctness_log_dir).await
         }
     }
 }
@@ -271,6 +274,7 @@ impl TestRunner {
                     assertion_results: vec![],
                     error: Some(format!("Failed to build driver configuration: {}", e)),
                     phase_timings,
+                    log_dir: None,
                 };
             }
         };
@@ -297,6 +301,7 @@ impl TestRunner {
                     assertion_results: vec![],
                     error: Some(format!("Failed to create driver: {}", e)),
                     phase_timings,
+                    log_dir: None,
                 };
             }
         };
@@ -318,6 +323,7 @@ impl TestRunner {
                     assertion_results: vec![],
                     error: Some(format!("Failed to start container: {}", e)),
                     phase_timings,
+                    log_dir: None,
                 };
             }
         };
@@ -442,6 +448,7 @@ impl TestRunner {
             assertion_results,
             error: None,
             phase_timings,
+            log_dir: None,
         }
     }
 

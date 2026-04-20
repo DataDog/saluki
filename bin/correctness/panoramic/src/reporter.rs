@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use colored::Colorize as _;
 use serde::Serialize;
@@ -31,6 +31,9 @@ pub struct TestResult {
     pub error: Option<String>,
     /// Timing breakdown for each phase of test execution.
     pub phase_timings: Vec<PhaseTiming>,
+    /// Log directory for this test, if available.
+    #[serde(skip)]
+    pub log_dir: Option<PathBuf>,
 }
 
 /// Result of running all test cases.
@@ -114,7 +117,13 @@ impl Reporter {
 
             // Show error if present
             if let Some(ref error) = result.error {
-                println!("  {} {}", "Error:".red(), error);
+                let mut lines = error.lines();
+                if let Some(first) = lines.next() {
+                    println!("  {} {}", "Error:".red(), first);
+                    for line in lines {
+                        println!("  {}", line);
+                    }
+                }
             }
 
             // Show assertion results on failure or in verbose mode
@@ -131,6 +140,10 @@ impl Reporter {
                     for phase in &result.phase_timings {
                         println!("    {} ({:.2?})", phase.phase, phase.duration);
                     }
+                }
+
+                if let Some(ref dir) = result.log_dir {
+                    println!("  {} {}", "Logs:".dimmed(), dir.display());
                 }
             }
         }
