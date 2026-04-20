@@ -333,6 +333,9 @@ pin_project! {
 
         /// Waiting for the server to stream the next message.
         Streaming { #[pin] stream: Streaming<T> },
+
+        /// Stream has produced an error or reached its end; further polls yield `None`.
+        Terminated,
     }
 }
 
@@ -343,32 +346,50 @@ impl<T> StreamingResponse<T> {
     {
         Self::Initial { inner: Box::pin(fut) }
     }
+
+    fn from_response(response: Response<Streaming<T>>) -> Self {
+        Self::Streaming {
+            stream: response.into_inner(),
+        }
+    }
 }
 
 impl<T> Stream for StreamingResponse<T> {
     type Item = Result<T, Status>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        // Each arm picks one of three outcomes: advance to a new state and loop, yield an item
+        // leaving state untouched, or fuse to `Terminated` while yielding an item. Fusing ensures
+        // no now-finished resource (notably the `Initial` future) is ever polled again.
+        #[allow(clippy::large_enum_variant)]
+        enum Outcome<T> {
+            Advance(StreamingResponse<T>),
+            Yield(Option<Result<T, Status>>),
+            Terminate(Option<Result<T, Status>>),
+        }
+
         loop {
             let this = self.as_mut().project();
-            let new_state = match this {
-                // When we get the initial response, we either get the streaming object or an error.
-                //
-                // The streaming object itself has to be polled to get an actual message, so we have to do a little
-                // dance here to update our state to the `Streaming` variant when that happens, and then loop so we can
-                // poll the streaming object for a message... but if we got an error, we just yield it like a normal
-                // item on the stream.
+            let outcome = match this {
                 StreamingResponseProj::Initial { inner } => match ready!(inner.as_mut().poll(cx)) {
-                    Ok(response) => {
-                        let stream = response.into_inner();
-                        StreamingResponse::Streaming { stream }
-                    }
-                    Err(status) => return Poll::Ready(Some(Err(status))),
+                    Ok(response) => Outcome::Advance(Self::from_response(response)),
+                    Err(status) => Outcome::Terminate(Some(Err(status))),
                 },
-                StreamingResponseProj::Streaming { stream } => return stream.poll_next(cx),
+                StreamingResponseProj::Streaming { stream } => match ready!(stream.poll_next(cx)) {
+                    Some(Ok(item)) => Outcome::Yield(Some(Ok(item))),
+                    other => Outcome::Terminate(other),
+                },
+                StreamingResponseProj::Terminated => Outcome::Yield(None),
             };
 
-            self.set(new_state);
+            match outcome {
+                Outcome::Advance(state) => self.set(state),
+                Outcome::Yield(item) => return Poll::Ready(item),
+                Outcome::Terminate(item) => {
+                    self.set(Self::Terminated);
+                    return Poll::Ready(item);
+                }
+            }
         }
     }
 }
@@ -391,5 +412,46 @@ async fn try_query_agent_api(
             )),
             _ => Err(e.into()),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use futures::{future::pending, StreamExt};
+    use tokio::time::timeout;
+    use tonic::{Code, Status};
+
+    use super::StreamingResponse;
+
+    #[tokio::test]
+    async fn streaming_response_terminates_after_initial_error() {
+        // Regression test: prior to fusing the `Initial` state on error, the second poll re-entered
+        // the already-completed async block and panicked with "async fn resumed after completion".
+        let mut stream = StreamingResponse::<()>::from_response_future(async { Err(Status::unavailable("boom")) });
+
+        match stream.next().await {
+            Some(Err(s)) => assert_eq!(s.code(), Code::Unavailable),
+            other => panic!(
+                "expected Some(Err(Unavailable)), got {:?}",
+                other.map(|r| r.map(|_| ()))
+            ),
+        }
+
+        // Subsequent polls must yield `None` and must not panic.
+        assert!(stream.next().await.is_none());
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn streaming_response_pending_initial_stays_pending() {
+        // Smoke test: a pending inner future leaves `poll_next` Pending without advancing state.
+        let mut stream = StreamingResponse::<()>::from_response_future(async { pending::<Result<_, Status>>().await });
+
+        assert!(
+            timeout(Duration::from_millis(50), stream.next()).await.is_err(),
+            "stream with pending initial future should not produce an item"
+        );
     }
 }
