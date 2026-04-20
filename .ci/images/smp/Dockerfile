@@ -14,6 +14,8 @@ RUN chmod +x /install-bloaty.sh && /install-bloaty.sh
 # Final stage: runtime-only dependencies. Build toolchain is not present here.
 FROM registry.ddbuild.io/docker:24.0.4-jammy
 
+ARG RUST_VERSION=1.93.0
+
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Etc/UTC
 
@@ -32,6 +34,10 @@ RUN apt-get update && \
     dd-package --bucket binaries-ddbuild-io-prod --package devtools/dd-package-dev --distribution "20.04" && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
+
+# Install Rust which is required by the Binary Size Analysis job.
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain ${RUST_VERSION}
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Install pr-commenter for posting analysis reports back to GitHub.
 COPY .ci/install-pr-commenter.sh /
