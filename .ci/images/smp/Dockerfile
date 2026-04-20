@@ -24,7 +24,7 @@ RUN --mount=type=bind,source=.ci/configure-apt-mirror.sh,target=/tmp/configure-a
 # analyze-binary-size.py (objcopy / strip). No C/C++ toolchain here — bloaty is built in the
 # dedicated builder stage above and copied in below.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl ca-certificates awscli lsb-release git jq bc bzip2 python3 binutils && \
+    apt-get install -y --no-install-recommends curl ca-certificates lsb-release git jq bc bzip2 python3 binutils && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -36,6 +36,10 @@ RUN apt-get update && \
 # Install pr-commenter for posting analysis reports back to GitHub.
 COPY .ci/install-pr-commenter.sh /
 RUN chmod +x /install-pr-commenter.sh && /install-pr-commenter.sh
+
+# Install AWS CLI for retrieiving credentials and settings for the SMP image registry location.
+COPY .ci/install-awscli.sh /
+RUN chmod +x /install-awscli.sh && /install-awscli.sh
 
 # Copy just the compiled bloaty binary from the builder stage.
 COPY --from=bloaty-builder /usr/local/bin/bloaty /usr/local/bin/bloaty
