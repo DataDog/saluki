@@ -14,6 +14,7 @@
 
 use std::time::{Duration, Instant};
 
+use metrics::{counter, gauge, Counter, Gauge, Level};
 use saluki_common::{collections::FastHashMap, rate::TokenBucket};
 use saluki_core::data_model::event::trace::{Span, Trace};
 use stringtheory::MetaString;
@@ -72,23 +73,25 @@ impl SeenSpans {
         }
     }
 
-    /// Record an expiry for a span signature.
+    /// Record an expiry for a span signature. Returns `true` if a shrink was triggered.
     ///
     /// Skips the update if the stored entry is still live and the new expiry is not meaningfully
     /// later (within `TTL_RENEWAL_PERIOD`). If the stored entry is already expired, always updates.
     /// This mirrors the Go agent's `ttlRenewalPeriod` check, which assumes `TTL > TTL_RENEWAL_PERIOD`.
-    fn add(&mut self, now: Instant, expire: Instant, span_hash: u32) {
+    fn add(&mut self, now: Instant, expire: Instant, span_hash: u32) -> bool {
         let sig = self.sign(span_hash);
         if let Some(&stored) = self.expires.get(&sig) {
             // Only skip if the stored entry is still live and the new expiry isn't meaningfully later.
             if stored > now && expire.duration_since(stored) < TTL_RENEWAL_PERIOD {
-                return;
+                return false;
             }
         }
         self.expires.insert(sig, expire);
         if self.expires.len() > self.cardinality {
             self.shrink();
+            return true;
         }
+        false
     }
 
     /// Returns the stored expiry for a span signature, if any.
@@ -119,6 +122,10 @@ pub(super) struct RareSampler {
     cardinality: usize,
     /// Keyed by (env, service) shard signature.
     seen: FastHashMap<Signature, SeenSpans>,
+    hits: Counter,
+    misses: Counter,
+    shrinks_gauge: Gauge,
+    shrink_total: u64,
 }
 
 impl RareSampler {
@@ -129,6 +136,10 @@ impl RareSampler {
             ttl,
             cardinality,
             seen: FastHashMap::default(),
+            hits: counter!(level: Level::INFO, "trace_sampler_rare_hits"),
+            misses: counter!(level: Level::INFO, "trace_sampler_rare_misses"),
+            shrinks_gauge: gauge!(level: Level::INFO, "trace_sampler_rare_shrinks"),
+            shrink_total: 0,
         }
     }
 
@@ -140,7 +151,13 @@ impl RareSampler {
         if !self.enabled {
             return false;
         }
-        self.handle_trace(trace, root_span_idx)
+        let kept = self.handle_trace(trace, root_span_idx);
+        if kept {
+            self.hits.increment(1);
+        } else {
+            self.misses.increment(1);
+        }
+        kept
     }
 
     fn handle_trace(&mut self, trace: &mut Trace, root_span_idx: usize) -> bool {
@@ -156,7 +173,11 @@ impl RareSampler {
         }
 
         // Update TTLs first (last use of env — NLL ends the borrow of trace here).
-        self.record_all_top_level_spans(trace, env, now, now + self.ttl);
+        let new_shrinks = self.record_all_top_level_spans(trace, env, now, now + self.ttl);
+        if new_shrinks > 0 {
+            self.shrink_total += new_shrinks;
+            self.shrinks_gauge.set(self.shrink_total as f64);
+        }
 
         // Now safe to mutably borrow trace.
         if let Some(span) = trace.spans_mut().get_mut(sampled_idx) {
@@ -188,7 +209,8 @@ impl RareSampler {
         None
     }
 
-    fn record_all_top_level_spans(&mut self, trace: &Trace, env: &str, now: Instant, expire: Instant) {
+    fn record_all_top_level_spans(&mut self, trace: &Trace, env: &str, now: Instant, expire: Instant) -> u64 {
+        let mut shrinks = 0u64;
         for span in trace.spans() {
             if !is_top_level_or_measured(span) {
                 continue;
@@ -199,8 +221,11 @@ impl RareSampler {
                 .seen
                 .entry(shard_sig)
                 .or_insert_with(|| SeenSpans::new(self.cardinality));
-            seen.add(now, expire, span_hash);
+            if seen.add(now, expire, span_hash) {
+                shrinks += 1;
+            }
         }
+        shrinks
     }
 }
 
