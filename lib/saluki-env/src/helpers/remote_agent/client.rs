@@ -48,6 +48,10 @@ const fn default_connect_retry_backoff() -> Duration {
     Duration::from_secs(2)
 }
 
+const fn default_grpc_max_message_size_bytes() -> usize {
+    32 * 1024 * 1024
+}
+
 #[derive(Deserialize)]
 struct RemoteAgentClientConfiguration {
     /// Datadog Agent IPC endpoint to connect to.
@@ -93,6 +97,19 @@ struct RemoteAgentClientConfiguration {
     /// Defaults to 2 seconds.
     #[serde(default = "default_connect_retry_backoff")]
     connect_retry_backoff: Duration,
+
+    /// Maximum gRPC message size, in bytes, allowed for requests and responses over the Agent IPC API.
+    ///
+    /// This controls both encoding and decoding limits on the ADP side. The default is `33554432` bytes (`32 MiB`),
+    /// which is intentionally higher than Tonic's default 4 MiB receive limit because config-stream snapshots can
+    /// legitimately exceed 4 MiB for large `metric_tag_filterlist` configurations.
+    ///
+    /// If this is set too low, config stream can fail with `ResourceExhausted` during the initial snapshot. If this is
+    /// set higher, ADP can accept larger snapshots at the cost of allowing larger in-memory IPC messages.
+    ///
+    /// Defaults to `33554432` (`32 MiB`).
+    #[serde(default = "default_grpc_max_message_size_bytes")]
+    grpc_max_message_size_bytes: usize,
 }
 
 impl BackoffBuilder for &RemoteAgentClientConfiguration {
@@ -170,8 +187,12 @@ impl RemoteAgentClient {
             .await
             .error_context("Failed to create Datadog Agent API client.")?;
 
-        let client = AgentClient::new(service.clone());
-        let mut secure_client = AgentSecureClient::new(service);
+        let client = AgentClient::new(service.clone())
+            .max_decoding_message_size(config.grpc_max_message_size_bytes)
+            .max_encoding_message_size(config.grpc_max_message_size_bytes);
+        let mut secure_client = AgentSecureClient::new(service)
+            .max_decoding_message_size(config.grpc_max_message_size_bytes)
+            .max_encoding_message_size(config.grpc_max_message_size_bytes);
 
         // Try and do a basic health check to make sure we can connect and that our authentication token is valid.
         try_query_agent_api(&mut secure_client).await?;

@@ -325,6 +325,7 @@ build-agent-adp-comparison-image:
       --build-arg DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT=true
       --build-arg DD_DATA_PLANE_REMOTE_AGENT_ENABLED=true
       --build-arg DD_DATA_PLANE_DOGSTATSD_ENABLED=true
+      --build-arg DD_CLUSTER_AGENT_CLUSTER_TAGGER_GRPC_MAX_MESSAGE_SIZE=33554432
       --build-arg ADP_DD_DATA_PLANE_TELEMETRY_ENABLED=true
       --build-arg ADP_DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102
       --build-arg ADP_DD_AGGREGATE_CONTEXT_LIMIT=80000
