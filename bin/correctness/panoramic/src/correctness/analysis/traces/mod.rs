@@ -27,6 +27,7 @@ static BASE_IGNORED_FIELDS_DIFF: &[&str] = &[
 static CUSTOM_FIELD_COMPARATORS: &[(&str, &dyn FieldComparator)] = &[("start", &check_start_diff)];
 
 const SAMPLE_MISMATCH_LIMIT: usize = 5;
+const SAMPLE_DIFFS_PER_SPAN: usize = 3;
 
 trait FieldComparator: Sync {
     fn compare(&self, baseline: &Value, comparison: &Value) -> Result<(), String>;
@@ -200,7 +201,7 @@ impl TracesAnalyzer {
                             let diffs = diff_recorder
                                 .diffs()
                                 .iter()
-                                .take(3)
+                                .take(SAMPLE_DIFFS_PER_SPAN)
                                 .map(|d| format!("    {}", d))
                                 .collect::<Vec<_>>()
                                 .join("\n");
@@ -246,7 +247,7 @@ impl TracesAnalyzer {
                 );
 
                 // Show samples of baseline-only stats
-                for key in baseline_only_aggregation_keys.iter().take(3) {
+                for key in baseline_only_aggregation_keys.iter().take(SAMPLE_DIFFS_PER_SPAN) {
                     if let Some(stats) = self.baseline_trace_stats.get(key) {
                         error!(
                             "Baseline-only key {}: {}",
@@ -257,7 +258,7 @@ impl TracesAnalyzer {
                 }
 
                 // Show samples of comparison-only stats
-                for key in comparison_only_aggregation_keys.iter().take(3) {
+                for key in comparison_only_aggregation_keys.iter().take(SAMPLE_DIFFS_PER_SPAN) {
                     if let Some(stats) = self.comparison_trace_stats.get(key) {
                         error!(
                             "Comparison-only key {}: {}",
@@ -305,7 +306,7 @@ impl TracesAnalyzer {
                                 let diffs = diff_recorder
                                     .diffs()
                                     .iter()
-                                    .take(3)
+                                    .take(SAMPLE_DIFFS_PER_SPAN)
                                     .map(|d| format!("    {}", d))
                                     .collect::<Vec<_>>()
                                     .join("\n");
