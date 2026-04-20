@@ -26,19 +26,19 @@ BENCH_DIR="$ROOT/test/bench"
 RESULTS_A=""
 RESULTS_B=""
 
-SED_INPLACE="sed -i$(uname | grep -q Darwin && echo "  ''")"
+if uname | grep -q Darwin; then SED_INPLACE="sed -i ''"; else SED_INPLACE="sed -i"; fi
 
 cleanup_versions() {
-    # Restore original tokio version from git
-    git -C "$ROOT" checkout Cargo.toml Cargo.lock 2>/dev/null || true
+    cd "$ROOT" && git checkout Cargo.toml Cargo.lock 2>/dev/null || true
 }
 trap cleanup_versions EXIT
 
 run_version() {
     local version=$1
+    cd "$ROOT"
 
-    $SED_INPLACE "s/tokio = { version = \"[^\"]*\"/tokio = { version = \"$version\"/" "$ROOT/Cargo.toml"
-    cargo -C "$ROOT" update tokio --precise "$version" -q
+    $SED_INPLACE "s/tokio = { version = \"[^\"]*\"/tokio = { version = \"$version\"/" Cargo.toml
+    cargo update tokio --precise "$version" -q
 
     "$BENCH_DIR/otlp-ingest.sh" --warmup "$WARMUP" --runs "$RUNS" 2>&1
 }
