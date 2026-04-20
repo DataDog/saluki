@@ -581,48 +581,6 @@ bench-otlp-ingest-compare: ## Compares OTLP ingest throughput between two tokio 
 test-correctness: ## Runs the complete correctness suite
 test-correctness: test-correctness-dsd-plain test-correctness-dsd-origin-detection test-correctness-otlp-metrics test-correctness-otlp-traces test-correctness-otlp-traces-ets test-correctness-otlp-traces-ottl-filtering test-correctness-otlp-traces-ottl-transform test-correctness-otlp-traces-probabilistic
 
-# Throughput benchmark: local OTLP ingest using millstone against a live ADP binary.
-# Builds release binaries, runs warm-up, then records N measurement runs.
-#
-# Single-version run:
-#   make bench-otlp-ingest
-#   make bench-otlp-ingest WARMUP=5 RUNS=20
-#
-# Two-version comparison (rebuilds between versions):
-#   make bench-otlp-ingest-compare TOKIO_A=1.50.0 TOKIO_B=1.51.0
-
-BENCH_WARMUP ?= 3
-BENCH_RUNS   ?= 10
-TOKIO_A      ?= 1.50.0
-TOKIO_B      ?= 1.51.0
-
-.PHONY: bench-tokio-regression
-bench-tokio-regression: ## Reproduces the tokio 1.51 OTLP ingest regression from PR #7431 (LIFO slot stealing)
-	@test/bench/bench-tokio-regression.sh
-
-.PHONY: bench-otlp-ingest
-bench-otlp-ingest: ## Runs the OTLP ingest throughput benchmark against the current build
-	@test/bench/otlp-ingest.sh --warmup $(BENCH_WARMUP) --runs $(BENCH_RUNS)
-
-.PHONY: bench-otlp-ingest-compare
-bench-otlp-ingest-compare: ## Compares OTLP ingest throughput between two tokio versions (TOKIO_A and TOKIO_B)
-	@fuser -k 4317/tcp 2>/dev/null || true; fuser -k 2049/tcp 2>/dev/null || true
-	@echo "### tokio $(TOKIO_A) ###"
-	@sed -i$(if $(filter Darwin,$(shell uname)),  '') 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_A)"/' Cargo.toml
-	@cargo update tokio --precise $(TOKIO_A) -q
-	@test/bench/otlp-ingest.sh --warmup $(BENCH_WARMUP) --runs $(BENCH_RUNS)
-	@echo ""
-	@fuser -k 4317/tcp 2>/dev/null || true; fuser -k 2049/tcp 2>/dev/null || true; sleep 1
-	@echo "### tokio $(TOKIO_B) ###"
-	@sed -i$(if $(filter Darwin,$(shell uname)),  '') 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_B)"/' Cargo.toml
-	@cargo update tokio --precise $(TOKIO_B) -q
-	@test/bench/otlp-ingest.sh --warmup $(BENCH_WARMUP) --runs $(BENCH_RUNS)
-	@echo ""
-	@echo "(restoring $(TOKIO_A))"
-	@fuser -k 4317/tcp 2>/dev/null || true; fuser -k 2049/tcp 2>/dev/null || true
-	@sed -i$(if $(filter Darwin,$(shell uname)),  '') 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_A)"/' Cargo.toml
-	@cargo update tokio --precise $(TOKIO_A) -q
-
 .PHONY: test-correctness
 
 .PHONY: test-correctness-dsd-plain
@@ -630,48 +588,6 @@ test-correctness-dsd-plain: build-ground-truth
 test-correctness-dsd-plain: ## Runs the 'dsd-plain' correctness test case
 	@echo "[*] Running 'dsd-plain' correctness test case..."
 	@target/release/ground-truth $(shell pwd)/test/correctness/dsd-plain/config.yaml
-
-# Throughput benchmark: local OTLP ingest using millstone against a live ADP binary.
-# Builds release binaries, runs warm-up, then records N measurement runs.
-#
-# Single-version run:
-#   make bench-otlp-ingest
-#   make bench-otlp-ingest WARMUP=5 RUNS=20
-#
-# Two-version comparison (rebuilds between versions):
-#   make bench-otlp-ingest-compare TOKIO_A=1.50.0 TOKIO_B=1.51.0
-
-BENCH_WARMUP ?= 3
-BENCH_RUNS   ?= 10
-TOKIO_A      ?= 1.50.0
-TOKIO_B      ?= 1.51.0
-
-.PHONY: bench-tokio-regression
-bench-tokio-regression: ## Reproduces the tokio 1.51 OTLP ingest regression from PR #7431 (LIFO slot stealing)
-	@test/bench/bench-tokio-regression.sh
-
-.PHONY: bench-otlp-ingest
-bench-otlp-ingest: ## Runs the OTLP ingest throughput benchmark against the current build
-	@test/bench/otlp-ingest.sh --warmup $(BENCH_WARMUP) --runs $(BENCH_RUNS)
-
-.PHONY: bench-otlp-ingest-compare
-bench-otlp-ingest-compare: ## Compares OTLP ingest throughput between two tokio versions (TOKIO_A and TOKIO_B)
-	@fuser -k 4317/tcp 2>/dev/null || true; fuser -k 2049/tcp 2>/dev/null || true
-	@echo "### tokio $(TOKIO_A) ###"
-	@sed -i$(if $(filter Darwin,$(shell uname)),  '') 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_A)"/' Cargo.toml
-	@cargo update tokio --precise $(TOKIO_A) -q
-	@test/bench/otlp-ingest.sh --warmup $(BENCH_WARMUP) --runs $(BENCH_RUNS)
-	@echo ""
-	@fuser -k 4317/tcp 2>/dev/null || true; fuser -k 2049/tcp 2>/dev/null || true; sleep 1
-	@echo "### tokio $(TOKIO_B) ###"
-	@sed -i$(if $(filter Darwin,$(shell uname)),  '') 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_B)"/' Cargo.toml
-	@cargo update tokio --precise $(TOKIO_B) -q
-	@test/bench/otlp-ingest.sh --warmup $(BENCH_WARMUP) --runs $(BENCH_RUNS)
-	@echo ""
-	@echo "(restoring $(TOKIO_A))"
-	@fuser -k 4317/tcp 2>/dev/null || true; fuser -k 2049/tcp 2>/dev/null || true
-	@sed -i$(if $(filter Darwin,$(shell uname)),  '') 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_A)"/' Cargo.toml
-	@cargo update tokio --precise $(TOKIO_A) -q
 
 .PHONY: test-correctness
 
@@ -681,48 +597,6 @@ test-correctness-dsd-origin-detection: ## Runs the 'dsd-origin-detection' correc
 	@echo "[*] Running 'dsd-origin-detection' correctness test case..."
 	@target/release/ground-truth $(shell pwd)/test/correctness/dsd-origin-detection/config.yaml
 
-# Throughput benchmark: local OTLP ingest using millstone against a live ADP binary.
-# Builds release binaries, runs warm-up, then records N measurement runs.
-#
-# Single-version run:
-#   make bench-otlp-ingest
-#   make bench-otlp-ingest WARMUP=5 RUNS=20
-#
-# Two-version comparison (rebuilds between versions):
-#   make bench-otlp-ingest-compare TOKIO_A=1.50.0 TOKIO_B=1.51.0
-
-BENCH_WARMUP ?= 3
-BENCH_RUNS   ?= 10
-TOKIO_A      ?= 1.50.0
-TOKIO_B      ?= 1.51.0
-
-.PHONY: bench-tokio-regression
-bench-tokio-regression: ## Reproduces the tokio 1.51 OTLP ingest regression from PR #7431 (LIFO slot stealing)
-	@test/bench/bench-tokio-regression.sh
-
-.PHONY: bench-otlp-ingest
-bench-otlp-ingest: ## Runs the OTLP ingest throughput benchmark against the current build
-	@test/bench/otlp-ingest.sh --warmup $(BENCH_WARMUP) --runs $(BENCH_RUNS)
-
-.PHONY: bench-otlp-ingest-compare
-bench-otlp-ingest-compare: ## Compares OTLP ingest throughput between two tokio versions (TOKIO_A and TOKIO_B)
-	@fuser -k 4317/tcp 2>/dev/null || true; fuser -k 2049/tcp 2>/dev/null || true
-	@echo "### tokio $(TOKIO_A) ###"
-	@sed -i$(if $(filter Darwin,$(shell uname)),  '') 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_A)"/' Cargo.toml
-	@cargo update tokio --precise $(TOKIO_A) -q
-	@test/bench/otlp-ingest.sh --warmup $(BENCH_WARMUP) --runs $(BENCH_RUNS)
-	@echo ""
-	@fuser -k 4317/tcp 2>/dev/null || true; fuser -k 2049/tcp 2>/dev/null || true; sleep 1
-	@echo "### tokio $(TOKIO_B) ###"
-	@sed -i$(if $(filter Darwin,$(shell uname)),  '') 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_B)"/' Cargo.toml
-	@cargo update tokio --precise $(TOKIO_B) -q
-	@test/bench/otlp-ingest.sh --warmup $(BENCH_WARMUP) --runs $(BENCH_RUNS)
-	@echo ""
-	@echo "(restoring $(TOKIO_A))"
-	@fuser -k 4317/tcp 2>/dev/null || true; fuser -k 2049/tcp 2>/dev/null || true
-	@sed -i$(if $(filter Darwin,$(shell uname)),  '') 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_A)"/' Cargo.toml
-	@cargo update tokio --precise $(TOKIO_A) -q
-
 .PHONY: test-correctness
 
 .PHONY: test-correctness-otlp-metrics
@@ -730,48 +604,6 @@ test-correctness-otlp-metrics: build-ground-truth
 test-correctness-otlp-metrics: ## Runs the 'otlp-metrics' correctness test case
 	@echo "[*] Running 'otlp-metrics' correctness test case..."
 	@target/release/ground-truth $(shell pwd)/test/correctness/otlp-metrics/config.yaml
-
-# Throughput benchmark: local OTLP ingest using millstone against a live ADP binary.
-# Builds release binaries, runs warm-up, then records N measurement runs.
-#
-# Single-version run:
-#   make bench-otlp-ingest
-#   make bench-otlp-ingest WARMUP=5 RUNS=20
-#
-# Two-version comparison (rebuilds between versions):
-#   make bench-otlp-ingest-compare TOKIO_A=1.50.0 TOKIO_B=1.51.0
-
-BENCH_WARMUP ?= 3
-BENCH_RUNS   ?= 10
-TOKIO_A      ?= 1.50.0
-TOKIO_B      ?= 1.51.0
-
-.PHONY: bench-tokio-regression
-bench-tokio-regression: ## Reproduces the tokio 1.51 OTLP ingest regression from PR #7431 (LIFO slot stealing)
-	@test/bench/bench-tokio-regression.sh
-
-.PHONY: bench-otlp-ingest
-bench-otlp-ingest: ## Runs the OTLP ingest throughput benchmark against the current build
-	@test/bench/otlp-ingest.sh --warmup $(BENCH_WARMUP) --runs $(BENCH_RUNS)
-
-.PHONY: bench-otlp-ingest-compare
-bench-otlp-ingest-compare: ## Compares OTLP ingest throughput between two tokio versions (TOKIO_A and TOKIO_B)
-	@fuser -k 4317/tcp 2>/dev/null || true; fuser -k 2049/tcp 2>/dev/null || true
-	@echo "### tokio $(TOKIO_A) ###"
-	@sed -i$(if $(filter Darwin,$(shell uname)),  '') 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_A)"/' Cargo.toml
-	@cargo update tokio --precise $(TOKIO_A) -q
-	@test/bench/otlp-ingest.sh --warmup $(BENCH_WARMUP) --runs $(BENCH_RUNS)
-	@echo ""
-	@fuser -k 4317/tcp 2>/dev/null || true; fuser -k 2049/tcp 2>/dev/null || true; sleep 1
-	@echo "### tokio $(TOKIO_B) ###"
-	@sed -i$(if $(filter Darwin,$(shell uname)),  '') 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_B)"/' Cargo.toml
-	@cargo update tokio --precise $(TOKIO_B) -q
-	@test/bench/otlp-ingest.sh --warmup $(BENCH_WARMUP) --runs $(BENCH_RUNS)
-	@echo ""
-	@echo "(restoring $(TOKIO_A))"
-	@fuser -k 4317/tcp 2>/dev/null || true; fuser -k 2049/tcp 2>/dev/null || true
-	@sed -i$(if $(filter Darwin,$(shell uname)),  '') 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_A)"/' Cargo.toml
-	@cargo update tokio --precise $(TOKIO_A) -q
 
 .PHONY: test-correctness
 
@@ -781,48 +613,6 @@ test-correctness-otlp-traces: ## Runs the 'otlp-traces' correctness test case
 	@echo "[*] Running 'otlp-traces' correctness test case..."
 	@target/release/ground-truth $(shell pwd)/test/correctness/otlp-traces/config.yaml
 
-# Throughput benchmark: local OTLP ingest using millstone against a live ADP binary.
-# Builds release binaries, runs warm-up, then records N measurement runs.
-#
-# Single-version run:
-#   make bench-otlp-ingest
-#   make bench-otlp-ingest WARMUP=5 RUNS=20
-#
-# Two-version comparison (rebuilds between versions):
-#   make bench-otlp-ingest-compare TOKIO_A=1.50.0 TOKIO_B=1.51.0
-
-BENCH_WARMUP ?= 3
-BENCH_RUNS   ?= 10
-TOKIO_A      ?= 1.50.0
-TOKIO_B      ?= 1.51.0
-
-.PHONY: bench-tokio-regression
-bench-tokio-regression: ## Reproduces the tokio 1.51 OTLP ingest regression from PR #7431 (LIFO slot stealing)
-	@test/bench/bench-tokio-regression.sh
-
-.PHONY: bench-otlp-ingest
-bench-otlp-ingest: ## Runs the OTLP ingest throughput benchmark against the current build
-	@test/bench/otlp-ingest.sh --warmup $(BENCH_WARMUP) --runs $(BENCH_RUNS)
-
-.PHONY: bench-otlp-ingest-compare
-bench-otlp-ingest-compare: ## Compares OTLP ingest throughput between two tokio versions (TOKIO_A and TOKIO_B)
-	@fuser -k 4317/tcp 2>/dev/null || true; fuser -k 2049/tcp 2>/dev/null || true
-	@echo "### tokio $(TOKIO_A) ###"
-	@sed -i$(if $(filter Darwin,$(shell uname)),  '') 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_A)"/' Cargo.toml
-	@cargo update tokio --precise $(TOKIO_A) -q
-	@test/bench/otlp-ingest.sh --warmup $(BENCH_WARMUP) --runs $(BENCH_RUNS)
-	@echo ""
-	@fuser -k 4317/tcp 2>/dev/null || true; fuser -k 2049/tcp 2>/dev/null || true; sleep 1
-	@echo "### tokio $(TOKIO_B) ###"
-	@sed -i$(if $(filter Darwin,$(shell uname)),  '') 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_B)"/' Cargo.toml
-	@cargo update tokio --precise $(TOKIO_B) -q
-	@test/bench/otlp-ingest.sh --warmup $(BENCH_WARMUP) --runs $(BENCH_RUNS)
-	@echo ""
-	@echo "(restoring $(TOKIO_A))"
-	@fuser -k 4317/tcp 2>/dev/null || true; fuser -k 2049/tcp 2>/dev/null || true
-	@sed -i$(if $(filter Darwin,$(shell uname)),  '') 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_A)"/' Cargo.toml
-	@cargo update tokio --precise $(TOKIO_A) -q
-
 .PHONY: test-correctness
 
 .PHONY: test-correctness-otlp-traces-ets
@@ -830,48 +620,6 @@ test-correctness-otlp-traces-ets: build-ground-truth
 test-correctness-otlp-traces-ets: ## Runs the 'otlp-traces-ets' correctness test case (Error Tracking Standalone mode)
 	@echo "[*] Running 'otlp-traces-ets' correctness test case..."
 	@target/release/ground-truth $(shell pwd)/test/correctness/otlp-traces-ets/config.yaml
-
-# Throughput benchmark: local OTLP ingest using millstone against a live ADP binary.
-# Builds release binaries, runs warm-up, then records N measurement runs.
-#
-# Single-version run:
-#   make bench-otlp-ingest
-#   make bench-otlp-ingest WARMUP=5 RUNS=20
-#
-# Two-version comparison (rebuilds between versions):
-#   make bench-otlp-ingest-compare TOKIO_A=1.50.0 TOKIO_B=1.51.0
-
-BENCH_WARMUP ?= 3
-BENCH_RUNS   ?= 10
-TOKIO_A      ?= 1.50.0
-TOKIO_B      ?= 1.51.0
-
-.PHONY: bench-tokio-regression
-bench-tokio-regression: ## Reproduces the tokio 1.51 OTLP ingest regression from PR #7431 (LIFO slot stealing)
-	@test/bench/bench-tokio-regression.sh
-
-.PHONY: bench-otlp-ingest
-bench-otlp-ingest: ## Runs the OTLP ingest throughput benchmark against the current build
-	@test/bench/otlp-ingest.sh --warmup $(BENCH_WARMUP) --runs $(BENCH_RUNS)
-
-.PHONY: bench-otlp-ingest-compare
-bench-otlp-ingest-compare: ## Compares OTLP ingest throughput between two tokio versions (TOKIO_A and TOKIO_B)
-	@fuser -k 4317/tcp 2>/dev/null || true; fuser -k 2049/tcp 2>/dev/null || true
-	@echo "### tokio $(TOKIO_A) ###"
-	@sed -i$(if $(filter Darwin,$(shell uname)),  '') 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_A)"/' Cargo.toml
-	@cargo update tokio --precise $(TOKIO_A) -q
-	@test/bench/otlp-ingest.sh --warmup $(BENCH_WARMUP) --runs $(BENCH_RUNS)
-	@echo ""
-	@fuser -k 4317/tcp 2>/dev/null || true; fuser -k 2049/tcp 2>/dev/null || true; sleep 1
-	@echo "### tokio $(TOKIO_B) ###"
-	@sed -i$(if $(filter Darwin,$(shell uname)),  '') 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_B)"/' Cargo.toml
-	@cargo update tokio --precise $(TOKIO_B) -q
-	@test/bench/otlp-ingest.sh --warmup $(BENCH_WARMUP) --runs $(BENCH_RUNS)
-	@echo ""
-	@echo "(restoring $(TOKIO_A))"
-	@fuser -k 4317/tcp 2>/dev/null || true; fuser -k 2049/tcp 2>/dev/null || true
-	@sed -i$(if $(filter Darwin,$(shell uname)),  '') 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_A)"/' Cargo.toml
-	@cargo update tokio --precise $(TOKIO_A) -q
 
 .PHONY: test-correctness
 
@@ -881,48 +629,6 @@ test-correctness-otlp-traces-ottl-filtering: ## Runs the 'otlp-traces-ottl-filte
 	@echo "[*] Running 'otlp-traces-ottl-filtering' correctness test case..."
 	@target/release/ground-truth $(shell pwd)/test/correctness/otlp-traces-ottl-filtering/config.yaml
 
-# Throughput benchmark: local OTLP ingest using millstone against a live ADP binary.
-# Builds release binaries, runs warm-up, then records N measurement runs.
-#
-# Single-version run:
-#   make bench-otlp-ingest
-#   make bench-otlp-ingest WARMUP=5 RUNS=20
-#
-# Two-version comparison (rebuilds between versions):
-#   make bench-otlp-ingest-compare TOKIO_A=1.50.0 TOKIO_B=1.51.0
-
-BENCH_WARMUP ?= 3
-BENCH_RUNS   ?= 10
-TOKIO_A      ?= 1.50.0
-TOKIO_B      ?= 1.51.0
-
-.PHONY: bench-tokio-regression
-bench-tokio-regression: ## Reproduces the tokio 1.51 OTLP ingest regression from PR #7431 (LIFO slot stealing)
-	@test/bench/bench-tokio-regression.sh
-
-.PHONY: bench-otlp-ingest
-bench-otlp-ingest: ## Runs the OTLP ingest throughput benchmark against the current build
-	@test/bench/otlp-ingest.sh --warmup $(BENCH_WARMUP) --runs $(BENCH_RUNS)
-
-.PHONY: bench-otlp-ingest-compare
-bench-otlp-ingest-compare: ## Compares OTLP ingest throughput between two tokio versions (TOKIO_A and TOKIO_B)
-	@fuser -k 4317/tcp 2>/dev/null || true; fuser -k 2049/tcp 2>/dev/null || true
-	@echo "### tokio $(TOKIO_A) ###"
-	@sed -i$(if $(filter Darwin,$(shell uname)),  '') 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_A)"/' Cargo.toml
-	@cargo update tokio --precise $(TOKIO_A) -q
-	@test/bench/otlp-ingest.sh --warmup $(BENCH_WARMUP) --runs $(BENCH_RUNS)
-	@echo ""
-	@fuser -k 4317/tcp 2>/dev/null || true; fuser -k 2049/tcp 2>/dev/null || true; sleep 1
-	@echo "### tokio $(TOKIO_B) ###"
-	@sed -i$(if $(filter Darwin,$(shell uname)),  '') 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_B)"/' Cargo.toml
-	@cargo update tokio --precise $(TOKIO_B) -q
-	@test/bench/otlp-ingest.sh --warmup $(BENCH_WARMUP) --runs $(BENCH_RUNS)
-	@echo ""
-	@echo "(restoring $(TOKIO_A))"
-	@fuser -k 4317/tcp 2>/dev/null || true; fuser -k 2049/tcp 2>/dev/null || true
-	@sed -i$(if $(filter Darwin,$(shell uname)),  '') 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_A)"/' Cargo.toml
-	@cargo update tokio --precise $(TOKIO_A) -q
-
 .PHONY: test-correctness
 
 .PHONY: test-correctness-otlp-traces-ottl-transform
@@ -930,48 +636,6 @@ test-correctness-otlp-traces-ottl-transform: build-ground-truth
 test-correctness-otlp-traces-ottl-transform: ## Runs the 'otlp-traces-ottl-transform' E2E test (OTel Collector + OTTL transform vs ADP + OTTL transform)
 	@echo "[*] Running 'otlp-traces-ottl-transform' correctness test case..."
 	@target/release/ground-truth $(shell pwd)/test/correctness/otlp-traces-ottl-transform/config.yaml
-
-# Throughput benchmark: local OTLP ingest using millstone against a live ADP binary.
-# Builds release binaries, runs warm-up, then records N measurement runs.
-#
-# Single-version run:
-#   make bench-otlp-ingest
-#   make bench-otlp-ingest WARMUP=5 RUNS=20
-#
-# Two-version comparison (rebuilds between versions):
-#   make bench-otlp-ingest-compare TOKIO_A=1.50.0 TOKIO_B=1.51.0
-
-BENCH_WARMUP ?= 3
-BENCH_RUNS   ?= 10
-TOKIO_A      ?= 1.50.0
-TOKIO_B      ?= 1.51.0
-
-.PHONY: bench-tokio-regression
-bench-tokio-regression: ## Reproduces the tokio 1.51 OTLP ingest regression from PR #7431 (LIFO slot stealing)
-	@test/bench/bench-tokio-regression.sh
-
-.PHONY: bench-otlp-ingest
-bench-otlp-ingest: ## Runs the OTLP ingest throughput benchmark against the current build
-	@test/bench/otlp-ingest.sh --warmup $(BENCH_WARMUP) --runs $(BENCH_RUNS)
-
-.PHONY: bench-otlp-ingest-compare
-bench-otlp-ingest-compare: ## Compares OTLP ingest throughput between two tokio versions (TOKIO_A and TOKIO_B)
-	@fuser -k 4317/tcp 2>/dev/null || true; fuser -k 2049/tcp 2>/dev/null || true
-	@echo "### tokio $(TOKIO_A) ###"
-	@sed -i$(if $(filter Darwin,$(shell uname)),  '') 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_A)"/' Cargo.toml
-	@cargo update tokio --precise $(TOKIO_A) -q
-	@test/bench/otlp-ingest.sh --warmup $(BENCH_WARMUP) --runs $(BENCH_RUNS)
-	@echo ""
-	@fuser -k 4317/tcp 2>/dev/null || true; fuser -k 2049/tcp 2>/dev/null || true; sleep 1
-	@echo "### tokio $(TOKIO_B) ###"
-	@sed -i$(if $(filter Darwin,$(shell uname)),  '') 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_B)"/' Cargo.toml
-	@cargo update tokio --precise $(TOKIO_B) -q
-	@test/bench/otlp-ingest.sh --warmup $(BENCH_WARMUP) --runs $(BENCH_RUNS)
-	@echo ""
-	@echo "(restoring $(TOKIO_A))"
-	@fuser -k 4317/tcp 2>/dev/null || true; fuser -k 2049/tcp 2>/dev/null || true
-	@sed -i$(if $(filter Darwin,$(shell uname)),  '') 's/tokio = { version = "[^"]*"/tokio = { version = "$(TOKIO_A)"/' Cargo.toml
-	@cargo update tokio --precise $(TOKIO_A) -q
 
 .PHONY: test-correctness
 
