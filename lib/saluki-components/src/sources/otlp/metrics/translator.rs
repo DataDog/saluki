@@ -129,8 +129,9 @@ fn format_float(f: f64) -> String {
     }
 
     // Mirror Go's strconv.FormatFloat(f, 'g', -1, 64): switch to scientific
-    // notation below 1e-4, with a zero-padded two-digit signed exponent.
-    if f.abs() < 1e-4 {
+    // notation below 1e-4 and at/above 1e6, with a zero-padded two-digit
+    // signed exponent.
+    if f.abs() < 1e-4 || f.abs() >= 1e6 {
         let s = format!("{f:e}");
         let (mantissa, exp_part) = s.split_once('e').expect("{:e} always contains 'e'");
         let (sign, digits) = if let Some(d) = exp_part.strip_prefix('-') {
@@ -138,11 +139,12 @@ fn format_float(f: f64) -> String {
         } else {
             ("+", exp_part.strip_prefix('+').unwrap_or(exp_part))
         };
-        return if digits.len() < 2 {
+        let s = if digits.len() < 2 {
             format!("{mantissa}e{sign}0{digits}")
         } else {
             format!("{mantissa}e{sign}{digits}")
         };
+        return if f == f.floor() { format!("{s}.0") } else { s };
     }
 
     let s = format!("{f}");
@@ -1388,6 +1390,37 @@ mod tests {
 
     fn nanos_from_seconds(s: u64) -> u64 {
         s * 1_000_000_000
+    }
+
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L2225
+    #[test]
+    fn test_format_float_go_parity() {
+        let tests = [
+            (0.0, "0"),
+            (0.001, "0.001"),
+            (0.9, "0.9"),
+            (0.95, "0.95"),
+            (0.99, "0.99"),
+            (0.999, "0.999"),
+            (1.0, "1.0"),
+            (2.0, "2.0"),
+            (f64::INFINITY, "inf"),
+            (f64::NEG_INFINITY, "-inf"),
+            (f64::NAN, "nan"),
+            (1e-10, "1e-10"),
+            (1e-5, "1e-05"),
+            (0.0001, "0.0001"),
+            (999_999.0, "999999.0"),
+            (1e6, "1e+06.0"),
+            (-1e6, "-1e+06.0"),
+            (1_000_000.5, "1.0000005e+06"),
+            (1_234_567.0, "1.234567e+06.0"),
+            (1_200_000.0, "1.2e+06.0"),
+        ];
+
+        for (input, expected) in tests {
+            assert_eq!(format_float(input), expected);
+        }
     }
 
     /// A helper function to build a series of cumulative monotonic integer data points from deltas.
