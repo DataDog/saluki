@@ -12,7 +12,7 @@ validate-buildcache-s3:
   before_script:
     # SMP CI image has no C/C++ toolchain (it's runtime-only); install gcc so we can
     # drive a real compile through buildcache.
-    - apt-get update && apt-get install -y --no-install-recommends gcc
+    - apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev
   script:
     - ./test/buildcache/configure-buildcache-s3.sh
     # Smoke test: prove creds work before blaming buildcache.
