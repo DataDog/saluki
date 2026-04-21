@@ -9,13 +9,16 @@ validate-buildcache-s3:
   variables:
     BUILDCACHE_S3_BUCKET: "dd-saluki-build-cache-us1-ddbuild-io"
     BUILDCACHE_S3_REGION: "us-east-1"
+  before_script:
+    # SMP CI image has no C/C++ toolchain (it's runtime-only); install gcc so we can
+    # drive a real compile through buildcache.
+    - apt-get update && apt-get install -y --no-install-recommends gcc
   script:
     - ./test/buildcache/configure-buildcache-s3.sh
     # Smoke test: prove creds work before blaming buildcache.
     - source /tmp/buildcache-aws-env.sh && aws sts get-caller-identity
     # Prove bucket ACL/network path works independent of buildcache.
     - source /tmp/buildcache-aws-env.sh && aws s3 ls "s3://${BUILDCACHE_S3_BUCKET}/" --region "${BUILDCACHE_S3_REGION}"
-    # Prove buildcache parses the config and recognizes the remote.
-    - source /tmp/buildcache-aws-env.sh && buildcache -s
-    # Force buildcache to actually hit S3 (cache miss is fine). debug=2 prints the attempt.
-    - source /tmp/buildcache-aws-env.sh && buildcache /bin/true || true
+    # Compile a small C file through buildcache twice (with a local cache clear in between)
+    # and assert we got a remote hit on the second run, proving the full S3 round trip.
+    - ./test/buildcache/compile-and-verify.sh
