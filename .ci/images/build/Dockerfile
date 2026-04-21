@@ -26,7 +26,7 @@ USER root
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
       build-essential software-properties-common curl ca-certificates git gnupg2 \
-      lsb-release make cmake unzip gcc g++ binutils jq bc bzip2 ninja-build python3 python3-pip && \
+      lsb-release make cmake unzip gcc g++ binutils jq bc bzip2 ninja-build python3 python3-pip musl-dev musl-tools && \
     mkdir -p /etc/apt/keyrings && \
     curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg && \
     echo "deb [arch=${TARGETARCH} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu jammy stable" > /etc/apt/sources.list.d/docker.list && \

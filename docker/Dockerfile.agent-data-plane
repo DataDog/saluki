@@ -1,7 +1,25 @@
 ARG BUILD_IMAGE=ubuntu:24.04
 ARG APP_IMAGE=ubuntu:24.04
+ARG BUILD_BASE=build-clean
 
-FROM ${BUILD_IMAGE} AS builder
+# For local builds from a clean base image: installs all required build tools.
+FROM ${BUILD_IMAGE} AS build-clean
+
+RUN --mount=type=bind,source=.ci/configure-apt-mirror.sh,target=/tmp/configure-apt-mirror.sh \
+    sh /tmp/configure-apt-mirror.sh
+
+RUN apt-get update && \
+    apt-get install --no-install-recommends -y \
+    build-essential ca-certificates musl-dev musl-tools linux-libc-dev make cmake gcc g++ perl golang-go protobuf-compiler curl unzip rustup
+RUN rustup set profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# For CI builds: the build CI image already has all tools installed; just expose the Cargo PATH.
+FROM ${BUILD_IMAGE} AS build-prepped
+
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+FROM ${BUILD_BASE} AS builder
 
 ARG TARGETARCH
 ARG RUST_VERSION=stable
@@ -23,16 +41,6 @@ ENV APP_IDENTIFIER=${APP_IDENTIFIER}
 ENV APP_GIT_HASH=${APP_GIT_HASH}
 ENV APP_VERSION=${APP_VERSION}
 ENV APP_BUILD_TIME=${APP_BUILD_TIME}
-
-RUN --mount=type=bind,source=.ci/configure-apt-mirror.sh,target=/tmp/configure-apt-mirror.sh \
-    sh /tmp/configure-apt-mirror.sh
-
-# Install Rust and other build dependencies.
-RUN apt-get update && \
-    apt-get install --no-install-recommends -y \
-    build-essential ca-certificates musl-dev musl-tools linux-headers-6.8.0-94-generic make cmake gcc g++ perl golang-go protobuf-compiler curl unzip rustup
-RUN rustup set profile minimal
-ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Copy over required build headers for AWS-LC.
 COPY ./tooling/copy-build-headers.sh /copy-build-headers.sh
