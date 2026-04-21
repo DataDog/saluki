@@ -30,8 +30,9 @@ impl ContextResolvers {
     ) -> Result<Self, GenericError> {
         // We'll use the same string interner size for both context resolvers, which does mean double the usage, but
         // it's simpler this way for the moment.
-        let context_string_interner_size = NonZeroUsize::new(config.context_string_interner_bytes.as_u64() as usize)
-            .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))?;
+        let context_string_interner_size =
+            NonZeroUsize::new(config.effective_context_string_interner_bytes().as_u64() as usize)
+                .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))?;
 
         let cached_contexts_limit = config.cached_contexts_limit;
         let cached_tagsets_limit = config.cached_tagsets_limit;

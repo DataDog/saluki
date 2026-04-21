@@ -1,17 +1,5 @@
+// This devcontainer directs workspaces to use a pre-built image.  To make
+// configuration changes, edit prebuild-devcontainer.json in this folder instead
 {
-  "name": "Saluki (ADP)",
-  "build": {
-    "dockerfile": "Dockerfile",
-    "context": "../../.."
-  },
-  "remoteUser": "saluki",
-  "onCreateCommand": "rustc --version",
-  "customizations": {
-    "vscode": {
-      "extensions": ["rust-lang.rust-analyzer", "vadimcn.vscode-lldb", "tamasfe.even-better-toml"],
-      "settings": {
-        "rust-analyzer.check.command": "clippy"
-      }
-    }
-  }
+    "image": "registry.ddbuild.io/workspaces/prebuilt/saluki@sha256:35abbac6e9841ceeeae2d2e3cea4b3decca32218a1cbe50055183dc16f5d986e"
 }

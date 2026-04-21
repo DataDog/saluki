@@ -4,6 +4,9 @@ FROM ${BASE_IMAGE} AS builder
 
 ARG RUST_VERSION=stable
 
+RUN --mount=type=bind,source=.ci/configure-apt-mirror.sh,target=/tmp/configure-apt-mirror.sh \
+    sh /tmp/configure-apt-mirror.sh
+
 # Install Rust and other build dependencies.
 RUN apt-get update && \
     apt-get install --no-install-recommends -y \

@@ -3,6 +3,9 @@ ARG APP_IMAGE
 
 FROM ${BUILD_IMAGE} AS builder
 
+RUN --mount=type=bind,source=.ci/configure-apt-mirror.sh,target=/tmp/configure-apt-mirror.sh \
+    sh /tmp/configure-apt-mirror.sh
+
 # Install basic utilities since we need to check out the source.
 WORKDIR /src
 RUN apt-get update && \

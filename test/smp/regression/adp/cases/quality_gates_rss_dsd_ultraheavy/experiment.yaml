@@ -18,7 +18,7 @@ target:
     DD_DOGSTATSD_PORT: "0"
     DD_DOGSTATSD_SOCKET: /tmp/adp-dogstatsd-dgram.sock
     DD_AGGREGATE_CONTEXT_LIMIT: "250100"
-    DD_DOGSTATSD_STRING_INTERNER_SIZE: 64MiB
+    DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES: 64MiB
   profiling_environment:
     SMP_PROFILING_ENABLED: "true"
     DD_SERVICE: agent-data-plane

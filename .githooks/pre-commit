@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "[*] Running pre-commit checks..."
+
+make check-fmt
+make check-clippy
+make check-licenses
+
+echo "[*] Pre-commit checks passed."
