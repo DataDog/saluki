@@ -11,6 +11,20 @@ RUN apt-get update && \
 COPY .ci/install-bloaty.sh /install-bloaty.sh
 RUN chmod +x /install-bloaty.sh && /install-bloaty.sh
 
+# Builder stage: compile buildcache from source. Build-only deps (cmake, ninja-build, g++,
+# git for cloning the fork, libssl-dev for HTTPS remote-cache support) stay here.
+FROM registry.ddbuild.io/docker:24.0.4-jammy AS buildcache-builder
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=Etc/UTC
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates curl git cmake ninja-build g++ libssl-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY .ci/install-buildcache.sh /install-buildcache.sh
+RUN chmod +x /install-buildcache.sh && /install-buildcache.sh
+
 # Final stage: runtime-only dependencies. Build toolchain is not present here.
 FROM registry.ddbuild.io/docker:24.0.4-jammy
 
@@ -49,6 +63,9 @@ RUN chmod +x /install-awscli.sh && /install-awscli.sh
 
 # Copy just the compiled bloaty binary from the builder stage.
 COPY --from=bloaty-builder /usr/local/bin/bloaty /usr/local/bin/bloaty
+
+# Copy just the compiled buildcache binary from the builder stage.
+COPY --from=buildcache-builder /usr/local/bin/buildcache /usr/local/bin/buildcache
 
 COPY .ci/images/smp/entrypoint.sh /
 RUN chmod +x /entrypoint.sh

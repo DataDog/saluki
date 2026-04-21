@@ -1,3 +1,18 @@
+# Builder stage: compile buildcache from source. The final image already ships cmake/g++/ninja
+# (needed by Rust C/C++ build scripts), but keeping this in a separate stage prevents the cloned
+# source tree and CMake build directory from landing in the final image layers.
+FROM registry.ddbuild.io/docker:24.0.4-jammy AS buildcache-builder
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=Etc/UTC
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates curl git cmake ninja-build g++ libssl-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY .ci/install-buildcache.sh /install-buildcache.sh
+RUN chmod +x /install-buildcache.sh && /install-buildcache.sh
+
 FROM registry.ddbuild.io/images/base/gbi-ubuntu_2204:release
 
 ARG RUST_VERSION=1.93.0
@@ -64,6 +79,9 @@ RUN find /tmp -mindepth 1 -delete && \
     rm -rf /root/.cargo/registry && \
     rm -rf /root/.rustup/toolchains/nightly-*/lib/rustlib/*/lib && \
     rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/locale/*
+
+# Copy just the compiled buildcache binary from the builder stage.
+COPY --from=buildcache-builder /usr/local/bin/buildcache /usr/local/bin/buildcache
 
 COPY .ci/images/build/entrypoint.sh /
 RUN chmod +x /entrypoint.sh
