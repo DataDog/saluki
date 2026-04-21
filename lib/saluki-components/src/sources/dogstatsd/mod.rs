@@ -1,5 +1,8 @@
-use std::sync::{Arc, LazyLock};
 use std::time::Duration;
+use std::{
+    path::PathBuf,
+    sync::{Arc, LazyLock},
+};
 
 use async_trait::async_trait;
 use bytes::{Buf, BufMut};
@@ -58,6 +61,9 @@ use self::filters::EnablePayloadsFilter;
 
 mod io_buffer;
 use self::io_buffer::IoBufferManager;
+
+mod replay;
+use self::replay::TrafficCapture;
 
 mod origin;
 use self::origin::{
@@ -148,6 +154,12 @@ const fn default_enable_payloads_events() -> bool {
 const fn default_enable_payloads_service_checks() -> bool {
     true
 }
+
+const fn default_capture_depth() -> usize {
+    0
+}
+
+const DOGSTATSD_CAPTURE_DIR: &str = "dsd_capture";
 
 /// DogStatsD source.
 ///
@@ -350,12 +362,33 @@ pub struct DogStatsDConfiguration {
     /// Additional tags to add to all metrics.
     #[serde(rename = "dogstatsd_tags", default)]
     additional_tags: Vec<String>,
+
+    /// The directory where DogStatsD capture files are written by default.
+    ///
+    /// When set to an empty path, the source attempts to derive the directory from `run_path` by appending
+    /// `dsd_capture`. If neither value is available, callers must provide an explicit capture path when starting a
+    /// capture session.
+    ///
+    /// Defaults to empty.
+    #[serde(rename = "dogstatsd_capture_path", default)]
+    capture_path: PathBuf,
+
+    /// The maximum number of captured packets that can be queued for persistence.
+    ///
+    /// This controls the depth of the in-process capture queue once the writer is fully implemented. A value of `0`
+    /// matches the Core Agent default and indicates no extra buffering.
+    ///
+    /// Defaults to `0`.
+    #[serde(rename = "dogstatsd_capture_depth", default = "default_capture_depth")]
+    capture_depth: usize,
 }
 
 impl DogStatsDConfiguration {
     /// Creates a new `DogStatsDConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
+        let mut dogstatsd_config: Self = config.as_typed()?;
+        dogstatsd_config.fix_empty_capture_path(config);
+        Ok(dogstatsd_config)
     }
 
     /// Returns the effective string interner size in bytes.
@@ -381,6 +414,34 @@ impl DogStatsDConfiguration {
     {
         self.workload_provider = Some(Arc::new(workload_provider));
         self
+    }
+
+    fn fix_empty_capture_path(&mut self, config: &GenericConfiguration) {
+        if self.capture_path.parent().is_some() {
+            return;
+        }
+
+        let capture_path = match config.try_get_typed::<PathBuf>("run_path") {
+            Ok(Some(mut run_path)) => {
+                run_path.push(DOGSTATSD_CAPTURE_DIR);
+                run_path
+            }
+            Ok(None) => {
+                debug!(
+                    "`dogstatsd_capture_path` and `run_path` were empty. Default DogStatsD capture path is unavailable."
+                );
+                return;
+            }
+            Err(e) => {
+                debug!(
+                    error = %e,
+                    "Failed to read `run_path` from configuration. Default DogStatsD capture path is unavailable."
+                );
+                return;
+            }
+        };
+
+        self.capture_path = capture_path;
     }
 
     async fn build_listeners(&self) -> Result<Vec<Listener>, Error> {
@@ -472,6 +533,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             .with_allow_sketches(self.enable_payloads_sketches)
             .with_allow_events(self.enable_payloads_events)
             .with_allow_service_checks(self.enable_payloads_service_checks);
+        let traffic_capture = TrafficCapture::new(self.capture_path.clone(), self.capture_depth);
 
         Ok(Box::new(DogStatsD {
             listeners,
@@ -482,6 +544,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             context_resolvers,
             enabled_filter: enable_payloads_filter,
             additional_tags: self.additional_tags.clone().into(),
+            traffic_capture,
         }))
     }
 
@@ -526,6 +589,7 @@ pub struct DogStatsD {
     context_resolvers: ContextResolvers,
     enabled_filter: EnablePayloadsFilter,
     additional_tags: Arc<[String]>,
+    traffic_capture: TrafficCapture,
 }
 
 struct ListenerContext {
@@ -535,6 +599,7 @@ struct ListenerContext {
     codec: DogStatsDCodec,
     context_resolvers: ContextResolvers,
     additional_tags: Arc<[String]>,
+    traffic_capture: TrafficCapture,
 }
 
 struct HandlerContext {
@@ -545,6 +610,7 @@ struct HandlerContext {
     metrics: Metrics,
     context_resolvers: ContextResolvers,
     additional_tags: Arc<[String]>,
+    traffic_capture: TrafficCapture,
 }
 
 struct Metrics {
@@ -711,6 +777,7 @@ impl Source for DogStatsD {
                 codec: self.codec.clone(),
                 context_resolvers: self.context_resolvers.clone(),
                 additional_tags: self.additional_tags.clone(),
+                traffic_capture: self.traffic_capture.clone(),
             };
 
             spawn_traced_named(
@@ -756,6 +823,7 @@ async fn process_listener(
         codec,
         context_resolvers,
         additional_tags,
+        traffic_capture,
     } = listener_context;
     tokio::pin!(shutdown_handle);
 
@@ -782,6 +850,7 @@ async fn process_listener(
                         metrics: build_metrics(&listen_addr, source_context.component_context()),
                         context_resolvers: context_resolvers.clone(),
                         additional_tags: additional_tags.clone(),
+                        traffic_capture: traffic_capture.clone(),
                     };
 
                     let task_name = format!("dogstatsd-stream-handler-{}", listen_addr.listener_type());
@@ -826,6 +895,7 @@ async fn drive_stream(
         metrics,
         mut context_resolvers,
         additional_tags,
+        traffic_capture: _traffic_capture,
     } = handler_context;
 
     debug!(%listen_addr, "Stream handler started.");
@@ -1223,16 +1293,18 @@ const fn get_adjusted_buffer_size(buffer_size: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use std::net::SocketAddr;
+    use std::{net::SocketAddr, path::PathBuf};
 
     use bytesize::ByteSize;
+    use saluki_config::ConfigurationLoader;
     use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
     use saluki_io::{
         deser::codec::dogstatsd::{DogStatsDCodec, DogStatsDCodecConfiguration, ParsedPacket},
         net::ConnectionAddress,
     };
+    use serde_json::json;
 
-    use super::{handle_metric_packet, ContextResolvers, DogStatsDConfiguration};
+    use super::{handle_metric_packet, ContextResolvers, DogStatsDConfiguration, DOGSTATSD_CAPTURE_DIR};
 
     #[test]
     fn no_metrics_when_interner_full_allocations_disallowed() {
@@ -1338,5 +1410,31 @@ mod tests {
         let config = deser_config(r#"{"dogstatsd_string_interner_size": 8192}"#);
         // 8192 entries * 512 bytes = 4 MiB
         assert_eq!(config.effective_context_string_interner_bytes(), ByteSize::mib(4));
+    }
+
+    #[tokio::test]
+    async fn fix_empty_capture_path_sets_path_from_run_path() {
+        const RUN_PATH: &str = "/my/little/run_path";
+
+        let base_config_values = json!({ "run_path": RUN_PATH });
+        let (config, _) = ConfigurationLoader::for_tests(Some(base_config_values), None, false).await;
+
+        let dogstatsd_config = DogStatsDConfiguration::from_configuration(&config).expect("should deserialize");
+
+        let expected = PathBuf::from(RUN_PATH).join(DOGSTATSD_CAPTURE_DIR);
+        assert_eq!(expected, dogstatsd_config.capture_path);
+    }
+
+    #[tokio::test]
+    async fn fix_empty_capture_path_keeps_explicit_path() {
+        const RUN_PATH: &str = "/my/little/run_path";
+        const CAPTURE_PATH: &str = "/custom/path/to/capture";
+
+        let base_config_values = json!({ "run_path": RUN_PATH, "dogstatsd_capture_path": CAPTURE_PATH });
+        let (config, _) = ConfigurationLoader::for_tests(Some(base_config_values), None, false).await;
+
+        let dogstatsd_config = DogStatsDConfiguration::from_configuration(&config).expect("should deserialize");
+
+        assert_eq!(PathBuf::from(CAPTURE_PATH), dogstatsd_config.capture_path);
     }
 }
