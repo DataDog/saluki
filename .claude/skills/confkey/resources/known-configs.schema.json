@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "known-configs.schema.json",
+  "title": "Known Configs",
+  "description": "Persistent ledger of classified DogStatsD configuration keys. NOT_APPLICABLE keys live in known-configs-not-applicable.json instead.",
+  "type": "array",
+  "uniqueItems": true,
+  "items": {
+    "type": "object",
+    "required": ["key", "feature_state", "action", "description", "reason"],
+    "additionalProperties": false,
+    "properties": {
+      "key": {
+        "type": "string",
+        "description": "Exact config key name as it appears in the datadog-agent codebase."
+      },
+      "feature_state": {
+        "type": "string",
+        "enum": [
+          "PARITY",
+          "DIVERGENT",
+          "MISSING",
+          "ADP_ONLY",
+          "UNKNOWN"
+        ],
+        "description": "Implementation reality, machine-derivable from code analysis. NOT_APPLICABLE keys are stored in known-configs-not-applicable.json instead of this file — hence its exclusion from this enum."
+      },
+      "action": {
+        "type": "string",
+        "enum": ["NONE", "INVESTIGATE", "IMPLEMENT", "DOCUMENT", "DOCUMENTED"],
+        "description": "Human decision about what to do with this key. DOCUMENTED is the terminal state for DOCUMENT -- it means the documentation has been written."
+      },
+      "description": {
+        "type": "string",
+        "maxLength": 50,
+        "description": "Short description of what the key does, used verbatim in documentation tables."
+      },
+      "reason": {
+        "type": "string",
+        "description": "Internal justification for the classification. Not customer-facing."
+      },
+      "issue": {
+        "type": ["string", "null"],
+        "pattern": "^#[0-9]+$",
+        "description": "GitHub issue reference (e.g. \"#1330\") tracking this work, if one exists."
+      },
+      "adp_key": {
+        "type": ["string", "null"],
+        "description": "The ADP-side config key name, when it differs from the agent-side key."
+      }
+    }
+  }
+}
