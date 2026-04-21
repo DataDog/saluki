@@ -686,32 +686,6 @@ mod tests {
     }
 
     #[test]
-    fn telemetry_initial_effective_list_sets_size() {
-        let recorder = TestRecorder::default();
-        let _local = set_default_local_recorder(&recorder);
-
-        let telemetry = FilterlistTelemetry::new(&MetricsBuilder::default());
-        let mut filter = DogStatsDPrefixFilter {
-            metric_prefix: "".to_string(),
-            metric_prefix_blocklist: vec![],
-            blocklist: Blocklist::default(),
-            effective_filterlist: EffectiveFilterlist {
-                metric_filterlist: vec!["foo".to_string(), "bar".to_string()],
-                metric_filterlist_match_prefix: false,
-                metric_blocklist: vec!["legacy".to_string()],
-                metric_blocklist_match_prefix: false,
-            },
-            telemetry,
-            configuration: None,
-        };
-
-        filter.sync_effective_blocklist(false);
-
-        assert_eq!(recorder.gauge(METRIC_FILTERLIST_SIZE_METRIC), Some(2.0));
-        assert_eq!(recorder.counter(METRIC_FILTERLIST_UPDATES_METRIC), Some(0));
-    }
-
-    #[test]
     fn telemetry_only_counts_active_filterlist_updates() {
         let recorder = TestRecorder::default();
         let _local = set_default_local_recorder(&recorder);

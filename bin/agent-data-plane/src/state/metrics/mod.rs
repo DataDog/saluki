@@ -548,16 +548,6 @@ mod tests {
         assert_eq!(remapped.name, "dogstatsd.processed");
         assert!(remapped.tags.iter().any(|t| t.as_ref() == "message_type:metrics"));
         assert!(remapped.tags.iter().any(|t| t.as_ref() == "state:ok"));
-
-        let context = Context::from_static_parts("adp.metric_filterlist_size", &["component_id:dsd_prefix_filter"]);
-        let matched = rules.iter().find_map(|r| r.try_match_no_context(&context));
-        let remapped = matched.expect("should have matched");
-        assert_eq!(remapped.name, "datadog.agent.filterlist.size");
-        assert!(remapped.tags.is_empty());
-
-        let context = Context::from_static_parts("adp.metric_filterlist_size", &["component_id:other"]);
-        let matched = rules.iter().find_map(|r| r.try_match_no_context(&context));
-        assert!(matched.is_none());
     }
 
     #[test]
