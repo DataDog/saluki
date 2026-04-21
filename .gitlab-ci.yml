@@ -41,6 +41,12 @@ variables:
   SALUKI_BUILD_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/build-ci:latest"
   SALUKI_GENERAL_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/general-ci:latest"
   SALUKI_SMP_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/smp-ci:latest"
+  # Zstd-compressed variants of the above, used by evaluation jobs to A/B test the zstd build flow
+  # before cutting over. Promoted to `:latest-zstd` by the manual `promote-*-zstd` jobs in
+  # `.gitlab/internal.yml`.
+  SALUKI_BUILD_CI_ZSTD_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/build-ci:latest-zstd"
+  SALUKI_GENERAL_CI_ZSTD_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/general-ci:latest-zstd"
+  SALUKI_SMP_CI_ZSTD_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/smp-ci:latest-zstd"
 
   # Converged Datadog Agent-specific variables, which control how we build the converged Datadog Agent image that we
   # publicly publish.
