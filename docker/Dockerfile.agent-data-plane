@@ -1,12 +1,19 @@
 ARG BUILD_IMAGE=ubuntu:24.04
 ARG APP_IMAGE=ubuntu:24.04
+
+# Set up our "build" layer.
+#
+# This can either be "clean" or "prepped", depending on whether or not we're in CI. In CI, we use a pre-built base build
+# image that already has all of the necessary build tooling installed, along with the necessary Rust toolchain(s), so that
+# we don't waste additional time installing those for every build job.
+#
+# Outside of CI, with the default "clean" mode, we assume we're starting from scratch and install all of those first.
+#
+# We vary this behavior by setting the `BUILD_BASE` build argument.
 ARG BUILD_BASE=build-clean
 
-# For local builds from a clean base image: installs all required build tools.
+# Clean build layer: install everything first.
 FROM ${BUILD_IMAGE} AS build-clean
-
-RUN --mount=type=bind,source=.ci/configure-apt-mirror.sh,target=/tmp/configure-apt-mirror.sh \
-    sh /tmp/configure-apt-mirror.sh
 
 RUN apt-get update && \
     apt-get install --no-install-recommends -y \
@@ -14,11 +21,15 @@ RUN apt-get update && \
 RUN rustup set profile minimal
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-# For CI builds: the build CI image already has all tools installed; just expose the Cargo PATH.
+# Prepped build layer: assume everything is already installed, just ensure Cargo is on $PATH.
 FROM ${BUILD_IMAGE} AS build-prepped
 
 ENV PATH="/root/.cargo/bin:${PATH}"
 
+# Build stage: actually build Agent Data Plane.
+#
+# We still do a little prep work here, like setting the necessary metadata environment variables and getting
+# some kernel headers into place... but by and large, this stage is all about compiling ADP.
 FROM ${BUILD_BASE} AS builder
 
 ARG TARGETARCH
@@ -48,8 +59,8 @@ RUN chmod +x /copy-build-headers.sh && /copy-build-headers.sh
 
 # Build Agent Data Plane.
 #
-# We install our build target here so that it gets installed against the pinned version
-# of the Rust toolchain defined in `rust-toolchain.toml`.
+# We install our build target here so that it gets installed against the pinned version # of the Rust toolchain defined
+# in `rust-toolchain.toml`.
 WORKDIR /adp
 COPY . /adp
 
