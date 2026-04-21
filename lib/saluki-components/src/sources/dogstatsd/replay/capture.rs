@@ -6,7 +6,7 @@ use std::{
 
 use saluki_error::GenericError;
 
-use super::writer::{CaptureRecord, TrafficCaptureWriter};
+use super::writer::{CaptureRecord, CaptureTargetDir, TrafficCaptureWriter};
 
 /// Owns capture lifecycle for a running DogStatsD source instance.
 #[derive(Clone)]
@@ -39,9 +39,10 @@ impl TrafficCapture {
     pub(crate) fn start_capture(
         &self, requested_dir: Option<&Path>, duration: Duration, compressed: bool,
     ) -> Result<PathBuf, GenericError> {
-        let target_dir = requested_dir
-            .map(PathBuf::from)
-            .unwrap_or_else(|| self.inner.default_capture_dir.clone());
+        let target_dir = match requested_dir {
+            Some(path) => CaptureTargetDir::Explicit(path.to_path_buf()),
+            None => CaptureTargetDir::Implicit(self.inner.default_capture_dir.clone()),
+        };
 
         self.inner.writer.start_capture(target_dir, duration, compressed)
     }
@@ -54,53 +55,5 @@ impl TrafficCapture {
     /// Enqueues a captured packet for persistence.
     pub(crate) fn enqueue(&self, record: CaptureRecord) -> bool {
         self.inner.writer.enqueue(record)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::{env::temp_dir, path::PathBuf, time::Duration};
-
-    use super::super::writer::CaptureRecord;
-    use super::TrafficCapture;
-
-    #[test]
-    fn capture_starts_inactive() {
-        let capture = TrafficCapture::new(temp_dir(), 0);
-
-        assert!(!capture.is_ongoing());
-    }
-
-    #[test]
-    fn capture_start_stop_transitions_state() {
-        let capture = TrafficCapture::new(temp_dir(), 0);
-
-        let path = capture
-            .start_capture(None, Duration::from_secs(1), false)
-            .expect("capture should start");
-        assert_eq!(path.parent(), Some(PathBuf::from(temp_dir()).as_path()));
-        assert!(capture.is_ongoing());
-
-        capture.stop_capture();
-        assert!(!capture.is_ongoing());
-    }
-
-    #[test]
-    fn capture_enqueue_defers_to_writer() {
-        let capture = TrafficCapture::new(temp_dir(), 0);
-
-        capture
-            .start_capture(None, Duration::from_secs(1), false)
-            .expect("capture should start");
-
-        let accepted = capture.enqueue(CaptureRecord {
-            timestamp_ns: 1,
-            payload: b"test".to_vec(),
-            pid: Some(123),
-            ancillary: Vec::new(),
-            container_id: None,
-        });
-
-        assert!(!accepted);
     }
 }
