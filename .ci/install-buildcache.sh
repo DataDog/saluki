@@ -27,7 +27,25 @@ install_buildcache() {
     git -C "${src_dir}" fetch --depth=1 origin "${REPO_COMMIT}"
     git -C "${src_dir}" checkout --detach "${REPO_COMMIT}"
 
-    cmake -S "${src_dir}/src" -B "${src_dir}/build" -G Ninja -DCMAKE_BUILD_TYPE=Release
+    local cmake_args=(
+        -S "${src_dir}/src"
+        -B "${src_dir}/build"
+        -G Ninja
+        -DCMAKE_BUILD_TYPE=Release
+    )
+
+    # Opt-in static linking for consumers (e.g. the buildcache-ci image) that want the
+    # binary to be droppable into a `FROM scratch` layer — OpenSSL linked statically,
+    # libstdc++/libgcc_s folded in. libc stays dynamic (we only use the binary inside
+    # glibc-based images downstream, where libc is always available).
+    if [[ "${BUILDCACHE_STATIC:-0}" == "1" ]]; then
+        cmake_args+=(
+            -DOPENSSL_USE_STATIC_LIBS=TRUE
+            "-DCMAKE_EXE_LINKER_FLAGS=-static-libgcc -static-libstdc++"
+        )
+    fi
+
+    cmake "${cmake_args[@]}"
     cmake --build "${src_dir}/build" --target buildcache
 
     cp "${src_dir}/build/buildcache" "${install_path}"

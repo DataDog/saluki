@@ -120,6 +120,12 @@ generate-smp-ci-image:
     IMAGE_NAME: smp-ci
     DOCKERFILE: .ci/images/smp/Dockerfile
 
+generate-buildcache-ci-image:
+  extends: [.generate-ci-image-definition]
+  variables:
+    IMAGE_NAME: buildcache-ci
+    DOCKERFILE: .ci/images/buildcache/Dockerfile
+
 generate-build-ci-image-zstd:
   extends: [.generate-ci-image-zstd-definition]
   before_script:
@@ -142,6 +148,12 @@ generate-smp-ci-image-zstd:
     IMAGE_NAME: smp-ci
     DOCKERFILE: .ci/images/smp/Dockerfile
 
+generate-buildcache-ci-image-zstd:
+  extends: [.generate-ci-image-zstd-definition]
+  variables:
+    IMAGE_NAME: buildcache-ci
+    DOCKERFILE: .ci/images/buildcache/Dockerfile
+
 promote-build-ci-image:
   extends: [.promote-ci-image-definition]
   variables:
@@ -160,6 +172,12 @@ promote-smp-ci-image:
     IMAGE_NAME: smp-ci
   needs: [generate-smp-ci-image]
 
+promote-buildcache-ci-image:
+  extends: [.promote-ci-image-definition]
+  variables:
+    IMAGE_NAME: buildcache-ci
+  needs: [generate-buildcache-ci-image]
+
 promote-build-ci-image-zstd:
   extends: [.promote-ci-image-zstd-definition]
   variables:
@@ -177,3 +195,9 @@ promote-smp-ci-image-zstd:
   variables:
     IMAGE_NAME: smp-ci
   needs: [generate-smp-ci-image-zstd]
+
+promote-buildcache-ci-image-zstd:
+  extends: [.promote-ci-image-zstd-definition]
+  variables:
+    IMAGE_NAME: buildcache-ci
+  needs: [generate-buildcache-ci-image-zstd]

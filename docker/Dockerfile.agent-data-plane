@@ -1,5 +1,14 @@
 ARG BUILD_IMAGE=ubuntu:24.04
 ARG APP_IMAGE=ubuntu:24.04
+# When set to the saluki buildcache-ci image (scratch + /buildcache), the binary is copied into
+# the builder stage below and cargo uses it as RUSTC_WRAPPER. Default is the regular BUILD_IMAGE,
+# which makes the subsequent buildcache-src bind-mount a no-op.
+ARG BUILDCACHE_IMAGE=${BUILD_IMAGE}
+
+# Optional buildcache source image. When BUILDCACHE_IMAGE is overridden to the buildcache-ci
+# image (scratch filesystem containing just /buildcache), the binary is extracted and cargo
+# picks it up as a compiler wrapper.
+FROM ${BUILDCACHE_IMAGE} AS buildcache-src
 
 # Set up our "build" layer.
 #
@@ -45,6 +54,12 @@ ARG APP_GIT_HASH=""
 ARG APP_VERSION=""
 ARG APP_BUILD_TIME=""
 ARG INTERNAL_BUILD=""
+# Optional buildcache configuration. BUILDCACHE_REMOTE is an S3-or-HTTPS endpoint URL;
+# BUILDCACHE_DEBUG controls log verbosity. Both default to empty so a build without buildcache
+# (the normal case) is unaffected. When buildcache is present but BUILDCACHE_REMOTE is empty,
+# buildcache degrades to a local-only cache.
+ARG BUILDCACHE_REMOTE=
+ARG BUILDCACHE_DEBUG=
 
 ENV APP_FULL_NAME=${APP_FULL_NAME}
 ENV APP_SHORT_NAME=${APP_SHORT_NAME}
@@ -52,10 +67,20 @@ ENV APP_IDENTIFIER=${APP_IDENTIFIER}
 ENV APP_GIT_HASH=${APP_GIT_HASH}
 ENV APP_VERSION=${APP_VERSION}
 ENV APP_BUILD_TIME=${APP_BUILD_TIME}
+ENV BUILDCACHE_REMOTE=${BUILDCACHE_REMOTE}
+ENV BUILDCACHE_DEBUG=${BUILDCACHE_DEBUG}
 
 # Copy over required build headers for AWS-LC.
 COPY ./tooling/copy-build-headers.sh /copy-build-headers.sh
 RUN chmod +x /copy-build-headers.sh && /copy-build-headers.sh
+
+# Bring in buildcache if the provider image shipped one. When BUILDCACHE_IMAGE is the default
+# (= BUILD_IMAGE), /buildcache doesn't exist on the bind mount and this step is a no-op.
+RUN --mount=type=bind,from=buildcache-src,source=/,target=/mnt/bcsrc \
+    if [ -f /mnt/bcsrc/buildcache ]; then \
+        install -m 0755 /mnt/bcsrc/buildcache /usr/local/bin/buildcache && \
+        /usr/local/bin/buildcache --version; \
+    fi
 
 # Build Agent Data Plane.
 #
@@ -65,16 +90,28 @@ WORKDIR /adp
 COPY . /adp
 
 RUN mkdir -p /adp/target/bin
-RUN if [ "${BUILD_TARGET}" = "default" ]; then \
-    CFLAGS="${BUILD_CFLAGS}" \
-    cargo build --profile ${BUILD_PROFILE} --package agent-data-plane --features ${BUILD_FEATURES} --target-dir /adp/target && \
-    cp /adp/target/${BUILD_PROFILE}/agent-data-plane /adp/target/bin/agent-data-plane; \
-else \
-    rustup target add ${BUILD_TARGET} && \
-    CFLAGS="${BUILD_CFLAGS}" \
-    cargo build --profile ${BUILD_PROFILE} --package agent-data-plane --features ${BUILD_FEATURES} --target ${BUILD_TARGET} --target-dir /adp/target && \
-    cp /adp/target/${BUILD_TARGET}/${BUILD_PROFILE}/agent-data-plane /adp/target/bin/agent-data-plane; \
-fi
+# Cargo build. When /usr/local/bin/buildcache exists (pulled in above), cargo wraps every rustc
+# invocation through it and the buildcache-aws-env secret, if provided, supplies AWS credentials
+# for the remote S3 cache. Both are optional: the default build path is byte-for-byte identical
+# to before this change.
+RUN --mount=type=secret,id=buildcache-aws-env,target=/run/secrets/buildcache-aws-env.sh,required=false \
+    if [ -f /run/secrets/buildcache-aws-env.sh ]; then . /run/secrets/buildcache-aws-env.sh; fi && \
+    if command -v buildcache >/dev/null 2>&1; then \
+        export RUSTC_WRAPPER=buildcache && buildcache --zero-stats; \
+    fi && \
+    if [ "${BUILD_TARGET}" = "default" ]; then \
+        CFLAGS="${BUILD_CFLAGS}" \
+        cargo build --profile ${BUILD_PROFILE} --package agent-data-plane --features ${BUILD_FEATURES} --target-dir /adp/target && \
+        cp /adp/target/${BUILD_PROFILE}/agent-data-plane /adp/target/bin/agent-data-plane; \
+    else \
+        rustup target add ${BUILD_TARGET} && \
+        CFLAGS="${BUILD_CFLAGS}" \
+        cargo build --profile ${BUILD_PROFILE} --package agent-data-plane --features ${BUILD_FEATURES} --target ${BUILD_TARGET} --target-dir /adp/target && \
+        cp /adp/target/${BUILD_TARGET}/${BUILD_PROFILE}/agent-data-plane /adp/target/bin/agent-data-plane; \
+    fi && \
+    if command -v buildcache >/dev/null 2>&1; then \
+        buildcache --show-stats; \
+    fi
 
 # Include helpers (including `ddprof` itself) if this build is for internal benchmarking.
 #
