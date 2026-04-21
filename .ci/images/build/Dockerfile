@@ -62,7 +62,7 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 RUN rustup component add clippy && \
     rustup toolchain install nightly --profile minimal --component rustfmt && \
     MUSL_TARGET=$(rustc -vV | awk '/^host:/ { gsub(/linux-gnu/, "linux-musl", $2); print $2 }') && \
-    rustup target add ${RUST_VERSION}-${MUSL_TARGET}
+    rustup target add ${MUSL_TARGET}
 
 # Pre-install the relevant Cargo tools we use in the build process.
 WORKDIR /tmp
