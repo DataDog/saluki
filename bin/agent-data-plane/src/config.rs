@@ -57,12 +57,15 @@ impl DataPlaneConfiguration {
 
     /// Returns `true` if the data plane is effectively enabled.
     ///
-    /// The data plane is effectively enabled when any of the following is true:
-    /// - `data_plane.enabled` is explicitly set to `true`
-    /// - `data_plane.enabled` is not set (i.e., using its default), and at least one data pipeline is enabled
+    /// When ADP runs in standalone mode or when the Core Agent config stream is disabled, `data_plane.enabled` may not
+    /// be explicitly set in the configuration. In that case, ADP infers enablement from whether any data pipeline is
+    /// enabled (e.g. `data_plane.dogstatsd.enabled`). When the Core Agent config stream is active, it sends the full
+    /// Agent configuration, so `data_plane.enabled` will always be present and is used directly.
     ///
-    /// If `data_plane.enabled` is explicitly set to `false`, it acts as a global kill switch and this method returns
-    /// `false` regardless of any per-feature flags such as `data_plane.dogstatsd.enabled`.
+    /// Concretely:
+    /// - `data_plane.enabled` explicitly `true` → enabled
+    /// - `data_plane.enabled` not set → enabled if at least one data pipeline is enabled
+    /// - `data_plane.enabled` explicitly `false` → disabled (global kill switch, overrides all pipeline flags)
     pub fn enabled(&self) -> bool {
         match self.enabled {
             Some(v) => v,
