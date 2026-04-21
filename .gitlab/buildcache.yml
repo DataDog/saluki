@@ -1,0 +1,21 @@
+# Validation job for the buildcache -> S3 integration. Does NOT compile anything via
+# buildcache — it only verifies that the runner's IAM role reaches the bucket and that
+# buildcache reads its config + propagates AWS credentials to its S3 client.
+
+validate-buildcache-s3:
+  image: "${SALUKI_SMP_CI_IMAGE}"
+  stage: test
+  tags: ["arch:amd64"]
+  variables:
+    BUILDCACHE_S3_BUCKET: "dd-saluki-build-cache-us1-ddbuild-io"
+    BUILDCACHE_S3_REGION: "us-east-1"
+  script:
+    - ./test/buildcache/configure-buildcache-s3.sh
+    # Smoke test: prove creds work before blaming buildcache.
+    - source /tmp/buildcache-aws-env.sh && aws sts get-caller-identity
+    # Prove bucket ACL/network path works independent of buildcache.
+    - source /tmp/buildcache-aws-env.sh && aws s3 ls "s3://${BUILDCACHE_S3_BUCKET}/" --region "${BUILDCACHE_S3_REGION}"
+    # Prove buildcache parses the config and recognizes the remote.
+    - source /tmp/buildcache-aws-env.sh && buildcache -s
+    # Force buildcache to actually hit S3 (cache miss is fine). debug=2 prints the attempt.
+    - source /tmp/buildcache-aws-env.sh && buildcache /bin/true || true
