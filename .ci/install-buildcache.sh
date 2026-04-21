@@ -14,7 +14,7 @@ set -x
 readonly REPO_URL="https://gitlab.com/tobz1/buildcache.git"
 readonly REPO_REF="tobz/https-support"
 # Pinned to a specific commit on REPO_REF for reproducibility. Bump intentionally.
-readonly REPO_COMMIT="7910c2cafa84368069a54e87162340b6ea56a365"
+readonly REPO_COMMIT="921c88108819fa3c2b9dc35083f8215c081e826e"
 
 readonly TMP_DIR="$(mktemp -d -t "buildcache_XXXX")"
 trap 'rm -rf "${TMP_DIR}"' EXIT
