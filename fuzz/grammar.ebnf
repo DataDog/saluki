@@ -1,0 +1,33 @@
+start = payload ;
+
+payload = message | message "\n" message ;
+
+message = metric;
+
+metric = name ":" value "|" mtype
+       | name ":" value "|" mtype "|@" srate
+       | name ":" value "|" mtype "|#" tags
+       | name ":" value "|" mtype "|@" srate "|#" tags ;
+
+mtype = "c" | "g" | "ms" | "h" | "s" | "d" ;
+
+srate = "0.1" | "0.5" | "0.01" | "0.25" | "0.001" | "1.0" | "boom" ;
+
+value = digits | digits "." digits | "-" digits | "-" digits "." digits ;
+
+tags = tag | tag "," tags ;
+tag = tagname ":" tagval | tagname ;
+tagname = letter | letter tagrest ;
+tagval = letter | digit | letter tagrest | digit tagrest ;
+tagrest = tagchar | tagchar tagrest ;
+tagchar = letter | digit | "." | "_" | "-" ;
+
+name = letter | letter namerest ;
+namerest = namechar | namechar namerest ;
+namechar = letter | digit | "." | "_" | "-" ;
+
+digits = digit | digit digits ;
+digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+letter = "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j"
+       | "k" | "l" | "m" | "n" | "o" | "p" | "q" | "r" | "s" | "t"
+       | "u" | "v" | "w" | "x" | "y" | "z" ;

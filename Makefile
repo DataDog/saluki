@@ -115,6 +115,13 @@ build-adp-system-alloc: ## Builds the ADP binary in debug mode with the system a
 build-adp-release-system-alloc: ## Builds the ADP binary in release mode with the system allocator (useful for memory profiling)
 	@$(MAKE) --no-print-directory build-adp-base BUILD_PROFILE=release RUSTFLAGS="--cfg tokio_unstable --cfg system_allocator"
 
+FUZZ_TARGET ?= apd
+FUZZ_ARGS ?=
+
+.PHONY: fuzz
+fuzz: ## Runs a fuzz target (FUZZ_TARGET=apd, FUZZ_ARGS passed through to cargo fuzz)
+	@RUSTFLAGS="--cfg tokio_unstable" cargo fuzz run $(FUZZ_TARGET) $(FUZZ_ARGS)
+
 .PHONY: build-adp-image-base
 build-adp-image-base:
 	@echo "[*] Building ADP image... (target: ${BUILD_TARGET}, profile: ${BUILD_PROFILE}, features: ${BUILD_FEATURES})"

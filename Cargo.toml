@@ -7,6 +7,7 @@ members = [
   "bin/correctness/millstone",
   "bin/correctness/panoramic",
   "bin/correctness/stele",
+  "fuzz",
   "lib/ddsketch",
   "lib/memory-accounting",
   "lib/ottl",
