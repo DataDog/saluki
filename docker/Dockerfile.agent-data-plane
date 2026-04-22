@@ -1,7 +1,36 @@
 ARG BUILD_IMAGE=ubuntu:24.04
 ARG APP_IMAGE=ubuntu:24.04
 
-FROM ${BUILD_IMAGE} AS builder
+# Set up our "build" layer.
+#
+# This can either be "clean" or "prepped", depending on whether or not we're in CI. In CI, we use a pre-built base build
+# image that already has all of the necessary build tooling installed, along with the necessary Rust toolchain(s), so
+# that we don't waste additional time installing those for every build job.
+#
+# Outside of CI, with the default "clean" mode, we assume we're starting from scratch and install all of those first.
+#
+# We vary this behavior by setting the `BUILD_BASE` build argument.
+ARG BUILD_BASE=build-clean
+
+# Clean build layer: install everything first.
+FROM ${BUILD_IMAGE} AS build-clean
+
+RUN apt-get update && \
+    apt-get install --no-install-recommends -y \
+    build-essential ca-certificates musl-dev musl-tools linux-libc-dev make cmake gcc g++ perl golang-go protobuf-compiler curl unzip rustup
+RUN rustup set profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Prepped build layer: assume everything is already installed, just ensure Cargo is on $PATH.
+FROM ${BUILD_IMAGE} AS build-prepped
+
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Build stage: actually build Agent Data Plane.
+#
+# We still do a little prep work here, like setting the necessary metadata environment variables and getting some
+# kernel headers into place... but by and large, this stage is all about compiling ADP.
+FROM ${BUILD_BASE} AS builder
 
 ARG TARGETARCH
 ARG RUST_VERSION=stable
@@ -24,24 +53,14 @@ ENV APP_GIT_HASH=${APP_GIT_HASH}
 ENV APP_VERSION=${APP_VERSION}
 ENV APP_BUILD_TIME=${APP_BUILD_TIME}
 
-RUN --mount=type=bind,source=.ci/configure-apt-mirror.sh,target=/tmp/configure-apt-mirror.sh \
-    sh /tmp/configure-apt-mirror.sh
-
-# Install Rust and other build dependencies.
-RUN apt-get update && \
-    apt-get install --no-install-recommends -y \
-    build-essential ca-certificates musl-dev musl-tools linux-headers-6.8.0-94-generic make cmake gcc g++ perl golang-go protobuf-compiler curl unzip rustup
-RUN rustup set profile minimal
-ENV PATH="/root/.cargo/bin:${PATH}"
-
 # Copy over required build headers for AWS-LC.
 COPY ./tooling/copy-build-headers.sh /copy-build-headers.sh
 RUN chmod +x /copy-build-headers.sh && /copy-build-headers.sh
 
 # Build Agent Data Plane.
 #
-# We install our build target here so that it gets installed against the pinned version
-# of the Rust toolchain defined in `rust-toolchain.toml`.
+# We install our build target here so that it gets installed against the pinned version of the Rust toolchain defined
+# in `rust-toolchain.toml`.
 WORKDIR /adp
 COPY . /adp
 
@@ -71,8 +90,6 @@ RUN if [ "${INTERNAL_BUILD}" = "true" ]; then \
 # Calculate the necessary licenses that we need to include in the final image.
 FROM ${BUILD_IMAGE} AS license-builder
 
-RUN --mount=type=bind,source=.ci/configure-apt-mirror.sh,target=/tmp/configure-apt-mirror.sh \
-    sh /tmp/configure-apt-mirror.sh
 RUN apt-get update && apt-get install -y curl
 
 # Pull down the latest SPDX licenses archive.
@@ -99,8 +116,6 @@ FROM ${APP_IMAGE}
 # For local builds, the regular Ubuntu application image needs to have the CA certificates installed, but it also uses
 # the `root` user, so we can install them without issue.
 USER root
-RUN --mount=type=bind,source=.ci/configure-apt-mirror.sh,target=/tmp/configure-apt-mirror.sh \
-    sh /tmp/configure-apt-mirror.sh
 RUN test -d /usr/share/ca-certificates || (apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates=20240203 && \
     apt-get clean && rm -rf /var/lib/apt/lists)
@@ -109,8 +124,8 @@ COPY NOTICE LICENSE LICENSE-3rdparty.csv /opt/datadog/agent-data-plane/
 COPY --from=license-builder /licenses /opt/datadog/agent-data-plane/LICENSES
 COPY --chmod=755 docker/entrypoint.sh /entrypoint.sh
 
-# We use a wildcard here to effectively make the copy conditional: we don't want it to fail
-# on non-internal builds when there's no files.
+# We use a wildcard here to effectively make the copy conditional: we don't want it to fail on non-internal builds
+# when there's no files.
 COPY --from=builder --chmod=755 /tmp/profiling/* /
 
 ENTRYPOINT [ "/usr/local/bin/agent-data-plane" ]
