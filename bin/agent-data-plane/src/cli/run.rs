@@ -461,7 +461,8 @@ async fn add_dsd_pipeline_to_blueprint(
 
     let dsd_config = DogStatsDConfiguration::from_configuration(config)
         .error_context("Failed to configure DogStatsD source.")?
-        .with_workload_provider(env_provider.workload().clone());
+        .with_workload_provider(env_provider.workload().clone())
+        .with_replay_state(env_provider.replay_state());
     let dsd_capture_control = dsd_config.capture_control();
     let dsd_prefix_filter_configuration = DogStatsDPrefixFilterConfiguration::from_configuration(config)?;
     let dsd_mapper_config = DogStatsDMapperConfiguration::from_configuration(config)?;

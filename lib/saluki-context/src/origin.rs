@@ -99,6 +99,9 @@ pub struct RawOrigin<'a> {
     /// Process ID of the sender.
     process_id: Option<NonZeroU32>,
 
+    /// Whether or not the sender is replay traffic.
+    replay: bool,
+
     /// Local Data of the sender.
     ///
     /// This will typically be either the container ID, or the inode of the container's cgroups controller, or both. It
@@ -146,6 +149,16 @@ impl<'a> RawOrigin<'a> {
     /// Returns the process ID of the sender.
     pub fn process_id(&self) -> Option<u32> {
         self.process_id.map(NonZeroU32::get)
+    }
+
+    /// Sets whether or not the sender is replay traffic.
+    pub fn set_replay(&mut self, replay: bool) {
+        self.replay = replay;
+    }
+
+    /// Returns whether or not the sender is replay traffic.
+    pub const fn is_replay(&self) -> bool {
+        self.replay
     }
 
     /// Sets the Local Data of the sender.
@@ -197,6 +210,16 @@ impl fmt::Display for RawOrigin<'_> {
 
         if let Some(process_id) = self.process_id {
             write!(f, "process_id={}", process_id)?;
+            has_written = true;
+        }
+
+        if self.replay {
+            if has_written {
+                write!(f, " ")?;
+            } else {
+                has_written = true;
+            }
+            write!(f, "replay=true")?;
         }
 
         if let Some(local_data) = self.local_data {

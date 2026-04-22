@@ -67,7 +67,7 @@ mod io_buffer;
 use self::io_buffer::IoBufferManager;
 
 mod replay;
-use self::replay::{CaptureRecord, TrafficCapture};
+use self::replay::{CaptureRecord, TrafficCapture, REPLAY_CREDENTIALS_GID};
 pub use self::replay::{DogStatsDCaptureControl, DogStatsDReplayState};
 
 mod origin;
@@ -364,6 +364,10 @@ pub struct DogStatsDConfiguration {
     #[serde(skip)]
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 
+    /// Shared replay state to use for replay-marked origin lookups.
+    #[serde(skip, default)]
+    replay_state: DogStatsDReplayState,
+
     /// Additional tags to add to all metrics.
     #[serde(rename = "dogstatsd_tags", default)]
     additional_tags: Vec<String>,
@@ -421,6 +425,12 @@ impl DogStatsDConfiguration {
         W: WorkloadProvider + Send + Sync + 'static,
     {
         self.workload_provider = Some(Arc::new(workload_provider));
+        self
+    }
+
+    /// Sets the shared replay state to use for replay-marked DogStatsD traffic.
+    pub fn with_replay_state(mut self, replay_state: DogStatsDReplayState) -> Self {
+        self.replay_state = replay_state;
         self
     }
 
@@ -527,10 +537,9 @@ impl SourceBuilder for DogStatsDConfiguration {
             ));
         }
 
-        let maybe_origin_tags_resolver = self
-            .workload_provider
-            .clone()
-            .map(|provider| DogStatsDOriginTagResolver::new(self.origin_enrichment.clone(), provider));
+        let maybe_origin_tags_resolver = self.workload_provider.clone().map(|provider| {
+            DogStatsDOriginTagResolver::new(self.origin_enrichment.clone(), provider, self.replay_state.clone())
+        });
         let context_resolvers = ContextResolvers::new(self, &context, maybe_origin_tags_resolver)
             .error_context("Failed to create context resolvers.")?;
 
@@ -1200,9 +1209,24 @@ fn parsed_packet_local_container_id(parsed: ParsedPacket<'_>) -> Option<String> 
 
 fn process_id_from_peer_addr(peer_addr: &ConnectionAddress) -> Option<i32> {
     match peer_addr {
+        ConnectionAddress::ProcessLike(Some(creds)) if creds.gid == REPLAY_CREDENTIALS_GID => {
+            i32::try_from(creds.uid).ok()
+        }
         ConnectionAddress::ProcessLike(Some(creds)) => Some(creds.pid),
         _ => None,
     }
+}
+
+fn process_id_for_origin(peer_addr: &ConnectionAddress) -> Option<u32> {
+    match peer_addr {
+        ConnectionAddress::ProcessLike(Some(creds)) if creds.gid == REPLAY_CREDENTIALS_GID => Some(creds.uid),
+        ConnectionAddress::ProcessLike(Some(creds)) => u32::try_from(creds.pid).ok(),
+        _ => None,
+    }
+}
+
+fn is_replay_peer_addr(peer_addr: &ConnectionAddress) -> bool {
+    matches!(peer_addr, ConnectionAddress::ProcessLike(Some(creds)) if creds.gid == REPLAY_CREDENTIALS_GID)
 }
 
 fn received_payload(buffer: &BytesBuffer, bytes_read: usize) -> &[u8] {
@@ -1308,9 +1332,10 @@ fn handle_metric_packet(
     let well_known_tags = WellKnownTags::from_raw_tags(packet.tags.clone());
 
     let mut origin = origin_from_metric_packet(&packet, &well_known_tags);
-    if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
-        origin.set_process_id(creds.pid as u32);
+    if let Some(process_id) = process_id_for_origin(peer_addr) {
+        origin.set_process_id(process_id);
     }
+    origin.set_replay(is_replay_peer_addr(peer_addr));
 
     // Choose the right context resolver based on whether or not this metric is pre-aggregated.
     let context_resolver = if packet.timestamp.is_some() {
@@ -1345,9 +1370,10 @@ fn handle_event_packet(
     let well_known_tags = WellKnownTags::from_raw_tags(packet.tags.clone());
 
     let mut origin = origin_from_event_packet(&packet, &well_known_tags);
-    if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
-        origin.set_process_id(creds.pid as u32);
+    if let Some(process_id) = process_id_for_origin(peer_addr) {
+        origin.set_process_id(process_id);
     }
+    origin.set_replay(is_replay_peer_addr(peer_addr));
     let origin_tags = tags_resolver.resolve_origin_tags(Some(origin));
 
     let tags = get_filtered_tags_iterator(packet.tags, additional_tags);
@@ -1374,9 +1400,10 @@ fn handle_service_check_packet(
     let well_known_tags = WellKnownTags::from_raw_tags(packet.tags.clone());
 
     let mut origin = origin_from_service_check_packet(&packet, &well_known_tags);
-    if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
-        origin.set_process_id(creds.pid as u32);
+    if let Some(process_id) = process_id_for_origin(peer_addr) {
+        origin.set_process_id(process_id);
     }
+    origin.set_replay(is_replay_peer_addr(peer_addr));
     let origin_tags = tags_resolver.resolve_origin_tags(Some(origin));
 
     let tags = get_filtered_tags_iterator(packet.tags, additional_tags);
@@ -1488,8 +1515,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        handle_metric_packet, payload_local_container_id, resolve_capture_container_id, ContextResolvers,
-        DogStatsDConfiguration, DOGSTATSD_CAPTURE_DIR,
+        handle_metric_packet, is_replay_peer_addr, payload_local_container_id, process_id_for_origin,
+        process_id_from_peer_addr, resolve_capture_container_id, ContextResolvers, DogStatsDConfiguration,
+        DOGSTATSD_CAPTURE_DIR, REPLAY_CREDENTIALS_GID,
     };
 
     #[derive(Default)]
@@ -1694,5 +1722,18 @@ mod tests {
         stream_capture.push_received(&ConnectionAddress::ProcessLike(None), &[], b"second");
 
         assert_eq!(stream_capture.last_pid, Some(42));
+    }
+
+    #[test]
+    fn process_id_from_replay_peer_addr_uses_uid_as_captured_pid() {
+        let peer_addr = ConnectionAddress::ProcessLike(Some(saluki_io::net::ProcessCredentials {
+            pid: 999,
+            uid: 42,
+            gid: REPLAY_CREDENTIALS_GID,
+        }));
+
+        assert_eq!(process_id_from_peer_addr(&peer_addr), Some(42));
+        assert_eq!(process_id_for_origin(&peer_addr), Some(42));
+        assert!(is_replay_peer_addr(&peer_addr));
     }
 }

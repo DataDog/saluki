@@ -4,11 +4,15 @@ use saluki_context::{
     origin::{OriginTagCardinality, OriginTagsResolver, RawOrigin},
     tags::SharedTagSet,
 };
-use saluki_env::{workload::origin::ResolvedOrigin, WorkloadProvider};
+use saluki_env::{
+    workload::{origin::ResolvedOrigin, EntityId},
+    WorkloadProvider,
+};
 use saluki_io::deser::codec::dogstatsd::{EventPacket, MetricPacket, ServiceCheckPacket};
 use serde::Deserialize;
 use tracing::trace;
 
+use super::replay::DogStatsDReplayState;
 use super::tags::WellKnownTags;
 
 const fn default_tag_cardinality() -> OriginTagCardinality {
@@ -91,16 +95,36 @@ impl Default for OriginEnrichmentConfiguration {
 pub(super) struct DogStatsDOriginTagResolver {
     config: OriginEnrichmentConfiguration,
     workload_provider: Arc<dyn WorkloadProvider + Send + Sync>,
+    replay_state: DogStatsDReplayState,
 }
 
 impl DogStatsDOriginTagResolver {
     pub fn new(
         config: OriginEnrichmentConfiguration, workload_provider: Arc<dyn WorkloadProvider + Send + Sync>,
+        replay_state: DogStatsDReplayState,
     ) -> Self {
         Self {
             config,
             workload_provider,
+            replay_state,
         }
+    }
+
+    fn get_tags_for_entity(
+        &self, entity_id: &EntityId, cardinality: OriginTagCardinality, replay: bool,
+    ) -> Option<SharedTagSet> {
+        if replay {
+            if let Some(tags) = self.replay_state.get_tags_for_entity(entity_id, cardinality) {
+                return Some(tags);
+            }
+
+            // Go does not fall back to the live host when replay credentials resolve a PID.
+            if matches!(entity_id, EntityId::ContainerPid(_)) {
+                return None;
+            }
+        }
+
+        self.workload_provider.get_tags_for_entity(entity_id, cardinality)
     }
 
     fn collect_origin_tags(&self, origin: ResolvedOrigin) -> SharedTagSet {
@@ -125,6 +149,7 @@ impl DogStatsDOriginTagResolver {
         let maybe_external_pod_uid = origin.resolved_external_data().map(|red| red.pod_entity_id());
 
         let tag_cardinality = origin.cardinality().unwrap_or(self.config.tag_cardinality);
+        let replay = origin.is_replay();
 
         if !self.config.origin_detection_unified {
             if self.config.origin_detection_optout && tag_cardinality == OriginTagCardinality::None {
@@ -136,7 +161,7 @@ impl DogStatsDOriginTagResolver {
             // was, but entity ID precedence is disabled), then try to get tags for the detected entity ID.
             if let Some(entity_id) = maybe_process_id {
                 if maybe_local_pod_uid.is_none() || !self.config.entity_id_precedence {
-                    if let Some(tags) = self.workload_provider.get_tags_for_entity(entity_id, tag_cardinality) {
+                    if let Some(tags) = self.get_tags_for_entity(entity_id, tag_cardinality, replay) {
                         collected_tags.extend_from_shared(&tags);
                     } else {
                         trace!(
@@ -152,7 +177,7 @@ impl DogStatsDOriginTagResolver {
             // entity ID takes precedence over the container ID.
             let maybe_entity_id = maybe_local_pod_uid.or(maybe_local_container_id);
             if let Some(entity_id) = maybe_entity_id {
-                if let Some(tags) = self.workload_provider.get_tags_for_entity(entity_id, tag_cardinality) {
+                if let Some(tags) = self.get_tags_for_entity(entity_id, tag_cardinality, replay) {
                     collected_tags.extend_from_shared(&tags);
                 } else {
                     trace!(
@@ -180,7 +205,7 @@ impl DogStatsDOriginTagResolver {
                 maybe_external_pod_uid,
             ];
             for entity_id in maybe_entity_ids.iter().flatten() {
-                if let Some(tags) = self.workload_provider.get_tags_for_entity(entity_id, tag_cardinality) {
+                if let Some(tags) = self.get_tags_for_entity(entity_id, tag_cardinality, replay) {
                     if !tags.is_empty() {
                         collected_tags.extend_from_shared(&tags);
                         break;
@@ -257,6 +282,7 @@ pub fn origin_from_service_check_packet<'packet>(
 mod tests {
     use std::collections::HashMap;
 
+    use datadog_protos::agent::{Entity, EntityId as RemoteEntityId, TaggerState};
     use saluki_context::tags::{RawTags, TagSet};
     use saluki_core::data_model::event::{metric::MetricValues, service_check::CheckStatus};
     use saluki_env::workload::{origin::ResolvedExternalData, EntityId};
@@ -317,7 +343,7 @@ mod tests {
 
     fn origin(
         maybe_process_id: Option<&EntityId>, maybe_local_container_id: Option<&EntityId>,
-        maybe_local_pod_uid: Option<&EntityId>, maybe_external_data: Option<&ResolvedExternalData>,
+        maybe_local_pod_uid: Option<&EntityId>, maybe_external_data: Option<&ResolvedExternalData>, replay: bool,
     ) -> ResolvedOrigin {
         ResolvedOrigin::from_parts(
             None,
@@ -325,10 +351,13 @@ mod tests {
             maybe_local_container_id.cloned(),
             maybe_local_pod_uid.cloned(),
             maybe_external_data.cloned(),
+            replay,
         )
     }
 
-    fn build_tags_resolver_with_default_tags(config: OriginEnrichmentConfiguration) -> DogStatsDOriginTagResolver {
+    fn build_tags_resolver_with_default_tags(
+        config: OriginEnrichmentConfiguration, replay_state: DogStatsDReplayState,
+    ) -> DogStatsDOriginTagResolver {
         let mut workload_provider = MockWorkloadProvider::default();
         workload_provider.add_tags(EID_PID.clone(), tags_for_entity(&EID_PID));
         workload_provider.add_tags(EID_LOCAL_CID.clone(), tags_for_entity(&EID_LOCAL_CID));
@@ -338,7 +367,7 @@ mod tests {
 
         let erased_workload_provider = Arc::new(workload_provider);
 
-        DogStatsDOriginTagResolver::new(config, erased_workload_provider)
+        DogStatsDOriginTagResolver::new(config, erased_workload_provider, replay_state)
     }
 
     #[test]
@@ -486,52 +515,52 @@ mod tests {
             // We only have the process ID, so entity ID precedence should be irrelevant.
             (
                 false,
-                origin(Some(&EID_PID), None, None, None),
+                origin(Some(&EID_PID), None, None, None, false),
                 tags_for_entity(&EID_PID),
             ),
             (
                 true,
-                origin(Some(&EID_PID), None, None, None),
+                origin(Some(&EID_PID), None, None, None, false),
                 tags_for_entity(&EID_PID),
             ),
             // We have both the process ID and local pod UID, but entity ID precedence is disabled, so we get the
             // process ID and local pod UID tags.
             (
                 false,
-                origin(Some(&EID_PID), None, Some(&EID_LOCAL_POD), None),
+                origin(Some(&EID_PID), None, Some(&EID_LOCAL_POD), None, false),
                 pid_plus_local_pod_tags.clone(),
             ),
             // We have both the process ID and local pod UID, but entity ID precedence is enabled, so we should only get
             // the local pod UID tags.
             (
                 true,
-                origin(Some(&EID_PID), None, Some(&EID_LOCAL_POD), None),
+                origin(Some(&EID_PID), None, Some(&EID_LOCAL_POD), None, false),
                 tags_for_entity(&EID_LOCAL_POD),
             ),
             // We have the process ID, local container ID, and local pod UID, but entity ID precedence is disabled, so
             // we should get the process ID and local pod UID tags.
             (
                 false,
-                origin(Some(&EID_PID), Some(&EID_LOCAL_CID), Some(&EID_LOCAL_POD), None),
+                origin(Some(&EID_PID), Some(&EID_LOCAL_CID), Some(&EID_LOCAL_POD), None, false),
                 pid_plus_local_pod_tags,
             ),
             // We have the process ID, local container ID, and local pod UID, but entity ID precedence is enabled, so we
             // should only get the local pod UID tags.
             (
                 true,
-                origin(Some(&EID_PID), Some(&EID_LOCAL_CID), Some(&EID_LOCAL_POD), None),
+                origin(Some(&EID_PID), Some(&EID_LOCAL_CID), Some(&EID_LOCAL_POD), None, false),
                 tags_for_entity(&EID_LOCAL_POD),
             ),
             // We only have the process ID and local container ID, so entity ID precedence should be irrelevant, and so
             // we should get the process ID and local container ID tags.
             (
                 false,
-                origin(Some(&EID_PID), Some(&EID_LOCAL_CID), None, None),
+                origin(Some(&EID_PID), Some(&EID_LOCAL_CID), None, None, false),
                 pid_plus_local_cid_tags.clone(),
             ),
             (
                 true,
-                origin(Some(&EID_PID), Some(&EID_LOCAL_CID), None, None),
+                origin(Some(&EID_PID), Some(&EID_LOCAL_CID), None, None, false),
                 pid_plus_local_cid_tags,
             ),
         ];
@@ -545,7 +574,8 @@ mod tests {
                 origin_detection_optout: false,
             };
 
-            let origin_tags_resolver = build_tags_resolver_with_default_tags(tag_resolver_config);
+            let origin_tags_resolver =
+                build_tags_resolver_with_default_tags(tag_resolver_config, DogStatsDReplayState::new());
 
             let actual_tags = origin_tags_resolver.collect_origin_tags(resolved_origin.clone());
             assert_eq!(
@@ -575,27 +605,31 @@ mod tests {
             origin_detection_optout: false,
         };
 
-        let origin_tags_resolver = build_tags_resolver_with_default_tags(tag_resolver_config);
+        let origin_tags_resolver =
+            build_tags_resolver_with_default_tags(tag_resolver_config, DogStatsDReplayState::new());
 
         // We craft our test cases to ensure that we always take the tags of the highest precedence entity ID available,
         // and don't take any other tags.
         let cases = [
             // Cases where we're only setting a single entity ID. This is the happy path.
-            (origin(Some(&EID_PID), None, None, None), tags_for_entity(&EID_PID)),
             (
-                origin(None, Some(&EID_LOCAL_CID), None, None),
+                origin(Some(&EID_PID), None, None, None, false),
+                tags_for_entity(&EID_PID),
+            ),
+            (
+                origin(None, Some(&EID_LOCAL_CID), None, None, false),
                 tags_for_entity(&EID_LOCAL_CID),
             ),
             (
-                origin(None, None, Some(&EID_LOCAL_POD), None),
+                origin(None, None, Some(&EID_LOCAL_POD), None, false),
                 tags_for_entity(&EID_LOCAL_POD),
             ),
             (
-                origin(None, None, None, Some(&ext_data_valid)),
+                origin(None, None, None, Some(&ext_data_valid), false),
                 tags_for_entity(&EID_EXTERNAL_CID_VALID),
             ),
             (
-                origin(None, None, None, Some(&ext_data_invalid)),
+                origin(None, None, None, Some(&ext_data_invalid), false),
                 tags_for_entity(&EID_EXTERNAL_POD),
             ),
             // Cases where we have multiple entity IDs to choose from. We work our way backwards here.
@@ -605,23 +639,24 @@ mod tests {
                     Some(&EID_LOCAL_CID),
                     Some(&EID_LOCAL_POD),
                     Some(&ext_data_valid),
+                    false,
                 ),
                 tags_for_entity(&EID_LOCAL_CID),
             ),
             (
-                origin(Some(&EID_PID), None, Some(&EID_LOCAL_POD), Some(&ext_data_valid)),
+                origin(Some(&EID_PID), None, Some(&EID_LOCAL_POD), Some(&ext_data_valid), false),
                 tags_for_entity(&EID_PID),
             ),
             (
-                origin(None, None, Some(&EID_LOCAL_POD), Some(&ext_data_valid)),
+                origin(None, None, Some(&EID_LOCAL_POD), Some(&ext_data_valid), false),
                 tags_for_entity(&EID_EXTERNAL_CID_VALID),
             ),
             (
-                origin(None, None, Some(&EID_LOCAL_POD), Some(&ext_data_invalid)),
+                origin(None, None, Some(&EID_LOCAL_POD), Some(&ext_data_invalid), false),
                 tags_for_entity(&EID_LOCAL_POD),
             ),
             (
-                origin(None, None, None, Some(&ext_data_invalid)),
+                origin(None, None, None, Some(&ext_data_invalid), false),
                 tags_for_entity(&EID_EXTERNAL_POD),
             ),
         ];
@@ -643,10 +678,126 @@ mod tests {
         let tag_resolver_config = OriginEnrichmentConfiguration::default();
         assert!(!tag_resolver_config.enabled);
 
-        let origin_tags_resolver = build_tags_resolver_with_default_tags(tag_resolver_config);
+        let origin_tags_resolver =
+            build_tags_resolver_with_default_tags(tag_resolver_config, DogStatsDReplayState::new());
 
-        let resolved_origin = origin(Some(&EID_PID), None, None, None);
+        let resolved_origin = origin(Some(&EID_PID), None, None, None, false);
         let actual_tags = origin_tags_resolver.collect_origin_tags(resolved_origin);
         assert!(actual_tags.is_empty());
+    }
+
+    #[test]
+    fn replay_traffic_uses_loaded_replay_state_before_live_state() {
+        let replay_state = DogStatsDReplayState::new();
+        replay_state
+            .load(TaggerState {
+                state: [(
+                    "container_id://replay-cid".to_string(),
+                    Entity {
+                        id: Some(RemoteEntityId {
+                            prefix: "container_id".to_string(),
+                            uid: "replay-cid".to_string(),
+                        }),
+                        low_cardinality_tags: vec!["tag_source:replay".to_string()],
+                        ..Default::default()
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                pid_map: [(12345, "container_id://replay-cid".to_string())].into_iter().collect(),
+                duration: 5_000,
+            })
+            .expect("replay state should load");
+
+        let origin_tags_resolver = build_tags_resolver_with_default_tags(
+            OriginEnrichmentConfiguration {
+                enabled: true,
+                entity_id_precedence: false,
+                tag_cardinality: OriginTagCardinality::Low,
+                origin_detection_unified: false,
+                origin_detection_optout: false,
+            },
+            replay_state,
+        );
+
+        let actual_tags = origin_tags_resolver.collect_origin_tags(origin(Some(&EID_PID), None, None, None, true));
+        assert_eq!(actual_tags, single_tag("tag_source:replay"));
+    }
+
+    #[test]
+    fn live_traffic_ignores_loaded_replay_state() {
+        let replay_state = DogStatsDReplayState::new();
+        replay_state
+            .load(TaggerState {
+                state: [(
+                    "container_id://replay-cid".to_string(),
+                    Entity {
+                        id: Some(RemoteEntityId {
+                            prefix: "container_id".to_string(),
+                            uid: "replay-cid".to_string(),
+                        }),
+                        low_cardinality_tags: vec!["tag_source:replay".to_string()],
+                        ..Default::default()
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                pid_map: [(12345, "container_id://replay-cid".to_string())].into_iter().collect(),
+                duration: 5_000,
+            })
+            .expect("replay state should load");
+
+        let origin_tags_resolver = build_tags_resolver_with_default_tags(
+            OriginEnrichmentConfiguration {
+                enabled: true,
+                entity_id_precedence: false,
+                tag_cardinality: OriginTagCardinality::Low,
+                origin_detection_unified: false,
+                origin_detection_optout: false,
+            },
+            replay_state,
+        );
+
+        let actual_tags = origin_tags_resolver.collect_origin_tags(origin(Some(&EID_PID), None, None, None, false));
+        assert_eq!(actual_tags, tags_for_entity(&EID_PID));
+    }
+
+    #[test]
+    fn cleared_replay_state_removes_replay_pid_lookup() {
+        let replay_state = DogStatsDReplayState::new();
+        replay_state
+            .load(TaggerState {
+                state: [(
+                    "container_id://replay-cid".to_string(),
+                    Entity {
+                        id: Some(RemoteEntityId {
+                            prefix: "container_id".to_string(),
+                            uid: "replay-cid".to_string(),
+                        }),
+                        low_cardinality_tags: vec!["tag_source:replay".to_string()],
+                        ..Default::default()
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                pid_map: [(12345, "container_id://replay-cid".to_string())].into_iter().collect(),
+                duration: 5_000,
+            })
+            .expect("replay state should load");
+        replay_state.clear();
+
+        let origin_tags_resolver = build_tags_resolver_with_default_tags(
+            OriginEnrichmentConfiguration {
+                enabled: true,
+                entity_id_precedence: false,
+                tag_cardinality: OriginTagCardinality::Low,
+                origin_detection_unified: false,
+                origin_detection_optout: false,
+            },
+            replay_state,
+        );
+
+        let actual_tags = origin_tags_resolver.collect_origin_tags(origin(Some(&EID_PID), None, None, None, true));
+        assert_eq!(actual_tags, SharedTagSet::default());
     }
 }
