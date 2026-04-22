@@ -50,8 +50,8 @@ variables:
 
   # Converged Datadog Agent-specific variables, which control how we build the converged Datadog Agent image that we
   # publicly publish.
-  PUBLIC_DSD_VERSION: "7.77.3"
-  PUBLIC_DD_AGENT_VERSION: "7.77.3-jmx"
+  PUBLIC_DSD_VERSION: "7.78.0"
+  PUBLIC_DD_AGENT_VERSION: "7.78.0-jmx"
 
   # Base images to copy Agent Data Plane into, depending on whether the image is meant for our internal environment or
   # public registries.

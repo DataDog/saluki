@@ -5,6 +5,7 @@
 pub mod attributes;
 pub mod config;
 pub mod origin;
+pub mod semantics;
 pub mod traces;
 pub mod util;
 

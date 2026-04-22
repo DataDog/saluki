@@ -24,6 +24,9 @@ use tracing::error;
 
 use crate::common::datadog::{OTEL_TRACE_ID_META_KEY, SAMPLING_PRIORITY_METRIC_KEY};
 use crate::common::otlp::attributes::{get_int_attribute, HTTP_MAPPINGS};
+use crate::common::otlp::semantics::{
+    lookup_int64, Accessor, Concept, OtelSpanAccessor, OtlpAttributesAccessor, REGISTRY,
+};
 use crate::common::otlp::traces::normalize::{
     is_normalized_tag_value, normalize_service_into, normalize_tag_value_append_unchecked,
     normalize_tag_value_into_unchecked,
@@ -1537,23 +1540,40 @@ fn get_otel_container_id(
     MetaString::empty()
 }
 // GetOTelStatusCode returns the HTTP status code based on OTel span and resource attributes, with span taking precedence.
+//
+// The ADP-specific `datadog.http_status_code` override is checked first; it is
+// not part of upstream's semantic registry but is load-bearing for the
+// `DD_NAMESPACED_TO_APM_CONVENTIONS` meta-copy path. Everything else flows
+// through the semantic registry, mirroring upstream's
+// `semantics.LookupInt64(_, _, ConceptHTTPStatusCode)`.
 fn get_otel_status_code(
     span_attributes: &[KeyValue], resource_attributes: &[KeyValue], ignore_missing_fields: bool,
 ) -> Option<i64> {
-    if let Some(value) = get_int_attribute(span_attributes, KEY_DATADOG_HTTP_STATUS_CODE) {
-        return Some(*value);
+    let span = OtlpAttributesAccessor::new(span_attributes);
+    let resource = OtlpAttributesAccessor::new(resource_attributes);
+
+    if let Some(value) = parse_int_like(&span, KEY_DATADOG_HTTP_STATUS_CODE)
+        .or_else(|| parse_int_like(&resource, KEY_DATADOG_HTTP_STATUS_CODE))
+    {
+        return Some(value);
     }
-    if let Some(value) = get_int_attribute(resource_attributes, KEY_DATADOG_HTTP_STATUS_CODE) {
-        return Some(*value);
+
+    if ignore_missing_fields {
+        return None;
     }
-    if !ignore_missing_fields {
-        return get_int_attribute(span_attributes, HTTP_STATUS_CODE_KEY)
-            .or_else(|| get_int_attribute(span_attributes, "http.response.status_code"))
-            .or_else(|| get_int_attribute(resource_attributes, HTTP_STATUS_CODE_KEY))
-            .or_else(|| get_int_attribute(resource_attributes, "http.response.status_code"))
-            .copied();
+
+    let combined = OtelSpanAccessor::new(span_attributes, resource_attributes);
+    lookup_int64(&REGISTRY, &combined, Concept::HttpStatusCode)
+}
+
+// Returns an i64 from either an IntValue attribute or a StringValue attribute
+// parsed via `i64::from_str`. Used for ADP-local `datadog.*`-namespaced
+// overrides that are not represented in the upstream semantic registry.
+fn parse_int_like<A: Accessor>(accessor: &A, key: &str) -> Option<i64> {
+    if let Some(v) = accessor.get_int64(key) {
+        return Some(v);
     }
-    None
+    accessor.get_string(key).and_then(|s| s.parse::<i64>().ok())
 }
 
 pub(super) fn bytes_to_hex_lowercase(bytes: &[u8]) -> String {
@@ -2025,6 +2045,66 @@ mod tests {
                     kv_int(SEMCONV_HTTP_STATUS_CODE, 211),
                 ],
                 expected: Some(206),
+                ignore_missing_datadog_fields: false,
+            },
+            // String-valued attributes — upstream 7.78.0's semantic registry
+            // parses string representations of status codes. Prior to that
+            // change, ADP only matched IntValue attributes and missed these.
+            TestCase {
+                name: "string http.response.status_code on span (lading repro)",
+                span_attrs: vec![kv_str(SEMCONV_HTTP_RESPONSE_STATUS_CODE, "500")],
+                resource_attrs: vec![],
+                expected: Some(500),
+                ignore_missing_datadog_fields: false,
+            },
+            TestCase {
+                name: "string http.status_code on span",
+                span_attrs: vec![kv_str(SEMCONV_HTTP_STATUS_CODE, "200")],
+                resource_attrs: vec![],
+                expected: Some(200),
+                ignore_missing_datadog_fields: false,
+            },
+            TestCase {
+                name: "string http.response.status_code on resource only",
+                span_attrs: vec![],
+                resource_attrs: vec![kv_str(SEMCONV_HTTP_RESPONSE_STATUS_CODE, "418")],
+                expected: Some(418),
+                ignore_missing_datadog_fields: false,
+            },
+            TestCase {
+                name: "string datadog.http_status_code override",
+                span_attrs: vec![kv_str(KEY_DATADOG_HTTP_STATUS_CODE, "206")],
+                resource_attrs: vec![],
+                expected: Some(206),
+                ignore_missing_datadog_fields: false,
+            },
+            TestCase {
+                name: "string datadog.http_status_code honored with ignore_missing_datadog_fields",
+                span_attrs: vec![
+                    kv_str(KEY_DATADOG_HTTP_STATUS_CODE, "403"),
+                    kv_int(SEMCONV_HTTP_STATUS_CODE, 200),
+                ],
+                resource_attrs: vec![],
+                expected: Some(403),
+                ignore_missing_datadog_fields: true,
+            },
+            TestCase {
+                name: "malformed string returns none",
+                span_attrs: vec![kv_str(SEMCONV_HTTP_STATUS_CODE, "not-a-number")],
+                resource_attrs: vec![],
+                expected: None,
+                ignore_missing_datadog_fields: false,
+            },
+            TestCase {
+                name: "int attribute wins over string attribute at same name",
+                // Per the mappings.json precedence list, int-typed tags for
+                // http.status_code are tried before the string-typed tag.
+                span_attrs: vec![
+                    kv_int(SEMCONV_HTTP_STATUS_CODE, 201),
+                    kv_str(SEMCONV_HTTP_RESPONSE_STATUS_CODE, "500"),
+                ],
+                resource_attrs: vec![],
+                expected: Some(201),
                 ignore_missing_datadog_fields: false,
             },
         ];
