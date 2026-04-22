@@ -40,7 +40,9 @@ pub(super) fn datadog_matcher(buf: &[u8]) -> bool {
 /// Parses the Datadog capture file version from the given buffer.
 pub(super) fn file_version(buf: &[u8]) -> Result<u8, GenericError> {
     if !datadog_matcher(buf) {
-        return Err(generic_error!("Cannot verify file version from invalid capture header."));
+        return Err(generic_error!(
+            "Cannot verify file version from invalid capture header."
+        ));
     }
 
     let version = 0xF0 ^ buf[VERSION_INDEX];
@@ -67,7 +69,7 @@ pub(super) fn write_header<W: Write>(writer: &mut W) -> io::Result<()> {
 mod tests {
     use std::io::{self, ErrorKind};
 
-    use super::{DATADOG_FILE_VERSION, DATADOG_HEADER, VERSION_INDEX, datadog_matcher, file_version, write_header};
+    use super::{datadog_matcher, file_version, write_header, DATADOG_FILE_VERSION, DATADOG_HEADER, VERSION_INDEX};
 
     #[test]
     fn test_header_format() {
@@ -75,7 +77,10 @@ mod tests {
         write_header(&mut bytes).expect("header should write");
 
         assert!(datadog_matcher(&bytes));
-        assert_eq!(file_version(&bytes).expect("version should parse"), DATADOG_FILE_VERSION);
+        assert_eq!(
+            file_version(&bytes).expect("version should parse"),
+            DATADOG_FILE_VERSION
+        );
 
         for (index, expected) in DATADOG_HEADER.iter().enumerate() {
             if index == VERSION_INDEX {
@@ -89,7 +94,12 @@ mod tests {
     #[test]
     fn test_header_format_error() {
         let test_cases = [
-            ("No error but less bytes written than datadogHeader", 1, None, ErrorKind::WriteZero),
+            (
+                "No error but less bytes written than datadogHeader",
+                1,
+                None,
+                ErrorKind::WriteZero,
+            ),
             (
                 "Error and less bytes written than datadogHeader",
                 1,

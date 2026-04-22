@@ -4131,6 +4131,7 @@ dependencies = [
  "tracing-appender",
  "tracing-rolling-file",
  "url",
+ "zstd",
 ]
 
 [[package]]
