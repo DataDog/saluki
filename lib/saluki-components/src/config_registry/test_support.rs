@@ -4,13 +4,11 @@ use serde_json::json;
 use super::{ConfigKey, ValueType, ALL_KEYS};
 use crate::config::{DatadogRemapper, KEY_ALIASES};
 
-/// Canonical test value used for `String` and `Integer`-like config keys.
+/// Test value injected for `String` keys.
 pub const TEST_STRING_VALUE: &str = "http://smoke-proxy.example.com:3128";
-
-/// Canonical test value used for `Bool` config keys.
+/// Test value injected for `Bool` keys.
 pub const TEST_BOOL_VALUE: bool = true;
-
-/// Canonical test value used for `StringList` config keys.
+/// Test value injected for `StringList` keys.
 pub const TEST_STRING_LIST_VALUE: &[&str] = &["smoke-host-1.example.com", "smoke-host-2.example.com"];
 
 fn test_json_value(value_type: ValueType) -> serde_json::Value {
@@ -69,20 +67,23 @@ async fn make_config_from_env(env_vars: &[(String, String)]) -> GenericConfigura
 
 /// Runs smoke tests for all keys in `keys` against a deserialized config struct `T`.
 ///
-/// Verifies:
-/// - every key in `keys` declares `struct_name` in its `used_by` set
-/// - every key in `ALL_KEYS` for `struct_name` is present in `keys`
-/// - for each key, the test value round-trips through the yaml_path file source and every declared env var
+/// Verifies two properties for every key in the global registry:
+///
+/// **Supported keys** (those in `keys`): loading the struct with the test value set via the
+/// key's `yaml_path` and via each of its declared `env_vars` must all produce identical structs,
+/// and each must differ from the default (empty-config) struct.
+///
+/// **Unsupported keys** (all other keys in `ALL_KEYS`): loading the struct with that key set must
+/// produce a struct identical to the default struct — i.e., the struct is unaffected.
 ///
 /// `config_factory` converts a raw `GenericConfiguration` into the typed struct under test.
-/// `verifier` receives the deserialized struct and the key being tested, and returns `true` if the
-/// expected test value was captured.
-pub async fn run_config_smoke_tests<T, Factory, Verifier>(
-    struct_name: &'static str, keys: &[&'static ConfigKey], config_factory: Factory, verifier: Verifier,
+pub async fn run_config_smoke_tests<T, Factory>(
+    struct_name: &'static str, keys: &[&'static ConfigKey], config_factory: Factory,
 ) where
+    T: PartialEq + std::fmt::Debug,
     Factory: Fn(GenericConfiguration) -> T,
-    Verifier: Fn(&T, &ConfigKey) -> bool,
 {
+    // Registry consistency: all passed keys declare struct_name as consumer.
     for key in keys {
         assert!(
             key.used_by.contains(&struct_name),
@@ -92,6 +93,7 @@ pub async fn run_config_smoke_tests<T, Factory, Verifier>(
         );
     }
 
+    // Registry consistency: all keys in ALL_KEYS for this struct are present in the test set.
     let local_paths: std::collections::HashSet<&str> = keys.iter().map(|k| k.yaml_path).collect();
     for key in ALL_KEYS.iter().filter(|k| k.used_by.contains(&struct_name)) {
         assert!(
@@ -102,12 +104,18 @@ pub async fn run_config_smoke_tests<T, Factory, Verifier>(
         );
     }
 
+    let default_struct = config_factory(make_config_from_file(json!({})).await);
+
+    // Supported keys: all sources must produce the same struct, and it must differ from default.
     for key in keys {
-        let file_values = yaml_path_to_json(key.yaml_path, test_json_value(key.value_type));
-        let typed = config_factory(make_config_from_file(file_values).await);
-        assert!(
-            verifier(&typed, key),
-            "key '{}' was not captured from yaml_path source",
+        let from_yaml = config_factory(
+            make_config_from_file(yaml_path_to_json(key.yaml_path, test_json_value(key.value_type))).await,
+        );
+
+        assert_ne!(
+            from_yaml, default_struct,
+            "key '{}' via yaml_path did not change the struct from its default — \
+             is the test value the same as the default, or is the key not wired up?",
             key.yaml_path,
         );
 
@@ -116,13 +124,24 @@ pub async fn run_config_smoke_tests<T, Factory, Verifier>(
                 dd_env_var_to_test_key(env_var).to_string(),
                 test_env_string(key.value_type),
             )];
-            let typed = config_factory(make_config_from_env(&env_pairs).await);
-            assert!(
-                verifier(&typed, key),
-                "key '{}' was not captured from env var '{}'",
-                key.yaml_path,
-                env_var,
+            let from_env = config_factory(make_config_from_env(&env_pairs).await);
+            assert_eq!(
+                from_env, from_yaml,
+                "key '{}' via env var '{}' produced a different struct than via yaml_path",
+                key.yaml_path, env_var,
             );
         }
+    }
+
+    // Unsupported keys: setting them must not change the struct.
+    for key in ALL_KEYS.iter().filter(|k| !k.used_by.contains(&struct_name)) {
+        let with_foreign = config_factory(
+            make_config_from_file(yaml_path_to_json(key.yaml_path, test_json_value(key.value_type))).await,
+        );
+        assert_eq!(
+            with_foreign, default_struct,
+            "key '{}' (not registered for '{}') unexpectedly changed the struct",
+            key.yaml_path, struct_name,
+        );
     }
 }

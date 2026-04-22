@@ -9,6 +9,7 @@ use serde::{Deserialize, Deserializer};
 use url::Url;
 
 #[derive(Clone, Deserialize, Facet)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
 pub struct ProxyConfiguration {
     /// The proxy server for HTTP requests.
     #[serde(rename = "proxy_http")]
@@ -340,30 +341,14 @@ mod config_smoke {
     use super::ProxyConfiguration;
     use crate::config_registry::datadog::proxy as proxy_reg;
     use crate::config_registry::structs;
-    use crate::config_registry::test_support::{
-        run_config_smoke_tests, TEST_BOOL_VALUE, TEST_STRING_LIST_VALUE, TEST_STRING_VALUE,
-    };
+    use crate::config_registry::test_support::run_config_smoke_tests;
 
     #[tokio::test]
     async fn proxy_configuration_smoke_test() {
-        run_config_smoke_tests(
-            structs::PROXY_CONFIGURATION,
-            proxy_reg::ALL,
-            |cfg| {
-                cfg.as_typed::<ProxyConfiguration>()
-                    .expect("ProxyConfiguration should deserialize")
-            },
-            |proxy: &ProxyConfiguration, key| match key.yaml_path {
-                "proxy.http" => proxy.http_server.as_deref() == Some(TEST_STRING_VALUE),
-                "proxy.https" => proxy.https_server.as_deref() == Some(TEST_STRING_VALUE),
-                "proxy.no_proxy" => {
-                    proxy.no_proxy.iter().map(String::as_str).collect::<Vec<_>>() == TEST_STRING_LIST_VALUE
-                }
-                "no_proxy_nonexact_match" => proxy.no_proxy_nonexact_match == TEST_BOOL_VALUE,
-                "use_proxy_for_cloud_metadata" => proxy.use_proxy_for_cloud_metadata == TEST_BOOL_VALUE,
-                _ => panic!("unrecognized key in verifier: {}", key.yaml_path),
-            },
-        )
+        run_config_smoke_tests(structs::PROXY_CONFIGURATION, proxy_reg::ALL, |cfg| {
+            cfg.as_typed::<ProxyConfiguration>()
+                .expect("ProxyConfiguration should deserialize")
+        })
         .await
     }
 }
