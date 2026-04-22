@@ -357,6 +357,11 @@ fn get_help_text(metric_name: &str) -> Option<&'static str> {
         }
         "aggregator.dogstatsd_contexts" => Some("Count the number of dogstatsd contexts in the aggregator"),
         "aggregator.processed" => Some("Amount of metrics/services_checks/events processed by the aggregator"),
+        "datadog.agent.filterlist.size" => Some("Metric filter list size"),
+        "datadog.agent.filterlist.updates" => {
+            Some("Incremented when a reconfiguration of the metric filterlist happened")
+        }
+        "datadog.agent.dogstatsd.listener_filtered_points" => Some("How many points were filtered out"),
         "dogstatsd.processed" => Some("Count of service checks/events/metrics processed by dogstatsd"),
         "dogstatsd.packet_pool_get" => Some("Count of get done in the packet pool"),
         "dogstatsd.packet_pool_put" => Some("Count of put done in the packet pool"),
@@ -602,6 +607,46 @@ mod tests {
     }
 
     #[test]
+    fn test_render_rar_telemetry_remaps_filterlist_metrics() {
+        let processor = AggregatedMetricsProcessor;
+        let state = processor.build_initial_state();
+
+        let metrics = vec![
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts("adp.metric_filterlist_size", &["component_id:dsd_prefix_filter"]),
+                2.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.metric_filterlist_updates_total",
+                    &["component_id:dsd_prefix_filter"],
+                ),
+                3.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.dogstatsd_listener_filtered_points_total",
+                    &["component_id:dsd_prefix_filter"],
+                ),
+                5.0,
+            )),
+        ];
+
+        for metric in metrics {
+            processor.process(metric, &state);
+        }
+
+        let rules = get_datadog_agent_remappings();
+        let mut renderer = PrometheusRenderer::new();
+        let output = render_rar_telemetry(&state, &rules, &mut renderer);
+
+        assert!(output.contains("datadog__agent__filterlist__size 2"));
+        assert!(output.contains("datadog__agent__filterlist__updates 3"));
+        assert!(output.contains("datadog__agent__dogstatsd__listener_filtered_points 5"));
+        assert!(!output.contains("component_id="));
+    }
+
+    #[test]
     fn prom_get_help_text() {
         // Ensure that we catch when the help text changes for these metrics.
         assert_eq!(
@@ -631,6 +676,18 @@ mod tests {
         assert_eq!(
             get_help_text("aggregator.processed"),
             Some("Amount of metrics/services_checks/events processed by the aggregator")
+        );
+        assert_eq!(
+            get_help_text("datadog.agent.filterlist.size"),
+            Some("Metric filter list size")
+        );
+        assert_eq!(
+            get_help_text("datadog.agent.filterlist.updates"),
+            Some("Incremented when a reconfiguration of the metric filterlist happened")
+        );
+        assert_eq!(
+            get_help_text("datadog.agent.dogstatsd.listener_filtered_points"),
+            Some("How many points were filtered out")
         );
     }
 }
