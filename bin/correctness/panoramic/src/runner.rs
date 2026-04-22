@@ -160,7 +160,7 @@ async fn run_with_timeout(test_case: DiscoveredTest, name: String, log_dir: &Arc
         DiscoveredTest::Integration(_) => run_single_test(test_case, log_dir).await,
         DiscoveredTest::Correctness { .. } => {
             let timeout = test_case.timeout();
-            let correctness_log_dir = log_dir.as_ref().as_ref().map(|d| d.join(&name));
+            let correctness_log_dir = log_dir.as_ref().as_ref().map(|d| d.join("correctness").join(&name));
             tokio::select! {
                 r = run_single_test(test_case, log_dir) => r,
                 _ = tokio::time::sleep(timeout) => {
@@ -183,15 +183,21 @@ async fn run_with_timeout(test_case: DiscoveredTest, name: String, log_dir: &Arc
 async fn run_single_test(test_case: DiscoveredTest, log_dir: &Arc<Option<PathBuf>>) -> TestResult {
     match test_case {
         DiscoveredTest::Integration(tc) => {
+            let test_log_dir = log_dir.as_ref().as_ref().map(|d| d.join("integration").join(&tc.name));
             let mut runner = TestRunner::new(tc);
             if let Some(ref dir) = **log_dir {
-                runner = runner.with_log_dir(dir.clone());
+                runner = runner.with_log_dir(dir.join("integration"));
             }
-            runner.run().await
+            let mut result = runner.run().await;
+            result.log_dir = test_log_dir;
+            write_result_log(&result);
+            result
         }
         DiscoveredTest::Correctness { name, config } => {
-            let correctness_log_dir = log_dir.as_ref().as_ref().map(|d| d.join(&name));
-            crate::correctness::runner::run_correctness_test(name, config, correctness_log_dir).await
+            let correctness_log_dir = log_dir.as_ref().as_ref().map(|d| d.join("correctness").join(&name));
+            let result = crate::correctness::runner::run_correctness_test(name, config, correctness_log_dir).await;
+            write_result_log(&result);
+            result
         }
     }
 }
@@ -733,5 +739,53 @@ impl TestRunner {
         );
 
         Ok(())
+    }
+}
+
+fn write_result_log(result: &crate::reporter::TestResult) {
+    let dir = match &result.log_dir {
+        Some(d) => d,
+        None => return,
+    };
+
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        warn!(path = %dir.display(), error = %e, "Failed to create log directory for result log.");
+        return;
+    }
+
+    let path = dir.join("result.log");
+    let mut f = match std::fs::File::create(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            warn!(path = %path.display(), error = %e, "Failed to create result log file.");
+            return;
+        }
+    };
+
+    let status = if result.passed { "PASS" } else { "FAIL" };
+    let _ = writeln!(f, "{} {} ({:.2?})", status, result.name, result.duration);
+
+    if let Some(ref error) = result.error {
+        let _ = writeln!(f, "Error: {}", error);
+    }
+
+    if !result.assertion_results.is_empty() {
+        let _ = writeln!(f);
+        let _ = writeln!(f, "Assertions:");
+        for assertion in &result.assertion_results {
+            let indicator = if assertion.passed { "+" } else { "-" };
+            let _ = writeln!(f, "  {} {} ({:.2?})", indicator, assertion.name, assertion.duration);
+            for line in assertion.message.lines() {
+                let _ = writeln!(f, "    {}", line);
+            }
+        }
+    }
+
+    if !result.phase_timings.is_empty() {
+        let _ = writeln!(f);
+        let _ = writeln!(f, "Phase timings:");
+        for phase in &result.phase_timings {
+            let _ = writeln!(f, "  {} ({:.2?})", phase.phase, phase.duration);
+        }
     }
 }
