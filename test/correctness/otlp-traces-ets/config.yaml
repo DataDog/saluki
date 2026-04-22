@@ -19,5 +19,6 @@ comparison:
   additional_env_vars:
     - DD_API_KEY=correctness-test
     - DD_DATA_PLANE_ENABLED=true
+    - DD_DATA_PLANE_STANDALONE_MODE=true
     - DD_DATA_PLANE_OTLP_ENABLED=true
     - DD_APM_ERROR_TRACKING_STANDALONE_ENABLED=true
