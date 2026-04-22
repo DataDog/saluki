@@ -50,12 +50,11 @@ pub enum ValueType {
 /// structs it feeds.
 #[derive(Debug)]
 pub struct ConfigKey {
-    /// Canonical dot-separated YAML path for this key (e.g. `proxy.http` or `dogstatsd_port`).
+    /// All dot-separated YAML paths that deliver this value (e.g. `&["proxy.http"]`).
     ///
-    /// For keys that are flat in every source this is identical to the flat key name. For keys
-    /// that appear as nested objects in the Agent config file this is the nested form, which is
-    /// aliased to a flat key at file-load time via `KEY_ALIASES`.
-    pub yaml_path: &'static str,
+    /// Most keys have a single path, but some may be reachable via multiple aliases in the config
+    /// file. Each path is aliased to a flat key at file-load time via `KEY_ALIASES`.
+    pub yaml_paths: &'static [&'static str],
 
     /// All environment variables that deliver this value, in precedence order (highest last).
     ///

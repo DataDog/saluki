@@ -88,36 +88,49 @@ pub async fn run_config_smoke_tests<T, Factory>(
         assert!(
             key.used_by.contains(&struct_name),
             "key '{}' is in the test set for '{}' but does not declare it in used_by",
-            key.yaml_path,
+            key.yaml_paths[0],
             struct_name,
         );
     }
 
     // Registry consistency: all keys in ALL_KEYS for this struct are present in the test set.
-    let local_paths: std::collections::HashSet<&str> = keys.iter().map(|k| k.yaml_path).collect();
+    let local_first_paths: std::collections::HashSet<&str> = keys.iter().map(|k| k.yaml_paths[0]).collect();
     for key in ALL_KEYS.iter().filter(|k| k.used_by.contains(&struct_name)) {
         assert!(
-            local_paths.contains(key.yaml_path),
+            local_first_paths.contains(key.yaml_paths[0]),
             "key '{}' is registered for '{}' in ALL_KEYS but is missing from the test set",
-            key.yaml_path,
+            key.yaml_paths[0],
             struct_name,
         );
     }
 
     let default_struct = config_factory(make_config_from_file(json!({})).await);
 
-    // Supported keys: all sources must produce the same struct, and it must differ from default.
+    // Supported keys: every yaml_path and env_var is loaded independently; all must produce the
+    // same struct, and each must differ from the default.
     for key in keys {
-        let from_yaml = config_factory(
-            make_config_from_file(yaml_path_to_json(key.yaml_path, test_json_value(key.value_type))).await,
+        // Use the first yaml_path as the canonical reference all other sources are compared to.
+        let reference = config_factory(
+            make_config_from_file(yaml_path_to_json(key.yaml_paths[0], test_json_value(key.value_type))).await,
         );
 
         assert_ne!(
-            from_yaml, default_struct,
-            "key '{}' via yaml_path did not change the struct from its default — \
+            reference, default_struct,
+            "key yaml_path '{}' did not change the struct from its default — \
              is the test value the same as the default, or is the key not wired up?",
-            key.yaml_path,
+            key.yaml_paths[0],
         );
+
+        for yaml_path in key.yaml_paths.iter().skip(1) {
+            let from_path = config_factory(
+                make_config_from_file(yaml_path_to_json(yaml_path, test_json_value(key.value_type))).await,
+            );
+            assert_eq!(
+                from_path, reference,
+                "yaml_path '{}' produced a different struct than yaml_path '{}'",
+                yaml_path, key.yaml_paths[0],
+            );
+        }
 
         for env_var in key.env_vars {
             let env_pairs = [(
@@ -126,22 +139,24 @@ pub async fn run_config_smoke_tests<T, Factory>(
             )];
             let from_env = config_factory(make_config_from_env(&env_pairs).await);
             assert_eq!(
-                from_env, from_yaml,
-                "key '{}' via env var '{}' produced a different struct than via yaml_path",
-                key.yaml_path, env_var,
+                from_env, reference,
+                "env var '{}' produced a different struct than yaml_path '{}'",
+                env_var, key.yaml_paths[0],
             );
         }
     }
 
-    // Unsupported keys: setting them must not change the struct.
+    // Unsupported keys: setting any of their yaml_paths must not change the struct.
     for key in ALL_KEYS.iter().filter(|k| !k.used_by.contains(&struct_name)) {
-        let with_foreign = config_factory(
-            make_config_from_file(yaml_path_to_json(key.yaml_path, test_json_value(key.value_type))).await,
-        );
-        assert_eq!(
-            with_foreign, default_struct,
-            "key '{}' (not registered for '{}') unexpectedly changed the struct",
-            key.yaml_path, struct_name,
-        );
+        for yaml_path in key.yaml_paths {
+            let with_foreign = config_factory(
+                make_config_from_file(yaml_path_to_json(yaml_path, test_json_value(key.value_type))).await,
+            );
+            assert_eq!(
+                with_foreign, default_struct,
+                "yaml_path '{}' (not registered for '{}') unexpectedly changed the struct",
+                yaml_path, struct_name,
+            );
+        }
     }
 }

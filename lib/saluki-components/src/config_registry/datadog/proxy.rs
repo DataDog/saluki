@@ -2,7 +2,7 @@ use crate::config_registry::{structs, ConfigKey, ValueType};
 
 /// `proxy.http` → [`ProxyConfiguration::http_server`][crate::common::datadog::proxy::ProxyConfiguration]
 pub const PROXY_HTTP: ConfigKey = ConfigKey {
-    yaml_path: "proxy.http",
+    yaml_paths: &["proxy.http"],
     env_vars: &["DD_PROXY_HTTP", "HTTP_PROXY"],
     value_type: ValueType::String,
     used_by: &[structs::PROXY_CONFIGURATION],
@@ -10,7 +10,7 @@ pub const PROXY_HTTP: ConfigKey = ConfigKey {
 
 /// `proxy.https` → [`ProxyConfiguration::https_server`][crate::common::datadog::proxy::ProxyConfiguration]
 pub const PROXY_HTTPS: ConfigKey = ConfigKey {
-    yaml_path: "proxy.https",
+    yaml_paths: &["proxy.https"],
     env_vars: &["DD_PROXY_HTTPS", "HTTPS_PROXY"],
     value_type: ValueType::String,
     used_by: &[structs::PROXY_CONFIGURATION],
@@ -18,7 +18,7 @@ pub const PROXY_HTTPS: ConfigKey = ConfigKey {
 
 /// `proxy.no_proxy` → [`ProxyConfiguration::no_proxy`][crate::common::datadog::proxy::ProxyConfiguration]
 pub const PROXY_NO_PROXY: ConfigKey = ConfigKey {
-    yaml_path: "proxy.no_proxy",
+    yaml_paths: &["proxy.no_proxy"],
     env_vars: &["DD_PROXY_NO_PROXY"],
     value_type: ValueType::StringList,
     used_by: &[structs::PROXY_CONFIGURATION],
@@ -26,7 +26,7 @@ pub const PROXY_NO_PROXY: ConfigKey = ConfigKey {
 
 /// `no_proxy_nonexact_match` → [`ProxyConfiguration::no_proxy_nonexact_match`][crate::common::datadog::proxy::ProxyConfiguration]
 pub const NO_PROXY_NONEXACT_MATCH: ConfigKey = ConfigKey {
-    yaml_path: "no_proxy_nonexact_match",
+    yaml_paths: &["no_proxy_nonexact_match"],
     env_vars: &["DD_NO_PROXY_NONEXACT_MATCH"],
     value_type: ValueType::Bool,
     used_by: &[structs::PROXY_CONFIGURATION],
@@ -34,7 +34,7 @@ pub const NO_PROXY_NONEXACT_MATCH: ConfigKey = ConfigKey {
 
 /// `use_proxy_for_cloud_metadata` → [`ProxyConfiguration::use_proxy_for_cloud_metadata`][crate::common::datadog::proxy::ProxyConfiguration]
 pub const USE_PROXY_FOR_CLOUD_METADATA: ConfigKey = ConfigKey {
-    yaml_path: "use_proxy_for_cloud_metadata",
+    yaml_paths: &["use_proxy_for_cloud_metadata"],
     env_vars: &["DD_USE_PROXY_FOR_CLOUD_METADATA"],
     value_type: ValueType::Bool,
     used_by: &[structs::PROXY_CONFIGURATION],
