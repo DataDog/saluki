@@ -311,9 +311,9 @@ impl TestCase {
 
 /// Discover all test cases across one or more directories.
 ///
-/// For each subdirectory containing a `config.yaml`, the file is first tried as a panoramic
-/// `TestCase` (integration test). If that fails, it is tried as a correctness `Config`.
-/// If both fail, a warning is logged and the directory is skipped.
+/// Each subdirectory containing a `config.yaml` must have a top-level `type` field set to either
+/// `"integration"` or `"correctness"`. Directories missing or with an unknown `type` are skipped
+/// with a warning.
 pub fn discover_tests(dirs: &[PathBuf]) -> Result<Vec<DiscoveredTest>, GenericError> {
     let mut tests = Vec::new();
 
@@ -353,22 +353,28 @@ pub fn discover_tests(dirs: &[PathBuf]) -> Result<Vec<DiscoveredTest>, GenericEr
     Ok(tests)
 }
 
-/// Try to load a test case from a config file, attempting integration (panoramic) schema first,
-/// then correctness schema.
+/// Load a test case from a config file, dispatching on the top-level `type` field.
 fn try_load_test(config_path: &Path, dir_path: &Path) -> Result<DiscoveredTest, GenericError> {
-    // Try panoramic TestCase first.
-    let integration_err = match TestCase::from_yaml(config_path) {
-        Ok(test_case) => return Ok(DiscoveredTest::Integration(test_case)),
-        Err(e) => e,
-    };
+    let content = std::fs::read_to_string(config_path)
+        .error_context(format!("Failed to read config file: {}", config_path.display()))?;
 
-    // Try correctness Config.
-    let config_path_str = config_path
-        .to_str()
-        .ok_or_else(|| generic_error!("Invalid UTF-8 in config path: {}", config_path.display()))?;
+    let peek: serde_yaml::Value = serde_yaml::from_str(&content).error_context(format!(
+        "Failed to parse config file as YAML: {}",
+        config_path.display()
+    ))?;
 
-    match CorrectnessConfig::from_yaml(config_path_str) {
-        Ok(config) => {
+    let test_type = peek
+        .get("type")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| generic_error!("Missing required 'type' field (expected 'integration' or 'correctness')"))?;
+
+    match test_type {
+        "integration" => TestCase::from_yaml(config_path).map(DiscoveredTest::Integration),
+        "correctness" => {
+            let config_path_str = config_path
+                .to_str()
+                .ok_or_else(|| generic_error!("Invalid UTF-8 in config path: {}", config_path.display()))?;
+            let config = CorrectnessConfig::from_yaml(config_path_str)?;
             let name = dir_path
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -376,10 +382,9 @@ fn try_load_test(config_path: &Path, dir_path: &Path) -> Result<DiscoveredTest, 
                 .to_string();
             Ok(DiscoveredTest::Correctness { name, config })
         }
-        Err(correctness_err) => Err(generic_error!(
-            "Config did not match integration schema ({}) or correctness schema ({})",
-            integration_err,
-            correctness_err
+        other => Err(generic_error!(
+            "Unknown test type '{}' (expected 'integration' or 'correctness')",
+            other
         )),
     }
 }

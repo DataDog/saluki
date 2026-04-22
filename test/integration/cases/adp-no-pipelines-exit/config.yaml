@@ -1,3 +1,4 @@
+type: integration
 name: "adp-no-pipelines-exit"
 description: "Verify ADP exits with error when no data pipelines enabled"
 timeout: 45s

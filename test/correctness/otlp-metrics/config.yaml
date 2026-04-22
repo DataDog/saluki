@@ -1,3 +1,4 @@
+type: correctness
 analysis_mode: metrics
 millstone:
   image: saluki-images/millstone:latest

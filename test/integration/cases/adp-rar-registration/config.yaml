@@ -1,3 +1,4 @@
+type: integration
 name: "adp-rar-registration"
 description: "Verify ADP successfully registers with Remote Agent Registry"
 timeout: 90s

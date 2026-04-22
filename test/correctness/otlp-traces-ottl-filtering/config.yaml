@@ -1,3 +1,4 @@
+type: correctness
 # E2E correctness test: DDOT (baseline) vs ADP (comparison), both with the same
 # OTTL span filtering. Millstone sends the same traces to both; we assert filtered outputs match.
 # Baseline uses the Datadog Distribution of OpenTelemetry (DDOT) from the agent -full image.
