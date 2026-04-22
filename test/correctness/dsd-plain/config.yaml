@@ -18,5 +18,6 @@ comparison:
   additional_env_vars:
     - DD_API_KEY=correctness-test
     - DD_DATA_PLANE_ENABLED=true
+    - DD_DATA_PLANE_STANDALONE_MODE=true
     - DD_DATA_PLANE_DOGSTATSD_ENABLED=true
     - DD_AGGREGATE_CONTEXT_LIMIT=500000
