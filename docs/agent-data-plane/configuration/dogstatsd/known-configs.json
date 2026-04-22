@@ -136,10 +136,10 @@
   },
   {
     "key": "bind_host",
-    "feature_state": "MISSING",
-    "action": "IMPLEMENT",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Global listen host fallback",
-    "reason": "ADP hardcodes 127.0.0.1; does not read bind_host.",
+    "reason": "Read by the DogStatsD source and used as the bind IP for UDP/TCP listeners. Accepts an IP literal or a hostname resolved via DNS. Precedence matches the core agent: dogstatsd_non_local_traffic=true binds 0.0.0.0, else bind_host is used, else 127.0.0.1.",
     "issue": "#1331",
     "adp_key": null
   },
