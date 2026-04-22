@@ -8,19 +8,20 @@ on:
 
 jobs:
   run_slapr:
+    if: github.event.pull_request.base.ref == 'main' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    permissions: {}
+    permissions:
+      id-token: write
     steps:
-    - uses: DataDog/slapr@4b5efe2ce585e45898bb88c4fa303e226e8199e4
-      env:
-        GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-        GITHUB_REPO: DataDog/saluki
-        SLACK_CHANNEL_ID: C070PQKLLP5
-        SLACK_API_TOKEN: "${{ secrets.SLACK_API_TOKEN }}"
-        SLAPR_BOT_USER_ID: "${{ secrets.SLAPR_BOT_USER_ID }}"
-        SLAPR_NUMBER_OF_APPROVALS_REQUIRED: 1
-        SLAPR_EMOJI_REVIEW_STARTED: "review_started"
-        SLAPR_EMOJI_APPROVED: "approved2"
-        SLAPR_EMOJI_CHANGES_REQUESTED: "changes_requested"
-        SLAPR_EMOJI_MERGED: "merged"
-        SLAPR_EMOJI_CLOSED: "closed"
+    - uses: DataDog/dd-octo-sts-action@96a25462dbcb10ebf0bfd6e2ccc917d2ab235b9a # v1.0.4
+      id: octo-sts
+      with:
+        scope: DataDog/saluki
+        policy: self.slapr.read-members
+    - uses: DataDog/slapr@3c19d2a0971acfc3f5a3524b508ed233f8ce0e23
+      with:
+        github-token: ${{ steps.octo-sts.outputs.token }}
+        slack-api-token: ${{ secrets.SLACK_SLAPR_BOT_TOKEN }}
+        slack-channel-id: ${{ vars.DEFAULT_SLACK_CHANNEL_ID }}
+        bot-user-id: ${{ vars.SLAPR_BOT_ID }}
+        emoji-approved: done
