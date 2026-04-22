@@ -6,6 +6,7 @@
 
 mod capture;
 mod file;
+mod reader;
 mod writer;
 
 pub use self::capture::DogStatsDCaptureControl;
