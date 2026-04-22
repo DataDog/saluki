@@ -34,6 +34,9 @@ pub struct TestResult {
     /// Log directory for this test, if available.
     #[serde(skip)]
     pub log_dir: Option<PathBuf>,
+    /// Full per-assertion mismatch details for log output (not shown in TUI/reporter).
+    #[serde(skip)]
+    pub assertion_details: Vec<Vec<String>>,
 }
 
 /// Result of running all test cases.

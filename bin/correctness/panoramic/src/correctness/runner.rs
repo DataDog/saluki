@@ -92,8 +92,9 @@ pub async fn run_correctness_test(name: String, config: Config, log_dir: Option<
             error: None,
             phase_timings,
             log_dir,
+            assertion_details: vec![],
         },
-        Err(e) => {
+        Err((e, details)) => {
             let full_message = format!("{:?}", e);
             let summary = full_message.lines().next().unwrap_or(&full_message).to_string();
             TestResult {
@@ -109,6 +110,7 @@ pub async fn run_correctness_test(name: String, config: Config, log_dir: Option<
                 error: Some(summary),
                 phase_timings,
                 log_dir,
+                assertion_details: vec![details],
             }
         }
     }
@@ -128,6 +130,7 @@ fn make_error_result(
             duration: started.elapsed(),
         }],
         log_dir,
+        assertion_details: vec![],
     }
 }
 

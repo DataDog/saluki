@@ -160,7 +160,7 @@ async fn run_with_timeout(test_case: DiscoveredTest, name: String, log_dir: &Arc
         DiscoveredTest::Integration(_) => run_single_test(test_case, log_dir).await,
         DiscoveredTest::Correctness { .. } => {
             let timeout = test_case.timeout();
-            let correctness_log_dir = log_dir.as_ref().as_ref().map(|d| d.join("correctness").join(&name));
+            let correctness_log_dir = (**log_dir).as_ref().map(|d| d.join("correctness").join(&name));
             tokio::select! {
                 r = run_single_test(test_case, log_dir) => r,
                 _ = tokio::time::sleep(timeout) => {
@@ -172,6 +172,7 @@ async fn run_with_timeout(test_case: DiscoveredTest, name: String, log_dir: &Arc
                         error: Some(format!("Test timed out after {:?}.", timeout)),
                         phase_timings: vec![],
                         log_dir: correctness_log_dir,
+                        assertion_details: vec![],
                     }
                 }
             }
@@ -183,7 +184,7 @@ async fn run_with_timeout(test_case: DiscoveredTest, name: String, log_dir: &Arc
 async fn run_single_test(test_case: DiscoveredTest, log_dir: &Arc<Option<PathBuf>>) -> TestResult {
     match test_case {
         DiscoveredTest::Integration(tc) => {
-            let test_log_dir = log_dir.as_ref().as_ref().map(|d| d.join("integration").join(&tc.name));
+            let test_log_dir = (**log_dir).as_ref().map(|d| d.join("integration").join(&tc.name));
             let mut runner = TestRunner::new(tc);
             if let Some(ref dir) = **log_dir {
                 runner = runner.with_log_dir(dir.join("integration"));
@@ -194,7 +195,7 @@ async fn run_single_test(test_case: DiscoveredTest, log_dir: &Arc<Option<PathBuf
             result
         }
         DiscoveredTest::Correctness { name, config } => {
-            let correctness_log_dir = log_dir.as_ref().as_ref().map(|d| d.join("correctness").join(&name));
+            let correctness_log_dir = (**log_dir).as_ref().map(|d| d.join("correctness").join(&name));
             let result = crate::correctness::runner::run_correctness_test(name, config, correctness_log_dir).await;
             write_result_log(&result);
             result
@@ -281,6 +282,7 @@ impl TestRunner {
                     error: Some(format!("Failed to build driver configuration: {}", e)),
                     phase_timings,
                     log_dir: None,
+                    assertion_details: vec![],
                 };
             }
         };
@@ -308,6 +310,7 @@ impl TestRunner {
                     error: Some(format!("Failed to create driver: {}", e)),
                     phase_timings,
                     log_dir: None,
+                    assertion_details: vec![],
                 };
             }
         };
@@ -330,6 +333,7 @@ impl TestRunner {
                     error: Some(format!("Failed to start container: {}", e)),
                     phase_timings,
                     log_dir: None,
+                    assertion_details: vec![],
                 };
             }
         };
@@ -455,6 +459,7 @@ impl TestRunner {
             error: None,
             phase_timings,
             log_dir: None,
+            assertion_details: vec![],
         }
     }
 
@@ -772,11 +777,18 @@ fn write_result_log(result: &crate::reporter::TestResult) {
     if !result.assertion_results.is_empty() {
         let _ = writeln!(f);
         let _ = writeln!(f, "Assertions:");
-        for assertion in &result.assertion_results {
+        for (i, assertion) in result.assertion_results.iter().enumerate() {
             let indicator = if assertion.passed { "+" } else { "-" };
             let _ = writeln!(f, "  {} {} ({:.2?})", indicator, assertion.name, assertion.duration);
-            for line in assertion.message.lines() {
-                let _ = writeln!(f, "    {}", line);
+            let full_details = result.assertion_details.get(i).map(|d| d.as_slice()).unwrap_or(&[]);
+            if !full_details.is_empty() {
+                for line in full_details {
+                    let _ = writeln!(f, "    {}", line);
+                }
+            } else {
+                for line in assertion.message.lines() {
+                    let _ = writeln!(f, "    {}", line);
+                }
             }
         }
     }
