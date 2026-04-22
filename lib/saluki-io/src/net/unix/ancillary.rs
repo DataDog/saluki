@@ -41,10 +41,16 @@ impl<const N: usize> AncillaryData<N> {
         self.len = new_len;
     }
 
+    /// Gets the initialized portion of the underlying buffer.
+    pub fn bytes(&self) -> &[u8] {
+        // SAFETY: `self.len` is only updated via `set_len`, which promises that this prefix of the
+        // backing buffer has been initialized by the caller.
+        unsafe { std::slice::from_raw_parts(self.buf.as_ptr().cast(), self.len) }
+    }
+
     /// Gets an iterator over any control messages in the buffer.
     pub unsafe fn messages(&self) -> ControlMessages<'_> {
-        let buf = std::slice::from_raw_parts(self.buf.as_ptr() as *const _, self.len);
-        ControlMessages::new(buf)
+        ControlMessages::new(self.bytes())
     }
 }
 

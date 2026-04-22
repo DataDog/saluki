@@ -200,6 +200,10 @@ impl WorkloadProvider for RemoteAgentWorkloadProvider {
     fn get_resolved_origin(&self, origin: RawOrigin<'_>) -> Option<ResolvedOrigin> {
         self.origin_resolver.get_resolved_origin(origin)
     }
+
+    fn resolve_container_entity_for_pid(&self, process_id: u32) -> Option<EntityId> {
+        self.on_demand_pid_resolver.resolve(process_id)
+    }
 }
 
 async fn build_collector<F, Fut, O>(

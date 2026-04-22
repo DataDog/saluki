@@ -3,7 +3,7 @@ use std::io;
 use bytes::BufMut;
 use socket2::{MaybeUninitSlice, MsgHdrMut, SockAddr, SockAddrStorage, SockRef};
 
-use crate::net::addr::ConnectionAddress;
+use crate::net::{ConnectionAddress, ReceiveResult};
 
 pub fn enable_uds_socket_credentials<'sock, S>(_socket: &'sock S) -> io::Result<()>
 where
@@ -12,7 +12,7 @@ where
     Ok(())
 }
 
-pub(super) fn uds_recvmsg<'sock, S, B: BufMut>(socket: &'sock S, buf: &mut B) -> io::Result<(usize, ConnectionAddress)>
+pub(super) fn uds_recvmsg<'sock, S, B: BufMut>(socket: &'sock S, buf: &mut B) -> io::Result<ReceiveResult>
 where
     SockRef<'sock>: From<&'sock S>,
 {
@@ -39,5 +39,9 @@ where
         buf.advance_mut(n);
     }
 
-    Ok((n, ConnectionAddress::ProcessLike(None)))
+    Ok(ReceiveResult {
+        bytes_read: n,
+        address: ConnectionAddress::ProcessLike(None),
+        ancillary_data: Vec::new(),
+    })
 }

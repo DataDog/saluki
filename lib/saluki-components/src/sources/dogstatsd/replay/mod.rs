@@ -9,3 +9,4 @@ mod file;
 mod writer;
 
 pub(crate) use self::capture::TrafficCapture;
+pub(crate) use self::writer::CaptureRecord;

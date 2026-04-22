@@ -83,6 +83,7 @@ async-compression = { version = "0.4.13", default-features = false, features = [
   "zlib",
   "zstd",
 ] }
+zstd = { version = "0.13.3", default-features = false }
 bitmask-enum = { version = "2.2", default-features = false }
 facet = { version = "0.44.3", default-features = false, features = ["std"] }
 figment = { version = "0.10", default-features = false }

@@ -3802,6 +3802,7 @@ dependencies = [
  "tower",
  "tracing",
  "url",
+ "zstd",
 ]
 
 [[package]]

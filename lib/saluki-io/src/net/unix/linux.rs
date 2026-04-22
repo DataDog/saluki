@@ -4,7 +4,7 @@ use bytes::BufMut;
 use socket2::{MaybeUninitSlice, MsgHdrMut, SockAddr, SockAddrStorage, SockRef};
 
 use super::ancillary::{ControlMessage, SocketCredentialsAncillaryData};
-use crate::net::addr::{ConnectionAddress, ProcessCredentials};
+use crate::net::{ConnectionAddress, ProcessCredentials, ReceiveResult};
 
 /// Enables the `SO_PASSCRED` option on the given socket.
 ///
@@ -19,7 +19,7 @@ where
     sock_ref.set_passcred(true)
 }
 
-pub(super) fn uds_recvmsg<'sock, S, B: BufMut>(socket: &'sock S, buf: &mut B) -> io::Result<(usize, ConnectionAddress)>
+pub(super) fn uds_recvmsg<'sock, S, B: BufMut>(socket: &'sock S, buf: &mut B) -> io::Result<ReceiveResult>
 where
     SockRef<'sock>: From<&'sock S>,
 {
@@ -49,30 +49,34 @@ where
     // If we got any socket credentials back, parse them.
     let control_len = msg_hdr.control_len();
 
-    let maybe_process_creds = if control_len > 0 {
+    let (maybe_process_creds, ancillary) = if control_len > 0 {
         unsafe {
             ancillary_data.set_len(control_len);
-            let messages = ancillary_data.messages();
-            messages
-                .map(|m| match m {
-                    ControlMessage::Credentials(creds) => ProcessCredentials {
-                        pid: creds.pid,
-                        uid: creds.uid,
-                        gid: creds.gid,
-                    },
-                })
-                .next()
+
+            let ancillary = ancillary_data.bytes().to_vec();
+
+            let maybe_process_creds = ancillary_data.messages().find_map(|m| match m {
+                ControlMessage::Credentials(creds) => Some(ProcessCredentials {
+                    pid: creds.pid,
+                    uid: creds.uid,
+                    gid: creds.gid,
+                }),
+            });
+
+            (maybe_process_creds, ancillary)
         }
     } else {
-        None
+        (None, Vec::new())
     };
-
-    let conn_addr = ConnectionAddress::ProcessLike(maybe_process_creds);
 
     // Finally, update our buffer to reflect the bytes we've read.
     unsafe {
         buf.advance_mut(n);
     }
 
-    Ok((n, conn_addr))
+    Ok(ReceiveResult {
+        bytes_read: n,
+        address: ConnectionAddress::ProcessLike(maybe_process_creds),
+        ancillary_data: ancillary,
+    })
 }
