@@ -69,6 +69,7 @@ mod io_buffer;
 use self::io_buffer::IoBufferManager;
 
 mod replay;
+pub use self::replay::DogStatsDCaptureControl;
 use self::replay::{CaptureRecord, TrafficCapture};
 
 mod origin;
@@ -470,6 +471,9 @@ pub struct DogStatsDConfiguration {
     /// Defaults to `0`.
     #[serde(rename = "dogstatsd_capture_depth", default = "default_capture_depth")]
     capture_depth: usize,
+
+    #[serde(skip, default)]
+    capture_control: DogStatsDCaptureControl,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -578,6 +582,11 @@ impl DogStatsDConfiguration {
     {
         self.workload_provider = Some(Arc::new(workload_provider));
         self
+    }
+
+    /// Returns the shared control handle for DogStatsD traffic capture.
+    pub fn capture_control(&self) -> DogStatsDCaptureControl {
+        self.capture_control.clone()
     }
 
     fn fix_empty_capture_path(&mut self, config: &GenericConfiguration) {
@@ -722,6 +731,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             .with_allow_events(self.enable_payloads.events)
             .with_allow_service_checks(self.enable_payloads.service_checks);
         let traffic_capture = TrafficCapture::new(self.capture_path.clone(), self.capture_depth);
+        self.capture_control.bind(traffic_capture.clone());
 
         Ok(Box::new(DogStatsD {
             listeners,

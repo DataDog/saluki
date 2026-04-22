@@ -8,7 +8,7 @@ use serde::Deserialize;
 use tokio::io::{self, AsyncWriteExt};
 use tracing::{error, info};
 
-use crate::cli::utils::DataPlaneAPIClient;
+use crate::cli::utils::{DataPlaneAPIClient, DataPlaneSecureClient};
 
 /// DogStatsD-specific debugging commands.
 #[derive(FromArgs, Debug)]
@@ -22,6 +22,7 @@ pub struct DogstatsdCommand {
 #[argh(subcommand)]
 enum DogstatsdSubcommand {
     Stats(StatsCommand),
+    Capture(CaptureCommand),
 }
 
 /// Prints basic statistics about the metrics received by the data plane.
@@ -47,6 +48,27 @@ struct StatsCommand {
     /// maximum number of metrics to display (applied after filtering)
     #[argh(option, short = 'l', long = "limit")]
     limit: Option<usize>,
+}
+
+fn default_capture_duration() -> String {
+    "1m0s".to_string()
+}
+
+/// Starts a DogStatsD traffic capture.
+#[derive(FromArgs, Debug)]
+#[argh(subcommand, name = "capture")]
+struct CaptureCommand {
+    /// how long the traffic capture should run for, using Go-style duration syntax such as `10s` or `1m0s`
+    #[argh(option, short = 'd', long = "duration", default = "default_capture_duration()")]
+    capture_duration: String,
+
+    /// directory path to write the capture into
+    #[argh(option, short = 'p', long = "path")]
+    capture_path: Option<String>,
+
+    /// whether to zstd-compress the capture file
+    #[argh(option, short = 'z', long = "compressed", default = "true")]
+    compressed: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -104,18 +126,32 @@ struct StatsResponse<'a> {
 
 /// Entrypoint for the `dogstatsd` commands.
 pub async fn handle_dogstatsd_command(bootstrap_config: &GenericConfiguration, cmd: DogstatsdCommand) {
-    let mut api_client = match DataPlaneAPIClient::from_config(bootstrap_config) {
-        Ok(client) => client,
-        Err(e) => {
-            error!("Failed to create data plane API client: {:#}", e);
-            std::process::exit(1);
-        }
-    };
-
     match cmd.subcommand {
         DogstatsdSubcommand::Stats(config) => {
+            let mut api_client = match DataPlaneAPIClient::from_config(bootstrap_config) {
+                Ok(client) => client,
+                Err(e) => {
+                    error!("Failed to create data plane API client: {:#}", e);
+                    std::process::exit(1);
+                }
+            };
+
             if let Err(e) = handle_dogstatsd_stats(&mut api_client, config).await {
                 error!("Failed to run stats subcommand: {:#}", e);
+                std::process::exit(1);
+            }
+        }
+        DogstatsdSubcommand::Capture(config) => {
+            let mut api_client = match DataPlaneSecureClient::from_config(bootstrap_config).await {
+                Ok(client) => client,
+                Err(e) => {
+                    error!("Failed to create secure data plane API client: {:#}", e);
+                    std::process::exit(1);
+                }
+            };
+
+            if let Err(e) = handle_dogstatsd_capture(&mut api_client, config).await {
+                error!("Failed to start DogStatsD capture: {:#}", e);
                 std::process::exit(1);
             }
         }
@@ -149,6 +185,20 @@ async fn handle_dogstatsd_stats(api_client: &mut DataPlaneAPIClient, cmd: StatsC
         AnalysisMode::Summary => handle_stats_summary_analysis(&cmd, response).await?,
         AnalysisMode::Cardinality => handle_stats_cardinality_analysis(&cmd, response).await?,
     }
+
+    Ok(())
+}
+
+async fn handle_dogstatsd_capture(
+    api_client: &mut DataPlaneSecureClient, cmd: CaptureCommand,
+) -> Result<(), GenericError> {
+    println!("Starting a dogstatsd traffic capture session...\n");
+
+    let capture_path = api_client
+        .dogstatsd_capture(&cmd.capture_duration, cmd.capture_path.as_deref(), cmd.compressed)
+        .await?;
+
+    println!("Capture started, capture file being written to: {capture_path}");
 
     Ok(())
 }
@@ -286,4 +336,14 @@ where
     }
     stdout.flush().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::default_capture_duration;
+
+    #[test]
+    fn dogstatsd_capture_default_duration_matches_go() {
+        assert_eq!(default_capture_duration(), "1m0s");
+    }
 }
