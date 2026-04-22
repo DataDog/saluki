@@ -37,9 +37,7 @@ impl DataPlaneConfiguration {
             use_new_config_stream_endpoint: config
                 .try_get_typed("data_plane.use_new_config_stream_endpoint")?
                 .unwrap_or(true),
-            remote_agent_enabled: config
-                .try_get_typed("data_plane.remote_agent_enabled")?
-                .unwrap_or(true),
+            remote_agent_enabled: config.try_get_typed("data_plane.remote_agent_enabled")?.unwrap_or(true),
             api_listen_address: config
                 .try_get_typed("data_plane.api_listen_address")?
                 .unwrap_or_else(|| ListenAddress::any_tcp(5100)),
