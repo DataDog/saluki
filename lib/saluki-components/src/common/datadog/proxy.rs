@@ -9,7 +9,7 @@ use serde::{Deserialize, Deserializer};
 use url::Url;
 
 #[derive(Clone, Deserialize, Facet)]
-#[cfg_attr(test, derive(Debug, PartialEq))]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct ProxyConfiguration {
     /// The proxy server for HTTP requests.
     #[serde(rename = "proxy_http")]
@@ -345,7 +345,7 @@ mod config_smoke {
 
     #[tokio::test]
     async fn proxy_configuration_smoke_test() {
-        run_config_smoke_tests(structs::PROXY_CONFIGURATION, proxy_reg::ALL, |cfg| {
+        run_config_smoke_tests(structs::PROXY_CONFIGURATION, proxy_reg::ALL, &[], |cfg| {
             cfg.as_typed::<ProxyConfiguration>()
                 .expect("ProxyConfiguration should deserialize")
         })

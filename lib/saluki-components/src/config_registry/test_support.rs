@@ -1,4 +1,5 @@
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
+use serde::Serialize;
 use serde_json::json;
 
 use super::{ConfigKey, ValueType, ALL_KEYS};
@@ -28,6 +29,29 @@ fn test_env_string(value_type: ValueType) -> String {
         ValueType::StringList => TEST_STRING_LIST_VALUE.join(" "),
         ValueType::Integer => "42".to_string(),
         ValueType::Float => "1.5".to_string(),
+    }
+}
+
+fn collect_unchanged_leaves(
+    full: &serde_json::Value, default: &serde_json::Value, path: &str, unchanged: &mut Vec<String>,
+) {
+    match (full, default) {
+        (serde_json::Value::Object(f), serde_json::Value::Object(d)) => {
+            for (key, full_val) in f {
+                let child_path = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{}.{}", path, key)
+                };
+                let def_val = d.get(key).unwrap_or(&serde_json::Value::Null);
+                collect_unchanged_leaves(full_val, def_val, &child_path, unchanged);
+            }
+        }
+        (full_val, def_val) => {
+            if full_val == def_val {
+                unchanged.push(path.to_string());
+            }
+        }
     }
 }
 
@@ -67,7 +91,7 @@ async fn make_config_from_env(env_vars: &[(String, String)]) -> GenericConfigura
 
 /// Runs smoke tests for all keys in `keys` against a deserialized config struct `T`.
 ///
-/// Verifies two properties for every key in the global registry:
+/// Verifies three properties:
 ///
 /// **Supported keys** (those in `keys`): loading the struct with the test value set via the
 /// key's `yaml_path` and via each of its declared `env_vars` must all produce identical structs,
@@ -76,11 +100,17 @@ async fn make_config_from_env(env_vars: &[(String, String)]) -> GenericConfigura
 /// **Unsupported keys** (all other keys in `ALL_KEYS`): loading the struct with that key set must
 /// produce a struct identical to the default struct — i.e., the struct is unaffected.
 ///
+/// **Full field coverage**: loading the struct with all supported keys set simultaneously must
+/// produce a struct where every serialized leaf field differs from the default. This catches fields
+/// that exist in the struct but have no registered `ConfigKey` exercising them. Fields that are
+/// intentionally not configuration-driven (e.g. populated from runtime state) can be excluded by
+/// passing their serialized paths in `non_config_fields` (e.g. `&["workload_provider"]`).
+///
 /// `config_factory` converts a raw `GenericConfiguration` into the typed struct under test.
 pub async fn run_config_smoke_tests<T, Factory>(
-    struct_name: &'static str, keys: &[&'static ConfigKey], config_factory: Factory,
+    struct_name: &'static str, keys: &[&'static ConfigKey], non_config_fields: &[&str], config_factory: Factory,
 ) where
-    T: PartialEq + std::fmt::Debug,
+    T: PartialEq + std::fmt::Debug + Serialize,
     Factory: Fn(GenericConfiguration) -> T,
 {
     // Registry consistency: all passed keys declare struct_name as consumer.
@@ -105,6 +135,7 @@ pub async fn run_config_smoke_tests<T, Factory>(
     }
 
     let default_struct = config_factory(make_config_from_file(json!({})).await);
+    let mut failures: Vec<String> = Vec::new();
 
     // Supported keys: every yaml_path and env_var is loaded independently; all must produce the
     // same struct, and each must differ from the default.
@@ -114,22 +145,26 @@ pub async fn run_config_smoke_tests<T, Factory>(
             make_config_from_file(yaml_path_to_json(key.yaml_paths[0], test_json_value(key.value_type))).await,
         );
 
-        assert_ne!(
-            reference, default_struct,
-            "key yaml_path '{}' did not change the struct from its default — \
-             is the test value the same as the default, or is the key not wired up?",
-            key.yaml_paths[0],
-        );
+        if reference == default_struct {
+            failures.push(format!(
+                "yaml_path '{}': struct did not change from its default — \
+                 is the test value the same as the default, or is the key not wired up?",
+                key.yaml_paths[0],
+            ));
+            // Reference is invalid; skip comparisons for this key to avoid cascading noise.
+            continue;
+        }
 
         for yaml_path in key.yaml_paths.iter().skip(1) {
             let from_path = config_factory(
                 make_config_from_file(yaml_path_to_json(yaml_path, test_json_value(key.value_type))).await,
             );
-            assert_eq!(
-                from_path, reference,
-                "yaml_path '{}' produced a different struct than yaml_path '{}'",
-                yaml_path, key.yaml_paths[0],
-            );
+            if from_path != reference {
+                failures.push(format!(
+                    "yaml_path '{}' produced a different struct than canonical yaml_path '{}'",
+                    yaml_path, key.yaml_paths[0],
+                ));
+            }
         }
 
         for env_var in key.env_vars {
@@ -138,11 +173,12 @@ pub async fn run_config_smoke_tests<T, Factory>(
                 test_env_string(key.value_type),
             )];
             let from_env = config_factory(make_config_from_env(&env_pairs).await);
-            assert_eq!(
-                from_env, reference,
-                "env var '{}' produced a different struct than yaml_path '{}'",
-                env_var, key.yaml_paths[0],
-            );
+            if from_env != reference {
+                failures.push(format!(
+                    "env var '{}' produced a different struct than yaml_path '{}'",
+                    env_var, key.yaml_paths[0],
+                ));
+            }
         }
     }
 
@@ -152,11 +188,50 @@ pub async fn run_config_smoke_tests<T, Factory>(
             let with_foreign = config_factory(
                 make_config_from_file(yaml_path_to_json(yaml_path, test_json_value(key.value_type))).await,
             );
-            assert_eq!(
-                with_foreign, default_struct,
-                "yaml_path '{}' (not registered for '{}') unexpectedly changed the struct",
-                yaml_path, struct_name,
-            );
+            if with_foreign != default_struct {
+                failures.push(format!(
+                    "yaml_path '{}' is not registered for '{}' but unexpectedly changed the struct",
+                    yaml_path, struct_name,
+                ));
+            }
         }
+    }
+
+    // Full coverage: load all supported keys at once and verify every serialized leaf field
+    // differs from the default. Catches struct fields that exist and are populated from config
+    // but have no registered ConfigKey exercising them.
+    let mut all_vals = json!({});
+    for key in keys {
+        saluki_config::upsert(&mut all_vals, key.yaml_paths[0], test_json_value(key.value_type));
+    }
+    let all_keys_struct = config_factory(make_config_from_file(all_vals).await);
+    let full_map = serde_json::to_value(&all_keys_struct).expect("failed to serialize struct with all keys set");
+    let default_map = serde_json::to_value(&default_struct).expect("failed to serialize default struct");
+    let mut unchanged = Vec::new();
+    collect_unchanged_leaves(&full_map, &default_map, "", &mut unchanged);
+    unchanged.retain(|path| !non_config_fields.contains(&path.as_str()));
+    if !unchanged.is_empty() {
+        failures.push(format!(
+            "{} serialized field(s) are never changed by any registered config key: [{}]\n  \
+             Fix: register a ConfigKey for each field and add it to the test set.\n  \
+             Fix: if a field is intentionally not config-driven (e.g. injected at runtime), \
+             add its serialized name to the `non_config_fields` slice in this test call.",
+            unchanged.len(),
+            unchanged.join(", "),
+        ));
+    }
+
+    if !failures.is_empty() {
+        panic!(
+            "config smoke tests for '{}' failed with {} error(s):\n\n{}",
+            struct_name,
+            failures.len(),
+            failures
+                .iter()
+                .enumerate()
+                .map(|(i, msg)| format!("  [{}] {}", i + 1, msg))
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+        );
     }
 }
