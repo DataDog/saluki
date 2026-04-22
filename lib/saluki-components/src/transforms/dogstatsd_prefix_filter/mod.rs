@@ -20,9 +20,9 @@ use serde::Deserialize;
 use tokio::select;
 use tracing::{debug, error};
 
-const METRIC_FILTERLIST_SIZE_METRIC: &str = "adp.metric_filterlist_size";
-const METRIC_FILTERLIST_UPDATES_METRIC: &str = "adp.metric_filterlist_updates_total";
-const LISTENER_FILTERED_POINTS_METRIC: &str = "adp.dogstatsd_listener_filtered_points_total";
+const METRIC_FILTERLIST_SIZE_METRIC: &str = "metric_filterlist_size";
+const METRIC_FILTERLIST_UPDATES_METRIC: &str = "metric_filterlist_updates_total";
+const LISTENER_FILTERED_POINTS_METRIC: &str = "dogstatsd_listener_filtered_points_total";
 
 /// DogStatsD prefix filter transform.
 ///
