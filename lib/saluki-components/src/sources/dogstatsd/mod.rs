@@ -153,7 +153,7 @@ const fn default_enable_payloads_service_checks() -> bool {
 ///
 /// Accepts metrics over TCP, UDP, or Unix Domain Sockets in the StatsD/DogStatsD format.
 #[serde_as]
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 pub struct DogStatsDConfiguration {
     /// The size of the buffer used to receive messages into, in bytes.
     ///
@@ -383,8 +383,11 @@ impl DogStatsDConfiguration {
         self
     }
 
-    async fn build_listeners(&self) -> Result<Vec<Listener>, Error> {
-        let mut listeners = Vec::new();
+    /// Using the current configuration, determines which listeners should be created and adds an address for each into
+    /// a `Vec<ListenAddress`. This function has no side effects so that it can be unit tested whereas `build_listeners`
+    /// actually binds the listeners on the system.
+    fn build_addresses(&self) -> Vec<ListenAddress> {
+        let mut addresses: Vec<ListenAddress> = Vec::new();
 
         if self.port != 0 {
             let address = if self.non_local_traffic {
@@ -392,11 +395,7 @@ impl DogStatsDConfiguration {
             } else {
                 ListenAddress::Udp(([127, 0, 0, 1], self.port).into())
             };
-
-            let listener = Listener::from_listen_address(address)
-                .await
-                .context(FailedToCreateListener { listener_type: "UDP" })?;
-            listeners.push(listener);
+            addresses.push(address);
         }
 
         if self.tcp_port != 0 {
@@ -405,33 +404,52 @@ impl DogStatsDConfiguration {
             } else {
                 ListenAddress::Tcp(([127, 0, 0, 1], self.tcp_port).into())
             };
-
-            let listener = Listener::from_listen_address(address)
-                .await
-                .context(FailedToCreateListener { listener_type: "TCP" })?;
-            listeners.push(listener);
+            addresses.push(address);
         }
 
         if let Some(socket_path) = &self.socket_path {
             let address = ListenAddress::Unixgram(socket_path.into());
-            let listener = Listener::from_listen_address(address)
-                .await
-                .context(FailedToCreateListener {
-                    listener_type: "UDS (datagram)",
-                })?;
-            listeners.push(listener);
+            addresses.push(address);
         }
 
         if let Some(socket_stream_path) = &self.socket_stream_path {
             let address = ListenAddress::Unix(socket_stream_path.into());
-            let listener = Listener::from_listen_address(address)
-                .await
-                .context(FailedToCreateListener {
-                    listener_type: "UDS (stream)",
-                })?;
-            listeners.push(listener);
+            addresses.push(address);
         }
 
+        addresses
+    }
+
+    /// Builds the appropriate `Listener` objects.
+    async fn build_listeners(&self) -> Result<Vec<Listener>, Error> {
+        let addresses = self.build_addresses();
+        let mut listeners = Vec::new();
+        for address in addresses {
+            // We use a match here so that we can add context to the error message.
+            let listener = match &address {
+                ListenAddress::Tcp(_) => Listener::from_listen_address(address)
+                    .await
+                    .context(FailedToCreateListener { listener_type: "TCP" })?,
+                ListenAddress::Udp(_) => Listener::from_listen_address(address)
+                    .await
+                    .context(FailedToCreateListener { listener_type: "UDP" })?,
+                ListenAddress::Unixgram(_) => {
+                    Listener::from_listen_address(address)
+                        .await
+                        .context(FailedToCreateListener {
+                            listener_type: "UDS (datagram)",
+                        })?
+                }
+                ListenAddress::Unix(_) => {
+                    Listener::from_listen_address(address)
+                        .await
+                        .context(FailedToCreateListener {
+                            listener_type: "UDS (stream)",
+                        })?
+                }
+            };
+            listeners.push(listener);
+        }
         Ok(listeners)
     }
 }
@@ -1223,16 +1241,16 @@ const fn get_adjusted_buffer_size(buffer_size: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use std::net::SocketAddr;
+    use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
+    use super::{handle_metric_packet, ContextResolvers, DogStatsDConfiguration};
     use bytesize::ByteSize;
     use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
+    use saluki_io::net::ListenAddress;
     use saluki_io::{
         deser::codec::dogstatsd::{DogStatsDCodec, DogStatsDCodecConfiguration, ParsedPacket},
         net::ConnectionAddress,
     };
-
-    use super::{handle_metric_packet, ContextResolvers, DogStatsDConfiguration};
 
     #[test]
     fn no_metrics_when_interner_full_allocations_disallowed() {
@@ -1338,5 +1356,217 @@ mod tests {
         let config = deser_config(r#"{"dogstatsd_string_interner_size": 8192}"#);
         // 8192 entries * 512 bytes = 4 MiB
         assert_eq!(config.effective_context_string_interner_bytes(), ByteSize::mib(4));
+    }
+
+    /// Asserts that two lists of ListenAddress are equivalent.
+    fn address_list_eq(expected: &mut [ListenAddress], actual: &mut [ListenAddress]) -> Result<(), String> {
+        if expected.len() != actual.len() {
+            return Err(format!(
+                "length mismatch: expected {} addresses, got {}",
+                expected.len(),
+                actual.len()
+            ));
+        }
+
+        expected.sort_by_key(|a| a.to_string());
+        actual.sort_by_key(|a| a.to_string());
+
+        for (e, a) in expected.iter().zip(actual.iter()) {
+            let (es, as_) = (e.to_string(), a.to_string());
+            if es != as_ {
+                return Err(format!("address mismatch: expected {}, got {}", es, as_));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// This test verifies that we didn't accidentally break the `build_addresses_no_listeners` helper function which
+    /// would render all further tests useless.
+    #[test]
+    fn build_addresses_assertion_function_works() {
+        let config = DogStatsDConfiguration {
+            port: 0,
+            tcp_port: 123,
+            socket_path: None,
+            socket_stream_path: None,
+            non_local_traffic: false,
+            ..Default::default()
+        };
+        let mut expected = vec![ListenAddress::Tcp(SocketAddr::V4(SocketAddrV4::new(
+            // Close, but not quite! This is intentionally *not* 127.0.0.1 to test that the assertion will fail
+            Ipv4Addr::new(127, 0, 0, 2),
+            123,
+        )))];
+        let mut actual = config.build_addresses();
+        assert!(address_list_eq(&mut expected, &mut actual).is_err())
+    }
+
+    /// With all four listener gates off, `build_addresses` returns an empty Vec.
+    #[test]
+    fn build_addresses_no_listeners() {
+        let config = DogStatsDConfiguration {
+            port: 0,
+            tcp_port: 0,
+            socket_path: None,
+            socket_stream_path: None,
+            non_local_traffic: false,
+            ..Default::default()
+        };
+        let mut expected = vec![];
+        let mut actual = config.build_addresses();
+        address_list_eq(&mut expected, &mut actual).unwrap();
+    }
+
+    /// UDP port set, `non_local_traffic=false` → UDP listener bound to `127.0.0.1`.
+    #[test]
+    fn build_addresses_udp_local_only() {
+        let config = DogStatsDConfiguration {
+            port: 8125,
+            tcp_port: 0,
+            socket_path: None,
+            socket_stream_path: None,
+            non_local_traffic: false,
+            ..Default::default()
+        };
+        let mut expected = vec![ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::new(127, 0, 0, 1),
+            8125,
+        )))];
+        let mut actual = config.build_addresses();
+        address_list_eq(&mut expected, &mut actual).unwrap();
+    }
+
+    /// UDP port set, `non_local_traffic=true` → UDP listener bound to `0.0.0.0`.
+    #[test]
+    fn build_addresses_udp_non_local_only() {
+        let config = DogStatsDConfiguration {
+            port: 8125,
+            tcp_port: 0,
+            socket_path: None,
+            socket_stream_path: None,
+            non_local_traffic: true,
+            ..Default::default()
+        };
+        let mut expected = vec![ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::new(0, 0, 0, 0),
+            8125,
+        )))];
+        let mut actual = config.build_addresses();
+        address_list_eq(&mut expected, &mut actual).unwrap();
+    }
+
+    /// TCP port set, `non_local_traffic=false` → TCP listener bound to `127.0.0.1`.
+    #[test]
+    fn build_addresses_tcp_local_only() {
+        let config = DogStatsDConfiguration {
+            port: 0,
+            tcp_port: 9000,
+            socket_path: None,
+            socket_stream_path: None,
+            non_local_traffic: false,
+            ..Default::default()
+        };
+        let mut expected = vec![ListenAddress::Tcp(SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::new(127, 0, 0, 1),
+            9000,
+        )))];
+        let mut actual = config.build_addresses();
+        address_list_eq(&mut expected, &mut actual).unwrap();
+    }
+
+    /// TCP port set, `non_local_traffic=true` → TCP listener bound to `0.0.0.0`.
+    #[test]
+    fn build_addresses_tcp_non_local_only() {
+        let config = DogStatsDConfiguration {
+            port: 0,
+            tcp_port: 9000,
+            socket_path: None,
+            socket_stream_path: None,
+            non_local_traffic: true,
+            ..Default::default()
+        };
+        let mut expected = vec![ListenAddress::Tcp(SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::new(0, 0, 0, 0),
+            9000,
+        )))];
+        let mut actual = config.build_addresses();
+        address_list_eq(&mut expected, &mut actual).unwrap();
+    }
+
+    /// `socket_path` set → a `Unixgram` address is produced with that path.
+    #[test]
+    fn build_addresses_unixgram_only() {
+        let config = DogStatsDConfiguration {
+            port: 0,
+            tcp_port: 0,
+            socket_path: Some("/tmp/dsd.sock".to_string()),
+            socket_stream_path: None,
+            non_local_traffic: false,
+            ..Default::default()
+        };
+        let mut expected = vec![ListenAddress::Unixgram("/tmp/dsd.sock".into())];
+        let mut actual = config.build_addresses();
+        address_list_eq(&mut expected, &mut actual).unwrap();
+    }
+
+    /// `socket_stream_path` set → a `Unix` (stream) address is produced with that path.
+    #[test]
+    fn build_addresses_unix_stream_only() {
+        let config = DogStatsDConfiguration {
+            port: 0,
+            tcp_port: 0,
+            socket_path: None,
+            socket_stream_path: Some("/tmp/dsd-stream.sock".to_string()),
+            non_local_traffic: false,
+            ..Default::default()
+        };
+        let mut expected = vec![ListenAddress::Unix("/tmp/dsd-stream.sock".into())];
+        let mut actual = config.build_addresses();
+        address_list_eq(&mut expected, &mut actual).unwrap();
+    }
+
+    /// All four listener types enabled at once, with `non_local_traffic=true` so both UDP and TCP
+    /// pick up the non-local branch. Verifies every gate fires and the flag applies consistently.
+    #[test]
+    fn build_addresses_all_four_non_local() {
+        let config = DogStatsDConfiguration {
+            port: 8125,
+            tcp_port: 9000,
+            socket_path: Some("/tmp/dsd.sock".to_string()),
+            socket_stream_path: Some("/tmp/dsd-stream.sock".to_string()),
+            non_local_traffic: true,
+            ..Default::default()
+        };
+        let mut expected = vec![
+            ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 8125))),
+            ListenAddress::Tcp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 9000))),
+            ListenAddress::Unixgram("/tmp/dsd.sock".into()),
+            ListenAddress::Unix("/tmp/dsd-stream.sock".into()),
+        ];
+        let mut actual = config.build_addresses();
+        address_list_eq(&mut expected, &mut actual).unwrap();
+    }
+
+    /// All four listener types enabled at once, with `non_local_traffic=false` so both UDP and TCP
+    /// pick up the local branch. Twin of `build_addresses_all_four_non_local`.
+    #[test]
+    fn build_addresses_all_four_local() {
+        let config = DogStatsDConfiguration {
+            port: 8125,
+            tcp_port: 9000,
+            socket_path: Some("/tmp/dsd.sock".to_string()),
+            socket_stream_path: Some("/tmp/dsd-stream.sock".to_string()),
+            non_local_traffic: false,
+            ..Default::default()
+        };
+        let mut expected = vec![
+            ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 8125))),
+            ListenAddress::Tcp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 9000))),
+            ListenAddress::Unixgram("/tmp/dsd.sock".into()),
+            ListenAddress::Unix("/tmp/dsd-stream.sock".into()),
+        ];
+        let mut actual = config.build_addresses();
+        address_list_eq(&mut expected, &mut actual).unwrap();
     }
 }
