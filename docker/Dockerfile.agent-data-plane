@@ -4,8 +4,8 @@ ARG APP_IMAGE=ubuntu:24.04
 # Set up our "build" layer.
 #
 # This can either be "clean" or "prepped", depending on whether or not we're in CI. In CI, we use a pre-built base build
-# image that already has all of the necessary build tooling installed, along with the necessary Rust toolchain(s), so that
-# we don't waste additional time installing those for every build job.
+# image that already has all of the necessary build tooling installed, along with the necessary Rust toolchain(s), so
+# that we don't waste additional time installing those for every build job.
 #
 # Outside of CI, with the default "clean" mode, we assume we're starting from scratch and install all of those first.
 #
@@ -28,8 +28,8 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Build stage: actually build Agent Data Plane.
 #
-# We still do a little prep work here, like setting the necessary metadata environment variables and getting
-# some kernel headers into place... but by and large, this stage is all about compiling ADP.
+# We still do a little prep work here, like setting the necessary metadata environment variables and getting some
+# kernel headers into place... but by and large, this stage is all about compiling ADP.
 FROM ${BUILD_BASE} AS builder
 
 ARG TARGETARCH
@@ -59,7 +59,7 @@ RUN chmod +x /copy-build-headers.sh && /copy-build-headers.sh
 
 # Build Agent Data Plane.
 #
-# We install our build target here so that it gets installed against the pinned version # of the Rust toolchain defined
+# We install our build target here so that it gets installed against the pinned version of the Rust toolchain defined
 # in `rust-toolchain.toml`.
 WORKDIR /adp
 COPY . /adp
@@ -90,8 +90,6 @@ RUN if [ "${INTERNAL_BUILD}" = "true" ]; then \
 # Calculate the necessary licenses that we need to include in the final image.
 FROM ${BUILD_IMAGE} AS license-builder
 
-RUN --mount=type=bind,source=.ci/configure-apt-mirror.sh,target=/tmp/configure-apt-mirror.sh \
-    sh /tmp/configure-apt-mirror.sh
 RUN apt-get update && apt-get install -y curl
 
 # Pull down the latest SPDX licenses archive.
@@ -118,8 +116,6 @@ FROM ${APP_IMAGE}
 # For local builds, the regular Ubuntu application image needs to have the CA certificates installed, but it also uses
 # the `root` user, so we can install them without issue.
 USER root
-RUN --mount=type=bind,source=.ci/configure-apt-mirror.sh,target=/tmp/configure-apt-mirror.sh \
-    sh /tmp/configure-apt-mirror.sh
 RUN test -d /usr/share/ca-certificates || (apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates=20240203 && \
     apt-get clean && rm -rf /var/lib/apt/lists)
@@ -128,8 +124,8 @@ COPY NOTICE LICENSE LICENSE-3rdparty.csv /opt/datadog/agent-data-plane/
 COPY --from=license-builder /licenses /opt/datadog/agent-data-plane/LICENSES
 COPY --chmod=755 docker/entrypoint.sh /entrypoint.sh
 
-# We use a wildcard here to effectively make the copy conditional: we don't want it to fail
-# on non-internal builds when there's no files.
+# We use a wildcard here to effectively make the copy conditional: we don't want it to fail on non-internal builds
+# when there's no files.
 COPY --from=builder --chmod=755 /tmp/profiling/* /
 
 ENTRYPOINT [ "/usr/local/bin/agent-data-plane" ]
