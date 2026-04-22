@@ -67,6 +67,7 @@ mod io_buffer;
 use self::io_buffer::IoBufferManager;
 
 mod replay;
+pub use self::replay::DogStatsDCaptureControl;
 use self::replay::{CaptureRecord, TrafficCapture};
 
 mod origin;
@@ -385,6 +386,9 @@ pub struct DogStatsDConfiguration {
     /// Defaults to `0`.
     #[serde(rename = "dogstatsd_capture_depth", default = "default_capture_depth")]
     capture_depth: usize,
+
+    #[serde(skip, default)]
+    capture_control: DogStatsDCaptureControl,
 }
 
 impl DogStatsDConfiguration {
@@ -418,6 +422,11 @@ impl DogStatsDConfiguration {
     {
         self.workload_provider = Some(Arc::new(workload_provider));
         self
+    }
+
+    /// Returns the shared control handle for DogStatsD traffic capture.
+    pub fn capture_control(&self) -> DogStatsDCaptureControl {
+        self.capture_control.clone()
     }
 
     fn fix_empty_capture_path(&mut self, config: &GenericConfiguration) {
@@ -538,6 +547,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             .with_allow_events(self.enable_payloads_events)
             .with_allow_service_checks(self.enable_payloads_service_checks);
         let traffic_capture = TrafficCapture::new(self.capture_path.clone(), self.capture_depth);
+        self.capture_control.bind(traffic_capture.clone());
 
         Ok(Box::new(DogStatsD {
             listeners,
@@ -1117,7 +1127,10 @@ fn capture_uds_traffic(
 
             stream_capture.push_received(peer_addr, ancillary_data, payload);
 
-            while let Ok(Some(outer_payload)) = stream_capture.outer_framer.next_frame(&mut stream_capture.pending, false) {
+            while let Ok(Some(outer_payload)) = stream_capture
+                .outer_framer
+                .next_frame(&mut stream_capture.pending, false)
+            {
                 let _ = traffic_capture.enqueue(build_capture_record(
                     codec,
                     workload_provider,
@@ -1132,8 +1145,8 @@ fn capture_uds_traffic(
 }
 
 fn build_capture_record(
-    codec: &DogStatsDCodec, workload_provider: Option<&(dyn WorkloadProvider + Send + Sync)>,
-    process_id: Option<i32>, ancillary_data: &[u8], payload: &[u8],
+    codec: &DogStatsDCodec, workload_provider: Option<&(dyn WorkloadProvider + Send + Sync)>, process_id: Option<i32>,
+    ancillary_data: &[u8], payload: &[u8],
 ) -> CaptureRecord {
     CaptureRecord {
         timestamp_ns: capture_timestamp_ns(),
@@ -1145,8 +1158,8 @@ fn build_capture_record(
 }
 
 fn resolve_capture_container_id(
-    codec: &DogStatsDCodec, workload_provider: Option<&(dyn WorkloadProvider + Send + Sync)>,
-    process_id: Option<i32>, payload: &[u8],
+    codec: &DogStatsDCodec, workload_provider: Option<&(dyn WorkloadProvider + Send + Sync)>, process_id: Option<i32>,
+    payload: &[u8],
 ) -> Option<String> {
     payload_local_container_id(codec, payload).or_else(|| {
         let process_id = u32::try_from(process_id?).ok()?;
@@ -1462,9 +1475,12 @@ mod tests {
 
     use bytesize::ByteSize;
     use saluki_config::ConfigurationLoader;
-    use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
     use saluki_context::tags::SharedTagSet;
-    use saluki_env::{workload::{origin::ResolvedOrigin, EntityId}, WorkloadProvider};
+    use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
+    use saluki_env::{
+        workload::{origin::ResolvedOrigin, EntityId},
+        WorkloadProvider,
+    };
     use saluki_io::{
         deser::codec::dogstatsd::{DogStatsDCodec, DogStatsDCodecConfiguration, ParsedPacket},
         net::ConnectionAddress,

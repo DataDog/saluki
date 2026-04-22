@@ -116,9 +116,7 @@ pub async fn unix_recvmsg<B: BufMut>(socket: &mut UnixStream, buf: &mut B) -> io
 /// ## Errors
 ///
 /// If the underlying system call fails, an error is returned.
-pub async fn unixgram_recvmsg<B: BufMut>(
-    socket: &mut UnixDatagram, buf: &mut B,
-) -> io::Result<ReceiveResult> {
+pub async fn unixgram_recvmsg<B: BufMut>(socket: &mut UnixDatagram, buf: &mut B) -> io::Result<ReceiveResult> {
     // We manually call `recvmsg` on our domain socket as stdlib/`mio`/`tokio` don't yet expose a way to do out-of-band
     // reads to get ancillary data such as the socket credentials used to shuttle origin detection information.
     socket

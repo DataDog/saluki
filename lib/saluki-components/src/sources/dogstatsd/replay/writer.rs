@@ -237,7 +237,7 @@ fn ensure_target_dir_exists(target_dir: &CaptureTargetDir) -> Result<(), Generic
                     path.display()
                 ));
             }
-        }
+        },
         Err(e) => {
             return Err(generic_error!(
                 "Failed to inspect DogStatsD capture path '{}': {}",
@@ -255,7 +255,13 @@ fn open_target_writer(target_path: &Path, compressed: bool) -> Result<CaptureFil
         .write(true)
         .create_new(true)
         .open(target_path)
-        .map_err(|e| generic_error!("Failed to create DogStatsD capture file '{}': {}", target_path.display(), e))?;
+        .map_err(|e| {
+            generic_error!(
+                "Failed to create DogStatsD capture file '{}': {}",
+                target_path.display(),
+                e
+            )
+        })?;
     let writer = BufWriter::new(file);
 
     if compressed {
@@ -273,7 +279,8 @@ fn open_target_writer(target_path: &Path, compressed: bool) -> Result<CaptureFil
 }
 
 fn run_capture_loop(
-    state: Arc<Mutex<WriterState>>, traffic_rx: Receiver<CaptureRecord>, mut writer: CaptureFileWriter, duration: Duration,
+    state: Arc<Mutex<WriterState>>, traffic_rx: Receiver<CaptureRecord>, mut writer: CaptureFileWriter,
+    duration: Duration,
 ) {
     let mut pid_map = HashMap::new();
     let start = std::time::Instant::now();
@@ -379,7 +386,11 @@ mod tests {
         let missing_dir = unique_path("explicit-missing");
 
         let error = writer
-            .start_capture(CaptureTargetDir::Explicit(missing_dir.clone()), Duration::from_millis(25), false)
+            .start_capture(
+                CaptureTargetDir::Explicit(missing_dir.clone()),
+                Duration::from_millis(25),
+                false,
+            )
             .expect_err("explicit missing directories should fail");
 
         assert!(
@@ -396,7 +407,11 @@ mod tests {
         let implicit_dir = unique_path("implicit-created");
 
         let capture_path = writer
-            .start_capture(CaptureTargetDir::Implicit(implicit_dir.clone()), Duration::from_millis(25), false)
+            .start_capture(
+                CaptureTargetDir::Implicit(implicit_dir.clone()),
+                Duration::from_millis(25),
+                false,
+            )
             .expect("implicit directory should be created");
 
         wait_until_inactive(&writer);
@@ -413,7 +428,11 @@ mod tests {
         let target_dir = unique_dir("writer-uncompressed");
 
         let capture_path = writer
-            .start_capture(CaptureTargetDir::Explicit(target_dir.clone()), Duration::from_millis(250), false)
+            .start_capture(
+                CaptureTargetDir::Explicit(target_dir.clone()),
+                Duration::from_millis(250),
+                false,
+            )
             .expect("capture should start");
         assert!(writer.enqueue(sample_record()));
         writer.stop_capture();
@@ -431,7 +450,11 @@ mod tests {
         let target_dir = unique_dir("writer-compressed");
 
         let capture_path = writer
-            .start_capture(CaptureTargetDir::Explicit(target_dir.clone()), Duration::from_millis(250), true)
+            .start_capture(
+                CaptureTargetDir::Explicit(target_dir.clone()),
+                Duration::from_millis(250),
+                true,
+            )
             .expect("capture should start");
         assert!(writer.enqueue(sample_record()));
         writer.stop_capture();
@@ -451,7 +474,11 @@ mod tests {
         let target_dir = unique_dir("writer-autostop");
 
         let capture_path = writer
-            .start_capture(CaptureTargetDir::Explicit(target_dir.clone()), Duration::from_millis(30), false)
+            .start_capture(
+                CaptureTargetDir::Explicit(target_dir.clone()),
+                Duration::from_millis(30),
+                false,
+            )
             .expect("capture should start");
 
         wait_until_inactive(&writer);
@@ -466,7 +493,8 @@ mod tests {
         assert!(datadog_matcher(bytes));
 
         let header_len = 8;
-        let record_size = u32::from_le_bytes(bytes[header_len..header_len + 4].try_into().expect("record size")) as usize;
+        let record_size =
+            u32::from_le_bytes(bytes[header_len..header_len + 4].try_into().expect("record size")) as usize;
         let record_start = header_len + 4;
         let record_end = record_start + record_size;
         let record = UnixDogstatsdMsg::decode(&bytes[record_start..record_end]).expect("record should decode");

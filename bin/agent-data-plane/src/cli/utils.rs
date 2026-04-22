@@ -1,18 +1,38 @@
+use std::{path::PathBuf, time::Duration};
+
 use bytes::Buf as _;
+use datadog_protos::agent::{AgentSecureClient, CaptureTriggerRequest};
 use futures::TryFutureExt as _;
 use http::{uri::PathAndQuery, Request, Response, StatusCode, Uri};
 use http_body_util::BodyExt as _;
 use hyper::body::Incoming;
 use saluki_config::GenericConfiguration;
+use saluki_env::helpers::tonic::BearerAuthInterceptor;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use saluki_io::net::{client::http::HttpClient, ListenAddress};
+use saluki_io::net::{
+    build_datadog_agent_client_ipc_tls_config,
+    client::http::{HttpClient, HttpsCapableConnectorBuilder},
+    get_ipc_cert_file_path, GrpcTargetAddress, ListenAddress,
+};
+use tonic::{
+    service::interceptor::InterceptedService,
+    transport::{Channel, Endpoint},
+    Code, Status,
+};
 
-use crate::config::DataPlaneConfiguration;
+use crate::{config::DataPlaneConfiguration, internal::platform::PlatformSettings};
+
+type SecureDataPlaneService = InterceptedService<Channel, BearerAuthInterceptor>;
 
 /// Typed API client for interacting with the APIs exposed by ADP.
 pub struct DataPlaneAPIClient {
     client: HttpClient,
     authority: String,
+}
+
+/// Typed gRPC client for interacting with the secure gRPC API exposed by ADP.
+pub struct DataPlaneSecureClient {
+    client: AgentSecureClient<SecureDataPlaneService>,
 }
 
 impl DataPlaneAPIClient {
@@ -231,6 +251,99 @@ impl DataPlaneAPIClient {
     }
 }
 
+impl DataPlaneSecureClient {
+    /// Creates a new `DataPlaneSecureClient` from the given generic configuration.
+    ///
+    /// # Errors
+    ///
+    /// If the data plane configuration can't be deserialized, or the secure gRPC client cannot be created, an error
+    /// will be returned.
+    pub async fn from_config(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        let dp_config = DataPlaneConfiguration::from_configuration(config)?;
+        let target_address = GrpcTargetAddress::try_from_listen_addr(dp_config.secure_api_listen_address())
+            .ok_or_else(|| {
+                generic_error!(
+                    "Expected connection-oriented address (TCP or UDS stream) for privileged API endpoint: {}",
+                    dp_config.secure_api_listen_address()
+                )
+            })?;
+
+        let mut auth_token_file_path = config
+            .try_get_typed::<PathBuf>("auth_token_file_path")
+            .error_context("Failed to get Agent auth token file path.")?
+            .unwrap_or_else(PlatformSettings::get_auth_token_path);
+        if auth_token_file_path.as_os_str().is_empty() {
+            auth_token_file_path = PlatformSettings::get_auth_token_path();
+        }
+
+        let mut ipc_cert_file_path = config
+            .try_get_typed::<Option<PathBuf>>("ipc_cert_file_path")
+            .error_context("Failed to get Agent IPC cert file path.")?
+            .flatten();
+        if ipc_cert_file_path
+            .as_ref()
+            .is_some_and(|path| path.as_os_str().is_empty())
+        {
+            ipc_cert_file_path = None;
+        }
+
+        let auth_interceptor = BearerAuthInterceptor::from_file(&auth_token_file_path).await?;
+        let ipc_cert_file_path = get_ipc_cert_file_path(ipc_cert_file_path.as_ref(), &auth_token_file_path);
+        let client_tls_config = build_datadog_agent_client_ipc_tls_config(ipc_cert_file_path).await?;
+
+        let mut connector_builder =
+            HttpsCapableConnectorBuilder::default().with_connect_timeout(Duration::from_secs(2));
+        let endpoint = match &target_address {
+            GrpcTargetAddress::Tcp(addr) => Endpoint::from_shared(format!("https://{addr}"))
+                .map_err(|e| generic_error!("Failed to construct ADP gRPC endpoint URI ({}).", e))?,
+            #[cfg(unix)]
+            GrpcTargetAddress::Unix(path) => {
+                connector_builder = connector_builder.with_unix_socket_path(path);
+                Endpoint::from_static("https://127.0.0.1")
+            }
+            #[cfg(not(unix))]
+            GrpcTargetAddress::Unix(_) => {
+                return Err(generic_error!(
+                    "Unix domain sockets are not supported for gRPC clients on this platform."
+                ))
+            }
+        };
+
+        let https_connector = connector_builder.build(client_tls_config)?;
+        let channel = endpoint
+            .connect_timeout(Duration::from_secs(2))
+            .connect_with_connector(https_connector)
+            .await
+            .with_error_context(|| format!("Failed to connect to Agent Data Plane API at '{}'.", target_address))?;
+
+        Ok(Self {
+            client: AgentSecureClient::new(InterceptedService::new(channel, auth_interceptor)),
+        })
+    }
+
+    /// Starts a DogStatsD traffic capture through the secure gRPC API.
+    ///
+    /// # Errors
+    ///
+    /// If the RPC fails, or if ADP rejects the capture request, an error is returned.
+    pub async fn dogstatsd_capture(
+        &mut self, duration: &str, path: Option<&str>, compressed: bool,
+    ) -> Result<String, GenericError> {
+        let response = self
+            .client
+            .dogstatsd_capture_trigger(CaptureTriggerRequest {
+                duration: duration.to_string(),
+                path: path.unwrap_or_default().to_string(),
+                compressed,
+            })
+            .await
+            .map_err(map_dogstatsd_capture_error)?
+            .into_inner();
+
+        Ok(response.path)
+    }
+}
+
 async fn collect_body(body: Incoming) -> Option<String> {
     let body = body.collect().await.ok()?.aggregate();
     String::from_utf8(body.chunk().to_vec()).ok()
@@ -269,5 +382,45 @@ fn empty_when_success(resp: Response<String>) -> Result<(), GenericError> {
             resp.status(),
             resp.into_body()
         ))
+    }
+}
+
+fn map_dogstatsd_capture_error(error: Status) -> GenericError {
+    match error.code() {
+        Code::FailedPrecondition | Code::InvalidArgument => generic_error!("{}", error.message()),
+        _ => generic_error!(
+            "Failed to start DogStatsD capture ({}): {}.",
+            error.code(),
+            error.message()
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::map_dogstatsd_capture_error;
+    use tonic::{Code, Status};
+
+    #[test]
+    fn dogstatsd_capture_failed_precondition_surfaces_server_message() {
+        let error = map_dogstatsd_capture_error(Status::new(Code::FailedPrecondition, "capture already in progress"));
+
+        assert_eq!(error.to_string(), "capture already in progress");
+    }
+
+    #[test]
+    fn dogstatsd_capture_invalid_argument_surfaces_server_message() {
+        let error = map_dogstatsd_capture_error(Status::new(Code::InvalidArgument, "missing duration unit"));
+
+        assert_eq!(error.to_string(), "missing duration unit");
+    }
+
+    #[test]
+    fn dogstatsd_capture_other_errors_keep_context() {
+        let error = map_dogstatsd_capture_error(Status::new(Code::Unavailable, "connection closed"));
+
+        let message = error.to_string();
+        assert!(message.contains("Failed to start DogStatsD capture"));
+        assert!(message.contains("connection closed"));
     }
 }

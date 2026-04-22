@@ -21,7 +21,7 @@ use saluki_components::{
     },
     forwarders::{DatadogConfiguration, OtlpForwarderConfiguration},
     relays::otlp::OtlpRelayConfiguration,
-    sources::{DogStatsDConfiguration, OtlpConfiguration},
+    sources::{DogStatsDCaptureControl, DogStatsDConfiguration, OtlpConfiguration},
     transforms::{
         AggregateConfiguration, ApmStatsTransformConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
         DogStatsDPrefixFilterConfiguration, HostEnrichmentConfiguration, HostTagsConfiguration,
@@ -139,7 +139,7 @@ pub async fn handle_run_command(
 
     // Create our primary data topology and spawn any internal processes, which will ensure all relevant components are
     // registered and accounted for in terms of memory usage.
-    let blueprint = create_topology(
+    let (blueprint, dsd_capture_control) = create_topology(
         &config,
         &dp_config,
         &env_provider,
@@ -156,6 +156,7 @@ pub async fn handle_run_command(
         health_registry.clone(),
         env_provider,
         dsd_stats_config,
+        dsd_capture_control,
         ra_bootstrap,
     )
     .await
@@ -284,8 +285,9 @@ pub async fn handle_run_command(
 async fn create_topology(
     config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, env_provider: &ADPEnvironmentProvider,
     component_registry: &ComponentRegistry, dsd_stats_config: DogStatsDStatisticsConfiguration,
-) -> Result<TopologyBlueprint, GenericError> {
+) -> Result<(TopologyBlueprint, Option<DogStatsDCaptureControl>), GenericError> {
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
+    let mut dsd_capture_control = None;
 
     // If no data pipelines are enabled, then there's nothing for us to do.
     if !dp_config.data_pipelines_enabled() {
@@ -324,14 +326,15 @@ async fn create_topology(
 
     // Now we move on to our actual data pipelines.
     if dp_config.dogstatsd().enabled() {
-        add_dsd_pipeline_to_blueprint(&mut blueprint, config, env_provider, dsd_stats_config).await?;
+        dsd_capture_control =
+            Some(add_dsd_pipeline_to_blueprint(&mut blueprint, config, env_provider, dsd_stats_config).await?);
     }
 
     if dp_config.otlp().enabled() {
         add_otlp_pipeline_to_blueprint(&mut blueprint, config, dp_config, env_provider)?;
     }
 
-    Ok(blueprint)
+    Ok((blueprint, dsd_capture_control))
 }
 
 async fn add_baseline_metrics_pipeline_to_blueprint(
@@ -425,7 +428,7 @@ async fn add_baseline_traces_pipeline_to_blueprint(
 async fn add_dsd_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
     dsd_stats_config: DogStatsDStatisticsConfiguration,
-) -> Result<(), GenericError> {
+) -> Result<DogStatsDCaptureControl, GenericError> {
     // We're creating the "front half" of the DogStatsD pipeline, which deals solely with accepting DogStatsD payloads,
     // and enriching/processing them in DSD-specific ways, relevant to how the Datadog Agent is expected to behave.
     //
@@ -459,6 +462,7 @@ async fn add_dsd_pipeline_to_blueprint(
     let dsd_config = DogStatsDConfiguration::from_configuration(config)
         .error_context("Failed to configure DogStatsD source.")?
         .with_workload_provider(env_provider.workload().clone());
+    let dsd_capture_control = dsd_config.capture_control();
     let dsd_prefix_filter_configuration = DogStatsDPrefixFilterConfiguration::from_configuration(config)?;
     let dsd_mapper_config = DogStatsDMapperConfiguration::from_configuration(config)?;
     let dsd_enrich_config =
@@ -496,7 +500,7 @@ async fn add_dsd_pipeline_to_blueprint(
         // DogStatsD Stats.
         .connect_component("dsd_stats_out", ["dsd_in.metrics"])?;
 
-    Ok(())
+    Ok(dsd_capture_control)
 }
 
 fn add_otlp_pipeline_to_blueprint(
