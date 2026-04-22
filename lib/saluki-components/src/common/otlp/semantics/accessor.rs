@@ -68,9 +68,7 @@ pub struct OtelSpanAccessor<'a> {
 }
 
 impl<'a> OtelSpanAccessor<'a> {
-    pub fn new(
-        span_attributes: &'a [otlp_common::KeyValue], resource_attributes: &'a [otlp_common::KeyValue],
-    ) -> Self {
+    pub fn new(span_attributes: &'a [otlp_common::KeyValue], resource_attributes: &'a [otlp_common::KeyValue]) -> Self {
         Self {
             span: OtlpAttributesAccessor::new(span_attributes),
             resource: OtlpAttributesAccessor::new(resource_attributes),

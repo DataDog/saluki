@@ -69,8 +69,8 @@ impl Registry {
     /// Any concept key that does not correspond to a known [`Concept`] variant
     /// is treated as an error — keeping the enum and the embedded JSON in sync.
     pub fn from_json(json: &str) -> Result<Self, GenericError> {
-        let data: RegistryData = serde_json::from_str(json)
-            .map_err(|e| generic_error!("failed to parse semantic mappings JSON: {}", e))?;
+        let data: RegistryData =
+            serde_json::from_str(json).map_err(|e| generic_error!("failed to parse semantic mappings JSON: {}", e))?;
 
         let mut mappings = FastHashMap::default();
         for (key, mapping) in data.concepts {
@@ -102,9 +102,8 @@ const MAPPINGS_JSON: &str = include_str!("mappings.json");
 /// The default registry, loaded from the embedded `mappings.json`.
 ///
 /// This mirrors upstream's `DefaultRegistry()` singleton.
-pub static REGISTRY: LazyLock<Registry> = LazyLock::new(|| {
-    Registry::from_json(MAPPINGS_JSON).expect("embedded semantic mappings.json failed to load")
-});
+pub static REGISTRY: LazyLock<Registry> =
+    LazyLock::new(|| Registry::from_json(MAPPINGS_JSON).expect("embedded semantic mappings.json failed to load"));
 
 #[cfg(test)]
 mod tests {

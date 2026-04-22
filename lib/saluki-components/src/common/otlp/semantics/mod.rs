@@ -1,20 +1,4 @@
 //! Semantic attribute registry for OTLP.
-//!
-//! This is a port of upstream `pkg/trace/semantics` from Datadog Agent 7.78.0.
-//! It replaces per-caller hand-written fallback lookups with a table-driven
-//! scheme: each semantic [`Concept`] has an ordered list of fallback attribute
-//! names, providers, versions, and value types. Callers use [`lookup_int64`],
-//! [`lookup_string`], or [`lookup_float64`] via an [`Accessor`] over the
-//! attributes of interest. String-typed registrations allow numeric results
-//! to be recovered from string attributes through parsing — the behavior that
-//! upstream 7.78.0 gained over 7.77.3.
-//!
-//! Upstream reference: <https://github.com/DataDog/datadog-agent/tree/7.78.0/pkg/trace/semantics>
-//!
-//! Most of the infrastructure in this module is intentionally broader than its
-//! current callers; `get_otel_status_code` is the only in-tree consumer today,
-//! but the full registry and `lookup_*` surface is in place for future
-//! migrations of other `get_otel_*` helpers.
 #![allow(dead_code, unused_imports)]
 
 pub mod accessor;

@@ -1,10 +1,4 @@
-//! Concept-driven attribute lookups — port of upstream `pkg/trace/semantics/lookup.go`.
-//!
-//! Each `lookup_*` function iterates through the registered fallback tags for a
-//! [`Concept`] in precedence order, dispatching to the type-strict accessor
-//! getter matching each tag's declared [`ValueType`]. String fallbacks allow
-//! numeric results to be recovered from string-typed attributes via parsing —
-//! this is the key behavior that upstream 7.78.0 gained over 7.77.3.
+//! Concept-driven attribute lookups.
 
 use super::accessor::Accessor;
 use super::registry::{Registry, ValueType};

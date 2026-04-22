@@ -2047,9 +2047,6 @@ mod tests {
                 expected: Some(206),
                 ignore_missing_datadog_fields: false,
             },
-            // String-valued attributes — upstream 7.78.0's semantic registry
-            // parses string representations of status codes. Prior to that
-            // change, ADP only matched IntValue attributes and missed these.
             TestCase {
                 name: "string http.response.status_code on span (lading repro)",
                 span_attrs: vec![kv_str(SEMCONV_HTTP_RESPONSE_STATUS_CODE, "500")],
