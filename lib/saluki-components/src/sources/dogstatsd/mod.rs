@@ -67,8 +67,8 @@ mod io_buffer;
 use self::io_buffer::IoBufferManager;
 
 mod replay;
-pub use self::replay::DogStatsDCaptureControl;
 use self::replay::{CaptureRecord, TrafficCapture};
+pub use self::replay::{DogStatsDCaptureControl, DogStatsDReplayState};
 
 mod origin;
 use self::origin::{

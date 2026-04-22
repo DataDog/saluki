@@ -22,7 +22,10 @@ use saluki_app::{
     api::APIBuilder, config::ConfigAPIHandler, dynamic_api::DynamicAPIBuilder, logging::acquire_logging_api_handler,
     memory::AllocationTelemetryWorker, metrics::acquire_metrics_api_handler,
 };
-use saluki_components::{destinations::DogStatsDStatisticsConfiguration, sources::DogStatsDCaptureControl};
+use saluki_components::{
+    destinations::DogStatsDStatisticsConfiguration,
+    sources::{DogStatsDCaptureControl, DogStatsDReplayState},
+};
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     health::HealthRegistry,
@@ -62,11 +65,15 @@ fn get_cert_path_from_config(config: &GenericConfiguration) -> Result<PathBuf, G
 
 struct DogStatsDCaptureApi {
     capture_control: DogStatsDCaptureControl,
+    replay_state: DogStatsDReplayState,
 }
 
 impl DogStatsDCaptureApi {
-    fn new(capture_control: DogStatsDCaptureControl) -> Self {
-        Self { capture_control }
+    fn new(capture_control: DogStatsDCaptureControl, replay_state: DogStatsDReplayState) -> Self {
+        Self {
+            capture_control,
+            replay_state,
+        }
     }
 }
 
@@ -121,11 +128,14 @@ impl AgentSecure for DogStatsDCaptureApi {
     }
 
     async fn dogstatsd_set_tagger_state(
-        &self, _request: Request<TaggerState>,
+        &self, request: Request<TaggerState>,
     ) -> Result<Response<TaggerStateResponse>, Status> {
-        Err(Status::unimplemented(
-            "DogstatsdSetTaggerState is not implemented by the Agent Data Plane.",
-        ))
+        let loaded = self
+            .replay_state
+            .load(request.into_inner())
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        Ok(Response::new(TaggerStateResponse { loaded }))
     }
 
     async fn client_get_configs(
@@ -372,6 +382,7 @@ impl Supervisable for PrivilegedApiWorker {
     async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
         let capture_api = AgentSecureServer::new(DogStatsDCaptureApi::new(
             self._dsd_capture_control.clone().unwrap_or_default(),
+            self.env_provider.replay_state(),
         ));
         let mut api_builder = APIBuilder::new()
             .with_tls_config(self.tls_config.clone())
@@ -449,7 +460,10 @@ pub async fn create_control_plane_supervisor(
 #[cfg(test)]
 mod tests {
     use super::{parse_go_duration, DogStatsDCaptureApi};
-    use datadog_protos::agent::{agent_secure_server::AgentSecure, CaptureTriggerRequest};
+    use datadog_protos::agent::{
+        agent_secure_server::AgentSecure, CaptureTriggerRequest, Entity, EntityId as RemoteEntityId, TaggerState,
+    };
+    use saluki_components::sources::DogStatsDReplayState;
     use std::time::Duration;
     use tonic::{Code, Request};
 
@@ -475,7 +489,7 @@ mod tests {
 
     #[tokio::test]
     async fn capture_trigger_returns_failed_precondition_when_source_is_unavailable() {
-        let api = DogStatsDCaptureApi::new(Default::default());
+        let api = DogStatsDCaptureApi::new(Default::default(), DogStatsDReplayState::new());
         let error = api
             .dogstatsd_capture_trigger(Request::new(CaptureTriggerRequest {
                 duration: "10s".to_string(),
@@ -486,5 +500,45 @@ mod tests {
             .expect_err("unbound capture control should fail");
 
         assert_eq!(error.code(), Code::FailedPrecondition);
+    }
+
+    #[tokio::test]
+    async fn tagger_state_rpc_loads_and_clears_replay_state() {
+        let replay_state = DogStatsDReplayState::new();
+        let api = DogStatsDCaptureApi::new(Default::default(), replay_state.clone());
+
+        let response = api
+            .dogstatsd_set_tagger_state(Request::new(TaggerState {
+                state: [(
+                    "container_id://cid-123".to_string(),
+                    Entity {
+                        id: Some(RemoteEntityId {
+                            prefix: "container_id".to_string(),
+                            uid: "cid-123".to_string(),
+                        }),
+                        low_cardinality_tags: vec!["env:prod".to_string()],
+                        ..Default::default()
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                pid_map: [(42, "container_id://cid-123".to_string())].into_iter().collect(),
+                duration: 10_000,
+            }))
+            .await
+            .expect("tagger state should load")
+            .into_inner();
+
+        assert!(response.loaded);
+        assert!(replay_state.is_loaded());
+
+        let response = api
+            .dogstatsd_set_tagger_state(Request::new(TaggerState::default()))
+            .await
+            .expect("empty tagger state should clear replay state")
+            .into_inner();
+
+        assert!(!response.loaded);
+        assert!(!replay_state.is_loaded());
     }
 }

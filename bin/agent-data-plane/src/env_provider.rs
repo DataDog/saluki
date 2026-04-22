@@ -1,4 +1,5 @@
 use memory_accounting::ComponentRegistry;
+use saluki_components::sources::DogStatsDReplayState;
 use saluki_config::GenericConfiguration;
 use saluki_core::health::HealthRegistry;
 use saluki_env::{
@@ -31,6 +32,7 @@ pub struct ADPEnvironmentProvider {
     host_provider: BoxedHostProvider,
     workload_provider: Option<RemoteAgentWorkloadProvider>,
     autodiscovery_provider: Option<BoxedAutodiscoveryProvider>,
+    replay_state: DogStatsDReplayState,
 }
 
 impl ADPEnvironmentProvider {
@@ -71,6 +73,7 @@ impl ADPEnvironmentProvider {
             host_provider,
             workload_provider,
             autodiscovery_provider: None,
+            replay_state: DogStatsDReplayState::new(),
         })
     }
 
@@ -80,6 +83,11 @@ impl ADPEnvironmentProvider {
     /// See [`RemoteAgentWorkloadAPIHandler`] for more information about routes and responses.
     pub fn workload_api_handler(&self) -> Option<RemoteAgentWorkloadAPIHandler> {
         self.workload_provider.as_ref().map(|provider| provider.api_handler())
+    }
+
+    /// Returns the shared DogStatsD replay-state handle.
+    pub fn replay_state(&self) -> DogStatsDReplayState {
+        self.replay_state.clone()
     }
 }
 

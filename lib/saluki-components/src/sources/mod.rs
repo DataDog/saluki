@@ -1,7 +1,7 @@
 //! Source implementations.
 
 mod dogstatsd;
-pub use self::dogstatsd::{DogStatsDCaptureControl, DogStatsDConfiguration};
+pub use self::dogstatsd::{DogStatsDCaptureControl, DogStatsDConfiguration, DogStatsDReplayState};
 
 mod internal_metrics;
 pub use self::internal_metrics::InternalMetricsConfiguration;
