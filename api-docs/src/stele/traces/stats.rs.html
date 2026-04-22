@@ -26,7 +26,7 @@
 <a href=#26 id=26 data-nosnippet>26</a>/// wrapper provides ergonomic conversions to/from a string representation based on a base64-encoded wrapper around the
 <a href=#27 id=27 data-nosnippet>27</a>/// canonical Protobuf representation.
 <a href=#28 id=28 data-nosnippet>28</a>///
-<a href=#29 id=29 data-nosnippet>29</a>/// This makes it safe to transport over JSON for use in `datadog-intake` and `ground-truth`.
+<a href=#29 id=29 data-nosnippet>29</a>/// This makes it safe to transport over JSON for use in `datadog-intake` and `panoramic`.
 <a href=#30 id=30 data-nosnippet>30</a></span><span class="attr">#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 <a href=#31 id=31 data-nosnippet>31</a>#[serde(try_from = <span class="string">"String"</span>, into = <span class="string">"String"</span>)]
 <a href=#32 id=32 data-nosnippet>32</a></span><span class="kw">pub struct </span>EncodedApmStatsDDSketch {

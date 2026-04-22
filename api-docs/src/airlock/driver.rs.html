@@ -944,7 +944,7 @@
 <a href=#944 id=944 data-nosnippet>944</a>    // Rather than threading through this information from the top level, we simply look for an override environment
 <a href=#945 id=945 data-nosnippet>945</a>    // variable here.. which lets us specify the right image reference to use in CI, while allowing normal users to just
 <a href=#946 id=946 data-nosnippet>946</a>    // grab it from Docker Hub when running locally.
-<a href=#947 id=947 data-nosnippet>947</a>    </span>std::env::var(<span class="string">"GROUND_TRUTH_ALPINE_IMAGE"</span>).unwrap_or_else(|<span class="kw">_</span>| <span class="string">"alpine:latest"</span>.to_string())
+<a href=#947 id=947 data-nosnippet>947</a>    </span>std::env::var(<span class="string">"PANORAMIC_ALPINE_IMAGE"</span>).unwrap_or_else(|<span class="kw">_</span>| <span class="string">"alpine:latest"</span>.to_string())
 <a href=#948 id=948 data-nosnippet>948</a>}
 <a href=#949 id=949 data-nosnippet>949</a>
 <a href=#950 id=950 data-nosnippet>950</a><span class="kw">fn </span>get_default_airlock_labels(isolation_group_id: <span class="kw-2">&amp;</span>str) -&gt; HashMap&lt;String, String&gt; {
