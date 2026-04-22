@@ -31,10 +31,20 @@ pub enum Connection {
     Unix(#[pin] tokio::net::UnixStream),
 }
 
+pub struct ReceiveResult {
+    pub bytes_read: usize,
+    pub address: ConnectionAddress,
+    pub ancillary_data: Vec<u8>,
+}
+
 impl Connection {
-    async fn receive<B: BufMut>(&mut self, buf: &mut B) -> io::Result<(usize, ConnectionAddress)> {
+    async fn receive<B: BufMut>(&mut self, buf: &mut B) -> io::Result<ReceiveResult> {
         match self {
-            Self::Tcp(inner, addr) => inner.read_buf(buf).await.map(|n| (n, (*addr).into())),
+            Self::Tcp(inner, addr) => inner.read_buf(buf).await.map(|n| ReceiveResult {
+                bytes_read: n,
+                address: (*addr).into(),
+                ancillary_data: Vec::new(),
+            }),
             #[cfg(unix)]
             Self::Unix(inner) => unix_recvmsg(inner, buf).await,
         }
@@ -99,9 +109,13 @@ enum Connectionless {
 }
 
 impl Connectionless {
-    async fn receive<B: BufMut>(&mut self, buf: &mut B) -> io::Result<(usize, ConnectionAddress)> {
+    async fn receive<B: BufMut>(&mut self, buf: &mut B) -> io::Result<ReceiveResult> {
         match self {
-            Self::Udp(inner) => inner.recv_buf_from(buf).await.map(|(n, addr)| (n, addr.into())),
+            Self::Udp(inner) => inner.recv_buf_from(buf).await.map(|(n, addr)| ReceiveResult {
+                bytes_read: n,
+                address: addr.into(),
+                ancillary_data: Vec::new(),
+            }),
             #[cfg(unix)]
             Self::Unixgram(inner) => unixgram_recvmsg(inner, buf).await,
         }
@@ -149,7 +163,7 @@ impl Stream {
     /// ## Errors
     ///
     /// If the underlying system call fails, an error is returned.
-    pub async fn receive<B: BufMut>(&mut self, buf: &mut B) -> io::Result<(usize, ConnectionAddress)> {
+    pub async fn receive<B: BufMut>(&mut self, buf: &mut B) -> io::Result<ReceiveResult> {
         match &mut self.inner {
             StreamInner::Connection { socket } => socket.receive(buf).await,
             StreamInner::Connectionless { socket } => socket.receive(buf).await,

@@ -46,6 +46,13 @@ pub trait WorkloadProvider {
     ///  If the origin is empty, `None` is returned. Otherwise, `Some(ResolvedOrigin)` will be returned, which contains
     ///  fully resolved versions of the raw origin components.
     fn get_resolved_origin(&self, origin: RawOrigin<'_>) -> Option<ResolvedOrigin>;
+
+    /// Resolves a process ID to the container entity that owns it, if known.
+    ///
+    /// Providers that cannot map process IDs to containers return `None`.
+    fn resolve_container_entity_for_pid(&self, _process_id: u32) -> Option<EntityId> {
+        None
+    }
 }
 
 impl<T> WorkloadProvider for Option<T>
@@ -62,6 +69,13 @@ where
     fn get_resolved_origin(&self, origin: RawOrigin<'_>) -> Option<ResolvedOrigin> {
         match self.as_ref() {
             Some(provider) => provider.get_resolved_origin(origin),
+            None => None,
+        }
+    }
+
+    fn resolve_container_entity_for_pid(&self, process_id: u32) -> Option<EntityId> {
+        match self.as_ref() {
+            Some(provider) => provider.resolve_container_entity_for_pid(process_id),
             None => None,
         }
     }
