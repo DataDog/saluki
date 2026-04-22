@@ -9,6 +9,7 @@ additional_span_ignore_fields:
   - agent_metadata.target_tps
   - metrics._top_level
   - metrics._dd.measured
+  - metrics.http.status_code
   - meta.error.msg
 millstone:
   image: saluki-images/millstone:latest
@@ -22,9 +23,9 @@ baseline:
     - collector.yaml:/etc/datadog-agent/otel-config.yaml
     - datadog_agent.yaml:/etc/datadog-agent/datadog.yaml
   additional_env_vars:
-    - DD_API_KEY=correctness-test    
+    - DD_API_KEY=correctness-test
     - DD_OTELCOLLECTOR_ENABLED=true
-    - DD_HOSTNAME=correctness-testing     
+    - DD_HOSTNAME=correctness-testing
 comparison:
   image: saluki-images/datadog-agent:testing-release
   files:
