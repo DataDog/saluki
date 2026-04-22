@@ -389,7 +389,7 @@ impl Transform for DogStatsDPrefixFilter {
                 },
                 (_, maybe_new_filterlist_match_prefix) = filterlist_match_prefix_watcher.changed::<bool>() => {
                     if let Some(new_match_prefix) = maybe_new_filterlist_match_prefix {
-                        debug!(match_prefix = new_match_prefix, "Updated metric filterlist match prefix.");
+                        debug!(new_match_prefix, "Updated metric filterlist match prefix.");
                         self.update_metric_filterlist_match_prefix(new_match_prefix);
                     }
                 },
