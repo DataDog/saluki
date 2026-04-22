@@ -55,11 +55,13 @@ impl AnalysisRunner {
     ///
     /// # Errors
     ///
-    /// If the analysis fails, or if the analysis identifies a difference between the baseline and comparison data, an error is returned.
-    pub fn run_analysis(self) -> Result<(), GenericError> {
+    /// If the analysis fails, or if the analysis identifies a difference between the baseline and comparison data,
+    /// an error is returned alongside the full list of mismatch details (for log output).
+    pub fn run_analysis(self) -> Result<(), (GenericError, Vec<String>)> {
         match self.mode {
             AnalysisMode::Metrics => {
-                let analyzer = metrics::MetricsAnalyzer::new(&self.baseline_data, &self.comparison_data)?;
+                let analyzer = metrics::MetricsAnalyzer::new(&self.baseline_data, &self.comparison_data)
+                    .map_err(|e| (e, vec![]))?;
                 analyzer.run_analysis()
             }
             AnalysisMode::Traces => {
@@ -67,7 +69,8 @@ impl AnalysisRunner {
                     otlp_direct_analysis_mode: false,
                     additional_span_ignore_fields: Vec::new(),
                 });
-                let analyzer = traces::TracesAnalyzer::new(&self.baseline_data, &self.comparison_data, opts)?;
+                let analyzer = traces::TracesAnalyzer::new(&self.baseline_data, &self.comparison_data, opts)
+                    .map_err(|e| (e, vec![]))?;
                 analyzer.run_analysis()
             }
         }

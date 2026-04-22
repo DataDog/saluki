@@ -1,3 +1,4 @@
+type: integration
 name: "adp-rar-disabled"
 description: "Verify ADP gracefully handles RAR being disabled on the Core Agent"
 timeout: 90s

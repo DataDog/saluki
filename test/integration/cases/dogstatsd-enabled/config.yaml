@@ -1,3 +1,4 @@
+type: integration
 name: "dogstatsd-enabled"
 description: "Verifies DogStatsD pipeline starts and listens on UDP port"
 timeout: 60s

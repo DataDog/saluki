@@ -146,14 +146,22 @@ impl Tui {
 
                     // Add error details if present.
                     if let Some(ref error) = result.error {
-                        self.add_line(format!("  Error: {}", error));
+                        let mut lines = error.lines();
+                        if let Some(first) = lines.next() {
+                            self.add_line(format!("  Error: {}", first));
+                            for line in lines {
+                                self.add_line(format!("  {}", line));
+                            }
+                        }
                     }
 
                     // Add failed assertion details.
                     for assertion in &result.assertion_results {
                         if !assertion.passed {
                             self.add_line(format!("  - {} ({:.2?})", assertion.name, assertion.duration));
-                            self.add_line(format!("    {}", assertion.message));
+                            for line in assertion.message.lines() {
+                                self.add_line(format!("    {}", line));
+                            }
                         }
                     }
 
@@ -163,6 +171,10 @@ impl Tui {
                         for phase in &result.phase_timings {
                             self.add_line(format!("    {} ({:.2?})", phase.phase, phase.duration));
                         }
+                    }
+
+                    if let Some(ref dir) = result.log_dir {
+                        self.add_line(format!("  Logs: {}", dir.display()));
                     }
                 }
             }

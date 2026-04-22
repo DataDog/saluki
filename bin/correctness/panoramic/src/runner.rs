@@ -25,7 +25,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     assertions::{create_assertion, AssertionContext, AssertionResult, LogBuffer},
-    config::{parse_file_spec, parse_port_spec, AssertionStep, TestCase},
+    config::{parse_file_spec, parse_port_spec, AssertionStep, DiscoveredTest, TestCase},
     events::TestEvent,
     reporter::{PhaseTiming, TestResult},
 };
@@ -40,7 +40,7 @@ use crate::{
 /// TUI and plain output modes. The caller is responsible for spawning an appropriate
 /// consumer to handle the emitted events.
 pub async fn run_tests(
-    test_cases: Vec<TestCase>, parallelism: usize, fail_fast: bool, log_dir: Option<PathBuf>,
+    test_cases: Vec<DiscoveredTest>, parallelism: usize, fail_fast: bool, log_dir: Option<PathBuf>,
     event_tx: mpsc::UnboundedSender<TestEvent>, cancel_token: CancellationToken,
 ) -> Vec<TestResult> {
     // Emit run started event.
@@ -73,7 +73,7 @@ pub async fn run_tests(
 
 /// Run tests sequentially, stopping at the first failure.
 async fn run_fail_fast(
-    test_cases: Vec<TestCase>, semaphore: Arc<Semaphore>, event_tx: Arc<mpsc::UnboundedSender<TestEvent>>,
+    test_cases: Vec<DiscoveredTest>, semaphore: Arc<Semaphore>, event_tx: Arc<mpsc::UnboundedSender<TestEvent>>,
     log_dir: Arc<Option<PathBuf>>, cancel_token: CancellationToken,
 ) -> Vec<TestResult> {
     let mut results = Vec::new();
@@ -85,15 +85,11 @@ async fn run_fail_fast(
         }
 
         let _permit = semaphore.acquire().await.unwrap();
-        let name = test_case.name.clone();
+        let name = test_case.name().to_string();
 
-        let _ = event_tx.send(TestEvent::TestStarted { name });
+        let _ = event_tx.send(TestEvent::TestStarted { name: name.clone() });
 
-        let mut runner = TestRunner::new(test_case);
-        if let Some(ref dir) = *log_dir {
-            runner = runner.with_log_dir(dir.clone());
-        }
-        let result = runner.run().await;
+        let result = run_with_timeout(test_case, name, &log_dir).await;
 
         let failed = !result.passed;
         let _ = event_tx.send(TestEvent::TestCompleted { result: result.clone() });
@@ -109,7 +105,7 @@ async fn run_fail_fast(
 
 /// Run tests in parallel up to the parallelism limit.
 async fn run_parallel(
-    test_cases: Vec<TestCase>, parallelism: usize, semaphore: Arc<Semaphore>,
+    test_cases: Vec<DiscoveredTest>, parallelism: usize, semaphore: Arc<Semaphore>,
     event_tx: Arc<mpsc::UnboundedSender<TestEvent>>, log_dir: Arc<Option<PathBuf>>, cancel_token: CancellationToken,
 ) -> Vec<TestResult> {
     let cancel = cancel_token.clone();
@@ -138,14 +134,11 @@ async fn run_parallel(
                     return None;
                 }
 
-                let name = test_case.name.clone();
-                let _ = event_tx.send(TestEvent::TestStarted { name });
+                let name = test_case.name().to_string();
 
-                let mut runner = TestRunner::new(test_case);
-                if let Some(ref dir) = *log_dir {
-                    runner = runner.with_log_dir(dir.clone());
-                }
-                let result = runner.run().await;
+                let _ = event_tx.send(TestEvent::TestStarted { name: name.clone() });
+
+                let result = run_with_timeout(test_case, name, &log_dir).await;
 
                 let _ = event_tx.send(TestEvent::TestCompleted { result: result.clone() });
 
@@ -156,6 +149,58 @@ async fn run_parallel(
         .filter_map(|r| async { r })
         .collect()
         .await
+}
+
+/// Run a single test with an appropriate timeout.
+///
+/// Integration tests handle their own timeout internally, so no outer timeout is applied.
+/// Correctness tests have no built-in timeout, so a 20-minute outer timeout is applied.
+async fn run_with_timeout(test_case: DiscoveredTest, name: String, log_dir: &Arc<Option<PathBuf>>) -> TestResult {
+    match &test_case {
+        DiscoveredTest::Integration(_) => run_single_test(test_case, log_dir).await,
+        DiscoveredTest::Correctness { .. } => {
+            let timeout = test_case.timeout();
+            let correctness_log_dir = (**log_dir).as_ref().map(|d| d.join("correctness").join(&name));
+            tokio::select! {
+                r = run_single_test(test_case, log_dir) => r,
+                _ = tokio::time::sleep(timeout) => {
+                    TestResult {
+                        name,
+                        passed: false,
+                        duration: timeout,
+                        assertion_results: vec![],
+                        error: Some(format!("Test timed out after {:?}.", timeout)),
+                        phase_timings: vec![],
+                        log_dir: correctness_log_dir,
+                        assertion_details: vec![],
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Run a single test, dispatching to the appropriate runner based on test type.
+async fn run_single_test(test_case: DiscoveredTest, log_dir: &Arc<Option<PathBuf>>) -> TestResult {
+    match test_case {
+        DiscoveredTest::Integration(tc) => {
+            let test_log_dir = (**log_dir).as_ref().map(|d| d.join("integration").join(&tc.name));
+            let mut runner = TestRunner::new(tc);
+            if let Some(ref dir) = **log_dir {
+                runner = runner.with_log_dir(dir.join("integration"));
+            }
+            let mut result = runner.run().await;
+            result.log_dir = test_log_dir;
+            write_result_log(&result);
+            result
+        }
+        DiscoveredTest::Correctness { name, config } => {
+            let correctness_log_dir = (**log_dir).as_ref().map(|d| d.join("correctness").join(&name));
+            let result = crate::correctness::runner::run_correctness_test(name, config, correctness_log_dir).await;
+            write_result_log(&result);
+            result
+        }
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -236,6 +281,8 @@ impl TestRunner {
                     assertion_results: vec![],
                     error: Some(format!("Failed to build driver configuration: {}", e)),
                     phase_timings,
+                    log_dir: None,
+                    assertion_details: vec![],
                 };
             }
         };
@@ -262,6 +309,8 @@ impl TestRunner {
                     assertion_results: vec![],
                     error: Some(format!("Failed to create driver: {}", e)),
                     phase_timings,
+                    log_dir: None,
+                    assertion_details: vec![],
                 };
             }
         };
@@ -283,6 +332,8 @@ impl TestRunner {
                     assertion_results: vec![],
                     error: Some(format!("Failed to start container: {}", e)),
                     phase_timings,
+                    log_dir: None,
+                    assertion_details: vec![],
                 };
             }
         };
@@ -407,6 +458,8 @@ impl TestRunner {
             assertion_results,
             error: None,
             phase_timings,
+            log_dir: None,
+            assertion_details: vec![],
         }
     }
 
@@ -691,5 +744,60 @@ impl TestRunner {
         );
 
         Ok(())
+    }
+}
+
+fn write_result_log(result: &crate::reporter::TestResult) {
+    let dir = match &result.log_dir {
+        Some(d) => d,
+        None => return,
+    };
+
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        warn!(path = %dir.display(), error = %e, "Failed to create log directory for result log.");
+        return;
+    }
+
+    let path = dir.join("result.log");
+    let mut f = match std::fs::File::create(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            warn!(path = %path.display(), error = %e, "Failed to create result log file.");
+            return;
+        }
+    };
+
+    let status = if result.passed { "PASS" } else { "FAIL" };
+    let _ = writeln!(f, "{} {} ({:.2?})", status, result.name, result.duration);
+
+    if let Some(ref error) = result.error {
+        let _ = writeln!(f, "Error: {}", error);
+    }
+
+    if !result.assertion_results.is_empty() {
+        let _ = writeln!(f);
+        let _ = writeln!(f, "Assertions:");
+        for (i, assertion) in result.assertion_results.iter().enumerate() {
+            let indicator = if assertion.passed { "+" } else { "-" };
+            let _ = writeln!(f, "  {} {} ({:.2?})", indicator, assertion.name, assertion.duration);
+            let full_details = result.assertion_details.get(i).map(|d| d.as_slice()).unwrap_or(&[]);
+            if !full_details.is_empty() {
+                for line in full_details {
+                    let _ = writeln!(f, "    {}", line);
+                }
+            } else {
+                for line in assertion.message.lines() {
+                    let _ = writeln!(f, "    {}", line);
+                }
+            }
+        }
+    }
+
+    if !result.phase_timings.is_empty() {
+        let _ = writeln!(f);
+        let _ = writeln!(f, "Phase timings:");
+        for phase in &result.phase_timings {
+            let _ = writeln!(f, "  {} ({:.2?})", phase.phase, phase.duration);
+        }
     }
 }

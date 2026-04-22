@@ -4,7 +4,7 @@ use tracing::{error, info, warn};
 
 mod types;
 use self::types::{NormalizedMetric, NormalizedMetrics};
-use crate::analysis::collected::CollectedData;
+use crate::correctness::analysis::collected::CollectedData;
 
 /// Analyzes metrics for correctness.
 pub struct MetricsAnalyzer {
@@ -31,8 +31,8 @@ impl MetricsAnalyzer {
     ///
     /// # Errors
     ///
-    /// If analysis fails, an error will be returned with specific details.
-    pub fn run_analysis(self) -> Result<(), GenericError> {
+    /// If analysis fails, an error will be returned with specific details and the full list of mismatches.
+    pub fn run_analysis(self) -> Result<(), (GenericError, Vec<String>)> {
         let mut baseline_metrics = self.baseline_metrics;
         let mut comparison_metrics = self.comparison_metrics;
 
@@ -66,8 +66,9 @@ impl MetricsAnalyzer {
                 error!("  - {} (type: {})", context, metric_type);
             }
 
-            return Err(generic_error!(
-                "Mismatch in metrics pairs between baseline and comparison."
+            return Err((
+                generic_error!("Mismatch in metrics pairs between baseline and comparison."),
+                vec![],
             ));
         }
 
@@ -80,10 +81,14 @@ impl MetricsAnalyzer {
     }
 }
 
+const SAMPLE_MISMATCH_LIMIT: usize = 5;
+
 fn compare_metric_values(
     baseline_metrics: &NormalizedMetrics, comparison_metrics: &NormalizedMetrics,
-) -> Result<(), GenericError> {
+) -> Result<(), (GenericError, Vec<String>)> {
     let mut mismatched_count = 0;
+    let mut samples: Vec<String> = Vec::new();
+    let mut all_details: Vec<String> = Vec::new();
 
     // We can safely assume that the metrics are sorted and deduplicated at this point, so we can simply iterate over
     // them in lockstep.
@@ -107,16 +112,33 @@ fn compare_metric_values(
                 "  Comparison: {}",
                 get_formatted_metric_values(comparison_metric, comparison_value)
             );
+
+            let detail = format!(
+                "  {}\n    baseline:    {}\n    comparison:  {}",
+                baseline_metric.context(),
+                get_formatted_metric_values(baseline_metric, baseline_value),
+                get_formatted_metric_values(comparison_metric, comparison_value),
+            );
+            all_details.push(detail.clone());
+            if samples.len() < SAMPLE_MISMATCH_LIMIT {
+                samples.push(detail);
+            }
         }
     }
 
     if mismatched_count == 0 {
         Ok(())
     } else {
-        Err(generic_error!(
+        let mut msg = format!(
             "{} metrics from baseline and comparison did not match.",
             mismatched_count
-        ))
+        );
+        msg.push_str(&format!("\n  (showing {} of {})", samples.len(), mismatched_count));
+        for sample in samples {
+            msg.push('\n');
+            msg.push_str(&sample);
+        }
+        Err((generic_error!("{}", msg), all_details))
     }
 }
 

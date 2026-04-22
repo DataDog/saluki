@@ -1,3 +1,4 @@
+type: correctness
 analysis_mode: traces
 otlp_direct_analysis_mode: true
 millstone:

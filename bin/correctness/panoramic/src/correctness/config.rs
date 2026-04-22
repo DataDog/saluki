@@ -11,7 +11,7 @@ use saluki_config::ConfigurationLoader;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
 
-use crate::analysis::AnalysisMode;
+use crate::correctness::analysis::AnalysisMode;
 
 fn default_millstone_binary_path() -> String {
     "/usr/local/bin/millstone".to_string()
@@ -133,7 +133,7 @@ impl Config {
         let mut config = ConfigurationLoader::default()
             .from_yaml(&config_path)
             .error_context("Failed to load configuration file.")?
-            .from_environment("GROUND_TRUTH")
+            .from_environment("PANORAMIC")
             .expect("Environment variable prefix should not be empty.")
             .into_typed::<Config>()
             .error_context("Failed to deserialize configuration file.")?;

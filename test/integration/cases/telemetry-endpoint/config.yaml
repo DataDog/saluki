@@ -1,3 +1,4 @@
+type: integration
 name: "telemetry-endpoint"
 description: "Verifies the internal telemetry endpoint is accessible"
 timeout: 60s

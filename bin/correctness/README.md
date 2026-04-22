@@ -6,16 +6,16 @@ consists of the following components:
 
 - `airlock`: helper library for running containerized applications in "isolated" groups, to allow for spawning
   supporting applications alongside a system under test (SUT) without colliding with other concurrent tests
-- `ground-truth`: a test runner designed specifically to drive an identical, deterministic telemetry workload into a
-  baseline and comparison target (for example, Datadog Agent vs ADP), and compare the outputs they forward to their configured
-  intake, highlighting any discrepancies
+- `panoramic`: unified test runner for both correctness tests and integration tests. For correctness tests, it drives
+  an identical, deterministic telemetry workload into a baseline and comparison target (for example, Datadog Agent vs
+  ADP), and compares the outputs they forward to their configured intake, highlighting any discrepancies
 - `datadog-intake`: a mock intake in the spirit of [`fakeintake`][fakeintake_gh] that provides a more ergonomic
   approach to dumping the captured data
 - `millstone`: a deterministic load generator, in the spirit of [Lading][lading_gh], that allow provides determinism
   around the number of payloads it sends, in addition to the basic determinism of the payloads it generates to send in
   the first place
 - `stele`: helper library that established a common, simplified represent for telemetry data, and their values, to be used
-  between `datadog-intake` and `ground-truth`
+  between `datadog-intake` and `panoramic`
 
 ## Building
 
@@ -34,8 +34,8 @@ after making actual changes to ADP. Once this is done, you can run the correctne
 test-correctness`.
 
 If updates to any of the required components are made, you can simply rebuild the individual corresponding image
-by running the corresponding `make build-<binary-name>-image` command. If changes are made to `ground-truth`, it will be
-rebuilt when running `make test-correctness`.
+by running the corresponding `make build-<binary-name>-image` command. Panoramic will be rebuilt automatically when
+running `make test-correctness`.
 
 [fakeintake_gh]: https://github.com/DataDog/datadog-agent/tree/main/test/fakeintake
 [lading_gh]: https://github.com/DataDog/lading

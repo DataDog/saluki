@@ -10,7 +10,7 @@ use stele::{AggregationKey, BucketedClientStatistics, ClientStatistics, Span};
 use tracing::{error, info};
 use treediff::value::Key;
 
-use crate::analysis::collected::CollectedData;
+use crate::correctness::analysis::collected::CollectedData;
 
 /// Built-in span field paths always ignored when diffing. Configurable additions via `TracesAnalysisOptions::additional_span_ignore_fields`.
 static BASE_IGNORED_FIELDS_DIFF: &[&str] = &[
@@ -26,6 +26,9 @@ static BASE_IGNORED_FIELDS_DIFF: &[&str] = &[
 
 static CUSTOM_FIELD_COMPARATORS: &[(&str, &dyn FieldComparator)] = &[("start", &check_start_diff)];
 
+const SAMPLE_MISMATCH_LIMIT: usize = 5;
+const SAMPLE_DIFFS_PER_SPAN: usize = 3;
+
 trait FieldComparator: Sync {
     fn compare(&self, baseline: &Value, comparison: &Value) -> Result<(), String>;
 }
@@ -39,7 +42,7 @@ where
     }
 }
 
-use super::TracesAnalysisOptions;
+use crate::correctness::analysis::TracesAnalysisOptions;
 
 /// Analyzes traces for correctness.
 pub struct TracesAnalyzer {
@@ -125,25 +128,35 @@ impl TracesAnalyzer {
     ///
     /// # Errors
     ///
-    /// If analysis fails, an error will be returned with specific details.
-    pub fn run_analysis(self) -> Result<(), GenericError> {
+    /// If analysis fails, an error will be returned with specific details and the full list of mismatches.
+    pub fn run_analysis(self) -> Result<(), (GenericError, Vec<String>)> {
         let mut error_count = 0;
         let mut diff_recorder = DifferenceRecorder::new(self.ignored_fields);
+        let mut span_samples: Vec<String> = Vec::new();
+        let mut stats_samples: Vec<String> = Vec::new();
+        let mut all_span_details: Vec<String> = Vec::new();
+        let mut all_stats_details: Vec<String> = Vec::new();
 
         // We should have an identical number of traces and spans.
         if self.baseline_total_traces != self.comparison_total_traces {
-            return Err(generic_error!(
-                "Number of traces do not match: {} (baseline) vs {} (comparison)",
-                self.baseline_total_traces,
-                self.comparison_total_traces
+            return Err((
+                generic_error!(
+                    "Number of traces do not match: {} (baseline) vs {} (comparison)",
+                    self.baseline_total_traces,
+                    self.comparison_total_traces
+                ),
+                vec![],
             ));
         }
 
         if self.baseline_spans.len() != self.comparison_spans.len() {
-            return Err(generic_error!(
-                "Number of spans do not match: {} (baseline) vs {} (comparison)",
-                self.baseline_spans.len(),
-                self.comparison_spans.len()
+            return Err((
+                generic_error!(
+                    "Number of spans do not match: {} (baseline) vs {} (comparison)",
+                    self.baseline_spans.len(),
+                    self.comparison_spans.len()
+                ),
+                vec![],
             ));
         }
 
@@ -157,10 +170,13 @@ impl TracesAnalyzer {
             let mut comparison_only_span_ids = comparison_span_ids.difference(&baseline_span_ids).collect::<Vec<_>>();
             comparison_only_span_ids.sort_unstable();
 
-            return Err(generic_error!(
-                "Baseline and comparison targets have non-overlapped set of spans: {} baseline-only spans and {} comparison-only spans.",
-                baseline_only_span_ids.len(),
-                comparison_only_span_ids.len()
+            return Err((
+                generic_error!(
+                    "Baseline and comparison targets have non-overlapped set of spans: {} baseline-only spans and {} comparison-only spans.",
+                    baseline_only_span_ids.len(),
+                    comparison_only_span_ids.len()
+                ),
+                vec![],
             ));
         }
 
@@ -191,6 +207,25 @@ impl TracesAnalyzer {
                         error!("");
 
                         error_count += 1;
+
+                        let all_diffs = diff_recorder
+                            .diffs()
+                            .iter()
+                            .map(|d| format!("    {}", d))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        all_span_details.push(format!("  span {}:\n{}", baseline_span_id, all_diffs));
+
+                        if span_samples.len() < SAMPLE_MISMATCH_LIMIT {
+                            let sample_diffs = diff_recorder
+                                .diffs()
+                                .iter()
+                                .take(SAMPLE_DIFFS_PER_SPAN)
+                                .map(|d| format!("    {}", d))
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            span_samples.push(format!("  span {}:\n{}", baseline_span_id, sample_diffs));
+                        }
                     }
                 }
                 None => {
@@ -207,10 +242,13 @@ impl TracesAnalyzer {
 
             // We should have an identical number of aggregation keys.
             if baseline_stats_aggregation_keys.len() != comparison_stats_aggregation_keys.len() {
-                return Err(generic_error!(
-                    "Number of aggregation keys do not match: {} (baseline) vs {} (comparison)",
-                    baseline_stats_aggregation_keys.len(),
-                    comparison_stats_aggregation_keys.len()
+                return Err((
+                    generic_error!(
+                        "Number of aggregation keys do not match: {} (baseline) vs {} (comparison)",
+                        baseline_stats_aggregation_keys.len(),
+                        comparison_stats_aggregation_keys.len()
+                    ),
+                    vec![],
                 ));
             }
 
@@ -231,7 +269,7 @@ impl TracesAnalyzer {
                 );
 
                 // Show samples of baseline-only stats
-                for key in baseline_only_aggregation_keys.iter().take(3) {
+                for key in baseline_only_aggregation_keys.iter().take(SAMPLE_DIFFS_PER_SPAN) {
                     if let Some(stats) = self.baseline_trace_stats.get(key) {
                         error!(
                             "Baseline-only key {}: {}",
@@ -242,7 +280,7 @@ impl TracesAnalyzer {
                 }
 
                 // Show samples of comparison-only stats
-                for key in comparison_only_aggregation_keys.iter().take(3) {
+                for key in comparison_only_aggregation_keys.iter().take(SAMPLE_DIFFS_PER_SPAN) {
                     if let Some(stats) = self.comparison_trace_stats.get(key) {
                         error!(
                             "Comparison-only key {}: {}",
@@ -252,10 +290,13 @@ impl TracesAnalyzer {
                     }
                 }
 
-                return Err(generic_error!(
-                    "Baseline and comparison targets have non-overlapped set of statistic aggregation keys: {} baseline-only keys and {} comparison-only keys.",
-                    baseline_only_aggregation_keys.len(),
-                    comparison_only_aggregation_keys.len()
+                return Err((
+                    generic_error!(
+                        "Baseline and comparison targets have non-overlapped set of statistic aggregation keys: {} baseline-only keys and {} comparison-only keys.",
+                        baseline_only_aggregation_keys.len(),
+                        comparison_only_aggregation_keys.len()
+                    ),
+                    vec![],
                 ));
             }
 
@@ -285,6 +326,27 @@ impl TracesAnalyzer {
                             error!("");
 
                             error_count += 1;
+
+                            let all_diffs = diff_recorder
+                                .diffs()
+                                .iter()
+                                .map(|d| format!("    {}", d))
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            all_stats_details
+                                .push(format!("  stats group {}:\n{}", baseline_aggegation_key, all_diffs));
+
+                            if stats_samples.len() < SAMPLE_MISMATCH_LIMIT {
+                                let sample_diffs = diff_recorder
+                                    .diffs()
+                                    .iter()
+                                    .take(SAMPLE_DIFFS_PER_SPAN)
+                                    .map(|d| format!("    {}", d))
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
+                                stats_samples
+                                    .push(format!("  stats group {}:\n{}", baseline_aggegation_key, sample_diffs));
+                            }
                         }
                     }
                     None => {
@@ -312,9 +374,37 @@ impl TracesAnalyzer {
         }
 
         if error_count > 0 {
-            Err(GenericError::msg(
-                "Detected mismatched spans between baseline and comparison targets.",
-            ))
+            let mut msg = format!(
+                "{} mismatched span(s)/stats group(s) between baseline and comparison.",
+                error_count
+            );
+            if !span_samples.is_empty() {
+                msg.push_str(&format!(
+                    "\n  (showing {} of {} mismatched span(s))",
+                    span_samples.len(),
+                    error_count
+                ));
+                for sample in span_samples {
+                    msg.push('\n');
+                    msg.push_str(&sample);
+                }
+            }
+            if !stats_samples.is_empty() {
+                msg.push_str(&format!(
+                    "\n  (showing {} of {} mismatched stats group(s))",
+                    stats_samples.len(),
+                    error_count
+                ));
+                for sample in stats_samples {
+                    msg.push('\n');
+                    msg.push_str(&sample);
+                }
+            }
+
+            let mut all_details = all_span_details;
+            all_details.extend(all_stats_details);
+
+            Err((generic_error!("{}", msg), all_details))
         } else {
             Ok(())
         }

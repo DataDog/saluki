@@ -13,6 +13,7 @@ use tracing_subscriber::{layer::SubscriberExt as _, util::SubscriberInitExt as _
 
 mod assertions;
 mod cli;
+mod correctness;
 use self::cli::{Cli, Command};
 
 mod config;
@@ -75,7 +76,17 @@ fn initialize_logging() {
 }
 
 async fn run_tests(mut cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
-    let mut test_cases = match discover_tests(&cmd.test_dir) {
+    if cmd.test_dirs.is_empty() {
+        let msg = "No test directories specified. Use -d <path> to specify one or more directories.";
+        if use_tui {
+            eprintln!("{}", msg);
+        } else {
+            error!("{}", msg);
+        }
+        return ExitCode::from(2);
+    }
+
+    let mut test_cases = match discover_tests(&cmd.test_dirs) {
         Ok(tests) => tests,
         Err(e) => {
             if use_tui {
@@ -88,10 +99,12 @@ async fn run_tests(mut cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     };
 
     if test_cases.is_empty() {
+        let dirs_str: Vec<_> = cmd.test_dirs.iter().map(|d| d.display().to_string()).collect();
+        let msg = format!("No test cases found in: {}", dirs_str.join(", "));
         if use_tui {
-            eprintln!("No test cases found in '{}'.", cmd.test_dir.display());
+            eprintln!("{}", msg);
         } else {
-            error!("No test cases found in '{}'.", cmd.test_dir.display());
+            error!("{}", msg);
         }
         return ExitCode::from(2);
     }
@@ -99,7 +112,7 @@ async fn run_tests(mut cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     // Filter tests if specific ones are requested.
     if let Some(ref filter) = cmd.tests {
         let requested_tests = filter.split(',').map(|s| s.trim()).collect::<Vec<_>>();
-        test_cases.retain(|t| requested_tests.contains(&t.name.as_str()));
+        test_cases.retain(|t| requested_tests.contains(&t.name()));
 
         if test_cases.is_empty() {
             if use_tui {
@@ -117,7 +130,10 @@ async fn run_tests(mut cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     } else {
         let dir = cmd.log_dir.take().unwrap_or_else(|| {
             let timestamp = Local::now().format("%Y%m%d-%H%M%S");
-            std::env::temp_dir().join(format!("panoramic-{}", timestamp))
+            let base = std::env::var("PANORAMIC_LOG_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| std::env::temp_dir());
+            base.join(format!("panoramic-{}", timestamp))
         });
         match std::fs::create_dir_all(&dir) {
             Ok(()) => Some(dir),
@@ -257,9 +273,15 @@ async fn run_logging_consumer(
 }
 
 async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
-    info!("Discovering test cases from '{}'...", cmd.test_dir.display());
+    if cmd.test_dirs.is_empty() {
+        error!("No test directories specified. Use -d <path> to specify one or more directories.");
+        return ExitCode::from(2);
+    }
 
-    let test_cases = match discover_tests(&cmd.test_dir) {
+    let dirs_str: Vec<_> = cmd.test_dirs.iter().map(|d| d.display().to_string()).collect();
+    info!("Discovering test cases from: {}...", dirs_str.join(", "));
+
+    let test_cases = match discover_tests(&cmd.test_dirs) {
         Ok(tests) => tests,
         Err(e) => {
             error!("Failed to discover tests: {}", e);
@@ -268,7 +290,7 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
     };
 
     if test_cases.is_empty() {
-        info!("No test cases found in '{}'.", cmd.test_dir.display());
+        info!("No test cases found.");
         return ExitCode::SUCCESS;
     }
 
@@ -279,15 +301,11 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
     println!();
 
     for test_case in &test_cases {
-        println!("  {}", test_case.name);
-        if let Some(ref description) = test_case.description {
+        println!("  {}", test_case.name());
+        if let Some(description) = test_case.description() {
             println!("    {}", description);
         }
-        println!(
-            "    Timeout: {:?}, Assertions: {}",
-            test_case.timeout.0,
-            test_case.total_assertion_count()
-        );
+        println!("    Timeout: {:?}", test_case.timeout());
         println!();
     }
 

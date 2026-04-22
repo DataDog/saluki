@@ -21,9 +21,9 @@ pub enum Command {
 #[derive(FromArgs)]
 #[argh(subcommand, name = "run")]
 pub struct RunCommand {
-    /// path to the test cases directory
-    #[argh(option, short = 'd', default = "default_test_dir()")]
-    pub test_dir: PathBuf,
+    /// path to a test cases directory (can be specified multiple times)
+    #[argh(option, short = 'd')]
+    pub test_dirs: Vec<PathBuf>,
 
     /// run only specific test(s) by name (comma-separated)
     #[argh(option, short = 't')]
@@ -62,11 +62,7 @@ pub struct RunCommand {
 #[derive(FromArgs)]
 #[argh(subcommand, name = "list")]
 pub struct ListCommand {
-    /// path to the test cases directory
-    #[argh(option, short = 'd', default = "default_test_dir()")]
-    pub test_dir: PathBuf,
-}
-
-fn default_test_dir() -> PathBuf {
-    PathBuf::from("test/integration/cases")
+    /// path to a test cases directory (can be specified multiple times)
+    #[argh(option, short = 'd')]
+    pub test_dirs: Vec<PathBuf>,
 }

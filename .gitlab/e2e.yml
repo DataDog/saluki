@@ -11,25 +11,25 @@
   artifacts:
     expire_in: 1 week
     paths:
-      - ground-truth-logs/
+      - panoramic-logs/
     when: always
   variables:
-    DD_LOG_LEVEL: "ground_truth=debug,info"
-    GROUND_TRUTH_LOG_DIR: "ground-truth-logs"
-    GROUND_TRUTH_ALPINE_IMAGE: registry.ddbuild.io/alpine:latest
-    GROUND_TRUTH_MILLSTONE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
-    GROUND_TRUTH_DATADOG_INTAKE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/datadog-intake:${CI_COMMIT_SHA}
-    GROUND_TRUTH_COMPARISON__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
+    DD_LOG_LEVEL: "panoramic=debug,info"
+    PANORAMIC_LOG_DIR: "panoramic-logs"
+    PANORAMIC_ALPINE_IMAGE: registry.ddbuild.io/alpine:latest
+    PANORAMIC_MILLSTONE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
+    PANORAMIC_DATADOG_INTAKE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/datadog-intake:${CI_COMMIT_SHA}
+    PANORAMIC_COMPARISON__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
   script:
-    - make build-ground-truth
-    - target/release/ground-truth ./test/correctness/${CORRECTNESS_TEST_CASE}/config.yaml
+    - make build-panoramic
+    - target/release/panoramic run -d $(pwd)/test/correctness -t ${CORRECTNESS_TEST_CASE} --no-tui
 
 # Mixin for correctness tests where baseline is the CI-built bundled ADP image.
 # Tests with a different baseline (for example, DDOT) should NOT extend this and instead
 # let config.yaml specify the baseline image directly.
 .test-correctness-adp-baseline:
   variables:
-    GROUND_TRUTH_BASELINE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
+    PANORAMIC_BASELINE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
 
 build-datadog-intake-image:
   stage: e2e
@@ -151,7 +151,7 @@ test-integration:
     # Looks weird but we need to set this so that the test runner knows the right image path to pull the `alpine` image, which is required by
     # `airlock` to properly configure some permissions on the shared volume before the target container is started. We don't have access to
     # Docker Hub so the default of `alpine:latest` is insufficient.
-    GROUND_TRUTH_ALPINE_IMAGE: registry.ddbuild.io/alpine:latest
+    PANORAMIC_ALPINE_IMAGE: registry.ddbuild.io/alpine:latest
     PANORAMIC_LOG_DIR: integration-logs
   script:
     # Copy the bundled Agent/ADP image we built to the local Docker instance so we can share the integration

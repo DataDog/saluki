@@ -26,7 +26,7 @@ use stringtheory::MetaString;
 /// wrapper provides ergonomic conversions to/from a string representation based on a base64-encoded wrapper around the
 /// canonical Protobuf representation.
 ///
-/// This makes it safe to transport over JSON for use in `datadog-intake` and `ground-truth`.
+/// This makes it safe to transport over JSON for use in `datadog-intake` and `panoramic`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct EncodedApmStatsDDSketch {

@@ -64,7 +64,6 @@ jobs:
             dsd stats
             env
             error
-            ground-truth
             health
             heartbeat
             host enrichment

@@ -4,7 +4,7 @@ use std::{
     path::PathBuf,
     pin::Pin,
     task::{ready, Context, Poll},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use airlock::{
@@ -18,7 +18,121 @@ use tokio::{select, task::JoinHandle, time::sleep};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, info_span, Instrument as _, Span};
 
-use crate::{analysis::CollectedData, config::Config, sync::Coordinator};
+use crate::correctness::{
+    analysis::{AnalysisMode, AnalysisRunner, CollectedData, TracesAnalysisOptions},
+    config::Config,
+    sync::Coordinator,
+};
+use crate::{
+    assertions::AssertionResult,
+    reporter::{PhaseTiming, TestResult},
+};
+
+/// Run a single correctness test and return a panoramic `TestResult`.
+pub async fn run_correctness_test(name: String, config: Config, log_dir: Option<PathBuf>) -> TestResult {
+    let started = Instant::now();
+
+    // Phase 1: spawn containers
+    let spawn_start = Instant::now();
+    let test_runner = match TestRunner::from_config(&config, log_dir.clone()).await {
+        Ok(r) => r,
+        Err(e) => return make_error_result(name, started, "spawn_containers", e, log_dir),
+    };
+    let spawn_duration = spawn_start.elapsed();
+
+    // Phase 2: collect data
+    let collect_start = Instant::now();
+    let (baseline_data, comparison_data) = match test_runner.run().await {
+        Ok(data) => data,
+        Err(e) => return make_error_result(name, started, "collect_data", e, log_dir),
+    };
+    let collect_duration = collect_start.elapsed();
+
+    // Phase 3: analysis
+    let analysis_start = Instant::now();
+    let traces_options = match config.analysis_mode {
+        AnalysisMode::Traces => Some(TracesAnalysisOptions {
+            otlp_direct_analysis_mode: config.otlp_direct_analysis_mode,
+            additional_span_ignore_fields: config.additional_span_ignore_fields.clone(),
+        }),
+        AnalysisMode::Metrics => None,
+    };
+    let analysis_runner = AnalysisRunner::new(config.analysis_mode, baseline_data, comparison_data, traces_options);
+    let analysis_result = analysis_runner.run_analysis();
+    let analysis_duration = analysis_start.elapsed();
+
+    let total_duration = started.elapsed();
+
+    let phase_timings = vec![
+        PhaseTiming {
+            phase: "spawn_containers".to_string(),
+            duration: spawn_duration,
+        },
+        PhaseTiming {
+            phase: "collect_data".to_string(),
+            duration: collect_duration,
+        },
+        PhaseTiming {
+            phase: "analysis".to_string(),
+            duration: analysis_duration,
+        },
+    ];
+
+    match analysis_result {
+        Ok(()) => TestResult {
+            name,
+            passed: true,
+            duration: total_duration,
+            assertion_results: vec![AssertionResult {
+                name: "telemetry matches".to_string(),
+                passed: true,
+                message: "No difference detected between baseline and comparison.".to_string(),
+                duration: analysis_duration,
+            }],
+            error: None,
+            phase_timings,
+            log_dir,
+            assertion_details: vec![],
+        },
+        Err((e, details)) => {
+            let full_message = format!("{:?}", e);
+            let summary = full_message.lines().next().unwrap_or(&full_message).to_string();
+            TestResult {
+                name,
+                passed: false,
+                duration: total_duration,
+                assertion_results: vec![AssertionResult {
+                    name: "telemetry matches".to_string(),
+                    passed: false,
+                    message: full_message,
+                    duration: analysis_duration,
+                }],
+                error: Some(summary),
+                phase_timings,
+                log_dir,
+                assertion_details: vec![details],
+            }
+        }
+    }
+}
+
+fn make_error_result(
+    name: String, started: Instant, phase: &str, e: GenericError, log_dir: Option<PathBuf>,
+) -> TestResult {
+    TestResult {
+        name,
+        passed: false,
+        duration: started.elapsed(),
+        assertion_results: vec![],
+        error: Some(format!("{:?}", e)),
+        phase_timings: vec![PhaseTiming {
+            phase: phase.to_string(),
+            duration: started.elapsed(),
+        }],
+        log_dir,
+        assertion_details: vec![],
+    }
+}
 
 pub struct TestRunner {
     datadog_intake_config: DatadogIntakeConfig,
@@ -32,7 +146,7 @@ pub struct TestRunner {
 }
 
 impl TestRunner {
-    pub async fn from_config(config: &Config) -> Result<Self, GenericError> {
+    pub async fn from_config(config: &Config, log_dir: Option<PathBuf>) -> Result<Self, GenericError> {
         Ok(Self {
             datadog_intake_config: config.datadog_intake_config(),
             millstone_config: config.millstone_config(),
@@ -41,9 +155,7 @@ impl TestRunner {
             cancel_token: CancellationToken::new(),
             baseline_coordinator: Coordinator::new(),
             comparison_coordinator: Coordinator::new(),
-            log_base_dir: std::env::var("GROUND_TRUTH_LOG_DIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from("/tmp/ground-truth")),
+            log_base_dir: log_dir.unwrap_or_else(|| PathBuf::from("/tmp/panoramic")),
         })
     }
 
@@ -232,7 +344,7 @@ impl GroupRunner {
         isolation_group_id: String, test_id: &'static str, log_base_dir: PathBuf, coordinator: Coordinator,
         cancel_token: CancellationToken,
     ) -> Self {
-        let runner_log_dir = log_base_dir.join(isolation_group_id.clone());
+        let runner_log_dir = log_base_dir.join(test_id);
 
         info!(
             "Creating test group runner for target '{}'. Logs will be saved to {}",
