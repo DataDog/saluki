@@ -47,6 +47,7 @@ impl ResolvedExternalData {
 struct ResolvedOriginInner {
     cardinality: Option<OriginTagCardinality>,
     process_id: Option<EntityId>,
+    replay: bool,
     local_data: Option<EntityId>,
     pod_uid: Option<EntityId>,
     resolved_external_data: Option<ResolvedExternalData>,
@@ -67,12 +68,13 @@ impl ResolvedOrigin {
     /// Creates a new `ResolvedOrigin` from the given parts.
     pub fn from_parts(
         cardinality: Option<OriginTagCardinality>, process_id: Option<EntityId>, local_data: Option<EntityId>,
-        pod_uid: Option<EntityId>, resolved_external_data: Option<ResolvedExternalData>,
+        pod_uid: Option<EntityId>, resolved_external_data: Option<ResolvedExternalData>, replay: bool,
     ) -> Self {
         Self {
             inner: Arc::new(ResolvedOriginInner {
                 cardinality,
                 process_id,
+                replay,
                 local_data,
                 pod_uid,
                 resolved_external_data,
@@ -88,6 +90,11 @@ impl ResolvedOrigin {
     /// Returns the process ID of the origin.
     pub fn process_id(&self) -> Option<&EntityId> {
         self.inner.process_id.as_ref()
+    }
+
+    /// Returns whether or not the origin is replay traffic.
+    pub fn is_replay(&self) -> bool {
+        self.inner.replay
     }
 
     /// Returns the Local Data-based entity ID of the origin.
@@ -135,6 +142,7 @@ impl OriginResolver {
             origin
                 .external_data()
                 .and_then(|raw_ed| self.ed_resolver.resolve(raw_ed)),
+            origin.is_replay(),
         )
     }
 
