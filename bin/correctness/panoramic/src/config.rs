@@ -311,9 +311,9 @@ impl TestCase {
 
 /// Discover all test cases across one or more directories.
 ///
-/// Each subdirectory containing a `config.yaml` must have a top-level `type` field set to either
-/// `"integration"` or `"correctness"`. Directories missing or with an unknown `type` are skipped
-/// with a warning.
+/// Each `config.yaml` found in a direct subdirectory must have a top-level `type` field set to
+/// either `"integration"` or `"correctness"`. Files with a missing or unknown `type` are skipped
+/// with a warning. Multiple test types may coexist freely within the same directory.
 pub fn discover_tests(dirs: &[PathBuf]) -> Result<Vec<DiscoveredTest>, GenericError> {
     let mut tests = Vec::new();
 
