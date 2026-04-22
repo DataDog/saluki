@@ -1,6 +1,6 @@
 # Configuring DogStatsD on Agent Data Plane
 
-<!-- Last updated: 2026-04-21 -->
+<!-- Last updated: 2026-04-23 -->
 
 The DogStatsD implementation on ADP has been redesigned in Rust for better resource guarantees and
 efficiency. Because the architecture is different from the original implementation, certain
@@ -27,7 +27,6 @@ tracking.
 | Config Key                                   | Description                       | Issue   |
 |----------------------------------------------|-----------------------------------|---------|
 | `allow_arbitrary_tags`                       | Allow arbitrary tag values        | [#1377] |
-| `bind_host`                                  | Global listen host fallback       | [#1331] |
 | `cri_connection_timeout`                     | CRI runtime connection timeout    | [#1348] |
 | `cri_query_timeout`                          | CRI runtime query timeout         | [#1348] |
 | `dogstatsd_capture_depth`                    | Traffic capture channel depth     | [#1381] |
@@ -231,6 +230,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `aggregate_context_limit`                 | Max contexts per agg window      |
 | `api_key`                                 | API key for endpoint auth        |
 | `auth_token_file_path`                    | IPC auth token file path         |
+| `bind_host`                               | Global listen host fallback      |
 | `container_cgroup_root`                   | Cgroup filesystem root path      |
 | `container_proc_root`                     | Procfs root path for containers  |
 | `cri_socket_path`                         | CRI/containerd socket path       |
