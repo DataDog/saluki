@@ -2163,18 +2163,21 @@ dependencies = [
 [[package]]
 name = "lading-payload"
 version = "0.1.0"
-source = "git+https://github.com/DataDog/lading?rev=bd60f9813012278a87a30516379805841c2e089f#bd60f9813012278a87a30516379805841c2e089f"
+source = "git+https://github.com/DataDog/lading?rev=6a3171a2246681b2d6bad70076457de20374657c#6a3171a2246681b2d6bad70076457de20374657c"
 dependencies = [
  "byte-unit",
  "bytes",
+ "chrono",
  "enum_dispatch",
  "opentelemetry-proto",
  "prost",
  "rand 0.9.3",
  "rmp-serde",
+ "rustc-hash 2.1.1",
  "serde",
  "serde_json",
  "serde_tuple",
+ "serde_yaml",
  "thiserror 2.0.18",
  "time",
  "tokio",
