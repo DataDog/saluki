@@ -98,7 +98,6 @@ pub enum ConfigurationError {
         /// Error source.
         source: GenericError,
     },
-
 }
 
 impl From<figment::Error> for ConfigurationError {
@@ -830,7 +829,6 @@ fn from_figment_error(lookup_sources: &HashSet<LookupSource>, e: figment::Error)
         _ => ConfigurationError::Generic { source: e.into() },
     }
 }
-
 
 #[cfg(test)]
 mod tests {
