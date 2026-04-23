@@ -1,5 +1,7 @@
 ARG BUILD_IMAGE=ubuntu:24.04
 ARG APP_IMAGE=ubuntu:24.04
+ARG BUILD_BASE=build-clean
+
 # When set to the saluki buildcache-ci image (scratch + /buildcache), the binary is copied into
 # the builder stage below and cargo uses it as RUSTC_WRAPPER. Default is the regular BUILD_IMAGE,
 # which makes the subsequent buildcache-src bind-mount a no-op.
@@ -19,7 +21,6 @@ FROM ${BUILDCACHE_IMAGE} AS buildcache-src
 # Outside of CI, with the default "clean" mode, we assume we're starting from scratch and install all of those first.
 #
 # We vary this behavior by setting the `BUILD_BASE` build argument.
-ARG BUILD_BASE=build-clean
 
 # Clean build layer: install everything first.
 FROM ${BUILD_IMAGE} AS build-clean
