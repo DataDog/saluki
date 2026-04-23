@@ -2,7 +2,7 @@ use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use serde::Serialize;
 use serde_json::json;
 
-use super::{ConfigKey, ValueType, ALL_KEYS};
+use super::{SalukiAnnotation, ValueType, ALL_ANNOTATIONS};
 use crate::config::{DatadogRemapper, KEY_ALIASES};
 
 /// Test value injected for `String` keys.
@@ -89,47 +89,48 @@ async fn make_config_from_env(env_vars: &[(String, String)]) -> GenericConfigura
     cfg
 }
 
-/// Runs smoke tests for all keys in `keys` against a deserialized config struct `T`.
+/// Runs smoke tests for all annotations in `keys` against a deserialized config struct `T`.
 ///
 /// Verifies three properties:
 ///
 /// **Supported keys** (those in `keys`): loading the struct with the test value set via the
-/// key's `yaml_path` and via each of its declared `env_vars` must all produce identical structs,
-/// and each must differ from the default (empty-config) struct.
+/// annotation's `yaml_path` and via each of its effective env vars must all produce identical
+/// structs, and each must differ from the default (empty-config) struct.
 ///
-/// **Unsupported keys** (all other keys in `ALL_KEYS`): loading the struct with that key set must
-/// produce a struct identical to the default struct — i.e., the struct is unaffected.
+/// **Unsupported keys** (all other annotations in `ALL_ANNOTATIONS`): loading the struct with
+/// that key set must produce a struct identical to the default struct — i.e., the struct is
+/// unaffected.
 ///
 /// **Full field coverage**: loading the struct with all supported keys set simultaneously must
 /// produce a struct where every serialized leaf field differs from the default. This catches fields
-/// that exist in the struct but have no registered `ConfigKey` exercising them. Fields that are
+/// that exist in the struct but have no registered annotation exercising them. Fields that are
 /// intentionally not configuration-driven (e.g. populated from runtime state) can be excluded by
 /// passing their serialized paths in `non_config_fields` (e.g. `&["workload_provider"]`).
 ///
 /// `config_factory` converts a raw `GenericConfiguration` into the typed struct under test.
 pub async fn run_config_smoke_tests<T, Factory>(
-    struct_name: &'static str, keys: &[&'static ConfigKey], non_config_fields: &[&str], config_factory: Factory,
+    struct_name: &'static str, keys: &[&'static SalukiAnnotation], non_config_fields: &[&str], config_factory: Factory,
 ) where
     T: PartialEq + std::fmt::Debug + Serialize,
     Factory: Fn(GenericConfiguration) -> T,
 {
-    // Registry consistency: all passed keys declare struct_name as consumer.
-    for key in keys {
+    // Registry consistency: all passed annotations declare struct_name as consumer.
+    for annotation in keys {
         assert!(
-            key.used_by.contains(&struct_name),
-            "key '{}' is in the test set for '{}' but does not declare it in used_by",
-            key.yaml_paths[0],
+            annotation.used_by.contains(&struct_name),
+            "annotation '{}' is in the test set for '{}' but does not declare it in used_by",
+            annotation.yaml_path(),
             struct_name,
         );
     }
 
-    // Registry consistency: all keys in ALL_KEYS for this struct are present in the test set.
-    let local_first_paths: std::collections::HashSet<&str> = keys.iter().map(|k| k.yaml_paths[0]).collect();
-    for key in ALL_KEYS.iter().filter(|k| k.used_by.contains(&struct_name)) {
+    // Registry consistency: all ALL_ANNOTATIONS for this struct are present in the test set.
+    let local_yaml_paths: std::collections::HashSet<&str> = keys.iter().map(|a| a.yaml_path()).collect();
+    for annotation in ALL_ANNOTATIONS.iter().filter(|a| a.used_by.contains(&struct_name)) {
         assert!(
-            local_first_paths.contains(key.yaml_paths[0]),
-            "key '{}' is registered for '{}' in ALL_KEYS but is missing from the test set",
-            key.yaml_paths[0],
+            local_yaml_paths.contains(annotation.yaml_path()),
+            "annotation '{}' is registered for '{}' in ALL_ANNOTATIONS but is missing from the test set",
+            annotation.yaml_path(),
             struct_name,
         );
     }
@@ -137,56 +138,60 @@ pub async fn run_config_smoke_tests<T, Factory>(
     let default_struct = config_factory(make_config_from_file(json!({})).await);
     let mut failures: Vec<String> = Vec::new();
 
-    // Supported keys: every yaml_path and env_var is loaded independently; all must produce the
-    // same struct, and each must differ from the default.
-    for key in keys {
-        // Use the first yaml_path as the canonical reference all other sources are compared to.
+    // Supported keys: the canonical yaml_path and every additional yaml_path and env var is
+    // loaded independently; all must produce the same struct, and each must differ from the default.
+    for annotation in keys {
+        let canonical_path = annotation.yaml_path();
         let reference = config_factory(
-            make_config_from_file(yaml_path_to_json(key.yaml_paths[0], test_json_value(key.value_type))).await,
+            make_config_from_file(yaml_path_to_json(
+                canonical_path,
+                test_json_value(annotation.value_type()),
+            ))
+            .await,
         );
 
         if reference == default_struct {
             failures.push(format!(
                 "yaml_path '{}': struct did not change from its default — \
                  is the test value the same as the default, or is the key not wired up?",
-                key.yaml_paths[0],
+                canonical_path,
             ));
             // Reference is invalid; skip comparisons for this key to avoid cascading noise.
             continue;
         }
 
-        for yaml_path in key.yaml_paths.iter().skip(1) {
+        for yaml_path in annotation.additional_yaml_paths {
             let from_path = config_factory(
-                make_config_from_file(yaml_path_to_json(yaml_path, test_json_value(key.value_type))).await,
+                make_config_from_file(yaml_path_to_json(yaml_path, test_json_value(annotation.value_type()))).await,
             );
             if from_path != reference {
                 failures.push(format!(
                     "yaml_path '{}' produced a different struct than canonical yaml_path '{}'",
-                    yaml_path, key.yaml_paths[0],
+                    yaml_path, canonical_path,
                 ));
             }
         }
 
-        for env_var in key.env_vars {
+        for env_var in annotation.effective_env_vars() {
             let env_pairs = [(
                 dd_env_var_to_test_key(env_var).to_string(),
-                test_env_string(key.value_type),
+                test_env_string(annotation.value_type()),
             )];
             let from_env = config_factory(make_config_from_env(&env_pairs).await);
             if from_env != reference {
                 failures.push(format!(
                     "env var '{}' produced a different struct than yaml_path '{}'",
-                    env_var, key.yaml_paths[0],
+                    env_var, canonical_path,
                 ));
             }
         }
     }
 
     // Unsupported keys: setting any of their yaml_paths must not change the struct.
-    for key in ALL_KEYS.iter().filter(|k| !k.used_by.contains(&struct_name)) {
-        for yaml_path in key.yaml_paths {
+    for annotation in ALL_ANNOTATIONS.iter().filter(|a| !a.used_by.contains(&struct_name)) {
+        for yaml_path in annotation.all_yaml_paths() {
             let with_foreign = config_factory(
-                make_config_from_file(yaml_path_to_json(yaml_path, test_json_value(key.value_type))).await,
+                make_config_from_file(yaml_path_to_json(yaml_path, test_json_value(annotation.value_type()))).await,
             );
             if with_foreign != default_struct {
                 failures.push(format!(
@@ -199,10 +204,14 @@ pub async fn run_config_smoke_tests<T, Factory>(
 
     // Full coverage: load all supported keys at once and verify every serialized leaf field
     // differs from the default. Catches struct fields that exist and are populated from config
-    // but have no registered ConfigKey exercising them.
+    // but have no registered annotation exercising them.
     let mut all_vals = json!({});
-    for key in keys {
-        saluki_config::upsert(&mut all_vals, key.yaml_paths[0], test_json_value(key.value_type));
+    for annotation in keys {
+        saluki_config::upsert(
+            &mut all_vals,
+            annotation.yaml_path(),
+            test_json_value(annotation.value_type()),
+        );
     }
     let all_keys_struct = config_factory(make_config_from_file(all_vals).await);
     let full_map = serde_json::to_value(&all_keys_struct).expect("failed to serialize struct with all keys set");

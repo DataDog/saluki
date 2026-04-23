@@ -11,7 +11,7 @@
 pub mod datadog;
 pub mod generated;
 
-pub use self::datadog::ALL_KEYS;
+pub use self::datadog::{ALL_ANNOTATIONS, ALL_KEYS};
 
 /// Shared helpers for config smoke tests.
 #[cfg(test)]
@@ -19,8 +19,8 @@ pub mod test_support;
 
 /// Identifiers for known configuration structs.
 ///
-/// Used as values in [`ConfigKey::used_by`] to declare which structs consume a given key. Adding
-/// a new struct here is the first step when registering its configuration keys.
+/// Used as values in [`SalukiAnnotation::used_by`] to declare which structs consume a given key.
+/// Adding a new struct here is the first step when registering its configuration keys.
 pub mod structs {
     /// `ProxyConfiguration`
     pub const PROXY_CONFIGURATION: &str = "ProxyConfiguration";
@@ -48,7 +48,7 @@ pub enum ValueType {
 ///
 /// Generated from the vendored Datadog Agent config schema. Contains only what the schema
 /// knows: the canonical YAML path, declared environment variables, and value type. Saluki-specific
-/// fields (`used_by`, `support_level`, etc.) live in [`ConfigKey`] annotations instead.
+/// fields (`used_by`, etc.) live in [`SalukiAnnotation`] instead.
 ///
 /// Do not construct these manually — they are produced by `cargo xtask gen-config-schema` and
 /// live in `config_registry::generated::schema`.
@@ -67,28 +67,83 @@ pub struct SchemaEntry {
     pub value_type: ValueType,
 }
 
-/// Specification for a single recognized configuration key.
+/// Saluki-specific annotation for a single configuration key.
 ///
-/// Models the key from the operator's perspective: where it lives in config files, which
-/// environment variables carry it, what kind of value it holds, and which internal config
-/// structs it feeds.
+/// Pairs a [`SchemaEntry`] (generated from the vendored schema) with the metadata that only
+/// saluki knows: which internal config structs consume the key, and any corrections to the
+/// schema's env var list.
+///
+/// These are hand-written constants, one per key saluki cares about, and live in
+/// `config_registry::datadog::*` submodules. They are never overwritten by codegen.
+#[derive(Debug)]
+pub struct SalukiAnnotation {
+    /// The schema entry this annotation enriches.
+    pub schema: &'static SchemaEntry,
+
+    /// Additional YAML paths beyond the canonical one in the schema (aliases).
+    ///
+    /// Most keys have no aliases; leave this as `&[]` unless the config system recognises
+    /// the key under more than one dot-separated path.
+    pub additional_yaml_paths: &'static [&'static str],
+
+    /// Overrides the schema's `env_vars` list entirely when `Some`.
+    ///
+    /// Use when the schema marks a key `no-env` but env vars are actually supported, or when
+    /// the schema's list is incorrect or incomplete (e.g. the proxy sub-keys).
+    pub env_var_override: Option<&'static [&'static str]>,
+
+    /// Config structs that incorporate this key, as [`structs`] constants.
+    pub used_by: &'static [&'static str],
+}
+
+impl SalukiAnnotation {
+    /// The canonical YAML path for this key (from the schema).
+    pub fn yaml_path(&self) -> &'static str {
+        self.schema.yaml_path
+    }
+
+    /// All YAML paths for this key: canonical first, then any aliases.
+    pub fn all_yaml_paths(&self) -> impl Iterator<Item = &'static str> {
+        std::iter::once(self.schema.yaml_path).chain(self.additional_yaml_paths.iter().copied())
+    }
+
+    /// Effective env vars: the override list if set, otherwise the schema's list.
+    pub fn effective_env_vars(&self) -> &'static [&'static str] {
+        self.env_var_override.unwrap_or(self.schema.env_vars)
+    }
+
+    /// Shape of the value (from the schema).
+    pub fn value_type(&self) -> ValueType {
+        self.schema.value_type
+    }
+}
+
+/// A fully resolved configuration key, derived from a [`SalukiAnnotation`] at registry init time.
+///
+/// Used for runtime unknown-key detection and anywhere a flattened, owned view of a key is
+/// needed. For test infrastructure, prefer working with [`SalukiAnnotation`] directly.
 #[derive(Debug)]
 pub struct ConfigKey {
-    /// All dot-separated YAML paths that deliver this value (e.g. `&["proxy.http"]`).
-    ///
-    /// Most keys have a single path, but some may be reachable via multiple aliases in the config
-    /// file. Each path is aliased to a flat key at file-load time via `KEY_ALIASES`.
-    pub yaml_paths: &'static [&'static str],
+    /// All dot-separated YAML paths that deliver this value.
+    pub yaml_paths: Vec<&'static str>,
 
-    /// All environment variables that deliver this value, in precedence order (highest last).
-    ///
-    /// Includes the `DD_`-prefixed canonical form and any non-`DD_` variables accepted via
-    /// `DatadogRemapper` (e.g. `HTTP_PROXY`). The `DD_` form is always listed first.
-    pub env_vars: &'static [&'static str],
+    /// All environment variables that deliver this value.
+    pub env_vars: Vec<&'static str>,
 
     /// Shape of the value.
     pub value_type: ValueType,
 
     /// Config structs that incorporate this key, as [`structs`] constants.
     pub used_by: &'static [&'static str],
+}
+
+impl From<&SalukiAnnotation> for ConfigKey {
+    fn from(a: &SalukiAnnotation) -> Self {
+        ConfigKey {
+            yaml_paths: a.all_yaml_paths().collect(),
+            env_vars: a.effective_env_vars().to_vec(),
+            value_type: a.value_type(),
+            used_by: a.used_by,
+        }
+    }
 }
