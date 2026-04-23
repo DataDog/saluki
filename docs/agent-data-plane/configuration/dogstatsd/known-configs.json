@@ -1009,11 +1009,11 @@
   },
   {
     "key": "expected_tags_duration",
-    "feature_state": "PARITY",
-    "action": "NONE",
+    "feature_state": "DIVERGENT",
+    "action": "IMPLEMENT",
     "description": "Host tag enrichment duration",
-    "reason": "Confirmed implemented in ADP. No divergence noted.",
-    "issue": null,
+    "reason": "Core agent declares this as `time.Duration` and viper parses duration strings (e.g. `30s`) via `time.ParseDuration`. ADP reads a bare `u64` of seconds in `lib/saluki-components/src/transforms/host_tags/mod.rs` and rejects string values at startup. Also: a bare integer like `5` means 5 nanoseconds in the core agent but 5 seconds in ADP, so numeric values copied from core agent configs may behave differently even when ADP does not error. Tracked in #1460.",
+    "issue": "#1460",
     "adp_key": null
   },
   {
