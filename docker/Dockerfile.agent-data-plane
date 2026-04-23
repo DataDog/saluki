@@ -3,11 +3,6 @@ ARG APP_IMAGE=ubuntu:24.04
 ARG BUILD_BASE=build-clean
 ARG BUILDCACHE_IMAGE=scratch
 
-# When set to the saluki buildcache-ci image (scratch + /buildcache), the binary is copied into
-# the builder stage below and cargo uses it as RUSTC_WRAPPER. Default is the regular BUILD_IMAGE,
-# which makes the subsequent buildcache-src bind-mount a no-op.
-ARG BUILDCACHE_IMAGE=${BUILD_IMAGE}
-
 # When `BUILDCACHE_IMAGE` is provided and points to an image that contains `/buildcache`, we copy it out into our actual
 # build layer, which then signals the build step to actually configure Cargo to use it as a rustc wrapper (`RUSTC_WRAPPER`),
 # allowing it to providing build caching in conjunction with any remote cache configuration passed in via the `BUILDCACHE_*`
@@ -130,19 +125,18 @@ RUN if [ "${INTERNAL_BUILD}" = "true" ]; then \
     fi
 
 # Calculate the necessary licenses that we need to include in the final image.
-FROM ${BUILD_IMAGE} AS license-builder
+FROM ubuntu:24.04 AS license-builder
 
-RUN apt-get update && apt-get install -y curl
-
-# Pull down the latest SPDX licenses archive.
-RUN curl -s -L -o /tmp/spdx-license-list-data-3.25.0.tar.gz https://github.com/spdx/license-list-data/archive/refs/tags/v3.25.0.tar.gz && \
-    tar -C /tmp -xzf /tmp/spdx-license-list-data-3.25.0.tar.gz && \
+# Pull down the latest SPDX licenses archive and extract it.
+RUN apt-get update && apt-get install --no-install-recommends -y curl && \
+    curl -s -L -o /tmp/spdx.tar.gz https://github.com/spdx/license-list-data/archive/refs/tags/v3.25.0.tar.gz && \
+    tar -C /tmp -xzf /tmp/spdx.tar.gz && \
     mv /tmp/license-list-data-3.25.0 /tmp/spdx-licenses
 
 # Pull in our LICENSE-3rdparty.csv file and analyze it to figure out which licenses we need a copy of.
 COPY LICENSE-3rdparty.csv /tmp/LICENSE-3rdparty.csv
-RUN mkdir /licenses
-RUN tail -n +2 /tmp/LICENSE-3rdparty.csv | awk -F ',' '{print $3}' | awk -F' ' '{for(i=1;i<=NF;i++) print $i}' | \
+RUN mkdir /licenses && \
+    tail -n +2 /tmp/LICENSE-3rdparty.csv | awk -F ',' '{print $3}' | awk -F' ' '{for(i=1;i<=NF;i++) print $i}' | \
     grep -v -E "(OR|AND|WITH|Custom|LLVM-exception)" | sed s/[\(\)]// | sort | uniq | \
     xargs -I {} cp /tmp/spdx-licenses/text/{}.txt /licenses/THIRD-PARTY-{}
 
@@ -159,7 +153,7 @@ FROM ${APP_IMAGE}
 # the `root` user, so we can install them without issue.
 USER root
 RUN test -d /usr/share/ca-certificates || (apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates=20240203 && \
+    apt-get install --no-install-recommends -y ca-certificates=20240203 && \
     apt-get clean && rm -rf /var/lib/apt/lists)
 COPY --from=builder /adp/target/bin/agent-data-plane /usr/local/bin/agent-data-plane
 COPY NOTICE LICENSE LICENSE-3rdparty.csv /opt/datadog/agent-data-plane/
