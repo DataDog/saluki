@@ -37,9 +37,9 @@ tracking.
 | `dogstatsd_log_file_max_rolls`         | DSD log file max roll count      | [#1356] |
 | `dogstatsd_log_file_max_size`          | DSD log file max size            | [#1356] |
 | `dogstatsd_logging_enabled`            | Enables DSD metric logging       | [#1356] |
-| `dogstatsd_pipe_name`                  | Windows named pipe path          |         |
+| `dogstatsd_pipe_name`                  | Windows named pipe path          | [#1466] |
 | `dogstatsd_so_rcvbuf`                  | Socket receive buffer size       | [#1341] |
-| `dogstatsd_windows_pipe_security_descriptor` | Windows named pipe ACL descriptor |    |
+| `dogstatsd_windows_pipe_security_descriptor` | Windows named pipe ACL descriptor | [#1466] |
 | `dogstatsd_stream_log_too_big`         | Log oversized stream messages    | [#1342] |
 | `extra_tags`                           | Additional static tags           | [#1332] |
 | `forwarder_http_protocol`              | HTTP version (auto/http1)        | [#1361] |
@@ -47,9 +47,8 @@ tracking.
 | `log_format_rfc3339`                   | Use RFC3339 timestamp format     | [#1373] |
 | `log_to_syslog`                        | Log to syslog daemon             | [#1337] |
 | `logging_frequency`                    | Transaction success log interval | [#1380] |
-| `metric_tag_filterlist`                | Per-metric tag include/exclude   |         |
 | `min_tls_version`                      | Minimum TLS version for HTTPS    | [#1370] |
-| `serializer_experimental_use_v3_api.*` | V3 metrics API migration flags   |         |
+| `serializer_experimental_use_v3_api.*` | V3 metrics API migration flags   | [#1468] |
 | `sslkeylogfile`                        | TLS key log file path            | [#1372] |
 | `tls_handshake_timeout`                | HTTP TLS handshake timeout       | [#178]  |
 
@@ -280,6 +279,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `log_to_console`                          | Log to stdout/stderr             |
 | `metric_filterlist`                       | Metric name blocklist            |
 | `metric_filterlist_match_prefix`          | Blocklist uses prefix matching   |
+| `metric_tag_filterlist`                   | Per-metric tag include/exclude   |
 | `no_proxy_nonexact_match`                 | Domain/CIDR no_proxy matching    |
 | `origin_detection_unified`                | Unified origin detection mode    |
 | `proxy`                                   | HTTP/HTTPS proxy configuration   |
@@ -329,3 +329,5 @@ The following settings work in ADP with the same behavior as the core agent.
 [#1382]: https://github.com/DataDog/saluki/issues/1382
 [#1433]: https://github.com/DataDog/saluki/issues/1433
 [#1434]: https://github.com/DataDog/saluki/issues/1434
+[#1466]: https://github.com/DataDog/saluki/issues/1466
+[#1468]: https://github.com/DataDog/saluki/issues/1468
