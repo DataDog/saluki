@@ -21,7 +21,7 @@ pub mod test_support;
 /// Used as values in [`ConfigKey::used_by`] to declare which structs consume a given key. Adding
 /// a new struct here is the first step when registering its configuration keys.
 pub mod structs {
-    /// [`ProxyConfiguration`][crate::common::datadog::proxy::ProxyConfiguration]
+    /// `ProxyConfiguration`
     pub const PROXY_CONFIGURATION: &str = "ProxyConfiguration";
 }
 
