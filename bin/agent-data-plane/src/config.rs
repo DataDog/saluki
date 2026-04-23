@@ -5,7 +5,7 @@ use saluki_io::net::ListenAddress;
 /// General data plane configuration.
 #[derive(Clone, Debug)]
 pub struct DataPlaneConfiguration {
-    enabled: bool,
+    enabled: Option<bool>,
     standalone_mode: bool,
     use_new_config_stream_endpoint: bool,
     remote_agent_enabled: bool,
@@ -32,7 +32,7 @@ impl DataPlaneConfiguration {
         // In the future, we plan on updating `saluki-config` to allow us to support both deserializing from "native"
         // nested data like JSON/YAML as well as with the idiomatically-named environment variables.
         Ok(Self {
-            enabled: config.try_get_typed("data_plane.enabled")?.unwrap_or(false),
+            enabled: config.try_get_typed("data_plane.enabled")?,
             standalone_mode: config.try_get_typed("data_plane.standalone_mode")?.unwrap_or(false),
             use_new_config_stream_endpoint: config
                 .try_get_typed("data_plane.use_new_config_stream_endpoint")?
@@ -53,9 +53,22 @@ impl DataPlaneConfiguration {
         })
     }
 
-    /// Returns `true` if the data plane is enabled.
-    pub const fn enabled(&self) -> bool {
-        self.enabled
+    /// Returns `true` if the data plane is effectively enabled.
+    ///
+    /// When ADP runs in standalone mode or when the Core Agent config stream is disabled, `data_plane.enabled` may not
+    /// be explicitly set in the configuration. In that case, ADP infers enablement from whether any data pipeline is
+    /// enabled (e.g. `data_plane.dogstatsd.enabled`). When the Core Agent config stream is active, it sends the full
+    /// Agent configuration, so `data_plane.enabled` will always be present and is used directly.
+    ///
+    /// Concretely:
+    /// - `data_plane.enabled` explicitly `true` → enabled
+    /// - `data_plane.enabled` not set → enabled if at least one data pipeline is enabled
+    /// - `data_plane.enabled` explicitly `false` → disabled (global kill switch, overrides all pipeline flags)
+    pub fn enabled(&self) -> bool {
+        match self.enabled {
+            Some(v) => v,
+            None => self.data_pipelines_enabled(),
+        }
     }
 
     /// Returns `true` if the data plane is running in standalone mode.
@@ -279,5 +292,77 @@ impl DataPlaneOtlpProxyConfiguration {
     /// Returns `true` if the OTLP logs should be proxied to the Core Agent.
     pub const fn proxy_logs(&self) -> bool {
         self.proxy_logs
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use saluki_config::ConfigurationLoader;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_dogstatsd_only_enables_adp() {
+        // Setting only data_plane.dogstatsd.enabled=true (without data_plane.enabled=true) should be sufficient
+        // to consider ADP enabled.
+        let (config, _) = ConfigurationLoader::for_tests(
+            Some(serde_json::json!({
+                "data_plane": { "dogstatsd": { "enabled": true } }
+            })),
+            None,
+            false,
+        )
+        .await;
+
+        let dp_config = DataPlaneConfiguration::from_configuration(&config).unwrap();
+        assert!(dp_config.enabled(), "dogstatsd.enabled=true alone should enable ADP");
+        assert!(dp_config.dogstatsd().enabled());
+    }
+
+    #[tokio::test]
+    async fn test_global_disabled_overrides_dogstatsd() {
+        // data_plane.enabled=false is a global kill switch — it should disable ADP even when
+        // data_plane.dogstatsd.enabled=true.
+        let (config, _) = ConfigurationLoader::for_tests(
+            Some(serde_json::json!({
+                "data_plane": { "enabled": false, "dogstatsd": { "enabled": true } }
+            })),
+            None,
+            false,
+        )
+        .await;
+
+        let dp_config = DataPlaneConfiguration::from_configuration(&config).unwrap();
+        assert!(
+            !dp_config.enabled(),
+            "data_plane.enabled=false should disable ADP regardless of dogstatsd flag"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_nothing_configured_not_enabled() {
+        // When neither data_plane.enabled nor any pipeline flag is set, ADP should not be enabled.
+        let (config, _) = ConfigurationLoader::for_tests(None, None, false).await;
+
+        let dp_config = DataPlaneConfiguration::from_configuration(&config).unwrap();
+        assert!(!dp_config.enabled(), "ADP should not be enabled when no config is set");
+    }
+
+    #[tokio::test]
+    async fn test_explicit_enabled_true_with_no_pipelines() {
+        // data_plane.enabled=true should still enable ADP even without any pipeline flags set.
+        // (The "no data pipelines enabled" error will be caught later in the topology setup.)
+        let (config, _) = ConfigurationLoader::for_tests(
+            Some(serde_json::json!({
+                "data_plane": { "enabled": true }
+            })),
+            None,
+            false,
+        )
+        .await;
+
+        let dp_config = DataPlaneConfiguration::from_configuration(&config).unwrap();
+        assert!(dp_config.enabled(), "data_plane.enabled=true should enable ADP");
+        assert!(!dp_config.data_pipelines_enabled());
     }
 }

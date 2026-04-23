@@ -1,0 +1,32 @@
+name: "dogstatsd-only-enabled"
+description: "Verifies DogStatsD pipeline starts with only data_plane.dogstatsd.enabled set (data_plane.enabled not required)"
+timeout: 60s
+
+container:
+  image: "saluki-images/datadog-agent:testing-devel"
+  env:
+    DD_API_KEY: "test-api-key"
+    DD_HOSTNAME: "integration-test-dsd-only"
+    # DD_DATA_PLANE_ENABLED is intentionally omitted to verify that DD_DATA_PLANE_DOGSTATSD_ENABLED
+    # alone is sufficient to enable ADP for DogStatsD.
+    DD_DATA_PLANE_STANDALONE_MODE: "true"
+    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+    DD_DOGSTATSD_PORT: "8125"
+    DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
+  exposed_ports:
+    - "8125/udp"
+
+assertions:
+  # Make sure the process becomes healthy, and stays up without errors, listening for DSD (UDP),
+  # for ~10 seconds after.
+  - parallel:
+      - type: process_stable_for
+        duration: 10s
+      - type: port_listening
+        port: 8125
+        protocol: udp
+        timeout: 10s
+      - type: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s
