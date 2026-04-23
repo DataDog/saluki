@@ -57,11 +57,11 @@ tracing-subscriber = { workspace = true, features = [
   "std",
   "tracing-log",
 ] }
+zstd = { workspace = true }
 
 [dev-dependencies]
 http-body-util = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true, features = ["client", "client-legacy", "http1", "tokio"] }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
-zstd = { workspace = true }
 rand = { workspace = true, features = ["small_rng"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

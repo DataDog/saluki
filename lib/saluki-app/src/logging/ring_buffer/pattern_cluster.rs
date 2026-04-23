@@ -1,7 +1,7 @@
 use std::hash::{BuildHasher, Hash, Hasher};
 
 use saluki_common::collections::FastHashMap;
-use saluki_common::hash::{FastBuildHasher, get_fast_build_hasher};
+use saluki_common::hash::{get_fast_build_hasher, FastBuildHasher};
 use tracing::Metadata;
 
 // -- Token types --
@@ -230,11 +230,7 @@ const CALLSITE_REVALIDATION_INTERVAL: u32 = 1000;
 
 enum CallsiteState {
     /// Route directly to cached cluster via stored signature. Still do full merge.
-    Learning {
-        signature: u64,
-        hits: u32,
-        misses: u32,
-    },
+    Learning { signature: u64, hits: u32, misses: u32 },
     /// Pattern is saturated and callsite consistently produces the same structure.
     /// Only whitespace-split + positional extraction needed.
     Converged {
@@ -349,8 +345,7 @@ impl ClusterManager {
                     if total >= CALLSITE_LEARNING_THRESHOLD
                         && (*misses * 100 / total) > CALLSITE_INSTABILITY_RATE_PERCENT
                     {
-                        self.callsite_cache
-                            .insert(callsite_key, CallsiteState::Unstable);
+                        self.callsite_cache.insert(callsite_key, CallsiteState::Unstable);
                     } else {
                         *cached_sig = signature;
                     }
@@ -436,11 +431,11 @@ impl ClusterManager {
                     self.skeleton_buf.push(' ');
                 }
                 first = false;
-                if slot.value.is_none() {
+                if let Some(value) = slot.value.as_ref() {
+                    self.skeleton_buf.push_str(value);
+                } else {
                     self.skeleton_buf.push('\x00');
                     self.variable_ranges.push((tok.start, tok.end));
-                } else {
-                    self.skeleton_buf.push_str(slot.value.as_ref().unwrap());
                 }
             }
 
@@ -492,12 +487,7 @@ impl ClusterManager {
             // SAFETY: We store references to `message` with a fake 'static lifetime. The token_buf
             // is always cleared before the borrow of `message` ends (at end of extract()).
             let value: &'static str = unsafe { std::mem::transmute::<&str, &'static str>(token) };
-            self.token_buf.push(InputToken {
-                ty,
-                value,
-                start,
-                end,
-            });
+            self.token_buf.push(InputToken { ty, value, start, end });
         }
     }
 
@@ -650,7 +640,9 @@ mod tests {
         let (s2, v2) = cm.extract("Forwarding 3000 metric(s) to topology_runner", meta);
         assert_eq!(s2, "Forwarding \x00 metric(s) to \x00");
         assert_eq!(v2, 2);
-        let vars: Vec<&str> = cm.variable_tokens("Forwarding 3000 metric(s) to topology_runner").collect();
+        let vars: Vec<&str> = cm
+            .variable_tokens("Forwarding 3000 metric(s) to topology_runner")
+            .collect();
         assert_eq!(vars, vec!["3000", "topology_runner"]);
     }
 
@@ -724,8 +716,10 @@ mod tests {
 
     #[test]
     fn naive_fallback_when_at_capacity() {
-        let mut cm = ClusterManager::default();
-        cm.max_patterns = 1; // Very low cap for testing.
+        let mut cm = ClusterManager {
+            max_patterns: 1, // Very low cap for testing.
+            ..Default::default()
+        };
         let meta = test_metadata();
 
         // First message creates a pattern.
