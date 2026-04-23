@@ -156,6 +156,10 @@ pub struct DataPlaneDogStatsDConfiguration {
 }
 
 impl DataPlaneDogStatsDConfiguration {
+    // We intentionally do NOT read the Core Agent's `use_dogstatsd` key here. The Core Agent is the
+    // sole authority on whether ADP should run DogStatsD: it evaluates `use_dogstatsd` (along with
+    // other signals) and sets `data_plane.dogstatsd.enabled` on our behalf. Reading both would risk
+    // ADP and the Core Agent disagreeing. See `docs/agent-data-plane/configuration/dogstatsd.md`.
     fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(Self {
             enabled: config.try_get_typed("data_plane.dogstatsd.enabled")?.unwrap_or(false),
@@ -279,5 +283,41 @@ impl DataPlaneOtlpProxyConfiguration {
     /// Returns `true` if the OTLP logs should be proxied to the Core Agent.
     pub const fn proxy_logs(&self) -> bool {
         self.proxy_logs
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use saluki_config::ConfigurationLoader;
+    use serde_json::json;
+
+    use super::*;
+
+    // The Core Agent owns the `use_dogstatsd` decision and communicates the result to ADP via
+    // `data_plane.dogstatsd.enabled`. These tests guard against a regression where ADP starts
+    // reading `use_dogstatsd` directly, which would let ADP and the Core Agent disagree.
+
+    #[tokio::test]
+    async fn use_dogstatsd_true_does_not_enable_dogstatsd() {
+        let (config, _) = ConfigurationLoader::for_tests(Some(json!({ "use_dogstatsd": true })), None, false).await;
+
+        let dsd = DataPlaneDogStatsDConfiguration::from_configuration(&config).expect("parse config");
+        assert!(!dsd.enabled());
+    }
+
+    #[tokio::test]
+    async fn use_dogstatsd_false_does_not_disable_dogstatsd() {
+        let (config, _) = ConfigurationLoader::for_tests(
+            Some(json!({
+                "use_dogstatsd": false,
+                "data_plane": { "dogstatsd": { "enabled": true } },
+            })),
+            None,
+            false,
+        )
+        .await;
+
+        let dsd = DataPlaneDogStatsDConfiguration::from_configuration(&config).expect("parse config");
+        assert!(dsd.enabled());
     }
 }

@@ -59,19 +59,20 @@ tracking.
 The following settings exist in the core agent but are not planned for ADP, typically because ADP's
 architecture is fundamentally different or the feature is platform-specific.
 
-| Config Key                                     | Description                    | Reason                             |
-|------------------------------------------------|--------------------------------|------------------------------------|
-| `dogstatsd_mem_based_rate_limiter.enabled`     | Enable memory rate limiter     | Go GC specific; use `memory_limit` |
-| `dogstatsd_no_aggregation_pipeline_batch_size` | No-agg pipeline batch size     | Fixed in ADP topology              |
-| `dogstatsd_packet_buffer_flush_timeout`        | Packet buffer flush timeout    | ADP decodes inline                 |
-| `dogstatsd_packet_buffer_size`                 | Datagrams per packet buffer    | ADP decodes inline                 |
-| `dogstatsd_pipeline_autoadjust`                | Auto-adjust pipeline workers   | ADP uses async tasks               |
-| `dogstatsd_pipeline_count`                     | Parallel processing pipelines  | ADP uses async tasks               |
-| `dogstatsd_queue_size`                         | Packet channel buffer size     | ADP uses async tasks               |
-| `dogstatsd_telemetry_enabled_listener_id`      | Per-listener telemetry tagging | Not feasible to thread through     |
-| `dogstatsd_workers_count`                      | Num DSD processing workers     | ADP uses async tasks               |
-| `statsd_forward_host`                          | Host for raw packet forwarding | Not planned                        |
-| `statsd_forward_port`                          | Port for raw packet forwarding | Not planned                        |
+| Config Key                                     | Description                    | Reason                                                       |
+|------------------------------------------------|--------------------------------|--------------------------------------------------------------|
+| `dogstatsd_mem_based_rate_limiter.enabled`     | Enable memory rate limiter     | Go GC specific; use `memory_limit`                           |
+| `dogstatsd_no_aggregation_pipeline_batch_size` | No-agg pipeline batch size     | Fixed in ADP topology                                        |
+| `dogstatsd_packet_buffer_flush_timeout`        | Packet buffer flush timeout    | ADP decodes inline                                           |
+| `dogstatsd_packet_buffer_size`                 | Datagrams per packet buffer    | ADP decodes inline                                           |
+| `dogstatsd_pipeline_autoadjust`                | Auto-adjust pipeline workers   | ADP uses async tasks                                         |
+| `dogstatsd_pipeline_count`                     | Parallel processing pipelines  | ADP uses async tasks                                         |
+| `dogstatsd_queue_size`                         | Packet channel buffer size     | ADP uses async tasks                                         |
+| `dogstatsd_telemetry_enabled_listener_id`      | Per-listener telemetry tagging | Not feasible to thread through                               |
+| `dogstatsd_workers_count`                      | Num DSD processing workers     | ADP uses async tasks                                         |
+| `statsd_forward_host`                          | Host for raw packet forwarding | Not planned                                                  |
+| `statsd_forward_port`                          | Port for raw packet forwarding | Not planned                                                  |
+| `use_dogstatsd`                                | Master DogStatsD enable toggle | Core Agent evaluates and sets `data_plane.dogstatsd.enabled` |
 
 ## Behavioral Differences
 
@@ -155,7 +156,6 @@ ways that are not yet fully characterized.
 | `statsd_metric_blocklist_match_prefix`             | Blocklist matches by prefix      | [#1434] |
 | `statsd_metric_namespace`                          | Prefix prepended to all metrics  |         |
 | `tags`                                             | Global tags (DD_TAGS)            |         |
-| `use_dogstatsd`                                    | Master DogStatsD enable toggle   |         |
 
 ## ADP-Only Settings
 
