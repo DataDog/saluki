@@ -26,6 +26,29 @@ pub mod structs {
     pub const PROXY_CONFIGURATION: &str = "ProxyConfiguration";
 }
 
+/// How well saluki supports a given configuration key.
+///
+/// Used in [`SalukiAnnotation`] to classify each key from saluki's perspective. `Ignored` is
+/// reserved for keys in the schema that have no annotation at all — it must not appear in any
+/// hand-written annotation.
+///
+/// Invariants enforced at test time:
+/// - `Full` and `Partial` require a non-empty `used_by` list.
+/// - `Incompatible` requires an empty `used_by` list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SupportLevel {
+    /// Fully supported. The key is wired up end-to-end and must be consumed by at least one struct.
+    Full,
+    /// Partially supported. The key is consumed by at least one struct, but support is incomplete.
+    Partial,
+    /// Explicitly incompatible. Saluki intentionally does not support this key; `used_by` must be
+    /// empty.
+    Incompatible,
+    /// Not annotated. Applied implicitly at runtime to any schema key that has no
+    /// [`SalukiAnnotation`]. Must not be set on a hand-written annotation.
+    Ignored,
+}
+
 /// The shape of a configuration value.
 ///
 /// Describes how a value should be parsed from both YAML and environment variables.
@@ -80,6 +103,11 @@ pub struct SalukiAnnotation {
     /// The schema entry this annotation enriches.
     pub schema: &'static SchemaEntry,
 
+    /// How well saluki supports this key.
+    ///
+    /// Must not be [`SupportLevel::Ignored`] — that level is reserved for unannotated schema keys.
+    pub support_level: SupportLevel,
+
     /// Additional YAML paths beyond the canonical one in the schema (aliases).
     ///
     /// Most keys have no aliases; leave this as `&[]` unless the config system recognises
@@ -93,6 +121,9 @@ pub struct SalukiAnnotation {
     pub env_var_override: Option<&'static [&'static str]>,
 
     /// Config structs that incorporate this key, as [`structs`] constants.
+    ///
+    /// Must be non-empty for [`SupportLevel::Full`] and [`SupportLevel::Partial`].
+    /// Must be empty for [`SupportLevel::Incompatible`].
     pub used_by: &'static [&'static str],
 }
 

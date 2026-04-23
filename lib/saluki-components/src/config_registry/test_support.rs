@@ -89,13 +89,17 @@ async fn make_config_from_env(env_vars: &[(String, String)]) -> GenericConfigura
     cfg
 }
 
-/// Runs smoke tests for all annotations in `keys` against a deserialized config struct `T`.
+/// Runs smoke tests for all annotations registered to `struct_name` against a deserialized config struct `T`.
+///
+/// Annotations are discovered automatically from [`ALL_ANNOTATIONS`] by filtering on `used_by` —
+/// there is no need to pass a list of keys explicitly. Register an annotation for a struct by
+/// adding its name (from [`crate::config_registry::structs`]) to the annotation's `used_by` field.
 ///
 /// Verifies three properties:
 ///
-/// **Supported keys** (those in `keys`): loading the struct with the test value set via the
-/// annotation's `yaml_path` and via each of its effective env vars must all produce identical
-/// structs, and each must differ from the default (empty-config) struct.
+/// **Supported keys** (those registered to `struct_name`): loading the struct with the test value
+/// set via the annotation's `yaml_path` and via each of its effective env vars must all produce
+/// identical structs, and each must differ from the default (empty-config) struct.
 ///
 /// **Unsupported keys** (all other annotations in `ALL_ANNOTATIONS`): loading the struct with
 /// that key set must produce a struct identical to the default struct — i.e., the struct is
@@ -109,38 +113,23 @@ async fn make_config_from_env(env_vars: &[(String, String)]) -> GenericConfigura
 ///
 /// `config_factory` converts a raw `GenericConfiguration` into the typed struct under test.
 pub async fn run_config_smoke_tests<T, Factory>(
-    struct_name: &'static str, keys: &[&'static SalukiAnnotation], non_config_fields: &[&str], config_factory: Factory,
+    struct_name: &'static str, non_config_fields: &[&str], config_factory: Factory,
 ) where
     T: PartialEq + std::fmt::Debug + Serialize,
     Factory: Fn(GenericConfiguration) -> T,
 {
-    // Registry consistency: all passed annotations declare struct_name as consumer.
-    for annotation in keys {
-        assert!(
-            annotation.used_by.contains(&struct_name),
-            "annotation '{}' is in the test set for '{}' but does not declare it in used_by",
-            annotation.yaml_path(),
-            struct_name,
-        );
-    }
-
-    // Registry consistency: all ALL_ANNOTATIONS for this struct are present in the test set.
-    let local_yaml_paths: std::collections::HashSet<&str> = keys.iter().map(|a| a.yaml_path()).collect();
-    for annotation in ALL_ANNOTATIONS.iter().filter(|a| a.used_by.contains(&struct_name)) {
-        assert!(
-            local_yaml_paths.contains(annotation.yaml_path()),
-            "annotation '{}' is registered for '{}' in ALL_ANNOTATIONS but is missing from the test set",
-            annotation.yaml_path(),
-            struct_name,
-        );
-    }
+    let keys: Vec<&'static SalukiAnnotation> = ALL_ANNOTATIONS
+        .iter()
+        .copied()
+        .filter(|a| a.used_by.contains(&struct_name))
+        .collect();
 
     let default_struct = config_factory(make_config_from_file(json!({})).await);
     let mut failures: Vec<String> = Vec::new();
 
     // Supported keys: the canonical yaml_path and every additional yaml_path and env var is
     // loaded independently; all must produce the same struct, and each must differ from the default.
-    for annotation in keys {
+    for annotation in &keys {
         let canonical_path = annotation.yaml_path();
         let reference = config_factory(
             make_config_from_file(yaml_path_to_json(
@@ -222,11 +211,12 @@ pub async fn run_config_smoke_tests<T, Factory>(
     if !unchanged.is_empty() {
         failures.push(format!(
             "{} serialized field(s) are never changed by any registered config key: [{}]\n  \
-             Fix: register a ConfigKey for each field and add it to the test set.\n  \
+             Fix: add a SalukiAnnotation for each field and include '{}' in its used_by list.\n  \
              Fix: if a field is intentionally not config-driven (e.g. injected at runtime), \
              add its serialized name to the `non_config_fields` slice in this test call.",
             unchanged.len(),
             unchanged.join(", "),
+            struct_name,
         ));
     }
 
