@@ -7,7 +7,10 @@ use saluki_error::{generic_error, GenericError};
 use super::file::{datadog_matcher, file_version, DATADOG_HEADER, MIN_STATE_VERSION};
 
 /// Reads DogStatsD capture files written by the Go agent.
-pub(crate) struct TrafficCaptureReader {
+///
+/// The reader keeps the full capture file contents in memory so packet replay can make multiple passes over the same
+/// file without reopening it.
+pub struct TrafficCaptureReader {
     contents: Vec<u8>,
     version: u8,
     offset: usize,
@@ -15,7 +18,13 @@ pub(crate) struct TrafficCaptureReader {
 
 impl TrafficCaptureReader {
     /// Opens a DogStatsD capture file from disk.
-    pub(crate) fn from_path(path: impl AsRef<Path>) -> Result<Self, GenericError> {
+    ///
+    /// Both raw `.dog` files and zstd-compressed `.dog.zstd` files are supported.
+    ///
+    /// # Errors
+    ///
+    /// If the file cannot be read, decompressed, or decoded as a valid Datadog capture file, an error is returned.
+    pub fn from_path(path: impl AsRef<Path>) -> Result<Self, GenericError> {
         let path = path.as_ref();
         let contents = read_capture_contents(path)?;
         let version = file_version(&contents)?;
@@ -30,6 +39,10 @@ impl TrafficCaptureReader {
     /// Returns the parsed capture file version.
     pub(crate) fn version(&self) -> u8 {
         self.version
+    }
+
+    pub(crate) fn rewind(&mut self) {
+        self.offset = DATADOG_HEADER.len();
     }
 
     /// Reads the next captured packet record.
@@ -68,7 +81,12 @@ impl TrafficCaptureReader {
     /// Reads the trailing replay state from the end of the file.
     ///
     /// This does not modify the current record cursor.
-    pub(crate) fn read_state(&self) -> Result<Option<TaggerState>, GenericError> {
+    ///
+    /// # Errors
+    ///
+    /// If the file format version does not support replay state, or the trailing protobuf block is malformed, an error
+    /// is returned.
+    pub fn read_state(&self) -> Result<Option<TaggerState>, GenericError> {
         if self.version < MIN_STATE_VERSION {
             return Err(generic_error!(
                 "DogStatsD capture file version {} does not contain replay state.",

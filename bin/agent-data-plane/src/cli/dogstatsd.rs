@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use argh::{FromArgValue, FromArgs};
 use comfy_table::{presets::ASCII_FULL_CONDENSED, Cell, ContentArrangement, Row, Table};
+use saluki_components::sources::{DogStatsDConfiguration, DogStatsDReplayInjector, TrafficCaptureReader};
 use saluki_config::GenericConfiguration;
 use saluki_error::{ErrorContext as _, GenericError};
 use serde::Deserialize;
@@ -23,6 +24,7 @@ pub struct DogstatsdCommand {
 enum DogstatsdSubcommand {
     Stats(StatsCommand),
     Capture(CaptureCommand),
+    Replay(ReplayCommand),
 }
 
 /// Prints basic statistics about the metrics received by the data plane.
@@ -54,6 +56,10 @@ fn default_capture_duration() -> String {
     "1m0s".to_string()
 }
 
+const fn default_replay_loops() -> usize {
+    1
+}
+
 /// Starts a DogStatsD traffic capture.
 #[derive(FromArgs, Debug)]
 #[argh(subcommand, name = "capture")]
@@ -69,6 +75,23 @@ struct CaptureCommand {
     /// whether to zstd-compress the capture file
     #[argh(option, short = 'z', long = "compressed", default = "true")]
     compressed: bool,
+}
+
+/// Replays a DogStatsD traffic capture back into the configured Unix socket.
+#[derive(FromArgs, Debug)]
+#[argh(subcommand, name = "replay")]
+struct ReplayCommand {
+    /// input file created by `dogstatsd capture`
+    #[argh(option, short = 'f', long = "file")]
+    replay_file_path: String,
+
+    /// print one line per replayed packet
+    #[argh(switch, short = 'v', long = "verbose")]
+    verbose: bool,
+
+    /// number of replay loops to run, where `0` means replay until interrupted
+    #[argh(option, short = 'l', long = "loops", default = "default_replay_loops()")]
+    loops: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -155,6 +178,20 @@ pub async fn handle_dogstatsd_command(bootstrap_config: &GenericConfiguration, c
                 std::process::exit(1);
             }
         }
+        DogstatsdSubcommand::Replay(config) => {
+            let mut api_client = match DataPlaneSecureClient::from_config(bootstrap_config).await {
+                Ok(client) => client,
+                Err(e) => {
+                    error!("Failed to create secure data plane API client: {:#}", e);
+                    std::process::exit(1);
+                }
+            };
+
+            if let Err(e) = handle_dogstatsd_replay(bootstrap_config, &mut api_client, config).await {
+                error!("Failed to replay DogStatsD capture: {:#}", e);
+                std::process::exit(1);
+            }
+        }
     }
 }
 
@@ -201,6 +238,87 @@ async fn handle_dogstatsd_capture(
     println!("Capture started, capture file being written to: {capture_path}");
 
     Ok(())
+}
+
+async fn handle_dogstatsd_replay(
+    bootstrap_config: &GenericConfiguration, api_client: &mut DataPlaneSecureClient, cmd: ReplayCommand,
+) -> Result<(), GenericError> {
+    println!("Replaying dogstatsd traffic...\n");
+
+    let dogstatsd_config = DogStatsDConfiguration::from_configuration(bootstrap_config)
+        .error_context("Failed to load DogStatsD configuration for replay.")?;
+    let socket_path = dogstatsd_config.socket_path().ok_or_else(|| {
+        saluki_error::generic_error!("DogStatsD Unix socket disabled: configure `dogstatsd_socket` before replaying.")
+    })?;
+
+    let mut reader = TrafficCaptureReader::from_path(&cmd.replay_file_path)?;
+    let injector = DogStatsDReplayInjector::from_socket_path(socket_path).await?;
+
+    match reader.read_state() {
+        Ok(Some(tagger_state)) => match api_client.dogstatsd_set_tagger_state(tagger_state).await {
+            Ok(true) => {}
+            Ok(false) => {
+                println!("API refused to set replay state, tag enrichment will be unavailable for this capture.");
+            }
+            Err(e) => {
+                println!("Unable to load replay state through the API, tag enrichment will be unavailable for this capture: {e}");
+            }
+        },
+        Ok(None) => {
+            println!("Capture file did not contain replay state, tag enrichment will be unavailable for this capture.");
+        }
+        Err(e) => {
+            println!("Unable to load replay state from file, tag enrichment will be unavailable for this capture: {e}");
+        }
+    }
+
+    let replay_result = tokio::select! {
+        result = replay_capture_loops(&injector, &mut reader, cmd.loops, cmd.verbose) => result,
+        _ = tokio::signal::ctrl_c() => {
+            println!("Replay interrupted.");
+            Ok(())
+        }
+    };
+
+    println!("Clearing agent replay state...");
+    let clear_result = api_client
+        .dogstatsd_clear_tagger_state()
+        .await
+        .error_context("Failed to clear DogStatsD replay state after replay.");
+
+    if let Ok(true) = &clear_result {
+        println!("The capture state and pid map have been successfully cleared from ADP.");
+    }
+
+    match (replay_result, clear_result) {
+        (Ok(()), Ok(_)) => {
+            println!("Replay done");
+            Ok(())
+        }
+        (Err(replay_error), Ok(_)) => Err(replay_error),
+        (Ok(()), Err(clear_error)) => Err(clear_error),
+        (Err(replay_error), Err(clear_error)) => Err(saluki_error::generic_error!(
+            "Replay failed: {}. Additionally failed to clear replay state: {}.",
+            replay_error,
+            clear_error
+        )),
+    }
+}
+
+async fn replay_capture_loops(
+    injector: &DogStatsDReplayInjector, reader: &mut TrafficCaptureReader, loops: usize, verbose: bool,
+) -> Result<(), GenericError> {
+    let mut iteration = 0;
+    while should_replay_iteration(iteration, loops) {
+        injector.replay_once(reader, verbose).await?;
+        iteration += 1;
+    }
+
+    Ok(())
+}
+
+fn should_replay_iteration(iteration: usize, loops: usize) -> bool {
+    loops == 0 || iteration < loops
 }
 
 async fn handle_stats_summary_analysis(cmd: &StatsCommand, mut response: StatsResponse<'_>) -> io::Result<()> {
@@ -340,10 +458,23 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::default_capture_duration;
+    use super::{default_capture_duration, should_replay_iteration};
 
     #[test]
     fn dogstatsd_capture_default_duration_matches_go() {
         assert_eq!(default_capture_duration(), "1m0s");
+    }
+
+    #[test]
+    fn replay_loops_zero_means_forever() {
+        assert!(should_replay_iteration(0, 0));
+        assert!(should_replay_iteration(25, 0));
+    }
+
+    #[test]
+    fn replay_loops_positive_limits_iterations() {
+        assert!(should_replay_iteration(0, 2));
+        assert!(should_replay_iteration(1, 2));
+        assert!(!should_replay_iteration(2, 2));
     }
 }

@@ -3,13 +3,25 @@ use std::io;
 use bytes::BufMut;
 use socket2::{MaybeUninitSlice, MsgHdrMut, SockAddr, SockAddrStorage, SockRef};
 
-use crate::net::{ConnectionAddress, ReceiveResult};
+use crate::net::{ConnectionAddress, ProcessCredentials, ReceiveResult};
 
 pub fn enable_uds_socket_credentials<'sock, S>(_socket: &'sock S) -> io::Result<()>
 where
     SockRef<'sock>: From<&'sock S>,
 {
     Ok(())
+}
+
+pub(super) fn uds_sendmsg<'sock, S>(
+    _socket: &'sock S, _payload: &[u8], _process_credentials: ProcessCredentials,
+) -> io::Result<usize>
+where
+    SockRef<'sock>: From<&'sock S>,
+{
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "Unix socket credential replay is not supported on this platform",
+    ))
 }
 
 pub(super) fn uds_recvmsg<'sock, S, B: BufMut>(socket: &'sock S, buf: &mut B) -> io::Result<ReceiveResult>
@@ -44,4 +56,29 @@ where
         address: ConnectionAddress::ProcessLike(None),
         ancillary_data: Vec::new(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{io::ErrorKind, os::unix::net::UnixDatagram};
+
+    use super::uds_sendmsg;
+    use crate::net::ProcessCredentials;
+
+    #[test]
+    fn uds_sendmsg_reports_unsupported() {
+        let (sender, _receiver) = UnixDatagram::pair().expect("socket pair should create");
+        let error = uds_sendmsg(
+            &sender,
+            b"metric:1|c",
+            ProcessCredentials {
+                pid: 1,
+                uid: 2,
+                gid: 3,
+            },
+        )
+        .expect_err("replay credentials should be unsupported on non-Linux platforms");
+
+        assert_eq!(error.kind(), ErrorKind::Unsupported);
+    }
 }

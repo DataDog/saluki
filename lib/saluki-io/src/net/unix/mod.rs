@@ -18,15 +18,15 @@ mod linux;
 #[cfg(target_os = "linux")]
 pub use self::linux::enable_uds_socket_credentials;
 #[cfg(target_os = "linux")]
-use self::linux::uds_recvmsg;
+use self::linux::{uds_recvmsg, uds_sendmsg};
 
 #[cfg(not(target_os = "linux"))]
 mod non_linux;
 #[cfg(not(target_os = "linux"))]
 pub use self::non_linux::enable_uds_socket_credentials;
 #[cfg(not(target_os = "linux"))]
-use self::non_linux::uds_recvmsg;
-use super::stream::ReceiveResult;
+use self::non_linux::{uds_recvmsg, uds_sendmsg};
+use super::{addr::ProcessCredentials, stream::ReceiveResult};
 
 /// Ensures that the given path is read for use as a UNIX socket.
 ///
@@ -121,5 +121,24 @@ pub async fn unixgram_recvmsg<B: BufMut>(socket: &mut UnixDatagram, buf: &mut B)
     // reads to get ancillary data such as the socket credentials used to shuttle origin detection information.
     socket
         .async_io(tokio::io::Interest::READABLE, || uds_recvmsg(socket, buf))
+        .await
+}
+
+/// Sends a datagram over a connected Unix domain socket with explicit process credentials.
+///
+/// This is used by DogStatsD replay to reproduce Go's Linux UDS send path, where replay traffic is tagged by a
+/// synthetic credential block rather than the replay process's real UID/GID.
+///
+/// ## Errors
+///
+/// If the underlying system call fails, or if the current platform does not support replay credentials, an error is
+/// returned.
+pub async fn unixgram_sendmsg_with_credentials(
+    socket: &UnixDatagram, payload: &[u8], process_credentials: ProcessCredentials,
+) -> io::Result<usize> {
+    socket
+        .async_io(tokio::io::Interest::WRITABLE, || {
+            uds_sendmsg(socket, payload, process_credentials.clone())
+        })
         .await
 }

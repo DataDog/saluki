@@ -1,7 +1,7 @@
 use std::{path::PathBuf, time::Duration};
 
 use bytes::Buf as _;
-use datadog_protos::agent::{AgentSecureClient, CaptureTriggerRequest};
+use datadog_protos::agent::{AgentSecureClient, CaptureTriggerRequest, TaggerState};
 use futures::TryFutureExt as _;
 use http::{uri::PathAndQuery, Request, Response, StatusCode, Uri};
 use http_body_util::BodyExt as _;
@@ -342,6 +342,31 @@ impl DataPlaneSecureClient {
 
         Ok(response.path)
     }
+
+    /// Loads replay tagger state into ADP through the secure gRPC API.
+    ///
+    /// # Errors
+    ///
+    /// If the RPC fails, an error is returned.
+    pub async fn dogstatsd_set_tagger_state(&mut self, tagger_state: TaggerState) -> Result<bool, GenericError> {
+        let response = self
+            .client
+            .dogstatsd_set_tagger_state(tagger_state)
+            .await
+            .map_err(map_dogstatsd_tagger_state_error)?
+            .into_inner();
+
+        Ok(response.loaded)
+    }
+
+    /// Clears any replay tagger state currently loaded in ADP.
+    ///
+    /// # Errors
+    ///
+    /// If the RPC fails, an error is returned.
+    pub async fn dogstatsd_clear_tagger_state(&mut self) -> Result<bool, GenericError> {
+        self.dogstatsd_set_tagger_state(TaggerState::default()).await
+    }
 }
 
 async fn collect_body(body: Incoming) -> Option<String> {
@@ -396,9 +421,20 @@ fn map_dogstatsd_capture_error(error: Status) -> GenericError {
     }
 }
 
+fn map_dogstatsd_tagger_state_error(error: Status) -> GenericError {
+    match error.code() {
+        Code::FailedPrecondition | Code::InvalidArgument => generic_error!("{}", error.message()),
+        _ => generic_error!(
+            "Failed to set DogStatsD replay state ({}): {}.",
+            error.code(),
+            error.message()
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::map_dogstatsd_capture_error;
+    use super::{map_dogstatsd_capture_error, map_dogstatsd_tagger_state_error};
     use tonic::{Code, Status};
 
     #[test]
@@ -421,6 +457,22 @@ mod tests {
 
         let message = error.to_string();
         assert!(message.contains("Failed to start DogStatsD capture"));
+        assert!(message.contains("connection closed"));
+    }
+
+    #[test]
+    fn dogstatsd_tagger_state_failed_precondition_surfaces_server_message() {
+        let error = map_dogstatsd_tagger_state_error(Status::new(Code::FailedPrecondition, "replay unavailable"));
+
+        assert_eq!(error.to_string(), "replay unavailable");
+    }
+
+    #[test]
+    fn dogstatsd_tagger_state_other_errors_keep_context() {
+        let error = map_dogstatsd_tagger_state_error(Status::new(Code::Unavailable, "connection closed"));
+
+        let message = error.to_string();
+        assert!(message.contains("Failed to set DogStatsD replay state"));
         assert!(message.contains("connection closed"));
     }
 }

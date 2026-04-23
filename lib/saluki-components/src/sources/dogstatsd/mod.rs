@@ -68,7 +68,7 @@ use self::io_buffer::IoBufferManager;
 
 mod replay;
 use self::replay::{CaptureRecord, TrafficCapture, REPLAY_CREDENTIALS_GID};
-pub use self::replay::{DogStatsDCaptureControl, DogStatsDReplayState};
+pub use self::replay::{DogStatsDCaptureControl, DogStatsDReplayInjector, DogStatsDReplayState, TrafficCaptureReader};
 
 mod origin;
 use self::origin::{
@@ -437,6 +437,13 @@ impl DogStatsDConfiguration {
     /// Returns the shared control handle for DogStatsD traffic capture.
     pub fn capture_control(&self) -> DogStatsDCaptureControl {
         self.capture_control.clone()
+    }
+
+    /// Returns the configured DogStatsD Unix datagram socket path.
+    ///
+    /// When this returns `None`, the datagram-mode DogStatsD Unix socket listener is disabled.
+    pub fn socket_path(&self) -> Option<&str> {
+        self.socket_path.as_deref()
     }
 
     fn fix_empty_capture_path(&mut self, config: &GenericConfiguration) {
