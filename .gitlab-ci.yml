@@ -41,10 +41,6 @@ variables:
   SALUKI_BUILD_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/build-ci:latest-zstd"
   SALUKI_GENERAL_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/general-ci:latest-zstd"
   SALUKI_SMP_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/smp-ci:latest-zstd"
-  # Scratch-based image containing a single statically-linked `/buildcache` binary. Used as a
-  # `COPY --from=` source inside other Dockerfiles (e.g. the ADP build) to opt into buildcache
-  # as a compiler wrapper. Pin to an immutable `v<pipeline>-<sha>` tag after the first run of
-  # `generate-buildcache-ci-image` rather than floating `:latest` once we depend on it.
   SALUKI_BUILDCACHE_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/buildcache-ci:latest"
 
   # Converged Datadog Agent-specific variables, which control how we build the converged Datadog Agent image that we

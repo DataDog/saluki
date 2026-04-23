@@ -31,13 +31,13 @@ build-adp-with-buildcache:
     - ./test/buildcache/configure-buildcache-s3.sh
     - docker buildx create --name adp-buildcache-builder --driver docker-container --use
     - docker buildx build
-        --file ./docker/Dockerfile.agent-data-plane
-        --build-arg BUILD_IMAGE=${PUBLIC_BASE_IMAGE}
-        --build-arg APP_IMAGE=${PUBLIC_BASE_IMAGE}
-        --build-arg BUILDCACHE_IMAGE=${SALUKI_BUILDCACHE_CI_IMAGE}
-        --build-arg BUILDCACHE_REMOTE=s3://s3.${BUILDCACHE_S3_REGION}.amazonaws.com/${BUILDCACHE_S3_BUCKET}
-        --build-arg BUILDCACHE_DEBUG=1
-        --build-arg BUILD_PROFILE=release
-        --build-arg BUILD_TARGET=x86_64-unknown-linux-musl
-        --secret id=buildcache-aws-env,src=/tmp/buildcache-aws-env.sh
-        .
+      --file ./docker/Dockerfile.agent-data-plane
+      --build-arg BUILD_IMAGE=${PUBLIC_BASE_IMAGE}
+      --build-arg APP_IMAGE=${PUBLIC_BASE_IMAGE}
+      --build-arg BUILDCACHE_IMAGE=${SALUKI_BUILDCACHE_CI_IMAGE}
+      --build-arg BUILDCACHE_REMOTE=s3://s3.${BUILDCACHE_S3_REGION}.amazonaws.com/${BUILDCACHE_S3_BUCKET}
+      --build-arg BUILDCACHE_DEBUG=1
+      --build-arg BUILD_PROFILE=release
+      --build-arg BUILD_TARGET=x86_64-unknown-linux-musl
+      --secret id=buildcache-aws-env,src=/tmp/buildcache-aws-env.sh
+      .
