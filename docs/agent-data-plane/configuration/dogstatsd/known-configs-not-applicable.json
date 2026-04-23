@@ -2203,6 +2203,7 @@
   "traceroute.enabled",
   "use_compression",
   "use_diskv2_check",
+  "use_dogstatsd",
   "use_improved_cgroup_parser",
   "use_networkv2_check",
   "use_v2_api",
