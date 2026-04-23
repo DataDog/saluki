@@ -1,7 +1,4 @@
-FROM registry.ddbuild.io/docker:20.10-py3
-
-RUN --mount=type=bind,source=.ci/configure-apt-mirror.sh,target=/tmp/configure-apt-mirror.sh \
-    sh /tmp/configure-apt-mirror.sh
+FROM registry.ddbuild.io/docker:27.3.1
 
 # Install datadog-ci.
 RUN set -x \
@@ -14,6 +11,10 @@ RUN set -x \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g @datadog/datadog-ci@3.0.1 \
     && datadog-ci version
+
+# Install aws-cli.
+COPY .ci/install-awscli.sh /
+RUN chmod +x /install-awscli.sh && /install-awscli.sh
 
 COPY .ci/images/general/entrypoint.sh /
 RUN chmod +x /entrypoint.sh
