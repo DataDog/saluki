@@ -110,17 +110,24 @@ RUN --mount=type=secret,id=aws-creds,target=/run/secrets/aws-creds.sh,required=f
 # Profiling stage: download `ddprof` if this is an internal build, and pull in our profiling wrapper used for
 # running ADP via `ddprof` when in SMP.
 FROM ${PROFILING_IMAGE} AS profiling-builder
+
+ARG TARGETARCH
+ARG INTERNAL_BUILD=""
+
 RUN mkdir -p /tmp/profiling
 COPY ./ci/maybe-profile.sh /tmp/maybe-profile.sh
 RUN if [ "${INTERNAL_BUILD}" = "true" ]; then \
-        curl -s -L -o /tmp/profiling/ddprof https://github.com/DataDog/ddprof/releases/download/v0.22.1/ddprof-${TARGETARCH}; \
+        apt-get update && \
+        apt-get install --no-install-recommends -y ca-certificates curl && \
+        curl -s -L -o /tmp/profiling/ddprof https://github.com/DataDog/ddprof/releases/download/v0.22.1/ddprof-${TARGETARCH} && \
         mv /tmp/maybe-profile.sh /tmp/profiling/maybe-profile.sh; \
     fi
 
 # License stage: base layer preparation.
 FROM ${LICENSE_IMAGE} AS license-clean
-RUN apt-get update && apt-get install -y curl
-RUN curl -s -L -o /tmp/spdx.tar.gz https://github.com/spdx/license-list-data/archive/refs/tags/v3.28.0.tar.gz && \
+RUN apt-get update && \
+    apt-get install --no-install-recommends -y ca-certificates curl && \
+    curl -s -L -o /tmp/spdx.tar.gz https://github.com/spdx/license-list-data/archive/refs/tags/v3.28.0.tar.gz && \
     tar -C /tmp -xzf /tmp/spdx.tar.gz && \
     mv /tmp/license-list-data-3.28.0 /tmp/spdx-licenses
 
