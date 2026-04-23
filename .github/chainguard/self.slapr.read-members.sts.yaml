@@ -5,7 +5,7 @@ subject: repo:DataDog/saluki:pull_request
 
 claim_pattern:
   event_name: pull_request(_review)?
-  job_workflow_ref: DataDog/saluki/\.github/workflows/slapr\.yml@refs/heads/main
+  job_workflow_ref: DataDog/saluki/\.github/workflows/slapr\.yml@refs/*
 
 permissions:
   members: read
