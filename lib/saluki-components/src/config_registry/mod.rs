@@ -9,6 +9,7 @@
 //! unknown or unsupported keys in a loaded configuration file.
 
 pub mod datadog;
+pub mod generated;
 
 pub use self::datadog::ALL_KEYS;
 
@@ -41,6 +42,29 @@ pub enum ValueType {
     Float,
     /// A list of strings (YAML sequence or space-separated env var string).
     StringList,
+}
+
+/// Schema-derived metadata for a single configuration key.
+///
+/// Generated from the vendored Datadog Agent config schema. Contains only what the schema
+/// knows: the canonical YAML path, declared environment variables, and value type. Saluki-specific
+/// fields (`used_by`, `support_level`, etc.) live in [`ConfigKey`] annotations instead.
+///
+/// Do not construct these manually — they are produced by `cargo xtask gen-config-schema` and
+/// live in `config_registry::generated::schema`.
+#[derive(Debug)]
+pub struct SchemaEntry {
+    /// Canonical dot-separated YAML path for this key (e.g. `"proxy.http"`).
+    pub yaml_path: &'static str,
+
+    /// Environment variables that deliver this value, as declared in the schema.
+    ///
+    /// Empty when the schema marks the key `no-env` or lists no env vars. Annotations may
+    /// override this with additional or corrected env vars.
+    pub env_vars: &'static [&'static str],
+
+    /// Shape of the value.
+    pub value_type: ValueType,
 }
 
 /// Specification for a single recognized configuration key.
