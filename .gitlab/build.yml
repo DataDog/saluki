@@ -8,14 +8,22 @@
   variables:
     APP_BUILD_TIME: ${CI_PIPELINE_CREATED_AT}
     DDCI_CONFIGURE_OTEL_EXPORTER: true
+    # Configure `buildcache` to use our shared cache bucket.
+    BUILDCACHE_S3_BUCKET: "dd-saluki-build-cache-us1-ddbuild-io"
+    BUILDCACHE_S3_REGION: "us-east-1"
   script:
     - docker buildx create --name adp-builder --driver docker-container --use
+    - echo "Acquiring temporary AWS credentials..."
+    - .ci/get-temporary-aws-credentials.sh
     - 'echo "Building ADP image. (version: ${ADP_IMAGE_VERSION}, target: ${BUILD_TARGET}, profile: ${BUILD_PROFILE})"'
     - docker buildx build
       --file ./docker/Dockerfile.agent-data-plane
       --output push-by-digest=true,type=image,push=true
       --metadata-file ./build-metadata.${BUILD_ARCH}
       --tag ${ADP_IMAGE_REPO_BASE}
+      --build-arg BUILDCACHE_IMAGE=${SALUKI_BUILDCACHE_CI_IMAGE}
+      --build-arg BUILDCACHE_REMOTE=s3://s3.${BUILDCACHE_S3_REGION}.amazonaws.com/${BUILDCACHE_S3_BUCKET}
+      --build-arg BUILDCACHE_DEBUG=1
       --build-arg BUILD_IMAGE=${ADP_BUILD_IMAGE}
       --build-arg BUILD_BASE=build-prepped
       --build-arg APP_IMAGE=${APP_IMAGE}
@@ -39,6 +47,7 @@
       --label "org.opencontainers.image.title=Agent Data Plane"
       --label "org.opencontainers.image.vendor=Datadog, Inc."
       --label "org.opencontainers.image.version=${ADP_IMAGE_VERSION}"
+      --secret id=aws-creds,src=/tmp/temporary-aws-credentials.sh
       --push
       .
   artifacts:
