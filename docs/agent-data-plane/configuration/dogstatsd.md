@@ -1,6 +1,6 @@
 # Configuring DogStatsD on Agent Data Plane
 
-<!-- Last updated: 2026-04-21 -->
+<!-- Last updated: 2026-04-23 -->
 
 The DogStatsD implementation on ADP has been redesigned in Rust for better resource guarantees and
 efficiency. Because the architecture is different from the original implementation, certain
@@ -92,6 +92,7 @@ default values.
 | `enable_payloads.series`             | Allow sending series payloads    | Dot separator             | Underscore: `enable_payloads_series` ([#1366])  |
 | `enable_payloads.service_checks`     | Allow sending svc check payloads | Dot separator             | Underscore ([#1366])                            |
 | `enable_payloads.sketches`           | Allow sending sketch payloads    | Dot separator             | Underscore ([#1366])                            |
+| `expected_tags_duration`             | Host tag enrichment duration     | Parses duration strings   | Integer seconds only ([#1460])                  |
 | `serializer_zstd_compressor_level`   | Zstd compression level           | Default level 1           | Default level 3 (intentional)                   |
 | `statsd_metric_namespace_blacklist`  | Prefixes exempt from namespace   | `_blacklist` key          | Use `_blocklist` key ([#1353])                  |
 | `telemetry.enabled`                  | Global telemetry toggle          | Agent toggle              | Use `data_plane.telemetry_enabled` ([#1338])    |
@@ -252,7 +253,6 @@ The following settings work in ADP with the same behavior as the core agent.
 | `dogstatsd_string_interner_size`          | String interner capacity         |
 | `dogstatsd_tag_cardinality`               | Default tag cardinality level    |
 | `dogstatsd_tags`                          | Extra tags added to all DSD data |
-| `expected_tags_duration`                  | Host tag enrichment duration     |
 | `forwarder_backoff_base`                  | Retry backoff base (secs)        |
 | `forwarder_backoff_factor`                | Retry backoff jitter factor      |
 | `forwarder_backoff_max`                   | Retry backoff ceiling (secs)     |
@@ -329,3 +329,4 @@ The following settings work in ADP with the same behavior as the core agent.
 [#1382]: https://github.com/DataDog/saluki/issues/1382
 [#1433]: https://github.com/DataDog/saluki/issues/1433
 [#1434]: https://github.com/DataDog/saluki/issues/1434
+[#1460]: https://github.com/DataDog/saluki/issues/1460
