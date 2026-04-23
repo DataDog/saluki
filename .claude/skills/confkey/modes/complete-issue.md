@@ -79,6 +79,8 @@ interactive back-and-forth until they are satisfied.
 Write all confirmed changes:
 
 - Update entries in `{{config_docs}}/known-configs.json`. Keep array sorted alphabetically by `key`.
+- Retain the `issue` field after work is complete. It preserves the historical link back to the
+  GitHub issue that drove the change. Do not clear it to `null`.
 - If any key is reclassified as not-applicable: move it from `known-configs.json` to
   `known-configs-not-applicable.json`. Keep both arrays sorted alphabetically.
 - Update `{{saluki}}/docs/agent-data-plane/configuration/dogstatsd.md`:
