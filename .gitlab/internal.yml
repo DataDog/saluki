@@ -126,6 +126,12 @@ generate-buildcache-ci-image:
     IMAGE_NAME: buildcache-ci
     DOCKERFILE: .ci/images/buildcache/Dockerfile
 
+generate-spdx-licenses-ci-image:
+  extends: [.generate-ci-image-definition]
+  variables:
+    IMAGE_NAME: spdx-licenses-ci
+    DOCKERFILE: .ci/images/spdx-licenses/Dockerfile
+
 generate-build-ci-image-zstd:
   extends: [.generate-ci-image-zstd-definition]
   before_script:
@@ -154,6 +160,12 @@ generate-buildcache-ci-image-zstd:
     IMAGE_NAME: buildcache-ci
     DOCKERFILE: .ci/images/buildcache/Dockerfile
 
+generate-spdx-licenses-ci-image-zstd:
+  extends: [.generate-ci-image-zstd-definition]
+  variables:
+    IMAGE_NAME: spdx-licenses-ci
+    DOCKERFILE: .ci/images/spdx-licenses/Dockerfile
+
 promote-build-ci-image:
   extends: [.promote-ci-image-definition]
   variables:
@@ -178,6 +190,12 @@ promote-buildcache-ci-image:
     IMAGE_NAME: buildcache-ci
   needs: [generate-buildcache-ci-image]
 
+promote-spdx-licenses-ci-image:
+  extends: [.promote-ci-image-definition]
+  variables:
+    IMAGE_NAME: spdx-licenses-ci
+  needs: [generate-spdx-licenses-ci-image]
+
 promote-build-ci-image-zstd:
   extends: [.promote-ci-image-zstd-definition]
   variables:
@@ -201,3 +219,9 @@ promote-buildcache-ci-image-zstd:
   variables:
     IMAGE_NAME: buildcache-ci
   needs: [generate-buildcache-ci-image-zstd]
+
+promote-spdx-licenses-ci-image-zstd:
+  extends: [.promote-ci-image-zstd-definition]
+  variables:
+    IMAGE_NAME: spdx-licenses-ci
+  needs: [generate-spdx-licenses-ci-image-zstd]

@@ -25,6 +25,8 @@
       --build-arg BUILDCACHE_REMOTE=s3://s3.${BUILDCACHE_S3_REGION}.amazonaws.com/${BUILDCACHE_S3_BUCKET}
       --build-arg BUILD_IMAGE=${ADP_BUILD_IMAGE}
       --build-arg BUILD_BASE=build-prepped
+      --build-arg LICENSE_IMAGE=${SALUKI_SPDX_LICENSES_CI_IMAGE}
+      --build-arg LICENSE_BASE=license-prepped
       --build-arg APP_IMAGE=${APP_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg BUILD_FEATURES=${BUILD_FEATURES}
