@@ -153,7 +153,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `forwarder_retry_queue_max_size` — (deprecated) max in-memory retry queue size in bytes. Schema Float; field Option<u64>.
+    /// `forwarder_retry_queue_max_size` — (deprecated) max in-memory retry queue size in bytes. Schema Float; field `Option<u64>`.
     FORWARDER_RETRY_QUEUE_MAX_SIZE = SalukiAnnotation {
         schema: &schema::FORWARDER_RETRY_QUEUE_MAX_SIZE,
         support_level: SupportLevel::Full,
@@ -164,7 +164,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `forwarder_retry_queue_payloads_max_size` — max in-memory retry queue size in bytes. Schema Float; field Option<u64>.
+    /// `forwarder_retry_queue_payloads_max_size` — max in-memory retry queue size in bytes. Schema Float; field `Option<u64>`.
     FORWARDER_RETRY_QUEUE_PAYLOADS_MAX_SIZE = SalukiAnnotation {
         schema: &schema::FORWARDER_RETRY_QUEUE_PAYLOADS_MAX_SIZE,
         support_level: SupportLevel::Full,
