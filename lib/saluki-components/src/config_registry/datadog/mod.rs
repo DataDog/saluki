@@ -4,6 +4,8 @@
 pub mod dogstatsd_mapper;
 /// Shared encoder configuration annotations.
 pub mod encoders;
+/// OTLP source, decoder, and relay configuration annotations.
+pub mod otlp;
 /// Proxy configuration annotations.
 pub mod proxy;
 
@@ -19,6 +21,7 @@ pub static ALL_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>> = LazyLock:
     let mut v = Vec::new();
     v.extend_from_slice(dogstatsd_mapper::ALL);
     v.extend_from_slice(encoders::ALL);
+    v.extend_from_slice(otlp::ALL);
     v.extend_from_slice(proxy::ALL);
     v
 });
