@@ -22,45 +22,6 @@
       --label ci.pipeline_id=${CI_PIPELINE_ID}
       --label ci.job_id=${CI_JOB_ID}
       ${BUILD_ARGS}
-      --push
-      --metadata-file ./build.metadata
-      --file ${DOCKERFILE}
-      .
-    # Now flatten the image, realizing any space savings from duplicate layers, cleaned up cruft, etc.
-    - crane flatten --tag ${IMAGE_REF} ${IMAGE_REF}
-    # Recalculate the image digest post-flattening and update the build metadata so we can sign the flattened image.
-    - NEW_DIGEST=$(crane digest ${IMAGE_REF})
-    - jq --arg d "$NEW_DIGEST" '.["containerimage.digest"] = $d' build.metadata > build.metadata.new && mv build.metadata.new build.metadata
-    - ddsign sign ${IMAGE_REF} --docker-metadata-file ./build.metadata
-
-# Builds the zstd-compressed variant of a CI image. Pushed as a single multi-arch image with all
-# layers compressed at zstd level 19. No flatten step: `crane flatten` always emits gzip and would
-# undo the win, so each layer is the buildx-emitted zstd blob directly. Tagged with a `-zstd`
-# suffix so it coexists with the gzip variant during evaluation.
-.generate-ci-image-zstd-definition:
-  stage: internal
-  image: ${DOCKER_BUILD_IMAGE}
-  id_tokens:
-    DDSIGN_ID_TOKEN:
-      aud: image-integrity
-  needs: []
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "web"
-      when: manual
-      allow_failure: true
-    - if: $CI_PIPELINE_SOURCE == "schedule" && $BUILD_HELPER_IMAGES == "true"
-      allow_failure: true
-  script:
-    - export IMAGE_REF=${SALUKI_IMAGE_REPO_BASE}/${IMAGE_NAME}:v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}-zstd
-    - docker buildx build
-      --platform linux/amd64,linux/arm64
-      --tag ${IMAGE_REF}
-      --label git.repository=${CI_PROJECT_NAME}
-      --label git.branch=${CI_COMMIT_REF_NAME}
-      --label git.commit=${CI_COMMIT_SHA}
-      --label ci.pipeline_id=${CI_PIPELINE_ID}
-      --label ci.job_id=${CI_JOB_ID}
-      ${BUILD_ARGS}
       --output type=registry,compression=zstd,compression-level=19,force-compression=true,oci-mediatypes=true
       --metadata-file ./build.metadata
       --file ${DOCKERFILE}
@@ -78,25 +39,10 @@
       when: manual
       allow_failure: true
     - if: $CI_PIPELINE_SOURCE == "schedule" && $BUILD_HELPER_IMAGES == "true"
-      when: manual
       allow_failure: true
   script:
     - export IMAGE_REF=${SALUKI_IMAGE_REPO_BASE}/${IMAGE_NAME}:v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}
     - crane tag ${IMAGE_REF} latest
-
-.promote-ci-image-zstd-definition:
-  stage: internal
-  image: ${DOCKER_BUILD_IMAGE}
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "web"
-      when: manual
-      allow_failure: true
-    - if: $CI_PIPELINE_SOURCE == "schedule" && $BUILD_HELPER_IMAGES == "true"
-      when: manual
-      allow_failure: true
-  script:
-    - export IMAGE_REF=${SALUKI_IMAGE_REPO_BASE}/${IMAGE_NAME}:v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}-zstd
-    - crane tag ${IMAGE_REF} latest-zstd
 
 generate-build-ci-image:
   extends: [.generate-ci-image-definition]
@@ -132,40 +78,6 @@ generate-spdx-licenses-ci-image:
     IMAGE_NAME: spdx-licenses-ci
     DOCKERFILE: .ci/images/spdx-licenses/Dockerfile
 
-generate-build-ci-image-zstd:
-  extends: [.generate-ci-image-zstd-definition]
-  before_script:
-    - export RUST_VERSION=$(grep channel rust-toolchain.toml | cut -d '"' -f 2)
-    - echo RUST_VERSION=${RUST_VERSION}
-    - export BUILD_ARGS="--build-arg RUST_VERSION=${RUST_VERSION}"
-  variables:
-    IMAGE_NAME: build-ci
-    DOCKERFILE: .ci/images/build/Dockerfile
-
-generate-general-ci-image-zstd:
-  extends: [.generate-ci-image-zstd-definition]
-  variables:
-    IMAGE_NAME: general-ci
-    DOCKERFILE: .ci/images/general/Dockerfile
-
-generate-smp-ci-image-zstd:
-  extends: [.generate-ci-image-zstd-definition]
-  variables:
-    IMAGE_NAME: smp-ci
-    DOCKERFILE: .ci/images/smp/Dockerfile
-
-generate-buildcache-ci-image-zstd:
-  extends: [.generate-ci-image-zstd-definition]
-  variables:
-    IMAGE_NAME: buildcache-ci
-    DOCKERFILE: .ci/images/buildcache/Dockerfile
-
-generate-spdx-licenses-ci-image-zstd:
-  extends: [.generate-ci-image-zstd-definition]
-  variables:
-    IMAGE_NAME: spdx-licenses-ci
-    DOCKERFILE: .ci/images/spdx-licenses/Dockerfile
-
 promote-build-ci-image:
   extends: [.promote-ci-image-definition]
   variables:
@@ -195,33 +107,3 @@ promote-spdx-licenses-ci-image:
   variables:
     IMAGE_NAME: spdx-licenses-ci
   needs: [generate-spdx-licenses-ci-image]
-
-promote-build-ci-image-zstd:
-  extends: [.promote-ci-image-zstd-definition]
-  variables:
-    IMAGE_NAME: build-ci
-  needs: [generate-build-ci-image-zstd]
-
-promote-general-ci-image-zstd:
-  extends: [.promote-ci-image-zstd-definition]
-  variables:
-    IMAGE_NAME: general-ci
-  needs: [generate-general-ci-image-zstd]
-
-promote-smp-ci-image-zstd:
-  extends: [.promote-ci-image-zstd-definition]
-  variables:
-    IMAGE_NAME: smp-ci
-  needs: [generate-smp-ci-image-zstd]
-
-promote-buildcache-ci-image-zstd:
-  extends: [.promote-ci-image-zstd-definition]
-  variables:
-    IMAGE_NAME: buildcache-ci
-  needs: [generate-buildcache-ci-image-zstd]
-
-promote-spdx-licenses-ci-image-zstd:
-  extends: [.promote-ci-image-zstd-definition]
-  variables:
-    IMAGE_NAME: spdx-licenses-ci
-  needs: [generate-spdx-licenses-ci-image-zstd]
