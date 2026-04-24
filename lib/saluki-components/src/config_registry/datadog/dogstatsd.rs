@@ -98,6 +98,17 @@ static ENABLE_PAYLOADS_SKETCHES_SCHEMA: SchemaEntry = SchemaEntry {
 crate::declare_annotations! {
     // ── Schema-based ──────────────────────────────────────────────────────────
 
+    /// `bind_host` — host address to bind UDP/TCP listeners to.
+    BIND_HOST = SalukiAnnotation {
+        schema: &schema::BIND_HOST,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DOGSTATSD_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+    };
+
     /// `dogstatsd_buffer_size` — receive buffer size in bytes. Schema says Float; field is usize.
     DOGSTATSD_BUFFER_SIZE = SalukiAnnotation {
         schema: &schema::DOGSTATSD_BUFFER_SIZE,

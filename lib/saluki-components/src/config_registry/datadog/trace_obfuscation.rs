@@ -6,7 +6,7 @@
 //! `apm_config.obfuscation.*` (e.g. `apm_config.obfuscation.credit_cards.enabled`).
 //! See the constants `APM_CONFIG_OBFUSCATION_*` in `generated/schema.rs`.
 //!
-//! However, [`TraceObfuscationConfiguration`] contains a `config: ObfuscationConfig` field,
+//! However, `TraceObfuscationConfiguration` contains a `config: ObfuscationConfig` field,
 //! so `cfg.as_typed::<TraceObfuscationConfiguration>()` reads from `config.*` paths, not
 //! `apm_config.obfuscation.*`. Custom statics with the `config.*` prefix are required for
 //! the smoke tests to exercise the right yaml paths.

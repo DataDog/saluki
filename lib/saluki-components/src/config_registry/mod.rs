@@ -57,37 +57,37 @@ pub mod test_support;
 /// Used as values in [`SalukiAnnotation::used_by`] to declare which structs consume a given key.
 /// Adding a new struct here is the first step when registering its configuration keys.
 pub mod structs {
-    /// Identifier for [`crate::common::datadog::proxy::ProxyConfiguration`].
+    /// Identifier for `ProxyConfiguration`.
     pub const PROXY_CONFIGURATION: &str = "ProxyConfiguration";
-    /// Identifier for [`crate::common::datadog::config::ForwarderConfiguration`].
+    /// Identifier for `ForwarderConfiguration`.
     pub const FORWARDER_CONFIGURATION: &str = "ForwarderConfiguration";
-    /// Identifier for [`crate::sources::dogstatsd::DogStatsDConfiguration`].
+    /// Identifier for `DogStatsDConfiguration`.
     pub const DOGSTATSD_CONFIGURATION: &str = "DogStatsDConfiguration";
-    /// Identifier for [`crate::sources::otlp::OtlpConfiguration`].
+    /// Identifier for `OtlpConfiguration`.
     pub const OTLP_CONFIGURATION: &str = "OtlpConfiguration";
-    /// Identifier for [`crate::transforms::aggregate::AggregateConfiguration`].
+    /// Identifier for `AggregateConfiguration`.
     pub const AGGREGATE_CONFIGURATION: &str = "AggregateConfiguration";
-    /// Identifier for [`crate::transforms::dogstatsd_mapper::DogStatsDMapperConfiguration`].
+    /// Identifier for `DogStatsDMapperConfiguration`.
     pub const DOGSTATSD_MAPPER_CONFIGURATION: &str = "DogStatsDMapperConfiguration";
-    /// Identifier for [`crate::transforms::dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration`].
+    /// Identifier for `DogStatsDPrefixFilterConfiguration`.
     pub const DOGSTATSD_PREFIX_FILTER_CONFIGURATION: &str = "DogStatsDPrefixFilterConfiguration";
-    /// Identifier for [`crate::encoders::datadog::metrics::DatadogMetricsConfiguration`].
+    /// Identifier for `DatadogMetricsConfiguration`.
     pub const DATADOG_METRICS_CONFIGURATION: &str = "DatadogMetricsConfiguration";
-    /// Identifier for [`crate::encoders::datadog::traces::DatadogTraceConfiguration`].
+    /// Identifier for `DatadogTraceConfiguration`.
     pub const DATADOG_TRACE_CONFIGURATION: &str = "DatadogTraceConfiguration";
-    /// Identifier for [`crate::encoders::datadog::logs::DatadogLogsConfiguration`].
+    /// Identifier for `DatadogLogsConfiguration`.
     pub const DATADOG_LOGS_CONFIGURATION: &str = "DatadogLogsConfiguration";
-    /// Identifier for [`crate::encoders::datadog::events::DatadogEventsConfiguration`].
+    /// Identifier for `DatadogEventsConfiguration`.
     pub const DATADOG_EVENTS_CONFIGURATION: &str = "DatadogEventsConfiguration";
-    /// Identifier for [`crate::encoders::datadog::service_checks::DatadogServiceChecksConfiguration`].
+    /// Identifier for `DatadogServiceChecksConfiguration`.
     pub const DATADOG_SERVICE_CHECKS_CONFIGURATION: &str = "DatadogServiceChecksConfiguration";
-    /// Identifier for [`crate::encoders::datadog::stats::DatadogApmStatsEncoderConfiguration`].
+    /// Identifier for `DatadogApmStatsEncoderConfiguration`.
     pub const DATADOG_APM_STATS_ENCODER_CONFIGURATION: &str = "DatadogApmStatsEncoderConfiguration";
-    /// Identifier for [`crate::decoders::otlp::OtlpDecoderConfiguration`].
+    /// Identifier for `OtlpDecoderConfiguration`.
     pub const OTLP_DECODER_CONFIGURATION: &str = "OtlpDecoderConfiguration";
-    /// Identifier for [`crate::relays::otlp::OtlpRelayConfiguration`].
+    /// Identifier for `OtlpRelayConfiguration`.
     pub const OTLP_RELAY_CONFIGURATION: &str = "OtlpRelayConfiguration";
-    /// Identifier for [`crate::transforms::trace_obfuscation::TraceObfuscationConfiguration`].
+    /// Identifier for `TraceObfuscationConfiguration`.
     pub const TRACE_OBFUSCATION_CONFIGURATION: &str = "TraceObfuscationConfiguration";
 }
 
