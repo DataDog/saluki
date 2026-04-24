@@ -250,7 +250,24 @@ ifeq ($(shell command -v protoc >/dev/null || echo not-found), not-found)
 endif
 ifeq ($(shell command -v cargo-binstall >/dev/null || echo not-found), not-found)
 	@echo "[*] Installing cargo-binstall@$(CARGO_TOOL_VERSION_cargo-binstall)..."
-	@cargo install cargo-binstall@$(CARGO_TOOL_VERSION_cargo-binstall)
+	@set -eu; \
+		host_triple=$$(rustc -vV | awk '/^host:/ { print $$2 }'); \
+		case "$$host_triple" in \
+			*apple-darwin|*windows*) ext=zip ;; \
+			*) ext=tgz ;; \
+		esac; \
+		asset="cargo-binstall-$$host_triple.full.$$ext"; \
+		url="https://github.com/cargo-bins/cargo-binstall/releases/download/v$(CARGO_TOOL_VERSION_cargo-binstall)/$$asset"; \
+		tmpdir=$$(mktemp -d); \
+		trap 'rm -rf "$$tmpdir"' EXIT; \
+		echo "[*] Downloading $$url..."; \
+		curl -fsSL "$$url" -o "$$tmpdir/$$asset"; \
+		case "$$ext" in \
+			zip) unzip -q "$$tmpdir/$$asset" -d "$$tmpdir" ;; \
+			tgz) tar -xzf "$$tmpdir/$$asset" -C "$$tmpdir" ;; \
+		esac; \
+		mkdir -p "$(CARGO_BIN_DIR)"; \
+		install -m 0755 "$$tmpdir/cargo-binstall" "$(CARGO_BIN_DIR)/cargo-binstall"
 endif
 
 ##@ Running
