@@ -29,6 +29,7 @@ crate::declare_annotations! {
             structs::DATADOG_TRACE_CONFIGURATION,
         ],
         value_type_override: None,
+        test_json: None,
     };
 
     /// `serializer_zstd_compressor_level` — zstd compression level for encoder request payloads.
@@ -46,6 +47,7 @@ crate::declare_annotations! {
             structs::DATADOG_TRACE_CONFIGURATION,
         ],
         value_type_override: Some(ValueType::Integer),
+        test_json: None,
     };
 
     /// `flush_timeout_secs` — how long to wait before force-flushing an in-flight payload.
@@ -61,6 +63,7 @@ crate::declare_annotations! {
             structs::DATADOG_TRACE_CONFIGURATION,
         ],
         value_type_override: None,
+        test_json: None,
     };
 
     /// `serializer_max_metrics_per_payload` — max metrics per encoded request payload.
@@ -72,6 +75,7 @@ crate::declare_annotations! {
         env_var_override: None,
         used_by: &[structs::DATADOG_METRICS_CONFIGURATION],
         value_type_override: None,
+        test_json: None,
     };
 
     /// `env` — the environment name attached to all emitted telemetry.
@@ -85,5 +89,6 @@ crate::declare_annotations! {
             structs::DATADOG_TRACE_CONFIGURATION,
         ],
         value_type_override: None,
+        test_json: None,
     };
 }

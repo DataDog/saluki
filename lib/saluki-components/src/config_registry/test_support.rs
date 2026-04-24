@@ -146,10 +146,14 @@ pub async fn run_config_smoke_tests<T, Factory>(
     // loaded independently; all must produce the same struct, and each must differ from the default.
     for annotation in &keys {
         let canonical_path = annotation.yaml_path();
+        let injected_value = match annotation.test_json {
+            Some(raw) => serde_json::from_str(raw).expect("test_json is not valid JSON"),
+            None => test_json_value(annotation.value_type()),
+        };
         let reference = config_factory(
             make_config_from_file(merge_over_base(
                 &base_config,
-                yaml_path_to_json(canonical_path, test_json_value(annotation.value_type())),
+                yaml_path_to_json(canonical_path, injected_value.clone()),
             ))
             .await,
         );
@@ -169,7 +173,7 @@ pub async fn run_config_smoke_tests<T, Factory>(
             let from_path = config_factory(
                 make_config_from_file(merge_over_base(
                     &base_config,
-                    yaml_path_to_json(yaml_path, test_json_value(annotation.value_type())),
+                    yaml_path_to_json(yaml_path, injected_value.clone()),
                 ))
                 .await,
             );
@@ -223,11 +227,11 @@ pub async fn run_config_smoke_tests<T, Factory>(
     // but have no registered annotation exercising them.
     let mut all_vals = base_config.clone();
     for annotation in keys {
-        saluki_config::upsert(
-            &mut all_vals,
-            annotation.yaml_path(),
-            test_json_value(annotation.value_type()),
-        );
+        let val = match annotation.test_json {
+            Some(raw) => serde_json::from_str(raw).expect("test_json is not valid JSON"),
+            None => test_json_value(annotation.value_type()),
+        };
+        saluki_config::upsert(&mut all_vals, annotation.yaml_path(), val);
     }
     let all_keys_struct = config_factory(make_config_from_file(all_vals).await);
     let full_map = serde_json::to_value(&all_keys_struct).expect("failed to serialize struct with all keys set");
