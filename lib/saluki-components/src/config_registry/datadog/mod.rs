@@ -1,5 +1,7 @@
 //! Datadog Agent configuration registry entries.
 
+/// Shared encoder configuration annotations.
+pub mod encoders;
 /// Proxy configuration annotations.
 pub mod proxy;
 
@@ -13,6 +15,7 @@ use super::{ConfigKey, SalukiAnnotation};
 /// Used by the smoke test runner and runtime unknown-key detection.
 pub static ALL_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>> = LazyLock::new(|| {
     let mut v = Vec::new();
+    v.extend_from_slice(encoders::ALL);
     v.extend_from_slice(proxy::ALL);
     v
 });

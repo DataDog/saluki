@@ -8,6 +8,7 @@ crate::declare_annotations! {
         additional_yaml_paths: &[],
         env_var_override: Some(&["DD_PROXY_HTTP", "HTTP_PROXY"]),
         used_by: &[structs::PROXY_CONFIGURATION],
+        value_type_override: None,
     };
 
     /// `proxy.https` → `ProxyConfiguration::https_server`
@@ -17,6 +18,7 @@ crate::declare_annotations! {
         additional_yaml_paths: &[],
         env_var_override: Some(&["DD_PROXY_HTTPS", "HTTPS_PROXY"]),
         used_by: &[structs::PROXY_CONFIGURATION],
+        value_type_override: None,
     };
 
     /// `proxy.no_proxy` → `ProxyConfiguration::no_proxy`
@@ -26,6 +28,7 @@ crate::declare_annotations! {
         additional_yaml_paths: &[],
         env_var_override: Some(&["DD_PROXY_NO_PROXY"]),
         used_by: &[structs::PROXY_CONFIGURATION],
+        value_type_override: None,
     };
 
     /// `no_proxy_nonexact_match` → `ProxyConfiguration::no_proxy_nonexact_match`
@@ -35,6 +38,7 @@ crate::declare_annotations! {
         additional_yaml_paths: &[],
         env_var_override: Some(&["DD_NO_PROXY_NONEXACT_MATCH"]),
         used_by: &[structs::PROXY_CONFIGURATION],
+        value_type_override: None,
     };
 
     /// `use_proxy_for_cloud_metadata` → `ProxyConfiguration::use_proxy_for_cloud_metadata`
@@ -44,5 +48,6 @@ crate::declare_annotations! {
         additional_yaml_paths: &[],
         env_var_override: Some(&["DD_USE_PROXY_FOR_CLOUD_METADATA"]),
         used_by: &[structs::PROXY_CONFIGURATION],
+        value_type_override: None,
     };
 }
