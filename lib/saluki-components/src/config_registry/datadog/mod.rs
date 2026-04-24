@@ -12,6 +12,8 @@ pub mod encoders;
 pub mod otlp;
 /// Proxy configuration annotations.
 pub mod proxy;
+/// Trace obfuscation transform configuration annotations.
+pub mod trace_obfuscation;
 
 use std::sync::LazyLock;
 
@@ -29,6 +31,7 @@ pub static ALL_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>> = LazyLock:
     v.extend_from_slice(encoders::ALL);
     v.extend_from_slice(otlp::ALL);
     v.extend_from_slice(proxy::ALL);
+    v.extend_from_slice(trace_obfuscation::ALL);
     v
 });
 
