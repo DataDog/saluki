@@ -788,7 +788,7 @@
     "action": "IMPLEMENT",
     "description": "Windows named pipe path",
     "reason": "ADP targets Linux for initial GA, this will follow with Windows support",
-    "issue": null,
+    "issue": "#1466",
     "adp_key": null
   },
   {
@@ -1396,10 +1396,10 @@
   },
   {
     "key": "metric_tag_filterlist",
-    "feature_state": "MISSING",
-    "action": "IMPLEMENT",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Per-metric tag include/exclude",
-    "reason": "Core agent supports per-metric tag include/exclude rules. ADP has no tag-filtering transform. No issue filed.",
+    "reason": "Core agent supports per-metric tag include/exclude rules. ADP has support. Moved to PARITY by Jesse in PR #1469.",
     "issue": null,
     "adp_key": null
   },
@@ -1553,7 +1553,7 @@
     "action": "IMPLEMENT",
     "description": "V3 API compression level",
     "reason": "V2 to V3 migration PR in progress. Feature is missing but actively being addressed.",
-    "issue": null,
+    "issue": "#1468",
     "adp_key": null
   },
   {
@@ -1562,7 +1562,7 @@
     "action": "IMPLEMENT",
     "description": "V3 API series endpoint list",
     "reason": "V2 to V3 migration PR in progress. Feature is missing but actively being addressed.",
-    "issue": null,
+    "issue": "#1468",
     "adp_key": null
   },
   {
@@ -1571,7 +1571,7 @@
     "action": "IMPLEMENT",
     "description": "V3 API series validation flag",
     "reason": "V2 to V3 migration PR in progress. Feature is missing but actively being addressed.",
-    "issue": null,
+    "issue": "#1468",
     "adp_key": null
   },
   {
@@ -1580,7 +1580,7 @@
     "action": "IMPLEMENT",
     "description": "V3 API sketches endpoints",
     "reason": "V2 to V3 migration PR in progress. Feature is missing but actively being addressed.",
-    "issue": null,
+    "issue": "#1468",
     "adp_key": null
   },
   {
@@ -1589,7 +1589,7 @@
     "action": "IMPLEMENT",
     "description": "V3 API sketches validation",
     "reason": "V2 to V3 migration PR in progress. Feature is missing but actively being addressed.",
-    "issue": null,
+    "issue": "#1468",
     "adp_key": null
   },
   {
