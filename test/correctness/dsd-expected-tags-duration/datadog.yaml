@@ -1,0 +1,26 @@
+# Using a fixed hostname is both required to avoid errors, and also will ensure consistent tags between DSD/ADP.
+hostname: "correctness-testing"
+
+# Dummy API key.
+api_key: dummy-api-key-correctness-testing
+
+# We have to specifically configure the health port to use.
+health_port: 5555
+
+# Point ourselves at the datadog-intake service.
+dd_url: "http://datadog-intake:2049"
+
+# Turn off UDP and listen on a UDS socket instead.
+dogstatsd_port: 0
+dogstatsd_socket: /airlock/metrics.sock
+
+dogstatsd_origin_detection: true
+
+# Gauges can be processed out-of-order when multiple workers are used, while ADP does not use multiple workers, so ADP
+# always ends up with the correct (last seen) value, while DSD might return the last seen value... or the value seen
+# four updates ago, etc etc.
+dogstatsd_workers_count: 1
+
+# 10s is a valid value for this key, but prior to fixing #1460 we would have errored on this value because we expected
+# an integer. This test proves that we accept duration strings.
+expected_tags_duration: 10s
