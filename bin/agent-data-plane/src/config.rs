@@ -293,11 +293,8 @@ mod tests {
 
     use super::*;
 
-    // The Core Agent owns the `use_dogstatsd` decision and communicates the result to ADP via
-    // `data_plane.dogstatsd.enabled`. ADP must not read `use_dogstatsd` directly — doing so would
-    // let ADP and the Core Agent disagree. These tests guard that invariant in both directions:
-    // `use_dogstatsd` must not enable DSD when `data_plane.dogstatsd.enabled=false`, and must not
-    // disable it when the key is unset (default true) or explicitly true.
+    // ADP ignores `use_dogstatsd`. The Core Agent evaluates that key and delivers the resolved
+    // decision to ADP by setting `data_plane.dogstatsd.enabled` via the config stream.
 
     #[tokio::test]
     async fn default_enables_dogstatsd() {
