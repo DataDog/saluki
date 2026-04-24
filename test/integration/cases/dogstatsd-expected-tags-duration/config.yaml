@@ -1,0 +1,37 @@
+type: integration
+name: "dogstatsd-expected-tags-duration"
+description: "Verifies ADP correctly handles duration strings for the expected_tags_duration config"
+timeout: 60s
+
+container:
+  image: "saluki-images/datadog-agent:testing-devel"
+  env:
+    DD_API_KEY: "test-api-key"
+    DD_HOSTNAME: "integration-test-dsd"
+    DD_DATA_PLANE_ENABLED: "true"
+    DD_DATA_PLANE_STANDALONE_MODE: "false"
+    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+    DD_DOGSTATSD_PORT: "8125"
+    DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
+    # This is the test input. It is a valid DurationString that would not be accepted before issue #1460 was fixed.
+    DD_EXPECTED_TAGS_DURATION: "0m13ms"
+  exposed_ports:
+    - "8125/udp"
+
+assertions:
+  # Make sure we always emit our initial startup log, which contains relevant information
+  # about the build version, architecture, and other details.
+  - type: log_contains
+    pattern: "Agent Data Plane starting"
+    timeout: 5s
+  # Make sure the process becomes healthy, and stays up without errors, for ~10 seconds after.
+  - parallel:
+      - type: process_stable_for
+        duration: 5s
+      - type: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 5s
+      - type: log_not_contains
+        pattern: "expected_tags_duration"
+        during: 5s

@@ -3792,6 +3792,7 @@ dependencies = [
 name = "saluki-config"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "figment",
  "saluki-error",
  "serde",

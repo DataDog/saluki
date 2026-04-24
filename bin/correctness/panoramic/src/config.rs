@@ -408,11 +408,10 @@ pub fn discover_tests(dirs: &[PathBuf]) -> Result<Vec<DiscoveredTest>, GenericEr
                     match try_load_test(&config_path, &path) {
                         Ok(test) => tests.push(test),
                         Err(e) => {
-                            tracing::warn!(
-                                path = %config_path.display(),
-                                error = %e,
-                                "Failed to load test case, skipping"
-                            );
+                            // Previously we had a warning here that cannot be seen in TUI-mode. It is better to fail
+                            // loudly and fast when we have a bad test configuration than to falsely believe our test is
+                            // working when we see that all tests passed.
+                            panic!("Failed to load test case, bad configuration: {e}");
                         }
                     }
                 }

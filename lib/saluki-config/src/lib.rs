@@ -17,9 +17,11 @@ use snafu::Snafu;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use tracing::{debug, error};
 
+pub mod duration_string;
 pub mod dynamic;
 mod provider;
 
+pub use self::duration_string::{DurationString, ParseDurationError};
 pub use self::dynamic::FieldUpdateWatcher;
 use self::dynamic::{ConfigChangeEvent, ConfigUpdate};
 use self::provider::ResolvedProvider;
