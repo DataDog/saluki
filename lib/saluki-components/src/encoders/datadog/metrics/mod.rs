@@ -102,6 +102,7 @@ const fn default_zstd_compressor_level() -> i32 {
 ///
 /// Generates Datadog metrics payloads for the Datadog platform.
 #[derive(Clone, Deserialize, Facet)]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 #[allow(dead_code)]
 pub struct DatadogMetricsConfiguration {
     /// Maximum number of input metrics to encode into a single request payload.
@@ -1059,5 +1060,23 @@ mod tests {
         assert!(!sketches_endpoint.is_valid_input(&set));
         assert!(sketches_endpoint.is_valid_input(&histogram));
         assert!(sketches_endpoint.is_valid_input(&distribution));
+    }
+}
+
+#[cfg(test)]
+mod config_smoke {
+    use serde_json::json;
+
+    use super::DatadogMetricsConfiguration;
+    use crate::config_registry::structs;
+    use crate::config_registry::test_support::run_config_smoke_tests;
+
+    #[tokio::test]
+    async fn smoke_test() {
+        run_config_smoke_tests(structs::DATADOG_METRICS_CONFIGURATION, &[], json!({}), |cfg| {
+            cfg.as_typed::<DatadogMetricsConfiguration>()
+                .expect("DatadogMetricsConfiguration should deserialize")
+        })
+        .await
     }
 }

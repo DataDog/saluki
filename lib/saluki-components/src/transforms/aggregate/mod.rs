@@ -79,6 +79,7 @@ const fn default_passthrough_idle_flush_timeout() -> Duration {
 /// updates to counters can be versus how long it takes for counters that don't exist anymore to actually cease to be
 /// emitted.
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct AggregateConfiguration {
     /// Size of the aggregation window.
     ///
@@ -1445,5 +1446,34 @@ mod tests {
             recorder.gauge(("aggregate_active_contexts_by_type", &[("metric_type", "gauge")])),
             Some(0.0)
         );
+    }
+}
+
+#[cfg(test)]
+mod config_smoke {
+    use serde_json::json;
+
+    use super::AggregateConfiguration;
+    use crate::config_registry::structs;
+    use crate::config_registry::test_support::run_config_smoke_tests;
+
+    #[tokio::test]
+    async fn smoke_test() {
+        // Duration fields serialize as {secs, nanos}. We inject whole-second values so the nanos
+        // sub-fields are always 0 — they are not independently configurable.
+        run_config_smoke_tests(
+            structs::AGGREGATE_CONFIGURATION,
+            &[
+                "aggregate_flush_interval.nanos",
+                "aggregate_passthrough_idle_flush_timeout.nanos",
+                "aggregate_window_duration.nanos",
+            ],
+            json!({}),
+            |cfg| {
+                cfg.as_typed::<AggregateConfiguration>()
+                    .expect("AggregateConfiguration should deserialize")
+            },
+        )
+        .await
     }
 }

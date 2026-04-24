@@ -28,6 +28,7 @@ pub(crate) const fn default_traces_string_interner_size() -> ByteSize {
 ///
 /// This follows the Datadog Agent `otlp_config.receiver` structure.
 #[derive(Deserialize, Debug, Default, Facet)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 pub struct Receiver {
     /// Protocol-specific receiver configuration.
     #[serde(default)]
@@ -36,6 +37,7 @@ pub struct Receiver {
 
 /// Protocol configuration for OTLP receiver.
 #[derive(Deserialize, Debug, Default, Facet)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 pub struct Protocols {
     /// gRPC protocol configuration.
     #[serde(default)]
@@ -48,6 +50,7 @@ pub struct Protocols {
 
 /// gRPC receiver configuration.
 #[derive(Deserialize, Debug, Facet)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 pub struct GrpcConfig {
     /// The gRPC endpoint to listen on for OTLP requests.
     ///
@@ -70,6 +73,7 @@ pub struct GrpcConfig {
 
 /// HTTP receiver configuration.
 #[derive(Deserialize, Debug, Facet)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 pub struct HttpConfig {
     /// The HTTP endpoint to listen on for OTLP requests.
     ///
@@ -108,6 +112,7 @@ impl Default for HttpConfig {
 /// This mirrors the Agent's `otlp_config` and contains configuration for
 /// the OTLP receiver as well as signal-specific settings (metrics, logs, traces).
 #[derive(Deserialize, Debug, Default)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 pub struct OtlpConfig {
     /// OTLP receiver configuration.
     #[serde(default)]
@@ -128,6 +133,7 @@ pub struct OtlpConfig {
 
 /// Configuration for OTLP logs processing.
 #[derive(Deserialize, Debug)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 pub struct LogsConfig {
     /// Whether to enable OTLP logs support.
     ///
@@ -150,6 +156,7 @@ impl Default for LogsConfig {
 
 /// Configuration for OTLP metrics processing.
 #[derive(Deserialize, Debug)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 pub struct MetricsConfig {
     /// Whether to enable OTLP metrics support.
     ///
@@ -174,6 +181,7 @@ impl Default for MetricsConfig {
 ///
 /// Mirrors the Agent's `otlp_config.traces` configuration.
 #[derive(Clone, Deserialize, Debug)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 pub struct TracesConfig {
     /// Whether to enable OTLP traces support.
     ///
@@ -227,6 +235,7 @@ const fn default_internal_port() -> u16 {
 
 /// Configuration for OTLP traces probabilistic sampling.
 #[derive(Clone, Deserialize, Debug)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 pub struct ProbabilisticSampler {
     /// Percentage of traces to ingest (0, 100].
     ///

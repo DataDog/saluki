@@ -30,6 +30,7 @@ const TEXT_NON_PARSABLE_SQL: &str = "Non-parsable SQL query";
 
 /// Trace obfuscation configuration.
 #[derive(Deserialize, Facet)]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct TraceObfuscationConfiguration {
     /// Obfuscator configuration.
     #[serde(default)]
@@ -249,5 +250,23 @@ impl SynchronousTransform for TraceObfuscation {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod config_smoke {
+    use serde_json::json;
+
+    use super::TraceObfuscationConfiguration;
+    use crate::config_registry::structs;
+    use crate::config_registry::test_support::run_config_smoke_tests;
+
+    #[tokio::test]
+    async fn smoke_test() {
+        run_config_smoke_tests(structs::TRACE_OBFUSCATION_CONFIGURATION, &[], json!({}), |cfg| {
+            cfg.as_typed::<TraceObfuscationConfiguration>()
+                .expect("TraceObfuscationConfiguration should deserialize")
+        })
+        .await
     }
 }

@@ -28,6 +28,7 @@ members = [
   "lib/saluki-metrics",
   "lib/saluki-tls",
   "lib/stringtheory",
+  "xtask",
 ]
 resolver = "2"
 

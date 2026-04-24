@@ -30,6 +30,7 @@ const LISTENER_FILTERED_POINTS_METRIC: &str = "dogstatsd_listener_filtered_point
 ///
 /// Checks if a metric name should be allowed.
 #[derive(Deserialize, Facet)]
+#[cfg_attr(test, derive(Debug, serde::Serialize))]
 pub struct DogStatsDPrefixFilterConfiguration {
     #[serde(default, rename = "statsd_metric_namespace")]
     metric_prefix: String,
@@ -81,6 +82,16 @@ fn default_metric_prefix_blocklist() -> Vec<String> {
         "tomcat".to_string(),
         "runtime".to_string(),
     ]
+}
+
+#[cfg(test)]
+impl PartialEq for DogStatsDPrefixFilterConfiguration {
+    fn eq(&self, other: &Self) -> bool {
+        // `configuration: Option<GenericConfiguration>` is #[serde(skip)] and GenericConfiguration
+        // contains tokio sync primitives that don't implement PartialEq. JSON comparison naturally
+        // excludes skip fields and stays correct as new fields are added.
+        serde_json::to_value(self).ok() == serde_json::to_value(other).ok()
+    }
 }
 
 impl DogStatsDPrefixFilterConfiguration {
@@ -778,5 +789,23 @@ mod tests {
         assert!(!filter.process_metric(&mut prefix_metric));
 
         assert_eq!(recorder.counter(LISTENER_FILTERED_POINTS_METRIC), Some(2));
+    }
+}
+
+#[cfg(test)]
+mod config_smoke {
+    use serde_json::json;
+
+    use super::DogStatsDPrefixFilterConfiguration;
+    use crate::config_registry::structs;
+    use crate::config_registry::test_support::run_config_smoke_tests;
+
+    #[tokio::test]
+    async fn smoke_test() {
+        run_config_smoke_tests(structs::DOGSTATSD_PREFIX_FILTER_CONFIGURATION, &[], json!({}), |cfg| {
+            cfg.as_typed::<DogStatsDPrefixFilterConfiguration>()
+                .expect("DogStatsDPrefixFilterConfiguration should deserialize")
+        })
+        .await
     }
 }

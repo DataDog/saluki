@@ -25,6 +25,7 @@ const fn default_origin_detection_optout() -> bool {
 /// "origin" information, such as specific metric tags or UDS socket credentials. Enrichment involves adding additional
 /// metric tags that describe the origin of the metric, such as the Kubernetes pod or container.
 #[derive(Clone, Deserialize)]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct OriginEnrichmentConfiguration {
     /// Whether or not to enable origin detection.
     ///

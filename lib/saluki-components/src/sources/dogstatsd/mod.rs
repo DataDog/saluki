@@ -160,6 +160,7 @@ const fn default_enable_payloads_service_checks() -> bool {
 /// Accepts metrics over TCP, UDP, or Unix Domain Sockets in the StatsD/DogStatsD format.
 #[serde_as]
 #[derive(Deserialize, Default)]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct DogStatsDConfiguration {
     /// The size of the buffer used to receive messages into, in bytes.
     ///
@@ -367,6 +368,16 @@ pub struct DogStatsDConfiguration {
     /// Additional tags to add to all metrics.
     #[serde(rename = "dogstatsd_tags", default)]
     additional_tags: Vec<String>,
+}
+
+#[cfg(test)]
+impl PartialEq for DogStatsDConfiguration {
+    fn eq(&self, other: &Self) -> bool {
+        // `workload_provider: Option<Arc<dyn WorkloadProvider>>` is #[serde(skip)] and trait
+        // objects can't implement PartialEq. JSON comparison naturally excludes skip fields
+        // and stays correct as new fields are added.
+        serde_json::to_value(self).ok() == serde_json::to_value(other).ok()
+    }
 }
 
 /// Resolves a `bind_host` string to an `IpAddr`.
@@ -1656,5 +1667,23 @@ mod tests {
         ];
         let mut actual = config.build_addresses(bind_host);
         address_list_eq(&mut expected, &mut actual).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod config_smoke {
+    use serde_json::json;
+
+    use super::DogStatsDConfiguration;
+    use crate::config_registry::structs;
+    use crate::config_registry::test_support::run_config_smoke_tests;
+
+    #[tokio::test]
+    async fn smoke_test() {
+        run_config_smoke_tests(structs::DOGSTATSD_CONFIGURATION, &[], json!({}), |cfg| {
+            cfg.as_typed::<DogStatsDConfiguration>()
+                .expect("DogStatsDConfiguration should deserialize")
+        })
+        .await
     }
 }

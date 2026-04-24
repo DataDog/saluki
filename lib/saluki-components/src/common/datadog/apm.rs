@@ -57,6 +57,7 @@ fn default_env() -> MetaString {
 
 /// Rare sampler tuning configuration (`apm_config.rare_sampler.*`).
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(test, derive(PartialEq))]
 struct RareSamplerConfig {
     #[serde(default = "default_rare_sampler_tps")]
     tps: f64,
@@ -103,6 +104,7 @@ struct ApmConfiguration {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(test, derive(PartialEq))]
 struct ProbabilisticSamplerConfig {
     /// Enables probabilistic sampling.
     ///
@@ -133,6 +135,7 @@ impl Default for ProbabilisticSamplerConfig {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(test, derive(PartialEq))]
 pub struct ApmConfig {
     /// Target traces per second for priority sampling.
     ///

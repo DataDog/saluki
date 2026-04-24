@@ -57,6 +57,7 @@ fn default_env() -> String {
 
 /// Configuration for the Datadog APM Stats encoder.
 #[derive(Deserialize, Facet)]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct DatadogApmStatsEncoderConfiguration {
     /// Flush timeout for pending requests, in seconds.
     ///
@@ -463,5 +464,28 @@ impl EndpointEncoder for StatsEndpointEncoder {
 
     fn content_type(&self) -> HeaderValue {
         CONTENT_TYPE_MSGPACK.clone()
+    }
+}
+
+#[cfg(test)]
+mod config_smoke {
+    use serde_json::json;
+
+    use super::DatadogApmStatsEncoderConfiguration;
+    use crate::config_registry::structs;
+    use crate::config_registry::test_support::run_config_smoke_tests;
+
+    #[tokio::test]
+    async fn smoke_test() {
+        run_config_smoke_tests(
+            structs::DATADOG_APM_STATS_ENCODER_CONFIGURATION,
+            &[],
+            json!({}),
+            |cfg| {
+                cfg.as_typed::<DatadogApmStatsEncoderConfiguration>()
+                    .expect("DatadogApmStatsEncoderConfiguration should deserialize")
+            },
+        )
+        .await
     }
 }
