@@ -298,32 +298,43 @@ mod tests {
 
     #[tokio::test]
     async fn default_enables_dogstatsd() {
-        let (config, _) = ConfigurationLoader::for_tests(None::<serde_json::Value>, None, false).await;
-
-        let dp = DataPlaneConfiguration::from_configuration(&config).expect("parse config");
-        assert!(dp.dogstatsd().enabled());
-    }
-
-    #[tokio::test]
-    async fn use_dogstatsd_false_does_not_disable_dogstatsd_by_default() {
-        // ADP must not read `use_dogstatsd` directly; the Core Agent communicates the
-        // resolved decision via `data_plane.dogstatsd.enabled`.
-        let (config, _) = ConfigurationLoader::for_tests(Some(json!({ "use_dogstatsd": false })), None, false).await;
-
-        let dp = DataPlaneConfiguration::from_configuration(&config).expect("parse config");
-        assert!(dp.dogstatsd().enabled());
-    }
-
-    #[tokio::test]
-    async fn explicit_false_disables_dogstatsd() {
         let (config, _) = ConfigurationLoader::for_tests(
-            Some(json!({ "data_plane": { "dogstatsd": { "enabled": false } } })),
+            Some(json!({ "data_plane": { "enabled": true } })),
             None,
             false,
         )
         .await;
 
         let dp = DataPlaneConfiguration::from_configuration(&config).expect("parse config");
+        assert!(dp.enabled());
+        assert!(dp.dogstatsd().enabled());
+    }
+
+    #[tokio::test]
+    async fn use_dogstatsd_false_does_not_disable_dogstatsd_by_default() {
+        let (config, _) = ConfigurationLoader::for_tests(
+            Some(json!({ "use_dogstatsd": false, "data_plane": { "enabled": true } })),
+            None,
+            false,
+        )
+        .await;
+
+        let dp = DataPlaneConfiguration::from_configuration(&config).expect("parse config");
+        assert!(dp.enabled());
+        assert!(dp.dogstatsd().enabled());
+    }
+
+    #[tokio::test]
+    async fn explicit_false_disables_dogstatsd() {
+        let (config, _) = ConfigurationLoader::for_tests(
+            Some(json!({ "data_plane": { "enabled": true, "dogstatsd": { "enabled": false } } })),
+            None,
+            false,
+        )
+        .await;
+
+        let dp = DataPlaneConfiguration::from_configuration(&config).expect("parse config");
+        assert!(dp.enabled());
         assert!(!dp.dogstatsd().enabled());
     }
 
@@ -334,7 +345,7 @@ mod tests {
         let (config, _) = ConfigurationLoader::for_tests(
             Some(json!({
                 "use_dogstatsd": true,
-                "data_plane": { "dogstatsd": { "enabled": false } },
+                "data_plane": { "enabled": true, "dogstatsd": { "enabled": false } },
             })),
             None,
             false,
@@ -342,6 +353,7 @@ mod tests {
         .await;
 
         let dp = DataPlaneConfiguration::from_configuration(&config).expect("parse config");
+        assert!(dp.enabled());
         assert!(!dp.dogstatsd().enabled());
     }
 
@@ -352,7 +364,7 @@ mod tests {
         let (config, _) = ConfigurationLoader::for_tests(
             Some(json!({
                 "use_dogstatsd": false,
-                "data_plane": { "dogstatsd": { "enabled": true } },
+                "data_plane": { "enabled": true, "dogstatsd": { "enabled": true } },
             })),
             None,
             false,
@@ -360,6 +372,7 @@ mod tests {
         .await;
 
         let dp = DataPlaneConfiguration::from_configuration(&config).expect("parse config");
+        assert!(dp.enabled());
         assert!(dp.dogstatsd().enabled());
     }
 }
