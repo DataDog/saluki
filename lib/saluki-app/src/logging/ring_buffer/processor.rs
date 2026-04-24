@@ -100,12 +100,13 @@ impl ProcessorState {
             self.metrics.oldest_timestamp_nanos = self.event_buffer.oldest_timestamp_nanos();
         }
 
-        // If the total ring buffer size exceeds the maximum and the event buffer has reached the minimum segment
-        // size, flush and compress it. This lets segments grow as large as possible for better compression ratios,
-        // only compressing when we're actually under memory pressure.
-        if self.total_size_bytes() > self.config.max_ring_buffer_size_bytes
-            && self.event_buffer.size_bytes() >= self.config.min_uncompressed_segment_size_bytes
-        {
+        // Flush whenever the event buffer reaches the minimum segment size. Previously this was also gated by
+        // `total > max` (i.e. only compress when under memory pressure), which let the event buffer grow arbitrarily
+        // large during startup. The resulting "monster" segments (up to the full buffer size) later caused huge
+        // retention drops when evicted. Capping each segment at `min_uncompressed_segment_size_bytes` keeps drops
+        // bounded to a predictable amplitude and makes retention much more stable, at the cost of not extracting a
+        // marginal extra compression ratio from oversized startup segments.
+        if self.event_buffer.size_bytes() >= self.config.min_uncompressed_segment_size_bytes {
             let compressed_segment = self.event_buffer.flush()?;
             self.compressed_segments.add_segment(compressed_segment);
         }

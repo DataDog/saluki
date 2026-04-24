@@ -361,6 +361,411 @@ fn print_report(result: &BenchmarkResult) {
     println!();
 }
 
+// --- Stability benchmark ---
+//
+// Measures how stable the retained event count is over time. The baseline capacity benchmark only
+// reports the final retained count; this benchmark samples retained count after every event (once
+// past a warmup phase) so we can characterize the min / avg / stddev / percentile distribution.
+//
+// Why this matters: ring buffer retention oscillates. Every time a segment is evicted, retained
+// count drops sharply by that segment's event count (typically thousands of events). Useful
+// coverage depends on the *minimum* retained count, not peak. Two configs could have the same
+// peak retention but very different min -- the one with smaller drop amplitudes is more useful.
+
+struct PhaseStats {
+    warmup_events: usize,
+    samples_count: usize,
+    drops_observed: u64,
+
+    // Retained event count statistics.
+    min_retained: usize,
+    max_retained: usize,
+    avg_retained: f64,
+    stddev_retained: f64,
+    p1_retained: usize,
+    p10_retained: usize,
+    p50_retained: usize,
+    p90_retained: usize,
+    p99_retained: usize,
+
+    // Coverage duration statistics (simulated nanoseconds).
+    min_coverage_ns: u128,
+    avg_coverage_ns: f64,
+    p1_coverage_ns: u128,
+    p50_coverage_ns: u128,
+
+    // Drop amplitude characterization.
+    max_drop_amplitude: usize,
+    avg_drop_amplitude: f64,
+    p99_drop_amplitude: usize,
+}
+
+struct StabilityResult {
+    config_desc: String,
+    seed: u64,
+    events_fed: usize,
+    early: PhaseStats,
+    steady: PhaseStats,
+}
+
+/// "Early" phase: after first segment drop (buffer has been filled once) but within the first
+/// cycle. This captures the transient "cleanup" period where we evict any monster segments
+/// created during startup.
+const STABILITY_EARLY_WARMUP_DROPS: u64 = 1;
+/// "Steady state" phase: after many drops, the startup-era segments have been fully evicted and
+/// behavior should be fully stable.
+const STABILITY_STEADY_WARMUP_DROPS: u64 = 50;
+
+fn run_stability_benchmark(
+    config: RingBufferConfig, config_desc: &str, seed: u64, num_events: usize,
+) -> StabilityResult {
+    let mut state = ProcessorState::new(config);
+    let mut gen = EventGenerator::new(seed);
+
+    // Collect samples at all phases.
+    let mut early_retained: Vec<u32> = Vec::with_capacity(num_events);
+    let mut early_coverage: Vec<u64> = Vec::with_capacity(num_events);
+    let mut early_drops: Vec<u32> = Vec::new();
+    let mut early_warmup_events: usize = 0;
+    let mut early_drops_at_start: u64 = 0;
+    let mut early_warmed_up = false;
+    let mut early_prev_retained: usize = 0;
+
+    let mut steady_retained: Vec<u32> = Vec::with_capacity(num_events);
+    let mut steady_coverage: Vec<u64> = Vec::with_capacity(num_events);
+    let mut steady_drops: Vec<u32> = Vec::new();
+    let mut steady_warmup_events: usize = 0;
+    let mut steady_drops_at_start: u64 = 0;
+    let mut steady_warmed_up = false;
+    let mut steady_prev_retained: usize = 0;
+
+    for i in 0..num_events {
+        let event = gen.next_event();
+        state.add_event(&event).unwrap();
+
+        let drops_total = state.compressed_segments.segments_dropped_total();
+        if !early_warmed_up && drops_total >= STABILITY_EARLY_WARMUP_DROPS {
+            early_warmed_up = true;
+            early_warmup_events = i + 1;
+            early_drops_at_start = drops_total;
+            early_prev_retained = state.compressed_segments.event_count() + state.event_buffer.event_count();
+        }
+        if !steady_warmed_up && drops_total >= STABILITY_STEADY_WARMUP_DROPS {
+            steady_warmed_up = true;
+            steady_warmup_events = i + 1;
+            steady_drops_at_start = drops_total;
+            steady_prev_retained = state.compressed_segments.event_count() + state.event_buffer.event_count();
+        }
+
+        let retained = state.compressed_segments.event_count() + state.event_buffer.event_count();
+        let oldest = if state.compressed_segments.segment_count() > 0 {
+            state.compressed_segments.oldest_timestamp_nanos()
+        } else {
+            state.event_buffer.oldest_timestamp_nanos()
+        };
+        let coverage = event.timestamp_nanos.saturating_sub(oldest) as u64;
+
+        if early_warmed_up {
+            early_retained.push(retained as u32);
+            early_coverage.push(coverage);
+            if retained < early_prev_retained {
+                early_drops.push((early_prev_retained - retained) as u32);
+            }
+            early_prev_retained = retained;
+        }
+        if steady_warmed_up {
+            steady_retained.push(retained as u32);
+            steady_coverage.push(coverage);
+            if retained < steady_prev_retained {
+                steady_drops.push((steady_prev_retained - retained) as u32);
+            }
+            steady_prev_retained = retained;
+        }
+    }
+
+    let early_drops_observed = state.compressed_segments.segments_dropped_total() - early_drops_at_start;
+    let steady_drops_observed = state.compressed_segments.segments_dropped_total() - steady_drops_at_start;
+
+    let build_phase_stats = |retained: &[u32],
+                             coverage: &[u64],
+                             drops: &[u32],
+                             warmup_events: usize,
+                             drops_observed: u64|
+     -> PhaseStats {
+        let (min_r, max_r, avg_r, stddev_r, p1_r, p10_r, p50_r, p90_r, p99_r) = stats_u32(retained);
+        let (min_c, avg_c, p1_c, p50_c) = {
+            if coverage.is_empty() {
+                (0u128, 0.0, 0u128, 0u128)
+            } else {
+                let min = *coverage.iter().min().unwrap() as u128;
+                let sum: u128 = coverage.iter().map(|&x| x as u128).sum();
+                let avg = sum as f64 / coverage.len() as f64;
+                let mut sorted = coverage.to_vec();
+                sorted.sort_unstable();
+                let p = |pct: usize| -> u128 { sorted.get(sorted.len() * pct / 100).copied().unwrap_or(0) as u128 };
+                (min, avg, p(1), p(50))
+            }
+        };
+        let (max_d, avg_d, p99_d) = {
+            if drops.is_empty() {
+                (0u32, 0.0, 0u32)
+            } else {
+                let max = *drops.iter().max().unwrap();
+                let sum: u64 = drops.iter().map(|&x| x as u64).sum();
+                let avg = sum as f64 / drops.len() as f64;
+                let mut sorted = drops.to_vec();
+                sorted.sort_unstable();
+                let p99 = sorted[(sorted.len() * 99) / 100];
+                (max, avg, p99)
+            }
+        };
+        PhaseStats {
+            warmup_events,
+            samples_count: retained.len(),
+            drops_observed,
+            min_retained: min_r as usize,
+            max_retained: max_r as usize,
+            avg_retained: avg_r,
+            stddev_retained: stddev_r,
+            p1_retained: p1_r as usize,
+            p10_retained: p10_r as usize,
+            p50_retained: p50_r as usize,
+            p90_retained: p90_r as usize,
+            p99_retained: p99_r as usize,
+            min_coverage_ns: min_c,
+            avg_coverage_ns: avg_c,
+            p1_coverage_ns: p1_c,
+            p50_coverage_ns: p50_c,
+            max_drop_amplitude: max_d as usize,
+            avg_drop_amplitude: avg_d,
+            p99_drop_amplitude: p99_d as usize,
+        }
+    };
+    let early = build_phase_stats(
+        &early_retained,
+        &early_coverage,
+        &early_drops,
+        early_warmup_events,
+        early_drops_observed,
+    );
+    let steady = build_phase_stats(
+        &steady_retained,
+        &steady_coverage,
+        &steady_drops,
+        steady_warmup_events,
+        steady_drops_observed,
+    );
+
+    StabilityResult {
+        config_desc: config_desc.to_string(),
+        seed,
+        events_fed: num_events,
+        early,
+        steady,
+    }
+}
+
+fn stats_u32(values: &[u32]) -> (u32, u32, f64, f64, u32, u32, u32, u32, u32) {
+    let min = *values.iter().min().unwrap_or(&0);
+    let max = *values.iter().max().unwrap_or(&0);
+    let sum: u64 = values.iter().map(|&x| x as u64).sum();
+    let avg = if values.is_empty() {
+        0.0
+    } else {
+        sum as f64 / values.len() as f64
+    };
+    let variance: f64 = values
+        .iter()
+        .map(|&x| {
+            let d = x as f64 - avg;
+            d * d
+        })
+        .sum::<f64>()
+        / values.len().max(1) as f64;
+    let stddev = variance.sqrt();
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    let p = |pct: usize| -> u32 { sorted.get(sorted.len() * pct / 100).copied().unwrap_or(0) };
+    (min, max, avg, stddev, p(1), p(10), p(50), p(90), p(99))
+}
+
+fn format_ns_as_secs(ns: u128) -> String {
+    let secs = ns as f64 / 1_000_000_000.0;
+    if secs >= 60.0 {
+        format!("{:.1}m", secs / 60.0)
+    } else {
+        format!("{:.1}s", secs)
+    }
+}
+
+fn print_phase(label: &str, p: &PhaseStats) {
+    let delta = p.max_retained.saturating_sub(p.min_retained);
+    let delta_pct = if p.avg_retained > 0.0 {
+        100.0 * delta as f64 / p.avg_retained
+    } else {
+        0.0
+    };
+    let min_pct = if p.avg_retained > 0.0 {
+        100.0 * p.min_retained as f64 / p.avg_retained
+    } else {
+        0.0
+    };
+    println!(
+        "--- {} (from event {}, drops {}, samples {}) ---",
+        label, p.warmup_events, p.drops_observed, p.samples_count
+    );
+    println!(
+        "  retained: min={} p1={} p10={} p50={} avg={:.0} p90={} p99={} max={}",
+        p.min_retained,
+        p.p1_retained,
+        p.p10_retained,
+        p.p50_retained,
+        p.avg_retained,
+        p.p90_retained,
+        p.p99_retained,
+        p.max_retained
+    );
+    println!(
+        "  stddev={:.0}  max-min={} ({:.1}% of avg)  min/avg={:.1}%",
+        p.stddev_retained, delta, delta_pct, min_pct
+    );
+    println!(
+        "  drop amplitude: max={} p99={} avg={:.0}",
+        p.max_drop_amplitude, p.p99_drop_amplitude, p.avg_drop_amplitude
+    );
+    println!(
+        "  coverage: min={} p1={} p50={} avg={}",
+        format_ns_as_secs(p.min_coverage_ns),
+        format_ns_as_secs(p.p1_coverage_ns),
+        format_ns_as_secs(p.p50_coverage_ns),
+        format_ns_as_secs(p.avg_coverage_ns as u128)
+    );
+}
+
+fn print_stability_report(result: &StabilityResult) {
+    println!();
+    println!("=== Ring Buffer Stability Benchmark ===");
+    println!("Config: {}", result.config_desc);
+    println!("Seed: 0x{:X} | Events fed: {}", result.seed, result.events_fed);
+    println!();
+    print_phase("Early (after 1st drop)", &result.early);
+    println!();
+    print_phase("Steady (after 50th drop)", &result.steady);
+    println!();
+}
+
+#[test]
+#[ignore]
+fn ring_buffer_stability_bench() {
+    let seed = 0xDEAD_BEEF_CAFE;
+    // 1.5M events -- at ~25ms per event, that's ~10 hours simulated. Produces ~300 drops at
+    // steady state, which is plenty for percentile stability.
+    let num_events = 1_500_000;
+
+    let config = RingBufferConfig::default().with_max_ring_buffer_size_bytes(2 * 1024 * 1024);
+
+    let result = run_stability_benchmark(config, "default: max=2MiB, min_segment=128KiB, zstd=19", seed, num_events);
+    print_stability_report(&result);
+}
+
+#[test]
+#[ignore]
+fn ring_buffer_stability_sweep() {
+    let seed = 0xDEAD_BEEF_CAFE;
+    let num_events = 750_000;
+
+    let configs: Vec<(&str, RingBufferConfig)> = vec![
+        (
+            "default: 128k, zstd=19",
+            RingBufferConfig::default().with_max_ring_buffer_size_bytes(2 * 1024 * 1024),
+        ),
+        (
+            "64k segments",
+            RingBufferConfig::default()
+                .with_max_ring_buffer_size_bytes(2 * 1024 * 1024)
+                .with_min_uncompressed_segment_size_bytes(64 * 1024),
+        ),
+        (
+            "32k segments",
+            RingBufferConfig::default()
+                .with_max_ring_buffer_size_bytes(2 * 1024 * 1024)
+                .with_min_uncompressed_segment_size_bytes(32 * 1024),
+        ),
+        (
+            "256k segments",
+            RingBufferConfig::default()
+                .with_max_ring_buffer_size_bytes(2 * 1024 * 1024)
+                .with_min_uncompressed_segment_size_bytes(256 * 1024),
+        ),
+        (
+            "128k, zstd=11",
+            RingBufferConfig::default()
+                .with_max_ring_buffer_size_bytes(2 * 1024 * 1024)
+                .with_compression_level(11),
+        ),
+        (
+            "128k, zstd=22",
+            RingBufferConfig::default()
+                .with_max_ring_buffer_size_bytes(2 * 1024 * 1024)
+                .with_compression_level(22),
+        ),
+    ];
+
+    let mut results = Vec::new();
+    for (name, config) in configs {
+        let result = run_stability_benchmark(config, name, seed, num_events);
+        print_stability_report(&result);
+        results.push(result);
+    }
+
+    println!("=== Early-phase Comparison (from first drop) ===");
+    println!(
+        "  {:<45} | {:>8} | {:>8} | {:>8} | {:>8} | {:>9} | {:>8}",
+        "Config", "min", "p1", "p50", "avg", "max-drop", "min/avg"
+    );
+    for r in &results {
+        let min_pct = if r.early.avg_retained > 0.0 {
+            100.0 * r.early.min_retained as f64 / r.early.avg_retained
+        } else {
+            0.0
+        };
+        println!(
+            "  {:<45} | {:>8} | {:>8} | {:>8} | {:>8.0} | {:>9} | {:>7.1}%",
+            r.config_desc,
+            r.early.min_retained,
+            r.early.p1_retained,
+            r.early.p50_retained,
+            r.early.avg_retained,
+            r.early.max_drop_amplitude,
+            min_pct,
+        );
+    }
+    println!();
+    println!("=== Steady-state Comparison (after 50 drops) ===");
+    println!(
+        "  {:<45} | {:>8} | {:>8} | {:>8} | {:>8} | {:>9} | {:>8}",
+        "Config", "min", "p1", "p50", "avg", "max-drop", "min/avg"
+    );
+    for r in &results {
+        let min_pct = if r.steady.avg_retained > 0.0 {
+            100.0 * r.steady.min_retained as f64 / r.steady.avg_retained
+        } else {
+            0.0
+        };
+        println!(
+            "  {:<45} | {:>8} | {:>8} | {:>8} | {:>8.0} | {:>9} | {:>7.1}%",
+            r.config_desc,
+            r.steady.min_retained,
+            r.steady.p1_retained,
+            r.steady.p50_retained,
+            r.steady.avg_retained,
+            r.steady.max_drop_amplitude,
+            min_pct,
+        );
+    }
+    println!();
+}
+
 #[test]
 #[ignore]
 fn ring_buffer_capacity_bench() {

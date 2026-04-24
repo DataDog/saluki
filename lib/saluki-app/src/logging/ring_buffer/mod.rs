@@ -36,12 +36,14 @@ pub struct RingBufferConfig {
 }
 
 impl RingBufferConfig {
-    /// Sets the minimum size of an uncompressed segment, in bytes, before compression is allowed.
+    /// Sets the target size of an uncompressed segment, in bytes, at which the event buffer is compressed into a
+    /// segment.
     ///
-    /// Compression is only triggered when the total ring buffer size exceeds the configured maximum _and_ the event
-    /// buffer has reached at least this size. This allows segments to grow larger for better compression ratios.
+    /// The event buffer is flushed as soon as it reaches this size. Larger values give zstd more context per frame
+    /// (marginally better compression ratios) but increase the number of events lost per eviction, hurting the
+    /// minimum retained-event count at steady state. Smaller values do the opposite.
     ///
-    /// Defaults to 256KiB.
+    /// Defaults to 128KiB.
     pub fn with_min_uncompressed_segment_size_bytes(mut self, min_uncompressed_segment_size_bytes: usize) -> Self {
         self.min_uncompressed_segment_size_bytes = min_uncompressed_segment_size_bytes;
         self
@@ -102,11 +104,12 @@ impl Default for RingBufferConfig {
 ///      enabling specialized per-column encoding. The buffer also maintains a per-segment string intern table for
 ///      deduplicating repeated strings (targets, file paths, and field keys).
 ///
-///   2. **Compressed segments**: A FIFO queue of zstd-compressed segment payloads. When the total ring buffer
-///      size exceeds the configured maximum _and_ the event buffer has accumulated at least
-///      `min_uncompressed_segment_size_bytes`, the event buffer is flushed: its columns are serialized and
-///      compressed into a segment, which is pushed onto the queue. If the total size still exceeds the limit,
-///      the oldest segments are dropped.
+///   2. **Compressed segments**: A FIFO queue of zstd-compressed segment payloads. Whenever the event buffer
+///      accumulates at least `min_uncompressed_segment_size_bytes`, it is flushed: its columns are serialized
+///      and compressed into a segment, which is pushed onto the queue. If the total ring buffer size exceeds
+///      the configured maximum, the oldest segments are dropped in FIFO order until the budget is respected.
+///      Capping segments at the configured size keeps eviction amplitude uniform so the minimum retained-event
+///      count stays close to the average.
 ///
 /// # Columnar Encoding
 ///

@@ -511,3 +511,149 @@ templates → better RLE on the template index column → less metadata frame ov
 | + Field column splitting | 130,366 | +89.7% |
 | + Message template extraction (naive) | 137,259 | +99.8% |
 | + Drain-inspired pattern clustering | **155,715** | **+126.6%** |
+
+---
+
+# Stability Optimization Hunt
+
+Previous optimizations focused on **peak retained events**: how many events the ring buffer can
+hold at its fullest. In practice, what matters to log-recovery usefulness is the *time range*
+of events the buffer covers -- i.e. the **minimum** retained count as the buffer cycles. A
+configuration that peaks at 155k events but dips to 112k moments later has a worse floor than
+one that peaks at 152k but never dips below 150k.
+
+This section tracks trials that target the **minimum** retained-event count and the delta
+between min and average, rather than the peak.
+
+## Methodology: stability benchmark
+
+Added `ring_buffer_stability_bench` / `ring_buffer_stability_sweep` in `benchmarks.rs`. Both
+feed 750k--1.5M synthetic events (~10 hours simulated log time at ~25ms/event) and sample
+retained count after **every** event add. Two phases are reported:
+
+- **Early**: samples start after the 1st segment drop (first time eviction occurs).
+- **Steady**: samples start after the 50th drop (startup transients fully flushed).
+
+For each phase the benchmark computes min / p1 / p10 / p50 / avg / p90 / p99 / max of
+retained events, plus drop-amplitude distribution (events lost in a single step) and
+coverage duration (oldest retained event to newest).
+
+## Baseline (post-capacity-optimization, pre-stability-optimization)
+
+Pre-Trial-I behavior (the "grow segments under no pressure" flush gate) at default config
+(max=2MiB, min_segment=128KiB, zstd=19), 1.5M events:
+
+**Early phase (from first drop)**:
+- min retained: **112,207**
+- avg retained: 152,747
+- max-min delta: 50,655 (33.2% of avg)
+- min as % of avg: **73.5%**
+- max drop amplitude: 36,633 events (single step loss)
+
+**Steady phase (after 50 drops)**:
+- min retained: 150,034
+- avg retained: 153,781
+- max-min delta: 6,413 (4.2% of avg)
+- min as % of avg: 97.6%
+- max drop amplitude: 5,605 events
+
+**Root cause of the gap between early and steady phase**: during startup, the event buffer
+is allowed to grow far beyond `min_segment_size_bytes` because the gate requires
+`total_size_bytes > max_ring_buffer_size_bytes`, which doesn't trip until the whole budget
+is nearly full. The first segment is compressed from up to 2 MiB of uncompressed data, the
+second from ~1.4 MiB, and so on -- a handful of "monster" segments 3--8x normal size get
+created. When these monster segments later reach the eviction queue, each eviction drops
+tens of thousands of events at once. By the time all monster segments have been evicted
+(~50 drops), the behavior stabilizes, but until then the min retention is horrible.
+
+---
+
+## Trial I: Flush at `min_segment_size_bytes` regardless of memory pressure
+
+**Hypothesis**: Remove the `total_size_bytes > max` gate on the flush path so that segments
+are capped at `min_segment_size_bytes` bytes from the very first flush. This eliminates the
+startup "monster segments" and should make eviction amplitudes uniform at all times.
+
+**Change**: In `ProcessorState::add_event`, replace
+
+```rust
+if self.total_size_bytes() > self.config.max_ring_buffer_size_bytes
+    && self.event_buffer.size_bytes() >= self.config.min_uncompressed_segment_size_bytes
+{
+    let compressed_segment = self.event_buffer.flush()?;
+    // ...
+}
+```
+
+with
+
+```rust
+if self.event_buffer.size_bytes() >= self.config.min_uncompressed_segment_size_bytes {
+    let compressed_segment = self.event_buffer.flush()?;
+    // ...
+}
+```
+
+**Result** (default 128KiB, zstd=19):
+
+**Early phase (from first drop)**:
+- min retained: **150,246** (up from 112,207 -- **+33.9%** in minimum retention)
+- avg retained: 152,368 (down from 152,747, -0.2%)
+- max-min delta: 4,342 (down from 50,655, **-91%**)
+- min as % of avg: **98.6%** (up from 73.5%)
+- max drop amplitude: 3,411 (down from 36,633, **-90.7%**)
+
+**Steady phase**: identical to early phase -- behavior is now **fully stable from the first
+drop onward**, no warmup required.
+
+**Cost**: peak retention drops slightly. The capacity benchmark (500k events) reports
+151,682 retained (down from 155,715, -2.6%). Pre-compression segment size is now capped at
+`min_segment_size_bytes` whereas it used to be allowed to grow to the full budget; zstd
+gets marginally less context per frame, costing ~7% on bytes/event (12.9 → 13.0). This is a
+worthwhile trade since minimum retention is what drives usefulness.
+
+### Sweep across segment sizes and compression levels (Trial I applied), 750k events
+
+| Config             | min    | avg    | max-min | min/avg | max drop |
+|--------------------|--------|--------|---------|---------|----------|
+| 128k, zstd=19      |**150,246**|**152,200**| 3,922 | 98.7% | 3,411 |
+| 128k, zstd=22      | 150,246| 152,200| 3,922   | 98.7%   | 3,411    |
+| 128k, zstd=11      | 137,349| 139,281| 3,860   | 98.6%   | 3,411    |
+| 64k, zstd=19       | 147,727| 149,399| 3,010   | 98.9%   | 1,715    |
+| 32k, zstd=19       | 139,632| 140,467| 1,567   | 99.4%   | 893      |
+| 256k, zstd=19      | 143,917| 147,424| 7,059   | 97.6%   | 6,662    |
+
+**Key takeaways**:
+
+- **128k + zstd=19 remains the best config** for absolute minimum retention.
+- **zstd=22 gives no gain over zstd=19** at these segment sizes (zstd's max level hits its
+  ceiling long before segment boundaries become the bottleneck). zstd=11 costs ~13k events.
+- **Smaller segments reduce drop amplitude but not delta/avg ratio** -- 32k drops are 74%
+  smaller than 128k drops, but the absolute minimum is also 10k events lower, so 128k still
+  wins on what the user cares about most. The "drop amplitude" alone is a misleading metric;
+  it needs to be weighed against absolute retention.
+- **256k segments lose on both axes** -- they suffer the same marginal compression-ratio
+  improvement seen pre-Trial-I but now also incur doubled drop amplitude, because with
+  monster-segment elimination gone, there's no scenario where "grow larger" pays off.
+
+**Why max-min delta is floor-limited to ~segment_size_in_events**: at steady state, each
+cycle consists of (many events added, one segment worth dropped). Retention oscillates by
+one segment's worth plus some noise from variability in event-add rate between drops.
+Further reducing delta requires **sub-segment eviction granularity**, which in turn
+requires either partial segment decompression/re-encoding (high CPU cost) or zstd
+dictionary compression so small frames share context (substantial complexity). Neither is
+obviously worth the marginal gain -- the current 2.6% delta/avg is close to what
+whole-segment eviction allows.
+
+### Stability summary
+
+| Metric (at 128k segments) | Baseline (early) | Trial I | Change |
+|---------------------------|------------------|---------|--------|
+| Min retained              | 112,207          | 150,246 | +33.9% |
+| Avg retained              | 152,747          | 152,368 | -0.2%  |
+| Max-min delta             | 50,655           | 4,342   | -91.4% |
+| Min / avg ratio           | 73.5%            | 98.6%   | +25 pp |
+| Max drop amplitude        | 36,633           | 3,411   | -90.7% |
+| Min coverage duration     | 47.6m            | 63.8m   | +34%   |
+
+The optimization is almost free at steady state and massively improves transient behavior.
