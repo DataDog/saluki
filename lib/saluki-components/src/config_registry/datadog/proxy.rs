@@ -7,7 +7,7 @@ crate::declare_annotations! {
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: Some(&["DD_PROXY_HTTP", "HTTP_PROXY"]),
-        used_by: &[structs::PROXY_CONFIGURATION],
+        used_by: &[structs::FORWARDER_CONFIGURATION, structs::PROXY_CONFIGURATION],
         value_type_override: None,
         test_json: None,
     };
@@ -18,7 +18,7 @@ crate::declare_annotations! {
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: Some(&["DD_PROXY_HTTPS", "HTTPS_PROXY"]),
-        used_by: &[structs::PROXY_CONFIGURATION],
+        used_by: &[structs::FORWARDER_CONFIGURATION, structs::PROXY_CONFIGURATION],
         value_type_override: None,
         test_json: None,
     };
@@ -29,7 +29,7 @@ crate::declare_annotations! {
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: Some(&["DD_PROXY_NO_PROXY"]),
-        used_by: &[structs::PROXY_CONFIGURATION],
+        used_by: &[structs::FORWARDER_CONFIGURATION, structs::PROXY_CONFIGURATION],
         value_type_override: None,
         test_json: None,
     };
@@ -40,7 +40,7 @@ crate::declare_annotations! {
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: Some(&["DD_NO_PROXY_NONEXACT_MATCH"]),
-        used_by: &[structs::PROXY_CONFIGURATION],
+        used_by: &[structs::FORWARDER_CONFIGURATION, structs::PROXY_CONFIGURATION],
         value_type_override: None,
         test_json: None,
     };
@@ -51,7 +51,7 @@ crate::declare_annotations! {
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: Some(&["DD_USE_PROXY_FOR_CLOUD_METADATA"]),
-        used_by: &[structs::PROXY_CONFIGURATION],
+        used_by: &[structs::FORWARDER_CONFIGURATION, structs::PROXY_CONFIGURATION],
         value_type_override: None,
         test_json: None,
     };

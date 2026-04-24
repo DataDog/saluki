@@ -87,9 +87,11 @@ async fn make_config_from_file(file_values: serde_json::Value) -> GenericConfigu
     cfg
 }
 
-async fn make_config_from_env(env_vars: &[(String, String)]) -> GenericConfiguration {
+async fn make_config_from_env(
+    base_file_values: &serde_json::Value, env_vars: &[(String, String)],
+) -> GenericConfiguration {
     let (cfg, _) = ConfigurationLoader::for_tests_with_provider_factory(
-        None,
+        Some(base_file_values.clone()),
         Some(env_vars),
         false,
         KEY_ALIASES,
@@ -191,7 +193,7 @@ pub async fn run_config_smoke_tests<T, Factory>(
                 dd_env_var_to_test_key(env_var).to_string(),
                 test_env_string(annotation.value_type()),
             )];
-            let from_env = config_factory(make_config_from_env(&env_pairs).await);
+            let from_env = config_factory(make_config_from_env(&base_config, &env_pairs).await);
             let from_env_json = serde_json::to_value(&from_env).expect("failed to serialize struct");
             if from_env_json != reference_json {
                 failures.push(format!(
