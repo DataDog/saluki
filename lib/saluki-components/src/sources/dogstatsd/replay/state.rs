@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     sync::{Arc, RwLock},
+    time::{Duration, Instant},
 };
 
 use datadog_protos::agent::{Entity as RemoteEntity, EntityId as RemoteEntityId, TaggerState};
@@ -11,7 +12,7 @@ use saluki_context::{
 use saluki_env::workload::EntityId;
 use saluki_error::{generic_error, GenericError};
 use stringtheory::MetaString;
-use tracing::{debug, warn};
+use tracing::warn;
 
 #[derive(Clone, Default)]
 struct ReplayEntityTags {
@@ -21,23 +22,20 @@ struct ReplayEntityTags {
 }
 
 impl ReplayEntityTags {
-    fn from_remote_entity(entity_id: &EntityId, entity: RemoteEntity) -> Option<Self> {
+    fn from_remote_entity(entity: RemoteEntity) -> Option<Self> {
         let RemoteEntity {
             high_cardinality_tags,
             orchestrator_cardinality_tags,
-            low_cardinality_tags,
+            mut low_cardinality_tags,
             standard_tags,
             ..
         } = entity;
 
-        if !standard_tags.is_empty() {
-            debug!(
-                %entity_id,
-                standard_tags = standard_tags.len(),
-                "Ignoring replay standard tags because Saluki does not model them separately."
-            );
-        }
-
+        // Go persists replay `standard_tags` separately, but Saluki's origin-tag model only
+        // exposes low/orchestrator/high cardinality lanes. Merge them into the low-cardinality
+        // replay set so low-cardinality lookups see them directly and higher cardinalities inherit
+        // them through the existing merge behavior.
+        low_cardinality_tags.extend(standard_tags);
         let low = shared_tags_from_strings(low_cardinality_tags);
         let orchestrator = shared_tags_from_strings(orchestrator_cardinality_tags);
         let high = shared_tags_from_strings(high_cardinality_tags);
@@ -95,10 +93,18 @@ impl ReplayEntityTags {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct LoadedReplayState {
     entity_tags: HashMap<EntityId, ReplayEntityTags>,
     pid_map: HashMap<u32, EntityId>,
+    loaded_at: Instant,
+    expires_after: Duration,
+}
+
+impl LoadedReplayState {
+    fn is_expired(&self) -> bool {
+        Instant::now().saturating_duration_since(self.loaded_at) >= self.expires_after
+    }
 }
 
 /// In-memory replay state for DogStatsD capture replays.
@@ -118,10 +124,7 @@ impl DogStatsDReplayState {
 
     /// Returns whether replay state is currently loaded.
     pub fn is_loaded(&self) -> bool {
-        self.inner
-            .read()
-            .expect("dogstatsd replay state lock poisoned")
-            .is_some()
+        self.with_live_state(|_| ()).is_some()
     }
 
     /// Loads replay state into memory.
@@ -135,7 +138,13 @@ impl DogStatsDReplayState {
             return Ok(false);
         }
 
-        let mut loaded_state = LoadedReplayState::default();
+        let expires_after = replay_expiry_window(replay_state.duration);
+        let mut loaded_state = LoadedReplayState {
+            entity_tags: HashMap::new(),
+            pid_map: HashMap::new(),
+            loaded_at: Instant::now(),
+            expires_after,
+        };
 
         for (raw_entity_key, entity) in replay_state.state {
             let Some(entity_id) = entity
@@ -151,7 +160,7 @@ impl DogStatsDReplayState {
                 continue;
             };
 
-            if let Some(entity_tags) = ReplayEntityTags::from_remote_entity(&entity_id, entity) {
+            if let Some(entity_tags) = ReplayEntityTags::from_remote_entity(entity) {
                 loaded_state.entity_tags.insert(entity_id, entity_tags);
             }
         }
@@ -191,26 +200,33 @@ impl DogStatsDReplayState {
             return None;
         }
 
-        let state = self.inner.read().expect("dogstatsd replay state lock poisoned");
-        let loaded_state = state.as_ref()?;
+        self.with_live_state(|loaded_state| {
+            let resolved_entity = match entity_id {
+                EntityId::ContainerPid(pid) => loaded_state.pid_map.get(pid).unwrap_or(entity_id),
+                _ => entity_id,
+            };
 
-        let resolved_entity = match entity_id {
-            EntityId::ContainerPid(pid) => loaded_state.pid_map.get(pid).unwrap_or(entity_id),
-            _ => entity_id,
-        };
-
-        loaded_state
-            .entity_tags
-            .get(resolved_entity)
-            .and_then(|entity_tags| entity_tags.merge_for_cardinality(cardinality))
+            loaded_state
+                .entity_tags
+                .get(resolved_entity)
+                .and_then(|entity_tags| entity_tags.merge_for_cardinality(cardinality))
+        })
+        .flatten()
     }
 
     pub(crate) fn resolve_container_entity_for_pid(&self, process_id: u32) -> Option<EntityId> {
-        self.inner
-            .read()
-            .expect("dogstatsd replay state lock poisoned")
-            .as_ref()
-            .and_then(|loaded_state| loaded_state.pid_map.get(&process_id).cloned())
+        self.with_live_state(|loaded_state| loaded_state.pid_map.get(&process_id).cloned())
+            .flatten()
+    }
+
+    fn with_live_state<T>(&self, f: impl FnOnce(&LoadedReplayState) -> T) -> Option<T> {
+        let mut state = self.inner.write().expect("dogstatsd replay state lock poisoned");
+        if state.as_ref().is_some_and(LoadedReplayState::is_expired) {
+            *state = None;
+            return None;
+        }
+
+        state.as_ref().map(f)
     }
 }
 
@@ -220,6 +236,13 @@ fn shared_tags_from_strings(tags: Vec<String>) -> Option<SharedTagSet> {
     }
 
     Some(TagSet::from_iter(tags.into_iter().map(Tag::from)).into_shared())
+}
+
+fn replay_expiry_window(duration_ms: i64) -> Duration {
+    let duration_ms = u64::try_from(duration_ms).unwrap_or(0);
+    Duration::from_millis(duration_ms)
+        .checked_mul(2)
+        .unwrap_or(Duration::MAX)
 }
 
 fn remote_entity_id_to_entity_id(remote_entity_id: RemoteEntityId) -> Option<EntityId> {
@@ -256,6 +279,11 @@ fn parse_entity_id_str(value: &str) -> Option<EntityId> {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        thread,
+        time::{Duration, Instant},
+    };
+
     use datadog_protos::agent::{Entity, EntityId as RemoteEntityId, TaggerState};
     use saluki_context::{
         origin::OriginTagCardinality,
@@ -274,6 +302,11 @@ mod tests {
 
         assert!(loaded);
         assert!(replay_state.is_loaded());
+        {
+            let loaded_state = replay_state.inner.read().expect("dogstatsd replay state lock poisoned");
+            let loaded_state = loaded_state.as_ref().expect("replay state should exist");
+            assert_eq!(loaded_state.expires_after, Duration::from_millis(10_000));
+        }
         assert_eq!(
             replay_state.resolve_container_entity_for_pid(42),
             Some(EntityId::Container("cid-123".into()))
@@ -284,7 +317,19 @@ mod tests {
             .expect("low-cardinality tags should resolve");
         assert_eq!(
             TagSet::from_iter((&low_tags).into_iter().cloned()),
-            TagSet::from_iter([Tag::from("env:prod")])
+            TagSet::from_iter([Tag::from("env:prod"), Tag::from("service:api")])
+        );
+
+        let orchestrator_tags = replay_state
+            .get_tags_for_entity(&EntityId::ContainerPid(42), OriginTagCardinality::Orchestrator)
+            .expect("orchestrator-cardinality tags should resolve");
+        assert_eq!(
+            TagSet::from_iter((&orchestrator_tags).into_iter().cloned()),
+            TagSet::from_iter([
+                Tag::from("env:prod"),
+                Tag::from("pod_name:api-123"),
+                Tag::from("service:api"),
+            ])
         );
 
         let high_tags = replay_state
@@ -296,6 +341,7 @@ mod tests {
                 Tag::from("container_name:api"),
                 Tag::from("env:prod"),
                 Tag::from("pod_name:api-123"),
+                Tag::from("service:api"),
             ])
         );
     }
@@ -324,6 +370,7 @@ mod tests {
         let loaded = replay_state
             .load(TaggerState {
                 pid_map: [(7, "container_id://cid-456".to_string())].into_iter().collect(),
+                duration: 5_000,
                 ..Default::default()
             })
             .expect("pid-map-only replay state should load");
@@ -333,6 +380,44 @@ mod tests {
             replay_state.resolve_container_entity_for_pid(7),
             Some(EntityId::Container("cid-456".into()))
         );
+    }
+
+    #[test]
+    fn loaded_state_expires_without_explicit_clear() {
+        let replay_state = DogStatsDReplayState::new();
+        replay_state
+            .load(sample_replay_state())
+            .expect("replay state should load");
+
+        {
+            let mut state = replay_state
+                .inner
+                .write()
+                .expect("dogstatsd replay state lock poisoned");
+            let loaded_state = state.as_mut().expect("replay state should exist");
+            loaded_state.loaded_at = Instant::now() - loaded_state.expires_after - Duration::from_millis(1);
+        }
+
+        assert!(!replay_state.is_loaded());
+        assert!(replay_state.resolve_container_entity_for_pid(42).is_none());
+        assert!(replay_state
+            .get_tags_for_entity(&EntityId::ContainerPid(42), OriginTagCardinality::High)
+            .is_none());
+    }
+
+    #[test]
+    fn zero_duration_state_expires_immediately() {
+        let replay_state = DogStatsDReplayState::new();
+        let loaded = replay_state
+            .load(TaggerState {
+                duration: 0,
+                ..sample_replay_state()
+            })
+            .expect("replay state should load");
+
+        assert!(loaded);
+        thread::yield_now();
+        assert!(!replay_state.is_loaded());
     }
 
     fn sample_replay_state() -> TaggerState {

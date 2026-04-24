@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap, HashSet},
     fs::{self, File},
     io::{self, BufWriter, Write},
     path::{Path, PathBuf},
@@ -11,8 +11,10 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use datadog_protos::agent::{TaggerState, UnixDogstatsdMsg};
+use datadog_protos::agent::{Entity, EntityId as RemoteEntityId, TaggerState, UnixDogstatsdMsg};
 use prost::Message;
+use saluki_context::{origin::OriginTagCardinality, tags::SharedTagSet};
+use saluki_env::{workload::EntityId, WorkloadProvider};
 use saluki_error::{generic_error, GenericError};
 use tracing::{debug, error, warn};
 use zstd::stream::write::Encoder as ZstdEncoder;
@@ -50,6 +52,7 @@ pub(crate) struct CaptureRecord {
 /// Owns writer-side capture state.
 pub(super) struct TrafficCaptureWriter {
     queue_depth: usize,
+    workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
     state: Arc<Mutex<WriterState>>,
 }
 
@@ -109,8 +112,16 @@ impl Write for CaptureFileWriter {
 impl TrafficCaptureWriter {
     /// Creates a new capture writer with the given queue depth.
     pub(super) fn new(queue_depth: usize) -> Self {
+        Self::with_workload_provider(queue_depth, None)
+    }
+
+    /// Creates a new capture writer with the given queue depth and optional workload provider.
+    pub(super) fn with_workload_provider(
+        queue_depth: usize, workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
+    ) -> Self {
         Self {
             queue_depth,
+            workload_provider,
             state: Arc::new(Mutex::new(WriterState::default())),
         }
     }
@@ -143,9 +154,10 @@ impl TrafficCaptureWriter {
         state.traffic_tx = Some(traffic_tx);
 
         let shared_state = Arc::clone(&self.state);
+        let workload_provider = self.workload_provider.clone();
         if let Err(e) = thread::Builder::new()
             .name("dogstatsd-capture-writer".into())
-            .spawn(move || run_capture_loop(shared_state, traffic_rx, writer, duration))
+            .spawn(move || run_capture_loop(shared_state, traffic_rx, writer, duration, workload_provider))
         {
             state.ongoing = false;
             state.accepting = false;
@@ -280,7 +292,7 @@ fn open_target_writer(target_path: &Path, compressed: bool) -> Result<CaptureFil
 
 fn run_capture_loop(
     state: Arc<Mutex<WriterState>>, traffic_rx: Receiver<CaptureRecord>, mut writer: CaptureFileWriter,
-    duration: Duration,
+    duration: Duration, workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 ) {
     let mut pid_map = HashMap::new();
     let start = std::time::Instant::now();
@@ -304,7 +316,7 @@ fn run_capture_loop(
         }
     }
 
-    if let Err(e) = write_state(&mut writer, pid_map, duration) {
+    if let Err(e) = write_state(&mut writer, pid_map, duration, workload_provider.as_deref()) {
         warn!("Failed to write DogStatsD capture state trailer: {}", e);
     }
 
@@ -352,8 +364,12 @@ fn write_record(
     Ok(())
 }
 
-fn write_state(writer: &mut CaptureFileWriter, pid_map: HashMap<i32, String>, duration: Duration) -> io::Result<()> {
+fn write_state(
+    writer: &mut CaptureFileWriter, pid_map: HashMap<i32, String>, duration: Duration,
+    workload_provider: Option<&(dyn WorkloadProvider + Send + Sync)>,
+) -> io::Result<()> {
     let state = TaggerState {
+        state: build_saved_entity_state(&pid_map, workload_provider),
         pid_map,
         duration: duration.as_millis().min(i64::MAX as u128) as i64,
         ..Default::default()
@@ -366,19 +382,216 @@ fn write_state(writer: &mut CaptureFileWriter, pid_map: HashMap<i32, String>, du
     Ok(())
 }
 
+fn build_saved_entity_state(
+    pid_map: &HashMap<i32, String>, workload_provider: Option<&(dyn WorkloadProvider + Send + Sync)>,
+) -> HashMap<String, Entity> {
+    let Some(workload_provider) = workload_provider else {
+        return HashMap::new();
+    };
+
+    let mut saved_entities = HashMap::new();
+    let mut seen_entities = HashSet::new();
+
+    for raw_entity_id in pid_map.values() {
+        let Some(entity_id) = parse_entity_id_str(raw_entity_id) else {
+            warn!(
+                raw_entity_id,
+                "Skipping captured entity with an unsupported ID while building replay state."
+            );
+            continue;
+        };
+
+        if !seen_entities.insert(entity_id.clone()) {
+            continue;
+        }
+
+        let Some(entity) = build_saved_entity(workload_provider, &entity_id) else {
+            continue;
+        };
+
+        saved_entities.insert(entity_id.to_string(), entity);
+    }
+
+    saved_entities
+}
+
+fn build_saved_entity(
+    workload_provider: &(dyn WorkloadProvider + Send + Sync), entity_id: &EntityId,
+) -> Option<Entity> {
+    let low_tags =
+        sorted_unique_tag_strings(workload_provider.get_tags_for_entity(entity_id, OriginTagCardinality::Low));
+    let orchestrator_cumulative =
+        sorted_unique_tag_strings(workload_provider.get_tags_for_entity(entity_id, OriginTagCardinality::Orchestrator));
+    let high_cumulative =
+        sorted_unique_tag_strings(workload_provider.get_tags_for_entity(entity_id, OriginTagCardinality::High));
+
+    let orchestrator_tags = subtract_tag_strings(orchestrator_cumulative.clone(), &low_tags);
+    let high_tags = subtract_tag_strings(high_cumulative, &orchestrator_cumulative);
+
+    if low_tags.is_empty() && orchestrator_tags.is_empty() && high_tags.is_empty() {
+        return None;
+    }
+
+    Some(Entity {
+        id: Some(entity_id_to_remote_entity_id(entity_id)),
+        low_cardinality_tags: low_tags,
+        orchestrator_cardinality_tags: orchestrator_tags,
+        high_cardinality_tags: high_tags,
+        ..Default::default()
+    })
+}
+
+fn sorted_unique_tag_strings(tags: Option<SharedTagSet>) -> Vec<String> {
+    let Some(tags) = tags else {
+        return Vec::new();
+    };
+
+    let unique = (&tags)
+        .into_iter()
+        .map(|tag| tag.as_str().to_string())
+        .collect::<BTreeSet<_>>();
+    unique.into_iter().collect()
+}
+
+fn subtract_tag_strings(current: Vec<String>, lower: &[String]) -> Vec<String> {
+    if lower.is_empty() {
+        return current;
+    }
+
+    let lower = lower.iter().map(String::as_str).collect::<HashSet<_>>();
+    current
+        .into_iter()
+        .filter(|tag| !lower.contains(tag.as_str()))
+        .collect()
+}
+
+fn entity_id_to_remote_entity_id(entity_id: &EntityId) -> RemoteEntityId {
+    match entity_id {
+        EntityId::Container(container_id) => RemoteEntityId {
+            prefix: "container_id".to_string(),
+            uid: container_id.to_string(),
+        },
+        EntityId::PodUid(pod_uid) => RemoteEntityId {
+            prefix: "kubernetes_pod_uid".to_string(),
+            uid: pod_uid.to_string(),
+        },
+        EntityId::Global => RemoteEntityId {
+            prefix: "internal".to_string(),
+            uid: "global-entity-id".to_string(),
+        },
+        EntityId::ContainerPid(pid) => RemoteEntityId {
+            prefix: "container_pid".to_string(),
+            uid: pid.to_string(),
+        },
+        EntityId::ContainerInode(inode) => RemoteEntityId {
+            prefix: "container_inode".to_string(),
+            uid: inode.to_string(),
+        },
+    }
+}
+
+fn parse_entity_id_str(value: &str) -> Option<EntityId> {
+    const CONTAINER_ID_PREFIX: &str = "container_id://";
+    const POD_UID_PREFIX: &str = "kubernetes_pod_uid://";
+    const CONTAINER_PID_PREFIX: &str = "container_pid://";
+    const CONTAINER_INODE_PREFIX: &str = "container_inode://";
+
+    if let Some(container_id) = value.strip_prefix(CONTAINER_ID_PREFIX) {
+        Some(EntityId::Container(container_id.into()))
+    } else if let Some(pod_uid) = value.strip_prefix(POD_UID_PREFIX) {
+        Some(EntityId::PodUid(pod_uid.into()))
+    } else if let Some(pid) = value.strip_prefix(CONTAINER_PID_PREFIX) {
+        pid.parse().ok().map(EntityId::ContainerPid)
+    } else if let Some(inode) = value.strip_prefix(CONTAINER_INODE_PREFIX) {
+        inode.parse().ok().map(EntityId::ContainerInode)
+    } else if value == "system://global" {
+        Some(EntityId::Global)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::HashMap,
         fs,
         io::Cursor,
+        sync::Arc,
         thread,
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     use prost::Message;
+    use saluki_context::{
+        origin::OriginTagCardinality,
+        tags::{SharedTagSet, Tag, TagSet},
+    };
+    use saluki_env::{
+        workload::{origin::ResolvedOrigin, EntityId},
+        WorkloadProvider,
+    };
 
     use super::{CaptureRecord, CaptureTargetDir, TaggerState, TrafficCaptureWriter, UnixDogstatsdMsg};
     use crate::sources::dogstatsd::replay::file::datadog_matcher;
+    use crate::sources::dogstatsd::replay::DogStatsDReplayState;
+
+    #[derive(Default)]
+    struct MockWorkloadProvider {
+        entities: HashMap<EntityId, MockEntityTags>,
+    }
+
+    struct MockEntityTags {
+        low: SharedTagSet,
+        orchestrator: SharedTagSet,
+        high: SharedTagSet,
+    }
+
+    impl MockWorkloadProvider {
+        fn with_entity(entity_id: EntityId, low: &[&str], orchestrator: &[&str], high: &[&str]) -> Self {
+            let mut entities = HashMap::new();
+            entities.insert(
+                entity_id,
+                MockEntityTags {
+                    low: shared_tags(low),
+                    orchestrator: shared_tags(orchestrator),
+                    high: shared_tags(high),
+                },
+            );
+            Self { entities }
+        }
+    }
+
+    impl WorkloadProvider for MockWorkloadProvider {
+        fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<SharedTagSet> {
+            let tags = self.entities.get(entity_id)?;
+
+            let mut merged = SharedTagSet::default();
+            if !tags.low.is_empty() {
+                merged.extend_from_shared(&tags.low);
+            }
+            if cardinality == OriginTagCardinality::Low {
+                return (!merged.is_empty()).then_some(merged);
+            }
+
+            if !tags.orchestrator.is_empty() {
+                merged.extend_from_shared(&tags.orchestrator);
+            }
+            if cardinality == OriginTagCardinality::Orchestrator {
+                return (!merged.is_empty()).then_some(merged);
+            }
+
+            if !tags.high.is_empty() {
+                merged.extend_from_shared(&tags.high);
+            }
+
+            (!merged.is_empty()).then_some(merged)
+        }
+
+        fn get_resolved_origin(&self, _origin: saluki_context::origin::RawOrigin<'_>) -> Option<ResolvedOrigin> {
+            None
+        }
+    }
 
     #[test]
     fn explicit_missing_directory_fails() {
@@ -469,6 +682,75 @@ mod tests {
     }
 
     #[test]
+    fn capture_with_workload_provider_writes_entity_state() {
+        let writer = TrafficCaptureWriter::with_workload_provider(
+            1,
+            Some(Arc::new(MockWorkloadProvider::with_entity(
+                EntityId::Container("container-123".into()),
+                &["env:prod", "service:api"],
+                &["pod_name:api-123"],
+                &["container_name:api"],
+            ))),
+        );
+        let target_dir = unique_dir("writer-state");
+
+        let capture_path = writer
+            .start_capture(
+                CaptureTargetDir::Explicit(target_dir.clone()),
+                Duration::from_millis(250),
+                false,
+            )
+            .expect("capture should start");
+        assert!(writer.enqueue(sample_record()));
+        writer.stop_capture();
+        wait_until_inactive(&writer);
+
+        let bytes = fs::read(&capture_path).expect("capture should be readable");
+        let state = decode_capture_state(&bytes);
+        let entity = state
+            .state
+            .get("container_id://container-123")
+            .expect("capture should include entity state");
+
+        assert_eq!(
+            entity.low_cardinality_tags,
+            vec!["env:prod".to_string(), "service:api".to_string()]
+        );
+        assert_eq!(
+            entity.orchestrator_cardinality_tags,
+            vec!["pod_name:api-123".to_string()]
+        );
+        assert_eq!(entity.high_cardinality_tags, vec!["container_name:api".to_string()]);
+        assert_eq!(
+            state.pid_map.get(&42).map(String::as_str),
+            Some("container_id://container-123")
+        );
+
+        let replay_state = DogStatsDReplayState::new();
+        replay_state
+            .load(state.clone())
+            .expect("capture state should load back into replay state");
+        assert_eq!(
+            replay_state.resolve_container_entity_for_pid(42),
+            Some(EntityId::Container("container-123".into()))
+        );
+        let high_tags = replay_state
+            .get_tags_for_entity(&EntityId::ContainerPid(42), OriginTagCardinality::High)
+            .expect("high-cardinality replay tags should resolve");
+        assert_eq!(
+            TagSet::from_iter((&high_tags).into_iter().cloned()),
+            TagSet::from_iter([
+                Tag::from("container_name:api"),
+                Tag::from("env:prod"),
+                Tag::from("pod_name:api-123"),
+                Tag::from("service:api"),
+            ])
+        );
+
+        let _ = fs::remove_dir_all(target_dir);
+    }
+
+    #[test]
     fn capture_stops_after_requested_duration() {
         let writer = TrafficCaptureWriter::new(1);
         let target_dir = unique_dir("writer-autostop");
@@ -508,12 +790,16 @@ mod tests {
 
         assert_eq!(&bytes[record_end..record_end + 4], &[0, 0, 0, 0]);
 
-        let state_size_offset = bytes.len() - 4;
-        let state_size = u32::from_le_bytes(bytes[state_size_offset..].try_into().expect("state size")) as usize;
-        let state_start = state_size_offset - state_size;
-        let state = TaggerState::decode(&bytes[state_start..state_size_offset]).expect("state should decode");
+        let state = decode_capture_state(bytes);
 
-        assert_eq!(state.pid_map.get(&42).map(String::as_str), Some("container-123"));
+        assert!(
+            state.state.is_empty(),
+            "captures without a workload provider should keep degraded replay state"
+        );
+        assert_eq!(
+            state.pid_map.get(&42).map(String::as_str),
+            Some("container_id://container-123")
+        );
         assert!(!state.duration.is_negative());
     }
 
@@ -523,8 +809,19 @@ mod tests {
             payload: b"test".to_vec(),
             pid: Some(42),
             ancillary: b"oob".to_vec(),
-            container_id: Some("container-123".to_string()),
+            container_id: Some("container_id://container-123".to_string()),
         }
+    }
+
+    fn decode_capture_state(bytes: &[u8]) -> TaggerState {
+        let state_size_offset = bytes.len() - 4;
+        let state_size = u32::from_le_bytes(bytes[state_size_offset..].try_into().expect("state size")) as usize;
+        let state_start = state_size_offset - state_size;
+        TaggerState::decode(&bytes[state_start..state_size_offset]).expect("state should decode")
+    }
+
+    fn shared_tags(tags: &[&str]) -> SharedTagSet {
+        TagSet::from_iter(tags.iter().copied().map(Tag::from)).into_shared()
     }
 
     fn wait_until_inactive(writer: &TrafficCaptureWriter) {

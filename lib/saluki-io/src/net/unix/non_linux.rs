@@ -68,16 +68,8 @@ mod tests {
     #[test]
     fn uds_sendmsg_reports_unsupported() {
         let (sender, _receiver) = UnixDatagram::pair().expect("socket pair should create");
-        let error = uds_sendmsg(
-            &sender,
-            b"metric:1|c",
-            ProcessCredentials {
-                pid: 1,
-                uid: 2,
-                gid: 3,
-            },
-        )
-        .expect_err("replay credentials should be unsupported on non-Linux platforms");
+        let error = uds_sendmsg(&sender, b"metric:1|c", ProcessCredentials { pid: 1, uid: 2, gid: 3 })
+            .expect_err("replay credentials should be unsupported on non-Linux platforms");
 
         assert_eq!(error.kind(), ErrorKind::Unsupported);
     }
