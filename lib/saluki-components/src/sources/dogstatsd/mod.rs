@@ -370,6 +370,14 @@ pub struct DogStatsDConfiguration {
     additional_tags: Vec<String>,
 }
 
+#[cfg(test)]
+impl PartialEq for DogStatsDConfiguration {
+    fn eq(&self, other: &Self) -> bool {
+        // intentionally skip workload_provider — #[serde(skip)], runtime-injected
+        serde_json::to_value(self).ok() == serde_json::to_value(other).ok()
+    }
+}
+
 /// Resolves a `bind_host` string to an `IpAddr`.
 ///
 /// Accepts either an IP literal (no DNS required) or a hostname (resolved via async DNS). Returns

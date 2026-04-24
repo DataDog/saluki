@@ -131,7 +131,7 @@ async fn make_config_from_env(
 pub async fn run_config_smoke_tests<T, Factory>(
     struct_name: &'static str, non_config_fields: &[&str], base_config: serde_json::Value, config_factory: Factory,
 ) where
-    T: Serialize,
+    T: PartialEq + Serialize,
     Factory: Fn(GenericConfiguration) -> T,
 {
     let keys: Vec<&'static SalukiAnnotation> = ALL_ANNOTATIONS
@@ -141,7 +141,6 @@ pub async fn run_config_smoke_tests<T, Factory>(
         .collect();
 
     let default_struct = config_factory(make_config_from_file(base_config.clone()).await);
-    let default_json = serde_json::to_value(&default_struct).expect("failed to serialize default struct");
     let mut failures: Vec<String> = Vec::new();
 
     // Supported keys: the canonical yaml_path and every additional yaml_path and env var is
@@ -159,9 +158,8 @@ pub async fn run_config_smoke_tests<T, Factory>(
             ))
             .await,
         );
-        let reference_json = serde_json::to_value(&reference).expect("failed to serialize reference struct");
 
-        if reference_json == default_json {
+        if reference == default_struct {
             failures.push(format!(
                 "yaml_path '{}': struct did not change from its default — \
                  is the test value the same as the default, or is the key not wired up?",
@@ -179,8 +177,7 @@ pub async fn run_config_smoke_tests<T, Factory>(
                 ))
                 .await,
             );
-            let from_path_json = serde_json::to_value(&from_path).expect("failed to serialize struct");
-            if from_path_json != reference_json {
+            if from_path != reference {
                 failures.push(format!(
                     "yaml_path '{}' produced a different struct than canonical yaml_path '{}'",
                     yaml_path, canonical_path,
@@ -194,8 +191,7 @@ pub async fn run_config_smoke_tests<T, Factory>(
                 test_env_string(annotation.value_type()),
             )];
             let from_env = config_factory(make_config_from_env(&base_config, &env_pairs).await);
-            let from_env_json = serde_json::to_value(&from_env).expect("failed to serialize struct");
-            if from_env_json != reference_json {
+            if from_env != reference {
                 failures.push(format!(
                     "env var '{}' produced a different struct than yaml_path '{}'",
                     env_var, canonical_path,
@@ -214,8 +210,7 @@ pub async fn run_config_smoke_tests<T, Factory>(
                 ))
                 .await,
             );
-            let with_foreign_json = serde_json::to_value(&with_foreign).expect("failed to serialize struct");
-            if with_foreign_json != default_json {
+            if with_foreign != default_struct {
                 failures.push(format!(
                     "yaml_path '{}' is not registered for '{}' but unexpectedly changed the struct",
                     yaml_path, struct_name,
@@ -237,8 +232,9 @@ pub async fn run_config_smoke_tests<T, Factory>(
     }
     let all_keys_struct = config_factory(make_config_from_file(all_vals).await);
     let full_map = serde_json::to_value(&all_keys_struct).expect("failed to serialize struct with all keys set");
+    let default_map = serde_json::to_value(&default_struct).expect("failed to serialize default struct");
     let mut unchanged = Vec::new();
-    collect_unchanged_leaves(&full_map, &default_json, "", &mut unchanged);
+    collect_unchanged_leaves(&full_map, &default_map, "", &mut unchanged);
     unchanged.retain(|path| !non_config_fields.contains(&path.as_str()));
     if !unchanged.is_empty() {
         failures.push(format!(

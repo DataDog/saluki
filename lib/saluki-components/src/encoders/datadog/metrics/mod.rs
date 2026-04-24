@@ -152,6 +152,17 @@ pub struct DatadogMetricsConfiguration {
     additional_tags: Option<SharedTagSet>,
 }
 
+#[cfg(test)]
+impl PartialEq for DatadogMetricsConfiguration {
+    fn eq(&self, other: &Self) -> bool {
+        self.max_metrics_per_payload == other.max_metrics_per_payload
+            && self.flush_timeout_secs == other.flush_timeout_secs
+            && self.compressor_kind == other.compressor_kind
+            && self.zstd_compressor_level == other.zstd_compressor_level
+        // intentionally skip additional_tags — #[serde(skip)], runtime-injected
+    }
+}
+
 impl DatadogMetricsConfiguration {
     /// Creates a new `DatadogMetricsConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {

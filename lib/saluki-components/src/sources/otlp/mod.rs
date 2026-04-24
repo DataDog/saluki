@@ -121,6 +121,18 @@ pub struct OtlpConfiguration {
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 }
 
+#[cfg(test)]
+impl PartialEq for OtlpConfiguration {
+    fn eq(&self, other: &Self) -> bool {
+        self.otlp_config == other.otlp_config
+            && self.context_string_interner_bytes == other.context_string_interner_bytes
+            && self.cached_contexts_limit == other.cached_contexts_limit
+            && self.cached_tagsets_limit == other.cached_tagsets_limit
+            && self.allow_context_heap_allocations == other.allow_context_heap_allocations
+        // intentionally skip workload_provider — #[serde(skip)], runtime-injected
+    }
+}
+
 impl OtlpConfiguration {
     /// Creates a new `OTLPConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {

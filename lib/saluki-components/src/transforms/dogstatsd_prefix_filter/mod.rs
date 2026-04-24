@@ -84,6 +84,19 @@ fn default_metric_prefix_blocklist() -> Vec<String> {
     ]
 }
 
+#[cfg(test)]
+impl PartialEq for DogStatsDPrefixFilterConfiguration {
+    fn eq(&self, other: &Self) -> bool {
+        self.metric_prefix == other.metric_prefix
+            && self.metric_prefix_blocklist == other.metric_prefix_blocklist
+            && self.metric_filterlist == other.metric_filterlist
+            && self.metric_filterlist_match_prefix == other.metric_filterlist_match_prefix
+            && self.metric_blocklist == other.metric_blocklist
+            && self.metric_blocklist_match_prefix == other.metric_blocklist_match_prefix
+        // intentionally skip configuration — #[serde(skip)], runtime-injected
+    }
+}
+
 impl DogStatsDPrefixFilterConfiguration {
     /// Creates a new `DogStatsDPrefixFilterConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {

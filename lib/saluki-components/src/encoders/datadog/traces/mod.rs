@@ -129,6 +129,17 @@ pub struct DatadogTraceConfiguration {
     env: String,
 }
 
+#[cfg(test)]
+impl PartialEq for DatadogTraceConfiguration {
+    fn eq(&self, other: &Self) -> bool {
+        self.compressor_kind == other.compressor_kind
+            && self.zstd_compressor_level == other.zstd_compressor_level
+            && self.flush_timeout_secs == other.flush_timeout_secs
+            && self.env == other.env
+        // intentionally skip default_hostname, version, apm_config, otlp_traces — #[serde(skip)], runtime-injected
+    }
+}
+
 impl DatadogTraceConfiguration {
     /// Creates a new `DatadogTraceConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
