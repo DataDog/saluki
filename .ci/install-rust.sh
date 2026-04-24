@@ -23,4 +23,4 @@ rustup target add --toolchain ${RUST_VERSION} ${musl_target}
 # We do manual cleanup afterwards to remove most of the actual toolchain bits, since all we care about
 # is `rustfmt` itself.
 rustup toolchain install --profile minimal --component rustfmt nightly
-rm -rf /root/.rustup/toolchains/nightly-*/lib
+rm -rf /root/.rustup/toolchains/nightly-*/lib/rustlib/*/lib

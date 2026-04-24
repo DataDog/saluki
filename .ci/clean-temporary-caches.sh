@@ -13,7 +13,6 @@ rm -rf /var/lib/apt/lists/*
 
 # Clean up Cargo-related files.
 rm -rf /root/.cargo/registry
-rm -rf /root/.rustup/toolchains/nightly-*/lib/rustlib/*/lib
 
 # General cleanup of documentation and locale files and things we don't need
 # on a build container.

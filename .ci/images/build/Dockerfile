@@ -48,7 +48,8 @@ RUN --mount=type=bind,from=ci-scripts,target=/scripts \
 # Install Rust and common Cargo tooling that we depend on.
 ENV PATH="/root/.cargo/bin:${PATH}"
 RUN --mount=type=bind,from=ci-scripts,target=/scripts \
-    /scripts/install-rust.sh
+    /scripts/install-rust.sh && \
+    /scripts/clean-temporary-caches.sh
 
 # Pre-install the relevant Cargo tools we use in the build process.
 RUN --mount=type=bind,source=Makefile,target=/tmp/Makefile \
