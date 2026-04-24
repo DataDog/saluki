@@ -2,6 +2,8 @@
 
 /// Aggregate transform configuration annotations.
 pub mod aggregate;
+/// DogStatsD source configuration annotations.
+pub mod dogstatsd;
 /// DogStatsD mapper transform configuration annotations.
 pub mod dogstatsd_mapper;
 /// DogStatsD prefix filter transform configuration annotations.
@@ -26,6 +28,7 @@ use super::{ConfigKey, SalukiAnnotation};
 pub static ALL_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>> = LazyLock::new(|| {
     let mut v = Vec::new();
     v.extend_from_slice(aggregate::ALL);
+    v.extend_from_slice(dogstatsd::ALL);
     v.extend_from_slice(dogstatsd_mapper::ALL);
     v.extend_from_slice(dogstatsd_prefix_filter::ALL);
     v.extend_from_slice(encoders::ALL);
