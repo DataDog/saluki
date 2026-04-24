@@ -153,6 +153,13 @@ pub struct SchemaEntry {
 
     /// Shape of the value.
     pub value_type: ValueType,
+
+    /// JSON-encoded default value from the Agent schema, if present.
+    ///
+    /// Examples: `Some("true")`, `Some("8125")`, `Some("\"datadoghq.com\"")`, `None`.
+    /// Used by smoke tests to auto-detect when a generic test value matches the default
+    /// and flip it so the test actually exercises the field.
+    pub default: Option<&'static str>,
 }
 
 /// Saluki-specific annotation for a single configuration key.

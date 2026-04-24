@@ -6,48 +6,56 @@ static OTLP_CONFIG_TRACES_ENABLE_TOP_LEVEL_BY_SPAN_KIND_SCHEMA: SchemaEntry = Sc
     yaml_path: "otlp_config.traces.enable_otlp_compute_top_level_by_span_kind",
     env_vars: &[],
     value_type: ValueType::Bool,
+    default: Some("true"),
 };
 
 static OTLP_CONFIG_TRACES_IGNORE_MISSING_DATADOG_FIELDS_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "otlp_config.traces.ignore_missing_datadog_fields",
     env_vars: &[],
     value_type: ValueType::Bool,
+    default: None,
 };
 
 static OTLP_CONFIG_TRACES_STRING_INTERNER_SIZE_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "otlp_config.traces.string_interner_size",
     env_vars: &[],
     value_type: ValueType::Integer,
+    default: None,
 };
 
 static OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TRANSPORT_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "otlp_config.receiver.protocols.http.transport",
     env_vars: &[],
     value_type: ValueType::String,
+    default: None,
 };
 
 static OTLP_ALLOW_CONTEXT_HEAP_ALLOCS_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "otlp_allow_context_heap_allocs",
     env_vars: &[],
     value_type: ValueType::Bool,
+    default: Some("true"),
 };
 
 static OTLP_CACHED_CONTEXTS_LIMIT_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "otlp_cached_contexts_limit",
     env_vars: &[],
     value_type: ValueType::Integer,
+    default: None,
 };
 
 static OTLP_CACHED_TAGSETS_LIMIT_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "otlp_cached_tagsets_limit",
     env_vars: &[],
     value_type: ValueType::Integer,
+    default: None,
 };
 
 static OTLP_STRING_INTERNER_SIZE_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "otlp_string_interner_size",
     env_vars: &[],
     value_type: ValueType::Integer,
+    default: None,
 };
 
 crate::declare_annotations! {
@@ -111,7 +119,7 @@ crate::declare_annotations! {
 
     // ── Traces ────────────────────────────────────────────────────────────────
 
-    /// `otlp_config.traces.enabled` — default true, inject false to differ from default.
+    /// `otlp_config.traces.enabled`.
     OTLP_CONFIG_TRACES_ENABLED = SalukiAnnotation {
         schema: &schema::OTLP_CONFIG_TRACES_ENABLED,
         support_level: SupportLevel::Full,
@@ -119,7 +127,7 @@ crate::declare_annotations! {
         env_var_override: None,
         used_by: &[structs::OTLP_DECODER_CONFIGURATION, structs::OTLP_CONFIGURATION],
         value_type_override: None,
-        test_json: Some("false"),
+        test_json: None,
     };
 
     /// `otlp_config.traces.ignore_missing_datadog_fields` — ADP-specific, default false.
@@ -133,7 +141,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `otlp_config.traces.enable_otlp_compute_top_level_by_span_kind` — ADP-specific, default true.
+    /// `otlp_config.traces.enable_otlp_compute_top_level_by_span_kind`.
     OTLP_CONFIG_TRACES_ENABLE_TOP_LEVEL_BY_SPAN_KIND = SalukiAnnotation {
         schema: &OTLP_CONFIG_TRACES_ENABLE_TOP_LEVEL_BY_SPAN_KIND_SCHEMA,
         support_level: SupportLevel::Full,
@@ -141,7 +149,7 @@ crate::declare_annotations! {
         env_var_override: None,
         used_by: &[structs::OTLP_DECODER_CONFIGURATION, structs::OTLP_CONFIGURATION],
         value_type_override: None,
-        test_json: Some("false"),
+        test_json: None,
     };
 
     /// `otlp_config.traces.internal_port` — schema says Float but field is u16.
@@ -180,7 +188,8 @@ crate::declare_annotations! {
 
     // ── Logs / Metrics ────────────────────────────────────────────────────────
 
-    /// `otlp_config.logs.enabled` — default true, inject false to differ from default.
+    /// `otlp_config.logs.enabled` — saluki defaults to true but schema says false.
+    /// Explicit test_json because schema default disagrees with Rust implementation default.
     OTLP_CONFIG_LOGS_ENABLED = SalukiAnnotation {
         schema: &schema::OTLP_CONFIG_LOGS_ENABLED,
         support_level: SupportLevel::Full,
@@ -191,7 +200,7 @@ crate::declare_annotations! {
         test_json: Some("false"),
     };
 
-    /// `otlp_config.metrics.enabled` — default true, inject false to differ from default.
+    /// `otlp_config.metrics.enabled`.
     OTLP_CONFIG_METRICS_ENABLED = SalukiAnnotation {
         schema: &schema::OTLP_CONFIG_METRICS_ENABLED,
         support_level: SupportLevel::Full,
@@ -199,12 +208,12 @@ crate::declare_annotations! {
         env_var_override: None,
         used_by: &[structs::OTLP_CONFIGURATION],
         value_type_override: None,
-        test_json: Some("false"),
+        test_json: None,
     };
 
     // ── OtlpConfiguration source-specific ─────────────────────────────────────
 
-    /// `otlp_allow_context_heap_allocs` — ADP-specific, default true.
+    /// `otlp_allow_context_heap_allocs`.
     OTLP_ALLOW_CONTEXT_HEAP_ALLOCS = SalukiAnnotation {
         schema: &OTLP_ALLOW_CONTEXT_HEAP_ALLOCS_SCHEMA,
         support_level: SupportLevel::Full,
@@ -212,7 +221,7 @@ crate::declare_annotations! {
         env_var_override: None,
         used_by: &[structs::OTLP_CONFIGURATION],
         value_type_override: None,
-        test_json: Some("false"),
+        test_json: None,
     };
 
     /// `otlp_cached_contexts_limit` — ADP-specific, default 500,000.

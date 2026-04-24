@@ -6,6 +6,7 @@ static STATSD_METRIC_NAMESPACE_BLOCKLIST_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "statsd_metric_namespace_blocklist",
     env_vars: &[],
     value_type: ValueType::StringList,
+    default: None,
 };
 
 crate::declare_annotations! {

@@ -6,12 +6,14 @@ static FLUSH_TIMEOUT_SECS_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "flush_timeout_secs",
     env_vars: &[],
     value_type: ValueType::Integer,
+    default: None,
 };
 
 static SERIALIZER_MAX_METRICS_PER_PAYLOAD_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "serializer_max_metrics_per_payload",
     env_vars: &[],
     value_type: ValueType::Integer,
+    default: None,
 };
 
 crate::declare_annotations! {

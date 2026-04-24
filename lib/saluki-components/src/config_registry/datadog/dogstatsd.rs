@@ -6,72 +6,84 @@ static DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "dogstatsd_allow_context_heap_allocs",
     env_vars: &[],
     value_type: ValueType::Bool,
+    default: Some("true"),
 };
 
 static DOGSTATSD_BUFFER_COUNT_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "dogstatsd_buffer_count",
     env_vars: &[],
     value_type: ValueType::Integer,
+    default: None,
 };
 
 static DOGSTATSD_CACHED_CONTEXTS_LIMIT_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "dogstatsd_cached_contexts_limit",
     env_vars: &[],
     value_type: ValueType::Integer,
+    default: None,
 };
 
 static DOGSTATSD_CACHED_TAGSETS_LIMIT_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "dogstatsd_cached_tagsets_limit",
     env_vars: &[],
     value_type: ValueType::Integer,
+    default: None,
 };
 
 static DOGSTATSD_MINIMUM_SAMPLE_RATE_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "dogstatsd_minimum_sample_rate",
     env_vars: &[],
     value_type: ValueType::Float,
+    default: None,
 };
 
 static DOGSTATSD_PERMISSIVE_DECODING_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "dogstatsd_permissive_decoding",
     env_vars: &[],
     value_type: ValueType::Bool,
+    default: Some("true"),
 };
 
 static DOGSTATSD_STRING_INTERNER_SIZE_BYTES_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "dogstatsd_string_interner_size_bytes",
     env_vars: &[],
     value_type: ValueType::Integer,
+    default: None,
 };
 
 static DOGSTATSD_TCP_PORT_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "dogstatsd_tcp_port",
     env_vars: &[],
     value_type: ValueType::Integer,
+    default: None,
 };
 
 static ENABLE_PAYLOADS_EVENTS_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "enable_payloads_events",
     env_vars: &[],
     value_type: ValueType::Bool,
+    default: Some("true"),
 };
 
 static ENABLE_PAYLOADS_SERIES_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "enable_payloads_series",
     env_vars: &[],
     value_type: ValueType::Bool,
+    default: Some("true"),
 };
 
 static ENABLE_PAYLOADS_SERVICE_CHECKS_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "enable_payloads_service_checks",
     env_vars: &[],
     value_type: ValueType::Bool,
+    default: Some("true"),
 };
 
 static ENABLE_PAYLOADS_SKETCHES_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "enable_payloads_sketches",
     env_vars: &[],
     value_type: ValueType::Bool,
+    default: Some("true"),
 };
 
 crate::declare_annotations! {
@@ -121,7 +133,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_origin_optout_enabled` — skip enrichment when cardinality=none. Default true.
+    /// `dogstatsd_origin_optout_enabled` — skip enrichment when cardinality=none.
     DOGSTATSD_ORIGIN_OPTOUT_ENABLED = SalukiAnnotation {
         schema: &schema::DOGSTATSD_ORIGIN_OPTOUT_ENABLED,
         support_level: SupportLevel::Full,
@@ -129,7 +141,7 @@ crate::declare_annotations! {
         env_var_override: None,
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
-        test_json: Some("false"),
+        test_json: None,
     };
 
     /// `dogstatsd_port` — UDP port. Schema says Float; field is u16.
@@ -212,7 +224,7 @@ crate::declare_annotations! {
 
     // ── ADP-specific ──────────────────────────────────────────────────────────
 
-    /// `dogstatsd_allow_context_heap_allocs` — allow heap allocations when interner is full. Default true.
+    /// `dogstatsd_allow_context_heap_allocs` — allow heap allocations when interner is full.
     DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS = SalukiAnnotation {
         schema: &DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS_SCHEMA,
         support_level: SupportLevel::Full,
@@ -220,7 +232,7 @@ crate::declare_annotations! {
         env_var_override: None,
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
-        test_json: Some("false"),
+        test_json: None,
     };
 
     /// `dogstatsd_buffer_count` — number of message buffers to pre-allocate.
@@ -267,7 +279,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_permissive_decoding` — relax decoding strictness for Agent compat. Default true.
+    /// `dogstatsd_permissive_decoding` — relax decoding strictness for Agent compat.
     DOGSTATSD_PERMISSIVE_DECODING = SalukiAnnotation {
         schema: &DOGSTATSD_PERMISSIVE_DECODING_SCHEMA,
         support_level: SupportLevel::Full,
@@ -275,7 +287,7 @@ crate::declare_annotations! {
         env_var_override: None,
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
-        test_json: Some("false"),
+        test_json: None,
     };
 
     /// `dogstatsd_string_interner_size_bytes` — explicit interner byte budget (overrides entry count).
@@ -300,7 +312,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `enable_payloads_events` — forward event payloads. Default true.
+    /// `enable_payloads_events` — forward event payloads.
     ENABLE_PAYLOADS_EVENTS = SalukiAnnotation {
         schema: &ENABLE_PAYLOADS_EVENTS_SCHEMA,
         support_level: SupportLevel::Full,
@@ -308,10 +320,10 @@ crate::declare_annotations! {
         env_var_override: None,
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
-        test_json: Some("false"),
+        test_json: None,
     };
 
-    /// `enable_payloads_series` — forward series (counter/gauge/rate) payloads. Default true.
+    /// `enable_payloads_series` — forward series (counter/gauge/rate) payloads.
     ENABLE_PAYLOADS_SERIES = SalukiAnnotation {
         schema: &ENABLE_PAYLOADS_SERIES_SCHEMA,
         support_level: SupportLevel::Full,
@@ -319,10 +331,10 @@ crate::declare_annotations! {
         env_var_override: None,
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
-        test_json: Some("false"),
+        test_json: None,
     };
 
-    /// `enable_payloads_service_checks` — forward service check payloads. Default true.
+    /// `enable_payloads_service_checks` — forward service check payloads.
     ENABLE_PAYLOADS_SERVICE_CHECKS = SalukiAnnotation {
         schema: &ENABLE_PAYLOADS_SERVICE_CHECKS_SCHEMA,
         support_level: SupportLevel::Full,
@@ -330,10 +342,10 @@ crate::declare_annotations! {
         env_var_override: None,
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
-        test_json: Some("false"),
+        test_json: None,
     };
 
-    /// `enable_payloads_sketches` — forward sketch (distribution) payloads. Default true.
+    /// `enable_payloads_sketches` — forward sketch (distribution) payloads.
     ENABLE_PAYLOADS_SKETCHES = SalukiAnnotation {
         schema: &ENABLE_PAYLOADS_SKETCHES_SCHEMA,
         support_level: SupportLevel::Full,
@@ -341,6 +353,6 @@ crate::declare_annotations! {
         env_var_override: None,
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
-        test_json: Some("false"),
+        test_json: None,
     };
 }

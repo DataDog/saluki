@@ -9,126 +9,151 @@ static CC_ENABLED: SchemaEntry = SchemaEntry {
     yaml_path: "config.credit_cards.enabled",
     env_vars: &[],
     value_type: ValueType::Bool,
+    default: None,
 };
 static CC_KEEP_VALUES: SchemaEntry = SchemaEntry {
     yaml_path: "config.credit_cards.keep_values",
     env_vars: &[],
     value_type: ValueType::StringList,
+    default: None,
 };
 static CC_LUHN: SchemaEntry = SchemaEntry {
     yaml_path: "config.credit_cards.luhn",
     env_vars: &[],
     value_type: ValueType::Bool,
+    default: None,
 };
 static ES_ENABLED: SchemaEntry = SchemaEntry {
     yaml_path: "config.es.enabled",
     env_vars: &[],
     value_type: ValueType::Bool,
+    default: None,
 };
 static ES_KEEP_VALUES: SchemaEntry = SchemaEntry {
     yaml_path: "config.es.keep_values",
     env_vars: &[],
     value_type: ValueType::StringList,
+    default: None,
 };
 static ES_OBFUSCATE_SQL: SchemaEntry = SchemaEntry {
     yaml_path: "config.es.obfuscate_sql_values",
     env_vars: &[],
     value_type: ValueType::StringList,
+    default: None,
 };
 static HTTP_REMOVE_PATH_DIGITS: SchemaEntry = SchemaEntry {
     yaml_path: "config.http.remove_path_digits",
     env_vars: &[],
     value_type: ValueType::Bool,
+    default: None,
 };
 static HTTP_REMOVE_QUERY_STRING: SchemaEntry = SchemaEntry {
     yaml_path: "config.http.remove_query_string",
     env_vars: &[],
     value_type: ValueType::Bool,
+    default: None,
 };
 static MCD_ENABLED: SchemaEntry = SchemaEntry {
     yaml_path: "config.memcached.enabled",
     env_vars: &[],
     value_type: ValueType::Bool,
+    default: None,
 };
 static MCD_KEEP_COMMAND: SchemaEntry = SchemaEntry {
     yaml_path: "config.memcached.keep_command",
     env_vars: &[],
     value_type: ValueType::Bool,
+    default: None,
 };
 static MONGO_ENABLED: SchemaEntry = SchemaEntry {
     yaml_path: "config.mongo.enabled",
     env_vars: &[],
     value_type: ValueType::Bool,
+    default: None,
 };
 static MONGO_KEEP_VALUES: SchemaEntry = SchemaEntry {
     yaml_path: "config.mongo.keep_values",
     env_vars: &[],
     value_type: ValueType::StringList,
+    default: None,
 };
 static MONGO_OBFUSCATE_SQL: SchemaEntry = SchemaEntry {
     yaml_path: "config.mongo.obfuscate_sql_values",
     env_vars: &[],
     value_type: ValueType::StringList,
+    default: None,
 };
 static OS_ENABLED: SchemaEntry = SchemaEntry {
     yaml_path: "config.open_search.enabled",
     env_vars: &[],
     value_type: ValueType::Bool,
+    default: None,
 };
 static OS_KEEP_VALUES: SchemaEntry = SchemaEntry {
     yaml_path: "config.open_search.keep_values",
     env_vars: &[],
     value_type: ValueType::StringList,
+    default: None,
 };
 static OS_OBFUSCATE_SQL: SchemaEntry = SchemaEntry {
     yaml_path: "config.open_search.obfuscate_sql_values",
     env_vars: &[],
     value_type: ValueType::StringList,
+    default: None,
 };
 static REDIS_ENABLED: SchemaEntry = SchemaEntry {
     yaml_path: "config.redis.enabled",
     env_vars: &[],
     value_type: ValueType::Bool,
+    default: None,
 };
 static REDIS_REMOVE_ALL: SchemaEntry = SchemaEntry {
     yaml_path: "config.redis.remove_all_args",
     env_vars: &[],
     value_type: ValueType::Bool,
+    default: None,
 };
 static SQL_DBMS: SchemaEntry = SchemaEntry {
     yaml_path: "config.sql.dbms",
     env_vars: &[],
     value_type: ValueType::String,
+    default: None,
 };
 static SQL_DOLLAR_QUOTED: SchemaEntry = SchemaEntry {
     yaml_path: "config.sql.dollar_quoted_func",
     env_vars: &[],
     value_type: ValueType::Bool,
+    default: None,
 };
 static SQL_KEEP_ALIAS: SchemaEntry = SchemaEntry {
     yaml_path: "config.sql.keep_sql_alias",
     env_vars: &[],
     value_type: ValueType::Bool,
+    default: None,
 };
 static SQL_REPLACE_DIGITS: SchemaEntry = SchemaEntry {
     yaml_path: "config.sql.replace_digits",
     env_vars: &[],
     value_type: ValueType::Bool,
+    default: None,
 };
 static SQL_TABLE_NAMES: SchemaEntry = SchemaEntry {
     yaml_path: "config.sql.table_names",
     env_vars: &[],
     value_type: ValueType::Bool,
+    default: None,
 };
 static VALKEY_ENABLED: SchemaEntry = SchemaEntry {
     yaml_path: "config.valkey.enabled",
     env_vars: &[],
     value_type: ValueType::Bool,
+    default: None,
 };
 static VALKEY_REMOVE_ALL: SchemaEntry = SchemaEntry {
     yaml_path: "config.valkey.remove_all_args",
     env_vars: &[],
     value_type: ValueType::Bool,
+    default: None,
 };
 
 crate::declare_annotations! {

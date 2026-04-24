@@ -6,6 +6,7 @@ static DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "dogstatsd_mapper_string_interner_size",
     env_vars: &[],
     value_type: ValueType::Integer,
+    default: None,
 };
 
 crate::declare_annotations! {

@@ -54,6 +54,8 @@ struct SchemaEntry {
     const_name: String,
     env_vars: Vec<String>,
     value_type: SchemaValueType,
+    /// JSON-encoded default value from the schema, if present (e.g. `"true"`, `"0"`, `"\"datadoghq.com\""`).
+    default: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,12 +143,14 @@ fn parse_setting(path_parts: &[&str], value: &Value) -> Option<SchemaEntry> {
     };
 
     let value_type = parse_value_type(value);
+    let default = value.get("default").and_then(yaml_value_to_json_str);
 
     Some(SchemaEntry {
         yaml_path,
         const_name,
         env_vars,
         value_type,
+        default,
     })
 }
 
@@ -169,6 +173,27 @@ fn parse_value_type(value: &Value) -> SchemaValueType {
         }
         Some("object") => SchemaValueType::Unknown,
         _ => SchemaValueType::Unknown,
+    }
+}
+
+/// Convert a YAML scalar default value to a JSON string representation suitable
+/// for embedding as a Rust `&'static str` literal (e.g. `true` → `"true"`,
+/// `"datadoghq.com"` → `"\"datadoghq.com\""`). Complex nested structures are
+/// skipped since the smoke tests only need primitive defaults.
+fn yaml_value_to_json_str(value: &serde_yaml::Value) -> Option<String> {
+    match value {
+        serde_yaml::Value::Null => None,
+        serde_yaml::Value::Bool(b) => Some(b.to_string()),
+        serde_yaml::Value::Number(n) => Some(n.to_string()),
+        serde_yaml::Value::String(s) => {
+            // Produce a JSON string literal (with surrounding quotes, inner quotes escaped).
+            let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+            Some(format!("\"{}\"", escaped))
+        }
+        serde_yaml::Value::Sequence(seq) if seq.is_empty() => Some("[]".to_string()),
+        serde_yaml::Value::Mapping(map) if map.is_empty() => Some("{}".to_string()),
+        // Non-empty arrays/objects: skip — too complex to embed reliably.
+        _ => None,
     }
 }
 
@@ -212,10 +237,16 @@ fn render(entries: &[SchemaEntry]) -> String {
             format!("&[{}]", items.join(", "))
         };
 
+        let default_literal = match &entry.default {
+            Some(d) => format!("Some(\"{}\")", d.replace('\\', "\\\\").replace('"', "\\\"")),
+            None => "None".to_string(),
+        };
+
         writeln!(out, "pub const {}: SchemaEntry = SchemaEntry {{", entry.const_name).unwrap();
         writeln!(out, "    yaml_path: \"{}\",", entry.yaml_path).unwrap();
         writeln!(out, "    env_vars: {},", env_vars_literal).unwrap();
         writeln!(out, "    value_type: {},", entry.value_type.as_rust()).unwrap();
+        writeln!(out, "    default: {},", default_literal).unwrap();
         writeln!(out, "}};").unwrap();
         writeln!(out).unwrap();
     }

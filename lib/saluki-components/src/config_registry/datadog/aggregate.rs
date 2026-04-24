@@ -6,36 +6,42 @@ static AGGREGATE_WINDOW_DURATION_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "aggregate_window_duration",
     env_vars: &[],
     value_type: ValueType::String,
+    default: None,
 };
 
 static AGGREGATE_FLUSH_INTERVAL_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "aggregate_flush_interval",
     env_vars: &[],
     value_type: ValueType::String,
+    default: None,
 };
 
 static AGGREGATE_CONTEXT_LIMIT_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "aggregate_context_limit",
     env_vars: &[],
     value_type: ValueType::Integer,
+    default: None,
 };
 
 static AGGREGATE_FLUSH_OPEN_WINDOWS_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "aggregate_flush_open_windows",
     env_vars: &[],
     value_type: ValueType::Bool,
+    default: None,
 };
 
 static COUNTER_EXPIRY_SECONDS_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "counter_expiry_seconds",
     env_vars: &[],
     value_type: ValueType::Integer,
+    default: None,
 };
 
 static AGGREGATE_PASSTHROUGH_IDLE_FLUSH_TIMEOUT_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "aggregate_passthrough_idle_flush_timeout",
     env_vars: &[],
     value_type: ValueType::String,
+    default: None,
 };
 
 crate::declare_annotations! {
@@ -96,7 +102,6 @@ crate::declare_annotations! {
     };
 
     /// `dogstatsd_no_aggregation_pipeline` — pass through pre-timestamped metrics immediately.
-    /// Default is true; inject false to differ from default.
     DOGSTATSD_NO_AGGREGATION_PIPELINE = SalukiAnnotation {
         schema: &schema::DOGSTATSD_NO_AGGREGATION_PIPELINE,
         support_level: SupportLevel::Full,
@@ -104,7 +109,7 @@ crate::declare_annotations! {
         env_var_override: None,
         used_by: &[structs::AGGREGATE_CONFIGURATION, structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
-        test_json: Some("false"),
+        test_json: None,
     };
 
     /// `aggregate_passthrough_idle_flush_timeout` — max buffer time for passthrough metrics.

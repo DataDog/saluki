@@ -22,13 +22,46 @@ fn test_json_value(value_type: ValueType) -> serde_json::Value {
     }
 }
 
-fn test_env_string(value_type: ValueType) -> String {
+/// Returns the effective test value for an annotation, auto-flipping when the
+/// generic value would match the schema default (which would leave the struct unchanged).
+fn effective_test_value(annotation: &SalukiAnnotation) -> serde_json::Value {
+    let v = test_json_value(annotation.value_type());
+    if let Some(default_raw) = annotation.schema.default {
+        if let Ok(default_val) = serde_json::from_str::<serde_json::Value>(default_raw) {
+            if v == default_val {
+                // Generic test value matches the default — flip it so the struct changes.
+                return match annotation.value_type() {
+                    ValueType::Bool => json!(!default_val.as_bool().unwrap_or(false)),
+                    // For other types the generic values (URL, [list], 42, 1.5) are
+                    // extremely unlikely to match any real default, so no flip needed.
+                    _ => v,
+                };
+            }
+        }
+    }
+    v
+}
+
+/// Converts an injected JSON value back to the string format used by env var loading.
+fn json_value_to_env_string(value: &serde_json::Value, value_type: ValueType) -> String {
     match value_type {
-        ValueType::String => TEST_STRING_VALUE.to_string(),
-        ValueType::Bool => "true".to_string(),
-        ValueType::StringList => TEST_STRING_LIST_VALUE.join(" "),
-        ValueType::Integer => "42".to_string(),
-        ValueType::Float => "1.5".to_string(),
+        ValueType::Bool => value
+            .as_bool()
+            .map(|b| b.to_string())
+            .unwrap_or_else(|| "true".to_string()),
+        ValueType::Integer => value
+            .as_i64()
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "42".to_string()),
+        ValueType::Float => value
+            .as_f64()
+            .map(|f| f.to_string())
+            .unwrap_or_else(|| "1.5".to_string()),
+        ValueType::String => value.as_str().unwrap_or(TEST_STRING_VALUE).to_string(),
+        ValueType::StringList => value
+            .as_array()
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" "))
+            .unwrap_or_else(|| TEST_STRING_LIST_VALUE.join(" ")),
     }
 }
 
@@ -149,7 +182,7 @@ pub async fn run_config_smoke_tests<T, Factory>(
         let canonical_path = annotation.yaml_path();
         let injected_value = match annotation.test_json {
             Some(raw) => serde_json::from_str(raw).expect("test_json is not valid JSON"),
-            None => test_json_value(annotation.value_type()),
+            None => effective_test_value(annotation),
         };
         let reference = config_factory(
             make_config_from_file(merge_over_base(
@@ -188,7 +221,7 @@ pub async fn run_config_smoke_tests<T, Factory>(
         for env_var in annotation.effective_env_vars() {
             let env_pairs = [(
                 dd_env_var_to_test_key(env_var).to_string(),
-                test_env_string(annotation.value_type()),
+                json_value_to_env_string(&injected_value, annotation.value_type()),
             )];
             let from_env = config_factory(make_config_from_env(&base_config, &env_pairs).await);
             if from_env != reference {
@@ -226,7 +259,7 @@ pub async fn run_config_smoke_tests<T, Factory>(
     for annotation in keys {
         let val = match annotation.test_json {
             Some(raw) => serde_json::from_str(raw).expect("test_json is not valid JSON"),
-            None => test_json_value(annotation.value_type()),
+            None => effective_test_value(annotation),
         };
         saluki_config::upsert(&mut all_vals, annotation.yaml_path(), val);
     }
