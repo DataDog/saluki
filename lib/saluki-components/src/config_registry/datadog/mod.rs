@@ -1,5 +1,7 @@
 //! Datadog Agent configuration registry entries.
 
+/// Aggregate transform configuration annotations.
+pub mod aggregate;
 /// DogStatsD mapper transform configuration annotations.
 pub mod dogstatsd_mapper;
 /// DogStatsD prefix filter transform configuration annotations.
@@ -21,6 +23,7 @@ use super::{ConfigKey, SalukiAnnotation};
 /// Used by the smoke test runner and runtime unknown-key detection.
 pub static ALL_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>> = LazyLock::new(|| {
     let mut v = Vec::new();
+    v.extend_from_slice(aggregate::ALL);
     v.extend_from_slice(dogstatsd_mapper::ALL);
     v.extend_from_slice(dogstatsd_prefix_filter::ALL);
     v.extend_from_slice(encoders::ALL);

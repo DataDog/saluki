@@ -1459,10 +1459,21 @@ mod config_smoke {
 
     #[tokio::test]
     async fn smoke_test() {
-        run_config_smoke_tests(structs::AGGREGATE_CONFIGURATION, &[], json!({}), |cfg| {
-            cfg.as_typed::<AggregateConfiguration>()
-                .expect("AggregateConfiguration should deserialize")
-        })
+        // Duration fields serialize as {secs, nanos}. We inject whole-second values so the nanos
+        // sub-fields are always 0 — they are not independently configurable.
+        run_config_smoke_tests(
+            structs::AGGREGATE_CONFIGURATION,
+            &[
+                "aggregate_flush_interval.nanos",
+                "aggregate_passthrough_idle_flush_timeout.nanos",
+                "aggregate_window_duration.nanos",
+            ],
+            json!({}),
+            |cfg| {
+                cfg.as_typed::<AggregateConfiguration>()
+                    .expect("AggregateConfiguration should deserialize")
+            },
+        )
         .await
     }
 }
