@@ -12,13 +12,9 @@ use super::{ConfigKey, SalukiAnnotation};
 /// The source of truth for which config keys saluki knows about and how they are consumed.
 /// Used by the smoke test runner and runtime unknown-key detection.
 pub static ALL_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>> = LazyLock::new(|| {
-    vec![
-        &proxy::PROXY_HTTP,
-        &proxy::PROXY_HTTPS,
-        &proxy::PROXY_NO_PROXY,
-        &proxy::NO_PROXY_NONEXACT_MATCH,
-        &proxy::USE_PROXY_FOR_CLOUD_METADATA,
-    ]
+    let mut v = Vec::new();
+    v.extend_from_slice(proxy::ALL);
+    v
 });
 
 /// All resolved [`ConfigKey`] entries, derived from [`ALL_ANNOTATIONS`] at first access.
