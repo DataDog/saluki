@@ -294,15 +294,17 @@ mod tests {
     use super::*;
 
     // The Core Agent owns the `use_dogstatsd` decision and communicates the result to ADP via
-    // `data_plane.dogstatsd.enabled`. These tests guard against a regression where ADP starts
-    // reading `use_dogstatsd` directly, which would let ADP and the Core Agent disagree.
+    // `data_plane.dogstatsd.enabled`. ADP must not read `use_dogstatsd` directly — doing so would
+    // let ADP and the Core Agent disagree. These tests guard that invariant in both directions:
+    // `use_dogstatsd` must not enable DSD when `data_plane.dogstatsd.enabled=false`, and must not
+    // disable it when the key is unset (default true) or explicitly true.
 
     #[tokio::test]
     async fn default_enables_dogstatsd() {
         let (config, _) = ConfigurationLoader::for_tests(None::<serde_json::Value>, None, false).await;
 
-        let dsd = DataPlaneDogStatsDConfiguration::from_configuration(&config).expect("parse config");
-        assert!(dsd.enabled());
+        let dp = DataPlaneConfiguration::from_configuration(&config).expect("parse config");
+        assert!(dp.dogstatsd().enabled());
     }
 
     #[tokio::test]
@@ -311,8 +313,8 @@ mod tests {
         // resolved decision via `data_plane.dogstatsd.enabled`.
         let (config, _) = ConfigurationLoader::for_tests(Some(json!({ "use_dogstatsd": false })), None, false).await;
 
-        let dsd = DataPlaneDogStatsDConfiguration::from_configuration(&config).expect("parse config");
-        assert!(dsd.enabled());
+        let dp = DataPlaneConfiguration::from_configuration(&config).expect("parse config");
+        assert!(dp.dogstatsd().enabled());
     }
 
     #[tokio::test]
@@ -324,7 +326,43 @@ mod tests {
         )
         .await;
 
-        let dsd = DataPlaneDogStatsDConfiguration::from_configuration(&config).expect("parse config");
-        assert!(!dsd.enabled());
+        let dp = DataPlaneConfiguration::from_configuration(&config).expect("parse config");
+        assert!(!dp.dogstatsd().enabled());
+    }
+
+    #[tokio::test]
+    async fn use_dogstatsd_true_does_not_override_explicit_false() {
+        // `use_dogstatsd=true` must not enable DSD when `data_plane.dogstatsd.enabled=false` is
+        // set explicitly. ADP reads only its own key.
+        let (config, _) = ConfigurationLoader::for_tests(
+            Some(json!({
+                "use_dogstatsd": true,
+                "data_plane": { "dogstatsd": { "enabled": false } },
+            })),
+            None,
+            false,
+        )
+        .await;
+
+        let dp = DataPlaneConfiguration::from_configuration(&config).expect("parse config");
+        assert!(!dp.dogstatsd().enabled());
+    }
+
+    #[tokio::test]
+    async fn use_dogstatsd_false_does_not_disable_dogstatsd_when_explicitly_enabled() {
+        // `use_dogstatsd=false` must not disable DSD when `data_plane.dogstatsd.enabled=true` is
+        // set explicitly. The Core Agent communicates its resolved decision via that key.
+        let (config, _) = ConfigurationLoader::for_tests(
+            Some(json!({
+                "use_dogstatsd": false,
+                "data_plane": { "dogstatsd": { "enabled": true } },
+            })),
+            None,
+            false,
+        )
+        .await;
+
+        let dp = DataPlaneConfiguration::from_configuration(&config).expect("parse config");
+        assert!(dp.dogstatsd().enabled());
     }
 }
