@@ -1,7 +1,19 @@
 //! Annotations for DogStatsD prefix filter transform configuration keys.
 use crate::config_registry::{generated::schema, structs, SalukiAnnotation, SchemaEntry, SupportLevel, ValueType};
 
-// ADP uses "blocklist" spelling; schema has legacy "blacklist".
+// The Agent schema uses `statsd_metric_namespace_blacklist` (generated/schema.rs:
+// STATSD_METRIC_NAMESPACE_BLACKLIST, yaml_path "statsd_metric_namespace_blacklist").
+//
+// ADP renamed the field to `statsd_metric_namespace_blocklist` for inclusive language, but the
+// struct has NO serde alias for the old spelling. This means Agent config files that set
+// `statsd_metric_namespace_blacklist` are silently ignored by ADP — the customized list is
+// dropped and ADP falls back to the hardcoded default. The default lists happen to be identical
+// today, so this only affects users who have customized the key in their Agent config.
+//
+// Fix: add `#[serde(alias = "statsd_metric_namespace_blacklist")]` to the struct field in
+// `transforms/dogstatsd_prefix_filter/mod.rs` and switch this static to reference the generated
+// STATSD_METRIC_NAMESPACE_BLACKLIST schema entry with the old key as additional_yaml_paths.
+// TODO: https://github.com/DataDog/saluki/issues — add serde alias for blacklist → blocklist
 static STATSD_METRIC_NAMESPACE_BLOCKLIST_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "statsd_metric_namespace_blocklist",
     env_vars: &[],
