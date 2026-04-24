@@ -220,13 +220,15 @@ impl EndpointEncoder for ServiceChecksEndpointEncoder {
 
 #[cfg(test)]
 mod config_smoke {
+    use serde_json::json;
+
     use super::DatadogServiceChecksConfiguration;
     use crate::config_registry::structs;
     use crate::config_registry::test_support::run_config_smoke_tests;
 
     #[tokio::test]
     async fn smoke_test() {
-        run_config_smoke_tests(structs::DATADOG_SERVICE_CHECKS_CONFIGURATION, &[], |cfg| {
+        run_config_smoke_tests(structs::DATADOG_SERVICE_CHECKS_CONFIGURATION, &[], json!({}), |cfg| {
             cfg.as_typed::<DatadogServiceChecksConfiguration>()
                 .expect("DatadogServiceChecksConfiguration should deserialize")
         })

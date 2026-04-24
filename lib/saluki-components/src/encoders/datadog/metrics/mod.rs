@@ -1065,13 +1065,15 @@ mod tests {
 
 #[cfg(test)]
 mod config_smoke {
+    use serde_json::json;
+
     use super::DatadogMetricsConfiguration;
     use crate::config_registry::structs;
     use crate::config_registry::test_support::run_config_smoke_tests;
 
     #[tokio::test]
     async fn smoke_test() {
-        run_config_smoke_tests(structs::DATADOG_METRICS_CONFIGURATION, &[], |cfg| {
+        run_config_smoke_tests(structs::DATADOG_METRICS_CONFIGURATION, &[], json!({}), |cfg| {
             cfg.as_typed::<DatadogMetricsConfiguration>()
                 .expect("DatadogMetricsConfiguration should deserialize")
         })

@@ -61,6 +61,16 @@ fn yaml_path_to_json(yaml_path: &str, value: serde_json::Value) -> serde_json::V
     root
 }
 
+fn merge_over_base(base: &serde_json::Value, overlay: serde_json::Value) -> serde_json::Value {
+    let mut merged = base.clone();
+    if let (Some(base_obj), Some(overlay_obj)) = (merged.as_object_mut(), overlay.as_object()) {
+        for (k, v) in overlay_obj {
+            base_obj.insert(k.clone(), v.clone());
+        }
+    }
+    merged
+}
+
 fn dd_env_var_to_test_key(env_var: &str) -> &str {
     env_var.strip_prefix("DD_").unwrap_or(env_var)
 }
@@ -111,9 +121,13 @@ async fn make_config_from_env(env_vars: &[(String, String)]) -> GenericConfigura
 /// intentionally not configuration-driven (e.g. populated from runtime state) can be excluded by
 /// passing their serialized paths in `non_config_fields` (e.g. `&["workload_provider"]`).
 ///
+/// `base_config` is merged into every config load before test values are applied. Use this to
+/// supply fields that are required for the struct to deserialize at all (e.g. `api_key`). Pass
+/// `json!({})` when no required fields are needed.
+///
 /// `config_factory` converts a raw `GenericConfiguration` into the typed struct under test.
 pub async fn run_config_smoke_tests<T, Factory>(
-    struct_name: &'static str, non_config_fields: &[&str], config_factory: Factory,
+    struct_name: &'static str, non_config_fields: &[&str], base_config: serde_json::Value, config_factory: Factory,
 ) where
     T: Serialize,
     Factory: Fn(GenericConfiguration) -> T,
@@ -124,7 +138,7 @@ pub async fn run_config_smoke_tests<T, Factory>(
         .filter(|a| a.used_by.contains(&struct_name))
         .collect();
 
-    let default_struct = config_factory(make_config_from_file(json!({})).await);
+    let default_struct = config_factory(make_config_from_file(base_config.clone()).await);
     let default_json = serde_json::to_value(&default_struct).expect("failed to serialize default struct");
     let mut failures: Vec<String> = Vec::new();
 
@@ -133,9 +147,9 @@ pub async fn run_config_smoke_tests<T, Factory>(
     for annotation in &keys {
         let canonical_path = annotation.yaml_path();
         let reference = config_factory(
-            make_config_from_file(yaml_path_to_json(
-                canonical_path,
-                test_json_value(annotation.value_type()),
+            make_config_from_file(merge_over_base(
+                &base_config,
+                yaml_path_to_json(canonical_path, test_json_value(annotation.value_type())),
             ))
             .await,
         );
@@ -153,7 +167,11 @@ pub async fn run_config_smoke_tests<T, Factory>(
 
         for yaml_path in annotation.additional_yaml_paths {
             let from_path = config_factory(
-                make_config_from_file(yaml_path_to_json(yaml_path, test_json_value(annotation.value_type()))).await,
+                make_config_from_file(merge_over_base(
+                    &base_config,
+                    yaml_path_to_json(yaml_path, test_json_value(annotation.value_type())),
+                ))
+                .await,
             );
             let from_path_json = serde_json::to_value(&from_path).expect("failed to serialize struct");
             if from_path_json != reference_json {
@@ -184,7 +202,11 @@ pub async fn run_config_smoke_tests<T, Factory>(
     for annotation in ALL_ANNOTATIONS.iter().filter(|a| !a.used_by.contains(&struct_name)) {
         for yaml_path in annotation.all_yaml_paths() {
             let with_foreign = config_factory(
-                make_config_from_file(yaml_path_to_json(yaml_path, test_json_value(annotation.value_type()))).await,
+                make_config_from_file(merge_over_base(
+                    &base_config,
+                    yaml_path_to_json(yaml_path, test_json_value(annotation.value_type())),
+                ))
+                .await,
             );
             let with_foreign_json = serde_json::to_value(&with_foreign).expect("failed to serialize struct");
             if with_foreign_json != default_json {
@@ -199,7 +221,7 @@ pub async fn run_config_smoke_tests<T, Factory>(
     // Full coverage: load all supported keys at once and verify every serialized leaf field
     // differs from the default. Catches struct fields that exist and are populated from config
     // but have no registered annotation exercising them.
-    let mut all_vals = json!({});
+    let mut all_vals = base_config.clone();
     for annotation in keys {
         saluki_config::upsert(
             &mut all_vals,

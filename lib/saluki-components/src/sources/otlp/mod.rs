@@ -481,13 +481,15 @@ async fn run_converter(
 
 #[cfg(test)]
 mod config_smoke {
+    use serde_json::json;
+
     use super::OtlpConfiguration;
     use crate::config_registry::structs;
     use crate::config_registry::test_support::run_config_smoke_tests;
 
     #[tokio::test]
     async fn smoke_test() {
-        run_config_smoke_tests(structs::OTLP_CONFIGURATION, &[], |cfg| {
+        run_config_smoke_tests(structs::OTLP_CONFIGURATION, &[], json!({ "otlp_config": {} }), |cfg| {
             cfg.as_typed::<OtlpConfiguration>()
                 .expect("OtlpConfiguration should deserialize")
         })
