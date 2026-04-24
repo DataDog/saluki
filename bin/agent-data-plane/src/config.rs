@@ -298,12 +298,8 @@ mod tests {
 
     #[tokio::test]
     async fn default_enables_dogstatsd() {
-        let (config, _) = ConfigurationLoader::for_tests(
-            Some(json!({ "data_plane": { "enabled": true } })),
-            None,
-            false,
-        )
-        .await;
+        let (config, _) =
+            ConfigurationLoader::for_tests(Some(json!({ "data_plane": { "enabled": true } })), None, false).await;
 
         let dp = DataPlaneConfiguration::from_configuration(&config).expect("parse config");
         assert!(dp.enabled());
