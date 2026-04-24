@@ -26,6 +26,7 @@ crate::declare_annotations! {
             structs::DATADOG_LOGS_CONFIGURATION,
             structs::DATADOG_METRICS_CONFIGURATION,
             structs::DATADOG_SERVICE_CHECKS_CONFIGURATION,
+            structs::DATADOG_TRACE_CONFIGURATION,
         ],
         value_type_override: None,
     };
@@ -42,6 +43,7 @@ crate::declare_annotations! {
             structs::DATADOG_LOGS_CONFIGURATION,
             structs::DATADOG_METRICS_CONFIGURATION,
             structs::DATADOG_SERVICE_CHECKS_CONFIGURATION,
+            structs::DATADOG_TRACE_CONFIGURATION,
         ],
         value_type_override: Some(ValueType::Integer),
     };
@@ -53,7 +55,11 @@ crate::declare_annotations! {
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
-        used_by: &[structs::DATADOG_METRICS_CONFIGURATION],
+        used_by: &[
+            structs::DATADOG_APM_STATS_ENCODER_CONFIGURATION,
+            structs::DATADOG_METRICS_CONFIGURATION,
+            structs::DATADOG_TRACE_CONFIGURATION,
+        ],
         value_type_override: None,
     };
 
@@ -65,6 +71,19 @@ crate::declare_annotations! {
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[structs::DATADOG_METRICS_CONFIGURATION],
+        value_type_override: None,
+    };
+
+    /// `env` — the environment name attached to all emitted telemetry.
+    ENV = SalukiAnnotation {
+        schema: &schema::ENV,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[
+            structs::DATADOG_APM_STATS_ENCODER_CONFIGURATION,
+            structs::DATADOG_TRACE_CONFIGURATION,
+        ],
         value_type_override: None,
     };
 }
