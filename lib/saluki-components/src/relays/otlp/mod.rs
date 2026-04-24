@@ -26,6 +26,7 @@ use crate::common::otlp::{
 
 /// Configuration for the OTLP relay.
 #[derive(Deserialize, Default, Facet)]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct OtlpRelayConfiguration {
     #[serde(default)]
     otlp_config: OtlpRelayConfig,
@@ -33,6 +34,7 @@ pub struct OtlpRelayConfiguration {
 
 /// OTLP configuration for the relay.
 #[derive(Deserialize, Default, Facet)]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct OtlpRelayConfig {
     #[serde(default)]
     receiver: Receiver,
@@ -257,5 +259,21 @@ impl OtlpHandler for RelayHandler {
             .send(OtlpPayload::traces(body))
             .await
             .error_context("Failed to send OTLP traces payload to relay dispatcher: channel closed.")
+    }
+}
+
+#[cfg(test)]
+mod config_smoke {
+    use super::OtlpRelayConfiguration;
+    use crate::config_registry::structs;
+    use crate::config_registry::test_support::run_config_smoke_tests;
+
+    #[tokio::test]
+    async fn smoke_test() {
+        run_config_smoke_tests(structs::OTLP_RELAY_CONFIGURATION, &[], |cfg| {
+            cfg.as_typed::<OtlpRelayConfiguration>()
+                .expect("OtlpRelayConfiguration should deserialize")
+        })
+        .await
     }
 }

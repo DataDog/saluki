@@ -34,9 +34,11 @@ pub(crate) enum EndpointError {
 
 #[serde_as]
 #[derive(Clone, Debug, Default, Deserialize, Facet)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 struct APIKeys(#[serde_as(as = "OneOrMany<_>")] Vec<String>);
 
 #[derive(Clone, Debug, Default, Deserialize, Facet)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 struct MappedAPIKeys(HashMap<String, APIKeys>);
 
 impl MappedAPIKeys {
@@ -54,11 +56,19 @@ impl FromStr for MappedAPIKeys {
     }
 }
 
+#[cfg(test)]
+impl std::fmt::Display for MappedAPIKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", serde_json::to_string(&self.0).unwrap_or_default())
+    }
+}
+
 /// A set of additional API endpoints to forward metrics to.
 ///
 /// Each endpoint can be associated with multiple API keys. Requests will be forwarded to each unique endpoint/API key pair.
 #[serde_as]
 #[derive(Clone, Debug, Default, Deserialize, Facet)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 pub(crate) struct AdditionalEndpoints(#[serde_as(as = "PickFirst<(DisplayFromStr, _)>")] MappedAPIKeys);
 
 impl AdditionalEndpoints {
@@ -105,6 +115,7 @@ impl AdditionalEndpoints {
 
 /// Endpoint configuration for sending payloads to the Datadog platform.
 #[derive(Clone, Deserialize, Facet)]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct EndpointConfiguration {
     /// The API key to use.
     api_key: String,

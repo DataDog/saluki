@@ -28,6 +28,7 @@ const fn default_forwarder_connection_reset_interval() -> u64 {
 /// Agent, which are used to control the behavior of its forwarder, such as retries and concurrency, in conjunction with
 /// with existing primitives, as such retry policies in [`saluki_io::util::retry`].
 #[derive(Clone, Deserialize, Facet)]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct ForwarderConfiguration {
     /// Maximum number of concurrent requests for an individual endpoint.
     ///
@@ -203,5 +204,20 @@ mod tests {
 
         let proxies = config.proxy().as_ref().unwrap().build().unwrap();
         assert_eq!(proxies[0].uri().to_string(), PROXY_B_URI);
+    }
+}
+
+#[cfg(test)]
+mod config_smoke {
+    use super::ForwarderConfiguration;
+    use crate::config_registry::structs;
+    use crate::config_registry::test_support::run_config_smoke_tests;
+
+    #[tokio::test]
+    async fn smoke_test() {
+        run_config_smoke_tests(structs::FORWARDER_CONFIGURATION, &[], |cfg| {
+            ForwarderConfiguration::from_configuration(&cfg).expect("ForwarderConfiguration should deserialize")
+        })
+        .await
     }
 }

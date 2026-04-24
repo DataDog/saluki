@@ -5,6 +5,7 @@ use serde::Deserialize;
 
 /// Configuration for the obfuscator.
 #[derive(Clone, Debug, Default, Deserialize, Facet)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 #[serde(default)]
 pub struct ObfuscationConfig {
     /// HTTP URL obfuscation settings.
@@ -40,6 +41,7 @@ pub struct ObfuscationConfig {
 
 /// HTTP URL obfuscation configuration.
 #[derive(Clone, Debug, Default, Deserialize, Facet)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 #[serde(default)]
 pub struct HttpObfuscationConfig {
     /// Whether to remove query strings from HTTP URLs.
@@ -52,6 +54,7 @@ pub struct HttpObfuscationConfig {
 
 /// Memcached obfuscation configuration.
 #[derive(Clone, Debug, Default, Deserialize, Facet)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 #[serde(default)]
 pub struct MemcachedObfuscationConfig {
     /// Whether memcached obfuscation is enabled.
@@ -63,6 +66,7 @@ pub struct MemcachedObfuscationConfig {
 
 /// Credit card obfuscation configuration.
 #[derive(Clone, Debug, Default, Deserialize, Facet)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 #[serde(default)]
 pub struct CreditCardObfuscationConfig {
     /// Whether credit card obfuscation is enabled.
@@ -78,6 +82,7 @@ pub struct CreditCardObfuscationConfig {
 
 /// Redis obfuscation configuration.
 #[derive(Clone, Debug, Default, Deserialize, Facet)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 #[serde(default)]
 pub struct RedisObfuscationConfig {
     /// Whether Redis obfuscation is enabled.
@@ -89,6 +94,7 @@ pub struct RedisObfuscationConfig {
 
 /// Valkey obfuscation configuration.
 #[derive(Clone, Debug, Default, Deserialize, Facet)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 #[serde(default)]
 pub struct ValkeyObfuscationConfig {
     /// Whether Valkey obfuscation is enabled.
@@ -100,6 +106,7 @@ pub struct ValkeyObfuscationConfig {
 
 /// SQL obfuscation configuration.
 #[derive(Clone, Debug, Default, Deserialize, Facet)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 #[serde(default)]
 pub struct SqlObfuscationConfig {
     /// DBMS type (for example, "postgresql", "mysql", "mssql", "sqlite").
@@ -121,6 +128,7 @@ pub struct SqlObfuscationConfig {
 
 /// JSON obfuscation configuration for MongoDB, Elasticsearch, and OpenSearch.
 #[derive(Clone, Debug, Default, Deserialize, Facet)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 #[serde(default)]
 pub struct JsonObfuscationConfig {
     /// Whether JSON obfuscation is enabled.

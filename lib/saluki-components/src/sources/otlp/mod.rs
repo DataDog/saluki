@@ -66,6 +66,7 @@ const fn default_allow_context_heap_allocations() -> bool {
 
 /// Configuration for the OTLP source.
 #[derive(Deserialize, Default)]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct OtlpConfiguration {
     otlp_config: OtlpConfig,
 
@@ -476,4 +477,20 @@ async fn run_converter(
     }
 
     debug!("OTLP resource converter task stopped.");
+}
+
+#[cfg(test)]
+mod config_smoke {
+    use super::OtlpConfiguration;
+    use crate::config_registry::structs;
+    use crate::config_registry::test_support::run_config_smoke_tests;
+
+    #[tokio::test]
+    async fn smoke_test() {
+        run_config_smoke_tests(structs::OTLP_CONFIGURATION, &[], |cfg| {
+            cfg.as_typed::<OtlpConfiguration>()
+                .expect("OtlpConfiguration should deserialize")
+        })
+        .await
+    }
 }

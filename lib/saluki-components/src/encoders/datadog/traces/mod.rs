@@ -87,6 +87,7 @@ fn default_env() -> String {
 /// to the Datadog traces intake endpoint (`/api/v0.2/traces`). It handles batching, compression,
 /// and enrichment with metadata such as hostname, environment, and container tags.
 #[derive(Deserialize, Facet)]
+#[cfg_attr(test, derive(Debug, serde::Serialize))]
 pub struct DatadogTraceConfiguration {
     #[serde(
         rename = "serializer_compressor_kind",  // renames the field in the user_configuration from "serializer_compressor_kind" to "compressor_kind".
@@ -983,5 +984,21 @@ mod tests {
             .flat_map(|tp| tp.chunks.iter())
             .any(|chunk| chunk.tags.contains_key("_dd.error_tracking_standalone.error"));
         assert!(!has_tag, "ETS chunk tag should be absent when ETS is disabled");
+    }
+}
+
+#[cfg(test)]
+mod config_smoke {
+    use super::DatadogTraceConfiguration;
+    use crate::config_registry::structs;
+    use crate::config_registry::test_support::run_config_smoke_tests;
+
+    #[tokio::test]
+    async fn smoke_test() {
+        run_config_smoke_tests(structs::DATADOG_TRACE_CONFIGURATION, &[], |cfg| {
+            cfg.as_typed::<DatadogTraceConfiguration>()
+                .expect("DatadogTraceConfiguration should deserialize")
+        })
+        .await
     }
 }

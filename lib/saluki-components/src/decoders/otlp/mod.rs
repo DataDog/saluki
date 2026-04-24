@@ -29,6 +29,7 @@ use crate::common::otlp::{
 
 /// Configuration for the OTLP decoder.
 #[derive(Deserialize, Default)]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct OtlpDecoderConfiguration {
     #[serde(default)]
     otlp_config: OtlpDecoderConfig,
@@ -36,6 +37,7 @@ pub struct OtlpDecoderConfiguration {
 
 /// OTLP configuration for the decoder.
 #[derive(Deserialize, Default)]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 struct OtlpDecoderConfig {
     #[serde(default)]
     traces: TracesConfig,
@@ -175,5 +177,21 @@ impl Decoder for OtlpDecoder {
         debug!("OTLP decoder stopped.");
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod config_smoke {
+    use super::OtlpDecoderConfiguration;
+    use crate::config_registry::structs;
+    use crate::config_registry::test_support::run_config_smoke_tests;
+
+    #[tokio::test]
+    async fn smoke_test() {
+        run_config_smoke_tests(structs::OTLP_DECODER_CONFIGURATION, &[], |cfg| {
+            cfg.as_typed::<OtlpDecoderConfiguration>()
+                .expect("OtlpDecoderConfiguration should deserialize")
+        })
+        .await
     }
 }

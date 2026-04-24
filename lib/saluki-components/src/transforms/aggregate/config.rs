@@ -4,6 +4,7 @@ use stringtheory::MetaString;
 
 /// A histogram statistic to calculate.
 #[derive(Clone)]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub enum HistogramStatistic {
     /// Total count of values in the histogram.
     Count,
@@ -117,6 +118,7 @@ impl Default for RawHistogramConfiguration {
 }
 
 #[derive(Clone, Deserialize)]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 #[serde(try_from = "RawHistogramConfiguration")]
 pub struct HistogramConfiguration {
     statistics: Vec<HistogramStatistic>,

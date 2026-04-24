@@ -160,6 +160,7 @@ const fn default_enable_payloads_service_checks() -> bool {
 /// Accepts metrics over TCP, UDP, or Unix Domain Sockets in the StatsD/DogStatsD format.
 #[serde_as]
 #[derive(Deserialize, Default)]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct DogStatsDConfiguration {
     /// The size of the buffer used to receive messages into, in bytes.
     ///
@@ -1656,5 +1657,21 @@ mod tests {
         ];
         let mut actual = config.build_addresses(bind_host);
         address_list_eq(&mut expected, &mut actual).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod config_smoke {
+    use super::DogStatsDConfiguration;
+    use crate::config_registry::structs;
+    use crate::config_registry::test_support::run_config_smoke_tests;
+
+    #[tokio::test]
+    async fn smoke_test() {
+        run_config_smoke_tests(structs::DOGSTATSD_CONFIGURATION, &[], |cfg| {
+            cfg.as_typed::<DogStatsDConfiguration>()
+                .expect("DogStatsDConfiguration should deserialize")
+        })
+        .await
     }
 }
