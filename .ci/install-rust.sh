@@ -13,8 +13,8 @@ export PATH="/root/.cargo/bin:${PATH}"
 
 # First, install the default toolchain, which is provided via the `RUST_VERSION` environment variable.
 #
-# We pull in `clippy` to support tests, and we add a musl target to support statically linked builds.
-rustup toolchain install --profile minimal --component clippy ${RUST_VERSION}
+# We add a musl target to support statically linked builds.
+rustup toolchain install --profile minimal --component clippy,rustfmt ${RUST_VERSION}
 musl_target=$(rustc -vV | grep 'host:' | awk '{print $2}' | sed 's/linux-gnu/linux-musl/')
 rustup target add --toolchain ${RUST_VERSION} ${musl_target}
 
