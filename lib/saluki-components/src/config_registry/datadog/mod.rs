@@ -2,6 +2,8 @@
 
 /// DogStatsD mapper transform configuration annotations.
 pub mod dogstatsd_mapper;
+/// DogStatsD prefix filter transform configuration annotations.
+pub mod dogstatsd_prefix_filter;
 /// Shared encoder configuration annotations.
 pub mod encoders;
 /// OTLP source, decoder, and relay configuration annotations.
@@ -20,6 +22,7 @@ use super::{ConfigKey, SalukiAnnotation};
 pub static ALL_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>> = LazyLock::new(|| {
     let mut v = Vec::new();
     v.extend_from_slice(dogstatsd_mapper::ALL);
+    v.extend_from_slice(dogstatsd_prefix_filter::ALL);
     v.extend_from_slice(encoders::ALL);
     v.extend_from_slice(otlp::ALL);
     v.extend_from_slice(proxy::ALL);
