@@ -27,7 +27,7 @@ where
 {
     let sock_ref = SockRef::from(socket);
 
-    let mut ancillary_data = socket_credentials_control_message(process_credentials);
+    let ancillary_data = socket_credentials_control_message(process_credentials);
     let data_bufs = [IoSlice::new(payload)];
     let msg_hdr = MsgHdr::new()
         .with_buffers(&data_bufs)
@@ -100,37 +100,42 @@ where
 
 fn socket_credentials_control_message(process_credentials: ProcessCredentials) -> SocketCredentialsAncillaryData {
     let mut ancillary_data = SocketCredentialsAncillaryData::new();
-    let control_buf = ancillary_data.as_mut_uninit();
+    let control_len = {
+        let control_buf = ancillary_data.as_mut_uninit();
 
-    // Zero the full ancillary buffer so the safe byte slice we expose afterward is fully initialized.
-    unsafe {
-        ptr::write_bytes(control_buf.as_mut_ptr().cast::<u8>(), 0, control_buf.len());
-        ancillary_data.set_len(control_buf.len());
-    }
+        // SAFETY: The ancillary buffer is exactly sized for a single `SCM_CREDENTIALS` control message, and we write a
+        // single `cmsghdr` plus one `ucred` payload into it before exposing the initialized bytes to `sendmsg`.
+        unsafe {
+            // Zero the full ancillary buffer so the safe byte slice we expose afterward is fully initialized.
+            ptr::write_bytes(control_buf.as_mut_ptr().cast::<u8>(), 0, control_buf.len());
 
-    // SAFETY: The ancillary buffer is exactly sized for a single `SCM_CREDENTIALS` control message, and we write a
-    // single `cmsghdr` plus one `ucred` payload into it before exposing the initialized bytes to `sendmsg`.
-    unsafe {
-        let mut msg_hdr: libc::msghdr = mem::zeroed();
-        msg_hdr.msg_control = control_buf.as_mut_ptr().cast();
-        msg_hdr.msg_controllen = control_buf.len();
+            let mut msg_hdr: libc::msghdr = mem::zeroed();
+            msg_hdr.msg_control = control_buf.as_mut_ptr().cast();
+            msg_hdr.msg_controllen = control_buf.len();
 
-        let cmsg = libc::CMSG_FIRSTHDR(&msg_hdr);
-        assert!(!cmsg.is_null(), "ancillary buffer should fit one credentials message");
+            let cmsg = libc::CMSG_FIRSTHDR(&msg_hdr);
+            assert!(!cmsg.is_null(), "ancillary buffer should fit one credentials message");
 
-        #[allow(clippy::unnecessary_cast)]
-        {
-            (*cmsg).cmsg_level = libc::SOL_SOCKET;
-            (*cmsg).cmsg_type = libc::SCM_CREDENTIALS;
-            (*cmsg).cmsg_len = libc::CMSG_LEN(mem::size_of::<libc::ucred>() as u32) as _;
+            #[allow(clippy::unnecessary_cast)]
+            {
+                (*cmsg).cmsg_level = libc::SOL_SOCKET;
+                (*cmsg).cmsg_type = libc::SCM_CREDENTIALS;
+                (*cmsg).cmsg_len = libc::CMSG_LEN(mem::size_of::<libc::ucred>() as u32) as _;
+            }
+
+            let ucred_ptr = libc::CMSG_DATA(cmsg).cast::<libc::ucred>();
+            ucred_ptr.write(libc::ucred {
+                pid: process_credentials.pid,
+                uid: process_credentials.uid,
+                gid: process_credentials.gid,
+            });
         }
 
-        let ucred_ptr = libc::CMSG_DATA(cmsg).cast::<libc::ucred>();
-        ucred_ptr.write(libc::ucred {
-            pid: process_credentials.pid,
-            uid: process_credentials.uid,
-            gid: process_credentials.gid,
-        });
+        control_buf.len()
+    };
+
+    unsafe {
+        ancillary_data.set_len(control_len);
     }
 
     ancillary_data

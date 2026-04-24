@@ -4,6 +4,7 @@ use std::{
     time::Duration,
 };
 
+use saluki_env::WorkloadProvider;
 use saluki_error::{generic_error, GenericError};
 
 use super::writer::{CaptureRecord, CaptureTargetDir, TrafficCaptureWriter};
@@ -25,9 +26,17 @@ struct TrafficCaptureInner {
 impl TrafficCapture {
     /// Creates a new capture controller with the given default directory and queue depth.
     pub(crate) fn new(default_capture_dir: PathBuf, queue_depth: usize) -> Self {
+        Self::with_workload_provider(default_capture_dir, queue_depth, None)
+    }
+
+    /// Creates a new capture controller with the given default directory, queue depth, and optional workload provider.
+    pub(crate) fn with_workload_provider(
+        default_capture_dir: PathBuf, queue_depth: usize,
+        workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
+    ) -> Self {
         Self {
             inner: Arc::new(TrafficCaptureInner {
-                writer: TrafficCaptureWriter::new(queue_depth),
+                writer: TrafficCaptureWriter::with_workload_provider(queue_depth, workload_provider),
                 default_capture_dir,
             }),
         }

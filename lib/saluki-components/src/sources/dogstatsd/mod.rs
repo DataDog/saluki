@@ -562,7 +562,11 @@ impl SourceBuilder for DogStatsDConfiguration {
             .with_allow_sketches(self.enable_payloads_sketches)
             .with_allow_events(self.enable_payloads_events)
             .with_allow_service_checks(self.enable_payloads_service_checks);
-        let traffic_capture = TrafficCapture::new(self.capture_path.clone(), self.capture_depth);
+        let traffic_capture = TrafficCapture::with_workload_provider(
+            self.capture_path.clone(),
+            self.capture_depth,
+            self.workload_provider.clone(),
+        );
         self.capture_control.bind(traffic_capture.clone());
 
         Ok(Box::new(DogStatsD {
@@ -1181,8 +1185,7 @@ fn resolve_capture_container_id(
         let process_id = u32::try_from(process_id?).ok()?;
         workload_provider
             .and_then(|provider| provider.resolve_container_entity_for_pid(process_id))
-            .and_then(EntityId::try_into_container)
-            .map(|container_id| container_id.to_string())
+            .map(|entity_id| entity_id.to_string())
     })
 }
 
@@ -1210,8 +1213,7 @@ fn parsed_packet_local_container_id(parsed: ParsedPacket<'_>) -> Option<String> 
 
     maybe_local_data
         .and_then(EntityId::from_local_data)
-        .and_then(EntityId::try_into_container)
-        .map(|container_id| container_id.to_string())
+        .map(|entity_id| entity_id.to_string())
 }
 
 fn process_id_from_peer_addr(peer_addr: &ConnectionAddress) -> Option<i32> {
@@ -1695,7 +1697,7 @@ mod tests {
 
         assert_eq!(
             payload_local_container_id(&codec, payload),
-            Some("local-container".to_string())
+            Some("container_id://local-container".to_string())
         );
     }
 
@@ -1709,7 +1711,7 @@ mod tests {
 
         assert_eq!(
             resolve_capture_container_id(&codec, Some(&workload_provider), Some(42), b"test.metric:1|c\n"),
-            Some("pid-container".to_string())
+            Some("container_id://pid-container".to_string())
         );
     }
 

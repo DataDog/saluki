@@ -541,4 +541,35 @@ mod tests {
         assert!(!response.loaded);
         assert!(!replay_state.is_loaded());
     }
+
+    #[tokio::test]
+    async fn tagger_state_rpc_uses_expiry_fallback_for_loaded_state() {
+        let replay_state = DogStatsDReplayState::new();
+        let api = DogStatsDCaptureApi::new(Default::default(), replay_state.clone());
+
+        let response = api
+            .dogstatsd_set_tagger_state(Request::new(TaggerState {
+                state: [(
+                    "container_id://cid-123".to_string(),
+                    Entity {
+                        id: Some(RemoteEntityId {
+                            prefix: "container_id".to_string(),
+                            uid: "cid-123".to_string(),
+                        }),
+                        low_cardinality_tags: vec!["env:prod".to_string()],
+                        ..Default::default()
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                pid_map: [(42, "container_id://cid-123".to_string())].into_iter().collect(),
+                duration: 0,
+            }))
+            .await
+            .expect("tagger state should load")
+            .into_inner();
+
+        assert!(response.loaded);
+        assert!(!replay_state.is_loaded());
+    }
 }

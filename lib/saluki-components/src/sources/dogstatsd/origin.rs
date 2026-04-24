@@ -283,7 +283,7 @@ mod tests {
     use std::collections::HashMap;
 
     use datadog_protos::agent::{Entity, EntityId as RemoteEntityId, TaggerState};
-    use saluki_context::tags::{RawTags, TagSet};
+    use saluki_context::tags::{RawTags, Tag, TagSet};
     use saluki_core::data_model::event::{metric::MetricValues, service_check::CheckStatus};
     use saluki_env::workload::{origin::ResolvedExternalData, EntityId};
     use stringtheory::MetaString;
@@ -722,6 +722,48 @@ mod tests {
 
         let actual_tags = origin_tags_resolver.collect_origin_tags(origin(Some(&EID_PID), None, None, None, true));
         assert_eq!(actual_tags, single_tag("tag_source:replay"));
+    }
+
+    #[test]
+    fn replay_traffic_merges_standard_tags_into_low_cardinality_tags() {
+        let replay_state = DogStatsDReplayState::new();
+        replay_state
+            .load(TaggerState {
+                state: [(
+                    "container_id://replay-cid".to_string(),
+                    Entity {
+                        id: Some(RemoteEntityId {
+                            prefix: "container_id".to_string(),
+                            uid: "replay-cid".to_string(),
+                        }),
+                        low_cardinality_tags: vec!["env:prod".to_string()],
+                        standard_tags: vec!["service:api".to_string()],
+                        ..Default::default()
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                pid_map: [(12345, "container_id://replay-cid".to_string())].into_iter().collect(),
+                duration: 5_000,
+            })
+            .expect("replay state should load");
+
+        let origin_tags_resolver = build_tags_resolver_with_default_tags(
+            OriginEnrichmentConfiguration {
+                enabled: true,
+                entity_id_precedence: false,
+                tag_cardinality: OriginTagCardinality::Low,
+                origin_detection_unified: false,
+                origin_detection_optout: false,
+            },
+            replay_state,
+        );
+
+        let actual_tags = origin_tags_resolver.collect_origin_tags(origin(Some(&EID_PID), None, None, None, true));
+        assert_eq!(
+            TagSet::from_iter((&actual_tags).into_iter().cloned()),
+            TagSet::from_iter([Tag::from("env:prod"), Tag::from("service:api")])
+        );
     }
 
     #[test]
