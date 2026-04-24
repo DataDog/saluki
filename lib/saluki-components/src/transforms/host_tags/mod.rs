@@ -5,7 +5,7 @@ use std::{
 
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_config::GenericConfiguration;
+use saluki_config::{DurationString, GenericConfiguration};
 use saluki_context::tags::{SharedTagSet, Tag};
 use saluki_core::{components::transforms::*, topology::EventsBuffer};
 use saluki_core::{components::ComponentContext, data_model::event::metric::Metric};
@@ -19,17 +19,18 @@ use stringtheory::MetaString;
 /// preventing gaps in queryability until the backend starts adding these tags automatically.
 pub struct HostTagsConfiguration {
     client: RemoteAgentClient,
-    expected_tags_duration: u64,
+    expected_tags_duration: Duration,
 }
 
-const DEFAULT_EXPECTED_TAGS_DURATION: u64 = 0;
+const DEFAULT_EXPECTED_TAGS_DURATION: Duration = Duration::ZERO;
 
 impl HostTagsConfiguration {
     /// Creates a new `HostTagsConfiguration` from the given configuration.
     pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let client = RemoteAgentClient::from_configuration(config).await?;
         let expected_tags_duration = config
-            .try_get_typed::<u64>("expected_tags_duration")?
+            .try_get_typed::<DurationString>("expected_tags_duration")?
+            .map(|ds| ds.as_duration())
             .unwrap_or(DEFAULT_EXPECTED_TAGS_DURATION);
 
         Ok(Self {
@@ -56,7 +57,7 @@ impl SynchronousTransformBuilder for HostTagsConfiguration {
 
         Ok(Box::new(HostTagsEnrichment {
             start: Instant::now(),
-            expected_tags_duration: Duration::from_secs(self.expected_tags_duration),
+            expected_tags_duration: self.expected_tags_duration,
             host_tags: Some(host_tags),
         }))
     }
