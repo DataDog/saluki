@@ -1,7 +1,6 @@
 //! Annotations for shared Datadog encoder configuration keys.
 use crate::config_registry::{generated::schema, structs, SalukiAnnotation, SchemaEntry, SupportLevel, ValueType};
 
-// ADP-specific keys not present in the vendored Agent schema.
 static FLUSH_TIMEOUT_SECS_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "flush_timeout_secs",
     env_vars: &[],
@@ -35,7 +34,7 @@ crate::declare_annotations! {
     };
 
     /// `serializer_zstd_compressor_level` — zstd compression level for encoder request payloads.
-    /// Schema says Float but the Rust field is i32, so we override the test value type.
+    /// Schema declares Float; field is i32.
     SERIALIZER_ZSTD_COMPRESSOR_LEVEL = SalukiAnnotation {
         schema: &schema::SERIALIZER_ZSTD_COMPRESSOR_LEVEL,
         support_level: SupportLevel::Full,
@@ -52,8 +51,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `flush_timeout_secs` — how long to wait before force-flushing an in-flight payload.
-    /// ADP-specific key, not in the Agent schema.
+    /// `flush_timeout_secs` — how long to wait before force-flushing an in-flight payload. ADP-specific.
     FLUSH_TIMEOUT_SECS = SalukiAnnotation {
         schema: &FLUSH_TIMEOUT_SECS_SCHEMA,
         support_level: SupportLevel::Full,
@@ -68,8 +66,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `serializer_max_metrics_per_payload` — max metrics per encoded request payload.
-    /// ADP-specific key, not in the Agent schema.
+    /// `serializer_max_metrics_per_payload` — max metrics per encoded request payload. ADP-specific.
     SERIALIZER_MAX_METRICS_PER_PAYLOAD = SalukiAnnotation {
         schema: &SERIALIZER_MAX_METRICS_PER_PAYLOAD_SCHEMA,
         support_level: SupportLevel::Full,

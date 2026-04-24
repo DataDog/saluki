@@ -29,7 +29,6 @@ fn effective_test_value(annotation: &SalukiAnnotation) -> serde_json::Value {
     if let Some(default_raw) = annotation.schema.default {
         if let Ok(default_val) = serde_json::from_str::<serde_json::Value>(default_raw) {
             if v == default_val {
-                // Generic test value matches the default — flip it so the struct changes.
                 return match annotation.value_type() {
                     ValueType::Bool => json!(!default_val.as_bool().unwrap_or(false)),
                     // For other types the generic values (URL, [list], 42, 1.5) are

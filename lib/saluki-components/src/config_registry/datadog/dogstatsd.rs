@@ -1,7 +1,6 @@
 //! Annotations for DogStatsD source configuration keys.
 use crate::config_registry::{generated::schema, structs, SalukiAnnotation, SchemaEntry, SupportLevel, ValueType};
 
-// ADP-specific keys not present in the vendored Agent schema.
 static DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "dogstatsd_allow_context_heap_allocs",
     env_vars: &[],

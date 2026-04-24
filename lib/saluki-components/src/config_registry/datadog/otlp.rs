@@ -1,7 +1,6 @@
 //! Annotations for OTLP source, decoder, and relay configuration keys.
 use crate::config_registry::{generated::schema, structs, SalukiAnnotation, SchemaEntry, SupportLevel, ValueType};
 
-// ADP-specific keys not present in the vendored Agent schema.
 static OTLP_CONFIG_TRACES_ENABLE_TOP_LEVEL_BY_SPAN_KIND_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "otlp_config.traces.enable_otlp_compute_top_level_by_span_kind",
     env_vars: &[],
@@ -175,7 +174,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `otlp_config.traces.string_interner_size` — ADP-specific ByteSize, default 512 KiB.
+    /// `otlp_config.traces.string_interner_size` — ADP-specific; default 512 KiB.
     OTLP_CONFIG_TRACES_STRING_INTERNER_SIZE = SalukiAnnotation {
         schema: &OTLP_CONFIG_TRACES_STRING_INTERNER_SIZE_SCHEMA,
         support_level: SupportLevel::Full,
@@ -188,8 +187,7 @@ crate::declare_annotations! {
 
     // ── Logs / Metrics ────────────────────────────────────────────────────────
 
-    /// `otlp_config.logs.enabled` — saluki defaults to true but schema says false.
-    /// Explicit test_json because schema default disagrees with Rust implementation default.
+    /// `otlp_config.logs.enabled` — schema default is false but saluki defaults to true; test_json injects false explicitly.
     OTLP_CONFIG_LOGS_ENABLED = SalukiAnnotation {
         schema: &schema::OTLP_CONFIG_LOGS_ENABLED,
         support_level: SupportLevel::Full,
@@ -246,7 +244,7 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `otlp_string_interner_size` — ADP-specific ByteSize context interner, default 2 MiB.
+    /// `otlp_string_interner_size` — ADP-specific; default 2 MiB.
     OTLP_STRING_INTERNER_SIZE = SalukiAnnotation {
         schema: &OTLP_STRING_INTERNER_SIZE_SCHEMA,
         support_level: SupportLevel::Full,
