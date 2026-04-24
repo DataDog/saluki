@@ -1,3 +1,4 @@
+//! Annotations for proxy configuration keys.
 use crate::config_registry::{generated::schema, structs, SalukiAnnotation, SupportLevel};
 
 crate::declare_annotations! {

@@ -1,22 +1,13 @@
 //! Datadog Agent configuration registry entries.
 
-/// Aggregate transform configuration annotations.
 pub mod aggregate;
-/// DogStatsD source configuration annotations.
 pub mod dogstatsd;
-/// DogStatsD mapper transform configuration annotations.
 pub mod dogstatsd_mapper;
-/// DogStatsD prefix filter transform configuration annotations.
 pub mod dogstatsd_prefix_filter;
-/// Shared encoder configuration annotations.
 pub mod encoders;
-/// Forwarder configuration annotations.
 pub mod forwarder;
-/// OTLP source, decoder, and relay configuration annotations.
 pub mod otlp;
-/// Proxy configuration annotations.
 pub mod proxy;
-/// Trace obfuscation transform configuration annotations.
 pub mod trace_obfuscation;
 
 use std::sync::LazyLock;

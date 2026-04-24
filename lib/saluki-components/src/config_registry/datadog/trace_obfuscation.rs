@@ -1,10 +1,23 @@
 //! Annotations for trace obfuscation transform configuration keys.
 //!
-//! The TraceObfuscationConfiguration deserializes from `config.*` paths (ADP-specific),
-//! not from the Agent schema's `apm_config.obfuscation.*` paths.
+//! ## Path mismatch vs. Agent schema
+//!
+//! Almost every key here has a corresponding entry in the generated schema under
+//! `apm_config.obfuscation.*` (e.g. `apm_config.obfuscation.credit_cards.enabled`).
+//! See the constants `APM_CONFIG_OBFUSCATION_*` in `generated/schema.rs`.
+//!
+//! However, [`TraceObfuscationConfiguration`] contains a `config: ObfuscationConfig` field,
+//! so `cfg.as_typed::<TraceObfuscationConfiguration>()` reads from `config.*` paths, not
+//! `apm_config.obfuscation.*`. Custom statics with the `config.*` prefix are required for
+//! the smoke tests to exercise the right yaml paths.
+//!
+//! TODO: evaluate whether TraceObfuscationConfiguration should be wired to read from
+//! `apm_config.obfuscation.*` directly (like `from_apm_configuration` does in production),
+//! and whether the smoke test should use that path instead.
 use crate::config_registry::{structs, SalukiAnnotation, SchemaEntry, SupportLevel, ValueType};
 
-// All paths are ADP-specific; the Agent schema uses `apm_config.obfuscation.*` equivalents.
+// Custom statics: Agent schema equivalents exist under `apm_config.obfuscation.*`
+// (generated/schema.rs: APM_CONFIG_OBFUSCATION_*) but use an incompatible path prefix.
 static CC_ENABLED: SchemaEntry = SchemaEntry {
     yaml_path: "config.credit_cards.enabled",
     env_vars: &[],
