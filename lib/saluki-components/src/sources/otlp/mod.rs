@@ -124,12 +124,10 @@ pub struct OtlpConfiguration {
 #[cfg(test)]
 impl PartialEq for OtlpConfiguration {
     fn eq(&self, other: &Self) -> bool {
-        self.otlp_config == other.otlp_config
-            && self.context_string_interner_bytes == other.context_string_interner_bytes
-            && self.cached_contexts_limit == other.cached_contexts_limit
-            && self.cached_tagsets_limit == other.cached_tagsets_limit
-            && self.allow_context_heap_allocations == other.allow_context_heap_allocations
-        // intentionally skip workload_provider — #[serde(skip)], runtime-injected
+        // `workload_provider: Option<Arc<dyn WorkloadProvider>>` is #[serde(skip)] and trait
+        // objects can't implement PartialEq. JSON comparison naturally excludes skip fields
+        // and stays correct as new fields are added.
+        serde_json::to_value(self).ok() == serde_json::to_value(other).ok()
     }
 }
 

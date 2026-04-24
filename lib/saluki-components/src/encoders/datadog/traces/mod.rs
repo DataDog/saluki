@@ -87,7 +87,7 @@ fn default_env() -> String {
 /// to the Datadog traces intake endpoint (`/api/v0.2/traces`). It handles batching, compression,
 /// and enrichment with metadata such as hostname, environment, and container tags.
 #[derive(Deserialize, Facet)]
-#[cfg_attr(test, derive(Debug, serde::Serialize))]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct DatadogTraceConfiguration {
     #[serde(
         rename = "serializer_compressor_kind",  // renames the field in the user_configuration from "serializer_compressor_kind" to "compressor_kind".
@@ -127,17 +127,6 @@ pub struct DatadogTraceConfiguration {
 
     #[serde(default = "default_env")]
     env: String,
-}
-
-#[cfg(test)]
-impl PartialEq for DatadogTraceConfiguration {
-    fn eq(&self, other: &Self) -> bool {
-        self.compressor_kind == other.compressor_kind
-            && self.zstd_compressor_level == other.zstd_compressor_level
-            && self.flush_timeout_secs == other.flush_timeout_secs
-            && self.env == other.env
-        // intentionally skip default_hostname, version, apm_config, otlp_traces — #[serde(skip)], runtime-injected
-    }
 }
 
 impl DatadogTraceConfiguration {

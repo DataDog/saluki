@@ -87,13 +87,10 @@ fn default_metric_prefix_blocklist() -> Vec<String> {
 #[cfg(test)]
 impl PartialEq for DogStatsDPrefixFilterConfiguration {
     fn eq(&self, other: &Self) -> bool {
-        self.metric_prefix == other.metric_prefix
-            && self.metric_prefix_blocklist == other.metric_prefix_blocklist
-            && self.metric_filterlist == other.metric_filterlist
-            && self.metric_filterlist_match_prefix == other.metric_filterlist_match_prefix
-            && self.metric_blocklist == other.metric_blocklist
-            && self.metric_blocklist_match_prefix == other.metric_blocklist_match_prefix
-        // intentionally skip configuration — #[serde(skip)], runtime-injected
+        // `configuration: Option<GenericConfiguration>` is #[serde(skip)] and GenericConfiguration
+        // contains tokio sync primitives that don't implement PartialEq. JSON comparison naturally
+        // excludes skip fields and stays correct as new fields are added.
+        serde_json::to_value(self).ok() == serde_json::to_value(other).ok()
     }
 }
 

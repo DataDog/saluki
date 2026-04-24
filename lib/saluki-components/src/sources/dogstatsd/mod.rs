@@ -373,7 +373,9 @@ pub struct DogStatsDConfiguration {
 #[cfg(test)]
 impl PartialEq for DogStatsDConfiguration {
     fn eq(&self, other: &Self) -> bool {
-        // intentionally skip workload_provider — #[serde(skip)], runtime-injected
+        // `workload_provider: Option<Arc<dyn WorkloadProvider>>` is #[serde(skip)] and trait
+        // objects can't implement PartialEq. JSON comparison naturally excludes skip fields
+        // and stays correct as new fields are added.
         serde_json::to_value(self).ok() == serde_json::to_value(other).ok()
     }
 }

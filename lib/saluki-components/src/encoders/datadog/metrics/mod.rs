@@ -102,7 +102,7 @@ const fn default_zstd_compressor_level() -> i32 {
 ///
 /// Generates Datadog metrics payloads for the Datadog platform.
 #[derive(Clone, Deserialize, Facet)]
-#[cfg_attr(test, derive(Debug, serde::Serialize))]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 #[allow(dead_code)]
 pub struct DatadogMetricsConfiguration {
     /// Maximum number of input metrics to encode into a single request payload.
@@ -150,17 +150,6 @@ pub struct DatadogMetricsConfiguration {
     #[serde(default, skip)]
     #[facet(opaque)]
     additional_tags: Option<SharedTagSet>,
-}
-
-#[cfg(test)]
-impl PartialEq for DatadogMetricsConfiguration {
-    fn eq(&self, other: &Self) -> bool {
-        self.max_metrics_per_payload == other.max_metrics_per_payload
-            && self.flush_timeout_secs == other.flush_timeout_secs
-            && self.compressor_kind == other.compressor_kind
-            && self.zstd_compressor_level == other.zstd_compressor_level
-        // intentionally skip additional_tags — #[serde(skip)], runtime-injected
-    }
 }
 
 impl DatadogMetricsConfiguration {
