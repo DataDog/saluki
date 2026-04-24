@@ -38,11 +38,11 @@ variables:
   # output artifacts like ADP itself.
   SALUKI_IMAGE_REPO_PREFIX: "saluki"
   SALUKI_IMAGE_REPO_BASE: "${IMAGE_REGISTRY}/${SALUKI_IMAGE_REPO_PREFIX}"
-  SALUKI_BUILD_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/build-ci:latest-zstd"
-  SALUKI_GENERAL_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/general-ci:latest-zstd"
-  SALUKI_SMP_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/smp-ci:latest-zstd"
-  SALUKI_BUILDCACHE_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/buildcache-ci:latest-zstd"
-  SALUKI_SPDX_LICENSES_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/spdx-licenses-ci:latest-zstd"
+  SALUKI_BUILD_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/build-ci:latest"
+  SALUKI_GENERAL_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/general-ci:latest"
+  SALUKI_SMP_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/smp-ci:latest"
+  SALUKI_BUILDCACHE_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/buildcache-ci:latest"
+  SALUKI_SPDX_LICENSES_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/spdx-licenses-ci:latest"
 
   # Converged Datadog Agent-specific variables, which control how we build the converged Datadog Agent image that we
   # publicly publish.
