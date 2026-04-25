@@ -12,6 +12,7 @@ use super::config::{
     Config, DDSKETCH_CONF_BIN_LIMIT, DDSKETCH_CONF_GAMMA_LN, DDSKETCH_CONF_GAMMA_V, DDSKETCH_CONF_NORM_BIAS,
     DDSKETCH_CONF_NORM_MIN,
 };
+use crate::canonical::mapping::LogarithmicMapping;
 use crate::common::float_eq;
 
 static SKETCH_CONFIG: Config = Config::new(
@@ -74,6 +75,17 @@ pub struct DDSketch {
 }
 
 impl DDSketch {
+    /// Returns the canonical DDSketch mapping that aligns with the agent sketch's key space.
+    pub fn remap_mapping() -> LogarithmicMapping {
+        LogarithmicMapping::new_with_gamma_and_offset(DDSKETCH_CONF_GAMMA_V, f64::from(DDSKETCH_CONF_NORM_BIAS) + 0.5)
+            .expect("agent sketch gamma and offset are always valid")
+    }
+
+    /// Returns the representative value for the given agent sketch key.
+    pub fn value_for_key(key: i16) -> f64 {
+        SKETCH_CONFIG.bin_lower_bound(key)
+    }
+
     /// Returns the number of bins in the sketch.
     pub fn bin_count(&self) -> usize {
         self.bins.len()
@@ -87,6 +99,31 @@ impl DDSketch {
     /// Number of samples currently represented by this sketch.
     pub fn count(&self) -> u64 {
         self.count
+    }
+
+    /// Overrides the sample count tracked by this sketch.
+    pub fn set_count(&mut self, count: u64) {
+        self.count = count;
+    }
+
+    /// Overrides the sum of all values tracked by this sketch.
+    pub fn set_sum(&mut self, sum: f64) {
+        self.sum = sum;
+    }
+
+    /// Overrides the average value tracked by this sketch.
+    pub fn set_avg(&mut self, avg: f64) {
+        self.avg = avg;
+    }
+
+    /// Overrides the minimum value tracked by this sketch.
+    pub fn set_min(&mut self, min: f64) {
+        self.min = min;
+    }
+
+    /// Overrides the maximum value tracked by this sketch.
+    pub fn set_max(&mut self, max: f64) {
+        self.max = max;
     }
 
     /// Minimum value seen by this sketch.

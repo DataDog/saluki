@@ -1,22 +1,31 @@
 #![allow(dead_code)]
 
+use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec::IntoIter;
 
+use ::ddsketch::canonical::mapping::IndexMapping;
+use datadog_protos::metrics::Dogsketch;
+use ddsketch::canonical::mapping::LogarithmicMapping;
+use ddsketch::canonical::store::DenseStore;
+use ddsketch::canonical::DDSketch as CanonicalDDSketch;
+use ddsketch::canonical::Store as DdStore;
+use ddsketch::{Bucket, DDSketch};
 use otlp_protos::opentelemetry::proto::common::v1::KeyValue as OtlpKeyValue;
 use otlp_protos::opentelemetry::proto::metrics::v1::{
-    metric::Data as OtlpMetricData, AggregationTemporality, DataPointFlags,
+    exponential_histogram_data_point::Buckets as OtlpExponentialHistogramBuckets, metric::Data as OtlpMetricData,
+    AggregationTemporality, DataPointFlags, ExponentialHistogramDataPoint as OtlpExponentialHistogramDataPoint,
     HistogramDataPoint as OtlpHistogramDataPoint, Metric as OtlpMetric, NumberDataPoint as OtlpNumberDataPoint,
-    ResourceMetrics as OtlpResourceMetrics,
+    ResourceMetrics as OtlpResourceMetrics, SummaryDataPoint as OtlpSummaryDataPoint,
 };
 use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_context::{ContextResolver, ContextResolverBuilder};
 use saluki_core::data_model::event::metric::{Metric, MetricMetadata, MetricValues};
 use saluki_core::data_model::event::Event;
-use saluki_error::GenericError;
-use tracing::{debug, warn};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use tracing::{debug, trace, warn};
 
 use super::cache::PointsCache;
 use super::config::{HistogramMode, NumberMode, OtlpMetricsTranslatorConfig};
@@ -80,21 +89,317 @@ struct HistogramInfo {
     ok: bool,
 }
 
+fn get_bounds(explicit_bounds: &[f64], idx: usize) -> (f64, f64) {
+    let lower = if idx > 0 {
+        explicit_bounds[idx - 1]
+    } else {
+        f64::NEG_INFINITY
+    };
+    let upper = if idx < explicit_bounds.len() {
+        explicit_bounds[idx]
+    } else {
+        f64::INFINITY
+    };
+    (lower, upper)
+}
+
+fn infer_delta_interval(start_ts: u64, ts: u64) -> i64 {
+    if start_ts == 0 || start_ts > ts {
+        return 0;
+    }
+    // Convert OTLP nanosecond timestamps to seconds because Datadog interval inference operates on whole-second intervals.
+    let delta = (ts - start_ts) as f64 / 1e9;
+    let rounded_delta = f64::round(delta);
+
+    if f64::abs(rounded_delta - delta) < 0.05 {
+        return rounded_delta as i64;
+    }
+    0
+}
+
+fn format_float(f: f64) -> String {
+    if f == f64::INFINITY {
+        return "inf".to_string();
+    } else if f == f64::NEG_INFINITY {
+        return "-inf".to_string();
+    } else if f.is_nan() {
+        return "nan".to_string();
+    } else if f == 0.0 {
+        return "0".to_string();
+    }
+
+    // Mirror Go's strconv.FormatFloat(f, 'g', -1, 64): switch to scientific
+    // notation below 1e-4 and at/above 1e6, with a zero-padded two-digit
+    // signed exponent.
+    if f.abs() < 1e-4 || f.abs() >= 1e6 {
+        let s = format!("{f:e}");
+        let (mantissa, exp_part) = s.split_once('e').expect("{:e} always contains 'e'");
+        let (sign, digits) = if let Some(d) = exp_part.strip_prefix('-') {
+            ("-", d)
+        } else {
+            ("+", exp_part.strip_prefix('+').unwrap_or(exp_part))
+        };
+        let s = if digits.len() < 2 {
+            format!("{mantissa}e{sign}0{digits}")
+        } else {
+            format!("{mantissa}e{sign}{digits}")
+        };
+        return if f == f.floor() { format!("{s}.0") } else { s };
+    }
+
+    let s = format!("{f}");
+    if f == f.floor() {
+        format!("{s}.0")
+    } else {
+        s
+    }
+}
+
+fn format_quantile_tag(quantile: f64) -> String {
+    "quantile:".to_string() + format_float(quantile).as_str()
+}
+
+fn to_store(b: Option<&OtlpExponentialHistogramBuckets>) -> DenseStore {
+    let mut store = DenseStore::new();
+    if let Some(buckets) = b {
+        let offset = buckets.offset;
+        let bucket_counts = &buckets.bucket_counts;
+
+        for (j, &count) in bucket_counts.iter().enumerate() {
+            let index = offset + j as i32;
+            store.add(index, count);
+        }
+    }
+    store
+}
+
+fn exponential_histogram_to_ddsketch(
+    dp: &OtlpExponentialHistogramDataPoint, delta: bool,
+) -> Result<CanonicalDDSketch<LogarithmicMapping, DenseStore>, GenericError> {
+    if !delta {
+        return Err(generic_error!("cumulative exponential histograms are not supported"));
+    }
+
+    let positive_store = to_store(dp.positive.as_ref());
+    let negative_store = to_store(dp.negative.as_ref());
+
+    let gamma = 2_f64.powf(2_f64.powi(-dp.scale));
+    let mapping = LogarithmicMapping::new_with_gamma(gamma)
+        .map_err(|e| generic_error!("Failed to create index mapping for DDSketch: {}", e))?;
+
+    let mut sketch = CanonicalDDSketch::new(mapping, positive_store, negative_store);
+    sketch.add_n(0.0, dp.zero_count);
+
+    Ok(sketch)
+}
+
+fn remap_store_bins_to_agent_space(
+    source_mapping: &LogarithmicMapping, target_mapping: &LogarithmicMapping, store: &DenseStore, sign: i32,
+    remapped_counts: &mut BTreeMap<i32, f64>, zeroes: &mut f64,
+) -> Result<(), GenericError> {
+    const MAX_AGENT_INDEX: i32 = i16::MAX as i32;
+
+    for (index, count) in store.iter_non_zero_bins() {
+        let count = count as f64;
+        if count <= 0.0 {
+            return Err(generic_error!("negative counts are not supported: got {}", count));
+        }
+
+        let input_lower_bound = source_mapping.lower_bound(index);
+        let input_upper_bound = source_mapping.lower_bound(index + 1);
+        let input_size = input_upper_bound - input_lower_bound;
+        let mut output_index = target_mapping.index(input_lower_bound);
+
+        while target_mapping.lower_bound(output_index) < input_upper_bound {
+            if output_index >= MAX_AGENT_INDEX {
+                return Err(generic_error!(
+                    "index value {} exceeds the maximum supported index value ({})",
+                    output_index,
+                    MAX_AGENT_INDEX
+                ));
+            }
+
+            let output_lower_bound = target_mapping.lower_bound(output_index);
+            let output_upper_bound = target_mapping.lower_bound(output_index + 1);
+            let lower_intersection_bound = output_lower_bound.max(input_lower_bound);
+            let upper_intersection_bound = output_upper_bound.min(input_upper_bound);
+            let intersection_size = upper_intersection_bound - lower_intersection_bound;
+
+            if intersection_size > 0.0 {
+                let remapped_count = count * (intersection_size / input_size);
+                if output_index <= 0 {
+                    *zeroes += remapped_count;
+                } else {
+                    *remapped_counts.entry(sign * output_index).or_default() += remapped_count;
+                }
+            }
+
+            output_index += 1;
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RemappedSketchSummary {
+    min: f64,
+    max: f64,
+    sum: f64,
+}
+
+fn sketch_value_for_key(target_mapping: &LogarithmicMapping, key: i32) -> f64 {
+    if key == 0 {
+        0.0
+    } else if key < 0 {
+        -target_mapping.value(-key)
+    } else {
+        target_mapping.value(key)
+    }
+}
+
+fn summarize_remapped_counts(
+    float_key_counts: &BTreeMap<i32, f64>, target_mapping: &LogarithmicMapping,
+) -> Option<RemappedSketchSummary> {
+    let mut summary: Option<RemappedSketchSummary> = None;
+
+    for (&key, &count) in float_key_counts {
+        if count <= 0.0 {
+            continue;
+        }
+
+        let value = sketch_value_for_key(target_mapping, key);
+
+        match &mut summary {
+            Some(summary) => {
+                summary.max = value;
+                summary.sum += value * count;
+            }
+            None => {
+                summary = Some(RemappedSketchSummary {
+                    min: value,
+                    max: value,
+                    sum: value * count,
+                });
+            }
+        }
+    }
+
+    summary
+}
+
+fn convert_float_counts_to_int_counts(
+    float_key_counts: BTreeMap<i32, f64>,
+) -> Result<(Vec<(i16, u64)>, u64), GenericError> {
+    let mut key_counts = Vec::new();
+    let mut float_total = 0.0;
+    let mut int_total = 0_u64;
+
+    for (key, count) in float_key_counts {
+        let key = i16::try_from(key).map_err(|_| generic_error!("bin key {} overflows i16", key))?;
+        float_total += count;
+
+        let rounded_total = float_total.round() as u64;
+        let rounded = rounded_total.saturating_sub(int_total);
+        int_total += rounded;
+
+        if rounded > 0 {
+            key_counts.push((key, rounded));
+        }
+    }
+
+    Ok((key_counts, int_total))
+}
+
+fn build_agent_sketch_from_key_counts(
+    key_counts: &[(i16, u64)], total_count: u64, summary: Option<RemappedSketchSummary>,
+) -> Result<DDSketch, GenericError> {
+    let mut dogsketch = Dogsketch::new();
+    dogsketch.set_cnt(i64::try_from(total_count).map_err(|_| generic_error!("sketch count overflows i64"))?);
+
+    if total_count == 0 {
+        return DDSketch::try_from(dogsketch).map_err(|e| generic_error!("failed to build sketch: {}", e));
+    }
+
+    let mut k = Vec::new();
+    let mut n = Vec::new();
+
+    for &(key, count) in key_counts {
+        let mut remaining = count;
+        while remaining > u64::from(u16::MAX) {
+            k.push(i32::from(key));
+            n.push(u32::from(u16::MAX));
+            remaining -= u64::from(u16::MAX);
+        }
+
+        if remaining > 0 {
+            k.push(i32::from(key));
+            n.push(remaining as u32);
+        }
+    }
+
+    let summary = summary.ok_or_else(|| generic_error!("missing sketch summary for non-empty sketch"))?;
+
+    dogsketch.set_min(summary.min);
+    dogsketch.set_max(summary.max);
+    dogsketch.set_sum(summary.sum);
+    dogsketch.set_avg(summary.sum / total_count as f64);
+    dogsketch.set_k(k);
+    dogsketch.set_n(n);
+
+    DDSketch::try_from(dogsketch).map_err(|e| generic_error!("failed to build sketch: {}", e))
+}
+
+fn convert_ddsketch_into_sketch(
+    canonical: CanonicalDDSketch<LogarithmicMapping, DenseStore>,
+) -> Result<DDSketch, GenericError> {
+    let target_mapping = DDSketch::remap_mapping();
+    let source_mapping = canonical.mapping();
+    let mut remapped_counts = BTreeMap::new();
+    let mut zeroes = canonical.zero_count() as f64;
+
+    remap_store_bins_to_agent_space(
+        source_mapping,
+        &target_mapping,
+        canonical.positive_store(),
+        1,
+        &mut remapped_counts,
+        &mut zeroes,
+    )?;
+    remap_store_bins_to_agent_space(
+        source_mapping,
+        &target_mapping,
+        canonical.negative_store(),
+        -1,
+        &mut remapped_counts,
+        &mut zeroes,
+    )?;
+
+    if zeroes != 0.0 {
+        *remapped_counts.entry(0).or_default() += zeroes;
+    }
+
+    let summary = summarize_remapped_counts(&remapped_counts, &target_mapping);
+    let (key_counts, total_count) = convert_float_counts_to_int_counts(remapped_counts)?;
+    build_agent_sketch_from_key_counts(&key_counts, total_count, summary)
+}
+
 impl OtlpMetricsTranslator {
     /// Creates a new, empty `OtlpMetricsTranslator`.
-    pub fn new(config: OtlpMetricsTranslatorConfig, context_resolver: ContextResolver) -> Self {
-        let process_start_time_ns = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("System time is before the UNIX epoch, this should not happen.")
-            .as_nanos() as u64;
+    pub fn new(config: OtlpMetricsTranslatorConfig, context_resolver: ContextResolver) -> Result<Self, GenericError> {
+        config
+            .validate()
+            .error_context("Failed to validate OTLP metrics translator configuration.")?;
 
-        Self {
+        let process_start_time_ns = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos() as u64;
+
+        Ok(Self {
             config,
             context_resolver,
             prev_pts: PointsCache::from_config(config),
             process_start_time_ns,
             attribute_translator: AttributeTranslator::new(),
-        }
+        })
     }
 
     /// Translates a batch of OTLP `ResourceMetrics` into Saluki `Event`s.
@@ -293,9 +598,24 @@ impl OtlpMetricsTranslator {
                         }
                     }
                 }
-                _ => {
-                    // TODO: Handle Summary, etc.
-                    Vec::new()
+                OtlpMetricData::Summary(summary) => self.map_summary_metrics(base_dims, summary.data_points, &context),
+                OtlpMetricData::ExponentialHistogram(exponential_histogram) => {
+                    match AggregationTemporality::try_from(exponential_histogram.aggregation_temporality) {
+                        Ok(AggregationTemporality::Delta) => self.map_exponential_histogram_metrics(
+                            base_dims,
+                            exponential_histogram.data_points,
+                            true,
+                            &context,
+                        ),
+                        _ => {
+                            warn!(
+                                metric_name = base_dims.name,
+                                temporality = exponential_histogram.aggregation_temporality,
+                                "Unknown or unsupported aggregation temporality"
+                            );
+                            Vec::new()
+                        }
+                    }
                 }
             }
         } else {
@@ -311,13 +631,13 @@ impl OtlpMetricsTranslator {
     ) {
         context.metrics.metrics_received().increment(1);
 
-        let ts = timestamp_ns / 1_000_000_000;
         let raw_origin = raw_origin_from_attributes(context.resource_attributes);
         match self.context_resolver.resolve(&dims.name, &dims.tags, Some(raw_origin)) {
             Some(resolved_context) => {
+                let timestamp_s = timestamp_ns / 1_000_000_000;
                 let values = match data_type {
-                    DataType::Gauge => MetricValues::gauge((ts, value)),
-                    DataType::Count => MetricValues::counter((ts, value)),
+                    DataType::Gauge => MetricValues::gauge((timestamp_s, value)),
+                    DataType::Count => MetricValues::counter((timestamp_s, value)),
                 };
 
                 let metric = Metric::from_parts(resolved_context, values, MetricMetadata::default());
@@ -329,6 +649,66 @@ impl OtlpMetricsTranslator {
         }
     }
 
+    // Maps a monotonic OTLP Summary metric to Saluki 'Event's.
+    fn map_summary_metrics(
+        &mut self, base_dims: Dimensions, data_points: Vec<OtlpSummaryDataPoint>, context: &TranslationContext,
+    ) -> Vec<Event> {
+        let mut events = Vec::new();
+        for (i, dp) in data_points.iter().enumerate() {
+            if dp.flags & (DataPointFlags::NoRecordedValueMask as u32) != 0 {
+                continue;
+            }
+
+            let start_ts = dp.start_time_unix_nano;
+            let ts = dp.time_unix_nano;
+            let point_dims = base_dims.with_attribute_map(&dp.attributes);
+            //Count will be treated as a cumulative monotonic metric
+            {
+                let count_dims = point_dims.with_suffix("count");
+                let val = dp.count as f64;
+
+                let (count_delta, is_first_point, should_drop_point) =
+                    self.prev_pts.monotonic_diff(&count_dims, start_ts, ts, val);
+
+                if !should_drop_point && !is_skippable(val) {
+                    if !is_first_point {
+                        self.record_metric_event(&count_dims, count_delta, ts, DataType::Count, &mut events, context);
+                    } else if i == 0 && self.should_consume_initial_value(start_ts, ts) {
+                        self.record_metric_event(&count_dims, val, ts, DataType::Count, &mut events, context);
+                    }
+                }
+            }
+            {
+                let sum_dims = point_dims.with_suffix("sum");
+                if !is_skippable(dp.sum) {
+                    let (sum_delta, ok) = self.prev_pts.diff(&sum_dims, start_ts, ts, dp.sum);
+                    if ok {
+                        self.record_metric_event(&sum_dims, sum_delta, ts, DataType::Count, &mut events, context);
+                    }
+                }
+            }
+
+            if self.config.quantiles {
+                let base_quantile_dims = point_dims.with_suffix("quantile");
+                let quantiles = &dp.quantile_values;
+                for quantile in quantiles {
+                    if is_skippable(quantile.value) {
+                        continue;
+                    }
+                    let quantile_dims = base_quantile_dims.add_tags(&[format_quantile_tag(quantile.quantile)]);
+                    self.record_metric_event(
+                        &quantile_dims,
+                        quantile.value,
+                        ts,
+                        DataType::Gauge,
+                        &mut events,
+                        context,
+                    );
+                }
+            }
+        }
+        events
+    }
     /// Maps a slice of OTLP numeric data points to Saluki `Event`s.
     fn map_number_metrics(
         &mut self, base_dims: Dimensions, data_points: Vec<OtlpNumberDataPoint>, data_type: DataType,
@@ -442,6 +822,165 @@ impl OtlpMetricsTranslator {
         events
     }
 
+    fn get_sketch_buckets(
+        &mut self, context: &TranslationContext, point_dims: Dimensions, p: &OtlpHistogramDataPoint, delta: bool,
+        events: &mut Vec<Event>, hist_info: HistogramInfo,
+    ) -> Result<(), GenericError> {
+        let start_ts = p.start_time_unix_nano;
+        let ts = p.time_unix_nano;
+
+        let mut qa = DDSketch::default();
+        let mut bucket_counts = p.bucket_counts.clone();
+        let mut explicit_bounds = p.explicit_bounds.clone();
+
+        if bucket_counts.is_empty() && hist_info.ok {
+            if hist_info.has_min_from_last_time_window {
+                bucket_counts.push(0);
+                explicit_bounds.push(p.min.unwrap_or(0.0));
+            }
+
+            bucket_counts.push(hist_info.count);
+
+            if hist_info.has_max_from_last_time_window {
+                bucket_counts.push(0);
+                explicit_bounds.push(p.max.unwrap_or(0.0));
+            }
+        }
+
+        let (mut min_bound, mut max_bound) = (0.0, 0.0);
+        let mut min_bound_set: bool = false;
+        let mut buckets: Vec<Bucket> = Vec::new();
+        for (j, &count) in bucket_counts.iter().enumerate() {
+            let (lower_bound, upper_bound) = get_bounds(&explicit_bounds, j);
+            let (original_lower_bound, original_upper_bound) = (lower_bound, upper_bound);
+
+            let bucket_dims = point_dims.add_tags(&[
+                "lower_bound:".to_string() + format_float(lower_bound).as_str(),
+                "upper_bound:".to_string() + format_float(upper_bound).as_str(),
+            ]);
+
+            let (dx, ok) = self.prev_pts.diff(&bucket_dims, start_ts, ts, count as f64);
+
+            let non_zero_bucket: bool;
+            if delta {
+                non_zero_bucket = count > 0u64;
+                buckets.push(Bucket {
+                    upper_limit: upper_bound,
+                    count,
+                });
+            } else {
+                non_zero_bucket = ok && dx > 0f64;
+                if ok {
+                    buckets.push(Bucket {
+                        upper_limit: upper_bound,
+                        count: dx as u64,
+                    });
+                }
+            }
+
+            if non_zero_bucket {
+                if !min_bound_set {
+                    min_bound = original_lower_bound;
+                    min_bound_set = true;
+                }
+                max_bound = original_upper_bound
+            }
+        }
+        qa.insert_interpolate_buckets(buckets)
+            .map_err(|e| generic_error!("Failed to insert interpolated buckets: {}", e))?;
+
+        if qa.is_empty() {
+            return Ok(());
+        }
+
+        if hist_info.ok {
+            qa.set_count(hist_info.count);
+            qa.set_sum(hist_info.sum);
+            qa.set_avg(hist_info.sum / hist_info.count as f64);
+        }
+
+        if min_bound_set {
+            if !min_bound.is_infinite() {
+                qa.set_min(min_bound);
+            }
+            if !max_bound.is_infinite() {
+                qa.set_max(max_bound);
+            }
+        }
+
+        if hist_info.has_min_from_last_time_window {
+            qa.set_min(p.min.unwrap_or(0.0));
+        } else if let Some(min) = p.min {
+            qa.set_min(f64::max(min, qa.min().unwrap()));
+        }
+
+        if hist_info.has_max_from_last_time_window {
+            qa.set_max(p.max.unwrap_or(0.0));
+        } else if let Some(max) = p.max {
+            qa.set_max(f64::min(max, qa.max().unwrap()));
+        }
+
+        let mut interval: i64 = 0;
+        if self.config.infer_delta_interval && delta {
+            interval = infer_delta_interval(start_ts, ts);
+        }
+
+        self.record_sketch_event(&point_dims, qa, ts, events, context, interval);
+
+        Ok(())
+    }
+
+    fn record_sketch_event(
+        &mut self, dims: &Dimensions, sketch: DDSketch, timestamp_ns: u64, events: &mut Vec<Event>,
+        context: &TranslationContext, interval: i64,
+    ) {
+        context.metrics.metrics_received().increment(1);
+        let raw_origin = raw_origin_from_attributes(context.resource_attributes);
+        match self.context_resolver.resolve(&dims.name, &dims.tags, Some(raw_origin)) {
+            Some(resolved_context) => {
+                if interval != 0 {
+                    trace!(
+                        metric = %dims.name,
+                        interval,
+                        "Inferred delta interval for OTLP metric."
+                    );
+                }
+                let timestamp_s = timestamp_ns / 1_000_000_000;
+                let values = MetricValues::distribution((timestamp_s, sketch));
+                let metric = Metric::from_parts(resolved_context, values, MetricMetadata::default());
+                events.push(Event::Metric(metric));
+            }
+            None => {
+                warn!("Failed to resolve context for metric: {}", dims.name);
+            }
+        }
+    }
+
+    fn get_legacy_buckets(
+        &mut self, context: &TranslationContext, point_dims: Dimensions, p: OtlpHistogramDataPoint, delta: bool,
+        events: &mut Vec<Event>,
+    ) {
+        let start_ts = p.start_time_unix_nano;
+        let ts = p.time_unix_nano;
+
+        let base_bucket_dims = &point_dims.with_suffix("bucket");
+        for idx in 0..p.bucket_counts.len() {
+            let (lower_bound, upper_bound) = get_bounds(&p.explicit_bounds, idx);
+
+            let bucket_dims = base_bucket_dims.add_tags(&[
+                "lower_bound:".to_string() + format_float(lower_bound).as_str(),
+                "upper_bound:".to_string() + format_float(upper_bound).as_str(),
+            ]);
+            let count = p.bucket_counts[idx];
+            let (dx, ok) = self.prev_pts.diff(&bucket_dims, start_ts, ts, count as f64);
+            if delta {
+                self.record_metric_event(&bucket_dims, count as f64, ts, DataType::Count, events, context);
+            } else if ok {
+                self.record_metric_event(&bucket_dims, dx, ts, DataType::Count, events, context);
+            }
+        }
+    }
+
     fn map_histogram_metrics(
         &mut self, base_dims: Dimensions, data_points: Vec<OtlpHistogramDataPoint>, delta: bool,
         context: &TranslationContext,
@@ -453,12 +992,11 @@ impl OtlpMetricsTranslator {
                 continue;
             }
 
+            let point_dims = base_dims.with_attribute_map(&dp.attributes);
             let mut hist_info = HistogramInfo {
                 ok: true,
                 ..Default::default()
             };
-
-            let point_dims = base_dims.with_attribute_map(&dp.attributes);
 
             let count_dims = point_dims.with_suffix("count");
             let sum_dims = point_dims.with_suffix("sum");
@@ -483,22 +1021,21 @@ impl OtlpMetricsTranslator {
             }
 
             // Handle the histogram's total sum.
-            if let Some(sum) = dp.sum {
-                if !is_skippable(sum) {
-                    if delta {
-                        hist_info.sum = sum;
-                    } else {
-                        let (delta, ok) =
-                            self.prev_pts
-                                .diff(&sum_dims, dp.start_time_unix_nano, dp.time_unix_nano, sum);
-                        if ok {
-                            hist_info.sum = delta;
-                        } else {
-                            hist_info.ok = false;
-                        }
-                    }
+            let sum = dp.sum.unwrap_or(0.0);
+
+            if !is_skippable(sum) {
+                if delta {
+                    hist_info.sum = sum;
                 } else {
-                    hist_info.ok = false;
+                    let (delta, ok) = self
+                        .prev_pts
+                        .diff(&sum_dims, dp.start_time_unix_nano, dp.time_unix_nano, sum);
+
+                    if ok {
+                        hist_info.sum = delta;
+                    } else {
+                        hist_info.ok = false;
+                    }
                 }
             } else {
                 hist_info.ok = false;
@@ -545,15 +1082,154 @@ impl OtlpMetricsTranslator {
             // TODO: Implement bucket-to-sketch conversion.
             match self.config.hist_mode {
                 HistogramMode::NoBuckets => {
-                    // Do nothing for buckets.
+                    continue;
                 }
                 HistogramMode::Counters => {
-                    // TODO: Implement legacy bucket conversion as counters.
+                    self.get_legacy_buckets(context, point_dims, dp, delta, &mut events);
                 }
                 HistogramMode::Distributions => {
-                    // TODO: Implement bucket-to-sketch conversion.
+                    if let Err(e) = self.get_sketch_buckets(context, point_dims, &dp, delta, &mut events, hist_info) {
+                        warn!(error = %e, "Failed to convert histogram buckets to sketch, dropping data point.");
+                    }
                 }
             }
+        }
+        events
+    }
+
+    fn map_exponential_histogram_metrics(
+        &mut self, base_dims: Dimensions, data_points: Vec<OtlpExponentialHistogramDataPoint>, delta: bool,
+        context: &TranslationContext,
+    ) -> Vec<Event> {
+        let mut events = Vec::new();
+        for dp in data_points.iter() {
+            let start_ts = dp.start_time_unix_nano;
+            let ts = dp.time_unix_nano;
+            let point_dims = base_dims.with_attribute_map(&dp.attributes);
+
+            let mut hist_info = HistogramInfo {
+                ok: true,
+                ..Default::default()
+            };
+
+            let count_dims = point_dims.with_suffix("count");
+
+            let count_val = dp.count as f64;
+
+            if delta {
+                hist_info.count = dp.count;
+            } else {
+                let (delta, ok) = self.prev_pts.diff(&count_dims, start_ts, ts, count_val);
+
+                if ok {
+                    hist_info.count = delta as u64;
+                } else {
+                    hist_info.ok = false;
+                }
+            }
+
+            let sum_dims = point_dims.with_suffix("sum");
+
+            let sum = dp.sum.unwrap_or(0.0);
+
+            if !is_skippable(sum) {
+                if delta {
+                    hist_info.sum = sum;
+                } else {
+                    let (delta, ok) = self
+                        .prev_pts
+                        .diff(&sum_dims, dp.start_time_unix_nano, dp.time_unix_nano, sum);
+
+                    if ok {
+                        hist_info.sum = delta;
+                    } else {
+                        hist_info.ok = false;
+                    }
+                }
+            } else {
+                hist_info.ok = false;
+            }
+
+            let min_dims = point_dims.with_suffix("min");
+            let max_dims = point_dims.with_suffix("max");
+
+            if self.config.send_histogram_aggregations && hist_info.ok {
+                self.record_metric_event(
+                    &count_dims,
+                    hist_info.count as f64,
+                    ts,
+                    DataType::Count,
+                    &mut events,
+                    context,
+                );
+
+                self.record_metric_event(&sum_dims, hist_info.sum, ts, DataType::Count, &mut events, context);
+
+                if delta {
+                    if let Some(min) = dp.min {
+                        self.record_metric_event(&min_dims, min, ts, DataType::Gauge, &mut events, context);
+                    }
+
+                    if let Some(max) = dp.max {
+                        self.record_metric_event(&max_dims, max, ts, DataType::Gauge, &mut events, context);
+                    }
+                }
+            }
+
+            let exp_hist_dd_sketch = match exponential_histogram_to_ddsketch(dp, delta) {
+                Ok(sketch) => sketch,
+                Err(e) => {
+                    debug!(
+                        metric_name = base_dims.name,
+                        error = %e,
+                        "Failed to convert ExponentialHistogram into DDSketch"
+                    );
+                    continue;
+                }
+            };
+
+            let mut agent_sketch = match convert_ddsketch_into_sketch(exp_hist_dd_sketch) {
+                Ok(sketch) => sketch,
+                Err(e) => {
+                    debug!(
+                        metric_name = base_dims.name,
+                        error = %e,
+                        "Failed to convert DDSketch into agent sketch"
+                    );
+                    continue;
+                }
+            };
+
+            if hist_info.ok {
+                agent_sketch.set_count(hist_info.count);
+                agent_sketch.set_sum(hist_info.sum);
+                agent_sketch.set_avg(if hist_info.count > 0 {
+                    hist_info.sum / hist_info.count as f64
+                } else {
+                    0.0
+                });
+
+                if hist_info.count == 1 {
+                    agent_sketch.set_min(hist_info.sum);
+                    agent_sketch.set_max(hist_info.sum);
+                }
+            }
+
+            if delta {
+                if let Some(min) = dp.min {
+                    agent_sketch.set_min(min);
+                }
+                if let Some(max) = dp.max {
+                    agent_sketch.set_max(max);
+                }
+            }
+
+            let mut interval: i64 = 0;
+            if self.config.infer_delta_interval && delta {
+                interval = infer_delta_interval(start_ts, ts);
+            }
+
+            self.record_sketch_event(&point_dims, agent_sketch, ts, &mut events, context, interval);
         }
         events
     }
@@ -701,6 +1377,7 @@ fn is_skippable(value: f64) -> bool {
 }
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use otlp_protos::opentelemetry::proto::metrics::v1::{
@@ -713,6 +1390,37 @@ mod tests {
 
     fn nanos_from_seconds(s: u64) -> u64 {
         s * 1_000_000_000
+    }
+
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L2225
+    #[test]
+    fn test_format_float_go_parity() {
+        let tests = [
+            (0.0, "0"),
+            (0.001, "0.001"),
+            (0.9, "0.9"),
+            (0.95, "0.95"),
+            (0.99, "0.99"),
+            (0.999, "0.999"),
+            (1.0, "1.0"),
+            (2.0, "2.0"),
+            (f64::INFINITY, "inf"),
+            (f64::NEG_INFINITY, "-inf"),
+            (f64::NAN, "nan"),
+            (1e-10, "1e-10"),
+            (1e-5, "1e-05"),
+            (0.0001, "0.0001"),
+            (999_999.0, "999999.0"),
+            (1e6, "1e+06.0"),
+            (-1e6, "-1e+06.0"),
+            (1_000_000.5, "1.0000005e+06"),
+            (1_234_567.0, "1.234567e+06.0"),
+            (1_200_000.0, "1.2e+06.0"),
+        ];
+
+        for (input, expected) in tests {
+            assert_eq!(format_float(input), expected);
+        }
     }
 
     /// A helper function to build a series of cumulative monotonic integer data points from deltas.
@@ -833,6 +1541,38 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    #[test]
+    fn remapped_summary_uses_target_mapping_values_for_signed_keys() {
+        let target_mapping = DDSketch::remap_mapping();
+        let mut remapped_counts = BTreeMap::new();
+        remapped_counts.insert(-10, 1.5);
+        remapped_counts.insert(0, 2.0);
+        remapped_counts.insert(12, 3.0);
+
+        let summary = summarize_remapped_counts(&remapped_counts, &target_mapping).expect("summary should exist");
+        let expected_min = -target_mapping.value(10);
+        let expected_max = target_mapping.value(12);
+        let expected_sum = expected_min * 1.5 + expected_max * 3.0;
+
+        assert_eq!(summary.min, expected_min);
+        assert_eq!(summary.max, expected_max);
+        assert!((summary.sum - expected_sum).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn ddsketch_conversion_splits_coarse_bins_across_multiple_agent_bins() {
+        let source_mapping = LogarithmicMapping::new_with_gamma(2.0).expect("source mapping should be valid");
+        let mut positive_store = DenseStore::new();
+        positive_store.add(0, 256);
+
+        let canonical = CanonicalDDSketch::new(source_mapping, positive_store, DenseStore::new());
+        let sketch = convert_ddsketch_into_sketch(canonical).expect("conversion should succeed");
+
+        assert_eq!(sketch.count(), 256);
+        assert!(sketch.bin_count() > 1);
+        assert!(sketch.min().unwrap() < sketch.max().unwrap());
     }
 
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L296
