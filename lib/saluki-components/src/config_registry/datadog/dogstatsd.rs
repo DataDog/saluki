@@ -66,7 +66,7 @@ static DOGSTATSD_TCP_PORT_SCHEMA: SchemaEntry = SchemaEntry {
 // The two naming conventions are incompatible at the config-loader level — setting the dotted path
 // produces a nested object that the flat field cannot consume. Custom statics with the flat paths
 // are required until the struct field naming is aligned with the Agent schema.
-// TODO: https://github.com/DataDog/saluki/issues — align enable_payloads field names with schema
+// TODO: https://github.com/DataDog/saluki/issues/1480
 static ENABLE_PAYLOADS_EVENTS_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "enable_payloads_events",
     env_vars: &[],

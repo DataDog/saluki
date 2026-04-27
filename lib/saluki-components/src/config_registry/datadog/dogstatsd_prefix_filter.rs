@@ -13,7 +13,7 @@ use crate::config_registry::{generated::schema, structs, SalukiAnnotation, Schem
 // Fix: add `#[serde(alias = "statsd_metric_namespace_blacklist")]` to the struct field in
 // `transforms/dogstatsd_prefix_filter/mod.rs` and switch this static to reference the generated
 // STATSD_METRIC_NAMESPACE_BLACKLIST schema entry with the old key as additional_yaml_paths.
-// TODO: https://github.com/DataDog/saluki/issues — add serde alias for blacklist → blocklist
+// TODO: https://github.com/DataDog/saluki/issues/1480
 static STATSD_METRIC_NAMESPACE_BLOCKLIST_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "statsd_metric_namespace_blocklist",
     env_vars: &[],
