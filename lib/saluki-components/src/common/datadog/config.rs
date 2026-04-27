@@ -217,6 +217,9 @@ mod config_smoke {
 
     #[tokio::test]
     async fn smoke_test() {
+        // `api_key` has no serde default (EndpointConfiguration::api_key: String), so
+        // deserialization panics on an empty config. Supply it via base_config so every
+        // config load in the smoke test has a valid starting point.
         run_config_smoke_tests(
             structs::FORWARDER_CONFIGURATION,
             &[],
