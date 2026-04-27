@@ -424,7 +424,7 @@ async fn process_http_response(
 
         telemetry.track_successful_transaction(&metadata);
     } else {
-        telemetry.track_failed_transaction(&metadata);
+        telemetry.track_failed_http_transaction(&metadata, status);
 
         if status == StatusCode::FORBIDDEN {
             // IMPORTANT: The wording of this log is matched by a Datadog monitor. Do not change it without
