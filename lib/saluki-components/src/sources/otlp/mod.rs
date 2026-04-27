@@ -66,7 +66,8 @@ const fn default_allow_context_heap_allocations() -> bool {
 
 /// Configuration for the OTLP source.
 #[derive(Deserialize, Default)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(test, derive(derivative::Derivative, serde::Serialize))]
+#[cfg_attr(test, derivative(PartialEq))]
 pub struct OtlpConfiguration {
     otlp_config: OtlpConfig,
 
@@ -118,17 +119,8 @@ pub struct OtlpConfiguration {
 
     /// Workload provider to utilize for origin detection/enrichment.
     #[serde(skip)]
+    #[cfg_attr(test, derivative(PartialEq = "ignore"))]
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
-}
-
-#[cfg(test)]
-impl PartialEq for OtlpConfiguration {
-    fn eq(&self, other: &Self) -> bool {
-        // `workload_provider: Option<Arc<dyn WorkloadProvider>>` is #[serde(skip)] and trait
-        // objects can't implement PartialEq. JSON comparison naturally excludes skip fields
-        // and stays correct as new fields are added.
-        serde_json::to_value(self).ok() == serde_json::to_value(other).ok()
-    }
 }
 
 impl OtlpConfiguration {

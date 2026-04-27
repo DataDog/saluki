@@ -160,7 +160,8 @@ const fn default_enable_payloads_service_checks() -> bool {
 /// Accepts metrics over TCP, UDP, or Unix Domain Sockets in the StatsD/DogStatsD format.
 #[serde_as]
 #[derive(Deserialize, Default)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(test, derive(derivative::Derivative, serde::Serialize))]
+#[cfg_attr(test, derivative(PartialEq))]
 pub struct DogStatsDConfiguration {
     /// The size of the buffer used to receive messages into, in bytes.
     ///
@@ -363,21 +364,12 @@ pub struct DogStatsDConfiguration {
 
     /// Workload provider to utilize for origin detection/enrichment.
     #[serde(skip)]
+    #[cfg_attr(test, derivative(PartialEq = "ignore"))]
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 
     /// Additional tags to add to all metrics.
     #[serde(rename = "dogstatsd_tags", default)]
     additional_tags: Vec<String>,
-}
-
-#[cfg(test)]
-impl PartialEq for DogStatsDConfiguration {
-    fn eq(&self, other: &Self) -> bool {
-        // `workload_provider: Option<Arc<dyn WorkloadProvider>>` is #[serde(skip)] and trait
-        // objects can't implement PartialEq. JSON comparison naturally excludes skip fields
-        // and stays correct as new fields are added.
-        serde_json::to_value(self).ok() == serde_json::to_value(other).ok()
-    }
 }
 
 /// Resolves a `bind_host` string to an `IpAddr`.

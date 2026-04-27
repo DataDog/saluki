@@ -30,7 +30,8 @@ const LISTENER_FILTERED_POINTS_METRIC: &str = "dogstatsd_listener_filtered_point
 ///
 /// Checks if a metric name should be allowed.
 #[derive(Deserialize, Facet)]
-#[cfg_attr(test, derive(Debug, serde::Serialize))]
+#[cfg_attr(test, derive(Debug, derivative::Derivative, serde::Serialize))]
+#[cfg_attr(test, derivative(PartialEq))]
 pub struct DogStatsDPrefixFilterConfiguration {
     #[serde(default, rename = "statsd_metric_namespace")]
     metric_prefix: String,
@@ -55,6 +56,7 @@ pub struct DogStatsDPrefixFilterConfiguration {
 
     #[serde(skip)]
     #[facet(opaque)]
+    #[cfg_attr(test, derivative(PartialEq = "ignore"))]
     configuration: Option<GenericConfiguration>,
 }
 
@@ -82,16 +84,6 @@ fn default_metric_prefix_blocklist() -> Vec<String> {
         "tomcat".to_string(),
         "runtime".to_string(),
     ]
-}
-
-#[cfg(test)]
-impl PartialEq for DogStatsDPrefixFilterConfiguration {
-    fn eq(&self, other: &Self) -> bool {
-        // `configuration: Option<GenericConfiguration>` is #[serde(skip)] and GenericConfiguration
-        // contains tokio sync primitives that don't implement PartialEq. JSON comparison naturally
-        // excludes skip fields and stays correct as new fields are added.
-        serde_json::to_value(self).ok() == serde_json::to_value(other).ok()
-    }
 }
 
 impl DogStatsDPrefixFilterConfiguration {
