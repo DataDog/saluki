@@ -1,6 +1,6 @@
 # Configuring DogStatsD on Agent Data Plane
 
-<!-- Last updated: 2026-04-23 -->
+<!-- Last updated: 2026-04-27 -->
 
 The DogStatsD implementation on ADP has been redesigned in Rust for better resource guarantees and
 efficiency. Because the architecture is different from the original implementation, certain
@@ -49,6 +49,8 @@ tracking.
 | `min_tls_version`                            | Minimum TLS version for HTTPS     | [#1370] |
 | `serializer_experimental_use_v3_api.*`       | V3 metrics API migration flags    | [#1468] |
 | `sslkeylogfile`                              | TLS key log file path             | [#1372] |
+| `statsd_forward_host`                        | Host for packet forwarding        | [#1476] |
+| `statsd_forward_port`                        | Port for packet forwarding        | [#1476] |
 | `tls_handshake_timeout`                      | HTTP TLS handshake timeout        | [#178]  |
 
 <!-- section:unsupported-not-planned -->
@@ -68,8 +70,6 @@ architecture is fundamentally different or the feature is platform-specific.
 | `dogstatsd_queue_size`                         | Packet channel buffer size     | ADP uses async tasks                                         |
 | `dogstatsd_telemetry_enabled_listener_id`      | Per-listener telemetry tagging | Not feasible to thread through                               |
 | `dogstatsd_workers_count`                      | Num DSD processing workers     | ADP uses async tasks                                         |
-| `statsd_forward_host`                          | Host for raw packet forwarding | Not planned                                                  |
-| `statsd_forward_port`                          | Port for raw packet forwarding | Not planned                                                  |
 | `use_dogstatsd`                                | Master DogStatsD enable toggle | Core Agent evaluates and sets `data_plane.dogstatsd.enabled` |
 
 ## Behavioral Differences
@@ -331,3 +331,4 @@ The following settings work in ADP with the same behavior as the core agent.
 [#1434]: https://github.com/DataDog/saluki/issues/1434
 [#1466]: https://github.com/DataDog/saluki/issues/1466
 [#1468]: https://github.com/DataDog/saluki/issues/1468
+[#1476]: https://github.com/DataDog/saluki/issues/1476

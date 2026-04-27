@@ -1685,19 +1685,19 @@
   {
     "key": "statsd_forward_host",
     "feature_state": "MISSING",
-    "action": "NONE",
+    "action": "IMPLEMENT",
     "description": "Host for packet forwarding",
-    "reason": "Forwards raw DogStatsD packets to another statsd server. Feature not planned.",
-    "issue": null,
+    "reason": "Forwards raw DogStatsD packets to another statsd server. Identified as customer-important; tracked for implementation.",
+    "issue": "#1476",
     "adp_key": null
   },
   {
     "key": "statsd_forward_port",
     "feature_state": "MISSING",
-    "action": "NONE",
+    "action": "IMPLEMENT",
     "description": "Port for packet forwarding",
-    "reason": "Forwards raw DogStatsD packets to another statsd server. Feature not planned.",
-    "issue": null,
+    "reason": "Forwards raw DogStatsD packets to another statsd server. Identified as customer-important; tracked for implementation.",
+    "issue": "#1476",
     "adp_key": null
   },
   {
