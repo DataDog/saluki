@@ -90,9 +90,13 @@ impl ComponentTelemetry {
         self.events_dropped_http.increment(metadata.event_count as u64);
     }
 
-    /// Tracks dropped transactions and events from queue eviction.
-    pub fn track_dropped_events(&self, items_permanently_dropped: u64, event_count: u64) {
-        self.items_dropped_total.increment(items_permanently_dropped);
+    /// Tracks dropped items from queue eviction.
+    pub fn track_dropped_items(&self, item_count: u64) {
+        self.items_dropped_total.increment(item_count);
+    }
+
+    /// Tracks dropped events from queue eviction.
+    pub fn track_dropped_events(&self, event_count: u64) {
         self.events_dropped_queue.increment(event_count);
     }
 }
