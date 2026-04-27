@@ -1,15 +1,1 @@
-version: 2
-updates:
-  - package-ecosystem: "cargo"
-    directory: "/" # Location of package manifests
-    schedule:
-      interval: "weekly"
-    cooldown:
-      semver-patch-days: 2
-      semver-minor-days: 7
-      semver-major-days: 30
-    ignore:
-      - dependency-name: "tokio"
-        update-types:
-          - "version-update:semver-major"
-          - "version-update:semver-minor"
+
