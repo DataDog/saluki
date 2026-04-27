@@ -7,6 +7,6 @@ make check-fmt
 make check-clippy
 make check-licenses
 make check-deny
-RUSTDOCFLAGS="--enable-index-page -Zunstable-options" cargo +nightly doc --no-deps -Zrustdoc-map --lib
+make check-api-docs
 
 echo "[*] Pre-commit checks passed."
