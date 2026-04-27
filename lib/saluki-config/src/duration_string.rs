@@ -424,198 +424,62 @@ mod tests {
     }
 
     #[test]
-    fn duration_string_success_01() {
-        run_success_case("0", Duration::default(), "0s0ns").unwrap();
-    }
+    fn duration_string_success_cases() {
+        let cases: &[(&str, Duration, &str)] = &[
+            ("0", Duration::ZERO, "0s0ns"),
+            ("-0", Duration::ZERO, "0s0ns"),
+            ("+0", Duration::ZERO, "0s0ns"),
+            ("+5h", Duration::from_hours(5), "18000s0ns"),
+            (".5s", Duration::from_millis(500), "0s500000000ns"),
+            ("5.s", Duration::from_secs(5), "5s0ns"),
+            ("0.000000001s", Duration::from_nanos(1), "0s1ns"),
+            ("1.5h", Duration::from_mins(90), "5400s0ns"),
+            (
+                "2h45m30.5s",
+                (2 * H) + (45 * M) + (30 * S) + (500 * MS),
+                "9930s500000000ns",
+            ),
+            ("12µs", Duration::from_micros(12), "0s12000ns"),
+            ("0s", Duration::ZERO, "0s0ns"),
+            ("1h1m1s1ms1us1ns", H + M + S + MS + (1000 * NS) + NS, "3661s1001001ns"),
+            ("24h", Duration::from_hours(24), "86400s0ns"),
+            (
+                "9223372036854775807ns",
+                Duration::from_nanos(9223372036854775807),
+                "9223372036s854775807ns",
+            ),
+            (
+                "9223372036854775.807us",
+                Duration::from_secs(9223372036) + (854775807 * NS),
+                "9223372036s854775807ns",
+            ),
+            (
+                "2562047h47m16.854775807s",
+                Duration::from_secs(9223372036) + (854775807 * NS),
+                "9223372036s854775807ns",
+            ),
+            ("0.1ns", Duration::ZERO, "0s0ns"),
+            ("05s", Duration::from_secs(5), "5s0ns"),
+            ("1ns1s", S + NS, "1s1ns"),
+            ("100h100m100s", (100 * H) + (100 * M) + (100 * S), "366100s0ns"),
+            ("5m32s", (5 * M) + (32 * S), "332s0ns"),
+            ("1m0s", M, "60s0ns"),
+            ("5m0s", 5 * M, "300s0ns"),
+            ("6m0s", 6 * M, "360s0ns"),
+            ("10m0s", 10 * M, "600s0ns"),
+            ("15m0s", 15 * M, "900s0ns"),
+            ("30m0s", 30 * M, "1800s0ns"),
+            ("40m0s", 40 * M, "2400s0ns"),
+            ("50m0s", 50 * M, "3000s0ns"),
+            ("87600h0m0s", 87600 * H, "315360000s0ns"),
+            ("5", 5 * NS, "0s5ns"),
+            (" 5s", 5 * S, "5s0ns"),
+            ("5s", 5 * S, "5s0ns"),
+        ];
 
-    #[test]
-    fn duration_string_success_02() {
-        run_success_case("-0", Duration::default(), "0s0ns").unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_03() {
-        run_success_case("+0", Duration::default(), "0s0ns").unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_04() {
-        run_success_case("+5h", Duration::from_hours(5), "18000s0ns").unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_05() {
-        run_success_case(".5s", Duration::from_millis(500), "0s500000000ns").unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_06() {
-        run_success_case("5.s", Duration::from_secs(5), "5s0ns").unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_07() {
-        run_success_case("0.000000001s", Duration::from_nanos(1), "0s1ns").unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_08() {
-        run_success_case("1.5h", Duration::from_mins(90), "5400s0ns").unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_09() {
-        run_success_case(
-            "2h45m30.5s",
-            (2 * H) + (45 * M) + (30 * S) + (500 * MS),
-            "9930s500000000ns",
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_10() {
-        run_success_case("12µs", Duration::from_micros(12), "0s12000ns").unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_11() {
-        run_success_case("0s", Duration::default(), "0s0ns").unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_12() {
-        run_success_case("1h1m1s1ms1us1ns", H + M + S + MS + (1000 * NS) + NS, "3661s1001001ns").unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_13() {
-        run_success_case("24h", Duration::from_hours(24), "86400s0ns").unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_14() {
-        run_success_case(
-            "9223372036854775807ns",
-            Duration::from_nanos(9223372036854775807),
-            "9223372036s854775807ns",
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_15() {
-        run_success_case(
-            "9223372036854775.807us",
-            Duration::from_secs(9223372036) + (854775807 * NS),
-            "9223372036s854775807ns",
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_16() {
-        run_success_case(
-            "2562047h47m16.854775807s",
-            Duration::from_secs(9223372036) + (854775807 * NS),
-            "9223372036s854775807ns",
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_17() {
-        run_success_case("0.1ns", Duration::default(), "0s0ns").unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_18() {
-        run_success_case("05s", Duration::from_secs(5), "5s0ns").unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_19() {
-        run_success_case("1ns1s", S + NS, "1s1ns").unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_20() {
-        run_success_case("100h100m100s", (100 * H) + (100 * M) + (100 * S), "366100s0ns").unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_21() {
-        run_success_case("5m32s", (5 * M) + (32 * S), "332s0ns").unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_22() {
-        run_success_case("0s", Duration::default(), "0s0ns").unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_23() {
-        run_success_case("1m0s", M, "60s0ns").unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_24() {
-        run_success_case("5m0s", 5 * M, "300s0ns").unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_25() {
-        run_success_case("6m0s", 6 * M, "360s0ns").unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_26() {
-        run_success_case("10m0s", 10 * M, "600s0ns").unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_27() {
-        run_success_case("15m0s", 15 * M, "900s0ns").unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_28() {
-        run_success_case("30m0s", 30 * M, "1800s0ns").unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_29() {
-        run_success_case("40m0s", 40 * M, "2400s0ns").unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_30() {
-        run_success_case("50m0s", 50 * M, "3000s0ns").unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_31() {
-        run_success_case("87600h0m0s", 87600 * H, "315360000s0ns").unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_32() {
-        run_success_case("5", 5 * NS, "0s5ns").unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_33() {
-        run_success_case(" 5s", 5 * S, "5s0ns").unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_34() {
-        run_success_case("5s", 5 * S, "5s0ns").unwrap();
-    }
-
-    #[test]
-    fn duration_string_success_35() {
-        run_success_case("5.s", 5 * S, "5s0ns").unwrap();
+        for (input, expected, serialized) in cases {
+            run_success_case(input, *expected, serialized).unwrap();
+        }
     }
 
     fn run_failure_case(input: &str, expected_msg: &str) -> anyhow::Result<()> {
@@ -636,107 +500,33 @@ mod tests {
     }
 
     #[test]
-    fn duration_string_failure_01() {
-        run_failure_case("5m32sFOO", "unknown unit 'sFOO'").unwrap();
-    }
+    fn duration_string_failure_cases() {
+        let cases: &[(&str, &str)] = &[
+            ("5m32sFOO", "unknown unit 'sFOO'"),
+            ("", "empty duration"),
+            (" ", "empty duration"),
+            ("+", "empty duration"),
+            ("-", "empty duration"),
+            (".", "expected digits"),
+            ("s", "expected digits"),
+            (".s", "expected digits"),
+            ("--5s", "expected digits"),
+            ("5.5.5s", "missing unit"),
+            ("1e3s", "unknown unit 'e'"),
+            ("5ns5", "missing unit"),
+            ("9223372036854775808ns", "exceeds"),
+            ("-1s", "negative"),
+            ("-0.5h", "negative"),
+            ("1d", "unknown unit 'd'"),
+            ("1w", "unknown unit 'w'"),
+            ("1S", "unknown unit 'S'"),
+            ("12 µs", "missing unit"),
+            ("5 s", "missing unit"),
+            ("5. s", "missing unit"),
+        ];
 
-    #[test]
-    fn duration_string_failure_02() {
-        run_failure_case("", "empty duration").unwrap();
-    }
-
-    #[test]
-    fn duration_string_failure_03() {
-        run_failure_case(" ", "empty duration").unwrap();
-    }
-
-    #[test]
-    fn duration_string_failure_04() {
-        run_failure_case("+", "empty duration").unwrap();
-    }
-
-    #[test]
-    fn duration_string_failure_05() {
-        run_failure_case("-", "empty duration").unwrap();
-    }
-
-    #[test]
-    fn duration_string_failure_06() {
-        run_failure_case(".", "expected digits").unwrap();
-    }
-
-    #[test]
-    fn duration_string_failure_07() {
-        run_failure_case("s", "expected digits").unwrap();
-    }
-
-    #[test]
-    fn duration_string_failure_08() {
-        run_failure_case(".s", "expected digits").unwrap();
-    }
-
-    #[test]
-    fn duration_string_failure_09() {
-        run_failure_case("--5s", "expected digits").unwrap();
-    }
-
-    #[test]
-    fn duration_string_failure_10() {
-        run_failure_case("5.5.5s", "missing unit").unwrap();
-    }
-
-    #[test]
-    fn duration_string_failure_11() {
-        run_failure_case("1e3s", "unknown unit 'e'").unwrap();
-    }
-
-    #[test]
-    fn duration_string_failure_12() {
-        run_failure_case("5ns5", "missing unit").unwrap();
-    }
-
-    #[test]
-    fn duration_string_failure_13() {
-        run_failure_case("9223372036854775808ns", "exceeds").unwrap();
-    }
-
-    #[test]
-    fn duration_string_failure_14() {
-        run_failure_case("-1s", "negative").unwrap();
-    }
-
-    #[test]
-    fn duration_string_failure_15() {
-        run_failure_case("-0.5h", "negative").unwrap();
-    }
-
-    #[test]
-    fn duration_string_failure_16() {
-        run_failure_case("1d", "unknown unit 'd'").unwrap();
-    }
-
-    #[test]
-    fn duration_string_failure_17() {
-        run_failure_case("1w", "unknown unit 'w'").unwrap();
-    }
-
-    #[test]
-    fn duration_string_failure_18() {
-        run_failure_case("1S", "unknown unit 'S'").unwrap();
-    }
-
-    #[test]
-    fn duration_string_failure_19() {
-        run_failure_case("12 µs", "missing unit").unwrap();
-    }
-
-    #[test]
-    fn duration_string_failure_20() {
-        run_failure_case("5 s", "missing unit").unwrap();
-    }
-
-    #[test]
-    fn duration_string_failure_21() {
-        run_failure_case("5. s", "missing unit").unwrap();
+        for (input, expected_msg) in cases {
+            run_failure_case(input, expected_msg).unwrap();
+        }
     }
 }
