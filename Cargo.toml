@@ -160,7 +160,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 bytesize = { version = "2", default-features = false, features = ["serde"] }
 criterion = { version = "0.8", features = ["html_reports"] }
 dhat = { version = "0.3", default-features = false }
-average = { version = "0.16", default-features = false }
+average = { version = "0.17", default-features = false }
 loom = { version = "0.7", default-features = false }
 trybuild = { version = "1", default-features = false }
 tokio-test = { version = "0.4.4", default-features = false }
