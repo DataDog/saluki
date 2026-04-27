@@ -351,7 +351,10 @@ async fn run_endpoint_io_loop<B>(
                         Err(RetryCircuitBreakerError::Open(req)) => {
                             let reassembled_txn = Transaction::reassemble(metadata, req);
                             match pending_txns.push_low_priority(reassembled_txn).await {
-                                Ok(push_result) => { telemetry.track_dropped_items(push_result.items_dropped); telemetry.track_dropped_events(push_result.events_dropped); },
+                                Ok(push_result) => {
+                                    telemetry.track_dropped_items(push_result.items_dropped);
+                                    telemetry.track_dropped_events(push_result.events_dropped);
+                                }
                                 Err(e) => error!(endpoint_url, error = %e, "Failed to re-enqueue failed transaction. Events may be permanently lost."),
                             }
                         },
