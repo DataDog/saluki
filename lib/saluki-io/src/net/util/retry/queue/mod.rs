@@ -48,10 +48,6 @@ pub struct PushResult {
 
     /// Total number of events represented by the dropped items.
     pub events_dropped: u64,
-
-    /// Number of items permanently lost — either evicted from disk, or dropped in-memory when disk persistence is
-    /// not enabled.
-    pub items_permanently_dropped: u64,
 }
 
 impl PushResult {
@@ -64,14 +60,12 @@ impl PushResult {
     pub fn merge(&mut self, other: Self) {
         self.items_dropped += other.items_dropped;
         self.events_dropped += other.events_dropped;
-        self.items_permanently_dropped += other.items_permanently_dropped;
     }
 
-    /// Tracks a single item that was permanently lost (disk eviction, or in-memory drop with no disk fallback).
-    pub fn track_permanently_dropped_item(&mut self, event_count: u64) {
+    /// Tracks a single dropped item.
+    pub fn track_dropped_item(&mut self, event_count: u64) {
         self.items_dropped += 1;
         self.events_dropped += event_count;
-        self.items_permanently_dropped += 1;
     }
 }
 
@@ -202,7 +196,7 @@ where
                     "Dropped in-memory entry to increase available capacity."
                 );
 
-                push_result.track_permanently_dropped_item(oldest_entry.event_count());
+                push_result.track_dropped_item(oldest_entry.event_count());
             }
 
             self.total_in_memory_bytes -= oldest_entry_size;
@@ -267,7 +261,7 @@ where
             } else {
                 debug!(entry.len = entry_size, "Dropped in-memory entry during flush.");
 
-                push_result.track_permanently_dropped_item(entry.event_count());
+                push_result.track_dropped_item(entry.event_count());
             }
         }
 
