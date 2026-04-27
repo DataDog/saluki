@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 # This Dockerfile is, generally speaking, tuned for CI builds.
 #
 # It is designed to work seamlessly in both local builds and CI environments, but as CI is invoked far more often,
@@ -30,6 +31,11 @@ RUN apt-get update && \
     build-essential ca-certificates musl-dev musl-tools linux-libc-dev make cmake gcc g++ perl golang-go protobuf-compiler curl unzip rustup
 RUN rustup set profile minimal
 ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Pre-install the pinned Rust toolchain. We bind-mount only `rust-toolchain.toml` so this layer's
+# cache key is just that file's content -- code changes do not invalidate the toolchain install.
+RUN --mount=type=bind,source=rust-toolchain.toml,target=/tmp/rust-toolchain.toml \
+    cd /tmp && rustup show active-toolchain
 
 FROM ${BUILD_IMAGE} AS build-prepped
 ENV PATH="/root/.cargo/bin:${PATH}"
@@ -82,21 +88,29 @@ RUN --mount=type=bind,from=buildcache-src,source=/,target=/mnt/bcsrc \
 WORKDIR /adp
 COPY . /adp
 
-RUN mkdir -p /adp/target/bin
+# We optimize local workflows by mounting a cache at cargo home and the target dir. This allows local development
+# workflows to take advantage of incremental builds. We copy the ADP binary out of the build cache to /out after
+# building it.
+#
+# COPY . /adp above will retrigger this layer on code changes but the builds should be incremental.
 RUN --mount=type=secret,id=aws-creds,target=/run/secrets/aws-creds.sh,required=false \
+    --mount=type=cache,target=/adp/target,id=adp-target-${BUILD_TARGET}-${BUILD_PROFILE} \
+    --mount=type=cache,target=/root/.cargo/registry,id=cargo-registry \
+    --mount=type=cache,target=/root/.cargo/git,id=cargo-git \
+    mkdir -p /out && \
     if [ -f /run/secrets/aws-creds.sh ]; then . /run/secrets/aws-creds.sh; fi && \
     if command -v buildcache >/dev/null 2>&1; then \
         export RUSTC_WRAPPER=buildcache && buildcache --zero-stats; \
     fi && \
     if [ "${BUILD_TARGET}" = "default" ]; then \
         CFLAGS="${BUILD_CFLAGS}" \
-        cargo build --profile ${BUILD_PROFILE} --package agent-data-plane --features ${BUILD_FEATURES} --target-dir /adp/target && \
-        cp /adp/target/${BUILD_PROFILE}/agent-data-plane /adp/target/bin/agent-data-plane; \
+        cargo build --profile ${BUILD_PROFILE} --package agent-data-plane --features ${BUILD_FEATURES} && \
+        cp /adp/target/${BUILD_PROFILE}/agent-data-plane /out/agent-data-plane; \
     else \
         rustup target add ${BUILD_TARGET} && \
         CFLAGS="${BUILD_CFLAGS}" \
-        cargo build --profile ${BUILD_PROFILE} --package agent-data-plane --features ${BUILD_FEATURES} --target ${BUILD_TARGET} --target-dir /adp/target && \
-        cp /adp/target/${BUILD_TARGET}/${BUILD_PROFILE}/agent-data-plane /adp/target/bin/agent-data-plane; \
+        cargo build --profile ${BUILD_PROFILE} --package agent-data-plane --features ${BUILD_FEATURES} --target ${BUILD_TARGET} && \
+        cp /adp/target/${BUILD_TARGET}/${BUILD_PROFILE}/agent-data-plane /out/agent-data-plane; \
     fi && \
     if command -v buildcache >/dev/null 2>&1; then \
         buildcache --show-stats; \
@@ -156,7 +170,7 @@ USER root
 RUN test -d /usr/share/ca-certificates || (apt-get update && \
     apt-get install --no-install-recommends -y ca-certificates=20240203 && \
     apt-get clean && rm -rf /var/lib/apt/lists)
-COPY --from=adp-builder /adp/target/bin/agent-data-plane /usr/local/bin/agent-data-plane
+COPY --from=adp-builder /out/agent-data-plane /usr/local/bin/agent-data-plane
 COPY NOTICE LICENSE LICENSE-3rdparty.csv /opt/datadog/agent-data-plane/
 COPY --from=license-builder /licenses /opt/datadog/agent-data-plane/LICENSES
 COPY --chmod=755 docker/entrypoint.sh /entrypoint.sh
