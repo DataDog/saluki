@@ -48,6 +48,9 @@ pub struct PushResult {
 
     /// Total number of events represented by the dropped items.
     pub events_dropped: u64,
+
+    /// Number of items dropped specifically due to disk queue eviction.
+    pub disk_items_dropped: u64,
 }
 
 impl PushResult {
@@ -60,12 +63,20 @@ impl PushResult {
     pub fn merge(&mut self, other: Self) {
         self.items_dropped += other.items_dropped;
         self.events_dropped += other.events_dropped;
+        self.disk_items_dropped += other.disk_items_dropped;
     }
 
     /// Tracks a single dropped item.
     pub fn track_dropped_item(&mut self, event_count: u64) {
         self.items_dropped += 1;
         self.events_dropped += event_count;
+    }
+
+    /// Tracks a single item dropped due to disk queue eviction.
+    pub fn track_dropped_disk_item(&mut self, event_count: u64) {
+        self.items_dropped += 1;
+        self.events_dropped += event_count;
+        self.disk_items_dropped += 1;
     }
 }
 
