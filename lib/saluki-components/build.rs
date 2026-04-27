@@ -1,19 +1,17 @@
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
-use serde::Deserialize;
 use serde_yaml::Value;
 
-// Locate the workspace root by walking up from the xtask binary location.
-fn workspace_root() -> PathBuf {
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest).parent().unwrap().to_path_buf()
-}
+fn main() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let schema_path = manifest_dir.join("vendor/core_schema.yaml");
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let out_path = out_dir.join("schema.rs");
 
-pub fn run() {
-    let root = workspace_root();
-    let schema_path = root.join("lib/saluki-components/vendor/core_schema.yaml");
-    let out_path = root.join("lib/saluki-components/src/config_registry/generated/schema.rs");
+    // Only re-run when the schema source or this build script changes.
+    println!("cargo:rerun-if-changed=vendor/core_schema.yaml");
+    println!("cargo:rerun-if-changed=build.rs");
 
     let src = std::fs::read_to_string(&schema_path)
         .unwrap_or_else(|e| panic!("failed to read {}: {}", schema_path.display(), e));
@@ -30,35 +28,20 @@ pub fn run() {
     entries.sort_by(|a, b| a.yaml_path.cmp(&b.yaml_path));
 
     let output = render(&entries);
-    std::fs::create_dir_all(out_path.parent().unwrap()).unwrap();
     std::fs::write(&out_path, output).unwrap_or_else(|e| panic!("failed to write {}: {}", out_path.display(), e));
-
-    // Format the output so it passes the pre-commit fmt check without a separate step.
-    let fmt_status = std::process::Command::new("rustup")
-        .args(["run", "nightly", "rustfmt", "--edition=2021"])
-        .arg(&out_path)
-        .status()
-        .unwrap_or_else(|e| panic!("failed to run rustfmt: {}", e));
-    if !fmt_status.success() {
-        panic!("rustfmt failed on {}", out_path.display());
-    }
-
-    println!("Generated {} entries -> {}", entries.len(), out_path.display());
 }
 
 // ── Schema entry (one per setting leaf) ─────────────────────────────────────
 
-#[derive(Debug)]
 struct SchemaEntry {
     yaml_path: String,
     const_name: String,
     env_vars: Vec<String>,
     value_type: SchemaValueType,
-    /// JSON-encoded default value from the schema, if present (e.g. `"true"`, `"0"`, `"\"datadoghq.com\""`).
     default: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum SchemaValueType {
     String,
     Bool,
@@ -69,7 +52,7 @@ enum SchemaValueType {
 }
 
 impl SchemaValueType {
-    fn as_rust(&self) -> &'static str {
+    fn as_rust(self) -> &'static str {
         match self {
             SchemaValueType::String => "ValueType::String",
             SchemaValueType::Bool => "ValueType::Bool",
@@ -80,7 +63,7 @@ impl SchemaValueType {
         }
     }
 
-    fn is_unknown(&self) -> bool {
+    fn is_unknown(self) -> bool {
         matches!(self, SchemaValueType::Unknown)
     }
 }
@@ -155,9 +138,7 @@ fn parse_setting(path_parts: &[&str], value: &Value) -> Option<SchemaEntry> {
 }
 
 fn parse_value_type(value: &Value) -> SchemaValueType {
-    let type_str = value.get("type").and_then(|v| v.as_str());
-
-    match type_str {
+    match value.get("type").and_then(|v| v.as_str()) {
         Some("string") => SchemaValueType::String,
         Some("boolean") => SchemaValueType::Bool,
         Some("integer") => SchemaValueType::Integer,
@@ -171,28 +152,22 @@ fn parse_value_type(value: &Value) -> SchemaValueType {
                 SchemaValueType::Unknown
             }
         }
-        Some("object") => SchemaValueType::Unknown,
         _ => SchemaValueType::Unknown,
     }
 }
 
-/// Convert a YAML scalar default value to a JSON string representation suitable
-/// for embedding as a Rust `&'static str` literal (e.g. `true` → `"true"`,
-/// `"datadoghq.com"` → `"\"datadoghq.com\""`). Complex nested structures are
-/// skipped since the smoke tests only need primitive defaults.
+/// Convert a YAML scalar default to a JSON string for embedding as a Rust `&'static str`.
 fn yaml_value_to_json_str(value: &serde_yaml::Value) -> Option<String> {
     match value {
         serde_yaml::Value::Null => None,
         serde_yaml::Value::Bool(b) => Some(b.to_string()),
         serde_yaml::Value::Number(n) => Some(n.to_string()),
         serde_yaml::Value::String(s) => {
-            // Produce a JSON string literal (with surrounding quotes, inner quotes escaped).
             let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
             Some(format!("\"{}\"", escaped))
         }
         serde_yaml::Value::Sequence(seq) if seq.is_empty() => Some("[]".to_string()),
         serde_yaml::Value::Mapping(map) if map.is_empty() => Some("{}".to_string()),
-        // Non-empty arrays/objects: skip — too complex to embed reliably.
         _ => None,
     }
 }
@@ -208,19 +183,16 @@ fn yaml_path_to_const(yaml_path: &str) -> String {
 fn render(entries: &[SchemaEntry]) -> String {
     let mut out = String::new();
 
-    writeln!(out, "// @generated — DO NOT EDIT").unwrap();
-    writeln!(out, "// Regenerate with: cargo xtask gen-config-schema").unwrap();
-    writeln!(out, "// Source: lib/saluki-components/vendor/core_schema.yaml").unwrap();
-    writeln!(out).unwrap();
-    writeln!(out, "#![allow(dead_code)]").unwrap();
-    writeln!(out, "#![allow(missing_docs)]").unwrap();
-    writeln!(out, "#![allow(non_upper_case_globals)]").unwrap();
+    writeln!(
+        out,
+        "// @generated by build.rs from vendor/core_schema.yaml — DO NOT EDIT"
+    )
+    .unwrap();
     writeln!(out).unwrap();
     writeln!(out, "use crate::config_registry::{{SchemaEntry, ValueType}};").unwrap();
     writeln!(out).unwrap();
 
     for entry in entries {
-        // Emit a comment if the type had to fall back to Unknown.
         if entry.value_type.is_unknown() {
             writeln!(
                 out,
@@ -252,17 +224,4 @@ fn render(entries: &[SchemaEntry]) -> String {
     }
 
     out
-}
-
-// ── Serde types (unused directly; here for future structured parsing) ────────
-
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-struct RawNode {
-    node_type: Option<String>,
-    #[serde(rename = "type")]
-    type_: Option<String>,
-    env_vars: Option<Vec<String>>,
-    tags: Option<Vec<String>>,
-    properties: Option<std::collections::HashMap<String, serde_yaml::Value>>,
 }

@@ -9,6 +9,7 @@
 //! unknown or unsupported keys in a loaded configuration file.
 
 pub mod datadog;
+/// Generated schema entries from the vendored Datadog Agent config schema.
 pub mod generated;
 
 pub use self::datadog::{ALL_ANNOTATIONS, ALL_KEYS};
