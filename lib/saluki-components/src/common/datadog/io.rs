@@ -431,7 +431,10 @@ async fn process_http_response(
             // also updating the monitor query.
             // Monitor: https://app.datadoghq.com/monitors/160161984
             // Equivalent in datadog-agent: https://github.com/DataDog/datadog-agent/blob/4b725e9a2d3d8529041f00e7e044b899eec2e134/comp/forwarder/defaultforwarder/transaction/transaction.go#L437
-            error!(endpoint_url, "API Key invalid (403 Forbidden), dropping transaction.");
+            error!(
+                "API Key invalid (403 response), dropping transaction for {}",
+                endpoint_url
+            );
         }
 
         match response.into_body().collect().await {
