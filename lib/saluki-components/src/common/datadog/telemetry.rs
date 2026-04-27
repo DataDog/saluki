@@ -19,7 +19,7 @@ pub struct ComponentTelemetry {
     events_dropped_http: Counter,
     events_dropped_encoder: Counter,
     events_dropped_queue: Counter,
-    disk_transactions_dropped: Counter,
+    transactions_dropped_total: Counter,
     http_failed_send: Counter,
     http_errors_by_code: Arc<Mutex<HashMap<StatusCode, Counter>>>,
 }
@@ -44,8 +44,7 @@ impl ComponentTelemetry {
                 "component_events_dropped_total",
                 ["intentional:true", "drop_reason:queue_limit"],
             ),
-            disk_transactions_dropped: builder
-                .register_debug_counter_with_tags("component_transactions_dropped_total", ["drop_reason:disk_limit"]),
+            transactions_dropped_total: builder.register_debug_counter("component_transactions_dropped_total"),
             http_failed_send: builder
                 .register_debug_counter_with_tags("component_errors_total", ["error_type:http_send"]),
             http_errors_by_code: Arc::new(Mutex::new(HashMap::new())),
@@ -92,8 +91,8 @@ impl ComponentTelemetry {
     }
 
     /// Tracks dropped transactions and events from queue eviction.
-    pub fn track_dropped_events(&self, disk_items_dropped: u64, event_count: u64) {
-        self.disk_transactions_dropped.increment(disk_items_dropped);
+    pub fn track_dropped_events(&self, items_permanently_dropped: u64, event_count: u64) {
+        self.transactions_dropped_total.increment(items_permanently_dropped);
         self.events_dropped_queue.increment(event_count);
     }
 }

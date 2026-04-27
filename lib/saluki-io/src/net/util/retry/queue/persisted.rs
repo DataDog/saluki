@@ -325,7 +325,7 @@ where
 
             // Update our statistics.
             self.total_on_disk_bytes -= entry.size_bytes;
-            push_result.track_dropped_disk_item(event_count);
+            push_result.track_permanently_dropped_item(event_count);
 
             warn!(entry.path = %entry.path.display(), entry.len = entry.size_bytes, "Dropped persisted entry.");
         }
