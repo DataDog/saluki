@@ -330,7 +330,7 @@ where
             // IMPORTANT: The wording of this log is matched by a Datadog monitor. Do not change it without
             // also updating the monitor query.
             // https://app.datadoghq.com/monitors/59652993
-            warn!(entry.path = %entry.path.display(), entry.len = entry.size_bytes, "Disk space limit for retry transactions reached. Removing persisted entry.");
+            warn!(entry.path = %entry.path.display(), entry.len = entry.size_bytes, "Maximum disk space for retry transactions is reached. Removing persisted entry.");
         }
 
         Ok(push_result)
