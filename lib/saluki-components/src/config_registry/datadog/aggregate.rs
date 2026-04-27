@@ -23,13 +23,6 @@ static AGGREGATE_CONTEXT_LIMIT_SCHEMA: SchemaEntry = SchemaEntry {
     default: None,
 };
 
-static AGGREGATE_FLUSH_OPEN_WINDOWS_SCHEMA: SchemaEntry = SchemaEntry {
-    yaml_path: "aggregate_flush_open_windows",
-    env_vars: &[],
-    value_type: ValueType::Bool,
-    default: None,
-};
-
 static COUNTER_EXPIRY_SECONDS_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "counter_expiry_seconds",
     env_vars: &[],
@@ -79,11 +72,11 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `aggregate_flush_open_windows` — flush open buckets on shutdown.
+    /// `dogstatsd_flush_incomplete_buckets` — flush open buckets on shutdown.
     AGGREGATE_FLUSH_OPEN_WINDOWS = SalukiAnnotation {
-        schema: &AGGREGATE_FLUSH_OPEN_WINDOWS_SCHEMA,
+        schema: &schema::DOGSTATSD_FLUSH_INCOMPLETE_BUCKETS,
         support_level: SupportLevel::Full,
-        additional_yaml_paths: &[],
+        additional_yaml_paths: &["aggregate_flush_open_windows"],
         env_var_override: None,
         used_by: &[structs::AGGREGATE_CONFIGURATION],
         value_type_override: None,

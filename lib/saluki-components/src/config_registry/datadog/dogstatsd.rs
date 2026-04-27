@@ -57,44 +57,6 @@ static DOGSTATSD_TCP_PORT_SCHEMA: SchemaEntry = SchemaEntry {
     default: None,
 };
 
-// The Agent schema defines these as nested properties under an `enable_payloads` section:
-//   enable_payloads.events, enable_payloads.series, etc.
-// (see ENABLE_PAYLOADS_EVENTS / ENABLE_PAYLOADS_SERIES etc. in generated/schema.rs)
-//
-// Saluki's DogStatsDConfiguration uses flat underscore-separated field names with no `#[serde(rename)]`,
-// so the yaml_path for deserialization is `enable_payloads_events` (not `enable_payloads.events`).
-// The two naming conventions are incompatible at the config-loader level — setting the dotted path
-// produces a nested object that the flat field cannot consume. Custom statics with the flat paths
-// are required until the struct field naming is aligned with the Agent schema.
-// TODO: https://github.com/DataDog/saluki/issues/1480
-static ENABLE_PAYLOADS_EVENTS_SCHEMA: SchemaEntry = SchemaEntry {
-    yaml_path: "enable_payloads_events",
-    env_vars: &[],
-    value_type: ValueType::Bool,
-    default: Some("true"),
-};
-
-static ENABLE_PAYLOADS_SERIES_SCHEMA: SchemaEntry = SchemaEntry {
-    yaml_path: "enable_payloads_series",
-    env_vars: &[],
-    value_type: ValueType::Bool,
-    default: Some("true"),
-};
-
-static ENABLE_PAYLOADS_SERVICE_CHECKS_SCHEMA: SchemaEntry = SchemaEntry {
-    yaml_path: "enable_payloads_service_checks",
-    env_vars: &[],
-    value_type: ValueType::Bool,
-    default: Some("true"),
-};
-
-static ENABLE_PAYLOADS_SKETCHES_SCHEMA: SchemaEntry = SchemaEntry {
-    yaml_path: "enable_payloads_sketches",
-    env_vars: &[],
-    value_type: ValueType::Bool,
-    default: Some("true"),
-};
-
 crate::declare_annotations! {
     // ── Schema-based ──────────────────────────────────────────────────────────
 
@@ -332,9 +294,9 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `enable_payloads_events` — forward event payloads.
+    /// `enable_payloads.events` — forward event payloads.
     ENABLE_PAYLOADS_EVENTS = SalukiAnnotation {
-        schema: &ENABLE_PAYLOADS_EVENTS_SCHEMA,
+        schema: &schema::ENABLE_PAYLOADS_EVENTS,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
@@ -343,9 +305,9 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `enable_payloads_series` — forward series (counter/gauge/rate) payloads.
+    /// `enable_payloads.series` — forward series (counter/gauge/rate) payloads.
     ENABLE_PAYLOADS_SERIES = SalukiAnnotation {
-        schema: &ENABLE_PAYLOADS_SERIES_SCHEMA,
+        schema: &schema::ENABLE_PAYLOADS_SERIES,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
@@ -354,9 +316,9 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `enable_payloads_service_checks` — forward service check payloads.
+    /// `enable_payloads.service_checks` — forward service check payloads.
     ENABLE_PAYLOADS_SERVICE_CHECKS = SalukiAnnotation {
-        schema: &ENABLE_PAYLOADS_SERVICE_CHECKS_SCHEMA,
+        schema: &schema::ENABLE_PAYLOADS_SERVICE_CHECKS,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
@@ -365,9 +327,9 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `enable_payloads_sketches` — forward sketch (distribution) payloads.
+    /// `enable_payloads.sketches` — forward sketch (distribution) payloads.
     ENABLE_PAYLOADS_SKETCHES = SalukiAnnotation {
-        schema: &ENABLE_PAYLOADS_SKETCHES_SCHEMA,
+        schema: &schema::ENABLE_PAYLOADS_SKETCHES,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,

@@ -124,7 +124,11 @@ pub struct AggregateConfiguration {
     /// In cases where flushing all outstanding data is paramount, this can be enabled.
     ///
     /// Defaults to `false`.
-    #[serde(rename = "aggregate_flush_open_windows", default)]
+    #[serde(
+        rename = "aggregate_flush_open_windows",
+        alias = "dogstatsd_flush_incomplete_buckets",
+        default
+    )]
     flush_open_windows: bool,
 
     /// How long to keep idle counters alive after they've been flushed, in seconds.
