@@ -145,7 +145,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 |---------------------------------------------|----------------------------------|---------|
 | `agent_ipc_endpoint`                        | Remote agent IPC URI             |         |
 | `aggregate_flush_interval`                  | Aggregator flush period          |         |
-| `aggregate_flush_open_windows`              | Flush open windows on stop       |         |
+| `aggregate_flush_open_windows`              | Flush open windows on stop; `dogstatsd_flush_incomplete_buckets` is a supported alias | |
 | `aggregate_passthrough_idle_flush_timeout`  | Passthrough buffer flush delay   |         |
 | `aggregate_window_duration`                 | Aggregation window size          |         |
 | `connect_retry_attempts`                    | IPC client connect retries       |         |
@@ -232,6 +232,10 @@ The following settings work in ADP with the same behavior as the core agent.
 | `dogstatsd_string_interner_size`          | String interner capacity         |
 | `dogstatsd_tag_cardinality`               | Default tag cardinality level    |
 | `dogstatsd_tags`                          | Extra tags added to all DSD data |
+| `enable_payloads.events`                  | Allow sending event payloads     |
+| `enable_payloads.series`                  | Allow sending series payloads    |
+| `enable_payloads.service_checks`          | Allow sending svc check payloads |
+| `enable_payloads.sketches`                | Allow sending sketch payloads    |
 | `expected_tags_duration`                  | Host tag enrichment duration     |
 | `extra_tags`                              | Additional static tags           |
 | `forwarder_backoff_base`                  | Retry backoff base (secs)        |
