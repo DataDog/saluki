@@ -11,7 +11,7 @@
 //! `apm_config.obfuscation.*`. Custom statics with the `config.*` prefix are required for
 //! the smoke tests to exercise the right yaml paths.
 //!
-//! TODO: https://github.com/DataDog/saluki/issues/1480 — evaluate whether TraceObfuscationConfiguration should be wired to read from
+//! TODO: <https://github.com/DataDog/saluki/issues/1480> — evaluate whether TraceObfuscationConfiguration should be wired to read from
 //! `apm_config.obfuscation.*` directly (like `from_apm_configuration` does in production),
 //! and whether the smoke test should use that path instead.
 use crate::config_registry::{structs, SalukiAnnotation, SchemaEntry, SupportLevel, ValueType};
