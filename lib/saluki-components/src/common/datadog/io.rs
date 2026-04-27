@@ -429,11 +429,9 @@ async fn process_http_response(
         if status == StatusCode::FORBIDDEN {
             // IMPORTANT: The wording of this log is matched by a Datadog monitor. Do not change it without
             // also updating the monitor query.
-            // https://app.datadoghq.com/monitors/160161984
-            error!(
-                endpoint_url,
-                "API key is invalid (403 Forbidden), dropping transaction."
-            );
+            // Monitor: https://app.datadoghq.com/monitors/160161984
+            // Equivalent in datadog-agent: https://github.com/DataDog/datadog-agent/blob/4b725e9a2d3d8529041f00e7e044b899eec2e134/comp/forwarder/defaultforwarder/transaction/transaction.go#L437
+            error!(endpoint_url, "API Key invalid (403 Forbidden), dropping transaction.");
         }
 
         match response.into_body().collect().await {
