@@ -67,12 +67,6 @@ impl PushResult {
         self.items_permanently_dropped += other.items_permanently_dropped;
     }
 
-    /// Tracks a single dropped item.
-    pub fn track_dropped_item(&mut self, event_count: u64) {
-        self.items_dropped += 1;
-        self.events_dropped += event_count;
-    }
-
     /// Tracks a single item that was permanently lost (disk eviction, or in-memory drop with no disk fallback).
     pub fn track_permanently_dropped_item(&mut self, event_count: u64) {
         self.items_dropped += 1;
@@ -273,7 +267,7 @@ where
             } else {
                 debug!(entry.len = entry_size, "Dropped in-memory entry during flush.");
 
-                push_result.track_dropped_item(entry.event_count());
+                push_result.track_permanently_dropped_item(entry.event_count());
             }
         }
 
