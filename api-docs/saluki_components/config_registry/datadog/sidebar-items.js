@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["aggregate","dogstatsd","dogstatsd_mapper","dogstatsd_prefix_filter","encoders","forwarder","otlp","proxy","trace_obfuscation"],"static":["ALL_ANNOTATIONS","ALL_KEYS"]};

@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["config","decoders","destinations","encoders","forwarders","relays","sources","transforms"]};
+window.SIDEBAR_ITEMS = {"macro":["declare_annotations"],"mod":["config","config_registry","decoders","destinations","encoders","forwarders","relays","sources","transforms"]};
