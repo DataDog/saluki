@@ -301,7 +301,7 @@ async fn run_endpoint_io_loop<B>(
             // Try and drain the next transaction from our channel, and push it into the pending transactions queue.
             maybe_txn = txns_rx.recv(), if !done => match maybe_txn {
                 Some(txn) => match pending_txns.push_high_priority(txn).await {
-                    Ok(push_result) => telemetry.track_dropped_events(push_result.events_dropped),
+                    Ok(push_result) => telemetry.track_dropped_events(push_result.items_dropped, push_result.events_dropped),
                     Err(e) => error!(endpoint_url, error = %e, "Failed to enqueue transaction. Events may be permanently lost."),
                 },
                 None => {
@@ -351,7 +351,7 @@ async fn run_endpoint_io_loop<B>(
                         Err(RetryCircuitBreakerError::Open(req)) => {
                             let reassembled_txn = Transaction::reassemble(metadata, req);
                             match pending_txns.push_low_priority(reassembled_txn).await {
-                                Ok(push_result) => telemetry.track_dropped_events(push_result.events_dropped),
+                                Ok(push_result) => telemetry.track_dropped_events(push_result.items_dropped, push_result.events_dropped),
                                 Err(e) => error!(endpoint_url, error = %e, "Failed to re-enqueue failed transaction. Events may be permanently lost."),
                             }
                         },
@@ -378,7 +378,7 @@ async fn run_endpoint_io_loop<B>(
                 events_dropped = flush_result.events_dropped,
                 "Flushed pending transactions prior to shutdown."
             );
-            telemetry.track_dropped_events(flush_result.events_dropped);
+            telemetry.track_dropped_events(flush_result.items_dropped, flush_result.events_dropped);
         }
         Err(e) => {
             error!(endpoint_url, error = %e, "Failed to flush pending transactions. Events may be permanently lost.")
