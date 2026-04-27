@@ -7,6 +7,6 @@ make check-fmt
 make check-clippy
 make check-licenses
 make check-deny
-make check-api-docs
+make generate-api-docs
 
 echo "[*] Pre-commit checks passed."

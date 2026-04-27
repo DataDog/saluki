@@ -43,7 +43,7 @@ jobs:
         run: |
           ls -l .
           ls -l .cargo/config.toml
-          make check-api-docs
+          make generate-api-docs
       - name: Compress generated API documentation assets
         run: tar -C ./target/doc -c -z -f api-docs.tar.gz .
       - name: Upload compressed API documentation assets

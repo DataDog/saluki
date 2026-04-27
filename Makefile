@@ -456,11 +456,11 @@ endif
 
 .PHONY: check-all
 check-all: ## Check everything
-check-all: check-fmt check-clippy check-features check-deny check-licenses check-api-docs
+check-all: check-fmt check-clippy check-features check-deny check-licenses generate-api-docs
 
-.PHONY: check-api-docs
-check-api-docs: check-rust-build-tools
-check-api-docs: ## Check that API documentation builds without errors
+.PHONY: generate-api-docs
+generate-api-docs: check-rust-build-tools
+generate-api-docs: ## Check that API documentation builds without errors
 	@echo "[*] Checking API documentation build..."
 	@RUSTDOCFLAGS="--enable-index-page -Zunstable-options" cargo +nightly doc --no-deps -Zrustdoc-map --lib
 
