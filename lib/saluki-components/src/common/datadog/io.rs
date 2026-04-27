@@ -301,7 +301,10 @@ async fn run_endpoint_io_loop<B>(
             // Try and drain the next transaction from our channel, and push it into the pending transactions queue.
             maybe_txn = txns_rx.recv(), if !done => match maybe_txn {
                 Some(txn) => match pending_txns.push_high_priority(txn).await {
-                    Ok(push_result) => { telemetry.track_dropped_items(push_result.items_dropped); telemetry.track_dropped_events(push_result.events_dropped); },
+                    Ok(push_result) => {
+                        telemetry.track_dropped_items(push_result.items_dropped);
+                        telemetry.track_dropped_events(push_result.events_dropped);
+                    }
                     Err(e) => error!(endpoint_url, error = %e, "Failed to enqueue transaction. Events may be permanently lost."),
                 },
                 None => {
