@@ -30,8 +30,8 @@ const LISTENER_FILTERED_POINTS_METRIC: &str = "dogstatsd_listener_filtered_point
 ///
 /// Checks if a metric name should be allowed.
 #[derive(Deserialize, Facet)]
-#[cfg_attr(test, derive(Debug, derivative::Derivative, serde::Serialize))]
-#[cfg_attr(test, derivative(PartialEq))]
+#[cfg_attr(test, derive(Debug, derive_where::DeriveWhere, serde::Serialize))]
+#[cfg_attr(test, derive_where(PartialEq))]
 pub struct DogStatsDPrefixFilterConfiguration {
     #[serde(default, rename = "statsd_metric_namespace")]
     metric_prefix: String,
@@ -56,7 +56,7 @@ pub struct DogStatsDPrefixFilterConfiguration {
 
     #[serde(skip)]
     #[facet(opaque)]
-    #[cfg_attr(test, derivative(PartialEq = "ignore"))]
+    #[cfg_attr(test, derive_where(skip))]
     configuration: Option<GenericConfiguration>,
 }
 

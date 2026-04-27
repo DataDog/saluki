@@ -66,8 +66,8 @@ const fn default_allow_context_heap_allocations() -> bool {
 
 /// Configuration for the OTLP source.
 #[derive(Deserialize, Default)]
-#[cfg_attr(test, derive(derivative::Derivative, serde::Serialize))]
-#[cfg_attr(test, derivative(PartialEq))]
+#[cfg_attr(test, derive(derive_where::DeriveWhere, serde::Serialize))]
+#[cfg_attr(test, derive_where(PartialEq))]
 pub struct OtlpConfiguration {
     otlp_config: OtlpConfig,
 
@@ -119,7 +119,7 @@ pub struct OtlpConfiguration {
 
     /// Workload provider to utilize for origin detection/enrichment.
     #[serde(skip)]
-    #[cfg_attr(test, derivative(PartialEq = "ignore"))]
+    #[cfg_attr(test, derive_where(skip))]
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 }
 
