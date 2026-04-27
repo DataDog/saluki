@@ -72,7 +72,7 @@ impl TrafficCapture {
 
 /// Shared control handle for starting and stopping DogStatsD traffic capture.
 ///
-/// This handle is created before the source is built, then bound to the live [`TrafficCapture`] runtime during source
+/// This handle is created before the source is built, then bound to the live capture runtime during source
 /// construction. That lets other parts of the process hold a stable handle without reaching into the source internals.
 #[derive(Clone, Default)]
 pub struct DogStatsDCaptureControl {
