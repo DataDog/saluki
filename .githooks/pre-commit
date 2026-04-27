@@ -6,5 +6,6 @@ echo "[*] Running pre-commit checks..."
 make check-fmt
 make check-clippy
 make check-licenses
+RUSTDOCFLAGS="--enable-index-page -Zunstable-options" cargo +nightly doc --no-deps -Zrustdoc-map --lib
 
 echo "[*] Pre-commit checks passed."
