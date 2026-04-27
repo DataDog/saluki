@@ -79,21 +79,16 @@ architecture is fundamentally different or the feature is platform-specific.
 The following settings are recognized by both ADP and the core agent, but with different behavior or
 default values.
 
-| Config Key                           | Description                      | Agent Behavior            | ADP Behavior                                    |
-|--------------------------------------|----------------------------------|---------------------------|-------------------------------------------------|
-| `dogstatsd_context_expiry_seconds`   | Context cache TTL (seconds)      | Default 20s, configurable | Hardcodes 30s ([#1340])                         |
-| `dogstatsd_flush_incomplete_buckets` | Flush open buckets on shutdown   | Standard key              | Key is `aggregate_flush_open_windows` ([#1366]) |
-| `dogstatsd_metrics_stats_enable`     | Enable per-metric debug stats    | Config toggle             | On-demand via API ([#1352])                     |
-| `dogstatsd_stats_enable`             | Enable internal stats endpoint   | Config toggle             | On-demand via API ([#1352])                     |
-| `dogstatsd_stats_buffer`             | Internal stats buffer size       | Configurable              | On-demand via API ([#1352])                     |
-| `dogstatsd_stats_port`               | Internal stats endpoint port     | Configurable port         | On-demand via API ([#1352])                     |
-| `enable_payloads.events`             | Allow sending event payloads     | Dot separator             | Underscore: `enable_payloads_events` ([#1366])  |
-| `enable_payloads.series`             | Allow sending series payloads    | Dot separator             | Underscore: `enable_payloads_series` ([#1366])  |
-| `enable_payloads.service_checks`     | Allow sending svc check payloads | Dot separator             | Underscore ([#1366])                            |
-| `enable_payloads.sketches`           | Allow sending sketch payloads    | Dot separator             | Underscore ([#1366])                            |
-| `serializer_zstd_compressor_level`   | Zstd compression level           | Default level 1           | Default level 3 (intentional)                   |
-| `statsd_metric_namespace_blacklist`  | Prefixes exempt from namespace   | `_blacklist` key          | Use `_blocklist` key ([#1353])                  |
-| `telemetry.enabled`                  | Global telemetry toggle          | Agent toggle              | Use `data_plane.telemetry_enabled` ([#1338])    |
+| Config Key                           | Description                      | Agent Behavior            | ADP Behavior                             |
+|--------------------------------------|----------------------------------|---------------------------|------------------------------------------|
+| `dogstatsd_context_expiry_seconds`   | Context cache TTL (seconds)      | Default 20s, configurable | Hardcodes 30s ([#1340])                  |
+| `dogstatsd_metrics_stats_enable`     | Enable per-metric debug stats    | Config toggle             | On-demand via API ([#1352])              |
+| `dogstatsd_stats_enable`             | Enable internal stats endpoint   | Config toggle             | On-demand via API ([#1352])              |
+| `dogstatsd_stats_buffer`             | Internal stats buffer size       | Configurable              | On-demand via API ([#1352])              |
+| `dogstatsd_stats_port`               | Internal stats endpoint port     | Configurable port         | On-demand via API ([#1352])              |
+| `serializer_zstd_compressor_level`   | Zstd compression level           | Default level 1           | Default level 3 (intentional)            |
+| `statsd_metric_namespace_blacklist`  | Prefixes exempt from namespace   | `_blacklist` key          | Use `_blocklist` key ([#1353])           |
+| `telemetry.enabled`                  | Global telemetry toggle          | Agent toggle              | Use `data_plane.telemetry_enabled` ([#1338]) |
 
 ### DogStatsD Statistics (`dogstatsd_stats_enable` / `dogstatsd_metrics_stats_enable`)
 
@@ -106,19 +101,6 @@ ADP exposes equivalent capability through its privileged API on demand — no co
 required. You trigger collection directly via the ADP binary and retrieve results via the privileged
 endpoint. The config keys `dogstatsd_stats_enable`, `dogstatsd_stats_buffer`,
 `dogstatsd_stats_port`, and `dogstatsd_metrics_stats_enable` are not read by ADP. See [#1352].
-
-### `dogstatsd_flush_incomplete_buckets`
-
-ADP implements this behavior under the key `aggregate_flush_open_windows`. If you set
-`dogstatsd_flush_incomplete_buckets`, ADP silently ignores it. Use `aggregate_flush_open_windows`
-instead. Tracked in [#1366].
-
-### `enable_payloads.*`
-
-The core agent uses dot-separated keys (`enable_payloads.events`, `enable_payloads.series`, etc.)
-while ADP currently reads underscore-separated variants (`enable_payloads_events`, etc.). The
-underlying feature is implemented in ADP; only the config key naming differs. Setting the documented
-core agent keys will have no effect on ADP until this is resolved. Tracked in [#1366].
 
 ### `telemetry.enabled`
 
@@ -165,7 +147,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 |---------------------------------------------|----------------------------------|---------|
 | `agent_ipc_endpoint`                        | Remote agent IPC URI             |         |
 | `aggregate_flush_interval`                  | Aggregator flush period          |         |
-| `aggregate_flush_open_windows`              | Flush open windows on stop       |         |
+| `aggregate_flush_open_windows`              | Flush open windows on stop; `dogstatsd_flush_incomplete_buckets` is a supported alias | |
 | `aggregate_passthrough_idle_flush_timeout`  | Passthrough buffer flush delay   |         |
 | `aggregate_window_duration`                 | Aggregation window size          |         |
 | `connect_retry_attempts`                    | IPC client connect retries       |         |
@@ -240,6 +222,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `dogstatsd_buffer_size`                   | Receive buffer size (bytes)      |
 | `dogstatsd_entity_id_precedence`          | Entity ID over auto-detection    |
 | `dogstatsd_expiry_seconds`                | Counter zero-value TTL (secs)    |
+| `dogstatsd_flush_incomplete_buckets`      | Flush open buckets on shutdown   |
 | `dogstatsd_mapper_profiles`               | Metric mapping profile defs      |
 | `dogstatsd_no_aggregation_pipeline`       | Enable no-agg timestamped path   |
 | `dogstatsd_non_local_traffic`             | Accept non-localhost UDP/TCP     |
@@ -251,6 +234,10 @@ The following settings work in ADP with the same behavior as the core agent.
 | `dogstatsd_string_interner_size`          | String interner capacity         |
 | `dogstatsd_tag_cardinality`               | Default tag cardinality level    |
 | `dogstatsd_tags`                          | Extra tags added to all DSD data |
+| `enable_payloads.events`                  | Allow sending event payloads     |
+| `enable_payloads.series`                  | Allow sending series payloads    |
+| `enable_payloads.service_checks`          | Allow sending svc check payloads |
+| `enable_payloads.sketches`                | Allow sending sketch payloads    |
 | `expected_tags_duration`                  | Host tag enrichment duration     |
 | `forwarder_backoff_base`                  | Retry backoff base (secs)        |
 | `forwarder_backoff_factor`                | Retry backoff jitter factor      |
