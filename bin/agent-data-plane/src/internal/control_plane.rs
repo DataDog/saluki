@@ -464,13 +464,15 @@ pub async fn create_control_plane_supervisor(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_go_duration, DogStatsDCaptureApi};
+    use std::time::Duration;
+
     use datadog_protos::agent::{
         agent_secure_server::AgentSecure, CaptureTriggerRequest, Entity, EntityId as RemoteEntityId, TaggerState,
     };
     use saluki_components::sources::DogStatsDReplayState;
-    use std::time::Duration;
     use tonic::{Code, Request};
+
+    use super::{parse_go_duration, DogStatsDCaptureApi};
 
     #[test]
     fn parse_go_duration_supports_go_style_units() {

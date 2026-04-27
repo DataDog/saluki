@@ -435,8 +435,9 @@ fn map_dogstatsd_tagger_state_error(error: Status) -> GenericError {
 
 #[cfg(test)]
 mod tests {
-    use super::{map_dogstatsd_capture_error, map_dogstatsd_tagger_state_error};
     use tonic::{Code, Status};
+
+    use super::{map_dogstatsd_capture_error, map_dogstatsd_tagger_state_error};
 
     #[test]
     fn dogstatsd_capture_failed_precondition_surfaces_server_message() {
