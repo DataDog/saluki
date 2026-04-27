@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.23
 # This Dockerfile is, generally speaking, tuned for CI builds.
 #
 # It is designed to work seamlessly in both local builds and CI environments, but as CI is invoked far more often,
