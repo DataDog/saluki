@@ -2,7 +2,7 @@ use std::{collections::VecDeque, error::Error as _, path::PathBuf, sync::Arc, ti
 
 use bytes::Buf;
 use futures::FutureExt as _;
-use http::{Request, Uri};
+use http::{Request, StatusCode, Uri};
 use http_body::Body;
 use http_body_util::BodyExt as _;
 use hyper::{body::Incoming, Response};
@@ -425,6 +425,16 @@ async fn process_http_response(
         telemetry.track_successful_transaction(&metadata);
     } else {
         telemetry.track_failed_transaction(&metadata);
+
+        if status == StatusCode::FORBIDDEN {
+            // IMPORTANT: The wording of this log is matched by a Datadog monitor. Do not change it without
+            // also updating the monitor query.
+            // https://app.datadoghq.com/monitors/160161984
+            error!(
+                endpoint_url,
+                "API key is invalid (403 Forbidden), dropping transaction."
+            );
+        }
 
         match response.into_body().collect().await {
             Ok(body) => {

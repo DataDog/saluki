@@ -327,7 +327,10 @@ where
             self.total_on_disk_bytes -= entry.size_bytes;
             push_result.track_dropped_item(event_count);
 
-            debug!(entry.path = %entry.path.display(), entry.len = entry.size_bytes, "Dropped persisted entry.");
+            // IMPORTANT: The wording of this log is matched by a Datadog monitor. Do not change it without
+            // also updating the monitor query.
+            // https://app.datadoghq.com/monitors/59652993
+            warn!(entry.path = %entry.path.display(), entry.len = entry.size_bytes, "Disk space limit for retry transactions reached. Removing persisted entry.");
         }
 
         Ok(push_result)
