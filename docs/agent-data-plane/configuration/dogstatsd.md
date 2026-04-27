@@ -95,17 +95,29 @@ default values.
 | `statsd_metric_namespace_blacklist`  | Prefixes exempt from namespace   | `_blacklist` key          | Use `_blocklist` key ([#1353])                  |
 | `telemetry.enabled`                  | Global telemetry toggle          | Agent toggle              | Use `data_plane.telemetry_enabled` ([#1338])    |
 
-### DogStatsD Statistics (`dogstatsd_stats_enable` / `dogstatsd_metrics_stats_enable`)
+### DogStatsD statistics (`dogstatsd_stats_enable` / `dogstatsd_metrics_stats_enable`)
 
-The core agent's DogStatsD stats feature collects per-metric statistics (name cardinality, tag
-counts, etc.). You enable it via `dogstatsd_stats_enable`, wait a sampling period, then query the
-`dogstatsd_stats_port` endpoint. `dogstatsd_metrics_stats_enable` is a related toggle for an older
-stats path.
+The core agent has two DogStatsD statistics mechanisms with different scopes.
+`dogstatsd_stats_enable` enables packet-level throughput statistics from a ring buffer, exposed as
+Go expvar data on `dogstatsd_stats_port` (default `5000`). Operators must configure an OpenMetrics
+check to scrape that endpoint before the data is submitted. `dogstatsd_metrics_stats_enable`
+enables runtime-toggleable metric-level debug statistics that track count and last-seen time per
+unique metric and tag combination. That data powers the core agent's `dogstatsd-stats` CLI command
+and HTTP endpoint.
 
-ADP exposes equivalent capability through its privileged API on demand — no config change is
-required. You trigger collection directly via the ADP binary and retrieve results via the privileged
-endpoint. The config keys `dogstatsd_stats_enable`, `dogstatsd_stats_buffer`,
-`dogstatsd_stats_port`, and `dogstatsd_metrics_stats_enable` are not read by ADP. See [#1352].
+ADP does not mirror either config-toggle path. Instead, ADP provides an on-demand metric-level view
+through a DogStatsD statistics destination that is always wired into the topology, but only collects
+data during a time-bounded request. To collect statistics, run
+`agent-data-plane dogstatsd stats --duration-secs N` or call the privileged
+`/dogstatsd/stats?collection_duration_secs=N` API. The handler waits for the requested collection
+window, then returns count and last-seen time per metric context inline as JSON. The CLI uses the
+same API and renders the result as either summary or cardinality analysis.
+
+ADP does not expose the core agent's packet-per-second expvar endpoint, a persistent DogStatsD
+statistics endpoint to scrape, or a runtime toggle for metric-level collection. You do not need to
+set up scraper configuration for this data. The config keys `dogstatsd_stats_enable`,
+`dogstatsd_stats_buffer`, `dogstatsd_stats_port`, and `dogstatsd_metrics_stats_enable` have no
+effect in ADP. See [#1352].
 
 ### `dogstatsd_flush_incomplete_buckets`
 
