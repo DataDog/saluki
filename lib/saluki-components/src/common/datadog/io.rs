@@ -2,7 +2,7 @@ use std::{collections::VecDeque, error::Error as _, path::PathBuf, sync::Arc, ti
 
 use bytes::Buf;
 use futures::FutureExt as _;
-use http::{Request, StatusCode, Uri};
+use http::{Request, Uri};
 use http_body::Body;
 use http_body_util::BodyExt as _;
 use hyper::{body::Incoming, Response};
@@ -341,7 +341,7 @@ async fn run_endpoint_io_loop<B>(
                         // The service itself encountered an error while sending the request or receiving the response:
                         // connection reset by peer, I/O error, etc.
                         Err(RetryCircuitBreakerError::Service(e)) => {
-                            telemetry.track_failed_transaction(&metadata);
+                            telemetry.track_failed_transaction(&metadata, None);
                             error!(endpoint_url, error = %e, error_source = ?e.source(), "Failed to send request.");
                         },
 
@@ -424,19 +424,7 @@ async fn process_http_response(
 
         telemetry.track_successful_transaction(&metadata);
     } else {
-        telemetry.track_failed_transaction(&metadata);
-        telemetry.track_http_error_code(status);
-
-        if status == StatusCode::FORBIDDEN {
-            // IMPORTANT: The wording of this log is matched by a Datadog monitor. Do not change it without
-            // also updating the monitor query.
-            // Monitor: https://app.datadoghq.com/monitors/160161984
-            // Equivalent in datadog-agent: https://github.com/DataDog/datadog-agent/blob/4b725e9a2d3d8529041f00e7e044b899eec2e134/comp/forwarder/defaultforwarder/transaction/transaction.go#L437
-            error!(
-                "API Key invalid (403 response), dropping transaction for {}",
-                endpoint_url
-            );
-        }
+        telemetry.track_failed_transaction(&metadata, Some(status));
 
         match response.into_body().collect().await {
             Ok(body) => {

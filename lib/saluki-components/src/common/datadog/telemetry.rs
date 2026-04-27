@@ -66,27 +66,26 @@ impl ComponentTelemetry {
     }
 
     /// Tracks a failed transaction.
-    pub fn track_failed_transaction(&self, metadata: &Metadata) {
-        self.http_failed_send.increment(1);
-        self.events_dropped_http.increment(metadata.event_count as u64);
-    }
-
-    /// Tracks the HTTP error code for a failed transaction.
     ///
-    /// This is emitted in addition to [`track_failed_transaction`][Self::track_failed_transaction] when the failure
-    /// has a known HTTP status code.
-    pub fn track_http_error_code(&self, status: StatusCode) {
-        let mut map = self.http_errors_by_code.lock().unwrap();
-        let counter = map.entry(status).or_insert_with(|| {
-            self.builder.register_debug_counter_with_tags(
-                "component_errors_total",
-                [
-                    ("error_type", "http_send".to_string()),
-                    ("error_code", status.as_str().to_string()),
-                ],
-            )
-        });
-        counter.increment(1);
+    /// When `status` is `Some`, the metric is additionally emitted with an `error_code` tag for the specific status.
+    pub fn track_failed_transaction(&self, metadata: &Metadata, status: Option<StatusCode>) {
+        match status {
+            None => self.http_failed_send.increment(1),
+            Some(status) => {
+                let mut map = self.http_errors_by_code.lock().unwrap();
+                let counter = map.entry(status).or_insert_with(|| {
+                    self.builder.register_debug_counter_with_tags(
+                        "component_errors_total",
+                        [
+                            ("error_type", "http_send".to_string()),
+                            ("error_code", status.as_str().to_string()),
+                        ],
+                    )
+                });
+                counter.increment(1);
+            }
+        }
+        self.events_dropped_http.increment(metadata.event_count as u64);
     }
 
     /// Tracks dropped events.
