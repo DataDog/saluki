@@ -23,6 +23,95 @@ pub const KEY_ALIASES: &[(&str, &str)] = &[
         "apm_config.error_tracking_standalone.enabled",
         "apm_error_tracking_standalone_enabled",
     ),
+
+    // The Agent schema defines `enable_payloads.*` as nested YAML keys, while ADP struct fields
+    // use flat underscore-separated names. These aliases bridge the two representations so that
+    // an Agent config file setting `enable_payloads.events: false` is correctly consumed by ADP.
+    ("enable_payloads.events", "enable_payloads_events"),
+    ("enable_payloads.series", "enable_payloads_series"),
+    ("enable_payloads.service_checks", "enable_payloads_service_checks"),
+    ("enable_payloads.sketches", "enable_payloads_sketches"),
+    // Obfuscation keys live at `apm_config.obfuscation.*` in YAML but the Agent's env vars use
+    // `DD_APM_OBFUSCATION_*` (no `_CONFIG_` segment), producing flat keys. These aliases emit the
+    // flat key when the nested YAML path is present so that both sources land on the same Figment
+    // key and env var precedence over file config works correctly.
+    (
+        "apm_config.obfuscation.credit_cards.enabled",
+        "apm_obfuscation_credit_cards_enabled",
+    ),
+    (
+        "apm_config.obfuscation.credit_cards.keep_values",
+        "apm_obfuscation_credit_cards_keep_values",
+    ),
+    (
+        "apm_config.obfuscation.credit_cards.luhn",
+        "apm_obfuscation_credit_cards_luhn",
+    ),
+    (
+        "apm_config.obfuscation.elasticsearch.enabled",
+        "apm_obfuscation_elasticsearch_enabled",
+    ),
+    (
+        "apm_config.obfuscation.elasticsearch.keep_values",
+        "apm_obfuscation_elasticsearch_keep_values",
+    ),
+    (
+        "apm_config.obfuscation.elasticsearch.obfuscate_sql_values",
+        "apm_obfuscation_elasticsearch_obfuscate_sql_values",
+    ),
+    (
+        "apm_config.obfuscation.http.remove_paths_with_digits",
+        "apm_obfuscation_http_remove_paths_with_digits",
+    ),
+    (
+        "apm_config.obfuscation.http.remove_query_string",
+        "apm_obfuscation_http_remove_query_string",
+    ),
+    (
+        "apm_config.obfuscation.memcached.enabled",
+        "apm_obfuscation_memcached_enabled",
+    ),
+    (
+        "apm_config.obfuscation.memcached.keep_command",
+        "apm_obfuscation_memcached_keep_command",
+    ),
+    (
+        "apm_config.obfuscation.mongodb.enabled",
+        "apm_obfuscation_mongodb_enabled",
+    ),
+    (
+        "apm_config.obfuscation.mongodb.keep_values",
+        "apm_obfuscation_mongodb_keep_values",
+    ),
+    (
+        "apm_config.obfuscation.mongodb.obfuscate_sql_values",
+        "apm_obfuscation_mongodb_obfuscate_sql_values",
+    ),
+    (
+        "apm_config.obfuscation.opensearch.enabled",
+        "apm_obfuscation_opensearch_enabled",
+    ),
+    (
+        "apm_config.obfuscation.opensearch.keep_values",
+        "apm_obfuscation_opensearch_keep_values",
+    ),
+    (
+        "apm_config.obfuscation.opensearch.obfuscate_sql_values",
+        "apm_obfuscation_opensearch_obfuscate_sql_values",
+    ),
+    ("apm_config.obfuscation.redis.enabled", "apm_obfuscation_redis_enabled"),
+    (
+        "apm_config.obfuscation.redis.remove_all_args",
+        "apm_obfuscation_redis_remove_all_args",
+    ),
+    (
+        "apm_config.obfuscation.valkey.enabled",
+        "apm_obfuscation_valkey_enabled",
+    ),
+    (
+        "apm_config.obfuscation.valkey.remove_all_args",
+        "apm_obfuscation_valkey_remove_all_args",
+    ),
 ];
 
 /// Remappings from environment variable names to canonical config keys.

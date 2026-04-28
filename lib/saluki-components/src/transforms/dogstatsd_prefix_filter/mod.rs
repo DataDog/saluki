@@ -38,7 +38,8 @@ pub struct DogStatsDPrefixFilterConfiguration {
 
     #[serde(
         default = "default_metric_prefix_blocklist",
-        rename = "statsd_metric_namespace_blocklist"
+        rename = "statsd_metric_namespace_blocklist",
+        alias = "statsd_metric_namespace_blacklist"
     )]
     metric_prefix_blocklist: Vec<String>,
 

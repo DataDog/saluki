@@ -40,7 +40,7 @@ pub struct TraceObfuscationConfiguration {
 impl TraceObfuscationConfiguration {
     /// Creates a new `TraceObfuscationConfiguration` from the given generic configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
+        Self::from_apm_configuration(config)
     }
 
     /// Creates a new `TraceObfuscationConfiguration` from the APM configuration section.
@@ -264,7 +264,7 @@ mod config_smoke {
     #[tokio::test]
     async fn smoke_test() {
         run_config_smoke_tests(structs::TRACE_OBFUSCATION_CONFIGURATION, &[], json!({}), |cfg| {
-            cfg.as_typed::<TraceObfuscationConfiguration>()
+            TraceObfuscationConfiguration::from_apm_configuration(&cfg)
                 .expect("TraceObfuscationConfiguration should deserialize")
         })
         .await

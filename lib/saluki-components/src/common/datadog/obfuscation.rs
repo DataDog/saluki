@@ -9,34 +9,34 @@ use serde::Deserialize;
 #[serde(default)]
 pub struct ObfuscationConfig {
     /// HTTP URL obfuscation settings.
-    http: HttpObfuscationConfig,
+    pub(crate) http: HttpObfuscationConfig,
 
     /// Memcached obfuscation settings.
-    memcached: MemcachedObfuscationConfig,
+    pub(crate) memcached: MemcachedObfuscationConfig,
 
     /// Credit card obfuscation settings.
-    credit_cards: CreditCardObfuscationConfig,
+    pub(crate) credit_cards: CreditCardObfuscationConfig,
 
     /// Redis obfuscation settings.
-    redis: RedisObfuscationConfig,
+    pub(crate) redis: RedisObfuscationConfig,
 
     /// Valkey obfuscation settings.
-    valkey: ValkeyObfuscationConfig,
+    pub(crate) valkey: ValkeyObfuscationConfig,
 
     /// SQL obfuscation settings.
-    sql: SqlObfuscationConfig,
+    pub(crate) sql: SqlObfuscationConfig,
 
     /// MongoDB obfuscation settings.
     #[serde(alias = "mongodb")]
-    mongo: JsonObfuscationConfig,
+    pub(crate) mongo: JsonObfuscationConfig,
 
     /// Elasticsearch obfuscation settings.
     #[serde(alias = "elasticsearch")]
-    es: JsonObfuscationConfig,
+    pub(crate) es: JsonObfuscationConfig,
 
     /// OpenSearch obfuscation settings.
     #[serde(alias = "opensearch")]
-    open_search: JsonObfuscationConfig,
+    pub(crate) open_search: JsonObfuscationConfig,
 }
 
 /// HTTP URL obfuscation configuration.
