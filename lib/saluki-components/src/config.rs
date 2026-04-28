@@ -23,7 +23,6 @@ pub const KEY_ALIASES: &[(&str, &str)] = &[
         "apm_config.error_tracking_standalone.enabled",
         "apm_error_tracking_standalone_enabled",
     ),
-
     // The Agent schema defines `enable_payloads.*` as nested YAML keys, while ADP struct fields
     // use flat underscore-separated names. These aliases bridge the two representations so that
     // an Agent config file setting `enable_payloads.events: false` is correctly consumed by ADP.
@@ -111,6 +110,23 @@ pub const KEY_ALIASES: &[(&str, &str)] = &[
     (
         "apm_config.obfuscation.valkey.remove_all_args",
         "apm_obfuscation_valkey_remove_all_args",
+    ),
+    ("apm_config.obfuscation.sql.dbms", "apm_obfuscation_sql_dbms"),
+    (
+        "apm_config.obfuscation.sql.dollar_quoted_func",
+        "apm_obfuscation_sql_dollar_quoted_func",
+    ),
+    (
+        "apm_config.obfuscation.sql.keep_sql_alias",
+        "apm_obfuscation_sql_keep_sql_alias",
+    ),
+    (
+        "apm_config.obfuscation.sql.replace_digits",
+        "apm_obfuscation_sql_replace_digits",
+    ),
+    (
+        "apm_config.obfuscation.sql.table_names",
+        "apm_obfuscation_sql_table_names",
     ),
 ];
 
