@@ -126,7 +126,9 @@ pub struct OtlpConfiguration {
 impl OtlpConfiguration {
     /// Creates a new `OTLPConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
+        let mut cfg: Self = config.as_typed()?;
+        cfg.otlp_config.traces.apply_env_overrides(config)?;
+        Ok(cfg)
     }
 
     /// Sets the workload provider to use for configuring origin detection/enrichment.
@@ -494,8 +496,7 @@ mod config_smoke {
     #[tokio::test]
     async fn smoke_test() {
         run_config_smoke_tests(structs::OTLP_CONFIGURATION, &[], json!({ "otlp_config": {} }), |cfg| {
-            cfg.as_typed::<OtlpConfiguration>()
-                .expect("OtlpConfiguration should deserialize")
+            OtlpConfiguration::from_configuration(&cfg).expect("OtlpConfiguration should deserialize")
         })
         .await
     }

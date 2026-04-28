@@ -163,12 +163,11 @@ crate::declare_annotations! {
     };
 
     /// `otlp_config.traces.probabilistic_sampler.sampling_percentage` — default 100.0.
-    /// The schema-declared env var doesn't round-trip via the DatadogRemapper for this deep path.
     OTLP_CONFIG_TRACES_PROBABILISTIC_SAMPLER_SAMPLING_PERCENTAGE = SalukiAnnotation {
         schema: &schema::OTLP_CONFIG_TRACES_PROBABILISTIC_SAMPLER_SAMPLING_PERCENTAGE,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
-        env_var_override: Some(&[]),
+        env_var_override: None,
         used_by: &[structs::OTLP_DECODER_CONFIGURATION, structs::OTLP_CONFIGURATION],
         value_type_override: None,
         test_json: None,

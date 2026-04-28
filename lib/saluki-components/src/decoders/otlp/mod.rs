@@ -46,9 +46,11 @@ struct OtlpDecoderConfig {
 impl OtlpDecoderConfiguration {
     /// Creates a new `OtlpDecoderConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        config
+        let mut cfg: Self = config
             .as_typed()
-            .error_context("Failed to load OTLP decoder configuration")
+            .error_context("Failed to load OTLP decoder configuration")?;
+        cfg.otlp_config.traces.apply_env_overrides(config)?;
+        Ok(cfg)
     }
 }
 
@@ -191,8 +193,7 @@ mod config_smoke {
     #[tokio::test]
     async fn smoke_test() {
         run_config_smoke_tests(structs::OTLP_DECODER_CONFIGURATION, &[], json!({}), |cfg| {
-            cfg.as_typed::<OtlpDecoderConfiguration>()
-                .expect("OtlpDecoderConfiguration should deserialize")
+            OtlpDecoderConfiguration::from_configuration(&cfg).expect("OtlpDecoderConfiguration should deserialize")
         })
         .await
     }

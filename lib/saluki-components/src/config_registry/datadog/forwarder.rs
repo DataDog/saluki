@@ -27,12 +27,11 @@ crate::declare_annotations! {
     };
 
     /// `dd_url` — explicit intake URL, overrides `site`.
-    /// The schema-declared env vars don't round-trip via the test DatadogRemapper.
     DD_URL = SalukiAnnotation {
         schema: &schema::DD_URL,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
-        env_var_override: Some(&[]),
+        env_var_override: None,
         used_by: &[structs::FORWARDER_CONFIGURATION],
         value_type_override: None,
         test_json: None,

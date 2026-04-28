@@ -121,6 +121,14 @@ pub const KEY_ALIASES: &[(&str, &str)] = &[
         "apm_config.obfuscation.sql.table_names",
         "apm_obfuscation_sql_table_names",
     ),
+    // `otlp_config.traces.probabilistic_sampler.sampling_percentage` lives at a deeply nested YAML
+    // path but the Agent's env var uses `DD_OTLP_CONFIG_TRACES_PROBABILISTIC_SAMPLER_SAMPLING_PERCENTAGE`,
+    // which strips to a flat key. This alias bridges the two so env var precedence over file config
+    // works correctly.
+    (
+        "otlp_config.traces.probabilistic_sampler.sampling_percentage",
+        "otlp_config_traces_probabilistic_sampler_sampling_percentage",
+    ),
 ];
 
 /// Remappings from environment variable names to canonical config keys.
