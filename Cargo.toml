@@ -201,7 +201,7 @@ tempfile = { version = "3", default-features = false }
 fs4 = { version = "0.13.1", default-features = false }
 fnv = { version = "1", default-features = false }
 twox-hash = { version = "2", features = ["xxhash64"] }
-sha3 = { version = "0.10", default-features = false }
+sha3 = { version = "0.11", default-features = false }
 test-strategy = { version = "0.4", default-features = false }
 opentelemetry-semantic-conventions = { version = "0.31.0", default-features = false }
 comfy-table = { version = "7", default-features = false }
