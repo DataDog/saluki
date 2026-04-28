@@ -1,188 +1,245 @@
 //! Obfuscation configuration types.
 
 use facet::Facet;
+use saluki_config::deserialize_space_separated_or_seq;
 use serde::Deserialize;
 
 /// Configuration for the obfuscator.
+///
+/// Fields use flat `apm_obfuscation_*` serde renames. `KEY_ALIASES` in `crate::config` bridges
+/// the nested YAML paths (e.g. `apm_config.obfuscation.credit_cards.enabled`) to these flat keys
+/// so that both YAML config files and `DD_APM_OBFUSCATION_*` env vars are read correctly.
 #[derive(Clone, Debug, Default, Deserialize, Facet)]
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
-#[serde(default)]
 pub struct ObfuscationConfig {
-    /// HTTP URL obfuscation settings.
-    pub(crate) http: HttpObfuscationConfig,
+    #[serde(default, rename = "apm_obfuscation_credit_cards_enabled")]
+    pub(crate) credit_cards_enabled: bool,
 
-    /// Memcached obfuscation settings.
-    pub(crate) memcached: MemcachedObfuscationConfig,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_space_separated_or_seq",
+        rename = "apm_obfuscation_credit_cards_keep_values"
+    )]
+    pub(crate) credit_cards_keep_values: Vec<String>,
 
-    /// Credit card obfuscation settings.
-    pub(crate) credit_cards: CreditCardObfuscationConfig,
+    #[serde(default, rename = "apm_obfuscation_credit_cards_luhn")]
+    pub(crate) credit_cards_luhn: bool,
 
-    /// Redis obfuscation settings.
-    pub(crate) redis: RedisObfuscationConfig,
+    #[serde(default, rename = "apm_obfuscation_elasticsearch_enabled")]
+    pub(crate) es_enabled: bool,
 
-    /// Valkey obfuscation settings.
-    pub(crate) valkey: ValkeyObfuscationConfig,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_space_separated_or_seq",
+        rename = "apm_obfuscation_elasticsearch_keep_values"
+    )]
+    pub(crate) es_keep_values: Vec<String>,
 
-    /// SQL obfuscation settings.
-    pub(crate) sql: SqlObfuscationConfig,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_space_separated_or_seq",
+        rename = "apm_obfuscation_elasticsearch_obfuscate_sql_values"
+    )]
+    pub(crate) es_obfuscate_sql_values: Vec<String>,
 
-    /// MongoDB obfuscation settings.
-    #[serde(alias = "mongodb")]
-    pub(crate) mongo: JsonObfuscationConfig,
+    #[serde(default, rename = "apm_obfuscation_http_remove_paths_with_digits")]
+    pub(crate) http_remove_path_digits: bool,
 
-    /// Elasticsearch obfuscation settings.
-    #[serde(alias = "elasticsearch")]
-    pub(crate) es: JsonObfuscationConfig,
+    #[serde(default, rename = "apm_obfuscation_http_remove_query_string")]
+    pub(crate) http_remove_query_string: bool,
 
-    /// OpenSearch obfuscation settings.
-    #[serde(alias = "opensearch")]
-    pub(crate) open_search: JsonObfuscationConfig,
+    #[serde(default, rename = "apm_obfuscation_memcached_enabled")]
+    pub(crate) memcached_enabled: bool,
+
+    #[serde(default, rename = "apm_obfuscation_memcached_keep_command")]
+    pub(crate) memcached_keep_command: bool,
+
+    #[serde(default, rename = "apm_obfuscation_mongodb_enabled")]
+    pub(crate) mongo_enabled: bool,
+
+    #[serde(
+        default,
+        deserialize_with = "deserialize_space_separated_or_seq",
+        rename = "apm_obfuscation_mongodb_keep_values"
+    )]
+    pub(crate) mongo_keep_values: Vec<String>,
+
+    #[serde(
+        default,
+        deserialize_with = "deserialize_space_separated_or_seq",
+        rename = "apm_obfuscation_mongodb_obfuscate_sql_values"
+    )]
+    pub(crate) mongo_obfuscate_sql_values: Vec<String>,
+
+    #[serde(default, rename = "apm_obfuscation_opensearch_enabled")]
+    pub(crate) open_search_enabled: bool,
+
+    #[serde(
+        default,
+        deserialize_with = "deserialize_space_separated_or_seq",
+        rename = "apm_obfuscation_opensearch_keep_values"
+    )]
+    pub(crate) open_search_keep_values: Vec<String>,
+
+    #[serde(
+        default,
+        deserialize_with = "deserialize_space_separated_or_seq",
+        rename = "apm_obfuscation_opensearch_obfuscate_sql_values"
+    )]
+    pub(crate) open_search_obfuscate_sql_values: Vec<String>,
+
+    #[serde(default, rename = "apm_obfuscation_redis_enabled")]
+    pub(crate) redis_enabled: bool,
+
+    #[serde(default, rename = "apm_obfuscation_redis_remove_all_args")]
+    pub(crate) redis_remove_all_args: bool,
+
+    #[serde(default, rename = "apm_obfuscation_valkey_enabled")]
+    pub(crate) valkey_enabled: bool,
+
+    #[serde(default, rename = "apm_obfuscation_valkey_remove_all_args")]
+    pub(crate) valkey_remove_all_args: bool,
+
+    #[serde(default, rename = "apm_obfuscation_sql_dbms")]
+    pub(crate) sql_dbms: String,
+
+    #[serde(default, rename = "apm_obfuscation_sql_table_names")]
+    pub(crate) sql_table_names: bool,
+
+    #[serde(default, rename = "apm_obfuscation_sql_replace_digits")]
+    pub(crate) sql_replace_digits: bool,
+
+    #[serde(default, rename = "apm_obfuscation_sql_keep_sql_alias")]
+    pub(crate) sql_keep_sql_alias: bool,
+
+    #[serde(default, rename = "apm_obfuscation_sql_dollar_quoted_func")]
+    pub(crate) sql_dollar_quoted_func: bool,
+}
+
+impl ObfuscationConfig {
+    pub fn http(&self) -> HttpObfuscationConfig {
+        HttpObfuscationConfig {
+            remove_query_string: self.http_remove_query_string,
+            remove_path_digits: self.http_remove_path_digits,
+        }
+    }
+
+    pub fn memcached(&self) -> MemcachedObfuscationConfig {
+        MemcachedObfuscationConfig {
+            enabled: self.memcached_enabled,
+            keep_command: self.memcached_keep_command,
+        }
+    }
+
+    pub fn credit_cards(&self) -> CreditCardObfuscationConfig {
+        CreditCardObfuscationConfig {
+            enabled: self.credit_cards_enabled,
+            luhn: self.credit_cards_luhn,
+            keep_values: self.credit_cards_keep_values.clone(),
+        }
+    }
+
+    pub fn redis(&self) -> RedisObfuscationConfig {
+        RedisObfuscationConfig {
+            enabled: self.redis_enabled,
+            remove_all_args: self.redis_remove_all_args,
+        }
+    }
+
+    pub fn valkey(&self) -> ValkeyObfuscationConfig {
+        ValkeyObfuscationConfig {
+            enabled: self.valkey_enabled,
+            remove_all_args: self.valkey_remove_all_args,
+        }
+    }
+
+    pub fn sql(&self) -> SqlObfuscationConfig {
+        SqlObfuscationConfig {
+            dbms: self.sql_dbms.clone(),
+            table_names: self.sql_table_names,
+            replace_digits: self.sql_replace_digits,
+            keep_sql_alias: self.sql_keep_sql_alias,
+            dollar_quoted_func: self.sql_dollar_quoted_func,
+        }
+    }
+
+    pub fn mongo(&self) -> JsonObfuscationConfig {
+        JsonObfuscationConfig {
+            enabled: self.mongo_enabled,
+            keep_values: self.mongo_keep_values.clone(),
+            obfuscate_sql_values: self.mongo_obfuscate_sql_values.clone(),
+        }
+    }
+
+    pub fn es(&self) -> JsonObfuscationConfig {
+        JsonObfuscationConfig {
+            enabled: self.es_enabled,
+            keep_values: self.es_keep_values.clone(),
+            obfuscate_sql_values: self.es_obfuscate_sql_values.clone(),
+        }
+    }
+
+    pub fn open_search(&self) -> JsonObfuscationConfig {
+        JsonObfuscationConfig {
+            enabled: self.open_search_enabled,
+            keep_values: self.open_search_keep_values.clone(),
+            obfuscate_sql_values: self.open_search_obfuscate_sql_values.clone(),
+        }
+    }
 }
 
 /// HTTP URL obfuscation configuration.
-#[derive(Clone, Debug, Default, Deserialize, Facet)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
-#[serde(default)]
+#[derive(Clone, Debug, Default)]
 pub struct HttpObfuscationConfig {
-    /// Whether to remove query strings from HTTP URLs.
     pub(crate) remove_query_string: bool,
-
-    /// Whether to obfuscate path segments containing digits.
-    #[serde(alias = "remove_paths_with_digits")]
     pub(crate) remove_path_digits: bool,
 }
 
 /// Memcached obfuscation configuration.
-#[derive(Clone, Debug, Default, Deserialize, Facet)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
-#[serde(default)]
+#[derive(Clone, Debug, Default)]
 pub struct MemcachedObfuscationConfig {
-    /// Whether memcached obfuscation is enabled.
     pub(crate) enabled: bool,
-
-    /// Whether to keep the command (if false, entire tag is removed).
     pub(crate) keep_command: bool,
 }
 
 /// Credit card obfuscation configuration.
-#[derive(Clone, Debug, Default, Deserialize, Facet)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
-#[serde(default)]
+#[derive(Clone, Debug, Default)]
 pub struct CreditCardObfuscationConfig {
-    /// Whether credit card obfuscation is enabled.
     pub(crate) enabled: bool,
-
-    /// Whether to use Luhn checksum validation (reduces false positives, increases CPU cost).
     pub(crate) luhn: bool,
-
-    /// Tag keys that are known to not contain credit cards and can be kept.
-    #[serde(default)]
     pub(crate) keep_values: Vec<String>,
 }
 
 /// Redis obfuscation configuration.
-#[derive(Clone, Debug, Default, Deserialize, Facet)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
-#[serde(default)]
+#[derive(Clone, Debug, Default)]
 pub struct RedisObfuscationConfig {
-    /// Whether Redis obfuscation is enabled.
     pub(crate) enabled: bool,
-
-    /// Whether to remove all arguments (nuclear option).
     pub(crate) remove_all_args: bool,
 }
 
 /// Valkey obfuscation configuration.
-#[derive(Clone, Debug, Default, Deserialize, Facet)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
-#[serde(default)]
+#[derive(Clone, Debug, Default)]
 pub struct ValkeyObfuscationConfig {
-    /// Whether Valkey obfuscation is enabled.
     pub(crate) enabled: bool,
-
-    /// Whether to remove all arguments (nuclear option).
     pub(crate) remove_all_args: bool,
 }
 
 /// SQL obfuscation configuration.
-#[derive(Clone, Debug, Default, Deserialize, Facet)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
-#[serde(default)]
+#[derive(Clone, Debug, Default)]
 pub struct SqlObfuscationConfig {
-    /// DBMS type (for example, "postgresql", "mysql", "mssql", "sqlite").
-    #[serde(default)]
     pub(crate) dbms: String,
-
-    /// Whether to extract table names.
     pub(crate) table_names: bool,
-
-    /// Whether to replace digits in table names and identifiers.
     pub(crate) replace_digits: bool,
-
-    /// Whether to keep SQL aliases (AS keyword) or truncate them.
     pub(crate) keep_sql_alias: bool,
-
-    /// Whether to treat "$func$" dollar-quoted strings specially (PostgreSQL).
     pub(crate) dollar_quoted_func: bool,
 }
 
 /// JSON obfuscation configuration for MongoDB, Elasticsearch, and OpenSearch.
-#[derive(Clone, Debug, Default, Deserialize, Facet)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
-#[serde(default)]
+#[derive(Clone, Debug, Default)]
 pub struct JsonObfuscationConfig {
-    /// Whether JSON obfuscation is enabled.
     pub(crate) enabled: bool,
-
-    /// Keys whose values should not be obfuscated.
-    #[serde(default)]
     pub(crate) keep_values: Vec<String>,
-
-    /// Keys whose string values should be SQL-obfuscated instead of replaced with "?".
-    #[serde(default)]
     pub(crate) obfuscate_sql_values: Vec<String>,
-}
-
-impl ObfuscationConfig {
-    pub fn http(&self) -> &HttpObfuscationConfig {
-        &self.http
-    }
-
-    pub fn set_http(&mut self, http: HttpObfuscationConfig) {
-        self.http = http;
-    }
-
-    pub fn memcached(&self) -> &MemcachedObfuscationConfig {
-        &self.memcached
-    }
-
-    pub fn credit_cards(&self) -> &CreditCardObfuscationConfig {
-        &self.credit_cards
-    }
-
-    pub fn redis(&self) -> &RedisObfuscationConfig {
-        &self.redis
-    }
-
-    pub fn valkey(&self) -> &ValkeyObfuscationConfig {
-        &self.valkey
-    }
-
-    pub fn sql(&self) -> &SqlObfuscationConfig {
-        &self.sql
-    }
-
-    pub fn mongo(&self) -> &JsonObfuscationConfig {
-        &self.mongo
-    }
-
-    pub fn es(&self) -> &JsonObfuscationConfig {
-        &self.es
-    }
-
-    pub fn open_search(&self) -> &JsonObfuscationConfig {
-        &self.open_search
-    }
 }
 
 impl HttpObfuscationConfig {
@@ -260,15 +317,12 @@ impl SqlObfuscationConfig {
         self.dollar_quoted_func
     }
 
-    /// Returns a clone with the specified DBMS.
     pub fn with_dbms(&self, dbms: String) -> Self {
         let mut clone = self.clone();
         clone.dbms = dbms;
         clone
     }
 
-    /// Returns a clone with dollar_quoted_func disabled.
-    /// Used for recursive obfuscation to avoid infinite loops.
     pub fn with_dollar_quoted_func_disabled(&self) -> Self {
         let mut clone = self.clone();
         clone.dollar_quoted_func = false;

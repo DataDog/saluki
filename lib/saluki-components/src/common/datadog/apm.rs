@@ -79,178 +79,6 @@ impl Default for RareSamplerConfig {
     }
 }
 
-use saluki_config::deserialize_opt_space_separated_or_seq as deser_opt_space_sep_strings;
-
-/// Flat env-var overrides for `apm_config.obfuscation.*`.
-///
-/// The Agent's `DD_APM_OBFUSCATION_*` env vars produce flat Figment keys (no `_config_` segment).
-/// This struct reads those flat keys and is merged over the nested `ObfuscationConfig` after
-/// deserialization so that env vars correctly override YAML file values.
-/// See `KEY_ALIASES` in `crate::config` for the YAML→flat bridging that keeps file precedence
-/// consistent.
-#[derive(Clone, Debug, Default, Deserialize)]
-struct ObfuscationFlatConfig {
-    #[serde(default, rename = "apm_obfuscation_credit_cards_enabled")]
-    credit_cards_enabled: Option<bool>,
-
-    #[serde(
-        default,
-        deserialize_with = "deser_opt_space_sep_strings",
-        rename = "apm_obfuscation_credit_cards_keep_values"
-    )]
-    credit_cards_keep_values: Option<Vec<String>>,
-
-    #[serde(default, rename = "apm_obfuscation_credit_cards_luhn")]
-    credit_cards_luhn: Option<bool>,
-
-    #[serde(default, rename = "apm_obfuscation_elasticsearch_enabled")]
-    es_enabled: Option<bool>,
-
-    #[serde(
-        default,
-        deserialize_with = "deser_opt_space_sep_strings",
-        rename = "apm_obfuscation_elasticsearch_keep_values"
-    )]
-    es_keep_values: Option<Vec<String>>,
-
-    #[serde(
-        default,
-        deserialize_with = "deser_opt_space_sep_strings",
-        rename = "apm_obfuscation_elasticsearch_obfuscate_sql_values"
-    )]
-    es_obfuscate_sql_values: Option<Vec<String>>,
-
-    #[serde(default, rename = "apm_obfuscation_http_remove_paths_with_digits")]
-    http_remove_paths_with_digits: Option<bool>,
-
-    #[serde(default, rename = "apm_obfuscation_http_remove_query_string")]
-    http_remove_query_string: Option<bool>,
-
-    #[serde(default, rename = "apm_obfuscation_memcached_enabled")]
-    memcached_enabled: Option<bool>,
-
-    #[serde(default, rename = "apm_obfuscation_memcached_keep_command")]
-    memcached_keep_command: Option<bool>,
-
-    #[serde(default, rename = "apm_obfuscation_mongodb_enabled")]
-    mongo_enabled: Option<bool>,
-
-    #[serde(
-        default,
-        deserialize_with = "deser_opt_space_sep_strings",
-        rename = "apm_obfuscation_mongodb_keep_values"
-    )]
-    mongo_keep_values: Option<Vec<String>>,
-
-    #[serde(
-        default,
-        deserialize_with = "deser_opt_space_sep_strings",
-        rename = "apm_obfuscation_mongodb_obfuscate_sql_values"
-    )]
-    mongo_obfuscate_sql_values: Option<Vec<String>>,
-
-    #[serde(default, rename = "apm_obfuscation_opensearch_enabled")]
-    open_search_enabled: Option<bool>,
-
-    #[serde(
-        default,
-        deserialize_with = "deser_opt_space_sep_strings",
-        rename = "apm_obfuscation_opensearch_keep_values"
-    )]
-    open_search_keep_values: Option<Vec<String>>,
-
-    #[serde(
-        default,
-        deserialize_with = "deser_opt_space_sep_strings",
-        rename = "apm_obfuscation_opensearch_obfuscate_sql_values"
-    )]
-    open_search_obfuscate_sql_values: Option<Vec<String>>,
-
-    #[serde(default, rename = "apm_obfuscation_redis_enabled")]
-    redis_enabled: Option<bool>,
-
-    #[serde(default, rename = "apm_obfuscation_redis_remove_all_args")]
-    redis_remove_all_args: Option<bool>,
-
-    #[serde(default, rename = "apm_obfuscation_valkey_enabled")]
-    valkey_enabled: Option<bool>,
-
-    #[serde(default, rename = "apm_obfuscation_valkey_remove_all_args")]
-    valkey_remove_all_args: Option<bool>,
-}
-
-impl ObfuscationFlatConfig {
-    fn apply_to(self, cfg: &mut ObfuscationConfig) {
-        if let Some(v) = self.credit_cards_enabled {
-            cfg.credit_cards.enabled = v;
-        }
-        if let Some(v) = self.credit_cards_keep_values {
-            cfg.credit_cards.keep_values = v;
-        }
-        if let Some(v) = self.credit_cards_luhn {
-            cfg.credit_cards.luhn = v;
-        }
-
-        if let Some(v) = self.es_enabled {
-            cfg.es.enabled = v;
-        }
-        if let Some(v) = self.es_keep_values {
-            cfg.es.keep_values = v;
-        }
-        if let Some(v) = self.es_obfuscate_sql_values {
-            cfg.es.obfuscate_sql_values = v;
-        }
-
-        if let Some(v) = self.http_remove_paths_with_digits {
-            cfg.http.remove_path_digits = v;
-        }
-        if let Some(v) = self.http_remove_query_string {
-            cfg.http.remove_query_string = v;
-        }
-
-        if let Some(v) = self.memcached_enabled {
-            cfg.memcached.enabled = v;
-        }
-        if let Some(v) = self.memcached_keep_command {
-            cfg.memcached.keep_command = v;
-        }
-
-        if let Some(v) = self.mongo_enabled {
-            cfg.mongo.enabled = v;
-        }
-        if let Some(v) = self.mongo_keep_values {
-            cfg.mongo.keep_values = v;
-        }
-        if let Some(v) = self.mongo_obfuscate_sql_values {
-            cfg.mongo.obfuscate_sql_values = v;
-        }
-
-        if let Some(v) = self.open_search_enabled {
-            cfg.open_search.enabled = v;
-        }
-        if let Some(v) = self.open_search_keep_values {
-            cfg.open_search.keep_values = v;
-        }
-        if let Some(v) = self.open_search_obfuscate_sql_values {
-            cfg.open_search.obfuscate_sql_values = v;
-        }
-
-        if let Some(v) = self.redis_enabled {
-            cfg.redis.enabled = v;
-        }
-        if let Some(v) = self.redis_remove_all_args {
-            cfg.redis.remove_all_args = v;
-        }
-
-        if let Some(v) = self.valkey_enabled {
-            cfg.valkey.enabled = v;
-        }
-        if let Some(v) = self.valkey_remove_all_args {
-            cfg.valkey.remove_all_args = v;
-        }
-    }
-}
-
 /// APM configuration.
 ///
 /// This configuration mirrors the Agent's trace agent configuration..
@@ -274,10 +102,10 @@ struct ApmConfiguration {
     )]
     enable_error_tracking_standalone: bool,
 
-    /// Flat obfuscation overrides from `DD_APM_OBFUSCATION_*` env vars.
-    /// See [`ObfuscationFlatConfig`] for details.
+    /// Obfuscation config read from flat `apm_obfuscation_*` keys.
+    /// KEY_ALIASES in `crate::config` bridge the YAML nested paths to these flat keys.
     #[serde(default, flatten)]
-    obfuscation_flat: ObfuscationFlatConfig,
+    obfuscation: ObfuscationConfig,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -383,7 +211,8 @@ pub struct ApmConfig {
     rare_sampler: RareSamplerConfig,
 
     /// Obfuscation configuration for trace data.
-    #[serde(default)]
+    /// Populated via `ObfuscationFlatConfig` in `from_configuration`; not read from serde directly.
+    #[serde(skip)]
     obfuscation: ObfuscationConfig,
 }
 
@@ -393,7 +222,7 @@ impl ApmConfig {
         let mut apm_config = wrapper.apm_config;
         apm_config.enable_rare_sampler = wrapper.enable_rare_sampler;
         apm_config.error_tracking_standalone = wrapper.enable_error_tracking_standalone;
-        wrapper.obfuscation_flat.apply_to(&mut apm_config.obfuscation);
+        apm_config.obfuscation = wrapper.obfuscation;
         Ok(apm_config)
     }
 

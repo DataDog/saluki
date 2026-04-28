@@ -39,25 +39,27 @@ impl Obfuscator {
     /// Creates a new obfuscator with the given configuration.
     pub fn new(config: ObfuscationConfig) -> Self {
         let cc_obfuscator = if config.credit_cards().enabled() {
-            Some(CreditCardObfuscator::new(config.credit_cards()))
+            Some(CreditCardObfuscator::new(&config.credit_cards()))
         } else {
             None
         };
 
+        let sql = config.sql();
+
         let es_obfuscator = if config.es().enabled() {
-            Some(JsonObfuscator::new(config.es(), config.sql()))
+            Some(JsonObfuscator::new(&config.es(), &sql))
         } else {
             None
         };
 
         let open_search_obfuscator = if config.open_search().enabled() {
-            Some(JsonObfuscator::new(config.open_search(), config.sql()))
+            Some(JsonObfuscator::new(&config.open_search(), &sql))
         } else {
             None
         };
 
         let mongo_obfuscator = if config.mongo().enabled() {
-            Some(JsonObfuscator::new(config.mongo(), config.sql()))
+            Some(JsonObfuscator::new(&config.mongo(), &sql))
         } else {
             None
         };
@@ -74,13 +76,13 @@ impl Obfuscator {
     /// Obfuscates a URL string.
     /// Returns `Some(obfuscated)` if any changes were made, `None` if unchanged.
     pub fn obfuscate_url(&self, url: &str) -> Option<MetaString> {
-        obfuscate_url(url, self.config.http())
+        obfuscate_url(url, &self.config.http())
     }
 
     /// Obfuscates a Memcached command.
     /// Returns `Some("")` to signal tag removal, `Some(value)` to replace, `None` if unchanged.
     pub fn obfuscate_memcached_command(&self, cmd: &str) -> Option<MetaString> {
-        obfuscate_memcached_command(cmd, self.config.memcached())
+        obfuscate_memcached_command(cmd, &self.config.memcached())
     }
 
     /// Obfuscates potential credit card numbers in a tag value.
@@ -98,13 +100,13 @@ impl Obfuscator {
     /// Obfuscates a Redis command string using command-specific rules.
     /// Returns `Some(obfuscated)` if any changes were made, `None` if unchanged.
     pub fn obfuscate_redis_string(&self, rediscmd: &str) -> Option<MetaString> {
-        obfuscate_redis_string(rediscmd, self.config.redis())
+        obfuscate_redis_string(rediscmd, &self.config.redis())
     }
 
     /// Obfuscates a Valkey command string using command-specific rules.
     /// Returns `Some(obfuscated)` if any changes were made, `None` if unchanged.
     pub fn obfuscate_valkey_string(&self, valkeycmd: &str) -> Option<MetaString> {
-        obfuscate_valkey_string(valkeycmd, self.config.valkey())
+        obfuscate_valkey_string(valkeycmd, &self.config.valkey())
     }
 
     /// Obfuscates a MongoDB JSON query string.
