@@ -1111,7 +1111,7 @@ mod tests {
             // 3: resource
             encode_fixpos(3), encode_fixstr("/api/v1"),
             // 4: spanID
-            encode_fixpos(4), encode_u64(0xdeadbeef_cafebabe),
+            encode_fixpos(4), encode_u64(0xdeadbeef_abbaabba),
             // 5: parentID
             encode_fixpos(5), encode_u64(0x0102030405060708),
             // 6: start
@@ -1145,7 +1145,7 @@ mod tests {
         assert_eq!(table.get(span.service), Some("my-svc"));
         assert_eq!(table.get(span.name), Some("http.request"));
         assert_eq!(table.get(span.resource), Some("/api/v1"));
-        assert_eq!(span.span_id, 0xdeadbeef_cafebabe);
+        assert_eq!(span.span_id, 0xdeadbeef_abbaabba);
         assert_eq!(span.parent_id, 0x0102030405060708);
         assert_eq!(span.start, 1_700_000_000_000_000_000);
         assert_eq!(span.duration, 500_000);
