@@ -157,8 +157,9 @@ fn main() {
                 "proto/checks/v1/log.proto",
                 "proto/checks/v1/service_check.proto",
                 "proto/checks/v1/event.proto",
-                "proto/checks/v1/histogram.proto",
+                "proto/checks/v1/sketch.proto",
                 "proto/checks/v1/event_platform_event.proto",
+                "proto/checks/v1/histogram_bucket.proto",
             ],
             &["proto"],
         )
