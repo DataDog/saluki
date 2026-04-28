@@ -139,19 +139,47 @@ const fn default_dogstatsd_minimum_sample_rate() -> f64 {
     0.000000003845
 }
 
-const fn default_enable_payloads_series() -> bool {
-    true
+/// Controls which payload types are forwarded to the backend.
+#[derive(Deserialize)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
+pub struct EnablePayloadsConfiguration {
+    /// Whether or not to enable sending series (counter/gauge/rate) payloads.
+    ///
+    /// Defaults to `true`.
+    #[serde(default = "default_true")]
+    pub series: bool,
+
+    /// Whether or not to enable sending sketch (distribution) payloads.
+    ///
+    /// Defaults to `true`.
+    #[serde(default = "default_true")]
+    pub sketches: bool,
+
+    /// Whether or not to enable sending event payloads.
+    ///
+    /// Defaults to `true`.
+    #[serde(default = "default_true")]
+    pub events: bool,
+
+    /// Whether or not to enable sending service check payloads.
+    ///
+    /// Defaults to `true`.
+    #[serde(default = "default_true")]
+    pub service_checks: bool,
 }
 
-const fn default_enable_payloads_sketches() -> bool {
-    true
+impl Default for EnablePayloadsConfiguration {
+    fn default() -> Self {
+        Self {
+            series: true,
+            sketches: true,
+            events: true,
+            service_checks: true,
+        }
+    }
 }
 
-const fn default_enable_payloads_events() -> bool {
-    true
-}
-
-const fn default_enable_payloads_service_checks() -> bool {
+const fn default_true() -> bool {
     true
 }
 
@@ -334,29 +362,9 @@ pub struct DogStatsDConfiguration {
     )]
     minimum_sample_rate: f64,
 
-    /// Whether or not to enable sending serie payloads.
-    ///
-    /// Defaults to `true`.
-    #[serde(default = "default_enable_payloads_series")]
-    enable_payloads_series: bool,
-
-    /// Whether or not to enable sending sketch payloads.
-    ///
-    /// Defaults to `true`.
-    #[serde(default = "default_enable_payloads_sketches")]
-    enable_payloads_sketches: bool,
-
-    /// Whether or not to enable sending event payloads.
-    ///
-    /// Defaults to `true`.
-    #[serde(default = "default_enable_payloads_events")]
-    enable_payloads_events: bool,
-
-    /// Whether or not to enable sending service check payloads.
-    ///
-    /// Defaults to `true`.
-    #[serde(default = "default_enable_payloads_service_checks")]
-    enable_payloads_service_checks: bool,
+    /// Which payload types to forward to the backend.
+    #[serde(rename = "enable_payloads", default)]
+    enable_payloads: EnablePayloadsConfiguration,
 
     /// Configuration related to origin detection and enrichment.
     #[serde(flatten, default)]
@@ -533,10 +541,10 @@ impl SourceBuilder for DogStatsDConfiguration {
         let codec = DogStatsDCodec::from_configuration(codec_config);
 
         let enable_payloads_filter = EnablePayloadsFilter::default()
-            .with_allow_series(self.enable_payloads_series)
-            .with_allow_sketches(self.enable_payloads_sketches)
-            .with_allow_events(self.enable_payloads_events)
-            .with_allow_service_checks(self.enable_payloads_service_checks);
+            .with_allow_series(self.enable_payloads.series)
+            .with_allow_sketches(self.enable_payloads.sketches)
+            .with_allow_events(self.enable_payloads.events)
+            .with_allow_service_checks(self.enable_payloads.service_checks);
 
         Ok(Box::new(DogStatsD {
             listeners,
