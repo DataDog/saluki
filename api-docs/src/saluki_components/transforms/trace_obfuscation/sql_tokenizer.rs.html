@@ -107,7 +107,7 @@
 <a href=#107 id=107 data-nosnippet>107</a>
 <a href=#108 id=108 data-nosnippet>108</a>        <span class="kw">let </span>ch = <span class="self">self</span>.last_char;
 <a href=#109 id=109 data-nosnippet>109</a>
-<a href=#110 id=110 data-nosnippet>110</a>        <span class="kw">if </span>is_leading_letter(ch) &amp;&amp; !(<span class="self">self</span>.config.dbms() == <span class="string">"postgresql" </span>&amp;&amp; ch == <span class="string">'@'</span>) {
+<a href=#110 id=110 data-nosnippet>110</a>        <span class="kw">if </span>is_leading_letter(ch) &amp;&amp; !(<span class="self">self</span>.config.dbms == <span class="string">"postgresql" </span>&amp;&amp; ch == <span class="string">'@'</span>) {
 <a href=#111 id=111 data-nosnippet>111</a>            <span class="kw">return </span><span class="self">self</span>.scan_identifier();
 <a href=#112 id=112 data-nosnippet>112</a>        }
 <a href=#113 id=113 data-nosnippet>113</a>
@@ -499,7 +499,7 @@
 <a href=#499 id=499 data-nosnippet>499</a>        <span class="kw">let </span>content_end = <span class="self">self</span>.pos - tag_len - <span class="number">2</span>;
 <a href=#500 id=500 data-nosnippet>500</a>        <span class="kw">let </span>buf = <span class="kw-2">&amp;</span><span class="self">self</span>.buf[content_start..content_end];
 <a href=#501 id=501 data-nosnippet>501</a>
-<a href=#502 id=502 data-nosnippet>502</a>        <span class="kw">let </span>kind = <span class="kw">if </span><span class="self">self</span>.config.dollar_quoted_func() &amp;&amp; tag == <span class="string">b"func" </span>{
+<a href=#502 id=502 data-nosnippet>502</a>        <span class="kw">let </span>kind = <span class="kw">if </span><span class="self">self</span>.config.dollar_quoted_func &amp;&amp; tag == <span class="string">b"func" </span>{
 <a href=#503 id=503 data-nosnippet>503</a>            TokenKind::DollarQuotedFunc
 <a href=#504 id=504 data-nosnippet>504</a>        } <span class="kw">else </span>{
 <a href=#505 id=505 data-nosnippet>505</a>            TokenKind::DollarQuotedString

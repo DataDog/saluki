@@ -11,7 +11,7 @@
 <a href=#11 id=11 data-nosnippet>11</a>    <span class="kw">let </span><span class="kw-2">mut </span>url = <span class="kw">match </span>Url::parse(val) {
 <a href=#12 id=12 data-nosnippet>12</a>        <span class="prelude-val">Ok</span>(u) =&gt; u,
 <a href=#13 id=13 data-nosnippet>13</a>        <span class="prelude-val">Err</span>(<span class="kw">_</span>) =&gt; {
-<a href=#14 id=14 data-nosnippet>14</a>            <span class="kw">if </span>config.remove_query_string() || config.remove_path_digits() {
+<a href=#14 id=14 data-nosnippet>14</a>            <span class="kw">if </span>config.remove_query_string || config.remove_path_digits {
 <a href=#15 id=15 data-nosnippet>15</a>                <span class="kw">return </span><span class="prelude-val">Some</span>(<span class="string">"?"</span>.into());
 <a href=#16 id=16 data-nosnippet>16</a>            }
 <a href=#17 id=17 data-nosnippet>17</a>            <span class="kw">return </span>obfuscate_userinfo_fallback(val);
@@ -26,12 +26,12 @@
 <a href=#26 id=26 data-nosnippet>26</a>        changed = <span class="bool-val">true</span>;
 <a href=#27 id=27 data-nosnippet>27</a>    }
 <a href=#28 id=28 data-nosnippet>28</a>
-<a href=#29 id=29 data-nosnippet>29</a>    <span class="kw">if </span>config.remove_query_string() &amp;&amp; url.query().is_some() {
+<a href=#29 id=29 data-nosnippet>29</a>    <span class="kw">if </span>config.remove_query_string &amp;&amp; url.query().is_some() {
 <a href=#30 id=30 data-nosnippet>30</a>        url.set_query(<span class="prelude-val">Some</span>(<span class="string">""</span>));
 <a href=#31 id=31 data-nosnippet>31</a>        changed = <span class="bool-val">true</span>;
 <a href=#32 id=32 data-nosnippet>32</a>    }
 <a href=#33 id=33 data-nosnippet>33</a>
-<a href=#34 id=34 data-nosnippet>34</a>    <span class="kw">if </span>config.remove_path_digits() {
+<a href=#34 id=34 data-nosnippet>34</a>    <span class="kw">if </span>config.remove_path_digits {
 <a href=#35 id=35 data-nosnippet>35</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(obfuscated_path) = obfuscate_path_digits(url.path()) {
 <a href=#36 id=36 data-nosnippet>36</a>            url.set_path(<span class="kw-2">&amp;</span>obfuscated_path);
 <a href=#37 id=37 data-nosnippet>37</a>            changed = <span class="bool-val">true</span>;

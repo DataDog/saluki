@@ -49,13 +49,13 @@
 <a href=#49 id=49 data-nosnippet>49</a>        <span class="comment">// Only store user-provided keep_values.
 <a href=#50 id=50 data-nosnippet>50</a>        // Static allowlist is checked separately via `ALLOWLISTED_TAGS.contains()`.
 <a href=#51 id=51 data-nosnippet>51</a>        </span><span class="kw">let </span>keep_values: FastHashSet&lt;MetaString&gt; = config
-<a href=#52 id=52 data-nosnippet>52</a>            .keep_values()
+<a href=#52 id=52 data-nosnippet>52</a>            .keep_values
 <a href=#53 id=53 data-nosnippet>53</a>            .iter()
 <a href=#54 id=54 data-nosnippet>54</a>            .map(|s| MetaString::from(s.as_str()))
 <a href=#55 id=55 data-nosnippet>55</a>            .collect();
 <a href=#56 id=56 data-nosnippet>56</a>
 <a href=#57 id=57 data-nosnippet>57</a>        <span class="self">Self </span>{
-<a href=#58 id=58 data-nosnippet>58</a>            luhn: config.luhn(),
+<a href=#58 id=58 data-nosnippet>58</a>            luhn: config.luhn,
 <a href=#59 id=59 data-nosnippet>59</a>            keep_values,
 <a href=#60 id=60 data-nosnippet>60</a>        }
 <a href=#61 id=61 data-nosnippet>61</a>    }

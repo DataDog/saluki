@@ -7,7 +7,7 @@
 <a href=#7 id=7 data-nosnippet>7</a><span class="doccomment">/// Obfuscates a Memcached command by removing key values.
 <a href=#8 id=8 data-nosnippet>8</a>/// Returns `Some("")` to signal tag removal, `Some(value)` to replace, `None` if unchanged.
 <a href=#9 id=9 data-nosnippet>9</a></span><span class="kw">pub fn </span>obfuscate_memcached_command(cmd: <span class="kw-2">&amp;</span>str, config: <span class="kw-2">&amp;</span>MemcachedObfuscationConfig) -&gt; <span class="prelude-ty">Option</span>&lt;MetaString&gt; {
-<a href=#10 id=10 data-nosnippet>10</a>    <span class="kw">if </span>!config.keep_command() {
+<a href=#10 id=10 data-nosnippet>10</a>    <span class="kw">if </span>!config.keep_command {
 <a href=#11 id=11 data-nosnippet>11</a>        <span class="kw">return </span><span class="prelude-val">Some</span>(<span class="string">""</span>.into());
 <a href=#12 id=12 data-nosnippet>12</a>    }
 <a href=#13 id=13 data-nosnippet>13</a>

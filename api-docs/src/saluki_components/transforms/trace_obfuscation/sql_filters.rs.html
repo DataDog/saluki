@@ -35,8 +35,8 @@
 <a href=#35 id=35 data-nosnippet>35</a><span class="kw">impl </span>MetadataFinderFilter {
 <a href=#36 id=36 data-nosnippet>36</a>    <span class="kw">pub fn </span>new(config: <span class="kw-2">&amp;</span>SqlObfuscationConfig) -&gt; <span class="self">Self </span>{
 <a href=#37 id=37 data-nosnippet>37</a>        <span class="self">Self </span>{
-<a href=#38 id=38 data-nosnippet>38</a>            collect_table_names: config.table_names(),
-<a href=#39 id=39 data-nosnippet>39</a>            replace_digits: config.replace_digits(),
+<a href=#38 id=38 data-nosnippet>38</a>            collect_table_names: config.table_names,
+<a href=#39 id=39 data-nosnippet>39</a>            replace_digits: config.replace_digits,
 <a href=#40 id=40 data-nosnippet>40</a>            tables_seen: FastHashSet::default(),
 <a href=#41 id=41 data-nosnippet>41</a>            tables_csv: String::new(),
 <a href=#42 id=42 data-nosnippet>42</a>        }
@@ -160,7 +160,7 @@
 <a href=#160 id=160 data-nosnippet>160</a><span class="kw">impl </span>ReplaceFilter {
 <a href=#161 id=161 data-nosnippet>161</a>    <span class="kw">pub fn </span>new(config: <span class="kw-2">&amp;</span>SqlObfuscationConfig) -&gt; <span class="self">Self </span>{
 <a href=#162 id=162 data-nosnippet>162</a>        <span class="self">Self </span>{
-<a href=#163 id=163 data-nosnippet>163</a>            replace_digits: config.replace_digits(),
+<a href=#163 id=163 data-nosnippet>163</a>            replace_digits: config.replace_digits,
 <a href=#164 id=164 data-nosnippet>164</a>            config: config.clone(),
 <a href=#165 id=165 data-nosnippet>165</a>        }
 <a href=#166 id=166 data-nosnippet>166</a>    }

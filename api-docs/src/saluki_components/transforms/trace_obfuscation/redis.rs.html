@@ -73,7 +73,7 @@
 <a href=#73 id=73 data-nosnippet>73</a><span class="doccomment">/// Obfuscates a Redis command string by removing sensitive arguments.
 <a href=#74 id=74 data-nosnippet>74</a>/// Returns `Some(obfuscated)` if any changes were made, `None` if unchanged.
 <a href=#75 id=75 data-nosnippet>75</a></span><span class="kw">pub fn </span>obfuscate_redis_string(rediscmd: <span class="kw-2">&amp;</span>str, config: <span class="kw-2">&amp;</span>RedisObfuscationConfig) -&gt; <span class="prelude-ty">Option</span>&lt;MetaString&gt; {
-<a href=#76 id=76 data-nosnippet>76</a>    <span class="kw">if </span>config.remove_all_args() {
+<a href=#76 id=76 data-nosnippet>76</a>    <span class="kw">if </span>config.remove_all_args {
 <a href=#77 id=77 data-nosnippet>77</a>        <span class="kw">let </span>result = rediscmd
 <a href=#78 id=78 data-nosnippet>78</a>            .lines()
 <a href=#79 id=79 data-nosnippet>79</a>            .map(remove_all_redis_args)
@@ -127,7 +127,7 @@
 <a href=#127 id=127 data-nosnippet>127</a><span class="doccomment">/// Obfuscates a Valkey command string by removing sensitive arguments.
 <a href=#128 id=128 data-nosnippet>128</a>/// Returns `Some(obfuscated)` if any changes were made, `None` if unchanged.
 <a href=#129 id=129 data-nosnippet>129</a></span><span class="kw">pub fn </span>obfuscate_valkey_string(valkeycmd: <span class="kw-2">&amp;</span>str, config: <span class="kw-2">&amp;</span>ValkeyObfuscationConfig) -&gt; <span class="prelude-ty">Option</span>&lt;MetaString&gt; {
-<a href=#130 id=130 data-nosnippet>130</a>    <span class="kw">if </span>config.remove_all_args() {
+<a href=#130 id=130 data-nosnippet>130</a>    <span class="kw">if </span>config.remove_all_args {
 <a href=#131 id=131 data-nosnippet>131</a>        <span class="kw">let </span>result = valkeycmd
 <a href=#132 id=132 data-nosnippet>132</a>            .lines()
 <a href=#133 id=133 data-nosnippet>133</a>            .map(remove_all_redis_args)
