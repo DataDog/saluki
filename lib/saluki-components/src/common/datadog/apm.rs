@@ -92,23 +92,27 @@ use saluki_config::deserialize_opt_space_separated_or_seq as deser_opt_space_sep
 struct ObfuscationFlatConfig {
     #[serde(default, rename = "apm_obfuscation_credit_cards_enabled")]
     credit_cards_enabled: Option<bool>,
+
     #[serde(
         default,
         deserialize_with = "deser_opt_space_sep_strings",
         rename = "apm_obfuscation_credit_cards_keep_values"
     )]
     credit_cards_keep_values: Option<Vec<String>>,
+
     #[serde(default, rename = "apm_obfuscation_credit_cards_luhn")]
     credit_cards_luhn: Option<bool>,
 
     #[serde(default, rename = "apm_obfuscation_elasticsearch_enabled")]
     es_enabled: Option<bool>,
+
     #[serde(
         default,
         deserialize_with = "deser_opt_space_sep_strings",
         rename = "apm_obfuscation_elasticsearch_keep_values"
     )]
     es_keep_values: Option<Vec<String>>,
+
     #[serde(
         default,
         deserialize_with = "deser_opt_space_sep_strings",
@@ -118,22 +122,26 @@ struct ObfuscationFlatConfig {
 
     #[serde(default, rename = "apm_obfuscation_http_remove_paths_with_digits")]
     http_remove_paths_with_digits: Option<bool>,
+
     #[serde(default, rename = "apm_obfuscation_http_remove_query_string")]
     http_remove_query_string: Option<bool>,
 
     #[serde(default, rename = "apm_obfuscation_memcached_enabled")]
     memcached_enabled: Option<bool>,
+
     #[serde(default, rename = "apm_obfuscation_memcached_keep_command")]
     memcached_keep_command: Option<bool>,
 
     #[serde(default, rename = "apm_obfuscation_mongodb_enabled")]
     mongo_enabled: Option<bool>,
+
     #[serde(
         default,
         deserialize_with = "deser_opt_space_sep_strings",
         rename = "apm_obfuscation_mongodb_keep_values"
     )]
     mongo_keep_values: Option<Vec<String>>,
+
     #[serde(
         default,
         deserialize_with = "deser_opt_space_sep_strings",
@@ -143,12 +151,14 @@ struct ObfuscationFlatConfig {
 
     #[serde(default, rename = "apm_obfuscation_opensearch_enabled")]
     open_search_enabled: Option<bool>,
+
     #[serde(
         default,
         deserialize_with = "deser_opt_space_sep_strings",
         rename = "apm_obfuscation_opensearch_keep_values"
     )]
     open_search_keep_values: Option<Vec<String>>,
+
     #[serde(
         default,
         deserialize_with = "deser_opt_space_sep_strings",
@@ -158,11 +168,13 @@ struct ObfuscationFlatConfig {
 
     #[serde(default, rename = "apm_obfuscation_redis_enabled")]
     redis_enabled: Option<bool>,
+
     #[serde(default, rename = "apm_obfuscation_redis_remove_all_args")]
     redis_remove_all_args: Option<bool>,
 
     #[serde(default, rename = "apm_obfuscation_valkey_enabled")]
     valkey_enabled: Option<bool>,
+
     #[serde(default, rename = "apm_obfuscation_valkey_remove_all_args")]
     valkey_remove_all_args: Option<bool>,
 }
