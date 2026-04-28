@@ -20,11 +20,13 @@ use tracing::{debug, error};
 pub mod duration_string;
 pub mod dynamic;
 mod provider;
+pub mod space_separated;
 
 pub use self::duration_string::{DurationString, ParseDurationError};
 pub use self::dynamic::FieldUpdateWatcher;
 use self::dynamic::{ConfigChangeEvent, ConfigUpdate};
 use self::provider::ResolvedProvider;
+pub use self::space_separated::{deserialize_opt_space_separated_or_seq, deserialize_space_separated_or_seq};
 
 #[derive(Clone)]
 struct ArcProvider(Arc<dyn Provider + Send + Sync>);

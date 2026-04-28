@@ -4,8 +4,9 @@ use std::sync::Arc;
 use facet::Facet;
 use headers::Authorization;
 use hyper_http_proxy::{Intercept, Proxy};
+use saluki_config::deserialize_space_separated_or_seq;
 use saluki_error::GenericError;
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
 use url::Url;
 
 #[derive(Clone, Deserialize, Facet)]
@@ -297,43 +298,6 @@ fn ip_in_cidr(network: IpAddr, prefix_len: u8, addr: IpAddr) -> bool {
         // IPv4 vs IPv6 mismatch — never matches.
         _ => false,
     }
-}
-
-/// Deserializes a `Vec<String>` from either a sequence or a space-separated string.
-///
-/// This handles the dual representation of `no_proxy`: a YAML sequence (`proxy.no_proxy`) and an
-/// environment variable (`DD_PROXY_NO_PROXY`) where values are space-separated.
-fn deserialize_space_separated_or_seq<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    use std::fmt;
-
-    use serde::de::{self, SeqAccess, Visitor};
-
-    struct SpaceSeparatedOrSeq;
-
-    impl<'de> Visitor<'de> for SpaceSeparatedOrSeq {
-        type Value = Vec<String>;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            formatter.write_str("a sequence or a space-separated string")
-        }
-
-        fn visit_str<E: de::Error>(self, v: &str) -> Result<Vec<String>, E> {
-            Ok(v.split_whitespace().map(str::to_owned).collect())
-        }
-
-        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<String>, A::Error> {
-            let mut values = Vec::new();
-            while let Some(v) = seq.next_element()? {
-                values.push(v);
-            }
-            Ok(values)
-        }
-    }
-
-    deserializer.deserialize_any(SpaceSeparatedOrSeq)
 }
 
 #[cfg(test)]

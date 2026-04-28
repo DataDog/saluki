@@ -79,36 +79,7 @@ impl Default for RareSamplerConfig {
     }
 }
 
-/// Deserializes `Option<Vec<String>>` from either a JSON/YAML array or a space-separated string.
-///
-/// Used for obfuscation flat-env-var fields where the Agent passes lists as space-separated
-/// strings (e.g. `DD_APM_OBFUSCATION_CREDIT_CARDS_KEEP_VALUES="foo bar"`) while YAML config
-/// files supply proper arrays.
-fn deser_opt_space_sep_strings<'de, D>(d: D) -> Result<Option<Vec<String>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::Deserialize;
-
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum SeqOrStr {
-        Seq(Vec<String>),
-        Str(String),
-    }
-
-    let opt = Option::<SeqOrStr>::deserialize(d)?;
-    Ok(opt.map(|v| match v {
-        SeqOrStr::Seq(s) => s,
-        SeqOrStr::Str(s) => {
-            if s.is_empty() {
-                vec![]
-            } else {
-                s.split(' ').map(str::to_string).collect()
-            }
-        }
-    }))
-}
+use saluki_config::deserialize_opt_space_separated_or_seq as deser_opt_space_sep_strings;
 
 /// Flat env-var overrides for `apm_config.obfuscation.*`.
 ///
