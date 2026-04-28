@@ -7,7 +7,7 @@ use super::obfuscator::MemcachedObfuscationConfig;
 /// Obfuscates a Memcached command by removing key values.
 /// Returns `Some("")` to signal tag removal, `Some(value)` to replace, `None` if unchanged.
 pub fn obfuscate_memcached_command(cmd: &str, config: &MemcachedObfuscationConfig) -> Option<MetaString> {
-    if !config.keep_command() {
+    if !config.keep_command {
         return Some("".into());
     }
 

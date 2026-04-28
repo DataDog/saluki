@@ -18,7 +18,7 @@ pub fn obfuscate_sql_string(query: &str, config: &SqlObfuscationConfig) -> Resul
     let mut tokenizer = SQLTokenizer::new(query, true, config);
 
     let mut metadata_filter = MetadataFinderFilter::new(config);
-    let mut discard_filter = DiscardFilter::new(config.keep_sql_alias());
+    let mut discard_filter = DiscardFilter::new(config.keep_sql_alias);
     let mut replace_filter = ReplaceFilter::new(config);
     let mut grouping_filter = GroupingFilter::new();
 

@@ -89,7 +89,7 @@ pub struct TraceObfuscation {
 
 impl TraceObfuscation {
     fn obfuscate_span(&mut self, span: &mut Span) {
-        if self.obfuscator.config.credit_cards().enabled() {
+        if self.obfuscator.config.credit_cards.enabled {
             self.obfuscate_credit_cards_in_span(span);
         }
 
@@ -141,8 +141,8 @@ impl TraceObfuscation {
         let dbms = span.meta().get(tags::DBMS);
 
         let config = match dbms {
-            Some(d) if !d.is_empty() => self.obfuscator.config.sql().with_dbms(d.to_string()),
-            _ => self.obfuscator.config.sql().clone(),
+            Some(d) if !d.is_empty() => self.obfuscator.config.sql.with_dbms(d.to_string()),
+            _ => self.obfuscator.config.sql.clone(),
         };
 
         match sql::obfuscate_sql_string(sql_query, &config) {
@@ -179,7 +179,7 @@ impl TraceObfuscation {
             span.set_resource(quantized.to_string());
         }
 
-        if span.span_type() == "redis" && self.obfuscator.config.redis().enabled() {
+        if span.span_type() == "redis" && self.obfuscator.config.redis.enabled {
             if let Some(cmd_value) = span.meta().get(tags::REDIS_RAW_COMMAND) {
                 if let Some(obfuscated) = self.obfuscator.obfuscate_redis_string(cmd_value.as_ref()) {
                     span.meta_mut().insert(tags::REDIS_RAW_COMMAND.into(), obfuscated);
@@ -187,7 +187,7 @@ impl TraceObfuscation {
             }
         }
 
-        if span.span_type() == "valkey" && self.obfuscator.config.valkey().enabled() {
+        if span.span_type() == "valkey" && self.obfuscator.config.valkey.enabled {
             if let Some(cmd_value) = span.meta().get(tags::VALKEY_RAW_COMMAND) {
                 if let Some(obfuscated) = self.obfuscator.obfuscate_valkey_string(cmd_value.as_ref()) {
                     span.meta_mut().insert(tags::VALKEY_RAW_COMMAND.into(), obfuscated);
@@ -197,7 +197,7 @@ impl TraceObfuscation {
     }
 
     fn obfuscate_memcached_span(&mut self, span: &mut Span) {
-        if !self.obfuscator.config.memcached().enabled() {
+        if !self.obfuscator.config.memcached.enabled {
             return;
         }
 
