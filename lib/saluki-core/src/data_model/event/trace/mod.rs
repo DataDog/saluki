@@ -1,5 +1,7 @@
 //! Traces.
 
+pub mod v1;
+
 use saluki_common::collections::FastHashMap;
 use saluki_context::tags::TagSet;
 use stringtheory::MetaString;

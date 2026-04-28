@@ -1,5 +1,8 @@
 //! Source implementations.
 
+mod apm;
+pub use self::apm::ApmReceiverConfiguration;
+
 mod dogstatsd;
 pub use self::dogstatsd::DogStatsDConfiguration;
 

@@ -13,6 +13,7 @@ pub struct DataPlaneConfiguration {
     secure_api_listen_address: ListenAddress,
     telemetry_enabled: bool,
     telemetry_listen_addr: ListenAddress,
+    apm: DataPlaneApmConfiguration,
     dogstatsd: DataPlaneDogStatsDConfiguration,
     otlp: DataPlaneOtlpConfiguration,
 }
@@ -48,6 +49,7 @@ impl DataPlaneConfiguration {
             telemetry_listen_addr: config
                 .try_get_typed("data_plane.telemetry_listen_addr")?
                 .unwrap_or_else(|| ListenAddress::any_tcp(5102)),
+            apm: DataPlaneApmConfiguration::from_configuration(config)?,
             dogstatsd: DataPlaneDogStatsDConfiguration::from_configuration(config)?,
             otlp: DataPlaneOtlpConfiguration::from_configuration(config)?,
         })
@@ -97,6 +99,11 @@ impl DataPlaneConfiguration {
         &self.telemetry_listen_addr
     }
 
+    /// Returns a reference to the APM-specific data plane configuration.
+    pub const fn apm(&self) -> &DataPlaneApmConfiguration {
+        &self.apm
+    }
+
     /// Returns a reference to the DogStatsD-specific data plane configuration.
     pub const fn dogstatsd(&self) -> &DataPlaneDogStatsDConfiguration {
         &self.dogstatsd
@@ -109,6 +116,15 @@ impl DataPlaneConfiguration {
 
     /// Returns `true` if any data pipelines are enabled.
     pub const fn data_pipelines_enabled(&self) -> bool {
+        self.apm().enabled() || self.dogstatsd().enabled() || self.otlp().enabled()
+    }
+
+    /// Returns `true` if the primary topology needs to be built and run.
+    ///
+    /// This is distinct from [`data_pipelines_enabled`][Self::data_pipelines_enabled]: some pipelines
+    /// (e.g. the APM receiver in its current NOOP form) run entirely as control-plane workers and do not
+    /// place any components into the topology.
+    pub const fn topology_required(&self) -> bool {
         self.dogstatsd().enabled() || self.otlp().enabled()
     }
 
@@ -141,6 +157,25 @@ impl DataPlaneConfiguration {
         // We consider the traces pipeline to be enabled if:
         // - OTLP is enabled and not in proxy mode or proxy mode is enabled and proxy traces are disabled
         self.otlp().enabled() && (!self.otlp().proxy().enabled() || !self.otlp().proxy().proxy_traces())
+    }
+}
+
+/// APM-specific data plane configuration.
+#[derive(Clone, Debug)]
+pub struct DataPlaneApmConfiguration {
+    enabled: bool,
+}
+
+impl DataPlaneApmConfiguration {
+    fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        Ok(Self {
+            enabled: config.try_get_typed("data_plane.apm.enabled")?.unwrap_or(false),
+        })
+    }
+
+    /// Returns `true` if the APM receiver is enabled.
+    pub const fn enabled(&self) -> bool {
+        self.enabled
     }
 }
 
