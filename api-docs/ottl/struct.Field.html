@@ -5,7 +5,7 @@
 <p>Each field has a name and zero or more index keys. For example, in the path
 <code>resource.attributes["key"]</code>, there are two fields: <code>Field { name: "resource", keys: [] }</code>
 and <code>Field { name: "attributes", keys: [IndexExpr::String("key")] }</code>.</p>
-<p>Pre-allocated at parse time and stored in [<code>ResolvedPath</code>]; on the hot path the evaluator
+<p>Pre-allocated at parse time and stored in <code>ResolvedPath</code>; on the hot path the evaluator
 passes <code>&amp;[Field]</code> by reference with zero allocation and zero copy.</p>
 </div></details><h2 id="fields" class="fields section-header">Fields<a href="#fields" class="anchor">§</a></h2><span id="structfield.name" class="structfield section-header"><a href="#structfield.name" class="anchor field">§</a><code>name: <a class="struct" href="https://doc.rust-lang.org/nightly/alloc/string/struct.String.html" title="struct alloc::string::String">String</a></code></span><div class="docblock"><p>Identifier for this field segment.</p>
 </div><span id="structfield.keys" class="structfield section-header"><a href="#structfield.keys" class="anchor field">§</a><code>keys: <a class="struct" href="https://doc.rust-lang.org/nightly/alloc/vec/struct.Vec.html" title="struct alloc::vec::Vec">Vec</a>&lt;<a class="enum" href="enum.IndexExpr.html" title="enum ottl::IndexExpr">IndexExpr</a>&gt;</code></span><div class="docblock"><p>Index keys attached to this field (for example, <code>["key"]</code>, <code>[0]</code>).</p>

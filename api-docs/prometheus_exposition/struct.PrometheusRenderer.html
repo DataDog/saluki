@@ -3,7 +3,7 @@
 multiple payloads over time.</p>
 <h2 id="usage"><a class="doc-anchor" href="#usage">§</a>Usage</h2>
 <p>There are two ways to use the renderer:</p>
-<p><strong>High-level</strong>: Use [<code>render_group</code>][Self::render_group] for counter/gauge groups where all series are simple
+<p><strong>High-level</strong>: Use <a href="struct.PrometheusRenderer.html#method.render_scalar_group" title="method prometheus_exposition::PrometheusRenderer::render_scalar_group"><code>render_scalar_group</code></a> for counter/gauge groups where all series are simple
 label/value pairs. This handles the TYPE/HELP headers and all series lines in one call.</p>
 <p><strong>Low-level</strong>: Use <a href="struct.PrometheusRenderer.html#method.begin_group" title="method prometheus_exposition::PrometheusRenderer::begin_group"><code>begin_group</code></a> to start a new metric group (writes TYPE/HELP headers), then
 call individual series writing methods like <a href="struct.PrometheusRenderer.html#method.write_gauge_or_counter_series" title="method prometheus_exposition::PrometheusRenderer::write_gauge_or_counter_series"><code>write_gauge_or_counter_series</code></a>,
