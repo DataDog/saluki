@@ -39,7 +39,6 @@ saluki-metrics = { workspace = true }
 saluki-tls = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_with = { workspace = true }
 tokio = { workspace = true, features = ["macros", "sync"] }
 tonic = { workspace = true, features = ["router"] }
 tower = { workspace = true, features = ["util"] }

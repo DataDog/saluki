@@ -43,7 +43,9 @@ use crate::{
         apm_onboarding::ApmOnboardingConfiguration, ottl_filter_processor::OttlFilterConfiguration,
         ottl_transform_processor::OttlTransformConfiguration, tag_filterlist::TagFilterlistConfiguration,
     },
-    internal::{create_internal_supervisor, logging::LoggingConfigurationTranslator, remote_agent::RemoteAgentBootstrap},
+    internal::{
+        create_internal_supervisor, logging::LoggingConfigurationTranslator, remote_agent::RemoteAgentBootstrap,
+    },
 };
 use crate::{config::DataPlaneConfiguration, env_provider::ADPEnvironmentProvider};
 

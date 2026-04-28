@@ -3743,7 +3743,6 @@ dependencies = [
  "saluki-tls",
  "serde",
  "serde_json",
- "serde_with",
  "tokio",
  "tonic",
  "tower",
