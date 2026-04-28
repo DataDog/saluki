@@ -172,7 +172,7 @@ smallvec = { version = "1.13", default-features = false, features = [
 ] }
 windows-sys = { version = "0.61", default-features = false }
 rustls-native-certs = { version = "0.8", default-features = false }
-hashbrown = { version = "0.16", default-features = false }
+hashbrown = { version = "0.17", default-features = false }
 quick_cache = { version = "0.6", default-features = false }
 crossbeam-queue = { version = "0.3", default-features = false, features = [
   "alloc",
