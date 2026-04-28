@@ -45,7 +45,14 @@ message CheckInstance {
   string check_name = 1;
   string instance_name = 2;
   string id = 3;
+  // The per-instance YAML/JSON block (a single entry from the
+  // integration's `instances:` list).
   bytes config = 4;
+  // The integration-level YAML/JSON `init_config:` block, shared
+  // across every instance of this integration. Required for any check
+  // that reads defaults at Configure time (credentials, base URLs,
+  // shared tags, etc.).
+  bytes init_config = 5;
 }
 
 // Check data: client -> server (batched)
