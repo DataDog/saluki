@@ -48,10 +48,5 @@
   //   - `prConcurrentLimit` and `prHourlyLimit` (does not count against caps)
   //   - grouping (gets its own focused PR rather than being bundled in the
   //     weekly non-major group)
-  //
-  // The block below customizes how those security PRs look. The bypass
-  // behavior itself is on by default and does not need to be enabled.
-
-  // Enable the OSV.dev advisory database in addition to GitHub's feed.
   "osvVulnerabilityAlerts": true
 }
