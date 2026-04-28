@@ -1018,10 +1018,10 @@
   },
   {
     "key": "extra_tags",
-    "feature_state": "MISSING",
-    "action": "IMPLEMENT",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Additional static tags",
-    "reason": "Core agent supports extra_tags to append additional tags to all submitted data. ADP does not support this.",
+    "reason": "ADP does not read the key directly; the core agent's tagger consumes it and surfaces these tags via the host_tags response that ADP fetches over RemoteAgentClient.",
     "issue": "#1332",
     "adp_key": null
   },
@@ -1747,10 +1747,10 @@
   },
   {
     "key": "tags",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Global tags (DD_TAGS)",
-    "reason": "ADP reads dogstatsd_tags but not the global tags key.",
+    "reason": "ADP does not read the key directly; the core agent's tagger consumes it and surfaces these tags via the host_tags response that ADP fetches over RemoteAgentClient.",
     "issue": "#1333",
     "adp_key": null
   },

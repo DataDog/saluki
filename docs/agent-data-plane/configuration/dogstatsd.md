@@ -40,7 +40,6 @@ tracking.
 | `dogstatsd_so_rcvbuf`                        | Socket receive buffer size        | [#1341] |
 | `dogstatsd_windows_pipe_security_descriptor` | Windows named pipe ACL descriptor | [#1466] |
 | `dogstatsd_stream_log_too_big`               | Log oversized stream messages     | [#1342] |
-| `extra_tags`                                 | Additional static tags            | [#1332] |
 | `forwarder_http_protocol`                    | HTTP version (auto/http1)         | [#1361] |
 | `forwarder_outdated_file_in_days`            | Retry file retention (days)       | [#1360] |
 | `log_format_rfc3339`                         | Use RFC3339 timestamp format      | [#1373] |
@@ -153,7 +152,6 @@ ways that are not yet fully characterized.
 | `statsd_metric_blocklist`                          | Metric name blocklist            | [#1433] |
 | `statsd_metric_blocklist_match_prefix`             | Blocklist matches by prefix      | [#1434] |
 | `statsd_metric_namespace`                          | Prefix prepended to all metrics  |         |
-| `tags`                                             | Global tags (DD_TAGS)            |         |
 
 ## ADP-Only Settings
 
@@ -252,6 +250,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `dogstatsd_tag_cardinality`               | Default tag cardinality level    |
 | `dogstatsd_tags`                          | Extra tags added to all DSD data |
 | `expected_tags_duration`                  | Host tag enrichment duration     |
+| `extra_tags`                              | Additional static tags           |
 | `forwarder_backoff_base`                  | Retry backoff base (secs)        |
 | `forwarder_backoff_factor`                | Retry backoff jitter factor      |
 | `forwarder_backoff_max`                   | Retry backoff ceiling (secs)     |
@@ -288,6 +287,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `secret_backend_timeout`                  | Secret backend timeout (seconds) |
 | `serializer_compressor_kind`              | Payload compression algorithm    |
 | `site`                                    | Datadog site domain              |
+| `tags`                                    | Global tags (DD_TAGS)            |
 | `use_proxy_for_cloud_metadata`            | Proxy cloud metadata endpoints   |
 
 [#178]: https://github.com/DataDog/saluki/issues/178

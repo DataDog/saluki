@@ -94,15 +94,20 @@ build-bundled-agent-adp-image:
       --push
       .
 
-test-correctness-dsd-plain:
+test-correctness-dsd-added-tags:
   extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-baseline]
   variables:
-    CORRECTNESS_TEST_CASE: dsd-plain
+    CORRECTNESS_TEST_CASE: dsd-added-tags
 
 test-correctness-dsd-origin-detection:
   extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-baseline]
   variables:
     CORRECTNESS_TEST_CASE: dsd-origin-detection
+
+test-correctness-dsd-plain:
+  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-baseline]
+  variables:
+    CORRECTNESS_TEST_CASE: dsd-plain
 
 test-correctness-otlp-metrics:
   extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-baseline]
