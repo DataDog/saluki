@@ -13,107 +13,107 @@ use serde::Deserialize;
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 pub struct ObfuscationConfig {
     #[serde(default, rename = "apm_obfuscation_credit_cards_enabled")]
-    pub(crate) credit_cards_enabled: bool,
+    credit_cards_enabled: bool,
 
     #[serde(
         default,
         deserialize_with = "deserialize_space_separated_or_seq",
         rename = "apm_obfuscation_credit_cards_keep_values"
     )]
-    pub(crate) credit_cards_keep_values: Vec<String>,
+    credit_cards_keep_values: Vec<String>,
 
     #[serde(default, rename = "apm_obfuscation_credit_cards_luhn")]
-    pub(crate) credit_cards_luhn: bool,
+    credit_cards_luhn: bool,
 
     #[serde(default, rename = "apm_obfuscation_elasticsearch_enabled")]
-    pub(crate) es_enabled: bool,
+    es_enabled: bool,
 
     #[serde(
         default,
         deserialize_with = "deserialize_space_separated_or_seq",
         rename = "apm_obfuscation_elasticsearch_keep_values"
     )]
-    pub(crate) es_keep_values: Vec<String>,
+    es_keep_values: Vec<String>,
 
     #[serde(
         default,
         deserialize_with = "deserialize_space_separated_or_seq",
         rename = "apm_obfuscation_elasticsearch_obfuscate_sql_values"
     )]
-    pub(crate) es_obfuscate_sql_values: Vec<String>,
+    es_obfuscate_sql_values: Vec<String>,
 
     #[serde(default, rename = "apm_obfuscation_http_remove_paths_with_digits")]
-    pub(crate) http_remove_path_digits: bool,
+    http_remove_path_digits: bool,
 
     #[serde(default, rename = "apm_obfuscation_http_remove_query_string")]
-    pub(crate) http_remove_query_string: bool,
+    http_remove_query_string: bool,
 
     #[serde(default, rename = "apm_obfuscation_memcached_enabled")]
-    pub(crate) memcached_enabled: bool,
+    memcached_enabled: bool,
 
     #[serde(default, rename = "apm_obfuscation_memcached_keep_command")]
-    pub(crate) memcached_keep_command: bool,
+    memcached_keep_command: bool,
 
     #[serde(default, rename = "apm_obfuscation_mongodb_enabled")]
-    pub(crate) mongo_enabled: bool,
+    mongo_enabled: bool,
 
     #[serde(
         default,
         deserialize_with = "deserialize_space_separated_or_seq",
         rename = "apm_obfuscation_mongodb_keep_values"
     )]
-    pub(crate) mongo_keep_values: Vec<String>,
+    mongo_keep_values: Vec<String>,
 
     #[serde(
         default,
         deserialize_with = "deserialize_space_separated_or_seq",
         rename = "apm_obfuscation_mongodb_obfuscate_sql_values"
     )]
-    pub(crate) mongo_obfuscate_sql_values: Vec<String>,
+    mongo_obfuscate_sql_values: Vec<String>,
 
     #[serde(default, rename = "apm_obfuscation_opensearch_enabled")]
-    pub(crate) open_search_enabled: bool,
+    open_search_enabled: bool,
 
     #[serde(
         default,
         deserialize_with = "deserialize_space_separated_or_seq",
         rename = "apm_obfuscation_opensearch_keep_values"
     )]
-    pub(crate) open_search_keep_values: Vec<String>,
+    open_search_keep_values: Vec<String>,
 
     #[serde(
         default,
         deserialize_with = "deserialize_space_separated_or_seq",
         rename = "apm_obfuscation_opensearch_obfuscate_sql_values"
     )]
-    pub(crate) open_search_obfuscate_sql_values: Vec<String>,
+    open_search_obfuscate_sql_values: Vec<String>,
 
     #[serde(default, rename = "apm_obfuscation_redis_enabled")]
-    pub(crate) redis_enabled: bool,
+    redis_enabled: bool,
 
     #[serde(default, rename = "apm_obfuscation_redis_remove_all_args")]
-    pub(crate) redis_remove_all_args: bool,
+    redis_remove_all_args: bool,
 
     #[serde(default, rename = "apm_obfuscation_valkey_enabled")]
-    pub(crate) valkey_enabled: bool,
+    valkey_enabled: bool,
 
     #[serde(default, rename = "apm_obfuscation_valkey_remove_all_args")]
-    pub(crate) valkey_remove_all_args: bool,
+    valkey_remove_all_args: bool,
 
     #[serde(default, rename = "apm_obfuscation_sql_dbms")]
-    pub(crate) sql_dbms: String,
+    sql_dbms: String,
 
     #[serde(default, rename = "apm_obfuscation_sql_table_names")]
-    pub(crate) sql_table_names: bool,
+    sql_table_names: bool,
 
     #[serde(default, rename = "apm_obfuscation_sql_replace_digits")]
-    pub(crate) sql_replace_digits: bool,
+    sql_replace_digits: bool,
 
     #[serde(default, rename = "apm_obfuscation_sql_keep_sql_alias")]
-    pub(crate) sql_keep_sql_alias: bool,
+    sql_keep_sql_alias: bool,
 
     #[serde(default, rename = "apm_obfuscation_sql_dollar_quoted_func")]
-    pub(crate) sql_dollar_quoted_func: bool,
+    sql_dollar_quoted_func: bool,
 }
 
 impl ObfuscationConfig {

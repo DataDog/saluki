@@ -211,7 +211,7 @@ pub struct ApmConfig {
     rare_sampler: RareSamplerConfig,
 
     /// Obfuscation configuration for trace data.
-    /// Populated via `ObfuscationFlatConfig` in `from_configuration`; not read from serde directly.
+    /// Populated from `ApmConfiguration.obfuscation` in `from_configuration`; not read from serde directly.
     #[serde(skip)]
     obfuscation: ObfuscationConfig,
 }
