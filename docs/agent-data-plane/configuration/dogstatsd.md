@@ -113,11 +113,18 @@ data during a time-bounded request. To collect statistics, run
 window, then returns count and last-seen time per metric context inline as JSON. The CLI uses the
 same API and renders the result as either summary or cardinality analysis.
 
-ADP does not expose the core agent's packet-per-second expvar endpoint, a persistent DogStatsD
-statistics endpoint to scrape, or a runtime toggle for metric-level collection. You do not need to
-set up scraper configuration for this data. The config keys `dogstatsd_stats_enable`,
-`dogstatsd_stats_buffer`, `dogstatsd_stats_port`, and `dogstatsd_metrics_stats_enable` have no
-effect in ADP. See [#1352].
+ADP also exposes internal DogStatsD telemetry through its OpenMetrics endpoint when
+`data_plane.telemetry_enabled` is enabled. Scrape `data_plane.telemetry_listen_addr` to collect
+aggregate DogStatsD counters such as processed message counts, packet and byte counts, packet pool
+usage, and channel latency. This telemetry endpoint is separate from `/dogstatsd/stats`: it does not
+return the per-metric count and last-seen map, and it is not controlled by the core agent's
+`dogstatsd_stats_*` keys.
+
+ADP does not expose the core agent's packet-per-second expvar endpoint, a persistent per-metric
+DogStatsD statistics endpoint to scrape, or a runtime toggle for metric-level collection. You do not
+need to set up scraper configuration for this per-metric data. The config keys
+`dogstatsd_stats_enable`, `dogstatsd_stats_buffer`, `dogstatsd_stats_port`, and
+`dogstatsd_metrics_stats_enable` have no effect in ADP. See [#1352].
 
 ### `dogstatsd_flush_incomplete_buckets`
 
