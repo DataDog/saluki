@@ -128,7 +128,7 @@ run-benchmarks-adp:
     paths:
       - submission_metadata # for provenance, debugging
       - outputs/report.md # for debugging, also on S3
-      - outputs/report.html # for debugging, also on S3
+      - outputs/report.json # for debugging, also on S3
     when: always
   script:
     # Do some pre-flight steps like creating directories, installing helper utilities, setting credentials, and so on.
