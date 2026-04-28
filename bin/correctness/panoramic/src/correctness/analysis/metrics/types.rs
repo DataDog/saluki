@@ -193,7 +193,7 @@ impl NormalizedMetrics {
 
         let metrics = aggregated_context_values
             .into_iter()
-            .map(|((context, _type), values)| NormalizedMetric::try_from_normalized_values(context, values))
+            .map(|((context, _type), values)| NormalizedMetric::try_from_values(context, values))
             .try_fold(Vec::new(), |mut metrics, maybe_metric| {
                 metrics.push(maybe_metric?);
                 Ok::<_, GenericError>(metrics)
