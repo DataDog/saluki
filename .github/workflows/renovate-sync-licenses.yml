@@ -1,0 +1,121 @@
+# Saluki maintains a LICENSE-3rdparty.csv file listing every third-party dependency and its license.
+# The check-licenses CI check verifies that this file is in sync with Cargo.lock. Renovate updates
+# Cargo.lock when it bumps dependency versions, but it has no way to regenerate the license file
+# because that requires running dd-rust-license-tool (a Rust binary). Renovate PRs therefore often
+# fail check-licenses until a human manually runs `make sync-licenses` and pushes the result.
+#
+# This workflow detects Renovate PRs, regenerates LICENSE-3rdparty.csv, and pushes a signed commit
+# back to the PR branch so check-licenses passes without human intervention.
+#
+# Human code reviewers will still see and review the license file changes.
+#
+# Policy considerations:
+#
+# - The commit is authored as github-actions[bot], not renovate[bot]. Renovate considers any commit
+#   by its own identity to be its own work, and will force-push over it on the next rebase cycle.
+#
+# - Pushing the signed commit fires a new `synchronize` event, which re-triggers this workflow. When
+#   LICENSE-3rdparty.csv is already up to date the "Check for changes" step finds no diff and exits.
+
+name: "Renovate: Sync Third-Party Licenses"
+
+on:
+  pull_request:
+    # `opened` catches the initial PR creation.
+    # `synchronize` catches subsequent pushes.
+    types: [opened, synchronize]
+
+jobs:
+  sync-licenses:
+    runs-on: ubuntu-latest
+
+    # Only run for Renovate PRs. The branch prefix check is a second gate because Renovate names all
+    # its branches `renovate/<package>`.
+    if: >
+      github.actor == 'renovate[bot]' &&
+      startsWith(github.head_ref, 'renovate/')
+
+    # cargo install compiles dd-rust-license-tool from source, which can take several minutes on a
+    # cold runner.
+    timeout-minutes: 15
+
+    permissions:
+      # Required by dd-octo-sts-action to request an OIDC token from GitHub, which it exchanges for
+      # a scoped installation token.
+      id-token: write
+
+    steps:
+      # Scoped token with `contents: write` for checkout, push, and commit signing. Policy:
+      # .github/chainguard/self.renovate-sync-licenses.sts.yaml
+      - name: Get access token from dd-octo-sts
+        uses: DataDog/dd-octo-sts-action@96a25462dbcb10ebf0bfd6e2ccc917d2ab235b9a # v1.0.4
+        id: octo-sts
+        with:
+          scope: DataDog/saluki
+          policy: self.renovate-sync-licenses
+
+      # Head branch (not merge commit) so we can push back to it.
+      - name: Checkout PR branch
+        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          ref: ${{ github.head_ref }}
+          token: "${{ steps.octo-sts.outputs.token }}"
+
+      # Toolchain pinned by rust-toolchain.toml. No cache (only the license tool is compiled).
+      # rustflags cleared to suppress the action's default
+      # -D warnings.
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7 # v1.16
+        with:
+          cache: false
+          rustflags: ""
+
+      # Version extracted from the Makefile (single source of truth). `cargo install` instead of
+      # `make` to avoid the protoc dependency in check-rust-build-tools.
+      - name: Install dd-rust-license-tool
+        run: |
+          TOOL_VERSION=$(grep 'CARGO_TOOL_VERSION_dd-rust-license-tool' Makefile | head -1 | sed 's/.*?= //')
+          cargo install "dd-rust-license-tool@${TOOL_VERSION}"
+
+      # `write` reads Cargo.lock and overwrites LICENSE-3rdparty.csv with the current dependency
+      # set. If nothing changed, the file is identical and git diff will report no modifications.
+      - name: Sync third-party license file
+        run: $HOME/.cargo/bin/dd-rust-license-tool write
+
+      # Only commit if the file actually changed. When this workflow re-triggers on its own push,
+      # the license file is already current and this exits with changed=false, preventing an
+      # infinite loop.
+      - name: Check for changes
+        id: changes
+        run: |
+          if git diff --quiet LICENSE-3rdparty.csv; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      # github-actions[bot] is used deliberately so that Renovate will not alter the commit.
+      - name: Configure Git
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Commit changes
+        id: commit
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          git add LICENSE-3rdparty.csv
+          git commit -m "chore(deps): sync third-party license file"
+          echo "commit_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+      # GPG-sign and push. head-sha is the current branch tip for fast-forward verification.
+      - name: Sign and push commit
+        if: steps.changes.outputs.changed == 'true'
+        uses: DataDog/commit-headless@5a0f3876e0fbdd3a86b3e008acf4ec562db59eee # v2.0.1
+        with:
+          token: "${{ steps.octo-sts.outputs.token }}"
+          branch: ${{ github.head_ref }}
+          head-sha: ${{ github.event.pull_request.head.sha }}
+          command: push
+          commits: "${{ steps.commit.outputs.commit_sha }}"
