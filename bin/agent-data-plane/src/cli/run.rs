@@ -191,10 +191,7 @@ pub async fn handle_run_command(
     // Emit the startup metrics for the application.
     emit_startup_metrics();
 
-    info!(
-        init_time_ms = startup_time.as_millis(),
-        "Waiting for interrupt..."
-    );
+    info!(init_time_ms = startup_time.as_millis(), "Waiting for interrupt...");
 
     // Wait for all components to become ready.
     tokio::spawn(async move {

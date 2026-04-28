@@ -44,9 +44,9 @@ impl ApmReceiverConfiguration {
             .try_get_typed::<String>("data_plane.apm.listen_address")?
             .unwrap_or_else(|| DEFAULT_LISTEN_ADDRESS.to_owned());
 
-        let listen_address = addr_str.parse::<SocketAddr>().map_err(|e| {
-            generic_error!("Invalid APM listen address '{}': {}", addr_str, e)
-        })?;
+        let listen_address = addr_str
+            .parse::<SocketAddr>()
+            .map_err(|e| generic_error!("Invalid APM listen address '{}': {}", addr_str, e))?;
 
         Ok(Self { listen_address })
     }
@@ -55,9 +55,7 @@ impl ApmReceiverConfiguration {
 impl Default for ApmReceiverConfiguration {
     fn default() -> Self {
         Self {
-            listen_address: DEFAULT_LISTEN_ADDRESS
-                .parse()
-                .expect("default listen address is valid"),
+            listen_address: DEFAULT_LISTEN_ADDRESS.parse().expect("default listen address is valid"),
         }
     }
 }
@@ -71,7 +69,9 @@ impl SourceBuilder for ApmReceiverConfiguration {
     }
 
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
-        Ok(Box::new(ApmReceiver { listen_address: self.listen_address }))
+        Ok(Box::new(ApmReceiver {
+            listen_address: self.listen_address,
+        }))
     }
 }
 
@@ -121,9 +121,9 @@ impl Source for ApmReceiver {
 
         let (tx, mut rx) = mpsc::channel::<Vec<V1Trace>>(256);
 
-        let listener = TcpListener::bind(self.listen_address).await.map_err(|e| {
-            generic_error!("Failed to bind APM receiver on {}: {}", self.listen_address, e)
-        })?;
+        let listener = TcpListener::bind(self.listen_address)
+            .await
+            .map_err(|e| generic_error!("Failed to bind APM receiver on {}: {}", self.listen_address, e))?;
 
         let app = Router::new()
             .route("/v1.0/traces", post(handle_v1_traces))
@@ -132,8 +132,9 @@ impl Source for ApmReceiver {
         let (server_shutdown_tx, server_shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
         tokio::spawn(async move {
-            let serve = axum::serve(listener, app)
-                .with_graceful_shutdown(async move { let _ = server_shutdown_rx.await; });
+            let serve = axum::serve(listener, app).with_graceful_shutdown(async move {
+                let _ = server_shutdown_rx.await;
+            });
             if let Err(e) = serve.await {
                 error!(error = %e, "APM HTTP server error.");
             }
@@ -182,9 +183,7 @@ fn resolve_payload(raw: RawTracerPayload) -> Vec<V1Trace> {
         .map(|s| MetaString::from_interner(s, &interner))
         .collect();
 
-    let r = |idx: u32| -> MetaString {
-        resolved.get(idx as usize).cloned().unwrap_or_default()
-    };
+    let r = |idx: u32| -> MetaString { resolved.get(idx as usize).cloned().unwrap_or_default() };
 
     // Resolve payload-level attributes once; they are shared across all chunks.
     let payload_attributes = resolve_kvs(raw.attributes, &r);

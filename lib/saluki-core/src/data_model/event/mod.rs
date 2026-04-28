@@ -17,8 +17,8 @@ pub mod log;
 use self::log::Log;
 
 pub mod trace;
-use self::trace::Trace;
 use self::trace::v1::V1Trace;
+use self::trace::Trace;
 
 pub mod trace_stats;
 use self::trace_stats::TraceStats;
