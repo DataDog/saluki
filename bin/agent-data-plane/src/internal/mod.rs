@@ -8,6 +8,8 @@ use saluki_error::GenericError;
 mod control_plane;
 pub use self::control_plane::create_control_plane_supervisor;
 
+pub mod logging;
+
 mod observability;
 pub use self::observability::create_observability_supervisor;
 

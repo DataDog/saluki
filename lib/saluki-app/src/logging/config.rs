@@ -1,69 +1,63 @@
 use bytesize::ByteSize;
-use saluki_common::deser::PermissiveBool;
-use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
-use serde_with::serde_as;
 use tracing_subscriber::{filter::LevelFilter, EnvFilter};
 
-fn default_log_level() -> LogLevel {
-    LevelFilter::INFO.into()
-}
+const DEFAULT_LOG_FILE_MAX_SIZE: ByteSize = ByteSize::mib(10);
+const DEFAULT_LOG_FILE_MAX_ROLLS: usize = 1;
 
-const fn default_true() -> bool {
-    true
-}
-
-const fn default_false() -> bool {
-    false
-}
-
-const fn default_log_file_max_size() -> ByteSize {
-    ByteSize::mib(10)
-}
-
-const fn default_log_file_max_rolls() -> usize {
-    1
-}
-
-#[serde_as]
-#[derive(Deserialize)]
+/// Logging configuration.
+///
+/// This is a plain value type. Callers construct instances directly, either via [`simple`] for a basic
+/// console-only configuration or via a translator that maps from the application's wider configuration into this
+/// type, applying any application-specific rules.
+///
+/// [`simple`]: LoggingConfiguration::simple
 pub struct LoggingConfiguration {
-    #[serde(default = "default_log_level")]
+    /// Verbosity directives (e.g., `info`, `debug`, `saluki=trace`).
     pub log_level: LogLevel,
-    #[serde_as(as = "PermissiveBool")]
-    #[serde(default = "default_false")]
+
+    /// Whether to emit log records as JSON instead of the default human-readable format.
     pub log_format_json: bool,
 
-    #[serde_as(as = "PermissiveBool")]
-    #[serde(default = "default_true")]
+    /// Whether to write log records to standard output.
     pub log_to_console: bool,
 
-    #[serde(default = "String::new")]
+    /// Path to the log file to write to, or empty to disable file logging.
     pub log_file: String,
-    #[serde(default = "default_log_file_max_size")]
+
+    /// Maximum size of a log file before it is rolled over.
     pub log_file_max_size: ByteSize,
-    #[serde(default = "default_log_file_max_rolls")]
+
+    /// Maximum number of rolled-over log files to retain.
     pub log_file_max_rolls: usize,
 }
 
 impl LoggingConfiguration {
-    /// Creates a new `LoggingConfiguration` instance from the given configuration.
+    /// Returns a configuration that writes only to the console in human-readable format at INFO level.
     ///
-    /// # Errors
-    ///
-    /// If the configuration cannot be deserialized as `LoggingConfiguration`, an error is returned.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let logging_config = config.as_typed()?;
-        Ok(logging_config)
+    /// Used as a safe default when an application has not yet supplied an explicit configuration.
+    pub fn simple() -> Self {
+        Self {
+            log_level: LevelFilter::INFO.into(),
+            log_format_json: false,
+            log_to_console: true,
+            log_file: String::new(),
+            log_file_max_size: DEFAULT_LOG_FILE_MAX_SIZE,
+            log_file_max_rolls: DEFAULT_LOG_FILE_MAX_ROLLS,
+        }
     }
 }
 
+/// A parsed `tracing` log level filter.
+///
+/// Wraps [`EnvFilter`] so it can be deserialized from a string (e.g., `"info"`, `"saluki=trace,info"`).
 #[derive(Deserialize)]
 #[serde(try_from = "String")]
 pub struct LogLevel(EnvFilter);
 
 impl LogLevel {
+    /// Returns the underlying `EnvFilter`.
     pub fn as_env_filter(&self) -> EnvFilter {
         self.0.clone()
     }

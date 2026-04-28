@@ -10,16 +10,33 @@ use crate::{
 };
 
 /// A drop guard for ensuring deferred cleanup of resources acquired during bootstrap.
-#[derive(Default)]
 pub struct BootstrapGuard {
-    logging_guard: Option<LoggingGuard>,
+    logging_guard: LoggingGuard,
+}
+
+impl BootstrapGuard {
+    /// Reloads the logging subsystem with the given configuration.
+    ///
+    /// Rebuilds the output layer stack and updates the level filter to match `config`, swapping both atomically into
+    /// the already-installed `tracing` subscriber. Worker guards for the previous outputs are dropped after the swap,
+    /// which flushes any buffered log lines to their original destinations.
+    ///
+    /// This is intended to be called exactly once, after the Datadog Agent has provided its authoritative
+    /// configuration. Further runtime reconfiguration of logging is not supported.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the new output layers cannot be constructed (e.g., the configured log file path is
+    /// inaccessible).
+    pub fn reload_logging(&mut self, config: LoggingConfiguration) -> Result<(), GenericError> {
+        self.logging_guard.reload(config)
+    }
 }
 
 /// Early application initialization.
 ///
 /// This helper type is used to configure the various low-level shared resources required by the application, such as
-/// the logging and metrics subsystems. It allows for programmatic configuration through the use of environment
-/// variables.
+/// the logging and metrics subsystems.
 pub struct AppBootstrapper {
     logging_config: LoggingConfiguration,
     // TODO: Just prefix at the moment.
@@ -27,17 +44,18 @@ pub struct AppBootstrapper {
 }
 
 impl AppBootstrapper {
-    /// Creates a new `AppBootstrapper` from environment-based configuration.
+    /// Creates a new `AppBootstrapper`.
     ///
-    /// Configuration for bootstrapping will be loaded from environment variables, with a prefix of `DD`.
+    /// The bootstrapper is initialized with a [`simple`][LoggingConfiguration::simple] logging configuration. Callers
+    /// that have application-specific logging requirements should follow up with
+    /// [`with_logging_configuration`][Self::with_logging_configuration] to override this default.
     ///
     /// # Errors
     ///
-    /// If the given configuration cannot be deserialized correctly, an error is returned.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let logging_config = LoggingConfiguration::from_configuration(config)?;
+    /// This currently does not fail, but the signature returns `Result` to leave room for future failures.
+    pub fn from_configuration(_config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(Self {
-            logging_config,
+            logging_config: LoggingConfiguration::simple(),
             metrics_config: "saluki".to_string(),
         })
     }
@@ -47,6 +65,15 @@ impl AppBootstrapper {
     /// Defaults to "saluki".
     pub fn with_metrics_prefix<S: Into<String>>(mut self, prefix: S) -> Self {
         self.metrics_config = prefix.into();
+        self
+    }
+
+    /// Sets the logging configuration to use during bootstrap.
+    ///
+    /// Replaces the [`simple`][LoggingConfiguration::simple] default that
+    /// [`from_configuration`][Self::from_configuration] installs.
+    pub fn with_logging_configuration(mut self, logging_config: LoggingConfiguration) -> Self {
+        self.logging_config = logging_config;
         self
     }
 
@@ -60,14 +87,11 @@ impl AppBootstrapper {
     ///
     /// If any of the bootstrap steps fail, an error will be returned.
     pub async fn bootstrap(self) -> Result<BootstrapGuard, GenericError> {
-        let mut bootstrap_guard = BootstrapGuard::default();
-
         // Initialize the logging subsystem first, since we want to make it possible to get any logs from the rest of
         // the bootstrap process.
-        let logging_guard = initialize_logging(&self.logging_config)
+        let logging_guard = initialize_logging(self.logging_config)
             .await
             .error_context("Failed to initialize logging subsystem.")?;
-        bootstrap_guard.logging_guard = Some(logging_guard);
 
         // Initialize everything else.
         initialize_tls().error_context("Failed to initialize TLS subsystem.")?;
@@ -75,6 +99,6 @@ impl AppBootstrapper {
             .await
             .error_context("Failed to initialize metrics subsystem.")?;
 
-        Ok(bootstrap_guard)
+        Ok(BootstrapGuard { logging_guard })
     }
 }

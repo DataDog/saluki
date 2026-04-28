@@ -256,6 +256,20 @@ pub enum AssertionConfig {
         /// Timeout for the health check to succeed.
         timeout: HumanDuration,
     },
+
+    /// Check that a file exists in the container, and optionally that its contents match a pattern.
+    FileContains {
+        /// Absolute path to the file inside the container.
+        path: String,
+        /// Optional pattern that must appear in the file's contents. If omitted, only file existence is checked.
+        #[serde(default)]
+        pattern: Option<String>,
+        /// Whether to interpret `pattern` as a regex.
+        #[serde(default)]
+        regex: bool,
+        /// Timeout for waiting for the file (and pattern, if any) to appear.
+        timeout: HumanDuration,
+    },
 }
 
 /// Which log stream(s) to check.
@@ -281,6 +295,12 @@ impl AssertionConfig {
             AssertionConfig::PortListening { protocol, .. } => {
                 crate::dynamic_vars::resolve_placeholders(protocol, vars);
             }
+            AssertionConfig::FileContains { path, pattern, .. } => {
+                crate::dynamic_vars::resolve_placeholders(path, vars);
+                if let Some(p) = pattern {
+                    crate::dynamic_vars::resolve_placeholders(p, vars);
+                }
+            }
             AssertionConfig::ProcessStableFor { .. } | AssertionConfig::ProcessExitsWith { .. } => {}
         }
     }
@@ -297,6 +317,12 @@ impl AssertionConfig {
             }
             AssertionConfig::PortListening { protocol, .. } => {
                 crate::dynamic_vars::find_unresolved(protocol, &mut out);
+            }
+            AssertionConfig::FileContains { path, pattern, .. } => {
+                crate::dynamic_vars::find_unresolved(path, &mut out);
+                if let Some(p) = pattern {
+                    crate::dynamic_vars::find_unresolved(p, &mut out);
+                }
             }
             AssertionConfig::ProcessStableFor { .. } | AssertionConfig::ProcessExitsWith { .. } => {}
         }

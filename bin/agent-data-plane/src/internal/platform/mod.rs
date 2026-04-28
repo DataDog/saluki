@@ -36,6 +36,11 @@ impl PlatformSettings {
         Path::new(DATADOG_AGENT_CONF_DIR).join("auth_token")
     }
 
+    /// Returns the default log file path for the Agent Data Plane.
+    pub fn get_default_log_file_path() -> PathBuf {
+        Path::new(DATADOG_AGENT_LOG_DIR).join("agent-data-plane.log")
+    }
+
     /// Returns the prefix for all environment variables used by the Datadog Agent.
     pub const fn get_env_var_prefix() -> &'static str {
         DATADOG_AGENT_ENV_VAR_PREFIX

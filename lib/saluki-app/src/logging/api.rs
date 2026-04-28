@@ -1,4 +1,7 @@
-use std::{sync::Mutex, time::Duration};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use saluki_api::{
     extract::{Query, State},
@@ -56,12 +59,12 @@ pub struct LoggingAPIHandler {
 }
 
 impl LoggingAPIHandler {
-    pub(super) fn new(original_filter: EnvFilter, reload_handle: Handle<EnvFilter, Registry>) -> Self {
+    pub(super) fn new(base_filter: Arc<Mutex<EnvFilter>>, reload_handle: Handle<EnvFilter, Registry>) -> Self {
         // Spawn our background task that will handle override requests.
         let (override_tx, override_rx) = mpsc::channel(1);
         spawn_traced_named(
             "dynamic-logging-override-processor",
-            process_override_requests(original_filter, reload_handle, override_rx),
+            process_override_requests(base_filter, reload_handle, override_rx),
         );
 
         Self {
@@ -123,7 +126,7 @@ impl APIHandler for LoggingAPIHandler {
 }
 
 async fn process_override_requests(
-    original_filter: EnvFilter, reload_handle: Handle<EnvFilter, Registry>,
+    base_filter: Arc<Mutex<EnvFilter>>, reload_handle: Handle<EnvFilter, Registry>,
     mut rx: mpsc::Receiver<Option<(Duration, EnvFilter)>>,
 ) {
     let mut override_active = false;
@@ -149,7 +152,7 @@ async fn process_override_requests(
                 },
 
                 Some(None) => {
-                    // We've been instructed to immediately reset the filter back to the original one, so simply update
+                    // We've been instructed to immediately reset the filter back to the base one, so simply update
                     // the override timeout to fire as soon as possible.
                     override_timeout.as_mut().reset(tokio::time::Instant::now());
                 },
@@ -158,18 +161,20 @@ async fn process_override_requests(
                 None => break,
             },
             _ = &mut override_timeout => {
-                // Our override timeout has fired. If we have an active override, reset it back to the original filter.
+                // Our override timeout has fired. If we have an active override, reset it back to the base filter.
                 //
                 // Otherwise, this just means that we've been running for a while without any overrides, so we can just
                 // reset the timeout with a long duration.
                 if override_active {
                     override_active = false;
 
-                    if let Err(e) = reload_handle.reload(original_filter.clone()) {
+                    let restore_filter = base_filter.lock().unwrap().clone();
+                    let restore_directives = restore_filter.to_string();
+                    if let Err(e) = reload_handle.reload(restore_filter) {
                         error!(error = %e, "Failed to reset log filtering directives.");
                     }
 
-                    info!(directives = %original_filter, "Restored original log filtering directives.");
+                    info!(directives = %restore_directives, "Restored base log filtering directives.");
                 }
 
                 override_timeout.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(3600));
@@ -177,8 +182,9 @@ async fn process_override_requests(
         }
     }
 
-    // Reset our filter to the original one before we exit.
-    if let Err(e) = reload_handle.reload(original_filter) {
+    // Reset our filter to the base one before we exit.
+    let restore_filter = base_filter.lock().unwrap().clone();
+    if let Err(e) = reload_handle.reload(restore_filter) {
         error!(error = %e, "Failed to reset log filtering directives before override handler shutdown.");
     }
 }

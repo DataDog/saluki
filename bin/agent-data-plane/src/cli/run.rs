@@ -7,6 +7,7 @@ use argh::FromArgs;
 use futures::FutureExt as _;
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::{
+    bootstrap::BootstrapGuard,
     memory::{initialize_memory_bounds, MemoryBoundsConfiguration},
     metrics::emit_startup_metrics,
 };
@@ -42,7 +43,7 @@ use crate::{
         apm_onboarding::ApmOnboardingConfiguration, ottl_filter_processor::OttlFilterConfiguration,
         ottl_transform_processor::OttlTransformConfiguration, tag_filterlist::TagFilterlistConfiguration,
     },
-    internal::{create_internal_supervisor, remote_agent::RemoteAgentBootstrap},
+    internal::{create_internal_supervisor, logging::LoggingConfigurationTranslator, remote_agent::RemoteAgentBootstrap},
 };
 use crate::{config::DataPlaneConfiguration, env_provider::ADPEnvironmentProvider};
 
@@ -58,6 +59,7 @@ pub struct RunCommand {
 /// Entrypoint for the `run` commands.
 pub async fn handle_run_command(
     started: Instant, bootstrap_config_path: PathBuf, bootstrap_config: GenericConfiguration,
+    bootstrap_guard: &mut BootstrapGuard,
 ) -> Result<(), GenericError> {
     let app_details = saluki_metadata::get_app_details();
     info!(
@@ -110,6 +112,24 @@ pub async fn handle_run_command(
             info!("Waiting for initial configuration from Datadog Agent...");
             dynamic_config.ready().await;
             info!("Initial configuration received.");
+
+            // Now that the Datadog Agent has supplied its authoritative configuration, reload the logging subsystem
+            // so its destinations, format, and level reflect what the Agent specifies rather than the bootstrap-phase
+            // defaults.
+            match LoggingConfigurationTranslator::translate(&dynamic_config) {
+                Ok(logging_config) => {
+                    if let Err(e) = bootstrap_guard.reload_logging(logging_config) {
+                        warn!(
+                            error = %e,
+                            "Failed to reload logging from Agent configuration; continuing with bootstrap logging settings."
+                        );
+                    }
+                }
+                Err(e) => warn!(
+                    error = %e,
+                    "Failed to translate logging configuration from Agent; continuing with bootstrap logging settings."
+                ),
+            }
 
             // Reload our data plane configuration based on the dynamic configuration.
             let dynamic_dp_config = DataPlaneConfiguration::from_configuration(&dynamic_config)

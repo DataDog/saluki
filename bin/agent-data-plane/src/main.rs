@@ -7,7 +7,7 @@
 #![deny(missing_docs)]
 use std::{path::PathBuf, time::Instant};
 
-use saluki_app::bootstrap::AppBootstrapper;
+use saluki_app::bootstrap::{AppBootstrapper, BootstrapGuard};
 use saluki_components::config::{DatadogRemapper, KEY_ALIASES};
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_error::{ErrorContext as _, GenericError};
@@ -15,7 +15,7 @@ use tracing::{error, info, warn};
 
 mod cli;
 use self::cli::*;
-use crate::internal::platform::PlatformSettings;
+use crate::internal::{logging::LoggingConfigurationTranslator, platform::PlatformSettings};
 
 mod components;
 mod config;
@@ -51,23 +51,36 @@ async fn main() -> Result<(), GenericError> {
         .error_context("Environment variable prefix should not be empty.")?
         .bootstrap_generic();
 
+    // Translate the bootstrap configuration into ADP's logging configuration, applying ADP-specific rules
+    // (per-subagent log file key, never sharing a file with the Core Agent).
+    let bootstrap_logging_config = LoggingConfigurationTranslator::translate(&bootstrap_config)
+        .error_context("Failed to translate logging configuration during bootstrap phase.")?;
+
     // Proceed with bootstrapping.
     //
     // This initializes logging, metrics, allocator telemetry, TLS, and more. We get handled a guard that we need to
     // hold until the application is about to exit, which ensures things like flushing any buffered logs, and so on.
     let bootstrapper = AppBootstrapper::from_configuration(&bootstrap_config)
         .error_context("Failed to parse bootstrap configuration during bootstrap phase.")?
-        .with_metrics_prefix("adp");
-    let _bootstrap_guard = bootstrapper
+        .with_metrics_prefix("adp")
+        .with_logging_configuration(bootstrap_logging_config);
+    let mut bootstrap_guard = bootstrapper
         .bootstrap()
         .await
         .error_context("Failed to complete bootstrap phase.")?;
 
     // Run the given subcommand.
-    let maybe_exit_code = run_inner(cli.action, started, bootstrap_config_path, bootstrap_config).await?;
+    let maybe_exit_code = run_inner(
+        cli.action,
+        started,
+        bootstrap_config_path,
+        bootstrap_config,
+        &mut bootstrap_guard,
+    )
+    .await?;
 
     // Drop the bootstrap guard to ensure logs are flushed, etc.
-    drop(_bootstrap_guard);
+    drop(bootstrap_guard);
 
     // Exit with the specific exit code, if one was provided.
     if let Some(exit_code) = maybe_exit_code {
@@ -79,6 +92,7 @@ async fn main() -> Result<(), GenericError> {
 
 async fn run_inner(
     action: Action, started: Instant, bootstrap_config_path: PathBuf, bootstrap_config: GenericConfiguration,
+    bootstrap_guard: &mut BootstrapGuard,
 ) -> Result<Option<i32>, GenericError> {
     match action {
         Action::Run(cmd) => {
@@ -91,16 +105,17 @@ async fn run_inner(
                 }
             }
 
-            let exit_code = match handle_run_command(started, bootstrap_config_path, bootstrap_config).await {
-                Ok(()) => {
-                    info!("Agent Data Plane stopped.");
-                    None
-                }
-                Err(e) => {
-                    error!("{:?}", e);
-                    Some(1)
-                }
-            };
+            let exit_code =
+                match handle_run_command(started, bootstrap_config_path, bootstrap_config, bootstrap_guard).await {
+                    Ok(()) => {
+                        info!("Agent Data Plane stopped.");
+                        None
+                    }
+                    Err(e) => {
+                        error!("{:?}", e);
+                        Some(1)
+                    }
+                };
 
             // Remove the PID file, if configured.
             if let Some(pid_file) = &cmd.pid_file {
