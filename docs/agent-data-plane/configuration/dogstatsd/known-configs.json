@@ -686,7 +686,7 @@
   {
     "key": "dogstatsd_metrics_stats_enable",
     "feature_state": "DIVERGENT",
-    "action": "DOCUMENT",
+    "action": "DOCUMENTED",
     "description": "Enable per-metric debug stats",
     "reason": "ADP uses an on-demand privileged API and CLI flow for metric-level DogStatsD statistics instead of this config toggle.",
     "issue": "#1352",
