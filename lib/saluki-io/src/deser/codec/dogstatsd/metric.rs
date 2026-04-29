@@ -111,7 +111,6 @@ pub fn parse_dogstatsd_metric<'a>(
                     maybe_tags = Some(tags);
                 }
                 // Local Data: client-provided data used for resolving the entity ID that this metric originated from.
-
                 b'c' if chunk.len() > 1 && chunk[1] == b':' => {
                     if config.client_origin_detection {
                         let (_, local_data) = all_consuming(preceded(tag("c:"), local_data)).parse(chunk)?;
@@ -126,7 +125,6 @@ pub fn parse_dogstatsd_metric<'a>(
                     }
                 }
                 // External Data: client-provided data used for resolving the entity ID that this metric originated from.
-
                 b'e' if chunk.len() > 1 && chunk[1] == b':' => {
                     if config.client_origin_detection {
                         let (_, external_data) = all_consuming(preceded(tag("e:"), external_data)).parse(chunk)?;
@@ -134,7 +132,6 @@ pub fn parse_dogstatsd_metric<'a>(
                     }
                 }
                 // Cardinality: client-provided cardinality for the metric.
-
                 b'c' if chunk.starts_with(CARDINALITY_PREFIX) => {
                     if config.client_origin_detection {
                         let (_, cardinality) = cardinality(chunk)?;

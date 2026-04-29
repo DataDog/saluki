@@ -126,7 +126,6 @@ pub fn parse_dogstatsd_event<'a>(
                     maybe_alert_type = AlertType::try_from_string(alert_type);
                 }
                 // Local Data: client-provided data used for resolving the entity ID that this event originated from.
-
                 LOCAL_DATA_PREFIX => {
                     if config.client_origin_detection && chunk != LOCAL_DATA_PREFIX {
                         let (_, local_data) =
@@ -135,7 +134,6 @@ pub fn parse_dogstatsd_event<'a>(
                     }
                 }
                 // External Data: client-provided data used for resolving the entity ID that this event originated from.
-
                 EXTERNAL_DATA_PREFIX => {
                     if config.client_origin_detection && chunk != EXTERNAL_DATA_PREFIX {
                         let (_, external_data) =
@@ -144,7 +142,6 @@ pub fn parse_dogstatsd_event<'a>(
                     }
                 }
                 // Cardinality: client-provided cardinality for the event.
-
                 _ if chunk.starts_with(CARDINALITY_PREFIX) => {
                     if config.client_origin_detection && chunk != CARDINALITY_PREFIX {
                         let (_, cardinality) = cardinality(chunk)?;
