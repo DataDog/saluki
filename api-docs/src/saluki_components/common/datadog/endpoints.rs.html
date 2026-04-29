@@ -136,7 +136,7 @@
 <a href=#136 id=136 data-nosnippet>136</a>    /// which are both useful when proxying traffic to an intermediate destination before forwarding to Datadog.
 <a href=#137 id=137 data-nosnippet>137</a>    ///
 <a href=#138 id=138 data-nosnippet>138</a>    /// Defaults to unset.
-<a href=#139 id=139 data-nosnippet>139</a>    </span><span class="attr">#[serde(default)]
+<a href=#139 id=139 data-nosnippet>139</a>    </span><span class="attr">#[serde(default, alias = <span class="string">"url"</span>)]
 <a href=#140 id=140 data-nosnippet>140</a>    </span>dd_url: <span class="prelude-ty">Option</span>&lt;String&gt;,
 <a href=#141 id=141 data-nosnippet>141</a>
 <a href=#142 id=142 data-nosnippet>142</a>    <span class="doccomment">/// Enables sending data to multiple endpoints and/or with multiple API keys via dual shipping.
