@@ -4,17 +4,48 @@
 //! shared (level, format, console output, rotation), but it must use its own per-subagent destination so it does not
 //! collide with the Core Agent's own log file. This module owns those rules in one place.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use bytesize::ByteSize;
 use saluki_app::logging::{LogLevel, LoggingConfiguration};
 use saluki_common::deser::PermissiveBool;
-use saluki_config::GenericConfiguration;
+use saluki_config::{value::Value as ConfigValue, GenericConfiguration};
 use saluki_error::{ErrorContext as _, GenericError};
 use serde::Deserialize;
 use serde_with::serde_as;
+use tracing::warn;
 
 use crate::internal::platform::PlatformSettings;
 
 const DATA_PLANE_LOG_FILE_KEY: &str = "data_plane.log_file";
+const LOGGING_FREQUENCY_KEY: &str = "logging_frequency";
+static LOGGING_FREQUENCY_WARNING_EMITTED: AtomicBool = AtomicBool::new(false);
+// `tracing` targets use Rust crate/module names, so Cargo package names with hyphens appear with underscores.
+const FIRST_PARTY_LOG_TARGETS: &[&str] = &[
+    "agent_data_plane",
+    "containerd_protos",
+    "datadog_protos",
+    "ddsketch",
+    "memory_accounting",
+    "otlp_protos",
+    "ottl",
+    "process_memory",
+    "prometheus_exposition",
+    "saluki_api",
+    "saluki_app",
+    "saluki_common",
+    "saluki_components",
+    "saluki_config",
+    "saluki_context",
+    "saluki_core",
+    "saluki_env",
+    "saluki_error",
+    "saluki_io",
+    "saluki_metadata",
+    "saluki_metrics",
+    "saluki_tls",
+    "stringtheory",
+];
 
 /// Logging configuration translator for matching the Datadog Agent's logging behavior.
 ///
@@ -37,10 +68,12 @@ impl LoggingConfigurationTranslator {
         let mut logging = LoggingConfiguration::simple();
 
         if let Some(level) = config
-            .try_get_typed::<LogLevel>("log_level")
+            .try_get_typed::<String>("log_level")
             .error_context("Failed to read `log_level`.")?
         {
-            logging.log_level = level;
+            logging.log_level = parse_adp_log_level(&level)?;
+        } else {
+            logging.log_level = first_party_log_level_filter("info")?;
         }
 
         if let Some(format_json) = read_permissive_bool(config, "log_format_json")? {
@@ -86,6 +119,22 @@ impl LoggingConfigurationTranslator {
     }
 }
 
+/// Warns once when `logging_frequency` appears in the Agent configuration.
+pub(crate) fn warn_if_logging_frequency_configured(config: &GenericConfiguration) {
+    if !logging_frequency_configured(config) {
+        return;
+    }
+
+    if LOGGING_FREQUENCY_WARNING_EMITTED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+
+    warn!(
+        "`logging_frequency` is configured, but Agent Data Plane does not use it. Successful forwarder operations are \
+        logged below the default `info` level; use `log_level` to control ADP log verbosity."
+    );
+}
+
 /// Reads a configuration key as a permissive boolean (accepts `true`/`false`, `"true"`/`"false"`, `"1"`/`"0"`, etc.).
 ///
 /// Returns `Ok(None)` if the key is absent.
@@ -96,6 +145,178 @@ fn read_permissive_bool(config: &GenericConfiguration, key: &str) -> Result<Opti
         .map(|v| v.0))
 }
 
+fn logging_frequency_configured(config: &GenericConfiguration) -> bool {
+    match config.try_get_typed::<ConfigValue>(LOGGING_FREQUENCY_KEY) {
+        Ok(Some(_)) => true,
+        Ok(None) => false,
+        Err(e) => {
+            warn!(
+                error = %e,
+                "`logging_frequency` could not be inspected; continuing without applying it."
+            );
+            false
+        }
+    }
+}
+
 #[serde_as]
 #[derive(Deserialize)]
 struct PermissiveBoolValue(#[serde_as(as = "PermissiveBool")] bool);
+
+fn parse_adp_log_level(value: &str) -> Result<LogLevel, GenericError> {
+    let trimmed = value.trim();
+    if let Some(level) = plain_log_level(trimmed) {
+        first_party_log_level_filter(level)
+    } else {
+        LogLevel::try_from(value.to_string()).error_context("Failed to parse `log_level`.")
+    }
+}
+
+fn plain_log_level(value: &str) -> Option<&'static str> {
+    match value.to_ascii_lowercase().as_str() {
+        "trace" => Some("trace"),
+        "debug" => Some("debug"),
+        "info" => Some("info"),
+        "warn" => Some("warn"),
+        "error" => Some("error"),
+        "off" => Some("off"),
+        _ => None,
+    }
+}
+
+fn first_party_log_level_filter(level: &str) -> Result<LogLevel, GenericError> {
+    let filter = FIRST_PARTY_LOG_TARGETS
+        .iter()
+        .map(|target| format!("{target}={level}"))
+        .collect::<Vec<_>>()
+        .join(",");
+
+    LogLevel::try_from(filter).error_context("Failed to build first-party `log_level` filter.")
+}
+
+#[cfg(test)]
+mod tests {
+    use saluki_config::ConfigurationLoader;
+    use serde_json::{json, Value};
+
+    use super::*;
+
+    async fn translate_filter(config_json: Option<Value>) -> Result<String, GenericError> {
+        let (config, _) = ConfigurationLoader::for_tests(config_json, None, false).await;
+        LoggingConfigurationTranslator::translate(&config).map(|logging| logging.log_level.as_env_filter().to_string())
+    }
+
+    async fn translate_filter_directives(config_json: Option<Value>) -> Result<Vec<String>, GenericError> {
+        translate_filter(config_json)
+            .await
+            .map(|filter| filter.split(',').map(str::to_string).collect())
+    }
+
+    async fn logging_frequency_present(config_json: Option<Value>) -> bool {
+        let (config, _) = ConfigurationLoader::for_tests(config_json, None, false).await;
+        logging_frequency_configured(&config)
+    }
+
+    #[tokio::test]
+    async fn missing_log_level_defaults_to_first_party_info() {
+        let filter = translate_filter(None).await.expect("translate logging config");
+
+        assert!(filter.contains("agent_data_plane=info"));
+    }
+
+    #[tokio::test]
+    async fn plain_log_level_becomes_first_party_filter() {
+        let directives = translate_filter_directives(Some(json!({ "log_level": "warn" })))
+            .await
+            .expect("translate logging config");
+
+        assert!(directives.contains(&"agent_data_plane=warn".to_string()));
+        assert!(directives.contains(&"saluki_components=warn".to_string()));
+    }
+
+    #[tokio::test]
+    async fn plain_log_level_does_not_enable_dependency_targets() {
+        let directives = translate_filter_directives(Some(json!({ "log_level": "warn" })))
+            .await
+            .expect("translate logging config");
+
+        assert!(!directives.contains(&"hyper=warn".to_string()));
+        assert!(!directives.contains(&"tokio=warn".to_string()));
+        assert!(!directives.contains(&"tonic=warn".to_string()));
+    }
+
+    #[tokio::test]
+    async fn plain_log_level_does_not_include_global_directive() {
+        let directives = translate_filter_directives(Some(json!({ "log_level": "warn" })))
+            .await
+            .expect("translate logging config");
+
+        assert!(!directives.contains(&"warn".to_string()));
+    }
+
+    #[tokio::test]
+    async fn env_plain_log_level_becomes_first_party_filter() {
+        let env_vars = [("LOG_LEVEL".to_string(), "warn".to_string())];
+        let (config, _) = ConfigurationLoader::for_tests(None, Some(&env_vars), false).await;
+        let filter = LoggingConfigurationTranslator::translate(&config)
+            .expect("translate logging config")
+            .log_level
+            .as_env_filter()
+            .to_string();
+
+        assert!(filter.contains("agent_data_plane=warn"));
+    }
+
+    #[tokio::test]
+    async fn plain_log_level_is_case_insensitive() {
+        let filter = translate_filter(Some(json!({ "log_level": "WaRn" })))
+            .await
+            .expect("translate logging config");
+
+        assert!(filter.contains("agent_data_plane=warn"));
+    }
+
+    #[tokio::test]
+    async fn advanced_log_level_directives_are_preserved() {
+        let directives = translate_filter_directives(Some(json!({
+            "log_level": "warn,agent_data_plane=debug,hyper=warn"
+        })))
+        .await
+        .expect("translate logging config");
+
+        assert!(directives.contains(&"warn".to_string()));
+        assert!(directives.contains(&"agent_data_plane=debug".to_string()));
+        assert!(directives.contains(&"hyper=warn".to_string()));
+    }
+
+    #[tokio::test]
+    async fn invalid_log_level_returns_error() {
+        let error = translate_filter(Some(json!({ "log_level": "agent_data_plane=verbose" })))
+            .await
+            .expect_err("invalid log level should fail");
+
+        assert!(error.to_string().contains("log_level"));
+    }
+
+    #[tokio::test]
+    async fn logging_frequency_detection_is_false_when_absent() {
+        assert!(!logging_frequency_present(None).await);
+    }
+
+    #[tokio::test]
+    async fn logging_frequency_detection_accepts_numeric_value() {
+        assert!(logging_frequency_present(Some(json!({ "logging_frequency": 500 }))).await);
+    }
+
+    #[tokio::test]
+    async fn logging_frequency_detection_does_not_depend_on_value_type() {
+        for value in [
+            json!("500"),
+            json!(true),
+            json!(["unexpected", "sequence"]),
+            json!({ "unexpected": "object" }),
+        ] {
+            assert!(logging_frequency_present(Some(json!({ "logging_frequency": value }))).await);
+        }
+    }
+}

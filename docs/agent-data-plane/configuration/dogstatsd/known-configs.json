@@ -1324,10 +1324,10 @@
   },
   {
     "key": "log_level",
-    "feature_state": "PARITY",
+    "feature_state": "DIVERGENT",
     "action": "NONE",
-    "description": "Log verbosity level",
-    "reason": "Implemented in ADP. No action needed.",
+    "description": "Log verbosity level/filter directives",
+    "reason": "Plain levels apply to ADP and Saluki-owned targets only. Advanced EnvFilter directives remain supported for dependency targets and global fallback behavior.",
     "issue": null,
     "adp_key": null
   },
@@ -1351,11 +1351,11 @@
   },
   {
     "key": "logging_frequency",
-    "feature_state": "MISSING",
-    "action": "IMPLEMENT",
+    "feature_state": "DIVERGENT",
+    "action": "NONE",
     "description": "Transaction success log interval",
-    "reason": "Core agent logs every Nth successful transaction via logging_frequency. ADP has no equivalent mechanism.",
-    "issue": "#1380",
+    "reason": "Core agent uses logging_frequency to throttle repetitive successful transaction logs. ADP logs successful forwarder operations below the default info level, so this key is intentionally unused; ADP warns when it is configured.",
+    "issue": null,
     "adp_key": null
   },
   {
