@@ -157,7 +157,7 @@ impl Stream {
     }
 
     #[cfg(test)]
-    pub(crate) fn recv_buffer_size_for_tests(&self) -> io::Result<usize> {
+    pub(crate) fn recv_buffer_size(&self) -> io::Result<usize> {
         match &self.inner {
             StreamInner::Connection { socket } => match socket {
                 Connection::Tcp(inner, _) => socket2::SockRef::from(inner).recv_buffer_size(),

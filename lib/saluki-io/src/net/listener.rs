@@ -179,10 +179,9 @@ impl Listener {
 
     /// Sets the socket receive buffer size for this listener.
     ///
-    /// The receive buffer size applies only to UDP and Unix domain socket listeners. A value of `0` keeps the OS
-    /// default.
-    pub fn with_receive_buffer_size(mut self, socket_receive_buffer_size: usize) -> Self {
-        self.socket_receive_buffer_size = (socket_receive_buffer_size != 0).then_some(socket_receive_buffer_size);
+    /// The receive buffer size applies to accepted streams. `None` keeps the OS default.
+    pub fn with_receive_buffer_size(mut self, socket_receive_buffer_size: Option<usize>) -> Self {
+        self.socket_receive_buffer_size = socket_receive_buffer_size;
         self
     }
 
@@ -202,17 +201,22 @@ impl Listener {
     /// If the listener fails to accept a new stream, or if the accepted stream cannot be configured correctly, an error
     /// is returned.
     pub async fn accept(&mut self) -> Result<Stream, ListenerError> {
+        let stream_type = self.listen_address.listener_type();
         match &mut self.inner {
-            ListenerInner::Tcp(tcp) => tcp.accept().await.map(Into::into).context(FailedToAccept {
-                address: self.listen_address.clone(),
-            }),
+            ListenerInner::Tcp(tcp) => {
+                let (socket, addr) = tcp.accept().await.context(FailedToAccept {
+                    address: self.listen_address.clone(),
+                })?;
+                configure_stream_socket_receive_buffer_size(&socket, self.socket_receive_buffer_size, stream_type)?;
+                Ok((socket, addr).into())
+            }
             ListenerInner::Udp(udp) => {
                 // TODO: We only emit a single stream here, but we _could_ do something like an internal configuration
                 // to allow for multiple streams to be emitted, where the socket is bound via SO_REUSEPORT and then we
                 // get load balancing between the sockets.... basically make it possible to parallelize UDP handling if
                 // that's a thing we want to do.
                 if let Some(socket) = udp.take() {
-                    configure_stream_socket_receive_buffer_size(&socket, self.socket_receive_buffer_size, "UDP")?;
+                    configure_stream_socket_receive_buffer_size(&socket, self.socket_receive_buffer_size, stream_type)?;
                     Ok(socket.into())
                 } else {
                     pending().await
@@ -221,14 +225,10 @@ impl Listener {
             #[cfg(unix)]
             ListenerInner::Unixgram(unix) => {
                 if let Some(socket) = unix.take() {
-                    configure_stream_socket_receive_buffer_size(
-                        &socket,
-                        self.socket_receive_buffer_size,
-                        "UDS (datagram)",
-                    )?;
+                    configure_stream_socket_receive_buffer_size(&socket, self.socket_receive_buffer_size, stream_type)?;
                     enable_uds_socket_credentials(&socket).context(FailedToConfigureStream {
                         setting: "SO_PASSCRED",
-                        stream_type: "UDS (datagram)",
+                        stream_type,
                     })?;
                     Ok(socket.into())
                 } else {
@@ -243,14 +243,10 @@ impl Listener {
                     address: self.listen_address.clone(),
                 })
                 .and_then(|(socket, _)| {
-                    configure_stream_socket_receive_buffer_size(
-                        &socket,
-                        self.socket_receive_buffer_size,
-                        "UDS (stream)",
-                    )?;
+                    configure_stream_socket_receive_buffer_size(&socket, self.socket_receive_buffer_size, stream_type)?;
                     enable_uds_socket_credentials(&socket).context(FailedToConfigureStream {
                         setting: "SO_PASSCRED",
-                        stream_type: "UDS (stream)",
+                        stream_type,
                     })?;
                     Ok(socket.into())
                 }),
@@ -381,9 +377,10 @@ impl ConnectionOrientedListener {
                     address: self.listen_address.clone(),
                 })
                 .and_then(|(socket, _)| {
+                    let stream_type = self.listen_address.listener_type();
                     enable_uds_socket_credentials(&socket).context(FailedToConfigureStream {
                         setting: "SO_PASSCRED",
-                        stream_type: "UDS (stream)",
+                        stream_type,
                     })?;
                     Ok(Connection::Unix(socket))
                 }),
@@ -414,20 +411,20 @@ mod tests {
             .await
             .expect("default stream should be accepted");
         let default_recv_buffer_size = default_stream
-            .recv_buffer_size_for_tests()
+            .recv_buffer_size()
             .expect("receive buffer size should be available");
 
         let zero_address = ListenAddress::Udp(([127, 0, 0, 1], 0).into());
         let mut zero_listener = Listener::from_listen_address(zero_address)
             .await
             .expect("zero-sized listener should bind")
-            .with_receive_buffer_size(0);
+            .with_receive_buffer_size(None);
         let zero_stream = zero_listener
             .accept()
             .await
             .expect("zero-sized stream should be accepted");
         let zero_recv_buffer_size = zero_stream
-            .recv_buffer_size_for_tests()
+            .recv_buffer_size()
             .expect("receive buffer size should be available");
 
         assert_eq!(zero_recv_buffer_size, default_recv_buffer_size);
@@ -439,7 +436,7 @@ mod tests {
         let mut listener = Listener::from_listen_address(address)
             .await
             .expect("listener should bind")
-            .with_receive_buffer_size(REQUESTED_RECV_BUFFER_SIZE);
+            .with_receive_buffer_size(Some(REQUESTED_RECV_BUFFER_SIZE));
         let local_addr = udp_local_addr(&listener).expect("local addr should be available");
 
         let sender = TokioUdpSocket::bind("127.0.0.1:0").await.expect("sender should bind");
@@ -450,7 +447,7 @@ mod tests {
 
         let mut stream = listener.accept().await.expect("listener should accept UDP stream");
         let actual_recv_buffer_size = stream
-            .recv_buffer_size_for_tests()
+            .recv_buffer_size()
             .expect("receive buffer size should be available");
         assert!(
             actual_recv_buffer_size >= REQUESTED_RECV_BUFFER_SIZE,
@@ -468,12 +465,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tcp_listener_ignores_receive_buffer_size() {
+    async fn tcp_listener_sets_receive_buffer_size() {
         let address = ListenAddress::Tcp(([127, 0, 0, 1], 0).into());
         let mut listener = Listener::from_listen_address(address)
             .await
             .expect("listener should bind")
-            .with_receive_buffer_size(usize::MAX);
+            .with_receive_buffer_size(Some(REQUESTED_RECV_BUFFER_SIZE));
         let local_addr = tcp_local_addr(&listener).expect("local addr should be available");
 
         let client = tokio::spawn(async move { TcpStream::connect(local_addr).await });
@@ -486,6 +483,13 @@ mod tests {
             .expect("client task should complete")
             .expect("client should connect");
 
+        let actual_recv_buffer_size = stream
+            .recv_buffer_size()
+            .expect("receive buffer size should be available");
+        assert!(
+            actual_recv_buffer_size >= REQUESTED_RECV_BUFFER_SIZE,
+            "expected receive buffer size >= {REQUESTED_RECV_BUFFER_SIZE}, got {actual_recv_buffer_size}"
+        );
         assert!(!stream.is_connectionless());
     }
 
@@ -498,7 +502,7 @@ mod tests {
         let mut listener = Listener::from_listen_address(address)
             .await
             .expect("listener should bind")
-            .with_receive_buffer_size(REQUESTED_RECV_BUFFER_SIZE);
+            .with_receive_buffer_size(Some(REQUESTED_RECV_BUFFER_SIZE));
 
         let sender = tokio::net::UnixDatagram::unbound().expect("sender should be created");
         sender
@@ -511,7 +515,7 @@ mod tests {
             .await
             .expect("listener should accept UDS datagram stream");
         let actual_recv_buffer_size = stream
-            .recv_buffer_size_for_tests()
+            .recv_buffer_size()
             .expect("receive buffer size should be available");
         assert!(
             actual_recv_buffer_size >= REQUESTED_RECV_BUFFER_SIZE,
@@ -537,7 +541,7 @@ mod tests {
         let mut listener = Listener::from_listen_address(address)
             .await
             .expect("listener should bind")
-            .with_receive_buffer_size(REQUESTED_RECV_BUFFER_SIZE);
+            .with_receive_buffer_size(Some(REQUESTED_RECV_BUFFER_SIZE));
 
         let client = tokio::spawn(async move { tokio::net::UnixStream::connect(socket_path).await });
         let stream = timeout(Duration::from_secs(1), listener.accept())
@@ -550,7 +554,7 @@ mod tests {
             .expect("client should connect");
 
         let actual_recv_buffer_size = stream
-            .recv_buffer_size_for_tests()
+            .recv_buffer_size()
             .expect("receive buffer size should be available");
         assert!(
             actual_recv_buffer_size >= REQUESTED_RECV_BUFFER_SIZE,
