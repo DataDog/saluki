@@ -739,10 +739,10 @@
   },
   {
     "key": "dogstatsd_origin_detection_client",
-    "feature_state": "DIVERGENT",
-    "action": "INVESTIGATE",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Honor client origin proto fields",
-    "reason": "Agent gates parsing of client-provided local_data (container ID extension), external_data, and |card: cardinality fields on this boolean (default false), to avoid changing tag cardinality for existing installations. ADP always parses these fields unconditionally. User-visible consequence: clients sending container ID or cardinality extensions will have them honored on ADP but silently ignored on the Agent by default.",
+    "reason": "ADP gates parsing of the c: (local data), e: (external data), and card: (cardinality) client-provided fields on this key, defaulting to false, matching the Agent. Implemented in #1426.",
     "issue": "#1426",
     "adp_key": null
   },

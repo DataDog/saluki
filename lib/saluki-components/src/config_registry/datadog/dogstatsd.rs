@@ -115,6 +115,17 @@ crate::declare_annotations! {
         test_json: None,
     };
 
+    /// `dogstatsd_origin_detection_client` — enable container enrichment fields.
+    DOGSTATSD_ORIGIN_DETECTION_CLIENT = SalukiAnnotation {
+        schema: &schema::DOGSTATSD_ORIGIN_DETECTION_CLIENT,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DOGSTATSD_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+    };
+
     /// `dogstatsd_origin_optout_enabled` — skip enrichment when cardinality=none.
     DOGSTATSD_ORIGIN_OPTOUT_ENABLED = SalukiAnnotation {
         schema: &schema::DOGSTATSD_ORIGIN_OPTOUT_ENABLED,

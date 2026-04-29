@@ -1,6 +1,6 @@
 # Configuring DogStatsD on Agent Data Plane
 
-<!-- Last updated: 2026-04-27 -->
+<!-- Last updated: 2026-04-29 -->
 
 The DogStatsD implementation on ADP has been redesigned in Rust for better resource guarantees and
 efficiency. Because the architecture is different from the original implementation, certain
@@ -137,7 +137,6 @@ ways that are not yet fully characterized.
 | Config Key                                         | Description                      | Issue   |
 |----------------------------------------------------|----------------------------------|---------|
 | `dogstatsd_disable_verbose_logs`                   | Suppress noisy parse error logs  |         |
-| `dogstatsd_origin_detection_client`                | Honor client origin proto fields | [#1426] |
 | `forwarder_apikey_validation_interval`             | API key check interval (mins)    |         |
 | `forwarder_flush_to_disk_mem_ratio`                | Mem-to-disk flush threshold      |         |
 | `forwarder_high_prio_buffer_size`                  | High-priority request queue size |         |
@@ -244,6 +243,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `dogstatsd_no_aggregation_pipeline`       | Enable no-agg timestamped path   |
 | `dogstatsd_non_local_traffic`             | Accept non-localhost UDP/TCP     |
 | `dogstatsd_origin_detection`              | Enable UDS origin detection      |
+| `dogstatsd_origin_detection_client`       | Honor client origin proto fields |
 | `dogstatsd_origin_optout_enabled`         | Allow clients to opt out origin  |
 | `dogstatsd_port`                          | UDP listen port                  |
 | `dogstatsd_socket`                        | UDS datagram socket path         |
@@ -325,7 +325,6 @@ The following settings work in ADP with the same behavior as the core agent.
 [#1372]: https://github.com/DataDog/saluki/issues/1372
 [#1373]: https://github.com/DataDog/saluki/issues/1373
 [#1377]: https://github.com/DataDog/saluki/issues/1377
-[#1426]: https://github.com/DataDog/saluki/issues/1426
 [#1380]: https://github.com/DataDog/saluki/issues/1380
 [#1381]: https://github.com/DataDog/saluki/issues/1381
 [#1382]: https://github.com/DataDog/saluki/issues/1382

@@ -29,8 +29,11 @@ pub struct MetricPacket<'a> {
     pub values: MetricValues,
     pub num_points: u64,
     pub timestamp: Option<u64>,
+    /// Extension to the statsd protocol. Prefixed with `c:` and used to carry a container ID.
     pub local_data: Option<&'a str>,
+    /// Extension to the statsd protocol. Prefixed with `e:` and used to carry a richer blob of workload identity data.
     pub external_data: Option<&'a str>,
+    /// Extension to the statsd protocol. Prefixed with `card:` and used to specify which origin fields should be used.
     pub cardinality: Option<OriginTagCardinality>,
 }
 
@@ -84,9 +87,12 @@ pub fn parse_dogstatsd_metric<'a>(
                     maybe_tags = Some(tags);
                 }
                 // Local Data: client-provided data used for resolving the entity ID that this metric originated from.
+
                 b'c' if chunk.len() > 1 && chunk[1] == b':' => {
-                    let (_, local_data) = all_consuming(preceded(tag("c:"), local_data)).parse(chunk)?;
-                    maybe_local_data = Some(local_data);
+                    if config.client_origin_detection {
+                        let (_, local_data) = all_consuming(preceded(tag("c:"), local_data)).parse(chunk)?;
+                        maybe_local_data = Some(local_data);
+                    }
                 }
                 // Timestamp: client-provided timestamp for the metric, relative to the Unix epoch, in seconds.
                 b'T' => {
@@ -96,14 +102,20 @@ pub fn parse_dogstatsd_metric<'a>(
                     }
                 }
                 // External Data: client-provided data used for resolving the entity ID that this metric originated from.
+
                 b'e' if chunk.len() > 1 && chunk[1] == b':' => {
-                    let (_, external_data) = all_consuming(preceded(tag("e:"), external_data)).parse(chunk)?;
-                    maybe_external_data = Some(external_data);
+                    if config.client_origin_detection {
+                        let (_, external_data) = all_consuming(preceded(tag("e:"), external_data)).parse(chunk)?;
+                        maybe_external_data = Some(external_data);
+                    }
                 }
                 // Cardinality: client-provided cardinality for the metric.
+
                 b'c' if chunk.starts_with(CARDINALITY_PREFIX) => {
-                    let (_, cardinality) = cardinality(chunk)?;
-                    maybe_cardinality = cardinality;
+                    if config.client_origin_detection {
+                        let (_, cardinality) = cardinality(chunk)?;
+                        maybe_cardinality = cardinality;
+                    }
                 }
                 _ => {
                     // We don't know what this is, so we just skip it.
@@ -388,7 +400,8 @@ mod tests {
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
         check_basic_metric_eq(expected, actual);
 
-        let config = DogStatsDCodecConfiguration::default();
+        // We need client_origin_detection on in order to parse local_data, external_data, and cardinality fields
+        let config = DogStatsDCodecConfiguration::default().with_client_origin_detection(true);
         let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
         assert_eq!(packet.local_data, Some(local_data));
     }
@@ -417,7 +430,8 @@ mod tests {
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
         check_basic_metric_eq(expected, actual);
 
-        let config = DogStatsDCodecConfiguration::default();
+        // We need client_origin_detection on in order to parse local_data, external_data, and cardinality fields
+        let config = DogStatsDCodecConfiguration::default().with_client_origin_detection(true);
         let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
         assert_eq!(packet.external_data, Some(external_data));
     }
@@ -433,7 +447,8 @@ mod tests {
         let actual = parse_dsd_metric(raw.as_bytes()).expect("should not fail to parse");
         check_basic_metric_eq(expected, actual);
 
-        let config = DogStatsDCodecConfiguration::default();
+        // We need client_origin_detection on in order to parse local_data, external_data, and cardinality fields
+        let config = DogStatsDCodecConfiguration::default().with_client_origin_detection(true);
         let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
         assert_eq!(packet.cardinality, Some(OriginTagCardinality::High));
     }
@@ -477,7 +492,8 @@ mod tests {
         assert_eq!(values.len(), 1);
         assert_eq!(values[0], (timestamp, value_sample_rate_adjusted));
 
-        let config = DogStatsDCodecConfiguration::default();
+        // We need client_origin_detection on in order to parse local_data, external_data, and cardinality fields
+        let config = DogStatsDCodecConfiguration::default().with_client_origin_detection(true);
         let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
         assert_eq!(packet.local_data, Some(local_data));
         assert_eq!(packet.external_data, Some(external_data));
@@ -628,6 +644,20 @@ mod tests {
 
             assert!(sketch.count() as u64 <= minimum_sample_rate.weight());
         }
+    }
+
+    #[test]
+    fn client_origin_fields_ignored_when_disabled() {
+        let local_data = "cn-name-a";
+        let external_data = "it-false,cn-name-b,pu-810fe89d-da47-410b-8979-9154a40f8183";
+        let raw = format!("foo:1|c|c:{local_data}|e:{external_data}|card:high");
+
+        let config = DogStatsDCodecConfiguration::default().with_client_origin_detection(false);
+        let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
+
+        assert_eq!(packet.local_data, None);
+        assert_eq!(packet.external_data, None);
+        assert_eq!(packet.cardinality, None);
     }
 
     proptest! {

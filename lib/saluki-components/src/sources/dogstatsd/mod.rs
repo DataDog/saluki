@@ -536,7 +536,8 @@ impl SourceBuilder for DogStatsDConfiguration {
         let codec_config = DogStatsDCodecConfiguration::default()
             .with_timestamps(self.no_aggregation_pipeline_support)
             .with_permissive_mode(self.permissive_decoding)
-            .with_minimum_sample_rate(self.minimum_sample_rate);
+            .with_minimum_sample_rate(self.minimum_sample_rate)
+            .with_client_origin_detection(self.origin_enrichment.origin_detection_client);
 
         let codec = DogStatsDCodec::from_configuration(codec_config);
 
