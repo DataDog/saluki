@@ -169,6 +169,8 @@ impl TransformBuilder for TagFilterlistConfiguration {
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(&context);
+        let telemetry = Telemetry::new(&metrics_builder);
+        telemetry.set_rules_loaded(self.entries.len());
 
         Ok(Box::new(TagFilterlist {
             filters: compile_filters(&self.entries),
@@ -176,7 +178,7 @@ impl TransformBuilder for TagFilterlistConfiguration {
                 .configuration
                 .clone()
                 .expect("configuration must be set via from_configuration"),
-            telemetry: Telemetry::new(&metrics_builder),
+            telemetry,
             context_cache: build_context_cache(),
         }))
     }
@@ -265,9 +267,11 @@ impl Transform for TagFilterlist {
                     None => break,
                 },
                 (_, new_entries) = watcher.changed::<Vec<MetricTagFilterEntry>>() => {
-                    self.filters = compile_filters(new_entries.as_deref().unwrap_or(&[]));
+                    let entries = new_entries.as_deref().unwrap_or(&[]);
+                    self.filters = compile_filters(entries);
                     self.context_cache = build_context_cache();
-                    debug!("Updated metric tag filterlist.");
+                    self.telemetry.set_rules_loaded(entries.len());
+                    debug!(rules_loaded = entries.len(), "Updated metric tag filterlist.");
                 },
             }
         }
