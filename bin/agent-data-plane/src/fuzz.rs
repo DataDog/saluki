@@ -1,12 +1,21 @@
+#![allow(dead_code)]
+use std::sync::LazyLock;
 use std::{
-    path::PathBuf,
+    collections::BTreeMap,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
-use argh::FromArgs;
+use arbitrary::{Arbitrary, Unstructured};
+use barkus_core::{generate::decode, ir::GrammarIr, profile::Profile};
+use bytes::Bytes;
 use futures::FutureExt as _;
-use memory_accounting::{ComponentBounds, ComponentRegistry};
+use libfuzzer_sys::fuzz_target;
+use memory_accounting::ComponentRegistry;
+use nix::sys::signal as nix_signal;
+use rand::{rngs::SmallRng, SeedableRng};
 use saluki_app::{
+    bootstrap::AppBootstrapper,
     memory::{initialize_memory_bounds, MemoryBoundsConfiguration},
     metrics::emit_startup_metrics,
 };
@@ -15,17 +24,15 @@ use saluki_components::{
     decoders::otlp::OtlpDecoderConfiguration,
     destinations::DogStatsDStatisticsConfiguration,
     encoders::{
-        BufferedIncrementalConfiguration, DatadogApmStatsEncoderConfiguration, DatadogEventsConfiguration,
-        DatadogLogsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration,
-        DatadogTraceConfiguration,
+        BufferedIncrementalConfiguration, DatadogEventsConfiguration, DatadogMetricsConfiguration,
+        DatadogServiceChecksConfiguration,
     },
     forwarders::{DatadogConfiguration, OtlpForwarderConfiguration},
     relays::otlp::OtlpRelayConfiguration,
     sources::{DogStatsDConfiguration, OtlpConfiguration},
     transforms::{
-        AggregateConfiguration, ApmStatsTransformConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
-        DogStatsDPrefixFilterConfiguration, HostEnrichmentConfiguration, HostTagsConfiguration,
-        TraceObfuscationConfiguration, TraceSamplerConfiguration,
+        AggregateConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration, DogStatsDPrefixFilterConfiguration,
+        HostEnrichmentConfiguration, HostTagsConfiguration,
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
@@ -34,26 +41,27 @@ use saluki_core::runtime::SupervisorError;
 use saluki_core::topology::TopologyBlueprint;
 use saluki_env::EnvironmentProvider as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use tokio::{select, time::interval};
+use tokio::{
+    net::UdpSocket,
+    process::Command,
+    select,
+    time::{self, interval},
+};
 use tracing::{error, info, warn};
 
+pub(crate) mod components;
+pub(crate) mod config;
+pub(crate) mod env_provider;
+pub(crate) mod internal;
+pub(crate) mod state;
+
 use crate::{
-    components::{
-        apm_onboarding::ApmOnboardingConfiguration, ottl_filter_processor::OttlFilterConfiguration,
-        ottl_transform_processor::OttlTransformConfiguration, tag_filterlist::TagFilterlistConfiguration,
-    },
-    internal::{create_internal_supervisor, remote_agent::RemoteAgentBootstrap},
+    components::tag_filterlist::TagFilterlistConfiguration,
+    internal::{create_internal_supervisor, platform::PlatformSettings},
 };
 use crate::{config::DataPlaneConfiguration, env_provider::ADPEnvironmentProvider};
 
-/// Runs the data plane.
-#[derive(FromArgs, Debug)]
-#[argh(subcommand, name = "run")]
-pub struct RunCommand {
-    /// path to the PID file
-    #[argh(option, short = 'p', long = "pidfile")]
-    pub pid_file: Option<PathBuf>,
-}
+const DD_YAML_CONFIG: &str = "bin/agent-data-plane/fuzz_datadog_config.yaml";
 
 // TODO: fuzz entry modeled after the content of that command
 // extract stuff to get a function that gives us enough to build the topology
@@ -66,17 +74,24 @@ pub struct RunCommand {
 // call the network calls to send packets to the topology
 /// Entrypoint for the `run` commands.
 pub async fn handle_run_command(
-    started: Instant, bootstrap_config_path: PathBuf, bootstrap_config: GenericConfiguration,
+    shutdown: tokio::sync::oneshot::Receiver<()>, started: Instant,
 ) -> Result<(), GenericError> {
-    let app_details = saluki_metadata::get_app_details();
-    info!(
-        version = app_details.version().raw(),
-        git_hash = app_details.git_hash(),
-        target_arch = app_details.target_arch(),
-        build_time = app_details.build_time(),
-        process_id = std::process::id(),
-        "Agent Data Plane starting..."
-    );
+    let bootstrap_config = ConfigurationLoader::default()
+        .with_key_aliases(KEY_ALIASES)
+        .from_yaml(&DD_YAML_CONFIG)
+        .error_context("Failed to load Datadog Agent configuration file during bootstrap.")?
+        .add_providers([DatadogRemapper::new()])
+        .from_environment(PlatformSettings::get_env_var_prefix())
+        .error_context("Environment variable prefix should not be empty.")?
+        .with_default_secrets_resolution()
+        .await
+        .error_context("Failed to load secrets resolution configuration during bootstrap.")?
+        .bootstrap_generic();
+
+    let _bs_guard = AppBootstrapper::from_configuration(&bootstrap_config)?
+        .bootstrap()
+        .await?;
+    info!("Agent Data Plane starting...");
 
     // Load our "bootstrap" configuration.
     //
@@ -87,51 +102,12 @@ pub async fn handle_run_command(
         .error_context("Failed to load data plane configuration.")?;
 
     let in_standalone_mode = bootstrap_dp_config.standalone_mode();
-    let remote_agent_enabled = bootstrap_dp_config.remote_agent_enabled();
-    let use_new_config_stream_endpoint = bootstrap_dp_config.use_new_config_stream_endpoint();
-    let should_bootstrap_remote_agent = !in_standalone_mode && (remote_agent_enabled || use_new_config_stream_endpoint);
+    // simpl: no remote loading, only the local config
+    assert!(in_standalone_mode);
+    assert!(!bootstrap_dp_config.remote_agent_enabled());
+    assert!(!bootstrap_dp_config.use_new_config_stream_endpoint());
 
-    let ra_bootstrap = if should_bootstrap_remote_agent {
-        let ra_bootstrap = RemoteAgentBootstrap::from_configuration(&bootstrap_config, &bootstrap_dp_config)
-            .await
-            .error_context("Failed to bootstrap remote agent state.")?;
-
-        Some(ra_bootstrap)
-    } else {
-        None
-    };
-
-    let (config, dp_config) = match &ra_bootstrap {
-        Some(ra_bootstrap) if use_new_config_stream_endpoint => {
-            // Build a new configuration that uses the configuration sent by the control plane as the authoritative
-            // configuration source, but with environment variables on top of that to allow for ADP-specific overriding: log
-            // level, etc.
-            let dynamic_config = ConfigurationLoader::default()
-                .with_key_aliases(KEY_ALIASES)
-                .from_yaml(&bootstrap_config_path)
-                .error_context("Failed to load Datadog Agent configuration file.")?
-                .with_dynamic_configuration(ra_bootstrap.create_config_stream())
-                .add_providers([DatadogRemapper::new()])
-                .from_environment(crate::internal::platform::DATADOG_AGENT_ENV_VAR_PREFIX)?
-                .with_default_secrets_resolution()
-                .await?
-                .into_generic()
-                .await?;
-
-            info!("Waiting for initial configuration from Datadog Agent...");
-            dynamic_config.ready().await;
-            info!("Initial configuration received.");
-
-            // Reload our data plane configuration based on the dynamic configuration.
-            let dynamic_dp_config = DataPlaneConfiguration::from_configuration(&dynamic_config)
-                .error_context("Failed to load data plane configuration.")?;
-
-            (dynamic_config, dynamic_dp_config)
-        }
-
-        // If dynamic configuration is disabled, the bootstrap configuration is already the complete and final configuration.
-        _ => (bootstrap_config, bootstrap_dp_config),
-    };
+    let (config, dp_config) = (bootstrap_config, bootstrap_dp_config);
 
     if !in_standalone_mode && !dp_config.enabled() {
         info!("Agent Data Plane is not enabled. Exiting.");
@@ -165,7 +141,7 @@ pub async fn handle_run_command(
         health_registry.clone(),
         env_provider,
         dsd_stats_config,
-        ra_bootstrap,
+        None,
     )
     .await
     .error_context("Failed to create internal supervisor.")?;
@@ -178,16 +154,6 @@ pub async fn handle_run_command(
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
     let bounds_config = MemoryBoundsConfiguration::try_from_config(&config)?;
     let memory_limiter = initialize_memory_bounds(bounds_config, component_registry.root())?;
-
-    if let Ok(val) = std::env::var("DD_ADP_WRITE_SIZING_GUIDE") {
-        if val != "false" {
-            if let Err(error) = write_sizing_guide(component_registry.as_bounds()) {
-                warn!("Failed to write sizing guide: {}", error);
-            } else {
-                return Ok(());
-            }
-        }
-    }
 
     // Bounds validation succeeded, so now we'll build and spawn the topology.
     let built_topology = blueprint.build().await?;
@@ -250,6 +216,7 @@ pub async fn handle_run_command(
                 }
             }
         }
+        _ = shutdown => {info!("shutdown request");},
         _ = running_topology.wait_for_unexpected_finish() => {
             error!("Topology component unexpectedly finished. Shutting down...");
             topology_failed = true;
@@ -324,11 +291,11 @@ async fn create_topology(
     }
 
     if dp_config.logs_pipeline_required() {
-        add_baseline_logs_pipeline_to_blueprint(&mut blueprint, config).await?;
+        error!("[Fuzz] logs not supported");
     }
 
     if dp_config.traces_pipeline_required() {
-        add_baseline_traces_pipeline_to_blueprint(&mut blueprint, config, env_provider).await?;
+        error!("[Fuzz] traces not supported");
     }
 
     // Now we move on to our actual data pipelines.
@@ -368,65 +335,6 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         .connect_component("dd_metrics_encode", ["metrics_enrich"])?
         // Forwarding.
         .connect_component("dd_out", ["dd_metrics_encode"])?;
-
-    Ok(())
-}
-
-async fn add_baseline_logs_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
-) -> Result<(), GenericError> {
-    // Create the back half of the logs processing pipeline.
-    let dd_logs_config = DatadogLogsConfiguration::from_configuration(config)
-        .map(BufferedIncrementalConfiguration::from_encoder_builder)
-        .error_context("Failed to configure Datadog Logs encoder.")?;
-
-    blueprint
-        // Components.
-        .add_encoder("dd_logs_encode", dd_logs_config)?
-        // Logs.
-        .connect_component("dd_out", ["dd_logs_encode"])?;
-
-    Ok(())
-}
-
-async fn add_baseline_traces_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
-) -> Result<(), GenericError> {
-    let dd_traces_config = DatadogTraceConfiguration::from_configuration(config)
-        .error_context("Failed to configure Datadog Traces encoder.")?
-        .with_environment_provider(env_provider.clone())
-        .await?;
-    let trace_obfuscation_config = TraceObfuscationConfiguration::from_apm_configuration(config)?;
-    let trace_sampler_config = TraceSamplerConfiguration::from_configuration(config)
-        .error_context("Failed to configure Trace Sampler transform.")?;
-    let ottl_filter_config = OttlFilterConfiguration::from_configuration(config)
-        .error_context("Failed to configure OTTL filter processor.")?;
-    let ottl_transform_config = OttlTransformConfiguration::from_configuration(config)
-        .error_context("Failed to configure OTTL transform processor.")?;
-    let dd_traces_enrich_config = ChainedConfiguration::default()
-        .with_transform_builder("ottl_filter", ottl_filter_config)
-        .with_transform_builder("ottl_transform", ottl_transform_config)
-        .with_transform_builder("apm_onboarding", ApmOnboardingConfiguration)
-        .with_transform_builder("trace_obfuscation", trace_obfuscation_config)
-        .with_transform_builder("trace_sampler", trace_sampler_config);
-    let apm_stats_transform_config = ApmStatsTransformConfiguration::from_configuration(config)
-        .error_context("Failed to configure APM Stats transform.")?
-        .with_environment_provider(env_provider.clone())
-        .await?;
-    let dd_apm_stats_encoder = DatadogApmStatsEncoderConfiguration::from_configuration(config)
-        .error_context("Failed to configure Datadog APM Stats encoder.")?
-        .with_environment_provider(env_provider.clone())
-        .await?;
-
-    blueprint
-        .add_transform("traces_enrich", dd_traces_enrich_config)?
-        .add_transform("dd_apm_stats", apm_stats_transform_config)?
-        .add_encoder("dd_stats_encode", dd_apm_stats_encoder)?
-        .add_encoder("dd_traces_encode", dd_traces_config)?
-        .connect_component("dd_apm_stats", ["traces_enrich"])?
-        .connect_component("dd_traces_encode", ["traces_enrich"])?
-        .connect_component("dd_stats_encode", ["dd_apm_stats"])?
-        .connect_component("dd_out", ["dd_traces_encode", "dd_stats_encode"])?;
 
     Ok(())
 }
@@ -568,24 +476,179 @@ fn add_otlp_pipeline_to_blueprint(
     Ok(())
 }
 
-fn write_sizing_guide(bounds: ComponentBounds) -> Result<(), GenericError> {
-    use std::{
-        fs::File,
-        io::{BufWriter, Write},
-    };
+// ----- END OF SALUKI-LIKE CODE ---
+// below is Greg messing around
 
-    let template = include_str!("../sizing_guide_template.html");
-    let mut output = BufWriter::new(File::create("sizing_guide.html")?);
-    for line in template.lines() {
-        if line.trim() == "<!-- INSERT GENERATED CONTENT -->" {
-            serde_json::to_writer_pretty(&mut output, &bounds.to_exprs())?;
-        } else {
-            output.write_all(line.as_bytes())?;
-        }
-        output.write_all(b"\n")?;
+const DSD_PORT: u16 = 3000;
+const INTAKE_PORT: u16 = 2049;
+const SALUKI_PATH: &str = "/Users/gregoire.roussel/dd/saluki";
+
+async fn intake(shutdown: tokio::sync::oneshot::Receiver<()>) -> Result<(), GenericError> {
+    let mut cmd = Command::new("target/release/datadog-intake")
+        .kill_on_drop(true)
+        .spawn()?;
+    shutdown.await?;
+
+    info!("SIGTERM intake");
+    let maybe_intake_pid = cmd.id();
+    if let Some(intake_pid) = maybe_intake_pid {
+        let nix_pid = nix::unistd::Pid::from_raw(intake_pid as i32);
+        nix_signal::kill(nix_pid, nix_signal::SIGTERM)?;
     }
-    info!("Wrote sizing guide to sizing_guide.html");
-    output.flush()?;
-
+    if let Err(_) = tokio::time::timeout(Duration::from_secs(5), cmd.wait()).await {
+        warn!("SIGKILL intake");
+        cmd.kill().await?;
+        cmd.wait().await?;
+    }
     Ok(())
 }
+
+static GRAMMAR_SINGLE: LazyLock<GrammarIr> = LazyLock::new(|| {
+    let grammar_path: PathBuf = Path::new(SALUKI_PATH).join("fuzz/dogstatsd_offset.ebnf");
+    let grammar = std::fs::read_to_string(grammar_path).unwrap();
+    barkus_ebnf::compile(&grammar).unwrap()
+});
+
+static PROFILE: LazyLock<Profile> = LazyLock::new(|| Profile::default());
+
+fn metric_line_from_raw(raw: &[u8]) -> Result<(u64, Bytes), GenericError> {
+    let split_index = memchr::memchr(b';', raw).ok_or_else(|| generic_error!("missing ';'"))?;
+    let ts = std::str::from_utf8(&raw[..split_index])?.parse::<u64>()?;
+    let body = Bytes::copy_from_slice(&raw[split_index + 1..]);
+    Ok((ts, body.into()))
+}
+
+fn aggregate_metric_lines(unsorted_packets: Vec<(u64, Bytes)>) -> Vec<(u64, Vec<Bytes>)> {
+    let mut groups: BTreeMap<u64, Vec<Bytes>> = BTreeMap::new();
+    unsorted_packets.into_iter().for_each(|(ts, packet)| {
+        groups.entry(ts).or_default().push(packet);
+    });
+    groups.into_iter().collect()
+}
+
+fn generate_corpus_random() -> Result<DogStatsDInput, GenericError> {
+    let seed = Some(1234u64);
+    let count = 100;
+
+    let mut rng: SmallRng = match seed {
+        Some(s) => SmallRng::seed_from_u64(s),
+        None => rand::make_rng(),
+    };
+
+    let generated_packets: Vec<(u64, Bytes)> = (0..count)
+        .map(|_| {
+            let (ast, _tape, _map) = barkus_core::generate::generate(&GRAMMAR_SINGLE, &PROFILE, &mut rng)
+                .map_err(|e| GenericError::msg("Barkus - failed to generate").context(e))?;
+
+            let ast_bytes = ast.serialize();
+            let (ts, packet) = metric_line_from_raw(&ast_bytes)?;
+            Ok((ts, packet))
+        })
+        .collect::<Result<_, GenericError>>()?;
+    Ok(DogStatsDInput {
+        messages: aggregate_metric_lines(generated_packets),
+    })
+}
+
+static GRAMMAR_MULTILINE: LazyLock<GrammarIr> = LazyLock::new(|| {
+    let grammar_path = Path::new(SALUKI_PATH).join("fuzz/dogstatsd_multi_offset.ebnf");
+    let grammar = std::fs::read_to_string(grammar_path).unwrap();
+    barkus_ebnf::compile(&grammar).unwrap()
+});
+
+#[derive(Debug)]
+struct DogStatsDInput {
+    messages: Vec<(u64, Vec<Bytes>)>,
+}
+
+impl<'a> Arbitrary<'a> for DogStatsDInput {
+    fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+        let tape = u.bytes(u.len())?;
+        let profile = Profile::default();
+        let (ast, _) = decode(&*GRAMMAR_SINGLE, &profile, tape).map_err(|_| arbitrary::Error::IncorrectFormat)?;
+        let text = ast.serialize();
+        let message_lines: Vec<(u64, Bytes)> = text
+            .split(|&b| b == b'\n')
+            .filter(|s| !s.is_empty())
+            .map(metric_line_from_raw)
+            .collect::<Result<_, _>>()
+            .map_err(|_| arbitrary::Error::IncorrectFormat)?;
+        let aggregated_messages = aggregate_metric_lines(message_lines);
+
+        Ok(DogStatsDInput {
+            messages: aggregated_messages,
+        })
+    }
+}
+
+async fn inject_plan(plan: Vec<(u64, Vec<Bytes>)>) -> Result<(), GenericError> {
+    let socket = UdpSocket::bind("0.0.0.0:0").await.expect("failed to bind UDP socket");
+    socket
+        .connect(("127.0.0.1", DSD_PORT))
+        .await
+        .unwrap_or_else(|e| panic!("failed to connect to port {}: {}", DSD_PORT, e));
+
+    let start = Instant::now();
+    let mut maybe_prev_ts = None;
+    for (ts, packets) in &plan {
+        // timestamp X is sent at second X/10
+        if let Some(prev_ts) = maybe_prev_ts {
+            assert!(prev_ts < ts);
+        }
+        maybe_prev_ts = Some(ts);
+        let target = start + Duration::from_millis(ts * 10);
+        if target > Instant::now() {
+            tokio::time::sleep_until(target.into()).await;
+        }
+        for packet in packets {
+            if let Err(e) = socket.send(packet).await {
+                eprintln!("send error: {e}");
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn inner(corpus: DogStatsDInput) {
+    let (st1_tx, st1_rx) = tokio::sync::oneshot::channel();
+    let saluki_handle = tokio::spawn(handle_run_command(st1_rx, Instant::now()));
+    let (st2_tx, st2_rx) = tokio::sync::oneshot::channel();
+    let intake_handle = tokio::spawn(intake(st2_rx));
+    time::sleep(Duration::from_secs(2)).await;
+
+    // run injection
+    info!("Starting injection");
+    inject_plan(corpus.messages).await.unwrap();
+    time::sleep(Duration::from_secs(10)).await;
+
+    // trigger shutdown
+    info!("Trigger shutdown");
+    st1_tx.send(()).unwrap();
+    saluki_handle.await.unwrap().unwrap();
+
+    info!("waiting on intake");
+    st2_tx.send(()).unwrap();
+    intake_handle.await.unwrap().unwrap();
+}
+
+fn main() {
+    println!("hello!");
+    let corpus = generate_corpus_random().unwrap();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(inner(corpus));
+    println!("goodbye!");
+}
+
+// static CODEC: LazyLock<DogStatsDCodec> =
+//     LazyLock::new(|| DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default()));
+
+fuzz_target!(|input: DogStatsDInput| {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(inner(input));
+});
