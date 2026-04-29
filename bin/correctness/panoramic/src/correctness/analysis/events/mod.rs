@@ -30,10 +30,9 @@ impl EventsAnalyzer {
             .unwrap_or(0);
         let one_hour = 3600i64;
 
-        // Use i64::MAX as the sentinel rather than 0. ADP currently stores 0 for events without
-        // a d: field (bug #1528), so using 0 would silently mask the mismatch. i64::MAX is
-        // guaranteed never to appear as a real lading timestamp (u32 range tops out at ~4.3B,
-        // well below i64::MAX) so it unambiguously marks a normalized fill-in value.
+        // Use i64::MAX as the sentinel: it is guaranteed never to appear as a real lading
+        // timestamp (u32 range tops out at ~4.3B, well below i64::MAX) so it unambiguously
+        // marks a normalized fill-in value.
         for event in baseline_events.iter_mut().chain(comparison_events.iter_mut()) {
             if (event.timestamp - now).abs() < one_hour {
                 event.timestamp = i64::MAX;
