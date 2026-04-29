@@ -105,6 +105,10 @@ const fn default_tcp_port() -> u16 {
     0
 }
 
+const fn default_socket_receive_buffer_size() -> usize {
+    0
+}
+
 const fn default_allow_context_heap_allocations() -> bool {
     true
 }
@@ -216,6 +220,14 @@ pub struct DogStatsDConfiguration {
     /// Defaults to 8125.
     #[serde(rename = "dogstatsd_port", default = "default_port")]
     port: u16,
+
+    /// The size of the DogStatsD UDP/UDS socket receive buffer, in bytes.
+    ///
+    /// If set to `0`, the OS default is used.
+    ///
+    /// Defaults to 0.
+    #[serde(rename = "dogstatsd_so_rcvbuf", default = "default_socket_receive_buffer_size")]
+    socket_receive_buffer_size: usize,
 
     /// The port to listen on in TCP mode.
     ///
@@ -479,24 +491,28 @@ impl DogStatsDConfiguration {
 
         let addresses = self.build_addresses(bind_host);
         let mut listeners = Vec::new();
+        let socket_receive_buffer_size =
+            (self.socket_receive_buffer_size != 0).then_some(self.socket_receive_buffer_size);
         for address in addresses {
             // We use a match here so that we can add context to the error message.
             let listener = match &address {
                 ListenAddress::Tcp(_) => Listener::from_listen_address(address)
                     .await
                     .context(FailedToCreateListener { listener_type: "TCP" })?,
-                ListenAddress::Udp(_) => Listener::from_listen_address(address)
-                    .await
-                    .context(FailedToCreateListener { listener_type: "UDP" })?,
+                ListenAddress::Udp(_) => {
+                    Listener::from_listen_address_with_socket_receive_buffer_size(address, socket_receive_buffer_size)
+                        .await
+                        .context(FailedToCreateListener { listener_type: "UDP" })?
+                }
                 ListenAddress::Unixgram(_) => {
-                    Listener::from_listen_address(address)
+                    Listener::from_listen_address_with_socket_receive_buffer_size(address, socket_receive_buffer_size)
                         .await
                         .context(FailedToCreateListener {
                             listener_type: "UDS (datagram)",
                         })?
                 }
                 ListenAddress::Unix(_) => {
-                    Listener::from_listen_address(address)
+                    Listener::from_listen_address_with_socket_receive_buffer_size(address, socket_receive_buffer_size)
                         .await
                         .context(FailedToCreateListener {
                             listener_type: "UDS (stream)",
@@ -1296,9 +1312,15 @@ const fn get_adjusted_buffer_size(buffer_size: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+    use std::{
+        env,
+        ffi::OsString,
+        net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
+        sync::{Mutex, OnceLock},
+    };
 
     use bytesize::ByteSize;
+    use saluki_config::ConfigurationLoader;
     use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
     use saluki_io::net::ListenAddress;
     use saluki_io::{
@@ -1383,6 +1405,40 @@ mod tests {
     fn interner_size_defaults_to_2mib() {
         let config = deser_config("{}");
         assert_eq!(config.effective_context_string_interner_bytes(), ByteSize::mib(2));
+    }
+
+    #[test]
+    fn socket_receive_buffer_size_defaults_to_zero() {
+        let config = deser_config("{}");
+        assert_eq!(config.socket_receive_buffer_size, 0);
+    }
+
+    #[test]
+    fn socket_receive_buffer_size_from_config() {
+        let config = deser_config(r#"{"dogstatsd_so_rcvbuf": 131072}"#);
+        assert_eq!(config.socket_receive_buffer_size, 131_072);
+    }
+
+    #[test]
+    fn socket_receive_buffer_size_from_dd_env_var() {
+        static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+
+        const ENV_VAR: &str = "DD_DOGSTATSD_SO_RCVBUF";
+        const ENV_VALUE: &str = "262144";
+
+        let _guard = ENV_MUTEX.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let previous = env::var_os(ENV_VAR);
+        env::set_var(ENV_VAR, ENV_VALUE);
+
+        let config = ConfigurationLoader::default()
+            .from_environment("DD")
+            .expect("environment prefix should be valid")
+            .into_typed::<DogStatsDConfiguration>()
+            .expect("configuration should deserialize");
+
+        restore_env_var(ENV_VAR, previous);
+
+        assert_eq!(config.socket_receive_buffer_size, 262_144);
     }
 
     #[test]
@@ -1667,6 +1723,14 @@ mod tests {
         ];
         let mut actual = config.build_addresses(bind_host);
         address_list_eq(&mut expected, &mut actual).unwrap();
+    }
+
+    fn restore_env_var(name: &str, previous: Option<OsString>) {
+        if let Some(value) = previous {
+            env::set_var(name, value);
+        } else {
+            env::remove_var(name);
+        }
     }
 }
 
