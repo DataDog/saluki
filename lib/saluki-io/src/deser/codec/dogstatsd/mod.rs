@@ -144,8 +144,8 @@ impl DogStatsDCodecConfiguration {
 
     /// Sets whether client-provided origin detection fields are parsed.
     ///
-    /// When disabled, the `c:` (local data), `e:` (external data), and `card:` (cardinality) fields
-    /// are ignored even if present in the payload.
+    /// When disabled, the `c:` (Local Data), `e:` (External Data), and `card:` (Cardinality)
+    /// fields are ignored even if present in the payload.
     ///
     /// Defaults to `false`.
     pub fn with_client_origin_detection(mut self, enabled: bool) -> Self {

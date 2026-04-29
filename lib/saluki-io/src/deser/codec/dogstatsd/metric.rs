@@ -23,17 +23,41 @@ enum MetricType {
 }
 
 /// A DogStatsD metric packet.
+///
+/// See the [DogStatsD datagram format][datagram] reference for the wire format and the protocol versions that
+/// introduced each field.
+///
+/// [datagram]: https://docs.datadoghq.com/extend/dogstatsd/datagram_shell/?tab=metrics
 pub struct MetricPacket<'a> {
+    /// Name of the metric.
     pub metric_name: &'a str,
+
+    /// Tags attached to the metric.
     pub tags: RawTags<'a>,
+
+    /// The metric kind (counter, gauge, rate, etc.) and its sample points.
     pub values: MetricValues,
+
+    /// Number of sample points represented by `values`.
     pub num_points: u64,
+
+    /// Optional Unix timestamp for the sample, in seconds (protocol v1.3).
     pub timestamp: Option<u64>,
-    /// Extension to the statsd protocol. Prefixed with `c:` and used to carry a container ID.
+
+    /// Local Data attached to the metric, carried in the `c:` field (protocol v1.2, extended in v1.4).
+    ///
+    /// Identifies the workload that emitted the metric. Carries a container ID (`ci-<id>`) or, when unavailable, a
+    /// cgroup node inode (`in-<inode>`).
     pub local_data: Option<&'a str>,
-    /// Extension to the statsd protocol. Prefixed with `e:` and used to carry a richer blob of workload identity data.
+
+    /// External Data attached to the metric, carried in the `e:` field (protocol v1.5).
+    ///
+    /// Used to convey a richer blob of workload identity data resolved by the receiver.
     pub external_data: Option<&'a str>,
-    /// Extension to the statsd protocol. Prefixed with `card:` and used to specify which origin fields should be used.
+
+    /// Cardinality hint for origin tag enrichment, carried in the `card:` field (protocol v1.6).
+    ///
+    /// Specifies which origin tags the receiver should attach to the metric.
     pub cardinality: Option<OriginTagCardinality>,
 }
 

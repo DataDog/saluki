@@ -77,7 +77,7 @@ pub struct OriginEnrichmentConfiguration {
 
     /// Whether or not to parse client-provided origin fields from DogStatsD payloads.
     ///
-    /// When enabled, the `c:` (local data), `e:` (external data), and `card:` (cardinality) protocol fields are
+    /// When enabled, the `c:` (Local Data), `e:` (External Data), and `card:` (Cardinality) protocol fields are
     /// parsed and used for origin enrichment.
     ///
     /// Defaults to `false`.
