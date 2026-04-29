@@ -20,25 +20,7 @@ corpus:
         inclusive:
           min: 2
           max: 8
-      value:
-        float_probability: 0.5
-        range:
-          inclusive:
-            min: -9999999
-            max: 9999999
-      multivalue_count:
-        inclusive:
-          min: 2
-          max: 32
-      multivalue_pack_probability: 0.08
       kind_weights:
         metric: 0
         event: 100
         service_check: 0
-      metric_weights:
-        count: 1
-        gauge: 1
-        timer: 0
-        distribution: 1
-        set: 0
-        histogram: 0
