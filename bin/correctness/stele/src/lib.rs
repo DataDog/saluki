@@ -3,6 +3,9 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
+mod events;
+pub use self::events::*;
+
 mod metrics;
 pub use self::metrics::*;
 

@@ -4,6 +4,7 @@ use serde::Deserialize;
 mod collected;
 pub use self::collected::CollectedData;
 
+mod events;
 mod metrics;
 mod traces;
 
@@ -11,6 +12,9 @@ mod traces;
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AnalysisMode {
+    /// Compares events between the baseline and comparison targets.
+    Events,
+
     /// Compares metrics between the baseline and comparison targets.
     Metrics,
 
@@ -59,6 +63,10 @@ impl AnalysisRunner {
     /// an error is returned alongside the full list of mismatch details (for log output).
     pub fn run_analysis(self) -> Result<(), (GenericError, Vec<String>)> {
         match self.mode {
+            AnalysisMode::Events => {
+                let analyzer = events::EventsAnalyzer::new(&self.baseline_data, &self.comparison_data);
+                analyzer.run_analysis()
+            }
             AnalysisMode::Metrics => {
                 let analyzer = metrics::MetricsAnalyzer::new(&self.baseline_data, &self.comparison_data)
                     .map_err(|e| (e, vec![]))?;

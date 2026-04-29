@@ -986,6 +986,8 @@ dependencies = [
  "protobuf",
  "rmp-serde",
  "saluki-error",
+ "serde",
+ "serde_json",
  "stele",
  "tokio",
  "tower-http",

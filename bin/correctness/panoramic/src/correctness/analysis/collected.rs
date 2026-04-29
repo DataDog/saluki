@@ -1,11 +1,12 @@
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use stele::{ClientStatisticsAggregator, Metric, Span};
+use stele::{ClientStatisticsAggregator, Event, Metric, Span};
 use tracing::debug;
 
 /// Collected data from a test target.
 ///
 /// Holds all telemetry data sent by the test target to the `datadog-intake` server spawned for the test run.
 pub struct CollectedData {
+    events: Vec<Event>,
     metrics: Vec<Metric>,
     spans: Vec<Span>,
     trace_stats: ClientStatisticsAggregator,
@@ -18,15 +19,22 @@ impl CollectedData {
     ///
     /// If the collected data cannot be retrieved from the `datadog-intake` server, an error is returned.
     pub async fn for_port(datadog_intake_port: u16) -> Result<Self, GenericError> {
+        let events = get_captured_events(datadog_intake_port).await?;
         let metrics = get_captured_metrics(datadog_intake_port).await?;
         let spans = get_captured_spans(datadog_intake_port).await?;
         let trace_stats = get_captured_trace_stats(datadog_intake_port).await?;
 
         Ok(Self {
+            events,
             metrics,
             spans,
             trace_stats,
         })
+    }
+
+    /// Returns a reference to the collected events.
+    pub fn events(&self) -> &[Event] {
+        &self.events
     }
 
     /// Returns a reference to the collected metrics.
@@ -43,6 +51,22 @@ impl CollectedData {
     pub fn trace_stats(&self) -> &ClientStatisticsAggregator {
         &self.trace_stats
     }
+}
+
+async fn get_captured_events(datadog_intake_port: u16) -> Result<Vec<Event>, GenericError> {
+    let client = reqwest::Client::new();
+    let events = client
+        .get(format!("http://localhost:{}/events/dump", datadog_intake_port))
+        .send()
+        .await
+        .error_context("Failed to call events dump endpoint on datadog-intake server.")?
+        .json::<Vec<Event>>()
+        .await
+        .error_context("Failed to decode dumped events from datadog-intake response.")?;
+
+    debug!("Events dumped successfully.");
+
+    Ok(events)
 }
 
 async fn get_captured_metrics(datadog_intake_port: u16) -> Result<Vec<Metric>, GenericError> {

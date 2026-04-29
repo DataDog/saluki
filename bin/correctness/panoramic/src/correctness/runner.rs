@@ -57,7 +57,7 @@ pub async fn run_correctness_test(
             otlp_direct_analysis_mode: config.otlp_direct_analysis_mode,
             additional_span_ignore_fields: config.additional_span_ignore_fields.clone(),
         }),
-        AnalysisMode::Metrics => None,
+        AnalysisMode::Events | AnalysisMode::Metrics => None,
     };
     let analysis_runner = AnalysisRunner::new(config.analysis_mode, baseline_data, comparison_data, traces_options);
     let analysis_result = analysis_runner.run_analysis();
