@@ -103,7 +103,6 @@ pub async fn handle_run_command(
             // level, etc.
             let dynamic_config = ConfigurationLoader::default()
                 .with_key_aliases(KEY_ALIASES)
-                .from_yaml(&bootstrap_config_path)
                 .error_context("Failed to load Datadog Agent configuration file.")?
                 .with_dynamic_configuration(ra_bootstrap.create_config_stream())
                 .add_providers([DatadogRemapper::new()])
