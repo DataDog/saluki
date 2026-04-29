@@ -110,22 +110,24 @@ usage, and channel latency. This telemetry endpoint is separate from `/dogstatsd
 return the per-metric count and last-seen map, and it is not controlled by the core agent's
 `dogstatsd_stats_*` keys.
 
-ADP does not expose the core agent's packet-per-second expvar endpoint, a persistent per-metric
-DogStatsD statistics endpoint to scrape, or a runtime toggle for metric-level collection. You do not
-need to set up scraper configuration for this per-metric data. The config keys
-`dogstatsd_stats_enable`, `dogstatsd_stats_buffer`, and `dogstatsd_stats_port` have no effect in
-ADP. See [#1352].
+ADP does not expose the core agent's packet-per-second expvar endpoint or a persistent per-metric
+DogStatsD statistics endpoint to scrape. You do not need to set up scraper configuration for this
+per-metric data. The config keys `dogstatsd_stats_enable`, `dogstatsd_stats_buffer`, and
+`dogstatsd_stats_port` have no effect in ADP. See [#1352].
 
 ### DogStatsD metric debug log
 
-ADP supports the core agent's DogStatsD metric debug log. To enable this file, set
+ADP supports the core agent's DogStatsD metric debug log. To write this file, set
 `dogstatsd_metrics_stats_enable: true`. `dogstatsd_logging_enabled` also must be `true`; it defaults
 to `true`, so most configurations only need to enable `dogstatsd_metrics_stats_enable`.
 
-When enabled, ADP connects an extra DogStatsD destination to the decoded metric stream. The
-destination writes one line per metric sample with the metric name, tags, count, and last-seen time.
-This feature is for support and troubleshooting. It does not change normal metric forwarding, and it
-does not replace the on-demand `/dogstatsd/stats` API.
+When `dogstatsd_logging_enabled` is `true`, ADP connects an extra DogStatsD destination to the
+decoded metric stream. The destination writes one line per metric sample with the metric name, tags,
+count, and last-seen time while `dogstatsd_metrics_stats_enable` is `true`. When
+`dogstatsd_metrics_stats_enable` is `false`, the destination drains decoded metrics and drops them.
+This lets runtime configuration changes start and stop the debug log without rebuilding the
+topology. This feature is for support and troubleshooting. It does not change normal metric
+forwarding, and it does not replace the on-demand `/dogstatsd/stats` API.
 
 Use these settings to control the file:
 
@@ -134,7 +136,7 @@ Use these settings to control the file:
 | `dogstatsd_log_file`             | Output path. If empty, ADP uses the platform default DogStatsD stats log path. |
 | `dogstatsd_log_file_max_rolls`   | Number of rotated files to keep. Defaults to `3`. |
 | `dogstatsd_log_file_max_size`    | Maximum active file size before rotation. Defaults to `10Mb`. |
-| `dogstatsd_logging_enabled`      | Enables or disables writing metric debug lines to the file. Defaults to `true`. |
+| `dogstatsd_logging_enabled`      | Controls whether ADP wires the debug log destination into the topology. Defaults to `true`. |
 
 The default `dogstatsd_log_file` path is
 `/var/log/datadog/dogstatsd_info/dogstatsd-stats.log` on Linux and other Unix platforms,

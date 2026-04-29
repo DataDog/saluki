@@ -436,7 +436,7 @@
     "feature_state": "PARITY",
     "action": "NONE",
     "description": "DSD dedicated log file path",
-    "reason": "ADP writes DogStatsD metric debug lines to this file when dogstatsd_metrics_stats_enable and dogstatsd_logging_enabled are true. An empty value uses the platform default path.",
+    "reason": "ADP writes DogStatsD metric debug lines to this file while dogstatsd_metrics_stats_enable is true and the debug log destination is wired. An empty value uses the platform default path.",
     "issue": "#1356",
     "adp_key": null
   },
@@ -463,7 +463,7 @@
     "feature_state": "PARITY",
     "action": "NONE",
     "description": "Enables DSD metric logging",
-    "reason": "ADP uses this toggle with dogstatsd_metrics_stats_enable to decide whether to write DogStatsD metric debug lines.",
+    "reason": "ADP uses this toggle to decide whether to wire the DogStatsD metric debug log destination. The destination writes only while dogstatsd_metrics_stats_enable is true.",
     "issue": "#1356",
     "adp_key": null
   },
@@ -688,7 +688,7 @@
     "feature_state": "DIVERGENT",
     "action": "DOCUMENTED",
     "description": "Enable per-metric debug stats",
-    "reason": "ADP uses an on-demand privileged API and CLI flow for metric-level DogStatsD statistics. This key also gates the DogStatsD metric debug log from #1356 when dogstatsd_logging_enabled is true.",
+    "reason": "ADP uses an on-demand privileged API and CLI flow for metric-level DogStatsD statistics. This key also gates writes in the DogStatsD metric debug log destination from #1356 when dogstatsd_logging_enabled is true.",
     "issue": "#1352",
     "adp_key": null
   },
