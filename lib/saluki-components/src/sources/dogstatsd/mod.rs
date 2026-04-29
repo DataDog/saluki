@@ -1319,7 +1319,6 @@ const fn get_adjusted_buffer_size(buffer_size: usize) -> usize {
 mod tests {
     use std::{
         env,
-        ffi::OsString,
         net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
         sync::{Mutex, OnceLock},
     };
@@ -1441,7 +1440,11 @@ mod tests {
             .into_typed::<DogStatsDConfiguration>()
             .expect("configuration should deserialize");
 
-        restore_env_var(ENV_VAR, previous);
+        if let Some(value) = previous {
+            env::set_var(ENV_VAR, value);
+        } else {
+            env::remove_var(ENV_VAR);
+        }
 
         assert_eq!(config.socket_receive_buffer_size, 262_144);
     }
@@ -1728,14 +1731,6 @@ mod tests {
         ];
         let mut actual = config.build_addresses(bind_host);
         address_list_eq(&mut expected, &mut actual).unwrap();
-    }
-
-    fn restore_env_var(name: &str, previous: Option<OsString>) {
-        if let Some(value) = previous {
-            env::set_var(name, value);
-        } else {
-            env::remove_var(name);
-        }
     }
 }
 
