@@ -14,7 +14,7 @@ mod dogstatsd;
 pub use self::dogstatsd::handle_dogstatsd_command;
 use self::dogstatsd::DogstatsdCommand;
 
-mod run;
+pub(crate) mod run;
 pub use self::run::handle_run_command;
 use self::run::RunCommand;
 

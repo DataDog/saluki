@@ -14,15 +14,15 @@ use saluki_error::{ErrorContext as _, GenericError};
 use tracing::{error, info, warn};
 
 mod cli;
-use self::cli::*;
-use crate::internal::platform::PlatformSettings;
-
 mod components;
 mod config;
 mod env_provider;
 mod internal;
+mod state;
 
-pub(crate) mod state;
+use self::cli::*;
+use self::internal::platform::PlatformSettings;
+
 
 #[cfg(all(target_os = "linux", not(system_allocator)))]
 #[global_allocator]

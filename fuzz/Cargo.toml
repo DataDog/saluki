@@ -5,22 +5,38 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+
 [package.metadata]
 cargo-fuzz = true
 
 [dependencies]
 
 libfuzzer-sys = "0.4"
+agent-data-plane = { path = "../bin/agent-data-plane", features = ["fuzzing"] }
+tokio = { workspace = true, features = ["rt", "macros"] }
+# Keep direct barkus/saluki-io deps for the inject* helper bins
 arbitrary = "1"
 barkus-core = { path = "../../barkus/crates/barkus-core" }
 barkus-ebnf = { path = "../../barkus/crates/barkus-ebnf" }
 saluki-io = { workspace = true }
+argh.workspace = true
+rand = "0.10"
 
 [[bin]]
 name = "apd"
 path = "fuzz_targets/apd.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "inject"
+path = "bin/inject.rs"
+[[bin]]
+name = "inject_generate"
+path = "bin/inject_generate.rs"
+[[bin]]
+name = "inject_generate_apd"
+path = "bin/inject_generate_apd.rs"
 
 [lints]
 workspace = true
