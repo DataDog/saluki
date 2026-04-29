@@ -12,6 +12,11 @@ pub struct Event {
     priority: String,
     source_type_name: String,
     tags: Vec<String>,
+    /// Unix timestamp in seconds from the `d:` field, or 0 if not present.
+    ///
+    /// NOTE: Do not compare this field directly without first normalizing pipeline-generated
+    /// fill-in values — see `EventsAnalyzer` for details.
+    pub timestamp: i64,
 }
 
 impl Event {
@@ -55,6 +60,11 @@ impl Event {
         &self.tags
     }
 
+    /// Returns the timestamp of the event (Unix seconds, 0 if not set).
+    pub fn timestamp(&self) -> i64 {
+        self.timestamp
+    }
+
     /// Converts an `EventsPayload` into a list of `Event`s.
     pub fn from_events_payload(payload: EventsPayload) -> Vec<Self> {
         payload
@@ -73,6 +83,7 @@ impl Event {
                     priority: e.priority().to_string(),
                     source_type_name: e.source_type_name().to_string(),
                     tags,
+                    timestamp: e.ts(),
                 }
             })
             .collect()
@@ -82,7 +93,7 @@ impl Event {
     #[allow(clippy::too_many_arguments)]
     pub fn from_intake_event(
         title: String, text: String, alert_type: String, aggregation_key: String, hostname: String, priority: String,
-        source_type_name: String, mut tags: Vec<String>,
+        source_type_name: String, mut tags: Vec<String>, timestamp: i64,
     ) -> Self {
         tags.sort_unstable();
         Event {
@@ -94,6 +105,7 @@ impl Event {
             priority,
             source_type_name,
             tags,
+            timestamp,
         }
     }
 }

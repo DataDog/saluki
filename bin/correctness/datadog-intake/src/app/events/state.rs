@@ -28,6 +28,7 @@ pub struct IntakeEvent {
     pub host: Option<String>,
     pub priority: Option<String>,
     pub tags: Option<Vec<String>>,
+    pub timestamp: Option<i64>,
 }
 
 impl EventsState {
@@ -62,6 +63,7 @@ impl EventsState {
                     intake_event.priority.unwrap_or_default(),
                     source_type.clone(),
                     intake_event.tags.unwrap_or_default(),
+                    intake_event.timestamp.unwrap_or(0),
                 );
                 new_events.push(event);
             }
