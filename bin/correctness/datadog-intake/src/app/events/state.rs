@@ -52,15 +52,6 @@ impl EventsState {
 
         let mut new_events = Vec::new();
         for (source_type, events) in events_map {
-            // The stock agent's serializer uses "api" as the default map key when an event has no
-            // source type name set (pkg/serializer/internal/metrics/events.go). Normalize it back
-            // to empty string so it compares correctly against ADP's protobuf representation, where
-            // an absent source_type_name is serialized as "".
-            let normalized_source_type = if source_type == "api" {
-                String::new()
-            } else {
-                source_type.clone()
-            };
             for intake_event in events {
                 let event = Event::from_intake_event(
                     intake_event.msg_title.unwrap_or_default(),
@@ -69,7 +60,7 @@ impl EventsState {
                     intake_event.aggregation_key.unwrap_or_default(),
                     intake_event.host.unwrap_or_default(),
                     intake_event.priority.unwrap_or_default(),
-                    normalized_source_type.clone(),
+                    source_type.clone(),
                     intake_event.tags.unwrap_or_default(),
                 );
                 new_events.push(event);
