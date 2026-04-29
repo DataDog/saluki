@@ -50,6 +50,13 @@ static DOGSTATSD_STRING_INTERNER_SIZE_BYTES_SCHEMA: SchemaEntry = SchemaEntry {
     default: None,
 };
 
+static DOGSTATSD_SO_RCVBUF_SCHEMA: SchemaEntry = SchemaEntry {
+    yaml_path: "dogstatsd_so_rcvbuf",
+    env_vars: &["DD_DOGSTATSD_SO_RCVBUF"],
+    value_type: ValueType::Integer,
+    default: Some("0"),
+};
+
 static DOGSTATSD_TCP_PORT_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "dogstatsd_tcp_port",
     env_vars: &[],
@@ -140,6 +147,17 @@ crate::declare_annotations! {
     /// `dogstatsd_socket` — UDS datagram socket path.
     DOGSTATSD_SOCKET = SalukiAnnotation {
         schema: &schema::DOGSTATSD_SOCKET,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DOGSTATSD_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+    };
+
+    /// `dogstatsd_so_rcvbuf` — DogStatsD UDP/UDS socket receive buffer size.
+    DOGSTATSD_SO_RCVBUF = SalukiAnnotation {
+        schema: &DOGSTATSD_SO_RCVBUF_SCHEMA,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
