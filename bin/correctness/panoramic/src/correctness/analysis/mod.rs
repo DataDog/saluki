@@ -6,17 +6,21 @@ pub use self::collected::CollectedData;
 
 mod events;
 mod metrics;
+mod service_checks;
 mod traces;
 
 /// Types of analysis to perform on collected data
 #[derive(Clone, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum AnalysisMode {
     /// Compares events between the baseline and comparison targets.
     Events,
 
     /// Compares metrics between the baseline and comparison targets.
     Metrics,
+
+    /// Compares service checks between the baseline and comparison targets.
+    ServiceChecks,
 
     /// Compares traces between the baseline and comparison targets.
     Traces,
@@ -70,6 +74,10 @@ impl AnalysisRunner {
             AnalysisMode::Metrics => {
                 let analyzer = metrics::MetricsAnalyzer::new(&self.baseline_data, &self.comparison_data)
                     .map_err(|e| (e, vec![]))?;
+                analyzer.run_analysis()
+            }
+            AnalysisMode::ServiceChecks => {
+                let analyzer = service_checks::ServiceChecksAnalyzer::new(&self.baseline_data, &self.comparison_data);
                 analyzer.run_analysis()
             }
             AnalysisMode::Traces => {

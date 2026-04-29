@@ -1,5 +1,5 @@
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use stele::{ClientStatisticsAggregator, Event, Metric, Span};
+use stele::{ClientStatisticsAggregator, Event, Metric, ServiceCheck, Span};
 use tracing::debug;
 
 /// Collected data from a test target.
@@ -8,6 +8,7 @@ use tracing::debug;
 pub struct CollectedData {
     events: Vec<Event>,
     metrics: Vec<Metric>,
+    service_checks: Vec<ServiceCheck>,
     spans: Vec<Span>,
     trace_stats: ClientStatisticsAggregator,
 }
@@ -21,12 +22,14 @@ impl CollectedData {
     pub async fn for_port(datadog_intake_port: u16) -> Result<Self, GenericError> {
         let events = get_captured_events(datadog_intake_port).await?;
         let metrics = get_captured_metrics(datadog_intake_port).await?;
+        let service_checks = get_captured_service_checks(datadog_intake_port).await?;
         let spans = get_captured_spans(datadog_intake_port).await?;
         let trace_stats = get_captured_trace_stats(datadog_intake_port).await?;
 
         Ok(Self {
             events,
             metrics,
+            service_checks,
             spans,
             trace_stats,
         })
@@ -40,6 +43,11 @@ impl CollectedData {
     /// Returns a reference to the collected metrics.
     pub fn metrics(&self) -> &[Metric] {
         &self.metrics
+    }
+
+    /// Returns a reference to the collected service checks.
+    pub fn service_checks(&self) -> &[ServiceCheck] {
+        &self.service_checks
     }
 
     /// Returns a reference to the collected spans.
@@ -83,6 +91,22 @@ async fn get_captured_metrics(datadog_intake_port: u16) -> Result<Vec<Metric>, G
     debug!("Metrics dumped successfully.");
 
     Ok(metrics)
+}
+
+async fn get_captured_service_checks(datadog_intake_port: u16) -> Result<Vec<ServiceCheck>, GenericError> {
+    let client = reqwest::Client::new();
+    let checks = client
+        .get(format!("http://localhost:{}/service_checks/dump", datadog_intake_port))
+        .send()
+        .await
+        .error_context("Failed to call service checks dump endpoint on datadog-intake server.")?
+        .json::<Vec<ServiceCheck>>()
+        .await
+        .error_context("Failed to decode dumped service checks from datadog-intake response.")?;
+
+    debug!("Service checks dumped successfully.");
+
+    Ok(checks)
 }
 
 async fn get_captured_spans(datadog_intake_port: u16) -> Result<Vec<Span>, GenericError> {
