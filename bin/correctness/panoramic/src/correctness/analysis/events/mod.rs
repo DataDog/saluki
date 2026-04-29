@@ -18,28 +18,12 @@ impl EventsAnalyzer {
         let mut baseline_events = baseline_data.events().to_vec();
         let mut comparison_events = comparison_data.events().to_vec();
 
-        // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        // TIMESTAMP NORMALIZATION — READ BEFORE CHANGING
-        //
-        // Lading generates event timestamps as random u32 values sampled uniformly across the
-        // full 0–4,294,967,295 range (year 1970 to 2106). When a DogStatsD event carries an
-        // explicit `d:` field, both the stock agent and ADP preserve that value exactly, so the
-        // two sides will agree.
-        //
-        // When `d:` is absent (~50% of lading events), the stock agent backfills `time.Now()`
-        // (pkg/aggregator/aggregator.go, addEvent) while ADP currently stores 0 (see issue
-        // #1528). After #1528 is fixed both sides will backfill `time.Now()`, but the two
-        // pipelines start at slightly different moments so the values will still differ by a few
-        // seconds.
-        //
-        // The probability that any single lading-generated random u32 lands within one hour of
-        // the current wall-clock time is approximately 3600 / 4,294,967,296 ≈ 0.000084%. In
-        // practice this never happens in a test run. Therefore: any timestamp within one hour of
-        // now is almost certainly a pipeline fill-in value, not an explicit `d:` timestamp from
-        // the test corpus. We zero those out on both sides before sorting and comparing, so that
-        // fill-in values from both pipelines compare equal regardless of the exact wall-clock
-        // time each pipeline happened to run.
-        // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        // Lading generates timestamps as random u32 values across 1970–2106. When `d:` is absent,
+        // both pipelines backfill the current time, but start at slightly different moments so the
+        // values diverge by a few seconds. Any timestamp within one hour of now is treated as a
+        // fill-in (probability of a lading value landing that close to now: ~0.000084%) and
+        // normalized to i64::MAX so both sides compare equal. Explicit `d:` timestamps are
+        // compared exactly.
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
