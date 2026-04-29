@@ -60,8 +60,7 @@ pub struct RunCommand {
 
 /// Entrypoint for the `run` commands.
 pub async fn handle_run_command(
-    started: Instant, bootstrap_config_path: PathBuf, bootstrap_config: GenericConfiguration,
-    bootstrap_guard: &mut BootstrapGuard,
+    started: Instant, bootstrap_config: GenericConfiguration, bootstrap_guard: &mut BootstrapGuard,
 ) -> Result<(), GenericError> {
     let app_details = saluki_metadata::get_app_details();
     info!(
@@ -103,7 +102,6 @@ pub async fn handle_run_command(
             // level, etc.
             let dynamic_config = ConfigurationLoader::default()
                 .with_key_aliases(KEY_ALIASES)
-                .error_context("Failed to load Datadog Agent configuration file.")?
                 .with_dynamic_configuration(ra_bootstrap.create_config_stream())
                 .add_providers([DatadogRemapper::new()])
                 .from_environment(crate::internal::platform::DATADOG_AGENT_ENV_VAR_PREFIX)?

@@ -5,7 +5,7 @@
 
 #![deny(warnings)]
 #![deny(missing_docs)]
-use std::{path::PathBuf, time::Instant};
+use std::time::Instant;
 
 use saluki_app::bootstrap::{AppBootstrapper, BootstrapGuard};
 use saluki_components::config::{DatadogRemapper, KEY_ALIASES};
@@ -70,14 +70,7 @@ async fn main() -> Result<(), GenericError> {
         .error_context("Failed to complete bootstrap phase.")?;
 
     // Run the given subcommand.
-    let maybe_exit_code = run_inner(
-        cli.action,
-        started,
-        bootstrap_config_path,
-        bootstrap_config,
-        &mut bootstrap_guard,
-    )
-    .await?;
+    let maybe_exit_code = run_inner(cli.action, started, bootstrap_config, &mut bootstrap_guard).await?;
 
     // Drop the bootstrap guard to ensure logs are flushed, etc.
     drop(bootstrap_guard);
@@ -91,8 +84,7 @@ async fn main() -> Result<(), GenericError> {
 }
 
 async fn run_inner(
-    action: Action, started: Instant, bootstrap_config_path: PathBuf, bootstrap_config: GenericConfiguration,
-    bootstrap_guard: &mut BootstrapGuard,
+    action: Action, started: Instant, bootstrap_config: GenericConfiguration, bootstrap_guard: &mut BootstrapGuard,
 ) -> Result<Option<i32>, GenericError> {
     match action {
         Action::Run(cmd) => {
@@ -105,17 +97,16 @@ async fn run_inner(
                 }
             }
 
-            let exit_code =
-                match handle_run_command(started, bootstrap_config_path, bootstrap_config, bootstrap_guard).await {
-                    Ok(()) => {
-                        info!("Agent Data Plane stopped.");
-                        None
-                    }
-                    Err(e) => {
-                        error!("{:?}", e);
-                        Some(1)
-                    }
-                };
+            let exit_code = match handle_run_command(started, bootstrap_config, bootstrap_guard).await {
+                Ok(()) => {
+                    info!("Agent Data Plane stopped.");
+                    None
+                }
+                Err(e) => {
+                    error!("{:?}", e);
+                    Some(1)
+                }
+            };
 
             // Remove the PID file, if configured.
             if let Some(pid_file) = &cmd.pid_file {
