@@ -3842,11 +3842,14 @@ dependencies = [
  "smallvec",
  "snafu",
  "stringtheory",
+ "tempfile",
  "test-strategy",
  "tokio",
  "tonic",
  "tower",
  "tracing",
+ "tracing-appender",
+ "tracing-rolling-file",
  "url",
 ]
 

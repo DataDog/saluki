@@ -433,37 +433,37 @@
   },
   {
     "key": "dogstatsd_log_file",
-    "feature_state": "MISSING",
-    "action": "IMPLEMENT",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "DSD dedicated log file path",
-    "reason": "DogStatsD debug logging not implemented in ADP.",
+    "reason": "ADP writes DogStatsD metric debug lines to this file when dogstatsd_metrics_stats_enable and dogstatsd_logging_enabled are true. An empty value uses the platform default path.",
     "issue": "#1356",
     "adp_key": null
   },
   {
     "key": "dogstatsd_log_file_max_rolls",
-    "feature_state": "MISSING",
-    "action": "IMPLEMENT",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "DSD log file max roll count",
-    "reason": "DogStatsD debug logging not implemented in ADP.",
+    "reason": "ADP keeps this many rotated DogStatsD debug log files.",
     "issue": "#1356",
     "adp_key": null
   },
   {
     "key": "dogstatsd_log_file_max_size",
-    "feature_state": "MISSING",
-    "action": "IMPLEMENT",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "DSD log file max size",
-    "reason": "DogStatsD debug logging not implemented in ADP.",
+    "reason": "ADP rotates the active DogStatsD debug log file when it reaches this size.",
     "issue": "#1356",
     "adp_key": null
   },
   {
     "key": "dogstatsd_logging_enabled",
-    "feature_state": "MISSING",
-    "action": "IMPLEMENT",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Enables DSD metric logging",
-    "reason": "DogStatsD debug logging not implemented in ADP.",
+    "reason": "ADP uses this toggle with dogstatsd_metrics_stats_enable to decide whether to write DogStatsD metric debug lines.",
     "issue": "#1356",
     "adp_key": null
   },
@@ -688,7 +688,7 @@
     "feature_state": "DIVERGENT",
     "action": "DOCUMENTED",
     "description": "Enable per-metric debug stats",
-    "reason": "ADP uses an on-demand privileged API and CLI flow for metric-level DogStatsD statistics instead of this config toggle.",
+    "reason": "ADP uses an on-demand privileged API and CLI flow for metric-level DogStatsD statistics. This key also gates the DogStatsD metric debug log from #1356 when dogstatsd_logging_enabled is true.",
     "issue": "#1352",
     "adp_key": null
   },

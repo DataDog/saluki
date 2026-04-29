@@ -1,6 +1,6 @@
 # Configuring DogStatsD on Agent Data Plane
 
-<!-- Last updated: 2026-04-27 -->
+<!-- Last updated: 2026-04-29 -->
 
 The DogStatsD implementation on ADP has been redesigned in Rust for better resource guarantees and
 efficiency. Because the architecture is different from the original implementation, certain
@@ -32,10 +32,6 @@ tracking.
 | `dogstatsd_capture_depth`                    | Traffic capture channel depth     | [#1381] |
 | `dogstatsd_capture_path`                     | Traffic capture file location     | [#1381] |
 | `dogstatsd_eol_required`                     | Require newline-terminated msgs   | [#1339] |
-| `dogstatsd_log_file`                         | DSD dedicated log file path       | [#1356] |
-| `dogstatsd_log_file_max_rolls`               | DSD log file max roll count       | [#1356] |
-| `dogstatsd_log_file_max_size`                | DSD log file max size             | [#1356] |
-| `dogstatsd_logging_enabled`                  | Enables DSD metric logging        | [#1356] |
 | `dogstatsd_pipe_name`                        | Windows named pipe path           | [#1466] |
 | `dogstatsd_so_rcvbuf`                        | Socket receive buffer size        | [#1341] |
 | `dogstatsd_windows_pipe_security_descriptor` | Windows named pipe ACL descriptor | [#1466] |
@@ -81,7 +77,7 @@ default values.
 | Config Key                           | Description                      | Agent Behavior            | ADP Behavior                             |
 |--------------------------------------|----------------------------------|---------------------------|------------------------------------------|
 | `dogstatsd_context_expiry_seconds`   | Context cache TTL (seconds)      | Default 20s, configurable | Hardcodes 30s ([#1340])                  |
-| `dogstatsd_metrics_stats_enable`     | Enable per-metric debug stats    | Config toggle             | On-demand via API ([#1352])              |
+| `dogstatsd_metrics_stats_enable`     | Enable per-metric debug stats    | Config toggle             | Gates debug log; stats API on-demand ([#1352], [#1356]) |
 | `dogstatsd_stats_enable`             | Enable internal stats endpoint   | Config toggle             | On-demand via API ([#1352])              |
 | `dogstatsd_stats_buffer`             | Internal stats buffer size       | Configurable              | On-demand via API ([#1352])              |
 | `dogstatsd_stats_port`               | Internal stats endpoint port     | Configurable port         | On-demand via API ([#1352])              |
@@ -99,9 +95,9 @@ enables runtime-toggleable metric-level debug statistics that track count and la
 unique metric and tag combination. That data powers the core agent's `dogstatsd-stats` CLI command
 and HTTP endpoint.
 
-ADP does not mirror either config-toggle path. Instead, ADP provides an on-demand metric-level view
-through a DogStatsD statistics destination that is always wired into the topology, but only collects
-data during a time-bounded request. To collect statistics, run
+ADP does not mirror the packet-level statistics config path. Instead, ADP provides an on-demand
+metric-level view through a DogStatsD statistics destination that is always wired into the
+topology, but only collects data during a time-bounded request. To collect statistics, run
 `agent-data-plane dogstatsd stats --duration-secs N` or call the privileged
 `/dogstatsd/stats?collection_duration_secs=N` API. The handler waits for the requested collection
 window, then returns count and last-seen time per metric context inline as JSON. The CLI uses the
@@ -117,8 +113,37 @@ return the per-metric count and last-seen map, and it is not controlled by the c
 ADP does not expose the core agent's packet-per-second expvar endpoint, a persistent per-metric
 DogStatsD statistics endpoint to scrape, or a runtime toggle for metric-level collection. You do not
 need to set up scraper configuration for this per-metric data. The config keys
-`dogstatsd_stats_enable`, `dogstatsd_stats_buffer`, `dogstatsd_stats_port`, and
-`dogstatsd_metrics_stats_enable` have no effect in ADP. See [#1352].
+`dogstatsd_stats_enable`, `dogstatsd_stats_buffer`, and `dogstatsd_stats_port` have no effect in
+ADP. See [#1352].
+
+### DogStatsD metric debug log
+
+ADP supports the core agent's DogStatsD metric debug log. To enable this file, set
+`dogstatsd_metrics_stats_enable: true`. `dogstatsd_logging_enabled` also must be `true`; it defaults
+to `true`, so most configurations only need to enable `dogstatsd_metrics_stats_enable`.
+
+When enabled, ADP connects an extra DogStatsD destination to the decoded metric stream. The
+destination writes one line per metric sample with the metric name, tags, count, and last-seen time.
+This feature is for support and troubleshooting. It does not change normal metric forwarding, and it
+does not replace the on-demand `/dogstatsd/stats` API.
+
+Use these settings to control the file:
+
+| Config Key                       | Behavior |
+|----------------------------------|----------|
+| `dogstatsd_log_file`             | Output path. If empty, ADP uses the platform default DogStatsD stats log path. |
+| `dogstatsd_log_file_max_rolls`   | Number of rotated files to keep. Defaults to `3`. |
+| `dogstatsd_log_file_max_size`    | Maximum active file size before rotation. Defaults to `10Mb`. |
+| `dogstatsd_logging_enabled`      | Enables or disables writing metric debug lines to the file. Defaults to `true`. |
+
+The default `dogstatsd_log_file` path is
+`/var/log/datadog/dogstatsd_info/dogstatsd-stats.log` on Linux and other Unix platforms,
+`/opt/datadog-agent/logs/dogstatsd_info/dogstatsd-stats.log` on macOS, and
+`%ProgramData%\datadog\logs\dogstatsd_info\dogstatsd-stats.log` on Windows.
+
+This debug log differs from the `dogstatsd_capture_*` settings. The debug log records decoded metric
+summaries after DogStatsD parsing. The capture settings record raw DogStatsD traffic for packet-level
+investigation, and they remain tracked separately under [#1381].
 
 ### `telemetry.enabled`
 
@@ -240,6 +265,10 @@ The following settings work in ADP with the same behavior as the core agent.
 | `dogstatsd_entity_id_precedence`          | Entity ID over auto-detection    |
 | `dogstatsd_expiry_seconds`                | Counter zero-value TTL (secs)    |
 | `dogstatsd_flush_incomplete_buckets`      | Flush open buckets on shutdown   |
+| `dogstatsd_log_file`                      | DSD metric debug log path        |
+| `dogstatsd_log_file_max_rolls`            | Max rotated DSD debug log files  |
+| `dogstatsd_log_file_max_size`             | Max DSD debug log file size      |
+| `dogstatsd_logging_enabled`               | Enable DSD metric debug logging  |
 | `dogstatsd_mapper_profiles`               | Metric mapping profile defs      |
 | `dogstatsd_no_aggregation_pipeline`       | Enable no-agg timestamped path   |
 | `dogstatsd_non_local_traffic`             | Accept non-localhost UDP/TCP     |

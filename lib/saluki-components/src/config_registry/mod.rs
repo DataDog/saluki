@@ -70,6 +70,8 @@ pub mod structs {
     pub const AGGREGATE_CONFIGURATION: &str = "AggregateConfiguration";
     /// Identifier for `DogStatsDMapperConfiguration`.
     pub const DOGSTATSD_MAPPER_CONFIGURATION: &str = "DogStatsDMapperConfiguration";
+    /// Identifier for `DogStatsDDebugLogConfiguration`.
+    pub const DOGSTATSD_DEBUG_LOG_CONFIGURATION: &str = "DogStatsDDebugLogConfiguration";
     /// Identifier for `DogStatsDPrefixFilterConfiguration`.
     pub const DOGSTATSD_PREFIX_FILTER_CONFIGURATION: &str = "DogStatsDPrefixFilterConfiguration";
     /// Identifier for `DatadogMetricsConfiguration`.
