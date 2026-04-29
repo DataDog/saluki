@@ -495,30 +495,35 @@ impl DogStatsDConfiguration {
             (self.socket_receive_buffer_size != 0).then_some(self.socket_receive_buffer_size);
         for address in addresses {
             // We use a match here so that we can add context to the error message.
-            let listener = match &address {
+            let mut listener = match &address {
                 ListenAddress::Tcp(_) => Listener::from_listen_address(address)
                     .await
                     .context(FailedToCreateListener { listener_type: "TCP" })?,
-                ListenAddress::Udp(_) => {
-                    Listener::from_listen_address_with_socket_receive_buffer_size(address, socket_receive_buffer_size)
-                        .await
-                        .context(FailedToCreateListener { listener_type: "UDP" })?
-                }
+                ListenAddress::Udp(_) => Listener::from_listen_address(address)
+                    .await
+                    .context(FailedToCreateListener { listener_type: "UDP" })?,
                 ListenAddress::Unixgram(_) => {
-                    Listener::from_listen_address_with_socket_receive_buffer_size(address, socket_receive_buffer_size)
+                    Listener::from_listen_address(address)
                         .await
                         .context(FailedToCreateListener {
                             listener_type: "UDS (datagram)",
                         })?
                 }
                 ListenAddress::Unix(_) => {
-                    Listener::from_listen_address_with_socket_receive_buffer_size(address, socket_receive_buffer_size)
+                    Listener::from_listen_address(address)
                         .await
                         .context(FailedToCreateListener {
                             listener_type: "UDS (stream)",
                         })?
                 }
             };
+
+            if !matches!(listener.listen_address(), ListenAddress::Tcp(_)) {
+                if let Some(size) = socket_receive_buffer_size {
+                    listener = listener.with_receive_buffer_size(size);
+                }
+            }
+
             listeners.push(listener);
         }
         Ok(listeners)
