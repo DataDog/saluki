@@ -457,20 +457,25 @@ async fn add_dsd_pipeline_to_blueprint(
     //               │                 │                          │ service checks           │ events
     //               │                 ▼                          ▼                          ▼
     //               │      ┌─────────────────────┐    ┌─────────────────────┐    ┌─────────────────────┐
-    //               │      │  DSD Prefix/Filter  │    │ DSD Service Checks  │    │     DSD Events      │
-    //               │      │     (transform)     │    │      (encoder)      │    │      (encoder)      │
+    //               │      │  DSD Prefix/Filter  │    │ DSD Service Checks  │    │   Events Enrich     │
+    //               │      │     (transform)     │    │      (encoder)      │    │     (transform)     │
     //               │      └─────────────────────┘    └─────────────────────┘    └─────────────────────┘
     //               │                 │                          │                          │
-    //               │                 ▼                          │                          └─ ─ ─ ┐
-    //               │      ┌─────────────────────┐               └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐   │
-    //               │      │     DSD Enrich      │                                             │   │
-    //               │      │ (chained transform) │        ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐    │   │
-    //               │      │┌───────────────────┐│        │        Metrics Pipeline       │    │   │
-    //               │      ││    DSD Mapper     ││ ─ ─ ─▶ │  (aggregate, enrich, encode)  │    │   │
-    //               │      │└───────────────────┘│        └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘    │   │
-    //               │      └─────────────────────┘                       │                     │   │
-    //               │                                                    │                     │   │
-    //               ▼                                                    ▼                     ▼   ▼
+    //               │                 ▼                          │                          ▼
+    //               │      ┌─────────────────────┐               │               ┌─────────────────────┐
+    //               │      │     DSD Enrich      │               │               │     DSD Events      │
+    //               │      │ (chained transform) │               │               │      (encoder)      │
+    //               │      │┌───────────────────┐│               │               └─────────────────────┘
+    //               │      ││    DSD Mapper     ││               │                          │
+    //               │      │└───────────────────┘│               │                          │
+    //               │      └─────────────────────┘               │                          │
+    //               │                 │                          │                          │
+    //               │                 │        ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐           │
+    //               │                 └ ─ ─ ─▶ │        Metrics Pipeline       │           │
+    //               │                          │  (aggregate, enrich, encode)  │           │
+    //               │                          └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘           │
+    //               │                                       │                               │
+    //               ▼                                       ▼                               ▼
     //    ┌─────────────────────┐    ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐
     //    │      DSD Stats      │    │                           Forwarder                             │
     //    │    (destination)    │    │                       (Datadog Platform)                        │
@@ -487,6 +492,10 @@ async fn add_dsd_pipeline_to_blueprint(
         .error_context("Failed to configure metric tag filterlist transform.")?;
     let dsd_agg_config =
         AggregateConfiguration::from_configuration(config).error_context("Failed to configure aggregate transform.")?;
+    let events_enrich_config = ChainedConfiguration::default().with_transform_builder(
+        "host_enrichment",
+        HostEnrichmentConfiguration::from_environment_provider(env_provider.clone()),
+    );
     let dd_events_config = DatadogEventsConfiguration::from_configuration(config)
         .map(BufferedIncrementalConfiguration::from_encoder_builder)
         .error_context("Failed to configure Datadog Events encoder.")?;
@@ -501,6 +510,7 @@ async fn add_dsd_pipeline_to_blueprint(
         .add_transform("dsd_enrich", dsd_enrich_config)?
         .add_transform("dsd_tag_filterlist", dsd_tag_filterlist_config)?
         .add_transform("dsd_agg", dsd_agg_config)?
+        .add_transform("events_enrich", events_enrich_config)?
         .add_encoder("dd_events_encode", dd_events_config)?
         .add_encoder("dd_service_checks_encode", dd_service_checks_config)?
         .add_destination("dsd_stats_out", dsd_stats_config)?
@@ -510,8 +520,10 @@ async fn add_dsd_pipeline_to_blueprint(
         .connect_component("dsd_tag_filterlist", ["dsd_enrich"])?
         .connect_component("dsd_agg", ["dsd_tag_filterlist"])?
         .connect_component("metrics_enrich", ["dsd_agg"])?
+        // Events.
+        .connect_component("events_enrich", ["dsd_in.events"])?
+        .connect_component("dd_events_encode", ["events_enrich"])?
         .connect_component("dd_service_checks_encode", ["dsd_in.service_checks"])?
-        .connect_component("dd_events_encode", ["dsd_in.events"])?
         .connect_component("dd_out", ["dd_service_checks_encode", "dd_events_encode"])?
         // DogStatsD Stats.
         .connect_component("dsd_stats_out", ["dsd_in.metrics"])?;

@@ -151,6 +151,16 @@ impl Event {
         }
     }
 
+    /// Returns a mutable reference to the inner event value, if this event is an `EventD`.
+    ///
+    /// Otherwise, `None` is returned.
+    pub fn try_as_eventd_mut(&mut self) -> Option<&mut EventD> {
+        match self {
+            Event::EventD(eventd) => Some(eventd),
+            _ => None,
+        }
+    }
+
     /// Returns the inner event value, if this event is an `EventD`.
     ///
     /// Otherwise, `None` is returned and the original event is consumed.
