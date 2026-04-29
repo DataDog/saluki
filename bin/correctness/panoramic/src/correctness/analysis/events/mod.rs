@@ -20,21 +20,21 @@ impl EventsAnalyzer {
 
         // Lading generates timestamps as random u32 values across 1970–2106. When `d:` is absent,
         // both pipelines backfill the current time, but start at slightly different moments so the
-        // values diverge by a few seconds. Any timestamp within one hour of now is treated as a
-        // fill-in (probability of a lading value landing that close to now: ~0.000084%) and
+        // values diverge by a few seconds. Any timestamp within 5 minutes of now is treated as a
+        // fill-in (probability of a lading value landing that close to now: ~0.0000070%) and
         // normalized to i64::MAX so both sides compare equal. Explicit `d:` timestamps are
         // compared exactly.
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
-        let one_hour = 3600i64;
+        let five_minutes = 300i64;
 
         // Use i64::MAX as the sentinel: it is guaranteed never to appear as a real lading
         // timestamp (u32 range tops out at ~4.3B, well below i64::MAX) so it unambiguously
         // marks a normalized fill-in value.
         for event in baseline_events.iter_mut().chain(comparison_events.iter_mut()) {
-            if (event.timestamp - now).abs() < one_hour {
+            if (event.timestamp - now).abs() < five_minutes {
                 event.timestamp = i64::MAX;
             }
         }
