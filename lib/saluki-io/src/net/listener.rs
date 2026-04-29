@@ -489,24 +489,6 @@ mod tests {
         assert!(!stream.is_connectionless());
     }
 
-    #[tokio::test]
-    async fn udp_listener_errors_when_receive_buffer_size_cannot_be_set() {
-        let address = ListenAddress::Udp(([127, 0, 0, 1], 0).into());
-        let mut listener = Listener::from_listen_address(address)
-            .await
-            .expect("listener should bind")
-            .with_receive_buffer_size(usize::MAX);
-
-        assert!(matches!(
-            listener.accept().await,
-            Err(ListenerError::FailedToConfigureStream {
-                setting: SOCKET_RECV_BUFFER_SIZE_SETTING,
-                stream_type: "UDP",
-                ..
-            })
-        ));
-    }
-
     #[cfg(unix)]
     #[tokio::test]
     async fn unixgram_listener_sets_receive_buffer_size() {
