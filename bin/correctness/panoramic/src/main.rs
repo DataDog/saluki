@@ -158,17 +158,17 @@ async fn run_tests(mut cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
             config::DiscoveredTest::Integration(tc) => {
                 registry
                     .register(Box::new(cases::IntegrationTestCase::new(
-                        tc,
+                        *tc,
                         log_dir.clone(),
                         cmd.mounts_dir.clone(),
                     )))
                     .expect("failure to register integration test");
             }
-            config::DiscoveredTest::Correctness { name, config } => {
+            config::DiscoveredTest::Correctness(config) => {
                 registry
                     .register(Box::new(cases::CorrectnessTestCase::new(
-                        name,
-                        config,
+                        config.name.clone(),
+                        *config,
                         log_dir.clone(),
                         cmd.mounts_dir.clone(),
                     )))
@@ -326,7 +326,7 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
             test_map.insert(
                 test.name(),
                 serde_json::json!({
-                    "type": match test {DiscoveredTest::Integration(_) => "integration",DiscoveredTest::Correctness{ .. } => "correctness"},
+                    "type": match test {DiscoveredTest::Integration(_) => "integration",DiscoveredTest::Correctness(_) => "correctness"},
                     "timeout": test.timeout(),
                     "images": test.images(),
                 }),

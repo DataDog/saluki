@@ -93,14 +93,9 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
 /// A discovered test, either an integration test or a correctness test.
 pub enum DiscoveredTest {
     /// An integration test case (panoramic schema).
-    Integration(IntegrationConfig),
+    Integration(Box<IntegrationConfig>),
     /// A correctness test case.
-    Correctness {
-        /// Name of the test (derived from directory name).
-        name: String,
-        /// The correctness test configuration.
-        config: CorrectnessConfig,
-    },
+    Correctness(Box<CorrectnessConfig>),
 }
 
 impl DiscoveredTest {
@@ -108,7 +103,7 @@ impl DiscoveredTest {
     pub fn name(&self) -> &str {
         match self {
             DiscoveredTest::Integration(tc) => &tc.name,
-            DiscoveredTest::Correctness { name, .. } => name,
+            DiscoveredTest::Correctness(config) => &config.name,
         }
     }
 
@@ -116,7 +111,7 @@ impl DiscoveredTest {
     pub fn timeout(&self) -> Duration {
         match self {
             DiscoveredTest::Integration(tc) => tc.timeout.0,
-            DiscoveredTest::Correctness { .. } => Duration::from_secs(20 * 60),
+            DiscoveredTest::Correctness(_) => Duration::from_secs(20 * 60),
         }
     }
 
@@ -124,7 +119,7 @@ impl DiscoveredTest {
     pub fn description(&self) -> Option<&str> {
         match self {
             DiscoveredTest::Integration(tc) => tc.description.as_deref(),
-            DiscoveredTest::Correctness { .. } => None,
+            DiscoveredTest::Correctness(_) => None,
         }
     }
 
@@ -135,7 +130,7 @@ impl DiscoveredTest {
             DiscoveredTest::Integration(i) => {
                 m.insert("integration", i.container.image.clone());
             }
-            DiscoveredTest::Correctness { config, .. } => {
+            DiscoveredTest::Correctness(config) => {
                 m.insert("baseline", config.baseline.image.clone());
                 m.insert("millstone", config.millstone.image.clone());
                 m.insert("datadog-intake", config.datadog_intake.image.clone());
@@ -554,18 +549,18 @@ fn try_load_test(config_path: &Path, dir_path: &Path) -> Result<DiscoveredTest, 
         .ok_or_else(|| generic_error!("Missing required 'type' field (expected 'integration' or 'correctness')"))?;
 
     match test_type {
-        "integration" => IntegrationConfig::from_yaml(config_path).map(DiscoveredTest::Integration),
+        "integration" => IntegrationConfig::from_yaml(config_path).map(|c| DiscoveredTest::Integration(Box::new(c))),
         "correctness" => {
             let config_path_str = config_path
                 .to_str()
                 .ok_or_else(|| generic_error!("Invalid UTF-8 in config path: {}", config_path.display()))?;
-            let config = CorrectnessConfig::from_yaml(config_path_str)?;
-            let name = dir_path
+            let mut config = CorrectnessConfig::from_yaml(config_path_str)?;
+            config.name = dir_path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown")
                 .to_string();
-            Ok(DiscoveredTest::Correctness { name, config })
+            Ok(DiscoveredTest::Correctness(Box::new(config)))
         }
         other => Err(generic_error!(
             "Unknown test type '{}' (expected 'integration' or 'correctness')",

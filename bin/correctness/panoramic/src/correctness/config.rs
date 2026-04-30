@@ -8,8 +8,8 @@ use airlock::{
     },
     driver::DriverConfig,
 };
-use saluki_config::ConfigurationLoader;
 use async_trait::async_trait;
+use saluki_config::ConfigurationLoader;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;

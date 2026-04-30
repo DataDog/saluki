@@ -172,7 +172,7 @@ async fn run_with_timeout(
 ) -> TestResult {
     match &test_case {
         DiscoveredTest::Integration(_) => run_single_test(test_case, log_dir, mounts_dir).await,
-        DiscoveredTest::Correctness { .. } => {
+        DiscoveredTest::Correctness(_) => {
             let timeout = test_case.timeout();
             let correctness_log_dir = (**log_dir).as_ref().map(|d| d.join("correctness").join(&name));
             tokio::select! {
@@ -201,7 +201,7 @@ async fn run_single_test(
     match test_case {
         DiscoveredTest::Integration(tc) => {
             let test_log_dir = (**log_dir).as_ref().map(|d| d.join("integration").join(&tc.name));
-            let mut runner = TestRunner::new(tc, (**mounts_dir).clone(), CancellationToken::new());
+            let mut runner = TestRunner::new(*tc, (**mounts_dir).clone(), CancellationToken::new());
             if let Some(ref dir) = **log_dir {
                 runner = runner.with_log_dir(dir.join("integration"));
             }
@@ -210,11 +210,11 @@ async fn run_single_test(
             write_result_log(&result);
             result
         }
-        DiscoveredTest::Correctness { name, config } => {
-            let correctness_log_dir = (**log_dir).as_ref().map(|d| d.join("correctness").join(&name));
+        DiscoveredTest::Correctness(config) => {
+            let correctness_log_dir = (**log_dir).as_ref().map(|d| d.join("correctness").join(&config.name));
             let result = crate::correctness::runner::run_correctness_test(
-                name,
-                config,
+                config.name.clone(),
+                *config,
                 correctness_log_dir,
                 (**mounts_dir).clone(),
                 CancellationToken::new(),
