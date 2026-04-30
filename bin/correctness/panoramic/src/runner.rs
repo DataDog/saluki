@@ -23,6 +23,7 @@ use tokio::sync::{mpsc, RwLock, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+use crate::test::Test;
 use crate::{
     assertions::{create_assertion, AssertionContext, AssertionResult, LogBuffer},
     config::{parse_file_spec, parse_port_spec, AssertionStep, DiscoveredTest, IntegrationConfig},
@@ -30,9 +31,80 @@ use crate::{
     reporter::{PhaseTiming, TestResult},
 };
 
-// ----------------------------------------------------------------------------
-// Public API: run_tests
-// ----------------------------------------------------------------------------
+/// A registry and runner of tests.
+pub(crate) struct Runner {
+    tests: Vec<Box<dyn Test>>,
+}
+
+impl Runner {
+    pub(crate) fn new() -> Self {
+        Self { tests: Vec::new() }
+    }
+
+    /// Register a test. Returns an error if the test name is a duplicate.
+    pub(crate) fn register(&mut self, test: Box<dyn Test>) -> Result<(), GenericError> {
+        // Inefficient but it probably does not matter unless we have thousands of tests.
+        if self.tests.iter().any(|existing| existing.name() == test.name()) {
+            return Err(generic_error!(
+                "A test named '{}' already exists in the registry",
+                test.name()
+            ));
+        }
+        self.tests.push(test);
+        Ok(())
+    }
+
+    // TODO: re-document
+    pub(crate) async fn run_tests(
+        &self, filter: Option<impl Fn(&dyn Test) -> bool>, event_tx: mpsc::UnboundedSender<TestEvent>,
+        cancel_token: CancellationToken,
+    ) -> Vec<TestResult> {
+        let tests: Vec<_> = self
+            .tests
+            .iter()
+            .filter(|t| filter.as_ref().is_none_or(|f| f(t.as_ref())))
+            .collect();
+
+        let _ = event_tx.send(TestEvent::RunStarted {
+            total_tests: tests.len(),
+        });
+
+        let mut results = Vec::new();
+
+        for test in tests {
+            if cancel_token.is_cancelled() {
+                break;
+            }
+
+            let name = test.name();
+            let timeout = test.timeout();
+            let _ = event_tx.send(TestEvent::TestStarted { name: name.clone() });
+
+            let result = tokio::select! {
+                r = test.run() => r,
+                _ = tokio::time::sleep(timeout) => {
+                    test.cancel().await;
+                    TestResult {
+                        name,
+                        passed: false,
+                        duration: timeout,
+                        assertion_results: vec![],
+                        error: Some(format!("Test timed out after {:?}.", timeout)),
+                        phase_timings: vec![],
+                        log_dir: Some(test.log_dir()),
+                        assertion_details: vec![],
+                    }
+                }
+            };
+
+            let _ = event_tx.send(TestEvent::TestCompleted { result: result.clone() });
+            results.push(result);
+        }
+
+        let _ = event_tx.send(TestEvent::AllDone);
+        results
+    }
+}
 
 /// Run all tests, emitting events to the provided channel.
 ///

@@ -6,8 +6,6 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::reporter::TestResult;
-mod test_registry;
-pub(crate) use test_registry::TestRegistry;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_mins(10);
 

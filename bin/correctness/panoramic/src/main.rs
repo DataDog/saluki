@@ -12,6 +12,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt as _, util::SubscriberInitExt as _, EnvFilter};
 
+use crate::runner::Runner;
+
 mod assertions;
 mod cli;
 mod correctness;
@@ -149,7 +151,7 @@ async fn run_tests(mut cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     };
 
     // Build the test registry from discovered tests.
-    let mut registry = test::TestRegistry::new();
+    let mut registry = Runner::new();
     for tc in test_cases {
         registry.register(tc).expect("failure to register test");
     }
