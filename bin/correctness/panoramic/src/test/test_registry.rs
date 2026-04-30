@@ -19,14 +19,8 @@ impl TestRegistry {
 
     /// Register a test. Returns an error if the test name is a duplicate.
     pub(crate) fn register(&mut self, test: Box<dyn Test>) -> Result<(), GenericError> {
-        // Inefficient but it probably does not matter unless we have a million tests
-        if self
-            .tests
-            .iter()
-            .filter(|&existing| existing.name() == test.name())
-            .next()
-            .is_some()
-        {
+        // Inefficient but it probably does not matter unless we have thousands of tests.
+        if self.tests.iter().any(|existing| existing.name() == test.name()) {
             return Err(generic_error!(
                 "A test named '{}' already exists in the registry",
                 test.name()
@@ -45,7 +39,7 @@ impl TestRegistry {
         let tests: Vec<_> = self
             .tests
             .iter()
-            .filter(|t| filter.as_ref().map_or(true, |f| f(t.as_ref())))
+            .filter(|t| filter.as_ref().is_none_or(|f| f(t.as_ref())))
             .collect();
 
         let _ = event_tx.send(TestEvent::RunStarted {

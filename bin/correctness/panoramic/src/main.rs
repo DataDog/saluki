@@ -178,7 +178,7 @@ async fn run_tests(mut cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     }
 
     // Build an optional name filter from the --tests flag.
-    let filter: Option<Box<dyn Fn(&dyn test::Test) -> bool + Send>> = cmd.tests.as_ref().map(|f| {
+    let filter: Option<test::TestFilter> = cmd.tests.as_ref().map(|f| {
         let names: Vec<String> = f.split(',').map(|s| s.trim().to_string()).collect();
         Box::new(move |t: &dyn test::Test| names.iter().any(|n| *n == t.name())) as _
     });
