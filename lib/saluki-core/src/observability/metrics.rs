@@ -7,26 +7,30 @@ use std::{
     time::Duration,
 };
 
+use async_trait::async_trait;
 use futures::Stream;
 use metrics::{
     Counter, Gauge, Histogram, Key, KeyName, Level, Metadata, Recorder, SetRecorderError, SharedString, Unit,
 };
 use metrics_util::registry::{AtomicStorage, Registry};
-use saluki_common::{
-    collections::{FastConcurrentHashMap, FastHashMap},
-    task::spawn_traced_named,
-};
+use saluki_common::collections::{FastConcurrentHashMap, FastHashMap};
 use saluki_context::{
     origin::RawOrigin,
     tags::{Tag, TagSet},
     Context, ContextResolver, ContextResolverBuilder,
 };
 use saluki_error::GenericError;
-use tokio::sync::broadcast::{self, error::RecvError, Receiver};
+use tokio::{
+    select,
+    sync::broadcast::{self, error::RecvError, Receiver},
+};
 use tokio_util::sync::ReusableBoxFuture;
 use tracing::debug;
 
-use crate::data_model::event::{metric::*, Event};
+use crate::{
+    data_model::event::{metric::*, Event},
+    runtime::{InitializationError, ProcessShutdown, Supervisable, SupervisorFuture},
+};
 
 const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 const INTERNAL_METRICS_INTERNER_SIZE: NonZeroUsize = NonZeroUsize::new(16_384).unwrap();
@@ -334,15 +338,41 @@ impl MetricsContextResolver {
 
 /// Initializes the metrics subsystem with the given metrics prefix.
 ///
-/// ## Errors
+/// Returns a [`FilterHandle`] for adjusting the runtime metrics filter, plus a [`MetricsFlusherWorker`]
+/// that must be added to a [`Supervisor`][crate::runtime::Supervisor] in order to drive the periodic
+/// flush loop. Internal metrics are not propagated to subscribers until the worker is running.
+///
+/// # Errors
 ///
 /// If a global recorder was already installed, an error will be returned.
-pub async fn initialize_metrics(metrics_prefix: String) -> Result<FilterHandle, GenericError> {
+pub async fn initialize_metrics(metrics_prefix: String) -> Result<(FilterHandle, MetricsFlusherWorker), GenericError> {
     let recorder = MetricsRecorder::new(metrics_prefix);
     let filter_handle = recorder.filter_handle();
     recorder.install()?;
 
-    spawn_traced_named("internal-telemetry-metrics-flusher", flush_metrics(FLUSH_INTERVAL));
+    Ok((filter_handle, MetricsFlusherWorker))
+}
 
-    Ok(filter_handle)
+/// A worker that periodically flushes the internal metrics registry to broadcast subscribers.
+///
+/// Wraps the internal flush loop and runs it under a [`Supervisor`][crate::runtime::Supervisor]. Must
+/// only be added to a supervisor after [`initialize_metrics`] has been called -- the flush loop
+/// reads from the global recorder state set by that call.
+pub struct MetricsFlusherWorker;
+
+#[async_trait]
+impl Supervisable for MetricsFlusherWorker {
+    fn name(&self) -> &str {
+        "internal-telemetry-metrics-flusher"
+    }
+
+    async fn initialize(&self, mut process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
+        Ok(Box::pin(async move {
+            select! {
+                _ = flush_metrics(FLUSH_INTERVAL) => {},
+                _ = process_shutdown.wait_for_shutdown() => {},
+            }
+            Ok(())
+        }))
+    }
 }
