@@ -188,3 +188,88 @@ async fn process_override_requests(
         error!(error = %e, "Failed to reset log filtering directives before override handler shutdown.");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use tokio::{sync::mpsc, time::sleep};
+    use tracing_subscriber::{reload, EnvFilter, Registry};
+
+    use super::*;
+
+    fn current_filter(handle: &reload::Handle<EnvFilter, Registry>) -> String {
+        handle
+            .clone_current()
+            .expect("reload layer should be alive")
+            .to_string()
+    }
+
+    async fn wait_for_filter(handle: &reload::Handle<EnvFilter, Registry>, expected: &str) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+
+        loop {
+            let actual = current_filter(handle);
+            if actual == expected {
+                return;
+            }
+
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "filter did not become `{expected}`; last value was `{actual}`"
+            );
+
+            sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn reset_restores_current_base_filter() {
+        let base_filter = Arc::new(Mutex::new(EnvFilter::new("agent_data_plane=info")));
+        let (_filter_layer, reload_handle) = reload::Layer::new(base_filter.lock().unwrap().clone());
+        let (tx, rx) = mpsc::channel(1);
+        let processor = tokio::spawn(process_override_requests(
+            base_filter.clone(),
+            reload_handle.clone(),
+            rx,
+        ));
+
+        tx.send(Some((Duration::from_secs(60), EnvFilter::new("hyper=warn"))))
+            .await
+            .expect("send override");
+        sleep(Duration::from_millis(25)).await;
+        assert_eq!(current_filter(&reload_handle), "hyper=warn");
+
+        *base_filter.lock().unwrap() = EnvFilter::new("agent_data_plane=debug");
+        tx.send(None).await.expect("send reset");
+        sleep(Duration::from_millis(25)).await;
+        assert_eq!(current_filter(&reload_handle), "agent_data_plane=debug");
+
+        drop(tx);
+        processor.await.expect("override processor should exit cleanly");
+    }
+
+    #[tokio::test]
+    async fn override_expiration_restores_current_base_filter() {
+        let base_filter = Arc::new(Mutex::new(EnvFilter::new("agent_data_plane=info")));
+        let (_filter_layer, reload_handle) = reload::Layer::new(base_filter.lock().unwrap().clone());
+        let (tx, rx) = mpsc::channel(1);
+        let processor = tokio::spawn(process_override_requests(
+            base_filter.clone(),
+            reload_handle.clone(),
+            rx,
+        ));
+
+        tx.send(Some((Duration::from_millis(100), EnvFilter::new("hyper=warn"))))
+            .await
+            .expect("send override");
+        sleep(Duration::from_millis(25)).await;
+        assert_eq!(current_filter(&reload_handle), "hyper=warn");
+
+        *base_filter.lock().unwrap() = EnvFilter::new("agent_data_plane=warn");
+        wait_for_filter(&reload_handle, "agent_data_plane=warn").await;
+
+        drop(tx);
+        processor.await.expect("override processor should exit cleanly");
+    }
+}

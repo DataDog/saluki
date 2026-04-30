@@ -44,7 +44,6 @@ tracking.
 | `forwarder_outdated_file_in_days`            | Retry file retention (days)       | [#1360] |
 | `log_format_rfc3339`                         | Use RFC3339 timestamp format      | [#1373] |
 | `log_to_syslog`                              | Log to syslog daemon              | [#1337] |
-| `logging_frequency`                          | Transaction success log interval  | [#1380] |
 | `min_tls_version`                            | Minimum TLS version for HTTPS     | [#1370] |
 | `serializer_experimental_use_v3_api.*`       | V3 metrics API migration flags    | [#1468] |
 | `sslkeylogfile`                              | TLS key log file path             | [#1372] |
@@ -85,9 +84,35 @@ default values.
 | `dogstatsd_stats_enable`             | Enable internal stats endpoint   | Config toggle             | On-demand via API ([#1352])              |
 | `dogstatsd_stats_buffer`             | Internal stats buffer size       | Configurable              | On-demand via API ([#1352])              |
 | `dogstatsd_stats_port`               | Internal stats endpoint port     | Configurable port         | On-demand via API ([#1352])              |
+| `log_level`                           | Log verbosity directives         | Controls Agent logs       | Plain levels control ADP/Saluki-owned targets only |
+| `logging_frequency`                   | Transaction success log interval | Throttles success logs    | Intentionally unused                     |
 | `serializer_zstd_compressor_level`   | Zstd compression level           | Default level 1           | Default level 3 (intentional)            |
 | `statsd_metric_namespace_blacklist`  | Prefixes exempt from namespace   | `_blacklist` key          | Use `_blocklist` key ([#1353])           |
 | `telemetry.enabled`                  | Global telemetry toggle          | Agent toggle              | Use `data_plane.telemetry_enabled` ([#1338]) |
+
+### Logging verbosity (`log_level` / `logging_frequency`)
+
+ADP accepts `log_level` as the startup logging control. A plain level applies to ADP-owned and
+Saluki-owned targets only, including `agent_data_plane`, `saluki_*`, and runtime crates under
+`lib/`.
+
+```yaml
+log_level: debug
+```
+
+This keeps third-party dependencies such as `hyper`, `tokio`, and `tonic` at their default filtering
+unless you opt them in.
+
+To control dependency logs or set a global fallback, use advanced `EnvFilter` directives in
+`log_level`. ADP applies those directive strings as configured:
+
+```yaml
+log_level: warn,agent_data_plane=debug,hyper=warn
+```
+
+`logging_frequency` is intentionally unused by ADP. The core agent uses it to throttle repetitive
+successful transaction logs. ADP logs successful forwarder operations below the default `info` level,
+so there is no matching info-level success-log stream to throttle.
 
 ### DogStatsD statistics (`dogstatsd_stats_enable` / `dogstatsd_metrics_stats_enable`)
 
@@ -276,7 +301,6 @@ The following settings work in ADP with the same behavior as the core agent.
 | `log_file_max_rolls`                      | Max rotated log files kept       |
 | `log_file_max_size`                       | Max log file size before rotate  |
 | `log_format_json`                         | Use JSON log format              |
-| `log_level`                               | Log verbosity level              |
 | `log_to_console`                          | Log to stdout/stderr             |
 | `metric_filterlist`                       | Metric name blocklist            |
 | `metric_filterlist_match_prefix`          | Blocklist uses prefix matching   |
