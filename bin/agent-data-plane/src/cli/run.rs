@@ -446,35 +446,37 @@ async fn add_dsd_pipeline_to_blueprint(
     // We're creating the "front half" of the DogStatsD pipeline, which deals solely with accepting DogStatsD payloads,
     // and enriching/processing them in DSD-specific ways, relevant to how the Datadog Agent is expected to behave.
     //
-    //                                        ┌─────────────────────┐
-    //                       metrics         │      DogStatsD      │   events + service checks
-    //          ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ │       (source)      │ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐
-    //          │                │            └─────────────────────┘                          │
-    //          │                ▼                                                             ▼
-    //          │     ┌─────────────────────┐                                    ┌─────────────────────┐
-    //          │     │  DSD Prefix/Filter  │                                    │  DSD Non-Metrics    │
-    //          │     │     (transform)     │                                    │  Enrich (chained)   │
-    //          │     └─────────────────────┘                                    │ ┌─────────────────┐ │
-    //          │                │                                               │ │ Host Enrichment │ │
-    //          │                ▼                                               │ └─────────────────┘ │
-    //          │     ┌─────────────────────┐                                    └─────────────────────┘
-    //          │     │     DSD Enrich      │                                         │           │
-    //          │     │ (chained transform) │                                         │           │
-    //          │     │┌───────────────────┐│                                         ▼           ▼
-    //          │     ││    DSD Mapper     ││                              ┌──────────────┐ ┌──────────────┐
-    //          │     │└───────────────────┘│                              │  DSD Events  │ │  DSD Service │
-    //          │     └─────────────────────┘                              │   (encoder)  │ │    Checks    │
-    //          │                │                                         └──────────────┘ │   (encoder)  │
-    //          │                │        ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐               └──────────────┘
-    //          │                └ ─ ─ ─▶ │        Metrics Pipeline       │                      │
-    //          │                         │  (aggregate, enrich, encode)  │                      │
-    //          │                         └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘                      │
-    //          │                                      │                                          │
-    //          ▼                                      ▼                                          ▼
-    // ┌─────────────────────┐    ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐
-    // │      DSD Stats      │    │                           Forwarder                             │
-    // │    (destination)    │    │                       (Datadog Platform)                        │
-    // └─────────────────────┘    └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
+    //                                                 ┌─────────────────────┐
+    //                              metrics            │      DogStatsD      │
+    //               ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ │       (source)      │ ─ ─ ─ ─ ─ ─ ─ ┐
+    //               │                 │               └─────────────────────┘               │
+    //               │                 │                          │                          │
+    //               │                 │                          │ service checks           │ events
+    //               │                 ▼                          ▼                          ▼
+    //               │      ┌─────────────────────┐    ┌─────────────────────┐    ┌─────────────────────┐
+    //               │      │  DSD Prefix/Filter  │    │  Service Checks     │    │   Events Enrich     │
+    //               │      │     (transform)     │    │  Enrich (chained)   │    │    (chained)        │
+    //               │      └─────────────────────┘    └─────────────────────┘    └─────────────────────┘
+    //               │                 │                          │                          │
+    //               │                 ▼                          ▼                          ▼
+    //               │      ┌─────────────────────┐    ┌─────────────────────┐    ┌─────────────────────┐
+    //               │      │     DSD Enrich      │    │     DSD Service     │    │     DSD Events      │
+    //               │      │ (chained transform) │    │    Checks (encoder) │    │      (encoder)      │
+    //               │      │┌───────────────────┐│    └─────────────────────┘    └─────────────────────┘
+    //               │      ││    DSD Mapper     ││               │                          │
+    //               │      │└───────────────────┘│               │                          │
+    //               │      └─────────────────────┘               │                          │
+    //               │                 │                          │                          │
+    //               │                 │        ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐           │
+    //               │                 └ ─ ─ ─▶ │        Metrics Pipeline       │           │
+    //               │                          │  (aggregate, enrich, encode)  │           │
+    //               │                          └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘           │
+    //               │                                       │                               │
+    //               ▼                                       ▼                               ▼
+    //    ┌─────────────────────┐    ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐
+    //    │      DSD Stats      │    │                           Forwarder                             │
+    //    │    (destination)    │    │                       (Datadog Platform)                        │
+    //    └─────────────────────┘    └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
 
     let dsd_config = DogStatsDConfiguration::from_configuration(config)
         .error_context("Failed to configure DogStatsD source.")?
@@ -487,7 +489,11 @@ async fn add_dsd_pipeline_to_blueprint(
         .error_context("Failed to configure metric tag filterlist transform.")?;
     let dsd_agg_config =
         AggregateConfiguration::from_configuration(config).error_context("Failed to configure aggregate transform.")?;
-    let dsd_non_metrics_enrich_config = ChainedConfiguration::default().with_transform_builder(
+    let events_enrich_config = ChainedConfiguration::default().with_transform_builder(
+        "host_enrichment",
+        HostEnrichmentConfiguration::from_environment_provider(env_provider.clone()),
+    );
+    let service_checks_enrich_config = ChainedConfiguration::default().with_transform_builder(
         "host_enrichment",
         HostEnrichmentConfiguration::from_environment_provider(env_provider.clone()),
     );
@@ -505,7 +511,8 @@ async fn add_dsd_pipeline_to_blueprint(
         .add_transform("dsd_enrich", dsd_enrich_config)?
         .add_transform("dsd_tag_filterlist", dsd_tag_filterlist_config)?
         .add_transform("dsd_agg", dsd_agg_config)?
-        .add_transform("dsd_non_metrics_enrich", dsd_non_metrics_enrich_config)?
+        .add_transform("events_enrich", events_enrich_config)?
+        .add_transform("service_checks_enrich", service_checks_enrich_config)?
         .add_encoder("dd_events_encode", dd_events_config)?
         .add_encoder("dd_service_checks_encode", dd_service_checks_config)?
         .add_destination("dsd_stats_out", dsd_stats_config)?
@@ -515,10 +522,11 @@ async fn add_dsd_pipeline_to_blueprint(
         .connect_component("dsd_tag_filterlist", ["dsd_enrich"])?
         .connect_component("dsd_agg", ["dsd_tag_filterlist"])?
         .connect_component("metrics_enrich", ["dsd_agg"])?
-        // Events and service checks share a single enrichment transform for host backfill.
-        .connect_component("dsd_non_metrics_enrich", ["dsd_in.events", "dsd_in.service_checks"])?
-        .connect_component("dd_events_encode", ["dsd_non_metrics_enrich"])?
-        .connect_component("dd_service_checks_encode", ["dsd_non_metrics_enrich"])?
+        // Events.
+        .connect_component("events_enrich", ["dsd_in.events"])?
+        .connect_component("dd_events_encode", ["events_enrich"])?
+        .connect_component("service_checks_enrich", ["dsd_in.service_checks"])?
+        .connect_component("dd_service_checks_encode", ["service_checks_enrich"])?
         .connect_component("dd_out", ["dd_service_checks_encode", "dd_events_encode"])?
         // DogStatsD Stats.
         .connect_component("dsd_stats_out", ["dsd_in.metrics"])?;
