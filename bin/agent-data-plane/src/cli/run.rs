@@ -154,25 +154,14 @@ pub async fn handle_run_command(
 
     let dsd_stats_config = DogStatsDStatisticsConfiguration::new();
 
-    // Create our primary data topology and spawn any internal processes, which will ensure all relevant components are
-    // registered and accounted for in terms of memory usage.
-    let blueprint = create_topology(
-        &config,
-        &dp_config,
-        &env_provider,
-        &component_registry,
-        dsd_stats_config.clone(),
-    )
-    .await?;
-
     // Create the internal supervisor (control plane + observability)
     let mut internal_supervisor = create_internal_supervisor(
         &config,
         &dp_config,
         &component_registry,
         health_registry.clone(),
-        env_provider,
-        dsd_stats_config,
+        env_provider.clone(),
+        dsd_stats_config.clone(),
         ra_bootstrap,
     )
     .await
@@ -197,19 +186,31 @@ pub async fn handle_run_command(
         }
     }
 
-    // Bounds validation succeeded, so now we'll build and spawn the topology.
-    let built_topology = blueprint.build().await?;
-    let mut running_topology = built_topology.spawn(&health_registry, memory_limiter).await?;
+    // Build and spawn the topology only when at least one data pipeline needs it.
+    // Some pipelines (e.g. the APM receiver) run entirely as control-plane workers and
+    // produce no topology components, so there is nothing to build or wait on.
+    let mut running_topology = if dp_config.topology_required() {
+        let blueprint = create_topology(
+            &config,
+            &dp_config,
+            &env_provider,
+            &component_registry,
+            dsd_stats_config,
+        )
+        .await?;
+
+        let built_topology = blueprint.build().await?;
+        Some(built_topology.spawn(&health_registry, memory_limiter).await?)
+    } else {
+        None
+    };
 
     let startup_time = started.elapsed();
 
     // Emit the startup metrics for the application.
     emit_startup_metrics();
 
-    info!(
-        init_time_ms = startup_time.as_millis(),
-        "Topology running. Waiting for interrupt..."
-    );
+    info!(init_time_ms = startup_time.as_millis(), "Waiting for interrupt...");
 
     // Wait for all components to become ready.
     tokio::spawn(async move {
@@ -258,7 +259,12 @@ pub async fn handle_run_command(
                 }
             }
         }
-        _ = running_topology.wait_for_unexpected_finish() => {
+        _ = async {
+            match running_topology.as_mut() {
+                Some(t) => t.wait_for_unexpected_finish().await,
+                None => std::future::pending().await,
+            }
+        } => {
             error!("Topology component unexpectedly finished. Shutting down...");
             topology_failed = true;
         },
@@ -267,8 +273,11 @@ pub async fn handle_run_command(
         }
     }
 
-    // Shutdown the primary topology
-    let topology_result = running_topology.shutdown_with_timeout(Duration::from_secs(30)).await;
+    // Shutdown the primary topology if one was running.
+    let topology_result = match running_topology {
+        Some(t) => t.shutdown_with_timeout(Duration::from_secs(30)).await,
+        None => Ok(()),
+    };
 
     // Signal the internal supervisor to shutdown (if still running) and drive it to completion.
     // If the supervisor already exited (i.e., the select! above matched its branch), both the send

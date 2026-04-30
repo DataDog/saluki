@@ -17,6 +17,7 @@ pub mod log;
 use self::log::Log;
 
 pub mod trace;
+use self::trace::v1::V1Trace;
 use self::trace::Trace;
 
 pub mod trace_stats;
@@ -46,6 +47,9 @@ pub enum EventType {
 
     /// Trace stats.
     TraceStats,
+
+    /// v1.0 APM wire-format traces.
+    V1Trace,
 }
 
 impl Default for EventType {
@@ -82,6 +86,10 @@ impl fmt::Display for EventType {
             types.push("TraceStats");
         }
 
+        if self.contains(Self::V1Trace) {
+            types.push("V1Trace");
+        }
+
         write!(f, "{}", types.join("|"))
     }
 }
@@ -106,6 +114,9 @@ pub enum Event {
 
     /// Trace stats.
     TraceStats(TraceStats),
+
+    /// A v1.0 APM wire-format trace.
+    V1Trace(V1Trace),
 }
 
 impl Event {
@@ -118,6 +129,7 @@ impl Event {
             Event::Log(_) => EventType::Log,
             Event::Trace(_) => EventType::Trace,
             Event::TraceStats(_) => EventType::TraceStats,
+            Event::V1Trace(_) => EventType::V1Trace,
         }
     }
 
@@ -235,6 +247,26 @@ impl Event {
     /// Returns `true` if the event is a `Trace`.
     pub fn is_trace(&self) -> bool {
         matches!(self, Event::Trace(_))
+    }
+
+    /// Returns the inner event value, if this event is a `V1Trace`.
+    ///
+    /// Otherwise, `None` is returned and the original event is consumed.
+    pub fn try_into_v1_trace(self) -> Option<V1Trace> {
+        match self {
+            Event::V1Trace(trace) => Some(trace),
+            _ => None,
+        }
+    }
+
+    /// Returns a mutable reference to the inner event value, if this event is a `V1Trace`.
+    ///
+    /// Otherwise, `None` is returned.
+    pub fn try_as_v1_trace_mut(&mut self) -> Option<&mut V1Trace> {
+        match self {
+            Event::V1Trace(trace) => Some(trace),
+            _ => None,
+        }
     }
 }
 

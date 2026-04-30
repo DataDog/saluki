@@ -23,6 +23,7 @@ version = "0.1.35"
 dependencies = [
  "argh",
  "async-trait",
+ "axum",
  "bytes",
  "bytesize",
  "chrono",
@@ -41,6 +42,7 @@ dependencies = [
  "papaya",
  "prometheus-exposition",
  "prost-types",
+ "rmp",
  "saluki-api",
  "saluki-app",
  "saluki-common",
@@ -3825,6 +3827,7 @@ dependencies = [
  "protobuf",
  "rand 0.9.4",
  "regex",
+ "rmp",
  "rmp-serde",
  "saluki-api",
  "saluki-common",
