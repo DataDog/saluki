@@ -120,12 +120,8 @@ impl DataPlaneConfiguration {
     }
 
     /// Returns `true` if the primary topology needs to be built and run.
-    ///
-    /// This is distinct from [`data_pipelines_enabled`][Self::data_pipelines_enabled]: some pipelines
-    /// (e.g. the APM receiver in its current NOOP form) run entirely as control-plane workers and do not
-    /// place any components into the topology.
     pub const fn topology_required(&self) -> bool {
-        self.dogstatsd().enabled() || self.otlp().enabled()
+        self.apm().enabled() || self.dogstatsd().enabled() || self.otlp().enabled()
     }
 
     /// Returns `true` if the metrics pipeline is required.

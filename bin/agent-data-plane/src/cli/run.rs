@@ -13,7 +13,7 @@ use saluki_app::{
 use saluki_components::{
     config::{DatadogRemapper, KEY_ALIASES},
     decoders::otlp::OtlpDecoderConfiguration,
-    destinations::DogStatsDStatisticsConfiguration,
+    destinations::{BlackholeConfiguration, DogStatsDStatisticsConfiguration},
     encoders::{
         BufferedIncrementalConfiguration, DatadogApmStatsEncoderConfiguration, DatadogEventsConfiguration,
         DatadogLogsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration,
@@ -21,7 +21,7 @@ use saluki_components::{
     },
     forwarders::{DatadogConfiguration, OtlpForwarderConfiguration},
     relays::otlp::OtlpRelayConfiguration,
-    sources::{DogStatsDConfiguration, OtlpConfiguration},
+    sources::{ApmReceiverConfiguration, DogStatsDConfiguration, OtlpConfiguration},
     transforms::{
         AggregateConfiguration, ApmStatsTransformConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
         DogStatsDPrefixFilterConfiguration, HostEnrichmentConfiguration, HostTagsConfiguration,
@@ -336,6 +336,15 @@ async fn create_topology(
 
     if dp_config.otlp().enabled() {
         add_otlp_pipeline_to_blueprint(&mut blueprint, config, dp_config, env_provider)?;
+    }
+
+    if dp_config.apm().enabled() {
+        let apm_config = ApmReceiverConfiguration::from_configuration(config)
+            .error_context("Failed to configure APM receiver.")?;
+        blueprint
+            .add_source("apm_in", apm_config)?
+            .add_destination("apm_blackhole", BlackholeConfiguration)?
+            .connect_component("apm_blackhole", ["apm_in.traces"])?;
     }
 
     Ok(blueprint)

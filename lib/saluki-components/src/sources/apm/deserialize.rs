@@ -529,11 +529,12 @@ fn decode_span_link<R: Read>(rd: &mut R, table: &mut StringTable) -> Result<RawS
         match field_num {
             span_link::FIELD_TRACE_ID => {
                 let bin_len = rmp::decode::read_bin_len(rd).map_err(vr_err)?;
-                if bin_len != 16 {
+                if bin_len > 16 {
                     return Err(DeserializeError::InvalidTraceIdLength(bin_len));
                 }
                 let mut buf = [0u8; 16];
-                rd.read_exact(&mut buf).map_err(|_| DeserializeError::UnexpectedEof)?;
+                let offset = 16 - bin_len as usize;
+                rd.read_exact(&mut buf[offset..]).map_err(|_| DeserializeError::UnexpectedEof)?;
                 link.trace_id_high = u64::from_be_bytes(buf[..8].try_into().unwrap());
                 link.trace_id_low = u64::from_be_bytes(buf[8..].try_into().unwrap());
             }
@@ -680,11 +681,12 @@ fn decode_chunk<R: Read>(rd: &mut R, table: &mut StringTable) -> Result<RawTrace
             trace_chunk::FIELD_DROPPED_TRACE => chunk.dropped_trace = rmp::decode::read_bool(rd).map_err(vr_err)?,
             trace_chunk::FIELD_TRACE_ID => {
                 let bin_len = rmp::decode::read_bin_len(rd).map_err(vr_err)?;
-                if bin_len != 16 {
+                if bin_len > 16 {
                     return Err(DeserializeError::InvalidTraceIdLength(bin_len));
                 }
                 let mut buf = [0u8; 16];
-                rd.read_exact(&mut buf).map_err(|_| DeserializeError::UnexpectedEof)?;
+                let offset = 16 - bin_len as usize;
+                rd.read_exact(&mut buf[offset..]).map_err(|_| DeserializeError::UnexpectedEof)?;
                 chunk.trace_id_high = u64::from_be_bytes(buf[..8].try_into().unwrap());
                 chunk.trace_id_low = u64::from_be_bytes(buf[8..].try_into().unwrap());
             }
@@ -1291,6 +1293,22 @@ mod tests {
         let chunk = decode_chunk(&mut rd, &mut table).unwrap();
         assert_eq!(chunk.trace_id_high, trace_id_high);
         assert_eq!(chunk.trace_id_low, trace_id_low);
+    }
+
+    #[test]
+    fn chunk_short_trace_id_right_aligned() {
+        // 8-byte trace ID (64-bit) should land in the low half; high half stays zero.
+        let mut data = vec![0xde, 0x00, 0x01]; // map16 with 1 entry
+        data.push(6); // FIELD_TRACE_ID
+        let trace_bytes: u64 = 0xcafe_babe_1234_5678;
+        let mut bin = vec![0xc4, 8]; // bin8, 8 bytes
+        bin.extend_from_slice(&trace_bytes.to_be_bytes());
+        data.extend_from_slice(&bin);
+        let mut table = StringTable::new();
+        let mut rd = data.as_slice();
+        let chunk = decode_chunk(&mut rd, &mut table).unwrap();
+        assert_eq!(chunk.trace_id_high, 0);
+        assert_eq!(chunk.trace_id_low, trace_bytes);
     }
 
     #[test]
