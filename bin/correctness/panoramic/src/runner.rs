@@ -428,8 +428,10 @@ impl TestRunner {
             warn!(test = %test_name, error = %e, "Failed to start log capture.");
         }
 
-        // Monitor container exit in the background.
-        let exit_cancel = self.cancel_token.clone();
+        // Monitor container exit in the background. Uses its own token so that a normal
+        // container exit does not trigger the external cancel path.
+        let exit_token = CancellationToken::new();
+        let exit_signal = exit_token.clone();
         let container_name = details.container_name().to_string();
         let container_name_for_exit = container_name.clone();
         let exit_handle = tokio::spawn(async move {
@@ -440,7 +442,7 @@ impl TestRunner {
 
             let mut wait_stream = docker.wait_container::<String>(&container_name_for_exit, None);
             if wait_stream.next().await.is_some() {
-                exit_cancel.cancel();
+                exit_signal.cancel();
             }
         });
 
@@ -548,7 +550,7 @@ impl TestRunner {
 
         let phase_start = Instant::now();
         let assertion_results = tokio::select! {
-            results = self.run_assertions(&port_mappings, &container_name) => results,
+            results = self.run_assertions(&port_mappings, &container_name, &exit_token) => results,
             _ = self.cancel_token.cancelled() => vec![AssertionResult {
                 name: "cancelled".to_string(),
                 passed: false,
@@ -738,12 +740,15 @@ impl TestRunner {
         Ok(())
     }
 
-    async fn run_assertions(&self, port_mappings: &HashMap<String, u16>, container_name: &str) -> Vec<AssertionResult> {
+    async fn run_assertions(
+        &self, port_mappings: &HashMap<String, u16>, container_name: &str, exit_token: &CancellationToken,
+    ) -> Vec<AssertionResult> {
         let mut results = Vec::new();
         let total_steps = self.test_case.assertions.len();
 
         let ctx = AssertionContext {
             log_buffer: self.log_buffer.clone(),
+            container_exit_token: exit_token.clone(),
             cancel_token: self.cancel_token.clone(),
             port_mappings: port_mappings.clone(),
             container_name: container_name.to_string(),

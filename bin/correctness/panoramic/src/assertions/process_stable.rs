@@ -37,8 +37,8 @@ impl Assertion for ProcessStableForAssertion {
                 }
             }
 
-            // Handle cancellation (container exited).
-            _ = ctx.cancel_token.cancelled() => {
+            // Container exited unexpectedly.
+            _ = ctx.container_exit_token.cancelled() => {
                 AssertionResult {
                     name: self.name().to_string(),
                     passed: false,
