@@ -10,6 +10,7 @@ use airlock::{
 use saluki_config::ConfigurationLoader;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
+use tokio_util::sync::CancellationToken;
 
 use crate::correctness::analysis::AnalysisMode;
 
@@ -54,6 +55,18 @@ pub struct Config {
 
     #[serde(skip, default = "PathBuf::new")]
     base_config_path: PathBuf,
+
+    #[serde(skip)]
+    #[allow(dead_code)]
+    pub(crate) log_dir: Option<PathBuf>,
+
+    #[serde(skip, default = "PathBuf::new")]
+    #[allow(dead_code)]
+    pub(crate) mounts_dir: PathBuf,
+
+    #[serde(skip)]
+    #[allow(dead_code)]
+    pub(crate) cancel_token: CancellationToken,
 }
 
 #[derive(Clone, Deserialize)]
