@@ -20,7 +20,7 @@ impl ServiceChecksAnalyzer {
 
         // When `d:` is absent, some pipeline stages may backfill the current time. Any timestamp
         // within 5 minutes of now is treated as a fill-in (probability of a lading value landing
-        // that close to now: ~0.0000070%) and normalized to None so both sides compare equal.
+        // that close to now: ~0.0000070%) and normalized to u64::MAX so both sides compare equal.
         // Explicit `d:` timestamps are compared exactly.
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -28,10 +28,13 @@ impl ServiceChecksAnalyzer {
             .unwrap_or(0);
         let five_minutes = 300u64;
 
+        // Use u64::MAX as the sentinel: it is guaranteed never to appear as a real lading
+        // timestamp (u32 range tops out at ~4.3B, well below u64::MAX) so it unambiguously
+        // marks a normalized fill-in value.
         for check in baseline_checks.iter_mut().chain(comparison_checks.iter_mut()) {
             if let Some(ts) = check.timestamp {
                 if ts.abs_diff(now) < five_minutes {
-                    check.timestamp = None;
+                    check.timestamp = Some(u64::MAX);
                 }
             }
         }
