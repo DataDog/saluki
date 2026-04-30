@@ -62,6 +62,7 @@ pub struct RunCommand {
     /// the container root: `<mounts-dir>/etc/foo` maps to `/etc/foo`. Defaults to
     /// `bin/correctness/panoramic/mounts/` in the Saluki workspace where this binary was
     /// compiled.
+    #[allow(dead_code)]
     #[argh(option, default = "default_mounts_dir()")]
     pub mounts_dir: PathBuf,
 }

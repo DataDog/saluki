@@ -12,8 +12,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt as _, util::SubscriberInitExt as _, EnvFilter};
 
-use crate::config::DiscoveredTest;
-
 mod assertions;
 mod cli;
 mod correctness;
@@ -30,6 +28,7 @@ use self::events::{create_event_channel, TestEvent};
 mod reporter;
 use self::reporter::{OutputFormat, Reporter, TestResult, TestSuiteResult};
 
+#[allow(dead_code)]
 mod cases;
 mod integration;
 #[allow(dead_code)]
@@ -154,27 +153,7 @@ async fn run_tests(mut cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     // Build the test registry from discovered tests.
     let mut registry = test::TestRegistry::new();
     for tc in test_cases {
-        match tc {
-            config::DiscoveredTest::Integration(tc) => {
-                registry
-                    .register(Box::new(cases::IntegrationTestCase::new(
-                        *tc,
-                        log_dir.clone(),
-                        cmd.mounts_dir.clone(),
-                    )))
-                    .expect("failure to register integration test");
-            }
-            config::DiscoveredTest::Correctness(config) => {
-                registry
-                    .register(Box::new(cases::CorrectnessTestCase::new(
-                        config.name.clone(),
-                        *config,
-                        log_dir.clone(),
-                        cmd.mounts_dir.clone(),
-                    )))
-                    .expect("failure to register correctness test");
-            }
-        }
+        registry.register(tc).expect("failure to register test");
     }
 
     // Build an optional name filter from the --tests flag.
@@ -326,7 +305,7 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
             test_map.insert(
                 test.name(),
                 serde_json::json!({
-                    "type": match test {DiscoveredTest::Integration(_) => "integration",DiscoveredTest::Correctness(_) => "correctness"},
+                    "type": test.suite(),
                     "timeout": test.timeout(),
                     "images": test.images(),
                 }),

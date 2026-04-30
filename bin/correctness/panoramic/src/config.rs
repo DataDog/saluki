@@ -91,6 +91,7 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
 }
 
 /// A discovered test, either an integration test or a correctness test.
+#[allow(dead_code)]
 pub enum DiscoveredTest {
     /// An integration test case (panoramic schema).
     Integration(Box<IntegrationConfig>),
@@ -98,6 +99,7 @@ pub enum DiscoveredTest {
     Correctness(Box<CorrectnessConfig>),
 }
 
+#[allow(dead_code)]
 impl DiscoveredTest {
     /// Returns the name of the test.
     pub fn name(&self) -> &str {
@@ -495,8 +497,8 @@ impl IntegrationConfig {
 /// Each `config.yaml` found in a direct subdirectory must have a top-level `type` field set to
 /// either `"integration"` or `"correctness"`. Files with a missing or unknown `type` are skipped
 /// with a warning. Multiple test types may coexist freely within the same directory.
-pub fn discover_tests(dirs: &[PathBuf]) -> Result<Vec<DiscoveredTest>, GenericError> {
-    let mut tests = Vec::new();
+pub fn discover_tests(dirs: &[PathBuf]) -> Result<Vec<Box<dyn Test>>, GenericError> {
+    let mut tests: Vec<Box<dyn Test>> = Vec::new();
 
     for base_path in dirs {
         if !base_path.is_dir() {
@@ -528,13 +530,13 @@ pub fn discover_tests(dirs: &[PathBuf]) -> Result<Vec<DiscoveredTest>, GenericEr
     }
 
     // Sort by name for deterministic ordering.
-    tests.sort_by(|a, b| a.name().cmp(b.name()));
+    tests.sort_by_key(|a| a.name());
 
     Ok(tests)
 }
 
 /// Load a test case from a config file, dispatching on the top-level `type` field.
-fn try_load_test(config_path: &Path, dir_path: &Path) -> Result<DiscoveredTest, GenericError> {
+fn try_load_test(config_path: &Path, dir_path: &Path) -> Result<Box<dyn Test>, GenericError> {
     let content = std::fs::read_to_string(config_path)
         .error_context(format!("Failed to read config file: {}", config_path.display()))?;
 
@@ -549,7 +551,10 @@ fn try_load_test(config_path: &Path, dir_path: &Path) -> Result<DiscoveredTest, 
         .ok_or_else(|| generic_error!("Missing required 'type' field (expected 'integration' or 'correctness')"))?;
 
     match test_type {
-        "integration" => IntegrationConfig::from_yaml(config_path).map(|c| DiscoveredTest::Integration(Box::new(c))),
+        "integration" => {
+            let config = IntegrationConfig::from_yaml(config_path)?;
+            Ok(Box::new(config))
+        }
         "correctness" => {
             let config_path_str = config_path
                 .to_str()
@@ -560,7 +565,7 @@ fn try_load_test(config_path: &Path, dir_path: &Path) -> Result<DiscoveredTest, 
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown")
                 .to_string();
-            Ok(DiscoveredTest::Correctness(Box::new(config)))
+            Ok(Box::new(config))
         }
         other => Err(generic_error!(
             "Unknown test type '{}' (expected 'integration' or 'correctness')",
