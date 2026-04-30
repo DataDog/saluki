@@ -538,7 +538,8 @@ impl TestRunner {
             });
         }
 
-        // Run assertions with overall timeout.
+        // Run assertions. Timeout is handled by the Runner, which calls cancel() on this test
+        // if the deadline is exceeded.
         info!(
             test = %test_name,
             assertion_count = self.test_case.total_assertion_count(),
@@ -548,15 +549,12 @@ impl TestRunner {
         let phase_start = Instant::now();
         let assertion_results = tokio::select! {
             results = self.run_assertions(&port_mappings, &container_name) => results,
-            _ = tokio::time::sleep(self.test_case.timeout.0) => {
-                error!(test = %test_name, timeout = ?self.test_case.timeout.0, "Test timed out.");
-                vec![AssertionResult {
-                    name: "timeout".to_string(),
-                    passed: false,
-                    message: format!("Test timed out after {:?}.", self.test_case.timeout.0),
-                    duration: self.test_case.timeout.0,
-                }]
-            }
+            _ = self.cancel_token.cancelled() => vec![AssertionResult {
+                name: "cancelled".to_string(),
+                passed: false,
+                message: "Test was cancelled.".to_string(),
+                duration: phase_start.elapsed(),
+            }],
         };
         phase_timings.push(PhaseTiming {
             phase: "assertions".to_string(),
