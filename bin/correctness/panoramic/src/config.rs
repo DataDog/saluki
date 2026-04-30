@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -121,6 +122,22 @@ impl DiscoveredTest {
             DiscoveredTest::Integration(tc) => tc.description.as_deref(),
             DiscoveredTest::Correctness { .. } => None,
         }
+    }
+
+    /// Lists the images this test depends on.
+    pub fn images(&self) -> BTreeMap<&str, String> {
+        let mut m = BTreeMap::new();
+        match self {
+            DiscoveredTest::Integration(i) => {
+                m.insert("integration", i.container.image.clone());
+            }
+            DiscoveredTest::Correctness { config, .. } => {
+                m.insert("baseline", config.baseline.image.clone());
+                m.insert("millstone", config.millstone.image.clone());
+                m.insert("datadog-intake", config.datadog_intake.image.clone());
+            }
+        }
+        m
     }
 }
 

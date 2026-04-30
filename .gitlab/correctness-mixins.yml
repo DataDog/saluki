@@ -1,0 +1,40 @@
+# Mixins extended by every correctness-test job in the dynamically generated
+# child pipeline (see tooling/generate-correctness-pipeline.sh).
+#
+# Why mixins: the generator emits one stanza per test that is identical except
+# for CORRECTNESS_TEST_CASE and (optionally) the baseline-image override.
+
+# Common to every correctness-test job.
+.test-correctness-definition:
+  stage: test
+  tags: ["docker-in-docker:amd64"]
+  retry: 2
+  timeout: 10m
+  image: "${SALUKI_BUILD_CI_IMAGE}"
+  artifacts:
+    expire_in: 1 week
+    paths: [panoramic-logs/]
+    when: always
+  # Pull panoramic binary built once in the parent pipeline.
+  needs:
+    - pipeline: $PARENT_PIPELINE_ID
+      job: build-panoramic-binary
+      artifacts: true
+  variables:
+    KUBERNETES_CPU_REQUEST: "24"
+    KUBERNETES_MEMORY_REQUEST: "24Gi"
+    KUBERNETES_MEMORY_LIMIT: "48Gi"
+    DD_LOG_LEVEL: "panoramic=debug,info"
+    PANORAMIC_LOG_DIR: "panoramic-logs"
+    PANORAMIC_ALPINE_IMAGE: registry.ddbuild.io/alpine:latest
+    PANORAMIC_MILLSTONE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
+    PANORAMIC_DATADOG_INTAKE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/datadog-intake:${CI_COMMIT_SHA}
+    PANORAMIC_COMPARISON__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
+  script:
+    - target/release/panoramic run -d $(pwd)/test/correctness -t ${CORRECTNESS_TEST_CASE} --no-tui
+
+# Added when the test's config.yaml names a saluki-images/ baseline (a
+# placeholder valid only locally). Replaces it with the CI-built image.
+.test-correctness-adp-baseline:
+  variables:
+    PANORAMIC_BASELINE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}

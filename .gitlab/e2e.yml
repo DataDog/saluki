@@ -1,36 +1,3 @@
-.test-correctness-definition:
-  stage: e2e
-  tags: ["docker-in-docker:amd64"]
-  needs:
-    - build-bundled-agent-adp-image
-    - build-datadog-intake-image
-    - build-millstone-image
-  retry: 2
-  timeout: 10m
-  image: "${SALUKI_BUILD_CI_IMAGE}"
-  artifacts:
-    expire_in: 1 week
-    paths:
-      - panoramic-logs/
-    when: always
-  variables:
-    DD_LOG_LEVEL: "panoramic=debug,info"
-    PANORAMIC_LOG_DIR: "panoramic-logs"
-    PANORAMIC_ALPINE_IMAGE: registry.ddbuild.io/alpine:latest
-    PANORAMIC_MILLSTONE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
-    PANORAMIC_DATADOG_INTAKE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/datadog-intake:${CI_COMMIT_SHA}
-    PANORAMIC_COMPARISON__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
-  script:
-    - make build-panoramic
-    - target/release/panoramic run -d $(pwd)/test/correctness -t ${CORRECTNESS_TEST_CASE} --no-tui
-
-# Mixin for correctness tests where baseline is the CI-built bundled ADP image.
-# Tests with a different baseline (for example, DDOT) should NOT extend this and instead
-# let config.yaml specify the baseline image directly.
-.test-correctness-adp-baseline:
-  variables:
-    PANORAMIC_BASELINE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
-
 build-datadog-intake-image:
   stage: e2e
   image: ${DOCKER_BUILD_IMAGE}
@@ -94,55 +61,55 @@ build-bundled-agent-adp-image:
       --push
       .
 
-test-correctness-dsd-added-tags:
-  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-baseline]
-  variables:
-    CORRECTNESS_TEST_CASE: dsd-added-tags
+# Compile panoramic once. The dynamically generated child pipeline below
+# pulls this artifact instead of rebuilding per test.
+build-panoramic-binary:
+  extends: .build-common-variables
+  stage: e2e
+  tags: ["arch:amd64"]
+  needs: []
+  retry: 2
+  timeout: 30m
+  image: "${SALUKI_BUILD_CI_IMAGE}"
+  artifacts:
+    expire_in: 1 day
+    paths: [target/release/panoramic]
+  script:
+    - make build-panoramic
 
-test-correctness-dsd-origin-detection:
-  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-baseline]
-  variables:
-    CORRECTNESS_TEST_CASE: dsd-origin-detection
+# Scan test/correctness/ and emit a child-pipeline YAML with one job per test
+# directory. Each emitted job extends mixins from .gitlab/correctness-mixins.yml.
+generate-correctness-pipeline:
+  stage: e2e
+  image: "${SALUKI_BUILD_CI_IMAGE}"
+  needs:
+    - build-bundled-agent-adp-image
+    - build-datadog-intake-image
+    - build-millstone-image
+    - build-panoramic-binary
+  script:
+    - bash tooling/generate-correctness-pipeline.sh > generated-correctness.yml
+  artifacts:
+    paths: [generated-correctness.yml]
 
-test-correctness-dsd-events:
-  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-baseline]
+# Run the generated child pipeline.
+run-correctness-tests:
+  stage: e2e
+  needs:
+    - generate-correctness-pipeline
   variables:
-    CORRECTNESS_TEST_CASE: dsd-events
-
-test-correctness-dsd-plain:
-  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-baseline]
-  variables:
-    CORRECTNESS_TEST_CASE: dsd-plain
-
-test-correctness-otlp-metrics:
-  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-baseline]
-  variables:
-    CORRECTNESS_TEST_CASE: otlp-metrics
-
-test-correctness-otlp-traces:
-  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-baseline]
-  variables:
-    CORRECTNESS_TEST_CASE: otlp-traces
-
-test-correctness-otlp-traces-ets:
-  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-baseline]
-  variables:
-    CORRECTNESS_TEST_CASE: otlp-traces-ets
-
-test-correctness-otlp-traces-probabilistic:
-  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-baseline]
-  variables:
-    CORRECTNESS_TEST_CASE: otlp-traces-probabilistic
-
-test-correctness-otlp-traces-ottl-filtering:
-  extends: [.build-common-variables, .test-correctness-definition]
-  variables:
-    CORRECTNESS_TEST_CASE: otlp-traces-ottl-filtering
-
-test-correctness-otlp-traces-ottl-transform:
-  extends: [.build-common-variables, .test-correctness-definition]
-  variables:
-    CORRECTNESS_TEST_CASE: otlp-traces-ottl-transform
+    # Child pipelines don't inherit YAML variables from the parent. Forward
+    # the ones referenced by correctness-mixins.yml.
+    PARENT_PIPELINE_ID: $CI_PIPELINE_ID
+    SALUKI_BUILD_CI_IMAGE: $SALUKI_BUILD_CI_IMAGE
+    SALUKI_IMAGE_REPO_BASE: $SALUKI_IMAGE_REPO_BASE
+  trigger:
+    include:
+      # this is the file we generated in the previous step
+      - artifact: generated-correctness.yml
+        job: generate-correctness-pipeline
+    # folds child status into the parent
+    strategy: depend
 
 test-integration:
   stage: e2e

@@ -77,4 +77,9 @@ pub struct ListCommand {
     /// path to a test cases directory (can be specified multiple times)
     #[argh(option, short = 'd')]
     pub test_dirs: Vec<PathBuf>,
+
+    /// output the discovered tests as json along with their image dependencies. a ci script depends on this for dynamic
+    /// pipeline creation.
+    #[argh(switch)]
+    pub json: bool,
 }

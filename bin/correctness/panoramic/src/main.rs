@@ -3,6 +3,7 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
+use std::collections::BTreeMap;
 use std::{io::IsTerminal, path::PathBuf, process::ExitCode, time::Instant};
 
 use chrono::Local;
@@ -10,6 +11,8 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt as _, util::SubscriberInitExt as _, EnvFilter};
+
+use crate::config::DiscoveredTest;
 
 mod assertions;
 mod cli;
@@ -37,15 +40,19 @@ async fn main() -> ExitCode {
     // See if we should use TUI mode.
     //
     // This influences how we configure things since some output gets redirected/rendered differently in TUI mode.
-    let use_tui = match &cli.command {
-        Command::Run(cmd) => !cmd.no_tui && cmd.output == "text" && std::io::stdout().is_terminal(),
-        Command::List(_) => false,
+    let (use_tui, is_test_run) = match &cli.command {
+        Command::Run(cmd) => (
+            !cmd.no_tui && cmd.output == "text" && std::io::stdout().is_terminal(),
+            true,
+        ),
+        Command::List(_) => (false, false),
     };
 
     if !use_tui {
         initialize_logging();
-
-        info!("Panoramic starting...");
+        if is_test_run {
+            info!("Panoramic starting...");
+        }
     }
 
     let result = match cli.command {
@@ -55,7 +62,11 @@ async fn main() -> ExitCode {
 
     if !use_tui {
         match result {
-            ExitCode::SUCCESS => info!("Panoramic stopped."),
+            ExitCode::SUCCESS => {
+                if is_test_run {
+                    info!("Panoramic stopped.")
+                }
+            }
             _ => error!("Panoramic stopped with errors."),
         }
     }
@@ -281,8 +292,10 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let dirs_str: Vec<_> = cmd.test_dirs.iter().map(|d| d.display().to_string()).collect();
-    info!("Discovering test cases from: {}...", dirs_str.join(", "));
+    if !cmd.json {
+        let dirs_str: Vec<_> = cmd.test_dirs.iter().map(|d| d.display().to_string()).collect();
+        info!("Discovering test cases from: {}...", dirs_str.join(", "));
+    }
 
     let test_cases = match discover_tests(&cmd.test_dirs) {
         Ok(tests) => tests,
@@ -292,25 +305,42 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
         }
     };
 
-    if test_cases.is_empty() {
-        info!("No test cases found.");
-        return ExitCode::SUCCESS;
-    }
-
-    info!("Discovered {} test case(s).", test_cases.len());
-
-    println!();
-    println!("Available tests ({}):", test_cases.len());
-    println!();
-
-    for test_case in &test_cases {
-        println!("  {}", test_case.name());
-        if let Some(description) = test_case.description() {
-            println!("    {}", description);
+    if cmd.json {
+        let mut test_map = BTreeMap::new();
+        for test in &test_cases {
+            test_map.insert(
+                test.name(),
+                serde_json::json!({
+                    "type": match test {DiscoveredTest::Integration(_) => "integration",DiscoveredTest::Correctness{ .. } => "correctness"},
+                    "timeout": test.timeout(),
+                    "images": test.images(),
+                }),
+            );
         }
-        println!("    Timeout: {:?}", test_case.timeout());
-        println!();
-    }
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&test_map).expect("Unable to serialize a map of the tests")
+        )
+    } else {
+        if test_cases.is_empty() {
+            info!("No test cases found.");
+            return ExitCode::SUCCESS;
+        }
 
+        info!("Discovered {} test case(s).", test_cases.len());
+
+        println!();
+        println!("Available tests ({}):", test_cases.len());
+        println!();
+
+        for test_case in &test_cases {
+            println!("  {}", test_case.name());
+            if let Some(description) = test_case.description() {
+                println!("    {}", description);
+            }
+            println!("    Timeout: {:?}", test_case.timeout());
+            println!();
+        }
+    }
     ExitCode::SUCCESS
 }
