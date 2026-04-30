@@ -65,6 +65,7 @@ impl TestRegistry {
             let result = tokio::select! {
                 r = test.run() => r,
                 _ = tokio::time::sleep(timeout) => {
+                    test.cancel().await;
                     TestResult {
                         name,
                         passed: false,

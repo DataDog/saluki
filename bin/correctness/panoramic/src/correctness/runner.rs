@@ -29,14 +29,16 @@ use crate::{
 };
 
 /// Run a single correctness test and return a panoramic `TestResult`.
+/// Run a single correctness test and return a panoramic `TestResult`.
 pub async fn run_correctness_test(
     name: String, config: Config, log_dir: Option<PathBuf>, mounts_dir: PathBuf,
+    cancel_token: CancellationToken,
 ) -> TestResult {
     let started = Instant::now();
 
     // Phase 1: spawn containers
     let spawn_start = Instant::now();
-    let test_runner = match TestRunner::from_config(&config, log_dir.clone(), &mounts_dir).await {
+    let test_runner = match TestRunner::from_config(&config, log_dir.clone(), &mounts_dir, cancel_token).await {
         Ok(r) => r,
         Err(e) => return make_error_result(name, started, "spawn_containers", e, log_dir),
     };
@@ -149,7 +151,7 @@ pub struct TestRunner {
 
 impl TestRunner {
     pub async fn from_config(
-        config: &Config, log_dir: Option<PathBuf>, mounts_dir: &Path,
+        config: &Config, log_dir: Option<PathBuf>, mounts_dir: &Path, cancel_token: CancellationToken,
     ) -> Result<Self, GenericError> {
         let baseline = crate::mounts::apply_target_mounts(config.baseline_target_driver_config().await?, mounts_dir)?;
         let comparison =
@@ -159,7 +161,7 @@ impl TestRunner {
             millstone_config: config.millstone_config(),
             baseline_target_driver_config: baseline,
             comparison_target_driver_config: comparison,
-            cancel_token: CancellationToken::new(),
+            cancel_token,
             baseline_coordinator: Coordinator::new(),
             comparison_coordinator: Coordinator::new(),
             log_base_dir: log_dir.unwrap_or_else(|| PathBuf::from("/tmp/panoramic")),

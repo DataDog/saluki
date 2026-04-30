@@ -201,7 +201,7 @@ async fn run_single_test(
     match test_case {
         DiscoveredTest::Integration(tc) => {
             let test_log_dir = (**log_dir).as_ref().map(|d| d.join("integration").join(&tc.name));
-            let mut runner = TestRunner::new(tc, (**mounts_dir).clone());
+            let mut runner = TestRunner::new(tc, (**mounts_dir).clone(), CancellationToken::new());
             if let Some(ref dir) = **log_dir {
                 runner = runner.with_log_dir(dir.join("integration"));
             }
@@ -217,6 +217,7 @@ async fn run_single_test(
                 config,
                 correctness_log_dir,
                 (**mounts_dir).clone(),
+                CancellationToken::new(),
             )
             .await;
             write_result_log(&result);
@@ -258,11 +259,11 @@ pub(crate) struct TestRunner {
 
 impl TestRunner {
     /// Create a new test runner for the given test case.
-    pub(crate) fn new(test_case: TestCase, mounts_dir: PathBuf) -> Self {
+    pub(crate) fn new(test_case: TestCase, mounts_dir: PathBuf, cancel_token: CancellationToken) -> Self {
         Self {
             test_case,
             isolation_group_id: generate_isolation_group_id(),
-            cancel_token: CancellationToken::new(),
+            cancel_token,
             log_buffer: Arc::new(RwLock::new(LogBuffer::default())),
             log_dir: None,
             mounts_dir,

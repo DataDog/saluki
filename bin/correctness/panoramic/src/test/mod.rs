@@ -38,4 +38,8 @@ pub(crate) trait Test: Send + Sync {
     /// Run the test and return the `TestResult`. Note that we do not return an error here. It is expected that you
     /// should handle errors and turn them into a failed `TestResult` and try not to panic.
     async fn run(&self) -> TestResult;
+
+    /// Request cancellation and clean up any resources (containers, networks, volumes). Called by the registry when a
+    /// test exceeds its timeout.
+    async fn cancel(&self);
 }

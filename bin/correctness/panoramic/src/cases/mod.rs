@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use tokio_util::sync::CancellationToken;
 
 use crate::config::TestCase;
 use crate::correctness::config::Config as CorrectnessConfig;
@@ -13,11 +14,17 @@ pub(crate) struct IntegrationTestCase {
     tc: TestCase,
     log_dir: Option<PathBuf>,
     mounts_dir: PathBuf,
+    cancel_token: CancellationToken,
 }
 
 impl IntegrationTestCase {
     pub(crate) fn new(tc: TestCase, log_dir: Option<PathBuf>, mounts_dir: PathBuf) -> Self {
-        Self { tc, log_dir, mounts_dir }
+        Self {
+            tc,
+            log_dir,
+            mounts_dir,
+            cancel_token: CancellationToken::new(),
+        }
     }
 }
 
@@ -47,13 +54,21 @@ impl Test for IntegrationTestCase {
     }
 
     async fn run(&self) -> TestResult {
-        let mut runner = crate::runner::TestRunner::new(self.tc.clone(), self.mounts_dir.clone());
+        let mut runner = crate::runner::TestRunner::new(
+            self.tc.clone(),
+            self.mounts_dir.clone(),
+            self.cancel_token.clone(),
+        );
         if let Some(ref dir) = self.log_dir {
             runner = runner.with_log_dir(dir.join("integration"));
         }
         let mut result = runner.run().await;
         result.log_dir = Some(self.log_dir());
         result
+    }
+
+    async fn cancel(&self) {
+        self.cancel_token.cancel();
     }
 }
 
@@ -63,11 +78,18 @@ pub(crate) struct CorrectnessTestCase {
     config: CorrectnessConfig,
     log_dir: Option<PathBuf>,
     mounts_dir: PathBuf,
+    cancel_token: CancellationToken,
 }
 
 impl CorrectnessTestCase {
     pub(crate) fn new(name: String, config: CorrectnessConfig, log_dir: Option<PathBuf>, mounts_dir: PathBuf) -> Self {
-        Self { name, config, log_dir, mounts_dir }
+        Self {
+            name,
+            config,
+            log_dir,
+            mounts_dir,
+            cancel_token: CancellationToken::new(),
+        }
     }
 }
 
@@ -98,7 +120,12 @@ impl Test for CorrectnessTestCase {
             self.config.clone(),
             Some(self.log_dir()),
             self.mounts_dir.clone(),
+            self.cancel_token.clone(),
         )
         .await
+    }
+
+    async fn cancel(&self) {
+        self.cancel_token.cancel();
     }
 }
