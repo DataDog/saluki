@@ -1,10 +1,16 @@
 use std::{
     path::PathBuf,
+    sync::Mutex,
     time::{Duration, Instant},
 };
 
+use saluki_app::bootstrap::BootstrapGuard;
 
-use futures::FutureExt as _;
+// Bootstrap sets global process state (logging, TLS, metrics). Hold the guard in a static
+// so ASAN can trace the allocation as reachable, and so the logger threads stay alive.
+static BOOTSTRAP_GUARD: Mutex<Option<BootstrapGuard>> = Mutex::new(None);
+
+
 use memory_accounting::ComponentRegistry;
 use saluki_app::{
     bootstrap::AppBootstrapper,
@@ -29,7 +35,6 @@ use saluki_components::{
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_core::health::HealthRegistry;
-use saluki_core::runtime::SupervisorError;
 use saluki_core::topology::TopologyBlueprint;
 use saluki_env::EnvironmentProvider as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -41,7 +46,7 @@ use tracing::{error, info, warn};
 
 use crate::{
     components::tag_filterlist::TagFilterlistConfiguration,
-    internal::{create_internal_supervisor, platform::PlatformSettings},
+    internal::platform::PlatformSettings,
 };
 use crate::{config::DataPlaneConfiguration, env_provider::ADPEnvironmentProvider};
 
@@ -79,9 +84,15 @@ pub async fn handle_run_command(
         .error_context("Failed to load data plane configuration.")?;
 
     let in_standalone_mode = dp_config.standalone_mode();
-    let _bs_guard = AppBootstrapper::from_configuration(&config)?
-        .bootstrap()
-        .await?;
+    // Bootstrap (logging, TLS, metrics) sets global process state — only run once.
+    // Drop the MutexGuard before `.await` to keep the future Send.
+    let needs_bootstrap = BOOTSTRAP_GUARD.lock().unwrap().is_none();
+    if needs_bootstrap {
+        let guard = AppBootstrapper::from_configuration(&config)?
+            .bootstrap()
+            .await?;
+        *BOOTSTRAP_GUARD.lock().unwrap() = Some(guard);
+    }
     // simpl: no remote loading, only the local config
     assert!(!dp_config.remote_agent_enabled());
     assert!(!dp_config.use_new_config_stream_endpoint());
@@ -110,24 +121,6 @@ pub async fn handle_run_command(
         dsd_stats_config.clone(),
     )
     .await?;
-
-    // Create the internal supervisor (control plane + observability)
-    let mut internal_supervisor = create_internal_supervisor(
-        &config,
-        &dp_config,
-        &component_registry,
-        health_registry.clone(),
-        env_provider,
-        dsd_stats_config,
-        None,
-    )
-    .await
-    .error_context("Failed to create internal supervisor.")?;
-
-    // Create shutdown channel for the internal supervisor - we'll drive it in the main select loop
-    let (internal_shutdown_tx, internal_shutdown_rx) = tokio::sync::oneshot::channel();
-    let internal_supervisor_fut = internal_supervisor.run_with_shutdown(internal_shutdown_rx).fuse();
-    tokio::pin!(internal_supervisor_fut);
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
     let bounds_config = MemoryBoundsConfiguration::try_from_config(&config)?;
@@ -171,29 +164,7 @@ pub async fn handle_run_command(
     });
 
     let mut topology_failed = false;
-    let mut internal_supervisor_failed = false;
     select! {
-        result = &mut internal_supervisor_fut => {
-            match result {
-                Err(SupervisorError::FailedToInitialize { child_name, source }) => {
-                    error!(child_name, "Internal supervisor failed to initialize: {}. Shutting down...", source);
-                    internal_supervisor_failed = true;
-                }
-                // If we haven't hit an initialization error -- which implies an error we can't really recover from --
-                // then just log for now, until we fully migrate everything over to the supervisor-based approach and
-                // can dial in our supervisor configuration.
-                //
-                // For right now, this matches the previous behavior where the process would exit if we couldn't
-                // configure/spawn the control plane or internal observability pipeline, but the process is unaffected
-                // if either of those components fail at _runtime_.
-                Err(e) => {
-                    warn!("Internal supervisor exited: {}", e);
-                }
-                Ok(()) => {
-                    warn!("Internal supervisor exited unexpectedly.");
-                }
-            }
-        }
         _ = shutdown => {info!("shutdown request");},
         _ = running_topology.wait_for_unexpected_finish() => {
             error!("Topology component unexpectedly finished. Shutting down...");
@@ -207,16 +178,7 @@ pub async fn handle_run_command(
     // Shutdown the primary topology
     let topology_result = running_topology.shutdown_with_timeout(Duration::from_secs(30)).await;
 
-    // Signal the internal supervisor to shutdown (if still running) and drive it to completion.
-    // If the supervisor already exited (i.e., the select! above matched its branch), both the send
-    // and await resolve immediately — the send is a no-op and the future is already complete.
-    let _ = internal_shutdown_tx.send(());
-    let _ = internal_supervisor_fut.await;
-
     // Figure out the final "result" of this run: did something fail? did we stop cleanly?
-    //
-    // We prefer to return errors from the topology failing over the internal supervisor failing, since that matters
-    // more in terms of understanding the state of the process when it exited.
     match topology_result {
         Ok(()) => {
             if topology_failed {
@@ -224,12 +186,7 @@ pub async fn handle_run_command(
             } else {
                 info!("Topology shutdown successfully.");
             }
-
-            if internal_supervisor_failed {
-                Err(generic_error!("Internal supervisor failed to initialize."))
-            } else {
-                Ok(())
-            }
+            Ok(())
         }
         Err(e) => Err(e),
     }
