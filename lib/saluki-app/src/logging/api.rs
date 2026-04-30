@@ -294,6 +294,7 @@ mod tests {
             base_filter.clone(),
             reload_handle.clone(),
             rx,
+            ProcessShutdown::noop(),
         ));
 
         tx.send(Some((Duration::from_secs(60), EnvFilter::new("hyper=warn"))))
@@ -320,6 +321,7 @@ mod tests {
             base_filter.clone(),
             reload_handle.clone(),
             rx,
+            ProcessShutdown::noop(),
         ));
 
         tx.send(Some((Duration::from_millis(100), EnvFilter::new("hyper=warn"))))
