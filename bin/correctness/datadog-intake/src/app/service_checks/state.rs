@@ -1,11 +1,21 @@
 use std::sync::{Arc, Mutex};
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use stele::ServiceCheck;
 
 #[derive(Clone)]
 pub struct ServiceChecksState {
     checks: Arc<Mutex<Vec<ServiceCheck>>>,
+}
+
+// DDA sends explicit `null` for optional string/array fields rather than omitting them.
+// `#[serde(default)]` alone handles absent fields but not null, so we need this helper.
+fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 /// A single item from the `/api/v1/check_run` JSON array payload.
@@ -14,12 +24,13 @@ pub struct CheckRunItem {
     #[serde(rename = "check")]
     pub name: String,
     pub status: u8,
-    #[serde(rename = "host_name", default)]
+    #[serde(rename = "host_name", default, deserialize_with = "null_as_default")]
     pub hostname: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub message: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub tags: Vec<String>,
+    #[serde(default)]
     pub timestamp: Option<u64>,
 }
 
