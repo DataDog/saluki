@@ -44,7 +44,8 @@ use crate::{
         ottl_transform_processor::OttlTransformConfiguration, tag_filterlist::TagFilterlistConfiguration,
     },
     internal::{
-        create_internal_supervisor, logging::LoggingConfigurationTranslator, remote_agent::RemoteAgentBootstrap,
+        create_internal_supervisor, logging::LoggingConfigurationTranslator, platform::PlatformSettings,
+        remote_agent::RemoteAgentBootstrap,
     },
 };
 use crate::{config::DataPlaneConfiguration, env_provider::ADPEnvironmentProvider};
@@ -493,8 +494,11 @@ async fn add_dsd_pipeline_to_blueprint(
     let dd_service_checks_config = DatadogServiceChecksConfiguration::from_configuration(config)
         .map(BufferedIncrementalConfiguration::from_encoder_builder)
         .error_context("Failed to configure Datadog Service Checks encoder.")?;
-    let dsd_debug_log_config = DogStatsDDebugLogConfiguration::from_configuration(config)
-        .error_context("Failed to configure DogStatsD debug log destination.")?;
+    let dsd_debug_log_config = DogStatsDDebugLogConfiguration::from_configuration(
+        config,
+        PlatformSettings::get_default_dogstatsd_log_file_path(),
+    )
+    .error_context("Failed to configure DogStatsD debug log destination.")?;
 
     blueprint
         // Components.

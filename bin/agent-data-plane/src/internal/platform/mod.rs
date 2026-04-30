@@ -41,6 +41,13 @@ impl PlatformSettings {
         Path::new(DATADOG_AGENT_LOG_DIR).join("agent-data-plane.log")
     }
 
+    /// Returns the default DogStatsD debug log file path.
+    pub fn get_default_dogstatsd_log_file_path() -> PathBuf {
+        Path::new(DATADOG_AGENT_LOG_DIR)
+            .join("dogstatsd_info")
+            .join("dogstatsd-stats.log")
+    }
+
     /// Returns the prefix for all environment variables used by the Datadog Agent.
     pub const fn get_env_var_prefix() -> &'static str {
         DATADOG_AGENT_ENV_VAR_PREFIX

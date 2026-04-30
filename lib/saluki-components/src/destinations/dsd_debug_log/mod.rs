@@ -125,11 +125,22 @@ struct ContextNoOrigin {
 
 impl DogStatsDDebugLogConfiguration {
     /// Creates a new `DogStatsDDebugLogConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+    ///
+    /// If `dogstatsd_log_file` is empty, `default_log_file_path` is used.
+    pub fn from_configuration(
+        config: &GenericConfiguration, default_log_file_path: PathBuf,
+    ) -> Result<Self, GenericError> {
         let mut cfg: Self = config.as_typed()?;
 
         if cfg.log_file.as_os_str().is_empty() {
-            cfg.log_file = Self::default_log_file_path();
+            cfg.log_file = default_log_file_path;
+        }
+
+        if cfg.log_file.to_str().is_none() {
+            return Err(generic_error!(
+                "dogstatsd_log_file must be valid UTF-8, got '{}'",
+                cfg.log_file.display()
+            ));
         }
 
         cfg.configuration = Some(config.clone());
@@ -155,11 +166,6 @@ impl DogStatsDDebugLogConfiguration {
     /// Returns the number of rotated debug log files to keep.
     pub const fn log_file_max_rolls(&self) -> usize {
         self.log_file_max_rolls
-    }
-
-    /// Returns the default DogStatsD debug log file path for the current platform.
-    pub fn default_log_file_path() -> PathBuf {
-        default_dogstatsd_log_file_path()
     }
 }
 
@@ -228,13 +234,6 @@ impl DogStatsDDebugLog {
     fn ensure_writer(&mut self) -> Result<(), GenericError> {
         if self.writer.is_some() {
             return Ok(());
-        }
-
-        if self.log_file.to_str().is_none() {
-            return Err(generic_error!(
-                "dogstatsd_log_file must be valid UTF-8, got '{}'",
-                self.log_file.display()
-            ));
         }
 
         let appender = RollingFileAppenderBase::new(
@@ -335,27 +334,6 @@ fn format_timestamp(timestamp: u64) -> String {
         .unwrap_or_else(|| timestamp.to_string())
 }
 
-#[cfg(target_os = "macos")]
-fn default_dogstatsd_log_file_path() -> PathBuf {
-    PathBuf::from("/opt/datadog-agent/logs/dogstatsd_info/dogstatsd-stats.log")
-}
-
-#[cfg(target_os = "windows")]
-fn default_dogstatsd_log_file_path() -> PathBuf {
-    std::env::var_os("ProgramData")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"c:\programdata"))
-        .join("datadog")
-        .join("logs")
-        .join("dogstatsd_info")
-        .join("dogstatsd-stats.log")
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn default_dogstatsd_log_file_path() -> PathBuf {
-    PathBuf::from("/var/log/datadog/dogstatsd_info/dogstatsd-stats.log")
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -373,11 +351,15 @@ mod tests {
     use crate::config_registry::structs;
     use crate::config_registry::test_support::run_config_smoke_tests;
 
+    fn test_default_log_file_path() -> PathBuf {
+        PathBuf::from("/tmp/default-dogstatsd-stats.log")
+    }
+
     async fn deser_config(raw_json: &str) -> DogStatsDDebugLogConfiguration {
         let value = serde_json::from_str(raw_json).expect("test config should be valid JSON");
         let (config, _) = saluki_config::ConfigurationLoader::for_tests(Some(value), None, false).await;
 
-        DogStatsDDebugLogConfiguration::from_configuration(&config)
+        DogStatsDDebugLogConfiguration::from_configuration(&config, test_default_log_file_path())
             .expect("DogStatsDDebugLogConfiguration should deserialize")
     }
 
@@ -388,10 +370,7 @@ mod tests {
         assert!(config.enabled());
         assert!(!config.metrics_stats_enabled);
         assert!(config.logging_enabled);
-        assert_eq!(
-            config.log_file(),
-            DogStatsDDebugLogConfiguration::default_log_file_path()
-        );
+        assert_eq!(config.log_file(), test_default_log_file_path());
         assert_eq!(config.log_file_max_size(), ByteSize::mb(10));
         assert_eq!(config.log_file_max_rolls(), 3);
     }
@@ -445,14 +424,14 @@ mod tests {
         let value = json!({ "dogstatsd_log_file_max_rolls": -1 });
         let (config, _) = saluki_config::ConfigurationLoader::for_tests(Some(value), None, false).await;
 
-        let result = DogStatsDDebugLogConfiguration::from_configuration(&config);
+        let result = DogStatsDDebugLogConfiguration::from_configuration(&config, test_default_log_file_path());
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn smoke_test() {
         run_config_smoke_tests(structs::DOGSTATSD_DEBUG_LOG_CONFIGURATION, &[], json!({}), |cfg| {
-            DogStatsDDebugLogConfiguration::from_configuration(&cfg)
+            DogStatsDDebugLogConfiguration::from_configuration(&cfg, test_default_log_file_path())
                 .expect("DogStatsDDebugLogConfiguration should deserialize")
         })
         .await
@@ -472,7 +451,7 @@ mod tests {
         )
         .await;
 
-        DogStatsDDebugLogConfiguration::from_configuration(&config)
+        DogStatsDDebugLogConfiguration::from_configuration(&config, test_default_log_file_path())
             .expect("DogStatsDDebugLogConfiguration should deserialize")
     }
 
@@ -556,7 +535,7 @@ mod tests {
             .expect("initial dynamic snapshot should be sent");
         config.ready().await;
 
-        let dsd_config = DogStatsDDebugLogConfiguration::from_configuration(&config)
+        let dsd_config = DogStatsDDebugLogConfiguration::from_configuration(&config, test_default_log_file_path())
             .expect("DogStatsDDebugLogConfiguration should deserialize");
         assert!(dsd_config.enabled());
         assert!(!dsd_config.metrics_stats_enabled);
