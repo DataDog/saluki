@@ -1354,7 +1354,7 @@
     "feature_state": "DIVERGENT",
     "action": "NONE",
     "description": "Transaction success log interval",
-    "reason": "Core agent uses logging_frequency to throttle repetitive successful transaction logs. ADP logs successful forwarder operations below the default info level, so this key is intentionally unused; ADP warns when it is configured.",
+    "reason": "Core agent uses logging_frequency to throttle repetitive successful transaction logs. ADP logs successful forwarder operations below the default info level, so this key is intentionally unused.",
     "issue": null,
     "adp_key": null
   },

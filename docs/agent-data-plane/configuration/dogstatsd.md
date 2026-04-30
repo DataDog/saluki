@@ -85,7 +85,7 @@ default values.
 | `dogstatsd_stats_buffer`             | Internal stats buffer size       | Configurable              | On-demand via API ([#1352])              |
 | `dogstatsd_stats_port`               | Internal stats endpoint port     | Configurable port         | On-demand via API ([#1352])              |
 | `log_level`                           | Log verbosity directives         | Controls Agent logs       | Plain levels control ADP/Saluki-owned targets only |
-| `logging_frequency`                   | Transaction success log interval | Throttles success logs    | Intentionally unused; warns if set       |
+| `logging_frequency`                   | Transaction success log interval | Throttles success logs    | Intentionally unused                     |
 | `serializer_zstd_compressor_level`   | Zstd compression level           | Default level 1           | Default level 3 (intentional)            |
 | `statsd_metric_namespace_blacklist`  | Prefixes exempt from namespace   | `_blacklist` key          | Use `_blocklist` key ([#1353])           |
 | `telemetry.enabled`                  | Global telemetry toggle          | Agent toggle              | Use `data_plane.telemetry_enabled` ([#1338]) |
@@ -112,8 +112,7 @@ log_level: warn,agent_data_plane=debug,hyper=warn
 
 `logging_frequency` is intentionally unused by ADP. The core agent uses it to throttle repetitive
 successful transaction logs. ADP logs successful forwarder operations below the default `info` level,
-so there is no matching info-level success-log stream to throttle. When `logging_frequency` is
-configured, ADP emits one warning and continues.
+so there is no matching info-level success-log stream to throttle.
 
 ### DogStatsD statistics (`dogstatsd_stats_enable` / `dogstatsd_metrics_stats_enable`)
 

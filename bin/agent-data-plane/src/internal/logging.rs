@@ -4,22 +4,17 @@
 //! shared (level, format, console output, rotation), but it must use its own per-subagent destination so it does not
 //! collide with the Core Agent's own log file. This module owns those rules in one place.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-
 use bytesize::ByteSize;
 use saluki_app::logging::{LogLevel, LoggingConfiguration};
 use saluki_common::deser::PermissiveBool;
-use saluki_config::{value::Value as ConfigValue, GenericConfiguration};
+use saluki_config::GenericConfiguration;
 use saluki_error::{ErrorContext as _, GenericError};
 use serde::Deserialize;
 use serde_with::serde_as;
-use tracing::warn;
 
 use crate::internal::platform::PlatformSettings;
 
 const DATA_PLANE_LOG_FILE_KEY: &str = "data_plane.log_file";
-const LOGGING_FREQUENCY_KEY: &str = "logging_frequency";
-static LOGGING_FREQUENCY_WARNING_EMITTED: AtomicBool = AtomicBool::new(false);
 // `tracing` targets use Rust crate/module names, so Cargo package names with hyphens appear with underscores.
 const FIRST_PARTY_LOG_TARGETS: &[&str] = &[
     "agent_data_plane",
@@ -119,22 +114,6 @@ impl LoggingConfigurationTranslator {
     }
 }
 
-/// Warns once when `logging_frequency` appears in the Agent configuration.
-pub(crate) fn warn_if_logging_frequency_configured(config: &GenericConfiguration) {
-    if !logging_frequency_configured(config) {
-        return;
-    }
-
-    if LOGGING_FREQUENCY_WARNING_EMITTED.swap(true, Ordering::Relaxed) {
-        return;
-    }
-
-    warn!(
-        "`logging_frequency` is configured, but Agent Data Plane does not use it. Successful forwarder operations are \
-        logged below the default `info` level; use `log_level` to control ADP log verbosity."
-    );
-}
-
 /// Reads a configuration key as a permissive boolean (accepts `true`/`false`, `"true"`/`"false"`, `"1"`/`"0"`, etc.).
 ///
 /// Returns `Ok(None)` if the key is absent.
@@ -143,20 +122,6 @@ fn read_permissive_bool(config: &GenericConfiguration, key: &str) -> Result<Opti
         .try_get_typed::<PermissiveBoolValue>(key)
         .with_error_context(|| format!("Failed to read `{}`.", key))?
         .map(|v| v.0))
-}
-
-fn logging_frequency_configured(config: &GenericConfiguration) -> bool {
-    match config.try_get_typed::<ConfigValue>(LOGGING_FREQUENCY_KEY) {
-        Ok(Some(_)) => true,
-        Ok(None) => false,
-        Err(e) => {
-            warn!(
-                error = %e,
-                "`logging_frequency` could not be inspected; continuing without applying it."
-            );
-            false
-        }
-    }
 }
 
 #[serde_as]
@@ -210,11 +175,6 @@ mod tests {
         translate_filter(config_json)
             .await
             .map(|filter| filter.split(',').map(str::to_string).collect())
-    }
-
-    async fn logging_frequency_present(config_json: Option<Value>) -> bool {
-        let (config, _) = ConfigurationLoader::for_tests(config_json, None, false).await;
-        logging_frequency_configured(&config)
     }
 
     #[tokio::test]
@@ -296,27 +256,5 @@ mod tests {
             .expect_err("invalid log level should fail");
 
         assert!(error.to_string().contains("log_level"));
-    }
-
-    #[tokio::test]
-    async fn logging_frequency_detection_is_false_when_absent() {
-        assert!(!logging_frequency_present(None).await);
-    }
-
-    #[tokio::test]
-    async fn logging_frequency_detection_accepts_numeric_value() {
-        assert!(logging_frequency_present(Some(json!({ "logging_frequency": 500 }))).await);
-    }
-
-    #[tokio::test]
-    async fn logging_frequency_detection_does_not_depend_on_value_type() {
-        for value in [
-            json!("500"),
-            json!(true),
-            json!(["unexpected", "sequence"]),
-            json!({ "unexpected": "object" }),
-        ] {
-            assert!(logging_frequency_present(Some(json!({ "logging_frequency": value }))).await);
-        }
     }
 }

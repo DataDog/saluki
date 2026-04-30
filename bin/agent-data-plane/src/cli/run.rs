@@ -44,9 +44,7 @@ use crate::{
         ottl_transform_processor::OttlTransformConfiguration, tag_filterlist::TagFilterlistConfiguration,
     },
     internal::{
-        create_internal_supervisor,
-        logging::{warn_if_logging_frequency_configured, LoggingConfigurationTranslator},
-        remote_agent::RemoteAgentBootstrap,
+        create_internal_supervisor, logging::LoggingConfigurationTranslator, remote_agent::RemoteAgentBootstrap,
     },
 };
 use crate::{config::DataPlaneConfiguration, env_provider::ADPEnvironmentProvider};
@@ -134,7 +132,6 @@ pub async fn handle_run_command(
                     "Failed to translate logging configuration from Agent; continuing with bootstrap logging settings."
                 ),
             }
-            warn_if_logging_frequency_configured(&dynamic_config);
 
             // Reload our data plane configuration based on the dynamic configuration.
             let dynamic_dp_config = DataPlaneConfiguration::from_configuration(&dynamic_config)

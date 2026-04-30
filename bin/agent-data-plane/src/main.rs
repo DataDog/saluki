@@ -15,10 +15,7 @@ use tracing::{error, info, warn};
 
 mod cli;
 use self::cli::*;
-use crate::internal::{
-    logging::{warn_if_logging_frequency_configured, LoggingConfigurationTranslator},
-    platform::PlatformSettings,
-};
+use crate::internal::{logging::LoggingConfigurationTranslator, platform::PlatformSettings};
 
 mod components;
 mod config;
@@ -71,7 +68,6 @@ async fn main() -> Result<(), GenericError> {
         .bootstrap()
         .await
         .error_context("Failed to complete bootstrap phase.")?;
-    warn_if_logging_frequency_configured(&bootstrap_config);
 
     // Run the given subcommand.
     let maybe_exit_code = run_inner(
