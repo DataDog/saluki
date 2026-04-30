@@ -26,7 +26,7 @@ use tracing::{debug, error, info, warn};
 use crate::test::Test;
 use crate::{
     assertions::{create_assertion, AssertionContext, AssertionResult, LogBuffer},
-    config::{parse_file_spec, parse_port_spec, AssertionStep, DiscoveredTest, IntegrationConfig},
+    config::{parse_file_spec, parse_port_spec, AssertionStep, IntegrationConfig},
     events::TestEvent,
     reporter::{PhaseTiming, TestResult},
 };
@@ -112,16 +112,18 @@ impl Runner {
     /// Run all registered tests, emitting events and returning results.
     pub(crate) async fn run_tests(&self, args: RunArgs) -> Vec<TestResult> {
         let RunArgs {
+            parallelism,
+            fail_fast,
             filter,
             event_sender,
             cancel_token,
-            ..
         } = args;
 
-        let tests: Vec<_> = self
+        let tests: Vec<&dyn Test> = self
             .tests
             .iter()
             .filter(|t| filter.as_ref().is_none_or(|f| f(t.as_ref())))
+            .map(|t| t.as_ref())
             .collect();
 
         if let Some(ref tx) = event_sender {
@@ -130,6 +132,27 @@ impl Runner {
             });
         }
 
+        let parallelism = parallelism.max(1);
+        let semaphore = Arc::new(Semaphore::new(parallelism));
+
+        let results = if fail_fast {
+            self.run_fail_fast(&tests, &semaphore, &event_sender, &cancel_token)
+                .await
+        } else {
+            self.run_parallel(&tests, parallelism, &semaphore, &event_sender, &cancel_token)
+                .await
+        };
+
+        if let Some(ref tx) = event_sender {
+            let _ = tx.send(TestEvent::AllDone);
+        }
+        results
+    }
+
+    async fn run_fail_fast(
+        &self, tests: &[&dyn Test], semaphore: &Semaphore, event_sender: &Option<EventSender>,
+        cancel_token: &CancellationToken,
+    ) -> Vec<TestResult> {
         let mut results = Vec::new();
 
         for test in tests {
@@ -137,231 +160,104 @@ impl Runner {
                 break;
             }
 
-            let name = test.name();
-            let timeout = test.timeout();
-            if let Some(ref tx) = event_sender {
-                let _ = tx.send(TestEvent::TestStarted { name: name.clone() });
-            }
-
-            let result = tokio::select! {
-                r = test.run() => r,
-                _ = tokio::time::sleep(timeout) => {
-                    test.cancel().await;
-                    TestResult {
-                        name,
-                        passed: false,
-                        duration: timeout,
-                        assertion_results: vec![],
-                        error: Some(format!("Test timed out after {:?}.", timeout)),
-                        phase_timings: vec![],
-                        log_dir: Some(test.log_dir()),
-                        assertion_details: vec![],
-                    }
-                }
-            };
-
-            if let Some(ref tx) = event_sender {
-                let _ = tx.send(TestEvent::TestCompleted { result: result.clone() });
-            }
+            let _permit = semaphore.acquire().await.unwrap();
+            let result = Self::run_one(*test, event_sender, cancel_token).await;
+            let failed = !result.passed;
             results.push(result);
+
+            if failed {
+                break;
+            }
         }
 
-        if let Some(ref tx) = event_sender {
-            let _ = tx.send(TestEvent::AllDone);
-        }
         results
     }
-}
 
-/// Run all tests, emitting events to the provided channel.
-///
-/// This is the single entry point for test execution, used identically by both
-/// TUI and plain output modes. The caller is responsible for spawning an appropriate
-/// consumer to handle the emitted events.
-pub async fn run_tests(
-    test_cases: Vec<DiscoveredTest>, parallelism: usize, fail_fast: bool, log_dir: Option<PathBuf>,
-    mounts_dir: PathBuf, event_tx: mpsc::UnboundedSender<TestEvent>, cancel_token: CancellationToken,
-) -> Vec<TestResult> {
-    // Emit run started event.
-    let _ = event_tx.send(TestEvent::RunStarted {
-        total_tests: test_cases.len(),
-    });
+    async fn run_parallel(
+        &self, tests: &[&dyn Test], parallelism: usize, semaphore: &Arc<Semaphore>, event_sender: &Option<EventSender>,
+        cancel_token: &CancellationToken,
+    ) -> Vec<TestResult> {
+        let mut futures = stream::FuturesUnordered::new();
+        let mut results = Vec::new();
 
-    let parallelism = parallelism.max(1);
-    let semaphore = Arc::new(Semaphore::new(parallelism));
-    let event_tx = Arc::new(event_tx);
-    let log_dir = Arc::new(log_dir);
-    let mounts_dir = Arc::new(mounts_dir);
-
-    let results = if fail_fast {
-        run_fail_fast(
-            test_cases,
-            semaphore,
-            event_tx.clone(),
-            log_dir,
-            mounts_dir,
-            cancel_token,
-        )
-        .await
-    } else {
-        run_parallel(
-            test_cases,
-            parallelism,
-            semaphore,
-            event_tx.clone(),
-            log_dir,
-            mounts_dir,
-            cancel_token,
-        )
-        .await
-    };
-
-    let _ = event_tx.send(TestEvent::AllDone);
-    results
-}
-
-/// Run tests sequentially, stopping at the first failure.
-async fn run_fail_fast(
-    test_cases: Vec<DiscoveredTest>, semaphore: Arc<Semaphore>, event_tx: Arc<mpsc::UnboundedSender<TestEvent>>,
-    log_dir: Arc<Option<PathBuf>>, mounts_dir: Arc<PathBuf>, cancel_token: CancellationToken,
-) -> Vec<TestResult> {
-    let mut results = Vec::new();
-
-    for test_case in test_cases {
-        // Check for cancellation before starting each test.
-        if cancel_token.is_cancelled() {
-            break;
-        }
-
-        let _permit = semaphore.acquire().await.unwrap();
-        let name = test_case.name().to_string();
-
-        let _ = event_tx.send(TestEvent::TestStarted { name: name.clone() });
-
-        let result = run_with_timeout(test_case, name, &log_dir, &mounts_dir).await;
-
-        let failed = !result.passed;
-        let _ = event_tx.send(TestEvent::TestCompleted { result: result.clone() });
-        results.push(result);
-
-        if failed {
-            break;
-        }
-    }
-
-    results
-}
-
-/// Run tests in parallel up to the parallelism limit.
-async fn run_parallel(
-    test_cases: Vec<DiscoveredTest>, parallelism: usize, semaphore: Arc<Semaphore>,
-    event_tx: Arc<mpsc::UnboundedSender<TestEvent>>, log_dir: Arc<Option<PathBuf>>, mounts_dir: Arc<PathBuf>,
-    cancel_token: CancellationToken,
-) -> Vec<TestResult> {
-    let cancel = cancel_token.clone();
-
-    stream::iter(test_cases)
-        .take_while(|_| {
-            let cancelled = cancel.is_cancelled();
-            async move { !cancelled }
-        })
-        .map(|test_case| {
+        for test in tests {
             let semaphore = semaphore.clone();
-            let event_tx = event_tx.clone();
             let cancel = cancel_token.clone();
-            let log_dir = log_dir.clone();
-            let mounts_dir = mounts_dir.clone();
-
-            async move {
-                // Check for cancellation before acquiring permit.
+            futures.push(async move {
                 if cancel.is_cancelled() {
                     return None;
                 }
 
                 let _permit = semaphore.acquire().await.unwrap();
 
-                // Check again after acquiring permit.
                 if cancel.is_cancelled() {
                     return None;
                 }
 
-                let name = test_case.name().to_string();
+                Some(Self::run_one(*test, event_sender, &cancel).await)
+            });
 
-                let _ = event_tx.send(TestEvent::TestStarted { name: name.clone() });
-
-                let result = run_with_timeout(test_case, name, &log_dir, &mounts_dir).await;
-
-                let _ = event_tx.send(TestEvent::TestCompleted { result: result.clone() });
-
-                Some(result)
-            }
-        })
-        .buffer_unordered(parallelism)
-        .filter_map(|r| async { r })
-        .collect()
-        .await
-}
-
-/// Run a single test with an appropriate timeout.
-///
-/// Integration tests handle their own timeout internally, so no outer timeout is applied.
-/// Correctness tests have no built-in timeout, so a 20-minute outer timeout is applied.
-async fn run_with_timeout(
-    test_case: DiscoveredTest, name: String, log_dir: &Arc<Option<PathBuf>>, mounts_dir: &Arc<PathBuf>,
-) -> TestResult {
-    match &test_case {
-        DiscoveredTest::Integration(_) => run_single_test(test_case, log_dir, mounts_dir).await,
-        DiscoveredTest::Correctness(_) => {
-            let timeout = test_case.timeout();
-            let correctness_log_dir = (**log_dir).as_ref().map(|d| d.join("correctness").join(&name));
-            tokio::select! {
-                r = run_single_test(test_case, log_dir, mounts_dir) => r,
-                _ = tokio::time::sleep(timeout) => {
-                    TestResult {
-                        name,
-                        passed: false,
-                        duration: timeout,
-                        assertion_results: vec![],
-                        error: Some(format!("Test timed out after {:?}.", timeout)),
-                        phase_timings: vec![],
-                        log_dir: correctness_log_dir,
-                        assertion_details: vec![],
-                    }
+            while futures.len() >= parallelism {
+                if let Some(Some(result)) = futures.next().await {
+                    results.push(result);
                 }
             }
         }
-    }
-}
 
-/// Run a single test, dispatching to the appropriate runner based on test type.
-async fn run_single_test(
-    test_case: DiscoveredTest, log_dir: &Arc<Option<PathBuf>>, mounts_dir: &Arc<PathBuf>,
-) -> TestResult {
-    match test_case {
-        DiscoveredTest::Integration(tc) => {
-            let test_log_dir = (**log_dir).as_ref().map(|d| d.join("integration").join(&tc.name));
-            let mut runner = TestRunner::new(*tc, (**mounts_dir).clone(), CancellationToken::new());
-            if let Some(ref dir) = **log_dir {
-                runner = runner.with_log_dir(dir.join("integration"));
+        while let Some(r) = futures.next().await {
+            if let Some(result) = r {
+                results.push(result);
             }
-            let mut result = runner.run().await;
-            result.log_dir = test_log_dir;
-            write_result_log(&result);
-            result
         }
-        DiscoveredTest::Correctness(config) => {
-            let correctness_log_dir = (**log_dir).as_ref().map(|d| d.join("correctness").join(&config.name));
-            let result = crate::correctness::runner::run_correctness_test(
-                config.name.clone(),
-                *config,
-                correctness_log_dir,
-                (**mounts_dir).clone(),
-                CancellationToken::new(),
-            )
-            .await;
-            write_result_log(&result);
-            result
+        results
+    }
+
+    async fn run_one(
+        test: &dyn Test, event_sender: &Option<EventSender>, cancel_token: &CancellationToken,
+    ) -> TestResult {
+        let name = test.name();
+        let timeout = test.timeout();
+        let started = Instant::now();
+
+        if let Some(ref tx) = event_sender {
+            let _ = tx.send(TestEvent::TestStarted { name: name.clone() });
         }
+
+        let result = tokio::select! {
+            r = test.run() => r,
+            _ = tokio::time::sleep(timeout) => {
+                test.cancel().await;
+                TestResult {
+                    name,
+                    passed: false,
+                    duration: timeout,
+                    assertion_results: vec![],
+                    error: Some(format!("Test timed out after {:?}.", timeout)),
+                    phase_timings: vec![],
+                    log_dir: Some(test.log_dir()),
+                    assertion_details: vec![],
+                }
+            }
+            _ = cancel_token.cancelled() => {
+                test.cancel().await;
+                TestResult {
+                    name,
+                    passed: false,
+                    duration: started.elapsed(),
+                    assertion_results: vec![],
+                    error: Some("Test cancelled.".to_string()),
+                    phase_timings: vec![],
+                    log_dir: Some(test.log_dir()),
+                    assertion_details: vec![],
+                }
+            }
+        };
+
+        if let Some(ref tx) = event_sender {
+            let _ = tx.send(TestEvent::TestCompleted { result: result.clone() });
+        }
+
+        result
     }
 }
 

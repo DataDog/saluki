@@ -90,58 +90,6 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
     Ok(total)
 }
 
-/// A discovered test, either an integration test or a correctness test.
-#[allow(dead_code)]
-pub enum DiscoveredTest {
-    /// An integration test case (panoramic schema).
-    Integration(Box<IntegrationConfig>),
-    /// A correctness test case.
-    Correctness(Box<CorrectnessConfig>),
-}
-
-#[allow(dead_code)]
-impl DiscoveredTest {
-    /// Returns the name of the test.
-    pub fn name(&self) -> &str {
-        match self {
-            DiscoveredTest::Integration(tc) => &tc.name,
-            DiscoveredTest::Correctness(config) => &config.name,
-        }
-    }
-
-    /// Returns the timeout for the test.
-    pub fn timeout(&self) -> Duration {
-        match self {
-            DiscoveredTest::Integration(tc) => tc.timeout.0,
-            DiscoveredTest::Correctness(_) => Duration::from_secs(20 * 60),
-        }
-    }
-
-    /// Returns the description of the test, if any.
-    pub fn description(&self) -> Option<&str> {
-        match self {
-            DiscoveredTest::Integration(tc) => tc.description.as_deref(),
-            DiscoveredTest::Correctness(_) => None,
-        }
-    }
-
-    /// Lists the images this test depends on.
-    pub fn images(&self) -> BTreeMap<&str, String> {
-        let mut m = BTreeMap::new();
-        match self {
-            DiscoveredTest::Integration(i) => {
-                m.insert("integration", i.container.image.clone());
-            }
-            DiscoveredTest::Correctness(config) => {
-                m.insert("baseline", config.baseline.image.clone());
-                m.insert("millstone", config.millstone.image.clone());
-                m.insert("datadog-intake", config.datadog_intake.image.clone());
-            }
-        }
-        m
-    }
-}
-
 ///
 ///
 /// The deserializable configuration struct that defines an integration test. Not to be confused with
