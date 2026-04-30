@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use airlock::{
@@ -8,11 +9,14 @@ use airlock::{
     driver::DriverConfig,
 };
 use saluki_config::ConfigurationLoader;
+use async_trait::async_trait;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
 use tokio_util::sync::CancellationToken;
 
 use crate::correctness::analysis::AnalysisMode;
+use crate::reporter::TestResult;
+use crate::test::{Test, TestSuite};
 
 fn default_millstone_binary_path() -> String {
     "/usr/local/bin/millstone".to_string()
@@ -28,6 +32,10 @@ fn default_otlp_direct_analysis_mode() -> bool {
 
 #[derive(Clone, Deserialize)]
 pub struct Config {
+    #[serde(skip)]
+    #[allow(dead_code)]
+    pub(crate) name: String,
+
     /// Analysis mode to use.
     pub analysis_mode: AnalysisMode,
 
@@ -136,7 +144,61 @@ pub struct TargetConfig {
     pub additional_env_vars: Vec<String>,
 }
 
+#[async_trait]
+impl Test for Config {
+    fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    fn suite(&self) -> TestSuite {
+        TestSuite::Correctness
+    }
+
+    fn description(&self) -> Option<String> {
+        None
+    }
+
+    fn log_dir(&self) -> PathBuf {
+        self.log_dir
+            .as_ref()
+            .map(|d| d.join("correctness").join(&self.name))
+            .unwrap_or_else(|| PathBuf::from("/tmp/panoramic/correctness").join(&self.name))
+    }
+
+    fn images(&self) -> BTreeMap<&str, String> {
+        let mut m = BTreeMap::new();
+        m.insert("baseline", self.baseline.image.clone());
+        m.insert("comparison", self.comparison.image.clone());
+        m.insert("datadog-intake", self.datadog_intake.image.clone());
+        m.insert("millstone", self.millstone.image.clone());
+        m
+    }
+
+    async fn run(&self) -> TestResult {
+        crate::correctness::runner::run_correctness_test(
+            self.name.clone(),
+            self.clone(),
+            Some(self.log_dir()),
+            self.mounts_dir.clone(),
+            self.cancel_token.clone(),
+        )
+        .await
+    }
+
+    async fn cancel(&self) {
+        self.cancel_token.cancel();
+    }
+}
+
 impl Config {
+    #[allow(dead_code)]
+    pub(crate) fn set_runtime_config(&mut self, name: String, log_dir: Option<PathBuf>, mounts_dir: PathBuf) {
+        self.name = name;
+        self.log_dir = log_dir;
+        self.mounts_dir = mounts_dir;
+        self.cancel_token = CancellationToken::new();
+    }
+
     pub fn from_yaml(config_path: &str) -> Result<Self, GenericError> {
         let config_path = PathBuf::from(config_path)
             .canonicalize()
