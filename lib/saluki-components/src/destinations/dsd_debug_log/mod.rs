@@ -218,7 +218,7 @@ impl DogStatsDDebugLog {
         )
         .map_err(|e| {
             generic_error!(
-                "Failed to write DogStatsD debug log line to DogStatsD debug log file '{}': {}",
+                "Failed to write to DogStatsD debug log file '{}': {}",
                 self.log_file.display(),
                 e
             )
