@@ -5,16 +5,12 @@
 
 use saluki_error::{ErrorContext as _, GenericError};
 use tokio::{
-    net::TcpListener,
     select,
     signal::unix::{signal, SignalKind},
     sync::mpsc,
 };
 use tracing::{error, info};
 use tracing_subscriber::{filter::LevelFilter, EnvFilter};
-
-mod app;
-use crate::app::initialize_app_router;
 
 #[tokio::main]
 async fn main() {
@@ -46,11 +42,11 @@ async fn run() -> Result<(), GenericError> {
 
     info!("datadog-intake started: listening on 0.0.0.0:2049");
 
-    let listener = TcpListener::bind("0.0.0.0:2049").await.unwrap();
-    axum::serve(listener, initialize_app_router())
-        .with_graceful_shutdown(async move { shutdown_rx.recv().await.unwrap_or(()) })
-        .await
-        .map_err(Into::into)
+    datadog_intake::serve(
+        "0.0.0.0:2049".parse().unwrap(),
+        async move { shutdown_rx.recv().await.unwrap_or(()) },
+    )
+    .await
 }
 
 fn spawn_signal_handlers(shutdown_tx: mpsc::Sender<()>) -> Result<(), GenericError> {

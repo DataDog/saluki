@@ -10,11 +10,9 @@ use arbitrary::{Arbitrary, Unstructured};
 use barkus_core::{generate::decode, ir::GrammarIr, profile::Profile};
 use bytes::Bytes;
 use libfuzzer_sys::fuzz_target;
-use nix::sys::signal as nix_signal;
 use saluki_error::{generic_error, GenericError};
 use tokio::{
     net::UdpSocket,
-    process::Command,
     time::{self},
 };
 use tracing::{info, warn};
@@ -23,34 +21,16 @@ use crate::fuzz_run::handle_run_command;
 
 const DSD_PORT: u16 = 3000;
 const INTAKE_PORT: u16 = 2049;
-const SALUKI_PATH: &str = "/Users/gregoire.roussel/dd/saluki";
-
-const INTAKE_BIN: &str = "target/release/datadog-intake";
 
 pub fn saluki_path() -> PathBuf {
     let home = std::env::var("HOME").expect("HOME not set");
     PathBuf::from(home).join("dd/saluki")
 }
 
-async fn intake(shutdown: tokio::sync::oneshot::Receiver<()>) -> Result<(), GenericError> {
-    let intake_exec = saluki_path().join(INTAKE_BIN);
-    let mut cmd = Command::new(intake_exec)
-        .kill_on_drop(true)
-        .spawn()?;
-    shutdown.await?;
-
-    info!("SIGTERM intake");
-    let maybe_intake_pid = cmd.id();
-    if let Some(intake_pid) = maybe_intake_pid {
-        let nix_pid = nix::unistd::Pid::from_raw(intake_pid as i32);
-        nix_signal::kill(nix_pid, nix_signal::SIGTERM)?;
-    }
-    if let Err(_) = tokio::time::timeout(Duration::from_secs(5), cmd.wait()).await {
-        warn!("SIGKILL intake");
-        cmd.kill().await?;
-        cmd.wait().await?;
-    }
-    Ok(())
+/// In-process Datadog intake server using the real datadog-intake implementation.
+async fn run_mock_intake(shutdown: tokio::sync::oneshot::Receiver<()>) -> Result<(), GenericError> {
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], INTAKE_PORT));
+    datadog_intake::serve(addr, async move { let _ = shutdown.await; }).await
 }
 
 pub static PROFILE: LazyLock<Profile> = LazyLock::new(|| Profile::default());
@@ -137,7 +117,7 @@ pub async fn inner(corpus: DogStatsDInput) {
     let (st1_tx, st1_rx) = tokio::sync::oneshot::channel();
     let saluki_handle = tokio::spawn(handle_run_command(config_path, st1_rx, Instant::now()));
     let (st2_tx, st2_rx) = tokio::sync::oneshot::channel();
-    let intake_handle = tokio::spawn(intake(st2_rx));
+    let intake_handle = tokio::spawn(run_mock_intake(st2_rx));
     time::sleep(Duration::from_secs(2)).await;
 
     // run injection
@@ -147,12 +127,14 @@ pub async fn inner(corpus: DogStatsDInput) {
 
     // trigger shutdown
     info!("Trigger shutdown");
-    st1_tx.send(()).unwrap();
+    let _ = st1_tx.send(());
     saluki_handle.await.unwrap().unwrap();
 
-    info!("waiting on intake");
-    st2_tx.send(()).unwrap();
-    intake_handle.await.unwrap().unwrap();
+    info!("stopping mock intake");
+    let _ = st2_tx.send(());
+    if let Err(e) = intake_handle.await.unwrap() {
+        warn!("Mock intake error: {}", e);
+    }
 }
 
 fuzz_target!(|input: DogStatsDInput| {

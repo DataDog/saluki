@@ -14,11 +14,11 @@ fips = ["saluki-app/tls-fips"]
 fuzzing = [
   "dep:libfuzzer-sys",
   "dep:arbitrary",
-  "dep:nix",
   "dep:barkus-core",
   "dep:barkus-ebnf",
   "dep:rand",
   "dep:memchr",
+  "dep:datadog-intake",
 ]
 
 [dependencies]
@@ -44,7 +44,7 @@ prost-types = { workspace = true }
 rand = { version = "0.10", optional = true }
 barkus-core = { path = "../../../barkus/crates/barkus-core", optional = true }
 barkus-ebnf = { path = "../../../barkus/crates/barkus-ebnf", optional = true }
-nix = { version = "0.29", default-features = false, features = ["signal"], optional = true }
+datadog-intake = { path = "../../bin/correctness/datadog-intake", optional = true }
 saluki-api = { workspace = true }
 saluki-app = { workspace = true }
 saluki-common = { workspace = true }

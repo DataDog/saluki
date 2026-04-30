@@ -8,6 +8,13 @@ repository = { workspace = true }
 [lints]
 workspace = true
 
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "datadog-intake"
+path = "src/main.rs"
+
 [dependencies]
 axum = { workspace = true, features = ["http1", "json", "tokio", "tracing"] }
 datadog-protos = { workspace = true }
