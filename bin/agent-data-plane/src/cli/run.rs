@@ -25,7 +25,7 @@ use saluki_components::{
     transforms::{
         AggregateConfiguration, ApmStatsTransformConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
         DogStatsDPrefixFilterConfiguration, HostEnrichmentConfiguration, HostTagsConfiguration,
-        TraceObfuscationConfiguration, TraceSamplerConfiguration,
+        TraceObfuscationConfiguration, TraceSamplerConfiguration, V1TraceSamplerConfiguration,
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
@@ -41,6 +41,7 @@ use crate::{
     components::{
         apm_onboarding::ApmOnboardingConfiguration, ottl_filter_processor::OttlFilterConfiguration,
         ottl_transform_processor::OttlTransformConfiguration, tag_filterlist::TagFilterlistConfiguration,
+        v1_apm_onboarding::V1ApmOnboardingConfiguration,
     },
     internal::{create_internal_supervisor, remote_agent::RemoteAgentBootstrap},
 };
@@ -339,15 +340,33 @@ async fn create_topology(
     }
 
     if dp_config.apm().enabled() {
-        let apm_config = ApmReceiverConfiguration::from_configuration(config)
-            .error_context("Failed to configure APM receiver.")?;
-        blueprint
-            .add_source("apm_in", apm_config)?
-            .add_destination("apm_blackhole", BlackholeConfiguration)?
-            .connect_component("apm_blackhole", ["apm_in.traces"])?;
+        add_apm_pipeline_to_blueprint(&mut blueprint, config).await?;
     }
 
     Ok(blueprint)
+}
+
+async fn add_apm_pipeline_to_blueprint(
+    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+) -> Result<(), GenericError> {
+    let apm_receiver_config = ApmReceiverConfiguration::from_configuration(config)
+        .error_context("Failed to configure APM receiver.")?;
+
+    let v1_trace_sampler_config = V1TraceSamplerConfiguration::from_configuration(config)
+        .error_context("Failed to configure V1 trace sampler.")?;
+
+    let v1_traces_enrich_config = ChainedConfiguration::default()
+        .with_transform_builder("v1_apm_onboarding", V1ApmOnboardingConfiguration)
+        .with_transform_builder("v1_trace_sampler", v1_trace_sampler_config);
+
+    blueprint
+        .add_source("apm_in", apm_receiver_config)?
+        .add_transform("v1_traces_enrich", v1_traces_enrich_config)?
+        .add_destination("apm_blackhole", BlackholeConfiguration)?
+        .connect_component("v1_traces_enrich", ["apm_in.traces"])?
+        .connect_component("apm_blackhole", ["v1_traces_enrich"])?;
+
+    Ok(())
 }
 
 async fn add_baseline_metrics_pipeline_to_blueprint(

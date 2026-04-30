@@ -13,8 +13,7 @@ use saluki_error::GenericError;
 use stringtheory::MetaString;
 use tracing::debug;
 
-mod install_info;
-use self::install_info::InstallInfo;
+use super::install_info::InstallInfo;
 
 static META_TAG_INSTALL_ID: MetaString = MetaString::from_static("_dd.install.id");
 static META_TAG_INSTALL_TYPE: MetaString = MetaString::from_static("_dd.install.type");

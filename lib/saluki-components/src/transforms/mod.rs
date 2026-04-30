@@ -29,3 +29,6 @@ pub use self::apm_stats::ApmStatsTransformConfiguration;
 
 mod trace_obfuscation;
 pub use self::trace_obfuscation::TraceObfuscationConfiguration;
+
+mod v1_trace_sampler;
+pub use self::v1_trace_sampler::V1TraceSamplerConfiguration;

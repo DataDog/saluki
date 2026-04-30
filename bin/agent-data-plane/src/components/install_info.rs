@@ -40,12 +40,8 @@ impl InstallInfo {
     pub async fn load_or_create() -> Result<Self, GenericError> {
         let path = PlatformSettings::get_config_dir_path().join("install.json");
 
-        // See if the file exists, and load it if so.
         let (install_info, should_write) = match tokio::fs::read(&path).await {
             Ok(data) => {
-                // Try and decode the installation info.
-                //
-                // If we fail, we don't try to update it.
                 let install_info = serde_json::from_slice(&data).with_error_context(|| {
                     format!(
                         "Failed to decode installation info file '{}'.",
@@ -57,10 +53,8 @@ impl InstallInfo {
             }
 
             Err(e) => match e.kind() {
-                // If the file doesn't exist, then _we'll_ try and create it.
                 ErrorKind::NotFound => (Self::from_environment(), true),
 
-                // There was a legitimate error so we bail out.
                 _ => {
                     return Err(e).with_error_context(|| {
                         format!("Failed to read installation info file '{}'.", path.as_path().display())
@@ -69,9 +63,6 @@ impl InstallInfo {
             },
         };
 
-        // Write it out if we were the ones to create it.
-        //
-        // If we fail to write it out, then we also just bail out.
         if should_write {
             let install_info_json =
                 serde_json::to_vec(&install_info).error_context("Failed to serialize installation info to JSON.")?;
