@@ -3,6 +3,8 @@
 //! These events are emitted by the test runner and consumed by either the TUI
 //! or a logging consumer, depending on the output mode.
 
+use std::path::PathBuf;
+
 use tokio::sync::mpsc;
 
 use crate::reporter::TestResult;
@@ -26,6 +28,9 @@ pub enum TestEvent {
     TestCompleted {
         /// The result of the completed test.
         result: TestResult,
+
+        /// The directory where this test keeps its logs. Determined and created by the Runner object.
+        log_dir: PathBuf,
     },
 
     /// All tests have finished.

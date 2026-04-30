@@ -1,4 +1,5 @@
-use std::{path::PathBuf, time::Duration};
+use std::path::Path;
+use std::time::Duration;
 
 use colored::Colorize as _;
 use serde::Serialize;
@@ -31,9 +32,6 @@ pub struct TestResult {
     pub error: Option<String>,
     /// Timing breakdown for each phase of test execution.
     pub phase_timings: Vec<PhaseTiming>,
-    /// Log directory for this test, if available.
-    #[serde(skip)]
-    pub log_dir: Option<PathBuf>,
     /// Full per-assertion mismatch details for log output (not shown in TUI/reporter).
     #[serde(skip)]
     pub assertion_details: Vec<Vec<String>>,
@@ -108,7 +106,7 @@ impl Reporter {
     }
 
     /// Report the result of a single test.
-    pub fn report_test_result(&self, result: &TestResult) {
+    pub fn report_test_result(&self, result: &TestResult, log_dir: impl AsRef<Path>) {
         if matches!(self.format, OutputFormat::Text) {
             let status = if result.passed {
                 "PASS".green().bold()
@@ -145,9 +143,7 @@ impl Reporter {
                     }
                 }
 
-                if let Some(ref dir) = result.log_dir {
-                    println!("  {} {}", "Logs:".dimmed(), dir.display());
-                }
+                println!("  {} {}", "Logs:".dimmed(), log_dir.as_ref().display());
             }
         }
     }

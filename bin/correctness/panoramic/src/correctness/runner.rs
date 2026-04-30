@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     future::Future,
-    path::{Path, PathBuf},
+    path::PathBuf,
     pin::Pin,
     task::{ready, Context, Poll},
     time::{Duration, Instant},
@@ -26,19 +26,18 @@ use crate::correctness::{
 use crate::{
     assertions::AssertionResult,
     reporter::{PhaseTiming, TestResult},
+    test::TestContext,
 };
 
 /// Run a single correctness test and return a panoramic `TestResult`.
-pub async fn run_correctness_test(
-    name: String, config: Config, log_dir: Option<PathBuf>, mounts_dir: PathBuf,
-) -> TestResult {
+pub async fn run_correctness_test(name: String, config: Config, tctx: TestContext) -> TestResult {
     let started = Instant::now();
 
     // Phase 1: spawn containers
     let spawn_start = Instant::now();
-    let test_runner = match TestRunner::from_config(&config, log_dir.clone(), &mounts_dir).await {
+    let test_runner = match CorrectnessRunner::from_config(&config, tctx).await {
         Ok(r) => r,
-        Err(e) => return make_error_result(name, started, "spawn_containers", e, log_dir),
+        Err(e) => return make_error_result(name, started, "spawn_containers", e),
     };
     let spawn_duration = spawn_start.elapsed();
 
@@ -46,7 +45,7 @@ pub async fn run_correctness_test(
     let collect_start = Instant::now();
     let (baseline_data, comparison_data) = match test_runner.run().await {
         Ok(data) => data,
-        Err(e) => return make_error_result(name, started, "collect_data", e, log_dir),
+        Err(e) => return make_error_result(name, started, "collect_data", e),
     };
     let collect_duration = collect_start.elapsed();
 
@@ -93,7 +92,6 @@ pub async fn run_correctness_test(
             }],
             error: None,
             phase_timings,
-            log_dir,
             assertion_details: vec![],
         },
         Err((e, details)) => {
@@ -111,16 +109,13 @@ pub async fn run_correctness_test(
                 }],
                 error: Some(summary),
                 phase_timings,
-                log_dir,
                 assertion_details: vec![details],
             }
         }
     }
 }
 
-fn make_error_result(
-    name: String, started: Instant, phase: &str, e: GenericError, log_dir: Option<PathBuf>,
-) -> TestResult {
+fn make_error_result(name: String, started: Instant, phase: &str, e: GenericError) -> TestResult {
     TestResult {
         name,
         passed: false,
@@ -131,38 +126,38 @@ fn make_error_result(
             phase: phase.to_string(),
             duration: started.elapsed(),
         }],
-        log_dir,
         assertion_details: vec![],
     }
 }
 
-pub struct TestRunner {
+/// Manages the state and program flow of running a *correctness* test.
+///
+/// In a correctness test, two isolated groups of containers are created. One containing the Agent alone, and the other
+/// containing ADP and the Agent working together. These are called 'baseline' and 'comparison', respectively.
+pub struct CorrectnessRunner {
     datadog_intake_config: DatadogIntakeConfig,
     millstone_config: MillstoneConfig,
     baseline_target_driver_config: DriverConfig,
     comparison_target_driver_config: DriverConfig,
-    cancel_token: CancellationToken,
+    tctx: TestContext,
     baseline_coordinator: Coordinator,
     comparison_coordinator: Coordinator,
-    log_base_dir: PathBuf,
 }
 
-impl TestRunner {
-    pub async fn from_config(
-        config: &Config, log_dir: Option<PathBuf>, mounts_dir: &Path,
-    ) -> Result<Self, GenericError> {
-        let baseline = crate::mounts::apply_target_mounts(config.baseline_target_driver_config().await?, mounts_dir)?;
+impl CorrectnessRunner {
+    pub async fn from_config(config: &Config, tctx: TestContext) -> Result<Self, GenericError> {
+        let baseline =
+            crate::mounts::apply_target_mounts(config.baseline_target_driver_config().await?, tctx.mounts_dir())?;
         let comparison =
-            crate::mounts::apply_target_mounts(config.comparison_target_driver_config().await?, mounts_dir)?;
+            crate::mounts::apply_target_mounts(config.comparison_target_driver_config().await?, tctx.mounts_dir())?;
         Ok(Self {
             datadog_intake_config: config.datadog_intake_config(),
             millstone_config: config.millstone_config(),
             baseline_target_driver_config: baseline,
             comparison_target_driver_config: comparison,
-            cancel_token: CancellationToken::new(),
+            tctx,
             baseline_coordinator: Coordinator::new(),
             comparison_coordinator: Coordinator::new(),
-            log_base_dir: log_dir.unwrap_or_else(|| PathBuf::from("/tmp/panoramic")),
         })
     }
 
@@ -172,9 +167,10 @@ impl TestRunner {
         let mut group_runner = GroupRunner::new(
             isolation_group_id,
             "baseline",
-            self.log_base_dir.clone(),
+            self.tctx.log_dir().to_path_buf(),
             self.baseline_coordinator.clone(),
-            self.cancel_token.child_token(),
+            // Pass a child from the test context so that a cancellation from above will affect the group runners.
+            self.tctx.test_cancel_token().child_token(),
         );
         group_runner
             .with_driver(DriverConfig::datadog_intake(self.datadog_intake_config.clone()).await?)?
@@ -190,9 +186,9 @@ impl TestRunner {
         let mut group_runner = GroupRunner::new(
             isolation_group_id,
             "comparison",
-            self.log_base_dir.clone(),
+            self.tctx.log_dir().to_path_buf(),
             self.comparison_coordinator.clone(),
-            self.cancel_token.child_token(),
+            self.tctx.test_cancel_token().child_token(),
         );
 
         group_runner
@@ -213,7 +209,7 @@ impl TestRunner {
             // If either side failed, we need to shutdown everything before returning the error.
             (maybe_baseline_error, maybe_comparison_error) => {
                 // Trigger any spawned drivers to shutdown and cleanup, and wait for that to happen.
-                self.cancel_token.cancel();
+                self.tctx.test_cancel_token().cancel();
                 self.baseline_coordinator.wait().await;
                 self.comparison_coordinator.wait().await;
 
@@ -287,7 +283,8 @@ impl TestRunner {
 
         // We've gotten our data back, so signal to any remaining containers that they can shutdown now.
         info!("Cleaning up remaining containers and resources...");
-        self.cancel_token.cancel();
+        // TODO: is it correct to be using tctx.test_cancel_token for this? Or is this cancel() call necessary?
+        self.tctx.test_cancel_token().cancel();
         self.baseline_coordinator.wait().await;
         self.comparison_coordinator.wait().await;
 
@@ -348,20 +345,21 @@ struct GroupRunner {
 
 impl GroupRunner {
     fn new(
-        isolation_group_id: String, test_id: &'static str, log_base_dir: PathBuf, coordinator: Coordinator,
+        isolation_group_id: String, group_name: &'static str, log_dir: PathBuf, coordinator: Coordinator,
         cancel_token: CancellationToken,
     ) -> Self {
-        let runner_log_dir = log_base_dir.join(test_id);
+        // Create a subdirectory for the isolation group's container logs.
+        let group_log_dir = log_dir.join(group_name);
 
         info!(
             "Creating test group runner for target '{}'. Logs will be saved to {}",
-            test_id,
-            runner_log_dir.display()
+            group_name,
+            group_log_dir.display()
         );
 
         Self {
             isolation_group_id,
-            runner_log_dir,
+            runner_log_dir: group_log_dir,
             drivers: Vec::new(),
             coordinator,
             cancel_token,

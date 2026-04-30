@@ -67,7 +67,7 @@ impl Assertion for PortListeningAssertion {
                 };
             }
 
-            if ctx.cancel_token.is_cancelled() {
+            if ctx.cancel_token.is_cancelled() || ctx.container_exit_token.is_cancelled() {
                 return AssertionResult {
                     name: self.name().to_string(),
                     passed: false,

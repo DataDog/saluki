@@ -31,8 +31,8 @@ impl Assertion for ProcessExitsWithAssertion {
         let started = Instant::now();
 
         tokio::select! {
-            // Wait for the container to exit (signaled via cancel_token).
-            _ = ctx.cancel_token.cancelled() => {
+            // Wait for the container to exit.
+            _ = ctx.container_exit_token.cancelled() => {
                 // Container exited - check exit code via Docker API
                 let docker: bollard::Docker = match airlock::docker::connect() {
                     Ok(d) => d,
