@@ -31,8 +31,7 @@ use crate::{
 /// Run a single correctness test and return a panoramic `TestResult`.
 /// Run a single correctness test and return a panoramic `TestResult`.
 pub async fn run_correctness_test(
-    name: String, config: Config, log_dir: Option<PathBuf>, mounts_dir: PathBuf,
-    cancel_token: CancellationToken,
+    name: String, config: Config, log_dir: Option<PathBuf>, mounts_dir: PathBuf, cancel_token: CancellationToken,
 ) -> TestResult {
     let started = Instant::now();
 

@@ -4,21 +4,21 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
-use crate::config::TestCase;
+use crate::config::IntegrationConfig;
 use crate::correctness::config::Config as CorrectnessConfig;
 use crate::reporter::TestResult;
 use crate::test::{Test, TestSuite};
 
 /// Wraps a YAML-discovered integration `TestCase` as a `Test`.
 pub(crate) struct IntegrationTestCase {
-    tc: TestCase,
+    tc: IntegrationConfig,
     log_dir: Option<PathBuf>,
     mounts_dir: PathBuf,
     cancel_token: CancellationToken,
 }
 
 impl IntegrationTestCase {
-    pub(crate) fn new(tc: TestCase, log_dir: Option<PathBuf>, mounts_dir: PathBuf) -> Self {
+    pub(crate) fn new(tc: IntegrationConfig, log_dir: Option<PathBuf>, mounts_dir: PathBuf) -> Self {
         Self {
             tc,
             log_dir,
@@ -54,11 +54,8 @@ impl Test for IntegrationTestCase {
     }
 
     async fn run(&self) -> TestResult {
-        let mut runner = crate::runner::TestRunner::new(
-            self.tc.clone(),
-            self.mounts_dir.clone(),
-            self.cancel_token.clone(),
-        );
+        let mut runner =
+            crate::runner::TestRunner::new(self.tc.clone(), self.mounts_dir.clone(), self.cancel_token.clone());
         if let Some(ref dir) = self.log_dir {
             runner = runner.with_log_dir(dir.join("integration"));
         }

@@ -1,8 +1,10 @@
-use crate::reporter::TestResult;
-use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
+
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+
+use crate::reporter::TestResult;
 mod test_registry;
 pub(crate) use test_registry::TestRegistry;
 

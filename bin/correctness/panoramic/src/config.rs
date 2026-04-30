@@ -89,7 +89,7 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
 /// A discovered test, either an integration test or a correctness test.
 pub enum DiscoveredTest {
     /// An integration test case (panoramic schema).
-    Integration(TestCase),
+    Integration(IntegrationConfig),
     /// A correctness test case.
     Correctness {
         /// Name of the test (derived from directory name).
@@ -141,9 +141,12 @@ impl DiscoveredTest {
     }
 }
 
-/// Root test case configuration.
+///
+///
+/// The deserializable configuration struct that defines an integration test. Not to be confused with
+/// `CorrectnessConfig` which is a different testing modality.
 #[derive(Clone, Debug, Deserialize)]
-pub struct TestCase {
+pub struct IntegrationConfig {
     /// Name of the test case.
     pub name: String,
 
@@ -369,7 +372,7 @@ impl AssertionStep {
     }
 }
 
-impl TestCase {
+impl IntegrationConfig {
     /// Replaces `{{PANORAMIC_DYNAMIC_*}}` placeholders in all assertion steps.
     pub fn resolve_dynamic_vars(&mut self, vars: &HashMap<String, String>) {
         for step in &mut self.assertions {
@@ -402,7 +405,7 @@ impl TestCase {
         let content = std::fs::read_to_string(path)
             .error_context(format!("Failed to read configuration file: {}", path.display()))?;
 
-        let mut test_case: TestCase = serde_yaml::from_str(&content)
+        let mut test_case: IntegrationConfig = serde_yaml::from_str(&content)
             .error_context(format!("Failed to parse configuration file: {}", path.display()))?;
 
         test_case.base_path = path
@@ -484,7 +487,7 @@ fn try_load_test(config_path: &Path, dir_path: &Path) -> Result<DiscoveredTest, 
         .ok_or_else(|| generic_error!("Missing required 'type' field (expected 'integration' or 'correctness')"))?;
 
     match test_type {
-        "integration" => TestCase::from_yaml(config_path).map(DiscoveredTest::Integration),
+        "integration" => IntegrationConfig::from_yaml(config_path).map(DiscoveredTest::Integration),
         "correctness" => {
             let config_path_str = config_path
                 .to_str()

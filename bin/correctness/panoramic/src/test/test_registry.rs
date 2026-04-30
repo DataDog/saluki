@@ -1,9 +1,10 @@
-use crate::events::TestEvent;
-use crate::reporter::TestResult;
-use crate::test::Test;
 use saluki_error::{generic_error, GenericError};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+
+use crate::events::TestEvent;
+use crate::reporter::TestResult;
+use crate::test::Test;
 
 /// The registry of all tests available to run. Rust tests are added at compile time and configuration-driven tests are
 /// added by directory scans.

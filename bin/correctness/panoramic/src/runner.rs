@@ -25,7 +25,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     assertions::{create_assertion, AssertionContext, AssertionResult, LogBuffer},
-    config::{parse_file_spec, parse_port_spec, AssertionStep, DiscoveredTest, TestCase},
+    config::{parse_file_spec, parse_port_spec, AssertionStep, DiscoveredTest, IntegrationConfig},
     events::TestEvent,
     reporter::{PhaseTiming, TestResult},
 };
@@ -249,7 +249,7 @@ fn generate_isolation_group_id() -> String {
 
 /// Runner for a single test case.
 pub(crate) struct TestRunner {
-    test_case: TestCase,
+    test_case: IntegrationConfig,
     isolation_group_id: String,
     cancel_token: CancellationToken,
     log_buffer: Arc<RwLock<LogBuffer>>,
@@ -259,7 +259,7 @@ pub(crate) struct TestRunner {
 
 impl TestRunner {
     /// Create a new test runner for the given test case.
-    pub(crate) fn new(test_case: TestCase, mounts_dir: PathBuf, cancel_token: CancellationToken) -> Self {
+    pub(crate) fn new(test_case: IntegrationConfig, mounts_dir: PathBuf, cancel_token: CancellationToken) -> Self {
         Self {
             test_case,
             isolation_group_id: generate_isolation_group_id(),
