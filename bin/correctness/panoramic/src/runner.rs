@@ -223,32 +223,44 @@ impl Runner {
             let _ = tx.send(TestEvent::TestStarted { name: name.clone() });
         }
 
+        let run_fut = test.run();
+        tokio::pin!(run_fut);
+
         let result = tokio::select! {
-            r = test.run() => r,
+            r = &mut run_fut => r,
+            // If the sleep future returns before our test future, then we timed out.
             _ = tokio::time::sleep(timeout) => {
                 test.cancel().await;
-                TestResult {
-                    name,
-                    passed: false,
-                    duration: timeout,
-                    assertion_results: vec![],
-                    error: Some(format!("Test timed out after {:?}.", timeout)),
-                    phase_timings: vec![],
-                    log_dir: Some(test.log_dir()),
-                    assertion_details: vec![],
+                // Give the test time to clean up containers through its normal path.
+                match tokio::time::timeout(Duration::from_secs(30), run_fut).await {
+                    Ok(r) => r,
+                    // This error is just the timeout signal, so its message can be ignored.
+                    Err(_) => TestResult {
+                        name,
+                        passed: false,
+                        duration: started.elapsed(),
+                        assertion_results: vec![],
+                        error: Some(format!("Test timed out after {:?}.", timeout)),
+                        phase_timings: vec![],
+                        log_dir: Some(test.log_dir()),
+                        assertion_details: vec![],
+                    },
                 }
             }
             _ = cancel_token.cancelled() => {
                 test.cancel().await;
-                TestResult {
-                    name,
-                    passed: false,
-                    duration: started.elapsed(),
-                    assertion_results: vec![],
-                    error: Some("Test cancelled.".to_string()),
-                    phase_timings: vec![],
-                    log_dir: Some(test.log_dir()),
-                    assertion_details: vec![],
+                match tokio::time::timeout(Duration::from_secs(30), run_fut).await {
+                    Ok(r) => r,
+                    Err(_) => TestResult {
+                        name,
+                        passed: false,
+                        duration: started.elapsed(),
+                        assertion_results: vec![],
+                        error: Some("Test cancelled.".to_string()),
+                        phase_timings: vec![],
+                        log_dir: Some(test.log_dir()),
+                        assertion_details: vec![],
+                    },
                 }
             }
         };
