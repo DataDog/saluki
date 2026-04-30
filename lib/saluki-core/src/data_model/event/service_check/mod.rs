@@ -116,6 +116,14 @@ impl ServiceCheck {
         self
     }
 
+    /// Set the hostname where the service check originated from.
+    pub fn set_hostname(&mut self, hostname: impl Into<Option<MetaString>>) {
+        self.hostname = match hostname.into() {
+            Some(hostname) => hostname,
+            None => MetaString::empty(),
+        };
+    }
+
     /// Set the tags of the service check
     ///
     /// This variant is specifically for use in builder-style APIs.

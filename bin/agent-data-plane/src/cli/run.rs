@@ -454,15 +454,15 @@ async fn add_dsd_pipeline_to_blueprint(
     //               │                 │                          │ service checks           │ events
     //               │                 ▼                          ▼                          ▼
     //               │      ┌─────────────────────┐    ┌─────────────────────┐    ┌─────────────────────┐
-    //               │      │  DSD Prefix/Filter  │    │ DSD Service Checks  │    │   Events Enrich     │
-    //               │      │     (transform)     │    │      (encoder)      │    │     (transform)     │
+    //               │      │  DSD Prefix/Filter  │    │  Service Checks     │    │   Events Enrich     │
+    //               │      │     (transform)     │    │  Enrich (chained)   │    │    (chained)        │
     //               │      └─────────────────────┘    └─────────────────────┘    └─────────────────────┘
     //               │                 │                          │                          │
-    //               │                 ▼                          │                          ▼
-    //               │      ┌─────────────────────┐               │               ┌─────────────────────┐
-    //               │      │     DSD Enrich      │               │               │     DSD Events      │
-    //               │      │ (chained transform) │               │               │      (encoder)      │
-    //               │      │┌───────────────────┐│               │               └─────────────────────┘
+    //               │                 ▼                          ▼                          ▼
+    //               │      ┌─────────────────────┐    ┌─────────────────────┐    ┌─────────────────────┐
+    //               │      │     DSD Enrich      │    │     DSD Service     │    │     DSD Events      │
+    //               │      │ (chained transform) │    │    Checks (encoder) │    │      (encoder)      │
+    //               │      │┌───────────────────┐│    └─────────────────────┘    └─────────────────────┘
     //               │      ││    DSD Mapper     ││               │                          │
     //               │      │└───────────────────┘│               │                          │
     //               │      └─────────────────────┘               │                          │
@@ -493,6 +493,10 @@ async fn add_dsd_pipeline_to_blueprint(
         "host_enrichment",
         HostEnrichmentConfiguration::from_environment_provider(env_provider.clone()),
     );
+    let service_checks_enrich_config = ChainedConfiguration::default().with_transform_builder(
+        "host_enrichment",
+        HostEnrichmentConfiguration::from_environment_provider(env_provider.clone()),
+    );
     let dd_events_config = DatadogEventsConfiguration::from_configuration(config)
         .map(BufferedIncrementalConfiguration::from_encoder_builder)
         .error_context("Failed to configure Datadog Events encoder.")?;
@@ -508,6 +512,7 @@ async fn add_dsd_pipeline_to_blueprint(
         .add_transform("dsd_tag_filterlist", dsd_tag_filterlist_config)?
         .add_transform("dsd_agg", dsd_agg_config)?
         .add_transform("events_enrich", events_enrich_config)?
+        .add_transform("service_checks_enrich", service_checks_enrich_config)?
         .add_encoder("dd_events_encode", dd_events_config)?
         .add_encoder("dd_service_checks_encode", dd_service_checks_config)?
         .add_destination("dsd_stats_out", dsd_stats_config)?
@@ -520,7 +525,8 @@ async fn add_dsd_pipeline_to_blueprint(
         // Events.
         .connect_component("events_enrich", ["dsd_in.events"])?
         .connect_component("dd_events_encode", ["events_enrich"])?
-        .connect_component("dd_service_checks_encode", ["dsd_in.service_checks"])?
+        .connect_component("service_checks_enrich", ["dsd_in.service_checks"])?
+        .connect_component("dd_service_checks_encode", ["service_checks_enrich"])?
         .connect_component("dd_out", ["dd_service_checks_encode", "dd_events_encode"])?
         // DogStatsD Stats.
         .connect_component("dsd_stats_out", ["dsd_in.metrics"])?;

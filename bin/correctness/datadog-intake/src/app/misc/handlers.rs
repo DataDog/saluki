@@ -15,12 +15,6 @@ pub async fn handle_metadata_v1() -> StatusCode {
     StatusCode::OK
 }
 
-pub async fn handle_check_run_v1() -> StatusCode {
-    debug!("Received check_run v1 payload.");
-
-    StatusCode::OK
-}
-
 pub async fn handle_events_v1(State(state): State<EventsState>, body: Bytes) -> StatusCode {
     debug!(bytes = body.len(), "Received events v1 payload.");
 

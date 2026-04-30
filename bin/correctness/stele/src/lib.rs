@@ -9,5 +9,8 @@ pub use self::events::*;
 mod metrics;
 pub use self::metrics::*;
 
+mod service_checks;
+pub use self::service_checks::*;
+
 mod traces;
 pub use self::traces::*;

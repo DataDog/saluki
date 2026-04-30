@@ -1221,8 +1221,15 @@ fn handle_service_check_packet(
     let tags = get_filtered_tags_iterator(packet.tags, additional_tags);
     let tags = tags_resolver.create_tag_set(tags)?;
 
+    // When no d: field is present, backfill the current time — matching the stock Datadog Agent's
+    // behavior, which sets the timestamp to time.Now().Unix() for any service check with a zero
+    // timestamp.
+    let timestamp = packet
+        .timestamp
+        .or_else(|| SystemTime::now().duration_since(UNIX_EPOCH).ok().map(|d| d.as_secs()));
+
     let service_check = ServiceCheck::new(packet.name, packet.status)
-        .with_timestamp(packet.timestamp)
+        .with_timestamp(timestamp)
         .with_hostname(packet.hostname.map(|s| s.into()))
         .with_tags(tags)
         .with_origin_tags(origin_tags)

@@ -181,6 +181,16 @@ impl Event {
         }
     }
 
+    /// Returns a mutable reference to the inner event value, if this event is a `ServiceCheck`.
+    ///
+    /// Otherwise, `None` is returned.
+    pub fn try_as_service_check_mut(&mut self) -> Option<&mut ServiceCheck> {
+        match self {
+            Event::ServiceCheck(service_check) => Some(service_check),
+            _ => None,
+        }
+    }
+
     /// Returns a reference inner event value, if this event is a `Trace`.
     ///
     /// Otherwise, `None` is returned.
