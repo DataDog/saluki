@@ -17,10 +17,13 @@ chrono = { workspace = true }
 colored = { workspace = true }
 crossterm = { workspace = true, features = ["events"] }
 futures = { workspace = true }
+k8s-openapi = { workspace = true, features = ["v1_29"] }
+kube = { workspace = true, features = ["client", "rustls-tls", "ws"] }
 rand = { workspace = true, features = ["std", "std_rng", "thread_rng"] }
 rand_distr = { workspace = true }
 regex = { workspace = true, features = ["std"] }
 reqwest = { workspace = true, features = ["json", "zstd", "rustls", "query"] }
+rustls = { workspace = true }
 saluki-common = { workspace = true }
 saluki-config = { workspace = true }
 saluki-error = { workspace = true }

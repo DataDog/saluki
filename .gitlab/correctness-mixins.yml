@@ -38,3 +38,28 @@
 .test-correctness-adp-baseline:
   variables:
     PANORAMIC_BASELINE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
+
+# Common to every kind-based correctness-test job. Extends .test-correctness-definition
+# but wraps the panoramic invocation with kind cluster setup and teardown.
+# The cluster is scoped to this job via CI_JOB_ID to avoid collisions across parallel runs.
+.test-correctness-kind-definition:
+  extends: .test-correctness-definition
+  timeout: 20m
+  variables:
+    KIND_CLUSTER_NAME: saluki-correctness-${CI_JOB_ID}
+  script:
+    - curl -sSLo /usr/local/bin/kind
+        https://kind.sigs.k8s.io/dl/v0.31.0/kind-linux-amd64
+        && chmod +x /usr/local/bin/kind
+    - kind create cluster --name ${KIND_CLUSTER_NAME} --wait 120s
+    - docker pull ${PANORAMIC_COMPARISON__IMAGE}
+    - docker pull ${PANORAMIC_BASELINE__IMAGE:-${PANORAMIC_COMPARISON__IMAGE}}
+    - docker pull ${PANORAMIC_MILLSTONE__IMAGE}
+    - docker pull ${PANORAMIC_DATADOG_INTAKE__IMAGE}
+    - kind load docker-image ${PANORAMIC_COMPARISON__IMAGE} --name ${KIND_CLUSTER_NAME}
+    - kind load docker-image ${PANORAMIC_BASELINE__IMAGE:-${PANORAMIC_COMPARISON__IMAGE}} --name ${KIND_CLUSTER_NAME}
+    - kind load docker-image ${PANORAMIC_MILLSTONE__IMAGE} --name ${KIND_CLUSTER_NAME}
+    - kind load docker-image ${PANORAMIC_DATADOG_INTAKE__IMAGE} --name ${KIND_CLUSTER_NAME}
+    - target/release/panoramic run -d $(pwd)/test/correctness -t ${CORRECTNESS_TEST_CASE} --no-tui
+  after_script:
+    - kind delete cluster --name ${KIND_CLUSTER_NAME} || true

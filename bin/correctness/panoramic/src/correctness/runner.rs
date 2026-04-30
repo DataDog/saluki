@@ -20,7 +20,7 @@ use tracing::{debug, error, info, info_span, Instrument as _, Span};
 
 use crate::correctness::{
     analysis::{AnalysisMode, AnalysisRunner, CollectedData, TracesAnalysisOptions},
-    config::Config,
+    config::{Config, Runtime},
     sync::Coordinator,
 };
 use crate::{
@@ -31,6 +31,13 @@ use crate::{
 
 /// Run a single correctness test and return a panoramic `TestResult`.
 pub async fn run_correctness_test(name: String, config: Config, tctx: TestContext) -> TestResult {
+    match config.runtime {
+        Runtime::Docker => run_docker_correctness_test(name, config, tctx).await,
+        Runtime::Kind => crate::correctness::k8s::run_k8s_correctness_test(name, config, tctx).await,
+    }
+}
+
+async fn run_docker_correctness_test(name: String, config: Config, tctx: TestContext) -> TestResult {
     let started = Instant::now();
 
     // Phase 1: spawn containers
@@ -115,7 +122,7 @@ pub async fn run_correctness_test(name: String, config: Config, tctx: TestContex
     }
 }
 
-fn make_error_result(name: String, started: Instant, phase: &str, e: GenericError) -> TestResult {
+pub(crate) fn make_error_result(name: String, started: Instant, phase: &str, e: GenericError) -> TestResult {
     TestResult {
         name,
         passed: false,

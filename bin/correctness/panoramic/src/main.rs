@@ -13,6 +13,7 @@ use tracing_subscriber::{layer::SubscriberExt as _, util::SubscriberInitExt as _
 
 use crate::runner::Runner;
 
+
 mod assertions;
 mod cli;
 mod correctness;
@@ -35,6 +36,10 @@ mod tui;
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // Install the rustls crypto provider once at startup. Both reqwest and kube use rustls 0.23,
+    // which requires an explicit provider install when multiple TLS-using crates are present.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     let cli: Cli = argh::from_env();
 
     // See if we should use TUI mode.
@@ -306,6 +311,7 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
                 test.name(),
                 serde_json::json!({
                     "type": test.suite(),
+                    "runtime": test.runtime(),
                     "timeout": test.timeout(),
                     "images": test.images(),
                 }),

@@ -428,6 +428,49 @@ ifeq ($(shell command -v minikube >/dev/null || echo not-found), not-found)
 	$(error "Please install minikube: https://minikube.sigs.k8s.io/docs/start/")
 endif
 
+##@ Kind (Correctness Testing)
+
+KIND_CLUSTER_NAME ?= saluki-correctness
+
+.PHONY: kind-create-cluster
+kind-create-cluster: check-kind-tools ## Creates a kind cluster for correctness testing
+	@echo "[*] Creating kind cluster '$(KIND_CLUSTER_NAME)'..."
+	@kind create cluster --name $(KIND_CLUSTER_NAME) --wait 60s
+
+.PHONY: kind-delete-cluster
+kind-delete-cluster: check-kind-tools ## Deletes the kind correctness cluster
+	@echo "[*] Deleting kind cluster '$(KIND_CLUSTER_NAME)'..."
+	@kind delete cluster --name $(KIND_CLUSTER_NAME)
+
+.PHONY: kind-load-images
+kind-load-images: check-kind-tools build-datadog-agent-image build-datadog-intake-image build-millstone-image
+kind-load-images: ## Loads correctness test images into the kind cluster
+	@echo "[*] Loading images into kind cluster '$(KIND_CLUSTER_NAME)'..."
+	@kind load docker-image saluki-images/datadog-agent:testing-release --name $(KIND_CLUSTER_NAME)
+	@kind load docker-image saluki-images/datadog-intake:latest --name $(KIND_CLUSTER_NAME)
+	@kind load docker-image saluki-images/millstone:latest --name $(KIND_CLUSTER_NAME)
+
+.PHONY: test-correctness-kind
+test-correctness-kind: build-panoramic
+test-correctness-kind: ## Runs all kind-based correctness tests (requires a running kind cluster with images loaded)
+	@echo "[*] Running kind correctness tests..."
+	@target/release/panoramic run -d $(shell pwd)/test/correctness -t dsd-plain-kind
+
+.PHONY: test-correctness-kind-case
+test-correctness-kind-case: build-panoramic
+test-correctness-kind-case: ## Runs a single kind correctness test case (usage: make test-correctness-kind-case CASE=dsd-plain-kind)
+	@echo "[*] Running kind correctness test '$(CASE)'..."
+	@target/release/panoramic run -d $(shell pwd)/test/correctness -t $(CASE)
+
+.PHONY: check-kind-tools
+check-kind-tools:
+ifeq ($(shell command -v kind >/dev/null 2>&1 || echo not-found), not-found)
+	$(error "Please install kind: https://kind.sigs.k8s.io/docs/user/quick-start/#installation")
+endif
+ifeq ($(shell command -v kubectl >/dev/null 2>&1 || echo not-found), not-found)
+	$(error "Please install kubectl: https://kubernetes.io/docs/tasks/tools/")
+endif
+
 .PHONY: check-proxy-dumper-tools
 check-proxy-dumper-tools:
 ifeq ($(shell command -v go >/dev/null || echo not-found), not-found)
