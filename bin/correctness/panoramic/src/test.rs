@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -38,6 +39,12 @@ pub(crate) trait Test: Send + Sync {
 
     /// Where this test is writing its logs.
     fn log_dir(&self) -> PathBuf;
+
+    /// Returns the list of images that this test depends on as a map of `name -> image`.
+    ///
+    /// Panoramic depends on container images to be built and ready. Build processes need to be able to inspect these
+    /// so we offer a command by which a build process can see these.
+    fn images(&self) -> BTreeMap<&str, String>;
 
     /// Run the test and return the `TestResult`. Note that we do not return an error here. It is expected that you
     /// should handle errors and turn them into a failed `TestResult` and try not to panic.

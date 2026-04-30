@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -42,6 +43,7 @@ impl Test for IntegrationTestCase {
         self.tc.description.clone()
     }
 
+    // TODO: decide if we really want integration tests to have no timeout.
     fn timeout(&self) -> Duration {
         self.tc.timeout.0
     }
@@ -51,6 +53,12 @@ impl Test for IntegrationTestCase {
             .as_ref()
             .map(|d| d.join("integration").join(&self.tc.name))
             .unwrap_or_else(|| PathBuf::from("/tmp/panoramic/integration").join(&self.tc.name))
+    }
+
+    fn images(&self) -> BTreeMap<&str, String> {
+        let mut m = BTreeMap::new();
+        m.insert("container", self.tc.container.image.clone());
+        m
     }
 
     async fn run(&self) -> TestResult {
@@ -109,6 +117,15 @@ impl Test for CorrectnessTestCase {
             .as_ref()
             .map(|d| d.join("correctness").join(&self.name))
             .unwrap_or_else(|| PathBuf::from("/tmp/panoramic/correctness").join(&self.name))
+    }
+
+    fn images(&self) -> BTreeMap<&str, String> {
+        let mut m = BTreeMap::new();
+        m.insert("baseline", self.config.baseline.image.clone());
+        m.insert("comparison", self.config.comparison.image.clone());
+        m.insert("datadog-intake", self.config.datadog_intake.image.clone());
+        m.insert("millstone", self.config.millstone.image.clone());
+        m
     }
 
     async fn run(&self) -> TestResult {
