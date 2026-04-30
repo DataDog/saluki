@@ -5,10 +5,14 @@ use std::{
     time::Duration,
 };
 
+use async_trait::async_trait;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
+use tokio_util::sync::CancellationToken;
 
 use crate::correctness::config::Config as CorrectnessConfig;
+use crate::reporter::TestResult;
+use crate::test::{Test, TestSuite};
 
 /// A duration that can be parsed from human-readable strings like "10s", "1m", "500ms".
 #[derive(Clone, Debug)]
@@ -166,6 +170,15 @@ pub struct IntegrationConfig {
     /// Base path for resolving relative file paths.
     #[serde(skip)]
     pub base_path: PathBuf,
+
+    #[serde(skip)]
+    pub(crate) log_dir: Option<PathBuf>,
+
+    #[serde(skip)]
+    pub(crate) mounts_dir: PathBuf,
+
+    #[serde(skip)]
+    pub(crate) cancel_token: CancellationToken,
 }
 
 /// Container configuration for a test case.
@@ -372,7 +385,61 @@ impl AssertionStep {
     }
 }
 
+#[async_trait]
+impl Test for IntegrationConfig {
+    fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    fn suite(&self) -> TestSuite {
+        TestSuite::Integration
+    }
+
+    fn description(&self) -> Option<String> {
+        self.description.clone()
+    }
+
+    fn timeout(&self) -> Duration {
+        self.timeout.0
+    }
+
+    fn log_dir(&self) -> PathBuf {
+        self.log_dir
+            .as_ref()
+            .map(|d| d.join("integration").join(&self.name))
+            .unwrap_or_else(|| PathBuf::from("/tmp/panoramic/integration").join(&self.name))
+    }
+
+    fn images(&self) -> BTreeMap<&str, String> {
+        let mut m = BTreeMap::new();
+        m.insert("container", self.container.image.clone());
+        m
+    }
+
+    async fn run(&self) -> TestResult {
+        let mut runner =
+            crate::runner::TestRunner::new(self.clone(), self.mounts_dir.clone(), self.cancel_token.clone());
+        if let Some(ref dir) = self.log_dir {
+            runner = runner.with_log_dir(dir.join("integration"));
+        }
+        let mut result = runner.run().await;
+        result.log_dir = Some(self.log_dir());
+        result
+    }
+
+    async fn cancel(&self) {
+        self.cancel_token.cancel();
+    }
+}
+
 impl IntegrationConfig {
+    #[allow(dead_code)]
+    pub(crate) fn set_runtime_config(&mut self, log_dir: Option<PathBuf>, mounts_dir: PathBuf) {
+        self.log_dir = log_dir;
+        self.mounts_dir = mounts_dir;
+        self.cancel_token = CancellationToken::new();
+    }
+
     /// Replaces `{{PANORAMIC_DYNAMIC_*}}` placeholders in all assertion steps.
     pub fn resolve_dynamic_vars(&mut self, vars: &HashMap<String, String>) {
         for step in &mut self.assertions {
