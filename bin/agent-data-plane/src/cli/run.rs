@@ -14,7 +14,7 @@ use saluki_app::{
 use saluki_components::{
     config::{DatadogRemapper, KEY_ALIASES},
     decoders::otlp::OtlpDecoderConfiguration,
-    destinations::DogStatsDStatisticsConfiguration,
+    destinations::{DogStatsDDebugLogConfiguration, DogStatsDStatisticsConfiguration},
     encoders::{
         BufferedIncrementalConfiguration, DatadogApmStatsEncoderConfiguration, DatadogEventsConfiguration,
         DatadogLogsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration,
@@ -44,7 +44,8 @@ use crate::{
         ottl_transform_processor::OttlTransformConfiguration, tag_filterlist::TagFilterlistConfiguration,
     },
     internal::{
-        create_internal_supervisor, logging::LoggingConfigurationTranslator, remote_agent::RemoteAgentBootstrap,
+        create_internal_supervisor, logging::LoggingConfigurationTranslator, platform::PlatformSettings,
+        remote_agent::RemoteAgentBootstrap,
     },
 };
 use crate::{config::DataPlaneConfiguration, env_provider::ADPEnvironmentProvider};
@@ -503,6 +504,11 @@ async fn add_dsd_pipeline_to_blueprint(
     let dd_service_checks_config = DatadogServiceChecksConfiguration::from_configuration(config)
         .map(BufferedIncrementalConfiguration::from_encoder_builder)
         .error_context("Failed to configure Datadog Service Checks encoder.")?;
+    let dsd_debug_log_config = DogStatsDDebugLogConfiguration::from_configuration(
+        config,
+        PlatformSettings::get_default_dogstatsd_log_file_path(),
+    )
+    .error_context("Failed to configure DogStatsD debug log destination.")?;
 
     blueprint
         // Components.
@@ -530,6 +536,13 @@ async fn add_dsd_pipeline_to_blueprint(
         .connect_component("dd_out", ["dd_service_checks_encode", "dd_events_encode"])?
         // DogStatsD Stats.
         .connect_component("dsd_stats_out", ["dsd_in.metrics"])?;
+
+    if dsd_debug_log_config.enabled() {
+        blueprint
+            // DogStatsD debug log.
+            .add_destination("dsd_debug_log_out", dsd_debug_log_config)?
+            .connect_component("dsd_debug_log_out", ["dsd_in.metrics"])?;
+    }
 
     Ok(())
 }
