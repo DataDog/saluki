@@ -7,6 +7,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::reporter::TestResult;
 
+pub(crate) struct RuntimeConfig {
+    pub log_dir: Option<PathBuf>,
+    pub mounts_dir: PathBuf,
+}
+
 const DEFAULT_TIMEOUT: Duration = Duration::from_mins(10);
 
 #[derive(Debug, Default, Clone, Copy, Eq, Ord, PartialOrd, PartialEq, Hash, Serialize, Deserialize)]
@@ -41,6 +46,9 @@ pub(crate) trait Test: Send + Sync {
     /// Panoramic depends on container images to be built and ready. Build processes need to be able to inspect these
     /// so we offer a command by which a build process can see these.
     fn images(&self) -> BTreeMap<&str, String>;
+
+    /// Inject runtime configuration that is not known at discovery time.
+    fn set_runtime_config(&mut self, config: RuntimeConfig);
 
     /// Run the test and return the `TestResult`. Note that we do not return an error here. It is expected that you
     /// should handle errors and turn them into a failed `TestResult` and try not to panic.

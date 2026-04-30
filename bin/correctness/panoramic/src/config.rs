@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::correctness::config::Config as CorrectnessConfig;
 use crate::reporter::TestResult;
-use crate::test::{Test, TestSuite};
+use crate::test::{RuntimeConfig, Test, TestSuite};
 
 /// A duration that can be parsed from human-readable strings like "10s", "1m", "500ms".
 #[derive(Clone, Debug)]
@@ -355,6 +355,12 @@ impl Test for IntegrationConfig {
             .unwrap_or_else(|| PathBuf::from("/tmp/panoramic/integration").join(&self.name))
     }
 
+    fn set_runtime_config(&mut self, config: RuntimeConfig) {
+        self.log_dir = config.log_dir;
+        self.mounts_dir = config.mounts_dir;
+        self.cancel_token = CancellationToken::new();
+    }
+
     fn images(&self) -> BTreeMap<&str, String> {
         let mut m = BTreeMap::new();
         m.insert("container", self.container.image.clone());
@@ -378,13 +384,6 @@ impl Test for IntegrationConfig {
 }
 
 impl IntegrationConfig {
-    #[allow(dead_code)]
-    pub(crate) fn set_runtime_config(&mut self, log_dir: Option<PathBuf>, mounts_dir: PathBuf) {
-        self.log_dir = log_dir;
-        self.mounts_dir = mounts_dir;
-        self.cancel_token = CancellationToken::new();
-    }
-
     /// Replaces `{{PANORAMIC_DYNAMIC_*}}` placeholders in all assertion steps.
     pub fn resolve_dynamic_vars(&mut self, vars: &HashMap<String, String>) {
         for step in &mut self.assertions {

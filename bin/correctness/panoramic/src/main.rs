@@ -30,9 +30,7 @@ use self::events::{create_event_channel, TestEvent};
 mod reporter;
 use self::reporter::{OutputFormat, Reporter, TestResult, TestSuiteResult};
 
-#[allow(dead_code)]
 mod runner;
-#[allow(dead_code)]
 mod test;
 mod tui;
 
@@ -149,9 +147,13 @@ async fn run_tests(mut cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         }
     };
 
-    // Build the test registry from discovered tests.
+    // Inject runtime config and build the test registry.
     let mut registry = Runner::new();
-    for tc in test_cases {
+    for mut tc in test_cases {
+        tc.set_runtime_config(test::RuntimeConfig {
+            log_dir: log_dir.clone(),
+            mounts_dir: cmd.mounts_dir.clone(),
+        });
         registry.register(tc).expect("failure to register test");
     }
 

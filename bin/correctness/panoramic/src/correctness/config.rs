@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::correctness::analysis::AnalysisMode;
 use crate::reporter::TestResult;
-use crate::test::{Test, TestSuite};
+use crate::test::{RuntimeConfig, Test, TestSuite};
 
 fn default_millstone_binary_path() -> String {
     "/usr/local/bin/millstone".to_string()
@@ -33,7 +33,6 @@ fn default_otlp_direct_analysis_mode() -> bool {
 #[derive(Clone, Deserialize)]
 pub struct Config {
     #[serde(skip)]
-    #[allow(dead_code)]
     pub(crate) name: String,
 
     /// Analysis mode to use.
@@ -65,15 +64,12 @@ pub struct Config {
     base_config_path: PathBuf,
 
     #[serde(skip)]
-    #[allow(dead_code)]
     pub(crate) log_dir: Option<PathBuf>,
 
     #[serde(skip, default = "PathBuf::new")]
-    #[allow(dead_code)]
     pub(crate) mounts_dir: PathBuf,
 
     #[serde(skip)]
-    #[allow(dead_code)]
     pub(crate) cancel_token: CancellationToken,
 }
 
@@ -165,6 +161,12 @@ impl Test for Config {
             .unwrap_or_else(|| PathBuf::from("/tmp/panoramic/correctness").join(&self.name))
     }
 
+    fn set_runtime_config(&mut self, config: RuntimeConfig) {
+        self.log_dir = config.log_dir;
+        self.mounts_dir = config.mounts_dir;
+        self.cancel_token = CancellationToken::new();
+    }
+
     fn images(&self) -> BTreeMap<&str, String> {
         let mut m = BTreeMap::new();
         m.insert("baseline", self.baseline.image.clone());
@@ -191,14 +193,6 @@ impl Test for Config {
 }
 
 impl Config {
-    #[allow(dead_code)]
-    pub(crate) fn set_runtime_config(&mut self, name: String, log_dir: Option<PathBuf>, mounts_dir: PathBuf) {
-        self.name = name;
-        self.log_dir = log_dir;
-        self.mounts_dir = mounts_dir;
-        self.cancel_token = CancellationToken::new();
-    }
-
     pub fn from_yaml(config_path: &str) -> Result<Self, GenericError> {
         let config_path = PathBuf::from(config_path)
             .canonicalize()

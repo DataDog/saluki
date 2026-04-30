@@ -265,6 +265,8 @@ impl Runner {
             }
         };
 
+        write_result_log(&result);
+
         if let Some(ref tx) = event_sender {
             let _ = tx.send(TestEvent::TestCompleted { result: result.clone() });
         }
@@ -913,7 +915,7 @@ impl TestRunner {
     }
 }
 
-fn write_result_log(result: &crate::reporter::TestResult) {
+fn write_result_log(result: &TestResult) {
     let dir = match &result.log_dir {
         Some(d) => d,
         None => return,
