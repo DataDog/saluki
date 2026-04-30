@@ -156,19 +156,23 @@ async fn run_tests(mut cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         registry.register(tc).expect("failure to register test");
     }
 
-    // Build an optional name filter from the --tests flag.
-    let filter: Option<test::TestFilter> = cmd.tests.as_ref().map(|f| {
-        let names: Vec<String> = f.split(',').map(|s| s.trim().to_string()).collect();
-        Box::new(move |t: &dyn test::Test| names.iter().any(|n| *n == t.name())) as _
-    });
-
     // Create the event channel and cancellation token.
     let (tx, rx) = create_event_channel();
     let cancel_token = CancellationToken::new();
 
+    // Build run args.
+    let mut args = runner::RunArgs::new(cancel_token.clone())
+        .with_parallelism(cmd.parallelism)
+        .with_fail_fast(cmd.fail_fast)
+        .with_event_sender(tx);
+
+    if let Some(ref filter_str) = cmd.tests {
+        let names: Vec<String> = filter_str.split(',').map(|s| s.trim().to_string()).collect();
+        args = args.with_filter(Box::new(move |t: &dyn test::Test| names.iter().any(|n| *n == t.name())));
+    }
+
     // Spawn the test runner task (same code path for both modes).
-    let runner_cancel = cancel_token.clone();
-    let runner_handle = tokio::spawn(async move { registry.run_tests(filter, tx, runner_cancel).await });
+    let runner_handle = tokio::spawn(async move { registry.run_tests(args).await });
 
     // Spawn the appropriate consumer based on mode.
     let all_passed = if use_tui {

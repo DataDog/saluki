@@ -9,8 +9,6 @@ use crate::reporter::TestResult;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_mins(10);
 
-pub(crate) type TestFilter = Box<dyn Fn(&dyn Test) -> bool + Send>;
-
 #[derive(Debug, Default, Clone, Copy, Eq, Ord, PartialOrd, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum TestSuite {

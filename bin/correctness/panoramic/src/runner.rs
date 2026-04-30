@@ -31,6 +31,61 @@ use crate::{
     reporter::{PhaseTiming, TestResult},
 };
 
+/// A function that tells us whether to run a test. Used to filter for the desired test or tests.
+pub(crate) type TestFilter = Box<dyn Fn(&dyn Test) -> bool + Send>;
+
+/// A sender that the `Runner` can use to send `TestEvent`s.
+pub(crate) type EventSender = mpsc::UnboundedSender<TestEvent>;
+
+pub(crate) struct RunArgs {
+    /// The number of tests to run in parallel.
+    parallelism: usize,
+
+    /// Whether to stop execution at the first failure.
+    fail_fast: bool,
+
+    /// A function to filter tests.
+    filter: Option<TestFilter>,
+
+    /// A channel that the runner can use to send events out to the caller.
+    event_sender: Option<EventSender>,
+
+    /// The token to be used for graceful shutdown.
+    cancel_token: CancellationToken,
+}
+
+impl RunArgs {
+    pub(crate) fn new(cancel_token: CancellationToken) -> Self {
+        Self {
+            parallelism: 1,
+            fail_fast: false,
+            filter: None,
+            event_sender: None,
+            cancel_token,
+        }
+    }
+
+    pub(crate) fn with_parallelism(mut self, parallelism: usize) -> Self {
+        self.parallelism = parallelism;
+        self
+    }
+
+    pub(crate) fn with_fail_fast(mut self, fail_fast: bool) -> Self {
+        self.fail_fast = fail_fast;
+        self
+    }
+
+    pub(crate) fn with_filter(mut self, filter: TestFilter) -> Self {
+        self.filter = Some(filter);
+        self
+    }
+
+    pub(crate) fn with_event_sender(mut self, sender: EventSender) -> Self {
+        self.event_sender = Some(sender);
+        self
+    }
+}
+
 /// A registry and runner of tests.
 pub(crate) struct Runner {
     tests: Vec<Box<dyn Test>>,
@@ -54,20 +109,26 @@ impl Runner {
         Ok(())
     }
 
-    // TODO: re-document
-    pub(crate) async fn run_tests(
-        &self, filter: Option<impl Fn(&dyn Test) -> bool>, event_tx: mpsc::UnboundedSender<TestEvent>,
-        cancel_token: CancellationToken,
-    ) -> Vec<TestResult> {
+    /// Run all registered tests, emitting events and returning results.
+    pub(crate) async fn run_tests(&self, args: RunArgs) -> Vec<TestResult> {
+        let RunArgs {
+            filter,
+            event_sender,
+            cancel_token,
+            ..
+        } = args;
+
         let tests: Vec<_> = self
             .tests
             .iter()
             .filter(|t| filter.as_ref().is_none_or(|f| f(t.as_ref())))
             .collect();
 
-        let _ = event_tx.send(TestEvent::RunStarted {
-            total_tests: tests.len(),
-        });
+        if let Some(ref tx) = event_sender {
+            let _ = tx.send(TestEvent::RunStarted {
+                total_tests: tests.len(),
+            });
+        }
 
         let mut results = Vec::new();
 
@@ -78,7 +139,9 @@ impl Runner {
 
             let name = test.name();
             let timeout = test.timeout();
-            let _ = event_tx.send(TestEvent::TestStarted { name: name.clone() });
+            if let Some(ref tx) = event_sender {
+                let _ = tx.send(TestEvent::TestStarted { name: name.clone() });
+            }
 
             let result = tokio::select! {
                 r = test.run() => r,
@@ -97,11 +160,15 @@ impl Runner {
                 }
             };
 
-            let _ = event_tx.send(TestEvent::TestCompleted { result: result.clone() });
+            if let Some(ref tx) = event_sender {
+                let _ = tx.send(TestEvent::TestCompleted { result: result.clone() });
+            }
             results.push(result);
         }
 
-        let _ = event_tx.send(TestEvent::AllDone);
+        if let Some(ref tx) = event_sender {
+            let _ = tx.send(TestEvent::AllDone);
+        }
         results
     }
 }
