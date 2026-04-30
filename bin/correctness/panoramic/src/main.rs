@@ -30,7 +30,6 @@ use self::events::{create_event_channel, TestEvent};
 mod reporter;
 use self::reporter::{OutputFormat, Reporter, TestResult, TestSuiteResult};
 
-mod integration;
 #[allow(dead_code)]
 mod runner;
 #[allow(dead_code)]
