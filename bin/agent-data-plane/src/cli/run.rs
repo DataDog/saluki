@@ -508,7 +508,7 @@ pub(crate) async fn add_dsd_pipeline_to_blueprint(
     Ok(())
 }
 
-fn add_otlp_pipeline_to_blueprint(
+pub(crate) fn add_otlp_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, dp_config: &DataPlaneConfiguration,
     env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {

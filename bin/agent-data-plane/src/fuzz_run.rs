@@ -10,7 +10,6 @@ use saluki_app::bootstrap::BootstrapGuard;
 // so ASAN can trace the allocation as reachable, and so the logger threads stay alive.
 static BOOTSTRAP_GUARD: Mutex<Option<BootstrapGuard>> = Mutex::new(None);
 
-
 use memory_accounting::ComponentRegistry;
 use saluki_app::{
     bootstrap::AppBootstrapper,
@@ -19,37 +18,21 @@ use saluki_app::{
 };
 use saluki_components::{
     config::{DatadogRemapper, KEY_ALIASES},
-    decoders::otlp::OtlpDecoderConfiguration,
     destinations::DogStatsDStatisticsConfiguration,
-    encoders::{
-        BufferedIncrementalConfiguration, DatadogEventsConfiguration, DatadogMetricsConfiguration,
-        DatadogServiceChecksConfiguration,
-    },
-    forwarders::{DatadogConfiguration, OtlpForwarderConfiguration},
-    relays::otlp::OtlpRelayConfiguration,
-    sources::{DogStatsDConfiguration, OtlpConfiguration},
-    transforms::{
-        AggregateConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration, DogStatsDPrefixFilterConfiguration,
-        HostEnrichmentConfiguration, HostTagsConfiguration,
-    },
+    forwarders::DatadogConfiguration,
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_core::health::HealthRegistry;
 use saluki_core::topology::TopologyBlueprint;
-use saluki_env::EnvironmentProvider as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use tokio::{
-    select,
-    time::interval,
-};
+use tokio::{select, time::interval};
 use tracing::{error, info, warn};
 
-use crate::{
-    components::tag_filterlist::TagFilterlistConfiguration,
-    internal::platform::PlatformSettings,
+use crate::cli::run::{
+    add_baseline_metrics_pipeline_to_blueprint, add_dsd_pipeline_to_blueprint, add_otlp_pipeline_to_blueprint,
 };
+use crate::internal::platform::PlatformSettings;
 use crate::{config::DataPlaneConfiguration, env_provider::ADPEnvironmentProvider};
-
 
 // TODO: fuzz entry modeled after the content of that command
 // extract stuff to get a function that gives us enough to build the topology
@@ -62,8 +45,7 @@ use crate::{config::DataPlaneConfiguration, env_provider::ADPEnvironmentProvider
 // call the network calls to send packets to the topology
 /// Entrypoint for the `run` commands.
 pub async fn handle_run_command(
-    bootstrap_config_path: PathBuf,
-    shutdown: tokio::sync::oneshot::Receiver<()>, started: Instant,
+    bootstrap_config_path: PathBuf, shutdown: tokio::sync::oneshot::Receiver<()>, started: Instant,
 ) -> Result<(), GenericError> {
     info!("Agent Data Plane starting...");
 
@@ -243,170 +225,4 @@ async fn create_topology(
     }
 
     Ok(blueprint)
-}
-
-async fn add_baseline_metrics_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, dp_config: &DataPlaneConfiguration,
-    env_provider: &ADPEnvironmentProvider,
-) -> Result<(), GenericError> {
-    // Create the back half of the metrics processing pipeline.
-    let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider.clone());
-    let mut metrics_enrich_config =
-        ChainedConfiguration::default().with_transform_builder("host_enrichment", host_enrichment_config);
-
-    if !dp_config.standalone_mode() {
-        let host_tags_config = HostTagsConfiguration::from_configuration(config).await?;
-        metrics_enrich_config = metrics_enrich_config.with_transform_builder("host_tags", host_tags_config);
-    }
-
-    let dd_metrics_config = DatadogMetricsConfiguration::from_configuration(config)
-        .error_context("Failed to configure Datadog Metrics encoder.")?;
-
-    blueprint
-        // Components.
-        .add_transform("metrics_enrich", metrics_enrich_config)?
-        .add_encoder("dd_metrics_encode", dd_metrics_config)?
-        // Metrics.
-        .connect_component("dd_metrics_encode", ["metrics_enrich"])?
-        // Forwarding.
-        .connect_component("dd_out", ["dd_metrics_encode"])?;
-
-    Ok(())
-}
-
-async fn add_dsd_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
-    dsd_stats_config: DogStatsDStatisticsConfiguration,
-) -> Result<(), GenericError> {
-    // We're creating the "front half" of the DogStatsD pipeline, which deals solely with accepting DogStatsD payloads,
-    // and enriching/processing them in DSD-specific ways, relevant to how the Datadog Agent is expected to behave.
-    //
-    //                                                 ┌─────────────────────┐
-    //                              metrics            │      DogStatsD      │
-    //               ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ │       (source)      │ ─ ─ ─ ─ ─ ─ ─ ┐
-    //               │                 │               └─────────────────────┘               │
-    //               │                 │                          │                          │
-    //               │                 │                          │ service checks           │ events
-    //               │                 ▼                          ▼                          ▼
-    //               │      ┌─────────────────────┐    ┌─────────────────────┐    ┌─────────────────────┐
-    //               │      │  DSD Prefix/Filter  │    │ DSD Service Checks  │    │     DSD Events      │
-    //               │      │     (transform)     │    │      (encoder)      │    │      (encoder)      │
-    //               │      └─────────────────────┘    └─────────────────────┘    └─────────────────────┘
-    //               │                 │                          │                          │
-    //               │                 ▼                          │                          └─ ─ ─ ┐
-    //               │      ┌─────────────────────┐               └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐   │
-    //               │      │     DSD Enrich      │                                             │   │
-    //               │      │ (chained transform) │        ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐    │   │
-    //               │      │┌───────────────────┐│        │        Metrics Pipeline       │    │   │
-    //               │      ││    DSD Mapper     ││ ─ ─ ─▶ │  (aggregate, enrich, encode)  │    │   │
-    //               │      │└───────────────────┘│        └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘    │   │
-    //               │      └─────────────────────┘                       │                     │   │
-    //               │                                                    │                     │   │
-    //               ▼                                                    ▼                     ▼   ▼
-    //    ┌─────────────────────┐    ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐
-    //    │      DSD Stats      │    │                           Forwarder                             │
-    //    │    (destination)    │    │                       (Datadog Platform)                        │
-    //    └─────────────────────┘    └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
-
-    let dsd_config = DogStatsDConfiguration::from_configuration(config)
-        .error_context("Failed to configure DogStatsD source.")?
-        .with_workload_provider(env_provider.workload().clone());
-    let dsd_prefix_filter_configuration = DogStatsDPrefixFilterConfiguration::from_configuration(config)?;
-    let dsd_mapper_config = DogStatsDMapperConfiguration::from_configuration(config)?;
-    let dsd_enrich_config =
-        ChainedConfiguration::default().with_transform_builder("dogstatsd_mapper", dsd_mapper_config);
-    let dsd_tag_filterlist_config = TagFilterlistConfiguration::from_configuration(config)
-        .error_context("Failed to configure metric tag filterlist transform.")?;
-    let dsd_agg_config =
-        AggregateConfiguration::from_configuration(config).error_context("Failed to configure aggregate transform.")?;
-    let dd_events_config = DatadogEventsConfiguration::from_configuration(config)
-        .map(BufferedIncrementalConfiguration::from_encoder_builder)
-        .error_context("Failed to configure Datadog Events encoder.")?;
-    let dd_service_checks_config = DatadogServiceChecksConfiguration::from_configuration(config)
-        .map(BufferedIncrementalConfiguration::from_encoder_builder)
-        .error_context("Failed to configure Datadog Service Checks encoder.")?;
-
-    blueprint
-        // Components.
-        .add_source("dsd_in", dsd_config)?
-        .add_transform("dsd_prefix_filter", dsd_prefix_filter_configuration)?
-        .add_transform("dsd_enrich", dsd_enrich_config)?
-        .add_transform("dsd_tag_filterlist", dsd_tag_filterlist_config)?
-        .add_transform("dsd_agg", dsd_agg_config)?
-        .add_encoder("dd_events_encode", dd_events_config)?
-        .add_encoder("dd_service_checks_encode", dd_service_checks_config)?
-        .add_destination("dsd_stats_out", dsd_stats_config)?
-        // Metrics.
-        .connect_component("dsd_prefix_filter", ["dsd_in.metrics"])?
-        .connect_component("dsd_enrich", ["dsd_prefix_filter"])?
-        .connect_component("dsd_tag_filterlist", ["dsd_enrich"])?
-        .connect_component("dsd_agg", ["dsd_tag_filterlist"])?
-        .connect_component("metrics_enrich", ["dsd_agg"])?
-        .connect_component("dd_service_checks_encode", ["dsd_in.service_checks"])?
-        .connect_component("dd_events_encode", ["dsd_in.events"])?
-        .connect_component("dd_out", ["dd_service_checks_encode", "dd_events_encode"])?
-        // DogStatsD Stats.
-        .connect_component("dsd_stats_out", ["dsd_in.metrics"])?;
-
-    Ok(())
-}
-
-fn add_otlp_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, dp_config: &DataPlaneConfiguration,
-    env_provider: &ADPEnvironmentProvider,
-) -> Result<(), GenericError> {
-    if dp_config.otlp().proxy().enabled() {
-        let core_agent_otlp_grpc_endpoint = dp_config.otlp().proxy().core_agent_otlp_grpc_endpoint().to_string();
-        let proxy_metrics = dp_config.otlp().proxy().proxy_metrics();
-        let proxy_logs = dp_config.otlp().proxy().proxy_logs();
-        let proxy_traces = dp_config.otlp().proxy().proxy_traces();
-
-        info!(
-            proxy_grpc_endpoint = %core_agent_otlp_grpc_endpoint,
-            proxy_metrics,
-            proxy_logs,
-            proxy_traces,
-            "OTLP proxy mode enabled. Select OTLP payloads will be proxied to the Core Agent."
-        );
-
-        let otlp_relay_config = OtlpRelayConfiguration::from_configuration(config)?;
-        let otlp_decoder_config = OtlpDecoderConfiguration::from_configuration(config)?;
-
-        let local_agent_otlp_forwarder_config =
-            OtlpForwarderConfiguration::from_configuration(config, core_agent_otlp_grpc_endpoint)?;
-
-        blueprint
-            // Components.
-            .add_relay("otlp_relay_in", otlp_relay_config)?
-            .add_forwarder("local_agent_otlp_out", local_agent_otlp_forwarder_config)?
-            // Metrics and logs directly to the forwarders.
-            .connect_component("local_agent_otlp_out", ["otlp_relay_in.metrics", "otlp_relay_in.logs"])?;
-
-        if dp_config.otlp().proxy().proxy_traces() {
-            blueprint.connect_component("local_agent_otlp_out", ["otlp_relay_in.traces"])?;
-        } else {
-            blueprint
-                .add_decoder("otlp_traces_decode", otlp_decoder_config)?
-                // Traces to decoder, then to the trace pipeline: obfuscation, enrichment, encoding, stats, forwarding.
-                .connect_component("otlp_traces_decode", ["otlp_relay_in.traces"])?
-                .connect_component("traces_enrich", ["otlp_traces_decode"])?;
-        }
-    } else {
-        info!("OTLP proxy mode disabled. OTLP signals will be handled natively.");
-
-        let otlp_config =
-            OtlpConfiguration::from_configuration(config)?.with_workload_provider(env_provider.workload().clone());
-
-        blueprint
-            // Components.
-            .add_source("otlp_in", otlp_config)?
-            // Metrics, logs, and traces.
-            //
-            // We send OTLP metrics directly to the enrichment stage of the metrics pipeline, skipping aggregation,
-            // to avoid transforming counters into rates.
-            .connect_component("metrics_enrich", ["otlp_in.metrics"])?
-            .connect_component("dd_logs_encode", ["otlp_in.logs"])?
-            .connect_component("traces_enrich", ["otlp_in.traces"])?;
-    }
-    Ok(())
 }
