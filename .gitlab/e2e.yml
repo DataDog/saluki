@@ -98,11 +98,11 @@ run-correctness-tests:
   needs:
     - generate-correctness-pipeline
   variables:
-    # Child pipelines don't inherit YAML variables from the parent. Forward
-    # the ones referenced by correctness-mixins.yml.
+    # Child pipelines inherit the parent's global YAML variables by default,
+    # so SALUKI_* are already available. PARENT_PIPELINE_ID is renamed from
+    # CI_PIPELINE_ID so the child's `needs:[pipeline: ..., job: ...]` can
+    # reference the parent pipeline (in the child, $CI_PIPELINE_ID is its own).
     PARENT_PIPELINE_ID: $CI_PIPELINE_ID
-    SALUKI_BUILD_CI_IMAGE: $SALUKI_BUILD_CI_IMAGE
-    SALUKI_IMAGE_REPO_BASE: $SALUKI_IMAGE_REPO_BASE
   trigger:
     include:
       # this is the file we generated in the previous step
