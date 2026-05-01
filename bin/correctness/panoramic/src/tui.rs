@@ -115,7 +115,7 @@ impl Tui {
                 self.add_line(format!("Starting test '{}'...", name));
                 self.active_tests.push(name);
             }
-            TestEvent::TestCompleted { result } => {
+            TestEvent::TestCompleted { result, log_dir } => {
                 // Remove from active tests.
                 self.active_tests.retain(|n| n != &result.name);
                 self.completed_tests += 1;
@@ -173,9 +173,7 @@ impl Tui {
                         }
                     }
 
-                    if let Some(ref dir) = result.log_dir {
-                        self.add_line(format!("  Logs: {}", dir.display()));
-                    }
+                    self.add_line(format!("  Logs: {}", log_dir.display()));
                 }
             }
             TestEvent::AllDone => {

@@ -254,8 +254,8 @@ async fn run_logging_consumer(
             Some(TestEvent::TestStarted { name }) => {
                 info!("Starting test '{}'...", name);
             }
-            Some(TestEvent::TestCompleted { result }) => {
-                reporter.report_test_result(&result);
+            Some(TestEvent::TestCompleted { result, log_dir }) => {
+                reporter.report_test_result(&result, log_dir);
                 results.push(result);
             }
             Some(TestEvent::AllDone) => {

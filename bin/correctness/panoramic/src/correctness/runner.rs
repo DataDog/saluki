@@ -39,7 +39,7 @@ pub async fn run_correctness_test(name: String, config: Config, tctx: TestContex
     let spawn_start = Instant::now();
     let test_runner = match TestRunner::from_config(&config, log_dir.clone(), tctx.mounts_dir(), tctx.cancel()).await {
         Ok(r) => r,
-        Err(e) => return make_error_result(name, started, "spawn_containers", e, &log_dir),
+        Err(e) => return make_error_result(name, started, "spawn_containers", e),
     };
     let spawn_duration = spawn_start.elapsed();
 
@@ -47,7 +47,7 @@ pub async fn run_correctness_test(name: String, config: Config, tctx: TestContex
     let collect_start = Instant::now();
     let (baseline_data, comparison_data) = match test_runner.run().await {
         Ok(data) => data,
-        Err(e) => return make_error_result(name, started, "collect_data", e, &log_dir),
+        Err(e) => return make_error_result(name, started, "collect_data", e),
     };
     let collect_duration = collect_start.elapsed();
 
@@ -94,7 +94,6 @@ pub async fn run_correctness_test(name: String, config: Config, tctx: TestContex
             }],
             error: None,
             phase_timings,
-            log_dir: Some(log_dir),
             assertion_details: vec![],
         },
         Err((e, details)) => {
@@ -112,16 +111,13 @@ pub async fn run_correctness_test(name: String, config: Config, tctx: TestContex
                 }],
                 error: Some(summary),
                 phase_timings,
-                log_dir: Some(log_dir),
                 assertion_details: vec![details],
             }
         }
     }
 }
 
-fn make_error_result(
-    name: String, started: Instant, phase: &str, e: GenericError, log_dir: &Path,
-) -> TestResult {
+fn make_error_result(name: String, started: Instant, phase: &str, e: GenericError) -> TestResult {
     TestResult {
         name,
         passed: false,
@@ -132,7 +128,6 @@ fn make_error_result(
             phase: phase.to_string(),
             duration: started.elapsed(),
         }],
-        log_dir: Some(log_dir.to_path_buf()),
         assertion_details: vec![],
     }
 }
@@ -145,7 +140,8 @@ pub struct TestRunner {
     cancel_token: CancellationToken,
     baseline_coordinator: Coordinator,
     comparison_coordinator: Coordinator,
-    log_base_dir: PathBuf,
+    // The logging directory for this test. Already specific to this specific test and created by the Runner object.
+    log_dir: PathBuf,
 }
 
 impl TestRunner {
@@ -163,7 +159,7 @@ impl TestRunner {
             cancel_token,
             baseline_coordinator: Coordinator::new(),
             comparison_coordinator: Coordinator::new(),
-            log_base_dir: log_dir,
+            log_dir,
         })
     }
 
@@ -173,7 +169,7 @@ impl TestRunner {
         let mut group_runner = GroupRunner::new(
             isolation_group_id,
             "baseline",
-            self.log_base_dir.clone(),
+            self.log_dir.clone(),
             self.baseline_coordinator.clone(),
             self.cancel_token.child_token(),
         );
@@ -191,7 +187,7 @@ impl TestRunner {
         let mut group_runner = GroupRunner::new(
             isolation_group_id,
             "comparison",
-            self.log_base_dir.clone(),
+            self.log_dir.clone(),
             self.comparison_coordinator.clone(),
             self.cancel_token.child_token(),
         );
@@ -349,20 +345,21 @@ struct GroupRunner {
 
 impl GroupRunner {
     fn new(
-        isolation_group_id: String, test_id: &'static str, log_base_dir: PathBuf, coordinator: Coordinator,
+        isolation_group_id: String, group_name: &'static str, log_dir: PathBuf, coordinator: Coordinator,
         cancel_token: CancellationToken,
     ) -> Self {
-        let runner_log_dir = log_base_dir.join(test_id);
+        // Create a subdirectory for the isolation group's container logs.
+        let group_log_dir = log_dir.join(group_name);
 
         info!(
             "Creating test group runner for target '{}'. Logs will be saved to {}",
-            test_id,
-            runner_log_dir.display()
+            group_name,
+            group_log_dir.display()
         );
 
         Self {
             isolation_group_id,
-            runner_log_dir,
+            runner_log_dir: group_log_dir,
             drivers: Vec::new(),
             coordinator,
             cancel_token,

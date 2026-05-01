@@ -239,8 +239,20 @@ impl Runner {
         let timeout = test.timeout();
         let started = Instant::now();
 
+        // This is the cancellation token that we will use to tell this individual test to stop and cleanup. Not to be
+        // confused with program_cancel which is how we receive a signal from the top level to stop (ctrl-c).
         let test_cancel = CancellationToken::new();
+
+        // Create a directory for the test to write logs into and pass it into the test context.
         let log_dir = log_base_dir.join(format!("{:?}", suite).to_lowercase()).join(&name);
+        if let Err(e) = tokio::fs::create_dir_all(&log_dir).await {
+            return TestResult::setup_error(
+                name,
+                started.elapsed(),
+                format!("Error creating log directory at {}: {e}", log_dir.display()),
+            );
+        }
+
         let tctx = TestContext::new(test_cancel.clone(), log_dir.clone(), mounts_dir);
 
         if let Some(ref tx) = event_sender {
@@ -268,10 +280,13 @@ impl Runner {
             }
         };
 
-        write_result_log(&result);
+        write_result_log(&result, &log_dir);
 
         if let Some(ref tx) = event_sender {
-            let _ = tx.send(TestEvent::TestCompleted { result: result.clone() });
+            let _ = tx.send(TestEvent::TestCompleted {
+                result: result.clone(),
+                log_dir,
+            });
         }
 
         result
@@ -348,7 +363,6 @@ impl TestRunner {
                     assertion_results: vec![],
                     error: Some(format!("Failed to build driver configuration: {}", e)),
                     phase_timings,
-                    log_dir: None,
                     assertion_details: vec![],
                 };
             }
@@ -376,7 +390,6 @@ impl TestRunner {
                     assertion_results: vec![],
                     error: Some(format!("Failed to create driver: {}", e)),
                     phase_timings,
-                    log_dir: None,
                     assertion_details: vec![],
                 };
             }
@@ -399,7 +412,6 @@ impl TestRunner {
                     assertion_results: vec![],
                     error: Some(format!("Failed to start container: {}", e)),
                     phase_timings,
-                    log_dir: None,
                     assertion_details: vec![],
                 };
             }
@@ -469,7 +481,6 @@ impl TestRunner {
                                     key
                                 )),
                                 phase_timings,
-                                log_dir: None,
                                 assertion_details: vec![],
                             };
                         }
@@ -502,7 +513,6 @@ impl TestRunner {
                                 unresolved.join(", ")
                             )),
                             phase_timings,
-                            log_dir: None,
                             assertion_details: vec![],
                         };
                     }
@@ -521,7 +531,6 @@ impl TestRunner {
                         assertion_results: vec![],
                         error: Some(format!("Failed to resolve dynamic variables: {}", e)),
                         phase_timings,
-                        log_dir: None,
                         assertion_details: vec![],
                     };
                 }
@@ -617,7 +626,6 @@ impl TestRunner {
             assertion_results,
             error: None,
             phase_timings,
-            log_dir: None,
             assertion_details: vec![],
         }
     }
@@ -875,16 +883,11 @@ impl TestRunner {
     async fn write_logs(&self, test_name: &str) -> Result<(), GenericError> {
         let log_dir = self.tctx.log_dir();
 
-        // Create the test-specific log directory.
-        let test_log_dir = log_dir.join(test_name);
-        std::fs::create_dir_all(&test_log_dir)
-            .error_context(format!("Failed to create log directory: {}", test_log_dir.display()))?;
-
         // Get the log buffer contents.
         let buffer = self.log_buffer.read().await;
 
         // Write stdout.
-        let stdout_path = test_log_dir.join("stdout.log");
+        let stdout_path = log_dir.join("stdout.log");
         let mut stdout_file = std::fs::File::create(&stdout_path)
             .error_context(format!("Failed to create stdout log file: {}", stdout_path.display()))?;
         for line in &buffer.stdout {
@@ -892,7 +895,7 @@ impl TestRunner {
         }
 
         // Write stderr.
-        let stderr_path = test_log_dir.join("stderr.log");
+        let stderr_path = log_dir.join("stderr.log");
         let mut stderr_file = std::fs::File::create(&stderr_path)
             .error_context(format!("Failed to create stderr log file: {}", stderr_path.display()))?;
         for line in &buffer.stderr {
@@ -901,7 +904,7 @@ impl TestRunner {
 
         debug!(
             test = %test_name,
-            path = %test_log_dir.display(),
+            path = %log_dir.display(),
             "Container logs written to disk."
         );
 
@@ -909,16 +912,8 @@ impl TestRunner {
     }
 }
 
-fn write_result_log(result: &TestResult) {
-    let dir = match &result.log_dir {
-        Some(d) => d,
-        None => return,
-    };
-
-    if let Err(e) = std::fs::create_dir_all(dir) {
-        warn!(path = %dir.display(), error = %e, "Failed to create log directory for result log.");
-        return;
-    }
+fn write_result_log(result: &TestResult, dir: impl AsRef<Path>) {
+    let dir = dir.as_ref();
 
     let path = dir.join("result.log");
     let mut f = match std::fs::File::create(&path) {
@@ -976,7 +971,6 @@ impl TestResult {
                 timeout
             )),
             phase_timings: vec![],
-            log_dir: None,
             assertion_details: vec![],
         }
     }
@@ -992,7 +986,21 @@ impl TestResult {
                 grace
             )),
             phase_timings: vec![],
-            log_dir: None,
+            assertion_details: vec![],
+        }
+    }
+
+    fn setup_error(name: impl Into<String>, total_duration: Duration, e: impl AsRef<str>) -> Self {
+        Self {
+            name: name.into(),
+            passed: false,
+            duration: total_duration,
+            assertion_results: vec![],
+            error: Some(format!(
+                "Test failed to start due to an error during setup. {}",
+                e.as_ref()
+            )),
+            phase_timings: vec![],
             assertion_details: vec![],
         }
     }
