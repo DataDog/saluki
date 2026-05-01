@@ -207,9 +207,9 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
 
     // Tear down the kind cluster unless the caller asked to keep it.
     if let Some(lifecycle) = kind_lifecycle {
-        if cmd.no_delete_cluster {
+        if cmd.no_delete_kind_cluster {
             info!(
-                "Skipping kind cluster teardown (--no-delete-cluster). \
+                "Skipping kind cluster teardown (--no-delete-kind-cluster). \
                  Cluster '{}' is still running.",
                 cmd.kind_cluster_name
             );

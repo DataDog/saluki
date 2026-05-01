@@ -69,7 +69,7 @@ pub struct RunCommand {
 
     /// do not delete the kind cluster after kind-runtime tests complete (useful for local iteration)
     #[argh(switch)]
-    pub no_delete_cluster: bool,
+    pub no_delete_kind_cluster: bool,
 }
 
 impl RunCommand {
