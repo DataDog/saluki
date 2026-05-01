@@ -146,6 +146,8 @@ fn build_output_stack(config: &LoggingConfiguration) -> Result<(OutputStack, Vec
     if config.log_to_syslog {
         let syslog_writer = SyslogWriter::from_uri(&config.syslog_uri)
             .map_err(|e| generic_error!("Failed to build syslog log writer: {}", e))?;
+        // Keep syslog on the same lossy non-blocking path as console/file so logging never
+        // backpressures ADP.
         let (nb_syslog, guard) = writer_to_nonblocking("syslog", syslog_writer);
         guards.push(guard);
         layers.push(build_syslog_formatting_layer(config, nb_syslog));

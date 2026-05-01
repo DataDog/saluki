@@ -83,11 +83,11 @@ impl LoggingConfigurationTranslator {
             logging.log_to_syslog = to_syslog;
         }
 
-        if let Some(syslog_rfc) = read_permissive_bool(config, "syslog_rfc")? {
-            logging.syslog_rfc = syslog_rfc;
-        }
-
         if logging.log_to_syslog {
+            if let Some(syslog_rfc) = read_permissive_bool(config, "syslog_rfc")? {
+                logging.syslog_rfc = syslog_rfc;
+            }
+
             let configured = config
                 .try_get_typed::<String>("syslog_uri")
                 .error_context("Failed to read `syslog_uri`.")?;
@@ -361,6 +361,19 @@ mod tests {
 
         assert!(!logging.log_to_syslog);
         assert!(logging.syslog_uri.is_empty());
+    }
+
+    #[tokio::test]
+    async fn syslog_rfc_has_no_effect_when_syslog_is_disabled() {
+        let logging = translate_logging(Some(json!({
+            "log_to_syslog": false,
+            "syslog_rfc": true,
+        })))
+        .await
+        .expect("translate logging config");
+
+        assert!(!logging.log_to_syslog);
+        assert!(!logging.syslog_rfc);
     }
 
     #[tokio::test]

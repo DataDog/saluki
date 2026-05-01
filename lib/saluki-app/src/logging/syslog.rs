@@ -3,7 +3,7 @@ use std::os::unix::net::{UnixDatagram, UnixStream};
 use std::{
     fmt, io,
     io::Write,
-    net::{Shutdown, SocketAddr, TcpStream, UdpSocket},
+    net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket},
     path::PathBuf,
 };
 
@@ -16,8 +16,8 @@ const SUPPORTED_SCHEMES: &str = "udp, tcp";
 
 #[derive(Clone, Debug)]
 enum SyslogDestination {
-    Udp(Vec<SocketAddr>),
-    Tcp(Vec<SocketAddr>),
+    Udp(String, u16),
+    Tcp(String, u16),
     #[cfg(unix)]
     Unixgram(PathBuf),
     #[cfg(unix)]
@@ -32,8 +32,8 @@ impl SyslogDestination {
         })?;
 
         match parsed.scheme() {
-            "udp" => parse_socket_addrs(&parsed, uri).map(Self::Udp),
-            "tcp" => parse_socket_addrs(&parsed, uri).map(Self::Tcp),
+            "udp" => parse_network_endpoint(&parsed, uri).map(|(host, port)| Self::Udp(host, port)),
+            "tcp" => parse_network_endpoint(&parsed, uri).map(|(host, port)| Self::Tcp(host, port)),
             #[cfg(unix)]
             "unixgram" => parse_unix_path(&parsed, uri).map(Self::Unixgram),
             #[cfg(unix)]
@@ -46,8 +46,16 @@ impl SyslogDestination {
 
     fn connect(&self) -> io::Result<SyslogConnection> {
         match self {
-            Self::Udp(addrs) => connect_udp(addrs).map(SyslogConnection::Udp),
-            Self::Tcp(addrs) => connect_first(addrs, TcpStream::connect).map(SyslogConnection::Tcp),
+            Self::Udp(host, port) => connect_first((host.as_str(), *port), |addr| {
+                let bind_addr = if addr.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
+                let socket = UdpSocket::bind(bind_addr)?;
+                socket.connect(addr)?;
+                Ok(socket)
+            })
+            .map(SyslogConnection::Udp),
+            Self::Tcp(host, port) => {
+                connect_first((host.as_str(), *port), TcpStream::connect).map(SyslogConnection::Tcp)
+            }
             #[cfg(unix)]
             Self::Unixgram(path) => connect_unixgram(path).map(SyslogConnection::Unixgram),
             #[cfg(unix)]
@@ -56,20 +64,20 @@ impl SyslogDestination {
     }
 }
 
-fn parse_socket_addrs(parsed: &Url, uri: &str) -> Result<Vec<SocketAddr>, SyslogError> {
-    let addrs = parsed.socket_addrs(|| None).map_err(|source| SyslogError::InvalidUri {
+fn parse_network_endpoint(parsed: &Url, uri: &str) -> Result<(String, u16), SyslogError> {
+    let host = parsed
+        .host_str()
+        .filter(|host| !host.is_empty())
+        .ok_or_else(|| SyslogError::InvalidUri {
+            uri: uri.to_string(),
+            reason: "network syslog URI must include a host".to_string(),
+        })?;
+    let port = parsed.port().ok_or_else(|| SyslogError::InvalidUri {
         uri: uri.to_string(),
-        reason: source.to_string(),
+        reason: "network syslog URI must include a port".to_string(),
     })?;
 
-    if addrs.is_empty() {
-        Err(SyslogError::InvalidUri {
-            uri: uri.to_string(),
-            reason: "URI must resolve to at least one socket address".to_string(),
-        })
-    } else {
-        Ok(addrs)
-    }
+    Ok((host.to_string(), port))
 }
 
 #[cfg(unix)]
@@ -93,25 +101,21 @@ fn parse_unix_path(parsed: &Url, uri: &str) -> Result<PathBuf, SyslogError> {
     Ok(path)
 }
 
-fn connect_udp(addrs: &[SocketAddr]) -> io::Result<UdpSocket> {
-    connect_first(addrs, |addr| {
-        let bind_addr = if addr.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
-        let socket = UdpSocket::bind(bind_addr)?;
-        socket.connect(addr)?;
-        Ok(socket)
-    })
-}
-
-fn connect_first<T>(addrs: &[SocketAddr], mut connect: impl FnMut(SocketAddr) -> io::Result<T>) -> io::Result<T> {
+fn connect_first<T>(addrs: impl ToSocketAddrs, mut connect: impl FnMut(SocketAddr) -> io::Result<T>) -> io::Result<T> {
     let mut last_error = None;
-    for addr in addrs {
-        match connect(*addr) {
+    for addr in addrs.to_socket_addrs()? {
+        match connect(addr) {
             Ok(conn) => return Ok(conn),
             Err(err) => last_error = Some(err),
         }
     }
 
-    Err(last_error.unwrap_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no socket addresses configured")))
+    Err(last_error.unwrap_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "network syslog URI did not resolve to any socket addresses",
+        )
+    }))
 }
 
 #[cfg(unix)]
@@ -119,6 +123,11 @@ fn connect_unixgram(path: &PathBuf) -> io::Result<UnixDatagram> {
     let socket = UnixDatagram::unbound()?;
     socket.connect(path)?;
     Ok(socket)
+}
+
+fn write_all_as_len(writer: &mut impl Write, buf: &[u8]) -> io::Result<usize> {
+    writer.write_all(buf)?;
+    Ok(buf.len())
 }
 
 enum SyslogConnection {
@@ -134,11 +143,11 @@ impl Write for SyslogConnection {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match self {
             Self::Udp(socket) => socket.send(buf),
-            Self::Tcp(stream) => stream.write(buf),
+            Self::Tcp(stream) => write_all_as_len(stream, buf),
             #[cfg(unix)]
             Self::Unixgram(socket) => socket.send(buf),
             #[cfg(unix)]
-            Self::Unix(stream) => stream.write(buf),
+            Self::Unix(stream) => write_all_as_len(stream, buf),
         }
     }
 
@@ -260,6 +269,32 @@ mod tests {
             .expect("unsupported scheme should fail");
 
         assert!(error.to_string().contains("Unsupported syslog URI scheme 'http'"));
+    }
+
+    #[test]
+    fn network_destination_parsing_does_not_require_dns_resolution() {
+        let udp_destination = SyslogDestination::parse("udp://saluki-syslog.invalid:1514")
+            .expect("UDP hostname should parse without DNS resolution");
+        let tcp_destination = SyslogDestination::parse("tcp://saluki-syslog.invalid:1514")
+            .expect("TCP hostname should parse without DNS resolution");
+
+        assert!(matches!(udp_destination, SyslogDestination::Udp(..)));
+        assert!(matches!(tcp_destination, SyslogDestination::Tcp(..)));
+    }
+
+    #[test]
+    fn write_all_as_len_retries_after_partial_writes() {
+        let mut writer = PartialWriter {
+            max_chunk: 2,
+            bytes: Vec::new(),
+            writes: 0,
+        };
+
+        let len = write_all_as_len(&mut writer, b"partial-write").expect("partial writes should complete");
+
+        assert_eq!(len, b"partial-write".len());
+        assert_eq!(writer.bytes, b"partial-write");
+        assert!(writer.writes > 1);
     }
 
     #[test]
@@ -403,5 +438,24 @@ mod tests {
     #[cfg(unix)]
     fn remove_socket(path: &PathBuf) {
         let _ = std::fs::remove_file(path);
+    }
+
+    struct PartialWriter {
+        max_chunk: usize,
+        bytes: Vec<u8>,
+        writes: usize,
+    }
+
+    impl Write for PartialWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let len = self.max_chunk.min(buf.len());
+            self.bytes.extend_from_slice(&buf[..len]);
+            self.writes += 1;
+            Ok(len)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 }
