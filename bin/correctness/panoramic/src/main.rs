@@ -134,7 +134,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     }
 
     // Inject runtime config and build the test registry.
-    let mut registry = Runner::new(log_dir.clone(), Some(cmd.mounts_dir.clone()));
+    let mut registry = Runner::new(log_dir.clone(), cmd.mounts_dir.clone());
     for mut tc in test_cases {
         tc.set_runtime_config(test::RuntimeConfig {
             log_dir: Some(log_dir.clone()),

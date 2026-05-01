@@ -154,13 +154,6 @@ impl Test for Config {
         None
     }
 
-    fn log_dir(&self) -> PathBuf {
-        self.log_dir
-            .as_ref()
-            .map(|d| d.join("correctness").join(&self.name))
-            .unwrap_or_else(|| PathBuf::from("/tmp/panoramic/correctness").join(&self.name))
-    }
-
     fn set_runtime_config(&mut self, config: RuntimeConfig) {
         self.log_dir = config.log_dir;
         self.mounts_dir = config.mounts_dir;
@@ -176,15 +169,8 @@ impl Test for Config {
         m
     }
 
-    async fn run(&self, _tctx: TestContext) -> TestResult {
-        crate::correctness::runner::run_correctness_test(
-            self.name.clone(),
-            self.clone(),
-            Some(self.log_dir()),
-            self.mounts_dir.clone(),
-            self.cancel_token.clone(),
-        )
-        .await
+    async fn run(&self, tctx: TestContext) -> TestResult {
+        crate::correctness::runner::run_correctness_test(self.name.clone(), self.clone(), tctx).await
     }
 }
 

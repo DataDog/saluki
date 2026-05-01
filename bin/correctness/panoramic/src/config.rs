@@ -348,13 +348,6 @@ impl Test for IntegrationConfig {
         self.timeout.0
     }
 
-    fn log_dir(&self) -> PathBuf {
-        self.log_dir
-            .as_ref()
-            .map(|d| d.join("integration").join(&self.name))
-            .unwrap_or_else(|| PathBuf::from("/tmp/panoramic/integration").join(&self.name))
-    }
-
     fn set_runtime_config(&mut self, config: RuntimeConfig) {
         self.log_dir = config.log_dir;
         self.mounts_dir = config.mounts_dir;
@@ -367,14 +360,11 @@ impl Test for IntegrationConfig {
         m
     }
 
-    async fn run(&self, _tctx: TestContext) -> TestResult {
-        let mut runner =
-            crate::runner::TestRunner::new(self.clone(), self.mounts_dir.clone(), self.cancel_token.clone());
-        if let Some(ref dir) = self.log_dir {
-            runner = runner.with_log_dir(dir.join("integration"));
-        }
+    async fn run(&self, tctx: TestContext) -> TestResult {
+        let log_dir = tctx.log_dir().to_path_buf();
+        let mut runner = crate::runner::TestRunner::new(self.clone(), tctx);
         let mut result = runner.run().await;
-        result.log_dir = Some(self.log_dir());
+        result.log_dir = Some(log_dir);
         result
     }
 }

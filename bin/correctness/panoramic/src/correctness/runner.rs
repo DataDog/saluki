@@ -26,20 +26,20 @@ use crate::correctness::{
 use crate::{
     assertions::AssertionResult,
     reporter::{PhaseTiming, TestResult},
+    test::TestContext,
 };
 
 /// Run a single correctness test and return a panoramic `TestResult`.
 /// Run a single correctness test and return a panoramic `TestResult`.
-pub async fn run_correctness_test(
-    name: String, config: Config, log_dir: Option<PathBuf>, mounts_dir: PathBuf, cancel_token: CancellationToken,
-) -> TestResult {
+pub async fn run_correctness_test(name: String, config: Config, tctx: TestContext) -> TestResult {
+    let log_dir = tctx.log_dir().to_path_buf();
     let started = Instant::now();
 
     // Phase 1: spawn containers
     let spawn_start = Instant::now();
-    let test_runner = match TestRunner::from_config(&config, log_dir.clone(), &mounts_dir, cancel_token).await {
+    let test_runner = match TestRunner::from_config(&config, log_dir.clone(), tctx.mounts_dir(), tctx.cancel()).await {
         Ok(r) => r,
-        Err(e) => return make_error_result(name, started, "spawn_containers", e, log_dir),
+        Err(e) => return make_error_result(name, started, "spawn_containers", e, &log_dir),
     };
     let spawn_duration = spawn_start.elapsed();
 
@@ -47,7 +47,7 @@ pub async fn run_correctness_test(
     let collect_start = Instant::now();
     let (baseline_data, comparison_data) = match test_runner.run().await {
         Ok(data) => data,
-        Err(e) => return make_error_result(name, started, "collect_data", e, log_dir),
+        Err(e) => return make_error_result(name, started, "collect_data", e, &log_dir),
     };
     let collect_duration = collect_start.elapsed();
 
@@ -94,7 +94,7 @@ pub async fn run_correctness_test(
             }],
             error: None,
             phase_timings,
-            log_dir,
+            log_dir: Some(log_dir),
             assertion_details: vec![],
         },
         Err((e, details)) => {
@@ -112,7 +112,7 @@ pub async fn run_correctness_test(
                 }],
                 error: Some(summary),
                 phase_timings,
-                log_dir,
+                log_dir: Some(log_dir),
                 assertion_details: vec![details],
             }
         }
@@ -120,7 +120,7 @@ pub async fn run_correctness_test(
 }
 
 fn make_error_result(
-    name: String, started: Instant, phase: &str, e: GenericError, log_dir: Option<PathBuf>,
+    name: String, started: Instant, phase: &str, e: GenericError, log_dir: &Path,
 ) -> TestResult {
     TestResult {
         name,
@@ -132,7 +132,7 @@ fn make_error_result(
             phase: phase.to_string(),
             duration: started.elapsed(),
         }],
-        log_dir,
+        log_dir: Some(log_dir.to_path_buf()),
         assertion_details: vec![],
     }
 }
@@ -150,7 +150,7 @@ pub struct TestRunner {
 
 impl TestRunner {
     pub async fn from_config(
-        config: &Config, log_dir: Option<PathBuf>, mounts_dir: &Path, cancel_token: CancellationToken,
+        config: &Config, log_dir: PathBuf, mounts_dir: &Path, cancel_token: CancellationToken,
     ) -> Result<Self, GenericError> {
         let baseline = crate::mounts::apply_target_mounts(config.baseline_target_driver_config().await?, mounts_dir)?;
         let comparison =
@@ -163,7 +163,7 @@ impl TestRunner {
             cancel_token,
             baseline_coordinator: Coordinator::new(),
             comparison_coordinator: Coordinator::new(),
-            log_base_dir: log_dir.unwrap_or_else(|| PathBuf::from("/tmp/panoramic")),
+            log_base_dir: log_dir,
         })
     }
 

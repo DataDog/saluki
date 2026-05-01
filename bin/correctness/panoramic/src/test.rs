@@ -42,12 +42,11 @@ pub(crate) struct TestContext {
     // TODO: this is an ugly hack introduced to support the PANORAMIC_DYNAMIC feature. Consider generalizing if needed.
     // For example: this could become runtime_config: HashMap<String, String> for shuttling domain specific items from
     // runtime to a test.
-    #[allow(dead_code)]
-    mounts_dir: Option<PathBuf>,
+    mounts_dir: PathBuf,
 }
 
 impl TestContext {
-    pub(crate) fn new(cancel: CancellationToken, log_dir: PathBuf, mounts_dir: Option<PathBuf>) -> Self {
+    pub(crate) fn new(cancel: CancellationToken, log_dir: PathBuf, mounts_dir: PathBuf) -> Self {
         Self {
             cancel,
             log_dir,
@@ -55,19 +54,16 @@ impl TestContext {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn cancel(&self) -> CancellationToken {
         self.cancel.clone()
     }
 
-    #[allow(dead_code)]
     pub(crate) fn log_dir(&self) -> &Path {
         &self.log_dir
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn mounts_dir(&self) -> Option<&Path> {
-        self.mounts_dir.as_deref()
+    pub(crate) fn mounts_dir(&self) -> &Path {
+        &self.mounts_dir
     }
 }
 
@@ -86,9 +82,6 @@ pub(crate) trait Test: Send + Sync {
     fn timeout(&self) -> Duration {
         DEFAULT_TIMEOUT
     }
-
-    /// Where this test is writing its logs.
-    fn log_dir(&self) -> PathBuf;
 
     /// Returns the list of images that this test depends on as a map of `name -> image`.
     ///

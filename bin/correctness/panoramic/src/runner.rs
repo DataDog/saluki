@@ -93,15 +93,15 @@ impl RunArgs {
 pub(crate) struct Runner {
     tests: Vec<Box<dyn Test>>,
     log_base_dir: PathBuf,
-    mounts_dir: Option<PathBuf>,
+    mounts_dir: PathBuf,
 }
 
 impl Runner {
-    pub(crate) fn new(log_base_dir: impl Into<PathBuf>, mounts_dir: Option<PathBuf>) -> Self {
+    pub(crate) fn new(log_base_dir: impl Into<PathBuf>, mounts_dir: impl Into<PathBuf>) -> Self {
         Self {
             tests: Vec::new(),
             log_base_dir: log_base_dir.into(),
-            mounts_dir,
+            mounts_dir: mounts_dir.into(),
         }
     }
 
@@ -232,7 +232,7 @@ impl Runner {
 
     async fn run_one(
         test: &dyn Test, event_sender: &Option<EventSender>, program_cancel: &CancellationToken, log_base_dir: PathBuf,
-        mounts_dir: Option<PathBuf>,
+        mounts_dir: PathBuf,
     ) -> TestResult {
         let name = test.name();
         let suite = test.suite();
@@ -303,29 +303,19 @@ fn generate_isolation_group_id() -> String {
 pub(crate) struct TestRunner {
     test_case: IntegrationConfig,
     isolation_group_id: String,
-    cancel_token: CancellationToken,
+    tctx: TestContext,
     log_buffer: Arc<RwLock<LogBuffer>>,
-    log_dir: Option<PathBuf>,
-    mounts_dir: PathBuf,
 }
 
 impl TestRunner {
     /// Create a new test runner for the given test case.
-    pub(crate) fn new(test_case: IntegrationConfig, mounts_dir: PathBuf, cancel_token: CancellationToken) -> Self {
+    pub(crate) fn new(test_case: IntegrationConfig, tctx: TestContext) -> Self {
         Self {
             test_case,
             isolation_group_id: generate_isolation_group_id(),
-            cancel_token,
+            tctx,
             log_buffer: Arc::new(RwLock::new(LogBuffer::default())),
-            log_dir: None,
-            mounts_dir,
         }
-    }
-
-    /// Set the directory where container logs should be written.
-    pub(crate) fn with_log_dir(mut self, log_dir: PathBuf) -> Self {
-        self.log_dir = Some(log_dir);
-        self
     }
 
     /// Run the test case and return the result.
@@ -552,9 +542,10 @@ impl TestRunner {
         );
 
         let phase_start = Instant::now();
+        let cancel_token = self.tctx.cancel();
         let assertion_results = tokio::select! {
             results = self.run_assertions(&port_mappings, &container_name, &exit_token) => results,
-            _ = self.cancel_token.cancelled() => vec![AssertionResult {
+            _ = cancel_token.cancelled() => vec![AssertionResult {
                 name: "cancelled".to_string(),
                 passed: false,
                 message: "Test was cancelled.".to_string(),
@@ -648,7 +639,7 @@ impl TestRunner {
         let mut config = DriverConfig::target("target", target_config).await?;
 
         // Apply panoramic's read-only file overlays before any test-specific bind mounts.
-        config = crate::mounts::apply_target_mounts(config, &self.mounts_dir)?;
+        config = crate::mounts::apply_target_mounts(config, self.tctx.mounts_dir())?;
 
         // Add file mounts.
         for file_spec in &container.files {
@@ -752,7 +743,7 @@ impl TestRunner {
         let ctx = AssertionContext {
             log_buffer: self.log_buffer.clone(),
             container_exit_token: exit_token.clone(),
-            cancel_token: self.cancel_token.clone(),
+            cancel_token: self.tctx.cancel(),
             port_mappings: port_mappings.clone(),
             container_name: container_name.to_string(),
         };
@@ -868,7 +859,7 @@ impl TestRunner {
 
     async fn cleanup(&self, _driver: &Driver) -> Result<(), GenericError> {
         // Cancel any running operations.
-        self.cancel_token.cancel();
+        self.tctx.cancel().cancel();
 
         // Give background tasks a moment to notice cancellation.
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -882,10 +873,7 @@ impl TestRunner {
     }
 
     async fn write_logs(&self, test_name: &str) -> Result<(), GenericError> {
-        let log_dir = match &self.log_dir {
-            Some(dir) => dir,
-            None => return Ok(()), // Log writing not enabled.
-        };
+        let log_dir = self.tctx.log_dir();
 
         // Create the test-specific log directory.
         let test_log_dir = log_dir.join(test_name);
