@@ -91,10 +91,6 @@ http = { version = "1", default-features = false }
 http-body = { version = "1", default-features = false }
 http-body-util = { version = "0.1", default-features = false }
 hyper = { version = "1", default-features = false }
-hyper-hickory = { version = "0.8", default-features = false, features = [
-  "tokio",
-  "system-config",
-] }
 hyper-http-proxy = { version = "1.1", default-features = false, features = [
   "rustls-tls-native-roots",
 ] }
@@ -220,6 +216,7 @@ num-traits = { version = "0.2", default-features = false }
 chumsky = { version = "0.12", default-features = false }
 logos = { version = "0.16", default-features = false }
 lru-slab = { version = "0.1.2", default-features = false }
+hickory-resolver = { version = "0.26", default-features = false }
 
 [patch.crates-io]
 # Forked version of `hyper-http-proxy` that removes an unused dependency on `rustls-native-certs`, which transitively depends
