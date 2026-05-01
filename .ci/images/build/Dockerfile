@@ -35,6 +35,10 @@ RUN --mount=type=bind,from=ci-scripts,target=/scripts \
     /scripts/install-docker-cli.sh && \
     /scripts/clean-temporary-caches.sh
 
+# Install kind (Kubernetes in Docker), used for kind-based correctness tests.
+RUN --mount=type=bind,from=ci-scripts,target=/scripts \
+    /scripts/install-kind.sh
+
 # Install Go, which we need to build AWS-LC in FIPS-compliant mode.
 ENV PATH="/usr/local/go/bin:${PATH}"
 RUN curl -s -L -o /tmp/go-1.23.0.tar.gz https://go.dev/dl/go1.23.0.linux-${TARGETARCH}.tar.gz && \

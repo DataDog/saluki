@@ -48,16 +48,7 @@
   variables:
     KIND_CLUSTER_NAME: saluki-correctness-${CI_JOB_ID}
   script:
-    # Download kind from the canonical GitHub releases URL and verify the SHA256 before installing.
-    # Checksum must be updated here whenever KIND_VERSION is bumped.
-    # Authoritative source: https://github.com/kubernetes-sigs/kind/releases/tag/v0.31.0
-    - |
-      KIND_VERSION="v0.31.0"
-      KIND_SHA256="eb244cbafcc157dff60cf68693c14c9a75c4e6e6fedaf9cd71c58117cb93e3fa"
-      curl -sSLo /tmp/kind \
-        "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
-      echo "${KIND_SHA256}  /tmp/kind" | sha256sum --check
-      install -m 755 /tmp/kind /usr/local/bin/kind
+    # kind is pre-installed in SALUKI_BUILD_CI_IMAGE via .ci/install-kind.sh.
     - kind create cluster --name ${KIND_CLUSTER_NAME} --wait 120s
     - |
       # Pull all images in parallel, then load them into kind in parallel.
