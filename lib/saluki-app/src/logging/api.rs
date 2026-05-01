@@ -172,7 +172,7 @@ impl APIHandler for LoggingAPIHandler {
     }
 }
 
-/// A worker that processes [`LoggingOverrideAction`]s sent through a [`LoggingOverrideController`].
+/// A worker that processes log filter directive overrides.
 ///
 /// Owns the receiving half of the controller's channel and the canonical base filter. The worker exits cleanly
 /// on either supervisor shutdown or channel close.

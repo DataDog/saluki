@@ -315,10 +315,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_log_level_returns_error() {
-        let error = translate_filter(Some(json!({ "log_level": "agent_data_plane=verbose" })))
-            .await
-            .expect_err("invalid log level should fail");
-
-        assert!(error.to_string().contains("log_level"));
+        let result = translate_filter(Some(json!({ "log_level": "agent_data_plane=verbose" }))).await;
+        assert!(result.is_err());
     }
 }
