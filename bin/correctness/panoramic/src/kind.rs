@@ -30,7 +30,7 @@ impl KindLifecycle {
 
         let unique_images: Vec<_> = images.into_iter().collect::<BTreeSet<_>>().into_iter().collect();
         if !unique_images.is_empty() {
-            pull_and_load_images(&cluster_name, &unique_images).await?;
+            load_images(&cluster_name, &unique_images).await?;
         }
 
         Ok(Self { cluster_name })
@@ -92,18 +92,6 @@ async fn delete_cluster(name: &str) -> Result<(), GenericError> {
     Ok(())
 }
 
-async fn pull_image(image: &str) -> Result<(), GenericError> {
-    let status = Command::new("docker")
-        .args(["pull", image])
-        .status()
-        .await
-        .error_context("Failed to spawn docker pull")?;
-    if !status.success() {
-        return Err(generic_error!("'docker pull {}' exited with non-zero status", image));
-    }
-    Ok(())
-}
-
 async fn load_image(cluster_name: &str, image: &str) -> Result<(), GenericError> {
     let status = Command::new("kind")
         .args(["load", "docker-image", image, "--name", cluster_name])
@@ -119,17 +107,46 @@ async fn load_image(cluster_name: &str, image: &str) -> Result<(), GenericError>
     Ok(())
 }
 
-async fn pull_and_load_images(cluster_name: &str, images: &[String]) -> Result<(), GenericError> {
-    info!("Pulling {} image(s) in parallel...", images.len());
+/// Returns true if the image is already present in the local Docker daemon.
+async fn image_present_locally(image: &str) -> Result<bool, GenericError> {
+    let status = Command::new("docker")
+        .args(["image", "inspect", "--format", "{{.Id}}", image])
+        .output()
+        .await
+        .error_context("Failed to spawn docker image inspect")?;
+    Ok(status.status.success())
+}
 
-    // Pull all in parallel. Local-only images (e.g. saluki-images/...) won't exist in any
-    // registry; log a debug message and continue — kind load will succeed from the local daemon.
-    let pull_futs: Vec<_> = images.iter().map(|img| pull_image(img.as_str())).collect();
-    let pull_results = future::join_all(pull_futs).await;
-    for (img, result) in images.iter().zip(&pull_results) {
-        if let Err(e) = result {
-            debug!("Could not pull '{}' (may be local-only): {}", img, e);
-        }
+async fn pull_image(image: &str) -> Result<(), GenericError> {
+    let status = Command::new("docker")
+        .args(["pull", image])
+        .status()
+        .await
+        .error_context("Failed to spawn docker pull")?;
+    if !status.success() {
+        return Err(generic_error!("'docker pull {}' failed", image));
+    }
+    Ok(())
+}
+
+async fn ensure_image_present(image: &str) -> Result<(), GenericError> {
+    if image_present_locally(image).await? {
+        debug!("Image '{}' already present in local Docker daemon.", image);
+        return Ok(());
+    }
+    info!("Image '{}' not found locally, pulling...", image);
+    pull_image(image)
+        .await
+        .with_error_context(|| format!("Image '{}' is not available locally and could not be pulled", image))
+}
+
+async fn load_images(cluster_name: &str, images: &[String]) -> Result<(), GenericError> {
+    // Ensure all images are present in the local Docker daemon before loading into kind.
+    // Runs in parallel; any pull failure is fatal — kind load requires the image to be present.
+    let ensure_futs: Vec<_> = images.iter().map(|img| ensure_image_present(img.as_str())).collect();
+    let ensure_results = future::join_all(ensure_futs).await;
+    for (img, result) in images.iter().zip(ensure_results) {
+        result.with_error_context(|| format!("Failed to ensure image '{}' is available", img))?;
     }
 
     info!(
