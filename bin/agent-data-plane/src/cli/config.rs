@@ -42,7 +42,13 @@ pub async fn handle_config_command(bootstrap_config: &GenericConfiguration) {
             std::process::exit(1);
         }
     };
-    let formatted = serde_json::to_string_pretty(&config_value).unwrap_or_default();
+    let formatted = match serde_json::to_string_pretty(&config_value) {
+        Ok(s) => s,
+        Err(e) => {
+            error!("Failed to format configuration response as JSON: {:#}", e);
+            std::process::exit(1);
+        }
+    };
 
     info!("Full configuration:\n{}", formatted);
 }
