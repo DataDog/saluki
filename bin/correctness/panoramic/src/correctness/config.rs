@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::correctness::analysis::AnalysisMode;
 use crate::reporter::TestResult;
-use crate::test::{RuntimeConfig, Test, TestSuite};
+use crate::test::{RuntimeConfig, Test, TestContext, TestSuite};
 
 fn default_millstone_binary_path() -> String {
     "/usr/local/bin/millstone".to_string()
@@ -176,7 +176,7 @@ impl Test for Config {
         m
     }
 
-    async fn run(&self) -> TestResult {
+    async fn run(&self, _tctx: TestContext) -> TestResult {
         crate::correctness::runner::run_correctness_test(
             self.name.clone(),
             self.clone(),
@@ -185,10 +185,6 @@ impl Test for Config {
             self.cancel_token.clone(),
         )
         .await
-    }
-
-    async fn cancel(&self) {
-        self.cancel_token.cancel();
     }
 }
 

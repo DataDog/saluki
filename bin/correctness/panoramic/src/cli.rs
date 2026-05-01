@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use argh::FromArgs;
+use chrono::Local;
 
 /// Panoramic: Integration test runner for Agent Data Plane.
 #[derive(FromArgs)]
@@ -49,13 +50,10 @@ pub struct RunCommand {
     #[argh(switch)]
     pub no_tui: bool,
 
-    /// directory to write container logs to (default: auto-generated temp dir)
+    /// directory to write container logs to (default: auto-generated temp dir). Can be set (or
+    /// overridden) by environment variable PANORAMIC_LOG_DIR
     #[argh(option, short = 'l')]
-    pub log_dir: Option<PathBuf>,
-
-    /// skip writing container logs to disk
-    #[argh(switch)]
-    pub no_logs: bool,
+    log_dir: Option<PathBuf>,
 
     /// directory whose contents are read-only bind mounted into every target container
     /// panoramic launches (not millstone or datadog-intake). The directory is treated as
@@ -64,6 +62,23 @@ pub struct RunCommand {
     /// compiled.
     #[argh(option, default = "default_mounts_dir()")]
     pub mounts_dir: PathBuf,
+}
+
+impl RunCommand {
+    /// Gets the user supplied log_dir from CLI arguments or environment variable, or else use a temp dir.
+    pub fn log_dir(&self) -> PathBuf {
+        let base = std::env::var("PANORAMIC_LOG_DIR")
+            .ok()
+            .map(PathBuf::from)
+            .or(self.log_dir.clone())
+            .unwrap_or_else(std::env::temp_dir);
+
+        // Add a panoramic-timestamp subdirectory to the base. Note this happens whether the user supplied the directory
+        // or not and preserves pre-existing behavior before a refactor that happened in May 2026.
+        // TODO: consider not adding a subdirectory when the user provides a desired log dir.
+        let timestamp = Local::now().format("%Y%m%d-%H%M%S");
+        base.join(format!("panoramic-{}", timestamp))
+    }
 }
 
 fn default_mounts_dir() -> PathBuf {

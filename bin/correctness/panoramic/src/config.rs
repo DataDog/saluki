@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::correctness::config::Config as CorrectnessConfig;
 use crate::reporter::TestResult;
-use crate::test::{RuntimeConfig, Test, TestSuite};
+use crate::test::{RuntimeConfig, Test, TestContext, TestSuite};
 
 /// A duration that can be parsed from human-readable strings like "10s", "1m", "500ms".
 #[derive(Clone, Debug)]
@@ -367,7 +367,7 @@ impl Test for IntegrationConfig {
         m
     }
 
-    async fn run(&self) -> TestResult {
+    async fn run(&self, _tctx: TestContext) -> TestResult {
         let mut runner =
             crate::runner::TestRunner::new(self.clone(), self.mounts_dir.clone(), self.cancel_token.clone());
         if let Some(ref dir) = self.log_dir {
@@ -376,10 +376,6 @@ impl Test for IntegrationConfig {
         let mut result = runner.run().await;
         result.log_dir = Some(self.log_dir());
         result
-    }
-
-    async fn cancel(&self) {
-        self.cancel_token.cancel();
     }
 }
 

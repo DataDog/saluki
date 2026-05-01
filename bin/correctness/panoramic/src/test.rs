@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 
 use crate::reporter::TestResult;
 
@@ -20,6 +21,54 @@ pub(crate) enum TestSuite {
     #[default]
     Integration,
     Correctness,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct TestContext {
+    /// Provides a teardown signal to a running test.
+    ///
+    /// Tests should watch this in a `tokio::select!` block so that they can tear down their resources when they have
+    /// been canceled either by an event or because they have timed out. They will be given a short grace period after
+    /// this fires to tear down resources.
+    #[allow(dead_code)]
+    cancel: CancellationToken,
+
+    /// A directory, which has been created for them, into which tests may write their logs.
+    #[allow(dead_code)]
+    log_dir: PathBuf,
+
+    /// A directory from which files should be mounted into one or more of the domain-specific containers used in this
+    /// test.
+    // TODO: this is an ugly hack introduced to support the PANORAMIC_DYNAMIC feature. Consider generalizing if needed.
+    // For example: this could become runtime_config: HashMap<String, String> for shuttling domain specific items from
+    // runtime to a test.
+    #[allow(dead_code)]
+    mounts_dir: Option<PathBuf>,
+}
+
+impl TestContext {
+    pub(crate) fn new(cancel: CancellationToken, log_dir: PathBuf, mounts_dir: Option<PathBuf>) -> Self {
+        Self {
+            cancel,
+            log_dir,
+            mounts_dir,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn cancel(&self) -> CancellationToken {
+        self.cancel.clone()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn log_dir(&self) -> &Path {
+        &self.log_dir
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn mounts_dir(&self) -> Option<&Path> {
+        self.mounts_dir.as_deref()
+    }
 }
 
 #[async_trait]
@@ -52,9 +101,5 @@ pub(crate) trait Test: Send + Sync {
 
     /// Run the test and return the `TestResult`. Note that we do not return an error here. It is expected that you
     /// should handle errors and turn them into a failed `TestResult` and try not to panic.
-    async fn run(&self) -> TestResult;
-
-    /// Request cancellation and clean up any resources (containers, networks, volumes). Called by the registry when a
-    /// test exceeds its timeout.
-    async fn cancel(&self);
+    async fn run(&self, tctx: TestContext) -> TestResult;
 }

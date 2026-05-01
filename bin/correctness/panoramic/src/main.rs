@@ -6,7 +6,6 @@
 use std::collections::BTreeMap;
 use std::{io::IsTerminal, path::PathBuf, process::ExitCode, time::Instant};
 
-use chrono::Local;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
@@ -89,7 +88,7 @@ fn initialize_logging() {
         .init();
 }
 
-async fn run_tests(mut cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
+async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     if cmd.test_dirs.is_empty() {
         let msg = "No test directories specified. Use -d <path> to specify one or more directories.";
         if use_tui {
@@ -123,35 +122,22 @@ async fn run_tests(mut cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         return ExitCode::from(2);
     }
 
-    // Create log directory if log capture is enabled.
-    let log_dir = if cmd.no_logs {
-        None
-    } else {
-        let dir = cmd.log_dir.take().unwrap_or_else(|| {
-            let timestamp = Local::now().format("%Y%m%d-%H%M%S");
-            let base = std::env::var("PANORAMIC_LOG_DIR")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|_| std::env::temp_dir());
-            base.join(format!("panoramic-{}", timestamp))
-        });
-        match std::fs::create_dir_all(&dir) {
-            Ok(()) => Some(dir),
-            Err(e) => {
-                if use_tui {
-                    eprintln!("Failed to create log directory: {}", e);
-                } else {
-                    error!("Failed to create log directory: {}", e);
-                }
-                return ExitCode::from(2);
-            }
+    // Create log directory.
+    let log_dir = cmd.log_dir();
+    if let Err(e) = std::fs::create_dir_all(&log_dir) {
+        if use_tui {
+            eprintln!("Failed to create log directory: {}", e);
+        } else {
+            error!("Failed to create log directory: {}", e);
         }
-    };
+        return ExitCode::from(2);
+    }
 
     // Inject runtime config and build the test registry.
-    let mut registry = Runner::new();
+    let mut registry = Runner::new(log_dir.clone(), Some(cmd.mounts_dir.clone()));
     for mut tc in test_cases {
         tc.set_runtime_config(test::RuntimeConfig {
-            log_dir: log_dir.clone(),
+            log_dir: Some(log_dir.clone()),
             mounts_dir: cmd.mounts_dir.clone(),
         });
         registry.register(tc).expect("failure to register test");
@@ -177,9 +163,9 @@ async fn run_tests(mut cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
 
     // Spawn the appropriate consumer based on mode.
     let all_passed = if use_tui {
-        run_with_tui_consumer(rx, cancel_token, log_dir, runner_handle).await
+        run_with_tui_consumer(rx, cancel_token, Some(log_dir), runner_handle).await
     } else {
-        run_with_logging_consumer(rx, &cmd, log_dir, runner_handle).await
+        run_with_logging_consumer(rx, &cmd, Some(log_dir), runner_handle).await
     };
 
     if all_passed {

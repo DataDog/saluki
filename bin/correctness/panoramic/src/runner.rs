@@ -23,7 +23,7 @@ use tokio::sync::{mpsc, RwLock, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-use crate::test::Test;
+use crate::test::{Test, TestContext};
 use crate::{
     assertions::{create_assertion, AssertionContext, AssertionResult, LogBuffer},
     config::{parse_file_spec, parse_port_spec, AssertionStep, IntegrationConfig},
@@ -36,6 +36,9 @@ pub(crate) type TestFilter = Box<dyn Fn(&dyn Test) -> bool + Send>;
 
 /// A sender that the `Runner` can use to send `TestEvent`s.
 pub(crate) type EventSender = mpsc::UnboundedSender<TestEvent>;
+
+/// The amount of time a test has to clean up after cancellation or timing out.
+const GRACE_TIME: Duration = Duration::from_secs(5);
 
 pub(crate) struct RunArgs {
     /// The number of tests to run in parallel.
@@ -89,11 +92,17 @@ impl RunArgs {
 /// A registry and runner of tests.
 pub(crate) struct Runner {
     tests: Vec<Box<dyn Test>>,
+    log_base_dir: PathBuf,
+    mounts_dir: Option<PathBuf>,
 }
 
 impl Runner {
-    pub(crate) fn new() -> Self {
-        Self { tests: Vec::new() }
+    pub(crate) fn new(log_base_dir: impl Into<PathBuf>, mounts_dir: Option<PathBuf>) -> Self {
+        Self {
+            tests: Vec::new(),
+            log_base_dir: log_base_dir.into(),
+            mounts_dir,
+        }
     }
 
     /// Register a test. Returns an error if the test name is a duplicate.
@@ -161,7 +170,14 @@ impl Runner {
             }
 
             let _permit = semaphore.acquire().await.unwrap();
-            let result = Self::run_one(*test, event_sender, cancel_token).await;
+            let result = Self::run_one(
+                *test,
+                event_sender,
+                cancel_token,
+                self.log_base_dir.clone(),
+                self.mounts_dir.clone(),
+            )
+            .await;
             let failed = !result.passed;
             results.push(result);
 
@@ -183,6 +199,8 @@ impl Runner {
         for test in tests {
             let semaphore = semaphore.clone();
             let cancel = cancel_token.clone();
+            let log_base_dir = self.log_base_dir.clone();
+            let mounts_dir = self.mounts_dir.clone();
             futures.push(async move {
                 if cancel.is_cancelled() {
                     return None;
@@ -194,7 +212,7 @@ impl Runner {
                     return None;
                 }
 
-                Some(Self::run_one(*test, event_sender, &cancel).await)
+                Some(Self::run_one(*test, event_sender, &cancel, log_base_dir, mounts_dir).await)
             });
 
             while futures.len() >= parallelism {
@@ -213,54 +231,39 @@ impl Runner {
     }
 
     async fn run_one(
-        test: &dyn Test, event_sender: &Option<EventSender>, cancel_token: &CancellationToken,
+        test: &dyn Test, event_sender: &Option<EventSender>, program_cancel: &CancellationToken, log_base_dir: PathBuf,
+        mounts_dir: Option<PathBuf>,
     ) -> TestResult {
         let name = test.name();
+        let suite = test.suite();
         let timeout = test.timeout();
         let started = Instant::now();
+
+        let test_cancel = CancellationToken::new();
+        let log_dir = log_base_dir.join(format!("{:?}", suite).to_lowercase()).join(&name);
+        let tctx = TestContext::new(test_cancel.clone(), log_dir.clone(), mounts_dir);
 
         if let Some(ref tx) = event_sender {
             let _ = tx.send(TestEvent::TestStarted { name: name.clone() });
         }
 
-        let run_fut = test.run();
+        let run_fut = test.run(tctx);
         tokio::pin!(run_fut);
 
         let result = tokio::select! {
             r = &mut run_fut => r,
-            // If the sleep future returns before our test future, then we timed out.
             _ = tokio::time::sleep(timeout) => {
-                test.cancel().await;
-                // Give the test time to clean up containers through its normal path.
-                match tokio::time::timeout(Duration::from_secs(30), run_fut).await {
+                test_cancel.cancel();
+                match tokio::time::timeout(GRACE_TIME, run_fut).await {
                     Ok(r) => r,
-                    // This error is just the timeout signal, so its message can be ignored.
-                    Err(_) => TestResult {
-                        name,
-                        passed: false,
-                        duration: started.elapsed(),
-                        assertion_results: vec![],
-                        error: Some(format!("Test timed out after {:?}.", timeout)),
-                        phase_timings: vec![],
-                        log_dir: Some(test.log_dir()),
-                        assertion_details: vec![],
-                    },
+                    Err(_) => TestResult::hard_timeout(name, timeout, started.elapsed())
                 }
             }
-            _ = cancel_token.cancelled() => {
-                test.cancel().await;
-                match tokio::time::timeout(Duration::from_secs(30), run_fut).await {
+            _ = program_cancel.cancelled() => {
+                test_cancel.cancel();
+                match tokio::time::timeout(GRACE_TIME, run_fut).await {
                     Ok(r) => r,
-                    Err(_) => TestResult {
-                        name,
-                        passed: false,
-                        duration: started.elapsed(),
-                        assertion_results: vec![],
-                        error: Some("Test cancelled.".to_string()),
-                        phase_timings: vec![],
-                        log_dir: Some(test.log_dir()),
-                        assertion_details: vec![],
-                    },
+                    Err(_) => TestResult::cancellation_failure(name, GRACE_TIME, started.elapsed())
                 }
             }
         };
@@ -969,6 +972,40 @@ fn write_result_log(result: &TestResult) {
         let _ = writeln!(f, "Phase timings:");
         for phase in &result.phase_timings {
             let _ = writeln!(f, "  {} ({:.2?})", phase.phase, phase.duration);
+        }
+    }
+}
+
+impl TestResult {
+    fn hard_timeout(name: impl Into<String>, timeout: Duration, total_duration: Duration) -> Self {
+        Self {
+            name: name.into(),
+            passed: false,
+            duration: total_duration,
+            assertion_results: vec![],
+            error: Some(format!(
+                "Test timed out after {:?} and failed to clean up resources in time.",
+                timeout
+            )),
+            phase_timings: vec![],
+            log_dir: None,
+            assertion_details: vec![],
+        }
+    }
+
+    fn cancellation_failure(name: impl Into<String>, grace: Duration, total_duration: Duration) -> Self {
+        Self {
+            name: name.into(),
+            passed: false,
+            duration: total_duration,
+            assertion_results: vec![],
+            error: Some(format!(
+                "Test was cancelled and failed to clean up its resources with a grace period of {:?}.",
+                grace
+            )),
+            phase_timings: vec![],
+            log_dir: None,
+            assertion_details: vec![],
         }
     }
 }
