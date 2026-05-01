@@ -15,7 +15,6 @@ fips = ["saluki-app/tls-fips"]
 [dependencies]
 argh = { workspace = true, features = ["help"] }
 async-trait = { workspace = true }
-bytes = { workspace = true }
 bytesize = { workspace = true }
 chrono = { workspace = true }
 colored = { workspace = true }
@@ -48,7 +47,6 @@ saluki-metrics = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
-serde_yaml = { workspace = true }
 stringtheory = { workspace = true }
 tokio = { workspace = true, features = [
   "macros",

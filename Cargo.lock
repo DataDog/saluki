@@ -23,7 +23,6 @@ version = "0.1.35"
 dependencies = [
  "argh",
  "async-trait",
- "bytes",
  "bytesize",
  "chrono",
  "colored",
@@ -56,7 +55,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
- "serde_yaml",
  "stringtheory",
  "tikv-jemallocator",
  "tokio",
@@ -3774,6 +3772,7 @@ dependencies = [
  "saluki-error",
  "saluki-metrics",
  "serde",
+ "serde_json",
  "serde_with",
  "sha3",
  "smallvec",
