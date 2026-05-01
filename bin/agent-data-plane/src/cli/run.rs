@@ -119,7 +119,7 @@ pub async fn handle_run_command(
             // defaults.
             match LoggingConfigurationTranslator::translate(&dynamic_config) {
                 Ok(logging_config) => {
-                    if let Err(e) = bootstrap_guard.reload_logging(logging_config) {
+                    if let Err(e) = bootstrap_guard.logging_mut().reload(logging_config).await {
                         warn!(
                             error = %e,
                             "Failed to reload logging from Agent configuration; continuing with bootstrap logging settings."
@@ -176,6 +176,7 @@ pub async fn handle_run_command(
         env_provider,
         dsd_stats_config,
         ra_bootstrap,
+        bootstrap_guard.logging().controller(),
     )
     .await
     .error_context("Failed to create internal supervisor.")?;

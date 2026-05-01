@@ -1,7 +1,4 @@
-use std::{
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{sync::Mutex, time::Duration};
 
 use async_trait::async_trait;
 use saluki_api::{
@@ -11,7 +8,7 @@ use saluki_api::{
     APIHandler, StatusCode,
 };
 use saluki_core::runtime::{InitializationError, ProcessShutdown, Supervisable, SupervisorFuture};
-use saluki_error::generic_error;
+use saluki_error::{generic_error, GenericError};
 use serde::Deserialize;
 use tokio::{select, sync::mpsc, time::sleep};
 use tracing::{error, info};
@@ -39,10 +36,64 @@ struct OverrideQueryParams {
     time_secs: u64,
 }
 
+/// An action driven through a [`LoggingOverrideController`] and processed by [`LoggingOverrideWorker`].
+enum LoggingOverrideAction {
+    /// Apply `filter` as a temporary override on top of the current base, lasting `duration`.
+    ///
+    /// When the duration elapses, or a [`Reset`][LoggingOverrideAction::Reset] arrives, the worker restores the
+    /// current base filter.
+    Override { duration: Duration, filter: EnvFilter },
+
+    /// Clear any active override, immediately restoring the current base filter.
+    Reset,
+
+    /// Replace the current base filter.
+    ///
+    /// Applied immediately if no override is active. If an override is active, the new base is stored and applied
+    /// once the override expires (or is reset), so we don't clobber an in-flight override.
+    UpdateBase(EnvFilter),
+}
+
+/// Controls the dynamic logging filter at runtime.
+///
+/// All filter mutations — temporary overrides, resets, and base updates — flow through here to the
+/// [`LoggingOverrideWorker`] that owns the underlying `tracing` reload handle. Cloning is cheap; hand clones to
+/// any caller that needs to drive filter changes (HTTP handlers, configuration watchers, etc.).
+#[derive(Clone)]
+pub struct LoggingOverrideController {
+    tx: mpsc::Sender<LoggingOverrideAction>,
+}
+
+impl LoggingOverrideController {
+    /// Applies `filter` as a temporary override for `duration`, after which the base filter is restored.
+    pub(crate) async fn override_for(&self, duration: Duration, filter: EnvFilter) -> Result<(), GenericError> {
+        self.send(LoggingOverrideAction::Override { duration, filter }).await
+    }
+
+    /// Clears any active override, immediately restoring the current base filter.
+    pub(crate) async fn reset(&self) -> Result<(), GenericError> {
+        self.send(LoggingOverrideAction::Reset).await
+    }
+
+    /// Replaces the current base filter.
+    ///
+    /// Applied immediately if no override is active; otherwise stored and applied when the override expires.
+    pub async fn update_base(&self, filter: EnvFilter) -> Result<(), GenericError> {
+        self.send(LoggingOverrideAction::UpdateBase(filter)).await
+    }
+
+    async fn send(&self, action: LoggingOverrideAction) -> Result<(), GenericError> {
+        self.tx
+            .send(action)
+            .await
+            .map_err(|_| generic_error!("logging override worker is no longer running"))
+    }
+}
+
 /// State used for the logging API handler.
 #[derive(Clone)]
 pub struct LoggingHandlerState {
-    override_tx: mpsc::Sender<Option<(Duration, EnvFilter)>>,
+    controller: LoggingOverrideController,
 }
 
 /// An API handler for updating log filtering directives at runtime.
@@ -61,28 +112,11 @@ pub struct LoggingAPIHandler {
 }
 
 impl LoggingAPIHandler {
-    /// Creates a new `LoggingAPIHandler` and a paired [`LoggingOverrideWorker`].
-    ///
-    /// The worker must be added to a [`Supervisor`][saluki_core::runtime::Supervisor] for the handler's
-    /// override/reset routes to take effect; without it, requests are accepted but never applied.
-    pub(super) fn new(
-        base_filter: Arc<Mutex<EnvFilter>>, reload_handle: Handle<EnvFilter, Registry>,
-    ) -> (Self, LoggingOverrideWorker) {
-        let (override_tx, override_rx) = mpsc::channel(1);
-        let worker = LoggingOverrideWorker {
-            state: Mutex::new(Some(LoggingOverrideWorkerState {
-                base_filter,
-                reload_handle,
-                override_rx,
-            })),
-        };
-
-        (
-            Self {
-                state: LoggingHandlerState { override_tx },
-            },
-            worker,
-        )
+    /// Creates a new `LoggingAPIHandler` driven by the given controller.
+    pub(super) fn new(controller: LoggingOverrideController) -> Self {
+        Self {
+            state: LoggingHandlerState { controller },
+        }
     }
 
     async fn override_handler(
@@ -112,15 +146,15 @@ impl LoggingAPIHandler {
             }
         };
 
-        // Instruct the override processor to apply the new log filtering directives for the given duration.
-        let _ = state.override_tx.send(Some((duration, new_filter))).await;
+        // Instruct the override worker to apply the new log filtering directives for the given duration.
+        let _ = state.controller.override_for(duration, new_filter).await;
 
         (StatusCode::OK, "acknowledged".to_string())
     }
 
     async fn reset_handler(State(state): State<LoggingHandlerState>) {
-        // Instruct the override processor to immediately reset back to the original log filtering directives.
-        let _ = state.override_tx.send(None).await;
+        // Instruct the override worker to immediately reset back to the current base log filtering directives.
+        let _ = state.controller.reset().await;
     }
 }
 
@@ -138,22 +172,47 @@ impl APIHandler for LoggingAPIHandler {
     }
 }
 
-/// A worker that processes dynamic log filter override requests sent via [`LoggingAPIHandler`].
+/// A worker that processes [`LoggingOverrideAction`]s sent through a [`LoggingOverrideController`].
 ///
-/// Holds the receiving half of the override channel; the corresponding sender is held by the API handler
-/// (which is itself stored in a static after the logging subsystem is initialized). The worker exits cleanly
+/// Owns the receiving half of the controller's channel and the canonical base filter. The worker exits cleanly
 /// on either supervisor shutdown or channel close.
 ///
-/// One-shot: a successful initialization consumes the receiver. Restart by the supervisor will fail with an
+/// One-shot: a successful initialization consumes the worker state. Restart by the supervisor will fail with an
 /// initialization error, propagating up to bring the supervisor down.
 pub struct LoggingOverrideWorker {
     state: Mutex<Option<LoggingOverrideWorkerState>>,
 }
 
 struct LoggingOverrideWorkerState {
-    base_filter: Arc<Mutex<EnvFilter>>,
+    initial_base: EnvFilter,
     reload_handle: Handle<EnvFilter, Registry>,
-    override_rx: mpsc::Receiver<Option<(Duration, EnvFilter)>>,
+    rx: mpsc::Receiver<LoggingOverrideAction>,
+}
+
+impl LoggingOverrideWorker {
+    /// Creates a new worker paired with a [`LoggingOverrideController`].
+    ///
+    /// `initial_base` is the base filter to restore after an override expires; it can be replaced at runtime via
+    /// [`LoggingOverrideController::update_base`]. `reload_handle` is the `tracing_subscriber` reload handle that
+    /// the worker drives directly.
+    ///
+    /// The worker must be added to a [`Supervisor`][saluki_core::runtime::Supervisor] for the controller's actions
+    /// to take effect; without it, sends are accepted but never applied.
+    pub(super) fn new(
+        initial_base: EnvFilter, reload_handle: Handle<EnvFilter, Registry>,
+    ) -> (Self, LoggingOverrideController) {
+        let (tx, rx) = mpsc::channel(1);
+        let controller = LoggingOverrideController { tx };
+        let worker = Self {
+            state: Mutex::new(Some(LoggingOverrideWorkerState {
+                initial_base,
+                reload_handle,
+                rx,
+            })),
+        };
+
+        (worker, controller)
+    }
 }
 
 #[async_trait]
@@ -164,9 +223,9 @@ impl Supervisable for LoggingOverrideWorker {
 
     async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
         let LoggingOverrideWorkerState {
-            base_filter,
+            initial_base,
             reload_handle,
-            override_rx,
+            rx,
         } = self
             .state
             .lock()
@@ -177,15 +236,15 @@ impl Supervisable for LoggingOverrideWorker {
             })?;
 
         Ok(Box::pin(async move {
-            process_override_requests(base_filter, reload_handle, override_rx, process_shutdown).await;
+            process_override_actions(initial_base, reload_handle, rx, process_shutdown).await;
             Ok(())
         }))
     }
 }
 
-async fn process_override_requests(
-    base_filter: Arc<Mutex<EnvFilter>>, reload_handle: Handle<EnvFilter, Registry>,
-    mut rx: mpsc::Receiver<Option<(Duration, EnvFilter)>>, mut process_shutdown: ProcessShutdown,
+async fn process_override_actions(
+    mut base_filter: EnvFilter, reload_handle: Handle<EnvFilter, Registry>,
+    mut rx: mpsc::Receiver<LoggingOverrideAction>, mut process_shutdown: ProcessShutdown,
 ) {
     let mut override_active = false;
     let override_timeout = sleep(Duration::from_secs(3600));
@@ -198,11 +257,11 @@ async fn process_override_requests(
     loop {
         select! {
             _ = &mut shutdown => break,
-            maybe_override = rx.recv() => match maybe_override {
-                Some(Some((duration, new_filter))) => {
-                    info!(directives = %new_filter, "Overriding existing log filtering directives for {} seconds...", duration.as_secs());
+            maybe_action = rx.recv() => match maybe_action {
+                Some(LoggingOverrideAction::Override { duration, filter }) => {
+                    info!(directives = %filter, "Overriding existing log filtering directives for {} seconds...", duration.as_secs());
 
-                    match reload_handle.reload(new_filter) {
+                    match reload_handle.reload(filter) {
                         Ok(()) => {
                             // We were able to successfully reload the filter, so mark ourselves as having an active
                             // override and update the override timeout.
@@ -213,13 +272,32 @@ async fn process_override_requests(
                     }
                 },
 
-                Some(None) => {
+                Some(LoggingOverrideAction::Reset) => {
                     // We've been instructed to immediately reset the filter back to the base one, so simply update
                     // the override timeout to fire as soon as possible.
                     override_timeout.as_mut().reset(tokio::time::Instant::now());
                 },
 
-                // Our sender has dropped, so there's no more override requests for us to handle.
+                Some(LoggingOverrideAction::UpdateBase(new_base)) => {
+                    base_filter = new_base;
+
+                    if override_active {
+                        // An override is currently active. Don't clobber it -- the new base will take effect when
+                        // the override expires.
+                        info!(
+                            directives = %base_filter,
+                            "Updated base log filtering directives; application deferred until active override expires."
+                        );
+                    } else {
+                        let new_directives = base_filter.to_string();
+                        match reload_handle.reload(base_filter.clone()) {
+                            Ok(()) => info!(directives = %new_directives, "Updated base log filtering directives."),
+                            Err(e) => error!(error = %e, "Failed to update base log filtering directives."),
+                        }
+                    }
+                },
+
+                // Our sender has dropped, so there's no more actions for us to handle.
                 None => break,
             },
             _ = &mut override_timeout => {
@@ -230,9 +308,8 @@ async fn process_override_requests(
                 if override_active {
                     override_active = false;
 
-                    let restore_filter = base_filter.lock().unwrap().clone();
-                    let restore_directives = restore_filter.to_string();
-                    if let Err(e) = reload_handle.reload(restore_filter) {
+                    let restore_directives = base_filter.to_string();
+                    if let Err(e) = reload_handle.reload(base_filter.clone()) {
                         error!(error = %e, "Failed to reset log filtering directives.");
                     }
 
@@ -245,8 +322,7 @@ async fn process_override_requests(
     }
 
     // Reset our filter to the base one before we exit.
-    let restore_filter = base_filter.lock().unwrap().clone();
-    if let Err(e) = reload_handle.reload(restore_filter) {
+    if let Err(e) = reload_handle.reload(base_filter) {
         error!(error = %e, "Failed to reset log filtering directives before override handler shutdown.");
     }
 }
@@ -285,55 +361,84 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn reset_restores_current_base_filter() {
-        let base_filter = Arc::new(Mutex::new(EnvFilter::new("agent_data_plane=info")));
-        let (_filter_layer, reload_handle) = reload::Layer::new(base_filter.lock().unwrap().clone());
+    fn spawn_processor(
+        initial_base: EnvFilter,
+    ) -> (
+        LoggingOverrideController,
+        reload::Handle<EnvFilter, Registry>,
+        tokio::task::JoinHandle<()>,
+        reload::Layer<EnvFilter, Registry>,
+    ) {
+        let (filter_layer, reload_handle) = reload::Layer::new(initial_base.clone());
         let (tx, rx) = mpsc::channel(1);
-        let processor = tokio::spawn(process_override_requests(
-            base_filter.clone(),
+        let controller = LoggingOverrideController { tx };
+        let processor = tokio::spawn(process_override_actions(
+            initial_base,
             reload_handle.clone(),
             rx,
             ProcessShutdown::noop(),
         ));
 
-        tx.send(Some((Duration::from_secs(60), EnvFilter::new("hyper=warn"))))
+        // The reload layer must outlive the handles -- callers should bind it (e.g., `let _layer = ...`) to keep
+        // the handle alive for the duration of the test.
+        (controller, reload_handle, processor, filter_layer)
+    }
+
+    #[tokio::test]
+    async fn reset_restores_current_base_filter() {
+        let (controller, reload_handle, processor, _filter_layer) =
+            spawn_processor(EnvFilter::new("agent_data_plane=info"));
+
+        controller
+            .override_for(Duration::from_secs(60), EnvFilter::new("hyper=warn"))
             .await
             .expect("send override");
-        sleep(Duration::from_millis(25)).await;
-        assert_eq!(current_filter(&reload_handle), "hyper=warn");
+        wait_for_filter(&reload_handle, "hyper=warn").await;
 
-        *base_filter.lock().unwrap() = EnvFilter::new("agent_data_plane=debug");
-        tx.send(None).await.expect("send reset");
-        sleep(Duration::from_millis(25)).await;
-        assert_eq!(current_filter(&reload_handle), "agent_data_plane=debug");
+        controller
+            .update_base(EnvFilter::new("agent_data_plane=debug"))
+            .await
+            .expect("send update_base");
+        controller.reset().await.expect("send reset");
+        wait_for_filter(&reload_handle, "agent_data_plane=debug").await;
 
-        drop(tx);
+        drop(controller);
         processor.await.expect("override processor should exit cleanly");
     }
 
     #[tokio::test]
     async fn override_expiration_restores_current_base_filter() {
-        let base_filter = Arc::new(Mutex::new(EnvFilter::new("agent_data_plane=info")));
-        let (_filter_layer, reload_handle) = reload::Layer::new(base_filter.lock().unwrap().clone());
-        let (tx, rx) = mpsc::channel(1);
-        let processor = tokio::spawn(process_override_requests(
-            base_filter.clone(),
-            reload_handle.clone(),
-            rx,
-            ProcessShutdown::noop(),
-        ));
+        let (controller, reload_handle, processor, _filter_layer) =
+            spawn_processor(EnvFilter::new("agent_data_plane=info"));
 
-        tx.send(Some((Duration::from_millis(100), EnvFilter::new("hyper=warn"))))
+        controller
+            .override_for(Duration::from_millis(100), EnvFilter::new("hyper=warn"))
             .await
             .expect("send override");
-        sleep(Duration::from_millis(25)).await;
-        assert_eq!(current_filter(&reload_handle), "hyper=warn");
+        wait_for_filter(&reload_handle, "hyper=warn").await;
 
-        *base_filter.lock().unwrap() = EnvFilter::new("agent_data_plane=warn");
+        controller
+            .update_base(EnvFilter::new("agent_data_plane=warn"))
+            .await
+            .expect("send update_base");
         wait_for_filter(&reload_handle, "agent_data_plane=warn").await;
 
-        drop(tx);
+        drop(controller);
+        processor.await.expect("override processor should exit cleanly");
+    }
+
+    #[tokio::test]
+    async fn update_base_applies_immediately_when_no_override_active() {
+        let (controller, reload_handle, processor, _filter_layer) =
+            spawn_processor(EnvFilter::new("agent_data_plane=info"));
+
+        controller
+            .update_base(EnvFilter::new("agent_data_plane=debug"))
+            .await
+            .expect("send update_base");
+        wait_for_filter(&reload_handle, "agent_data_plane=debug").await;
+
+        drop(controller);
         processor.await.expect("override processor should exit cleanly");
     }
 }

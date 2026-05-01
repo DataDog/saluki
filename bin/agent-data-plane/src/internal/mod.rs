@@ -1,4 +1,5 @@
 use memory_accounting::ComponentRegistry;
+use saluki_app::logging::LoggingOverrideController;
 use saluki_components::destinations::DogStatsDStatisticsConfiguration;
 use saluki_config::GenericConfiguration;
 use saluki_core::health::HealthRegistry;
@@ -34,6 +35,7 @@ pub async fn create_internal_supervisor(
     config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, component_registry: &ComponentRegistry,
     health_registry: HealthRegistry, env_provider: ADPEnvironmentProvider,
     dsd_stats_config: DogStatsDStatisticsConfiguration, ra_bootstrap: Option<RemoteAgentBootstrap>,
+    logging_controller: LoggingOverrideController,
 ) -> Result<Supervisor, GenericError> {
     // The root supervisor runs in ambient mode (caller's runtime) since its children each have their own
     // dedicated runtimes. The default restart strategy (one-for-one, 1 restart per 5s) applies to the child
@@ -50,6 +52,7 @@ pub async fn create_internal_supervisor(
             env_provider,
             dsd_stats_config,
             ra_bootstrap,
+            logging_controller,
         )
         .await?,
     );
