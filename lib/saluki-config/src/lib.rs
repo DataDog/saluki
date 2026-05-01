@@ -819,10 +819,7 @@ impl GenericConfiguration {
         match json_root {
             serde_json::Value::Object(map) => Ok(map),
             other => Err(ConfigurationError::Generic {
-                source: saluki_error::generic_error!(
-                    "configuration root must be a JSON object, got {}",
-                    other
-                ),
+                source: saluki_error::generic_error!("configuration root must be a JSON object, got {}", other),
             }),
         }
     }

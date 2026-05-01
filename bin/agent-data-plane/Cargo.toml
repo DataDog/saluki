@@ -15,7 +15,6 @@ fips = ["saluki-app/tls-fips"]
 [dependencies]
 argh = { workspace = true, features = ["help"] }
 async-trait = { workspace = true }
-bytes = { workspace = true }
 bytesize = { workspace = true }
 chrono = { workspace = true }
 colored = { workspace = true }

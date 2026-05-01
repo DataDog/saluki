@@ -365,10 +365,7 @@ mod tests {
 
     #[test]
     fn test_password_yaml_double_quoted_value() {
-        assert_clean(
-            "password: \"supersecret\"",
-            "password: \"********\"",
-        );
+        assert_clean("password: \"supersecret\"", "password: \"********\"");
     }
 
     #[test]
@@ -397,10 +394,7 @@ mod tests {
     #[test]
     fn test_large_single_line_json_scrubbed_still_parses() {
         let mut map = serde_json::Map::new();
-        map.insert(
-            "api_key".into(),
-            serde_json::json!("aaaaaaaaaaaaaaaaaaaaaaaaaaaabbbb"),
-        );
+        map.insert("api_key".into(), serde_json::json!("aaaaaaaaaaaaaaaaaaaaaaaaaaaabbbb"));
         map.insert("pad".into(), serde_json::json!("x".repeat(25_000)));
         let line = serde_json::to_string(&serde_json::Value::Object(map)).unwrap();
         assert!(line.len() > 16_384, "sanity: payload should exceed 16 KiB");
