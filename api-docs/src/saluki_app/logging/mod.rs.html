@@ -20,7 +20,7 @@
 <a href=#20 id=20 data-nosnippet>20</a>
 <a href=#21 id=21 data-nosnippet>21</a><span class="kw">mod </span>api;
 <a href=#22 id=22 data-nosnippet>22</a><span class="kw">use </span><span class="self">self</span>::api::set_logging_api_handler;
-<a href=#23 id=23 data-nosnippet>23</a><span class="kw">pub use </span><span class="self">self</span>::api::{acquire_logging_api_handler, LoggingAPIHandler};
+<a href=#23 id=23 data-nosnippet>23</a><span class="kw">pub use </span><span class="self">self</span>::api::{acquire_logging_api_handler, LoggingAPIHandler, LoggingOverrideWorker};
 <a href=#24 id=24 data-nosnippet>24</a>
 <a href=#25 id=25 data-nosnippet>25</a><span class="kw">mod </span>config;
 <a href=#26 id=26 data-nosnippet>26</a><span class="kw">pub use </span><span class="self">self</span>::config::{LogLevel, LoggingConfiguration};
@@ -76,77 +76,84 @@
 <a href=#76 id=76 data-nosnippet>76</a>/// An API handler can be acquired (via [`acquire_logging_api_handler`]) to install the API routes which allow for
 <a href=#77 id=77 data-nosnippet>77</a>/// dynamically controlling the logging level filtering. See [`LoggingAPIHandler`] for more information.
 <a href=#78 id=78 data-nosnippet>78</a>///
-<a href=#79 id=79 data-nosnippet>79</a>/// Returns a [`LoggingGuard`] which must be held until the application is about to shutdown, ensuring that any
-<a href=#80 id=80 data-nosnippet>80</a>/// configured logging backends are able to completely flush any pending logs before the application exits.
-<a href=#81 id=81 data-nosnippet>81</a>///
-<a href=#82 id=82 data-nosnippet>82</a>/// # Errors
-<a href=#83 id=83 data-nosnippet>83</a>///
-<a href=#84 id=84 data-nosnippet>84</a>/// If the logging subsystem was already initialized, an error will be returned.
-<a href=#85 id=85 data-nosnippet>85</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">async fn </span>initialize_logging(config: LoggingConfiguration) -&gt; <span class="prelude-ty">Result</span>&lt;LoggingGuard, GenericError&gt; {
-<a href=#86 id=86 data-nosnippet>86</a>    <span class="comment">// TODO: Support for logging to syslog.
-<a href=#87 id=87 data-nosnippet>87</a>
-<a href=#88 id=88 data-nosnippet>88</a>    // Build the initial output stack from the supplied configuration. This is later swappable via
-<a href=#89 id=89 data-nosnippet>89</a>    // `BootstrapGuard::reload_logging` once the Datadog Agent provides authoritative configuration.
-<a href=#90 id=90 data-nosnippet>90</a>    </span><span class="kw">let </span>(output_stack, worker_guards) = build_output_stack(<span class="kw-2">&amp;</span>config)<span class="question-mark">?</span>;
-<a href=#91 id=91 data-nosnippet>91</a>    <span class="kw">let </span>(output_layer, stack_handle) = reload::Layer::new(output_stack);
-<a href=#92 id=92 data-nosnippet>92</a>
-<a href=#93 id=93 data-nosnippet>93</a>    <span class="comment">// Set up our log level filtering and dynamic filter layer.
-<a href=#94 id=94 data-nosnippet>94</a>    </span><span class="kw">let </span>level_filter = config.log_level.as_env_filter();
-<a href=#95 id=95 data-nosnippet>95</a>    <span class="kw">let </span>(filter_layer, filter_handle) = reload::Layer::new(level_filter.clone());
-<a href=#96 id=96 data-nosnippet>96</a>
-<a href=#97 id=97 data-nosnippet>97</a>    <span class="comment">// The base filter is the level the override-restore should land on after a `/logging/override` timeout. It starts
-<a href=#98 id=98 data-nosnippet>98</a>    // as the bootstrap level, and is updated by `LoggingGuard::reload` once the Agent's configuration is applied.
-<a href=#99 id=99 data-nosnippet>99</a>    </span><span class="kw">let </span>base_filter = Arc::new(Mutex::new(level_filter));
-<a href=#100 id=100 data-nosnippet>100</a>    set_logging_api_handler(LoggingAPIHandler::new(base_filter.clone(), filter_handle.clone()));
-<a href=#101 id=101 data-nosnippet>101</a>
-<a href=#102 id=102 data-nosnippet>102</a>    tracing_subscriber::registry()
-<a href=#103 id=103 data-nosnippet>103</a>        .with(output_layer.with_filter(filter_layer))
-<a href=#104 id=104 data-nosnippet>104</a>        .try_init()<span class="question-mark">?</span>;
+<a href=#79 id=79 data-nosnippet>79</a>/// Returns a [`LoggingGuard`] which must be held until the application is about to shutdown, plus a
+<a href=#80 id=80 data-nosnippet>80</a>/// [`LoggingOverrideWorker`] that must be added to a [`Supervisor`][saluki_core::runtime::Supervisor] to drive
+<a href=#81 id=81 data-nosnippet>81</a>/// the dynamic override processor; without the worker running, override requests are accepted but never applied.
+<a href=#82 id=82 data-nosnippet>82</a>///
+<a href=#83 id=83 data-nosnippet>83</a>/// # Errors
+<a href=#84 id=84 data-nosnippet>84</a>///
+<a href=#85 id=85 data-nosnippet>85</a>/// If the logging subsystem was already initialized, an error will be returned.
+<a href=#86 id=86 data-nosnippet>86</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">async fn </span>initialize_logging(
+<a href=#87 id=87 data-nosnippet>87</a>    config: LoggingConfiguration,
+<a href=#88 id=88 data-nosnippet>88</a>) -&gt; <span class="prelude-ty">Result</span>&lt;(LoggingGuard, LoggingOverrideWorker), GenericError&gt; {
+<a href=#89 id=89 data-nosnippet>89</a>    <span class="comment">// TODO: Support for logging to syslog.
+<a href=#90 id=90 data-nosnippet>90</a>
+<a href=#91 id=91 data-nosnippet>91</a>    // Build the initial output stack from the supplied configuration. This is later swappable via
+<a href=#92 id=92 data-nosnippet>92</a>    // `BootstrapGuard::reload_logging` once the Datadog Agent provides authoritative configuration.
+<a href=#93 id=93 data-nosnippet>93</a>    </span><span class="kw">let </span>(output_stack, worker_guards) = build_output_stack(<span class="kw-2">&amp;</span>config)<span class="question-mark">?</span>;
+<a href=#94 id=94 data-nosnippet>94</a>    <span class="kw">let </span>(output_layer, stack_handle) = reload::Layer::new(output_stack);
+<a href=#95 id=95 data-nosnippet>95</a>
+<a href=#96 id=96 data-nosnippet>96</a>    <span class="comment">// Set up our log level filtering and dynamic filter layer.
+<a href=#97 id=97 data-nosnippet>97</a>    </span><span class="kw">let </span>level_filter = config.log_level.as_env_filter();
+<a href=#98 id=98 data-nosnippet>98</a>    <span class="kw">let </span>(filter_layer, filter_handle) = reload::Layer::new(level_filter.clone());
+<a href=#99 id=99 data-nosnippet>99</a>
+<a href=#100 id=100 data-nosnippet>100</a>    <span class="comment">// The base filter is the level the override-restore should land on after a `/logging/override` timeout. It starts
+<a href=#101 id=101 data-nosnippet>101</a>    // as the bootstrap level, and is updated by `LoggingGuard::reload` once the Agent's configuration is applied.
+<a href=#102 id=102 data-nosnippet>102</a>    </span><span class="kw">let </span>base_filter = Arc::new(Mutex::new(level_filter));
+<a href=#103 id=103 data-nosnippet>103</a>    <span class="kw">let </span>(api_handler, override_worker) = LoggingAPIHandler::new(base_filter.clone(), filter_handle.clone());
+<a href=#104 id=104 data-nosnippet>104</a>    set_logging_api_handler(api_handler);
 <a href=#105 id=105 data-nosnippet>105</a>
-<a href=#106 id=106 data-nosnippet>106</a>    <span class="prelude-val">Ok</span>(LoggingGuard {
-<a href=#107 id=107 data-nosnippet>107</a>        worker_guards,
-<a href=#108 id=108 data-nosnippet>108</a>        stack_handle,
-<a href=#109 id=109 data-nosnippet>109</a>        filter_handle,
-<a href=#110 id=110 data-nosnippet>110</a>        base_filter,
-<a href=#111 id=111 data-nosnippet>111</a>    })
-<a href=#112 id=112 data-nosnippet>112</a>}
-<a href=#113 id=113 data-nosnippet>113</a>
-<a href=#114 id=114 data-nosnippet>114</a><span class="kw">fn </span>build_output_stack(config: <span class="kw-2">&amp;</span>LoggingConfiguration) -&gt; <span class="prelude-ty">Result</span>&lt;(OutputStack, Vec&lt;WorkerGuard&gt;), GenericError&gt; {
-<a href=#115 id=115 data-nosnippet>115</a>    <span class="kw">let </span><span class="kw-2">mut </span>layers: OutputStack = Vec::new();
-<a href=#116 id=116 data-nosnippet>116</a>    <span class="kw">let </span><span class="kw-2">mut </span>guards = Vec::new();
-<a href=#117 id=117 data-nosnippet>117</a>
-<a href=#118 id=118 data-nosnippet>118</a>    <span class="kw">if </span>config.log_to_console {
-<a href=#119 id=119 data-nosnippet>119</a>        <span class="kw">let </span>(nb_stdout, guard) = writer_to_nonblocking(<span class="string">"console"</span>, std::io::stdout());
-<a href=#120 id=120 data-nosnippet>120</a>        guards.push(guard);
-<a href=#121 id=121 data-nosnippet>121</a>        layers.push(build_formatting_layer(config, nb_stdout));
-<a href=#122 id=122 data-nosnippet>122</a>    }
-<a href=#123 id=123 data-nosnippet>123</a>
-<a href=#124 id=124 data-nosnippet>124</a>    <span class="kw">if </span>!config.log_file.is_empty() {
-<a href=#125 id=125 data-nosnippet>125</a>        <span class="kw">let </span>appender_builder = RollingFileAppenderBase::builder();
-<a href=#126 id=126 data-nosnippet>126</a>        <span class="kw">let </span>appender = appender_builder
-<a href=#127 id=127 data-nosnippet>127</a>            .filename(config.log_file.clone())
-<a href=#128 id=128 data-nosnippet>128</a>            .max_filecount(config.log_file_max_rolls)
-<a href=#129 id=129 data-nosnippet>129</a>            .condition_max_file_size(config.log_file_max_size.as_u64())
-<a href=#130 id=130 data-nosnippet>130</a>            .build()
-<a href=#131 id=131 data-nosnippet>131</a>            .map_err(|e| <span class="macro">generic_error!</span>(<span class="string">"Failed to build log file appender: {}"</span>, e))<span class="question-mark">?</span>;
-<a href=#132 id=132 data-nosnippet>132</a>
-<a href=#133 id=133 data-nosnippet>133</a>        <span class="kw">let </span>(nb_appender, guard) = writer_to_nonblocking(<span class="string">"file"</span>, appender);
-<a href=#134 id=134 data-nosnippet>134</a>        guards.push(guard);
-<a href=#135 id=135 data-nosnippet>135</a>        layers.push(build_formatting_layer(config, nb_appender));
-<a href=#136 id=136 data-nosnippet>136</a>    }
-<a href=#137 id=137 data-nosnippet>137</a>
-<a href=#138 id=138 data-nosnippet>138</a>    <span class="prelude-val">Ok</span>((layers, guards))
-<a href=#139 id=139 data-nosnippet>139</a>}
-<a href=#140 id=140 data-nosnippet>140</a>
-<a href=#141 id=141 data-nosnippet>141</a><span class="kw">fn </span>writer_to_nonblocking&lt;W&gt;(writer_name: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, writer: W) -&gt; (NonBlocking, WorkerGuard)
-<a href=#142 id=142 data-nosnippet>142</a><span class="kw">where
-<a href=#143 id=143 data-nosnippet>143</a>    </span>W: Write + Send + <span class="lifetime">'static</span>,
-<a href=#144 id=144 data-nosnippet>144</a>{
-<a href=#145 id=145 data-nosnippet>145</a>    <span class="kw">let </span>thread_name = <span class="macro">format!</span>(<span class="string">"log-writer-{}"</span>, writer_name);
-<a href=#146 id=146 data-nosnippet>146</a>    NonBlockingBuilder::default()
-<a href=#147 id=147 data-nosnippet>147</a>        .thread_name(<span class="kw-2">&amp;</span>thread_name)
-<a href=#148 id=148 data-nosnippet>148</a>        .buffered_lines_limit(NB_LOG_WRITER_BUFFER_SIZE)
-<a href=#149 id=149 data-nosnippet>149</a>        .lossy(<span class="bool-val">true</span>)
-<a href=#150 id=150 data-nosnippet>150</a>        .finish(writer)
-<a href=#151 id=151 data-nosnippet>151</a>}
+<a href=#106 id=106 data-nosnippet>106</a>    tracing_subscriber::registry()
+<a href=#107 id=107 data-nosnippet>107</a>        .with(output_layer.with_filter(filter_layer))
+<a href=#108 id=108 data-nosnippet>108</a>        .try_init()<span class="question-mark">?</span>;
+<a href=#109 id=109 data-nosnippet>109</a>
+<a href=#110 id=110 data-nosnippet>110</a>    <span class="prelude-val">Ok</span>((
+<a href=#111 id=111 data-nosnippet>111</a>        LoggingGuard {
+<a href=#112 id=112 data-nosnippet>112</a>            worker_guards,
+<a href=#113 id=113 data-nosnippet>113</a>            stack_handle,
+<a href=#114 id=114 data-nosnippet>114</a>            filter_handle,
+<a href=#115 id=115 data-nosnippet>115</a>            base_filter,
+<a href=#116 id=116 data-nosnippet>116</a>        },
+<a href=#117 id=117 data-nosnippet>117</a>        override_worker,
+<a href=#118 id=118 data-nosnippet>118</a>    ))
+<a href=#119 id=119 data-nosnippet>119</a>}
+<a href=#120 id=120 data-nosnippet>120</a>
+<a href=#121 id=121 data-nosnippet>121</a><span class="kw">fn </span>build_output_stack(config: <span class="kw-2">&amp;</span>LoggingConfiguration) -&gt; <span class="prelude-ty">Result</span>&lt;(OutputStack, Vec&lt;WorkerGuard&gt;), GenericError&gt; {
+<a href=#122 id=122 data-nosnippet>122</a>    <span class="kw">let </span><span class="kw-2">mut </span>layers: OutputStack = Vec::new();
+<a href=#123 id=123 data-nosnippet>123</a>    <span class="kw">let </span><span class="kw-2">mut </span>guards = Vec::new();
+<a href=#124 id=124 data-nosnippet>124</a>
+<a href=#125 id=125 data-nosnippet>125</a>    <span class="kw">if </span>config.log_to_console {
+<a href=#126 id=126 data-nosnippet>126</a>        <span class="kw">let </span>(nb_stdout, guard) = writer_to_nonblocking(<span class="string">"console"</span>, std::io::stdout());
+<a href=#127 id=127 data-nosnippet>127</a>        guards.push(guard);
+<a href=#128 id=128 data-nosnippet>128</a>        layers.push(build_formatting_layer(config, nb_stdout));
+<a href=#129 id=129 data-nosnippet>129</a>    }
+<a href=#130 id=130 data-nosnippet>130</a>
+<a href=#131 id=131 data-nosnippet>131</a>    <span class="kw">if </span>!config.log_file.is_empty() {
+<a href=#132 id=132 data-nosnippet>132</a>        <span class="kw">let </span>appender_builder = RollingFileAppenderBase::builder();
+<a href=#133 id=133 data-nosnippet>133</a>        <span class="kw">let </span>appender = appender_builder
+<a href=#134 id=134 data-nosnippet>134</a>            .filename(config.log_file.clone())
+<a href=#135 id=135 data-nosnippet>135</a>            .max_filecount(config.log_file_max_rolls)
+<a href=#136 id=136 data-nosnippet>136</a>            .condition_max_file_size(config.log_file_max_size.as_u64())
+<a href=#137 id=137 data-nosnippet>137</a>            .build()
+<a href=#138 id=138 data-nosnippet>138</a>            .map_err(|e| <span class="macro">generic_error!</span>(<span class="string">"Failed to build log file appender: {}"</span>, e))<span class="question-mark">?</span>;
+<a href=#139 id=139 data-nosnippet>139</a>
+<a href=#140 id=140 data-nosnippet>140</a>        <span class="kw">let </span>(nb_appender, guard) = writer_to_nonblocking(<span class="string">"file"</span>, appender);
+<a href=#141 id=141 data-nosnippet>141</a>        guards.push(guard);
+<a href=#142 id=142 data-nosnippet>142</a>        layers.push(build_formatting_layer(config, nb_appender));
+<a href=#143 id=143 data-nosnippet>143</a>    }
+<a href=#144 id=144 data-nosnippet>144</a>
+<a href=#145 id=145 data-nosnippet>145</a>    <span class="prelude-val">Ok</span>((layers, guards))
+<a href=#146 id=146 data-nosnippet>146</a>}
+<a href=#147 id=147 data-nosnippet>147</a>
+<a href=#148 id=148 data-nosnippet>148</a><span class="kw">fn </span>writer_to_nonblocking&lt;W&gt;(writer_name: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, writer: W) -&gt; (NonBlocking, WorkerGuard)
+<a href=#149 id=149 data-nosnippet>149</a><span class="kw">where
+<a href=#150 id=150 data-nosnippet>150</a>    </span>W: Write + Send + <span class="lifetime">'static</span>,
+<a href=#151 id=151 data-nosnippet>151</a>{
+<a href=#152 id=152 data-nosnippet>152</a>    <span class="kw">let </span>thread_name = <span class="macro">format!</span>(<span class="string">"log-writer-{}"</span>, writer_name);
+<a href=#153 id=153 data-nosnippet>153</a>    NonBlockingBuilder::default()
+<a href=#154 id=154 data-nosnippet>154</a>        .thread_name(<span class="kw-2">&amp;</span>thread_name)
+<a href=#155 id=155 data-nosnippet>155</a>        .buffered_lines_limit(NB_LOG_WRITER_BUFFER_SIZE)
+<a href=#156 id=156 data-nosnippet>156</a>        .lossy(<span class="bool-val">true</span>)
+<a href=#157 id=157 data-nosnippet>157</a>        .finish(writer)
+<a href=#158 id=158 data-nosnippet>158</a>}
 </code></pre></div></section></main></body></html>

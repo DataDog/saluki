@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["acquire_logging_api_handler"],"struct":["LogLevel","LoggingAPIHandler","LoggingConfiguration"]};
+window.SIDEBAR_ITEMS = {"fn":["acquire_logging_api_handler"],"struct":["LogLevel","LoggingAPIHandler","LoggingConfiguration","LoggingOverrideWorker"]};

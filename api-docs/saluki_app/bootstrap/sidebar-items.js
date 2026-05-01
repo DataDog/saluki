@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["AppBootstrapper","BootstrapGuard"]};
+window.SIDEBAR_ITEMS = {"struct":["AppBootstrapper","Bootstrap","BootstrapGuard"]};
