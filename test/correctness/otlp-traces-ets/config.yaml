@@ -1,10 +1,10 @@
 type: correctness
 analysis_mode: traces
 millstone:
-  image: saluki-images/millstone:latest
+  image: saluki-images/correctness-tools:latest
   config_path: millstone.yaml
 datadog_intake:
-  image: saluki-images/datadog-intake:latest
+  image: saluki-images/correctness-tools:latest
   config_path: ../datadog-intake.yaml
 baseline:
   image: saluki-images/datadog-agent:testing-release
