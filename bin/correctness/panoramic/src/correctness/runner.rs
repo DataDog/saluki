@@ -33,7 +33,7 @@ use crate::{
 pub async fn run_correctness_test(name: String, config: Config, tctx: TestContext) -> TestResult {
     match config.runtime {
         Runtime::Docker => run_docker_correctness_test(name, config, tctx).await,
-        Runtime::Kind => crate::correctness::k8s::run_k8s_correctness_test(name, config, tctx).await,
+        Runtime::KubernetesInDocker => crate::correctness::k8s::run_k8s_correctness_test(name, config, tctx).await,
     }
 }
 

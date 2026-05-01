@@ -28,8 +28,8 @@ const CORRECTNESS_TIMEOUT: Duration = Duration::from_mins(20);
 pub enum Runtime {
     /// Run test groups as Docker containers.
     Docker,
-    /// Run test groups as pods in a kind Kubernetes cluster.
-    Kind,
+    /// Run test groups as pods in a kind (Kubernetes in Docker) cluster.
+    KubernetesInDocker,
 }
 
 fn default_millstone_binary_path() -> String {
@@ -178,7 +178,7 @@ impl Test for Config {
     fn runtime(&self) -> String {
         match self.runtime {
             Runtime::Docker => "docker".to_string(),
-            Runtime::Kind => "kubernetes_in_docker".to_string(),
+            Runtime::KubernetesInDocker => "kubernetes_in_docker".to_string(),
         }
     }
 

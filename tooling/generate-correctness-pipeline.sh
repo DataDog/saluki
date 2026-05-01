@@ -24,7 +24,7 @@ EOF
     | while IFS=$'\t' read -r case runtime baseline; do
 
         # Pick the right base mixin depending on runtime.
-        if [[ "${runtime}" == "kind" ]]; then
+        if [[ "${runtime}" == "kubernetes_in_docker" ]]; then
             base_mixin=".test-correctness-kind-definition"
         else
             base_mixin=".test-correctness-definition"

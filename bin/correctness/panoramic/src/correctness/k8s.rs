@@ -8,13 +8,13 @@ use k8s_openapi::{
     apimachinery::pkg::apis::meta::v1::ObjectMeta,
 };
 use kube::{
-    api::{Api, DeleteParams, PostParams},
+    api::{Api, DeleteParams, LogParams, PostParams},
     Client,
 };
 use rand::{distr::SampleString as _, rng};
 use rand_distr::Alphanumeric;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use tokio::{net::TcpListener, time::sleep};
+use tokio::{io::AsyncWriteExt as _, net::TcpListener, time::sleep};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
@@ -35,9 +35,9 @@ const POD_READY_TIMEOUT: Duration = Duration::from_secs(120);
 // Allow enough time for millstone to finish sending all metrics plus a buffer.
 const MILLSTONE_EXIT_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// Entry point called by the correctness runner when `runtime: kind` is set.
+/// Entry point called by the correctness runner when `runtime: kubernetes_in_docker` is set.
 pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestContext) -> TestResult {
-    let started = std::time::Instant::now();
+    let started = Instant::now();
 
     let client = match Client::try_default().await {
         Ok(c) => c,
@@ -144,6 +144,8 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
     }
 }
 
+const CONTAINER_NAMES: &[&str] = &["datadog-intake", "target", "millstone"];
+
 /// Runs one test group (baseline or comparison) as a multi-container pod.
 ///
 /// All three containers (datadog-intake, target agent, millstone) share the same pod and a single
@@ -151,7 +153,7 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
 /// communicate over `localhost` rather than container-name DNS.
 async fn run_group(
     client: Client, namespace: String, config: &Config, target_config: &crate::correctness::config::TargetConfig,
-    _log_dir: PathBuf,
+    log_dir: PathBuf,
 ) -> Result<CollectedData, GenericError> {
     let millstone_cfg = config.millstone_config();
     let intake_cfg = config.datadog_intake_config();
@@ -217,7 +219,24 @@ async fn run_group(
         .await
         .with_error_context(|| format!("Pod in namespace '{}' failed to reach Running phase", namespace))?;
 
-    // 5. Start a local port-forward to datadog-intake's port 2049.
+    // 5. Stream container logs to the log directory (best-effort; errors are logged and ignored).
+    {
+        if let Err(e) = tokio::fs::create_dir_all(&log_dir).await {
+            warn!("Failed to create log directory '{}': {}", log_dir.display(), e);
+        } else {
+            for &container in CONTAINER_NAMES {
+                let log_path = log_dir.join(format!("{}.log", container));
+                tokio::spawn(stream_container_logs(
+                    pod_api.clone(),
+                    POD_NAME,
+                    container.to_string(),
+                    log_path,
+                ));
+            }
+        }
+    }
+
+    // 7. Start a local port-forward to datadog-intake's port 2049.
     let pf_cancel = CancellationToken::new();
     let local_port = start_port_forward(
         client.clone(),
@@ -234,7 +253,7 @@ async fn run_group(
         local_port, POD_NAME
     );
 
-    // 6. Wait for the millstone container to exit successfully.
+    // 8. Wait for the millstone container to exit successfully.
     wait_for_millstone_exit(&pod_api, POD_NAME, MILLSTONE_EXIT_TIMEOUT)
         .await
         .with_error_context(|| format!("Millstone container in namespace '{}' did not exit cleanly", namespace))?;
@@ -244,10 +263,10 @@ async fn run_group(
         namespace, FLUSH_WAIT_SECS
     );
 
-    // 7. Wait for the aggregation flush interval.
+    // 9. Wait for the aggregation flush interval.
     sleep(Duration::from_secs(FLUSH_WAIT_SECS)).await;
 
-    // 8. Collect telemetry from datadog-intake via the forwarded port.
+    // 10. Collect telemetry from datadog-intake via the forwarded port.
     let data = CollectedData::for_port(local_port).await.with_error_context(|| {
         format!(
             "Failed to collect telemetry from datadog-intake in namespace '{}'",
@@ -628,6 +647,42 @@ async fn wait_for_millstone_exit(pods: &Api<Pod>, pod_name: &str, timeout: Durat
 
         sleep(POD_POLL_INTERVAL).await;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Container log streaming
+// ---------------------------------------------------------------------------
+
+/// Streams logs from a single container to a file. Runs as a background task; errors are logged
+/// and the task exits cleanly when the pod is deleted.
+async fn stream_container_logs(pods: Api<Pod>, pod_name: &'static str, container: String, path: PathBuf) {
+    let params = LogParams {
+        container: Some(container.clone()),
+        follow: true,
+        ..Default::default()
+    };
+
+    let stream = match pods.log_stream(pod_name, &params).await {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("Failed to start log stream for container '{}': {}", container, e);
+            return;
+        }
+    };
+
+    let mut file = match tokio::fs::File::create(&path).await {
+        Ok(f) => f,
+        Err(e) => {
+            warn!("Failed to create log file '{}': {}", path.display(), e);
+            return;
+        }
+    };
+
+    use tokio_util::compat::FuturesAsyncReadCompatExt as _;
+    if let Err(e) = tokio::io::copy(&mut stream.compat(), &mut file).await {
+        debug!("Log stream for container '{}' ended: {}", container, e);
+    }
+    let _ = file.flush().await;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 type: correctness
-runtime: kind
+runtime: kubernetes_in_docker
 analysis_mode: metrics
 millstone:
   image: saluki-images/millstone:latest
