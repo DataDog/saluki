@@ -8,11 +8,10 @@ use std::{
 use async_trait::async_trait;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
-use tokio_util::sync::CancellationToken;
 
 use crate::correctness::config::Config as CorrectnessConfig;
 use crate::reporter::TestResult;
-use crate::test::{RuntimeConfig, Test, TestContext, TestSuite};
+use crate::test::{Test, TestContext, TestSuite};
 
 /// A duration that can be parsed from human-readable strings like "10s", "1m", "500ms".
 #[derive(Clone, Debug)]
@@ -115,15 +114,6 @@ pub struct IntegrationConfig {
     /// Base path for resolving relative file paths.
     #[serde(skip)]
     pub base_path: PathBuf,
-
-    #[serde(skip)]
-    pub(crate) log_dir: Option<PathBuf>,
-
-    #[serde(skip)]
-    pub(crate) mounts_dir: PathBuf,
-
-    #[serde(skip)]
-    pub(crate) cancel_token: CancellationToken,
 }
 
 /// Container configuration for a test case.
@@ -346,12 +336,6 @@ impl Test for IntegrationConfig {
 
     fn timeout(&self) -> Duration {
         self.timeout.0
-    }
-
-    fn set_runtime_config(&mut self, config: RuntimeConfig) {
-        self.log_dir = config.log_dir;
-        self.mounts_dir = config.mounts_dir;
-        self.cancel_token = CancellationToken::new();
     }
 
     fn images(&self) -> BTreeMap<&str, String> {

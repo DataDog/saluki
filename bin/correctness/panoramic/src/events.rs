@@ -4,6 +4,7 @@
 //! or a logging consumer, depending on the output mode.
 
 use std::path::PathBuf;
+
 use tokio::sync::mpsc;
 
 use crate::reporter::TestResult;

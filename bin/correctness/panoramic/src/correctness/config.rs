@@ -12,11 +12,10 @@ use async_trait::async_trait;
 use saluki_config::ConfigurationLoader;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
-use tokio_util::sync::CancellationToken;
 
 use crate::correctness::analysis::AnalysisMode;
 use crate::reporter::TestResult;
-use crate::test::{RuntimeConfig, Test, TestContext, TestSuite};
+use crate::test::{Test, TestContext, TestSuite};
 
 fn default_millstone_binary_path() -> String {
     "/usr/local/bin/millstone".to_string()
@@ -62,15 +61,6 @@ pub struct Config {
 
     #[serde(skip, default = "PathBuf::new")]
     base_config_path: PathBuf,
-
-    #[serde(skip)]
-    pub(crate) log_dir: Option<PathBuf>,
-
-    #[serde(skip, default = "PathBuf::new")]
-    pub(crate) mounts_dir: PathBuf,
-
-    #[serde(skip)]
-    pub(crate) cancel_token: CancellationToken,
 }
 
 #[derive(Clone, Deserialize)]
@@ -152,12 +142,6 @@ impl Test for Config {
 
     fn description(&self) -> Option<String> {
         None
-    }
-
-    fn set_runtime_config(&mut self, config: RuntimeConfig) {
-        self.log_dir = config.log_dir;
-        self.mounts_dir = config.mounts_dir;
-        self.cancel_token = CancellationToken::new();
     }
 
     fn images(&self) -> BTreeMap<&str, String> {
