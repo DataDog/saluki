@@ -52,14 +52,20 @@
         https://kind.sigs.k8s.io/dl/v0.31.0/kind-linux-amd64
         && chmod +x /usr/local/bin/kind
     - kind create cluster --name ${KIND_CLUSTER_NAME} --wait 120s
-    - docker pull ${PANORAMIC_COMPARISON__IMAGE}
-    - docker pull ${PANORAMIC_BASELINE__IMAGE:-${PANORAMIC_COMPARISON__IMAGE}}
-    - docker pull ${PANORAMIC_MILLSTONE__IMAGE}
-    - docker pull ${PANORAMIC_DATADOG_INTAKE__IMAGE}
-    - kind load docker-image ${PANORAMIC_COMPARISON__IMAGE} --name ${KIND_CLUSTER_NAME}
-    - kind load docker-image ${PANORAMIC_BASELINE__IMAGE:-${PANORAMIC_COMPARISON__IMAGE}} --name ${KIND_CLUSTER_NAME}
-    - kind load docker-image ${PANORAMIC_MILLSTONE__IMAGE} --name ${KIND_CLUSTER_NAME}
-    - kind load docker-image ${PANORAMIC_DATADOG_INTAKE__IMAGE} --name ${KIND_CLUSTER_NAME}
+    - |
+      # Pull all images in parallel, then load them into kind in parallel.
+      # Baseline falls back to comparison image when not separately overridden.
+      BASELINE_IMAGE="${PANORAMIC_BASELINE__IMAGE:-${PANORAMIC_COMPARISON__IMAGE}}"
+      docker pull "${PANORAMIC_COMPARISON__IMAGE}" &
+      docker pull "${BASELINE_IMAGE}" &
+      docker pull "${PANORAMIC_MILLSTONE__IMAGE}" &
+      docker pull "${PANORAMIC_DATADOG_INTAKE__IMAGE}" &
+      wait
+      kind load docker-image "${PANORAMIC_COMPARISON__IMAGE}" --name "${KIND_CLUSTER_NAME}" &
+      kind load docker-image "${BASELINE_IMAGE}" --name "${KIND_CLUSTER_NAME}" &
+      kind load docker-image "${PANORAMIC_MILLSTONE__IMAGE}" --name "${KIND_CLUSTER_NAME}" &
+      kind load docker-image "${PANORAMIC_DATADOG_INTAKE__IMAGE}" --name "${KIND_CLUSTER_NAME}" &
+      wait
     - target/release/panoramic run -d $(pwd)/test/correctness -t ${CORRECTNESS_TEST_CASE} --no-tui
   after_script:
     - kind delete cluster --name ${KIND_CLUSTER_NAME} || true

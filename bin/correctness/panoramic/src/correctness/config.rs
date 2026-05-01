@@ -23,11 +23,10 @@ use crate::test::{Test, TestContext, TestSuite};
 const CORRECTNESS_TIMEOUT: Duration = Duration::from_mins(20);
 
 /// The container runtime backend to use for a correctness test.
-#[derive(Clone, Deserialize, Default, PartialEq, Eq)]
+#[derive(Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Runtime {
-    /// Run test groups as Docker containers (default).
-    #[default]
+    /// Run test groups as Docker containers.
     Docker,
     /// Run test groups as pods in a kind Kubernetes cluster.
     Kind,
@@ -51,7 +50,6 @@ pub struct Config {
     pub(crate) name: String,
 
     /// Container runtime backend to use.
-    #[serde(default)]
     pub runtime: Runtime,
 
     /// Analysis mode to use.

@@ -1,4 +1,5 @@
 type: correctness
+runtime: docker
 analysis_mode: events
 millstone:
   image: saluki-images/correctness-tools:latest
