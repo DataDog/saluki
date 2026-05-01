@@ -93,15 +93,19 @@ async fn delete_cluster(name: &str) -> Result<(), GenericError> {
 }
 
 async fn load_image(cluster_name: &str, image: &str) -> Result<(), GenericError> {
-    let status = Command::new("kind")
+    let output = Command::new("kind")
         .args(["load", "docker-image", image, "--name", cluster_name])
-        .status()
+        .output()
         .await
         .error_context("Failed to spawn kind load docker-image")?;
-    if !status.success() {
+    if !output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(generic_error!(
-            "'kind load docker-image {}' exited with non-zero status",
-            image
+            "'kind load docker-image {}' exited with non-zero status\nstdout: {}\nstderr: {}",
+            image,
+            stdout.trim(),
+            stderr.trim(),
         ));
     }
     Ok(())
