@@ -1342,11 +1342,11 @@
   },
   {
     "key": "log_to_syslog",
-    "feature_state": "MISSING",
-    "action": "IMPLEMENT",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Log to syslog daemon",
-    "reason": "Core agent supports log_to_syslog to direct log output to syslog. ADP has a TODO in logging/mod.rs but no implementation.",
-    "issue": "#1337",
+    "reason": "Implemented in ADP. No action needed.",
+    "issue": null,
     "adp_key": null
   },
   {
@@ -1743,6 +1743,24 @@
     "description": "Alias (unused) for blacklist key",
     "reason": "This key does not exist in the core agent — Saluki invented it as a rename of _blacklist.",
     "issue": "#1353",
+    "adp_key": null
+  },
+  {
+    "key": "syslog_rfc",
+    "feature_state": "PARITY",
+    "action": "NONE",
+    "description": "Use RFC-style syslog header",
+    "reason": "Implemented in ADP as a companion setting for log_to_syslog. No action needed.",
+    "issue": null,
+    "adp_key": null
+  },
+  {
+    "key": "syslog_uri",
+    "feature_state": "PARITY",
+    "action": "NONE",
+    "description": "Syslog destination URI",
+    "reason": "Implemented in ADP as a companion setting for log_to_syslog. Empty values use the platform default local syslog URI when syslog logging is enabled.",
+    "issue": null,
     "adp_key": null
   },
   {

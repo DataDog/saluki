@@ -26,7 +26,10 @@ mod config;
 pub use self::config::{LogLevel, LoggingConfiguration};
 
 mod layer;
-use self::layer::build_formatting_layer;
+use self::layer::{build_formatting_layer, build_syslog_formatting_layer};
+
+mod syslog;
+use self::syslog::SyslogWriter;
 
 // Number of buffered lines in each non-blocking log writer.
 //
@@ -86,8 +89,6 @@ impl LoggingGuard {
 pub(crate) async fn initialize_logging(
     config: LoggingConfiguration,
 ) -> Result<(LoggingGuard, LoggingOverrideWorker), GenericError> {
-    // TODO: Support for logging to syslog.
-
     // Build the initial output stack from the supplied configuration. This is later swappable via
     // `BootstrapGuard::reload_logging` once the Datadog Agent provides authoritative configuration.
     let (output_stack, worker_guards) = build_output_stack(&config)?;
@@ -142,6 +143,14 @@ fn build_output_stack(config: &LoggingConfiguration) -> Result<(OutputStack, Vec
         layers.push(build_formatting_layer(config, nb_appender));
     }
 
+    if config.log_to_syslog {
+        let syslog_writer = SyslogWriter::from_uri(&config.syslog_uri)
+            .map_err(|e| generic_error!("Failed to build syslog log writer: {}", e))?;
+        let (nb_syslog, guard) = writer_to_nonblocking("syslog", syslog_writer);
+        guards.push(guard);
+        layers.push(build_syslog_formatting_layer(config, nb_syslog));
+    }
+
     Ok((layers, guards))
 }
 
@@ -155,4 +164,106 @@ where
         .buffered_lines_limit(NB_LOG_WRITER_BUFFER_SIZE)
         .lossy(true)
         .finish(writer)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+
+    const TEST_SYSLOG_URI: &str = "udp://127.0.0.1:9";
+
+    #[test]
+    fn output_stack_skips_syslog_when_disabled() {
+        let config = logging_config_without_outputs();
+
+        let (layers, guards) = build_output_stack(&config).expect("build output stack");
+
+        assert_eq!(layers.len(), 0);
+        assert_eq!(guards.len(), 0);
+    }
+
+    #[test]
+    fn output_stack_adds_syslog_layer_and_guard_when_enabled() {
+        let config = logging_config_with_syslog(TEST_SYSLOG_URI);
+
+        let (layers, guards) = build_output_stack(&config).expect("build output stack with syslog");
+
+        assert_eq!(layers.len(), 1);
+        assert_eq!(guards.len(), 1);
+    }
+
+    #[test]
+    fn output_stack_fails_when_syslog_uri_is_invalid() {
+        let config = logging_config_with_syslog("http://127.0.0.1:514");
+
+        let error = match build_output_stack(&config) {
+            Ok(_) => panic!("invalid syslog URI should fail output stack build"),
+            Err(error) => error,
+        };
+
+        let error = error.to_string();
+        assert!(error.contains("Failed to build syslog log writer"));
+        assert!(error.contains("Unsupported syslog URI scheme 'http'"));
+    }
+
+    #[test]
+    fn reload_can_enable_change_disable_syslog_and_preserves_previous_stack_on_invalid_config() {
+        let config = logging_config_without_outputs();
+        let (output_stack, worker_guards) = build_output_stack(&config).expect("build initial output stack");
+        let (output_layer, stack_handle) = reload::Layer::new(output_stack);
+        let level_filter = config.log_level.as_env_filter();
+        let (filter_layer, filter_handle) = reload::Layer::new(level_filter.clone());
+        let base_filter = Arc::new(Mutex::new(level_filter));
+        let mut guard = LoggingGuard {
+            worker_guards,
+            stack_handle,
+            filter_handle,
+            base_filter,
+        };
+        let _keep_layers_alive = (output_layer, filter_layer);
+
+        guard
+            .reload(logging_config_with_syslog(TEST_SYSLOG_URI))
+            .expect("reload should enable syslog");
+        assert_eq!(guard.worker_guards.len(), 1);
+
+        guard
+            .reload(logging_config_with_syslog("udp://127.0.0.1:10"))
+            .expect("reload should change syslog URI");
+        assert_eq!(guard.worker_guards.len(), 1);
+
+        guard
+            .reload(logging_config_without_outputs())
+            .expect("reload should disable syslog");
+        assert_eq!(guard.worker_guards.len(), 0);
+
+        guard
+            .reload(logging_config_with_syslog(TEST_SYSLOG_URI))
+            .expect("reload should re-enable syslog");
+        assert_eq!(guard.worker_guards.len(), 1);
+
+        let error = guard
+            .reload(logging_config_with_syslog("http://127.0.0.1:514"))
+            .expect_err("invalid syslog URI should fail reload");
+        assert!(error.to_string().contains("Failed to build syslog log writer"));
+        assert_eq!(guard.worker_guards.len(), 1);
+    }
+
+    fn logging_config_without_outputs() -> LoggingConfiguration {
+        let mut config = LoggingConfiguration::simple();
+        config.log_to_console = false;
+        config.log_file.clear();
+        config.log_to_syslog = false;
+        config.syslog_uri.clear();
+        config
+    }
+
+    fn logging_config_with_syslog(uri: &str) -> LoggingConfiguration {
+        let mut config = logging_config_without_outputs();
+        config.log_to_syslog = true;
+        config.syslog_uri = uri.to_string();
+        config
+    }
 }

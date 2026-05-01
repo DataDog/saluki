@@ -3819,6 +3819,7 @@ dependencies = [
  "tracing-appender",
  "tracing-rolling-file",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

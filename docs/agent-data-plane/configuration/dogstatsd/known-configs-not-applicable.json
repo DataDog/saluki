@@ -2099,8 +2099,6 @@
   "synthetics.forwarder.use_compression",
   "synthetics.forwarder.use_v2_api",
   "synthetics.forwarder.zstd_compression_level",
-  "syslog_rfc",
-  "syslog_uri",
   "system_probe_config.adjusted",
   "system_probe_config.allow_prebuilt_fallback",
   "system_probe_config.allow_precompiled_fallback",

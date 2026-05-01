@@ -79,6 +79,24 @@ impl LoggingConfigurationTranslator {
             logging.log_to_console = to_console;
         }
 
+        if let Some(to_syslog) = read_permissive_bool(config, "log_to_syslog")? {
+            logging.log_to_syslog = to_syslog;
+        }
+
+        if let Some(syslog_rfc) = read_permissive_bool(config, "syslog_rfc")? {
+            logging.syslog_rfc = syslog_rfc;
+        }
+
+        if logging.log_to_syslog {
+            let configured = config
+                .try_get_typed::<String>("syslog_uri")
+                .error_context("Failed to read `syslog_uri`.")?;
+            logging.syslog_uri = match configured {
+                Some(uri) if !uri.is_empty() => uri,
+                _ => PlatformSettings::get_default_syslog_uri().to_string(),
+            };
+        }
+
         if let Some(max_size) = config
             .try_get_typed::<ByteSize>("log_file_max_size")
             .error_context("Failed to read `log_file_max_size`.")?
@@ -166,9 +184,20 @@ mod tests {
 
     use super::*;
 
-    async fn translate_filter(config_json: Option<Value>) -> Result<String, GenericError> {
+    async fn translate_logging(config_json: Option<Value>) -> Result<LoggingConfiguration, GenericError> {
         let (config, _) = ConfigurationLoader::for_tests(config_json, None, false).await;
-        LoggingConfigurationTranslator::translate(&config).map(|logging| logging.log_level.as_env_filter().to_string())
+        LoggingConfigurationTranslator::translate(&config)
+    }
+
+    async fn translate_logging_with_env(env_vars: &[(String, String)]) -> Result<LoggingConfiguration, GenericError> {
+        let (config, _) = ConfigurationLoader::for_tests(None, Some(env_vars), false).await;
+        LoggingConfigurationTranslator::translate(&config)
+    }
+
+    async fn translate_filter(config_json: Option<Value>) -> Result<String, GenericError> {
+        translate_logging(config_json)
+            .await
+            .map(|logging| logging.log_level.as_env_filter().to_string())
     }
 
     async fn translate_filter_directives(config_json: Option<Value>) -> Result<Vec<String>, GenericError> {
@@ -256,5 +285,125 @@ mod tests {
             .expect_err("invalid log level should fail");
 
         assert!(error.to_string().contains("log_level"));
+    }
+
+    #[tokio::test]
+    async fn missing_syslog_values_default_to_disabled() {
+        let logging = translate_logging(None).await.expect("translate logging config");
+
+        assert!(!logging.log_to_syslog);
+        assert!(logging.syslog_uri.is_empty());
+        assert!(!logging.syslog_rfc);
+    }
+
+    #[tokio::test]
+    async fn yaml_syslog_values_are_translated() {
+        let logging = translate_logging(Some(json!({
+            "log_to_syslog": true,
+            "syslog_uri": "udp://127.0.0.1:1514",
+            "syslog_rfc": true,
+        })))
+        .await
+        .expect("translate logging config");
+
+        assert!(logging.log_to_syslog);
+        assert_eq!(logging.syslog_uri, "udp://127.0.0.1:1514");
+        assert!(logging.syslog_rfc);
+    }
+
+    #[tokio::test]
+    async fn env_syslog_values_are_translated() {
+        let env_vars = [
+            ("LOG_TO_SYSLOG".to_string(), "true".to_string()),
+            ("SYSLOG_URI".to_string(), "tcp://127.0.0.1:1514".to_string()),
+            ("SYSLOG_RFC".to_string(), "1".to_string()),
+        ];
+        let logging = translate_logging_with_env(&env_vars)
+            .await
+            .expect("translate logging config");
+
+        assert!(logging.log_to_syslog);
+        assert_eq!(logging.syslog_uri, "tcp://127.0.0.1:1514");
+        assert!(logging.syslog_rfc);
+    }
+
+    #[tokio::test]
+    async fn enabled_syslog_with_missing_uri_uses_platform_default() {
+        let logging = translate_logging(Some(json!({ "log_to_syslog": true })))
+            .await
+            .expect("translate logging config");
+
+        assert!(logging.log_to_syslog);
+        assert_eq!(logging.syslog_uri, PlatformSettings::get_default_syslog_uri());
+    }
+
+    #[tokio::test]
+    async fn enabled_syslog_with_empty_uri_uses_platform_default() {
+        let logging = translate_logging(Some(json!({
+            "log_to_syslog": true,
+            "syslog_uri": "",
+        })))
+        .await
+        .expect("translate logging config");
+
+        assert!(logging.log_to_syslog);
+        assert_eq!(logging.syslog_uri, PlatformSettings::get_default_syslog_uri());
+    }
+
+    #[tokio::test]
+    async fn configured_syslog_uri_has_no_effect_when_syslog_is_disabled() {
+        let logging = translate_logging(Some(json!({
+            "log_to_syslog": false,
+            "syslog_uri": "udp://127.0.0.1:1514",
+        })))
+        .await
+        .expect("translate logging config");
+
+        assert!(!logging.log_to_syslog);
+        assert!(logging.syslog_uri.is_empty());
+    }
+
+    #[tokio::test]
+    async fn syslog_rfc_defaults_to_false_when_syslog_is_enabled() {
+        let logging = translate_logging(Some(json!({
+            "log_to_syslog": true,
+            "syslog_uri": "udp://127.0.0.1:1514",
+        })))
+        .await
+        .expect("translate logging config");
+
+        assert!(logging.log_to_syslog);
+        assert!(!logging.syslog_rfc);
+    }
+
+    #[tokio::test]
+    async fn data_plane_log_file_behavior_remains_unchanged_with_syslog_config() {
+        let logging = translate_logging(Some(json!({
+            "data_plane": {
+                "log_file": "/tmp/adp.log",
+            },
+            "log_to_syslog": true,
+        })))
+        .await
+        .expect("translate logging config");
+
+        assert_eq!(logging.log_file, "/tmp/adp.log");
+        assert!(logging.log_to_syslog);
+    }
+
+    #[tokio::test]
+    async fn disable_file_logging_behavior_remains_unchanged_with_syslog_config() {
+        let logging = translate_logging(Some(json!({
+            "disable_file_logging": true,
+            "data_plane": {
+                "log_file": "/tmp/adp.log",
+            },
+            "log_to_syslog": true,
+        })))
+        .await
+        .expect("translate logging config");
+
+        assert!(logging.log_file.is_empty());
+        assert!(logging.log_to_syslog);
     }
 }
