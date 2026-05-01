@@ -355,6 +355,13 @@ fn build_pod(cfg: PodConfig<'_>) -> Pod {
         })
         .collect();
 
+    // Disable ANSI color output in all containers so log files are plain text.
+    let no_color_env = EnvVar {
+        name: "NO_COLOR".to_string(),
+        value: Some("1".to_string()),
+        ..Default::default()
+    };
+
     let mut target_mounts = vec![
         VolumeMount {
             name: "airlock".to_string(),
@@ -397,6 +404,7 @@ fn build_pod(cfg: PodConfig<'_>) -> Pod {
                     name: "datadog-intake".to_string(),
                     image: Some(intake_image.to_string()),
                     command: Some(vec![intake_binary.to_string()]),
+                    env: Some(vec![no_color_env.clone()]),
                     image_pull_policy: Some("IfNotPresent".to_string()),
                     volume_mounts: Some(vec![VolumeMount {
                         name: "airlock".to_string(),
@@ -408,7 +416,11 @@ fn build_pod(cfg: PodConfig<'_>) -> Pod {
                 Container {
                     name: "target".to_string(),
                     image: Some(target_image.to_string()),
-                    env: Some(target_env),
+                    env: Some({
+                        let mut env = target_env;
+                        env.push(no_color_env.clone());
+                        env
+                    }),
                     image_pull_policy: Some("IfNotPresent".to_string()),
                     volume_mounts: Some(target_mounts),
                     ..Default::default()
@@ -418,6 +430,7 @@ fn build_pod(cfg: PodConfig<'_>) -> Pod {
                     image: Some(millstone_image.to_string()),
                     command: Some(vec!["/bin/sh".to_string()]),
                     args: Some(vec!["-c".to_string(), millstone_wait_cmd]),
+                    env: Some(vec![no_color_env]),
                     image_pull_policy: Some("IfNotPresent".to_string()),
                     volume_mounts: Some(vec![
                         VolumeMount {
