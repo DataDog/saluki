@@ -1,3 +1,5 @@
+#[cfg(unix)]
+use std::os::unix::net::{UnixDatagram, UnixStream};
 use std::{
     fmt, io,
     io::Write,
@@ -6,9 +8,6 @@ use std::{
 };
 
 use url::Url;
-
-#[cfg(unix)]
-use std::os::unix::net::{UnixDatagram, UnixStream};
 
 #[cfg(unix)]
 const SUPPORTED_SCHEMES: &str = "udp, tcp, unixgram, unix";
