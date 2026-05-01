@@ -1,5 +1,6 @@
-use std::time::Duration;
+use std::{sync::Mutex, time::Duration};
 
+use async_trait::async_trait;
 use metrics::Level;
 use saluki_api::{
     extract::{Query, State},
@@ -7,8 +8,11 @@ use saluki_api::{
     routing::{post, Router},
     APIHandler, StatusCode,
 };
-use saluki_common::task::spawn_traced_named;
-use saluki_core::observability::metrics::FilterHandle;
+use saluki_core::{
+    observability::metrics::FilterHandle,
+    runtime::{InitializationError, ProcessShutdown, Supervisable, SupervisorFuture},
+};
+use saluki_error::generic_error;
 use serde::Deserialize;
 use tokio::{select, sync::mpsc, time::sleep};
 use tracing::info;
@@ -42,17 +46,25 @@ pub struct MetricsAPIHandler {
 }
 
 impl MetricsAPIHandler {
-    pub(super) fn new(filter_handle: FilterHandle) -> Self {
-        // Spawn our background task that will handle override requests.
+    /// Creates a new `MetricsAPIHandler` and a paired [`MetricsOverrideWorker`].
+    ///
+    /// The worker must be added to a [`Supervisor`][saluki_core::runtime::Supervisor] for the handler's
+    /// override/reset routes to take effect; without it, requests are accepted but never applied.
+    pub(super) fn new(filter_handle: FilterHandle) -> (Self, MetricsOverrideWorker) {
         let (override_tx, override_rx) = mpsc::channel(1);
-        spawn_traced_named(
-            "dynamic-metrics-override-processor",
-            process_override_requests(filter_handle, override_rx),
-        );
+        let worker = MetricsOverrideWorker {
+            state: Mutex::new(Some(MetricsOverrideWorkerState {
+                filter_handle,
+                override_rx,
+            })),
+        };
 
-        Self {
-            state: MetricsHandlerState { override_tx },
-        }
+        (
+            Self {
+                state: MetricsHandlerState { override_tx },
+            },
+            worker,
+        )
     }
 
     async fn override_handler(
@@ -107,14 +119,66 @@ impl APIHandler for MetricsAPIHandler {
     }
 }
 
-async fn process_override_requests(filter_handle: FilterHandle, mut rx: mpsc::Receiver<Option<(Duration, Level)>>) {
+/// A worker that processes dynamic metric filter override requests sent via [`MetricsAPIHandler`].
+///
+/// Holds the receiving half of the override channel; the corresponding sender is held by the API handler
+/// (which is itself stored in a static after the metrics subsystem is initialized). The worker exits cleanly
+/// on either supervisor shutdown or channel close.
+///
+/// This worker is one-shot: a successful initialization consumes the receiver. Restart by the supervisor will
+/// fail with an initialization error, propagating up to bring the supervisor down. This matches the historical
+/// fire-and-forget semantics, since the corresponding sender held by [`MetricsAPIHandler`] would no longer have
+/// a live receiver to deliver to.
+pub struct MetricsOverrideWorker {
+    state: Mutex<Option<MetricsOverrideWorkerState>>,
+}
+
+struct MetricsOverrideWorkerState {
+    filter_handle: FilterHandle,
+    override_rx: mpsc::Receiver<Option<(Duration, Level)>>,
+}
+
+#[async_trait]
+impl Supervisable for MetricsOverrideWorker {
+    fn name(&self) -> &str {
+        "dynamic-metrics-override-processor"
+    }
+
+    async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
+        let MetricsOverrideWorkerState {
+            filter_handle,
+            override_rx,
+        } = self
+            .state
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or_else(|| InitializationError::Failed {
+                source: generic_error!("metrics override worker has already been initialized"),
+            })?;
+
+        Ok(Box::pin(async move {
+            process_override_requests(filter_handle, override_rx, process_shutdown).await;
+            Ok(())
+        }))
+    }
+}
+
+async fn process_override_requests(
+    filter_handle: FilterHandle, mut rx: mpsc::Receiver<Option<(Duration, Level)>>,
+    mut process_shutdown: ProcessShutdown,
+) {
     let mut override_active = false;
     let override_timeout = sleep(Duration::MAX);
 
     tokio::pin!(override_timeout);
 
+    let shutdown = process_shutdown.wait_for_shutdown();
+    tokio::pin!(shutdown);
+
     loop {
         select! {
+            _ = &mut shutdown => break,
             maybe_override = rx.recv() => match maybe_override {
                 Some(Some((duration, new_level))) => {
                     // TODO: Using the `Debug` representation of `Level` is noisy, and we should add a method upstream to

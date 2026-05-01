@@ -20,7 +20,7 @@ use tracing_subscriber::{layer::SubscriberExt as _, reload, util::SubscriberInit
 
 mod api;
 use self::api::set_logging_api_handler;
-pub use self::api::{acquire_logging_api_handler, LoggingAPIHandler};
+pub use self::api::{acquire_logging_api_handler, LoggingAPIHandler, LoggingOverrideWorker};
 
 mod config;
 pub use self::config::{LogLevel, LoggingConfiguration};
@@ -76,13 +76,16 @@ impl LoggingGuard {
 /// An API handler can be acquired (via [`acquire_logging_api_handler`]) to install the API routes which allow for
 /// dynamically controlling the logging level filtering. See [`LoggingAPIHandler`] for more information.
 ///
-/// Returns a [`LoggingGuard`] which must be held until the application is about to shutdown, ensuring that any
-/// configured logging backends are able to completely flush any pending logs before the application exits.
+/// Returns a [`LoggingGuard`] which must be held until the application is about to shutdown, plus a
+/// [`LoggingOverrideWorker`] that must be added to a [`Supervisor`][saluki_core::runtime::Supervisor] to drive
+/// the dynamic override processor; without the worker running, override requests are accepted but never applied.
 ///
 /// # Errors
 ///
 /// If the logging subsystem was already initialized, an error will be returned.
-pub(crate) async fn initialize_logging(config: LoggingConfiguration) -> Result<LoggingGuard, GenericError> {
+pub(crate) async fn initialize_logging(
+    config: LoggingConfiguration,
+) -> Result<(LoggingGuard, LoggingOverrideWorker), GenericError> {
     // TODO: Support for logging to syslog.
 
     // Build the initial output stack from the supplied configuration. This is later swappable via
@@ -97,18 +100,22 @@ pub(crate) async fn initialize_logging(config: LoggingConfiguration) -> Result<L
     // The base filter is the level the override-restore should land on after a `/logging/override` timeout. It starts
     // as the bootstrap level, and is updated by `LoggingGuard::reload` once the Agent's configuration is applied.
     let base_filter = Arc::new(Mutex::new(level_filter));
-    set_logging_api_handler(LoggingAPIHandler::new(base_filter.clone(), filter_handle.clone()));
+    let (api_handler, override_worker) = LoggingAPIHandler::new(base_filter.clone(), filter_handle.clone());
+    set_logging_api_handler(api_handler);
 
     tracing_subscriber::registry()
         .with(output_layer.with_filter(filter_layer))
         .try_init()?;
 
-    Ok(LoggingGuard {
-        worker_guards,
-        stack_handle,
-        filter_handle,
-        base_filter,
-    })
+    Ok((
+        LoggingGuard {
+            worker_guards,
+            stack_handle,
+            filter_handle,
+            base_filter,
+        },
+        override_worker,
+    ))
 }
 
 fn build_output_stack(config: &LoggingConfiguration) -> Result<(OutputStack, Vec<WorkerGuard>), GenericError> {

@@ -1,6 +1,7 @@
 //! Bootstrap utilities.
 
 use saluki_config::GenericConfiguration;
+use saluki_core::runtime::Supervisor;
 use saluki_error::{ErrorContext as _, GenericError};
 
 use crate::{
@@ -8,6 +9,20 @@ use crate::{
     metrics::initialize_metrics,
     tls::initialize_tls,
 };
+
+/// The result of running [`AppBootstrapper::bootstrap`].
+///
+/// Bundles together the [`BootstrapGuard`] that must be held for the lifetime of the application with the
+/// [`Supervisor`] that drives the background workers spawned during bootstrap. Callers must arrange for the
+/// supervisor to be run (either directly or by adding it to a parent supervisor) for those workers to make
+/// progress.
+pub struct Bootstrap {
+    /// Supervisor populated with workers for all background async tasks created during bootstrap.
+    pub supervisor: Supervisor,
+
+    /// Drop guard for resources acquired during bootstrap.
+    pub guard: BootstrapGuard,
+}
 
 /// A drop guard for ensuring deferred cleanup of resources acquired during bootstrap.
 pub struct BootstrapGuard {
@@ -79,26 +94,40 @@ impl AppBootstrapper {
 
     /// Executes the bootstrap operation, initializing all configured subsystems.
     ///
-    /// A [`BootstrapGuard`] is returned, which must be held until the application is ready to shut down. This guard
-    /// ensures that all relevant resources created during the bootstrap phase are properly cleaned up/flushed before
-    /// the application exits.
+    /// Returns a [`Bootstrap`] containing both a [`BootstrapGuard`] (which must be held until the application is
+    /// ready to shut down) and a [`Supervisor`] populated with workers for all background async tasks created
+    /// during bootstrap. Callers must arrange for the supervisor to run (typically by adding it to a parent
+    /// supervisor or calling [`Supervisor::run_with_shutdown`]) for those workers to make progress.
     ///
     /// # Errors
     ///
     /// If any of the bootstrap steps fail, an error will be returned.
-    pub async fn bootstrap(self) -> Result<BootstrapGuard, GenericError> {
+    pub async fn bootstrap(self) -> Result<Bootstrap, GenericError> {
         // Initialize the logging subsystem first, since we want to make it possible to get any logs from the rest of
         // the bootstrap process.
-        let logging_guard = initialize_logging(self.logging_config)
+        let (logging_guard, logging_override) = initialize_logging(self.logging_config)
             .await
             .error_context("Failed to initialize logging subsystem.")?;
 
         // Initialize everything else.
         initialize_tls().error_context("Failed to initialize TLS subsystem.")?;
-        initialize_metrics(self.metrics_config)
+        let metrics_workers = initialize_metrics(self.metrics_config)
             .await
             .error_context("Failed to initialize metrics subsystem.")?;
 
-        Ok(BootstrapGuard { logging_guard })
+        // Build the supervisor for all bootstrap-spawned background workers. The default ambient runtime mode is
+        // appropriate here: these are lightweight tasks that share the parent runtime, and the runtime metrics
+        // worker has already eagerly captured the parent's `Handle` so it always describes the right runtime.
+        let mut supervisor =
+            Supervisor::new("app-bootstrap").error_context("Failed to construct app bootstrap supervisor.")?;
+        supervisor.add_worker(logging_override);
+        supervisor.add_worker(metrics_workers.flusher);
+        supervisor.add_worker(metrics_workers.runtime);
+        supervisor.add_worker(metrics_workers.override_processor);
+
+        Ok(Bootstrap {
+            supervisor,
+            guard: BootstrapGuard { logging_guard },
+        })
     }
 }

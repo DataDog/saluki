@@ -7,9 +7,10 @@
 #![deny(missing_docs)]
 use std::time::Instant;
 
-use saluki_app::bootstrap::{AppBootstrapper, BootstrapGuard};
+use saluki_app::bootstrap::{AppBootstrapper, Bootstrap, BootstrapGuard};
 use saluki_components::config::{DatadogRemapper, KEY_ALIASES};
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
+use saluki_core::runtime::Supervisor;
 use saluki_error::{ErrorContext as _, GenericError};
 use tracing::{error, info, warn};
 
@@ -64,13 +65,25 @@ async fn main() -> Result<(), GenericError> {
         .error_context("Failed to parse bootstrap configuration during bootstrap phase.")?
         .with_metrics_prefix("adp")
         .with_logging_configuration(bootstrap_logging_config);
-    let mut bootstrap_guard = bootstrapper
+    let Bootstrap {
+        supervisor: bootstrap_supervisor,
+        guard: mut bootstrap_guard,
+    } = bootstrapper
         .bootstrap()
         .await
         .error_context("Failed to complete bootstrap phase.")?;
 
-    // Run the given subcommand.
-    let maybe_exit_code = run_inner(cli.action, started, bootstrap_config, &mut bootstrap_guard).await?;
+    // Run the given subcommand. The bootstrap supervisor is forwarded by value; only the long-lived `run`
+    // subcommand actually drives it (it is added as a child of the internal supervisor inside
+    // `handle_run_command`). All other subcommands drop it on entry.
+    let maybe_exit_code = run_inner(
+        cli.action,
+        started,
+        bootstrap_config,
+        &mut bootstrap_guard,
+        bootstrap_supervisor,
+    )
+    .await?;
 
     // Drop the bootstrap guard to ensure logs are flushed, etc.
     drop(bootstrap_guard);
@@ -85,6 +98,7 @@ async fn main() -> Result<(), GenericError> {
 
 async fn run_inner(
     action: Action, started: Instant, bootstrap_config: GenericConfiguration, bootstrap_guard: &mut BootstrapGuard,
+    bootstrap_supervisor: Supervisor,
 ) -> Result<Option<i32>, GenericError> {
     match action {
         Action::Run(cmd) => {
@@ -97,16 +111,17 @@ async fn run_inner(
                 }
             }
 
-            let exit_code = match handle_run_command(started, bootstrap_config, bootstrap_guard).await {
-                Ok(()) => {
-                    info!("Agent Data Plane stopped.");
-                    None
-                }
-                Err(e) => {
-                    error!("{:?}", e);
-                    Some(1)
-                }
-            };
+            let exit_code =
+                match handle_run_command(started, bootstrap_config, bootstrap_guard, bootstrap_supervisor).await {
+                    Ok(()) => {
+                        info!("Agent Data Plane stopped.");
+                        None
+                    }
+                    Err(e) => {
+                        error!("{:?}", e);
+                        Some(1)
+                    }
+                };
 
             // Remove the PID file, if configured.
             if let Some(pid_file) = &cmd.pid_file {

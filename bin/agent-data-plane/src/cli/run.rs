@@ -31,7 +31,7 @@ use saluki_components::{
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_core::health::HealthRegistry;
-use saluki_core::runtime::SupervisorError;
+use saluki_core::runtime::{Supervisor, SupervisorError};
 use saluki_core::topology::TopologyBlueprint;
 use saluki_env::EnvironmentProvider as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -62,6 +62,7 @@ pub struct RunCommand {
 /// Entrypoint for the `run` commands.
 pub async fn handle_run_command(
     started: Instant, bootstrap_config: GenericConfiguration, bootstrap_guard: &mut BootstrapGuard,
+    bootstrap_supervisor: Supervisor,
 ) -> Result<(), GenericError> {
     let app_details = saluki_metadata::get_app_details();
     info!(
@@ -178,6 +179,11 @@ pub async fn handle_run_command(
     )
     .await
     .error_context("Failed to create internal supervisor.")?;
+
+    // Attach the bootstrap supervisor as a child so its workers (logging/metrics override processors,
+    // metrics flusher, runtime metrics collector) are driven and shut down alongside the rest of the
+    // internal supervision tree.
+    internal_supervisor.add_worker(bootstrap_supervisor);
 
     // Create shutdown channel for the internal supervisor - we'll drive it in the main select loop
     let (internal_shutdown_tx, internal_shutdown_rx) = tokio::sync::oneshot::channel();
