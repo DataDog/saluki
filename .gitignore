@@ -21,4 +21,3 @@ fuzz/artifacts/
 fuzz/coverage/
 fuzz/corpus/
 heaptrack.*
-.claude/settings.local.json
