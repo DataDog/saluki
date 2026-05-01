@@ -355,13 +355,6 @@ fn build_pod(cfg: PodConfig<'_>) -> Pod {
         })
         .collect();
 
-    // Disable ANSI color output in all containers so log files are plain text.
-    let no_color_env = EnvVar {
-        name: "NO_COLOR".to_string(),
-        value: Some("1".to_string()),
-        ..Default::default()
-    };
-
     let mut target_mounts = vec![
         VolumeMount {
             name: "airlock".to_string(),
@@ -404,7 +397,6 @@ fn build_pod(cfg: PodConfig<'_>) -> Pod {
                     name: "datadog-intake".to_string(),
                     image: Some(intake_image.to_string()),
                     command: Some(vec![intake_binary.to_string()]),
-                    env: Some(vec![no_color_env.clone()]),
                     image_pull_policy: Some("IfNotPresent".to_string()),
                     volume_mounts: Some(vec![VolumeMount {
                         name: "airlock".to_string(),
@@ -416,11 +408,7 @@ fn build_pod(cfg: PodConfig<'_>) -> Pod {
                 Container {
                     name: "target".to_string(),
                     image: Some(target_image.to_string()),
-                    env: Some({
-                        let mut env = target_env;
-                        env.push(no_color_env.clone());
-                        env
-                    }),
+                    env: Some(target_env),
                     image_pull_policy: Some("IfNotPresent".to_string()),
                     volume_mounts: Some(target_mounts),
                     ..Default::default()
@@ -430,7 +418,6 @@ fn build_pod(cfg: PodConfig<'_>) -> Pod {
                     image: Some(millstone_image.to_string()),
                     command: Some(vec!["/bin/sh".to_string()]),
                     args: Some(vec!["-c".to_string(), millstone_wait_cmd]),
-                    env: Some(vec![no_color_env]),
                     image_pull_policy: Some("IfNotPresent".to_string()),
                     volume_mounts: Some(vec![
                         VolumeMount {
@@ -691,11 +678,47 @@ async fn stream_container_logs(pods: Api<Pod>, pod_name: &'static str, container
         }
     };
 
+    use tokio::io::AsyncReadExt as _;
     use tokio_util::compat::FuturesAsyncReadCompatExt as _;
-    if let Err(e) = tokio::io::copy(&mut stream.compat(), &mut file).await {
-        debug!("Log stream for container '{}' ended: {}", container, e);
+    let mut reader = stream.compat();
+    let mut buf = vec![0u8; 8192];
+    loop {
+        match reader.read(&mut buf).await {
+            Ok(0) => break,
+            Ok(n) => {
+                let stripped = strip_ansi_codes(&buf[..n]);
+                if let Err(e) = file.write_all(&stripped).await {
+                    warn!("Failed to write log chunk for container '{}': {}", container, e);
+                    break;
+                }
+            }
+            Err(e) => {
+                debug!("Log stream for container '{}' ended: {}", container, e);
+                break;
+            }
+        }
     }
     let _ = file.flush().await;
+}
+
+/// Removes ANSI escape sequences (`ESC[...letter`) from a byte slice.
+fn strip_ansi_codes(input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        // ESC [ ... <letter> — skip the entire sequence.
+        if input[i] == 0x1b && input.get(i + 1) == Some(&b'[') {
+            i += 2;
+            while i < input.len() && !input[i].is_ascii_alphabetic() {
+                i += 1;
+            }
+            i += 1; // skip the terminating letter
+        } else {
+            out.push(input[i]);
+            i += 1;
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
