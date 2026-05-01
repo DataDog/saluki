@@ -14,6 +14,9 @@ use tracing_subscriber::{layer::SubscriberExt as _, util::SubscriberInitExt as _
 use crate::runner::Runner;
 
 
+mod kind;
+use self::kind::KindLifecycle;
+
 mod assertions;
 mod cli;
 mod correctness;
@@ -138,6 +141,26 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         return ExitCode::from(2);
     }
 
+    // Set up a kind cluster if any of the selected tests require one (before test_cases is moved).
+    let kind_lifecycle = {
+        let images = collect_kind_images(&test_cases);
+        if images.is_empty() {
+            None
+        } else {
+            match KindLifecycle::ensure(cmd.kind_cluster_name.clone(), images).await {
+                Ok(lc) => Some(lc),
+                Err(e) => {
+                    if use_tui {
+                        eprintln!("Failed to set up kind cluster: {:?}", e);
+                    } else {
+                        error!("Failed to set up kind cluster: {:?}", e);
+                    }
+                    return ExitCode::from(2);
+                }
+            }
+        }
+    };
+
     // Inject runtime config and build the test registry.
     let mut registry = Runner::new(log_dir.clone(), cmd.mounts_dir.clone());
     for tc in test_cases {
@@ -182,11 +205,38 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         run_with_logging_consumer(rx, &cmd, Some(log_dir), runner_handle).await
     };
 
+    // Tear down the kind cluster unless the caller asked to keep it.
+    if let Some(lifecycle) = kind_lifecycle {
+        if cmd.no_delete_cluster {
+            info!(
+                "Skipping kind cluster teardown (--no-delete-cluster). \
+                 Cluster '{}' is still running.",
+                cmd.kind_cluster_name
+            );
+        } else {
+            lifecycle.teardown().await;
+        }
+    }
+
     if all_passed {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(1)
     }
+}
+
+/// Collects the unique set of images required by all kind-runtime tests in the given list.
+fn collect_kind_images(tests: &[Box<dyn test::Test>]) -> Vec<String> {
+    use std::collections::BTreeSet;
+    let mut images = BTreeSet::new();
+    for test in tests {
+        if test.runtime() == "kubernetes_in_docker" {
+            for (_, image) in test.images() {
+                images.insert(image);
+            }
+        }
+    }
+    images.into_iter().collect()
 }
 
 /// Run with the TUI consumer.

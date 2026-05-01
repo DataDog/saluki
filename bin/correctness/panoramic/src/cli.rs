@@ -62,6 +62,14 @@ pub struct RunCommand {
     /// compiled.
     #[argh(option, default = "default_mounts_dir()")]
     pub mounts_dir: PathBuf,
+
+    /// name of the kind cluster to create or reuse for kind-runtime tests
+    #[argh(option, default = "crate::kind::DEFAULT_CLUSTER_NAME.to_string()")]
+    pub kind_cluster_name: String,
+
+    /// do not delete the kind cluster after kind-runtime tests complete (useful for local iteration)
+    #[argh(switch)]
+    pub no_delete_cluster: bool,
 }
 
 impl RunCommand {

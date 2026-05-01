@@ -40,30 +40,8 @@
     PANORAMIC_BASELINE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
 
 # Common to every kind-based correctness-test job. Extends .test-correctness-definition
-# but wraps the panoramic invocation with kind cluster setup and teardown.
-# The cluster is scoped to this job via CI_JOB_ID to avoid collisions across parallel runs.
+# with a longer timeout. Cluster creation, image loading, and teardown are managed by
+# panoramic itself via the kind lifecycle in k8s.rs.
 .test-correctness-kind-definition:
   extends: .test-correctness-definition
   timeout: 20m
-  variables:
-    KIND_CLUSTER_NAME: saluki-correctness-${CI_JOB_ID}
-  script:
-    # kind is pre-installed in SALUKI_BUILD_CI_IMAGE via .ci/install-kind.sh.
-    - kind create cluster --name ${KIND_CLUSTER_NAME} --wait 120s
-    - |
-      # Pull all images in parallel, then load them into kind in parallel.
-      # Baseline falls back to comparison image when not separately overridden.
-      BASELINE_IMAGE="${PANORAMIC_BASELINE__IMAGE:-${PANORAMIC_COMPARISON__IMAGE}}"
-      docker pull "${PANORAMIC_COMPARISON__IMAGE}" &
-      docker pull "${BASELINE_IMAGE}" &
-      docker pull "${PANORAMIC_MILLSTONE__IMAGE}" &
-      docker pull "${PANORAMIC_DATADOG_INTAKE__IMAGE}" &
-      wait
-      kind load docker-image "${PANORAMIC_COMPARISON__IMAGE}" --name "${KIND_CLUSTER_NAME}" &
-      kind load docker-image "${BASELINE_IMAGE}" --name "${KIND_CLUSTER_NAME}" &
-      kind load docker-image "${PANORAMIC_MILLSTONE__IMAGE}" --name "${KIND_CLUSTER_NAME}" &
-      kind load docker-image "${PANORAMIC_DATADOG_INTAKE__IMAGE}" --name "${KIND_CLUSTER_NAME}" &
-      wait
-    - target/release/panoramic run -d $(pwd)/test/correctness -t ${CORRECTNESS_TEST_CASE} --no-tui
-  after_script:
-    - kind delete cluster --name ${KIND_CLUSTER_NAME} || true
