@@ -91,9 +91,10 @@ impl V1SamplingRatesHandle {
     /// Called by the V1 trace sampler transform whenever the core sampler's
     /// sliding window advances and produces new per-service rates.
     pub fn set_all(&self, new_rates: FastHashMap<String, f64>) {
-        if let Ok(mut guard) = self.inner.write() {
-            guard.set_all(new_rates);
-        }
+        // Recover from lock poisoning consistently with the read side — if another
+        // thread panicked holding the lock, the data inside is still valid to update.
+        let mut guard = self.inner.write().unwrap_or_else(|e| e.into_inner());
+        guard.set_all(new_rates);
     }
 
     /// Returns the appropriate response for a tracer's `/v1.0/traces` request.
@@ -101,9 +102,15 @@ impl V1SamplingRatesHandle {
     /// `client_version` is the value of the `Datadog-Rates-Payload-Version` request
     /// header, or an empty string if the header was absent.
     pub fn get_response(&self, client_version: &str) -> RateResponse {
-        let guard = self.inner.read().expect("sampling rates lock poisoned");
+        let guard = self.inner.read().unwrap_or_else(|e| e.into_inner());
         let current_version = guard.version.clone();
-        if !client_version.is_empty() && client_version == current_version {
+        // An empty version means no rates have been computed yet — always send Updated
+        // so the tracer gets an explicit empty map rather than a stale "unchanged" reply.
+        // This matches the Go agent's treatment of version="" as a "no rates" sentinel.
+        let version_matches = !current_version.is_empty()
+            && !client_version.is_empty()
+            && client_version == current_version;
+        if version_matches {
             RateResponse::Unchanged { version: current_version }
         } else {
             RateResponse::Updated {
@@ -188,5 +195,18 @@ mod tests {
         handle.set_all(make_rates(&[("service:,env:", 1.0)]));
         let response = handle.get_response("");
         assert!(matches!(response, RateResponse::Updated { .. }));
+    }
+
+    #[test]
+    fn updated_response_before_any_set_all() {
+        // Before the sampler calls set_all, version is empty. A tracer that also
+        // has an empty version should still receive Updated (not Unchanged), matching
+        // the Go agent's treatment of version="" as "no rates computed yet".
+        let handle = V1SamplingRatesHandle::new();
+        let response = handle.get_response("");
+        assert!(
+            matches!(response, RateResponse::Updated { .. }),
+            "should return Updated before any set_all even when client version is also empty"
+        );
     }
 }

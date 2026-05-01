@@ -4,10 +4,7 @@
 //! Aggregates `Event::V1Trace` events into time-bucketed statistics using the same
 //! `SpanConcentrator` as the OTLP path, producing `Event::TraceStats` events.
 
-use std::{
-    sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -405,9 +402,10 @@ fn split_into_trace_stats(client_payloads: Vec<ClientStatsPayload>, max_entries_
     events
 }
 
-// Suppress the unused import warning for Arc — it's needed for TransformBuilder
-// impls that may use workload providers in the future.
-const _: Option<Arc<()>> = None;
+// TODO (#17): plumb a workload provider into V1ApmStatsTransformConfiguration so
+// that build_infra_tags can resolve container tags (kube_namespace, image_name,
+// etc.) from container_id — mirroring ApmStatsTransformConfiguration::with_workload_provider.
+// Until then, stats payloads from the V1 pipeline are missing container/k8s tags.
 
 #[cfg(test)]
 mod tests {

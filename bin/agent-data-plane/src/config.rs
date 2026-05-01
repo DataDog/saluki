@@ -116,7 +116,7 @@ impl DataPlaneConfiguration {
 
     /// Returns `true` if any data pipelines are enabled.
     pub const fn data_pipelines_enabled(&self) -> bool {
-        self.apm().enabled() || self.dogstatsd().enabled() || self.otlp().enabled()
+        self.topology_required()
     }
 
     /// Returns `true` if the primary topology needs to be built and run.
@@ -153,6 +153,14 @@ impl DataPlaneConfiguration {
         // We consider the traces pipeline to be enabled if:
         // - OTLP is enabled and not in proxy mode or proxy mode is enabled and proxy traces are disabled
         self.otlp().enabled() && (!self.otlp().proxy().enabled() || !self.otlp().proxy().proxy_traces())
+    }
+
+    /// Returns `true` if the APM pipeline is required.
+    ///
+    /// This indicates that the native APM trace ingestion pipeline (`apm_in` → `v1_traces_enrich` →
+    /// `v1_dd_traces_encode` / `v1_dd_apm_stats`) needs to be built.
+    pub const fn apm_pipeline_required(&self) -> bool {
+        self.apm().enabled()
     }
 }
 
@@ -327,6 +335,30 @@ mod tests {
     // The Core Agent owns the `use_dogstatsd` decision and communicates the result to ADP via
     // `data_plane.dogstatsd.enabled`. These tests guard against a regression where ADP starts
     // reading `use_dogstatsd` directly, which would let ADP and the Core Agent disagree.
+
+    #[tokio::test]
+    async fn apm_pipeline_required_when_apm_enabled() {
+        let (config, _) = ConfigurationLoader::for_tests(
+            Some(json!({ "data_plane": { "apm": { "enabled": true } } })),
+            None,
+            false,
+        )
+        .await;
+        let dp = DataPlaneConfiguration::from_configuration(&config).expect("parse config");
+        assert!(dp.apm_pipeline_required());
+    }
+
+    #[tokio::test]
+    async fn apm_pipeline_not_required_when_apm_disabled() {
+        let (config, _) = ConfigurationLoader::for_tests(
+            Some(json!({ "data_plane": { "apm": { "enabled": false } } })),
+            None,
+            false,
+        )
+        .await;
+        let dp = DataPlaneConfiguration::from_configuration(&config).expect("parse config");
+        assert!(!dp.apm_pipeline_required());
+    }
 
     #[tokio::test]
     async fn use_dogstatsd_true_does_not_enable_dogstatsd() {

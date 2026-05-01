@@ -73,6 +73,17 @@ impl SynchronousTransformBuilder for V1TraceSamplerConfiguration {
             None
         };
 
+        // TODO: implement the probabilistic sampler path from the Go agent
+        // (agent.go ProbabilisticSamplerEnabled branch). Users who enable
+        // apm_config.probabilistic_sampler.enabled will silently receive
+        // the priority-sampler path instead.
+        if self.apm_config.probabilistic_sampler_enabled() {
+            tracing::warn!(
+                "apm_config.probabilistic_sampler.enabled is set but the V1 trace sampler \
+                 does not yet implement the probabilistic path; falling back to priority sampler"
+            );
+        }
+
         let sampler = V1TraceSampler {
             priority_sampler: V1PrioritySampler::new(
                 self.apm_config.default_env().clone(),
@@ -146,7 +157,12 @@ impl V1TraceSampler {
         let rare = self.rare_sampler.sample(chunk);
 
         // ── Manual/user drop: hard drop, no overrides possible ─────────────────
-        // isManualUserDropV1 (simplified): priority < 0.
+        // TODO: implement the full isManualUserDropV1 check from the Go agent:
+        // hard-drop should only fire when BOTH priority < 0 AND
+        // sampling_mechanism == manualSamplingV1 (4). As-written, any negative
+        // priority hard-drops even when it wasn't an explicit user drop, which
+        // prevents the rare/error samplers from overriding it.
+        // See: pkg/trace/agent/agent.go isManualUserDropV1
         if chunk.priority < 0 {
             chunk.dropped_trace = true;
             return false;
@@ -173,6 +189,11 @@ impl V1TraceSampler {
         };
 
         if keep {
+            // Normalize PRIORITY_NONE (-128) so the encoder never writes an undefined
+            // priority value into the proto. Go's runSamplers always lands on {-1,0,1,2}.
+            if chunk.priority == PRIORITY_NONE {
+                chunk.priority = PRIORITY_AUTO_KEEP;
+            }
             chunk.dropped_trace = false;
             return true;
         }
@@ -188,6 +209,10 @@ impl V1TraceSampler {
             }
         }
 
+        // Normalize PRIORITY_NONE on the drop path too.
+        if chunk.priority == PRIORITY_NONE {
+            chunk.priority = 0; // PRIORITY_AUTO_DROP
+        }
         debug!(
             trace_id_low = chunk.trace_id_low,
             priority = chunk.priority,

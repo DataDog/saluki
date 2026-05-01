@@ -16,3 +16,6 @@ pub use self::stats::DatadogApmStatsEncoderConfiguration;
 
 mod traces;
 pub use self::traces::DatadogTraceConfiguration;
+
+mod v1_traces;
+pub use self::v1_traces::V1DatadogTraceConfiguration;

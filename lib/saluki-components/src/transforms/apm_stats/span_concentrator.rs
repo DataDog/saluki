@@ -170,16 +170,13 @@ impl SpanConcentrator {
     /// Eligibility mirrors the OTLP path: the span must have `_top_level=1` or `_dd.measured=1` in
     /// its attributes, or `compute_stats_by_span_kind` must be enabled and the span's kind must be
     /// one of server/client/producer/consumer.  Partial snapshots (`_dd.partial_version`) are
-    /// always excluded.  Returns `true` if the span was added.
+    /// always excluded.
     pub fn add_v1_span_if_eligible(
         &mut self, span: &V1Span, weight: f64, payload_key: &PayloadAggregationKey, infra_tags: &InfraTags,
         origin: &str,
-    ) -> bool {
+    ) {
         if let Some(stat_span) = self.new_stat_span_from_v1_span(span) {
             self.add_span_internal(&stat_span, weight, payload_key, infra_tags, origin);
-            true
-        } else {
-            false
         }
     }
 

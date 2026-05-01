@@ -13,11 +13,11 @@ use saluki_app::{
 use saluki_components::{
     config::{DatadogRemapper, KEY_ALIASES},
     decoders::otlp::OtlpDecoderConfiguration,
-    destinations::{BlackholeConfiguration, DogStatsDStatisticsConfiguration},
+    destinations::DogStatsDStatisticsConfiguration,
     encoders::{
         BufferedIncrementalConfiguration, DatadogApmStatsEncoderConfiguration, DatadogEventsConfiguration,
         DatadogLogsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration,
-        DatadogTraceConfiguration,
+        DatadogTraceConfiguration, V1DatadogTraceConfiguration,
     },
     forwarders::{DatadogConfiguration, OtlpForwarderConfiguration},
     relays::otlp::OtlpRelayConfiguration,
@@ -313,6 +313,7 @@ async fn create_topology(
     if dp_config.metrics_pipeline_required()
         || dp_config.logs_pipeline_required()
         || dp_config.traces_pipeline_required()
+        || dp_config.apm_pipeline_required()
     {
         let dd_forwarder_config =
             DatadogConfiguration::from_configuration(config).error_context("Failed to configure Datadog forwarder.")?;
@@ -340,15 +341,16 @@ async fn create_topology(
         add_otlp_pipeline_to_blueprint(&mut blueprint, config, dp_config, env_provider)?;
     }
 
-    if dp_config.apm().enabled() {
-        add_apm_pipeline_to_blueprint(&mut blueprint, config, env_provider).await?;
+    if dp_config.apm_pipeline_required() {
+        add_apm_pipeline_to_blueprint(&mut blueprint, config, dp_config, env_provider).await?;
     }
 
     Ok(blueprint)
 }
 
 async fn add_apm_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
+    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, dp_config: &DataPlaneConfiguration,
+    env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
     let sampling_rates = V1SamplingRatesHandle::new();
 
@@ -368,6 +370,11 @@ async fn add_apm_pipeline_to_blueprint(
         .with_transform_builder("v1_trace_obfuscation", v1_trace_obfuscation_config)
         .with_transform_builder("v1_trace_sampler", v1_trace_sampler_config);
 
+    let v1_dd_traces_config = V1DatadogTraceConfiguration::from_configuration(config)
+        .error_context("Failed to configure V1 Datadog Traces encoder.")?
+        .with_environment_provider(env_provider.clone())
+        .await?;
+
     let v1_apm_stats_config = V1ApmStatsTransformConfiguration::from_configuration(config)
         .error_context("Failed to configure V1 APM stats transform.")?
         .with_environment_provider(env_provider.clone())
@@ -377,10 +384,28 @@ async fn add_apm_pipeline_to_blueprint(
         .add_source("apm_in", apm_receiver_config)?
         .add_transform("v1_traces_enrich", v1_traces_enrich_config)?
         .add_transform("v1_dd_apm_stats", v1_apm_stats_config)?
-        .add_destination("apm_blackhole", BlackholeConfiguration)?
+        .add_encoder("v1_dd_traces_encode", v1_dd_traces_config)?
         .connect_component("v1_traces_enrich", ["apm_in.traces"])?
+        .connect_component("v1_dd_traces_encode", ["v1_traces_enrich"])?
         .connect_component("v1_dd_apm_stats", ["v1_traces_enrich"])?
-        .connect_component("apm_blackhole", ["v1_traces_enrich", "v1_dd_apm_stats"])?;
+        .connect_component("dd_out", ["v1_dd_traces_encode"])?;
+
+    // `dd_stats_encode` is shared with the OTLP traces pipeline when both are active.
+    // If OTLP traces are not present we own the encoder AND the dd_out edge for stats.
+    // If OTLP traces ARE present the encoder already exists and is already wired to
+    // dd_out — we only need to add v1_dd_apm_stats as a second upstream.
+    // Adding the dd_out edge unconditionally would create a duplicate graph edge that
+    // causes every stats payload to be forwarded twice.
+    blueprint.connect_component("dd_stats_encode", ["v1_dd_apm_stats"])?;
+    if !dp_config.traces_pipeline_required() {
+        let dd_apm_stats_encoder = DatadogApmStatsEncoderConfiguration::from_configuration(config)
+            .error_context("Failed to configure Datadog APM Stats encoder.")?
+            .with_environment_provider(env_provider.clone())
+            .await?;
+        blueprint
+            .add_encoder("dd_stats_encode", dd_apm_stats_encoder)?
+            .connect_component("dd_out", ["dd_stats_encode"])?;
+    }
 
     Ok(())
 }
