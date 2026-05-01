@@ -147,4 +147,7 @@ pub struct V1Trace {
     pub app_version: MetaString,
     /// Payload-level attributes.
     pub payload_attributes: Vec<V1KeyValue>,
+    /// Per-chunk weight from the `Datadog-Client-Dropped-P0-Traces` request header,
+    /// computed as `header_value / num_chunks_in_payload`. Zero if the header was absent.
+    pub client_dropped_p0s_weight: f64,
 }

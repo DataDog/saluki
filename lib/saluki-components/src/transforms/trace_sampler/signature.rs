@@ -22,37 +22,47 @@ fn write_hash(mut hash: u32, bytes: &[u8]) -> u32 {
     hash
 }
 
-pub(super) fn fnv1a_32(seed: &[u8], bytes: &[u8]) -> u32 {
+pub(crate) fn fnv1a_32(seed: &[u8], bytes: &[u8]) -> u32 {
     let hash = write_hash(OFFSET_32, seed);
     write_hash(hash, bytes)
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub(super) struct Signature(pub(super) u64);
+pub(crate) struct Signature(pub(super) u64);
 
 /// Service identifier for sampling rate lookups.
 ///
 /// Represents a unique (service name, environment) pair used as a key
 /// for storing and retrieving sampling rates in distributed sampling.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-pub(super) struct ServiceSignature {
+pub(crate) struct ServiceSignature {
     name: MetaString,
     env: MetaString,
 }
 
 impl ServiceSignature {
     /// Creates a new ServiceSignature from name and environment.
-    pub(super) fn new(name: impl Into<MetaString>, env: impl Into<MetaString>) -> Self {
+    pub(crate) fn new(name: impl Into<MetaString>, env: impl Into<MetaString>) -> Self {
         Self {
             name: name.into(),
             env: env.into(),
         }
     }
 
+    /// Returns the service name.
+    pub(crate) fn name(&self) -> &str {
+        self.name.as_ref()
+    }
+
+    /// Returns the environment.
+    pub(crate) fn env(&self) -> &str {
+        self.env.as_ref()
+    }
+
     /// Computes FNV-1a hash matching Go's ServiceSignature.Hash().
     ///
     /// The hash is computed over: `name + "," + env`
-    pub(super) fn hash(&self) -> Signature {
+    pub(crate) fn hash(&self) -> Signature {
         let mut h = OFFSET_32;
         h = write_hash(h, self.name.as_ref().as_bytes());
         h = write_hash(h, b",");

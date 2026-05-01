@@ -21,7 +21,7 @@ use saluki_components::{
     },
     forwarders::{DatadogConfiguration, OtlpForwarderConfiguration},
     relays::otlp::OtlpRelayConfiguration,
-    sources::{ApmReceiverConfiguration, DogStatsDConfiguration, OtlpConfiguration},
+    sources::{apm::sampling_rates::V1SamplingRatesHandle, ApmReceiverConfiguration, DogStatsDConfiguration, OtlpConfiguration},
     transforms::{
         AggregateConfiguration, ApmStatsTransformConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
         DogStatsDPrefixFilterConfiguration, HostEnrichmentConfiguration, HostTagsConfiguration,
@@ -349,11 +349,17 @@ async fn create_topology(
 async fn add_apm_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
 ) -> Result<(), GenericError> {
+    // Single construction point for the shared rate state.
+    // Mirrors: let dsd_stats_config = DogStatsDStatisticsConfiguration::new();
+    let sampling_rates = V1SamplingRatesHandle::new();
+
     let apm_receiver_config = ApmReceiverConfiguration::from_configuration(config)
-        .error_context("Failed to configure APM receiver.")?;
+        .error_context("Failed to configure APM receiver.")?
+        .with_sampling_rates(sampling_rates.clone());
 
     let v1_trace_sampler_config = V1TraceSamplerConfiguration::from_configuration(config)
-        .error_context("Failed to configure V1 trace sampler.")?;
+        .error_context("Failed to configure V1 trace sampler.")?
+        .with_sampling_rates(sampling_rates.clone());
 
     let v1_traces_enrich_config = ChainedConfiguration::default()
         .with_transform_builder("v1_apm_onboarding", V1ApmOnboardingConfiguration)

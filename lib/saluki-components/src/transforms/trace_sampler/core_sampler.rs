@@ -105,7 +105,7 @@ impl Sampler {
         }
     }
 
-    pub(super) fn count_weighted_sig(&mut self, now: SystemTime, signature: &Signature, n: f32) -> bool {
+    pub(crate) fn count_weighted_sig(&mut self, now: SystemTime, signature: &Signature, n: f32) -> bool {
         // All traces within the same `BUCKET_DURATION` interval share the same bucket_id
         let bucket_id = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() / BUCKET_DURATION.as_secs();
         let prev_bucket_id = self.last_bucket_id;

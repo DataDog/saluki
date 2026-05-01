@@ -28,14 +28,14 @@ use saluki_error::GenericError;
 use stringtheory::MetaString;
 use tracing::debug;
 
-mod catalog;
-mod core_sampler;
+pub(crate) mod catalog;
+pub(crate) mod core_sampler;
 mod errors;
 mod priority_sampler;
 mod probabilistic;
 mod rare_sampler;
 mod score_sampler;
-mod signature;
+pub(crate) mod signature;
 
 use self::probabilistic::PROB_RATE_KEY;
 use crate::common::datadog::{

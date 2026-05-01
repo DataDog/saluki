@@ -1,6 +1,7 @@
 //! Source implementations.
 
-mod apm;
+/// APM receiver source and shared sampling-rate state.
+pub mod apm;
 pub use self::apm::ApmReceiverConfiguration;
 
 mod dogstatsd;

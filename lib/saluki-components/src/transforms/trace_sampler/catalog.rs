@@ -28,7 +28,7 @@ struct CatalogEntry {
 ///
 /// The catalog maintains a bounded cache of service signatures, evicting
 /// the least recently used entries when the capacity is exceeded.
-pub(super) struct ServiceKeyCatalog {
+pub(crate) struct ServiceKeyCatalog {
     /// Map from ServiceSignature to slot token in the LRU slab.
     items: FastHashMap<ServiceSignature, u32>,
     /// LRU list of entries (front = most recently used).
@@ -98,6 +98,45 @@ impl ServiceKeyCatalog {
         }
 
         hash
+    }
+
+    /// Builds the sampling-rates-by-service map used in HTTP responses to tracers.
+    ///
+    /// Keys use the format `"service:<name>,env:<env>"`. The default rate (empty service,
+    /// empty env — `"service:,env:"`) is always present. Entries whose signature is absent
+    /// from `rates` are evicted from the catalog (they have received no traffic recently).
+    ///
+    /// When a service's env matches `agent_env`, an additional empty-env alias
+    /// `"service:<name>,env:"` is included so tracers that don't send an env tag still
+    /// receive a calibrated rate.
+    pub(crate) fn rates_by_service(
+        &mut self,
+        agent_env: &str,
+        rates: &FastHashMap<Signature, f64>,
+        default_rate: f64,
+    ) -> FastHashMap<String, f64> {
+        let mut result: FastHashMap<String, f64> = FastHashMap::default();
+        let mut stale: Vec<(ServiceSignature, u32)> = Vec::new();
+
+        for (svc_sig, &slot) in &self.items {
+            let sig = self.entries.peek(slot).sig;
+            if let Some(&rate) = rates.get(&sig) {
+                result.insert(format!("service:{},env:{}", svc_sig.name(), svc_sig.env()), rate);
+                if !svc_sig.env().is_empty() && svc_sig.env() == agent_env {
+                    result.insert(format!("service:{},env:", svc_sig.name()), rate);
+                }
+            } else {
+                stale.push((svc_sig.clone(), slot));
+            }
+        }
+
+        for (key, slot) in stale {
+            self.entries.remove(slot);
+            self.items.remove(&key);
+        }
+
+        result.insert("service:,env:".to_string(), default_rate);
+        result
     }
 }
 
