@@ -1,6 +1,6 @@
 # Configuring DogStatsD on Agent Data Plane
 
-<!-- Last updated: 2026-04-29 -->
+<!-- Last updated: 2026-05-01 -->
 
 The DogStatsD implementation on ADP has been redesigned in Rust for better resource guarantees and
 efficiency. Because the architecture is different from the original implementation, certain
@@ -83,8 +83,27 @@ default values.
 | `log_level`                           | Log verbosity directives         | Controls Agent logs       | Plain levels control ADP/Saluki-owned targets only |
 | `logging_frequency`                   | Transaction success log interval | Throttles success logs    | Intentionally unused                     |
 | `serializer_zstd_compressor_level`   | Zstd compression level           | Default level 1           | Default level 3 (intentional)            |
+| `skip_ssl_validation`                 | Skip TLS cert validation         | Disables validation for outbound HTTPS clients | Applies to the shared Datadog forwarder; rejected in FIPS mode |
 | `statsd_metric_namespace_blacklist`  | Prefixes exempt from namespace   | `_blacklist` key          | Use `_blocklist` key ([#1353])           |
 | `telemetry.enabled`                  | Global telemetry toggle          | Agent toggle              | Use `data_plane.telemetry_enabled` ([#1338]) |
+
+### Datadog intake TLS validation (`skip_ssl_validation`)
+
+ADP supports `skip_ssl_validation` for Datadog intake forwarding through the shared Datadog
+forwarder. The default is `false`, which preserves normal server certificate validation. To accept
+invalid server certificates for Datadog intake requests, set `skip_ssl_validation: true` or
+`DD_SKIP_SSL_VALIDATION=true`.
+
+When enabled, this setting affects the Datadog intake clients used by metrics, logs, traces, events,
+and service checks that flow through the shared forwarder.
+
+> [!WARNING]
+> Setting `skip_ssl_validation: true` disables TLS server certificate validation for Datadog intake
+> forwarding. Use it only when you understand and accept that risk.
+
+This setting does not affect ADP IPC, local privileged APIs, ADP control-plane clients, OTLP
+proxying to the core agent, or unrelated HTTP clients. In FIPS builds, ADP rejects
+`skip_ssl_validation: true` because disabling TLS certificate validation is not FIPS-compliant.
 
 ### Logging verbosity (`log_level` / `logging_frequency`)
 
@@ -200,7 +219,6 @@ ways that are not yet fully characterized.
 | `serializer_max_series_points_per_payload`         | Max series points per payload    |         |
 | `serializer_max_series_uncompressed_payload_size`  | Max series uncompressed size     |         |
 | `serializer_max_uncompressed_payload_size`         | Max uncompressed payload size    |         |
-| `skip_ssl_validation`                              | Skip TLS cert validation         |         |
 | `statsd_metric_blocklist`                          | Metric name blocklist            | [#1433] |
 | `statsd_metric_blocklist_match_prefix`             | Blocklist matches by prefix      | [#1434] |
 | `statsd_metric_namespace`                          | Prefix prepended to all metrics  |         |

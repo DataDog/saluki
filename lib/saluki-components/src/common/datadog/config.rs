@@ -68,6 +68,14 @@ pub struct ForwarderConfiguration {
         rename = "forwarder_connection_reset_interval"
     )]
     connection_reset_interval_secs: u64,
+
+    /// Whether to disable TLS certificate validation for Datadog intake forwarding.
+    ///
+    /// Defaults to `false`. If set to `true`, HTTPS clients built for the shared Datadog forwarder accept invalid
+    /// server certificates. Only deployments that intentionally route Datadog intake traffic through endpoints with
+    /// invalid or self-signed certificates should enable this.
+    #[serde(default)]
+    skip_ssl_validation: bool,
 }
 
 impl ForwarderConfiguration {
@@ -119,6 +127,11 @@ impl ForwarderConfiguration {
     /// Returns the connection reset interval.
     pub const fn connection_reset_interval(&self) -> Duration {
         Duration::from_secs(self.connection_reset_interval_secs)
+    }
+
+    /// Returns whether TLS certificate validation is disabled for Datadog intake forwarding.
+    pub const fn skip_ssl_validation(&self) -> bool {
+        self.skip_ssl_validation
     }
 }
 
@@ -204,6 +217,30 @@ mod tests {
 
         let proxies = config.proxy().as_ref().unwrap().build().unwrap();
         assert_eq!(proxies[0].uri().to_string(), PROXY_B_URI);
+    }
+
+    #[tokio::test]
+    async fn skip_ssl_validation_defaults_to_false() {
+        let config = forwarder_config_from(base_config(), None).await;
+
+        assert!(!config.skip_ssl_validation());
+    }
+
+    #[tokio::test]
+    async fn skip_ssl_validation_set_via_yaml() {
+        let config = forwarder_config_from(config_with(serde_json::json!({ "skip_ssl_validation": true })), None).await;
+
+        assert!(config.skip_ssl_validation());
+    }
+
+    #[tokio::test]
+    async fn skip_ssl_validation_set_via_env_var() {
+        // SKIP_SSL_VALIDATION simulates DD_SKIP_SSL_VALIDATION: the test helper sets
+        // TEST_SKIP_SSL_VALIDATION, which from_environment("TEST") reads as skip_ssl_validation.
+        let env_vars = vec![("SKIP_SSL_VALIDATION".to_string(), "true".to_string())];
+        let config = forwarder_config_from(base_config(), Some(&env_vars)).await;
+
+        assert!(config.skip_ssl_validation());
     }
 }
 

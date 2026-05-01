@@ -9,7 +9,7 @@ repository = { workspace = true }
 workspace = true
 
 [features]
-tls-fips = ["saluki-tls/fips"]
+tls-fips = ["saluki-io/fips", "saluki-tls/fips"]
 
 [dependencies]
 arc-swap = { workspace = true }

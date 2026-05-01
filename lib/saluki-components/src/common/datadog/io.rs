@@ -11,7 +11,7 @@ use saluki_config::GenericConfiguration;
 use saluki_core::components::ComponentContext;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::{
-    client::http::{into_client_body, HttpClient},
+    client::http::{into_client_body, HttpClient, HttpClientBuilder},
     util::{
         middleware::{RetryCircuitBreakerError, RetryCircuitBreakerLayer},
         retry::{DiskUsageRetrieverImpl, PushResult, RetryQueue, Retryable},
@@ -25,7 +25,7 @@ use tokio::{
     task::JoinSet,
 };
 use tower::{Service, ServiceBuilder, ServiceExt as _};
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use super::{
     config::ForwarderConfiguration,
@@ -91,6 +91,48 @@ pub struct TransactionForwarder<B> {
     _marker: std::marker::PhantomData<B>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TlsCertificateValidation {
+    Enabled,
+    Disabled,
+}
+
+impl TlsCertificateValidation {
+    const fn from_forwarder_config(config: &ForwarderConfiguration) -> Self {
+        if config.skip_ssl_validation() {
+            Self::Disabled
+        } else {
+            Self::Enabled
+        }
+    }
+
+    fn apply_to(self, client_builder: HttpClientBuilder) -> Result<HttpClientBuilder, GenericError> {
+        self.ensure_supported()?;
+
+        Ok(match self {
+            Self::Enabled => client_builder,
+            Self::Disabled => {
+                warn!(
+                    config_key = "skip_ssl_validation",
+                    "TLS certificate validation is disabled for Datadog intake forwarding."
+                );
+                client_builder.with_tls_config(|builder| builder.danger_accept_invalid_certs())
+            }
+        })
+    }
+
+    fn ensure_supported(self) -> Result<(), GenericError> {
+        #[cfg(feature = "fips")]
+        if matches!(self, Self::Disabled) {
+            return Err(generic_error!(
+                "`skip_ssl_validation: true` is unsupported in FIPS mode because disabling TLS certificate validation is not FIPS-compliant."
+            ));
+        }
+
+        Ok(())
+    }
+}
+
 impl<B> TransactionForwarder<B>
 where
     B: Body + Buf + Clone + Unpin + Send + Sync + 'static,
@@ -117,6 +159,8 @@ where
         if config.connection_reset_interval() > Duration::ZERO {
             client_builder = client_builder.with_connection_age_limit(config.connection_reset_interval());
         }
+
+        client_builder = TlsCertificateValidation::from_forwarder_config(&config).apply_to(client_builder)?;
 
         let client = client_builder.build()?;
 
@@ -597,5 +641,170 @@ impl<T: Retryable> PendingTransactions<T> {
         push_result.merge(flush_result);
 
         Ok(push_result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, OnceLock};
+
+    use bytes::Bytes;
+    use http_body_util::Empty;
+    use rcgen::{generate_simple_self_signed, CertifiedKey};
+    use rustls::{
+        pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer},
+        RootCertStore, ServerConfig,
+    };
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        sync::mpsc,
+        time::{timeout, Duration},
+    };
+    use tokio_rustls::TlsAcceptor;
+
+    use super::*;
+
+    fn forwarder_config_from_value(value: serde_json::Value) -> ForwarderConfiguration {
+        serde_json::from_value(value).expect("ForwarderConfiguration should deserialize")
+    }
+
+    fn init_tls_crypto_provider() {
+        static INIT: OnceLock<()> = OnceLock::new();
+        INIT.get_or_init(|| {
+            let _ = saluki_tls::initialize_default_crypto_provider();
+        });
+    }
+
+    fn http_client_for_tls_validation(validation: TlsCertificateValidation) -> HttpClient {
+        let client_builder =
+            HttpClient::builder().with_tls_config(|builder| builder.with_root_cert_store(RootCertStore::empty()));
+
+        validation
+            .apply_to(client_builder)
+            .expect("TLS certificate validation policy should apply")
+            .build()
+            .expect("HTTP client should build")
+    }
+
+    async fn start_self_signed_https_server() -> (String, mpsc::Receiver<String>) {
+        init_tls_crypto_provider();
+
+        let CertifiedKey { cert, signing_key } = generate_simple_self_signed(["localhost".to_string()]).unwrap();
+        let cert_chain = vec![cert.der().clone()];
+        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(signing_key.serialize_der()));
+        let server_config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(cert_chain, key)
+            .unwrap();
+        let acceptor = TlsAcceptor::from(Arc::new(server_config));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (request_tx, request_rx) = mpsc::channel(4);
+
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let acceptor = acceptor.clone();
+                let request_tx = request_tx.clone();
+
+                tokio::spawn(async move {
+                    let mut stream = match acceptor.accept(stream).await {
+                        Ok(stream) => stream,
+                        Err(_) => return,
+                    };
+
+                    let mut request = Vec::new();
+                    let mut buf = [0u8; 1024];
+                    loop {
+                        match stream.read(&mut buf).await {
+                            Ok(0) => return,
+                            Ok(n) => {
+                                request.extend_from_slice(&buf[..n]);
+                                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                                    break;
+                                }
+                            }
+                            Err(_) => return,
+                        }
+                    }
+
+                    let request = String::from_utf8_lossy(&request).into_owned();
+                    let _ = request_tx.send(request).await;
+                    let _ = stream
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                        .await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+
+        (format!("https://127.0.0.1:{port}/"), request_rx)
+    }
+
+    #[test]
+    fn tls_certificate_validation_enabled_by_default() {
+        let config = forwarder_config_from_value(serde_json::json!({ "api_key": "test-api-key" }));
+
+        assert_eq!(
+            TlsCertificateValidation::from_forwarder_config(&config),
+            TlsCertificateValidation::Enabled
+        );
+    }
+
+    #[test]
+    fn tls_certificate_validation_disabled_when_skip_ssl_validation_enabled() {
+        let config = forwarder_config_from_value(serde_json::json!({
+            "api_key": "test-api-key",
+            "skip_ssl_validation": true,
+        }));
+
+        assert_eq!(
+            TlsCertificateValidation::from_forwarder_config(&config),
+            TlsCertificateValidation::Disabled
+        );
+    }
+
+    #[cfg(feature = "fips")]
+    #[test]
+    fn skip_ssl_validation_rejected_in_fips_mode() {
+        let error = TlsCertificateValidation::Disabled
+            .ensure_supported()
+            .expect_err("skip_ssl_validation should be rejected in FIPS mode");
+        let message = error.to_string();
+
+        assert!(message.contains("skip_ssl_validation"));
+        assert!(message.contains("FIPS mode"));
+        assert!(message.contains("disabling TLS certificate validation"));
+    }
+
+    #[tokio::test]
+    async fn skip_ssl_validation_rejects_self_signed_https_endpoint_by_default() {
+        let (uri, mut request_rx) = start_self_signed_https_server().await;
+        let mut client = http_client_for_tls_validation(TlsCertificateValidation::Enabled);
+        let request = http::Request::builder().uri(uri).body(Empty::<Bytes>::new()).unwrap();
+
+        let result = client.send(request).await;
+
+        assert!(result.is_err(), "self-signed certificate should be rejected");
+        assert!(
+            timeout(Duration::from_millis(200), request_rx.recv()).await.is_err(),
+            "server should not receive an HTTP request when certificate validation fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn skip_ssl_validation_allows_self_signed_https_endpoint_when_enabled() {
+        let (uri, mut request_rx) = start_self_signed_https_server().await;
+        let mut client = http_client_for_tls_validation(TlsCertificateValidation::Disabled);
+        let request = http::Request::builder().uri(uri).body(Empty::<Bytes>::new()).unwrap();
+
+        let response = client.send(request).await.expect("request should succeed");
+
+        assert_eq!(response.status(), http::StatusCode::OK);
+        let received_request = timeout(Duration::from_secs(2), request_rx.recv())
+            .await
+            .expect("timed out waiting for HTTPS request")
+            .expect("HTTPS request channel closed");
+        assert!(received_request.starts_with("GET / HTTP/1.1"));
     }
 }
