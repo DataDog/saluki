@@ -2,8 +2,8 @@ use std::{collections::BTreeMap, path::PathBuf, time::{Duration, Instant}};
 
 use k8s_openapi::{
     api::core::v1::{
-        ConfigMapVolumeSource, Container, EmptyDirVolumeSource, EnvVar, HostPathVolumeSource, Namespace, Pod, PodSpec,
-        Volume, VolumeMount,
+        ConfigMap, ConfigMapVolumeSource, Container, EmptyDirVolumeSource, EnvVar, HostPathVolumeSource, Namespace,
+        Pod, PodSpec, Volume, VolumeMount,
     },
     apimachinery::pkg::apis::meta::v1::ObjectMeta,
 };
@@ -15,12 +15,13 @@ use rand::{distr::SampleString as _, rng};
 use rand_distr::Alphanumeric;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::{net::TcpListener, time::sleep};
-use tracing::{debug, info};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, info, warn};
 
 use crate::{
     correctness::{
         analysis::{AnalysisMode, AnalysisRunner, CollectedData, TracesAnalysisOptions},
-        config::Config,
+        config::{Config, TargetConfig},
         runner::make_error_result,
     },
     reporter::{PhaseTiming, TestResult},
@@ -31,6 +32,8 @@ const POD_NAME: &str = "correctness-pod";
 const FLUSH_WAIT_SECS: u64 = 32;
 const POD_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const POD_READY_TIMEOUT: Duration = Duration::from_secs(120);
+// Allow enough time for millstone to finish sending all metrics plus a buffer.
+const MILLSTONE_EXIT_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Entry point called by the correctness runner when `runtime: kind` is set.
 pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestContext) -> TestResult {
@@ -56,16 +59,18 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
         baseline_ns, comparison_ns
     );
 
-    let spawn_start = Instant::now();
+    let run_start = Instant::now();
     let (baseline_result, comparison_result) = tokio::join!(
         run_group(client.clone(), baseline_ns.clone(), &config, &config.baseline, tctx.log_dir().join("baseline")),
         run_group(client.clone(), comparison_ns.clone(), &config, &config.comparison, tctx.log_dir().join("comparison")),
     );
-    let spawn_duration = spawn_start.elapsed();
+    let run_duration = run_start.elapsed();
 
     // Clean up both namespaces regardless of outcome.
-    cleanup_namespace(client.clone(), &baseline_ns).await;
-    cleanup_namespace(client.clone(), &comparison_ns).await;
+    tokio::join!(
+        cleanup_namespace(client.clone(), &baseline_ns),
+        cleanup_namespace(client.clone(), &comparison_ns),
+    );
 
     let (baseline_data, comparison_data) = match (baseline_result, comparison_result) {
         (Ok(b), Ok(c)) => (b, c),
@@ -94,8 +99,8 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
 
     let phase_timings = vec![
         PhaseTiming {
-            phase: "spawn_pods".to_string(),
-            duration: spawn_duration,
+            phase: "run_groups".to_string(),
+            duration: run_duration,
         },
         PhaseTiming {
             phase: "analysis".to_string(),
@@ -213,9 +218,16 @@ async fn run_group(
         .with_error_context(|| format!("Pod in namespace '{}' failed to reach Running phase", namespace))?;
 
     // 5. Start a local port-forward to datadog-intake's port 2049.
-    let local_port = start_port_forward(client.clone(), namespace.clone(), POD_NAME.to_string(), 2049)
-        .await
-        .error_context("Failed to start port-forward to datadog-intake")?;
+    let pf_cancel = CancellationToken::new();
+    let local_port = start_port_forward(
+        client.clone(),
+        namespace.clone(),
+        POD_NAME.to_string(),
+        2049,
+        pf_cancel.clone(),
+    )
+    .await
+    .error_context("Failed to start port-forward to datadog-intake")?;
 
     debug!(
         "Port-forward established: localhost:{} -> pod/{} port 2049",
@@ -223,7 +235,7 @@ async fn run_group(
     );
 
     // 6. Wait for the millstone container to exit successfully.
-    wait_for_millstone_exit(&pod_api, POD_NAME)
+    wait_for_millstone_exit(&pod_api, POD_NAME, MILLSTONE_EXIT_TIMEOUT)
         .await
         .with_error_context(|| format!("Millstone container in namespace '{}' did not exit cleanly", namespace))?;
 
@@ -242,6 +254,9 @@ async fn run_group(
             namespace
         )
     })?;
+
+    // Port-forward is no longer needed once data is collected.
+    pf_cancel.cancel();
 
     info!("Data collected from namespace '{}'.", namespace);
 
@@ -409,7 +424,7 @@ fn build_pod(cfg: PodConfig<'_>) -> Pod {
 /// Reads target `files:` entries, creates one ConfigMap per unique container directory,
 /// and returns the corresponding Volume and VolumeMount definitions.
 async fn build_agent_config_volumes(
-    client: Client, namespace: &str, config: &Config, target_config: &crate::correctness::config::TargetConfig,
+    client: Client, namespace: &str, config: &Config, target_config: &TargetConfig,
 ) -> Result<(Vec<Volume>, Vec<VolumeMount>), GenericError> {
     use std::path::Path;
 
@@ -502,10 +517,8 @@ async fn create_namespace(client: Client, name: &str) -> Result<(), GenericError
 async fn create_config_map(
     client: Client, namespace: &str, name: &str, data: BTreeMap<String, String>,
 ) -> Result<(), GenericError> {
-    use k8s_openapi::api::core::v1::ConfigMap;
-
     let cm_api: Api<ConfigMap> = Api::namespaced(client, namespace);
-    let cm = k8s_openapi::api::core::v1::ConfigMap {
+    let cm = ConfigMap {
         metadata: ObjectMeta {
             name: Some(name.to_string()),
             namespace: Some(namespace.to_string()),
@@ -524,7 +537,7 @@ async fn create_config_map(
 async fn cleanup_namespace(client: Client, name: &str) {
     let ns_api: Api<Namespace> = Api::all(client);
     if let Err(e) = ns_api.delete(name, &DeleteParams::default()).await {
-        tracing::warn!("Failed to delete namespace '{}': {}", name, e);
+        warn!("Failed to delete namespace '{}': {}", name, e);
     } else {
         debug!("Deleted namespace '{}'.", name);
     }
@@ -564,8 +577,17 @@ async fn wait_for_pod_running(pods: &Api<Pod>, pod_name: &str, timeout: Duration
     }
 }
 
-async fn wait_for_millstone_exit(pods: &Api<Pod>, pod_name: &str) -> Result<(), GenericError> {
+async fn wait_for_millstone_exit(pods: &Api<Pod>, pod_name: &str, timeout: Duration) -> Result<(), GenericError> {
+    let deadline = tokio::time::Instant::now() + timeout;
+
     loop {
+        if tokio::time::Instant::now() >= deadline {
+            return Err(generic_error!(
+                "Timed out waiting for millstone container in pod '{}' to exit",
+                pod_name
+            ));
+        }
+
         let pod = pods
             .get(pod_name)
             .await
@@ -612,9 +634,9 @@ async fn wait_for_millstone_exit(pods: &Api<Pod>, pod_name: &str) -> Result<(), 
 // ---------------------------------------------------------------------------
 
 /// Binds a local TCP listener and forwards each accepted connection to the given pod port.
-/// Returns the local ephemeral port number.
+/// Returns the local ephemeral port number. The forward runs until `cancel` is triggered.
 async fn start_port_forward(
-    client: Client, namespace: String, pod_name: String, pod_port: u16,
+    client: Client, namespace: String, pod_name: String, pod_port: u16, cancel: CancellationToken,
 ) -> Result<u16, GenericError> {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -626,22 +648,25 @@ async fn start_port_forward(
 
     tokio::spawn(async move {
         loop {
-            let Ok((mut conn, _)) = listener.accept().await else {
-                break;
-            };
-            let client = client.clone();
-            let namespace = namespace.clone();
-            let pod_name = pod_name.clone();
-            tokio::spawn(async move {
-                let pods: Api<Pod> = Api::namespaced(client, &namespace);
-                let Ok(mut pf) = pods.portforward(&pod_name, &[pod_port]).await else {
-                    return;
-                };
-                let Some(mut stream) = pf.take_stream(pod_port) else {
-                    return;
-                };
-                let _ = tokio::io::copy_bidirectional(&mut conn, &mut stream).await;
-            });
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                result = listener.accept() => {
+                    let Ok((mut conn, _)) = result else { break };
+                    let client = client.clone();
+                    let namespace = namespace.clone();
+                    let pod_name = pod_name.clone();
+                    tokio::spawn(async move {
+                        let pods: Api<Pod> = Api::namespaced(client, &namespace);
+                        let Ok(mut pf) = pods.portforward(&pod_name, &[pod_port]).await else {
+                            return;
+                        };
+                        let Some(mut stream) = pf.take_stream(pod_port) else {
+                            return;
+                        };
+                        let _ = tokio::io::copy_bidirectional(&mut conn, &mut stream).await;
+                    });
+                }
+            }
         }
     });
 
