@@ -503,6 +503,7 @@ async fn create_namespace(client: Client, name: &str) -> Result<(), GenericError
     let ns = Namespace {
         metadata: ObjectMeta {
             name: Some(name.to_string()),
+            labels: Some([("created-by".to_string(), "panoramic-kind".to_string())].into()),
             ..Default::default()
         },
         ..Default::default()

@@ -744,6 +744,14 @@ clean-airlock: ## Cleans up Airlock-related resources in Docker (used for correc
 	@docker volume ls --filter label=created_by=airlock -q | xargs -r docker volume rm -f
 	@docker network ls --filter label=created_by=airlock -q | xargs -r docker network rm -f
 
+.PHONY: clean-kind
+clean-kind: check-kind-tools ## Cleans up orphaned panoramic namespaces in the kind cluster (used for correctness tests)
+	@echo "[*] Cleaning panoramic-kind namespaces..."
+	@kubectl get namespace -l created-by=panoramic-kind -o name | xargs -r kubectl delete
+
+.PHONY: clean-correctness
+clean-correctness: clean-airlock clean-kind ## Cleans up all orphaned correctness test resources (Docker + kind)
+
 .PHONY: fmt
 fmt: check-rust-build-tools cargo-install-cargo-autoinherit cargo-install-cargo-sort
 fmt: ## Format Rust source code
