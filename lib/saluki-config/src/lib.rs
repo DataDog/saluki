@@ -12,6 +12,7 @@ use figment::{
     Figment, Provider,
 };
 use saluki_error::GenericError;
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use snafu::Snafu;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
@@ -791,6 +792,56 @@ impl GenericConfiguration {
             .unwrap()
             .extract()
             .map_err(|e| from_figment_error(&self.inner.lookup_sources, e))
+    }
+
+    /// Returns the merged configuration as a JSON object at the root.
+    ///
+    /// This is useful when callers need to inspect or edit top-level keys before deserializing into a struct — for
+    /// example removing a deprecated alias key that would otherwise conflict with a canonical key for the same Serde
+    /// field.
+    ///
+    /// ## Errors
+    ///
+    /// If the merged root is not a JSON object, or if conversion from the internal Figment value fails, an error is
+    /// returned.
+    pub fn merged_config_as_json_map(&self) -> Result<serde_json::Map<String, serde_json::Value>, ConfigurationError> {
+        let figment_root: figment::value::Value = self
+            .inner
+            .figment
+            .read()
+            .unwrap()
+            .extract()
+            .map_err(|e| from_figment_error(&self.inner.lookup_sources, e))?;
+
+        let json_root =
+            serde_json::to_value(&figment_root).map_err(|e| ConfigurationError::Generic { source: e.into() })?;
+
+        match json_root {
+            serde_json::Value::Object(map) => Ok(map),
+            other => Err(ConfigurationError::Generic {
+                source: saluki_error::generic_error!(
+                    "configuration root must be a JSON object, got {}",
+                    other
+                ),
+            }),
+        }
+    }
+
+    /// Deserializes the merged configuration as `T` via a JSON object map.
+    ///
+    /// Configuration is first converted to a [`serde_json::Map`] (see [`merged_config_as_json_map`][Self::merged_config_as_json_map]),
+    /// then deserialized with `serde_json`. This path tolerates scenarios where direct Figment extraction fails but
+    /// the merged view still has at most one value per JSON object key (later merged layers overwrite earlier ones).
+    ///
+    /// ## Errors
+    ///
+    /// If the merged root is not a JSON object, or if deserialization into `T` fails, an error is returned.
+    pub fn as_typed_allow_duplicate_keys<T>(&self) -> Result<T, ConfigurationError>
+    where
+        T: DeserializeOwned,
+    {
+        let json = serde_json::Value::Object(self.merged_config_as_json_map()?);
+        serde_json::from_value(json).map_err(|e| ConfigurationError::Generic { source: e.into() })
     }
 
     /// Subscribes for updates to the configuration.

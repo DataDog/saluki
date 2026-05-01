@@ -48,7 +48,6 @@ saluki-metrics = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
-serde_yaml = { workspace = true }
 stringtheory = { workspace = true }
 tokio = { workspace = true, features = [
   "macros",
