@@ -114,10 +114,10 @@ impl Default for Scrubber {
             repl_func: None,
         };
 
-        // Capture the closing `"` as $4 so the replacement can mask the secret ($3) without dropping the delimiter.
-        // Otherwise JSON like `"password":"secret"` becomes invalid and YAML/JSON parsers report EOF inside a quoted scalar.
+        // Capture the optional closing `"` as $4 so the replacement preserves it for JSON values without breaking
+        // unquoted values (plain text / YAML). Without $4, `"password":"secret"` → `"password":"********` (invalid JSON).
         let password_replacer = Replacer {
-            regex: Some(Regex::new(r#"(?i)(\"?(?:pass(?:word)?|pswd|pwd)\"?)((?:=| = |: )\"?)([0-9A-Za-z#!$%&'()*+,\-./:;<=>?@\[\\\]^_{|}~]+)(\")"#).unwrap()),
+            regex: Some(Regex::new(r#"(?i)(\"?(?:pass(?:word)?|pswd|pwd)\"?)((?:=| = |: )\"?)([0-9A-Za-z#!$%&'()*+,\-./:;<=>?@\[\\\]^_{|}~]+)(\"?)"#).unwrap()),
             repl: Some(b"$1$2********$4".to_vec()),
             hints: None,
             repl_func: None,
@@ -366,6 +366,12 @@ mod tests {
     #[test]
     fn test_password_yaml_double_quoted_value() {
         assert_clean("password: \"supersecret\"", "password: \"********\"");
+    }
+
+    #[test]
+    fn test_password_unquoted_value_still_scrubbed() {
+        assert_clean("password=supersecret", "password=********");
+        assert_clean("password: supersecret", "password: ********");
     }
 
     #[test]

@@ -830,6 +830,9 @@ impl GenericConfiguration {
     /// then deserialized with `serde_json`. This path tolerates scenarios where direct Figment extraction fails but
     /// the merged view still has at most one value per JSON object key (later merged layers overwrite earlier ones).
     ///
+    /// Note: all values are passed through `serde_json`'s type system (i64/u64/f64). Integers outside JSON's safe
+    /// range or types like `u128`/`i128` may lose precision; prefer [`as_typed`][Self::as_typed] for those cases.
+    ///
     /// ## Errors
     ///
     /// If the merged root is not a JSON object, or if deserialization into `T` fails, an error is returned.
