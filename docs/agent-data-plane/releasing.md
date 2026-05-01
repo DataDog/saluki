@@ -13,6 +13,7 @@ The release process for ADP roughly looks like this:
 - the additional CI jobs, once manually triggered, will publish ADP container images to various public container image
   registries
 - bump the version of ADP to the next development version
+- post a release announcement in the `#agent-data-plane` Slack channel
 
 ## Quick steps
 
@@ -40,6 +41,12 @@ The release process for ADP roughly looks like this:
 - Once complete, you should be able to navigate to a public container image registry that we use, such as [Docker
   Hub](https://hub.docker.com/r/datadog/agent-data-plane/tags), and find the resulting images: if the tag was `0.2.0`,
   you should be able to see a recently-published image with a tag that looks like `0.2.0` and `0.2.0-fips`.
+- Post a release announcement in the `#agent-data-plane` Slack channel
+  in the following format:
+  ```
+  Agent Data Plane vX.Y.Z: <link to GitHub release>
+  CI pipeline: <link to GitLab CI pipeline for the git tag>
+  ```
 
 ## Determining the version
 
