@@ -2,6 +2,7 @@ mod addr;
 pub use self::addr::{ConnectionAddress, GrpcTargetAddress, ListenAddress, ProcessCredentials};
 
 pub mod client;
+pub mod dns;
 pub mod listener;
 pub mod server;
 

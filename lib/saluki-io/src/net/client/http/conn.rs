@@ -9,7 +9,6 @@ use std::{
 };
 
 use http::{Extensions, Uri};
-use hyper_hickory::{TokioHickoryHttpConnector, TokioHickoryResolver};
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder, MaybeHttpsStream};
 use hyper_util::{
     client::legacy::connect::{CaptureConnection, Connected, Connection, HttpConnector},
@@ -22,6 +21,8 @@ use saluki_error::{ErrorContext as _, GenericError};
 use tokio::net::TcpStream;
 use tower::{BoxError, Service};
 use tracing::debug;
+
+use crate::net::dns::{HickoryHttpConnector, HickoryResolver};
 
 /// Imposes a limit on the age of a connection.
 ///
@@ -209,7 +210,7 @@ impl hyper::rt::Write for HttpsCapableConnection {
 /// of the URI host. Otherwise, connections are routed via the standard DNS + TCP path.
 #[derive(Clone)]
 struct InnerConnector {
-    http: TokioHickoryHttpConnector,
+    http: HickoryHttpConnector,
     connect_timeout: Duration,
     #[cfg(unix)]
     unix_socket_path: Option<Arc<std::path::Path>>,
@@ -346,7 +347,7 @@ impl HttpsCapableConnectorBuilder {
     pub fn build(self, tls_config: ClientConfig) -> Result<HttpsCapableConnector, GenericError> {
         let connect_timeout = self.connect_timeout.unwrap_or(Duration::from_secs(30));
 
-        let hickory_resolver = TokioHickoryResolver::from_system_conf()
+        let hickory_resolver = HickoryResolver::from_system_conf()
             .error_context("Failed to load system DNS configuration when creating DNS resolver for HTTP client.")?;
 
         // Create the HTTP connector, and ensure that we don't enforce _only_ HTTP, since that will break being able to

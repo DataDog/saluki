@@ -5,6 +5,7 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "warn"
 ignore = [
   { id = "RUSTSEC-2024-0436", reason = "paste is a stable crate and we do not consider it being unmaintained as a security risk" },
+  { id = "RUSTSEC-2026-0118", reason = "hickory-proto/hickory-net 0.26.1 should contain the fix but the advisory DB doesn't seem to be caught up yet" },
 ]
 
 [bans]
