@@ -5,9 +5,9 @@ subject_pattern: repo:DataDog/saluki:ref:refs/tags/[0-9]+\.[0-9]+\.[0-9]+
 
 claim_pattern:
   event_name: (push|workflow_dispatch)
-  ref: refs/tags/[0-9]+\.[0-9]+\.[0-9]+
-  ref_protected: "false"
   job_workflow_ref: DataDog/saluki/\.github/workflows/bump-adp-version\.yml@refs/tags/[0-9]+\.[0-9]+\.[0-9]+
+  ref: refs/tags/[0-9]+\.[0-9]+\.[0-9]+
+  repository: DataDog/saluki
 
 permissions:
   contents: write
