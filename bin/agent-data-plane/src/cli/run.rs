@@ -25,7 +25,8 @@ use saluki_components::{
     transforms::{
         AggregateConfiguration, ApmStatsTransformConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
         DogStatsDPrefixFilterConfiguration, HostEnrichmentConfiguration, HostTagsConfiguration,
-        TraceObfuscationConfiguration, TraceSamplerConfiguration, V1TraceSamplerConfiguration,
+        TraceObfuscationConfiguration, TraceSamplerConfiguration, V1ApmStatsTransformConfiguration,
+        V1TraceObfuscationConfiguration, V1TraceSamplerConfiguration,
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
@@ -340,22 +341,23 @@ async fn create_topology(
     }
 
     if dp_config.apm().enabled() {
-        add_apm_pipeline_to_blueprint(&mut blueprint, config).await?;
+        add_apm_pipeline_to_blueprint(&mut blueprint, config, env_provider).await?;
     }
 
     Ok(blueprint)
 }
 
 async fn add_apm_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
-    // Single construction point for the shared rate state.
-    // Mirrors: let dsd_stats_config = DogStatsDStatisticsConfiguration::new();
     let sampling_rates = V1SamplingRatesHandle::new();
 
     let apm_receiver_config = ApmReceiverConfiguration::from_configuration(config)
         .error_context("Failed to configure APM receiver.")?
         .with_sampling_rates(sampling_rates.clone());
+
+    let v1_trace_obfuscation_config = V1TraceObfuscationConfiguration::from_apm_configuration(config)
+        .error_context("Failed to configure V1 trace obfuscation.")?;
 
     let v1_trace_sampler_config = V1TraceSamplerConfiguration::from_configuration(config)
         .error_context("Failed to configure V1 trace sampler.")?
@@ -363,14 +365,22 @@ async fn add_apm_pipeline_to_blueprint(
 
     let v1_traces_enrich_config = ChainedConfiguration::default()
         .with_transform_builder("v1_apm_onboarding", V1ApmOnboardingConfiguration)
+        .with_transform_builder("v1_trace_obfuscation", v1_trace_obfuscation_config)
         .with_transform_builder("v1_trace_sampler", v1_trace_sampler_config);
+
+    let v1_apm_stats_config = V1ApmStatsTransformConfiguration::from_configuration(config)
+        .error_context("Failed to configure V1 APM stats transform.")?
+        .with_environment_provider(env_provider.clone())
+        .await?;
 
     blueprint
         .add_source("apm_in", apm_receiver_config)?
         .add_transform("v1_traces_enrich", v1_traces_enrich_config)?
+        .add_transform("v1_dd_apm_stats", v1_apm_stats_config)?
         .add_destination("apm_blackhole", BlackholeConfiguration)?
         .connect_component("v1_traces_enrich", ["apm_in.traces"])?
-        .connect_component("apm_blackhole", ["v1_traces_enrich"])?;
+        .connect_component("v1_dd_apm_stats", ["v1_traces_enrich"])?
+        .connect_component("apm_blackhole", ["v1_traces_enrich", "v1_dd_apm_stats"])?;
 
     Ok(())
 }

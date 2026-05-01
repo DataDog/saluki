@@ -152,8 +152,16 @@ impl ObfuscationConfig {
         &self.credit_cards
     }
 
+    pub fn set_credit_cards(&mut self, credit_cards: CreditCardObfuscationConfig) {
+        self.credit_cards = credit_cards;
+    }
+
     pub fn redis(&self) -> &RedisObfuscationConfig {
         &self.redis
+    }
+
+    pub fn set_redis(&mut self, redis: RedisObfuscationConfig) {
+        self.redis = redis;
     }
 
     pub fn valkey(&self) -> &ValkeyObfuscationConfig {

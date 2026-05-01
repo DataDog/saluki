@@ -35,10 +35,12 @@ use crate::common::{
 };
 
 mod aggregation;
-use self::aggregation::{process_tags_hash, PayloadAggregationKey};
+pub(crate) use self::aggregation::{process_tags_hash, PayloadAggregationKey};
+#[cfg(test)]
+pub(crate) use self::aggregation::BUCKET_DURATION_NS;
 
 mod span_concentrator;
-use self::span_concentrator::{InfraTags, SpanConcentrator};
+pub(crate) use self::span_concentrator::{InfraTags, SpanConcentrator};
 
 mod statsraw;
 

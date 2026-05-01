@@ -237,10 +237,20 @@ fn obfuscate_redis_cmd(out: &mut String, cmd: &str, args: &[String]) {
     let mut args = args.to_vec();
 
     match cmd_upper.as_str() {
-        "AUTH" => {
+        // AUTH, MIGRATE, HELLO: obfuscate all arguments by replacing the first with "?" and
+        // truncating. MIGRATE carries an inline AUTH password; HELLO carries AUTH credentials.
+        "AUTH" | "MIGRATE" | "HELLO" => {
             if !args.is_empty() {
                 args[0] = "?".to_string();
                 args.truncate(1);
+            }
+        }
+
+        // ACL: keep the subcommand (arg 0) and obfuscate all further arguments.
+        "ACL" => {
+            if args.len() > 1 {
+                args[1] = "?".to_string();
+                args.truncate(2);
             }
         }
 
@@ -316,7 +326,9 @@ fn obfuscate_redis_cmd(out: &mut String, cmd: &str, args: &[String]) {
 
 fn needs_obfuscation(cmd_upper: &str, args: &[String]) -> bool {
     match cmd_upper {
-        "AUTH" | "APPEND" | "GETSET" | "LPUSHX" | "GEORADIUSBYMEMBER" | "RPUSHX" | "SET" | "SETNX" | "SISMEMBER"
+        "AUTH" | "MIGRATE" | "HELLO" => !args.is_empty(),
+        "ACL" => args.len() > 1,
+        "APPEND" | "GETSET" | "LPUSHX" | "GEORADIUSBYMEMBER" | "RPUSHX" | "SET" | "SETNX" | "SISMEMBER"
         | "ZRANK" | "ZREVRANK" | "ZSCORE" | "HSETNX" | "LREM" | "LSET" | "SETBIT" | "SETEX" | "PSETEX" | "SETRANGE"
         | "ZINCRBY" | "SMOVE" | "RESTORE" | "LINSERT" | "GEOHASH" | "GEOPOS" | "GEODIST" | "LPUSH" | "RPUSH"
         | "SREM" | "ZREM" | "SADD" | "GEOADD" | "HSET" | "HMSET" | "MSET" | "MSETNX" | "ZADD" => true,
@@ -609,6 +621,20 @@ mod tests {
             ("ZADD key XX INCR score member", "ZADD key XX INCR score ?"),
             ("ZADD key XX INCR score", "ZADD key XX INCR score"),
             ("\nCONFIG command\nSET k v\n\t\t\t", "CONFIG command\nSET k ?"),
+            // MIGRATE, HELLO: obfuscate everything after the command (arg 0 → ?, truncate)
+            ("MIGRATE host port key 0 5000", "MIGRATE ?"),
+            ("MIGRATE host port \"\" 0 5000 COPY REPLACE AUTH secret", "MIGRATE ?"),
+            ("MIGRATE", "MIGRATE"),
+            ("HELLO 3 AUTH username secret SETNAME client", "HELLO ?"),
+            ("HELLO 3", "HELLO ?"),
+            ("HELLO", "HELLO"),
+            // ACL: keep subcommand (arg 0), obfuscate arg 1, truncate
+            ("ACL SETUSER alice on >password ~cached:* +get", "ACL SETUSER ?"),
+            ("ACL GETUSER alice", "ACL GETUSER ?"),
+            ("ACL DELUSER alice bob", "ACL DELUSER ?"),
+            ("ACL LIST", "ACL LIST"),
+            ("ACL WHOAMI", "ACL WHOAMI"),
+            ("ACL", "ACL"),
         ];
 
         for (input, expected) in cases {

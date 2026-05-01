@@ -35,6 +35,12 @@ const ALLOWLISTED_TAGS: &[&str] = &[
     "service",
     "sql.query",
     "version",
+    // Data Job Monitoring tags — these values are frequently similar to credit card numbers.
+    "databricks_job_id",
+    "databricks_job_run_id",
+    "databricks_task_run_id",
+    "config.spark_app_startTime",
+    "config.spark_databricks_job_parentRunId",
 ];
 
 /// Credit card obfuscator with configuration.
@@ -596,6 +602,38 @@ mod tests {
         );
         // Not a credit card -> None (unchanged)
         assert_eq!(obfuscator.obfuscate_credit_card_number("user.id", "12345"), None);
+    }
+
+    #[test]
+    fn test_databricks_and_spark_tags_are_not_obfuscated() {
+        // These tags look like credit card numbers but are Data Job Monitoring IDs;
+        // they must be in the allowlist to prevent false-positive obfuscation.
+        let obfuscator = CreditCardObfuscator::new(&default_config());
+
+        // A value that would be detected as a card if the key is not allowlisted.
+        let card_like_value = "4111111111111111";
+
+        let allowlisted = &[
+            "databricks_job_id",
+            "databricks_job_run_id",
+            "databricks_task_run_id",
+            "config.spark_app_startTime",
+            "config.spark_databricks_job_parentRunId",
+        ];
+        for key in allowlisted {
+            assert_eq!(
+                obfuscator.obfuscate_credit_card_number(key, card_like_value),
+                None,
+                "Key '{}' should be allowlisted and not obfuscated",
+                key
+            );
+        }
+
+        // Verify the value itself is detected as a card on a non-allowlisted key.
+        assert_eq!(
+            obfuscator.obfuscate_credit_card_number("payment.card", card_like_value),
+            Some("?".into())
+        );
     }
 
     #[test]
