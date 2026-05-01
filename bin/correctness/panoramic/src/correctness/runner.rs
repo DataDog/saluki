@@ -37,10 +37,11 @@ pub async fn run_correctness_test(name: String, config: Config, tctx: TestContex
 
     // Phase 1: spawn containers
     let spawn_start = Instant::now();
-    let test_runner = match TestRunner::from_config(&config, log_dir.clone(), tctx.mounts_dir(), tctx.cancel()).await {
-        Ok(r) => r,
-        Err(e) => return make_error_result(name, started, "spawn_containers", e),
-    };
+    let test_runner =
+        match CorrectnessRunner::from_config(&config, log_dir.clone(), tctx.mounts_dir(), tctx.cancel()).await {
+            Ok(r) => r,
+            Err(e) => return make_error_result(name, started, "spawn_containers", e),
+        };
     let spawn_duration = spawn_start.elapsed();
 
     // Phase 2: collect data
@@ -132,7 +133,11 @@ fn make_error_result(name: String, started: Instant, phase: &str, e: GenericErro
     }
 }
 
-pub struct TestRunner {
+/// Manages the state and program flow of running a *correctness* test.
+///
+/// In a correctness test, two isolated groups of containers are created. One containing the Agent alone, and the other
+/// containing ADP and the Agent working together. These are called 'baseline' and 'comparison', repectively.
+pub struct CorrectnessRunner {
     datadog_intake_config: DatadogIntakeConfig,
     millstone_config: MillstoneConfig,
     baseline_target_driver_config: DriverConfig,
@@ -144,7 +149,7 @@ pub struct TestRunner {
     log_dir: PathBuf,
 }
 
-impl TestRunner {
+impl CorrectnessRunner {
     pub async fn from_config(
         config: &Config, log_dir: PathBuf, mounts_dir: &Path, cancel_token: CancellationToken,
     ) -> Result<Self, GenericError> {

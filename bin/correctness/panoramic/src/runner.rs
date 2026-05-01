@@ -294,7 +294,7 @@ impl Runner {
 }
 
 // ----------------------------------------------------------------------------
-// TestRunner: single test case execution
+// IntegrationRunner: single integration test case execution
 // ----------------------------------------------------------------------------
 
 /// Generates a random isolation group ID.
@@ -314,15 +314,15 @@ fn generate_isolation_group_id() -> String {
     chars
 }
 
-/// Runner for a single test case.
-pub(crate) struct TestRunner {
+/// Runner for a single integration test case.
+pub(crate) struct IntegrationRunner {
     test_case: IntegrationConfig,
     isolation_group_id: String,
     tctx: TestContext,
     log_buffer: Arc<RwLock<LogBuffer>>,
 }
 
-impl TestRunner {
+impl IntegrationRunner {
     /// Create a new test runner for the given test case.
     pub(crate) fn new(test_case: IntegrationConfig, tctx: TestContext) -> Self {
         Self {

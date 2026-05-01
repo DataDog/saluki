@@ -361,7 +361,7 @@ impl Test for IntegrationConfig {
     }
 
     async fn run(&self, tctx: TestContext) -> TestResult {
-        let mut runner = crate::runner::TestRunner::new(self.clone(), tctx);
+        let mut runner = crate::runner::IntegrationRunner::new(self.clone(), tctx);
         let result = runner.run().await;
         result
     }
