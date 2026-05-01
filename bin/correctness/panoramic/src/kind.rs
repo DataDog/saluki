@@ -138,13 +138,15 @@ async fn ensure_image_present(image: &str) -> Result<(), GenericError> {
         debug!("Image '{}' already present in local Docker daemon.", image);
         return Ok(());
     }
-    info!("Image '{}' not found locally, pulling...", image);
+    debug!("Image '{}' not found locally, pulling...", image);
     pull_image(image)
         .await
         .with_error_context(|| format!("Image '{}' is not available locally and could not be pulled", image))
 }
 
 async fn load_images(cluster_name: &str, images: &[String]) -> Result<(), GenericError> {
+    info!("Pulling container images (if not already present)...");
+
     // Ensure all images are present in the local Docker daemon before loading into kind.
     // Runs in parallel; any pull failure is fatal — kind load requires the image to be present.
     let ensure_futs: Vec<_> = images.iter().map(|img| ensure_image_present(img.as_str())).collect();
@@ -153,11 +155,7 @@ async fn load_images(cluster_name: &str, images: &[String]) -> Result<(), Generi
         result.with_error_context(|| format!("Failed to ensure image '{}' is available", img))?;
     }
 
-    info!(
-        "Loading {} image(s) into kind cluster '{}' in parallel...",
-        images.len(),
-        cluster_name
-    );
+    info!("Loading images into kind cluster '{}'...", cluster_name);
 
     let load_futs: Vec<_> = images
         .iter()
