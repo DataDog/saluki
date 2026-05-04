@@ -62,7 +62,7 @@ use airlock::driver::Driver;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tracing::debug;
 
-use crate::config::TestCase;
+use crate::config::IntegrationConfig;
 
 /// Prefix for dynamic variable env vars in the test config.
 pub const ENV_PREFIX: &str = "PANORAMIC_DYNAMIC_";
@@ -71,7 +71,7 @@ pub const ENV_PREFIX: &str = "PANORAMIC_DYNAMIC_";
 const PLACEHOLDER_NEEDLE: &str = "{{PANORAMIC_DYNAMIC_";
 
 /// Returns `true` if the test case defines any `PANORAMIC_DYNAMIC_*` env vars.
-pub fn has_dynamic_vars(test_case: &TestCase) -> bool {
+pub fn has_dynamic_vars(test_case: &IntegrationConfig) -> bool {
     test_case.container.env.keys().any(|k| k.starts_with(ENV_PREFIX))
 }
 

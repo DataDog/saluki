@@ -43,6 +43,7 @@ use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use serde_with::{serde_as, NoneAsEmptyString};
 use snafu::{ResultExt as _, Snafu};
+use stringtheory::MetaString;
 use tokio::{
     select,
     time::{interval, MissedTickBehavior},
@@ -1061,6 +1062,9 @@ fn handle_frame(
 
     let event = match parsed {
         ParsedPacket::Metric(metric_packet) => {
+            if metric_packet.num_points == 0 {
+                return Ok(None);
+            }
             let events_len = metric_packet.num_points;
             if !enabled_filter.allow_metric(&metric_packet) {
                 trace!(
@@ -1153,7 +1157,8 @@ fn handle_metric_packet(
                 .unwrap_or_else(MetricOrigin::dogstatsd);
             let metadata = MetricMetadata::default()
                 .with_origin(metric_origin)
-                .with_hostname(well_known_tags.hostname.map(Arc::from));
+                .with_hostname(well_known_tags.hostname.map(Arc::from))
+                .with_unit(packet.unit.map_or_else(MetaString::empty, MetaString::from_static));
 
             Some(Metric::from_parts(context, packet.values, metadata))
         }
@@ -1700,6 +1705,24 @@ mod tests {
         ];
         let mut actual = config.build_addresses(bind_host);
         address_list_eq(&mut expected, &mut actual).unwrap();
+    }
+
+    #[test]
+    fn non_finite_metric_values_are_silently_dropped() {
+        // The Datadog Agent sends NaN gauges (e.g. encode_ms.avg computed as 0.0/0.0 in Go).
+        // FloatIter skips non-finite values with a debug log, so decode_packet returns Ok with
+        // num_points == 0. handle_frame then returns Ok(None) for zero-point packets, which is
+        // the existing silent-drop path (no warning emitted).
+        let codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
+        for input in &[b"my.gauge:NaN|g" as &[u8], b"my.gauge:inf|g", b"my.gauge:-inf|g"] {
+            match codec.decode_packet(input).expect("should decode without error") {
+                ParsedPacket::Metric(packet) => assert_eq!(
+                    packet.num_points, 0,
+                    "non-finite value should be dropped, leaving 0 valid points"
+                ),
+                _ => panic!("expected Metric packet"),
+            }
+        }
     }
 }
 

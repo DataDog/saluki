@@ -8,19 +8,16 @@
 // We might consider _something_ like a string pool in the future, but we can defer that until we have a better idea of
 // what the potential impact is in practice.
 
-use std::{
-    io::Write,
-    sync::{Arc, Mutex},
-};
+use std::io::Write;
 
 use saluki_error::{generic_error, GenericError};
 use tracing_appender::non_blocking::{NonBlocking, NonBlockingBuilder, WorkerGuard};
 use tracing_rolling_file::RollingFileAppenderBase;
-use tracing_subscriber::{layer::SubscriberExt as _, reload, util::SubscriberInitExt as _, EnvFilter, Layer, Registry};
+use tracing_subscriber::{layer::SubscriberExt as _, reload, util::SubscriberInitExt as _, Layer, Registry};
 
 mod api;
 use self::api::set_logging_api_handler;
-pub use self::api::{acquire_logging_api_handler, LoggingAPIHandler, LoggingOverrideWorker};
+pub use self::api::{acquire_logging_api_handler, LoggingAPIHandler, LoggingOverrideController, LoggingOverrideWorker};
 
 mod config;
 pub use self::config::{LogLevel, LoggingConfiguration};
@@ -40,36 +37,54 @@ const NB_LOG_WRITER_BUFFER_SIZE: usize = 4096;
 
 type OutputStack = Vec<Box<dyn Layer<Registry> + Send + Sync>>;
 
-pub(crate) struct LoggingGuard {
+/// A handle to the dynamic logging subsystem.
+///
+/// Held by [`BootstrapGuard`][crate::bootstrap::BootstrapGuard] for the lifetime of the application. Owns the
+/// worker guards (which flush buffered output on drop), and exposes [`reload`][Self::reload] for swapping the
+/// entire logging configuration plus [`controller`][Self::controller] for driving runtime filter changes through
+/// the override worker.
+pub struct LoggingGuard {
     worker_guards: Vec<WorkerGuard>,
     stack_handle: reload::Handle<OutputStack, Registry>,
-    filter_handle: reload::Handle<EnvFilter, Registry>,
-    base_filter: Arc<Mutex<EnvFilter>>,
+    controller: LoggingOverrideController,
 }
 
 impl LoggingGuard {
     /// Reloads the logging subsystem from the given configuration.
     ///
-    /// Rebuilds the output layer stack and updates the level filter from `config`, swapping both atomically into the
-    /// already-installed `tracing` subscriber. Worker guards for the previous outputs are dropped after the swap, which
-    /// flushes any buffered log lines to their original destinations.
-    pub(crate) fn reload(&mut self, config: LoggingConfiguration) -> Result<(), GenericError> {
+    /// Rebuilds the output layer stack from `config` and routes the new level filter through the override worker
+    /// as the new base filter, so an active override is preserved (the new base will take effect once the override
+    /// expires). Worker guards for the previous outputs are dropped after the swap, which flushes any buffered log
+    /// lines to their original destinations.
+    ///
+    /// This is the right entry point when the entire logging configuration may have changed (e.g., outputs,
+    /// format, level). For runtime base-filter changes only -- such as following a `log_level` config update --
+    /// use [`controller`][Self::controller] and call
+    /// [`update_base`][LoggingOverrideController::update_base] directly.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the new output layers cannot be constructed (e.g., the configured log file path is
+    /// inaccessible) or if the override worker is no longer running.
+    pub async fn reload(&mut self, config: LoggingConfiguration) -> Result<(), GenericError> {
         let (new_stack, new_guards) = build_output_stack(&config)?;
         let new_filter = config.log_level.as_env_filter();
 
         self.stack_handle
             .reload(new_stack)
             .map_err(|e| generic_error!("Failed to swap logging output stack: {}", e))?;
-        self.filter_handle
-            .reload(new_filter.clone())
-            .map_err(|e| generic_error!("Failed to swap logging filter: {}", e))?;
-        *self.base_filter.lock().unwrap() = new_filter;
+        self.controller.update_base(new_filter).await?;
 
         // Drop the old worker guards _after_ the swap so any buffered lines are flushed to their original destinations
         // before the worker threads exit.
         let _old_guards = std::mem::replace(&mut self.worker_guards, new_guards);
 
         Ok(())
+    }
+
+    /// Returns a logging override controller that can be used to change the default filter directives.
+    pub fn controller(&self) -> LoggingOverrideController {
+        self.controller.clone()
     }
 }
 
@@ -98,11 +113,12 @@ pub(crate) async fn initialize_logging(
     let level_filter = config.log_level.as_env_filter();
     let (filter_layer, filter_handle) = reload::Layer::new(level_filter.clone());
 
-    // The base filter is the level the override-restore should land on after a `/logging/override` timeout. It starts
-    // as the bootstrap level, and is updated by `LoggingGuard::reload` once the Agent's configuration is applied.
-    let base_filter = Arc::new(Mutex::new(level_filter));
-    let (api_handler, override_worker) = LoggingAPIHandler::new(base_filter.clone(), filter_handle.clone());
-    set_logging_api_handler(api_handler);
+    // The override worker owns the canonical base filter -- the directives the system restores to after an override
+    // expires or is reset. It starts as the bootstrap level and is updated via the controller, both by
+    // `LoggingGuard::reload` once the Agent's configuration is applied and by any other caller (e.g. a runtime
+    // `log_level` watcher) wired up via [`LoggingGuard::controller`].
+    let (override_worker, controller) = LoggingOverrideWorker::new(level_filter, filter_handle);
+    set_logging_api_handler(LoggingAPIHandler::new(controller.clone()));
 
     tracing_subscriber::registry()
         .with(output_layer.with_filter(filter_layer))
@@ -112,8 +128,7 @@ pub(crate) async fn initialize_logging(
         LoggingGuard {
             worker_guards,
             stack_handle,
-            filter_handle,
-            base_filter,
+            controller,
         },
         override_worker,
     ))

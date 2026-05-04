@@ -4,13 +4,17 @@
 //! shared (level, format, console output, rotation), but it must use its own per-subagent destination so it does not
 //! collide with the Core Agent's own log file. This module owns those rules in one place.
 
+use async_trait::async_trait;
 use bytesize::ByteSize;
-use saluki_app::logging::{LogLevel, LoggingConfiguration};
+use saluki_app::logging::{LogLevel, LoggingConfiguration, LoggingOverrideController};
 use saluki_common::deser::PermissiveBool;
 use saluki_config::GenericConfiguration;
+use saluki_core::runtime::{InitializationError, ProcessShutdown, Supervisable, SupervisorFuture};
 use saluki_error::{ErrorContext as _, GenericError};
 use serde::Deserialize;
 use serde_with::serde_as;
+use tokio::{pin, select};
+use tracing::{debug, warn};
 
 use crate::internal::platform::PlatformSettings;
 
@@ -62,14 +66,10 @@ impl LoggingConfigurationTranslator {
     pub fn translate(config: &GenericConfiguration) -> Result<LoggingConfiguration, GenericError> {
         let mut logging = LoggingConfiguration::simple();
 
-        if let Some(level) = config
+        let maybe_log_level = config
             .try_get_typed::<String>("log_level")
-            .error_context("Failed to read `log_level`.")?
-        {
-            logging.log_level = parse_adp_log_level(&level)?;
-        } else {
-            logging.log_level = first_party_log_level_filter("info")?;
-        }
+            .error_context("Failed to read `log_level`.")?;
+        logging.log_level = parse_optional_log_level_raw(maybe_log_level)?;
 
         if let Some(format_json) = read_permissive_bool(config, "log_format_json")? {
             logging.log_format_json = format_json;
@@ -146,12 +146,19 @@ fn read_permissive_bool(config: &GenericConfiguration, key: &str) -> Result<Opti
 #[derive(Deserialize)]
 struct PermissiveBoolValue(#[serde_as(as = "PermissiveBool")] bool);
 
+fn parse_optional_log_level_raw(maybe_log_level: Option<String>) -> Result<LogLevel, GenericError> {
+    match maybe_log_level {
+        Some(log_level) => parse_adp_log_level(&log_level),
+        None => first_party_log_level_filter("info"),
+    }
+}
+
 fn parse_adp_log_level(value: &str) -> Result<LogLevel, GenericError> {
     let trimmed = value.trim();
     if let Some(level) = plain_log_level(trimmed) {
         first_party_log_level_filter(level)
     } else {
-        LogLevel::try_from(value.to_string()).error_context("Failed to parse `log_level`.")
+        LogLevel::try_from(value.to_string()).error_context("Failed to parse log filter directives.")
     }
 }
 
@@ -174,7 +181,64 @@ fn first_party_log_level_filter(level: &str) -> Result<LogLevel, GenericError> {
         .collect::<Vec<_>>()
         .join(",");
 
-    LogLevel::try_from(filter).error_context("Failed to build first-party `log_level` filter.")
+    LogLevel::try_from(filter).error_context("Failed to parse first-party log filter directives.")
+}
+
+/// A supervised worker that watches for updates to `log_level` and adjusts the logging stack's current filter
+/// directives to match.
+///
+/// The watcher relies on dynamic configuration; if it is not enabled, the worker simply idles until shutdown.
+pub struct DynamicLogLevelWorker {
+    config: GenericConfiguration,
+    controller: LoggingOverrideController,
+}
+
+impl DynamicLogLevelWorker {
+    /// Creates a new `DynamicLogLevelWorker` watching the given configuration.
+    pub fn new(config: &GenericConfiguration, controller: LoggingOverrideController) -> Self {
+        Self {
+            config: config.clone(),
+            controller,
+        }
+    }
+}
+
+#[async_trait]
+impl Supervisable for DynamicLogLevelWorker {
+    fn name(&self) -> &str {
+        "dynamic-log-level"
+    }
+
+    async fn initialize(&self, process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
+        let mut watcher = self.config.watch_for_updates("log_level");
+        let controller = self.controller.clone();
+
+        Ok(Box::pin(async move {
+            pin!(process_shutdown);
+
+            debug!("Dynamic log level worker started.");
+
+            loop {
+                select! {
+                    _ = &mut process_shutdown => break,
+                    (_, new_log_level) = watcher.changed::<String>() => {
+                        match parse_optional_log_level_raw(new_log_level) {
+                            Ok(log_level) => {
+                                if let Err(e) = controller.update_base(log_level.as_env_filter()).await {
+                                    warn!(error = %e, %log_level, "Failed to apply updated log level.");
+                                }
+                            }
+                            Err(e) => warn!(error = %e, "Failed to parse updated log level."),
+                        }
+                    }
+                }
+            }
+
+            debug!("Dynamic log level worker stopped.");
+
+            Ok(())
+        }))
+    }
 }
 
 #[cfg(test)]
@@ -280,11 +344,8 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_log_level_returns_error() {
-        let error = translate_filter(Some(json!({ "log_level": "agent_data_plane=verbose" })))
-            .await
-            .expect_err("invalid log level should fail");
-
-        assert!(error.to_string().contains("log_level"));
+        let result = translate_filter(Some(json!({ "log_level": "agent_data_plane=verbose" }))).await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]

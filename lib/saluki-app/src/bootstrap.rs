@@ -30,21 +30,19 @@ pub struct BootstrapGuard {
 }
 
 impl BootstrapGuard {
-    /// Reloads the logging subsystem with the given configuration.
+    /// Returns a reference to the [`LoggingGuard`].
     ///
-    /// Rebuilds the output layer stack and updates the level filter to match `config`, swapping both atomically into
-    /// the already-installed `tracing` subscriber. Worker guards for the previous outputs are dropped after the swap,
-    /// which flushes any buffered log lines to their original destinations.
+    /// Use this to obtain a [`LoggingOverrideController`][crate::logging::LoggingOverrideController] clone (via
+    /// [`LoggingGuard::controller`]) for downstream callers that drive runtime filter changes.
+    pub fn logging(&self) -> &LoggingGuard {
+        &self.logging_guard
+    }
+
+    /// Returns a mutable reference to the [`LoggingGuard`].
     ///
-    /// This is intended to be called exactly once, after the Datadog Agent has provided its authoritative
-    /// configuration. Further runtime reconfiguration of logging is not supported.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the new output layers cannot be constructed (e.g., the configured log file path is
-    /// inaccessible).
-    pub fn reload_logging(&mut self, config: LoggingConfiguration) -> Result<(), GenericError> {
-        self.logging_guard.reload(config)
+    /// Use this to swap the entire logging configuration (outputs, format, level) via [`LoggingGuard::reload`].
+    pub fn logging_mut(&mut self) -> &mut LoggingGuard {
+        &mut self.logging_guard
     }
 }
 

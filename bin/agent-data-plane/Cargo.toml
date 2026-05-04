@@ -10,7 +10,7 @@ workspace = true
 
 [features]
 default = []
-fips = ["saluki-app/tls-fips"]
+fips = ["saluki-app/tls-fips", "saluki-components/fips"]
 
 [dependencies]
 argh = { workspace = true, features = ["help"] }

@@ -2,10 +2,10 @@ type: correctness
 analysis_mode: traces
 otlp_direct_analysis_mode: true
 millstone:
-  image: saluki-images/millstone:latest
+  image: saluki-images/correctness-tools:latest
   config_path: millstone.yaml
 datadog_intake:
-  image: saluki-images/datadog-intake:latest
+  image: saluki-images/correctness-tools:latest
   config_path: ../datadog-intake.yaml
 baseline:
   image: saluki-images/datadog-agent:testing-release
@@ -23,4 +23,6 @@ comparison:
     - DD_DATA_PLANE_ENABLED=true
     - DD_DATA_PLANE_STANDALONE_MODE=true
     - DD_DATA_PLANE_OTLP_ENABLED=true
+    # TODO: remove when we have Agent v7.80 https://github.com/DataDog/saluki/issues/1577
+    - DD_DATA_PLANE_DOGSTATSD_ENABLED=false
     - DD_APM_PROBABILISTIC_SAMPLER_ENABLED=true

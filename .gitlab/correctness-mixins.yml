@@ -27,8 +27,8 @@
     DD_LOG_LEVEL: "panoramic=debug,info"
     PANORAMIC_LOG_DIR: "panoramic-logs"
     PANORAMIC_ALPINE_IMAGE: registry.ddbuild.io/alpine:latest
-    PANORAMIC_MILLSTONE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
-    PANORAMIC_DATADOG_INTAKE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/datadog-intake:${CI_COMMIT_SHA}
+    PANORAMIC_MILLSTONE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA}
+    PANORAMIC_DATADOG_INTAKE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA}
     PANORAMIC_COMPARISON__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
   script:
     - target/release/panoramic run -d $(pwd)/test/correctness -t ${CORRECTNESS_TEST_CASE} --no-tui

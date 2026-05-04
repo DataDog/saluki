@@ -1,3 +1,5 @@
+use std::fmt;
+
 use bytesize::ByteSize;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
@@ -126,5 +128,11 @@ impl TryFrom<String> for LogLevel {
             .parse(value)
             .map(Self)
             .error_context("Failed to parse valid log level.")
+    }
+}
+
+impl fmt::Display for LogLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
     }
 }

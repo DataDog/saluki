@@ -70,6 +70,7 @@ const SERIES_METRIC_FIELD_NUMBER: u32 = 2;
 const SERIES_TAGS_FIELD_NUMBER: u32 = 3;
 const SERIES_POINTS_FIELD_NUMBER: u32 = 4;
 const SERIES_TYPE_FIELD_NUMBER: u32 = 5;
+const SERIES_UNIT_FIELD_NUMBER: u32 = 6;
 const SERIES_SOURCE_TYPE_NAME_FIELD_NUMBER: u32 = 7;
 const SERIES_INTERVAL_FIELD_NUMBER: u32 = 8;
 const SERIES_METADATA_FIELD_NUMBER: u32 = 9;
@@ -692,6 +693,10 @@ fn encode_series_metric(
 
     output_stream.write_enum(SERIES_TYPE_FIELD_NUMBER, metric_type.value())?;
 
+    if let Some(unit) = metric.metadata().unit() {
+        output_stream.write_string(SERIES_UNIT_FIELD_NUMBER, unit)?;
+    }
+
     for (timestamp, value) in points {
         // If this is a rate metric, scale our value by the interval, in seconds.
         let value = maybe_interval
@@ -741,6 +746,9 @@ fn encode_sketch_metric(
             *product_detail,
         )?;
     }
+
+    // TODO: emit `metric.metadata().unit()` in the sketch payload once the upstream `agent-payload` proto defines a
+    // unit field on `SketchPayload.Sketch`.
 
     // Write out our sketches.
     match metric.values() {
@@ -980,10 +988,11 @@ mod tests {
 
     use protobuf::CodedOutputStream;
     use saluki_common::iter::ReusableDeduplicator;
-    use saluki_context::tags::SharedTagSet;
-    use saluki_core::data_model::event::metric::Metric;
+    use saluki_context::{tags::SharedTagSet, Context};
+    use saluki_core::data_model::event::metric::{Metric, MetricMetadata, MetricValues};
+    use stringtheory::MetaString;
 
-    use super::{encode_sketch_metric, MetricsEndpoint, MetricsEndpointEncoder};
+    use super::{encode_series_metric, encode_sketch_metric, MetricsEndpoint, MetricsEndpointEncoder};
     use crate::common::datadog::request_builder::EndpointEncoder as _;
 
     #[test]
@@ -1060,6 +1069,51 @@ mod tests {
         assert!(!sketches_endpoint.is_valid_input(&set));
         assert!(sketches_endpoint.is_valid_input(&histogram));
         assert!(sketches_endpoint.is_valid_input(&distribution));
+    }
+
+    #[test]
+    fn series_metric_unit_encoded() {
+        // A gauge with a unit in its metadata must produce a series protobuf payload that contains the unit string
+        // in field 6 (MetricSeries.unit), which the Datadog backend already accepts.
+        //
+        // In production this state is reached when histogram aggregation flushes timer (`ms`) statistics as gauges,
+        // each carrying unit = "millisecond" propagated through MetricMetadata.
+        let context = Context::from_static_parts("my.timer.avg", &[]);
+        let metadata = MetricMetadata::default().with_unit(MetaString::from_static("millisecond"));
+        let gauge = Metric::from_parts(context, MetricValues::gauge([1.0_f64]), metadata);
+
+        let host_tags = SharedTagSet::default();
+        let mut scratch_buf = Vec::new();
+        let mut tags_deduplicator = ReusableDeduplicator::new();
+
+        let mut payload = Vec::new();
+        {
+            let mut writer = CodedOutputStream::vec(&mut payload);
+            encode_series_metric(
+                &gauge,
+                &host_tags,
+                &mut writer,
+                &mut scratch_buf,
+                &mut tags_deduplicator,
+            )
+            .expect("Failed to encode gauge as series metric");
+            writer.flush().expect("Failed to flush");
+        }
+
+        // In the protobuf wire format, a string field with field number 6 has tag byte 0x32 ((6 << 3) | 2).
+        // The tag is followed by a varint length and then the UTF-8 bytes of the string.
+        let expected_tag: u8 = (6 << 3) | 2; // 0x32
+        let expected_value = b"millisecond";
+
+        let tag_pos = payload
+            .windows(1 + 1 + expected_value.len())
+            .position(|w| w[0] == expected_tag && w[1] == expected_value.len() as u8 && &w[2..] == expected_value);
+
+        assert!(
+            tag_pos.is_some(),
+            "series payload should contain unit field (field 6 = 'millisecond'), got bytes: {:?}",
+            payload
+        );
     }
 }
 

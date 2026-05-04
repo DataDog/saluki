@@ -1,4 +1,4 @@
-build-datadog-intake-image:
+build-correctness-tools-image:
   stage: e2e
   image: ${DOCKER_BUILD_IMAGE}
   needs: []
@@ -7,29 +7,10 @@ build-datadog-intake-image:
   script:
     - docker buildx build
       --platform linux/amd64
-      --file ./docker/Dockerfile.datadog-intake
-      --tag ${SALUKI_IMAGE_REPO_BASE}/datadog-intake:${CI_COMMIT_SHA}
-      --build-arg BASE_IMAGE=${PUBLIC_BASE_IMAGE}
-      --label git.repository=${CI_PROJECT_NAME}
-      --label git.branch=${CI_COMMIT_REF_NAME}
-      --label git.commit=${CI_COMMIT_SHA}
-      --label ci.pipeline_id=${CI_PIPELINE_ID}
-      --label ci.job_id=${CI_JOB_ID}
-      --push
-      .
-
-build-millstone-image:
-  stage: e2e
-  image: ${DOCKER_BUILD_IMAGE}
-  needs: []
-  retry: 2
-  timeout: 10m
-  script:
-    - docker buildx build
-      --platform linux/amd64
-      --file ./docker/Dockerfile.millstone
-      --tag ${SALUKI_IMAGE_REPO_BASE}/millstone:${CI_COMMIT_SHA}
-      --build-arg BASE_IMAGE=${PUBLIC_BASE_IMAGE}
+      --file ./docker/Dockerfile.correctness-tools
+      --tag ${SALUKI_IMAGE_REPO_BASE}/correctness-tools:${CI_COMMIT_SHA}
+      --build-arg BUILD_IMAGE=${PUBLIC_BASE_IMAGE}
+      --build-arg APP_IMAGE=${PUBLIC_BASE_IMAGE}
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
       --label git.commit=${CI_COMMIT_SHA}
@@ -84,8 +65,7 @@ generate-correctness-pipeline:
   image: "${SALUKI_BUILD_CI_IMAGE}"
   needs:
     - build-bundled-agent-adp-image
-    - build-datadog-intake-image
-    - build-millstone-image
+    - build-correctness-tools-image
     - build-panoramic-binary
   script:
     - bash tooling/generate-correctness-pipeline.sh > generated-correctness.yml

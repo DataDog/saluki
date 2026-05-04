@@ -371,6 +371,7 @@ mod tests {
             local_data: None,
             external_data: None,
             cardinality: Some(OriginTagCardinality::Low),
+            unit: None,
         };
 
         let packet_without_card = MetricPacket {
@@ -382,6 +383,7 @@ mod tests {
             local_data: None,
             external_data: None,
             cardinality: None,
+            unit: None,
         };
 
         let with_card_origin = origin_from_metric_packet(&packet_with_card, &well_known_tags);

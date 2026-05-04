@@ -4,8 +4,12 @@ use async_trait::async_trait;
 use memory_accounting::ComponentRegistry;
 use saluki_api::EndpointType;
 use saluki_app::{
-    api::APIBuilder, config::ConfigAPIHandler, dynamic_api::DynamicAPIBuilder, logging::acquire_logging_api_handler,
-    memory::AllocationTelemetryWorker, metrics::acquire_metrics_api_handler,
+    api::APIBuilder,
+    config::ConfigAPIHandler,
+    dynamic_api::DynamicAPIBuilder,
+    logging::{acquire_logging_api_handler, LoggingOverrideController},
+    memory::AllocationTelemetryWorker,
+    metrics::acquire_metrics_api_handler,
 };
 use saluki_components::destinations::DogStatsDStatisticsConfiguration;
 use saluki_config::GenericConfiguration;
@@ -23,7 +27,7 @@ use tracing::info;
 use crate::{
     config::DataPlaneConfiguration,
     env_provider::ADPEnvironmentProvider,
-    internal::{platform::PlatformSettings, remote_agent::RemoteAgentBootstrap},
+    internal::{logging::DynamicLogLevelWorker, platform::PlatformSettings, remote_agent::RemoteAgentBootstrap},
 };
 
 /// Gets the IPC certificate file path from the configuration.
@@ -133,6 +137,7 @@ pub async fn create_control_plane_supervisor(
     config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, component_registry: &ComponentRegistry,
     health_registry: HealthRegistry, env_provider: ADPEnvironmentProvider,
     dsd_stats_config: DogStatsDStatisticsConfiguration, ra_bootstrap: Option<RemoteAgentBootstrap>,
+    logging_controller: LoggingOverrideController,
 ) -> Result<Supervisor, GenericError> {
     let mut supervisor = Supervisor::new("ctrl-pln")?
         .with_dedicated_runtime(RuntimeConfiguration::single_threaded())
@@ -140,6 +145,7 @@ pub async fn create_control_plane_supervisor(
 
     supervisor.add_worker(health_registry.worker());
     supervisor.add_worker(AllocationTelemetryWorker::new(component_registry));
+    supervisor.add_worker(DynamicLogLevelWorker::new(config, logging_controller));
 
     supervisor.add_worker(DynamicAPIBuilder::new(
         EndpointType::Unprivileged,

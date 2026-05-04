@@ -40,8 +40,10 @@ use tracing::{error, info, warn};
 
 use crate::{
     components::{
-        apm_onboarding::ApmOnboardingConfiguration, ottl_filter_processor::OttlFilterConfiguration,
-        ottl_transform_processor::OttlTransformConfiguration, tag_filterlist::TagFilterlistConfiguration,
+        apm_onboarding::ApmOnboardingConfiguration,
+        dogstatsd_post_aggregate_filter::DogStatsDPostAggregateFilterConfiguration,
+        ottl_filter_processor::OttlFilterConfiguration, ottl_transform_processor::OttlTransformConfiguration,
+        tag_filterlist::TagFilterlistConfiguration,
     },
     internal::{
         create_internal_supervisor, logging::LoggingConfigurationTranslator, platform::PlatformSettings,
@@ -119,7 +121,7 @@ pub async fn handle_run_command(
             // defaults.
             match LoggingConfigurationTranslator::translate(&dynamic_config) {
                 Ok(logging_config) => {
-                    if let Err(e) = bootstrap_guard.reload_logging(logging_config) {
+                    if let Err(e) = bootstrap_guard.logging_mut().reload(logging_config).await {
                         warn!(
                             error = %e,
                             "Failed to reload logging from Agent configuration; continuing with bootstrap logging settings."
@@ -176,6 +178,7 @@ pub async fn handle_run_command(
         env_provider,
         dsd_stats_config,
         ra_bootstrap,
+        bootstrap_guard.logging().controller(),
     )
     .await
     .error_context("Failed to create internal supervisor.")?;
@@ -496,6 +499,8 @@ async fn add_dsd_pipeline_to_blueprint(
         .error_context("Failed to configure metric tag filterlist transform.")?;
     let dsd_agg_config =
         AggregateConfiguration::from_configuration(config).error_context("Failed to configure aggregate transform.")?;
+    let dsd_post_agg_filter_config = DogStatsDPostAggregateFilterConfiguration::from_configuration(config)
+        .error_context("Failed to configure DogStatsD post-aggregate filter transform.")?;
     let events_enrich_config = ChainedConfiguration::default().with_transform_builder(
         "host_enrichment",
         HostEnrichmentConfiguration::from_environment_provider(env_provider.clone()),
@@ -523,6 +528,7 @@ async fn add_dsd_pipeline_to_blueprint(
         .add_transform("dsd_enrich", dsd_enrich_config)?
         .add_transform("dsd_tag_filterlist", dsd_tag_filterlist_config)?
         .add_transform("dsd_agg", dsd_agg_config)?
+        .add_transform("dsd_post_agg_filter", dsd_post_agg_filter_config)?
         .add_transform("events_enrich", events_enrich_config)?
         .add_transform("service_checks_enrich", service_checks_enrich_config)?
         .add_encoder("dd_events_encode", dd_events_config)?
@@ -533,7 +539,8 @@ async fn add_dsd_pipeline_to_blueprint(
         .connect_component("dsd_enrich", ["dsd_prefix_filter"])?
         .connect_component("dsd_tag_filterlist", ["dsd_enrich"])?
         .connect_component("dsd_agg", ["dsd_tag_filterlist"])?
-        .connect_component("metrics_enrich", ["dsd_agg"])?
+        .connect_component("dsd_post_agg_filter", ["dsd_agg"])?
+        .connect_component("metrics_enrich", ["dsd_post_agg_filter"])?
         // Events.
         .connect_component("events_enrich", ["dsd_in.events"])?
         .connect_component("dd_events_encode", ["events_enrich"])?

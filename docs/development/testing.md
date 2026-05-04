@@ -61,7 +61,7 @@ Build the required container images, then run:
 
 ```bash
 # build images (only needed once, or after changes)
-make build-datadog-intake-image build-millstone-image build-datadog-agent-image
+make build-correctness-tools-image build-datadog-agent-image
 
 # run all correctness tests
 make test-correctness
@@ -69,6 +69,8 @@ make test-correctness
 # run a single test case
 make test-correctness-case CASE=dsd-plain
 ```
+
+The `correctness-tools` image bundles the **correctness tools suite** -- both `datadog-intake` and `millstone` -- into a single image used by every correctness test case.
 
 CI: `.gitlab/e2e.yml` — `e2e` stage, 10 min timeout, retry 2.
 

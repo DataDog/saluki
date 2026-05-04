@@ -1666,11 +1666,11 @@
   },
   {
     "key": "skip_ssl_validation",
-    "feature_state": "MISSING",
-    "action": "INVESTIGATE",
+    "feature_state": "DIVERGENT",
+    "action": "NONE",
     "description": "Skip TLS cert validation",
-    "reason": "ADP has danger_accept_invalid_certs() capability but it is not wired to skip_ssl_validation config key for metric forwarding. Investigation open.",
-    "issue": "#1371",
+    "reason": "ADP reads skip_ssl_validation for the shared Datadog forwarder and disables TLS certificate validation for Datadog intake forwarding. ADP rejects true in FIPS builds and does not apply the key to IPC, control-plane clients, OTLP proxying, or unrelated HTTP clients.",
+    "issue": null,
     "adp_key": null
   },
   {

@@ -362,6 +362,9 @@ fn get_help_text(metric_name: &str) -> Option<&'static str> {
             Some("Incremented when a reconfiguration of the metric filterlist happened")
         }
         "datadog.agent.dogstatsd.listener_filtered_points" => Some("How many points were filtered out"),
+        "datadog.agent.aggregator.dogstatsd_filtered_metrics" => {
+            Some("How many metrics were filtered in the time samplers")
+        }
         "dogstatsd.processed" => Some("Count of service checks/events/metrics processed by dogstatsd"),
         "dogstatsd.packet_pool_get" => Some("Count of get done in the packet pool"),
         "dogstatsd.packet_pool_put" => Some("Count of put done in the packet pool"),
@@ -630,6 +633,13 @@ mod tests {
                 ),
                 5.0,
             )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.dogstatsd_post_aggregate_filtered_metrics_total",
+                    &["component_id:dsd_post_agg_filter"],
+                ),
+                7.0,
+            )),
         ];
 
         for metric in metrics {
@@ -643,6 +653,7 @@ mod tests {
         assert!(output.contains("datadog__agent__filterlist__size 2"));
         assert!(output.contains("datadog__agent__filterlist__updates 3"));
         assert!(output.contains("datadog__agent__dogstatsd__listener_filtered_points 5"));
+        assert!(output.contains("datadog__agent__aggregator__dogstatsd_filtered_metrics 7"));
         assert!(!output.contains("component_id="));
     }
 
@@ -688,6 +699,10 @@ mod tests {
         assert_eq!(
             get_help_text("datadog.agent.dogstatsd.listener_filtered_points"),
             Some("How many points were filtered out")
+        );
+        assert_eq!(
+            get_help_text("datadog.agent.aggregator.dogstatsd_filtered_metrics"),
+            Some("How many metrics were filtered in the time samplers")
         );
     }
 }
