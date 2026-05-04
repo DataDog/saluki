@@ -6,8 +6,6 @@ yanked = "warn"
 ignore = [
   { id = "RUSTSEC-2024-0436", reason = "paste is a stable crate and we do not consider it being unmaintained as a security risk" },
   { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile is a transitive dependency of kube; no safe upgrade is available until kube updates its rustls ecosystem deps" },
-  { id = "RUSTSEC-2026-0118", reason = "hickory-proto/hickory-net 0.26.1 should contain the fix but the advisory DB doesn't seem to be caught up yet" },
-  { id = "RUSTSEC-2026-0119", reason = "hickory-proto DNS name compression CPU exhaustion; we do not expose DNS handling to untrusted input. Fix requires updating hyper-hickory beyond 0.8.0 to lift the hickory 0.25.x pin" },
 ]
 
 [bans]
