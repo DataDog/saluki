@@ -141,6 +141,9 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         return ExitCode::from(2);
     }
 
+    // Create the event channel early so the kind setup task can emit status messages.
+    let (tx, rx) = create_event_channel();
+
     // Spawn kind cluster setup in the background so non-kind tests start immediately.
     // Kind tests will wait on `kind_rx` before doing any work.
     let kind_images = collect_kind_images(&test_cases);
@@ -151,8 +154,9 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         let (kind_tx, kind_rx) = watch::channel::<Option<Result<(), String>>>(None);
         let slot = kind_lifecycle_slot.clone();
         let cluster_name = cmd.kind_cluster_name.clone();
+        let event_tx = tx.clone();
         tokio::spawn(async move {
-            match KindLifecycle::ensure(cluster_name, kind_images).await {
+            match KindLifecycle::ensure(cluster_name, kind_images, event_tx).await {
                 Ok(lc) => {
                     *slot.lock().await = Some(lc);
                     let _ = kind_tx.send(Some(Ok(())));
@@ -174,8 +178,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         registry.register(tc).expect("failure to register test");
     }
 
-    // Create the event channel and cancellation token.
-    let (tx, rx) = create_event_channel();
+    // Cancellation token for the test run.
 
     // Create a signal sender so that we can shut it down on ctrl-c.
     let cancel_all = CancellationToken::new();
@@ -331,6 +334,9 @@ async fn run_logging_consumer(
             Some(TestEvent::TestCompleted { result, log_dir }) => {
                 reporter.report_test_result(&result, log_dir);
                 results.push(result);
+            }
+            Some(TestEvent::StatusLine { message }) => {
+                info!("{}", message);
             }
             Some(TestEvent::AllDone) => {
                 break;

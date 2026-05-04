@@ -33,6 +33,12 @@ pub enum TestEvent {
         log_dir: PathBuf,
     },
 
+    /// A plain status message to display in the log/TUI (e.g. infrastructure setup progress).
+    StatusLine {
+        /// The message to display.
+        message: String,
+    },
+
     /// All tests have finished.
     AllDone,
 }

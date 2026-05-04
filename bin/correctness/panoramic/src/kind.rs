@@ -3,7 +3,10 @@ use std::collections::BTreeSet;
 use futures::future;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::process::Command;
+use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
+
+use crate::events::TestEvent;
 
 pub const DEFAULT_CLUSTER_NAME: &str = "saluki-correctness";
 
@@ -18,19 +21,27 @@ pub struct KindLifecycle {
 impl KindLifecycle {
     /// Ensures a kind cluster with the given name is running, then pulls and loads
     /// all required images into it. Creates the cluster if it does not already exist.
-    pub async fn ensure(cluster_name: String, images: Vec<String>) -> Result<Self, GenericError> {
+    pub async fn ensure(
+        cluster_name: String, images: Vec<String>, event_tx: mpsc::UnboundedSender<TestEvent>,
+    ) -> Result<Self, GenericError> {
         check_kind_installed().await?;
 
+        let status_line = |msg: &str| {
+            let _ = event_tx.send(TestEvent::StatusLine {
+                message: msg.to_string(),
+            });
+        };
+
         if cluster_exists(&cluster_name).await? {
-            info!("Reusing existing kind cluster '{}'.", cluster_name);
+            status_line(&format!("Reusing existing kind cluster '{}'.", cluster_name));
         } else {
-            info!("Creating kind cluster '{}'...", cluster_name);
+            status_line(&format!("Creating kind cluster '{}'...", cluster_name));
             create_cluster(&cluster_name).await?;
         }
 
         let unique_images: Vec<_> = images.into_iter().collect::<BTreeSet<_>>().into_iter().collect();
         if !unique_images.is_empty() {
-            load_images(&cluster_name, &unique_images).await?;
+            load_images(&cluster_name, &unique_images, &event_tx).await?;
         }
 
         Ok(Self { cluster_name })
@@ -160,8 +171,12 @@ async fn ensure_image_present(image: &str) -> Result<(), GenericError> {
         .with_error_context(|| format!("Image '{}' is not available locally and could not be pulled", image))
 }
 
-async fn load_images(cluster_name: &str, images: &[String]) -> Result<(), GenericError> {
-    info!("Pulling container images (if not already present)...");
+async fn load_images(
+    cluster_name: &str, images: &[String], event_tx: &mpsc::UnboundedSender<TestEvent>,
+) -> Result<(), GenericError> {
+    let _ = event_tx.send(TestEvent::StatusLine {
+        message: "Pulling container images (if not already present)...".to_string(),
+    });
 
     // Ensure all images are present in the local Docker daemon before loading into kind.
     // Runs in parallel; any pull failure is fatal — kind load requires the image to be present.
@@ -171,7 +186,9 @@ async fn load_images(cluster_name: &str, images: &[String]) -> Result<(), Generi
         result.with_error_context(|| format!("Failed to ensure image '{}' is available", img))?;
     }
 
-    info!("Loading images into kind cluster '{}'...", cluster_name);
+    let _ = event_tx.send(TestEvent::StatusLine {
+        message: format!("Loading images into kind cluster '{}'...", cluster_name),
+    });
 
     let load_futs: Vec<_> = images
         .iter()
