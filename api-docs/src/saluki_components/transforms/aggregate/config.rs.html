@@ -82,8 +82,8 @@
 <a href=#82 id=82 data-nosnippet>82</a>    <span class="doccomment">/// Percentiles to calculate over histograms.
 <a href=#83 id=83 data-nosnippet>83</a>    ///
 <a href=#84 id=84 data-nosnippet>84</a>    /// Percentiles are expressed in quantile form: 95% becomes 0.95, and so on. Any floating-point number between
-<a href=#85 id=85 data-nosnippet>85</a>    /// 0.0 and 1.0 (inclusive) is allowed, but values that extend beyond two decimal places (i.e. 0.999) will be
-<a href=#86 id=86 data-nosnippet>86</a>    /// truncated.
+<a href=#85 id=85 data-nosnippet>85</a>    /// 0.0 and 1.0 (inclusive) is allowed, but values that extend beyond two decimal places are rounded to the nearest
+<a href=#86 id=86 data-nosnippet>86</a>    /// whole percentile to match the Datadog Agent.
 <a href=#87 id=87 data-nosnippet>87</a>    ///
 <a href=#88 id=88 data-nosnippet>88</a>    /// The metric name generated for each percentile will be in the form of `&lt;original metric
 <a href=#89 id=89 data-nosnippet>89</a>    /// name&gt;.&lt;stripped_q&gt;percentile`, where `stripped_q` represents the quantile multiplied by 100. For example, a
@@ -199,20 +199,48 @@
 <a href=#199 id=199 data-nosnippet>199</a>                <span class="kw">return </span><span class="prelude-val">Err</span>(<span class="macro">format!</span>(<span class="string">"Percentile out of range: {}"</span>, faux_percentile));
 <a href=#200 id=200 data-nosnippet>200</a>            }
 <a href=#201 id=201 data-nosnippet>201</a>
-<a href=#202 id=202 data-nosnippet>202</a>            <span class="comment">// Truncate the quantile value and then generate the string representation for the metric name suffix.
-<a href=#203 id=203 data-nosnippet>203</a>            //
-<a href=#204 id=204 data-nosnippet>204</a>            // We do the weird multiplication and division when we generate the suffix because you can end up with
-<a href=#205 id=205 data-nosnippet>205</a>            // rounding errors, such that you might get `28` when doing `(0.29 * 100) as u32`.
-<a href=#206 id=206 data-nosnippet>206</a>            </span><span class="kw">let </span>quantile = (quantile * <span class="number">100.0</span>).trunc() / <span class="number">100.0</span>;
-<a href=#207 id=207 data-nosnippet>207</a>            <span class="kw">let </span>suffix = <span class="macro">format!</span>(<span class="string">"{}percentile"</span>, ((quantile * <span class="number">1000.0</span>) <span class="kw">as </span>u32 / <span class="number">10</span>)).into();
-<a href=#208 id=208 data-nosnippet>208</a>            statistics.push(HistogramStatistic::Percentile { q: quantile, suffix });
-<a href=#209 id=209 data-nosnippet>209</a>        }
-<a href=#210 id=210 data-nosnippet>210</a>
-<a href=#211 id=211 data-nosnippet>211</a>        <span class="prelude-val">Ok</span>(<span class="self">Self </span>{
-<a href=#212 id=212 data-nosnippet>212</a>            statistics,
-<a href=#213 id=213 data-nosnippet>213</a>            copy_to_distribution: raw.histogram_copy_to_distribution,
-<a href=#214 id=214 data-nosnippet>214</a>            copy_to_distribution_prefix: raw.histogram_copy_to_distribution_prefix,
-<a href=#215 id=215 data-nosnippet>215</a>        })
-<a href=#216 id=216 data-nosnippet>216</a>    }
-<a href=#217 id=217 data-nosnippet>217</a>}
+<a href=#202 id=202 data-nosnippet>202</a>            <span class="kw">let </span>percentile = (quantile * <span class="number">100.0 </span>+ <span class="number">0.5</span>) <span class="kw">as </span>u32;
+<a href=#203 id=203 data-nosnippet>203</a>            <span class="kw">let </span>quantile = f64::from(percentile) / <span class="number">100.0</span>;
+<a href=#204 id=204 data-nosnippet>204</a>            <span class="kw">let </span>suffix = <span class="macro">format!</span>(<span class="string">"{}percentile"</span>, percentile).into();
+<a href=#205 id=205 data-nosnippet>205</a>            statistics.push(HistogramStatistic::Percentile { q: quantile, suffix });
+<a href=#206 id=206 data-nosnippet>206</a>        }
+<a href=#207 id=207 data-nosnippet>207</a>
+<a href=#208 id=208 data-nosnippet>208</a>        <span class="prelude-val">Ok</span>(<span class="self">Self </span>{
+<a href=#209 id=209 data-nosnippet>209</a>            statistics,
+<a href=#210 id=210 data-nosnippet>210</a>            copy_to_distribution: raw.histogram_copy_to_distribution,
+<a href=#211 id=211 data-nosnippet>211</a>            copy_to_distribution_prefix: raw.histogram_copy_to_distribution_prefix,
+<a href=#212 id=212 data-nosnippet>212</a>        })
+<a href=#213 id=213 data-nosnippet>213</a>    }
+<a href=#214 id=214 data-nosnippet>214</a>}
+<a href=#215 id=215 data-nosnippet>215</a>
+<a href=#216 id=216 data-nosnippet>216</a><span class="attr">#[cfg(test)]
+<a href=#217 id=217 data-nosnippet>217</a></span><span class="kw">mod </span>tests {
+<a href=#218 id=218 data-nosnippet>218</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
+<a href=#219 id=219 data-nosnippet>219</a>
+<a href=#220 id=220 data-nosnippet>220</a>    <span class="attr">#[test]
+<a href=#221 id=221 data-nosnippet>221</a>    </span><span class="kw">fn </span>percentile_suffixes_match_agent_rounding() {
+<a href=#222 id=222 data-nosnippet>222</a>        <span class="kw">let </span>raw = RawHistogramConfiguration {
+<a href=#223 id=223 data-nosnippet>223</a>            histogram_aggregates: Vec::new(),
+<a href=#224 id=224 data-nosnippet>224</a>            histogram_percentiles: <span class="macro">vec!</span>[<span class="string">"0.299"</span>.to_string(), <span class="string">"0.73"</span>.to_string()],
+<a href=#225 id=225 data-nosnippet>225</a>            histogram_copy_to_distribution: <span class="bool-val">false</span>,
+<a href=#226 id=226 data-nosnippet>226</a>            histogram_copy_to_distribution_prefix: String::new(),
+<a href=#227 id=227 data-nosnippet>227</a>        };
+<a href=#228 id=228 data-nosnippet>228</a>
+<a href=#229 id=229 data-nosnippet>229</a>        <span class="kw">let </span>config = HistogramConfiguration::try_from(raw).unwrap();
+<a href=#230 id=230 data-nosnippet>230</a>
+<a href=#231 id=231 data-nosnippet>231</a>        <span class="macro">assert_eq!</span>(
+<a href=#232 id=232 data-nosnippet>232</a>            config.statistics(),
+<a href=#233 id=233 data-nosnippet>233</a>            <span class="kw-2">&amp;</span>[
+<a href=#234 id=234 data-nosnippet>234</a>                HistogramStatistic::Percentile {
+<a href=#235 id=235 data-nosnippet>235</a>                    q: <span class="number">0.30</span>,
+<a href=#236 id=236 data-nosnippet>236</a>                    suffix: <span class="string">"30percentile"</span>.into(),
+<a href=#237 id=237 data-nosnippet>237</a>                },
+<a href=#238 id=238 data-nosnippet>238</a>                HistogramStatistic::Percentile {
+<a href=#239 id=239 data-nosnippet>239</a>                    q: <span class="number">0.73</span>,
+<a href=#240 id=240 data-nosnippet>240</a>                    suffix: <span class="string">"73percentile"</span>.into(),
+<a href=#241 id=241 data-nosnippet>241</a>                },
+<a href=#242 id=242 data-nosnippet>242</a>            ]
+<a href=#243 id=243 data-nosnippet>243</a>        );
+<a href=#244 id=244 data-nosnippet>244</a>    }
+<a href=#245 id=245 data-nosnippet>245</a>}
 </code></pre></div></section></main></body></html>
