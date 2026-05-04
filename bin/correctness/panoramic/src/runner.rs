@@ -221,16 +221,18 @@ impl Runner {
                     return None;
                 }
 
-                // Wait for kind cluster readiness before acquiring a concurrency slot so we
-                // don't starve non-kind tests while the cluster is being set up.
-                if let Some(ref rx) = kind_ready {
-                    let mut rx = rx.lock().await;
-                    loop {
-                        if rx.borrow().is_some() {
-                            break;
-                        }
-                        if rx.changed().await.is_err() {
-                            break;
+                // Kind tests wait for cluster readiness before acquiring a concurrency slot
+                // so they don't starve Docker tests while the cluster is being set up.
+                if test.runtime() == "kubernetes_in_docker" {
+                    if let Some(ref rx) = kind_ready {
+                        let mut rx = rx.lock().await;
+                        loop {
+                            if rx.borrow().is_some() {
+                                break;
+                            }
+                            if rx.changed().await.is_err() {
+                                break;
+                            }
                         }
                     }
                 }
