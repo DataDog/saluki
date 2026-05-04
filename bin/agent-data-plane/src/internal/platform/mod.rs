@@ -48,6 +48,11 @@ impl PlatformSettings {
             .join("dogstatsd-stats.log")
     }
 
+    /// Returns the default local syslog URI used by the Datadog Agent on this platform.
+    pub const fn get_default_syslog_uri() -> &'static str {
+        DATADOG_AGENT_DEFAULT_SYSLOG_URI
+    }
+
     /// Returns the prefix for all environment variables used by the Datadog Agent.
     pub const fn get_env_var_prefix() -> &'static str {
         DATADOG_AGENT_ENV_VAR_PREFIX

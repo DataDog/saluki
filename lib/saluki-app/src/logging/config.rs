@@ -25,6 +25,28 @@ pub struct LoggingConfiguration {
     /// Whether to write log records to standard output.
     pub log_to_console: bool,
 
+    /// Whether to write log records to syslog.
+    ///
+    /// Defaults to `false`. When this is `true` and [`syslog_uri`] is empty, callers should resolve the destination to
+    /// the platform's default local syslog URI before constructing the logging output stack.
+    ///
+    /// [`syslog_uri`]: LoggingConfiguration::syslog_uri
+    pub log_to_syslog: bool,
+
+    /// URI of the syslog destination.
+    ///
+    /// Defaults to an empty string. An empty value means "use the platform default" only when [`log_to_syslog`] is
+    /// enabled; otherwise it has no effect. Supported URI schemes are handled by the syslog output implementation.
+    ///
+    /// [`log_to_syslog`]: LoggingConfiguration::log_to_syslog
+    pub syslog_uri: String,
+
+    /// Whether to use the Agent's RFC-style syslog header.
+    ///
+    /// Defaults to `false`, which preserves the Agent's legacy syslog header format. Set this to `true` when the
+    /// receiving syslog daemon expects the Agent's RFC-style header.
+    pub syslog_rfc: bool,
+
     /// Path to the log file to write to, or empty to disable file logging.
     pub log_file: String,
 
@@ -44,10 +66,33 @@ impl LoggingConfiguration {
             log_level: LevelFilter::INFO.into(),
             log_format_json: false,
             log_to_console: true,
+            log_to_syslog: false,
+            syslog_uri: String::new(),
+            syslog_rfc: false,
             log_file: String::new(),
             log_file_max_size: DEFAULT_LOG_FILE_MAX_SIZE,
             log_file_max_rolls: DEFAULT_LOG_FILE_MAX_ROLLS,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn simple_defaults_to_console_only_logging_with_syslog_disabled() {
+        let config = LoggingConfiguration::simple();
+
+        assert_eq!(config.log_level.as_env_filter().to_string(), "info");
+        assert!(!config.log_format_json);
+        assert!(config.log_to_console);
+        assert!(!config.log_to_syslog);
+        assert!(config.syslog_uri.is_empty());
+        assert!(!config.syslog_rfc);
+        assert!(config.log_file.is_empty());
+        assert_eq!(config.log_file_max_size, DEFAULT_LOG_FILE_MAX_SIZE);
+        assert_eq!(config.log_file_max_rolls, DEFAULT_LOG_FILE_MAX_ROLLS);
     }
 }
 

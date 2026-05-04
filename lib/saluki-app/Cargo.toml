@@ -55,6 +55,7 @@ tracing-subscriber = { workspace = true, features = [
   "std",
   "tracing-log",
 ] }
+url = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
 http-body-util = { workspace = true }

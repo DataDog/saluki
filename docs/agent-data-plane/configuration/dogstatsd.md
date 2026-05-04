@@ -39,7 +39,6 @@ tracking.
 | `forwarder_http_protocol`                    | HTTP version (auto/http1)         | [#1361] |
 | `forwarder_outdated_file_in_days`            | Retry file retention (days)       | [#1360] |
 | `log_format_rfc3339`                         | Use RFC3339 timestamp format      | [#1373] |
-| `log_to_syslog`                              | Log to syslog daemon              | [#1337] |
 | `min_tls_version`                            | Minimum TLS version for HTTPS     | [#1370] |
 | `serializer_experimental_use_v3_api.*`       | V3 metrics API migration flags    | [#1468] |
 | `sslkeylogfile`                              | TLS key log file path             | [#1372] |
@@ -292,6 +291,12 @@ These two keys are transitional flags being phased out. Both will be implied by
 
 The following settings work in ADP with the same behavior as the core agent.
 
+To enable syslog logging, set `log_to_syslog: true`. Console logging remains controlled by
+`log_to_console`; enabling syslog does not disable console or file logging. If `syslog_uri` is empty
+while syslog logging is enabled, ADP uses the platform default local syslog socket:
+`unixgram:///dev/log` on Linux and `unixgram:///var/run/syslog` on macOS. Set `syslog_rfc: true`
+when the receiving syslog daemon expects the Agent's RFC-style header.
+
 | Config Key                                | Description                      |
 |-------------------------------------------|----------------------------------|
 | `additional_endpoints`                    | Dual-ship to extra endpoints     |
@@ -351,6 +356,7 @@ The following settings work in ADP with the same behavior as the core agent.
 | `log_file_max_size`                       | Max log file size before rotate  |
 | `log_format_json`                         | Use JSON log format              |
 | `log_to_console`                          | Log to stdout/stderr             |
+| `log_to_syslog`                           | Log to syslog daemon             |
 | `metric_filterlist`                       | Metric name blocklist            |
 | `metric_filterlist_match_prefix`          | Blocklist uses prefix matching   |
 | `metric_tag_filterlist`                   | Per-metric tag include/exclude   |
@@ -362,6 +368,8 @@ The following settings work in ADP with the same behavior as the core agent.
 | `secret_backend_timeout`                  | Secret backend timeout (seconds) |
 | `serializer_compressor_kind`              | Payload compression algorithm    |
 | `site`                                    | Datadog site domain              |
+| `syslog_rfc`                              | Use RFC-style syslog header      |
+| `syslog_uri`                              | Syslog destination URI           |
 | `tags`                                    | Global tags (DD_TAGS)            |
 | `use_proxy_for_cloud_metadata`            | Proxy cloud metadata endpoints   |
 
@@ -371,7 +379,6 @@ The following settings work in ADP with the same behavior as the core agent.
 [#1332]: https://github.com/DataDog/saluki/issues/1332
 [#1333]: https://github.com/DataDog/saluki/issues/1333
 [#1334]: https://github.com/DataDog/saluki/issues/1334
-[#1337]: https://github.com/DataDog/saluki/issues/1337
 [#1338]: https://github.com/DataDog/saluki/issues/1338
 [#1339]: https://github.com/DataDog/saluki/issues/1339
 [#1340]: https://github.com/DataDog/saluki/issues/1340
