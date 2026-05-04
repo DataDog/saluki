@@ -72,12 +72,12 @@ where
 
             let ancillary = ancillary_data.bytes().to_vec();
 
-            let maybe_process_creds = ancillary_data.messages().find_map(|m| match m {
-                ControlMessage::Credentials(creds) => Some(ProcessCredentials {
+            let maybe_process_creds = ancillary_data.messages().next().map(|m| match m {
+                ControlMessage::Credentials(creds) => ProcessCredentials {
                     pid: creds.pid,
                     uid: creds.uid,
                     gid: creds.gid,
-                }),
+                },
             });
 
             (maybe_process_creds, ancillary)
@@ -111,10 +111,15 @@ fn socket_credentials_control_message(process_credentials: ProcessCredentials) -
 
             let mut msg_hdr: libc::msghdr = mem::zeroed();
             msg_hdr.msg_control = control_buf.as_mut_ptr().cast();
-            msg_hdr.msg_controllen = control_buf
-                .len()
-                .try_into()
-                .expect("control buffer length should fit in msg_controllen");
+            // `msg_controllen` varies across libc targets. Keep this as a checked conversion so narrower targets fail
+            // loudly instead of silently truncating the ancillary buffer length.
+            #[allow(clippy::useless_conversion)]
+            {
+                msg_hdr.msg_controllen = control_buf
+                    .len()
+                    .try_into()
+                    .expect("control buffer length should fit in msg_controllen");
+            }
 
             let cmsg = libc::CMSG_FIRSTHDR(&msg_hdr);
             assert!(!cmsg.is_null(), "ancillary buffer should fit one credentials message");
