@@ -72,7 +72,7 @@ deranged,https://github.com/jhpratt/deranged,MIT OR Apache-2.0,Jacob Pratt <jaco
 derive-ex,https://github.com/frozenlib/derive-ex,MIT OR Apache-2.0,frozenlib
 digest,https://github.com/RustCrypto/traits,MIT OR Apache-2.0,RustCrypto Developers
 displaydoc,https://github.com/yaahc/displaydoc,MIT OR Apache-2.0,Jane Lusby <jlusby@yaah.dev>
-dyn-clone,https://github.com/dtolnay/dyn-clone,MIT OR Apache-2.0,David Tolnay <dtolnay@gmail.com>
+document-features,https://github.com/slint-ui/document-features,MIT OR Apache-2.0,Slint Developers <info@slint.dev>
 either,https://github.com/rayon-rs/either,MIT OR Apache-2.0,bluss
 enum_dispatch,https://gitlab.com/antonok/enum_dispatch,MIT OR Apache-2.0,Anton Lazarev <https://antonok.com>
 equivalent,https://github.com/indexmap-rs/equivalent,Apache-2.0 OR MIT,The equivalent Authors
@@ -123,6 +123,7 @@ http-body,https://github.com/hyperium/http-body,MIT,"Carl Lerche <me@carllerche.
 http-serde-ext,https://github.com/andrewtoth/http-serde-ext,MIT,Andrew Toth
 httparse,https://github.com/seanmonstar/httparse,MIT OR Apache-2.0,Sean McArthur <sean@seanmonstar.com>
 httpdate,https://github.com/pyfisch/httpdate,MIT OR Apache-2.0,Pyfisch <pyfisch@posteo.org>
+hybrid-array,https://github.com/RustCrypto/hybrid-array,MIT OR Apache-2.0,RustCrypto Developers
 hyper,https://github.com/hyperium/hyper,MIT,Sean McArthur <sean@seanmonstar.com>
 hyper-http-proxy,https://github.com/metalbear-co/hyper-http-proxy,MIT,MetalBear Tech LTD <hi@metalbear.co>
 hyper-named-pipe,https://github.com/fussybeaver/hyper-named-pipe,Apache-2.0,The hyper-named-pipe Authors
@@ -144,7 +145,6 @@ iddqd,https://github.com/oxidecomputer/iddqd,MIT OR Apache-2.0,The iddqd Authors
 ident_case,https://github.com/TedDriggs/ident_case,MIT OR Apache-2.0,Ted Driggs <ted.driggs@outlook.com>
 idna_adapter,https://github.com/hsivonen/idna_adapter,Apache-2.0 OR MIT,The rust-url developers
 impls,https://github.com/nvzqz/impls,MIT OR Apache-2.0,"Nikolai Vazquez, Nadrieril Feneanar"
-indexmap,https://github.com/bluss/indexmap,Apache-2.0 OR MIT,The indexmap Authors
 indexmap,https://github.com/indexmap-rs/indexmap,Apache-2.0 OR MIT,The indexmap Authors
 inlinable_string,https://github.com/fitzgen/inlinable_string,Apache-2.0 OR MIT,Nick Fitzgerald <fitzgen@gmail.com>
 ipconfig,https://github.com/liranringel/ipconfig,MIT OR Apache-2.0,Liran Ringel <liranringel@gmail.com>
@@ -158,7 +158,7 @@ jni-sys,https://github.com/jni-rs/jni-sys,MIT OR Apache-2.0,"Steven Fackler <sfa
 jni-sys-macros,https://github.com/jni-rs/jni-sys,MIT OR Apache-2.0,Robert Bragg <robert@sixbynine.org>
 jobserver,https://github.com/rust-lang/jobserver-rs,MIT OR Apache-2.0,Alex Crichton <alex@alexcrichton.com>
 js-sys,https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys,MIT OR Apache-2.0,The wasm-bindgen Developers
-keccak,https://github.com/RustCrypto/sponges/tree/master/keccak,Apache-2.0 OR MIT,RustCrypto Developers
+keccak,https://github.com/RustCrypto/sponges,Apache-2.0 OR MIT,RustCrypto Developers
 lading-payload,https://github.com/datadog/lading,MIT,"Brian L. Troutwine <brian.troutwine@datadoghq.com>, George Hahn <george.hahn@datadoghq.com"
 lazy_static,https://github.com/rust-lang-nursery/lazy-static.rs,MIT OR Apache-2.0,Marvin Löbel <loebel.marvin@gmail.com>
 leb128fmt,https://github.com/bluk/leb128fmt,MIT OR Apache-2.0,Bryant Luk <code@bryantluk.com>
@@ -166,6 +166,7 @@ libc,https://github.com/rust-lang/libc,MIT OR Apache-2.0,The Rust Project Develo
 libm,https://github.com/rust-lang/compiler-builtins,MIT,"Alex Crichton <alex@alexcrichton.com>, Amanieu d'Antras <amanieu@gmail.com>, Jorge Aparicio <japaricious@gmail.com>, Trevor Gross <tg@trevorgross.com>"
 linux-raw-sys,https://github.com/sunfishcode/linux-raw-sys,Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT,Dan Gohman <dev@sunfishcode.online>
 litemap,https://github.com/unicode-org/icu4x,Unicode-3.0,The ICU4X Project Developers
+litrs,https://github.com/LukasKalbertodt/litrs,MIT OR Apache-2.0,Lukas Kalbertodt <lukas.kalbertodt@gmail.com>
 log,https://github.com/rust-lang/log,MIT OR Apache-2.0,The Rust Project Developers
 logos,https://github.com/maciejhirsz/logos,MIT OR Apache-2.0,"Maciej Hirsz <hello@maciej.codes>, Jérome Eertmans (maintainer) <jeertmans@icloud.com>"
 lru-slab,https://github.com/Ralith/lru-slab,MIT OR Apache-2.0 OR Zlib,Benjamin Saunders <ben.e.saunders@gmail.com>
@@ -251,7 +252,6 @@ rayon,https://github.com/rayon-rs/rayon,MIT OR Apache-2.0,The rayon Authors
 rayon-core,https://github.com/rayon-rs/rayon,MIT OR Apache-2.0,The rayon-core Authors
 rcgen,https://github.com/rustls/rcgen,MIT OR Apache-2.0,The rcgen Authors
 redox_syscall,https://gitlab.redox-os.org/redox-os/syscall,MIT,Jeremy Soller <jackpot51@gmail.com>
-ref-cast,https://github.com/dtolnay/ref-cast,MIT OR Apache-2.0,David Tolnay <dtolnay@gmail.com>
 regex,https://github.com/rust-lang/regex,MIT OR Apache-2.0,"The Rust Project Developers, Andrew Gallant <jamslam@gmail.com>"
 reqwest,https://github.com/seanmonstar/reqwest,MIT OR Apache-2.0,Sean McArthur <sean@seanmonstar.com>
 resolv-conf,https://github.com/hickory-dns/resolv-conf,MIT OR Apache-2.0,The resolv-conf Authors
@@ -274,7 +274,6 @@ rustversion,https://github.com/dtolnay/rustversion,MIT OR Apache-2.0,David Tolna
 ryu,https://github.com/dtolnay/ryu,Apache-2.0 OR BSL-1.0,David Tolnay <dtolnay@gmail.com>
 same-file,https://github.com/BurntSushi/same-file,Unlicense OR MIT,Andrew Gallant <jamslam@gmail.com>
 schannel,https://github.com/steffengy/schannel-rs,MIT,"Steven Fackler <sfackler@gmail.com>, Steffen Butzer <steffen.butzer@outlook.com>"
-schemars,https://github.com/GREsau/schemars,MIT,Graham Esau <gesau@hotmail.co.uk>
 scopeguard,https://github.com/bluss/scopeguard,MIT OR Apache-2.0,bluss
 security-framework,https://github.com/kornelski/rust-security-framework,MIT OR Apache-2.0,"Steven Fackler <sfackler@gmail.com>, Kornel <kornel@geekhood.net>"
 seize,https://github.com/ibraheemdev/seize,MIT,Ibraheem Ahmed <ibraheem@ibraheem.ca>

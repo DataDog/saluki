@@ -7,7 +7,7 @@ use std::{
 
 use chrono::{DateTime, NaiveDateTime, Utc};
 use fs4::{available_space, total_space};
-use rand::Rng;
+use rand::RngExt as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::{de::DeserializeOwned, Serialize};
 use tracing::{debug, info, warn};
@@ -456,6 +456,7 @@ async fn create_directory_recursive(path: PathBuf) -> Result<(), GenericError> {
 
 #[cfg(test)]
 mod tests {
+    use rand::RngExt as _;
     use rand_distr::Alphanumeric;
     use serde::Deserialize;
 

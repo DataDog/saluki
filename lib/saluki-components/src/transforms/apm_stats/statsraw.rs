@@ -4,7 +4,7 @@ use ddsketch::canonical::mapping::FixedLogarithmicMapping;
 use ddsketch::canonical::store::CollapsingLowestDenseStore;
 use ddsketch::canonical::PositiveOnlyDDSketch;
 use protobuf::Message;
-use rand::Rng as _;
+use rand::RngExt as _;
 use saluki_common::collections::{FastHashMap, PrehashedHashMap};
 use saluki_context::tags::TagSet;
 use saluki_core::data_model::event::trace_stats::{ClientGroupedStats, ClientStatsBucket};
