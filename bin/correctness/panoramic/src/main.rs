@@ -159,6 +159,17 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     // Spawn the test runner task (same code path for both modes).
     let runner_handle = tokio::spawn(async move { registry.run_tests(args).await });
 
+    // In non-TUI mode we need to handle a SIGINT from ctrl-c and call cancel on the cancel_all token.
+    if !use_tui {
+        let cancel_all_clone = cancel_all.clone();
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                info!("Received Ctrl+C, cancelling test run...");
+                cancel_all_clone.cancel();
+            }
+        });
+    }
+
     // Spawn the appropriate consumer based on mode.
     let all_passed = if use_tui {
         run_with_tui_consumer(rx, cancel_all, Some(log_dir), runner_handle).await
