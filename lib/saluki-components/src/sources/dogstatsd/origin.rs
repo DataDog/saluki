@@ -731,6 +731,7 @@ mod tests {
                 tag_cardinality: OriginTagCardinality::Low,
                 origin_detection_unified: false,
                 origin_detection_optout: false,
+                origin_detection_client: false,
             },
             replay_state,
         );
@@ -770,6 +771,7 @@ mod tests {
                 tag_cardinality: OriginTagCardinality::Low,
                 origin_detection_unified: false,
                 origin_detection_optout: false,
+                origin_detection_client: false,
             },
             replay_state,
         );
@@ -811,6 +813,7 @@ mod tests {
                 tag_cardinality: OriginTagCardinality::Low,
                 origin_detection_unified: false,
                 origin_detection_optout: false,
+                origin_detection_client: false,
             },
             replay_state,
         );
@@ -850,6 +853,7 @@ mod tests {
                 tag_cardinality: OriginTagCardinality::Low,
                 origin_detection_unified: false,
                 origin_detection_optout: false,
+                origin_detection_client: false,
             },
             replay_state,
         );

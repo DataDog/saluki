@@ -56,24 +56,13 @@ pub(super) struct TrafficCaptureWriter {
     state: Arc<Mutex<WriterState>>,
 }
 
+#[derive(Default)]
 struct WriterState {
     ongoing: bool,
     accepting: bool,
     target_path: Option<PathBuf>,
     compressed: bool,
     traffic_tx: Option<SyncSender<CaptureRecord>>,
-}
-
-impl Default for WriterState {
-    fn default() -> Self {
-        Self {
-            ongoing: false,
-            accepting: false,
-            target_path: None,
-            compressed: false,
-            traffic_tx: None,
-        }
-    }
 }
 
 enum CaptureFileWriter {
@@ -372,7 +361,6 @@ fn write_state(
         state: build_saved_entity_state(&pid_map, workload_provider),
         pid_map,
         duration: duration.as_millis().min(i64::MAX as u128) as i64,
-        ..Default::default()
     };
     let serialized = state.encode_to_vec();
 

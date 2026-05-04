@@ -47,7 +47,7 @@ use crate::{
     },
     internal::{
         create_internal_supervisor, logging::LoggingConfigurationTranslator, platform::PlatformSettings,
-        remote_agent::RemoteAgentBootstrap,
+        remote_agent::RemoteAgentBootstrap, ControlPlaneDependencies,
     },
 };
 use crate::{config::DataPlaneConfiguration, env_provider::ADPEnvironmentProvider};
@@ -176,10 +176,12 @@ pub async fn handle_run_command(
         &component_registry,
         health_registry.clone(),
         env_provider,
-        dsd_stats_config,
-        dsd_capture_control,
-        ra_bootstrap,
-        bootstrap_guard.logging().controller(),
+        ControlPlaneDependencies {
+            dsd_stats_config,
+            dsd_capture_control,
+            ra_bootstrap,
+            logging_controller: bootstrap_guard.logging().controller(),
+        },
     )
     .await
     .error_context("Failed to create internal supervisor.")?;

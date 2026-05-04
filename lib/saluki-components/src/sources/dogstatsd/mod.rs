@@ -407,6 +407,7 @@ pub struct DogStatsDConfiguration {
 
     /// Shared replay state to use for replay-marked origin lookups.
     #[serde(skip, default)]
+    #[cfg_attr(test, derive_where(skip))]
     replay_state: DogStatsDReplayState,
 
     /// Additional tags to add to all metrics.
@@ -433,6 +434,7 @@ pub struct DogStatsDConfiguration {
     capture_depth: usize,
 
     #[serde(skip, default)]
+    #[cfg_attr(test, derive_where(skip))]
     capture_control: DogStatsDCaptureControl,
 }
 
@@ -1077,7 +1079,7 @@ async fn drive_stream(
                         &codec,
                         &peer_addr,
                         &ancillary_data,
-                        received_payload(&io_buffer, bytes_read),
+                        received_payload(io_buffer, bytes_read),
                         stream_capture.as_mut(),
                     );
 
@@ -2115,6 +2117,8 @@ mod tests {
         assert_eq!(process_id_from_peer_addr(&peer_addr), Some(42));
         assert_eq!(process_id_for_origin(&peer_addr), Some(42));
         assert!(is_replay_peer_addr(&peer_addr));
+    }
+
     #[test]
     fn non_finite_metric_values_are_silently_dropped() {
         // The Datadog Agent sends NaN gauges (e.g. encode_ms.avg computed as 0.0/0.0 in Go).

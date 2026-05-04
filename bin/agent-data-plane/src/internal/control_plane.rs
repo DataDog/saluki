@@ -419,6 +419,14 @@ impl Supervisable for PrivilegedApiWorker {
     }
 }
 
+/// Dependencies used to assemble the control plane supervisor.
+pub struct ControlPlaneDependencies {
+    pub dsd_stats_config: DogStatsDStatisticsConfiguration,
+    pub dsd_capture_control: Option<DogStatsDCaptureControl>,
+    pub ra_bootstrap: Option<RemoteAgentBootstrap>,
+    pub logging_controller: LoggingOverrideController,
+}
+
 /// Creates the control plane supervisor.
 ///
 /// This supervisor manages the health registry, unprivileged and privileged APIs, and optionally the remote agent
@@ -431,10 +439,15 @@ impl Supervisable for PrivilegedApiWorker {
 /// If the supervisor cannot be created, an error is returned.
 pub async fn create_control_plane_supervisor(
     config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, component_registry: &ComponentRegistry,
-    health_registry: HealthRegistry, env_provider: ADPEnvironmentProvider,
-    dsd_stats_config: DogStatsDStatisticsConfiguration, dsd_capture_control: Option<DogStatsDCaptureControl>,
-    ra_bootstrap: Option<RemoteAgentBootstrap>, logging_controller: LoggingOverrideController,
+    health_registry: HealthRegistry, env_provider: ADPEnvironmentProvider, dependencies: ControlPlaneDependencies,
 ) -> Result<Supervisor, GenericError> {
+    let ControlPlaneDependencies {
+        dsd_stats_config,
+        dsd_capture_control,
+        ra_bootstrap,
+        logging_controller,
+    } = dependencies;
+
     let mut supervisor = Supervisor::new("ctrl-pln")?
         .with_dedicated_runtime(RuntimeConfiguration::single_threaded())
         .with_restart_strategy(RestartStrategy::one_to_one());
