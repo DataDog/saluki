@@ -464,17 +464,17 @@ async fn add_dsd_pipeline_to_blueprint(
     //               │                 │                          │ service checks           │ events
     //               │                 ▼                          ▼                          ▼
     //               │      ┌─────────────────────┐    ┌─────────────────────┐    ┌─────────────────────┐
-    //               │      │  DSD Prefix/Filter  │    │  Service Checks     │    │   Events Enrich     │
-    //               │      │     (transform)     │    │  Enrich (chained)   │    │    (chained)        │
-    //               │      └─────────────────────┘    └─────────────────────┘    └─────────────────────┘
-    //               │                 │                          │                          │
-    //               │                 ▼                          ▼                          ▼
-    //               │      ┌─────────────────────┐    ┌─────────────────────┐    ┌─────────────────────┐
     //               │      │     DSD Enrich      │    │     DSD Service     │    │     DSD Events      │
     //               │      │ (chained transform) │    │    Checks (encoder) │    │      (encoder)      │
     //               │      │┌───────────────────┐│    └─────────────────────┘    └─────────────────────┘
     //               │      ││    DSD Mapper     ││               │                          │
     //               │      │└───────────────────┘│               │                          │
+    //               │      └─────────────────────┘               │                          │
+    //               │                 │                          │                          │
+    //               │                 ▼                          │                          │
+    //               │      ┌─────────────────────┐               │                          │
+    //               │      │  DSD Prefix/Filter  │               │                          │
+    //               │      │     (transform)     │               │                          │
     //               │      └─────────────────────┘               │                          │
     //               │                 │                          │                          │
     //               │                 │        ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐           │
@@ -535,9 +535,9 @@ async fn add_dsd_pipeline_to_blueprint(
         .add_encoder("dd_service_checks_encode", dd_service_checks_config)?
         .add_destination("dsd_stats_out", dsd_stats_config)?
         // Metrics.
-        .connect_component("dsd_prefix_filter", ["dsd_in.metrics"])?
-        .connect_component("dsd_enrich", ["dsd_prefix_filter"])?
-        .connect_component("dsd_tag_filterlist", ["dsd_enrich"])?
+        .connect_component("dsd_enrich", ["dsd_in.metrics"])?
+        .connect_component("dsd_prefix_filter", ["dsd_enrich"])?
+        .connect_component("dsd_tag_filterlist", ["dsd_prefix_filter"])?
         .connect_component("dsd_agg", ["dsd_tag_filterlist"])?
         .connect_component("dsd_post_agg_filter", ["dsd_agg"])?
         .connect_component("metrics_enrich", ["dsd_post_agg_filter"])?
