@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["into_client_body"],"struct":["EndpointTelemetry","EndpointTelemetryLayer","HttpClient","HttpsCapableConnector","HttpsCapableConnectorBuilder"],"type":["ClientBody"]};
+window.SIDEBAR_ITEMS = {"fn":["into_client_body"],"struct":["EndpointTelemetry","EndpointTelemetryLayer","HttpClient","HttpClientBuilder","HttpsCapableConnector","HttpsCapableConnectorBuilder"],"type":["ClientBody"]};
