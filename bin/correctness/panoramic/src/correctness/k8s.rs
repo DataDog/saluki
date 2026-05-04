@@ -43,6 +43,31 @@ const MILLSTONE_EXIT_TIMEOUT: Duration = Duration::from_secs(300);
 pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestContext) -> TestResult {
     let started = Instant::now();
 
+    // Wait for the kind cluster to be ready. The runner already waited before acquiring a concurrency
+    // slot, so this is a fast-path check — the value should already be Some by the time we get here.
+    if let Some(ref rx) = tctx.kind_ready {
+        let status: Option<Result<(), String>> = rx.lock().await.borrow().clone();
+        match status {
+            Some(Ok(())) => {}
+            Some(Err(e)) => {
+                return make_error_result(
+                    name,
+                    started,
+                    "kind_setup",
+                    generic_error!("Kind cluster setup failed: {}", e),
+                );
+            }
+            None => {
+                return make_error_result(
+                    name,
+                    started,
+                    "kind_setup",
+                    generic_error!("Kind cluster setup did not complete"),
+                );
+            }
+        }
+    }
+
     let client = match Client::try_default().await {
         Ok(c) => c,
         Err(e) => {

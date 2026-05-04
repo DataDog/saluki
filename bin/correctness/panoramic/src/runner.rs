@@ -101,6 +101,7 @@ pub(crate) struct Runner {
     tests: Vec<Box<dyn Test>>,
     log_base_dir: PathBuf,
     mounts_dir: PathBuf,
+    kind_ready: Option<crate::test::KindReadyReceiver>,
 }
 
 impl Runner {
@@ -109,7 +110,13 @@ impl Runner {
             tests: Vec::new(),
             log_base_dir: log_base_dir.into(),
             mounts_dir: mounts_dir.into(),
+            kind_ready: None,
         }
+    }
+
+    pub(crate) fn with_kind_ready(mut self, rx: crate::test::KindReadyReceiver) -> Self {
+        self.kind_ready = Some(rx);
+        self
     }
 
     /// Register a test. Returns an error if the test name is a duplicate.
@@ -182,6 +189,7 @@ impl Runner {
                 cancel_all,
                 self.log_base_dir.clone(),
                 self.mounts_dir.clone(),
+                self.kind_ready.clone(),
             )
             .await;
             let failed = !result.passed;
@@ -207,7 +215,26 @@ impl Runner {
             let cancel = cancel_all.clone();
             let log_base_dir = self.log_base_dir.clone();
             let mounts_dir = self.mounts_dir.clone();
+            let kind_ready = self.kind_ready.clone();
             futures.push(async move {
+                if cancel.is_cancelled() {
+                    return None;
+                }
+
+                // Wait for kind cluster readiness before acquiring a concurrency slot so we
+                // don't starve non-kind tests while the cluster is being set up.
+                if let Some(ref rx) = kind_ready {
+                    let mut rx = rx.lock().await;
+                    loop {
+                        if rx.borrow().is_some() {
+                            break;
+                        }
+                        if rx.changed().await.is_err() {
+                            break;
+                        }
+                    }
+                }
+
                 if cancel.is_cancelled() {
                     return None;
                 }
@@ -218,7 +245,7 @@ impl Runner {
                     return None;
                 }
 
-                Some(Self::run_one(*test, event_sender, &cancel, log_base_dir, mounts_dir).await)
+                Some(Self::run_one(*test, event_sender, &cancel, log_base_dir, mounts_dir, kind_ready).await)
             });
 
             while futures.len() >= parallelism {
@@ -238,7 +265,7 @@ impl Runner {
 
     async fn run_one(
         test: &dyn Test, event_sender: &Option<EventSender>, cancel_all: &CancellationToken, log_base_dir: PathBuf,
-        mounts_dir: PathBuf,
+        mounts_dir: PathBuf, kind_ready: Option<crate::test::KindReadyReceiver>,
     ) -> TestResult {
         let name = test.name();
         let suite = test.suite();
@@ -259,7 +286,12 @@ impl Runner {
             );
         }
 
-        let tctx = TestContext::new(test_cancel.clone(), log_dir.clone(), mounts_dir);
+        let mut tctx = TestContext::new(test_cancel.clone(), log_dir.clone(), mounts_dir);
+        if test.runtime() == "kubernetes_in_docker" {
+            if let Some(rx) = kind_ready {
+                tctx = tctx.with_kind_ready(rx);
+            }
+        }
 
         if let Some(ref tx) = event_sender {
             let _ = tx.send(TestEvent::TestStarted { name: name.clone() });

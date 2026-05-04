@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::{io::IsTerminal, path::PathBuf, process::ExitCode, time::Instant};
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 use tracing_subscriber::{layer::SubscriberExt as _, util::SubscriberInitExt as _, EnvFilter};
@@ -140,28 +140,35 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         return ExitCode::from(2);
     }
 
-    // Set up a kind cluster if any of the selected tests require one (before test_cases is moved).
-    let kind_lifecycle = {
-        let images = collect_kind_images(&test_cases);
-        if images.is_empty() {
-            None
-        } else {
-            match KindLifecycle::ensure(cmd.kind_cluster_name.clone(), images).await {
-                Ok(lc) => Some(lc),
+    // Spawn kind cluster setup in the background so non-kind tests start immediately.
+    // Kind tests will wait on `kind_rx` before doing any work.
+    let kind_images = collect_kind_images(&test_cases);
+    let kind_lifecycle_slot = std::sync::Arc::new(Mutex::new(None::<KindLifecycle>));
+    let kind_rx = if kind_images.is_empty() {
+        None
+    } else {
+        let (kind_tx, kind_rx) = watch::channel::<Option<Result<(), String>>>(None);
+        let slot = kind_lifecycle_slot.clone();
+        let cluster_name = cmd.kind_cluster_name.clone();
+        tokio::spawn(async move {
+            match KindLifecycle::ensure(cluster_name, kind_images).await {
+                Ok(lc) => {
+                    *slot.lock().await = Some(lc);
+                    let _ = kind_tx.send(Some(Ok(())));
+                }
                 Err(e) => {
-                    if use_tui {
-                        eprintln!("Failed to set up kind cluster: {:?}", e);
-                    } else {
-                        error!("Failed to set up kind cluster: {:?}", e);
-                    }
-                    return ExitCode::from(2);
+                    let _ = kind_tx.send(Some(Err(format!("{:?}", e))));
                 }
             }
-        }
+        });
+        Some(std::sync::Arc::new(Mutex::new(kind_rx)))
     };
 
     // Inject runtime config and build the test registry.
     let mut registry = Runner::new(log_dir.clone(), cmd.mounts_dir.clone());
+    if let Some(ref rx) = kind_rx {
+        registry = registry.with_kind_ready(rx.clone());
+    }
     for tc in test_cases {
         registry.register(tc).expect("failure to register test");
     }
@@ -205,15 +212,18 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     };
 
     // Tear down the kind cluster unless the caller asked to keep it.
-    if let Some(lifecycle) = kind_lifecycle {
-        if cmd.no_delete_kind_cluster {
-            info!(
-                "Skipping kind cluster teardown (--no-delete-kind-cluster). \
-                 Cluster '{}' is still running.",
-                cmd.kind_cluster_name
-            );
-        } else {
-            lifecycle.teardown().await;
+    if kind_rx.is_some() {
+        let lifecycle: Option<KindLifecycle> = kind_lifecycle_slot.lock().await.take();
+        if let Some(lifecycle) = lifecycle {
+            if cmd.no_delete_kind_cluster {
+                info!(
+                    "Skipping kind cluster teardown (--no-delete-kind-cluster). \
+                     Cluster '{}' is still running.",
+                    cmd.kind_cluster_name
+                );
+            } else {
+                lifecycle.teardown().await;
+            }
         }
     }
 

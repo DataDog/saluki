@@ -1,12 +1,21 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use tokio::sync::{watch, Mutex};
 use tokio_util::sync::CancellationToken;
 
 use crate::reporter::TestResult;
+
+/// Signal used to notify kind-runtime tests when the cluster is ready.
+///
+/// The receiver holds `None` until setup completes, then `Some(Ok(()))` on success or
+/// `Some(Err(message))` on failure. Wrapped in `Arc<Mutex<_>>` so multiple concurrent kind
+/// tests can each wait on it.
+pub(crate) type KindReadyReceiver = Arc<Mutex<watch::Receiver<Option<Result<(), String>>>>>;
 
 #[derive(Debug, Default, Clone, Copy, Eq, Ord, PartialOrd, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -35,6 +44,10 @@ pub(crate) struct TestContext {
     // For example: this could become runtime_config: HashMap<String, String> for shuttling domain specific items from
     // runtime to a test.
     mounts_dir: PathBuf,
+
+    /// For kind-runtime tests: a shared channel that fires when the cluster is ready (or has failed).
+    /// Non-kind tests leave this as `None` and proceed immediately.
+    pub(crate) kind_ready: Option<KindReadyReceiver>,
 }
 
 impl TestContext {
@@ -43,7 +56,13 @@ impl TestContext {
             test_cancel_token: cancel,
             log_dir,
             mounts_dir,
+            kind_ready: None,
         }
+    }
+
+    pub(crate) fn with_kind_ready(mut self, rx: KindReadyReceiver) -> Self {
+        self.kind_ready = Some(rx);
+        self
     }
 
     pub(crate) fn test_cancel_token(&self) -> CancellationToken {
