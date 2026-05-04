@@ -2065,7 +2065,9 @@ mod tests {
 
     #[test]
     fn payload_local_container_id_reads_local_data() {
-        let codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
+        let codec = DogStatsDCodec::from_configuration(
+            DogStatsDCodecConfiguration::default().with_client_origin_detection(true),
+        );
         let payload = b"test.metric:1|c|c:ci-local-container\n";
 
         assert_eq!(
