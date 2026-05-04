@@ -1,9 +1,6 @@
 //! DogStatsD post-aggregate metric filter transform.
 //!
 //! Drops post-aggregation scalar metrics whose generated histogram aggregate names match the metric filterlist.
-
-mod telemetry;
-
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
@@ -25,6 +22,8 @@ use serde::Deserialize;
 use stringtheory::MetaString;
 use tokio::select;
 use tracing::{debug, error};
+
+mod telemetry;
 
 use self::telemetry::Telemetry;
 
@@ -89,7 +88,7 @@ impl DogStatsDPostAggregateFilterConfiguration {
     ///
     /// If the configuration cannot be deserialized, an error is returned.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let mut typed_config: DogStatsDPostAggregateFilterConfiguration = config.as_typed()?;
+        let mut typed_config: Self = config.as_typed()?;
         typed_config.configuration = Some(config.clone());
         Ok(typed_config)
     }
@@ -593,18 +592,27 @@ mod tests {
     // https://github.com/DataDog/datadog-agent/blob/12213fe95538f47d98d73bd945a87b3e24189285/pkg/aggregator/time_sampler_test.go#L546
     #[test]
     fn sketch_metrics_are_not_filtered() {
-        let filter = noop_filter(vec!["request.duration.max"], false, vec![], false);
+        let filter = noop_filter(
+            vec![
+                "distribution.duration.max",
+                "histogram.duration.max",
+                "gauge.duration.max",
+            ],
+            false,
+            vec![],
+            false,
+        );
 
         let names = filter_metric_names(
             &filter,
             vec![
-                Metric::distribution("request.duration.max", [1.0, 2.0, 3.0]),
-                Metric::histogram("request.duration.max", [1.0, 2.0, 3.0]),
-                Metric::gauge("request.duration.max", 1.0),
+                Metric::distribution("distribution.duration.max", [1.0, 2.0, 3.0]),
+                Metric::histogram("histogram.duration.max", [1.0, 2.0, 3.0]),
+                Metric::gauge("gauge.duration.max", 1.0),
             ],
         );
 
-        assert_eq!(names, vec!["request.duration.max", "request.duration.max"]);
+        assert_eq!(names, vec!["distribution.duration.max", "histogram.duration.max"]);
     }
 
     // Mirrors Datadog Agent runtime metric filterlist update behavior:
