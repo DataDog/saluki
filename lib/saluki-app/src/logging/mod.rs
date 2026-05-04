@@ -225,18 +225,27 @@ mod tests {
 
     #[tokio::test]
     async fn reload_can_enable_change_disable_syslog_and_preserves_previous_stack_on_invalid_config() {
+        use saluki_core::runtime::{ProcessShutdown, Supervisable as _};
+
         let config = logging_config_without_outputs();
         let (output_stack, worker_guards) = build_output_stack(&config).expect("build initial output stack");
         let (output_layer, stack_handle) = reload::Layer::new(output_stack);
         let level_filter = config.log_level.as_env_filter();
         let (filter_layer, filter_handle) = reload::Layer::new(level_filter.clone());
-        let (_override_worker, controller) = LoggingOverrideWorker::new(level_filter, filter_handle);
+        let (override_worker, controller) = LoggingOverrideWorker::new(level_filter, filter_handle);
         let mut guard = LoggingGuard {
             worker_guards,
             stack_handle,
             controller,
         };
         let _keep_layers_alive = (output_layer, filter_layer);
+
+        // Spawn the override worker so update_base calls inside reload() don't block on a full channel.
+        let worker_fut = override_worker
+            .initialize(ProcessShutdown::noop())
+            .await
+            .expect("worker init");
+        let worker_handle = tokio::spawn(worker_fut);
 
         guard
             .reload(logging_config_with_syslog(TEST_SYSLOG_URI))
@@ -268,6 +277,13 @@ mod tests {
             .expect_err("invalid syslog URI should fail reload");
         assert!(error.to_string().contains("Failed to build syslog log writer"));
         assert_eq!(guard.worker_guards.len(), 1);
+
+        // Dropping the guard closes the controller channel, which lets the worker exit.
+        drop(guard);
+        worker_handle
+            .await
+            .expect("override worker should exit cleanly")
+            .expect("override worker should not error");
     }
 
     fn logging_config_without_outputs() -> LoggingConfiguration {
