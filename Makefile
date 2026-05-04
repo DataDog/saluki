@@ -193,22 +193,13 @@ build-gen-statsd-image: ## Builds the gen-statsd container image ('latest' tag)
 		.
 
 
-.PHONY: build-datadog-intake-image
-build-datadog-intake-image: ## Builds the datadog-intake container image in release mode ('latest' tag)
-	@echo "[*] Building datadog-intake image..."
+.PHONY: build-correctness-tools-image
+build-correctness-tools-image: ## Builds the correctness tools suite (datadog-intake + millstone) container image ('latest' tag)
+	@echo "[*] Building correctness tools image (datadog-intake + millstone)..."
 	@docker build \
-		--tag saluki-images/datadog-intake:latest \
-		--tag local.dev/saluki-images/datadog-intake:testing \
-		--file ./docker/Dockerfile.datadog-intake \
-		.
-
-.PHONY: build-millstone-image
-build-millstone-image: ## Builds the millstone container image in release mode ('latest' tag)
-	@echo "[*] Building millstone image..."
-	@docker build \
-		--tag saluki-images/millstone:latest \
-		--tag local.dev/saluki-images/millstone:testing \
-		--file ./docker/Dockerfile.millstone \
+		--tag saluki-images/correctness-tools:latest \
+		--tag local.dev/saluki-images/correctness-tools:testing \
+		--file ./docker/Dockerfile.correctness-tools \
 		.
 
 .PHONY: build-proxy-dumper-image
