@@ -111,7 +111,10 @@ fn socket_credentials_control_message(process_credentials: ProcessCredentials) -
 
             let mut msg_hdr: libc::msghdr = mem::zeroed();
             msg_hdr.msg_control = control_buf.as_mut_ptr().cast();
-            msg_hdr.msg_controllen = control_buf.len() as u32;
+            msg_hdr.msg_controllen = control_buf
+                .len()
+                .try_into()
+                .expect("control buffer length should fit in msg_controllen");
 
             let cmsg = libc::CMSG_FIRSTHDR(&msg_hdr);
             assert!(!cmsg.is_null(), "ancillary buffer should fit one credentials message");
