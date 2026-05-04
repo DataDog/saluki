@@ -13,16 +13,14 @@ use std::io::Write;
 use saluki_error::{generic_error, GenericError};
 use tracing_appender::non_blocking::{NonBlocking, NonBlockingBuilder, WorkerGuard};
 use tracing_rolling_file::RollingFileAppenderBase;
-use tracing_subscriber::{
-    layer::SubscriberExt as _, reload::Layer as ReloadLayer, util::SubscriberInitExt as _, Layer,
-};
+use tracing_subscriber::{layer::SubscriberExt as _, reload, util::SubscriberInitExt as _, Layer, Registry};
 
 mod api;
 use self::api::set_logging_api_handler;
-pub use self::api::{acquire_logging_api_handler, LoggingAPIHandler};
+pub use self::api::{acquire_logging_api_handler, LoggingAPIHandler, LoggingOverrideController, LoggingOverrideWorker};
 
 mod config;
-pub(crate) use self::config::LoggingConfiguration;
+pub use self::config::{LogLevel, LoggingConfiguration};
 
 mod layer;
 use self::layer::build_formatting_layer;
@@ -34,52 +32,114 @@ use self::layer::build_formatting_layer;
 // minimum of ~32KB, etc.
 const NB_LOG_WRITER_BUFFER_SIZE: usize = 4096;
 
-#[derive(Default)]
-pub(crate) struct LoggingGuard {
+type OutputStack = Vec<Box<dyn Layer<Registry> + Send + Sync>>;
+
+/// A handle to the dynamic logging subsystem.
+///
+/// Held by [`BootstrapGuard`][crate::bootstrap::BootstrapGuard] for the lifetime of the application. Owns the
+/// worker guards (which flush buffered output on drop), and exposes [`reload`][Self::reload] for swapping the
+/// entire logging configuration plus [`controller`][Self::controller] for driving runtime filter changes through
+/// the override worker.
+pub struct LoggingGuard {
     worker_guards: Vec<WorkerGuard>,
+    stack_handle: reload::Handle<OutputStack, Registry>,
+    controller: LoggingOverrideController,
 }
 
 impl LoggingGuard {
-    fn add_worker_guard(&mut self, guard: WorkerGuard) {
-        self.worker_guards.push(guard);
+    /// Reloads the logging subsystem from the given configuration.
+    ///
+    /// Rebuilds the output layer stack from `config` and routes the new level filter through the override worker
+    /// as the new base filter, so an active override is preserved (the new base will take effect once the override
+    /// expires). Worker guards for the previous outputs are dropped after the swap, which flushes any buffered log
+    /// lines to their original destinations.
+    ///
+    /// This is the right entry point when the entire logging configuration may have changed (e.g., outputs,
+    /// format, level). For runtime base-filter changes only -- such as following a `log_level` config update --
+    /// use [`controller`][Self::controller] and call
+    /// [`update_base`][LoggingOverrideController::update_base] directly.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the new output layers cannot be constructed (e.g., the configured log file path is
+    /// inaccessible) or if the override worker is no longer running.
+    pub async fn reload(&mut self, config: LoggingConfiguration) -> Result<(), GenericError> {
+        let (new_stack, new_guards) = build_output_stack(&config)?;
+        let new_filter = config.log_level.as_env_filter();
+
+        self.stack_handle
+            .reload(new_stack)
+            .map_err(|e| generic_error!("Failed to swap logging output stack: {}", e))?;
+        self.controller.update_base(new_filter).await?;
+
+        // Drop the old worker guards _after_ the swap so any buffered lines are flushed to their original destinations
+        // before the worker threads exit.
+        let _old_guards = std::mem::replace(&mut self.worker_guards, new_guards);
+
+        Ok(())
+    }
+
+    /// Returns a logging override controller that can be used to change the default filter directives.
+    pub fn controller(&self) -> LoggingOverrideController {
+        self.controller.clone()
     }
 }
 
 /// Initializes the logging subsystem for `tracing` with the ability to dynamically update the log filtering directives
 /// at runtime.
 ///
-/// This function reads the `DD_LOG_LEVEL` environment variable to determine the log level to use. If the environment
-/// variable is not set, the default log level is `INFO`. Additionally, it reads the `DD_LOG_FORMAT_JSON` environment
-/// variable to determine which output format to use. If it is set to `json` (case insensitive), the logs will be
-/// formatted as JSON. If it is set to any other value, or not set at all, the logs will default to a rich, colored,
-/// human-readable format.
-///
 /// An API handler can be acquired (via [`acquire_logging_api_handler`]) to install the API routes which allow for
 /// dynamically controlling the logging level filtering. See [`LoggingAPIHandler`] for more information.
 ///
-/// Returns a [`LoggingGuard`] which must be held until the application is about to shutdown, ensuring that any
-/// configured logging backends are able to completely flush any pending logs before the application exits.
+/// Returns a [`LoggingGuard`] which must be held until the application is about to shutdown, plus a
+/// [`LoggingOverrideWorker`] that must be added to a [`Supervisor`][saluki_core::runtime::Supervisor] to drive
+/// the dynamic override processor; without the worker running, override requests are accepted but never applied.
 ///
 /// # Errors
 ///
 /// If the logging subsystem was already initialized, an error will be returned.
-pub(crate) async fn initialize_logging(config: &LoggingConfiguration) -> Result<LoggingGuard, GenericError> {
+pub(crate) async fn initialize_logging(
+    config: LoggingConfiguration,
+) -> Result<(LoggingGuard, LoggingOverrideWorker), GenericError> {
     // TODO: Support for logging to syslog.
+
+    // Build the initial output stack from the supplied configuration.
+    let (output_stack, worker_guards) = build_output_stack(&config)?;
+    let (output_layer, stack_handle) = reload::Layer::new(output_stack);
 
     // Set up our log level filtering and dynamic filter layer.
     let level_filter = config.log_level.as_env_filter();
-    let (filter_layer, reload_handle) = ReloadLayer::new(level_filter.clone());
-    set_logging_api_handler(LoggingAPIHandler::new(level_filter, reload_handle));
+    let (filter_layer, filter_handle) = reload::Layer::new(level_filter.clone());
 
-    // Build all configured layers: one per output mechanism (console, file, etc).
-    let mut configured_layers = Vec::new();
-    let mut logging_guard = LoggingGuard::default();
+    // The override worker owns the canonical base filter -- the directives the system restores to after an override
+    // expires or is reset. It starts as the bootstrap level and is updated via the controller, both by
+    // `LoggingGuard::reload` once the Agent's configuration is applied and by any other caller (e.g. a runtime
+    // `log_level` watcher) wired up via [`LoggingGuard::controller`].
+    let (override_worker, controller) = LoggingOverrideWorker::new(level_filter, filter_handle);
+    set_logging_api_handler(LoggingAPIHandler::new(controller.clone()));
+
+    tracing_subscriber::registry()
+        .with(output_layer.with_filter(filter_layer))
+        .try_init()?;
+
+    Ok((
+        LoggingGuard {
+            worker_guards,
+            stack_handle,
+            controller,
+        },
+        override_worker,
+    ))
+}
+
+fn build_output_stack(config: &LoggingConfiguration) -> Result<(OutputStack, Vec<WorkerGuard>), GenericError> {
+    let mut layers: OutputStack = Vec::new();
+    let mut guards = Vec::new();
 
     if config.log_to_console {
         let (nb_stdout, guard) = writer_to_nonblocking("console", std::io::stdout());
-        logging_guard.add_worker_guard(guard);
-
-        configured_layers.push(build_formatting_layer(config, nb_stdout));
+        guards.push(guard);
+        layers.push(build_formatting_layer(config, nb_stdout));
     }
 
     if !config.log_file.is_empty() {
@@ -92,18 +152,11 @@ pub(crate) async fn initialize_logging(config: &LoggingConfiguration) -> Result<
             .map_err(|e| generic_error!("Failed to build log file appender: {}", e))?;
 
         let (nb_appender, guard) = writer_to_nonblocking("file", appender);
-        logging_guard.add_worker_guard(guard);
-
-        configured_layers.push(build_formatting_layer(config, nb_appender));
+        guards.push(guard);
+        layers.push(build_formatting_layer(config, nb_appender));
     }
 
-    // `tracing` accepts a `Vec<L>` where `L` implements `Layer<S>`, which acts as a fanout.. and then we're applying
-    // our filter layer on top of that, so that we filter out events once rather than per output layer.
-    tracing_subscriber::registry()
-        .with(configured_layers.with_filter(filter_layer))
-        .try_init()?;
-
-    Ok(logging_guard)
+    Ok((layers, guards))
 }
 
 fn writer_to_nonblocking<W>(writer_name: &'static str, writer: W) -> (NonBlocking, WorkerGuard)

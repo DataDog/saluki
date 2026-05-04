@@ -4,11 +4,13 @@ use std::sync::Arc;
 use facet::Facet;
 use headers::Authorization;
 use hyper_http_proxy::{Intercept, Proxy};
+use saluki_config::deserialize_space_separated_or_seq;
 use saluki_error::GenericError;
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
 use url::Url;
 
 #[derive(Clone, Deserialize, Facet)]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct ProxyConfiguration {
     /// The proxy server for HTTP requests.
     #[serde(rename = "proxy_http")]
@@ -298,41 +300,22 @@ fn ip_in_cidr(network: IpAddr, prefix_len: u8, addr: IpAddr) -> bool {
     }
 }
 
-/// Deserializes a `Vec<String>` from either a sequence or a space-separated string.
-///
-/// This handles the dual representation of `no_proxy`: a YAML sequence (`proxy.no_proxy`) and an
-/// environment variable (`DD_PROXY_NO_PROXY`) where values are space-separated.
-fn deserialize_space_separated_or_seq<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    use std::fmt;
+#[cfg(test)]
+mod config_smoke {
+    use serde_json::json;
 
-    use serde::de::{self, SeqAccess, Visitor};
+    use super::ProxyConfiguration;
+    use crate::config_registry::structs;
+    use crate::config_registry::test_support::run_config_smoke_tests;
 
-    struct SpaceSeparatedOrSeq;
-
-    impl<'de> Visitor<'de> for SpaceSeparatedOrSeq {
-        type Value = Vec<String>;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            formatter.write_str("a sequence or a space-separated string")
-        }
-
-        fn visit_str<E: de::Error>(self, v: &str) -> Result<Vec<String>, E> {
-            Ok(v.split_whitespace().map(str::to_owned).collect())
-        }
-
-        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<String>, A::Error> {
-            let mut values = Vec::new();
-            while let Some(v) = seq.next_element()? {
-                values.push(v);
-            }
-            Ok(values)
-        }
+    #[tokio::test]
+    async fn proxy_configuration_smoke_test() {
+        run_config_smoke_tests(structs::PROXY_CONFIGURATION, &[], json!({}), |cfg| {
+            cfg.as_typed::<ProxyConfiguration>()
+                .expect("ProxyConfiguration should deserialize")
+        })
+        .await
     }
-
-    deserializer.deserialize_any(SpaceSeparatedOrSeq)
 }
 
 #[cfg(test)]

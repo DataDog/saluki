@@ -1,3 +1,4 @@
+type: integration
 name: "basic-startup"
 description: "Verifies ADP starts successfully and remains stable"
 timeout: 60s

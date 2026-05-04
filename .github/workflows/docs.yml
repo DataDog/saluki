@@ -9,7 +9,7 @@ jobs:
   generate-docs-site:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Set up Node 23
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -28,13 +28,13 @@ jobs:
   generate-api-docs:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Install Protobuf Compiler
         run: |
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler
       - name: Set up Rust Nightly
-        uses: actions-rust-lang/setup-rust-toolchain@02be93da58aa71fb456aa9c43b301149248829d8 # v1.15.1
+        uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7 # v1.16
         with:
           toolchain: nightly
           cache: false
@@ -43,7 +43,7 @@ jobs:
         run: |
           ls -l .
           ls -l .cargo/config.toml
-          RUSTDOCFLAGS="--enable-index-page -Zunstable-options" cargo +nightly doc --no-deps -Zrustdoc-map --lib
+          make generate-api-docs
       - name: Compress generated API documentation assets
         run: tar -C ./target/doc -c -z -f api-docs.tar.gz .
       - name: Upload compressed API documentation assets
@@ -62,7 +62,7 @@ jobs:
       id-token: write
     steps:
       - name: Get access token from dd-octo-sts
-        uses: DataDog/dd-octo-sts-action@acaa02eee7e3bb0839e4272dacb37b8f3b58ba80 # v1.0.3
+        uses: DataDog/dd-octo-sts-action@96a25462dbcb10ebf0bfd6e2ccc917d2ab235b9a # v1.0.4
         id: octo-sts
         with:
           scope: DataDog/saluki

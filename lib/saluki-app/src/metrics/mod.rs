@@ -2,44 +2,64 @@
 
 use std::{sync::Mutex, time::Duration};
 
+use async_trait::async_trait;
 use metrics::gauge;
-use saluki_common::task::spawn_traced_named;
+use saluki_core::{
+    observability::metrics::MetricsFlusherWorker,
+    runtime::{InitializationError, ProcessShutdown, Supervisable, SupervisorFuture},
+};
 use saluki_error::GenericError;
 use saluki_metrics::static_metrics;
-use tokio::{runtime::Handle, time::sleep};
+use tokio::{runtime::Handle, select, time::sleep};
 
 static API_HANDLER: Mutex<Option<MetricsAPIHandler>> = Mutex::new(None);
 
 mod api;
-pub use self::api::MetricsAPIHandler;
+pub use self::api::{MetricsAPIHandler, MetricsOverrideWorker};
+
+/// The set of workers spawned by [`initialize_metrics`].
+///
+/// Each worker must be added to a [`Supervisor`][saluki_core::runtime::Supervisor] for the metrics subsystem to
+/// fully function: the flusher worker propagates internal metrics to subscribers, the runtime worker emits Tokio
+/// runtime gauges, and the override processor handles dynamic filter overrides driven by [`MetricsAPIHandler`].
+pub(crate) struct MetricsWorkers {
+    pub runtime: RuntimeMetricsWorker,
+    pub flusher: MetricsFlusherWorker,
+    pub override_processor: MetricsOverrideWorker,
+}
 
 /// Initializes the metrics subsystem for `metrics`.
 ///
 /// The given prefix is used to namespace all metrics that are emitted by the application, and is prepended to all
 /// metrics, followed by a period (for example, `<prefix>.<metric name>`).
 ///
+/// Returns a [`MetricsWorkers`] bundle containing the supervisable workers needed to drive the metrics subsystem
+/// at runtime.
+///
 /// # Errors
 ///
 /// If the metrics subsystem was already initialized, an error will be returned.
-pub(crate) async fn initialize_metrics(metrics_prefix: impl Into<String>) -> Result<(), GenericError> {
+pub(crate) async fn initialize_metrics(metrics_prefix: impl Into<String>) -> Result<MetricsWorkers, GenericError> {
     // We forward to the implementation in `saluki_core` so that we can have this crate be the collection point of all
     // helpers/types that are specific to generic application setup/initialization.
     //
     // The implementation itself has to live in `saluki_core`, however, to have access to all of the underlying types
     // that are created and used to install the global recorder, such that they need not be exposed publicly.
-    let filter_handle = saluki_core::observability::metrics::initialize_metrics(metrics_prefix.into()).await?;
-    API_HANDLER
-        .lock()
-        .unwrap()
-        .replace(MetricsAPIHandler::new(filter_handle));
+    let (filter_handle, flusher) =
+        saluki_core::observability::metrics::initialize_metrics(metrics_prefix.into()).await?;
 
-    // We also spawn a background task that collects and emits the Tokio runtime metrics.
-    spawn_traced_named(
-        "tokio-runtime-metrics-collector-primary",
-        collect_runtime_metrics("primary"),
-    );
+    let (api_handler, override_processor) = MetricsAPIHandler::new(filter_handle);
+    API_HANDLER.lock().unwrap().replace(api_handler);
 
-    Ok(())
+    // Capture the current runtime handle eagerly so the runtime metrics worker measures the runtime that owns
+    // bootstrap, regardless of where the worker future eventually executes under the supervisor.
+    let runtime = RuntimeMetricsWorker::new("primary", Handle::current());
+
+    Ok(MetricsWorkers {
+        runtime,
+        flusher,
+        override_processor,
+    })
 }
 
 /// Acquires the metrics API handler.
@@ -71,15 +91,12 @@ pub fn emit_startup_metrics() {
     gauge!("running", "version" => app_version).set(1.0);
 }
 
-/// Collects Tokio runtime metrics on the current Tokio runtime.
+/// Collects Tokio runtime metrics from the given runtime handle.
 ///
-/// All metrics generate will include a `runtime_id` label which maps to the given runtime ID. This allows for
+/// All metrics generated will include a `runtime_id` label which maps to the given runtime ID. This allows for
 /// differentiating between multiple runtimes that may be running in the same process.
-pub async fn collect_runtime_metrics(runtime_id: &str) {
-    // Get the handle to the runtime we're executing in, and then grab the total number of runtime workers.
-    //
-    // We need the number of workers to properly initialize/register our metrics.
-    let handle = Handle::current();
+pub async fn collect_runtime_metrics(runtime_id: &str, handle: Handle) {
+    // Grab the total number of runtime workers to properly initialize/register our metrics.
     let runtime_metrics = RuntimeMetrics::with_workers(runtime_id, handle.metrics().num_workers());
 
     // With our metrics registered, enter the main loop where we periodically scrape the metrics.
@@ -88,6 +105,45 @@ pub async fn collect_runtime_metrics(runtime_id: &str) {
         runtime_metrics.update(&latest_runtime_metrics);
 
         sleep(Duration::from_secs(5)).await;
+    }
+}
+
+/// A worker that periodically collects Tokio runtime metrics.
+///
+/// The runtime is captured at construction time so that the metrics measured always describe the runtime that
+/// owned the bootstrap, regardless of where this worker eventually executes under a supervisor.
+pub struct RuntimeMetricsWorker {
+    runtime_id: String,
+    handle: Handle,
+}
+
+impl RuntimeMetricsWorker {
+    /// Creates a new `RuntimeMetricsWorker` that collects metrics from the given runtime.
+    pub fn new<S: Into<String>>(runtime_id: S, handle: Handle) -> Self {
+        Self {
+            runtime_id: runtime_id.into(),
+            handle,
+        }
+    }
+}
+
+#[async_trait]
+impl Supervisable for RuntimeMetricsWorker {
+    fn name(&self) -> &str {
+        "tokio-runtime-metrics-collector"
+    }
+
+    async fn initialize(&self, mut process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
+        let runtime_id = self.runtime_id.clone();
+        let handle = self.handle.clone();
+
+        Ok(Box::pin(async move {
+            select! {
+                _ = collect_runtime_metrics(&runtime_id, handle) => {},
+                _ = process_shutdown.wait_for_shutdown() => {},
+            }
+            Ok(())
+        }))
     }
 }
 

@@ -50,7 +50,7 @@ build-adp-baseline-image:
     - docker buildx build
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${BASELINE_ADP_IMG}
-      --build-arg BUILD_PROFILE=optimized-release
+      --build-arg BUILD_PROFILE=release
       --build-arg BUILD_TARGET=x86_64-unknown-linux-musl
       --build-arg BUILD_IMAGE=${ADP_PUBLIC_BASE_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
@@ -107,7 +107,7 @@ build-adp-comparison-image:
     - docker buildx build
       --file ./docker/Dockerfile.agent-data-plane
       --tag ${COMPARISON_ADP_IMG}
-      --build-arg BUILD_PROFILE=optimized-release
+      --build-arg BUILD_PROFILE=release
       --build-arg BUILD_TARGET=x86_64-unknown-linux-musl
       --build-arg BUILD_IMAGE=${ADP_PUBLIC_BASE_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
@@ -145,7 +145,7 @@ run-benchmarks-adp:
   needs:
     - build-adp-baseline-image
     - build-adp-comparison-image
-  image: "${SALUKI_BUILD_CI_IMAGE}"
+  image: "${SALUKI_SMP_CI_IMAGE}"
   before_script:
     - *setup-smp-env
   artifacts:
@@ -153,7 +153,7 @@ run-benchmarks-adp:
     paths:
       - submission_metadata # for provenance, debugging
       - outputs/report.md # for debugging, also on S3
-      - outputs/report.html # for debugging, also on S3
+      - outputs/report.json # for debugging, also on S3
     when: always
   script:
     # Do some pre-flight steps like creating directories, installing helper utilities, setting credentials, and so on.
@@ -407,7 +407,7 @@ binary-size-analysis:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - if: !reference [.on_development_branch, rules, if]
-  image: "${SALUKI_BUILD_CI_IMAGE}"
+  image: "${SALUKI_SMP_CI_IMAGE}"
   needs:
     - build-adp-baseline-image
     - build-adp-comparison-image

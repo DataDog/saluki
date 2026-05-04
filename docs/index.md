@@ -14,6 +14,7 @@ hero:
     - theme: alt
       text: API Documentation
       link: /api-docs/
+      target: _self
 
 features:
   - title: Plug-and-play

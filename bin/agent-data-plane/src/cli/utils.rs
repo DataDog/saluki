@@ -1,4 +1,3 @@
-use bytes::Buf as _;
 use futures::TryFutureExt as _;
 use http::{uri::PathAndQuery, Request, Response, StatusCode, Uri};
 use http_body_util::BodyExt as _;
@@ -232,8 +231,10 @@ impl DataPlaneAPIClient {
 }
 
 async fn collect_body(body: Incoming) -> Option<String> {
-    let body = body.collect().await.ok()?.aggregate();
-    String::from_utf8(body.chunk().to_vec()).ok()
+    // `Collected::to_bytes()` merges all frames. Do not use `Buf::chunk().to_vec()` on an aggregated body: `chunk()`
+    // is only the first contiguous slice (often ~16 KiB), which truncates large JSON such as `/config` responses.
+    let bytes = body.collect().await.ok()?.to_bytes();
+    String::from_utf8(bytes.into()).ok()
 }
 
 async fn process_response_body(response: Response<Incoming>) -> Result<Response<String>, GenericError> {

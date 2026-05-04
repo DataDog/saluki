@@ -31,8 +31,24 @@ pub async fn handle_config_command(bootstrap_config: &GenericConfiguration) {
     let scrubber = scrubber::default_scrubber();
     let scrubbed_bytes = scrubber.scrub_bytes(response_body.as_bytes());
 
-    let yaml_value: serde_yaml::Value = serde_yaml::from_slice(&scrubbed_bytes).unwrap();
-    let yaml = serde_yaml::to_string(&yaml_value).unwrap_or_default();
+    // The privileged `/config` endpoint returns JSON (`ConfigAPIHandler`); parse as JSON after scrubbing.
+    let config_value: serde_json::Value = match serde_json::from_slice(&scrubbed_bytes) {
+        Ok(v) => v,
+        Err(e) => {
+            error!(
+                "Failed to parse configuration response as JSON after scrubbing (malformed payload or scrubber bug): {:#}",
+                e
+            );
+            std::process::exit(1);
+        }
+    };
+    let formatted = match serde_json::to_string_pretty(&config_value) {
+        Ok(s) => s,
+        Err(e) => {
+            error!("Failed to format configuration response as JSON: {:#}", e);
+            std::process::exit(1);
+        }
+    };
 
-    info!("Full configuration:\n{}", yaml);
+    info!("Full configuration:\n{}", formatted);
 }

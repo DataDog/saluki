@@ -2,7 +2,7 @@
 
 mod client;
 
-pub use self::client::{into_client_body, ClientBody, HttpClient};
+pub use self::client::{into_client_body, ClientBody, HttpClient, HttpClientBuilder};
 
 mod conn;
 pub use self::conn::{HttpsCapableConnector, HttpsCapableConnectorBuilder};

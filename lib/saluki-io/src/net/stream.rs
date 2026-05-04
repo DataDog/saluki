@@ -155,6 +155,22 @@ impl Stream {
             StreamInner::Connectionless { socket } => socket.receive(buf).await,
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn recv_buffer_size(&self) -> io::Result<usize> {
+        match &self.inner {
+            StreamInner::Connection { socket } => match socket {
+                Connection::Tcp(inner, _) => socket2::SockRef::from(inner).recv_buffer_size(),
+                #[cfg(unix)]
+                Connection::Unix(inner) => socket2::SockRef::from(inner).recv_buffer_size(),
+            },
+            StreamInner::Connectionless { socket } => match socket {
+                Connectionless::Udp(inner) => socket2::SockRef::from(inner).recv_buffer_size(),
+                #[cfg(unix)]
+                Connectionless::Unixgram(inner) => socket2::SockRef::from(inner).recv_buffer_size(),
+            },
+        }
+    }
 }
 
 impl From<(TcpStream, SocketAddr)> for Stream {

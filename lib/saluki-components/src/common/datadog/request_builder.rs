@@ -2,7 +2,7 @@
 
 use std::io;
 
-use http::{HeaderValue, Method, Request, Uri};
+use http::{HeaderName, HeaderValue, Method, Request, Uri};
 use saluki_common::buf::{ChunkedBytesBuffer, FrozenChunkedBytesBuffer};
 use saluki_io::compression::*;
 use snafu::{ResultExt, Snafu};
@@ -74,6 +74,13 @@ pub trait EndpointEncoder: std::fmt::Debug {
     ///
     /// This should be the corresponding MIME type for the encoded form of input events.
     fn content_type(&self) -> HeaderValue;
+
+    /// Returns any additional HTTP headers to include with each request.
+    ///
+    /// Defaults to no additional headers. Override to add encoder-specific headers.
+    fn additional_headers(&self) -> &[(HeaderName, HeaderValue)] {
+        &[]
+    }
 }
 
 // Request builder errors.
@@ -614,6 +621,10 @@ where
 
         if let Some(content_encoding) = self.compressor.content_encoding() {
             builder = builder.header(http::header::CONTENT_ENCODING, content_encoding);
+        }
+
+        for (name, value) in self.encoder.additional_headers() {
+            builder = builder.header(name, value);
         }
 
         builder.body(buffer).context(Http)

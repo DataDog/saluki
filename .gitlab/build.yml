@@ -1,6 +1,6 @@
 .build-adp-definition:
   stage: build
-  image: ${DOCKER_BUILD_IMAGE}
+  image: ${SALUKI_GENERAL_CI_IMAGE}
   needs:
     - calculate-build-metadata
   retry: 2
@@ -8,15 +8,25 @@
   variables:
     APP_BUILD_TIME: ${CI_PIPELINE_CREATED_AT}
     DDCI_CONFIGURE_OTEL_EXPORTER: true
+    # Configure `buildcache` to use our shared cache bucket.
+    BUILDCACHE_S3_BUCKET: "dd-saluki-build-cache-us1-ddbuild-io"
+    BUILDCACHE_S3_REGION: "us-east-1"
   script:
     - docker buildx create --name adp-builder --driver docker-container --use
+    - echo "Acquiring temporary AWS credentials..."
+    - .ci/get-temporary-aws-credentials.sh
     - 'echo "Building ADP image. (version: ${ADP_IMAGE_VERSION}, target: ${BUILD_TARGET}, profile: ${BUILD_PROFILE})"'
     - docker buildx build
       --file ./docker/Dockerfile.agent-data-plane
       --output push-by-digest=true,type=image,push=true
       --metadata-file ./build-metadata.${BUILD_ARCH}
       --tag ${ADP_IMAGE_REPO_BASE}
-      --build-arg BUILD_IMAGE=${ADP_PUBLIC_BASE_IMAGE}
+      --build-arg BUILDCACHE_IMAGE=${SALUKI_BUILDCACHE_CI_IMAGE}
+      --build-arg BUILDCACHE_REMOTE=s3://s3.${BUILDCACHE_S3_REGION}.amazonaws.com/${BUILDCACHE_S3_BUCKET}
+      --build-arg BUILD_IMAGE=${ADP_BUILD_IMAGE}
+      --build-arg BUILD_BASE=build-prepped
+      --build-arg LICENSE_IMAGE=${SALUKI_SPDX_LICENSES_CI_IMAGE}
+      --build-arg LICENSE_BASE=license-prepped
       --build-arg APP_IMAGE=${APP_IMAGE}
       --build-arg BUILD_PROFILE=${BUILD_PROFILE}
       --build-arg BUILD_FEATURES=${BUILD_FEATURES}
@@ -38,6 +48,7 @@
       --label "org.opencontainers.image.title=Agent Data Plane"
       --label "org.opencontainers.image.vendor=Datadog, Inc."
       --label "org.opencontainers.image.version=${ADP_IMAGE_VERSION}"
+      --secret id=aws-creds,src=/tmp/temporary-aws-credentials.sh
       --push
       .
   artifacts:
@@ -46,7 +57,7 @@
 
 .build-adp-multi-arch-definition:
   stage: build
-  image: ${DOCKER_BUILD_IMAGE}
+  image: ${SALUKI_GENERAL_CI_IMAGE}
   script:
     # Collect the manifest list digests for our AMD64 and ARM64 images, and then build a multi-arch manifest from them.
     - export AMD64_DIGEST=$(jq -r '."containerimage.digest"' build-metadata.amd64)
@@ -114,7 +125,7 @@ build-adp-image-internal-amd64:
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
-    - when: always
+    - when: on_success
   variables:
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
 
@@ -124,7 +135,7 @@ build-adp-image-internal-arm64:
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
-    - when: always
+    - when: on_success
   variables:
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
 
@@ -133,7 +144,7 @@ build-adp-image-internal:
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
-    - when: always
+    - when: on_success
       needs:
         - build-adp-image-internal-amd64
         - build-adp-image-internal-arm64
@@ -146,7 +157,7 @@ build-adp-image-fips-internal-amd64:
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
-    - when: always
+    - when: on_success
   variables:
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
     BUILD_FEATURES: "fips"
@@ -157,7 +168,7 @@ build-adp-image-fips-internal-arm64:
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
-    - when: always
+    - when: on_success
   variables:
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
     BUILD_FEATURES: "fips"
@@ -167,7 +178,7 @@ build-adp-image-fips-internal:
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
-    - when: always
+    - when: on_success
       needs:
         - build-adp-image-fips-internal-amd64
         - build-adp-image-fips-internal-arm64
@@ -189,7 +200,7 @@ publish-adp-image-internal:
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
-    - when: always
+    - when: on_success
       needs:
         - build-adp-image-internal
   trigger:
@@ -213,7 +224,7 @@ publish-adp-image-internal-fips:
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
-    - when: always
+    - when: on_success
       needs:
         - build-adp-image-fips-internal
   trigger:
@@ -237,7 +248,7 @@ display-image-tags:
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
-    - when: always
+    - when: on_success
       needs:
         - build-adp-image-internal
         - build-adp-image-fips-internal

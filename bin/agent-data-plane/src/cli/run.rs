@@ -7,13 +7,14 @@ use argh::FromArgs;
 use futures::FutureExt as _;
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::{
+    bootstrap::BootstrapGuard,
     memory::{initialize_memory_bounds, MemoryBoundsConfiguration},
     metrics::emit_startup_metrics,
 };
 use saluki_components::{
     config::{DatadogRemapper, KEY_ALIASES},
     decoders::otlp::OtlpDecoderConfiguration,
-    destinations::DogStatsDStatisticsConfiguration,
+    destinations::{DogStatsDDebugLogConfiguration, DogStatsDStatisticsConfiguration},
     encoders::{
         BufferedIncrementalConfiguration, DatadogApmStatsEncoderConfiguration, DatadogEventsConfiguration,
         DatadogLogsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration,
@@ -29,20 +30,25 @@ use saluki_components::{
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
-use saluki_core::runtime::SupervisorError;
+use saluki_core::health::HealthRegistry;
+use saluki_core::runtime::{Supervisor, SupervisorError};
 use saluki_core::topology::TopologyBlueprint;
 use saluki_env::EnvironmentProvider as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use saluki_health::HealthRegistry;
 use tokio::{select, time::interval};
 use tracing::{error, info, warn};
 
 use crate::{
     components::{
-        apm_onboarding::ApmOnboardingConfiguration, ottl_filter_processor::OttlFilterConfiguration,
-        ottl_transform_processor::OttlTransformConfiguration, tag_filterlist::TagFilterlistConfiguration,
+        apm_onboarding::ApmOnboardingConfiguration,
+        dogstatsd_post_aggregate_filter::DogStatsDPostAggregateFilterConfiguration,
+        ottl_filter_processor::OttlFilterConfiguration, ottl_transform_processor::OttlTransformConfiguration,
+        tag_filterlist::TagFilterlistConfiguration,
     },
-    internal::{create_internal_supervisor, remote_agent::RemoteAgentBootstrap},
+    internal::{
+        create_internal_supervisor, logging::LoggingConfigurationTranslator, platform::PlatformSettings,
+        remote_agent::RemoteAgentBootstrap,
+    },
 };
 use crate::{config::DataPlaneConfiguration, env_provider::ADPEnvironmentProvider};
 
@@ -57,7 +63,8 @@ pub struct RunCommand {
 
 /// Entrypoint for the `run` commands.
 pub async fn handle_run_command(
-    started: Instant, bootstrap_config_path: PathBuf, bootstrap_config: GenericConfiguration,
+    started: Instant, bootstrap_config: GenericConfiguration, bootstrap_guard: &mut BootstrapGuard,
+    bootstrap_supervisor: Supervisor,
 ) -> Result<(), GenericError> {
     let app_details = saluki_metadata::get_app_details();
     info!(
@@ -107,19 +114,33 @@ pub async fn handle_run_command(
             // level, etc.
             let dynamic_config = ConfigurationLoader::default()
                 .with_key_aliases(KEY_ALIASES)
-                .from_yaml(&bootstrap_config_path)
-                .error_context("Failed to load Datadog Agent configuration file.")?
                 .with_dynamic_configuration(ra_bootstrap.create_config_stream())
                 .add_providers([DatadogRemapper::new()])
                 .from_environment(crate::internal::platform::DATADOG_AGENT_ENV_VAR_PREFIX)?
-                .with_default_secrets_resolution()
-                .await?
                 .into_generic()
                 .await?;
 
             info!("Waiting for initial configuration from Datadog Agent...");
             dynamic_config.ready().await;
             info!("Initial configuration received.");
+
+            // Now that the Datadog Agent has supplied its authoritative configuration, reload the logging subsystem
+            // so its destinations, format, and level reflect what the Agent specifies rather than the bootstrap-phase
+            // defaults.
+            match LoggingConfigurationTranslator::translate(&dynamic_config) {
+                Ok(logging_config) => {
+                    if let Err(e) = bootstrap_guard.logging_mut().reload(logging_config).await {
+                        warn!(
+                            error = %e,
+                            "Failed to reload logging from Agent configuration; continuing with bootstrap logging settings."
+                        );
+                    }
+                }
+                Err(e) => warn!(
+                    error = %e,
+                    "Failed to translate logging configuration from Agent; continuing with bootstrap logging settings."
+                ),
+            }
 
             // Reload our data plane configuration based on the dynamic configuration.
             let dynamic_dp_config = DataPlaneConfiguration::from_configuration(&dynamic_config)
@@ -165,9 +186,15 @@ pub async fn handle_run_command(
         env_provider,
         dsd_stats_config,
         ra_bootstrap,
+        bootstrap_guard.logging().controller(),
     )
     .await
     .error_context("Failed to create internal supervisor.")?;
+
+    // Attach the bootstrap supervisor as a child so its workers (logging/metrics override processors,
+    // metrics flusher, runtime metrics collector) are driven and shut down alongside the rest of the
+    // internal supervision tree.
+    internal_supervisor.add_worker(bootstrap_supervisor);
 
     // Create shutdown channel for the internal supervisor - we'll drive it in the main select loop
     let (internal_shutdown_tx, internal_shutdown_rx) = tokio::sync::oneshot::channel();
@@ -176,7 +203,7 @@ pub async fn handle_run_command(
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
     let bounds_config = MemoryBoundsConfiguration::try_from_config(&config)?;
-    let memory_limiter = initialize_memory_bounds(bounds_config, &component_registry)?;
+    let memory_limiter = initialize_memory_bounds(bounds_config, component_registry.root())?;
 
     if let Ok(val) = std::env::var("DD_ADP_WRITE_SIZING_GUIDE") {
         if val != "false" {
@@ -445,20 +472,25 @@ async fn add_dsd_pipeline_to_blueprint(
     //               │                 │                          │ service checks           │ events
     //               │                 ▼                          ▼                          ▼
     //               │      ┌─────────────────────┐    ┌─────────────────────┐    ┌─────────────────────┐
-    //               │      │  DSD Prefix/Filter  │    │ DSD Service Checks  │    │     DSD Events      │
-    //               │      │     (transform)     │    │      (encoder)      │    │      (encoder)      │
-    //               │      └─────────────────────┘    └─────────────────────┘    └─────────────────────┘
+    //               │      │     DSD Enrich      │    │     DSD Service     │    │     DSD Events      │
+    //               │      │ (chained transform) │    │    Checks (encoder) │    │      (encoder)      │
+    //               │      │┌───────────────────┐│    └─────────────────────┘    └─────────────────────┘
+    //               │      ││    DSD Mapper     ││               │                          │
+    //               │      │└───────────────────┘│               │                          │
+    //               │      └─────────────────────┘               │                          │
     //               │                 │                          │                          │
-    //               │                 ▼                          │                          └─ ─ ─ ┐
-    //               │      ┌─────────────────────┐               └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐   │
-    //               │      │     DSD Enrich      │                                             │   │
-    //               │      │ (chained transform) │        ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐    │   │
-    //               │      │┌───────────────────┐│        │        Metrics Pipeline       │    │   │
-    //               │      ││    DSD Mapper     ││ ─ ─ ─▶ │  (aggregate, enrich, encode)  │    │   │
-    //               │      │└───────────────────┘│        └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘    │   │
-    //               │      └─────────────────────┘                       │                     │   │
-    //               │                                                    │                     │   │
-    //               ▼                                                    ▼                     ▼   ▼
+    //               │                 ▼                          │                          │
+    //               │      ┌─────────────────────┐               │                          │
+    //               │      │  DSD Prefix/Filter  │               │                          │
+    //               │      │     (transform)     │               │                          │
+    //               │      └─────────────────────┘               │                          │
+    //               │                 │                          │                          │
+    //               │                 │        ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐           │
+    //               │                 └ ─ ─ ─▶ │        Metrics Pipeline       │           │
+    //               │                          │  (aggregate, enrich, encode)  │           │
+    //               │                          └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘           │
+    //               │                                       │                               │
+    //               ▼                                       ▼                               ▼
     //    ┌─────────────────────┐    ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐
     //    │      DSD Stats      │    │                           Forwarder                             │
     //    │    (destination)    │    │                       (Datadog Platform)                        │
@@ -475,12 +507,27 @@ async fn add_dsd_pipeline_to_blueprint(
         .error_context("Failed to configure metric tag filterlist transform.")?;
     let dsd_agg_config =
         AggregateConfiguration::from_configuration(config).error_context("Failed to configure aggregate transform.")?;
+    let dsd_post_agg_filter_config = DogStatsDPostAggregateFilterConfiguration::from_configuration(config)
+        .error_context("Failed to configure DogStatsD post-aggregate filter transform.")?;
+    let events_enrich_config = ChainedConfiguration::default().with_transform_builder(
+        "host_enrichment",
+        HostEnrichmentConfiguration::from_environment_provider(env_provider.clone()),
+    );
+    let service_checks_enrich_config = ChainedConfiguration::default().with_transform_builder(
+        "host_enrichment",
+        HostEnrichmentConfiguration::from_environment_provider(env_provider.clone()),
+    );
     let dd_events_config = DatadogEventsConfiguration::from_configuration(config)
         .map(BufferedIncrementalConfiguration::from_encoder_builder)
         .error_context("Failed to configure Datadog Events encoder.")?;
     let dd_service_checks_config = DatadogServiceChecksConfiguration::from_configuration(config)
         .map(BufferedIncrementalConfiguration::from_encoder_builder)
         .error_context("Failed to configure Datadog Service Checks encoder.")?;
+    let dsd_debug_log_config = DogStatsDDebugLogConfiguration::from_configuration(
+        config,
+        PlatformSettings::get_default_dogstatsd_log_file_path(),
+    )
+    .error_context("Failed to configure DogStatsD debug log destination.")?;
 
     blueprint
         // Components.
@@ -489,20 +536,34 @@ async fn add_dsd_pipeline_to_blueprint(
         .add_transform("dsd_enrich", dsd_enrich_config)?
         .add_transform("dsd_tag_filterlist", dsd_tag_filterlist_config)?
         .add_transform("dsd_agg", dsd_agg_config)?
+        .add_transform("dsd_post_agg_filter", dsd_post_agg_filter_config)?
+        .add_transform("events_enrich", events_enrich_config)?
+        .add_transform("service_checks_enrich", service_checks_enrich_config)?
         .add_encoder("dd_events_encode", dd_events_config)?
         .add_encoder("dd_service_checks_encode", dd_service_checks_config)?
         .add_destination("dsd_stats_out", dsd_stats_config)?
         // Metrics.
-        .connect_component("dsd_prefix_filter", ["dsd_in.metrics"])?
-        .connect_component("dsd_enrich", ["dsd_prefix_filter"])?
-        .connect_component("dsd_tag_filterlist", ["dsd_enrich"])?
+        .connect_component("dsd_enrich", ["dsd_in.metrics"])?
+        .connect_component("dsd_prefix_filter", ["dsd_enrich"])?
+        .connect_component("dsd_tag_filterlist", ["dsd_prefix_filter"])?
         .connect_component("dsd_agg", ["dsd_tag_filterlist"])?
-        .connect_component("metrics_enrich", ["dsd_agg"])?
-        .connect_component("dd_service_checks_encode", ["dsd_in.service_checks"])?
-        .connect_component("dd_events_encode", ["dsd_in.events"])?
+        .connect_component("dsd_post_agg_filter", ["dsd_agg"])?
+        .connect_component("metrics_enrich", ["dsd_post_agg_filter"])?
+        // Events.
+        .connect_component("events_enrich", ["dsd_in.events"])?
+        .connect_component("dd_events_encode", ["events_enrich"])?
+        .connect_component("service_checks_enrich", ["dsd_in.service_checks"])?
+        .connect_component("dd_service_checks_encode", ["service_checks_enrich"])?
         .connect_component("dd_out", ["dd_service_checks_encode", "dd_events_encode"])?
         // DogStatsD Stats.
         .connect_component("dsd_stats_out", ["dsd_in.metrics"])?;
+
+    if dsd_debug_log_config.enabled() {
+        blueprint
+            // DogStatsD debug log.
+            .add_destination("dsd_debug_log_out", dsd_debug_log_config)?
+            .connect_component("dsd_debug_log_out", ["dsd_in.metrics"])?;
+    }
 
     Ok(())
 }

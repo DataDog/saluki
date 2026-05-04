@@ -273,7 +273,7 @@ where
 mod tests {
     use std::path::Path;
 
-    use rand::Rng as _;
+    use rand::RngExt as _;
     use rand_distr::Alphanumeric;
     use serde::Deserialize;
 

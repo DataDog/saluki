@@ -8,6 +8,10 @@ repository = { workspace = true }
 [lints]
 workspace = true
 
+[features]
+default = []
+fips = ["saluki-tls/fips"]
+
 [dependencies]
 async-compression = { workspace = true, features = ["gzip", "tokio", "zlib"] }
 axum = { workspace = true, features = ["tokio"] }
@@ -15,11 +19,11 @@ bytes = { workspace = true }
 chrono = { workspace = true }
 fs4 = { workspace = true }
 futures = { workspace = true }
+hickory-resolver = { workspace = true, features = ["tokio", "system-config"] }
 http = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true, features = ["client", "server"] }
-hyper-hickory = { workspace = true }
 hyper-http-proxy = { workspace = true }
 hyper-rustls = { workspace = true }
 hyper-util = { workspace = true, features = [

@@ -28,6 +28,9 @@ pub const TAG_DECISION_MAKER: &str = "_dd.p.dm";
 /// Decision maker value for probabilistic sampling (matches Datadog Agent).
 pub const DECISION_MAKER_PROBABILISTIC: &str = "-9";
 
+/// Decision maker value for manual/user-set sampling (matches Datadog Agent).
+pub const DECISION_MAKER_MANUAL: &str = "-4";
+
 /// Metadata key used to store the OTEL trace id.
 pub const OTEL_TRACE_ID_META_KEY: &str = "otel.trace_id";
 

@@ -29,6 +29,7 @@ use crate::common::otlp::{
 
 /// Configuration for the OTLP decoder.
 #[derive(Deserialize, Default)]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct OtlpDecoderConfiguration {
     #[serde(default)]
     otlp_config: OtlpDecoderConfig,
@@ -36,6 +37,7 @@ pub struct OtlpDecoderConfiguration {
 
 /// OTLP configuration for the decoder.
 #[derive(Deserialize, Default)]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 struct OtlpDecoderConfig {
     #[serde(default)]
     traces: TracesConfig,
@@ -44,9 +46,11 @@ struct OtlpDecoderConfig {
 impl OtlpDecoderConfiguration {
     /// Creates a new `OtlpDecoderConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        config
+        let mut cfg: Self = config
             .as_typed()
-            .error_context("Failed to load OTLP decoder configuration")
+            .error_context("Failed to load OTLP decoder configuration")?;
+        cfg.otlp_config.traces.apply_env_overrides(config)?;
+        Ok(cfg)
     }
 }
 
@@ -175,5 +179,22 @@ impl Decoder for OtlpDecoder {
         debug!("OTLP decoder stopped.");
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod config_smoke {
+    use serde_json::json;
+
+    use super::OtlpDecoderConfiguration;
+    use crate::config_registry::structs;
+    use crate::config_registry::test_support::run_config_smoke_tests;
+
+    #[tokio::test]
+    async fn smoke_test() {
+        run_config_smoke_tests(structs::OTLP_DECODER_CONFIGURATION, &[], json!({}), |cfg| {
+            OtlpDecoderConfiguration::from_configuration(&cfg).expect("OtlpDecoderConfiguration should deserialize")
+        })
+        .await
     }
 }

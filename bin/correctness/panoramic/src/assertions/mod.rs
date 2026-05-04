@@ -6,12 +6,14 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::{AssertionConfig, LogStream};
 
+mod file_contains;
 mod health_check;
 mod log_contains;
 mod port_listening;
 mod process_exits;
 mod process_stable;
 
+pub use file_contains::FileContainsAssertion;
 pub use health_check::HealthCheckAssertion;
 pub use log_contains::{LogContainsAssertion, LogNotContainsAssertion};
 pub use port_listening::PortListeningAssertion;
@@ -92,7 +94,9 @@ impl LogBuffer {
 pub struct AssertionContext {
     /// Shared log buffer for reading container logs.
     pub log_buffer: Arc<RwLock<LogBuffer>>,
-    /// Cancellation token for cooperative shutdown.
+    /// Fired when the container exits. Used by process assertions.
+    pub container_exit_token: CancellationToken,
+    /// Fired for external cancellation (timeout or user cancel).
     pub cancel_token: CancellationToken,
     /// Port mappings from internal port to host port.
     pub port_mappings: std::collections::HashMap<String, u16>,
@@ -158,6 +162,17 @@ pub fn create_assertion(config: &AssertionConfig) -> Result<Box<dyn Assertion>, 
         } => Ok(Box::new(HealthCheckAssertion::new(
             endpoint.clone(),
             *expected_status,
+            timeout.0,
+        ))),
+        AssertionConfig::FileContains {
+            path,
+            pattern,
+            regex,
+            timeout,
+        } => Ok(Box::new(FileContainsAssertion::new(
+            path.clone(),
+            pattern.clone(),
+            *regex,
             timeout.0,
         ))),
     }

@@ -66,6 +66,8 @@ const fn default_allow_context_heap_allocations() -> bool {
 
 /// Configuration for the OTLP source.
 #[derive(Deserialize, Default)]
+#[cfg_attr(test, derive(derive_where::DeriveWhere, serde::Serialize))]
+#[cfg_attr(test, derive_where(PartialEq))]
 pub struct OtlpConfiguration {
     otlp_config: OtlpConfig,
 
@@ -117,13 +119,16 @@ pub struct OtlpConfiguration {
 
     /// Workload provider to utilize for origin detection/enrichment.
     #[serde(skip)]
+    #[cfg_attr(test, derive_where(skip))]
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 }
 
 impl OtlpConfiguration {
     /// Creates a new `OTLPConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
+        let mut cfg: Self = config.as_typed()?;
+        cfg.otlp_config.traces.apply_env_overrides(config)?;
+        Ok(cfg)
     }
 
     /// Sets the workload provider to use for configuring origin detection/enrichment.
@@ -184,7 +189,9 @@ impl SourceBuilder for OtlpConfiguration {
         let maybe_origin_tags_resolver = self.workload_provider.clone().map(OtlpOriginTagResolver::new);
 
         let context_resolver = build_context_resolver(self, &context, maybe_origin_tags_resolver.clone())?;
-        let metrics_translator_config = metrics::config::OtlpMetricsTranslatorConfig::default().with_remapping(true);
+        let metrics_translator_config = metrics::config::OtlpMetricsTranslatorConfig::default()
+            .with_remapping(true)
+            .with_quantiles(true);
         let traces_interner_size =
             std::num::NonZeroUsize::new(self.otlp_config.traces.string_interner_bytes.as_u64() as usize)
                 .ok_or_else(|| generic_error!("otlp_config.traces.string_interner_size must be greater than 0"))?;
@@ -249,7 +256,7 @@ impl Source for Otlp {
 
         let mut converter_shutdown_coordinator = DynamicShutdownCoordinator::default();
 
-        let metrics_translator = OtlpMetricsTranslator::new(metrics_translator_config, context_resolver);
+        let metrics_translator = OtlpMetricsTranslator::new(metrics_translator_config, context_resolver)?;
 
         let thread_pool_handle = context.topology_context().global_thread_pool().clone();
 
@@ -476,4 +483,21 @@ async fn run_converter(
     }
 
     debug!("OTLP resource converter task stopped.");
+}
+
+#[cfg(test)]
+mod config_smoke {
+    use serde_json::json;
+
+    use super::OtlpConfiguration;
+    use crate::config_registry::structs;
+    use crate::config_registry::test_support::run_config_smoke_tests;
+
+    #[tokio::test]
+    async fn smoke_test() {
+        run_config_smoke_tests(structs::OTLP_CONFIGURATION, &[], json!({ "otlp_config": {} }), |cfg| {
+            OtlpConfiguration::from_configuration(&cfg).expect("OtlpConfiguration should deserialize")
+        })
+        .await
+    }
 }

@@ -11,7 +11,7 @@ pub fn obfuscate_url(val: &str, config: &HttpObfuscationConfig) -> Option<MetaSt
     let mut url = match Url::parse(val) {
         Ok(u) => u,
         Err(_) => {
-            if config.remove_query_string() || config.remove_path_digits() {
+            if config.remove_query_string || config.remove_path_digits {
                 return Some("?".into());
             }
             return obfuscate_userinfo_fallback(val);
@@ -26,12 +26,12 @@ pub fn obfuscate_url(val: &str, config: &HttpObfuscationConfig) -> Option<MetaSt
         changed = true;
     }
 
-    if config.remove_query_string() && url.query().is_some() {
+    if config.remove_query_string && url.query().is_some() {
         url.set_query(Some(""));
         changed = true;
     }
 
-    if config.remove_path_digits() {
+    if config.remove_path_digits {
         if let Some(obfuscated_path) = obfuscate_path_digits(url.path()) {
             url.set_path(&obfuscated_path);
             changed = true;

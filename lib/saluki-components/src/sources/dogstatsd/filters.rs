@@ -84,6 +84,7 @@ mod tests {
             local_data: None,
             external_data: None,
             cardinality: None,
+            unit: None,
         }
     }
 

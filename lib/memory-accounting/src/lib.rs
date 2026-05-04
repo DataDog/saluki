@@ -78,7 +78,7 @@ mod registry;
 
 use serde::Serialize;
 
-pub use self::registry::{ComponentRegistry, MemoryBoundsBuilder};
+pub use self::registry::{ComponentRegistry, ComponentRegistryHandle, MemoryBoundsBuilder};
 
 mod grant;
 pub use self::grant::MemoryGrant;

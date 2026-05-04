@@ -1,0 +1,26 @@
+seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
+target: "unixgram:///airlock/metrics.sock"
+aggregation_bucket_width_secs: 10
+volume: 1000
+corpus:
+  size: 1000
+  payload:
+    dogstatsd:
+      contexts:
+        constant: 100
+      name_length:
+        inclusive:
+          min: 1
+          max: 32
+      tag_length:
+        inclusive:
+          min: 3
+          max: 16
+      tags_per_msg:
+        inclusive:
+          min: 2
+          max: 8
+      kind_weights:
+        metric: 0
+        event: 100
+        service_check: 0

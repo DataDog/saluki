@@ -12,7 +12,7 @@ use tracing::warn;
 use crate::tags::{SharedTagSet, Tag};
 
 /// The cardinality of tags associated with the origin entity.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(try_from = "String")]
 pub enum OriginTagCardinality {
     /// No cardinality.

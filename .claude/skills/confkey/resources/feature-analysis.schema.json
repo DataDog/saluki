@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "feature-analysis.schema.json",
+  "title": "Feature Analysis",
+  "description": "Compiled analysis of DogStatsD feature parity per config key, produced by analyze-features sub-agents and written to {{tmp}}/feature-analysis.json. Each entry is the result of independent clean-room code analysis of both RefImpl and AdpImpl.",
+  "type": "array",
+  "uniqueItems": true,
+  "items": {
+    "type": "object",
+    "required": ["ConfKey", "Status", "Description", "Notes", "Discussion"],
+    "additionalProperties": false,
+    "properties": {
+      "ConfKey": {
+        "type": "string",
+        "description": "Exact config key name."
+      },
+      "Status": {
+        "type": "string",
+        "enum": ["Implemented", "Missing", "Divergent", "ADP Only", "Unsure"],
+        "description": "Parity verdict from code analysis. 'Unsure' is a last resort when code evidence is genuinely ambiguous."
+      },
+      "Description": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 50,
+        "description": "Terse description of what the key controls. Used verbatim in documentation tables."
+      },
+      "Notes": {
+        "type": "string",
+        "maxLength": 50,
+        "description": "Short annotation for Divergent or surprising cases. Empty string if not needed."
+      },
+      "Discussion": {
+        "type": ["string", "null"],
+        "description": "Markdown prose for noteworthy features only. Must start with '### key_name'. Null for most keys."
+      }
+    }
+  }
+}

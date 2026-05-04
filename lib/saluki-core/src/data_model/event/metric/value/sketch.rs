@@ -124,6 +124,12 @@ impl<const N: usize> From<(u64, [f64; N])> for SketchPoints {
     }
 }
 
+impl From<(u64, DDSketch)> for SketchPoints {
+    fn from((ts, sketch): (u64, DDSketch)) -> Self {
+        Self(TimestampedValue::from((ts, sketch)).into())
+    }
+}
+
 impl<'a> From<(u64, &'a [f64])> for SketchPoints {
     fn from((ts, values): (u64, &'a [f64])) -> Self {
         let mut sketch = DDSketch::default();

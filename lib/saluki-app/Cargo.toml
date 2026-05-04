@@ -9,14 +9,17 @@ repository = { workspace = true }
 workspace = true
 
 [features]
-tls-fips = ["saluki-tls/fips"]
+tls-fips = ["saluki-io/fips", "saluki-tls/fips"]
 
 [dependencies]
+arc-swap = { workspace = true }
+async-trait = { workspace = true }
 axum = { workspace = true }
 bytesize = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
 http = { workspace = true }
+hyper = { workspace = true }
 iana-time-zone = { workspace = true }
 itoa = { workspace = true }
 memory-accounting = { workspace = true }
@@ -36,7 +39,6 @@ saluki-metrics = { workspace = true }
 saluki-tls = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_with = { workspace = true }
 tokio = { workspace = true, features = ["macros", "sync"] }
 tonic = { workspace = true, features = ["router"] }
 tower = { workspace = true, features = ["util"] }
@@ -53,3 +55,9 @@ tracing-subscriber = { workspace = true, features = [
   "std",
   "tracing-log",
 ] }
+
+[dev-dependencies]
+http-body-util = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true, features = ["client", "client-legacy", "http1", "tokio"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

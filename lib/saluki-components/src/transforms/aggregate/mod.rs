@@ -25,7 +25,7 @@ use tokio::{
     select,
     time::{interval, interval_at},
 };
-use tracing::{debug, error, trace};
+use tracing::{debug, error, info, trace, warn};
 
 mod telemetry;
 use self::telemetry::Telemetry;
@@ -44,7 +44,7 @@ const fn default_primary_flush_interval() -> Duration {
 }
 
 const fn default_context_limit() -> usize {
-    5000
+    1_000_000
 }
 
 const fn default_counter_expiry_seconds() -> Option<u64> {
@@ -79,6 +79,7 @@ const fn default_passthrough_idle_flush_timeout() -> Duration {
 /// updates to counters can be versus how long it takes for counters that don't exist anymore to actually cease to be
 /// emitted.
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct AggregateConfiguration {
     /// Size of the aggregation window.
     ///
@@ -108,7 +109,7 @@ pub struct AggregateConfiguration {
     /// When the maximum number of contexts is reached in the current aggregation window, additional metrics are dropped
     /// until the next window starts.
     ///
-    /// Defaults to 1000.
+    /// Defaults to 1,000,000.
     #[serde(rename = "aggregate_context_limit", default = "default_context_limit")]
     context_limit: usize,
 
@@ -123,7 +124,11 @@ pub struct AggregateConfiguration {
     /// In cases where flushing all outstanding data is paramount, this can be enabled.
     ///
     /// Defaults to `false`.
-    #[serde(rename = "aggregate_flush_open_windows", default)]
+    #[serde(
+        rename = "aggregate_flush_open_windows",
+        alias = "dogstatsd_flush_incomplete_buckets",
+        default
+    )]
     flush_open_windows: bool,
 
     /// How long to keep idle counters alive after they've been flushed, in seconds.
@@ -306,12 +311,20 @@ impl Transform for Aggregate {
 
                         let should_flush_open_windows = final_primary_flush && self.flush_open_windows;
 
+                        // Remember if the context limit had been surpassed before this flush.
+                        let was_breached = self.state.context_limit_breached();
+
                         let mut dispatcher = context.dispatcher().buffered().expect("default output should always exist");
                         if let Err(e) = self.state.flush(get_unix_timestamp(), should_flush_open_windows, &mut dispatcher).await {
                             error!(error = %e, "Failed to flush aggregation state.");
                         }
 
                         self.telemetry.increment_flushes();
+
+                        // If flush recovered us from a breach, log the recovery.
+                        if was_breached && !self.state.context_limit_breached() {
+                            info!("Context limit no longer exceeded, metrics are being accepted again.");
+                        }
 
                         match dispatcher.flush().await {
                             Ok(aggregated_events) => debug!(aggregated_events, "Dispatched events."),
@@ -358,8 +371,14 @@ impl Transform for Aggregate {
                                     metric
                                 };
 
+                                let was_breached = self.state.context_limit_breached();
                                 if !self.state.insert(current_time, metric) {
                                     trace!("Dropping metric due to context limit.");
+                                    if !was_breached {
+                                        // First drop since the last recovery — emit a single warning.
+                                        warn!(context_limit = self.state.context_limit, "Context limit reached, \
+                                        dropping metrics. Consider increasing `aggregate_context_limit`.");
+                                    }
                                     self.telemetry.increment_events_dropped();
                                 }
                             }
@@ -514,6 +533,9 @@ struct AggregationState {
     last_flush: u64,
     hist_config: HistogramConfiguration,
     telemetry: Telemetry,
+    /// Tracks whether the context limit has been breached. Starts out as `false`. Set to `true` on the first dropped
+    /// metric. Reset to `false` when the context count drops below the limit during flush.
+    context_limit_breached: bool,
 }
 
 impl AggregationState {
@@ -532,6 +554,7 @@ impl AggregationState {
             last_flush: 0,
             hist_config,
             telemetry,
+            context_limit_breached: false,
         }
     }
 
@@ -542,6 +565,7 @@ impl AggregationState {
     fn insert(&mut self, timestamp: u64, metric: Metric) -> bool {
         // If we haven't seen this context yet, and it would put us over the limit to insert it, then return early.
         if !self.contexts.contains_key(metric.context()) && self.contexts.len() >= self.context_limit {
+            self.context_limit_breached = true;
             return false;
         }
 
@@ -686,9 +710,17 @@ impl AggregationState {
         let target_contexts_capacity = contexts_len_after.saturating_add(contexts_delta / 2);
         self.contexts.shrink_to(target_contexts_capacity);
 
+        if self.context_limit_breached && self.contexts.len() < self.context_limit {
+            self.context_limit_breached = false;
+        }
+
         self.last_flush = current_time;
 
         Ok(())
+    }
+
+    fn context_limit_breached(&self) -> bool {
+        self.context_limit_breached
     }
 }
 
@@ -813,6 +845,7 @@ mod tests {
         topology::{interconnect::Dispatcher, ComponentId, OutputName},
     };
     use saluki_metrics::test::TestRecorder;
+    use stringtheory::MetaString;
     use tokio::sync::mpsc;
 
     use super::config::HistogramStatistic;
@@ -1030,16 +1063,24 @@ mod tests {
             Metric::gauge("metric4", 4.0),
         ];
 
+        assert!(!state.context_limit_breached());
+
         assert!(state.insert(insert_ts(1), input_metrics[0].clone()));
         assert!(state.insert(insert_ts(1), input_metrics[1].clone()));
-        assert!(!state.insert(insert_ts(1), input_metrics[2].clone()));
-        assert!(!state.insert(insert_ts(1), input_metrics[3].clone()));
+        assert!(!state.context_limit_breached());
 
-        // We should only see the first two gauges after flushing.
+        assert!(!state.insert(insert_ts(1), input_metrics[2].clone()));
+        assert!(state.context_limit_breached());
+        assert!(!state.insert(insert_ts(1), input_metrics[3].clone()));
+        assert!(state.context_limit_breached());
+
+        // We should only see the first two gauges after flushing. The flush should also clear the breached flag since
+        // contexts drop below the limit.
         let flushed_metrics = get_flushed_metrics(flush_ts(1), &mut state).await;
         assert_eq!(flushed_metrics.len(), 2);
         assert_eq!(input_metrics[0].context(), flushed_metrics[0].context());
         assert_eq!(input_metrics[1].context(), flushed_metrics[1].context());
+        assert!(!state.context_limit_breached());
 
         // We should be able to insert the third and fourth gauges now as the first two have been flushed, and along
         // with them, their contexts should no longer be tracked in the aggregation state:
@@ -1216,6 +1257,47 @@ mod tests {
         assert_flushed_scalar_metric!(count_metric, &flushed_metrics[0], [bucket_ts(1) => 5.0]);
         assert_flushed_scalar_metric!(p50_metric, &flushed_metrics[1], [bucket_ts(1) => 3.0], error_ratio => 0.0025);
         assert_flushed_scalar_metric!(sum_metric, &flushed_metrics[2], [bucket_ts(1) => 15.0]);
+    }
+
+    #[tokio::test]
+    async fn histogram_statistics_unit_propagation() {
+        // We're testing that the unit from the input histogram metadata propagates to all flushed output metrics.
+        let hist_config = HistogramConfiguration::from_statistics(
+            &[
+                HistogramStatistic::Count,
+                HistogramStatistic::Sum,
+                HistogramStatistic::Percentile {
+                    q: 0.5,
+                    suffix: "p50".into(),
+                },
+            ],
+            false,
+            "".into(),
+        );
+        let mut state = AggregationState::new(BUCKET_WIDTH, 10, COUNTER_EXPIRE, hist_config, Telemetry::noop());
+
+        // Build a histogram with unit = "millisecond", simulating what arrives from a DogStatsD `ms` metric.
+        let context = Context::from_static_parts("metric1", &[]);
+        let metadata = MetricMetadata::default().with_unit(MetaString::from_static("millisecond"));
+        let input_metric = Metric::from_parts(
+            context,
+            MetricValues::histogram([1.0_f64, 2.0, 3.0, 4.0, 5.0]),
+            metadata,
+        );
+        assert!(state.insert(insert_ts(1), input_metric));
+
+        let flushed_metrics = get_flushed_metrics(flush_ts(1), &mut state).await;
+        assert_eq!(flushed_metrics.len(), 3);
+
+        // Every output metric (count, p50, sum) must carry the unit from the input histogram.
+        for metric in &flushed_metrics {
+            assert_eq!(
+                metric.metadata().unit(),
+                Some("millisecond"),
+                "flushed metric '{}' should carry unit='millisecond'",
+                metric.context().name()
+            );
+        }
     }
 
     #[tokio::test]
@@ -1410,5 +1492,34 @@ mod tests {
             recorder.gauge(("aggregate_active_contexts_by_type", &[("metric_type", "gauge")])),
             Some(0.0)
         );
+    }
+}
+
+#[cfg(test)]
+mod config_smoke {
+    use serde_json::json;
+
+    use super::AggregateConfiguration;
+    use crate::config_registry::structs;
+    use crate::config_registry::test_support::run_config_smoke_tests;
+
+    #[tokio::test]
+    async fn smoke_test() {
+        // Duration fields serialize as {secs, nanos}. We inject whole-second values so the nanos
+        // sub-fields are always 0 — they are not independently configurable.
+        run_config_smoke_tests(
+            structs::AGGREGATE_CONFIGURATION,
+            &[
+                "aggregate_flush_interval.nanos",
+                "aggregate_passthrough_idle_flush_timeout.nanos",
+                "aggregate_window_duration.nanos",
+            ],
+            json!({}),
+            |cfg| {
+                cfg.as_typed::<AggregateConfiguration>()
+                    .expect("AggregateConfiguration should deserialize")
+            },
+        )
+        .await
     }
 }

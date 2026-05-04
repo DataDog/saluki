@@ -3,7 +3,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{components::transforms::*, topology::EventsBuffer};
-use saluki_core::{components::ComponentContext, data_model::event::metric::Metric};
+use saluki_core::{
+    components::ComponentContext,
+    data_model::event::{eventd::EventD, metric::Metric, service_check::ServiceCheck},
+};
 use saluki_env::{EnvironmentProvider, HostProvider};
 use saluki_error::GenericError;
 
@@ -77,13 +80,31 @@ impl HostEnrichment {
             metric.metadata_mut().set_hostname(self.hostname.clone());
         }
     }
+
+    fn enrich_eventd(&self, eventd: &mut EventD) {
+        // Only add the hostname if it's not already present.
+        if eventd.hostname().is_none() {
+            eventd.set_hostname(Some(self.hostname.as_ref().into()));
+        }
+    }
+
+    fn enrich_service_check(&self, service_check: &mut ServiceCheck) {
+        // Only add the hostname if it's not already present.
+        if service_check.hostname().is_none() {
+            service_check.set_hostname(Some(self.hostname.as_ref().into()));
+        }
+    }
 }
 
 impl SynchronousTransform for HostEnrichment {
     fn transform_buffer(&mut self, event_buffer: &mut EventsBuffer) {
         for event in event_buffer {
             if let Some(metric) = event.try_as_metric_mut() {
-                self.enrich_metric(metric)
+                self.enrich_metric(metric);
+            } else if let Some(eventd) = event.try_as_eventd_mut() {
+                self.enrich_eventd(eventd);
+            } else if let Some(service_check) = event.try_as_service_check_mut() {
+                self.enrich_service_check(service_check);
             }
         }
     }

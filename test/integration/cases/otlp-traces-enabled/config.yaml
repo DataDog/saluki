@@ -1,3 +1,4 @@
+type: integration
 name: "otlp-traces-enabled"
 description: "Verifies OTLP pipeline starts with native trace handling and proxying for metrics/logs"
 timeout: 60s

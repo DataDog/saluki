@@ -151,6 +151,16 @@ impl Event {
         }
     }
 
+    /// Returns a mutable reference to the inner event value, if this event is an `EventD`.
+    ///
+    /// Otherwise, `None` is returned.
+    pub fn try_as_eventd_mut(&mut self) -> Option<&mut EventD> {
+        match self {
+            Event::EventD(eventd) => Some(eventd),
+            _ => None,
+        }
+    }
+
     /// Returns the inner event value, if this event is an `EventD`.
     ///
     /// Otherwise, `None` is returned and the original event is consumed.
@@ -165,6 +175,16 @@ impl Event {
     ///
     /// Otherwise, `None` is returned and the original event is consumed.
     pub fn try_into_service_check(self) -> Option<ServiceCheck> {
+        match self {
+            Event::ServiceCheck(service_check) => Some(service_check),
+            _ => None,
+        }
+    }
+
+    /// Returns a mutable reference to the inner event value, if this event is a `ServiceCheck`.
+    ///
+    /// Otherwise, `None` is returned.
+    pub fn try_as_service_check_mut(&mut self) -> Option<&mut ServiceCheck> {
         match self {
             Event::ServiceCheck(service_check) => Some(service_check),
             _ => None,

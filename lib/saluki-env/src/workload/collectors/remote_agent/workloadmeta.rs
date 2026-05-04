@@ -4,8 +4,8 @@ use futures::{StreamExt as _, TryStreamExt as _};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::origin::ExternalData;
+use saluki_core::health::Health;
 use saluki_error::GenericError;
-use saluki_health::Health;
 use saluki_io::net::util::tonic::StatusError;
 use saluki_metrics::static_metrics;
 use stringtheory::{

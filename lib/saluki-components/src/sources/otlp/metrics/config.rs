@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use saluki_error::{generic_error, GenericError};
+
 const DEFAULT_DELTA_TTL: Duration = Duration::from_secs(3600);
 const DEFAULT_SWEEP_INTERVAL: Duration = Duration::from_secs(1800);
 
@@ -52,13 +54,22 @@ pub struct OtlpMetricsTranslatorConfig {
     // renamed with the `otel.` prefix. This prevents the Collector and Datadog
     // Agent from computing metrics with the same names.
     pub with_otel_prefix: bool,
+    pub quantiles: bool,
     // Points cache settings
     pub delta_ttl: Duration,
     pub sweep_interval: Duration,
+    pub infer_delta_interval: bool,
 }
 
 #[allow(dead_code)]
 impl OtlpMetricsTranslatorConfig {
+    pub fn validate(&self) -> Result<(), GenericError> {
+        if self.hist_mode == HistogramMode::NoBuckets && !self.send_histogram_aggregations {
+            return Err(generic_error!("no buckets mode and no send count sum are incompatible"));
+        }
+        Ok(())
+    }
+
     pub fn with_remapping(mut self, with_remapping: bool) -> Self {
         self.with_remapping = with_remapping;
         if with_remapping {
@@ -94,6 +105,16 @@ impl OtlpMetricsTranslatorConfig {
         self
     }
 
+    pub fn with_quantiles(mut self, quantiles: bool) -> Self {
+        self.quantiles = quantiles;
+        self
+    }
+
+    pub fn with_infer_delta_interval(mut self, infer_delta_interval: bool) -> Self {
+        self.infer_delta_interval = infer_delta_interval;
+        self
+    }
+
     pub fn with_instrumentation_scope_metadata_as_tags(mut self, instrumentation_scope_metadata_as_tags: bool) -> Self {
         self.instrumentation_scope_metadata_as_tags = instrumentation_scope_metadata_as_tags;
         self
@@ -121,13 +142,15 @@ impl Default for OtlpMetricsTranslatorConfig {
     fn default() -> Self {
         Self {
             hist_mode: HistogramMode::default(),
-            send_histogram_aggregations: true,
+            send_histogram_aggregations: false,
             number_mode: NumberMode::default(),
             initial_cumul_mono_value_mode: InitialCumulMonoValueMode::default(),
             instrumentation_scope_metadata_as_tags: true,
             instrumentation_library_metadata_as_tags: false,
             with_remapping: false,
             with_otel_prefix: false,
+            quantiles: false,
+            infer_delta_interval: false,
             delta_ttl: DEFAULT_DELTA_TTL,
             sweep_interval: DEFAULT_SWEEP_INTERVAL,
         }

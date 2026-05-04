@@ -127,7 +127,7 @@ pub fn parse_dogstatsd_event<'a>(
                 }
                 // Local Data: client-provided data used for resolving the entity ID that this event originated from.
                 LOCAL_DATA_PREFIX => {
-                    if chunk != LOCAL_DATA_PREFIX {
+                    if config.client_origin_detection && chunk != LOCAL_DATA_PREFIX {
                         let (_, local_data) =
                             all_consuming(preceded(tag(LOCAL_DATA_PREFIX), local_data)).parse(chunk)?;
                         maybe_local_data = Some(local_data);
@@ -135,7 +135,7 @@ pub fn parse_dogstatsd_event<'a>(
                 }
                 // External Data: client-provided data used for resolving the entity ID that this event originated from.
                 EXTERNAL_DATA_PREFIX => {
-                    if chunk != EXTERNAL_DATA_PREFIX {
+                    if config.client_origin_detection && chunk != EXTERNAL_DATA_PREFIX {
                         let (_, external_data) =
                             all_consuming(preceded(tag(EXTERNAL_DATA_PREFIX), external_data)).parse(chunk)?;
                         maybe_external_data = Some(external_data);
@@ -143,7 +143,7 @@ pub fn parse_dogstatsd_event<'a>(
                 }
                 // Cardinality: client-provided cardinality for the event.
                 _ if chunk.starts_with(CARDINALITY_PREFIX) => {
-                    if chunk != CARDINALITY_PREFIX {
+                    if config.client_origin_detection && chunk != CARDINALITY_PREFIX {
                         let (_, cardinality) = cardinality(chunk)?;
                         maybe_cardinality = cardinality;
                     }
@@ -370,11 +370,24 @@ mod tests {
             .with_tags(shared_tag_set);
         check_basic_eventd_eq(expected, actual);
 
-        let config = DogStatsDCodecConfiguration::default();
+        // We need client_origin_detection on in order to parse local_data, external_data, and cardinality fields
+        let config = DogStatsDCodecConfiguration::default().with_client_origin_detection(true);
         let (_, packet) = parse_dogstatsd_event(raw.as_bytes(), &config).expect("should not fail to parse");
         assert_eq!(packet.local_data, Some(event_local_data));
         assert_eq!(packet.external_data, Some(event_external_data));
         assert_eq!(packet.cardinality, Some(OriginTagCardinality::Low));
+    }
+
+    #[test]
+    fn client_origin_fields_ignored_when_disabled() {
+        let local_data = "abcdef123456";
+        let external_data = "it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183";
+        let raw = format!("_e{{5,4}}:title|text|c:{}|e:{}|card:low", local_data, external_data);
+        let config = DogStatsDCodecConfiguration::default().with_client_origin_detection(false);
+        let (_, packet) = parse_dogstatsd_event(raw.as_bytes(), &config).expect("should not fail to parse");
+        assert_eq!(packet.local_data, None);
+        assert_eq!(packet.external_data, None);
+        assert_eq!(packet.cardinality, None);
     }
 
     #[test]

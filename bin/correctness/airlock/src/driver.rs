@@ -6,16 +6,17 @@ use std::{
 };
 
 use bollard::{
-    container::{Config, CreateContainerOptions, ListContainersOptions, LogOutput, LogsOptions},
+    container::LogOutput,
     errors::Error,
-    image::CreateImageOptions,
-    models::{HealthConfig, HealthStatusEnum, HostConfig, Ipam},
-    network::CreateNetworkOptions,
-    secret::ContainerStateStatusEnum,
-    volume::CreateVolumeOptions,
+    exec::{CreateExecOptions, StartExecResults},
+    models::{
+        ContainerCreateBody, ContainerStateStatusEnum, HealthConfig, HealthStatusEnum, HostConfig, Ipam,
+        NetworkCreateRequest, VolumeCreateRequest,
+    },
+    query_parameters::{CreateContainerOptionsBuilder, CreateImageOptions, ListContainersOptionsBuilder, LogsOptions},
     Docker,
 };
-use futures::StreamExt as _;
+use futures::{StreamExt as _, TryStreamExt as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::{
     io::{AsyncWriteExt as _, BufWriter},
@@ -199,6 +200,23 @@ impl DriverConfig {
         self
     }
 
+    /// Adds a read-only bind mount to the container.
+    ///
+    /// Same as [`with_bind_mount`][Self::with_bind_mount] but the container cannot modify the mounted path.
+    pub fn with_readonly_bind_mount<HP, CP>(mut self, host_path: HP, container_path: CP) -> Self
+    where
+        HP: AsRef<Path>,
+        CP: AsRef<Path>,
+    {
+        let bind_mount = format!(
+            "{}:{}:ro",
+            host_path.as_ref().display(),
+            container_path.as_ref().display()
+        );
+        self.binds.push(bind_mount);
+        self
+    }
+
     /// Sets the healthcheck for the container.
     pub fn with_healthcheck(
         mut self, mut test_command: Vec<String>, interval: Duration, timeout: Duration, retries: i64,
@@ -289,7 +307,7 @@ impl Driver {
     ///
     /// If the Docker client cannot be created/configured, an error will be returned.
     pub fn from_config(isolation_group_id: String, config: DriverConfig) -> Result<Self, GenericError> {
-        let docker = Docker::connect_with_defaults()?;
+        let docker = crate::docker::connect()?;
 
         Ok(Self {
             isolation_group_name: format!("airlock-{}", isolation_group_id),
@@ -327,19 +345,22 @@ impl Driver {
     /// If the Docker client cannot be created/configured, or there is an error when finding or removing any of the
     /// related resources, an error will be returned.
     pub async fn clean_related_resources(isolation_group_id: String) -> Result<(), GenericError> {
-        let docker = Docker::connect_with_defaults()?;
+        let docker = crate::docker::connect()?;
 
         let isolation_group_name = format!("airlock-{}", isolation_group_id);
         let isolation_group_label = format!("airlock-isolation-group={}", isolation_group_id);
 
         // Remove any containers related to the isolation group. We do so forcefully.
-        let list_options = Some(ListContainersOptions {
-            all: true,
-            filters: vec![("label", vec!["created_by=airlock", isolation_group_label.as_str()])]
+        let list_filters: HashMap<&str, Vec<&str>> =
+            [("label", vec!["created_by=airlock", isolation_group_label.as_str()])]
                 .into_iter()
-                .collect(),
-            ..Default::default()
-        });
+                .collect();
+        let list_options = Some(
+            ListContainersOptionsBuilder::default()
+                .all(true)
+                .filters(&list_filters)
+                .build(),
+        );
         let containers = docker.list_containers(list_options).await.with_error_context(|| {
             format!(
                 "Failed to list containers attached to isolation group '{}'.",
@@ -372,7 +393,13 @@ impl Driver {
         }
 
         // Remove the shared volume.
-        if let Err(e) = docker.remove_volume(isolation_group_name.as_str(), None).await {
+        if let Err(e) = docker
+            .remove_volume(
+                isolation_group_name.as_str(),
+                None::<bollard::query_parameters::RemoveVolumeOptions>,
+            )
+            .await
+        {
             error!(error = %e, "Failed to remove shared volume '{}'.", isolation_group_name);
         } else {
             debug!("Removed shared volume '{}'.", isolation_group_name);
@@ -390,7 +417,7 @@ impl Driver {
 
     async fn create_network_if_missing(&self) -> Result<(), GenericError> {
         // See if the network already exists or not.
-        let networks = self.docker.list_networks::<String>(None).await?;
+        let networks = self.docker.list_networks(None).await?;
         if networks
             .iter()
             .any(|network| network.name.as_deref() == Some(self.isolation_group_name.as_str()))
@@ -407,13 +434,12 @@ impl Driver {
         );
 
         // Create the network since it doesn't yet exist.
-        let network_options = CreateNetworkOptions {
+        let network_options = NetworkCreateRequest {
             name: self.isolation_group_name.clone(),
-            check_duplicate: true,
-            driver: "bridge".to_string(),
-            ipam: Ipam::default(),
-            enable_ipv6: false,
-            labels: get_default_airlock_labels(self.isolation_group_id.as_str()),
+            driver: Some("bridge".to_string()),
+            ipam: Some(Ipam::default()),
+            enable_ipv6: Some(false),
+            labels: Some(get_default_airlock_labels(self.isolation_group_id.as_str())),
             ..Default::default()
         };
         let response = self.docker.create_network(network_options).await?;
@@ -430,7 +456,7 @@ impl Driver {
 
     async fn create_image_if_missing_inner(&self, image: &str) -> Result<(), GenericError> {
         let image_options = CreateImageOptions {
-            from_image: image,
+            from_image: Some(image.to_string()),
             ..Default::default()
         };
 
@@ -470,7 +496,10 @@ impl Driver {
 
     async fn create_volume_if_missing(&self) -> Result<(), GenericError> {
         // Check to see if the shared volume already exists.
-        let volumes = self.docker.list_volumes::<String>(None).await?;
+        let volumes = self
+            .docker
+            .list_volumes(None::<bollard::query_parameters::ListVolumesOptions>)
+            .await?;
         if volumes
             .volumes
             .iter()
@@ -488,10 +517,10 @@ impl Driver {
             self.isolation_group_name
         );
 
-        let volume_options = CreateVolumeOptions {
-            name: self.isolation_group_name.clone(),
-            driver: "local".to_string(),
-            labels: get_default_airlock_labels(self.isolation_group_id.as_str()),
+        let volume_options = VolumeCreateRequest {
+            name: Some(self.isolation_group_name.clone()),
+            driver: Some("local".to_string()),
+            labels: Some(get_default_airlock_labels(self.isolation_group_id.as_str())),
             ..Default::default()
         };
         self.docker.create_volume(volume_options).await?;
@@ -553,15 +582,16 @@ impl Driver {
         let (publish_all_ports, exposed_ports) = if self.config.exposed_ports.is_empty() {
             (None, None)
         } else {
-            let mut exposed_ports = HashMap::new();
-            for (protocol, internal_port) in &self.config.exposed_ports {
-                exposed_ports.insert(format!("{}/{}", internal_port, protocol), HashMap::new());
-            }
-
+            let exposed_ports: Vec<String> = self
+                .config
+                .exposed_ports
+                .iter()
+                .map(|(protocol, internal_port)| format!("{}/{}", internal_port, protocol))
+                .collect();
             (Some(true), Some(exposed_ports))
         };
 
-        let container_config = Config {
+        let container_config = ContainerCreateBody {
             hostname: Some(self.config.driver_id.to_string()),
             env,
             image: Some(image),
@@ -580,10 +610,7 @@ impl Driver {
             ..Default::default()
         };
 
-        let create_options = CreateContainerOptions {
-            name: container_name,
-            ..Default::default()
-        };
+        let create_options = CreateContainerOptionsBuilder::default().name(&container_name).build();
 
         let response = self
             .docker
@@ -624,7 +651,7 @@ impl Driver {
     }
 
     async fn start_container_inner(&self, container_name: &str) -> Result<DriverDetails, GenericError> {
-        self.docker.start_container::<String>(container_name, None).await?;
+        self.docker.start_container(container_name, None).await?;
 
         let mut details = DriverDetails {
             container_name: container_name.to_string(),
@@ -765,7 +792,7 @@ impl Driver {
     }
 
     async fn wait_for_container_exit_inner(&self, container_name: &str) -> Result<ExitStatus, GenericError> {
-        let mut wait_stream = self.docker.wait_container::<String>(container_name, None);
+        let mut wait_stream = self.docker.wait_container(container_name, None);
         match wait_stream.next().await {
             Some(result) => match result {
                 Ok(response) => {
@@ -823,6 +850,66 @@ impl Driver {
         );
 
         Ok(exit_status)
+    }
+
+    /// Executes a command inside the running container and returns its stdout.
+    ///
+    /// The command runs as root with no TTY. Stderr is discarded — only stdout is returned. If the command exits with a
+    /// nonzero status, an error is returned.
+    ///
+    /// # Errors
+    ///
+    /// If the exec creation, start, output collection, or command exit code indicates failure, an error is returned.
+    pub async fn exec_in_container(&self, cmd: Vec<String>) -> Result<String, GenericError> {
+        let exec_opts = CreateExecOptions {
+            attach_stdout: Some(true),
+            attach_stderr: Some(false),
+            cmd: Some(cmd.clone()),
+            ..Default::default()
+        };
+
+        let exec = self
+            .docker
+            .create_exec(&self.container_name, exec_opts)
+            .await
+            .with_error_context(|| format!("Failed to create exec instance for container {}.", self.container_name))?;
+
+        let exec_id = exec.id.clone();
+
+        let output = self
+            .docker
+            .start_exec(&exec.id, None)
+            .await
+            .with_error_context(|| format!("Failed to start exec for container {}.", self.container_name))?;
+
+        let mut stdout = String::new();
+        if let StartExecResults::Attached { mut output, .. } = output {
+            while let Some(chunk) = output.try_next().await? {
+                if let LogOutput::StdOut { message } = chunk {
+                    stdout.push_str(&String::from_utf8_lossy(&message));
+                }
+            }
+        }
+
+        // Check the command's exit code.
+        let inspect = self
+            .docker
+            .inspect_exec(&exec_id)
+            .await
+            .error_context("Failed to inspect exec result.")?;
+
+        if let Some(code) = inspect.exit_code {
+            if code != 0 {
+                return Err(generic_error!(
+                    "Command {:?} exited with code {} in container {}.",
+                    cmd,
+                    code,
+                    self.container_name
+                ));
+            }
+        }
+
+        Ok(stdout)
     }
 
     async fn cleanup_inner(&self, container_name: &str) -> Result<(), GenericError> {
@@ -888,7 +975,7 @@ impl Driver {
             stderr: true,
             ..Default::default()
         };
-        let mut log_stream = self.docker.logs::<String>(container_name, Some(logs_config));
+        let mut log_stream = self.docker.logs(container_name, Some(logs_config));
 
         tokio::spawn(async move {
             while let Some(log_result) = log_stream.next().await {
@@ -944,7 +1031,7 @@ fn get_alpine_container_image() -> String {
     // Rather than threading through this information from the top level, we simply look for an override environment
     // variable here.. which lets us specify the right image reference to use in CI, while allowing normal users to just
     // grab it from Docker Hub when running locally.
-    std::env::var("GROUND_TRUTH_ALPINE_IMAGE").unwrap_or_else(|_| "alpine:latest".to_string())
+    std::env::var("PANORAMIC_ALPINE_IMAGE").unwrap_or_else(|_| "alpine:latest".to_string())
 }
 
 fn get_default_airlock_labels(isolation_group_id: &str) -> HashMap<String, String> {

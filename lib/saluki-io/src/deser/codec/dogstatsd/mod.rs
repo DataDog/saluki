@@ -78,6 +78,7 @@ pub struct DogStatsDCodecConfiguration {
     maximum_tag_count: usize,
     timestamps: bool,
     minimum_sample_rate: f64,
+    client_origin_detection: bool,
 }
 
 impl DogStatsDCodecConfiguration {
@@ -140,6 +141,17 @@ impl DogStatsDCodecConfiguration {
         self.minimum_sample_rate = minimum_sample_rate;
         self
     }
+
+    /// Sets whether client-provided origin detection fields are parsed.
+    ///
+    /// When disabled, the `c:` (Local Data), `e:` (External Data), and `card:` (Cardinality) fields are ignored even if
+    /// present in the payload.
+    ///
+    /// Defaults to `false`.
+    pub fn with_client_origin_detection(mut self, enabled: bool) -> Self {
+        self.client_origin_detection = enabled;
+        self
+    }
 }
 
 impl Default for DogStatsDCodecConfiguration {
@@ -150,6 +162,7 @@ impl Default for DogStatsDCodecConfiguration {
             timestamps: true,
             permissive: false,
             minimum_sample_rate: MINIMUM_SAFE_DEFAULT_SAMPLE_RATE,
+            client_origin_detection: false,
         }
     }
 }

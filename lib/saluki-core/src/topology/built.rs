@@ -6,7 +6,6 @@ use memory_accounting::{
 };
 use saluki_common::task::JoinSetExt as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use saluki_health::HealthRegistry;
 use tokio::{
     runtime::Handle,
     sync::mpsc,
@@ -42,6 +41,7 @@ use super::{
     graph::Graph, running::RunningTopology, shutdown::ComponentShutdownCoordinator, ComponentId, EventsBuffer,
     EventsConsumer, OutputName, PayloadsConsumer, RegisteredComponent, TypedComponentId,
 };
+use crate::health::HealthRegistry;
 use crate::{
     components::{
         decoders::{Decoder, DecoderContext},

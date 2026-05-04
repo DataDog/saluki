@@ -1,3 +1,4 @@
+type: integration
 name: "adp-config-stream"
 description: "Verify ADP receives configuration from Core Agent via config stream"
 timeout: 90s

@@ -220,6 +220,24 @@ Checks an HTTP health endpoint.
   timeout: 30s
 ```
 
+#### `file_contains`
+
+Polls a file inside the container (via `docker exec cat`) until it exists and, optionally, contains a pattern. If `pattern` is omitted, only file existence is checked.
+
+```yaml
+# File must exist.
+- type: file_contains
+  path: "/var/log/datadog/agent-data-plane.log"
+  timeout: 30s
+
+# File must exist and contain the pattern.
+- type: file_contains
+  path: "/var/log/datadog/agent-data-plane.log"
+  pattern: "DATAPLANE"
+  regex: false           # Optional: treat pattern as regex (default: false)
+  timeout: 30s
+```
+
 ### Duration Format
 
 Durations support human-readable formats:

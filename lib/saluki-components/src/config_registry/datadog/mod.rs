@@ -1,0 +1,79 @@
+//! Datadog Agent configuration registry entries.
+
+pub mod aggregate;
+pub mod dogstatsd;
+pub mod dogstatsd_mapper;
+pub mod dogstatsd_prefix_filter;
+pub mod encoders;
+pub mod forwarder;
+pub mod otlp;
+pub mod proxy;
+pub mod trace_obfuscation;
+
+use std::sync::LazyLock;
+
+use super::{ConfigKey, SalukiAnnotation};
+
+/// All saluki annotations across every sub-system, in registration order.
+///
+/// The source of truth for which config keys saluki knows about and how they are consumed.
+/// Used by the smoke test runner and runtime unknown-key detection.
+pub static ALL_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>> = LazyLock::new(|| {
+    let mut v = Vec::new();
+    v.extend_from_slice(aggregate::ALL);
+    v.extend_from_slice(dogstatsd::ALL);
+    v.extend_from_slice(dogstatsd_mapper::ALL);
+    v.extend_from_slice(forwarder::ALL);
+    v.extend_from_slice(dogstatsd_prefix_filter::ALL);
+    v.extend_from_slice(encoders::ALL);
+    v.extend_from_slice(otlp::ALL);
+    v.extend_from_slice(proxy::ALL);
+    v.extend_from_slice(trace_obfuscation::ALL);
+    v
+});
+
+/// All resolved [`ConfigKey`] entries, derived from [`ALL_ANNOTATIONS`] at first access.
+///
+/// Provides a flattened, owned view suitable for runtime unknown-key detection.
+pub static ALL_KEYS: LazyLock<Vec<ConfigKey>> =
+    LazyLock::new(|| ALL_ANNOTATIONS.iter().map(|a| ConfigKey::from(*a)).collect());
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+    use crate::config_registry::SupportLevel;
+
+    #[test]
+    fn annotation_invariants() {
+        for annotation in ALL_ANNOTATIONS.iter() {
+            let path = annotation.yaml_path();
+            match annotation.support_level {
+                SupportLevel::Full | SupportLevel::Partial => {
+                    assert!(
+                        !annotation.used_by.is_empty(),
+                        "annotation '{}' has support level {:?} but used_by is empty — \
+                         add the consuming struct name(s) to used_by, or change the support level",
+                        path,
+                        annotation.support_level,
+                    );
+                }
+                SupportLevel::Incompatible => {
+                    assert!(
+                        annotation.used_by.is_empty(),
+                        "annotation '{}' has support level Incompatible but used_by is not empty — \
+                         remove the struct name(s) from used_by, or change the support level",
+                        path,
+                    );
+                }
+                SupportLevel::Ignored => {
+                    panic!(
+                        "annotation '{}' has support level Ignored — \
+                         Ignored is reserved for unannotated schema keys and must not appear \
+                         in a hand-written SalukiAnnotation",
+                        path,
+                    );
+                }
+            }
+        }
+    }
+}

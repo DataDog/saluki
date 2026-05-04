@@ -324,8 +324,9 @@ mod tests {
 
     #[test]
     fn rate_limit_drops_excess_rare_traces() {
-        // Use TPS=1000 but create 60 distinct signatures to exceed the burst of 50.
-        let mut sampler = RareSampler::new(true, 1000.0, Duration::from_secs(300), 200);
+        // Use a very low TPS so the bucket doesn't refill during the loop, then create 60 distinct
+        // signatures to exceed the burst of 50. We're testing the burst cap, not the refill rate.
+        let mut sampler = RareSampler::new(true, 0.000_000_001, Duration::from_secs(300), 200);
 
         let mut kept = 0usize;
         for i in 0..60usize {

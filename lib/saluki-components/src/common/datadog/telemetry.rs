@@ -1,3 +1,6 @@
+use std::{collections::HashMap, sync::Arc, sync::Mutex};
+
+use http::StatusCode;
 use metrics::{Counter, Histogram};
 use saluki_metrics::MetricsBuilder;
 
@@ -9,19 +12,23 @@ use super::transaction::Metadata;
 /// the commonalities between them.
 #[derive(Clone)]
 pub struct ComponentTelemetry {
+    builder: MetricsBuilder,
     events_sent: Counter,
     events_sent_batch_size: Histogram,
     bytes_sent: Counter,
     events_dropped_http: Counter,
     events_dropped_encoder: Counter,
     events_dropped_queue: Counter,
+    items_dropped_total: Counter,
     http_failed_send: Counter,
+    http_errors_by_code: Arc<Mutex<HashMap<StatusCode, Counter>>>,
 }
 
 impl ComponentTelemetry {
     /// Creates a new `ComponentTelemetry` instance with default tags derived from the given component context.
     pub fn from_builder(builder: &MetricsBuilder) -> Self {
         Self {
+            builder: builder.clone(),
             events_sent: builder.register_debug_counter("component_events_sent_total"),
             events_sent_batch_size: builder.register_debug_histogram("component_events_sent_batch_size"),
             bytes_sent: builder.register_debug_counter("component_bytes_sent_total"),
@@ -37,8 +44,10 @@ impl ComponentTelemetry {
                 "component_events_dropped_total",
                 ["intentional:true", "drop_reason:queue_limit"],
             ),
+            items_dropped_total: builder.register_debug_counter("component_items_dropped_total"),
             http_failed_send: builder
                 .register_debug_counter_with_tags("component_errors_total", ["error_type:http_send"]),
+            http_errors_by_code: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -59,12 +68,34 @@ impl ComponentTelemetry {
     }
 
     /// Tracks a failed transaction.
-    pub fn track_failed_transaction(&self, metadata: &Metadata) {
-        self.http_failed_send.increment(1);
+    ///
+    /// When `status` is `Some`, the metric is additionally emitted with an `error_code` tag for the specific status.
+    pub fn track_failed_transaction(&self, metadata: &Metadata, status: Option<StatusCode>) {
+        match status {
+            None => self.http_failed_send.increment(1),
+            Some(status) => {
+                let mut map = self.http_errors_by_code.lock().unwrap();
+                let counter = map.entry(status).or_insert_with(|| {
+                    self.builder.register_debug_counter_with_tags(
+                        "component_errors_total",
+                        [
+                            ("error_type", "http_send".to_string()),
+                            ("error_code", status.as_str().to_string()),
+                        ],
+                    )
+                });
+                counter.increment(1);
+            }
+        }
         self.events_dropped_http.increment(metadata.event_count as u64);
     }
 
-    /// Tracks dropped events.
+    /// Tracks dropped items from queue eviction.
+    pub fn track_dropped_items(&self, item_count: u64) {
+        self.items_dropped_total.increment(item_count);
+    }
+
+    /// Tracks dropped events from queue eviction.
     pub fn track_dropped_events(&self, event_count: u64) {
         self.events_dropped_queue.increment(event_count);
     }

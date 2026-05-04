@@ -1,0 +1,27 @@
+type: integration
+name: "adp-logging-default-path"
+description: "Verifies ADP writes to the platform-default log file path (/var/log/datadog/agent-data-plane.log) when no override is provided"
+timeout: 90s
+
+container:
+  image: "saluki-images/datadog-agent:testing-devel"
+  env:
+    DD_API_KEY: "test-api-key"
+    DD_HOSTNAME: "integration-test-default-log"
+    DD_DATA_PLANE_ENABLED: "true"
+    DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
+    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+    DD_DOGSTATSD_PORT: "8125"
+  exposed_ports:
+    - "8125/udp"
+
+assertions:
+  # Wait for ADP to receive its initial configuration from the Core Agent and reload logging.
+  - type: log_contains
+    pattern: "Initial configuration received."
+    timeout: 30s
+  # The default per-subagent log file path is used.
+  - type: file_contains
+    path: "/var/log/datadog/agent-data-plane.log"
+    pattern: "DATAPLANE"
+    timeout: 30s

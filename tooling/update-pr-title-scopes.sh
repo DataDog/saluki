@@ -21,9 +21,12 @@ COMPONENT_TYPES=(decoders destinations encoders forwarders relays sources transf
 # Fixed scopes that aren't derived from the codebase.
 FIXED_SCOPES=(
     ci
+    correctness
     deps
     dev
     docs
+    integration
+    test
 )
 
 # Reads the crate name from a Cargo.toml file.

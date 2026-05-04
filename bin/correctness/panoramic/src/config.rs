@@ -1,11 +1,17 @@
+use std::collections::BTreeMap;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     time::Duration,
 };
 
+use async_trait::async_trait;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
+
+use crate::correctness::config::Config as CorrectnessConfig;
+use crate::reporter::TestResult;
+use crate::test::{Test, TestContext, TestSuite};
 
 /// A duration that can be parsed from human-readable strings like "10s", "1m", "500ms".
 #[derive(Clone, Debug)]
@@ -83,9 +89,10 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
     Ok(total)
 }
 
-/// Root test case configuration.
+/// The deserializable configuration struct that defines an integration test. Not to be confused with
+/// `CorrectnessConfig` which is a different testing modality.
 #[derive(Clone, Debug, Deserialize)]
-pub struct TestCase {
+pub struct IntegrationConfig {
     /// Name of the test case.
     pub name: String,
 
@@ -215,6 +222,20 @@ pub enum AssertionConfig {
         /// Timeout for the health check to succeed.
         timeout: HumanDuration,
     },
+
+    /// Check that a file exists in the container, and optionally that its contents match a pattern.
+    FileContains {
+        /// Absolute path to the file inside the container.
+        path: String,
+        /// Optional pattern that must appear in the file's contents. If omitted, only file existence is checked.
+        #[serde(default)]
+        pattern: Option<String>,
+        /// Whether to interpret `pattern` as a regex.
+        #[serde(default)]
+        regex: bool,
+        /// Timeout for waiting for the file (and pattern, if any) to appear.
+        timeout: HumanDuration,
+    },
 }
 
 /// Which log stream(s) to check.
@@ -227,7 +248,122 @@ pub enum LogStream {
     Both,
 }
 
-impl TestCase {
+impl AssertionConfig {
+    /// Replaces `{{PANORAMIC_DYNAMIC_*}}` placeholders in string fields with resolved values.
+    pub fn resolve_dynamic_vars(&mut self, vars: &HashMap<String, String>) {
+        match self {
+            AssertionConfig::LogContains { pattern, .. } | AssertionConfig::LogNotContains { pattern, .. } => {
+                crate::dynamic_vars::resolve_placeholders(pattern, vars);
+            }
+            AssertionConfig::HealthCheck { endpoint, .. } => {
+                crate::dynamic_vars::resolve_placeholders(endpoint, vars);
+            }
+            AssertionConfig::PortListening { protocol, .. } => {
+                crate::dynamic_vars::resolve_placeholders(protocol, vars);
+            }
+            AssertionConfig::FileContains { path, pattern, .. } => {
+                crate::dynamic_vars::resolve_placeholders(path, vars);
+                if let Some(p) = pattern {
+                    crate::dynamic_vars::resolve_placeholders(p, vars);
+                }
+            }
+            AssertionConfig::ProcessStableFor { .. } | AssertionConfig::ProcessExitsWith { .. } => {}
+        }
+    }
+
+    /// Returns any unresolved `{{PANORAMIC_DYNAMIC_*}}` placeholders in string fields.
+    pub fn unresolved_placeholders(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        match self {
+            AssertionConfig::LogContains { pattern, .. } | AssertionConfig::LogNotContains { pattern, .. } => {
+                crate::dynamic_vars::find_unresolved(pattern, &mut out);
+            }
+            AssertionConfig::HealthCheck { endpoint, .. } => {
+                crate::dynamic_vars::find_unresolved(endpoint, &mut out);
+            }
+            AssertionConfig::PortListening { protocol, .. } => {
+                crate::dynamic_vars::find_unresolved(protocol, &mut out);
+            }
+            AssertionConfig::FileContains { path, pattern, .. } => {
+                crate::dynamic_vars::find_unresolved(path, &mut out);
+                if let Some(p) = pattern {
+                    crate::dynamic_vars::find_unresolved(p, &mut out);
+                }
+            }
+            AssertionConfig::ProcessStableFor { .. } | AssertionConfig::ProcessExitsWith { .. } => {}
+        }
+        out
+    }
+}
+
+impl AssertionStep {
+    /// Replaces `{{PANORAMIC_DYNAMIC_*}}` placeholders in all assertion configs within this step.
+    pub fn resolve_dynamic_vars(&mut self, vars: &HashMap<String, String>) {
+        match self {
+            AssertionStep::Single(config) => config.resolve_dynamic_vars(vars),
+            AssertionStep::Parallel { parallel } => {
+                for config in parallel {
+                    config.resolve_dynamic_vars(vars);
+                }
+            }
+        }
+    }
+
+    /// Returns any unresolved `{{PANORAMIC_DYNAMIC_*}}` placeholders in this step.
+    pub fn unresolved_placeholders(&self) -> Vec<String> {
+        match self {
+            AssertionStep::Single(config) => config.unresolved_placeholders(),
+            AssertionStep::Parallel { parallel } => parallel.iter().flat_map(|c| c.unresolved_placeholders()).collect(),
+        }
+    }
+}
+
+#[async_trait]
+impl Test for IntegrationConfig {
+    fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    fn suite(&self) -> TestSuite {
+        TestSuite::Integration
+    }
+
+    fn description(&self) -> Option<String> {
+        self.description.clone()
+    }
+
+    fn timeout(&self) -> Duration {
+        self.timeout.0
+    }
+
+    fn images(&self) -> BTreeMap<&str, String> {
+        let mut m = BTreeMap::new();
+        m.insert("container", self.container.image.clone());
+        m
+    }
+
+    async fn run(&self, tctx: TestContext) -> TestResult {
+        let mut runner = crate::runner::IntegrationRunner::new(self.clone(), tctx);
+        runner.run().await
+    }
+}
+
+impl IntegrationConfig {
+    /// Replaces `{{PANORAMIC_DYNAMIC_*}}` placeholders in all assertion steps.
+    pub fn resolve_dynamic_vars(&mut self, vars: &HashMap<String, String>) {
+        for step in &mut self.assertions {
+            step.resolve_dynamic_vars(vars);
+        }
+    }
+
+    /// Returns any unresolved `{{PANORAMIC_DYNAMIC_*}}` placeholders across all assertion steps.
+    pub fn unresolved_placeholders(&self) -> Vec<String> {
+        self.assertions
+            .iter()
+            .flat_map(|s| s.unresolved_placeholders())
+            .collect()
+    }
+
     /// Count total individual assertions across all steps.
     pub fn total_assertion_count(&self) -> usize {
         self.assertions
@@ -245,7 +381,7 @@ impl TestCase {
         let content = std::fs::read_to_string(path)
             .error_context(format!("Failed to read configuration file: {}", path.display()))?;
 
-        let mut test_case: TestCase = serde_yaml::from_str(&content)
+        let mut test_case: IntegrationConfig = serde_yaml::from_str(&content)
             .error_context(format!("Failed to parse configuration file: {}", path.display()))?;
 
         test_case.base_path = path
@@ -268,43 +404,86 @@ impl TestCase {
     }
 }
 
-/// Discover all test cases in a directory.
-pub fn discover_tests<P: AsRef<Path>>(base_path: P) -> Result<Vec<TestCase>, GenericError> {
-    let base_path = base_path.as_ref();
-    let mut test_cases = Vec::new();
+/// Discover all test cases across one or more directories.
+///
+/// Each `config.yaml` found in a direct subdirectory must have a top-level `type` field set to
+/// either `"integration"` or `"correctness"`. Files with a missing or unknown `type` are skipped
+/// with a warning. Multiple test types may coexist freely within the same directory.
+pub fn discover_tests(dirs: &[PathBuf]) -> Result<Vec<Box<dyn Test>>, GenericError> {
+    let mut tests: Vec<Box<dyn Test>> = Vec::new();
 
-    if !base_path.is_dir() {
-        return Err(generic_error!("Test directory does not exist: {}", base_path.display()));
-    }
+    for base_path in dirs {
+        if !base_path.is_dir() {
+            return Err(generic_error!("Test directory does not exist: {}", base_path.display()));
+        }
 
-    let entries = std::fs::read_dir(base_path)
-        .error_context(format!("Failed to read test directory: {}", base_path.display()))?;
+        let entries = std::fs::read_dir(base_path)
+            .error_context(format!("Failed to read test directory: {}", base_path.display()))?;
 
-    for entry in entries {
-        let entry = entry.error_context("Failed to read directory entry")?;
-        let path = entry.path();
+        for entry in entries {
+            let entry = entry.error_context("Failed to read directory entry")?;
+            let path = entry.path();
 
-        if path.is_dir() {
-            let config_path = path.join("config.yaml");
-            if config_path.exists() {
-                match TestCase::from_yaml(&config_path) {
-                    Ok(test_case) => test_cases.push(test_case),
-                    Err(e) => {
-                        tracing::warn!(
-                            path = %config_path.display(),
-                            error = %e,
-                            "Failed to load test case, skipping"
-                        );
+            if path.is_dir() {
+                let config_path = path.join("config.yaml");
+                if config_path.exists() {
+                    match try_load_test(&config_path, &path) {
+                        Ok(test) => tests.push(test),
+                        Err(e) => {
+                            // Previously we had a warning here that cannot be seen in TUI-mode. It is better to fail
+                            // loudly and fast when we have a bad test configuration than to falsely believe our test is
+                            // working when we see that all tests passed.
+                            panic!("Failed to load test case, bad configuration: {e}");
+                        }
                     }
                 }
             }
         }
     }
 
-    // Sort by name for deterministic ordering
-    test_cases.sort_by(|a, b| a.name.cmp(&b.name));
+    // Sort by name for deterministic ordering.
+    tests.sort_by_key(|a| a.name());
 
-    Ok(test_cases)
+    Ok(tests)
+}
+
+/// Load a test case from a config file, dispatching on the top-level `type` field.
+fn try_load_test(config_path: &Path, dir_path: &Path) -> Result<Box<dyn Test>, GenericError> {
+    let content = std::fs::read_to_string(config_path)
+        .error_context(format!("Failed to read config file: {}", config_path.display()))?;
+
+    let peek: serde_yaml::Value = serde_yaml::from_str(&content).error_context(format!(
+        "Failed to parse config file as YAML: {}",
+        config_path.display()
+    ))?;
+
+    let test_type = peek
+        .get("type")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| generic_error!("Missing required 'type' field (expected 'integration' or 'correctness')"))?;
+
+    match test_type {
+        "integration" => {
+            let config = IntegrationConfig::from_yaml(config_path)?;
+            Ok(Box::new(config))
+        }
+        "correctness" => {
+            let config_path_str = config_path
+                .to_str()
+                .ok_or_else(|| generic_error!("Invalid UTF-8 in config path: {}", config_path.display()))?;
+            let mut config = CorrectnessConfig::from_yaml(config_path_str)?;
+            config.name = dir_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            Ok(Box::new(config))
+        }
+        other => Err(generic_error!(
+            "Unknown test type '{}' (expected 'integration' or 'correctness')",
+            other
+        )),
+    }
 }
 
 /// Parse a port specification (for example, "8125/udp") into port number and protocol.

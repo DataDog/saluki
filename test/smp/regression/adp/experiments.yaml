@@ -350,7 +350,7 @@ experiments:
     target:
       environment:
         # Sets the context resolver's string interner size.
-        DD_DOGSTATSD_STRING_INTERNER_SIZE: "32MiB"
+        DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES: "32MiB"
 
         # Set the context limit in the aggregator to right above 100K, which matches the maximum number of contexts we expect
         # to generate. We essentially don't want the aggregator to be a limiting factor.
@@ -382,7 +382,7 @@ experiments:
     target:
       environment:
         # Sets the context resolver's string interner size.
-        DD_DOGSTATSD_STRING_INTERNER_SIZE: "64MiB"
+        DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES: "64MiB"
 
         # Set the context limit in the aggregator to right above 250K, which matches the maximum number of contexts we
         # expect to generate. We essentially don't want the aggregator to be a limiting factor.

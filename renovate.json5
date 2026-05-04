@@ -1,0 +1,52 @@
+// Renovate configuration for the Saluki repo.
+//
+// This file is JSONC (JSON with Comments). Can be validated with:
+//     npx --yes --package renovate -- renovate-config-validator renovate.json
+//
+// The configuration below is designed to spam us with fewer PRs:
+//
+//   - Updates land in a single weekly window instead of continuously.
+//   - Non-major updates collapse into one combined PR.
+//   - Brand-new releases soak for a week before Renovate proposes them, which
+//     filters out same-week re-bumps and gives upstream maintainers time to
+//     yank broken releases.
+//   - Hard caps prevent surprise floods from a busy ecosystem week.
+//
+// Security advisories are explicitly exempted from all of the above and open
+// dedicated PRs immediately. See the `vulnerabilityAlerts` block.
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+
+  // Presets are bundles of config maintained by the Renovate project.
+  "extends": [
+    "config:recommended",
+    // Collapse all non-major updates (patch + minor) across every ecosystem
+    // into a single PR per scheduled run.
+    "group:allNonMajor",
+
+    // Restrict Renovate to creating branches to weekly.
+    "schedule:weekly"
+  ],
+
+  // Maximum number of Renovate-authored PRs that may be open at once.
+  "prConcurrentLimit": 5,
+
+  // Maximum number of new PRs Renovate may create per hour.
+  "prHourlyLimit": 2,
+
+  // Wait this long after a new version is published before Renovate will
+  // propose updating to it.
+  "minimumReleaseAge": "7 days",
+
+  // Renovate has a separate code path for vulnerability fixes. When a
+  // dependency in the repo has a known advisory (from GitHub's security
+  // advisory feed and, with the option below, from OSV.dev) and a fixed
+  // version is available, Renovate creates a dedicated PR that bypasses:
+  //
+  //   - `schedule` (opens immediately, not just on Monday)
+  //   - `minimumReleaseAge` (no 7-day soak)
+  //   - `prConcurrentLimit` and `prHourlyLimit` (does not count against caps)
+  //   - grouping (gets its own focused PR rather than being bundled in the
+  //     weekly non-major group)
+  "osvVulnerabilityAlerts": true
+}

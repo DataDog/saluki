@@ -28,6 +28,7 @@ const fn default_forwarder_connection_reset_interval() -> u64 {
 /// Agent, which are used to control the behavior of its forwarder, such as retries and concurrency, in conjunction with
 /// with existing primitives, as such retry policies in [`saluki_io::util::retry`].
 #[derive(Clone, Deserialize, Facet)]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct ForwarderConfiguration {
     /// Maximum number of concurrent requests for an individual endpoint.
     ///
@@ -67,6 +68,14 @@ pub struct ForwarderConfiguration {
         rename = "forwarder_connection_reset_interval"
     )]
     connection_reset_interval_secs: u64,
+
+    /// Whether to disable TLS certificate validation for Datadog intake forwarding.
+    ///
+    /// Defaults to `false`. If set to `true`, HTTPS clients built for the shared Datadog forwarder accept invalid
+    /// server certificates. Only deployments that intentionally route Datadog intake traffic through endpoints with
+    /// invalid or self-signed certificates should enable this.
+    #[serde(default)]
+    skip_ssl_validation: bool,
 }
 
 impl ForwarderConfiguration {
@@ -118,6 +127,11 @@ impl ForwarderConfiguration {
     /// Returns the connection reset interval.
     pub const fn connection_reset_interval(&self) -> Duration {
         Duration::from_secs(self.connection_reset_interval_secs)
+    }
+
+    /// Returns whether TLS certificate validation is disabled for Datadog intake forwarding.
+    pub const fn skip_ssl_validation(&self) -> bool {
+        self.skip_ssl_validation
     }
 }
 
@@ -203,5 +217,52 @@ mod tests {
 
         let proxies = config.proxy().as_ref().unwrap().build().unwrap();
         assert_eq!(proxies[0].uri().to_string(), PROXY_B_URI);
+    }
+
+    #[tokio::test]
+    async fn skip_ssl_validation_defaults_to_false() {
+        let config = forwarder_config_from(base_config(), None).await;
+
+        assert!(!config.skip_ssl_validation());
+    }
+
+    #[tokio::test]
+    async fn skip_ssl_validation_set_via_yaml() {
+        let config = forwarder_config_from(config_with(serde_json::json!({ "skip_ssl_validation": true })), None).await;
+
+        assert!(config.skip_ssl_validation());
+    }
+
+    #[tokio::test]
+    async fn skip_ssl_validation_set_via_env_var() {
+        // SKIP_SSL_VALIDATION simulates DD_SKIP_SSL_VALIDATION: the test helper sets
+        // TEST_SKIP_SSL_VALIDATION, which from_environment("TEST") reads as skip_ssl_validation.
+        let env_vars = vec![("SKIP_SSL_VALIDATION".to_string(), "true".to_string())];
+        let config = forwarder_config_from(base_config(), Some(&env_vars)).await;
+
+        assert!(config.skip_ssl_validation());
+    }
+}
+
+#[cfg(test)]
+mod config_smoke {
+    use serde_json::json;
+
+    use super::ForwarderConfiguration;
+    use crate::config_registry::structs;
+    use crate::config_registry::test_support::run_config_smoke_tests;
+
+    #[tokio::test]
+    async fn smoke_test() {
+        // `api_key` has no serde default (EndpointConfiguration::api_key: String), so
+        // deserialization panics on an empty config. Supply it via base_config so every
+        // config load in the smoke test has a valid starting point.
+        run_config_smoke_tests(
+            structs::FORWARDER_CONFIGURATION,
+            &[],
+            json!({ "api_key": "smoke-test-api-key" }),
+            |cfg| ForwarderConfiguration::from_configuration(&cfg).expect("ForwarderConfiguration should deserialize"),
+        )
+        .await
     }
 }

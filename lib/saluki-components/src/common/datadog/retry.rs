@@ -42,6 +42,7 @@ const fn default_storage_max_disk_ratio() -> f64 {
 
 /// Datadog Agent-specific forwarder retry configuration.
 #[derive(Clone, Deserialize, Facet)]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct RetryConfiguration {
     /// The minimum backoff factor to use when retrying requests.
     ///

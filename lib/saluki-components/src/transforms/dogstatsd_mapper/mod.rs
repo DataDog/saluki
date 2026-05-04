@@ -33,6 +33,7 @@ const fn default_context_string_interner_size() -> ByteSize {
 /// DogStatsD mapper transform.
 #[serde_as]
 #[derive(Deserialize)]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct DogStatsDMapperConfiguration {
     /// Total size of the string interner used for contexts, in bytes.
     ///
@@ -51,13 +52,13 @@ pub struct DogStatsDMapperConfiguration {
     dogstatsd_mapper_profiles: MapperProfileConfigs,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 struct MappingProfileConfig {
     name: String,
     prefix: String,
     mappings: Vec<MetricMappingConfig>,
 }
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 struct MapperProfileConfigs(pub Vec<MappingProfileConfig>);
 
 impl FromStr for MapperProfileConfigs {
@@ -66,6 +67,13 @@ impl FromStr for MapperProfileConfigs {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let profiles: Vec<MappingProfileConfig> = serde_json::from_str(s)?;
         Ok(MapperProfileConfigs(profiles))
+    }
+}
+
+#[cfg(test)]
+impl std::fmt::Display for MapperProfileConfigs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", serde_json::to_string(&self.0).unwrap_or_default())
     }
 }
 
@@ -175,7 +183,7 @@ fn build_regex(match_re: &str, match_type: &str) -> Result<Regex, GenericError> 
     })
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 struct MetricMappingConfig {
     // The metric name to extract groups from with the Wildcard or Regex match logic.
     #[serde(rename = "match")]
@@ -919,5 +927,23 @@ mod tests {
             ]
         }]);
         assert!(mapper(json_data).is_err());
+    }
+}
+
+#[cfg(test)]
+mod config_smoke {
+    use serde_json::json;
+
+    use super::DogStatsDMapperConfiguration;
+    use crate::config_registry::structs;
+    use crate::config_registry::test_support::run_config_smoke_tests;
+
+    #[tokio::test]
+    async fn smoke_test() {
+        run_config_smoke_tests(structs::DOGSTATSD_MAPPER_CONFIGURATION, &[], json!({}), |cfg| {
+            cfg.as_typed::<DogStatsDMapperConfiguration>()
+                .expect("DogStatsDMapperConfiguration should deserialize")
+        })
+        .await
     }
 }

@@ -7,8 +7,8 @@ use saluki_context::{
     origin::OriginTagCardinality,
     tags::{Tag, TagSet},
 };
+use saluki_core::health::Health;
 use saluki_error::GenericError;
-use saluki_health::Health;
 use saluki_io::net::util::tonic::StatusError;
 use saluki_metrics::static_metrics;
 use stringtheory::{
@@ -240,7 +240,7 @@ fn remote_entity_id_to_entity_id(remote_entity_id: RemoteEntityId) -> Option<Ent
             }
         },
         // We don't care about these, so we just ignore them.
-        "container_image_metadata" | "process" => None,
+        "container_image_metadata" | "process" | "gpu" => None,
         prefix => {
             warn!("Unhandled entity ID prefix: {}://{}", prefix, remote_entity_id.uid);
             None

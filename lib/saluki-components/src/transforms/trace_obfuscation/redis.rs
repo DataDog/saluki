@@ -73,7 +73,7 @@ pub fn quantize_redis_string(query: &str) -> Option<MetaString> {
 /// Obfuscates a Redis command string by removing sensitive arguments.
 /// Returns `Some(obfuscated)` if any changes were made, `None` if unchanged.
 pub fn obfuscate_redis_string(rediscmd: &str, config: &RedisObfuscationConfig) -> Option<MetaString> {
-    if config.remove_all_args() {
+    if config.remove_all_args {
         let result = rediscmd
             .lines()
             .map(remove_all_redis_args)
@@ -127,7 +127,7 @@ pub fn obfuscate_redis_string(rediscmd: &str, config: &RedisObfuscationConfig) -
 /// Obfuscates a Valkey command string by removing sensitive arguments.
 /// Returns `Some(obfuscated)` if any changes were made, `None` if unchanged.
 pub fn obfuscate_valkey_string(valkeycmd: &str, config: &ValkeyObfuscationConfig) -> Option<MetaString> {
-    if config.remove_all_args() {
+    if config.remove_all_args {
         let result = valkeycmd
             .lines()
             .map(remove_all_redis_args)

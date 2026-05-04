@@ -1,5 +1,5 @@
 use std::sync::{Arc, LazyLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use bytes::{Buf, BufMut};
@@ -43,6 +43,7 @@ use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use serde_with::{serde_as, NoneAsEmptyString};
 use snafu::{ResultExt as _, Snafu};
+use stringtheory::MetaString;
 use tokio::{
     select,
     time::{interval, MissedTickBehavior},
@@ -81,6 +82,12 @@ enum Error {
 
     #[snafu(display("No listeners configured. Please specify a port (`dogstatsd_port`) or a socket path (`dogstatsd_socket` or `dogstatsd_stream_socket`) to enable a listener."))]
     NoListenersConfigured,
+
+    #[snafu(display("Could not resolve bind_host '{}': {}", host, source))]
+    UnresolvableBindHost { host: String, source: std::io::Error },
+
+    #[snafu(display("bind_host '{}' resolved to zero IP addresses.", host))]
+    BindHostHasNoAddresses { host: String },
 }
 
 const fn default_buffer_size() -> usize {
@@ -99,6 +106,10 @@ const fn default_tcp_port() -> u16 {
     0
 }
 
+const fn default_socket_receive_buffer_size() -> usize {
+    0
+}
+
 const fn default_allow_context_heap_allocations() -> bool {
     true
 }
@@ -107,9 +118,15 @@ const fn default_no_aggregation_pipeline_support() -> bool {
     true
 }
 
-const fn default_context_string_interner_size() -> ByteSize {
-    ByteSize::mib(2)
+const fn default_context_string_interner_entry_count() -> u64 {
+    4096
 }
+
+/// Baseline byte cost per interner entry, used to convert the Core Agent's entry-count-based
+/// `dogstatsd_string_interner_size` to a byte size.
+///
+/// 4096 entries × 512 bytes = 2 MiB, matching ADP's previous default.
+const INTERNER_BASELINE_BYTES_PER_ENTRY: u64 = 512;
 
 const fn default_cached_contexts_limit() -> usize {
     500_000
@@ -127,19 +144,47 @@ const fn default_dogstatsd_minimum_sample_rate() -> f64 {
     0.000000003845
 }
 
-const fn default_enable_payloads_series() -> bool {
-    true
+/// Controls which payload types are forwarded to the backend.
+#[derive(Deserialize)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
+pub struct EnablePayloadsConfiguration {
+    /// Whether or not to enable sending series (counter/gauge/rate) payloads.
+    ///
+    /// Defaults to `true`.
+    #[serde(default = "default_true")]
+    pub series: bool,
+
+    /// Whether or not to enable sending sketch (distribution) payloads.
+    ///
+    /// Defaults to `true`.
+    #[serde(default = "default_true")]
+    pub sketches: bool,
+
+    /// Whether or not to enable sending event payloads.
+    ///
+    /// Defaults to `true`.
+    #[serde(default = "default_true")]
+    pub events: bool,
+
+    /// Whether or not to enable sending service check payloads.
+    ///
+    /// Defaults to `true`.
+    #[serde(default = "default_true")]
+    pub service_checks: bool,
 }
 
-const fn default_enable_payloads_sketches() -> bool {
-    true
+impl Default for EnablePayloadsConfiguration {
+    fn default() -> Self {
+        Self {
+            series: true,
+            sketches: true,
+            events: true,
+            service_checks: true,
+        }
+    }
 }
 
-const fn default_enable_payloads_events() -> bool {
-    true
-}
-
-const fn default_enable_payloads_service_checks() -> bool {
+const fn default_true() -> bool {
     true
 }
 
@@ -147,7 +192,9 @@ const fn default_enable_payloads_service_checks() -> bool {
 ///
 /// Accepts metrics over TCP, UDP, or Unix Domain Sockets in the StatsD/DogStatsD format.
 #[serde_as]
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
+#[cfg_attr(test, derive(derive_where::DeriveWhere, serde::Serialize))]
+#[cfg_attr(test, derive_where(PartialEq))]
 pub struct DogStatsDConfiguration {
     /// The size of the buffer used to receive messages into, in bytes.
     ///
@@ -175,6 +222,14 @@ pub struct DogStatsDConfiguration {
     #[serde(rename = "dogstatsd_port", default = "default_port")]
     port: u16,
 
+    /// The size of the DogStatsD UDP/UDS socket receive buffer, in bytes.
+    ///
+    /// If set to `0`, the OS default is used.
+    ///
+    /// Defaults to 0.
+    #[serde(rename = "dogstatsd_so_rcvbuf", default = "default_socket_receive_buffer_size")]
+    socket_receive_buffer_size: usize,
+
     /// The port to listen on in TCP mode.
     ///
     /// If set to `0`, TCP is not used.
@@ -201,10 +256,21 @@ pub struct DogStatsDConfiguration {
     #[serde_as(as = "NoneAsEmptyString")]
     socket_stream_path: Option<String>,
 
+    /// The host address to bind DogStatsD UDP and TCP listeners to.
+    ///
+    /// When set, UDP and TCP listeners bind to this address. Accepts either an IP literal (e.g.
+    /// `192.168.1.50`, `::1`) or a hostname that resolves via DNS (e.g. `agent.internal`).
+    /// Ignored when `dogstatsd_non_local_traffic` is `true`.
+    ///
+    /// Defaults to unset, which binds to `127.0.0.1`.
+    #[serde(rename = "bind_host", default)]
+    #[serde_as(as = "NoneAsEmptyString")]
+    bind_host: Option<String>,
+
     /// Whether or not to listen for non-local traffic in UDP mode.
     ///
     /// If set to `true`, the listener will accept packets from any interface/address. Otherwise, the source will only
-    /// listen on `localhost`.
+    /// listen on the address specified by `bind_host`, or `127.0.0.1` if `bind_host` is not set.
     ///
     /// Defaults to `false`.
     #[serde(rename = "dogstatsd_non_local_traffic", default)]
@@ -238,16 +304,26 @@ pub struct DogStatsDConfiguration {
     )]
     no_aggregation_pipeline_support: bool,
 
-    /// Total size of the string interner used for contexts.
+    /// Number of entries for the string interner, as interpreted by the Core Datadog Agent.
     ///
-    /// This controls the amount of memory that can be used to intern metric names and tags. If the interner is full,
-    /// metrics with contexts that have not already been resolved may or may not be dropped, depending on the value of
-    /// `allow_context_heap_allocations`.
+    /// When `dogstatsd_string_interner_size_bytes` is not set, this value is multiplied by 512 bytes per entry to
+    /// derive the interner byte size. This provides backwards compatibility for customers migrating configurations
+    /// from the Core Agent, where this setting represents an entry count rather than a byte size.
+    ///
+    /// Defaults to 4096 entries, which yields 2 MiB when converted.
     #[serde(
         rename = "dogstatsd_string_interner_size",
-        default = "default_context_string_interner_size"
+        default = "default_context_string_interner_entry_count"
     )]
-    context_string_interner_bytes: ByteSize,
+    context_string_interner_entry_count: u64,
+
+    /// Total size of the string interner used for contexts, in bytes.
+    ///
+    /// When set, this takes priority over `dogstatsd_string_interner_size`. This controls the amount of memory that
+    /// can be used to intern metric names and tags. If the interner is full, metrics with contexts that have not
+    /// already been resolved may or may not be dropped, depending on the value of `allow_context_heap_allocations`.
+    #[serde(rename = "dogstatsd_string_interner_size_bytes", default)]
+    context_string_interner_size_bytes: Option<ByteSize>,
 
     /// The maximum number of cached contexts to allow.
     ///
@@ -299,29 +375,9 @@ pub struct DogStatsDConfiguration {
     )]
     minimum_sample_rate: f64,
 
-    /// Whether or not to enable sending serie payloads.
-    ///
-    /// Defaults to `true`.
-    #[serde(default = "default_enable_payloads_series")]
-    enable_payloads_series: bool,
-
-    /// Whether or not to enable sending sketch payloads.
-    ///
-    /// Defaults to `true`.
-    #[serde(default = "default_enable_payloads_sketches")]
-    enable_payloads_sketches: bool,
-
-    /// Whether or not to enable sending event payloads.
-    ///
-    /// Defaults to `true`.
-    #[serde(default = "default_enable_payloads_events")]
-    enable_payloads_events: bool,
-
-    /// Whether or not to enable sending service check payloads.
-    ///
-    /// Defaults to `true`.
-    #[serde(default = "default_enable_payloads_service_checks")]
-    enable_payloads_service_checks: bool,
+    /// Which payload types to forward to the backend.
+    #[serde(rename = "enable_payloads", default)]
+    enable_payloads: EnablePayloadsConfiguration,
 
     /// Configuration related to origin detection and enrichment.
     #[serde(flatten, default)]
@@ -329,6 +385,7 @@ pub struct DogStatsDConfiguration {
 
     /// Workload provider to utilize for origin detection/enrichment.
     #[serde(skip)]
+    #[cfg_attr(test, derive_where(skip))]
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 
     /// Additional tags to add to all metrics.
@@ -336,10 +393,37 @@ pub struct DogStatsDConfiguration {
     additional_tags: Vec<String>,
 }
 
+/// Resolves a `bind_host` string to an `IpAddr`.
+///
+/// Accepts either an IP literal (no DNS required) or a hostname (resolved via async DNS). Returns
+/// `UnresolvableBindHost` if the lookup fails, or `BindHostHasNoAddresses` if it succeeds but
+/// returns no addresses.
+async fn resolve_bind_host(host: &str) -> Result<std::net::IpAddr, Error> {
+    let mut addrs = tokio::net::lookup_host((host, 0u16))
+        .await
+        .context(UnresolvableBindHost { host: host.to_string() })?;
+    addrs
+        .next()
+        .map(|sa| sa.ip())
+        .ok_or_else(|| Error::BindHostHasNoAddresses { host: host.to_string() })
+}
+
 impl DogStatsDConfiguration {
     /// Creates a new `DogStatsDConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(config.as_typed()?)
+    }
+
+    /// Returns the effective string interner size in bytes.
+    ///
+    /// If `dogstatsd_string_interner_size_bytes` is set, it is used directly. Otherwise,
+    /// `dogstatsd_string_interner_size` (an entry count) is multiplied by 512 bytes per entry to derive the byte
+    /// size.
+    fn effective_context_string_interner_bytes(&self) -> ByteSize {
+        match self.context_string_interner_size_bytes {
+            Some(explicit_bytes) => explicit_bytes,
+            None => ByteSize::b(self.context_string_interner_entry_count * INTERNER_BASELINE_BYTES_PER_ENTRY),
+        }
     }
 
     /// Sets the workload provider to use for configuring origin detection/enrichment.
@@ -355,55 +439,70 @@ impl DogStatsDConfiguration {
         self
     }
 
-    async fn build_listeners(&self) -> Result<Vec<Listener>, Error> {
-        let mut listeners = Vec::new();
+    /// Using the current configuration, determines which listeners should be created and adds an address for each into
+    /// a `Vec<ListenAddress>`. This function has no side effects so that it can be unit tested whereas build_listeners`
+    /// actually binds the listeners on the system.
+    ///
+    /// `bind_host` is the pre-resolved IP that UDP and TCP listeners should bind to (provided by
+    /// `resolve_bind_host`). Precedence matches the Agent:
+    ///   - `non_local_traffic=true` → `0.0.0.0` (bind_host ignored)
+    ///   - `bind_host=Some(ip)`     → `ip`
+    ///   - `bind_host=None`         → `127.0.0.1`
+    fn build_addresses(&self, bind_host: Option<std::net::IpAddr>) -> Vec<ListenAddress> {
+        let bind_ip: std::net::IpAddr = if self.non_local_traffic {
+            [0, 0, 0, 0].into()
+        } else {
+            bind_host.unwrap_or_else(|| [127, 0, 0, 1].into())
+        };
+
+        let mut addresses: Vec<ListenAddress> = Vec::new();
 
         if self.port != 0 {
-            let address = if self.non_local_traffic {
-                ListenAddress::Udp(([0, 0, 0, 0], self.port).into())
-            } else {
-                ListenAddress::Udp(([127, 0, 0, 1], self.port).into())
-            };
-
-            let listener = Listener::from_listen_address(address)
-                .await
-                .context(FailedToCreateListener { listener_type: "UDP" })?;
-            listeners.push(listener);
+            addresses.push(ListenAddress::Udp(std::net::SocketAddr::new(bind_ip, self.port)));
         }
 
         if self.tcp_port != 0 {
-            let address = if self.non_local_traffic {
-                ListenAddress::Tcp(([0, 0, 0, 0], self.tcp_port).into())
-            } else {
-                ListenAddress::Tcp(([127, 0, 0, 1], self.tcp_port).into())
-            };
-
-            let listener = Listener::from_listen_address(address)
-                .await
-                .context(FailedToCreateListener { listener_type: "TCP" })?;
-            listeners.push(listener);
+            addresses.push(ListenAddress::Tcp(std::net::SocketAddr::new(bind_ip, self.tcp_port)));
         }
 
         if let Some(socket_path) = &self.socket_path {
-            let address = ListenAddress::Unixgram(socket_path.into());
-            let listener = Listener::from_listen_address(address)
-                .await
-                .context(FailedToCreateListener {
-                    listener_type: "UDS (datagram)",
-                })?;
-            listeners.push(listener);
+            addresses.push(ListenAddress::Unixgram(socket_path.into()));
         }
 
         if let Some(socket_stream_path) = &self.socket_stream_path {
-            let address = ListenAddress::Unix(socket_stream_path.into());
-            let listener = Listener::from_listen_address(address)
-                .await
-                .context(FailedToCreateListener {
-                    listener_type: "UDS (stream)",
-                })?;
-            listeners.push(listener);
+            addresses.push(ListenAddress::Unix(socket_stream_path.into()));
         }
 
+        addresses
+    }
+
+    /// Builds the appropriate `Listener` objects.
+    async fn build_listeners(&self) -> Result<Vec<Listener>, Error> {
+        // Resolve `bind_host` to an IP (via DNS if needed). Skip the lookup when
+        // `non_local_traffic=true` since `bind_host` is ignored in that branch — matches Go's
+        // laziness and avoids failing startup on an unresolvable hostname that wouldn't be used.
+        let bind_host: Option<std::net::IpAddr> = if self.non_local_traffic {
+            None
+        } else {
+            match &self.bind_host {
+                Some(host) => Some(resolve_bind_host(host).await?),
+                None => None,
+            }
+        };
+
+        let addresses = self.build_addresses(bind_host);
+        let mut listeners = Vec::new();
+        let socket_receive_buffer_size =
+            (self.socket_receive_buffer_size != 0).then_some(self.socket_receive_buffer_size);
+        for address in addresses {
+            let listener_type = address.listener_type();
+            let listener = Listener::from_listen_address(address)
+                .await
+                .context(FailedToCreateListener { listener_type })?
+                .with_receive_buffer_size(socket_receive_buffer_size);
+
+            listeners.push(listener);
+        }
         Ok(listeners)
     }
 }
@@ -435,15 +534,16 @@ impl SourceBuilder for DogStatsDConfiguration {
         let codec_config = DogStatsDCodecConfiguration::default()
             .with_timestamps(self.no_aggregation_pipeline_support)
             .with_permissive_mode(self.permissive_decoding)
-            .with_minimum_sample_rate(self.minimum_sample_rate);
+            .with_minimum_sample_rate(self.minimum_sample_rate)
+            .with_client_origin_detection(self.origin_enrichment.origin_detection_client);
 
         let codec = DogStatsDCodec::from_configuration(codec_config);
 
         let enable_payloads_filter = EnablePayloadsFilter::default()
-            .with_allow_series(self.enable_payloads_series)
-            .with_allow_sketches(self.enable_payloads_sketches)
-            .with_allow_events(self.enable_payloads_events)
-            .with_allow_service_checks(self.enable_payloads_service_checks);
+            .with_allow_series(self.enable_payloads.series)
+            .with_allow_sketches(self.enable_payloads.sketches)
+            .with_allow_events(self.enable_payloads.events)
+            .with_allow_service_checks(self.enable_payloads.service_checks);
 
         Ok(Box::new(DogStatsD {
             listeners,
@@ -484,8 +584,8 @@ impl MemoryBounds for DogStatsDConfiguration {
             // We also allocate the backing storage for the string interner up front, which is used by our context
             // resolver.
             .with_expr(UsageExpr::config(
-                "dogstatsd_string_interner_size",
-                self.context_string_interner_bytes.as_u64() as usize,
+                "dogstatsd_string_interner_size_bytes",
+                self.effective_context_string_interner_bytes().as_u64() as usize,
             ));
     }
 }
@@ -962,6 +1062,9 @@ fn handle_frame(
 
     let event = match parsed {
         ParsedPacket::Metric(metric_packet) => {
+            if metric_packet.num_points == 0 {
+                return Ok(None);
+            }
             let events_len = metric_packet.num_points;
             if !enabled_filter.allow_metric(&metric_packet) {
                 trace!(
@@ -1054,7 +1157,8 @@ fn handle_metric_packet(
                 .unwrap_or_else(MetricOrigin::dogstatsd);
             let metadata = MetricMetadata::default()
                 .with_origin(metric_origin)
-                .with_hostname(well_known_tags.hostname.map(Arc::from));
+                .with_hostname(well_known_tags.hostname.map(Arc::from))
+                .with_unit(packet.unit.map_or_else(MetaString::empty, MetaString::from_static));
 
             Some(Metric::from_parts(context, packet.values, metadata))
         }
@@ -1077,13 +1181,29 @@ fn handle_event_packet(
     let tags = get_filtered_tags_iterator(packet.tags, additional_tags);
     let tags = tags_resolver.create_tag_set(tags)?;
 
+    // When no d: field is present, backfill the current time — matching the stock Datadog Agent's
+    // behavior in pkg/aggregator/aggregator.go (addEvent), which sets e.Ts = time.Now().Unix()
+    // for any event with Ts == 0.
+    let timestamp = packet
+        .timestamp
+        .or_else(|| SystemTime::now().duration_since(UNIX_EPOCH).ok().map(|d| d.as_secs()));
+
     let eventd = EventD::new(packet.title, packet.text)
-        .with_timestamp(packet.timestamp)
+        .with_timestamp(timestamp)
         .with_hostname(packet.hostname.map(|s| s.into()))
         .with_aggregation_key(packet.aggregation_key.map(|s| s.into()))
         .with_alert_type(packet.alert_type)
         .with_priority(packet.priority)
-        .with_source_type_name(packet.source_type_name.map(|s| s.into()))
+        // When no source type is provided, default to "api" — the same default the stock Datadog
+        // Agent applies when serializing DogStatsD events to the intake JSON format. The agent
+        // groups events by source type name and uses "api" as the key for events without an
+        // explicit `s:` field. See: pkg/serializer/internal/metrics/events.go (writeItem).
+        .with_source_type_name(Some(
+            packet
+                .source_type_name
+                .map(|s| s.into())
+                .unwrap_or_else(|| "api".into()),
+        ))
         .with_alert_type(packet.alert_type)
         .with_tags(tags)
         .with_origin_tags(origin_tags);
@@ -1106,8 +1226,15 @@ fn handle_service_check_packet(
     let tags = get_filtered_tags_iterator(packet.tags, additional_tags);
     let tags = tags_resolver.create_tag_set(tags)?;
 
+    // When no d: field is present, backfill the current time — matching the stock Datadog Agent's
+    // behavior, which sets the timestamp to time.Now().Unix() for any service check with a zero
+    // timestamp.
+    let timestamp = packet
+        .timestamp
+        .or_else(|| SystemTime::now().duration_since(UNIX_EPOCH).ok().map(|d| d.as_secs()));
+
     let service_check = ServiceCheck::new(packet.name, packet.status)
-        .with_timestamp(packet.timestamp)
+        .with_timestamp(timestamp)
         .with_hostname(packet.hostname.map(|s| s.into()))
         .with_tags(tags)
         .with_origin_tags(origin_tags)
@@ -1195,15 +1322,17 @@ const fn get_adjusted_buffer_size(buffer_size: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use std::net::SocketAddr;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 
+    use bytesize::ByteSize;
     use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
+    use saluki_io::net::ListenAddress;
     use saluki_io::{
         deser::codec::dogstatsd::{DogStatsDCodec, DogStatsDCodecConfiguration, ParsedPacket},
         net::ConnectionAddress,
     };
 
-    use super::{handle_metric_packet, ContextResolvers};
+    use super::{handle_metric_packet, ContextResolvers, DogStatsDConfiguration};
 
     #[test]
     fn no_metrics_when_interner_full_allocations_disallowed() {
@@ -1270,5 +1399,347 @@ mod tests {
         for tag in additional_tags {
             assert!(context.tags().has_tag(tag));
         }
+    }
+
+    fn deser_config(json: &str) -> DogStatsDConfiguration {
+        serde_json::from_str(json).expect("failed to deserialize config")
+    }
+
+    #[test]
+    fn interner_size_defaults_to_2mib() {
+        let config = deser_config("{}");
+        assert_eq!(config.effective_context_string_interner_bytes(), ByteSize::mib(2));
+    }
+
+    #[test]
+    fn socket_receive_buffer_size_defaults_to_zero() {
+        let config = deser_config("{}");
+        assert_eq!(config.socket_receive_buffer_size, 0);
+    }
+
+    #[test]
+    fn socket_receive_buffer_size_from_config() {
+        let config = deser_config(r#"{"dogstatsd_so_rcvbuf": 131072}"#);
+        assert_eq!(config.socket_receive_buffer_size, 131_072);
+    }
+
+    #[test]
+    fn interner_size_from_entry_count() {
+        // A Core Agent migration config with entry count 4096 should yield 2 MiB, not 4096 bytes.
+        let config = deser_config(r#"{"dogstatsd_string_interner_size": 4096}"#);
+        assert_eq!(config.effective_context_string_interner_bytes(), ByteSize::mib(2));
+    }
+
+    #[test]
+    fn interner_size_from_explicit_bytes() {
+        let config = deser_config(r#"{"dogstatsd_string_interner_size_bytes": 4194304}"#);
+        assert_eq!(config.effective_context_string_interner_bytes(), ByteSize::b(4194304));
+    }
+
+    #[test]
+    fn interner_size_explicit_bytes_takes_priority() {
+        let config = deser_config(
+            r#"{"dogstatsd_string_interner_size": 4096, "dogstatsd_string_interner_size_bytes": 8388608}"#,
+        );
+        // The _bytes key (8 MiB) takes priority over the entry count.
+        assert_eq!(config.effective_context_string_interner_bytes(), ByteSize::b(8388608));
+    }
+
+    #[test]
+    fn interner_size_custom_entry_count() {
+        let config = deser_config(r#"{"dogstatsd_string_interner_size": 8192}"#);
+        // 8192 entries * 512 bytes = 4 MiB
+        assert_eq!(config.effective_context_string_interner_bytes(), ByteSize::mib(4));
+    }
+
+    /// Asserts that two lists of ListenAddress are equivalent.
+    fn address_list_eq(expected: &mut [ListenAddress], actual: &mut [ListenAddress]) -> Result<(), String> {
+        if expected.len() != actual.len() {
+            return Err(format!(
+                "length mismatch: expected {} addresses, got {}",
+                expected.len(),
+                actual.len()
+            ));
+        }
+
+        expected.sort_by_key(|a| a.to_string());
+        actual.sort_by_key(|a| a.to_string());
+
+        for (e, a) in expected.iter().zip(actual.iter()) {
+            let (es, as_) = (e.to_string(), a.to_string());
+            if es != as_ {
+                return Err(format!("address mismatch: expected {}, got {}", es, as_));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// This test verifies that we didn't accidentally break the `build_addresses_no_listeners` helper function which
+    /// would render all further tests useless.
+    #[test]
+    fn build_addresses_assertion_function_works() {
+        let config = DogStatsDConfiguration {
+            port: 0,
+            tcp_port: 123,
+            socket_path: None,
+            socket_stream_path: None,
+            non_local_traffic: false,
+            ..Default::default()
+        };
+        let mut expected = vec![ListenAddress::Tcp(SocketAddr::V4(SocketAddrV4::new(
+            // Close, but not quite! This is intentionally *not* 127.0.0.1 to test that the assertion will fail
+            Ipv4Addr::new(127, 0, 0, 2),
+            123,
+        )))];
+        let mut actual = config.build_addresses(None);
+        assert!(address_list_eq(&mut expected, &mut actual).is_err())
+    }
+
+    /// With all four listener gates off, `build_addresses` returns an empty Vec.
+    #[test]
+    fn build_addresses_no_listeners() {
+        let config = DogStatsDConfiguration {
+            port: 0,
+            tcp_port: 0,
+            socket_path: None,
+            socket_stream_path: None,
+            non_local_traffic: false,
+            ..Default::default()
+        };
+        let mut expected = vec![];
+        let mut actual = config.build_addresses(None);
+        address_list_eq(&mut expected, &mut actual).unwrap();
+    }
+
+    /// UDP port set, `non_local_traffic=false` -> UDP listener bound to `127.0.0.1`.
+    #[test]
+    fn build_addresses_udp_local_only() {
+        let config = DogStatsDConfiguration {
+            port: 8125,
+            tcp_port: 0,
+            socket_path: None,
+            socket_stream_path: None,
+            non_local_traffic: false,
+            ..Default::default()
+        };
+        let mut expected = vec![ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::new(127, 0, 0, 1),
+            8125,
+        )))];
+        let mut actual = config.build_addresses(None);
+        address_list_eq(&mut expected, &mut actual).unwrap();
+    }
+
+    /// UDP port set, `non_local_traffic=true` -> UDP listener bound to `0.0.0.0`.
+    #[test]
+    fn build_addresses_udp_non_local_only() {
+        let config = DogStatsDConfiguration {
+            port: 8125,
+            tcp_port: 0,
+            socket_path: None,
+            socket_stream_path: None,
+            non_local_traffic: true,
+            ..Default::default()
+        };
+        let mut expected = vec![ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::new(0, 0, 0, 0),
+            8125,
+        )))];
+        let mut actual = config.build_addresses(None);
+        address_list_eq(&mut expected, &mut actual).unwrap();
+    }
+
+    /// TCP port set, `non_local_traffic=false` -> TCP listener bound to `127.0.0.1`.
+    #[test]
+    fn build_addresses_tcp_local_only() {
+        let config = DogStatsDConfiguration {
+            port: 0,
+            tcp_port: 9000,
+            socket_path: None,
+            socket_stream_path: None,
+            non_local_traffic: false,
+            ..Default::default()
+        };
+        let mut expected = vec![ListenAddress::Tcp(SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::new(127, 0, 0, 1),
+            9000,
+        )))];
+        let mut actual = config.build_addresses(None);
+        address_list_eq(&mut expected, &mut actual).unwrap();
+    }
+
+    /// TCP port set, `non_local_traffic=true` -> TCP listener bound to `0.0.0.0`.
+    #[test]
+    fn build_addresses_tcp_non_local_only() {
+        let config = DogStatsDConfiguration {
+            port: 0,
+            tcp_port: 9000,
+            socket_path: None,
+            socket_stream_path: None,
+            non_local_traffic: true,
+            ..Default::default()
+        };
+        let mut expected = vec![ListenAddress::Tcp(SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::new(0, 0, 0, 0),
+            9000,
+        )))];
+        let mut actual = config.build_addresses(None);
+        address_list_eq(&mut expected, &mut actual).unwrap();
+    }
+
+    /// `socket_path` set -> a `Unixgram` address is produced with that path.
+    #[test]
+    fn build_addresses_unixgram_only() {
+        let config = DogStatsDConfiguration {
+            port: 0,
+            tcp_port: 0,
+            socket_path: Some("/tmp/dsd.sock".to_string()),
+            socket_stream_path: None,
+            non_local_traffic: false,
+            ..Default::default()
+        };
+        let mut expected = vec![ListenAddress::Unixgram("/tmp/dsd.sock".into())];
+        let mut actual = config.build_addresses(None);
+        address_list_eq(&mut expected, &mut actual).unwrap();
+    }
+
+    /// `socket_stream_path` set -> a `Unix` (stream) address is produced with that path.
+    #[test]
+    fn build_addresses_unix_stream_only() {
+        let config = DogStatsDConfiguration {
+            port: 0,
+            tcp_port: 0,
+            socket_path: None,
+            socket_stream_path: Some("/tmp/dsd-stream.sock".to_string()),
+            non_local_traffic: false,
+            ..Default::default()
+        };
+        let mut expected = vec![ListenAddress::Unix("/tmp/dsd-stream.sock".into())];
+        let mut actual = config.build_addresses(None);
+        address_list_eq(&mut expected, &mut actual).unwrap();
+    }
+
+    /// All four listener types enabled at once, with `non_local_traffic=true`.
+    #[test]
+    fn build_addresses_all_four_non_local() {
+        let config = DogStatsDConfiguration {
+            port: 8125,
+            tcp_port: 9000,
+            socket_path: Some("/tmp/dsd.sock".to_string()),
+            socket_stream_path: Some("/tmp/dsd-stream.sock".to_string()),
+            non_local_traffic: true,
+            ..Default::default()
+        };
+        let mut expected = vec![
+            ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 8125))),
+            ListenAddress::Tcp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 9000))),
+            ListenAddress::Unixgram("/tmp/dsd.sock".into()),
+            ListenAddress::Unix("/tmp/dsd-stream.sock".into()),
+        ];
+        let mut actual = config.build_addresses(None);
+        address_list_eq(&mut expected, &mut actual).unwrap();
+    }
+
+    /// All four listener types enabled at once, with `non_local_traffic=false`.
+    #[test]
+    fn build_addresses_all_four_local() {
+        let config = DogStatsDConfiguration {
+            port: 8125,
+            tcp_port: 9000,
+            socket_path: Some("/tmp/dsd.sock".to_string()),
+            socket_stream_path: Some("/tmp/dsd-stream.sock".to_string()),
+            non_local_traffic: false,
+            ..Default::default()
+        };
+        let mut expected = vec![
+            ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 8125))),
+            ListenAddress::Tcp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 9000))),
+            ListenAddress::Unixgram("/tmp/dsd.sock".into()),
+            ListenAddress::Unix("/tmp/dsd-stream.sock".into()),
+        ];
+        let mut actual = config.build_addresses(None);
+        address_list_eq(&mut expected, &mut actual).unwrap();
+    }
+
+    /// Passing `Some(ip)` to `build_addresses` with `non_local_traffic=false` -> both UDP and TCP
+    /// bind to that IP. Includes a UDS datagram socket to confirm `bind_host` doesn't affect it.
+    #[test]
+    fn build_addresses_bind_host_applies_to_udp_and_tcp() {
+        let config = DogStatsDConfiguration {
+            port: 8125,
+            tcp_port: 9000,
+            socket_path: Some("/tmp/dsd.sock".to_string()),
+            socket_stream_path: None,
+            non_local_traffic: false,
+            ..Default::default()
+        };
+        let bind_host = Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50)));
+        let mut expected = vec![
+            ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 50), 8125))),
+            ListenAddress::Tcp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 50), 9000))),
+            ListenAddress::Unixgram("/tmp/dsd.sock".into()),
+        ];
+        let mut actual = config.build_addresses(bind_host);
+        address_list_eq(&mut expected, &mut actual).unwrap();
+    }
+
+    /// Passing `Some(ip)` to `build_addresses` with `non_local_traffic=true` -> both UDP and TCP
+    /// bind to `0.0.0.0`; the bind_host parameter is ignored (precedence matches the Agent).
+    /// Includes a UDS stream socket to confirm `bind_host` doesn't affect it.
+    #[test]
+    fn build_addresses_non_local_clobbers_bind_host() {
+        let config = DogStatsDConfiguration {
+            port: 8125,
+            tcp_port: 9000,
+            socket_path: None,
+            socket_stream_path: Some("/tmp/dsd-stream.sock".to_string()),
+            non_local_traffic: true,
+            ..Default::default()
+        };
+        let bind_host = Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50)));
+        let mut expected = vec![
+            ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 8125))),
+            ListenAddress::Tcp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 9000))),
+            ListenAddress::Unix("/tmp/dsd-stream.sock".into()),
+        ];
+        let mut actual = config.build_addresses(bind_host);
+        address_list_eq(&mut expected, &mut actual).unwrap();
+    }
+
+    #[test]
+    fn non_finite_metric_values_are_silently_dropped() {
+        // The Datadog Agent sends NaN gauges (e.g. encode_ms.avg computed as 0.0/0.0 in Go).
+        // FloatIter skips non-finite values with a debug log, so decode_packet returns Ok with
+        // num_points == 0. handle_frame then returns Ok(None) for zero-point packets, which is
+        // the existing silent-drop path (no warning emitted).
+        let codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
+        for input in &[b"my.gauge:NaN|g" as &[u8], b"my.gauge:inf|g", b"my.gauge:-inf|g"] {
+            match codec.decode_packet(input).expect("should decode without error") {
+                ParsedPacket::Metric(packet) => assert_eq!(
+                    packet.num_points, 0,
+                    "non-finite value should be dropped, leaving 0 valid points"
+                ),
+                _ => panic!("expected Metric packet"),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod config_smoke {
+    use serde_json::json;
+
+    use super::DogStatsDConfiguration;
+    use crate::config_registry::structs;
+    use crate::config_registry::test_support::run_config_smoke_tests;
+
+    #[tokio::test]
+    async fn smoke_test() {
+        run_config_smoke_tests(structs::DOGSTATSD_CONFIGURATION, &[], json!({}), |cfg| {
+            cfg.as_typed::<DogStatsDConfiguration>()
+                .expect("DogStatsDConfiguration should deserialize")
+        })
+        .await
     }
 }

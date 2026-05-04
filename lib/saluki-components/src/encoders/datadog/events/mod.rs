@@ -47,6 +47,7 @@ const fn default_zstd_compressor_level() -> i32 {
 ///
 /// Generates Datadog Events payloads for the Datadog platform.
 #[derive(Deserialize, Facet)]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct DatadogEventsConfiguration {
     /// Compression kind to use for the request payloads.
     ///
@@ -266,4 +267,22 @@ fn encode_eventd(eventd: &EventD, tags_deduplicator: &mut ReusableDeduplicator<T
     event.set_tags(deduplicated_tags.map(|tag| tag.as_str().into()).collect());
 
     event
+}
+
+#[cfg(test)]
+mod config_smoke {
+    use serde_json::json;
+
+    use super::DatadogEventsConfiguration;
+    use crate::config_registry::structs;
+    use crate::config_registry::test_support::run_config_smoke_tests;
+
+    #[tokio::test]
+    async fn smoke_test() {
+        run_config_smoke_tests(structs::DATADOG_EVENTS_CONFIGURATION, &[], json!({}), |cfg| {
+            cfg.as_typed::<DatadogEventsConfiguration>()
+                .expect("DatadogEventsConfiguration should deserialize")
+        })
+        .await
+    }
 }
