@@ -669,6 +669,8 @@ mod tests {
     }
 
     fn init_tls_crypto_provider() {
+        // TODO: Figure out a better pattern for testing that doesn't involve initializing
+        // the process-wide crypto provider.
         static INIT: OnceLock<()> = OnceLock::new();
         INIT.get_or_init(|| {
             let _ = saluki_tls::initialize_default_crypto_provider();
