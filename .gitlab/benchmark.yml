@@ -206,7 +206,7 @@ run-benchmarks-adp-tagfilter:
   needs:
     - build-adp-baseline-image
     - build-adp-comparison-image
-  image: "${SALUKI_BUILD_CI_IMAGE}"
+  image: "${SALUKI_SMP_CI_IMAGE}"
   before_script:
     - *setup-smp-env
   artifacts:
@@ -362,7 +362,7 @@ run-benchmarks-agent-adp:
   needs:
     - build-agent-adp-baseline-image
     - build-agent-adp-comparison-image
-  image: "${SALUKI_BUILD_CI_IMAGE}"
+  image: "${SALUKI_SMP_CI_IMAGE}"
   before_script:
     - *setup-smp-env
   artifacts:

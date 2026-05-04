@@ -1,9 +1,10 @@
+type: correctness
 analysis_mode: metrics
 millstone:
-  image: saluki-images/millstone:latest
+  image: saluki-images/correctness-tools:latest
   config_path: millstone.yaml
 datadog_intake:
-  image: saluki-images/datadog-intake:latest
+  image: saluki-images/correctness-tools:latest
   config_path: ../datadog-intake.yaml
 baseline:
   image: docker.io/datadog/agent-dev:7ed0f1b6-py3-jmx
