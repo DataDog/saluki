@@ -38,7 +38,7 @@ pub(crate) type TestFilter = Box<dyn Fn(&dyn Test) -> bool + Send>;
 pub(crate) type EventSender = mpsc::UnboundedSender<TestEvent>;
 
 /// The amount of time a test has to clean up after cancellation or timing out.
-const GRACE_TIME: Duration = Duration::from_secs(5);
+const GRACE_TIME: Duration = Duration::from_secs(30);
 
 pub(crate) struct RunArgs {
     /// The number of tests to run in parallel.
