@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, path::PathBuf, time::{Duration, Instant}};
+use std::{
+    collections::BTreeMap,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use k8s_openapi::{
     api::core::v1::{
@@ -61,8 +65,20 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
 
     let run_start = Instant::now();
     let (baseline_result, comparison_result) = tokio::join!(
-        run_group(client.clone(), baseline_ns.clone(), &config, &config.baseline, tctx.log_dir().join("baseline")),
-        run_group(client.clone(), comparison_ns.clone(), &config, &config.comparison, tctx.log_dir().join("comparison")),
+        run_group(
+            client.clone(),
+            baseline_ns.clone(),
+            &config,
+            &config.baseline,
+            tctx.log_dir().join("baseline")
+        ),
+        run_group(
+            client.clone(),
+            comparison_ns.clone(),
+            &config,
+            &config.comparison,
+            tctx.log_dir().join("comparison")
+        ),
     );
     let run_duration = run_start.elapsed();
 

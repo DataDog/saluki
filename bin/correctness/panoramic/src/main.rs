@@ -13,7 +13,6 @@ use tracing_subscriber::{layer::SubscriberExt as _, util::SubscriberInitExt as _
 
 use crate::runner::Runner;
 
-
 mod kind;
 use self::kind::KindLifecycle;
 
