@@ -2,9 +2,23 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use saluki_error::{generic_error, GenericError};
 use stele::ServiceCheck;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::correctness::analysis::collected::CollectedData;
+
+/// Check name prefixes used exclusively by the Core Agent's internal check scheduler.
+///
+/// These checks fire on a ~15 s flush cycle, so the number of flush cycles that complete
+/// before the dump varies under parallel test load. Because millstone generates random names
+/// that never start with these prefixes, filtering them out before comparison isolates the
+/// user-generated checks without affecting correctness signal.
+const AGENT_INTERNAL_PREFIXES: &[&str] = &["datadog."];
+
+fn is_agent_internal(check: &ServiceCheck) -> bool {
+    AGENT_INTERNAL_PREFIXES
+        .iter()
+        .any(|prefix| check.name().starts_with(prefix))
+}
 
 /// Analyzes service checks for correctness.
 pub struct ServiceChecksAnalyzer {
@@ -17,6 +31,22 @@ impl ServiceChecksAnalyzer {
     pub fn new(baseline_data: &CollectedData, comparison_data: &CollectedData) -> Self {
         let mut baseline_checks = baseline_data.service_checks().to_vec();
         let mut comparison_checks = comparison_data.service_checks().to_vec();
+
+        // Strip Core Agent internal checks before comparison. Their count is non-deterministic
+        // (depends on how many 15 s flush cycles complete before the dump), so including them
+        // causes spurious count mismatches under parallel test load.
+        let baseline_before = baseline_checks.len();
+        let comparison_before = comparison_checks.len();
+        baseline_checks.retain(|c| !is_agent_internal(c));
+        comparison_checks.retain(|c| !is_agent_internal(c));
+        let baseline_filtered = baseline_before - baseline_checks.len();
+        let comparison_filtered = comparison_before - comparison_checks.len();
+        if baseline_filtered > 0 || comparison_filtered > 0 {
+            info!(
+                baseline_filtered,
+                comparison_filtered, "Filtered agent-internal service checks before comparison."
+            );
+        }
 
         // When `d:` is absent, some pipeline stages may backfill the current time. Any timestamp
         // within 5 minutes of now is treated as a fill-in (probability of a lading value landing
@@ -67,6 +97,30 @@ impl ServiceChecksAnalyzer {
                 self.comparison_checks.len(),
             );
             error!("{}", msg);
+
+            // Log the extra checks on whichever side has more to aid debugging.
+            let (longer, shorter, longer_label, shorter_label) =
+                if self.baseline_checks.len() > self.comparison_checks.len() {
+                    (&self.baseline_checks, &self.comparison_checks, "baseline", "comparison")
+                } else {
+                    (&self.comparison_checks, &self.baseline_checks, "comparison", "baseline")
+                };
+            let extra_count = longer.len() - shorter.len();
+            warn!(
+                "{} has {} extra check(s) not present in {}:",
+                longer_label, extra_count, shorter_label
+            );
+            for check in longer.iter().rev().take(extra_count.min(20)) {
+                warn!(
+                    "  extra check: name={:?} status={} hostname={:?} tags={:?} timestamp={:?}",
+                    check.name(),
+                    check.status(),
+                    check.hostname(),
+                    check.tags(),
+                    check.timestamp(),
+                );
+            }
+
             return Err((generic_error!("{}", msg), vec![msg]));
         }
 
