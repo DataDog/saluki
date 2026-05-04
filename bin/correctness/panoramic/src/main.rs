@@ -35,6 +35,7 @@ use self::reporter::{OutputFormat, Reporter, TestResult, TestSuiteResult};
 mod runner;
 mod test;
 mod tui;
+mod utils;
 
 #[tokio::main]
 async fn main() -> ExitCode {

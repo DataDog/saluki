@@ -69,13 +69,29 @@ async fn cluster_exists(name: &str) -> Result<bool, GenericError> {
 }
 
 async fn create_cluster(name: &str) -> Result<(), GenericError> {
-    let status = Command::new("kind")
+    let output = Command::new("kind")
         .args(["create", "cluster", "--name", name, "--wait", "120s"])
-        .status()
+        .output()
         .await
         .error_context("Failed to spawn kind create cluster")?;
-    if !status.success() {
-        return Err(generic_error!("'kind create cluster' exited with status: {}", status));
+
+    // kind writes progress to stderr. Log each line through tracing so it doesn't
+    // interleave with other output, and strip ANSI codes since kind uses color.
+    let combined = [output.stdout.as_slice(), output.stderr.as_slice()].concat();
+    for line in String::from_utf8_lossy(&combined).lines() {
+        let clean = strip_ansi_codes(line.as_bytes());
+        let clean = String::from_utf8_lossy(&clean);
+        let clean = clean.trim();
+        if !clean.is_empty() {
+            debug!("[kind] {}", clean);
+        }
+    }
+
+    if !output.status.success() {
+        return Err(generic_error!(
+            "'kind create cluster' exited with status: {}",
+            output.status
+        ));
     }
     Ok(())
 }
@@ -168,3 +184,4 @@ async fn load_images(cluster_name: &str, images: &[String]) -> Result<(), Generi
 
     Ok(())
 }
+use crate::utils::strip_ansi_codes;
