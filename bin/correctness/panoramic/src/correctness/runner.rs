@@ -274,12 +274,32 @@ impl CorrectnessRunner {
             .await?;
         info!("Containers spawned successfully. Waiting for data...");
 
-        let maybe_baseline_data = run_in_background(&baseline_runner_span, baseline_collector.wait_for_data());
-        let maybe_comparison_data = run_in_background(&comparison_runner_span, comparison_collector.wait_for_data());
+        let maybe_baseline_port = run_in_background(&baseline_runner_span, baseline_collector.wait_for_millstone());
+        let maybe_comparison_port = run_in_background(&comparison_runner_span, comparison_collector.wait_for_millstone());
 
-        let (baseline_data, comparison_data) = self
-            .unwrap_or_shutdown("collect_data", maybe_baseline_data.await, maybe_comparison_data.await)
+        let (baseline_port, comparison_port) = self
+            .unwrap_or_shutdown("wait_for_millstone", maybe_baseline_port.await, maybe_comparison_port.await)
             .await?;
+
+        // Both millstones are done. Wait for the flush interval, then dump both sides simultaneously
+        // so they capture the same set of target-generated background telemetry.
+        //
+        // TODO: This should maybe be configurable, or perhaps we can figure out a better way to determine when the next flush
+        // has happened... and further, we might not need to care about this for particular analysis modes if the functionality
+        // we're testing doesn't rely on flushing like metrics does.
+        info!("Both millstones complete. Waiting for flush interval before dumping data...");
+        sleep(Duration::from_secs(32)).await;
+
+        // Dump both sides simultaneously so the data collection is more likely to happen at the
+        // same wall-clock time, capturing the same set of background telemetry from the targets.
+        let (baseline_result, comparison_result) = tokio::join!(
+            CollectedData::for_port(baseline_port),
+            CollectedData::for_port(comparison_port),
+        );
+        let baseline_data = baseline_result
+            .error_context("Failed to collect telemetry data from baseline datadog-intake.")?;
+        let comparison_data = comparison_result
+            .error_context("Failed to collect telemetry data from comparison datadog-intake.")?;
 
         // We've gotten our data back, so signal to any remaining containers that they can shutdown now.
         info!("Cleaning up remaining containers and resources...");
@@ -467,28 +487,16 @@ impl DataCollector {
         })
     }
 
-    async fn wait_for_data(self) -> Result<CollectedData, GenericError> {
+    async fn wait_for_millstone(self) -> Result<u16, GenericError> {
         debug!("Waiting for millstone container to complete...");
 
         // Wait for millstone to complete, since that signals that all metrics have been _sent_ to the target.
         if let ExitStatus::Failed { code, error } = self.millstone_handle.wait().await {
             return Err(generic_error!("Failed to drive millstone to completion; process exited with non-zero exit code ({}). Error message: {}", code, error));
         }
-        debug!(
-            "Millstone container stopped successfully. Waiting for flush interval to elapse before dumping metrics..."
-        );
+        debug!("Millstone container stopped successfully.");
 
-        // Now we'll briefly wait (for the duration of an aggregation flush interval, plus a little extra) before dumping the metrics from
-        // datadog-intake, to ensure everything from the target has been flushed out.
-        //
-        // TODO: This should maybe be configurable, or perhaps we can figure out a better way to determine when the next flush
-        // has happened... and further, we might not need to care about this for particular analysis modes if the functionality
-        // we're testing doesn't rely on flushing like metrics does.
-        sleep(Duration::from_secs(32)).await;
-
-        CollectedData::for_port(self.datadog_intake_port)
-            .await
-            .error_context("Failed to collect telemetry data from datadog-intake container.")
+        Ok(self.datadog_intake_port)
     }
 }
 
