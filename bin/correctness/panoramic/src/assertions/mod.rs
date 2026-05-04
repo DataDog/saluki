@@ -94,7 +94,9 @@ impl LogBuffer {
 pub struct AssertionContext {
     /// Shared log buffer for reading container logs.
     pub log_buffer: Arc<RwLock<LogBuffer>>,
-    /// Cancellation token for cooperative shutdown.
+    /// Fired when the container exits. Used by process assertions.
+    pub container_exit_token: CancellationToken,
+    /// Fired for external cancellation (timeout or user cancel).
     pub cancel_token: CancellationToken,
     /// Port mappings from internal port to host port.
     pub port_mappings: std::collections::HashMap<String, u16>,

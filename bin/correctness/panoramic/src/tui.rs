@@ -115,7 +115,7 @@ impl Tui {
                 self.add_line(format!("Starting test '{}'...", name));
                 self.active_tests.push(name);
             }
-            TestEvent::TestCompleted { result } => {
+            TestEvent::TestCompleted { result, log_dir } => {
                 // Remove from active tests.
                 self.active_tests.retain(|n| n != &result.name);
                 self.completed_tests += 1;
@@ -173,9 +173,7 @@ impl Tui {
                         }
                     }
 
-                    if let Some(ref dir) = result.log_dir {
-                        self.add_line(format!("  Logs: {}", dir.display()));
-                    }
+                    self.add_line(format!("  Logs: {}", log_dir.display()));
                 }
             }
             TestEvent::AllDone => {
@@ -315,7 +313,7 @@ impl Drop for Tui {
 /// This function consumes test events from the channel and renders them to the terminal.
 /// It returns when `AllDone` is received or the user cancels via Ctrl+C or 'q'.
 pub async fn run_tui_consumer(
-    mut rx: mpsc::UnboundedReceiver<TestEvent>, cancel_token: CancellationToken, log_dir: Option<PathBuf>,
+    mut rx: mpsc::UnboundedReceiver<TestEvent>, cancel_all: CancellationToken, log_dir: Option<PathBuf>,
 ) -> io::Result<()> {
     let mut tui = Tui::new()?;
 
@@ -330,7 +328,7 @@ pub async fn run_tui_consumer(
     while !done {
         if tui.poll_input()? && !cancelled {
             cancelled = true;
-            cancel_token.cancel();
+            cancel_all.cancel();
             tui.add_line("Cancelling...");
         }
 

@@ -5,10 +5,13 @@ use std::{
     time::Duration,
 };
 
+use async_trait::async_trait;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
 
 use crate::correctness::config::Config as CorrectnessConfig;
+use crate::reporter::TestResult;
+use crate::test::{Test, TestContext, TestSuite};
 
 /// A duration that can be parsed from human-readable strings like "10s", "1m", "500ms".
 #[derive(Clone, Debug)]
@@ -86,64 +89,10 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
     Ok(total)
 }
 
-/// A discovered test, either an integration test or a correctness test.
-pub enum DiscoveredTest {
-    /// An integration test case (panoramic schema).
-    Integration(TestCase),
-    /// A correctness test case.
-    Correctness {
-        /// Name of the test (derived from directory name).
-        name: String,
-        /// The correctness test configuration.
-        config: CorrectnessConfig,
-    },
-}
-
-impl DiscoveredTest {
-    /// Returns the name of the test.
-    pub fn name(&self) -> &str {
-        match self {
-            DiscoveredTest::Integration(tc) => &tc.name,
-            DiscoveredTest::Correctness { name, .. } => name,
-        }
-    }
-
-    /// Returns the timeout for the test.
-    pub fn timeout(&self) -> Duration {
-        match self {
-            DiscoveredTest::Integration(tc) => tc.timeout.0,
-            DiscoveredTest::Correctness { .. } => Duration::from_secs(20 * 60),
-        }
-    }
-
-    /// Returns the description of the test, if any.
-    pub fn description(&self) -> Option<&str> {
-        match self {
-            DiscoveredTest::Integration(tc) => tc.description.as_deref(),
-            DiscoveredTest::Correctness { .. } => None,
-        }
-    }
-
-    /// Lists the images this test depends on.
-    pub fn images(&self) -> BTreeMap<&str, String> {
-        let mut m = BTreeMap::new();
-        match self {
-            DiscoveredTest::Integration(i) => {
-                m.insert("integration", i.container.image.clone());
-            }
-            DiscoveredTest::Correctness { config, .. } => {
-                m.insert("baseline", config.baseline.image.clone());
-                m.insert("millstone", config.millstone.image.clone());
-                m.insert("datadog-intake", config.datadog_intake.image.clone());
-            }
-        }
-        m
-    }
-}
-
-/// Root test case configuration.
+/// The deserializable configuration struct that defines an integration test. Not to be confused with
+/// `CorrectnessConfig` which is a different testing modality.
 #[derive(Clone, Debug, Deserialize)]
-pub struct TestCase {
+pub struct IntegrationConfig {
     /// Name of the test case.
     pub name: String,
 
@@ -369,7 +318,37 @@ impl AssertionStep {
     }
 }
 
-impl TestCase {
+#[async_trait]
+impl Test for IntegrationConfig {
+    fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    fn suite(&self) -> TestSuite {
+        TestSuite::Integration
+    }
+
+    fn description(&self) -> Option<String> {
+        self.description.clone()
+    }
+
+    fn timeout(&self) -> Duration {
+        self.timeout.0
+    }
+
+    fn images(&self) -> BTreeMap<&str, String> {
+        let mut m = BTreeMap::new();
+        m.insert("container", self.container.image.clone());
+        m
+    }
+
+    async fn run(&self, tctx: TestContext) -> TestResult {
+        let mut runner = crate::runner::IntegrationRunner::new(self.clone(), tctx);
+        runner.run().await
+    }
+}
+
+impl IntegrationConfig {
     /// Replaces `{{PANORAMIC_DYNAMIC_*}}` placeholders in all assertion steps.
     pub fn resolve_dynamic_vars(&mut self, vars: &HashMap<String, String>) {
         for step in &mut self.assertions {
@@ -402,7 +381,7 @@ impl TestCase {
         let content = std::fs::read_to_string(path)
             .error_context(format!("Failed to read configuration file: {}", path.display()))?;
 
-        let mut test_case: TestCase = serde_yaml::from_str(&content)
+        let mut test_case: IntegrationConfig = serde_yaml::from_str(&content)
             .error_context(format!("Failed to parse configuration file: {}", path.display()))?;
 
         test_case.base_path = path
@@ -430,8 +409,8 @@ impl TestCase {
 /// Each `config.yaml` found in a direct subdirectory must have a top-level `type` field set to
 /// either `"integration"` or `"correctness"`. Files with a missing or unknown `type` are skipped
 /// with a warning. Multiple test types may coexist freely within the same directory.
-pub fn discover_tests(dirs: &[PathBuf]) -> Result<Vec<DiscoveredTest>, GenericError> {
-    let mut tests = Vec::new();
+pub fn discover_tests(dirs: &[PathBuf]) -> Result<Vec<Box<dyn Test>>, GenericError> {
+    let mut tests: Vec<Box<dyn Test>> = Vec::new();
 
     for base_path in dirs {
         if !base_path.is_dir() {
@@ -463,13 +442,13 @@ pub fn discover_tests(dirs: &[PathBuf]) -> Result<Vec<DiscoveredTest>, GenericEr
     }
 
     // Sort by name for deterministic ordering.
-    tests.sort_by(|a, b| a.name().cmp(b.name()));
+    tests.sort_by_key(|a| a.name());
 
     Ok(tests)
 }
 
 /// Load a test case from a config file, dispatching on the top-level `type` field.
-fn try_load_test(config_path: &Path, dir_path: &Path) -> Result<DiscoveredTest, GenericError> {
+fn try_load_test(config_path: &Path, dir_path: &Path) -> Result<Box<dyn Test>, GenericError> {
     let content = std::fs::read_to_string(config_path)
         .error_context(format!("Failed to read config file: {}", config_path.display()))?;
 
@@ -484,18 +463,21 @@ fn try_load_test(config_path: &Path, dir_path: &Path) -> Result<DiscoveredTest, 
         .ok_or_else(|| generic_error!("Missing required 'type' field (expected 'integration' or 'correctness')"))?;
 
     match test_type {
-        "integration" => TestCase::from_yaml(config_path).map(DiscoveredTest::Integration),
+        "integration" => {
+            let config = IntegrationConfig::from_yaml(config_path)?;
+            Ok(Box::new(config))
+        }
         "correctness" => {
             let config_path_str = config_path
                 .to_str()
                 .ok_or_else(|| generic_error!("Invalid UTF-8 in config path: {}", config_path.display()))?;
-            let config = CorrectnessConfig::from_yaml(config_path_str)?;
-            let name = dir_path
+            let mut config = CorrectnessConfig::from_yaml(config_path_str)?;
+            config.name = dir_path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown")
                 .to_string();
-            Ok(DiscoveredTest::Correctness { name, config })
+            Ok(Box::new(config))
         }
         other => Err(generic_error!(
             "Unknown test type '{}' (expected 'integration' or 'correctness')",

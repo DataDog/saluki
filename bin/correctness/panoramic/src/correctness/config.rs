@@ -1,4 +1,6 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use airlock::{
     config::{
@@ -7,11 +9,18 @@ use airlock::{
     },
     driver::DriverConfig,
 };
+use async_trait::async_trait;
 use saluki_config::ConfigurationLoader;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
 
 use crate::correctness::analysis::AnalysisMode;
+use crate::reporter::TestResult;
+use crate::test::{Test, TestContext, TestSuite};
+
+// Correctness tests run two isolation groups (baseline + comparison), each with multiple
+// containers, so they need more time than the default.
+const CORRECTNESS_TIMEOUT: Duration = Duration::from_mins(20);
 
 fn default_millstone_binary_path() -> String {
     "/usr/local/bin/millstone".to_string()
@@ -27,6 +36,9 @@ fn default_otlp_direct_analysis_mode() -> bool {
 
 #[derive(Clone, Deserialize)]
 pub struct Config {
+    #[serde(skip)]
+    pub(crate) name: String,
+
     /// Analysis mode to use.
     pub analysis_mode: AnalysisMode,
 
@@ -121,6 +133,38 @@ pub struct TargetConfig {
     /// These should be in the form of `KEY=VALUE`.
     #[serde(default = "Vec::new")]
     pub additional_env_vars: Vec<String>,
+}
+
+#[async_trait]
+impl Test for Config {
+    fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    fn suite(&self) -> TestSuite {
+        TestSuite::Correctness
+    }
+
+    fn description(&self) -> Option<String> {
+        None
+    }
+
+    fn timeout(&self) -> Duration {
+        CORRECTNESS_TIMEOUT
+    }
+
+    fn images(&self) -> BTreeMap<&str, String> {
+        let mut m = BTreeMap::new();
+        m.insert("baseline", self.baseline.image.clone());
+        m.insert("comparison", self.comparison.image.clone());
+        m.insert("datadog-intake", self.datadog_intake.image.clone());
+        m.insert("millstone", self.millstone.image.clone());
+        m
+    }
+
+    async fn run(&self, tctx: TestContext) -> TestResult {
+        crate::correctness::runner::run_correctness_test(self.name.clone(), self.clone(), tctx).await
+    }
 }
 
 impl Config {
