@@ -233,8 +233,7 @@ impl HistogramSuffixes {
             // Match the Agent histogram filterlist suffix generation:
             // https://github.com/DataDog/datadog-agent/blob/12213fe95538f47d98d73bd945a87b3e24189285/comp/filterlist/impl/filterlist.go#L197-L217
             // https://github.com/DataDog/datadog-agent/blob/12213fe95538f47d98d73bd945a87b3e24189285/pkg/metrics/histogram.go#L51-L69
-            let quantile = (quantile * 100.0).trunc() / 100.0;
-            let suffix = format!("{}percentile", ((quantile * 1000.0) as u32 / 10));
+            let suffix = format!("{}percentile", (quantile * 100.0 + 0.5) as u32);
             values.push(suffix.into());
         }
 
@@ -522,9 +521,44 @@ mod tests {
     // Mirrors Datadog Agent histogram-specific filterlist derivation:
     // https://github.com/DataDog/datadog-agent/blob/12213fe95538f47d98d73bd945a87b3e24189285/comp/filterlist/impl/filterlist_test.go#L19
     #[test]
+    fn histogram_filter_subset_matches_agent_suffix_selection() {
+        let filter = filter_with(
+            vec![
+                "foo",
+                "bar",
+                "baz",
+                "foomax",
+                "foo.avg",
+                "foo.max",
+                "foo.count",
+                "baz.73percentile",
+                "bar.50percentile",
+                "bar.22percentile",
+                "count",
+            ],
+            false,
+            vec![],
+            false,
+            vec!["avg", "max", "median"],
+            vec!["0.73", "0.22"],
+            Telemetry::noop(),
+        );
+
+        assert!(filter.should_filter_metric(&Metric::gauge("foo.avg", 1.0)));
+        assert!(filter.should_filter_metric(&Metric::gauge("foo.max", 1.0)));
+        assert!(filter.should_filter_metric(&Metric::gauge("baz.73percentile", 1.0)));
+        assert!(filter.should_filter_metric(&Metric::gauge("bar.22percentile", 1.0)));
+        assert!(!filter.should_filter_metric(&Metric::gauge("foo.count", 1.0)));
+        assert!(!filter.should_filter_metric(&Metric::gauge("bar.50percentile", 1.0)));
+        assert!(!filter.should_filter_metric(&Metric::gauge("foomax", 1.0)));
+    }
+
+    // Mirrors Datadog Agent percentile suffix generation:
+    // https://github.com/DataDog/datadog-agent/blob/12213fe95538f47d98d73bd945a87b3e24189285/pkg/metrics/histogram.go#L53
+    #[test]
     fn filters_percentile_suffixes_like_aggregate_configuration() {
         let filter = filter_with(
-            vec!["request.duration.95percentile", "request.duration.29percentile"],
+            vec!["request.duration.95percentile", "request.duration.30percentile"],
             false,
             vec![],
             false,
@@ -537,12 +571,12 @@ mod tests {
             &filter,
             vec![
                 Metric::gauge("request.duration.95percentile", 1.0),
-                Metric::gauge("request.duration.29percentile", 1.0),
                 Metric::gauge("request.duration.30percentile", 1.0),
+                Metric::gauge("request.duration.29percentile", 1.0),
             ],
         );
 
-        assert_eq!(names, vec!["request.duration.30percentile"]);
+        assert_eq!(names, vec!["request.duration.29percentile"]);
     }
 
     #[test]

@@ -82,8 +82,8 @@ struct RawHistogramConfiguration {
     /// Percentiles to calculate over histograms.
     ///
     /// Percentiles are expressed in quantile form: 95% becomes 0.95, and so on. Any floating-point number between
-    /// 0.0 and 1.0 (inclusive) is allowed, but values that extend beyond two decimal places (i.e. 0.999) will be
-    /// truncated.
+    /// 0.0 and 1.0 (inclusive) is allowed, but values that extend beyond two decimal places are rounded to the nearest
+    /// whole percentile to match the Datadog Agent.
     ///
     /// The metric name generated for each percentile will be in the form of `<original metric
     /// name>.<stripped_q>percentile`, where `stripped_q` represents the quantile multiplied by 100. For example, a
@@ -199,12 +199,9 @@ impl TryFrom<RawHistogramConfiguration> for HistogramConfiguration {
                 return Err(format!("Percentile out of range: {}", faux_percentile));
             }
 
-            // Truncate the quantile value and then generate the string representation for the metric name suffix.
-            //
-            // We do the weird multiplication and division when we generate the suffix because you can end up with
-            // rounding errors, such that you might get `28` when doing `(0.29 * 100) as u32`.
-            let quantile = (quantile * 100.0).trunc() / 100.0;
-            let suffix = format!("{}percentile", ((quantile * 1000.0) as u32 / 10)).into();
+            let percentile = (quantile * 100.0 + 0.5) as u32;
+            let quantile = f64::from(percentile) / 100.0;
+            let suffix = format!("{}percentile", percentile).into();
             statistics.push(HistogramStatistic::Percentile { q: quantile, suffix });
         }
 
@@ -213,5 +210,36 @@ impl TryFrom<RawHistogramConfiguration> for HistogramConfiguration {
             copy_to_distribution: raw.histogram_copy_to_distribution,
             copy_to_distribution_prefix: raw.histogram_copy_to_distribution_prefix,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn percentile_suffixes_match_agent_rounding() {
+        let raw = RawHistogramConfiguration {
+            histogram_aggregates: Vec::new(),
+            histogram_percentiles: vec!["0.299".to_string(), "0.73".to_string()],
+            histogram_copy_to_distribution: false,
+            histogram_copy_to_distribution_prefix: String::new(),
+        };
+
+        let config = HistogramConfiguration::try_from(raw).unwrap();
+
+        assert_eq!(
+            config.statistics(),
+            &[
+                HistogramStatistic::Percentile {
+                    q: 0.30,
+                    suffix: "30percentile".into(),
+                },
+                HistogramStatistic::Percentile {
+                    q: 0.73,
+                    suffix: "73percentile".into(),
+                },
+            ]
+        );
     }
 }
