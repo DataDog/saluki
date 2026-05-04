@@ -1,5 +1,7 @@
 use std::{fmt, sync::Arc};
 
+use stringtheory::MetaString;
+
 const ORIGIN_PRODUCT_AGENT: u32 = 10;
 const ORIGIN_SUBPRODUCT_DOGSTATSD: u32 = 10;
 const ORIGIN_SUBPRODUCT_INTEGRATION: u32 = 11;
@@ -25,6 +27,12 @@ pub struct MetricMetadata {
     /// The metric origin.
     // TODO: only optional so we can default? seems like we always have one
     pub origin: Option<MetricOrigin>,
+
+    /// The unit of the metric values, if known.
+    ///
+    /// This is set for DogStatsD timing metrics (`ms` type), which carry an implicit unit of `"millisecond"`. For all
+    /// other metric types the unit is empty.
+    pub unit: MetaString,
 }
 
 impl MetricMetadata {
@@ -94,12 +102,38 @@ impl MetricMetadata {
     pub fn set_origin(&mut self, origin: impl Into<Option<MetricOrigin>>) {
         self.origin = origin.into();
     }
+
+    /// Returns the unit of the metric values, if set.
+    pub fn unit(&self) -> Option<&str> {
+        if self.unit.is_empty() {
+            None
+        } else {
+            Some(&self.unit)
+        }
+    }
+
+    /// Set the unit of the metric values.
+    ///
+    /// This variant is specifically for use in builder-style APIs.
+    pub fn with_unit(mut self, unit: impl Into<MetaString>) -> Self {
+        self.unit = unit.into();
+        self
+    }
+
+    /// Set the unit of the metric values.
+    pub fn set_unit(&mut self, unit: impl Into<MetaString>) {
+        self.unit = unit.into();
+    }
 }
 
 impl fmt::Display for MetricMetadata {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(origin) = &self.origin {
             write!(f, " origin={}", origin)?;
+        }
+
+        if !self.unit.is_empty() {
+            write!(f, " unit={}", self.unit)?;
         }
 
         Ok(())

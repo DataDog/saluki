@@ -59,6 +59,9 @@ pub struct MetricPacket<'a> {
     ///
     /// Specifies which origin tags the receiver should attach to the metric.
     pub cardinality: Option<OriginTagCardinality>,
+
+    /// Unit for this metric, if any.
+    pub unit: Option<&'static str>,
 }
 
 #[inline]
@@ -156,6 +159,14 @@ pub fn parse_dogstatsd_metric<'a>(
         remaining
     };
 
+    // Capture the unit from the metric type before it is erased into a MetricValues variant.
+    // Only timing metrics carry an implicit unit; all other types have no unit.
+    let maybe_unit = if matches!(metric_type, MetricType::Timer) {
+        Some("millisecond")
+    } else {
+        None
+    };
+
     let (num_points, mut metric_values) = metric_values_from_raw(raw_metric_values, metric_type, maybe_sample_rate)?;
 
     // If we got a timestamp, apply it to all metric values.
@@ -176,6 +187,7 @@ pub fn parse_dogstatsd_metric<'a>(
             local_data: maybe_local_data,
             external_data: maybe_external_data,
             cardinality: maybe_cardinality,
+            unit: maybe_unit,
         },
     ))
 }
@@ -372,6 +384,22 @@ mod tests {
         let set_expected = Metric::set(set_name, set_value);
         let set_actual = parse_dsd_metric(set_raw.as_bytes()).expect("should not fail to parse");
         check_basic_metric_eq(set_expected, set_actual);
+    }
+
+    #[test]
+    fn metric_unit() {
+        let config = DogStatsDCodecConfiguration::default();
+
+        // Timing metrics must carry an implicit millisecond unit.
+        let (_, packet) = parse_dogstatsd_metric(b"my.timer:1.0|ms", &config).expect("should not fail to parse");
+        assert_eq!(packet.unit, Some("millisecond"));
+
+        // All other metric types must have no unit.
+        for kind in &["c", "g", "h", "d", "s"] {
+            let raw = format!("my.metric:1.0|{}", kind);
+            let (_, packet) = parse_dogstatsd_metric(raw.as_bytes(), &config).expect("should not fail to parse");
+            assert_eq!(packet.unit, None, "expected no unit for metric type '{}'", kind);
+        }
     }
 
     #[test]

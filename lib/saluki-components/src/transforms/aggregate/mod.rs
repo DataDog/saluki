@@ -845,6 +845,7 @@ mod tests {
         topology::{interconnect::Dispatcher, ComponentId, OutputName},
     };
     use saluki_metrics::test::TestRecorder;
+    use stringtheory::MetaString;
     use tokio::sync::mpsc;
 
     use super::config::HistogramStatistic;
@@ -1256,6 +1257,47 @@ mod tests {
         assert_flushed_scalar_metric!(count_metric, &flushed_metrics[0], [bucket_ts(1) => 5.0]);
         assert_flushed_scalar_metric!(p50_metric, &flushed_metrics[1], [bucket_ts(1) => 3.0], error_ratio => 0.0025);
         assert_flushed_scalar_metric!(sum_metric, &flushed_metrics[2], [bucket_ts(1) => 15.0]);
+    }
+
+    #[tokio::test]
+    async fn histogram_statistics_unit_propagation() {
+        // We're testing that the unit from the input histogram metadata propagates to all flushed output metrics.
+        let hist_config = HistogramConfiguration::from_statistics(
+            &[
+                HistogramStatistic::Count,
+                HistogramStatistic::Sum,
+                HistogramStatistic::Percentile {
+                    q: 0.5,
+                    suffix: "p50".into(),
+                },
+            ],
+            false,
+            "".into(),
+        );
+        let mut state = AggregationState::new(BUCKET_WIDTH, 10, COUNTER_EXPIRE, hist_config, Telemetry::noop());
+
+        // Build a histogram with unit = "millisecond", simulating what arrives from a DogStatsD `ms` metric.
+        let context = Context::from_static_parts("metric1", &[]);
+        let metadata = MetricMetadata::default().with_unit(MetaString::from_static("millisecond"));
+        let input_metric = Metric::from_parts(
+            context,
+            MetricValues::histogram([1.0_f64, 2.0, 3.0, 4.0, 5.0]),
+            metadata,
+        );
+        assert!(state.insert(insert_ts(1), input_metric));
+
+        let flushed_metrics = get_flushed_metrics(flush_ts(1), &mut state).await;
+        assert_eq!(flushed_metrics.len(), 3);
+
+        // Every output metric (count, p50, sum) must carry the unit from the input histogram.
+        for metric in &flushed_metrics {
+            assert_eq!(
+                metric.metadata().unit(),
+                Some("millisecond"),
+                "flushed metric '{}' should carry unit='millisecond'",
+                metric.context().name()
+            );
+        }
     }
 
     #[tokio::test]

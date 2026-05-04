@@ -43,6 +43,7 @@ use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use serde_with::{serde_as, NoneAsEmptyString};
 use snafu::{ResultExt as _, Snafu};
+use stringtheory::MetaString;
 use tokio::{
     select,
     time::{interval, MissedTickBehavior},
@@ -1153,7 +1154,8 @@ fn handle_metric_packet(
                 .unwrap_or_else(MetricOrigin::dogstatsd);
             let metadata = MetricMetadata::default()
                 .with_origin(metric_origin)
-                .with_hostname(well_known_tags.hostname.map(Arc::from));
+                .with_hostname(well_known_tags.hostname.map(Arc::from))
+                .with_unit(packet.unit.map_or_else(MetaString::empty, MetaString::from_static));
 
             Some(Metric::from_parts(context, packet.values, metadata))
         }
