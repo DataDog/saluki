@@ -6,14 +6,14 @@ use std::{
 };
 
 use bollard::{
-    container::{Config, CreateContainerOptions, ListContainersOptions, LogOutput, LogsOptions},
+    container::LogOutput,
     errors::Error,
     exec::{CreateExecOptions, StartExecResults},
-    image::CreateImageOptions,
-    models::{HealthConfig, HealthStatusEnum, HostConfig, Ipam},
-    network::CreateNetworkOptions,
-    secret::ContainerStateStatusEnum,
-    volume::CreateVolumeOptions,
+    models::{
+        ContainerCreateBody, ContainerStateStatusEnum, HealthConfig, HealthStatusEnum, HostConfig, Ipam,
+        NetworkCreateRequest, VolumeCreateRequest,
+    },
+    query_parameters::{CreateContainerOptionsBuilder, CreateImageOptions, ListContainersOptionsBuilder, LogsOptions},
     Docker,
 };
 use futures::{StreamExt as _, TryStreamExt as _};
@@ -351,13 +351,16 @@ impl Driver {
         let isolation_group_label = format!("airlock-isolation-group={}", isolation_group_id);
 
         // Remove any containers related to the isolation group. We do so forcefully.
-        let list_options = Some(ListContainersOptions {
-            all: true,
-            filters: vec![("label", vec!["created_by=airlock", isolation_group_label.as_str()])]
+        let list_filters: HashMap<&str, Vec<&str>> =
+            [("label", vec!["created_by=airlock", isolation_group_label.as_str()])]
                 .into_iter()
-                .collect(),
-            ..Default::default()
-        });
+                .collect();
+        let list_options = Some(
+            ListContainersOptionsBuilder::default()
+                .all(true)
+                .filters(&list_filters)
+                .build(),
+        );
         let containers = docker.list_containers(list_options).await.with_error_context(|| {
             format!(
                 "Failed to list containers attached to isolation group '{}'.",
@@ -390,7 +393,13 @@ impl Driver {
         }
 
         // Remove the shared volume.
-        if let Err(e) = docker.remove_volume(isolation_group_name.as_str(), None).await {
+        if let Err(e) = docker
+            .remove_volume(
+                isolation_group_name.as_str(),
+                None::<bollard::query_parameters::RemoveVolumeOptions>,
+            )
+            .await
+        {
             error!(error = %e, "Failed to remove shared volume '{}'.", isolation_group_name);
         } else {
             debug!("Removed shared volume '{}'.", isolation_group_name);
@@ -408,7 +417,7 @@ impl Driver {
 
     async fn create_network_if_missing(&self) -> Result<(), GenericError> {
         // See if the network already exists or not.
-        let networks = self.docker.list_networks::<String>(None).await?;
+        let networks = self.docker.list_networks(None).await?;
         if networks
             .iter()
             .any(|network| network.name.as_deref() == Some(self.isolation_group_name.as_str()))
@@ -425,13 +434,12 @@ impl Driver {
         );
 
         // Create the network since it doesn't yet exist.
-        let network_options = CreateNetworkOptions {
+        let network_options = NetworkCreateRequest {
             name: self.isolation_group_name.clone(),
-            check_duplicate: true,
-            driver: "bridge".to_string(),
-            ipam: Ipam::default(),
-            enable_ipv6: false,
-            labels: get_default_airlock_labels(self.isolation_group_id.as_str()),
+            driver: Some("bridge".to_string()),
+            ipam: Some(Ipam::default()),
+            enable_ipv6: Some(false),
+            labels: Some(get_default_airlock_labels(self.isolation_group_id.as_str())),
             ..Default::default()
         };
         let response = self.docker.create_network(network_options).await?;
@@ -448,7 +456,7 @@ impl Driver {
 
     async fn create_image_if_missing_inner(&self, image: &str) -> Result<(), GenericError> {
         let image_options = CreateImageOptions {
-            from_image: image,
+            from_image: Some(image.to_string()),
             ..Default::default()
         };
 
@@ -488,7 +496,10 @@ impl Driver {
 
     async fn create_volume_if_missing(&self) -> Result<(), GenericError> {
         // Check to see if the shared volume already exists.
-        let volumes = self.docker.list_volumes::<String>(None).await?;
+        let volumes = self
+            .docker
+            .list_volumes(None::<bollard::query_parameters::ListVolumesOptions>)
+            .await?;
         if volumes
             .volumes
             .iter()
@@ -506,10 +517,10 @@ impl Driver {
             self.isolation_group_name
         );
 
-        let volume_options = CreateVolumeOptions {
-            name: self.isolation_group_name.clone(),
-            driver: "local".to_string(),
-            labels: get_default_airlock_labels(self.isolation_group_id.as_str()),
+        let volume_options = VolumeCreateRequest {
+            name: Some(self.isolation_group_name.clone()),
+            driver: Some("local".to_string()),
+            labels: Some(get_default_airlock_labels(self.isolation_group_id.as_str())),
             ..Default::default()
         };
         self.docker.create_volume(volume_options).await?;
@@ -571,15 +582,16 @@ impl Driver {
         let (publish_all_ports, exposed_ports) = if self.config.exposed_ports.is_empty() {
             (None, None)
         } else {
-            let mut exposed_ports = HashMap::new();
-            for (protocol, internal_port) in &self.config.exposed_ports {
-                exposed_ports.insert(format!("{}/{}", internal_port, protocol), HashMap::new());
-            }
-
+            let exposed_ports: Vec<String> = self
+                .config
+                .exposed_ports
+                .iter()
+                .map(|(protocol, internal_port)| format!("{}/{}", internal_port, protocol))
+                .collect();
             (Some(true), Some(exposed_ports))
         };
 
-        let container_config = Config {
+        let container_config = ContainerCreateBody {
             hostname: Some(self.config.driver_id.to_string()),
             env,
             image: Some(image),
@@ -598,10 +610,7 @@ impl Driver {
             ..Default::default()
         };
 
-        let create_options = CreateContainerOptions {
-            name: container_name,
-            ..Default::default()
-        };
+        let create_options = CreateContainerOptionsBuilder::default().name(&container_name).build();
 
         let response = self
             .docker
@@ -642,7 +651,7 @@ impl Driver {
     }
 
     async fn start_container_inner(&self, container_name: &str) -> Result<DriverDetails, GenericError> {
-        self.docker.start_container::<String>(container_name, None).await?;
+        self.docker.start_container(container_name, None).await?;
 
         let mut details = DriverDetails {
             container_name: container_name.to_string(),
@@ -783,7 +792,7 @@ impl Driver {
     }
 
     async fn wait_for_container_exit_inner(&self, container_name: &str) -> Result<ExitStatus, GenericError> {
-        let mut wait_stream = self.docker.wait_container::<String>(container_name, None);
+        let mut wait_stream = self.docker.wait_container(container_name, None);
         match wait_stream.next().await {
             Some(result) => match result {
                 Ok(response) => {
@@ -861,7 +870,7 @@ impl Driver {
 
         let exec = self
             .docker
-            .create_exec::<String>(&self.container_name, exec_opts)
+            .create_exec(&self.container_name, exec_opts)
             .await
             .with_error_context(|| format!("Failed to create exec instance for container {}.", self.container_name))?;
 
@@ -966,7 +975,7 @@ impl Driver {
             stderr: true,
             ..Default::default()
         };
-        let mut log_stream = self.docker.logs::<String>(container_name, Some(logs_config));
+        let mut log_stream = self.docker.logs(container_name, Some(logs_config));
 
         tokio::spawn(async move {
             while let Some(log_result) = log_stream.next().await {

@@ -231,7 +231,7 @@ async fn run_single_test(
 
 /// Generates a random isolation group ID.
 fn generate_isolation_group_id() -> String {
-    use rand::Rng as _;
+    use rand::RngExt as _;
     let mut rng = rand::rng();
     let chars: String = (0..8)
         .map(|_| {
@@ -388,7 +388,10 @@ impl TestRunner {
                 Err(_) => return,
             };
 
-            let mut wait_stream = docker.wait_container::<String>(&container_name_for_exit, None);
+            let mut wait_stream = docker.wait_container(
+                &container_name_for_exit,
+                None::<bollard::query_parameters::WaitContainerOptions>,
+            );
             if wait_stream.next().await.is_some() {
                 exit_cancel.cancel();
             }
@@ -647,7 +650,7 @@ impl TestRunner {
         let log_buffer = self.log_buffer.clone();
         let container_name = container_name.to_string();
 
-        let logs_options = bollard::container::LogsOptions::<String> {
+        let logs_options = bollard::query_parameters::LogsOptions {
             follow: true,
             stdout: true,
             stderr: true,
