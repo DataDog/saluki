@@ -9,7 +9,7 @@ use nom::{
 };
 use saluki_context::{origin::OriginTagCardinality, tags::RawTags};
 use saluki_core::data_model::event::metric::*;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use super::{helpers::*, DogStatsDCodecConfiguration, NomParserError};
 
@@ -283,19 +283,24 @@ impl<'a> Iterator for FloatIter<'a> {
     type Item = Result<f64, NomParserError<'a>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.raw_values.is_empty() {
-            return None;
-        }
+        loop {
+            if self.raw_values.is_empty() {
+                return None;
+            }
 
-        let (raw_value, tail) = split_at_delimiter(self.raw_values, b':')?;
-        self.raw_values = tail;
+            let (raw_value, tail) = split_at_delimiter(self.raw_values, b':')?;
+            self.raw_values = tail;
 
-        // SAFETY: The caller that creates `ValueIter` is responsible for ensuring that the entire byte slice is valid
-        // UTF-8.
-        let value_s = unsafe { std::str::from_utf8_unchecked(raw_value) };
-        match value_s.parse::<f64>() {
-            Ok(value) => Some(Ok(value)),
-            Err(_) => Some(Err(nom::Err::Error(Error::new(raw_value, ErrorKind::Float)))),
+            // SAFETY: The caller that creates `ValueIter` is responsible for ensuring that the entire byte slice is valid
+            // UTF-8.
+            let value_s = unsafe { std::str::from_utf8_unchecked(raw_value) };
+            match value_s.parse::<f64>() {
+                Ok(value) if value.is_finite() => return Some(Ok(value)),
+                Ok(_) => {
+                    debug!(value = value_s, "Dropping non-finite DogStatsD metric value.");
+                }
+                Err(_) => return Some(Err(nom::Err::Error(Error::new(raw_value, ErrorKind::Float)))),
+            }
         }
     }
 }
@@ -707,6 +712,25 @@ mod tests {
         assert_eq!(packet.local_data, None);
         assert_eq!(packet.external_data, None);
         assert_eq!(packet.cardinality, None);
+    }
+
+    #[test]
+    fn non_finite_metric_values_are_dropped() {
+        // Non-finite float values (NaN, ±Inf) are silently dropped at parse time with a debug log.
+        // The Datadog Agent's trace agent sends NaN gauges (e.g. encode_ms.avg) when a flush
+        // window has zero operations, producing 0.0/0.0 in Go. The parse succeeds but yields
+        // zero valid points; handle_frame then returns Ok(None) for zero-point packets.
+        let config = DogStatsDCodecConfiguration::default();
+        let cases = ["my.gauge:NaN|g", "my.gauge:inf|g", "my.gauge:-inf|g"];
+
+        for input in &cases {
+            let (_, packet) = parse_dogstatsd_metric(input.as_bytes(), &config)
+                .unwrap_or_else(|_| panic!("should parse without error: {input}"));
+            assert_eq!(
+                packet.num_points, 0,
+                "non-finite value should be dropped, leaving 0 valid points: {input}"
+            );
+        }
     }
 
     proptest! {
