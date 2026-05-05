@@ -199,8 +199,8 @@ run-benchmarks-adp:
     - if: !reference [.on_development_branch, rules, if]
   timeout: 1h
   needs:
-    - build-adp-baseline-image
-    - build-adp-comparison-image
+    - build-agent-adp-baseline-image
+    - build-agent-adp-comparison-image
   image: "${SALUKI_SMP_CI_IMAGE}"
   before_script:
     - *setup-smp-env
@@ -221,10 +221,10 @@ run-benchmarks-adp:
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job submit
       --warmup-seconds 0
-      --baseline-image ${BASELINE_ADP_IMG}
-      --comparison-image ${COMPARISON_ADP_IMG}
-      --baseline-sha ${BASELINE_ADP_SHA}
-      --comparison-sha ${COMPARISON_ADP_SHA}
+      --baseline-image ${BASELINE_AGENT_IMG}
+      --comparison-image ${COMPARISON_AGENT_IMG}
+      --baseline-sha ${BASELINE_AGENT_SHA}
+      --comparison-sha ${COMPARISON_AGENT_SHA}
       --target-config-dir ./test/smp/regression/adp/
       --submission-metadata submission_metadata
     # Wait for job to complete.
@@ -239,7 +239,7 @@ run-benchmarks-adp:
       --submission-metadata submission_metadata
       --output-path outputs
     # Post the report to the linked PR.
-    - cat outputs/report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Agent Data Plane)"
+    - cat outputs/report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Agent vs Agent+ADP, 1Hz dogstatsd)"
     # Finally, exit 1 if the job signals a regression else 0.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job result
