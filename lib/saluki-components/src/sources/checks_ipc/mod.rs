@@ -7,6 +7,7 @@ use datadog_protos::checks::{
     checks_server::{Checks, ChecksServer},
     log::LogLevel,
     metric::MetricType,
+    service_check::Status as ServiceCheckStatus,
     SendCheckPayloadRequest, SendCheckPayloadResponse,
 };
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -32,7 +33,7 @@ use tokio::select;
 use tokio::sync::mpsc;
 use tonic::transport::Server;
 use tonic::{Response, Status};
-use tracing::{debug, info, warn};
+use tracing::{debug, trace, warn};
 
 const fn default_grpc_endpoint() -> ListenAddress {
     ListenAddress::any_tcp(5105)
@@ -145,88 +146,87 @@ impl Checks for ChecksService {
     async fn send_check_payload(
         &self, request: tonic::Request<SendCheckPayloadRequest>,
     ) -> Result<Response<SendCheckPayloadResponse>, Status> {
-        // command for testing locally:
-        //
-        // DD_DATA_PLANE_CHECKS_ENABLED=true make run-adp-standalone
-        // grpcurl -d '{"payload": {"data": [{"metric": {"type": 1, "name": "my_counter", "tags": ["tag1:value1"], "points": [{"timestamp": 1234, "value": 1.0}]}}]}}' -plaintext -proto lib/protos/datadog/proto/checks/checks.proto localhost:5105 datadog.checks.Checks/SendCheckPayload
-
-        info!("Received check payload.");
+        trace!("Received check payload.");
 
         let payload = request.into_inner();
         for check_data in payload.data.into_iter().filter_map(|data| data.data) {
-            let event = match check_data {
-                Data::Metric(metric) => {
-                    let metric_type = match MetricType::try_from(metric.r#type) {
-                        Ok(typ) => typ,
-                        Err(_) => continue,
-                    };
-
-                    let tags = metric.tags.into_iter().map(Tag::from).collect::<TagSet>();
-                    let context = Context::from_parts(metric.name, tags.into_shared());
-                    let metric = match metric_type {
-                        MetricType::Counter => Metric::counter(context, (metric.timestamp, metric.value)),
-                        MetricType::Gauge => Metric::gauge(context, (metric.timestamp, metric.value)),
-                        MetricType::Rate => {
-                            let interval_secs = metric.interval_secs;
-                            if interval_secs == 0 {
-                                warn!("Received rate metric from check with interval of zero. Skipping.");
-                                continue;
-                            }
-
-                            Metric::rate(
-                                context,
-                                (metric.timestamp, metric.value),
-                                Duration::from_secs(interval_secs),
-                            )
-                        }
-                        MetricType::Histogram => Metric::histogram(context, (metric.timestamp, metric.value)),
-                        MetricType::Unspecified => {
-                            warn!("Received metric with unspecified type. Skipping.");
-                            continue;
-                        }
-                    };
-
-                    Event::Metric(metric)
-                }
-                Data::Log(log) => {
-                    let status = match LogLevel::try_from(log.level) {
-                        Ok(level) => log_level_to_log_status(level),
-                        Err(_) => continue,
-                    };
-
-                    Event::Log(Log::new(log.message).with_status(status))
-                }
-                Data::Event(event) => {
-                    let tags = event.tags.into_iter().map(Tag::from).collect::<TagSet>();
-                    Event::EventD(
-                        EventD::new(event.title, event.text)
-                            .with_timestamp(event.timestamp)
-                            .with_tags(tags.into_shared()),
-                    )
-                }
-                Data::ServiceCheck(sc) => {
-                    let status = match CheckStatus::try_from(sc.status as u8) {
-                        Ok(status) => status,
-                        Err(_) => {
-                            warn!("Received service check with invalid status: {}. Skipping.", sc.status);
-                            continue;
-                        }
-                    };
-                    let tags = sc.tags.into_iter().map(Tag::from).collect::<TagSet>();
-                    Event::ServiceCheck(
-                        ServiceCheck::new(sc.name, status)
-                            .with_message(MetaString::from(sc.message))
-                            .with_tags(tags.into_shared()),
-                    )
-                }
+            let Some(event) = check_data_to_event(check_data) else {
+                continue;
             };
 
             if let Err(e) = self.events_tx.send(event).await {
-                warn!("Failed to send metric event: {:?}", e);
+                warn!("Failed to send check event: {:?}", e);
             }
         }
 
         Ok(Response::new(SendCheckPayloadResponse {}))
+    }
+}
+
+fn check_data_to_event(check_data: Data) -> Option<Event> {
+    match check_data {
+        Data::Metric(metric) => {
+            let metric_type = MetricType::try_from(metric.r#type).ok()?;
+
+            let tags = metric.tags.into_iter().map(Tag::from).collect::<TagSet>();
+            let context = Context::from_parts(metric.name, tags.into_shared());
+            let metric = match metric_type {
+                MetricType::Counter => Metric::counter(context, (metric.timestamp, metric.value)),
+                MetricType::Gauge => Metric::gauge(context, (metric.timestamp, metric.value)),
+                MetricType::Rate => {
+                    let interval_secs = metric.interval_secs;
+                    if interval_secs == 0 {
+                        warn!("Received rate metric from check with interval of zero. Skipping.");
+                        return None;
+                    }
+
+                    Metric::rate(
+                        context,
+                        (metric.timestamp, metric.value),
+                        Duration::from_secs(interval_secs),
+                    )
+                }
+                MetricType::Histogram => Metric::histogram(context, (metric.timestamp, metric.value)),
+                MetricType::Unspecified => {
+                    warn!("Received metric with unspecified type. Skipping.");
+                    return None;
+                }
+            };
+
+            Some(Event::Metric(metric))
+        }
+        Data::Log(log) => {
+            let level = LogLevel::try_from(log.level).ok()?;
+            let status = log_level_to_log_status(level);
+
+            Some(Event::Log(Log::new(log.message).with_status(status)))
+        }
+        Data::Event(event) => {
+            let tags = event.tags.into_iter().map(Tag::from).collect::<TagSet>();
+            Some(Event::EventD(
+                EventD::new(event.title, event.text)
+                    .with_timestamp(event.timestamp)
+                    .with_tags(tags.into_shared()),
+            ))
+        }
+        Data::ServiceCheck(sc) => {
+            let Some(status) = ServiceCheckStatus::try_from(sc.status)
+                .ok()
+                .and_then(service_check_status_to_check_status)
+            else {
+                warn!(
+                    "Received service check with unspecified or invalid status: {}. Skipping.",
+                    sc.status
+                );
+                return None;
+            };
+            let tags = sc.tags.into_iter().map(Tag::from).collect::<TagSet>();
+            Some(Event::ServiceCheck(
+                ServiceCheck::new(sc.name, status)
+                    .with_message(MetaString::from(sc.message))
+                    .with_tags(tags.into_shared()),
+            ))
+        }
     }
 }
 
@@ -239,5 +239,246 @@ fn log_level_to_log_status(log_level: LogLevel) -> LogStatus {
         LogLevel::Error => LogStatus::Error,
         LogLevel::Critical => LogStatus::Emergency,
         _ => LogStatus::Info,
+    }
+}
+
+fn service_check_status_to_check_status(status: ServiceCheckStatus) -> Option<CheckStatus> {
+    match status {
+        ServiceCheckStatus::Ok => Some(CheckStatus::Ok),
+        ServiceCheckStatus::Warning => Some(CheckStatus::Warning),
+        ServiceCheckStatus::Critical => Some(CheckStatus::Critical),
+        ServiceCheckStatus::Unknown => Some(CheckStatus::Unknown),
+        ServiceCheckStatus::Unspecified => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use datadog_protos::checks::{
+        check_data::Data,
+        event::Event as ProtoEvent,
+        log::Log as ProtoLog,
+        metric::{Metric as ProtoMetric, MetricType as ProtoMetricType},
+        service_check::{ServiceCheck as ProtoServiceCheck, Status as ProtoServiceCheckStatus},
+    };
+    use saluki_core::data_model::event::metric::MetricValues;
+
+    use super::*;
+
+
+    fn metric_data(r#type: i32, name: &str, value: f64, timestamp: u64, interval_secs: u64, tags: &[&str]) -> Data {
+        Data::Metric(ProtoMetric {
+            r#type,
+            name: name.to_string(),
+            value,
+            timestamp,
+            tags: tags.iter().map(|t| (*t).to_string()).collect(),
+            hostname: String::new(),
+            interval_secs,
+        })
+    }
+
+    fn log_data(level: i32, message: &str) -> Data {
+        Data::Log(ProtoLog {
+            message: message.to_string(),
+            level,
+        })
+    }
+
+    fn event_data(title: &str, text: &str, timestamp: u64, tags: &[&str]) -> Data {
+        Data::Event(ProtoEvent {
+            title: title.to_string(),
+            text: text.to_string(),
+            priority: 0,
+            hostname: String::new(),
+            tags: tags.iter().map(|t| (*t).to_string()).collect(),
+            alert_type: 0,
+            aggregation_key: String::new(),
+            source_type_name: String::new(),
+            timestamp,
+        })
+    }
+
+    fn service_check_data(status: i32, name: &str, message: &str, tags: &[&str]) -> Data {
+        Data::ServiceCheck(ProtoServiceCheck {
+            status,
+            name: name.to_string(),
+            message: message.to_string(),
+            tags: tags.iter().map(|t| (*t).to_string()).collect(),
+            hostname: String::new(),
+        })
+    }
+
+    #[test]
+    fn metric_counter_conversion() {
+        let event = check_data_to_event(metric_data(
+            ProtoMetricType::Counter as i32,
+            "my_counter",
+            1.0,
+            1234,
+            0,
+            &["tag1:value1", "tag2:value2"],
+        ))
+        .expect("counter should convert");
+
+        let Event::Metric(metric) = event else {
+            panic!("expected Metric event");
+        };
+        assert_eq!(metric.context().name().as_ref(), "my_counter");
+        assert!(metric.context().tags().has_tag("tag1:value1"));
+        assert!(metric.context().tags().has_tag("tag2:value2"));
+        assert!(matches!(metric.values(), MetricValues::Counter(_)));
+    }
+
+    #[test]
+    fn metric_gauge_conversion() {
+        let event = check_data_to_event(metric_data(
+            ProtoMetricType::Gauge as i32,
+            "my_gauge",
+            42.0,
+            1234,
+            0,
+            &[],
+        ))
+        .expect("gauge should convert");
+        let Event::Metric(metric) = event else {
+            panic!("expected Metric event");
+        };
+        assert!(matches!(metric.values(), MetricValues::Gauge(_)));
+    }
+
+    #[test]
+    fn metric_histogram_conversion() {
+        let event = check_data_to_event(metric_data(
+            ProtoMetricType::Histogram as i32,
+            "my_hist",
+            1.0,
+            1234,
+            0,
+            &[],
+        ))
+        .expect("histogram should convert");
+        let Event::Metric(metric) = event else {
+            panic!("expected Metric event");
+        };
+        assert!(matches!(metric.values(), MetricValues::Histogram(_)));
+    }
+
+    #[test]
+    fn metric_rate_conversion_uses_interval() {
+        let event = check_data_to_event(metric_data(
+            ProtoMetricType::Rate as i32,
+            "my_rate",
+            10.0,
+            1234,
+            60,
+            &[],
+        ))
+        .expect("rate should convert");
+        let Event::Metric(metric) = event else {
+            panic!("expected Metric event");
+        };
+        match metric.values() {
+            MetricValues::Rate(_, interval) => assert_eq!(*interval, Duration::from_secs(60)),
+            other => panic!("expected Rate values, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn metric_rate_with_zero_interval_is_skipped() {
+        let event = check_data_to_event(metric_data(ProtoMetricType::Rate as i32, "my_rate", 10.0, 1234, 0, &[]));
+        assert!(event.is_none(), "rate with zero interval must be skipped");
+    }
+
+    #[test]
+    fn metric_unspecified_type_is_skipped() {
+        let event = check_data_to_event(metric_data(ProtoMetricType::Unspecified as i32, "x", 1.0, 1234, 0, &[]));
+        assert!(event.is_none(), "unspecified metric type must be skipped");
+    }
+
+    #[test]
+    fn metric_unknown_type_is_skipped() {
+        // Any i32 outside the proto enum range fails MetricType::try_from.
+        let event = check_data_to_event(metric_data(99, "x", 1.0, 1234, 0, &[]));
+        assert!(event.is_none(), "unknown metric type must be skipped");
+    }
+
+    #[test]
+    fn log_unknown_level_is_skipped() {
+        // 99 is not part of the LogLevel proto enum, so try_from returns Err.
+        let event = check_data_to_event(log_data(99, "hello"));
+        assert!(event.is_none(), "unknown log level must be skipped");
+    }
+
+    #[test]
+    fn event_conversion_preserves_fields() {
+        let event = check_data_to_event(event_data("title", "body", 1234, &["env:prod", "team:foo"]))
+            .expect("event should convert");
+        let Event::EventD(ev) = event else {
+            panic!("expected EventD event");
+        };
+        assert_eq!(ev.title(), "title");
+        assert_eq!(ev.text(), "body");
+        assert_eq!(ev.timestamp(), Some(1234));
+        assert!(ev.tags().has_tag("env:prod"));
+        assert!(ev.tags().has_tag("team:foo"));
+    }
+
+    #[test]
+    fn service_check_status_mapping() {
+        let cases = [
+            (ProtoServiceCheckStatus::Ok, CheckStatus::Ok),
+            (ProtoServiceCheckStatus::Warning, CheckStatus::Warning),
+            (ProtoServiceCheckStatus::Critical, CheckStatus::Critical),
+            (ProtoServiceCheckStatus::Unknown, CheckStatus::Unknown),
+        ];
+
+        for (proto_status, expected) in cases {
+            let event = check_data_to_event(service_check_data(proto_status as i32, "n", "m", &[]))
+                .unwrap_or_else(|| panic!("status {proto_status:?} should convert"));
+            let Event::ServiceCheck(sc) = event else {
+                panic!("expected ServiceCheck event for {proto_status:?}");
+            };
+            assert_eq!(sc.status(), expected, "status {proto_status:?}");
+        }
+    }
+
+    #[test]
+    fn service_check_unspecified_status_is_skipped() {
+        let event = check_data_to_event(service_check_data(
+            ProtoServiceCheckStatus::Unspecified as i32,
+            "n",
+            "m",
+            &[],
+        ));
+        assert!(event.is_none(), "service check with unspecified status must be skipped");
+    }
+
+    #[test]
+    fn service_check_unknown_status_value_is_skipped() {
+        // 99 is outside the proto Status enum, so try_from returns Err.
+        let event = check_data_to_event(service_check_data(99, "n", "m", &[]));
+        assert!(
+            event.is_none(),
+            "service check with out-of-range status must be skipped"
+        );
+    }
+
+    #[test]
+    fn service_check_preserves_name_message_and_tags() {
+        let event = check_data_to_event(service_check_data(
+            ProtoServiceCheckStatus::Ok as i32,
+            "my.check",
+            "all good",
+            &["env:prod"],
+        ))
+        .expect("service check should convert");
+        let Event::ServiceCheck(sc) = event else {
+            panic!("expected ServiceCheck event");
+        };
+        assert_eq!(sc.name(), "my.check");
+        assert_eq!(sc.status(), CheckStatus::Ok);
+        assert_eq!(sc.message(), Some("all good"));
+        assert!(sc.tags().has_tag("env:prod"));
     }
 }
