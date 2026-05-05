@@ -44,10 +44,15 @@ const fn default_connect_retry_attempts() -> usize {
     10
 }
 
+const fn default_grpc_max_message_size() -> usize {
+    128 * 1024 * 1024
+}
+
 const fn default_connect_retry_backoff() -> Duration {
     Duration::from_secs(2)
 }
 
+// TODO (dda-unification): This stuff should really move to a separate crate or `agent-data-plane` since it's very very specific to the Datadog Agent.
 #[derive(Deserialize)]
 struct RemoteAgentClientConfiguration {
     /// Datadog Agent IPC endpoint to connect to.
@@ -93,6 +98,15 @@ struct RemoteAgentClientConfiguration {
     /// Defaults to 2 seconds.
     #[serde(default = "default_connect_retry_backoff")]
     connect_retry_backoff: Duration,
+
+    /// Maximum message size for gRPC messages.
+    ///
+    /// Defaults to `128 * 1024 * 1024` (4MB).
+    #[serde(
+        rename = "agent_ipc_grpc_max_message_size",
+        default = "default_grpc_max_message_size"
+    )]
+    grpc_max_message_size: usize,
 }
 
 impl BackoffBuilder for &RemoteAgentClientConfiguration {
@@ -170,8 +184,8 @@ impl RemoteAgentClient {
             .await
             .error_context("Failed to create Datadog Agent API client.")?;
 
-        let client = AgentClient::new(service.clone());
-        let mut secure_client = AgentSecureClient::new(service);
+        let client = AgentClient::new(service.clone()).max_decoding_message_size(config.grpc_max_message_size);
+        let mut secure_client = AgentSecureClient::new(service).max_decoding_message_size(config.grpc_max_message_size);
 
         // Try and do a basic health check to make sure we can connect and that our authentication token is valid.
         try_query_agent_api(&mut secure_client).await?;
