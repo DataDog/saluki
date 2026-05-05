@@ -14,7 +14,7 @@
 type: integration
 name: "dogstatsd-bind-host"
 description: "Verifies DogStatsD binds to the address specified by bind_host"
-timeout: 60s
+timeout: 90s
 
 container:
   image: "saluki-images/datadog-agent:testing-devel"

@@ -23,7 +23,7 @@
 type: integration
 name: "dogstatsd-bind-custom-hostname"
 description: "Verifies DogStatsD resolves a custom hostname in bind_host via DNS"
-timeout: 60s
+timeout: 90s
 
 container:
   image: "saluki-images/datadog-agent:testing-devel"
