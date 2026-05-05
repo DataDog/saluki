@@ -1,4 +1,0 @@
-ottl_transform_config:
-  error_mode: ignore
-  trace_statements:
-  - set(attributes["test_attr"], "test-val")
