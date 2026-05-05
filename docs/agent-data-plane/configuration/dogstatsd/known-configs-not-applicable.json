@@ -1634,6 +1634,7 @@
   "python3_linter_timeout",
   "python_lazy_loading",
   "remote_agent.configstream.enabled",
+  "remote_agent.configstream.consumer.enabled",
   "remote_agent.configstream.sleep_interval",
   "remote_agent.registry.enabled",
   "remote_agent.registry.idle_timeout",
