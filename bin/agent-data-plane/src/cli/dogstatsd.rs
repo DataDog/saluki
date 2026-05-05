@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use argh::{FromArgValue, FromArgs};
 use comfy_table::{presets::ASCII_FULL_CONDENSED, Cell, ContentArrangement, Row, Table};
 use saluki_components::sources::{DogStatsDConfiguration, DogStatsDReplayInjector, TrafficCaptureReader};
-use saluki_config::GenericConfiguration;
+use saluki_config::{DurationString, GenericConfiguration};
 use saluki_error::{ErrorContext as _, GenericError};
 use serde::Deserialize;
 use tokio::io::{self, AsyncWriteExt};
@@ -52,8 +52,10 @@ struct StatsCommand {
     limit: Option<usize>,
 }
 
-fn default_capture_duration() -> String {
-    "1m0s".to_string()
+fn default_capture_duration() -> DurationString {
+    "1m0s"
+        .parse()
+        .expect("default DogStatsD capture duration must be valid")
 }
 
 const fn default_replay_loops() -> usize {
@@ -66,7 +68,7 @@ const fn default_replay_loops() -> usize {
 struct CaptureCommand {
     /// how long the traffic capture should run for, using Go-style duration syntax such as `10s` or `1m0s`
     #[argh(option, short = 'd', long = "duration", default = "default_capture_duration()")]
-    capture_duration: String,
+    capture_duration: DurationString,
 
     /// directory path to write the capture into
     #[argh(option, short = 'p', long = "path")]
@@ -232,7 +234,11 @@ async fn handle_dogstatsd_capture(
     println!("Starting a dogstatsd traffic capture session...\n");
 
     let capture_path = api_client
-        .dogstatsd_capture(&cmd.capture_duration, cmd.capture_path.as_deref(), cmd.compressed)
+        .dogstatsd_capture(
+            &cmd.capture_duration.to_string(),
+            cmd.capture_path.as_deref(),
+            cmd.compressed,
+        )
         .await?;
 
     println!("Capture started, capture file being written to: {capture_path}");
@@ -462,7 +468,10 @@ mod tests {
 
     #[test]
     fn dogstatsd_capture_default_duration_matches_go() {
-        assert_eq!(default_capture_duration(), "1m0s");
+        assert_eq!(
+            default_capture_duration().as_duration(),
+            std::time::Duration::from_secs(60)
+        );
     }
 
     #[test]
