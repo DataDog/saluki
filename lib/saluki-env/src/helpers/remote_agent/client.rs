@@ -101,7 +101,7 @@ struct RemoteAgentClientConfiguration {
 
     /// Maximum message size for gRPC messages.
     ///
-    /// Defaults to `128 * 1024 * 1024` (4MB).
+    /// Defaults to `128 * 1024 * 1024` (128MB).
     #[serde(
         rename = "agent_ipc_grpc_max_message_size",
         default = "default_grpc_max_message_size"
