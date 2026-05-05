@@ -31,6 +31,25 @@ const fn default_enable_global_limiter() -> bool {
     true
 }
 
+/// The memory mode that controls how the configured memory limit is enforced.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum MemoryMode {
+    /// Memory bounds verification is skipped, and the global memory limiter is configured with an unbounded grant
+    /// such that backpressure will never be applied. Components are free to allocate without any process-wide limit.
+    #[default]
+    Disabled,
+
+    /// Memory bounds are verified against the configured (or detected) memory limit, but the process will still start
+    /// even if the calculated bounds exceed the limit. A warning is emitted in that case. The global memory limiter
+    /// uses the configured limit.
+    Permissive,
+
+    /// Memory bounds are strictly verified against the configured (or detected) memory limit. If the calculated
+    /// bounds exceed the limit, the process fails to start. The global memory limiter uses the configured limit.
+    Strict,
+}
+
 /// Configuration for memory bounds.
 #[derive(Deserialize)]
 pub struct MemoryBoundsConfiguration {
@@ -64,6 +83,14 @@ pub struct MemoryBoundsConfiguration {
     /// Defaults to `true`.
     #[serde(default = "default_enable_global_limiter")]
     enable_global_limiter: bool,
+
+    /// The memory mode to use when reconciling the calculated memory bounds against the configured memory limit.
+    ///
+    /// See [`MemoryMode`] for the available modes and their behavior.
+    ///
+    /// Defaults to [`MemoryMode::Disabled`].
+    #[serde(default)]
+    memory_mode: MemoryMode,
 }
 
 impl MemoryBoundsConfiguration {
@@ -111,60 +138,97 @@ impl MemoryBoundsConfiguration {
     }
 }
 
-/// Initializes the memory bounds system and verifies any configured bounds.
+/// Initializes the memory bounds system and verifies any configured bounds based on the configured memory mode.
 ///
-/// If no memory limit is configured, or if the populated memory bounds fit within the configured memory limit,
-/// `Ok(MemoryLimiter)` is returned. The memory limiter can be used as a global limiter for the process, allowing
-/// callers to cooperatively participate in staying within the configured memory bounds by blocking when used memory
-/// exceeds the configured limit, until it returns below the limit. The limiter uses the effective memory limit, based
-/// on the configured slop factor.
+/// The behavior is dictated by [`MemoryBoundsConfiguration::memory_mode`]:
+///
+/// - [`MemoryMode::Disabled`]: bounds are not verified, and the global memory limiter is configured with an
+///   unbounded grant so it never applies backpressure.
+/// - [`MemoryMode::Permissive`]: bounds are verified against the configured limit, but exceeding the limit only
+///   emits a warning. The configured limit is used to drive the global memory limiter.
+/// - [`MemoryMode::Strict`]: bounds are strictly verified, and the process fails to start if they exceed the
+///   configured limit. The configured limit is used to drive the global memory limiter.
+///
+/// If no memory limit is configured, no verification is performed and a no-op global memory limiter is returned,
+/// regardless of the configured mode (except for [`MemoryMode::Disabled`], where an unbounded limiter is still
+/// returned when the global limiter is enabled).
 ///
 /// # Errors
 ///
-/// If the bounds could not be validated, an error is returned.
+/// If the bounds could not be validated under [`MemoryMode::Strict`], or if the configured grant is invalid, an
+/// error is returned.
 pub fn initialize_memory_bounds(
     configuration: MemoryBoundsConfiguration, component_registry: ComponentRegistryHandle,
 ) -> Result<MemoryLimiter, GenericError> {
-    let initial_grant = match configuration.memory_limit {
-        Some(limit) => MemoryGrant::with_slop_factor(limit.as_u64() as usize, configuration.memory_slop_factor)?,
-        None => {
-            info!("No memory limit set for the process. Skipping memory bounds verification.");
-            return Ok(MemoryLimiter::noop());
+    let configured_grant = configuration
+        .memory_limit
+        .map(|limit| MemoryGrant::with_slop_factor(limit.as_u64() as usize, configuration.memory_slop_factor))
+        .transpose()?;
+
+    let limiter_grant = match configuration.memory_mode {
+        MemoryMode::Disabled => {
+            info!("Memory limiting disabled.");
+            Some(MemoryGrant::unbounded())
         }
+        mode @ (MemoryMode::Permissive | MemoryMode::Strict) => match configured_grant {
+            Some(grant) => {
+                verify_bounds_for_mode(mode, grant, &component_registry)?;
+                Some(grant)
+            }
+            None => {
+                info!("No memory limit set for the process. Skipping memory bounds verification.");
+                None
+            }
+        },
     };
 
-    let verified_bounds = match component_registry.verify_bounds(initial_grant) {
-        Ok(verified_bounds) => verified_bounds,
-        Err(e) => {
-            error!("Failed to verify memory bounds: {}.", e);
+    let limiter = match limiter_grant {
+        Some(grant) if configuration.enable_global_limiter => MemoryLimiter::new(grant)
+            .ok_or_else(|| generic_error!("Memory statistics cannot be gathered on this system."))?,
+        _ => MemoryLimiter::noop(),
+    };
 
+    Ok(limiter)
+}
+
+fn verify_bounds_for_mode(
+    mode: MemoryMode, initial_grant: MemoryGrant, component_registry: &ComponentRegistryHandle,
+) -> Result<(), GenericError> {
+    match component_registry.verify_bounds(initial_grant) {
+        Ok(verified_bounds) => {
+            info!(
+				"Verified memory bounds. Minimum memory requirement of {}, with a calculated firm memory bound of {} out of {} available, from an initial {} grant.",
+				bytes_to_si_string(verified_bounds.total_minimum_required_bytes()),
+				bytes_to_si_string(verified_bounds.total_firm_limit_bytes()),
+				bytes_to_si_string(verified_bounds.total_available_bytes()),
+				bytes_to_si_string(initial_grant.initial_limit_bytes()),
+			);
+
+            print_bounds(verified_bounds.bounds());
+            Ok(())
+        }
+        Err(e) => {
             let bounds = component_registry.as_bounds();
             print_bounds(&bounds);
 
-            return Err(generic_error!(
-                "Configured memory limit is insufficient for the current configuration."
-            ));
+            match mode {
+                MemoryMode::Strict => {
+                    error!("Failed to verify memory bounds: {}.", e);
+                    Err(generic_error!(
+                        "Configured memory limit is insufficient for the current configuration."
+                    ))
+                }
+                MemoryMode::Permissive => {
+                    warn!(
+                        "Configured memory limit ({}) may be insufficient for the current configuration. Memory limiting behavior will be best effort. Continuing.",
+                        bytes_to_si_string(initial_grant.initial_limit_bytes()),
+                    );
+                    Ok(())
+                }
+                MemoryMode::Disabled => unreachable!("verify_bounds_for_mode is never called with Disabled mode"),
+            }
         }
-    };
-
-    let limiter = if configuration.enable_global_limiter {
-        MemoryLimiter::new(initial_grant)
-            .ok_or_else(|| generic_error!("Memory statistics cannot be gathered on this system."))
-    } else {
-        Ok(MemoryLimiter::noop())
-    }?;
-
-    info!(
-		"Verified memory bounds. Minimum memory requirement of {}, with a calculated firm memory bound of {} out of {} available, from an initial {} grant.",
-		bytes_to_si_string(verified_bounds.total_minimum_required_bytes()),
-		bytes_to_si_string(verified_bounds.total_firm_limit_bytes()),
-		bytes_to_si_string(verified_bounds.total_available_bytes()),
-		bytes_to_si_string(initial_grant.initial_limit_bytes()),
-	);
-
-    print_bounds(verified_bounds.bounds());
-
-    Ok(limiter)
+    }
 }
 
 fn print_bounds(bounds: &ComponentBounds) {
