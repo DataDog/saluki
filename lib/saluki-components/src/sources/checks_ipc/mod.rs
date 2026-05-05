@@ -42,7 +42,7 @@ const fn default_grpc_endpoint() -> ListenAddress {
 /// Checks IPC source.
 #[derive(Debug, Deserialize)]
 pub struct ChecksIPCConfiguration {
-    #[serde(default = "default_grpc_endpoint")]
+    #[serde(rename = "checks_ipc_endpoint", default = "default_grpc_endpoint")]
     grpc_endpoint: ListenAddress,
 }
 
@@ -264,7 +264,6 @@ mod tests {
     use saluki_core::data_model::event::metric::MetricValues;
 
     use super::*;
-
 
     fn metric_data(r#type: i32, name: &str, value: f64, timestamp: u64, interval_secs: u64, tags: &[&str]) -> Data {
         Data::Metric(ProtoMetric {
