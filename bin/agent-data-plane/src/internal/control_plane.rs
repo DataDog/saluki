@@ -1,4 +1,4 @@
-use std::{path::PathBuf, time::Duration};
+use std::path::PathBuf;
 
 use async_trait::async_trait;
 use datadog_protos::agent::{
@@ -30,7 +30,7 @@ use saluki_components::{
     destinations::DogStatsDStatisticsConfiguration,
     sources::{DogStatsDCaptureControl, DogStatsDReplayState},
 };
-use saluki_config::GenericConfiguration;
+use saluki_config::{parse_duration, GenericConfiguration};
 use saluki_core::{
     health::HealthRegistry,
     runtime::{
@@ -118,7 +118,7 @@ impl AgentSecure for DogStatsDCaptureApi {
         &self, request: Request<CaptureTriggerRequest>,
     ) -> Result<Response<CaptureTriggerResponse>, Status> {
         let request = request.into_inner();
-        let duration = parse_go_duration(&request.duration).map_err(Status::invalid_argument)?;
+        let duration = parse_duration(&request.duration).map_err(|e| Status::invalid_argument(e.to_string()))?;
         let requested_dir = (!request.path.is_empty()).then(|| std::path::Path::new(&request.path));
 
         let capture_path = self
@@ -229,111 +229,6 @@ impl AgentSecure for DogStatsDCaptureApi {
             "StreamConfigEvents is not implemented by the Agent Data Plane.",
         ))
     }
-}
-
-fn parse_go_duration(value: &str) -> Result<Duration, String> {
-    let value = value.trim();
-    if value.is_empty() {
-        return Err("duration string cannot be empty".to_string());
-    }
-
-    let value = value.replace(['µ', 'μ'], "u");
-    let mut chars = value.chars().peekable();
-    let mut total_nanos = 0_u128;
-    let mut saw_component = false;
-
-    while chars.peek().is_some() {
-        let mut number = String::new();
-        let mut saw_decimal = false;
-
-        while let Some(ch) = chars.peek().copied() {
-            if ch.is_ascii_digit() {
-                number.push(ch);
-                chars.next();
-            } else if ch == '.' && !saw_decimal {
-                saw_decimal = true;
-                number.push(ch);
-                chars.next();
-            } else {
-                break;
-            }
-        }
-
-        if number.is_empty() {
-            return Err(format!("expected duration number in '{}'", value));
-        }
-
-        let mut unit = String::new();
-        while let Some(ch) = chars.peek().copied() {
-            if ch.is_ascii_alphabetic() {
-                unit.push(ch);
-                chars.next();
-            } else {
-                break;
-            }
-        }
-
-        if unit.is_empty() {
-            return Err(format!("missing duration unit after '{}'", number));
-        }
-
-        total_nanos = total_nanos
-            .checked_add(parse_duration_component_nanos(&number, &unit)?)
-            .ok_or_else(|| format!("duration '{}' is too large", value))?;
-        saw_component = true;
-    }
-
-    if !saw_component {
-        return Err(format!("duration '{}' did not contain any components", value));
-    }
-
-    let total_nanos = u64::try_from(total_nanos).map_err(|_| format!("duration '{}' is too large", value))?;
-    Ok(Duration::from_nanos(total_nanos))
-}
-
-fn parse_duration_component_nanos(number: &str, unit: &str) -> Result<u128, String> {
-    let unit_nanos = match unit {
-        "ns" => 1,
-        "us" => 1_000,
-        "ms" => 1_000_000,
-        "s" => 1_000_000_000,
-        "m" => 60 * 1_000_000_000,
-        "h" => 60 * 60 * 1_000_000_000,
-        _ => return Err(format!("unsupported duration unit '{}'", unit)),
-    };
-
-    let (whole, fractional) = number.split_once('.').map_or((number, ""), |parts| parts);
-    let whole_nanos = if whole.is_empty() {
-        0
-    } else {
-        whole
-            .parse::<u128>()
-            .map_err(|_| format!("invalid duration number '{}'", number))?
-            .checked_mul(unit_nanos)
-            .ok_or_else(|| format!("duration component '{}' is too large", number))?
-    };
-
-    if fractional.is_empty() {
-        return Ok(whole_nanos);
-    }
-
-    let fractional_value = fractional
-        .parse::<u128>()
-        .map_err(|_| format!("invalid duration number '{}'", number))?;
-    let scale = 10_u128
-        .checked_pow(u32::try_from(fractional.len()).map_err(|_| format!("invalid duration number '{}'", number))?)
-        .ok_or_else(|| format!("duration component '{}' is too precise", number))?;
-
-    let fractional_numerator = fractional_value
-        .checked_mul(unit_nanos)
-        .ok_or_else(|| format!("duration component '{}' is too large", number))?;
-    if fractional_numerator % scale != 0 {
-        return Err(format!("duration component '{}' cannot be represented exactly", number));
-    }
-
-    whole_nanos
-        .checked_add(fractional_numerator / scale)
-        .ok_or_else(|| format!("duration component '{}' is too large", number))
 }
 
 /// A worker that serves the privileged HTTP API with TLS.
@@ -477,35 +372,13 @@ pub async fn create_control_plane_supervisor(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use datadog_protos::agent::{
         agent_secure_server::AgentSecure, CaptureTriggerRequest, Entity, EntityId as RemoteEntityId, TaggerState,
     };
     use saluki_components::sources::DogStatsDReplayState;
     use tonic::{Code, Request};
 
-    use super::{parse_go_duration, DogStatsDCaptureApi};
-
-    #[test]
-    fn parse_go_duration_supports_go_style_units() {
-        assert_eq!(parse_go_duration("10s").unwrap(), Duration::from_secs(10));
-        assert_eq!(parse_go_duration("1m0s").unwrap(), Duration::from_secs(60));
-        assert_eq!(parse_go_duration("500ms").unwrap(), Duration::from_millis(500));
-        assert_eq!(
-            parse_go_duration("1h2m3.5s").unwrap(),
-            Duration::from_secs(3723) + Duration::from_millis(500)
-        );
-        assert_eq!(parse_go_duration("250us").unwrap(), Duration::from_micros(250));
-    }
-
-    #[test]
-    fn parse_go_duration_rejects_invalid_values() {
-        assert!(parse_go_duration("").is_err());
-        assert!(parse_go_duration("abc").is_err());
-        assert!(parse_go_duration("10").is_err());
-        assert!(parse_go_duration("1xs").is_err());
-    }
+    use super::DogStatsDCaptureApi;
 
     #[tokio::test]
     async fn capture_trigger_returns_failed_precondition_when_source_is_unavailable() {
@@ -520,6 +393,21 @@ mod tests {
             .expect_err("unbound capture control should fail");
 
         assert_eq!(error.code(), Code::FailedPrecondition);
+    }
+
+    #[tokio::test]
+    async fn capture_trigger_rejects_invalid_duration_before_starting_capture() {
+        let api = DogStatsDCaptureApi::new(Default::default(), DogStatsDReplayState::new());
+        let error = api
+            .dogstatsd_capture_trigger(Request::new(CaptureTriggerRequest {
+                duration: "10".to_string(),
+                path: String::new(),
+                compressed: false,
+            }))
+            .await
+            .expect_err("unitless duration should be rejected");
+
+        assert_eq!(error.code(), Code::InvalidArgument);
     }
 
     #[tokio::test]

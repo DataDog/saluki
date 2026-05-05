@@ -152,7 +152,11 @@ fn replay_process_credentials(_captured_pid: i32) -> Result<(), GenericError> {
 
 fn replay_offset(version: u8, first_timestamp: Option<i64>, current_timestamp: i64) -> Option<Duration> {
     let first_timestamp = first_timestamp?;
-    let delta = current_timestamp.saturating_sub(first_timestamp) as u64;
+    let delta = if current_timestamp <= first_timestamp {
+        0
+    } else {
+        current_timestamp.saturating_sub(first_timestamp) as u64
+    };
 
     Some(if version < MIN_NANO_VERSION {
         Duration::from_secs(delta)
@@ -193,6 +197,15 @@ mod tests {
         let offset = replay_offset(2, Some(10), 12).expect("offset should exist");
 
         assert_eq!(offset, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn replay_offset_returns_zero_for_out_of_order_timestamps() {
+        let nanosecond_offset = replay_offset(3, Some(10), 9).expect("offset should exist");
+        let second_offset = replay_offset(2, Some(10), 9).expect("offset should exist");
+
+        assert_eq!(nanosecond_offset, Duration::ZERO);
+        assert_eq!(second_offset, Duration::ZERO);
     }
 
     #[test]
