@@ -24,31 +24,31 @@ If you find an error on this page, please [open an issue].
 The following settings are not yet supported in ADP but are planned with GitHub issue links for
 tracking.
 
-| Config Key                                   | Description                       | Issue   |
-|----------------------------------------------|-----------------------------------|---------|
-| `allow_arbitrary_tags`                       | Allow arbitrary tag values        | [#1377] |
-| `cri_connection_timeout`                     | CRI runtime connection timeout    | [#1348] |
-| `cri_query_timeout`                          | CRI runtime query timeout         | [#1348] |
-| `dogstatsd_capture_depth`                    | Traffic capture channel depth     | [#1381] |
-| `dogstatsd_capture_path`                     | Traffic capture file location     | [#1381] |
-| `dogstatsd_eol_required`                     | Require newline-terminated msgs   | [#1339] |
-| `dogstatsd_pipe_name`                        | Windows named pipe path           | [#1466] |
-| `dogstatsd_so_rcvbuf`                        | Socket receive buffer size        | [#1341] |
-| `dogstatsd_windows_pipe_security_descriptor` | Windows named pipe ACL descriptor | [#1466] |
-| `dogstatsd_stream_log_too_big`               | Log oversized stream messages     | [#1342] |
-| `forwarder_http_protocol`                    | HTTP version (auto/http1)         | [#1361] |
-| `forwarder_outdated_file_in_days`            | Retry file retention (days)       | [#1360] |
-| `log_format_rfc3339`                         | Use RFC3339 timestamp format      | [#1373] |
-| `min_tls_version`                            | Minimum TLS version for HTTPS     | [#1370] |
-| `observability_pipelines_worker.metrics.enabled` | Route metrics to OPW instance | [#1586] |
-| `observability_pipelines_worker.metrics.url` | OPW metrics intake URL            | [#1586] |
-| `serializer_experimental_use_v3_api.*`       | V3 metrics API migration flags    | [#1468] |
-| `sslkeylogfile`                              | TLS key log file path             | [#1372] |
-| `statsd_forward_host`                        | Host for packet forwarding        | [#1476] |
-| `statsd_forward_port`                        | Port for packet forwarding        | [#1476] |
-| `tls_handshake_timeout`                      | HTTP TLS handshake timeout        | [#178]  |
-| `vector.metrics.enabled`                    | Route metrics to OPW (legacy alias) | [#1586] |
-| `vector.metrics.url`                        | OPW metrics intake URL (legacy alias) | [#1586] |
+| Config Key                                       | Description                           | Issue   |
+| ------------------------------------------------ | ------------------------------------- | ------- |
+| `allow_arbitrary_tags`                           | Allow arbitrary tag values            | [#1377] |
+| `cri_connection_timeout`                         | CRI runtime connection timeout        | [#1348] |
+| `cri_query_timeout`                              | CRI runtime query timeout             | [#1348] |
+| `dogstatsd_capture_depth`                        | Traffic capture channel depth         | [#1381] |
+| `dogstatsd_capture_path`                         | Traffic capture file location         | [#1381] |
+| `dogstatsd_eol_required`                         | Require newline-terminated msgs       | [#1339] |
+| `dogstatsd_pipe_name`                            | Windows named pipe path               | [#1466] |
+| `dogstatsd_so_rcvbuf`                            | Socket receive buffer size            | [#1341] |
+| `dogstatsd_windows_pipe_security_descriptor`     | Windows named pipe ACL descriptor     | [#1466] |
+| `dogstatsd_stream_log_too_big`                   | Log oversized stream messages         | [#1342] |
+| `forwarder_http_protocol`                        | HTTP version (auto/http1)             | [#1361] |
+| `forwarder_outdated_file_in_days`                | Retry file retention (days)           | [#1360] |
+| `log_format_rfc3339`                             | Use RFC3339 timestamp format          | [#1373] |
+| `min_tls_version`                                | Minimum TLS version for HTTPS         | [#1370] |
+| `observability_pipelines_worker.metrics.enabled` | Route metrics to OPW instance         | [#1586] |
+| `observability_pipelines_worker.metrics.url`     | OPW metrics intake URL                | [#1586] |
+| `serializer_experimental_use_v3_api.*`           | V3 metrics API migration flags        | [#1468] |
+| `sslkeylogfile`                                  | TLS key log file path                 | [#1372] |
+| `statsd_forward_host`                            | Host for packet forwarding            | [#1476] |
+| `statsd_forward_port`                            | Port for packet forwarding            | [#1476] |
+| `tls_handshake_timeout`                          | HTTP TLS handshake timeout            | [#178]  |
+| `vector.metrics.enabled`                         | Route metrics to OPW (legacy alias)   | [#1586] |
+| `vector.metrics.url`                             | OPW metrics intake URL (legacy alias) | [#1586] |
 
 <!-- section:unsupported-not-planned -->
 ### Not Planned
@@ -57,7 +57,7 @@ The following settings exist in the core agent but are not planned for ADP, typi
 architecture is fundamentally different or the feature is platform-specific.
 
 | Config Key                                     | Description                    | Reason                                                       |
-|------------------------------------------------|--------------------------------|--------------------------------------------------------------|
+| ---------------------------------------------- | ------------------------------ | ------------------------------------------------------------ |
 | `dogstatsd_mem_based_rate_limiter.enabled`     | Enable memory rate limiter     | Go GC specific; use `memory_limit`                           |
 | `dogstatsd_no_aggregation_pipeline_batch_size` | No-agg pipeline batch size     | Fixed in ADP topology                                        |
 | `dogstatsd_packet_buffer_flush_timeout`        | Packet buffer flush timeout    | ADP decodes inline                                           |
@@ -76,19 +76,19 @@ architecture is fundamentally different or the feature is platform-specific.
 The following settings are recognized by both ADP and the core agent, but with different behavior or
 default values.
 
-| Config Key                           | Description                      | Agent Behavior            | ADP Behavior                             |
-|--------------------------------------|----------------------------------|---------------------------|------------------------------------------|
-| `dogstatsd_context_expiry_seconds`   | Context cache TTL (seconds)      | Default 20s, configurable | Hardcodes 30s ([#1340])                  |
-| `dogstatsd_metrics_stats_enable`     | Enable per-metric debug stats    | Config toggle             | Gates debug log; stats API on-demand ([#1352], [#1356]) |
-| `dogstatsd_stats_enable`             | Enable internal stats endpoint   | Config toggle             | On-demand via API ([#1352])              |
-| `dogstatsd_stats_buffer`             | Internal stats buffer size       | Configurable              | On-demand via API ([#1352])              |
-| `dogstatsd_stats_port`               | Internal stats endpoint port     | Configurable port         | On-demand via API ([#1352])              |
-| `log_level`                           | Log verbosity directives         | Controls Agent logs       | Plain levels control ADP/Saluki-owned targets only |
-| `logging_frequency`                   | Transaction success log interval | Throttles success logs    | Intentionally unused                     |
-| `serializer_zstd_compressor_level`   | Zstd compression level           | Default level 1           | Default level 3 (intentional)            |
-| `skip_ssl_validation`                 | Skip TLS cert validation         | Disables validation for outbound HTTPS clients | Applies to the shared Datadog forwarder; rejected in FIPS mode |
-| `statsd_metric_namespace_blacklist`  | Prefixes exempt from namespace   | `_blacklist` key          | Use `_blocklist` key ([#1353])           |
-| `telemetry.enabled`                  | Global telemetry toggle          | Agent toggle              | Use `data_plane.telemetry_enabled` ([#1338]) |
+| Config Key                          | Description                      | Agent Behavior                                 | ADP Behavior                                                   |
+| ----------------------------------- | -------------------------------- | ---------------------------------------------- | -------------------------------------------------------------- |
+| `dogstatsd_context_expiry_seconds`  | Context cache TTL (seconds)      | Default 20s, configurable                      | Hardcodes 30s ([#1340])                                        |
+| `dogstatsd_metrics_stats_enable`    | Enable per-metric debug stats    | Config toggle                                  | Gates debug log; stats API on-demand ([#1352], [#1356])        |
+| `dogstatsd_stats_enable`            | Enable internal stats endpoint   | Config toggle                                  | On-demand via API ([#1352])                                    |
+| `dogstatsd_stats_buffer`            | Internal stats buffer size       | Configurable                                   | On-demand via API ([#1352])                                    |
+| `dogstatsd_stats_port`              | Internal stats endpoint port     | Configurable port                              | On-demand via API ([#1352])                                    |
+| `log_level`                         | Log verbosity directives         | Controls Agent logs                            | Plain levels control ADP/Saluki-owned targets only             |
+| `logging_frequency`                 | Transaction success log interval | Throttles success logs                         | Intentionally unused                                           |
+| `serializer_zstd_compressor_level`  | Zstd compression level           | Default level 1                                | Default level 3 (intentional)                                  |
+| `skip_ssl_validation`               | Skip TLS cert validation         | Disables validation for outbound HTTPS clients | Applies to the shared Datadog forwarder; rejected in FIPS mode |
+| `statsd_metric_namespace_blacklist` | Prefixes exempt from namespace   | `_blacklist` key                               | Use `_blocklist` key ([#1353])                                 |
+| `telemetry.enabled`                 | Global telemetry toggle          | Agent toggle                                   | Use `data_plane.telemetry_enabled` ([#1338])                   |
 
 ### Datadog intake TLS validation (`skip_ssl_validation`)
 
@@ -178,12 +178,12 @@ forwarding, and it does not replace the on-demand `/dogstatsd/stats` API.
 
 Use these settings to control the file:
 
-| Config Key                       | Behavior |
-|----------------------------------|----------|
-| `dogstatsd_log_file`             | Output path. If empty, ADP uses the platform default DogStatsD stats log path. |
-| `dogstatsd_log_file_max_rolls`   | Number of rotated files to keep. Defaults to `3`. |
-| `dogstatsd_log_file_max_size`    | Maximum active file size before rotation. Defaults to `10Mb`. |
-| `dogstatsd_logging_enabled`      | Controls whether ADP wires the debug log destination into the topology. Defaults to `true`. |
+| Config Key                     | Behavior                                                                                    |
+| ------------------------------ | ------------------------------------------------------------------------------------------- |
+| `dogstatsd_log_file`           | Output path. If empty, ADP uses the platform default DogStatsD stats log path.              |
+| `dogstatsd_log_file_max_rolls` | Number of rotated files to keep. Defaults to `3`.                                           |
+| `dogstatsd_log_file_max_size`  | Maximum active file size before rotation. Defaults to `10Mb`.                               |
+| `dogstatsd_logging_enabled`    | Controls whether ADP wires the debug log destination into the topology. Defaults to `true`. |
 
 The default `dogstatsd_log_file` path is
 `/var/log/datadog/dogstatsd_info/dogstatsd-stats.log` on Linux and other Unix platforms,
@@ -209,7 +209,7 @@ The following settings need further investigation. ADP behavior may differ from 
 ways that are not yet fully characterized.
 
 | Config Key                                         | Description                      | Issue   |
-|----------------------------------------------------|----------------------------------|---------|
+| -------------------------------------------------- | -------------------------------- | ------- |
 | `dogstatsd_disable_verbose_logs`                   | Suppress noisy parse error logs  |         |
 | `forwarder_apikey_validation_interval`             | API key check interval (mins)    |         |
 | `forwarder_flush_to_disk_mem_ratio`                | Mem-to-disk flush threshold      |         |
@@ -233,7 +233,7 @@ ways that are not yet fully characterized.
 The following settings are specific to ADP and have no equivalent in the core agent.
 
 | Config Key                                  | Description                      | Default |
-|---------------------------------------------|----------------------------------|---------|
+| ------------------------------------------- | -------------------------------- | ------- |
 | `agent_ipc_endpoint`                        | Remote agent IPC URI             |         |
 | `aggregate_flush_interval`                  | Aggregator flush period          |         |
 | `aggregate_flush_open_windows`              | Flush open windows on stop       |         |
@@ -302,7 +302,7 @@ while syslog logging is enabled, ADP uses the platform default local syslog sock
 when the receiving syslog daemon expects the Agent's RFC-style header.
 
 | Config Key                                | Description                      |
-|-------------------------------------------|----------------------------------|
+| ----------------------------------------- | -------------------------------- |
 | `additional_endpoints`                    | Dual-ship to extra endpoints     |
 | `aggregate_context_limit`                 | Max contexts per agg window      |
 | `api_key`                                 | API key for endpoint auth        |
