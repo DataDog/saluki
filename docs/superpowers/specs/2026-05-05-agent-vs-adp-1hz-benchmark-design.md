@@ -188,7 +188,7 @@ Three classes of change:
 
    ```yaml
    # https://github.com/DataDog/datadog-agent/pull/49676/changes/15f1e04a4d7b07854ae372d50350af0889c25582
-   - export AGENT_IMG=docker.io/datadog/agent-dev:15f1e04a-py3-jmx
+   - export AGENT_IMG=docker.io/datadog/agent-dev:luke-configurable-aggregation-15f1e04a-full
    ```
 
    Defined inline in each job that needs it (matches reference PR's `STEPHEN_AGENT_IMG` pattern) — not added globally to `.setup-smp-env` since not all jobs need it.

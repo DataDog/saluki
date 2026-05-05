@@ -712,7 +712,7 @@ build-agent-adp-baseline-image:
     - ./test/smp/configure-smp-aws-credentials.sh
     # See https://github.com/DataDog/datadog-agent/pull/49676/changes/15f1e04a4d7b07854ae372d50350af0889c25582
     - export AGENT_SHA=15f1e04a
-    - export AGENT_IMG=docker.io/datadog/agent-dev:15f1e04a-py3-jmx
+    - export AGENT_IMG=docker.io/datadog/agent-dev:luke-configurable-aggregation-15f1e04a-full
     - export AGENT_ADP_IMG_BASE="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:agent-adp-${CI_PIPELINE_ID}"
     - export BASELINE_AGENT_IMG="${AGENT_ADP_IMG_BASE}-baseline-${AGENT_SHA}"
     - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
@@ -743,7 +743,7 @@ build-agent-adp-comparison-image:
   script:
     - ./test/smp/configure-smp-aws-credentials.sh
     # See https://github.com/DataDog/datadog-agent/pull/49676/changes/15f1e04a4d7b07854ae372d50350af0889c25582
-    - export AGENT_IMG=docker.io/datadog/agent-dev:15f1e04a-py3-jmx
+    - export AGENT_IMG=docker.io/datadog/agent-dev:luke-configurable-aggregation-15f1e04a-full
     - export AGENT_ADP_IMG_BASE="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:agent-adp-${CI_PIPELINE_ID}"
     - export COMPARISON_AGENT_SHA=${CI_COMMIT_SHA}
     - export COMPARISON_AGENT_IMG="${AGENT_ADP_IMG_BASE}-comparison-${COMPARISON_AGENT_SHA}"
@@ -803,7 +803,7 @@ git add .gitlab/benchmark.yml
 git commit -m "ci(benchmark): add Agent+ADP image build jobs for SMP comparison
 
 build-agent-adp-baseline-image retags the upstream Datadog Agent dev
-image (15f1e04a-py3-jmx, from datadog-agent#49676) as the SMP baseline.
+image (luke-configurable-aggregation-15f1e04a-full, from datadog-agent#49676) as the SMP baseline.
 build-agent-adp-comparison-image builds Dockerfile.datadog-agent on top
 of the comparison ADP image with all DD_DATA_PLANE_* knobs set to drive
 non-standalone, config-stream-driven mode.
@@ -1024,6 +1024,6 @@ Placeholder scan: each step shows the actual command, file content, or expected 
 
 Type/name consistency:
 - `BASELINE_AGENT_IMG` / `COMPARISON_AGENT_IMG` / `BASELINE_AGENT_SHA` / `COMPARISON_AGENT_SHA` used identically in Tasks 7 and 8. ✓
-- `AGENT_IMG=docker.io/datadog/agent-dev:15f1e04a-py3-jmx` matches in both build-agent-adp-* jobs and the spec. ✓
+- `AGENT_IMG=docker.io/datadog/agent-dev:luke-configurable-aggregation-15f1e04a-full` matches in both build-agent-adp-* jobs and the spec. ✓
 - `dogstatsd_socket: '/tmp/dsd.socket'` (Task 3) matches `path: "/tmp/dsd.socket"` (Task 5). ✓
 - ADP env-var set: `DD_DATA_PLANE_ENABLED`, `DD_DATA_PLANE_STANDALONE_MODE`, `DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT`, `DD_DATA_PLANE_REMOTE_AGENT_ENABLED`, `DD_DATA_PLANE_DOGSTATSD_ENABLED`, `ADP_DD_DATA_PLANE_TELEMETRY_ENABLED`, `ADP_DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR` — same seven names in Task 6 (Dockerfile ARG/ENV) and Task 7 (build args). ✓
