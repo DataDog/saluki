@@ -15,12 +15,12 @@ Use `./Makefile` to understand build commands.
 ### Checking your Work
 
 Use these commands to check your Rust work. Each command is progressively deeper. Use Level 1 when
-you are editing Rust code, then whe you think yuo are done, progress through the additional levels.
+you are editing Rust code, then whe you think you are done, progress through the additional levels.
 
 - Level 1: `cargo check --workspace && cargo check --workspace --tests`: At first this may be
   specialized to the `--bin` or `--lib` you are working on, but run it on the whole workspace before
   moving on to the next level.
-  - Run the locally relevant tests using `cargo test`
+  - Run the locally relevant tests using `cargo nextest run`
   - Always use `make fmt` when you are done editing.
 - Level 2: `make check-all` for lint checks.
 - Level 3: `make test-all` to run all unit tests.
@@ -37,7 +37,7 @@ Check these facts against the Makefile as this is a fast-moving project.
   confusing experience for you and the user both.
 - Suite "correctness":
   - Build prerequisite containers:
-    `make build-correctness-tools-image build-datadog-agent-image build-datadog-agent-release build-adp-image`
+    `make build-correctness-tools-image build-datadog-agent-image build-datadog-agent-release`
   - Run tests: `make test-correctness` or one test case by name `make test-correctness-case CASE=dsd-mapper-blocklist`
 
 Alternatively, `panoramic` can be invoked directly, for example if the user requests certain command-line options like
