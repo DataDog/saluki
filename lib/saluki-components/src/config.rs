@@ -129,6 +129,12 @@ pub const KEY_ALIASES: &[(&str, &str)] = &[
         "otlp_config.traces.probabilistic_sampler.sampling_percentage",
         "otlp_config_traces_probabilistic_sampler_sampling_percentage",
     ),
+    // Agent IPC relates to some of the Agent's IPC configuration options.
+    //
+    // We don't use them in this crate, but we still depend on them for stuff like the environment provider, and this is
+    // the only set of key aliases we use, so I'm adding it here _for now_ until we have a better way to unify these
+    // sorts of things.
+    ("agent_ipc.grpc_max_message_size", "agent_ipc_grpc_max_message_size"),
 ];
 
 /// Remappings from environment variable names to canonical config keys.
