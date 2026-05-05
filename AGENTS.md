@@ -8,6 +8,44 @@ While the rise of agentic coding has spurred the ability for developers to produ
 and software in record time, it also poses an increased risk for eroding the security and quality
 of software projects, in addition to making them harder to maintain and debug over time.
 
+## Building and Testing
+
+Use `./Makefile` to understand build commands.
+
+### Checking your Work
+
+Use these commands to check your Rust work. Each command is progressively deeper. Use Level 1 when
+you are editing Rust code, then whe you think you are done, progress through the additional levels.
+
+- Level 1: `cargo check --workspace && cargo check --workspace --tests`: At first this may be
+  specialized to the `--bin` or `--lib` you are working on, but run it on the whole workspace before
+  moving on to the next level.
+  - Run the locally relevant tests using `cargo nextest run`
+  - Always use `make fmt` when you are done editing.
+- Level 2: `make check-all` for lint checks.
+- Level 3: `make test-all` to run all unit tests.
+
+Level 4: At the user's discretion, proceed to integration testing. There are two integration test
+suites:
+- Name "integration": test definitions at `test/integration`.
+- Name "correctness": test definitions at `test/correctness/cases`.
+- The integration harness and libraries are in `bin/correctness`.
+
+Check these facts against the Makefile as this is a fast-moving project.
+- Suite "integration": `make test-integration`. Only use `make test-integration-quick` when we know that the images(s)
+  we depend on are up-to-date with the current state of the codebase. Failure to rebuild the images can lead to a
+  confusing experience for you and the user both.
+- Suite "correctness":
+  - Build prerequisite containers:
+    `make build-correctness-tools-image build-datadog-agent-image build-datadog-agent-release`
+  - Run tests: `make test-correctness` or one test case by name `make test-correctness-case CASE=dsd-mapper-blocklist`
+
+Alternatively, `panoramic` can be invoked directly, for example if the user requests certain command-line options like
+`--no-tui`. Examples:
+- `cargo run --release --bin panoramic -- run -d test/correctness --no-tui`
+- `cargo run --release --bin panoramic -- run -d test/correctness -t test-name-1 -t test-name-2`
+- `cargo run --release --bin panoramic -- --help`
+
 ## High-level guidelines
 
 Overall, use of LLMs while working on Saluki is **absolutely fine.** This covers all aspects
