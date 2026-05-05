@@ -109,6 +109,87 @@ build-adp-comparison-image:
     reports:
       dotenv: smp-vars.env
 
+build-agent-adp-baseline-image:
+  extends: .build-common-variables
+  stage: benchmark
+  tags: ["docker-in-docker:amd64"]
+  rules:
+    - if: !reference [.on_mq_branch, rules, if]
+      when: never
+    - if: !reference [.on_development_branch, rules, if]
+  image: "${SALUKI_SMP_CI_IMAGE}"
+  needs: []
+  retry: 2
+  timeout: 15m
+  before_script:
+    - *setup-smp-env
+  script:
+    - ./test/smp/configure-smp-aws-credentials.sh
+    # See https://github.com/DataDog/datadog-agent/pull/49676/changes/15f1e04a4d7b07854ae372d50350af0889c25582
+    - export AGENT_SHA=15f1e04a
+    - export AGENT_IMG=docker.io/datadog/agent-dev:luke-configurable-aggregation-15f1e04a-full
+    - export AGENT_ADP_IMG_BASE="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:agent-adp-${CI_PIPELINE_ID}"
+    - export BASELINE_AGENT_IMG="${AGENT_ADP_IMG_BASE}-baseline-${AGENT_SHA}"
+    - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
+    - docker pull ${AGENT_IMG}
+    - docker tag ${AGENT_IMG} ${BASELINE_AGENT_IMG}
+    - docker push ${BASELINE_AGENT_IMG}
+    - echo "BASELINE_AGENT_SHA=${AGENT_SHA}" >> smp-vars.env
+    - echo "BASELINE_AGENT_IMG=${BASELINE_AGENT_IMG}" >> smp-vars.env
+  artifacts:
+    reports:
+      dotenv: smp-vars.env
+
+build-agent-adp-comparison-image:
+  extends: .build-common-variables
+  stage: benchmark
+  tags: ["docker-in-docker:amd64"]
+  rules:
+    - if: !reference [.on_mq_branch, rules, if]
+      when: never
+    - if: !reference [.on_development_branch, rules, if]
+  image: "${SALUKI_SMP_CI_IMAGE}"
+  needs:
+    - build-adp-comparison-image
+  retry: 2
+  timeout: 20m
+  before_script:
+    - *setup-smp-env
+  script:
+    - ./test/smp/configure-smp-aws-credentials.sh
+    # See https://github.com/DataDog/datadog-agent/pull/49676/changes/15f1e04a4d7b07854ae372d50350af0889c25582
+    - export AGENT_IMG=docker.io/datadog/agent-dev:luke-configurable-aggregation-15f1e04a-full
+    - export AGENT_ADP_IMG_BASE="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:agent-adp-${CI_PIPELINE_ID}"
+    - export COMPARISON_AGENT_SHA=${CI_COMMIT_SHA}
+    - export COMPARISON_AGENT_IMG="${AGENT_ADP_IMG_BASE}-comparison-${COMPARISON_AGENT_SHA}"
+    - git switch --detach ${COMPARISON_AGENT_SHA}
+    - aws ecr get-login-password --region us-west-2 --profile ${AWS_NAMED_PROFILE} | docker login --username AWS --password-stdin ${SMP_ECR_HOST}
+    - docker buildx create --name agent-adp-builder --driver docker-container --use
+    - docker buildx build
+      --file ./docker/Dockerfile.datadog-agent
+      --tag ${COMPARISON_AGENT_IMG}
+      --build-arg DD_AGENT_IMAGE=${AGENT_IMG}
+      --build-arg ADP_IMAGE=${COMPARISON_ADP_IMG}
+      --build-arg DD_DATA_PLANE_ENABLED=true
+      --build-arg DD_DATA_PLANE_STANDALONE_MODE=false
+      --build-arg DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT=true
+      --build-arg DD_DATA_PLANE_REMOTE_AGENT_ENABLED=true
+      --build-arg DD_DATA_PLANE_DOGSTATSD_ENABLED=true
+      --build-arg ADP_DD_DATA_PLANE_TELEMETRY_ENABLED=true
+      --build-arg ADP_DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR=tcp://127.0.0.1:5102
+      --label git.repository=${CI_PROJECT_NAME}
+      --label git.branch=${CI_COMMIT_REF_NAME}
+      --label git.commit=${CI_COMMIT_SHA}
+      --label ci.pipeline_id=${CI_PIPELINE_ID}
+      --label ci.job_id=${CI_JOB_ID}
+      --push
+      .
+    - echo "COMPARISON_AGENT_SHA=${COMPARISON_AGENT_SHA}" >> smp-vars.env
+    - echo "COMPARISON_AGENT_IMG=${COMPARISON_AGENT_IMG}" >> smp-vars.env
+  artifacts:
+    reports:
+      dotenv: smp-vars.env
+
 run-benchmarks-adp:
   stage: benchmark
   # Don't run benchmarks unless it's a PR, basically.
@@ -118,8 +199,8 @@ run-benchmarks-adp:
     - if: !reference [.on_development_branch, rules, if]
   timeout: 1h
   needs:
-    - build-adp-baseline-image
-    - build-adp-comparison-image
+    - build-agent-adp-baseline-image
+    - build-agent-adp-comparison-image
   image: "${SALUKI_SMP_CI_IMAGE}"
   before_script:
     - *setup-smp-env
@@ -140,10 +221,10 @@ run-benchmarks-adp:
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job submit
       --warmup-seconds 0
-      --baseline-image ${BASELINE_ADP_IMG}
-      --comparison-image ${COMPARISON_ADP_IMG}
-      --baseline-sha ${BASELINE_ADP_SHA}
-      --comparison-sha ${COMPARISON_ADP_SHA}
+      --baseline-image ${BASELINE_AGENT_IMG}
+      --comparison-image ${COMPARISON_AGENT_IMG}
+      --baseline-sha ${BASELINE_AGENT_SHA}
+      --comparison-sha ${COMPARISON_AGENT_SHA}
       --target-config-dir ./test/smp/regression/adp/
       --submission-metadata submission_metadata
     # Wait for job to complete.
@@ -158,7 +239,7 @@ run-benchmarks-adp:
       --submission-metadata submission_metadata
       --output-path outputs
     # Post the report to the linked PR.
-    - cat outputs/report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Agent Data Plane)"
+    - cat outputs/report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Agent vs Agent+ADP, 1Hz dogstatsd)"
     # Finally, exit 1 if the job signals a regression else 0.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job result
