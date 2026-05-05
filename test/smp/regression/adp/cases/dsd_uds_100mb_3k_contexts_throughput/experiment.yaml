@@ -1,6 +1,5 @@
 optimization_goal: ingress_throughput
 erratic: false
-
 target:
   name: datadog-agent
   command: /bin/entrypoint.sh
@@ -9,7 +8,6 @@ target:
   environment:
     DD_API_KEY: a0000001
     DD_HOSTNAME: smp-regression
-
   profiling_environment:
     DD_INTERNAL_PROFILING_BLOCK_PROFILE_RATE: 10000
     DD_INTERNAL_PROFILING_CPU_DURATION: 1m
@@ -24,7 +22,8 @@ target:
     DD_PROFILING_WAIT_PROFILE: true
     DD_APM_INTERNAL_PROFILING_ENABLED: true
     DD_INTERNAL_PROFILING_EXTRA_TAGS: experiment:dsd_uds_100mb_3k_contexts_throughput
-
 report_links:
-  - text: "bounds checks dashboard"
-    link: "https://app.datadoghq.com/dashboard/vz3-jd5-bdi?fromUser=true&refresh_mode=paused&tpl_var_experiment%5B0%5D={{ experiment }}&tpl_var_job_id%5B0%5D={{ job_id }}&tpl_var_run-id%5B0%5D={{ job_id }}&view=spans&from_ts={{ start_time_ms }}&to_ts={{ end_time_ms }}&live=false"
+- text: bounds checks dashboard
+  link: https://app.datadoghq.com/dashboard/vz3-jd5-bdi?fromUser=true&refresh_mode=paused&tpl_var_experiment%5B0%5D={{ experiment
+    }}&tpl_var_job_id%5B0%5D={{ job_id }}&tpl_var_run-id%5B0%5D={{ job_id }}&view=spans&from_ts={{ start_time_ms }}&to_ts={{
+    end_time_ms }}&live=false

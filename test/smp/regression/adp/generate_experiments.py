@@ -406,6 +406,20 @@ def write_experiment(
     write_target_files(target_dir, files_config, base_path)
 
 
+def substitute_experiment_name(node, experiment_name: str):
+    """Replace `${EXPERIMENT_NAME}` placeholders with the expanded experiment name.
+
+    Walks dicts and lists recursively; only string values are inspected.
+    """
+    if isinstance(node, dict):
+        return {k: substitute_experiment_name(v, experiment_name) for k, v in node.items()}
+    if isinstance(node, list):
+        return [substitute_experiment_name(item, experiment_name) for item in node]
+    if isinstance(node, str):
+        return node.replace("${EXPERIMENT_NAME}", experiment_name)
+    return node
+
+
 def generate_experiments(config: dict, output_dir: Path, base_path: Path) -> list[str]:
     """Generate all experiment files and return list of experiment names."""
     global_config = config.get("global", {})
@@ -423,6 +437,7 @@ def generate_experiments(config: dict, output_dir: Path, base_path: Path) -> lis
             resolved = copy.deepcopy(resolved_base)
             if goal is not None:
                 resolved["optimization_goal"] = goal
+            resolved = substitute_experiment_name(resolved, name)
             write_experiment(name, resolved, output_dir, base_path)
             generated.append(name)
 
