@@ -1422,6 +1422,24 @@
     "adp_key": null
   },
   {
+    "key": "observability_pipelines_worker.metrics.enabled",
+    "feature_state": "MISSING",
+    "action": "IMPLEMENT",
+    "description": "Route metrics to OPW instance",
+    "reason": "ADP does not read this key. Metrics always flow to the Datadog backend regardless of this setting.",
+    "issue": "#1586",
+    "adp_key": null
+  },
+  {
+    "key": "observability_pipelines_worker.metrics.url",
+    "feature_state": "MISSING",
+    "action": "IMPLEMENT",
+    "description": "OPW metrics intake URL",
+    "reason": "ADP does not read this key. Metrics always flow to the Datadog backend regardless of this setting.",
+    "issue": "#1586",
+    "adp_key": null
+  },
+  {
     "key": "origin_detection_unified",
     "feature_state": "PARITY",
     "action": "NONE",
@@ -1806,6 +1824,24 @@
     "description": "Proxy cloud metadata endpoints",
     "reason": "ADP honors proxy settings but does not query cloud metadata (the core agent handles that).",
     "issue": null,
+    "adp_key": null
+  },
+  {
+    "key": "vector.metrics.enabled",
+    "feature_state": "MISSING",
+    "action": "IMPLEMENT",
+    "description": "Route metrics to OPW (legacy alias)",
+    "reason": "Legacy alias for observability_pipelines_worker.metrics.enabled. ADP does not read either key.",
+    "issue": "#1586",
+    "adp_key": null
+  },
+  {
+    "key": "vector.metrics.url",
+    "feature_state": "MISSING",
+    "action": "IMPLEMENT",
+    "description": "OPW metrics intake URL (legacy alias)",
+    "reason": "Legacy alias for observability_pipelines_worker.metrics.url. ADP does not read either key.",
+    "issue": "#1586",
     "adp_key": null
   }
 ]
