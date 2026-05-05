@@ -25,7 +25,7 @@ use saluki_core::{
     components::{sources::*, ComponentContext},
     data_model::event::log::LogStatus,
 };
-use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_error::{generic_error, GenericError};
 use saluki_io::net::ListenAddress;
 use serde::Deserialize;
 use stringtheory::MetaString;
@@ -123,9 +123,8 @@ impl Source for ChecksIPC {
                         Event::ServiceCheck(_) => "service_checks",
                         _ => continue,
                     };
-                    let buffered = context.dispatcher().buffered_named(output_name)
-                        .error_context("Failed to get buffered dispatcher")?;
-                    if let Err(e) = buffered.send_all([event]).await {
+
+                    if let Err(e) = context.dispatcher().dispatch_one_named(output_name, event).await {
                         warn!("Failed to dispatch {output_name} event: {:?}", e);
                     }
                 },
