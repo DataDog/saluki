@@ -125,7 +125,10 @@ build-adp-image-internal-amd64:
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
-    - when: on_success
+    - if: !reference [.on_official_release, rules, if]
+      when: on_success
+    - when: manual
+      allow_failure: true
   variables:
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
 
@@ -135,7 +138,10 @@ build-adp-image-internal-arm64:
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
-    - when: on_success
+    - if: !reference [.on_official_release, rules, if]
+      when: on_success
+    - when: manual
+      allow_failure: true
   variables:
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
 
@@ -157,7 +163,10 @@ build-adp-image-fips-internal-amd64:
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
-    - when: on_success
+    - if: !reference [.on_official_release, rules, if]
+      when: on_success
+    - when: manual
+      allow_failure: true
   variables:
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
     BUILD_FEATURES: "fips"
@@ -168,7 +177,10 @@ build-adp-image-fips-internal-arm64:
   rules:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
-    - when: on_success
+    - if: !reference [.on_official_release, rules, if]
+      when: on_success
+    - when: manual
+      allow_failure: true
   variables:
     APP_IMAGE: ${ADP_INTERNAL_BASE_IMAGE}
     BUILD_FEATURES: "fips"
