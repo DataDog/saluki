@@ -14,11 +14,11 @@ use std::sync::LazyLock;
 
 use super::{ConfigKey, SalukiAnnotation};
 
-/// All saluki annotations across every sub-system, in registration order.
+/// Supported saluki annotations across every sub-system, in registration order.
 ///
-/// The source of truth for which config keys saluki knows about and how they are consumed.
+/// The source of truth for which config keys saluki consumes partially or fully supports.
 /// Used by the smoke test runner and runtime unknown-key detection.
-pub static ALL_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>> = LazyLock::new(|| {
+pub static SUPPORTED_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>> = LazyLock::new(|| {
     let mut v = Vec::new();
     v.extend_from_slice(aggregate::ALL);
     v.extend_from_slice(dogstatsd::ALL);
@@ -32,11 +32,11 @@ pub static ALL_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>> = LazyLock:
     v
 });
 
-/// All resolved [`ConfigKey`] entries, derived from [`ALL_ANNOTATIONS`] at first access.
+/// All resolved [`ConfigKey`] entries, derived from [`SUPPORTED_ANNOTATIONS`] at first access.
 ///
 /// Provides a flattened, owned view suitable for runtime unknown-key detection.
 pub static ALL_KEYS: LazyLock<Vec<ConfigKey>> =
-    LazyLock::new(|| ALL_ANNOTATIONS.iter().map(|a| ConfigKey::from(*a)).collect());
+    LazyLock::new(|| SUPPORTED_ANNOTATIONS.iter().map(|a| ConfigKey::from(*a)).collect());
 
 #[cfg(test)]
 mod registry_tests {
@@ -45,7 +45,7 @@ mod registry_tests {
 
     #[test]
     fn annotation_invariants() {
-        for annotation in ALL_ANNOTATIONS.iter() {
+        for annotation in SUPPORTED_ANNOTATIONS.iter() {
             let path = annotation.yaml_path();
             match annotation.support_level {
                 SupportLevel::Full | SupportLevel::Partial => {

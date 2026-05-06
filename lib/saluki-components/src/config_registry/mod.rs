@@ -12,7 +12,7 @@ pub mod datadog;
 /// Generated schema entries from the vendored Datadog Agent config schema.
 pub mod generated;
 
-pub use self::datadog::{ALL_ANNOTATIONS, ALL_KEYS};
+pub use self::datadog::{SUPPORTED_ANNOTATIONS, ALL_KEYS};
 
 /// Declares a set of [`SalukiAnnotation`] constants and generates a companion `ALL` slice.
 ///
