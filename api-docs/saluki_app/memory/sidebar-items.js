@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["initialize_memory_bounds"],"struct":["AllocationTelemetryWorker","MemoryBoundsConfiguration"]};
+window.SIDEBAR_ITEMS = {"enum":["MemoryMode"],"fn":["initialize_memory_bounds"],"struct":["AllocationTelemetryWorker","MemoryBoundsConfiguration"]};
