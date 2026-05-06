@@ -464,6 +464,7 @@ async fn run_request_builder(
                         MetricsEndpoint::Series => tag_series.then(MetricsPayloadInfo::v3_series),
                         MetricsEndpoint::Sketches => tag_sketches.then(MetricsPayloadInfo::v3_sketches),
                     };
+                    let mut carried_metric_into_next_batch = false;
                     let v3_flushed = if let Some(v3_metrics) = maybe_v3_metrics {
                         let should_flush_v3 = match endpoint_mode {
                             MetricsEncoderMode::V2Only => false,
@@ -479,6 +480,7 @@ async fn run_request_builder(
                             let split_metric = if v2_flushed { v3_metrics.pop() } else { None };
                             encode_and_flush_v3_metrics(endpoint, &v3_endpoint_config, &v3_series_endpoint_uri, v3_metrics, &telemetry, &mut payloads_tx, active_batch_id, v3_payload_info).await?;
                             if let Some(m) = split_metric {
+                                carried_metric_into_next_batch = true;
                                 v3_metrics.push(m);
                             }
                             true
@@ -489,9 +491,10 @@ async fn run_request_builder(
                         false
                     };
 
-                    // If we flushed either V2 and/or V3, clear the endpoint-local validation batch UUID.
+                    // If a V2-triggered split leaves the current metric pending in the next batch, assign that pending
+                    // V2/V3 pair a fresh validation ID. Otherwise, the next timeout flush would omit validation headers.
                     if endpoint_mode.needs_batch_id() && (v2_flushed || v3_flushed) {
-                        *batch_id = None;
+                        *batch_id = carried_metric_into_next_batch.then(Uuid::now_v7);
                     }
                 }
 
@@ -983,6 +986,8 @@ async fn create_v3_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use saluki_core::data_model::{event::Event, payload::Payload};
+    use tokio::time::timeout;
 
     #[test]
     fn deser_agent_v3_api_nested_settings() {
@@ -1028,5 +1033,79 @@ serializer_experimental_use_v3_api:
         .expect("request should be created");
 
         assert_eq!("/api/intake/metrics/custom/series", request.uri());
+    }
+
+    #[tokio::test]
+    async fn validation_split_flush_assigns_batch_id_to_carried_metric() {
+        let v2_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 1, None);
+        let v2_series_builder = Some(
+            v2::create_v2_request_builder(MetricsEndpoint::Series, &v2_endpoint_config)
+                .await
+                .expect("V2 request builder should be created"),
+        );
+        let v3_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
+        let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
+        let (events_tx, events_rx) = tokio::sync::mpsc::channel(1);
+        let (payloads_tx, mut payloads_rx) = tokio::sync::mpsc::channel(8);
+
+        let request_builder_handle = tokio::spawn(run_request_builder(
+            v2_series_builder,
+            None,
+            MetricsEncoderMode::Validation,
+            MetricsEncoderMode::V2Only,
+            v3_endpoint_config,
+            V3_SERIES_ENDPOINT_URI.to_string(),
+            telemetry,
+            events_rx,
+            payloads_tx,
+            Duration::from_millis(10),
+        ));
+
+        let mut events = EventsBuffer::default();
+        assert!(events
+            .try_push(Event::Metric(Metric::counter("validation.split.one", 1.0)))
+            .is_none());
+        assert!(events
+            .try_push(Event::Metric(Metric::counter("validation.split.two", 2.0)))
+            .is_none());
+        events_tx
+            .send(events)
+            .await
+            .expect("events should be sent to request builder");
+
+        let mut flushed_requests = Vec::new();
+        for _ in 0..4 {
+            let payload = timeout(Duration::from_secs(1), payloads_rx.recv())
+                .await
+                .expect("payload should arrive before timeout")
+                .expect("payload channel should remain open");
+            let Payload::Http(http_payload) = payload else {
+                panic!("expected HTTP payload");
+            };
+            let (_, request) = http_payload.into_parts();
+            let batch_id = request
+                .headers()
+                .get("X-Metrics-Request-ID")
+                .expect("validation batch ID header should be present")
+                .to_str()
+                .expect("validation batch ID should be valid header text")
+                .to_string();
+            flushed_requests.push((request.uri().to_string(), batch_id));
+        }
+
+        assert_eq!("/api/v2/series", flushed_requests[0].0);
+        assert_eq!(V3_SERIES_ENDPOINT_URI, flushed_requests[1].0);
+        assert_eq!("/api/v2/series", flushed_requests[2].0);
+        assert_eq!(V3_SERIES_ENDPOINT_URI, flushed_requests[3].0);
+
+        assert_eq!(flushed_requests[0].1, flushed_requests[1].1);
+        assert_eq!(flushed_requests[2].1, flushed_requests[3].1);
+        assert_ne!(flushed_requests[0].1, flushed_requests[2].1);
+
+        drop(events_tx);
+        request_builder_handle
+            .await
+            .expect("request builder task should complete")
+            .expect("request builder should stop cleanly");
     }
 }
