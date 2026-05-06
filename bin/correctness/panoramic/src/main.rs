@@ -146,7 +146,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
 
     // Spawn kind cluster setup in the background so non-kind tests start immediately.
     // Kind tests will wait on `kind_rx` before doing any work.
-    let kind_images = collect_kind_images(&test_cases);
+    let kind_images = collect_kind_images(&test_cases, cmd.tests.as_deref());
     let kind_lifecycle_slot = std::sync::Arc::new(Mutex::new(None::<KindLifecycle>));
     let kind_rx = if kind_images.is_empty() {
         None
@@ -247,10 +247,16 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
 }
 
 /// Collects the unique set of images required by all kind-runtime tests in the given list.
-fn collect_kind_images(tests: &[Box<dyn test::Test>]) -> Vec<String> {
+fn collect_kind_images(tests: &[Box<dyn test::Test>], filter: Option<&str>) -> Vec<String> {
     use std::collections::BTreeSet;
+    let names: Vec<&str> = filter
+        .map(|f| f.split(',').map(str::trim).collect())
+        .unwrap_or_default();
     let mut images = BTreeSet::new();
     for test in tests {
+        if !names.is_empty() && !names.contains(&test.name().as_str()) {
+            continue;
+        }
         if test.runtime() == "kubernetes_in_docker" {
             for (_, image) in test.images() {
                 images.insert(image);
