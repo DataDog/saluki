@@ -28,6 +28,7 @@ dependencies = [
  "colored",
  "comfy-table",
  "datadog-protos",
+ "derive-where",
  "foldhash 0.2.0",
  "futures",
  "hashbrown 0.17.0",

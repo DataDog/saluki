@@ -69,4 +69,6 @@ tikv-jemallocator = { workspace = true, features = [
 chrono = { workspace = true }
 
 [dev-dependencies]
+derive-where = { workspace = true }
+saluki-components = { workspace = true, features = ["config-test-support"] }
 saluki-metrics = { workspace = true, features = ["test"] }
