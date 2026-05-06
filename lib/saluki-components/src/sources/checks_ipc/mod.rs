@@ -167,7 +167,7 @@ fn check_data_to_event(check_data: Data) -> Option<Event> {
     // Each arm exhaustively destructures its proto message (no `..`) so adding a new field
     // upstream becomes a compile error here until it's mapped or explicitly ignored.
     match check_data {
-        Data::Metric(m) => {
+        Data::Metric(metric) => {
             let ProtoMetric {
                 r#type,
                 name,
@@ -176,7 +176,7 @@ fn check_data_to_event(check_data: Data) -> Option<Event> {
                 tags,
                 hostname,
                 interval_secs,
-            } = m;
+            } = metric;
 
             let metric_type = MetricType::try_from(r#type).ok()?;
 
