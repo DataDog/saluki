@@ -1,0 +1,29 @@
+type: integration
+name: "adp-memory-mode-permissive-exceeds-limit"
+description: "Verifies that permissive mode emits a best-effort warning when the calculated bounds exceed the configured limit, but the process still starts"
+timeout: 60s
+
+container:
+  image: "saluki-images/datadog-agent:testing-devel"
+  env:
+    DD_API_KEY: "test-api-key"
+    DD_HOSTNAME: "integration-test"
+    DD_DATA_PLANE_ENABLED: "true"
+    DD_DATA_PLANE_STANDALONE_MODE: "true"
+    DD_MEMORY_MODE: "permissive"
+    DD_MEMORY_LIMIT: "256mb"
+    # Bumped well above the default of 1,000,000 to drive the firm bound for the aggregate
+    # transform far past the configured memory limit.
+    DD_AGGREGATE_CONTEXT_LIMIT: "10000000"
+
+assertions:
+  - type: log_contains
+    pattern: "Memory limiting behavior will be best effort."
+    timeout: 15s
+  - parallel:
+      - type: process_stable_for
+        duration: 10s
+      - type: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s
