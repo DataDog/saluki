@@ -985,9 +985,10 @@ async fn create_v3_request(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use saluki_core::data_model::{event::Event, payload::Payload};
     use tokio::time::timeout;
+
+    use super::*;
 
     #[test]
     fn deser_agent_v3_api_nested_settings() {

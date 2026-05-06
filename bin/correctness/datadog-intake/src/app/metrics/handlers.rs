@@ -27,6 +27,28 @@ pub async fn handle_metrics_dump(State(state): State<MetricsState>) -> Json<Vec<
     Json(state.dump_metrics())
 }
 
+pub async fn handle_metrics_validation_status(State(state): State<MetricsState>) -> (StatusCode, String) {
+    info!("Got request to dump metrics validation status.");
+
+    let status = state.validation_status();
+    if status.is_ok() {
+        (StatusCode::OK, "ok\n".to_string())
+    } else {
+        let mut body = format!(
+            "metrics validation failed: failures={}, pending_series_batches={}, pending_sketches_batches={}\n",
+            status.failures.len(),
+            status.pending_series_batches,
+            status.pending_sketches_batches
+        );
+        for failure in status.failures {
+            body.push_str("- ");
+            body.push_str(&failure);
+            body.push('\n');
+        }
+        (StatusCode::INTERNAL_SERVER_ERROR, body)
+    }
+}
+
 pub async fn handle_series_v2(State(state): State<MetricsState>, headers: HeaderMap, body: Bytes) -> StatusCode {
     let payload = match MetricPayload::parse_from_bytes(&body[..]) {
         Ok(payload) => payload,
@@ -36,9 +58,9 @@ pub async fn handle_series_v2(State(state): State<MetricsState>, headers: Header
         }
     };
 
-    if let Some((batch_id, _seq, batch_len)) = extract_batch_info(&headers) {
-        info!(batch_id, "Received V2 series validation pair.");
-        match state.accumulate_v2_series(payload, batch_id, batch_len) {
+    if let Some((batch_id, batch_seq, batch_len)) = extract_batch_info(&headers) {
+        info!(batch_id, batch_seq, batch_len, "Received V2 series validation pair.");
+        match state.accumulate_v2_series(payload, batch_id, batch_seq, batch_len) {
             Ok(()) => StatusCode::ACCEPTED,
             Err(e) => {
                 error!(error = %e, "Failed to accumulate V2 series validation pair.");
@@ -69,9 +91,9 @@ pub async fn handle_sketch_beta(State(state): State<MetricsState>, headers: Head
         }
     };
 
-    if let Some((batch_id, _seq, batch_len)) = extract_batch_info(&headers) {
-        info!(batch_id, "Received V2 sketches validation pair.");
-        match state.accumulate_v2_sketches(payload, batch_id, batch_len) {
+    if let Some((batch_id, batch_seq, batch_len)) = extract_batch_info(&headers) {
+        info!(batch_id, batch_seq, batch_len, "Received V2 sketches validation pair.");
+        match state.accumulate_v2_sketches(payload, batch_id, batch_seq, batch_len) {
             Ok(()) => StatusCode::ACCEPTED,
             Err(e) => {
                 error!(error = %e, "Failed to accumulate V2 sketches validation pair.");
@@ -102,9 +124,9 @@ pub async fn handle_series_v3(State(state): State<MetricsState>, headers: Header
         }
     };
 
-    if let Some((batch_id, _seq, _len)) = extract_batch_info(&headers) {
-        info!(batch_id, "Received V3 series validation pair.");
-        match state.accumulate_v3_series_and_merge(payload, batch_id) {
+    if let Some((batch_id, batch_seq, batch_len)) = extract_batch_info(&headers) {
+        info!(batch_id, batch_seq, batch_len, "Received V3 series validation pair.");
+        match state.accumulate_v3_series_and_merge(payload, batch_id, batch_seq, batch_len) {
             Ok(()) => StatusCode::ACCEPTED,
             Err(e) => {
                 error!(error = %e, "Failed to accumulate V3 series validation pair.");
@@ -135,9 +157,9 @@ pub async fn handle_sketch_v3(State(state): State<MetricsState>, headers: Header
         }
     };
 
-    if let Some((batch_id, _seq, _len)) = extract_batch_info(&headers) {
-        info!(batch_id, "Received V3 sketches validation pair.");
-        match state.accumulate_v3_sketches_and_merge(payload, batch_id) {
+    if let Some((batch_id, batch_seq, batch_len)) = extract_batch_info(&headers) {
+        info!(batch_id, batch_seq, batch_len, "Received V3 sketches validation pair.");
+        match state.accumulate_v3_sketches_and_merge(payload, batch_id, batch_seq, batch_len) {
             Ok(()) => StatusCode::ACCEPTED,
             Err(e) => {
                 error!(error = %e, "Failed to accumulate V3 sketches validation pair.");
