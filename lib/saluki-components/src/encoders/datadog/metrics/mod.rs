@@ -49,6 +49,8 @@ mod v2;
 mod v3;
 
 const DEFAULT_SERIALIZER_COMPRESSOR_KIND: &str = "zstd";
+const V3_SERIES_ENDPOINT_URI: &str = "/api/intake/metrics/v3/series";
+const V3_SKETCHES_ENDPOINT_URI: &str = "/api/intake/metrics/v3/sketches";
 
 const fn default_max_metrics_per_payload() -> usize {
     10_000
@@ -156,15 +158,6 @@ pub struct DatadogMetricsConfiguration {
     /// Configures which endpoints receive V3 payloads and whether validation mode is enabled.
     #[serde(rename = "serializer_experimental_use_v3_api", default)]
     v3_api: V3ApiConfig,
-
-    /// Override compression level for V3 payloads.
-    ///
-    /// When set to a value > 0, this compression level is used specifically for V3 payloads
-    /// instead of the default `zstd_compressor_level`.
-    ///
-    /// Defaults to 0 (use default compression level).
-    #[serde(rename = "serializer_experimental_use_v3_api_compression_level", default)]
-    v3_compression_level: i32,
 }
 
 impl DatadogMetricsConfiguration {
@@ -195,10 +188,15 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
 
         let v2_compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
-        let v3_compression_scheme = if self.v3_compression_level > 0 {
-            CompressionScheme::new(&self.compressor_kind, self.v3_compression_level)
+        let v3_compression_scheme = if self.v3_api.compression_level > 0 {
+            CompressionScheme::new(&self.compressor_kind, self.v3_api.compression_level)
         } else {
             v2_compression_scheme
+        };
+        let v3_series_endpoint_uri = if self.v3_api.series.use_beta {
+            self.v3_api.series.beta_route.clone()
+        } else {
+            V3_SERIES_ENDPOINT_URI.to_string()
         };
 
         let v2_endpoint_config = EndpointConfiguration::new(
@@ -253,6 +251,7 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
             series_mode,
             sketches_mode,
             v3_endpoint_config,
+            v3_series_endpoint_uri,
             telemetry,
             flush_timeout,
         }))
@@ -289,6 +288,7 @@ pub struct DatadogMetrics {
     series_mode: MetricsEncoderMode,
     sketches_mode: MetricsEncoderMode,
     v3_endpoint_config: EndpointConfiguration,
+    v3_series_endpoint_uri: String,
     telemetry: ComponentTelemetry,
     flush_timeout: Duration,
 }
@@ -302,6 +302,7 @@ impl Encoder for DatadogMetrics {
             series_mode,
             sketches_mode,
             v3_endpoint_config,
+            v3_series_endpoint_uri,
             telemetry,
             flush_timeout,
         } = *self;
@@ -317,6 +318,7 @@ impl Encoder for DatadogMetrics {
             series_mode,
             sketches_mode,
             v3_endpoint_config,
+            v3_series_endpoint_uri,
             telemetry,
             events_rx,
             payloads_tx,
@@ -378,9 +380,9 @@ impl Encoder for DatadogMetrics {
 async fn run_request_builder(
     mut v2_series_builder: Option<RequestBuilder<v2::MetricsEndpointEncoder>>,
     mut v2_sketch_builder: Option<RequestBuilder<v2::MetricsEndpointEncoder>>, series_mode: MetricsEncoderMode,
-    sketches_mode: MetricsEncoderMode, v3_endpoint_config: EndpointConfiguration, telemetry: ComponentTelemetry,
-    mut events_rx: mpsc::Receiver<EventsBuffer>, mut payloads_tx: mpsc::Sender<PayloadsBuffer>,
-    flush_timeout: Duration,
+    sketches_mode: MetricsEncoderMode, v3_endpoint_config: EndpointConfiguration, v3_series_endpoint_uri: String,
+    telemetry: ComponentTelemetry, mut events_rx: mpsc::Receiver<EventsBuffer>,
+    mut payloads_tx: mpsc::Sender<PayloadsBuffer>, flush_timeout: Duration,
 ) -> Result<(), GenericError> {
     let mut pending_flush = false;
     let pending_flush_timeout = sleep(flush_timeout);
@@ -475,7 +477,7 @@ async fn run_request_builder(
                             // that triggered the flush is re-encoded into the next V2 batch). Pop it
                             // from V3 before flushing so both batches cover the same set of metrics.
                             let split_metric = if v2_flushed { v3_metrics.pop() } else { None };
-                            encode_and_flush_v3_metrics(endpoint, &v3_endpoint_config, v3_metrics, &telemetry, &mut payloads_tx, active_batch_id, v3_payload_info).await?;
+                            encode_and_flush_v3_metrics(endpoint, &v3_endpoint_config, &v3_series_endpoint_uri, v3_metrics, &telemetry, &mut payloads_tx, active_batch_id, v3_payload_info).await?;
                             if let Some(m) = split_metric {
                                 v3_metrics.push(m);
                             }
@@ -520,7 +522,7 @@ async fn run_request_builder(
                 let v3_series_payload_info = tag_series.then(MetricsPayloadInfo::v3_series);
                 if let Some(metrics) = &mut v3_series_metrics {
                     if v2_series_flush_succeeded {
-                        if let Err(e) = encode_and_flush_v3_series_metrics(&v3_endpoint_config, metrics, &telemetry, &mut payloads_tx, series_active_batch_id, v3_series_payload_info).await {
+                        if let Err(e) = encode_and_flush_v3_series_metrics(&v3_endpoint_config, &v3_series_endpoint_uri, metrics, &telemetry, &mut payloads_tx, series_active_batch_id, v3_series_payload_info).await {
                             error!(error = %e, "Failed to flush V3 series metrics: {}", e);
                         }
                     } else {
@@ -661,13 +663,22 @@ async fn flush_v2_metrics(
 }
 
 async fn encode_and_flush_v3_metrics(
-    endpoint: MetricsEndpoint, ep_config: &EndpointConfiguration, metrics: &mut Vec<Metric>,
+    endpoint: MetricsEndpoint, ep_config: &EndpointConfiguration, series_endpoint_uri: &str, metrics: &mut Vec<Metric>,
     telemetry: &ComponentTelemetry, payloads_tx: &mut mpsc::Sender<Payload>, batch_id: Option<&Uuid>,
     payload_info: Option<MetricsPayloadInfo>,
 ) -> Result<(), GenericError> {
     match endpoint {
         MetricsEndpoint::Series => {
-            encode_and_flush_v3_series_metrics(ep_config, metrics, telemetry, payloads_tx, batch_id, payload_info).await
+            encode_and_flush_v3_series_metrics(
+                ep_config,
+                series_endpoint_uri,
+                metrics,
+                telemetry,
+                payloads_tx,
+                batch_id,
+                payload_info,
+            )
+            .await
         }
         MetricsEndpoint::Sketches => {
             encode_and_flush_v3_sketch_metrics(ep_config, metrics, telemetry, payloads_tx, batch_id, payload_info).await
@@ -676,7 +687,7 @@ async fn encode_and_flush_v3_metrics(
 }
 
 async fn encode_and_flush_v3_series_metrics(
-    ep_config: &EndpointConfiguration, metrics: &mut Vec<Metric>, telemetry: &ComponentTelemetry,
+    ep_config: &EndpointConfiguration, endpoint_uri: &str, metrics: &mut Vec<Metric>, telemetry: &ComponentTelemetry,
     payloads_tx: &mut mpsc::Sender<Payload>, batch_id: Option<&Uuid>, payload_info: Option<MetricsPayloadInfo>,
 ) -> Result<(), GenericError> {
     if metrics.is_empty() {
@@ -686,18 +697,16 @@ async fn encode_and_flush_v3_series_metrics(
     let events = metrics_to_flush.len();
 
     match encode_v3_metrics_batch(&metrics_to_flush, ep_config.additional_tags()) {
-        Ok(encoded) => {
-            match create_v3_request("/api/intake/metrics/v3/series", encoded, ep_config.compression_scheme()).await {
-                Ok(request) => {
-                    flush_payload(request, events, payloads_tx, batch_id, 0, 1, payload_info).await?;
-                    debug!(events, "Sent V3 series payload.");
-                }
-                Err(e) => {
-                    error!(error = %e, "Failed to create V3 series request.");
-                    telemetry.events_dropped_encoder().increment(events as u64);
-                }
+        Ok(encoded) => match create_v3_request(endpoint_uri, encoded, ep_config.compression_scheme()).await {
+            Ok(request) => {
+                flush_payload(request, events, payloads_tx, batch_id, 0, 1, payload_info).await?;
+                debug!(events, "Sent V3 series payload.");
             }
-        }
+            Err(e) => {
+                error!(error = %e, "Failed to create V3 series request.");
+                telemetry.events_dropped_encoder().increment(events as u64);
+            }
+        },
         Err(e) => {
             error!(error = %e, "Failed to encode V3 series batch.");
             telemetry.events_dropped_encoder().increment(events as u64);
@@ -718,12 +727,7 @@ async fn encode_and_flush_v3_sketch_metrics(
     let events = metrics_to_flush.len();
 
     match encode_v3_metrics_batch(&metrics_to_flush, ep_config.additional_tags()) {
-        Ok(encoded) => match create_v3_request(
-            "/api/intake/metrics/v3/sketches",
-            encoded,
-            ep_config.compression_scheme(),
-        )
-        .await
+        Ok(encoded) => match create_v3_request(V3_SKETCHES_ENDPOINT_URI, encoded, ep_config.compression_scheme()).await
         {
             Ok(request) => {
                 flush_payload(request, events, payloads_tx, batch_id, 0, 1, payload_info).await?;
@@ -974,4 +978,55 @@ async fn create_v3_request(
     builder
         .body(compressed_buf)
         .map_err(|e| generic_error!("Failed to build V3 request: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deser_agent_v3_api_nested_settings() {
+        let raw = r#"
+serializer_experimental_use_v3_api:
+  compression_level: 7
+  series:
+    endpoints:
+      - https://app.datadoghq.com
+    validate: true
+    use_beta: true
+    beta_route: /api/intake/metrics/custom/series
+  sketches:
+    endpoints:
+      - https://app.datadoghq.eu
+"#;
+
+        let config =
+            serde_yaml::from_str::<DatadogMetricsConfiguration>(raw).expect("configuration should deserialize");
+
+        assert_eq!(7, config.v3_api.compression_level);
+        assert_eq!(
+            Some("https://app.datadoghq.com"),
+            config.v3_api.series.endpoints.first().map(String::as_str)
+        );
+        assert!(config.v3_api.series.validate);
+        assert!(config.v3_api.series.use_beta);
+        assert_eq!("/api/intake/metrics/custom/series", config.v3_api.series.beta_route);
+        assert_eq!(
+            Some("https://app.datadoghq.eu"),
+            config.v3_api.sketches.endpoints.first().map(String::as_str)
+        );
+    }
+
+    #[tokio::test]
+    async fn create_v3_request_uses_configured_endpoint_uri() {
+        let request = create_v3_request(
+            "/api/intake/metrics/custom/series",
+            Vec::new(),
+            CompressionScheme::noop(),
+        )
+        .await
+        .expect("request should be created");
+
+        assert_eq!("/api/intake/metrics/custom/series", request.uri());
+    }
 }

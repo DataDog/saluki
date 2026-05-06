@@ -246,11 +246,12 @@ async fn run_endpoint_io_loop<B>(
 {
     let queue_id = generate_retry_queue_id(context, &endpoint);
     let endpoint_url = endpoint.endpoint().to_string();
+    let configured_endpoint = endpoint.configured_endpoint().to_string();
 
-    // Create V3 settings for this endpoint by matching the URL against the configured V3 endpoint lists.
+    // Match against the endpoint string from configuration, not the version-prefixed URL used for requests.
     let v3_api = config.v3_api();
     let endpoint_v3_settings = EndpointV3Settings::from_endpoint_url(
-        &endpoint_url,
+        &configured_endpoint,
         &v3_api.series.endpoints,
         &v3_api.sketches.endpoints,
         v3_api.series.validate,
@@ -258,6 +259,7 @@ async fn run_endpoint_io_loop<B>(
     );
     debug!(
         endpoint_url,
+        configured_endpoint,
         num_workers = config.endpoint_concurrency(),
         ?endpoint_v3_settings,
         "Starting endpoint I/O task."

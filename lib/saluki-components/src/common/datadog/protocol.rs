@@ -3,6 +3,12 @@
 use facet::Facet;
 use serde::{Deserialize, Serialize};
 
+const DEFAULT_V3_BETA_SERIES_ROUTE: &str = "/api/intake/metrics/v3beta/series";
+
+fn default_v3_beta_series_route() -> String {
+    DEFAULT_V3_BETA_SERIES_ROUTE.to_owned()
+}
+
 /// The type of metrics payload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MetricsPayloadType {
@@ -76,11 +82,11 @@ impl MetricsPayloadInfo {
 }
 
 /// V3 API settings for a specific metric type (series or sketches).
-#[derive(Clone, Debug, Default, Deserialize, Facet)]
+#[derive(Clone, Debug, Deserialize, Facet)]
 pub struct V3ApiSettings {
     /// Endpoints that should receive V3 payloads for this metric type.
     ///
-    /// Each entry should be a URL or URL pattern that matches endpoint URLs.
+    /// Each entry should be a configured endpoint name, such as `https://app.datadoghq.com`.
     /// If empty, no V3 payloads are generated for this metric type.
     #[serde(default)]
     pub endpoints: Vec<String>,
@@ -91,6 +97,29 @@ pub struct V3ApiSettings {
     /// When false, endpoints in the `endpoints` list receive only V3 payloads.
     #[serde(default)]
     pub validate: bool,
+
+    /// Whether to use the beta V3 route for this metric type.
+    ///
+    /// This only applies to series metrics. Sketches always use the standard V3 sketches route.
+    #[serde(default)]
+    pub use_beta: bool,
+
+    /// Beta V3 route to use when `use_beta` is enabled for series metrics.
+    ///
+    /// Defaults to `/api/intake/metrics/v3beta/series`.
+    #[serde(default = "default_v3_beta_series_route")]
+    pub beta_route: String,
+}
+
+impl Default for V3ApiSettings {
+    fn default() -> Self {
+        Self {
+            endpoints: Vec::new(),
+            validate: false,
+            use_beta: false,
+            beta_route: default_v3_beta_series_route(),
+        }
+    }
 }
 
 impl V3ApiSettings {
@@ -110,6 +139,12 @@ pub struct V3ApiConfig {
     /// V3 settings for sketch metrics (histograms, distributions).
     #[serde(default)]
     pub sketches: V3ApiSettings,
+
+    /// Override compression level for V3 payloads.
+    ///
+    /// Defaults to `0`, which uses the normal serializer compression level.
+    #[serde(default)]
+    pub compression_level: i32,
 }
 
 impl V3ApiConfig {
