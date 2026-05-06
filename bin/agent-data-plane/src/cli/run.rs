@@ -25,8 +25,7 @@ use saluki_components::{
     sources::{ChecksIPCConfiguration, DogStatsDConfiguration, OtlpConfiguration},
     transforms::{
         AggregateConfiguration, ApmStatsTransformConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
-        DogStatsDPrefixFilterConfiguration, HostEnrichmentConfiguration, HostTagsConfiguration,
-        TraceObfuscationConfiguration, TraceSamplerConfiguration,
+        HostEnrichmentConfiguration, HostTagsConfiguration, TraceObfuscationConfiguration, TraceSamplerConfiguration,
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
@@ -42,8 +41,8 @@ use crate::{
     components::{
         apm_onboarding::ApmOnboardingConfiguration,
         dogstatsd_post_aggregate_filter::DogStatsDPostAggregateFilterConfiguration,
-        ottl_filter_processor::OttlFilterConfiguration, ottl_transform_processor::OttlTransformConfiguration,
-        tag_filterlist::TagFilterlistConfiguration,
+        dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration, ottl_filter_processor::OttlFilterConfiguration,
+        ottl_transform_processor::OttlTransformConfiguration, tag_filterlist::TagFilterlistConfiguration,
     },
     internal::{
         create_internal_supervisor, logging::LoggingConfigurationTranslator, platform::PlatformSettings,
