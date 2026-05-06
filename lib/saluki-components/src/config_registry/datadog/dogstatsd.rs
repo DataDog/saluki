@@ -223,6 +223,17 @@ crate::declare_annotations! {
         test_json: None,
     };
 
+    /// `dogstatsd_stream_log_too_big` — log oversized UDS stream frames.
+    DOGSTATSD_STREAM_LOG_TOO_BIG = SalukiAnnotation {
+        schema: &schema::DOGSTATSD_STREAM_LOG_TOO_BIG,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DOGSTATSD_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+    };
+
     /// `dogstatsd_string_interner_size` — context interner entry count. Schema Float; field u64.
     DOGSTATSD_STRING_INTERNER_SIZE = SalukiAnnotation {
         schema: &schema::DOGSTATSD_STRING_INTERNER_SIZE,

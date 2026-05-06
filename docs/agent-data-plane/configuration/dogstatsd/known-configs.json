@@ -874,10 +874,10 @@
   },
   {
     "key": "dogstatsd_stream_log_too_big",
-    "feature_state": "MISSING",
-    "action": "IMPLEMENT",
-    "description": "Log oversized stream messages",
-    "reason": "ADP detects oversized frames but does not log them.",
+    "feature_state": "PARITY",
+    "action": "NONE",
+    "description": "Log oversized UDS stream frames",
+    "reason": "ADP logs oversized UDS stream frames when this setting is enabled.",
     "issue": "#1342",
     "adp_key": null
   },
