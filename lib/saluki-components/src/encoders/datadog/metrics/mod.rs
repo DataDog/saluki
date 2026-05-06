@@ -389,8 +389,8 @@ async fn run_request_builder(
     let mut v3_series_metrics = series_mode.needs_v3().then(Vec::<Metric>::new);
     let mut v3_sketch_metrics = sketches_mode.needs_v3().then(Vec::<Metric>::new);
 
-    let mut batch_id = None;
-    let validation_enabled = series_mode.needs_batch_id() || sketches_mode.needs_batch_id();
+    let mut series_batch_id = None;
+    let mut sketches_batch_id = None;
 
     let tag_series = series_mode.needs_tagging();
     let tag_sketches = sketches_mode.needs_tagging();
@@ -399,13 +399,6 @@ async fn run_request_builder(
         select! {
             Some(event_buffer) = events_rx.recv() => {
                 for event in event_buffer {
-                    // Ensure we have a validation batch UUID for each metric. Regenerating here
-                    // (rather than at the top of the outer loop) ensures a flush mid-buffer
-                    // doesn't leave subsequent metrics in the same buffer without a batch ID.
-                    if validation_enabled && batch_id.is_none() {
-                        batch_id = Some(Uuid::now_v7());
-                    }
-
                     let metric = match event.try_into_metric() {
                         Some(metric) => metric,
                         None => continue,
@@ -413,10 +406,24 @@ async fn run_request_builder(
 
                     // Figure out which endpoint the metric belongs to, and grab the relevant V2 builder/V3 storage.
                     let endpoint = MetricsEndpoint::from_metric(&metric);
-                    let (maybe_v2_builder, maybe_v3_metrics) = match endpoint {
-                        MetricsEndpoint::Series => (&mut v2_series_builder, &mut v3_series_metrics),
-                        MetricsEndpoint::Sketches => (&mut v2_sketch_builder, &mut v3_sketch_metrics),
+                    let (endpoint_mode, maybe_v2_builder, maybe_v3_metrics, batch_id) = match endpoint {
+                        MetricsEndpoint::Series => (
+                            series_mode,
+                            &mut v2_series_builder,
+                            &mut v3_series_metrics,
+                            &mut series_batch_id,
+                        ),
+                        MetricsEndpoint::Sketches => (
+                            sketches_mode,
+                            &mut v2_sketch_builder,
+                            &mut v3_sketch_metrics,
+                            &mut sketches_batch_id,
+                        ),
                     };
+                    if endpoint_mode.needs_batch_id() && batch_id.is_none() {
+                        *batch_id = Some(Uuid::now_v7());
+                    }
+                    let active_batch_id = endpoint_mode.needs_batch_id().then_some(batch_id.as_ref()).flatten();
 
                     // Store a copy of the metric in `maybe_v3_metrics` if it's present.
                     //
@@ -437,7 +444,7 @@ async fn run_request_builder(
                         MetricsEndpoint::Sketches => tag_sketches.then(MetricsPayloadInfo::v2_sketches),
                     };
                     let v2_flushed = if let Some(builder) = maybe_v2_builder {
-                        let result = encode_v2_metrics(builder, metric, &telemetry, &mut payloads_tx, batch_id.as_ref(), v2_payload_info).await?;
+                        let result = encode_v2_metrics(builder, metric, &telemetry, &mut payloads_tx, active_batch_id, v2_payload_info).await?;
                         if !result.encoded() {
                             if let Some(metrics) = maybe_v3_metrics {
                                 let _ = metrics.pop();
@@ -456,12 +463,19 @@ async fn run_request_builder(
                         MetricsEndpoint::Sketches => tag_sketches.then(MetricsPayloadInfo::v3_sketches),
                     };
                     let v3_flushed = if let Some(v3_metrics) = maybe_v3_metrics {
-                        if v2_flushed || v3_metrics.len() >= v3_endpoint_config.max_metrics_per_payload() {
+                        let should_flush_v3 = match endpoint_mode {
+                            MetricsEncoderMode::V2Only => false,
+                            MetricsEncoderMode::V3Enabled => {
+                                v2_flushed || v3_metrics.len() >= v3_endpoint_config.max_metrics_per_payload()
+                            }
+                            MetricsEncoderMode::Validation => v2_flushed,
+                        };
+                        if should_flush_v3 {
                             // V2 flushes the previous batch without the current metric (the metric
                             // that triggered the flush is re-encoded into the next V2 batch). Pop it
                             // from V3 before flushing so both batches cover the same set of metrics.
                             let split_metric = if v2_flushed { v3_metrics.pop() } else { None };
-                            encode_and_flush_v3_metrics(endpoint, &v3_endpoint_config, v3_metrics, &telemetry, &mut payloads_tx, batch_id.as_ref(), v3_payload_info).await?;
+                            encode_and_flush_v3_metrics(endpoint, &v3_endpoint_config, v3_metrics, &telemetry, &mut payloads_tx, active_batch_id, v3_payload_info).await?;
                             if let Some(m) = split_metric {
                                 v3_metrics.push(m);
                             }
@@ -473,9 +487,9 @@ async fn run_request_builder(
                         false
                     };
 
-                    // If we flushed either V2 and/or V3, clear our validation batch UUID.
-                    if v2_flushed || v3_flushed {
-                        batch_id = None;
+                    // If we flushed either V2 and/or V3, clear the endpoint-local validation batch UUID.
+                    if endpoint_mode.needs_batch_id() && (v2_flushed || v3_flushed) {
+                        *batch_id = None;
                     }
                 }
 
@@ -494,9 +508,10 @@ async fn run_request_builder(
 
                 // Flush any pending series metrics.
                 let v2_series_payload_info = tag_series.then(MetricsPayloadInfo::v2_series);
+                let series_active_batch_id = series_mode.needs_batch_id().then_some(series_batch_id.as_ref()).flatten();
                 let mut v2_series_flush_succeeded = true;
                 if let Some(builder) = &mut v2_series_builder {
-                    if let Err(e) = flush_v2_metrics(builder, &mut payloads_tx, batch_id.as_ref(), v2_series_payload_info).await {
+                    if let Err(e) = flush_v2_metrics(builder, &mut payloads_tx, series_active_batch_id, v2_series_payload_info).await {
                         error!(error = %e, "Failed to flush V2 series metrics: {}", e);
                         v2_series_flush_succeeded = false;
                     }
@@ -505,7 +520,7 @@ async fn run_request_builder(
                 let v3_series_payload_info = tag_series.then(MetricsPayloadInfo::v3_series);
                 if let Some(metrics) = &mut v3_series_metrics {
                     if v2_series_flush_succeeded {
-                        if let Err(e) = encode_and_flush_v3_series_metrics(&v3_endpoint_config, metrics, &telemetry, &mut payloads_tx, batch_id.as_ref(), v3_series_payload_info).await {
+                        if let Err(e) = encode_and_flush_v3_series_metrics(&v3_endpoint_config, metrics, &telemetry, &mut payloads_tx, series_active_batch_id, v3_series_payload_info).await {
                             error!(error = %e, "Failed to flush V3 series metrics: {}", e);
                         }
                     } else {
@@ -513,12 +528,16 @@ async fn run_request_builder(
                         metrics.clear();
                     }
                 }
+                if series_mode.needs_batch_id() {
+                    series_batch_id = None;
+                }
 
                 // Flush any pending sketch metrics.
                 let v2_sketches_payload_info = tag_sketches.then(MetricsPayloadInfo::v2_sketches);
+                let sketches_active_batch_id = sketches_mode.needs_batch_id().then_some(sketches_batch_id.as_ref()).flatten();
                 let mut v2_sketches_flush_succeeded = true;
                 if let Some(builder) = &mut v2_sketch_builder {
-                    if let Err(e) = flush_v2_metrics(builder, &mut payloads_tx, batch_id.as_ref(), v2_sketches_payload_info).await {
+                    if let Err(e) = flush_v2_metrics(builder, &mut payloads_tx, sketches_active_batch_id, v2_sketches_payload_info).await {
                         error!(error = %e, "Failed to flush V2 sketch metrics: {}", e);
                         v2_sketches_flush_succeeded = false;
                     }
@@ -527,7 +546,7 @@ async fn run_request_builder(
                 let v3_sketches_payload_info = tag_sketches.then(MetricsPayloadInfo::v3_sketches);
                 if let Some(metrics) = &mut v3_sketch_metrics {
                     if v2_sketches_flush_succeeded {
-                        if let Err(e) = encode_and_flush_v3_sketch_metrics(&v3_endpoint_config, metrics, &telemetry, &mut payloads_tx, batch_id.as_ref(), v3_sketches_payload_info).await {
+                        if let Err(e) = encode_and_flush_v3_sketch_metrics(&v3_endpoint_config, metrics, &telemetry, &mut payloads_tx, sketches_active_batch_id, v3_sketches_payload_info).await {
                             error!(error = %e, "Failed to flush V3 sketch metrics: {}", e);
                         }
                     } else {
@@ -535,9 +554,9 @@ async fn run_request_builder(
                         metrics.clear();
                     }
                 }
-
-                // Clear our validation batch UUID.
-                batch_id = None;
+                if sketches_mode.needs_batch_id() {
+                    sketches_batch_id = None;
+                }
 
                 debug!("All flushed requests sent to I/O task. Waiting for next event buffer...");
             },
