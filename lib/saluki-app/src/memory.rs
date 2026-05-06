@@ -31,22 +31,22 @@ const fn default_enable_global_limiter() -> bool {
     true
 }
 
-/// The memory mode that controls how the configured memory limit is enforced.
+/// Bounds validation and global memory limiter behavior.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum MemoryMode {
-    /// Memory bounds verification is skipped, and the global memory limiter is configured with an unbounded grant
-    /// such that backpressure will never be applied. Components are free to allocate without any process-wide limit.
+    /// Bounds validation is skipped, and no memory limiting is applied.
     #[default]
     Disabled,
 
-    /// Memory bounds are verified against the configured (or detected) memory limit, but the process will still start
-    /// even if the calculated bounds exceed the limit. A warning is emitted in that case. The global memory limiter
-    /// uses the configured limit.
+    /// Treat bounds validation failures as non-fatal.
+    ///
+    /// Global memory limiter will be enabled and active if a memory limit is configured.
     Permissive,
 
-    /// Memory bounds are strictly verified against the configured (or detected) memory limit. If the calculated
-    /// bounds exceed the limit, the process fails to start. The global memory limiter uses the configured limit.
+    /// Treat bounds validation failures as fatal.
+    ///
+    /// Global memory limiter will be enabled and active if a memory limit is configured.
     Strict,
 }
 
@@ -77,8 +77,8 @@ pub struct MemoryBoundsConfiguration {
 
     /// Whether or not to enable the global memory limiter.
     ///
-    /// When set to `false`, the global memory limiter will operate in a no-op mode. All calls to use it will never exert
-    /// backpressure, and only the inherent memory bounds of the running components will influence memory usage.
+    /// When set to `false`, the global memory limiter will operate in a no-op mode. All calls to use it will never
+    /// exert backpressure, and only the inherent memory bounds of the running components will influence memory usage.
     ///
     /// Defaults to `true`.
     #[serde(default = "default_enable_global_limiter")]
@@ -140,23 +140,12 @@ impl MemoryBoundsConfiguration {
 
 /// Initializes the memory bounds system and verifies any configured bounds based on the configured memory mode.
 ///
-/// The behavior is dictated by [`MemoryBoundsConfiguration::memory_mode`]:
-///
-/// - [`MemoryMode::Disabled`]: bounds are not verified, and the global memory limiter is configured with an
-///   unbounded grant so it never applies backpressure.
-/// - [`MemoryMode::Permissive`]: bounds are verified against the configured limit, but exceeding the limit only
-///   emits a warning. The configured limit is used to drive the global memory limiter.
-/// - [`MemoryMode::Strict`]: bounds are strictly verified, and the process fails to start if they exceed the
-///   configured limit. The configured limit is used to drive the global memory limiter.
-///
-/// If no memory limit is configured, no verification is performed and a no-op global memory limiter is returned,
-/// regardless of the configured mode (except for [`MemoryMode::Disabled`], where an unbounded limiter is still
-/// returned when the global limiter is enabled).
+/// See [`MemoryMode`] for details on the behavior of each mode.
 ///
 /// # Errors
 ///
-/// If the bounds could not be validated under [`MemoryMode::Strict`], or if the configured grant is invalid, an
-/// error is returned.
+/// If the bounds could not be validated under [`MemoryMode::Strict`], or if the configured grant is invalid, an error
+/// is returned.
 pub fn initialize_memory_bounds(
     configuration: MemoryBoundsConfiguration, component_registry: ComponentRegistryHandle,
 ) -> Result<MemoryLimiter, GenericError> {
@@ -168,7 +157,7 @@ pub fn initialize_memory_bounds(
     let limiter_grant = match configuration.memory_mode {
         MemoryMode::Disabled => {
             info!("Memory limiting disabled.");
-            Some(MemoryGrant::unbounded())
+            None
         }
         mode @ (MemoryMode::Permissive | MemoryMode::Strict) => match configured_grant {
             Some(grant) => {

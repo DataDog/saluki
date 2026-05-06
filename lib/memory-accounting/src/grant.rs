@@ -53,15 +53,6 @@ impl MemoryGrant {
         Self::with_slop_factor(effective_limit_bytes, 0.0)
     }
 
-    /// Creates a new memory grant with the maximum possible effective limit.
-    ///
-    /// Useful for callers that want a valid grant whose effective limit is large enough that any reasonable memory
-    /// usage will fall well below it (e.g. when memory limiting should be effectively disabled but a real limiter
-    /// instance is still desired).
-    pub fn unbounded() -> Self {
-        Self::effective(MAX_GRANT_BYTES).expect("MAX_GRANT_BYTES is a valid grant size")
-    }
-
     /// Creates a new memory grant based on the given initial limit and slop factor.
     ///
     /// The slop factor accounts for the percentage of the initial limit that can effectively be used. For example, a
