@@ -197,7 +197,7 @@ run-benchmarks-adp:
     - if: !reference [.on_mq_branch, rules, if]
       when: never
     - if: !reference [.on_development_branch, rules, if]
-  timeout: 1h
+  timeout: 2h
   needs:
     - build-agent-adp-baseline-image
     - build-agent-adp-comparison-image
@@ -239,7 +239,7 @@ run-benchmarks-adp:
       --submission-metadata submission_metadata
       --output-path outputs
     # Post the report to the linked PR.
-    - cat outputs/report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Agent vs Agent+ADP, 1Hz dogstatsd)"
+    - cat outputs/report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Agent vs Agent+ADP, 1Hz vs default bucket)"
     # Finally, exit 1 if the job signals a regression else 0.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job result
