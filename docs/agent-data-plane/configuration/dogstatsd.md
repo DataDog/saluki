@@ -34,7 +34,6 @@ tracking.
 | `dogstatsd_eol_required`                         | Require newline-terminated msgs       | [#1339] |
 | `dogstatsd_pipe_name`                            | Windows named pipe path               | [#1466] |
 | `dogstatsd_windows_pipe_security_descriptor`     | Windows named pipe ACL descriptor     | [#1466] |
-| `dogstatsd_stream_log_too_big`                   | Log oversized stream messages         | [#1342] |
 | `forwarder_http_protocol`                        | HTTP version (auto/http1)             | [#1361] |
 | `forwarder_outdated_file_in_days`                | Retry file retention (days)           | [#1360] |
 | `log_format_rfc3339`                             | Use RFC3339 timestamp format          | [#1373] |
@@ -330,6 +329,7 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 | `dogstatsd_port`                          | UDP listen port                  |
 | `dogstatsd_so_rcvbuf`                     | Socket receive buffer size       |
 | `dogstatsd_socket`                        | UDS datagram socket path         |
+| `dogstatsd_stream_log_too_big`            | Log oversized UDS stream frames  |
 | `dogstatsd_stream_socket`                 | UDS stream socket path           |
 | `dogstatsd_string_interner_size`          | String interner capacity         |
 | `dogstatsd_tag_cardinality`               | Default tag cardinality level    |

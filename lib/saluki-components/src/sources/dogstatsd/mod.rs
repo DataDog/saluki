@@ -33,7 +33,10 @@ use saluki_env::WorkloadProvider;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::{
     buf::{BytesBuffer, FixedSizeVec},
-    deser::{codec::dogstatsd::*, framing::FramerExt as _},
+    deser::{
+        codec::dogstatsd::*,
+        framing::{FramerExt as _, FramingError},
+    },
     net::{
         listener::{Listener, ListenerError},
         ConnectionAddress, ListenAddress, Stream,
@@ -255,6 +258,17 @@ pub struct DogStatsDConfiguration {
     #[serde(rename = "dogstatsd_stream_socket", default)]
     #[serde_as(as = "NoneAsEmptyString")]
     socket_stream_path: Option<String>,
+
+    /// Controls whether ADP logs oversized DogStatsD stream frames.
+    ///
+    /// When set to `true`, ADP emits a warning when a UDS stream frame exceeds the
+    /// configured DogStatsD buffer size. The frame is still rejected either way.
+    ///
+    /// Enable this when diagnosing clients that send oversized UDS stream frames.
+    ///
+    /// Defaults to `false`.
+    #[serde(rename = "dogstatsd_stream_log_too_big", default)]
+    stream_log_too_big: bool,
 
     /// The host address to bind DogStatsD UDP and TCP listeners to.
     ///
@@ -553,6 +567,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             codec,
             context_resolvers,
             enabled_filter: enable_payloads_filter,
+            stream_log_too_big: self.stream_log_too_big,
             additional_tags: self.additional_tags.clone().into(),
         }))
     }
@@ -597,6 +612,7 @@ pub struct DogStatsD {
     codec: DogStatsDCodec,
     context_resolvers: ContextResolvers,
     enabled_filter: EnablePayloadsFilter,
+    stream_log_too_big: bool,
     additional_tags: Arc<[String]>,
 }
 
@@ -606,6 +622,7 @@ struct ListenerContext {
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
     codec: DogStatsDCodec,
     context_resolvers: ContextResolvers,
+    stream_log_too_big: bool,
     additional_tags: Arc<[String]>,
 }
 
@@ -616,6 +633,7 @@ struct HandlerContext {
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
     metrics: Metrics,
     context_resolvers: ContextResolvers,
+    stream_log_too_big: bool,
     additional_tags: Arc<[String]>,
 }
 
@@ -782,6 +800,7 @@ impl Source for DogStatsD {
                 io_buffer_pool: self.io_buffer_pool.clone(),
                 codec: self.codec.clone(),
                 context_resolvers: self.context_resolvers.clone(),
+                stream_log_too_big: self.stream_log_too_big,
                 additional_tags: self.additional_tags.clone(),
             };
 
@@ -827,6 +846,7 @@ async fn process_listener(
         io_buffer_pool,
         codec,
         context_resolvers,
+        stream_log_too_big,
         additional_tags,
     } = listener_context;
     tokio::pin!(shutdown_handle);
@@ -853,6 +873,7 @@ async fn process_listener(
                         io_buffer_pool: io_buffer_pool.clone(),
                         metrics: build_metrics(&listen_addr, source_context.component_context()),
                         context_resolvers: context_resolvers.clone(),
+                        stream_log_too_big,
                         additional_tags: additional_tags.clone(),
                     };
 
@@ -897,6 +918,7 @@ async fn drive_stream(
         io_buffer_pool,
         metrics,
         mut context_resolvers,
+        stream_log_too_big,
         additional_tags,
     } = handler_context;
 
@@ -987,6 +1009,14 @@ async fn drive_stream(
                             }
                             Some(Err(e)) => {
                                 metrics.framing_errors().increment(1);
+                                if should_warn_stream_log_too_big(&listen_addr, &e, stream_log_too_big) {
+                                    warn!(
+                                        %listen_addr,
+                                        %peer_addr,
+                                        error = %e,
+                                        "DogStatsD stream frame exceeded the configured buffer size."
+                                    );
+                                }
 
                                 if stream.is_connectionless() {
                                     // For connectionless streams, we don't want to shutdown the stream since we can just keep
@@ -1040,6 +1070,12 @@ async fn drive_stream(
     metrics.connections_active().decrement(1);
 
     debug!(%listen_addr, "Stream handler stopped.");
+}
+
+fn should_warn_stream_log_too_big(listen_addr: &ListenAddress, error: &FramingError, stream_log_too_big: bool) -> bool {
+    stream_log_too_big
+        && matches!(listen_addr, ListenAddress::Unix(_))
+        && matches!(error, FramingError::InvalidFrame { .. })
 }
 
 fn handle_frame(
@@ -1421,6 +1457,32 @@ mod tests {
     fn socket_receive_buffer_size_from_config() {
         let config = deser_config(r#"{"dogstatsd_so_rcvbuf": 131072}"#);
         assert_eq!(config.socket_receive_buffer_size, 131_072);
+    }
+
+    #[test]
+    fn stream_log_too_big_defaults_to_false() {
+        let config = deser_config("{}");
+        assert!(!config.stream_log_too_big);
+    }
+
+    #[test]
+    fn stream_log_too_big_from_config() {
+        let config = deser_config(r#"{"dogstatsd_stream_log_too_big": true}"#);
+        assert!(config.stream_log_too_big);
+    }
+
+    #[test]
+    fn stream_log_too_big_only_warns_for_enabled_unix_invalid_frames() {
+        let uds_stream = ListenAddress::Unix("/tmp/dsd-stream.sock".into());
+        let tcp_stream = ListenAddress::Tcp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)));
+        let error = saluki_io::deser::framing::FramingError::InvalidFrame {
+            frame_len: 8193,
+            reason: "frame length exceeds buffer capacity",
+        };
+
+        assert!(super::should_warn_stream_log_too_big(&uds_stream, &error, true));
+        assert!(!super::should_warn_stream_log_too_big(&uds_stream, &error, false));
+        assert!(!super::should_warn_stream_log_too_big(&tcp_stream, &error, true));
     }
 
     #[test]
