@@ -1,4 +1,8 @@
-use std::{fs, io::Cursor, path::Path};
+use std::{
+    fs::File,
+    io::{BufReader, Read, Seek},
+    path::Path,
+};
 
 use datadog_protos::agent::{TaggerState, UnixDogstatsdMsg};
 use prost::Message;
@@ -133,26 +137,31 @@ impl TrafficCaptureReader {
 }
 
 fn read_capture_contents(path: &Path) -> Result<Vec<u8>, GenericError> {
-    let raw_contents = fs::read(path)
-        .map_err(|e| generic_error!("Failed to read DogStatsD capture file '{}': {}", path.display(), e))?;
-    if datadog_matcher(&raw_contents) {
-        return Ok(raw_contents);
+    // Read the first few bytes to check if this is a raw .dog file
+    let mut file = File::open(path)?;
+    let mut prefix = [0; DATADOG_HEADER.len()];
+    let prefix_len = file.read(&mut prefix)?;
+    // Rewind to beginning of file
+    file.rewind()?;
+
+    // If the prefix matches the DATADOG_HEADER, this is a raw .dog file
+    if prefix_len == DATADOG_HEADER.len() && datadog_matcher(&prefix) {
+        // Initialize a new vector to store the contents of the file
+        let mut contents = Vec::new();
+        // Read the rest of the file into the vector
+        file.read_to_end(&mut contents)?;
+        // Return the contents of the file
+        return Ok(contents);
     }
 
-    let contents = zstd::stream::decode_all(Cursor::new(raw_contents.as_slice())).map_err(|e| {
-        generic_error!(
-            "DogStatsD capture file '{}' was neither a raw Datadog capture nor a valid zstd-compressed capture: {}",
-            path.display(),
-            e
-        )
-    })?;
+    // If the prefix didn't match, decode to verify. If it's valid, return the contents.
+    let contents = zstd::stream::decode_all(BufReader::new(file))?;
     if !datadog_matcher(&contents) {
         return Err(generic_error!(
             "DogStatsD capture file '{}' did not contain a valid Datadog capture header after zstd decompression.",
             path.display()
         ));
     }
-
     Ok(contents)
 }
 

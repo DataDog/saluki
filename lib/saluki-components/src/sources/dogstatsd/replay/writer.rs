@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashSet},
     fs::{self, File},
     io::{self, BufWriter, Write},
     path::{Path, PathBuf},
@@ -13,6 +13,7 @@ use std::{
 
 use datadog_protos::agent::{Entity, EntityId as RemoteEntityId, TaggerState, UnixDogstatsdMsg};
 use prost::Message;
+use saluki_common::collections::FastHashMap;
 use saluki_context::{origin::OriginTagCardinality, tags::SharedTagSet};
 use saluki_env::{workload::EntityId, WorkloadProvider};
 use saluki_error::{generic_error, GenericError};
@@ -283,7 +284,7 @@ fn run_capture_loop(
     state: Arc<Mutex<WriterState>>, traffic_rx: Receiver<CaptureRecord>, mut writer: CaptureFileWriter,
     duration: Duration, workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 ) {
-    let mut pid_map = HashMap::new();
+    let mut pid_map = FastHashMap::<i32, String>::default();
     let start = std::time::Instant::now();
 
     loop {
@@ -322,7 +323,7 @@ fn run_capture_loop(
 }
 
 fn write_record(
-    writer: &mut CaptureFileWriter, record: CaptureRecord, pid_map: &mut HashMap<i32, String>,
+    writer: &mut CaptureFileWriter, record: CaptureRecord, pid_map: &mut FastHashMap<i32, String>,
 ) -> io::Result<()> {
     let CaptureRecord {
         timestamp_ns,
@@ -354,12 +355,14 @@ fn write_record(
 }
 
 fn write_state(
-    writer: &mut CaptureFileWriter, pid_map: HashMap<i32, String>, duration: Duration,
+    writer: &mut CaptureFileWriter, pid_map: FastHashMap<i32, String>, duration: Duration,
     workload_provider: Option<&(dyn WorkloadProvider + Send + Sync)>,
 ) -> io::Result<()> {
     let state = TaggerState {
-        state: build_saved_entity_state(&pid_map, workload_provider),
-        pid_map,
+        state: build_saved_entity_state(&pid_map, workload_provider)
+            .into_iter()
+            .collect(),
+        pid_map: pid_map.into_iter().collect(),
         duration: duration.as_millis().min(i64::MAX as u128) as i64,
     };
     let serialized = state.encode_to_vec();
@@ -371,13 +374,13 @@ fn write_state(
 }
 
 fn build_saved_entity_state(
-    pid_map: &HashMap<i32, String>, workload_provider: Option<&(dyn WorkloadProvider + Send + Sync)>,
-) -> HashMap<String, Entity> {
+    pid_map: &FastHashMap<i32, String>, workload_provider: Option<&(dyn WorkloadProvider + Send + Sync)>,
+) -> FastHashMap<String, Entity> {
     let Some(workload_provider) = workload_provider else {
-        return HashMap::new();
+        return FastHashMap::default();
     };
 
-    let mut saved_entities = HashMap::new();
+    let mut saved_entities = FastHashMap::default();
     let mut seen_entities = HashSet::new();
 
     for raw_entity_id in pid_map.values() {
@@ -502,7 +505,6 @@ fn parse_entity_id_str(value: &str) -> Option<EntityId> {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::HashMap,
         fs,
         io::Cursor,
         sync::Arc,
@@ -511,6 +513,7 @@ mod tests {
     };
 
     use prost::Message;
+    use saluki_common::collections::FastHashMap;
     use saluki_context::{
         origin::OriginTagCardinality,
         tags::{SharedTagSet, Tag, TagSet},
@@ -526,7 +529,7 @@ mod tests {
 
     #[derive(Default)]
     struct MockWorkloadProvider {
-        entities: HashMap<EntityId, MockEntityTags>,
+        entities: FastHashMap<EntityId, MockEntityTags>,
     }
 
     struct MockEntityTags {
@@ -537,7 +540,7 @@ mod tests {
 
     impl MockWorkloadProvider {
         fn with_entity(entity_id: EntityId, low: &[&str], orchestrator: &[&str], high: &[&str]) -> Self {
-            let mut entities = HashMap::new();
+            let mut entities = FastHashMap::default();
             entities.insert(
                 entity_id,
                 MockEntityTags {
