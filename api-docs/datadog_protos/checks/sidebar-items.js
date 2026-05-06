@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["check_data","checks_client","checks_server","event","log","metric","service_check"],"struct":["CheckData","SendCheckPayloadRequest","SendCheckPayloadResponse"]};
