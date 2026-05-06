@@ -32,10 +32,10 @@ use saluki_core::{
 use saluki_env::WorkloadProvider;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::{
-    buf::{BytesBuffer, FixedSizeVec},
+    buf::{BytesBuffer, ClearableIoBuffer, FixedSizeVec, ReadIoBuffer},
     deser::{
         codec::dogstatsd::*,
-        framing::{FramerExt as _, FramingError},
+        framing::{Framer as _, FramingError},
     },
     net::{
         listener::{Listener, ListenerError},
@@ -1039,10 +1039,14 @@ async fn drive_stream(
                         bytes_read
                     );
 
-                    let mut frames = io_buffer.framed(&mut framer, reached_eof);
                     'frame: loop {
-                        match frames.next() {
-                            Some(Ok(frame)) => {
+                        match next_frame_or_discard_connectionless(
+                            &mut framer,
+                            &mut *io_buffer,
+                            reached_eof,
+                            stream.is_connectionless(),
+                        ) {
+                            Ok(Some(frame)) => {
                                 trace!(%listen_addr, %peer_addr, ?frame, "Decoded frame.");
                                 match handle_frame(&frame[..], &codec, &mut context_resolvers, &metrics, &peer_addr, enabled_filter, &additional_tags) {
                                     Ok(Some(event)) => {
@@ -1064,7 +1068,7 @@ async fn drive_stream(
                                     },
                                 }
                             }
-                            Some(Err(e)) => {
+                            Err(e) => {
                                 metrics.framing_errors().increment(1);
                                 if should_warn_stream_log_too_big(&listen_addr, &e, stream_log_too_big) {
                                     warn!(
@@ -1085,7 +1089,7 @@ async fn drive_stream(
                                     break 'read;
                                 }
                             }
-                            None => {
+                            Ok(None) => {
                                 trace!(%listen_addr, %peer_addr, "Not enough data to decode another frame.");
                                 if eof && !stream.is_connectionless() {
                                     debug!(%listen_addr, %peer_addr, "Stream received EOF. Shutting down handler.");
@@ -1127,6 +1131,25 @@ async fn drive_stream(
     metrics.connections_active().decrement(1);
 
     debug!(%listen_addr, "Stream handler stopped.");
+}
+
+/// Returns the next frame, discarding buffered bytes after connectionless framing errors.
+///
+/// UDP and Unixgram reads represent whole datagrams, so a bad datagram must not be retained as a partial frame for the
+/// next read.
+fn next_frame_or_discard_connectionless<B>(
+    framer: &mut DsdFramer, io_buffer: &mut B, reached_eof: bool, is_connectionless: bool,
+) -> Result<Option<bytes::Bytes>, FramingError>
+where
+    B: ReadIoBuffer + ClearableIoBuffer,
+{
+    match framer.next_frame(io_buffer, reached_eof) {
+        Err(e) if is_connectionless => {
+            io_buffer.clear();
+            Err(e)
+        }
+        result => result,
+    }
 }
 
 fn should_warn_stream_log_too_big(listen_addr: &ListenAddress, error: &FramingError, stream_log_too_big: bool) -> bool {
@@ -1417,15 +1440,21 @@ const fn get_adjusted_buffer_size(buffer_size: usize) -> usize {
 mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 
+    use bytes::{Buf as _, BufMut as _};
     use bytesize::ByteSize;
     use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
-    use saluki_io::net::ListenAddress;
+    use saluki_core::pooling::{ObjectPool as _, OnDemandObjectPool};
     use saluki_io::{
+        buf::{BytesBuffer, FixedSizeVec},
         deser::codec::dogstatsd::{DogStatsDCodec, DogStatsDCodecConfiguration, ParsedPacket},
-        net::ConnectionAddress,
+        deser::framing::FramingError,
+        net::{ConnectionAddress, ListenAddress},
     };
 
-    use super::{handle_metric_packet, ContextResolvers, DogStatsDConfiguration};
+    use super::{
+        get_framer, handle_metric_packet, next_frame_or_discard_connectionless, ContextResolvers,
+        DogStatsDConfiguration,
+    };
 
     #[test]
     fn no_metrics_when_interner_full_allocations_disallowed() {
@@ -1566,6 +1595,40 @@ mod tests {
         let eol_required = config.eol_required();
 
         assert!(eol_required.for_listener(&udp_listen_address()));
+    }
+
+    #[tokio::test]
+    async fn connectionless_framing_error_discards_buffer() {
+        let bad_payload = b"bad_metric:1|c";
+        let good_payload = b"good_metric:1|c";
+        let pool =
+            OnDemandObjectPool::<BytesBuffer>::with_builder("test_dsd_packet_bufs", || FixedSizeVec::with_capacity(64));
+        let mut io_buffer = pool.acquire().await;
+        let mut framer = get_framer(&udp_listen_address(), true);
+
+        io_buffer.put_slice(bad_payload);
+
+        let err = next_frame_or_discard_connectionless(&mut framer, &mut io_buffer, true, true)
+            .expect_err("bad datagram should fail framing");
+
+        assert_eq!(
+            err,
+            FramingError::InvalidFrame {
+                frame_len: bad_payload.len(),
+                reason: "reached EOF without finding newline delimiter",
+            }
+        );
+        assert_eq!(io_buffer.remaining(), 0);
+
+        io_buffer.put_slice(good_payload);
+        io_buffer.put_slice(b"\n");
+
+        let frame = next_frame_or_discard_connectionless(&mut framer, &mut io_buffer, true, true)
+            .expect("good datagram should not fail framing")
+            .expect("good datagram should produce a frame");
+
+        assert_eq!(&frame[..], good_payload);
+        assert_eq!(io_buffer.remaining(), 0);
     }
 
     #[test]
