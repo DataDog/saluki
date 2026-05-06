@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use crate::events::TestEvent;
+use crate::utils::strip_ansi_codes;
 
 pub const DEFAULT_CLUSTER_NAME: &str = "saluki-correctness";
 
@@ -57,16 +58,18 @@ impl KindLifecycle {
 }
 
 async fn check_kind_installed() -> Result<(), GenericError> {
-    Command::new("kind")
-        .arg("version")
-        .output()
-        .await
-        .map(|_| ())
-        .map_err(|_| {
-            generic_error!(
-                "'kind' not found in PATH. Install it from https://kind.sigs.k8s.io/docs/user/quick-start/#installation"
-            )
-        })
+    let output = Command::new("kind").arg("version").output().await.map_err(|_| {
+        generic_error!(
+            "'kind' not found in PATH. Install it from https://kind.sigs.k8s.io/docs/user/quick-start/#installation"
+        )
+    })?;
+    if !output.status.success() {
+        return Err(generic_error!(
+            "'kind version' exited with status {}; is kind installed correctly?",
+            output.status
+        ));
+    }
+    Ok(())
 }
 
 async fn cluster_exists(name: &str) -> Result<bool, GenericError> {
@@ -201,4 +204,3 @@ async fn load_images(
 
     Ok(())
 }
-use crate::utils::strip_ansi_codes;

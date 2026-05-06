@@ -8,7 +8,7 @@ use std::{io::IsTerminal, path::PathBuf, process::ExitCode, time::Instant};
 
 use tokio::sync::{mpsc, watch, Mutex};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt as _, util::SubscriberInitExt as _, EnvFilter};
 
 use crate::runner::Runner;
@@ -228,6 +228,14 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
             } else {
                 lifecycle.teardown().await;
             }
+        } else {
+            // lifecycle is None when setup failed after creating the cluster but before
+            // completing image loading. The cluster may still be running.
+            warn!(
+                "Kind cluster setup did not complete successfully. \
+                 A kind cluster named '{}' may still be running — run 'kind delete cluster --name {}' to clean it up.",
+                cmd.kind_cluster_name, cmd.kind_cluster_name
+            );
         }
     }
 

@@ -277,7 +277,7 @@ async fn run_group(
         }
     }
 
-    // 7. Start a local port-forward to datadog-intake's port 2049.
+    // 6. Start a local port-forward to datadog-intake's port 2049.
     let pf_cancel = CancellationToken::new();
     let local_port = start_port_forward(
         client.clone(),
@@ -294,7 +294,7 @@ async fn run_group(
         local_port, POD_NAME
     );
 
-    // 8. Wait for the millstone container to exit successfully.
+    // 7. Wait for the millstone container to exit successfully.
     wait_for_millstone_exit(&pod_api, POD_NAME, MILLSTONE_EXIT_TIMEOUT)
         .await
         .with_error_context(|| format!("Millstone container in namespace '{}' did not exit cleanly", namespace))?;
@@ -304,10 +304,10 @@ async fn run_group(
         namespace, FLUSH_WAIT_SECS
     );
 
-    // 9. Wait for the aggregation flush interval.
+    // 8. Wait for the aggregation flush interval.
     sleep(Duration::from_secs(FLUSH_WAIT_SECS)).await;
 
-    // 10. Collect telemetry from datadog-intake via the forwarded port.
+    // 9. Collect telemetry from datadog-intake via the forwarded port.
     let data = CollectedData::for_port(local_port).await.with_error_context(|| {
         format!(
             "Failed to collect telemetry from datadog-intake in namespace '{}'",
@@ -386,13 +386,16 @@ fn build_pod(cfg: PodConfig<'_>) -> Pod {
 
     let target_env: Vec<EnvVar> = target_env_strs
         .iter()
-        .filter_map(|s| {
-            let (k, v) = s.split_once('=')?;
-            Some(EnvVar {
+        .filter_map(|s| match s.split_once('=') {
+            Some((k, v)) => Some(EnvVar {
                 name: k.to_string(),
                 value: Some(v.to_string()),
                 ..Default::default()
-            })
+            }),
+            None => {
+                warn!("Ignoring malformed env var (no '=' found): {:?}", s);
+                None
+            }
         })
         .collect();
 

@@ -182,6 +182,27 @@ impl Runner {
                 break;
             }
 
+            // Kind tests wait for cluster readiness before acquiring a concurrency slot.
+            if test.runtime() == "kubernetes_in_docker" {
+                if let Some(ref rx) = self.kind_ready {
+                    loop {
+                        let is_ready = rx.lock().await.borrow().is_some();
+                        if is_ready {
+                            break;
+                        }
+                        tokio::select! {
+                            _ = cancel_all.cancelled() => break,
+                            result = {
+                                let mut rx = rx.lock().await;
+                                async move { rx.changed().await }
+                            } => {
+                                if result.is_err() { break; }
+                            }
+                        }
+                    }
+                }
+            }
+
             let _permit = semaphore.acquire().await.unwrap();
             let result = Self::run_one(
                 *test,
@@ -225,13 +246,21 @@ impl Runner {
                 // so they don't starve Docker tests while the cluster is being set up.
                 if test.runtime() == "kubernetes_in_docker" {
                     if let Some(ref rx) = kind_ready {
-                        let mut rx = rx.lock().await;
                         loop {
-                            if rx.borrow().is_some() {
+                            // Drop the lock between iterations so all concurrent kind tests
+                            // can check simultaneously rather than serializing.
+                            let is_ready = rx.lock().await.borrow().is_some();
+                            if is_ready {
                                 break;
                             }
-                            if rx.changed().await.is_err() {
-                                break;
+                            tokio::select! {
+                                _ = cancel.cancelled() => break,
+                                result = {
+                                    let mut rx = rx.lock().await;
+                                    async move { rx.changed().await }
+                                } => {
+                                    if result.is_err() { break; }
+                                }
                             }
                         }
                     }
