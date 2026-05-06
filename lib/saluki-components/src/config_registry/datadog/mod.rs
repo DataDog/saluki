@@ -9,6 +9,7 @@ pub mod forwarder;
 pub mod otlp;
 pub mod proxy;
 pub mod trace_obfuscation;
+pub mod unsupported;
 
 use std::sync::LazyLock;
 
@@ -29,6 +30,24 @@ pub static SUPPORTED_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>> = Laz
     v.extend_from_slice(otlp::ALL);
     v.extend_from_slice(proxy::ALL);
     v.extend_from_slice(trace_obfuscation::ALL);
+    v
+});
+
+/// Annotations for keys that Saluki intentionally does not support.
+///
+/// All entries have [`Incompatible`](super::SupportLevel::Incompatible) and empty `used_by`.
+pub static UNSUPPORTED_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>> = LazyLock::new(|| {
+    let mut v = Vec::new();
+    v.extend_from_slice(unsupported::ALL);
+    v
+});
+
+/// All saluki annotations: supported and unsupported combined.
+///
+/// Used by the adp-runtime config check to classify every key in the resolved config.
+pub static ALL_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>> = LazyLock::new(|| {
+    let mut v = SUPPORTED_ANNOTATIONS.clone();
+    v.extend_from_slice(&UNSUPPORTED_ANNOTATIONS);
     v
 });
 
@@ -74,6 +93,26 @@ mod registry_tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn no_overlap_between_supported_and_unsupported() {
+        let supported_paths: std::collections::HashSet<&str> =
+            SUPPORTED_ANNOTATIONS.iter().map(|a| a.yaml_path()).collect();
+
+        let duplicates: Vec<&str> = UNSUPPORTED_ANNOTATIONS
+            .iter()
+            .map(|a| a.yaml_path())
+            .filter(|p| supported_paths.contains(p))
+            .collect();
+
+        if !duplicates.is_empty() {
+            panic!(
+                "{} key(s) appear in both SUPPORTED_ANNOTATIONS and UNSUPPORTED_ANNOTATIONS:\n{}",
+                duplicates.len(),
+                duplicates.iter().map(|p| format!("  - {}", p)).collect::<Vec<_>>().join("\n"),
+            );
         }
     }
 }
