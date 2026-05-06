@@ -12,7 +12,7 @@ pub mod datadog;
 /// Generated schema entries from the vendored Datadog Agent config schema.
 pub mod generated;
 
-pub use self::datadog::{SUPPORTED_ANNOTATIONS, ALL_KEYS};
+pub use self::datadog::{ALL_KEYS, SUPPORTED_ANNOTATIONS};
 
 /// Declares a set of [`SalukiAnnotation`] constants and generates a companion `ALL` slice.
 ///
@@ -109,12 +109,19 @@ pub enum SupportLevel {
     Full,
     /// Partially supported. The key is consumed by at least one struct, but support is incomplete.
     Partial,
-    /// Explicitly incompatible. Saluki intentionally does not support this key; `used_by` must be
-    /// empty.
+    /// Explicitly incompatible. Saluki does not support this key and may not behave as expected in
+    /// its presence; `used_by` must be empty. Support for the key may be added in the future but
+    /// tracking such intent is not encoded here.
     Incompatible,
-    /// Not annotated. Applied implicitly at runtime to any schema key that has no
-    /// [`SalukiAnnotation`]. Must not be set on a hand-written annotation.
-    Ignored,
+    /// Not applicable. The key is not relevant to Saluki and we ignore it. This assignment must be
+    /// intentionally chosen and specified for a key. We never assume that a key is `NotApplicable`
+    /// just because we are unaware of it.
+    #[allow(unused)]
+    NotApplicable,
+    /// Unrecognized. The Saluki codebase is unaware of the existence of this key. It is not in our
+    /// vendored datadog config schema, nor is it annotated.
+    #[allow(unused)]
+    Unrecognized,
 }
 
 /// The shape of a configuration value.
@@ -180,7 +187,8 @@ pub struct SalukiAnnotation {
 
     /// How well saluki supports this key.
     ///
-    /// Must not be [`SupportLevel::Ignored`] — that level is reserved for unannotated schema keys.
+    /// Must not be [`SupportLevel::NotApplicable`] or [`SupportLevel::Unrecognized`] which are
+    /// reserved for unannotated keys.
     pub support_level: SupportLevel,
 
     /// Additional YAML paths beyond the canonical one in the schema (aliases).

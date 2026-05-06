@@ -65,12 +65,12 @@ mod registry_tests {
                         path,
                     );
                 }
-                SupportLevel::Ignored => {
+                SupportLevel::NotApplicable | SupportLevel::Unrecognized => {
                     panic!(
-                        "annotation '{}' has support level Ignored — \
+                        "annotation '{}' has support level {:?} — \
                          Ignored is reserved for unannotated schema keys and must not appear \
                          in a hand-written SalukiAnnotation",
-                        path,
+                        path, annotation.support_level
                     );
                 }
             }

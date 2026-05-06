@@ -233,7 +233,10 @@ pub async fn run_config_smoke_tests<T, Factory>(
     }
 
     // Unsupported keys: setting any of their yaml_paths must not change the struct.
-    for annotation in SUPPORTED_ANNOTATIONS.iter().filter(|a| !a.used_by.contains(&struct_name)) {
+    for annotation in SUPPORTED_ANNOTATIONS
+        .iter()
+        .filter(|a| !a.used_by.contains(&struct_name))
+    {
         for yaml_path in annotation.all_yaml_paths() {
             let with_foreign = config_factory(
                 make_config_from_file(merge_over_base(
