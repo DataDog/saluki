@@ -745,25 +745,7 @@ async fn stream_container_logs(pods: Api<Pod>, pod_name: &'static str, container
     let _ = file.flush().await;
 }
 
-/// Removes ANSI escape sequences (`ESC[...letter`) from a byte slice.
-fn strip_ansi_codes(input: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(input.len());
-    let mut i = 0;
-    while i < input.len() {
-        // ESC [ ... <letter> — skip the entire sequence.
-        if input[i] == 0x1b && input.get(i + 1) == Some(&b'[') {
-            i += 2;
-            while i < input.len() && !input[i].is_ascii_alphabetic() {
-                i += 1;
-            }
-            i += 1; // skip the terminating letter
-        } else {
-            out.push(input[i]);
-            i += 1;
-        }
-    }
-    out
-}
+use crate::utils::strip_ansi_codes;
 
 // ---------------------------------------------------------------------------
 // Port-forward
