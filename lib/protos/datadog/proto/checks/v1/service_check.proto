@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package datadog.checks.v1.service_check;
+
+enum Status {
+    STATUS_UNSPECIFIED = 0;
+    STATUS_OK = 1;
+    STATUS_WARNING = 2;
+    STATUS_CRITICAL = 3;
+    STATUS_UNKNOWN = 4;
+}
+
+message ServiceCheck {
+    Status status = 1;
+    string name = 2;
+    string message = 3;
+    repeated string tags = 4;
+    string hostname = 5;
+}

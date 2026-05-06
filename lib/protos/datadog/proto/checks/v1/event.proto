@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package datadog.checks.v1.event;
+
+enum Priority {
+    PRIORITY_UNSPECIFIED = 0;
+    PRIORITY_LOW = 1;
+    PRIORITY_NORMAL = 2;
+}
+
+enum AlertType {
+    ALERT_TYPE_UNSPECIFIED = 0;
+    ALERT_TYPE_ERROR = 1;
+    ALERT_TYPE_WARNING = 2;
+    ALERT_TYPE_INFO = 3;
+    ALERT_TYPE_SUCCESS = 4;
+}
+
+message Event {
+    string title = 1;
+    string text = 2;
+    Priority priority = 3;
+    string hostname = 4;
+    repeated string tags = 5;
+    AlertType alert_type = 6;
+    string aggregation_key = 7;
+    string source_type_name = 8;
+    uint64 timestamp = 9;
+}

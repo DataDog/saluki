@@ -22,7 +22,7 @@ use saluki_components::{
     },
     forwarders::{DatadogConfiguration, OtlpForwarderConfiguration},
     relays::otlp::OtlpRelayConfiguration,
-    sources::{DogStatsDConfiguration, OtlpConfiguration},
+    sources::{ChecksIPCConfiguration, DogStatsDConfiguration, OtlpConfiguration},
     transforms::{
         AggregateConfiguration, ApmStatsTransformConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
         DogStatsDPrefixFilterConfiguration, HostEnrichmentConfiguration, HostTagsConfiguration,
@@ -330,6 +330,8 @@ async fn create_topology(
     // is the only reason we're differentiating here.
     if dp_config.metrics_pipeline_required()
         || dp_config.logs_pipeline_required()
+        || dp_config.events_pipeline_required()
+        || dp_config.service_checks_pipeline_required()
         || dp_config.traces_pipeline_required()
     {
         let dd_forwarder_config =
@@ -345,11 +347,23 @@ async fn create_topology(
         add_baseline_logs_pipeline_to_blueprint(&mut blueprint, config).await?;
     }
 
+    if dp_config.events_pipeline_required() {
+        add_baseline_events_pipeline_to_blueprint(&mut blueprint, config).await?;
+    }
+
+    if dp_config.service_checks_pipeline_required() {
+        add_baseline_service_checks_pipeline_to_blueprint(&mut blueprint, config).await?;
+    }
+
     if dp_config.traces_pipeline_required() {
         add_baseline_traces_pipeline_to_blueprint(&mut blueprint, config, env_provider).await?;
     }
 
     // Now we move on to our actual data pipelines.
+    if dp_config.checks().enabled() {
+        add_checks_pipeline_to_blueprint(&mut blueprint, config).await?;
+    }
+
     if dp_config.dogstatsd().enabled() {
         add_dsd_pipeline_to_blueprint(&mut blueprint, config, env_provider, dsd_stats_config).await?;
     }
@@ -359,6 +373,21 @@ async fn create_topology(
     }
 
     Ok(blueprint)
+}
+
+async fn add_checks_pipeline_to_blueprint(
+    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+) -> Result<(), GenericError> {
+    let checks_config = ChecksIPCConfiguration::from_configuration(config)?;
+
+    blueprint
+        .add_source("checks_ipc_in", checks_config)?
+        .connect_component("metrics_enrich", ["checks_ipc_in.metrics"])?
+        .connect_component("dd_logs_encode", ["checks_ipc_in.logs"])?
+        .connect_component("dd_events_encode", ["checks_ipc_in.events"])?
+        .connect_component("dd_service_checks_encode", ["checks_ipc_in.service_checks"])?;
+
+    Ok(())
 }
 
 async fn add_baseline_metrics_pipeline_to_blueprint(
@@ -403,6 +432,34 @@ async fn add_baseline_logs_pipeline_to_blueprint(
         .add_encoder("dd_logs_encode", dd_logs_config)?
         // Logs.
         .connect_component("dd_out", ["dd_logs_encode"])?;
+
+    Ok(())
+}
+
+async fn add_baseline_events_pipeline_to_blueprint(
+    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+) -> Result<(), GenericError> {
+    let dd_events_config = DatadogEventsConfiguration::from_configuration(config)
+        .map(BufferedIncrementalConfiguration::from_encoder_builder)
+        .error_context("Failed to configure Datadog Events encoder.")?;
+
+    blueprint
+        .add_encoder("dd_events_encode", dd_events_config)?
+        .connect_component("dd_out", ["dd_events_encode"])?;
+
+    Ok(())
+}
+
+async fn add_baseline_service_checks_pipeline_to_blueprint(
+    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+) -> Result<(), GenericError> {
+    let dd_service_checks_config = DatadogServiceChecksConfiguration::from_configuration(config)
+        .map(BufferedIncrementalConfiguration::from_encoder_builder)
+        .error_context("Failed to configure Datadog Service Checks encoder.")?;
+
+    blueprint
+        .add_encoder("dd_service_checks_encode", dd_service_checks_config)?
+        .connect_component("dd_out", ["dd_service_checks_encode"])?;
 
     Ok(())
 }
@@ -509,12 +566,6 @@ async fn add_dsd_pipeline_to_blueprint(
         "host_enrichment",
         HostEnrichmentConfiguration::from_environment_provider(env_provider.clone()),
     );
-    let dd_events_config = DatadogEventsConfiguration::from_configuration(config)
-        .map(BufferedIncrementalConfiguration::from_encoder_builder)
-        .error_context("Failed to configure Datadog Events encoder.")?;
-    let dd_service_checks_config = DatadogServiceChecksConfiguration::from_configuration(config)
-        .map(BufferedIncrementalConfiguration::from_encoder_builder)
-        .error_context("Failed to configure Datadog Service Checks encoder.")?;
     let dsd_debug_log_config = DogStatsDDebugLogConfiguration::from_configuration(
         config,
         PlatformSettings::get_default_dogstatsd_log_file_path(),
@@ -531,8 +582,6 @@ async fn add_dsd_pipeline_to_blueprint(
         .add_transform("dsd_post_agg_filter", dsd_post_agg_filter_config)?
         .add_transform("events_enrich", events_enrich_config)?
         .add_transform("service_checks_enrich", service_checks_enrich_config)?
-        .add_encoder("dd_events_encode", dd_events_config)?
-        .add_encoder("dd_service_checks_encode", dd_service_checks_config)?
         .add_destination("dsd_stats_out", dsd_stats_config)?
         // Metrics.
         .connect_component("dsd_enrich", ["dsd_in.metrics"])?
@@ -546,7 +595,6 @@ async fn add_dsd_pipeline_to_blueprint(
         .connect_component("dd_events_encode", ["events_enrich"])?
         .connect_component("service_checks_enrich", ["dsd_in.service_checks"])?
         .connect_component("dd_service_checks_encode", ["service_checks_enrich"])?
-        .connect_component("dd_out", ["dd_service_checks_encode", "dd_events_encode"])?
         // DogStatsD Stats.
         .connect_component("dsd_stats_out", ["dsd_in.metrics"])?;
 
