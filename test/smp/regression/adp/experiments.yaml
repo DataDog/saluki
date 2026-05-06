@@ -1,8 +1,14 @@
 # SMP Experiment Definitions
 #
-# This file defines all SMP experiments for the Agent-vs-Agent+ADP 1Hz dogstatsd
-# benchmark. Run `make generate-smp-experiments` to regenerate the case files
-# under `cases/`.
+# This file defines all SMP experiments for the Agent-vs-Agent+ADP dogstatsd
+# benchmark. Each dsd_uds_* size is run twice — once with
+# `aggregator_bucket_size_seconds: 1` (1Hz aggregation) and once at the Agent's
+# default 10s bucket — so a single SMP report shows both variants side-by-side.
+# The cross-variant diff (matched `*_1hz_*` and `*_default_*` rows) isolates
+# the telemetry impact of the 1Hz knob from the Agent-vs-Agent+ADP delta.
+#
+# Run `make generate-smp-experiments` to regenerate the case files under
+# `cases/`.
 #
 # Structure:
 # - global: Base configuration inherited by ALL experiments
@@ -10,9 +16,7 @@
 # - experiments: Individual experiment definitions
 #
 # The generator substitutes the literal token `${EXPERIMENT_NAME}` (anywhere it
-# appears in env values) with the fully-expanded experiment name (e.g.
-# `dsd_uds_10mb_3k_contexts_throughput`). This is how per-case profiling tags
-# get distinct values without duplicating each experiment three times.
+# appears in env values) with the fully-expanded experiment name.
 
 global:
   erratic: false
@@ -22,11 +26,6 @@ global:
     command: /bin/entrypoint.sh
     cpu_allotment: 4
     memory_allotment: 3200MiB
-
-    # Default files placed in the target directory (datadog-agent/)
-    files:
-      datadog.yaml:
-        source: shared/datadog.yaml
 
     environment:
       DD_API_KEY: a0000001
@@ -69,7 +68,8 @@ global:
             sub_agent: "core"
 
 templates:
-  # Base template for DogStatsD experiments
+  # Shared lading generator config (bucket-size-agnostic). The 1hz and
+  # default-bucket leaves below differ only in which datadog.yaml they ship.
   dsd_base:
     lading:
       generator:
@@ -113,13 +113,30 @@ templates:
                   histogram: 1
             maximum_prebuild_cache_size_bytes: "500 Mb"
 
+  # 1Hz bucketing — Agent + ADP both honor `aggregator_bucket_size_seconds: 1`.
+  dsd_base_1hz:
+    extends: dsd_base
+    target:
+      files:
+        datadog.yaml:
+          source: shared/datadog-1hz.yaml
+
+  # Default 10s bucketing — `aggregator_bucket_size_seconds` is unset so both
+  # sides use the Agent's built-in default.
+  dsd_base_default:
+    extends: dsd_base
+    target:
+      files:
+        datadog.yaml:
+          source: shared/datadog-default-bucket.yaml
+
 experiments:
   # ============================================================================
-  # DogStatsD: basic regression (CPU, memory, throughput)
+  # DogStatsD: 1Hz bucketing (5 sizes × 3 goals = 15 cases)
   # ============================================================================
 
-  - name: dsd_uds_512kb_3k_contexts
-    extends: dsd_base
+  - name: dsd_uds_512kb_3k_contexts_1hz
+    extends: dsd_base_1hz
     optimization_goals:
       - cpu
       - memory
@@ -129,8 +146,8 @@ experiments:
         - unix_datagram:
             bytes_per_second: "512 KiB"
 
-  - name: dsd_uds_1mb_3k_contexts
-    extends: dsd_base
+  - name: dsd_uds_1mb_3k_contexts_1hz
+    extends: dsd_base_1hz
     optimization_goals:
       - cpu
       - memory
@@ -140,8 +157,8 @@ experiments:
         - unix_datagram:
             bytes_per_second: "1 MiB"
 
-  - name: dsd_uds_10mb_3k_contexts
-    extends: dsd_base
+  - name: dsd_uds_10mb_3k_contexts_1hz
+    extends: dsd_base_1hz
     optimization_goals:
       - cpu
       - memory
@@ -151,8 +168,8 @@ experiments:
         - unix_datagram:
             bytes_per_second: "10 MiB"
 
-  - name: dsd_uds_100mb_3k_contexts
-    extends: dsd_base
+  - name: dsd_uds_100mb_3k_contexts_1hz
+    extends: dsd_base_1hz
     optimization_goals:
       - cpu
       - memory
@@ -162,8 +179,67 @@ experiments:
         - unix_datagram:
             bytes_per_second: "100 MiB"
 
-  - name: dsd_uds_500mb_3k_contexts
-    extends: dsd_base
+  - name: dsd_uds_500mb_3k_contexts_1hz
+    extends: dsd_base_1hz
+    optimization_goals:
+      - cpu
+      - memory
+      - ingress_throughput
+    lading:
+      generator:
+        - unix_datagram:
+            bytes_per_second: "500 MiB"
+
+  # ============================================================================
+  # DogStatsD: default 10s bucketing (5 sizes × 3 goals = 15 cases)
+  # ============================================================================
+
+  - name: dsd_uds_512kb_3k_contexts_default
+    extends: dsd_base_default
+    optimization_goals:
+      - cpu
+      - memory
+      - ingress_throughput
+    lading:
+      generator:
+        - unix_datagram:
+            bytes_per_second: "512 KiB"
+
+  - name: dsd_uds_1mb_3k_contexts_default
+    extends: dsd_base_default
+    optimization_goals:
+      - cpu
+      - memory
+      - ingress_throughput
+    lading:
+      generator:
+        - unix_datagram:
+            bytes_per_second: "1 MiB"
+
+  - name: dsd_uds_10mb_3k_contexts_default
+    extends: dsd_base_default
+    optimization_goals:
+      - cpu
+      - memory
+      - ingress_throughput
+    lading:
+      generator:
+        - unix_datagram:
+            bytes_per_second: "10 MiB"
+
+  - name: dsd_uds_100mb_3k_contexts_default
+    extends: dsd_base_default
+    optimization_goals:
+      - cpu
+      - memory
+      - ingress_throughput
+    lading:
+      generator:
+        - unix_datagram:
+            bytes_per_second: "100 MiB"
+
+  - name: dsd_uds_500mb_3k_contexts_default
+    extends: dsd_base_default
     optimization_goals:
       - cpu
       - memory
