@@ -132,9 +132,4 @@ impl V3ApiConfig {
     pub fn use_v3_sketches_validate(&self) -> bool {
         self.sketches.is_enabled() && self.sketches.validate
     }
-
-    /// Returns true if any V3 encoding is enabled.
-    pub fn any_v3_enabled(&self) -> bool {
-        self.use_v3_series() || self.use_v3_sketches()
-    }
 }
