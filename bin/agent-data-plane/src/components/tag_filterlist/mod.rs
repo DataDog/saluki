@@ -32,6 +32,8 @@ use serde::{de::Deserializer, Deserialize};
 use tokio::select;
 use tracing::{debug, error, warn};
 
+use crate::components::dogstatsd_filterlist::METRIC_TAG_FILTERLIST_CONFIG_KEY;
+
 const CONTEXT_CACHE_CAPACITY: usize = 100_000;
 const CONTEXT_CACHE_TTI: Duration = Duration::from_secs(30);
 const CONTEXT_CACHE_EXPIRATION_INTERVAL: Duration = Duration::from_secs(1);
@@ -214,7 +216,7 @@ impl Transform for TagFilterlist {
         let mut health = context.take_health_handle();
         health.mark_ready();
 
-        let mut watcher = self.configuration.watch_for_updates("metric_tag_filterlist");
+        let mut watcher = self.configuration.watch_for_updates(METRIC_TAG_FILTERLIST_CONFIG_KEY);
 
         let mut view_state = TagSetMutViewState::default();
 

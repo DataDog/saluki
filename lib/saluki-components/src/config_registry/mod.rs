@@ -50,7 +50,7 @@ macro_rules! declare_annotations {
 }
 
 /// Shared helpers for config smoke tests.
-#[cfg(test)]
+#[cfg(any(test, feature = "config-test-support"))]
 pub mod test_support;
 
 /// Identifiers for known configuration structs.

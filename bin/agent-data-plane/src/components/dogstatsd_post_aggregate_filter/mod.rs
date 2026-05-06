@@ -23,6 +23,11 @@ use stringtheory::MetaString;
 use tokio::select;
 use tracing::{debug, error};
 
+use crate::components::dogstatsd_filterlist::{
+    Blocklist, EffectiveFilterlist, METRIC_FILTERLIST_CONFIG_KEY, METRIC_FILTERLIST_MATCH_PREFIX_CONFIG_KEY,
+    STATSD_METRIC_BLOCKLIST_CONFIG_KEY, STATSD_METRIC_BLOCKLIST_MATCH_PREFIX_CONFIG_KEY,
+};
+
 mod telemetry;
 
 use self::telemetry::Telemetry;
@@ -109,7 +114,12 @@ impl TransformBuilder for DogStatsDPostAggregateFilterConfiguration {
         let metrics_builder = MetricsBuilder::from_component_context(&context);
         let histogram_suffixes =
             HistogramSuffixes::from_configuration(&self.histogram_aggregates, &self.histogram_percentiles)?;
-        let effective_filterlist = EffectiveFilterlist::from_configuration(self);
+        let effective_filterlist = EffectiveFilterlist::new(
+            self.metric_filterlist.clone(),
+            self.metric_filterlist_match_prefix,
+            self.metric_blocklist.clone(),
+            self.metric_blocklist_match_prefix,
+        );
         let mut filter = DogStatsDPostAggregateFilter {
             matcher: Blocklist::default(),
             effective_filterlist,
@@ -128,84 +138,6 @@ impl MemoryBounds for DogStatsDPostAggregateFilterConfiguration {
         builder
             .minimum()
             .with_single_value::<DogStatsDPostAggregateFilter>("component struct");
-    }
-}
-
-// The Blocklist is the compiled matcher for metric names that should be dropped.
-// Matcher logic copied from `saluki-components::transforms::dogstatsd_prefix_filter` so post-aggregate filtering uses
-// the same exact/prefix semantics as listener-side metric filtering.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-struct Blocklist {
-    data: Vec<String>,
-    match_prefix: bool,
-}
-
-impl Blocklist {
-    fn new(data: &[String], match_prefix: bool) -> Self {
-        let mut data = data.to_owned();
-        data.sort();
-
-        if match_prefix && !data.is_empty() {
-            let mut i = 0;
-            for j in 1..data.len() {
-                if !data[j].starts_with(&data[i]) {
-                    i += 1;
-                    data[i] = data[j].clone();
-                }
-            }
-            data.truncate(i + 1);
-        }
-
-        Self { data, match_prefix }
-    }
-
-    fn contains(&self, name: &str) -> bool {
-        if self.data.is_empty() {
-            return false;
-        }
-
-        let i = self.data.binary_search_by(|candidate| candidate.as_str().cmp(name));
-
-        if self.match_prefix {
-            // `Err` contains the insertion index where `name` would fit in the sorted blocklist.
-            let index = i.unwrap_or_else(|idx| idx);
-            if index > 0 && name.starts_with(&self.data[index - 1]) {
-                return true;
-            }
-        }
-
-        if let Ok(index) = i {
-            return name == self.data[index];
-        }
-
-        false
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-struct EffectiveFilterlist {
-    metric_filterlist: Vec<String>,
-    metric_filterlist_match_prefix: bool,
-    metric_blocklist: Vec<String>,
-    metric_blocklist_match_prefix: bool,
-}
-
-impl EffectiveFilterlist {
-    fn from_configuration(config: &DogStatsDPostAggregateFilterConfiguration) -> Self {
-        Self {
-            metric_filterlist: config.metric_filterlist.clone(),
-            metric_filterlist_match_prefix: config.metric_filterlist_match_prefix,
-            metric_blocklist: config.metric_blocklist.clone(),
-            metric_blocklist_match_prefix: config.metric_blocklist_match_prefix,
-        }
-    }
-
-    fn effective_values(&self) -> (&[String], bool) {
-        if !self.metric_filterlist.is_empty() {
-            (&self.metric_filterlist, self.metric_filterlist_match_prefix)
-        } else {
-            (&self.metric_blocklist, self.metric_blocklist_match_prefix)
-        }
     }
 }
 
@@ -278,26 +210,28 @@ impl DogStatsDPostAggregateFilter {
             .cloned()
             .collect::<Vec<_>>();
 
-        self.matcher = Blocklist::new(&histogram_values, match_prefix);
+        self.matcher = Blocklist::new(histogram_values.iter().map(String::as_str), match_prefix);
     }
 
     fn update_metric_filterlist(&mut self, metric_filterlist: Vec<String>) {
-        self.effective_filterlist.metric_filterlist = metric_filterlist;
+        self.effective_filterlist.set_metric_filterlist(metric_filterlist);
         self.sync_matcher();
     }
 
     fn update_metric_blocklist(&mut self, metric_blocklist: Vec<String>) {
-        self.effective_filterlist.metric_blocklist = metric_blocklist;
+        self.effective_filterlist.set_metric_blocklist(metric_blocklist);
         self.sync_matcher();
     }
 
     fn update_metric_filterlist_match_prefix(&mut self, match_prefix: bool) {
-        self.effective_filterlist.metric_filterlist_match_prefix = match_prefix;
+        self.effective_filterlist
+            .set_metric_filterlist_match_prefix(match_prefix);
         self.sync_matcher();
     }
 
     fn update_metric_blocklist_match_prefix(&mut self, match_prefix: bool) {
-        self.effective_filterlist.metric_blocklist_match_prefix = match_prefix;
+        self.effective_filterlist
+            .set_metric_blocklist_match_prefix(match_prefix);
         self.sync_matcher();
     }
 
@@ -331,11 +265,12 @@ impl Transform for DogStatsDPostAggregateFilter {
             .configuration
             .as_ref()
             .expect("configuration must be set via from_configuration");
-        let mut filterlist_watcher = configuration.watch_for_updates("metric_filterlist");
-        let mut filterlist_match_prefix_watcher = configuration.watch_for_updates("metric_filterlist_match_prefix");
-        let mut blocklist_watcher = configuration.watch_for_updates("statsd_metric_blocklist");
+        let mut filterlist_watcher = configuration.watch_for_updates(METRIC_FILTERLIST_CONFIG_KEY);
+        let mut filterlist_match_prefix_watcher =
+            configuration.watch_for_updates(METRIC_FILTERLIST_MATCH_PREFIX_CONFIG_KEY);
+        let mut blocklist_watcher = configuration.watch_for_updates(STATSD_METRIC_BLOCKLIST_CONFIG_KEY);
         let mut blocklist_match_prefix_watcher =
-            configuration.watch_for_updates("statsd_metric_blocklist_match_prefix");
+            configuration.watch_for_updates(STATSD_METRIC_BLOCKLIST_MATCH_PREFIX_CONFIG_KEY);
 
         debug!("DogStatsD post-aggregate filter transform started.");
 
@@ -419,12 +354,12 @@ mod tests {
 
         let mut filter = DogStatsDPostAggregateFilter {
             matcher: Blocklist::default(),
-            effective_filterlist: EffectiveFilterlist {
-                metric_filterlist: metric_filterlist.into_iter().map(ToString::to_string).collect(),
+            effective_filterlist: EffectiveFilterlist::new(
+                metric_filterlist.into_iter().map(ToString::to_string).collect(),
                 metric_filterlist_match_prefix,
-                metric_blocklist: metric_blocklist.into_iter().map(ToString::to_string).collect(),
+                metric_blocklist.into_iter().map(ToString::to_string).collect(),
                 metric_blocklist_match_prefix,
-            },
+            ),
             histogram_suffixes,
             telemetry,
             configuration: None,
