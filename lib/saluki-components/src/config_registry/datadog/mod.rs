@@ -35,7 +35,7 @@ pub static SUPPORTED_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>> = Laz
 /// All resolved [`ConfigKey`] entries, derived from [`SUPPORTED_ANNOTATIONS`] at first access.
 ///
 /// Provides a flattened, owned view suitable for runtime unknown-key detection.
-pub static ALL_KEYS: LazyLock<Vec<ConfigKey>> =
+pub static SUPPORTED_KEYS: LazyLock<Vec<ConfigKey>> =
     LazyLock::new(|| SUPPORTED_ANNOTATIONS.iter().map(|a| ConfigKey::from(*a)).collect());
 
 #[cfg(test)]
