@@ -1,8 +1,11 @@
 //! Annotations for DogStatsD mapper transform configuration keys.
-use crate::config_registry::{generated::schema, structs, SalukiAnnotation, SchemaEntry, SupportLevel, ValueType};
+use crate::config_registry::{
+    generated::schema, structs, SalukiAnnotation, Schema, SchemaEntry, SupportLevel, ValueType,
+};
 
 // ADP-specific keys not present in the vendored Agent schema.
 static DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
     yaml_path: "dogstatsd_mapper_string_interner_size",
     env_vars: &[],
     value_type: ValueType::Integer,

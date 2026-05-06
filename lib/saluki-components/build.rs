@@ -1,16 +1,19 @@
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::fs::read_to_string;
+use std::path::{Path, PathBuf};
 
 use serde_yaml::Value;
 
 fn main() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let schema_path = manifest_dir.join("vendor/core_schema.yaml");
+    let ignored_keys_path = manifest_dir.join("vendor/ignored_keys.yaml");
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let out_path = out_dir.join("schema.rs");
 
     // Only re-run when the schema source or this build script changes.
     println!("cargo:rerun-if-changed=vendor/core_schema.yaml");
+    println!("cargo:rerun-if-changed=vendor/ignored_keys.yaml");
     println!("cargo:rerun-if-changed=build.rs");
 
     let src = std::fs::read_to_string(&schema_path)
@@ -27,7 +30,9 @@ fn main() {
     collect_entries(properties, &[], &mut entries);
     entries.sort_by(|a, b| a.yaml_path.cmp(&b.yaml_path));
 
-    let output = render(&entries);
+    let mut output = render(&entries);
+    render_array(&entries, &mut output);
+    render_ignored_keys(&ignored_keys_path, &mut output);
     std::fs::write(&out_path, output).unwrap_or_else(|e| panic!("failed to write {}: {}", out_path.display(), e));
 }
 
@@ -83,11 +88,7 @@ fn collect_entries(mapping: &serde_yaml::Mapping, path_parts: &[&str], out: &mut
         let node_type = value.get("node_type").and_then(|v| v.as_str()).unwrap_or("");
 
         match node_type {
-            "setting" => {
-                if let Some(entry) = parse_setting(&parts, value) {
-                    out.push(entry);
-                }
-            }
+            "setting" => out.push(parse_setting(&parts, value)),
             "section" => {
                 if let Some(props) = value.get("properties").and_then(|v| v.as_mapping()) {
                     collect_entries(props, &parts, out);
@@ -103,7 +104,7 @@ fn collect_entries(mapping: &serde_yaml::Mapping, path_parts: &[&str], out: &mut
     }
 }
 
-fn parse_setting(path_parts: &[&str], value: &Value) -> Option<SchemaEntry> {
+fn parse_setting(path_parts: &[&str], value: &Value) -> SchemaEntry {
     let yaml_path = path_parts.join(".");
     let const_name = yaml_path_to_const(&yaml_path);
 
@@ -128,13 +129,13 @@ fn parse_setting(path_parts: &[&str], value: &Value) -> Option<SchemaEntry> {
     let value_type = parse_value_type(value);
     let default = value.get("default").and_then(yaml_value_to_json_str);
 
-    Some(SchemaEntry {
+    SchemaEntry {
         yaml_path,
         const_name,
         env_vars,
         value_type,
         default,
-    })
+    }
 }
 
 fn parse_value_type(value: &Value) -> SchemaValueType {
@@ -189,7 +190,7 @@ fn render(entries: &[SchemaEntry]) -> String {
     )
     .unwrap();
     writeln!(out).unwrap();
-    writeln!(out, "use crate::config_registry::{{SchemaEntry, ValueType}};").unwrap();
+    writeln!(out, "use crate::config_registry::{{Schema, SchemaEntry, ValueType}};").unwrap();
     writeln!(out).unwrap();
 
     for entry in entries {
@@ -215,6 +216,7 @@ fn render(entries: &[SchemaEntry]) -> String {
         };
 
         writeln!(out, "pub const {}: SchemaEntry = SchemaEntry {{", entry.const_name).unwrap();
+        writeln!(out, "    schema: Schema::Datadog,").unwrap();
         writeln!(out, "    yaml_path: \"{}\",", entry.yaml_path).unwrap();
         writeln!(out, "    env_vars: {},", env_vars_literal).unwrap();
         writeln!(out, "    value_type: {},", entry.value_type.as_rust()).unwrap();
@@ -224,4 +226,60 @@ fn render(entries: &[SchemaEntry]) -> String {
     }
 
     out
+}
+
+fn render_array(entries: &[SchemaEntry], output: &mut String) {
+    writeln!(output).unwrap();
+    writeln!(output).unwrap();
+    writeln!(
+        output,
+        "/// The complete list of entries found in the Datadog config schema."
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "pub static ALL_SCHEMA_ENTRIES: [&SchemaEntry; {}] = [",
+        entries.len()
+    )
+    .unwrap();
+    for entry in entries {
+        writeln!(output, "    &{},", entry.const_name).unwrap();
+    }
+    writeln!(output, "];").unwrap();
+}
+
+fn render_ignored_keys(ignored_keys_path: &Path, output: &mut String) {
+    // Deserialize the data file.
+    let contents =
+        read_to_string(ignored_keys_path).unwrap_or_else(|_| panic!("Unable to read {}", ignored_keys_path.display()));
+    let yaml_value: serde_yaml::Value = serde_yaml::from_str(&contents)
+        .unwrap_or_else(|_| panic!("Unable to deserialize {}", ignored_keys_path.display()));
+    let names: Vec<&str> = yaml_value
+        .as_sequence()
+        .expect("Expected a yaml sequence but found something else")
+        .iter()
+        .map(|value| {
+            value
+                .as_mapping()
+                .expect("Expected an object")
+                .get("name")
+                .expect("Name field not found.")
+                .as_str()
+                .expect("Expected a string.")
+        })
+        .collect();
+
+    // Begin rendering.
+    writeln!(output).unwrap();
+    writeln!(output).unwrap();
+    writeln!(
+        output,
+        "/// The list of entries found in the Datadog config schema which we are intentionally ignoring."
+    )
+    .unwrap();
+    writeln!(output, "pub static IGNORED_ENTRIES: [&str; {}] = [", names.len()).unwrap();
+    for name in names {
+        writeln!(output, "    \"{name}\",").unwrap();
+    }
+    writeln!(output, "];").unwrap();
 }

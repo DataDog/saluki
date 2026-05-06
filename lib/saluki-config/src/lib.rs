@@ -798,6 +798,22 @@ impl GenericConfiguration {
         self.inner.event_sender.as_ref().map(|s| s.subscribe())
     }
 
+    /// Extracts the entire configuration as a flat list of dot-separated key paths and their values.
+    ///
+    /// Nested JSON objects are descended into, joining keys with dots. Arrays, strings, numbers,
+    /// bools, and nulls are leaf values and are never descended into. The returned values are
+    /// never `Value::Object`.
+    ///
+    /// ## Errors
+    ///
+    /// If the configuration could not be serialized to JSON, an error will be returned.
+    pub fn flattened_keys(&self) -> Result<Vec<(String, serde_json::Value)>, ConfigurationError> {
+        let root: serde_json::Value = self.as_typed()?;
+        let mut out = Vec::new();
+        flatten_value(&root, &mut String::new(), &mut out);
+        Ok(out)
+    }
+
     /// Creates a watcher that yields only when the given key changes.
     ///
     /// If dynamic configuration is disabled, the returned watcher's `changed()`
@@ -807,6 +823,22 @@ impl GenericConfiguration {
             key: key.to_string(),
             rx: self.subscribe_for_updates(),
         }
+    }
+}
+
+fn flatten_value(value: &serde_json::Value, prefix: &mut String, out: &mut Vec<(String, serde_json::Value)>) {
+    if let serde_json::Value::Object(map) = value {
+        for (key, child) in map {
+            let prev_len = prefix.len();
+            if !prefix.is_empty() {
+                prefix.push('.');
+            }
+            prefix.push_str(key);
+            flatten_value(child, prefix, out);
+            prefix.truncate(prev_len);
+        }
+    } else {
+        out.push((prefix.clone(), value.clone()));
     }
 }
 
@@ -1089,5 +1121,72 @@ mod tests {
         // ready() should not resolve until the initial snapshot is processed.
         let res = tokio::time::timeout(std::time::Duration::from_millis(1000), cfg.ready()).await;
         assert!(res.is_err(), "ready() should time out without an initial snapshot");
+    }
+
+    #[tokio::test]
+    async fn test_flattened_keys_flat_and_nested() {
+        let (cfg, _) = ConfigurationLoader::for_tests(
+            Some(serde_json::json!({
+                "top": "value",
+                "nested": { "a": 1, "b": { "c": true } }
+            })),
+            None,
+            false,
+        )
+        .await;
+        cfg.ready().await;
+
+        let pairs = cfg.flattened_keys().unwrap();
+        let map: std::collections::HashMap<&str, &serde_json::Value> =
+            pairs.iter().map(|(k, v)| (k.as_str(), v)).collect();
+
+        assert_eq!(map.get("top"), Some(&&serde_json::json!("value")));
+        assert_eq!(map.get("nested.a"), Some(&&serde_json::json!(1)));
+        assert_eq!(map.get("nested.b.c"), Some(&&serde_json::json!(true)));
+        assert!(!map.contains_key("nested"));
+        assert!(!map.contains_key("nested.b"));
+    }
+
+    #[tokio::test]
+    async fn test_flattened_keys_arrays_are_leaves() {
+        let (cfg, _) = ConfigurationLoader::for_tests(
+            Some(serde_json::json!({
+                "tags": ["a", "b"],
+                "matrix": [[1, 2], [3, 4]]
+            })),
+            None,
+            false,
+        )
+        .await;
+        cfg.ready().await;
+
+        let pairs = cfg.flattened_keys().unwrap();
+        let map: std::collections::HashMap<&str, &serde_json::Value> =
+            pairs.iter().map(|(k, v)| (k.as_str(), v)).collect();
+
+        assert_eq!(map.get("tags"), Some(&&serde_json::json!(["a", "b"])));
+        assert_eq!(map.get("matrix"), Some(&&serde_json::json!([[1, 2], [3, 4]])));
+    }
+
+    #[tokio::test]
+    async fn test_flattened_keys_null_values_absent() {
+        let (cfg, _) = ConfigurationLoader::for_tests(
+            Some(serde_json::json!({
+                "present": "yes",
+                "absent": null
+            })),
+            None,
+            false,
+        )
+        .await;
+        cfg.ready().await;
+
+        let pairs = cfg.flattened_keys().unwrap();
+        let map: std::collections::HashMap<&str, &serde_json::Value> =
+            pairs.iter().map(|(k, v)| (k.as_str(), v)).collect();
+
+        assert_eq!(map.get("present"), Some(&&serde_json::json!("yes")));
+        // Figment drops null values during deserialization, so they are absent from the output.
+        assert!(!map.contains_key("absent"));
     }
 }

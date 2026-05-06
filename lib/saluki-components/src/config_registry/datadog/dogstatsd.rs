@@ -1,7 +1,10 @@
 //! Annotations for DogStatsD source configuration keys.
-use crate::config_registry::{generated::schema, structs, SalukiAnnotation, SchemaEntry, SupportLevel, ValueType};
+use crate::config_registry::{
+    generated::schema, structs, SalukiAnnotation, Schema, SchemaEntry, SupportLevel, ValueType,
+};
 
 static DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
     yaml_path: "dogstatsd_allow_context_heap_allocs",
     env_vars: &[],
     value_type: ValueType::Bool,
@@ -9,6 +12,7 @@ static DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static DOGSTATSD_BUFFER_COUNT_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
     yaml_path: "dogstatsd_buffer_count",
     env_vars: &[],
     value_type: ValueType::Integer,
@@ -16,6 +20,7 @@ static DOGSTATSD_BUFFER_COUNT_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static DOGSTATSD_CACHED_CONTEXTS_LIMIT_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
     yaml_path: "dogstatsd_cached_contexts_limit",
     env_vars: &[],
     value_type: ValueType::Integer,
@@ -23,6 +28,7 @@ static DOGSTATSD_CACHED_CONTEXTS_LIMIT_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static DOGSTATSD_CACHED_TAGSETS_LIMIT_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
     yaml_path: "dogstatsd_cached_tagsets_limit",
     env_vars: &[],
     value_type: ValueType::Integer,
@@ -30,6 +36,7 @@ static DOGSTATSD_CACHED_TAGSETS_LIMIT_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static DOGSTATSD_LOG_FILE_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
     yaml_path: "dogstatsd_log_file",
     env_vars: &["DD_DOGSTATSD_LOG_FILE"],
     value_type: ValueType::String,
@@ -37,6 +44,7 @@ static DOGSTATSD_LOG_FILE_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static DOGSTATSD_LOG_FILE_MAX_ROLLS_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
     yaml_path: "dogstatsd_log_file_max_rolls",
     env_vars: &["DD_DOGSTATSD_LOG_FILE_MAX_ROLLS"],
     value_type: ValueType::Integer,
@@ -44,6 +52,7 @@ static DOGSTATSD_LOG_FILE_MAX_ROLLS_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static DOGSTATSD_LOG_FILE_MAX_SIZE_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
     yaml_path: "dogstatsd_log_file_max_size",
     env_vars: &["DD_DOGSTATSD_LOG_FILE_MAX_SIZE"],
     value_type: ValueType::String,
@@ -51,6 +60,7 @@ static DOGSTATSD_LOG_FILE_MAX_SIZE_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static DOGSTATSD_LOGGING_ENABLED_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
     yaml_path: "dogstatsd_logging_enabled",
     env_vars: &["DD_DOGSTATSD_LOGGING_ENABLED"],
     value_type: ValueType::Bool,
@@ -58,6 +68,7 @@ static DOGSTATSD_LOGGING_ENABLED_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static DOGSTATSD_METRICS_STATS_ENABLE_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
     yaml_path: "dogstatsd_metrics_stats_enable",
     env_vars: &["DD_DOGSTATSD_METRICS_STATS_ENABLE"],
     value_type: ValueType::Bool,
@@ -65,6 +76,7 @@ static DOGSTATSD_METRICS_STATS_ENABLE_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static DOGSTATSD_MINIMUM_SAMPLE_RATE_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
     yaml_path: "dogstatsd_minimum_sample_rate",
     env_vars: &[],
     value_type: ValueType::Float,
@@ -72,6 +84,7 @@ static DOGSTATSD_MINIMUM_SAMPLE_RATE_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static DOGSTATSD_PERMISSIVE_DECODING_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
     yaml_path: "dogstatsd_permissive_decoding",
     env_vars: &[],
     value_type: ValueType::Bool,
@@ -79,6 +92,7 @@ static DOGSTATSD_PERMISSIVE_DECODING_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static DOGSTATSD_STRING_INTERNER_SIZE_BYTES_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
     yaml_path: "dogstatsd_string_interner_size_bytes",
     env_vars: &[],
     value_type: ValueType::Integer,
@@ -86,6 +100,7 @@ static DOGSTATSD_STRING_INTERNER_SIZE_BYTES_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static DOGSTATSD_SO_RCVBUF_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
     yaml_path: "dogstatsd_so_rcvbuf",
     env_vars: &["DD_DOGSTATSD_SO_RCVBUF"],
     value_type: ValueType::Integer,
@@ -93,6 +108,7 @@ static DOGSTATSD_SO_RCVBUF_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static DOGSTATSD_TCP_PORT_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
     yaml_path: "dogstatsd_tcp_port",
     env_vars: &[],
     value_type: ValueType::Integer,
