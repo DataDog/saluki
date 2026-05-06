@@ -33,7 +33,7 @@ use crate::{
 };
 
 const POD_NAME: &str = "correctness-pod";
-const FLUSH_WAIT_SECS: u64 = 32;
+const FLUSH_WAIT: Duration = Duration::from_secs(30);
 const POD_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const POD_READY_TIMEOUT: Duration = Duration::from_secs(120);
 // Allow enough time for millstone to finish sending all metrics plus a buffer.
@@ -300,12 +300,12 @@ async fn run_group(
         .with_error_context(|| format!("Millstone container in namespace '{}' did not exit cleanly", namespace))?;
 
     debug!(
-        "Millstone completed in namespace '{}'. Waiting {}s for flush...",
-        namespace, FLUSH_WAIT_SECS
+        "Millstone completed in namespace '{}'. Waiting {:?} for flush...",
+        namespace, FLUSH_WAIT
     );
 
     // 8. Wait for the aggregation flush interval.
-    sleep(Duration::from_secs(FLUSH_WAIT_SECS)).await;
+    sleep(FLUSH_WAIT).await;
 
     // 9. Collect telemetry from datadog-intake via the forwarded port.
     let data = CollectedData::for_port(local_port).await.with_error_context(|| {
