@@ -561,12 +561,6 @@ async fn add_dsd_pipeline_to_blueprint(
         "host_enrichment",
         HostEnrichmentConfiguration::from_environment_provider(env_provider.clone()),
     );
-    let dd_events_config = DatadogEventsConfiguration::from_configuration(config)
-        .map(BufferedIncrementalConfiguration::from_encoder_builder)
-        .error_context("Failed to configure Datadog Events encoder.")?;
-    let dd_service_checks_config = DatadogServiceChecksConfiguration::from_configuration(config)
-        .map(BufferedIncrementalConfiguration::from_encoder_builder)
-        .error_context("Failed to configure Datadog Service Checks encoder.")?;
     let dsd_debug_log_config = DogStatsDDebugLogConfiguration::from_configuration(
         config,
         PlatformSettings::get_default_dogstatsd_log_file_path(),
@@ -582,8 +576,6 @@ async fn add_dsd_pipeline_to_blueprint(
         .add_transform("dsd_agg", dsd_agg_config)?
         .add_transform("events_enrich", events_enrich_config)?
         .add_transform("service_checks_enrich", service_checks_enrich_config)?
-        .add_encoder("dd_events_encode", dd_events_config)?
-        .add_encoder("dd_service_checks_encode", dd_service_checks_config)?
         .add_destination("dsd_stats_out", dsd_stats_config)?
         // Metrics.
         .connect_component("dsd_prefix_filter", ["dsd_in.metrics"])?
@@ -596,7 +588,6 @@ async fn add_dsd_pipeline_to_blueprint(
         .connect_component("dd_events_encode", ["events_enrich"])?
         .connect_component("service_checks_enrich", ["dsd_in.service_checks"])?
         .connect_component("dd_service_checks_encode", ["service_checks_enrich"])?
-        .connect_component("dd_out", ["dd_service_checks_encode", "dd_events_encode"])?
         // DogStatsD Stats.
         .connect_component("dsd_stats_out", ["dsd_in.metrics"])?;
 
