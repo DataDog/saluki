@@ -31,7 +31,6 @@ tracking.
 | `cri_query_timeout`                              | CRI runtime query timeout             | [#1348] |
 | `dogstatsd_capture_depth`                        | Traffic capture channel depth         | [#1381] |
 | `dogstatsd_capture_path`                         | Traffic capture file location         | [#1381] |
-| `dogstatsd_eol_required`                         | Require newline-terminated msgs       | [#1339] |
 | `dogstatsd_pipe_name`                            | Windows named pipe path               | [#1466] |
 | `dogstatsd_windows_pipe_security_descriptor`     | Windows named pipe ACL descriptor     | [#1466] |
 | `forwarder_http_protocol`                        | HTTP version (auto/http1)             | [#1361] |
@@ -314,6 +313,7 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 | `dd_url`                                  | Override intake endpoint URL     |
 | `dogstatsd_buffer_size`                   | Receive buffer size (bytes)      |
 | `dogstatsd_entity_id_precedence`          | Entity ID over auto-detection    |
+| `dogstatsd_eol_required`                  | Require newline-terminated messages |
 | `dogstatsd_expiry_seconds`                | Counter zero-value TTL (secs)    |
 | `dogstatsd_flush_incomplete_buckets`      | Flush open buckets on shutdown   |
 | `dogstatsd_log_file`                      | DSD metric debug log path        |
