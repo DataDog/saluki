@@ -1,6 +1,6 @@
 # Configuring DogStatsD on Agent Data Plane
 
-<!-- Last updated: 2026-05-05 -->
+<!-- Last updated: 2026-05-06 -->
 
 The DogStatsD implementation on ADP has been redesigned in Rust for better resource guarantees and
 efficiency. Because the architecture is different from the original implementation, certain
@@ -33,7 +33,6 @@ tracking.
 | `dogstatsd_capture_path`                         | Traffic capture file location         | [#1381] |
 | `dogstatsd_eol_required`                         | Require newline-terminated msgs       | [#1339] |
 | `dogstatsd_pipe_name`                            | Windows named pipe path               | [#1466] |
-| `dogstatsd_so_rcvbuf`                            | Socket receive buffer size            | [#1341] |
 | `dogstatsd_windows_pipe_security_descriptor`     | Windows named pipe ACL descriptor     | [#1466] |
 | `dogstatsd_stream_log_too_big`                   | Log oversized stream messages         | [#1342] |
 | `forwarder_http_protocol`                        | HTTP version (auto/http1)             | [#1361] |
@@ -329,6 +328,7 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 | `dogstatsd_origin_detection_client`       | Honor client origin proto fields |
 | `dogstatsd_origin_optout_enabled`         | Allow clients to opt out origin  |
 | `dogstatsd_port`                          | UDP listen port                  |
+| `dogstatsd_so_rcvbuf`                     | Socket receive buffer size       |
 | `dogstatsd_socket`                        | UDS datagram socket path         |
 | `dogstatsd_stream_socket`                 | UDS stream socket path           |
 | `dogstatsd_string_interner_size`          | String interner capacity         |
@@ -386,7 +386,6 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 [#1338]: https://github.com/DataDog/saluki/issues/1338
 [#1339]: https://github.com/DataDog/saluki/issues/1339
 [#1340]: https://github.com/DataDog/saluki/issues/1340
-[#1341]: https://github.com/DataDog/saluki/issues/1341
 [#1342]: https://github.com/DataDog/saluki/issues/1342
 [#1348]: https://github.com/DataDog/saluki/issues/1348
 [#1350]: https://github.com/DataDog/saluki/issues/1350
