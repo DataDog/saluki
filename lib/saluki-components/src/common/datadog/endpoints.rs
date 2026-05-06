@@ -107,6 +107,22 @@ impl EndpointV3Settings {
             }
         }
     }
+
+    /// Determines if this endpoint should receive metrics validation headers.
+    ///
+    /// Validation headers are endpoint-scoped: they should only be sent to endpoints that are
+    /// receiving both V2 and V3 payloads for the payload's metric family.
+    pub fn should_receive_validation_headers(&self, payload_info: Option<MetricsPayloadInfo>) -> bool {
+        let Some(info) = payload_info else {
+            return false;
+        };
+
+        if info.is_sketch() {
+            self.sketches_validation_mode
+        } else {
+            self.series_validation_mode
+        }
+    }
 }
 
 /// Error type for invalid endpoints.
@@ -656,5 +672,21 @@ mod tests {
         let resolved = calculate_resolved_endpoint(Some(override_url), "us3.datadoghq.com", "")
             .expect("error calculating override API endpoint");
         assert_eq!(expected_endpoint, resolved.endpoint().to_string());
+    }
+
+    #[test]
+    fn validation_headers_are_scoped_to_payload_family() {
+        let settings = EndpointV3Settings {
+            use_v3_series: true,
+            use_v3_sketches: false,
+            series_validation_mode: true,
+            sketches_validation_mode: false,
+        };
+
+        assert!(settings.should_receive_validation_headers(Some(MetricsPayloadInfo::v2_series())));
+        assert!(settings.should_receive_validation_headers(Some(MetricsPayloadInfo::v3_series())));
+        assert!(!settings.should_receive_validation_headers(Some(MetricsPayloadInfo::v2_sketches())));
+        assert!(!settings.should_receive_validation_headers(Some(MetricsPayloadInfo::v3_sketches())));
+        assert!(!settings.should_receive_validation_headers(None));
     }
 }

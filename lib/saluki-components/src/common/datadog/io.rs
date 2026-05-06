@@ -322,6 +322,11 @@ async fn run_endpoint_io_loop<B>(
                         );
                         continue;
                     }
+                    let txn = if endpoint_v3_settings.should_receive_validation_headers(payload_info) {
+                        txn
+                    } else {
+                        strip_metrics_validation_headers(txn)
+                    };
 
                     match pending_txns.push_high_priority(txn).await {
                         Ok(push_result) => telemetry.track_dropped_events(push_result.events_dropped),
@@ -416,6 +421,18 @@ async fn run_endpoint_io_loop<B>(
 
     // Signal to the main I/O task that we've finished.
     task_barrier.wait().await;
+}
+
+fn strip_metrics_validation_headers<B>(txn: Transaction<B>) -> Transaction<B>
+where
+    B: Buf + Clone,
+{
+    let (metadata, mut request) = txn.into_parts();
+    let headers = request.headers_mut();
+    headers.remove("X-Metrics-Request-ID");
+    headers.remove("X-Metrics-Request-Seq");
+    headers.remove("X-Metrics-Request-Len");
+    Transaction::reassemble(metadata, request)
 }
 
 fn generate_retry_queue_id(context: ComponentContext, endpoint: &ResolvedEndpoint) -> String {

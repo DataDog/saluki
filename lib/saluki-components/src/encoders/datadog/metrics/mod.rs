@@ -71,8 +71,8 @@ const fn default_zstd_compressor_level() -> i32 {
 enum MetricsEncoderMode {
     /// Send V2 payloads only.
     V2Only,
-    /// V3 is enabled for some endpoints; send both V2 and V3, tagged so the forwarder can route
-    /// each payload to the endpoints that accept it.
+    /// V3 is enabled for at least one endpoint; generate tagged V2 and V3 payloads so each endpoint
+    /// receives the protocol version configured for it.
     V3Enabled,
     /// Send both V2 and V3 payloads simultaneously with a shared batch ID for backend validation.
     Validation,
