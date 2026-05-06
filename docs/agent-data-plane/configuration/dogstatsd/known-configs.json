@@ -895,7 +895,7 @@
     "feature_state": "PARITY",
     "action": "NONE",
     "description": "String interner capacity",
-    "reason": "CLOSED \u2014 rename complete. Agent=4096 entries (count), ADP=2MiB bytes (size). Semantic clash resolved by rename; closed issue indicates work is done.",
+    "reason": "CLOSED - rename complete. Agent=4096 entries (count), ADP=2MiB bytes (size). Semantic clash resolved by rename; closed issue indicates work is done.",
     "issue": "#1367",
     "adp_key": null
   },
@@ -1111,7 +1111,7 @@
     "feature_state": "MISSING",
     "action": "INVESTIGATE",
     "description": "Low-priority request queue size",
-    "reason": "ADP has no separate low-priority queue \u2014 all requests go through one buffer. Covered by the same investigation as forwarder_high_prio_buffer_size.",
+    "reason": "ADP has no separate low-priority queue - all requests go through one buffer. Covered by the same investigation as forwarder_high_prio_buffer_size.",
     "issue": "#1362",
     "adp_key": null
   },
@@ -1759,7 +1759,7 @@
     "feature_state": "ADP_ONLY",
     "action": "NONE",
     "description": "Alias (unused) for blacklist key",
-    "reason": "This key does not exist in the core agent \u2014 Saluki invented it as a rename of _blacklist.",
+    "reason": "This key does not exist in the core agent - Saluki invented it as a rename of _blacklist.",
     "issue": "#1353",
     "adp_key": null
   },
