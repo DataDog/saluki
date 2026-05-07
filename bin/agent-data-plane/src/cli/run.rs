@@ -4,6 +4,7 @@ use std::{
 };
 
 use argh::FromArgs;
+use datadog_agent_commons::platform::PlatformSettings;
 use futures::FutureExt as _;
 use memory_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::{
@@ -25,7 +26,7 @@ use saluki_components::{
     sources::{ChecksIPCConfiguration, DogStatsDConfiguration, OtlpConfiguration},
     transforms::{
         AggregateConfiguration, ApmStatsTransformConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
-        HostEnrichmentConfiguration, HostTagsConfiguration, TraceObfuscationConfiguration, TraceSamplerConfiguration,
+        HostEnrichmentConfiguration, TraceObfuscationConfiguration, TraceSamplerConfiguration,
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
@@ -41,15 +42,15 @@ use crate::{
     components::{
         apm_onboarding::ApmOnboardingConfiguration,
         dogstatsd_post_aggregate_filter::DogStatsDPostAggregateFilterConfiguration,
-        dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration, ottl_filter_processor::OttlFilterConfiguration,
-        ottl_transform_processor::OttlTransformConfiguration, tag_filterlist::TagFilterlistConfiguration,
+        dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration, host_tags::HostTagsConfiguration,
+        ottl_filter_processor::OttlFilterConfiguration, ottl_transform_processor::OttlTransformConfiguration,
+        tag_filterlist::TagFilterlistConfiguration,
     },
     internal::{
-        create_internal_supervisor, logging::LoggingConfigurationTranslator, platform::PlatformSettings,
-        remote_agent::RemoteAgentBootstrap,
+        create_internal_supervisor, logging::LoggingConfigurationTranslator, remote_agent::RemoteAgentBootstrap,
     },
 };
-use crate::{config::DataPlaneConfiguration, env_provider::ADPEnvironmentProvider};
+use crate::{config::DataPlaneConfiguration, internal::env::ADPEnvironmentProvider};
 
 /// Runs the data plane.
 #[derive(FromArgs, Debug)]
@@ -107,7 +108,7 @@ pub async fn handle_run_command(
                 .with_key_aliases(KEY_ALIASES)
                 .with_dynamic_configuration(ra_bootstrap.create_config_stream())
                 .add_providers([DatadogRemapper::new()])
-                .from_environment(crate::internal::platform::DATADOG_AGENT_ENV_VAR_PREFIX)?
+                .from_environment(PlatformSettings::get_env_var_prefix())?
                 .into_generic()
                 .await?;
 

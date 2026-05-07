@@ -10,7 +10,6 @@
 
 pub mod autodiscovery;
 pub mod features;
-pub mod helpers;
 pub mod host;
 pub mod workload;
 

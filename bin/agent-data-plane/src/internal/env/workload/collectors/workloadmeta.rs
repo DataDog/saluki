@@ -1,10 +1,12 @@
 use async_trait::async_trait;
+use datadog_agent_commons::ipc::client::RemoteAgentClient;
 use datadog_protos::agent::{Container, KubernetesPod, WorkloadmetaEventType};
 use futures::{StreamExt as _, TryStreamExt as _};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::origin::ExternalData;
 use saluki_core::health::Health;
+use saluki_env::workload::{collectors::MetadataCollector, EntityId, MetadataOperation};
 use saluki_error::GenericError;
 use saluki_io::net::util::tonic::StatusError;
 use saluki_metrics::static_metrics;
@@ -14,11 +16,6 @@ use stringtheory::{
 };
 use tokio::{select, sync::mpsc};
 use tracing::{debug, trace, warn};
-
-use crate::{
-    helpers::remote_agent::RemoteAgentClient,
-    workload::{collectors::MetadataCollector, metadata::MetadataOperation, EntityId},
-};
 
 static_metrics!(
    name => Telemetry,

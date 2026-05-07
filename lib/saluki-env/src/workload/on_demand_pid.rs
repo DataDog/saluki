@@ -16,7 +16,7 @@ use tokio::time::sleep;
 use tracing::{debug, trace};
 
 #[cfg(target_os = "linux")]
-use super::helpers::cgroups::{CgroupsConfiguration, CgroupsReader};
+use crate::workload::helpers::cgroups::{CgroupsConfiguration, CgroupsReader};
 use crate::{features::FeatureDetector, workload::EntityId};
 
 static_metrics! {
@@ -87,6 +87,11 @@ impl OnDemandPIDResolver {
         })
     }
 
+    /// Creates a new `OnDemandPIDResolver` from the given configuration.
+    ///
+    /// ## Errors
+    ///
+    /// If a cgroups hierarchy cannot be found, or the internal cache cannot be created, an error is returned.
     #[cfg(target_os = "linux")]
     pub fn from_configuration(
         config: &GenericConfiguration, feature_detector: FeatureDetector, interner: GenericMapInterner,

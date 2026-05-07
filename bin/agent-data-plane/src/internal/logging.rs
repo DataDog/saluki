@@ -6,6 +6,7 @@
 
 use async_trait::async_trait;
 use bytesize::ByteSize;
+use datadog_agent_commons::platform::PlatformSettings;
 use saluki_app::logging::{LogLevel, LoggingConfiguration, LoggingOverrideController};
 use saluki_common::deser::PermissiveBool;
 use saluki_config::GenericConfiguration;
@@ -16,14 +17,13 @@ use serde_with::serde_as;
 use tokio::{pin, select};
 use tracing::{debug, warn};
 
-use crate::internal::platform::PlatformSettings;
-
 const DATA_PLANE_LOG_FILE_KEY: &str = "data_plane.log_file";
 // `tracing` targets use Rust crate/module names, so Cargo package names with hyphens appear with underscores.
 const FIRST_PARTY_LOG_TARGETS: &[&str] = &[
     "agent_data_plane",
     "containerd_protos",
     "datadog_protos",
+    "datadog_agent_commons",
     "ddsketch",
     "memory_accounting",
     "otlp_protos",

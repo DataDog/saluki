@@ -9,13 +9,12 @@ use saluki_context::{
     origin::OriginTagCardinality,
     tags::{SharedTagSet, TagSet},
 };
-use serde::{ser::SerializeSeq as _, Serialize};
-
-use crate::workload::{
+use saluki_env::workload::{
     entity::HighestPrecedenceEntityIdRef,
     stores::{ExternalDataStoreResolver, TagStoreQuerier},
     EntityId,
 };
+use serde::{ser::SerializeSeq as _, Serialize};
 
 #[derive(Serialize)]
 struct EntityTags {

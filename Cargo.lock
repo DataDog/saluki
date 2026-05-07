@@ -27,6 +27,7 @@ dependencies = [
  "chrono",
  "colored",
  "comfy-table",
+ "datadog-agent-commons",
  "datadog-protos",
  "derive-where",
  "foldhash 0.2.0",
@@ -41,6 +42,7 @@ dependencies = [
  "papaya",
  "prometheus-exposition",
  "prost-types",
+ "rustls",
  "saluki-api",
  "saluki-app",
  "saluki-common",
@@ -1023,6 +1025,28 @@ name = "data-encoding"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
+
+[[package]]
+name = "datadog-agent-commons"
+version = "0.1.0"
+dependencies = [
+ "backon",
+ "datadog-protos",
+ "futures",
+ "http-serde-ext",
+ "pin-project-lite",
+ "rustls",
+ "rustls-pki-types",
+ "saluki-config",
+ "saluki-error",
+ "saluki-io",
+ "saluki-metadata",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tonic",
+ "tracing",
+]
 
 [[package]]
 name = "datadog-intake"

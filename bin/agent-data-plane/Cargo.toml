@@ -19,6 +19,7 @@ bytesize = { workspace = true }
 chrono = { workspace = true }
 colored = { workspace = true }
 comfy-table = { workspace = true }
+datadog-agent-commons = { workspace = true }
 datadog-protos = { workspace = true }
 foldhash = { workspace = true }
 futures = { workspace = true }
@@ -32,6 +33,7 @@ ottl = { workspace = true }
 papaya = { workspace = true }
 prometheus-exposition = { workspace = true }
 prost-types = { workspace = true }
+rustls = { workspace = true }
 saluki-api = { workspace = true }
 saluki-app = { workspace = true }
 saluki-common = { workspace = true }

@@ -1,3 +1,5 @@
+//! Workload metadata aggregation.
+
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::health::Health;
 use tokio::{select, sync::mpsc};
@@ -14,13 +16,9 @@ const OPERATIONS_CHANNEL_SIZE: usize = 128;
 /// Aggregates the metadata from multiple collectors.
 ///
 /// Metadata collectors are used to either scrape or listen for changes in workload metadata, and convert those into
-/// [`MetadataOperation`]s that are applied to a [`TagStore`]. [`MetadataAggregator`] is a simple manager type that
+/// [`MetadataOperation`]s that are applied to a [`MetadataStore`]. [`MetadataAggregator`] is a simple manager type that
 /// controls the lifecycle of each collector added, and processes the metadata operations produced by them in order to
-/// update a single, unified tag store.
-///
-/// Tags can then be accessed through [`TagSnapshot`] (via [`MetadataAggregator::tags`]), which is a shared reference
-/// to the most up-to-date, consistent view of the tag store. This tag snapshot can be used to query for entity tags
-/// directly, with an equivalent API to [`WorkloadProvider`].
+/// update a set of [`MetadataStore`]s.
 pub struct MetadataAggregator {
     stores: Vec<Box<dyn MetadataStore + Send>>,
     operations_tx: mpsc::Sender<MetadataOperation>,
@@ -62,10 +60,8 @@ impl MetadataAggregator {
 
     /// Runs the aggregator.
     ///
-    /// This method will run indefinitely, watching for metadata changes seen by the collectors and updating the tag
-    /// store based on those changes. Changes to the tag store will be captured as a tag "snapshot", to which a shared
-    /// reference can be acquired ([`MetadataAggregator::tags`]), and the snapshot allows querying for the tags of a
-    /// specific entity.
+    /// This method will run indefinitely, watching for metadata changes seen by the collectors and updating the
+    /// configured metadata stores based on those changes.
     pub async fn run(mut self) {
         debug!("Metadata aggregator started.");
         self.health.mark_ready();

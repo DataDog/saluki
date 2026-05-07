@@ -1,3 +1,5 @@
+//! Entity identifiers.
+
 use std::{cmp::Ordering, fmt};
 
 use stringtheory::MetaString;

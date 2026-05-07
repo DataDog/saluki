@@ -4,12 +4,12 @@ use std::{
 };
 
 use async_trait::async_trait;
+use datadog_agent_commons::ipc::client::RemoteAgentClient;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::{DurationString, GenericConfiguration};
 use saluki_context::tags::{SharedTagSet, Tag};
 use saluki_core::{components::transforms::*, topology::EventsBuffer};
 use saluki_core::{components::ComponentContext, data_model::event::metric::Metric};
-use saluki_env::helpers::remote_agent::RemoteAgentClient;
 use saluki_error::GenericError;
 use stringtheory::MetaString;
 

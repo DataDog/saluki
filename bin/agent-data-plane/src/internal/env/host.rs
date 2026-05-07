@@ -1,10 +1,10 @@
 use async_trait::async_trait;
+use datadog_agent_commons::ipc::client::RemoteAgentClient;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
+use saluki_env::HostProvider;
 use saluki_error::GenericError;
 use tokio::sync::OnceCell;
-
-use crate::{helpers::remote_agent::RemoteAgentClient, HostProvider};
 
 /// Datadog Agent-based host provider.
 ///
