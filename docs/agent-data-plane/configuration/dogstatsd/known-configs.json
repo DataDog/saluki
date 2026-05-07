@@ -415,10 +415,10 @@
   },
   {
     "key": "dogstatsd_flush_incomplete_buckets",
-    "feature_state": "DIVERGENT",
-    "action": "IMPLEMENT",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Flush open buckets on shutdown",
-    "reason": "ADP implements this as aggregate_flush_open_windows; the core agent key is not recognized by ADP.",
+    "reason": "Key naming mismatch fixed in #1498. ADP reads both dogstatsd_flush_incomplete_buckets and aggregate_flush_open_windows.",
     "issue": "#1366",
     "adp_key": "aggregate_flush_open_windows"
   },
@@ -964,39 +964,39 @@
   },
   {
     "key": "enable_payloads_events",
-    "feature_state": "DIVERGENT",
-    "action": "IMPLEMENT",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Allow sending event payloads",
-    "reason": "Core agent key is enable_payloads.events (dot separator); ADP uses enable_payloads_events (underscore). Feature works in ADP but users setting the documented core agent key will be silently ignored.",
+    "reason": "Key naming mismatch fixed in #1498. ADP reads enable_payloads.events.",
     "issue": "#1366",
-    "adp_key": "enable_payloads_events"
+    "adp_key": null
   },
   {
     "key": "enable_payloads_series",
-    "feature_state": "DIVERGENT",
-    "action": "IMPLEMENT",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Allow sending series payloads",
-    "reason": "Core agent key is enable_payloads.series (dot separator); ADP uses enable_payloads_series (underscore). Same class as enable_payloads_events.",
+    "reason": "Key naming mismatch fixed in #1498. ADP reads enable_payloads.series.",
     "issue": "#1366",
-    "adp_key": "enable_payloads_series"
+    "adp_key": null
   },
   {
     "key": "enable_payloads_service_checks",
-    "feature_state": "DIVERGENT",
-    "action": "IMPLEMENT",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Allow sending svc check payloads",
-    "reason": "Core agent key is enable_payloads.service_checks (dot separator); ADP uses enable_payloads_service_checks (underscore). Same class as enable_payloads_events.",
+    "reason": "Key naming mismatch fixed in #1498. ADP reads enable_payloads.service_checks.",
     "issue": "#1366",
-    "adp_key": "enable_payloads_service_checks"
+    "adp_key": null
   },
   {
     "key": "enable_payloads_sketches",
-    "feature_state": "DIVERGENT",
-    "action": "IMPLEMENT",
+    "feature_state": "PARITY",
+    "action": "NONE",
     "description": "Allow sending sketch payloads",
-    "reason": "Core agent key is enable_payloads.sketches (dot separator); ADP uses enable_payloads_sketches (underscore). Same class as enable_payloads_events.",
+    "reason": "Key naming mismatch fixed in #1498. ADP reads enable_payloads.sketches.",
     "issue": "#1366",
-    "adp_key": "enable_payloads_sketches"
+    "adp_key": null
   },
   {
     "key": "env",
