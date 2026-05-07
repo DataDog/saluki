@@ -428,6 +428,21 @@ ifeq ($(shell command -v minikube >/dev/null || echo not-found), not-found)
 	$(error "Please install minikube: https://minikube.sigs.k8s.io/docs/start/")
 endif
 
+##@ Kind (Correctness Testing)
+
+# kind cluster lifecycle (create, load, delete) is managed by panoramic automatically
+# when running kind-runtime tests. Use --no-delete-cluster to keep the cluster alive
+# between local runs.
+
+.PHONY: check-kind-tools
+check-kind-tools:
+ifeq ($(shell command -v kind >/dev/null 2>&1 || echo not-found), not-found)
+	$(error "Please install kind: https://kind.sigs.k8s.io/docs/user/quick-start/#installation")
+endif
+ifeq ($(shell command -v kubectl >/dev/null 2>&1 || echo not-found), not-found)
+	$(error "Please install kubectl: https://kubernetes.io/docs/tasks/tools/")
+endif
+
 .PHONY: check-proxy-dumper-tools
 check-proxy-dumper-tools:
 ifeq ($(shell command -v go >/dev/null || echo not-found), not-found)
@@ -728,6 +743,14 @@ clean-airlock: ## Cleans up Airlock-related resources in Docker (used for correc
 	@docker container ls --filter label=created_by=airlock -q | xargs -r docker container rm -f
 	@docker volume ls --filter label=created_by=airlock -q | xargs -r docker volume rm -f
 	@docker network ls --filter label=created_by=airlock -q | xargs -r docker network rm -f
+
+.PHONY: clean-kind
+clean-kind: check-kind-tools ## Cleans up orphaned panoramic namespaces in the kind cluster (used for correctness tests)
+	@echo "[*] Cleaning panoramic-kind namespaces..."
+	@kubectl get namespace -l created-by=panoramic-kind -o name | xargs -r kubectl delete
+
+.PHONY: clean-correctness
+clean-correctness: clean-airlock clean-kind ## Cleans up all orphaned correctness test resources (Docker + kind)
 
 .PHONY: fmt
 fmt: check-rust-build-tools cargo-install-cargo-autoinherit cargo-install-cargo-sort

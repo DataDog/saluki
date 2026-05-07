@@ -22,6 +22,16 @@ use crate::test::{Test, TestContext, TestSuite};
 // containers, so they need more time than the default.
 const CORRECTNESS_TIMEOUT: Duration = Duration::from_mins(20);
 
+/// The container runtime backend to use for a correctness test.
+#[derive(Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Runtime {
+    /// Run test groups as Docker containers.
+    Docker,
+    /// Run test groups as pods in a kind (Kubernetes in Docker) cluster.
+    KubernetesInDocker,
+}
+
 fn default_millstone_binary_path() -> String {
     "/usr/local/bin/millstone".to_string()
 }
@@ -38,6 +48,9 @@ fn default_otlp_direct_analysis_mode() -> bool {
 pub struct Config {
     #[serde(skip)]
     pub(crate) name: String,
+
+    /// Container runtime backend to use.
+    pub runtime: Runtime,
 
     /// Analysis mode to use.
     pub analysis_mode: AnalysisMode,
@@ -162,6 +175,13 @@ impl Test for Config {
         m
     }
 
+    fn runtime(&self) -> String {
+        match self.runtime {
+            Runtime::Docker => "docker".to_string(),
+            Runtime::KubernetesInDocker => "kubernetes_in_docker".to_string(),
+        }
+    }
+
     async fn run(&self, tctx: TestContext) -> TestResult {
         crate::correctness::runner::run_correctness_test(self.name.clone(), self.clone(), tctx).await
     }
@@ -193,7 +213,7 @@ impl Config {
         Ok(config)
     }
 
-    fn get_canonicalized_config_path<P: AsRef<Path>>(&self, path: P) -> PathBuf {
+    pub fn get_canonicalized_config_path<P: AsRef<Path>>(&self, path: P) -> PathBuf {
         let path = path.as_ref();
         if path.is_absolute() {
             path.to_path_buf()

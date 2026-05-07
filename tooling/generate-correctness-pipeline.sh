@@ -17,19 +17,27 @@ stages:
   - test
 EOF
 
-# Ask panoramic for the test list. jq yields one `<case>\t<baseline-image>`
-# line per test.
+# Ask panoramic for the test list. jq yields one `<case>\t<runtime>\t<baseline-image>`
+# line per test. Kind-runtime tests use .test-correctness-kind-definition (longer timeout);
+# all cluster and image management is handled inside panoramic at runtime.
 ./target/release/panoramic list -d test/correctness --json \
-    | jq -r 'to_entries[] | "\(.key)\t\(.value.images.baseline)"' \
-    | while IFS=$'\t' read -r case baseline; do
+    | jq -r 'to_entries[] | "\(.key)\t\(.value.runtime)\t\(.value.images.baseline)"' \
+    | while IFS=$'\t' read -r case runtime baseline; do
+
+        # Pick the right base mixin depending on runtime.
+        if [[ "${runtime}" == "kubernetes_in_docker" ]]; then
+            base_mixin=".test-correctness-kind-definition"
+        else
+            base_mixin=".test-correctness-definition"
+        fi
 
         # saluki-images/* is a local-only placeholder; CI must inject the
         # registry image via the adp-baseline mixin. Real registry URLs
         # (DDOT) work as-is.
         if [[ "${baseline}" == saluki-images/* ]]; then
-            extends='[.test-correctness-definition, .test-correctness-adp-baseline]'
+            extends="[${base_mixin}, .test-correctness-adp-baseline]"
         else
-            extends='[.test-correctness-definition]'
+            extends="[${base_mixin}]"
         fi
 
         cat <<EOF

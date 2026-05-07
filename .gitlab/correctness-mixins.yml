@@ -38,3 +38,10 @@
 .test-correctness-adp-baseline:
   variables:
     PANORAMIC_BASELINE__IMAGE: ${SALUKI_IMAGE_REPO_BASE}/bundled-agent-adp:${CI_COMMIT_SHA}
+
+# Common to every kind-based correctness-test job. Extends .test-correctness-definition
+# with a longer timeout. Cluster creation, image loading, and teardown are managed by
+# panoramic itself via the kind lifecycle in k8s.rs.
+.test-correctness-kind-definition:
+  extends: .test-correctness-definition
+  timeout: 20m

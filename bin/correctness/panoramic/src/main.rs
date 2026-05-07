@@ -6,12 +6,15 @@
 use std::collections::BTreeMap;
 use std::{io::IsTerminal, path::PathBuf, process::ExitCode, time::Instant};
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch, Mutex};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt as _, util::SubscriberInitExt as _, EnvFilter};
 
 use crate::runner::Runner;
+
+mod kind;
+use self::kind::KindLifecycle;
 
 mod assertions;
 mod cli;
@@ -32,9 +35,14 @@ use self::reporter::{OutputFormat, Reporter, TestResult, TestSuiteResult};
 mod runner;
 mod test;
 mod tui;
+mod utils;
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // Install the rustls crypto provider once at startup. Both reqwest and kube use rustls 0.23,
+    // which requires an explicit provider install when multiple TLS-using crates are present.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     let cli: Cli = argh::from_env();
 
     // See if we should use TUI mode.
@@ -133,14 +141,42 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         return ExitCode::from(2);
     }
 
+    // Create the event channel early so the kind setup task can emit status messages.
+    let (tx, rx) = create_event_channel();
+
+    // Spawn kind cluster setup in the background so non-kind tests start immediately.
+    // Kind tests will wait on `kind_rx` before doing any work.
+    let kind_images = collect_kind_images(&test_cases, cmd.tests.as_deref());
+    let kind_lifecycle_slot = std::sync::Arc::new(Mutex::new(None::<KindLifecycle>));
+    let kind_rx = if kind_images.is_empty() {
+        None
+    } else {
+        let (kind_tx, kind_rx) = watch::channel::<Option<Result<(), String>>>(None);
+        let slot = kind_lifecycle_slot.clone();
+        let cluster_name = cmd.kind_cluster_name.clone();
+        let event_tx = tx.clone();
+        tokio::spawn(async move {
+            match KindLifecycle::ensure(cluster_name, kind_images, event_tx).await {
+                Ok(lc) => {
+                    *slot.lock().await = Some(lc);
+                    let _ = kind_tx.send(Some(Ok(())));
+                }
+                Err(e) => {
+                    let _ = kind_tx.send(Some(Err(format!("{:?}", e))));
+                }
+            }
+        });
+        Some(kind_rx)
+    };
+
     // Inject runtime config and build the test registry.
     let mut registry = Runner::new(log_dir.clone(), cmd.mounts_dir.clone());
+    if let Some(ref rx) = kind_rx {
+        registry = registry.with_kind_ready(rx.clone());
+    }
     for tc in test_cases {
         registry.register(tc).expect("failure to register test");
     }
-
-    // Create the event channel and cancellation token.
-    let (tx, rx) = create_event_channel();
 
     // Create a signal sender so that we can shut it down on ctrl-c.
     let cancel_all = CancellationToken::new();
@@ -177,11 +213,55 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
         run_with_logging_consumer(rx, &cmd, Some(log_dir), runner_handle).await
     };
 
+    // Tear down the kind cluster unless the caller asked to keep it.
+    if kind_rx.is_some() {
+        let lifecycle: Option<KindLifecycle> = kind_lifecycle_slot.lock().await.take();
+        if let Some(lifecycle) = lifecycle {
+            if cmd.no_delete_kind_cluster {
+                info!(
+                    "Skipping kind cluster teardown (--no-delete-kind-cluster). \
+                     Cluster '{}' is still running.",
+                    cmd.kind_cluster_name
+                );
+            } else {
+                lifecycle.teardown().await;
+            }
+        } else {
+            // lifecycle is None when setup failed after creating the cluster but before
+            // completing image loading. The cluster may still be running.
+            warn!(
+                "Kind cluster setup did not complete successfully. \
+                 A kind cluster named '{}' may still be running — run 'kind delete cluster --name {}' to clean it up.",
+                cmd.kind_cluster_name, cmd.kind_cluster_name
+            );
+        }
+    }
+
     if all_passed {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(1)
     }
+}
+
+/// Collects the unique set of images required by all kind-runtime tests in the given list.
+fn collect_kind_images(tests: &[Box<dyn test::Test>], filter: Option<&str>) -> Vec<String> {
+    use std::collections::BTreeSet;
+    let names: Vec<&str> = filter
+        .map(|f| f.split(',').map(str::trim).collect())
+        .unwrap_or_default();
+    let mut images = BTreeSet::new();
+    for test in tests {
+        if !names.is_empty() && !names.contains(&test.name().as_str()) {
+            continue;
+        }
+        if test.runtime() == "kubernetes_in_docker" {
+            for (_, image) in test.images() {
+                images.insert(image);
+            }
+        }
+    }
+    images.into_iter().collect()
 }
 
 /// Run with the TUI consumer.
@@ -267,6 +347,9 @@ async fn run_logging_consumer(
                 reporter.report_test_result(&result, log_dir);
                 results.push(result);
             }
+            Some(TestEvent::StatusLine { message }) => {
+                info!("{}", message);
+            }
             Some(TestEvent::AllDone) => {
                 break;
             }
@@ -306,6 +389,7 @@ async fn list_tests(cmd: cli::ListCommand) -> ExitCode {
                 test.name(),
                 serde_json::json!({
                     "type": test.suite(),
+                    "runtime": test.runtime(),
                     "timeout": test.timeout(),
                     "images": test.images(),
                 }),

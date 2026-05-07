@@ -29,10 +29,12 @@ RUN --mount=type=bind,from=ci-scripts,target=/scripts \
     /scripts/clean-temporary-caches.sh
 
 # Install the Docker CLI directly, as well as the CI-specific credential helper.
+# Also install kind (Kubernetes in Docker), used for kind-based correctness tests.
 #
 # We intentionally avoid basing our image off of the `docker` image because it's fat and bloated. ¯\_(ツ)_/¯
 RUN --mount=type=bind,from=ci-scripts,target=/scripts \
     /scripts/install-docker-cli.sh && \
+    /scripts/install-kind.sh && \
     /scripts/clean-temporary-caches.sh
 
 # Install Go, which we need to build AWS-LC in FIPS-compliant mode.

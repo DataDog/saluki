@@ -176,6 +176,9 @@ impl Tui {
                     self.add_line(format!("  Logs: {}", log_dir.display()));
                 }
             }
+            TestEvent::StatusLine { message } => {
+                self.add_line(message);
+            }
             TestEvent::AllDone => {
                 // Add summary line.
                 let elapsed = self.started.elapsed();
