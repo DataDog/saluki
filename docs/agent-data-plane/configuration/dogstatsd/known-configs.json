@@ -848,7 +848,7 @@
   {
     "key": "dogstatsd_stats_buffer",
     "feature_state": "DIVERGENT",
-    "action": "DOCUMENT",
+    "action": "DOCUMENTED",
     "description": "Internal stats buffer size",
     "reason": "ADP does not expose the core agent's packet-per-second expvar endpoint, so there is no persistent stats endpoint buffer to configure.",
     "issue": "#1352",
@@ -857,7 +857,7 @@
   {
     "key": "dogstatsd_stats_enable",
     "feature_state": "DIVERGENT",
-    "action": "DOCUMENT",
+    "action": "DOCUMENTED",
     "description": "Enable internal stats endpoint",
     "reason": "ADP does not expose the core agent's packet-per-second expvar endpoint. It provides on-demand metric-level DogStatsD statistics through the privileged API instead.",
     "issue": "#1352",
@@ -866,7 +866,7 @@
   {
     "key": "dogstatsd_stats_port",
     "feature_state": "DIVERGENT",
-    "action": "DOCUMENT",
+    "action": "DOCUMENTED",
     "description": "Internal stats endpoint port",
     "reason": "ADP returns metric-level DogStatsD statistics inline from the privileged API request, so there is no persistent stats endpoint port to scrape.",
     "issue": "#1352",
@@ -1793,7 +1793,7 @@
   {
     "key": "telemetry.enabled",
     "feature_state": "DIVERGENT",
-    "action": "DOCUMENT",
+    "action": "DOCUMENTED",
     "description": "Global telemetry toggle",
     "reason": "ADP uses data_plane.telemetry_enabled instead of telemetry.enabled. Operator setting telemetry.enabled won't affect ADP; must use ADP's key.",
     "issue": "#1338",
