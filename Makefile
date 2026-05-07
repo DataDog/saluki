@@ -44,7 +44,7 @@ export CARGO_TOOL_VERSION_dummyhttp ?= 1.1.0
 export CARGO_TOOL_VERSION_cargo-machete ?= 0.9.1
 export CARGO_TOOL_VERSION_rustfilt ?= 0.2.1
 export DDPROF_VERSION ?= 0.20.0
-export LADING_VERSION ?= sha-6a3171a2246681b2d6bad70076457de20374657c
+export LADING_VERSION ?= 0.32.0
 
 # Version of source repositories (Git tag) for vendored Protocol Buffers definitions.
 export PROTOBUF_SRC_REPO_DD_AGENT ?= 7.73.x
