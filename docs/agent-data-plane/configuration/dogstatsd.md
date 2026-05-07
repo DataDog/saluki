@@ -334,6 +334,10 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 | `dogstatsd_string_interner_size`          | String interner capacity         |
 | `dogstatsd_tag_cardinality`               | Default tag cardinality level    |
 | `dogstatsd_tags`                          | Extra tags added to all DSD data |
+| `enable_payloads.events`                  | Allow sending event payloads     |
+| `enable_payloads.series`                  | Allow sending series payloads    |
+| `enable_payloads.service_checks`          | Allow sending svc check payloads |
+| `enable_payloads.sketches`                | Allow sending sketch payloads    |
 | `expected_tags_duration`                  | Host tag enrichment duration     |
 | `extra_tags`                              | Additional static tags           |
 | `forwarder_backoff_base`                  | Retry backoff base (secs)        |
