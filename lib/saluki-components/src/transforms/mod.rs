@@ -9,9 +9,6 @@ pub use self::chained::ChainedConfiguration;
 mod host_enrichment;
 pub use self::host_enrichment::HostEnrichmentConfiguration;
 
-mod host_tags;
-pub use self::host_tags::HostTagsConfiguration;
-
 mod dogstatsd_mapper;
 pub use self::dogstatsd_mapper::DogStatsDMapperConfiguration;
 

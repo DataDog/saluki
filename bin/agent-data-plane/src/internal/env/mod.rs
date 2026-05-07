@@ -3,14 +3,22 @@ use saluki_config::GenericConfiguration;
 use saluki_core::health::HealthRegistry;
 use saluki_env::{
     autodiscovery::providers::BoxedAutodiscoveryProvider,
-    host::providers::{BoxedHostProvider, FixedHostProvider, RemoteAgentHostProvider},
-    workload::providers::{RemoteAgentWorkloadAPIHandler, RemoteAgentWorkloadProvider},
+    host::providers::{BoxedHostProvider, FixedHostProvider},
     EnvironmentProvider,
 };
 use saluki_error::GenericError;
 use tracing::{debug, warn};
 
 use crate::config::DataPlaneConfiguration;
+
+mod autodiscovery;
+pub use self::autodiscovery::RemoteAgentAutodiscoveryProvider;
+
+mod host;
+pub use self::host::RemoteAgentHostProvider;
+
+mod workload;
+pub use self::workload::{RemoteAgentWorkloadAPIHandler, RemoteAgentWorkloadProvider};
 
 /// Agent Data Plane-specific environment provider.
 ///
@@ -25,7 +33,6 @@ use crate::config::DataPlaneConfiguration;
 ///
 /// This will effectively disable origin enrichment (no entity tags) and cause metrics to be tagged with a fixed
 /// hostname based on the configuration value of `hostname`.
-#[allow(dead_code)]
 #[derive(Clone)]
 pub struct ADPEnvironmentProvider {
     host_provider: BoxedHostProvider,
@@ -67,10 +74,18 @@ impl ADPEnvironmentProvider {
             Some(provider)
         };
 
+        let autodiscovery_provider = if in_standalone_mode {
+            debug!("Using no-op autodiscovery provider due to standalone mode.");
+            None
+        } else {
+            let provider = RemoteAgentAutodiscoveryProvider::from_configuration(config).await?;
+            Some(BoxedAutodiscoveryProvider::from_provider(provider))
+        };
+
         Ok(Self {
             host_provider,
             workload_provider,
-            autodiscovery_provider: None,
+            autodiscovery_provider,
         })
     }
 

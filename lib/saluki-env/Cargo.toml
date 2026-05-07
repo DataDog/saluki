@@ -12,29 +12,22 @@ workspace = true
 arc-swap = { workspace = true }
 async-stream = { workspace = true }
 async-trait = { workspace = true }
-backon = { workspace = true, features = ["tokio-sleep"] }
 bitmask-enum = { workspace = true }
 containerd-protos = { workspace = true }
 datadog-protos = { workspace = true }
 fnv = { workspace = true }
 futures = { workspace = true }
-http-serde-ext = { workspace = true }
 hyper-util = { workspace = true }
 memory-accounting = { workspace = true }
-pin-project-lite = { workspace = true }
 prost = { workspace = true }
 regex = { workspace = true, features = ["std", "perf"] }
-saluki-api = { workspace = true }
 saluki-common = { workspace = true }
 saluki-config = { workspace = true }
 saluki-context = { workspace = true }
 saluki-core = { workspace = true }
 saluki-error = { workspace = true }
-saluki-io = { workspace = true }
-saluki-metadata = { workspace = true }
 saluki-metrics = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true, features = ["std"] }
 serde_yaml = { workspace = true }
 snafu = { workspace = true }
 socket2 = { workspace = true }

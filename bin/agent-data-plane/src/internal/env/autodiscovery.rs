@@ -1,13 +1,15 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
+use datadog_agent_commons::ipc::client::RemoteAgentClient;
 use futures::StreamExt;
+use saluki_config::GenericConfiguration;
+use saluki_env::autodiscovery::AutodiscoveryEvent;
+use saluki_env::AutodiscoveryProvider;
+use saluki_error::GenericError;
 use tokio::sync::broadcast::{self, Receiver, Sender};
 use tokio::sync::OnceCell;
 use tracing::{debug, info, warn};
-
-use crate::autodiscovery::{AutodiscoveryEvent, AutodiscoveryProvider};
-use crate::helpers::remote_agent::RemoteAgentClient;
 
 /// An autodiscovery provider that uses the Datadog Agent's internal gRPC API to receive autodiscovery updates.
 pub struct RemoteAgentAutodiscoveryProvider {
@@ -17,15 +19,20 @@ pub struct RemoteAgentAutodiscoveryProvider {
 }
 
 impl RemoteAgentAutodiscoveryProvider {
-    /// Creates a new `RemoteAgentAutodiscoveryProvider` that uses the remote client to receive autodiscovery updates.
-    pub fn new(client: RemoteAgentClient) -> Self {
-        let (sender, _) = broadcast::channel::<AutodiscoveryEvent>(super::AD_STREAM_CAPACITY);
+    /// Creates a new `RemoteAgentAutodiscoveryProvider` from the given configuration.
+    ///
+    /// ## Errors
+    ///
+    /// If the remote agent client could not be created, an error is returned.
+    pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        let client = RemoteAgentClient::from_configuration(config).await?;
+        let (sender, _) = broadcast::channel::<AutodiscoveryEvent>(16);
 
-        Self {
+        Ok(Self {
             client,
             sender,
             listener_init: OnceCell::new(),
-        }
+        })
     }
 
     async fn start_background_listener(&self) {

@@ -27,6 +27,7 @@ dependencies = [
  "chrono",
  "colored",
  "comfy-table",
+ "datadog-agent-commons",
  "datadog-protos",
  "derive-where",
  "foldhash 0.2.0",
@@ -41,6 +42,7 @@ dependencies = [
  "papaya",
  "prometheus-exposition",
  "prost-types",
+ "rustls",
  "saluki-api",
  "saluki-app",
  "saluki-common",
@@ -1023,6 +1025,28 @@ name = "data-encoding"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
+
+[[package]]
+name = "datadog-agent-commons"
+version = "0.1.0"
+dependencies = [
+ "backon",
+ "datadog-protos",
+ "futures",
+ "http-serde-ext",
+ "pin-project-lite",
+ "rustls",
+ "rustls-pki-types",
+ "saluki-config",
+ "saluki-error",
+ "saluki-io",
+ "saluki-metadata",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tonic",
+ "tracing",
+]
 
 [[package]]
 name = "datadog-intake"
@@ -4013,30 +4037,23 @@ dependencies = [
  "arc-swap",
  "async-stream",
  "async-trait",
- "backon",
  "bitmask-enum",
  "containerd-protos",
  "datadog-protos",
  "fnv",
  "futures",
- "http-serde-ext",
  "hyper-util",
  "memory-accounting",
- "pin-project-lite",
  "proptest",
  "prost",
  "regex",
- "saluki-api",
  "saluki-common",
  "saluki-config",
  "saluki-context",
  "saluki-core",
  "saluki-error",
- "saluki-io",
- "saluki-metadata",
  "saluki-metrics",
  "serde",
- "serde_json",
  "serde_yaml",
  "snafu",
  "socket2",
@@ -4084,7 +4101,6 @@ dependencies = [
  "rand 0.10.1",
  "rand_distr",
  "rustls",
- "rustls-pki-types",
  "saluki-common",
  "saluki-context",
  "saluki-core",

@@ -7,6 +7,7 @@
 #![deny(missing_docs)]
 use std::time::Instant;
 
+use datadog_agent_commons::platform::PlatformSettings;
 use saluki_app::bootstrap::{AppBootstrapper, Bootstrap, BootstrapGuard};
 use saluki_components::config::{DatadogRemapper, KEY_ALIASES};
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
@@ -16,11 +17,10 @@ use tracing::{error, info, warn};
 
 mod cli;
 use self::cli::*;
-use crate::internal::{logging::LoggingConfigurationTranslator, platform::PlatformSettings};
+use crate::internal::logging::LoggingConfigurationTranslator;
 
 mod components;
 mod config;
-mod env_provider;
 mod internal;
 
 pub(crate) mod state;

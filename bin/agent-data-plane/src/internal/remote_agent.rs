@@ -3,6 +3,8 @@ use std::{collections::hash_map::Entry, time::Duration};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use datadog_agent_commons::ipc::client::RemoteAgentClient;
+use datadog_agent_commons::ipc::session::{SessionId, SessionIdHandle};
 use datadog_protos::agent::{
     config_event,
     flare::v1::{flare_provider_server::*, *},
@@ -16,7 +18,6 @@ use prost_types::value::Kind;
 use saluki_common::task::spawn_traced_named;
 use saluki_config::{dynamic::ConfigUpdate, upsert, GenericConfiguration};
 use saluki_core::state::reflector::Reflector;
-use saluki_env::helpers::remote_agent::{RemoteAgentClient, SessionId, SessionIdHandle};
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::GrpcTargetAddress;
 use serde_json::{Map, Value};

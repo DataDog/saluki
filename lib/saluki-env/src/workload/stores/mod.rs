@@ -1,3 +1,5 @@
+//! Workload data stores.
+
 mod external_data;
 pub use self::external_data::{ExternalDataStore, ExternalDataStoreResolver};
 

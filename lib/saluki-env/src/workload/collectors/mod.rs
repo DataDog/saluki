@@ -1,3 +1,5 @@
+//! Workload metadata collection.
+
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -14,9 +16,6 @@ pub use self::cgroups::CgroupsMetadataCollector;
 
 mod containerd;
 pub use self::containerd::ContainerdMetadataCollector;
-
-mod remote_agent;
-pub use self::remote_agent::{RemoteAgentTaggerMetadataCollector, RemoteAgentWorkloadMetadataCollector};
 
 /// A metadata collector.
 ///

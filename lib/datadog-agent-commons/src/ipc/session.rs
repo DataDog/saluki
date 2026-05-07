@@ -1,3 +1,5 @@
+//! IPC session management.
+
 use std::{
     fmt,
     sync::{Arc, Mutex},
@@ -7,7 +9,7 @@ use saluki_error::{ErrorContext as _, GenericError};
 use tokio::sync::Notify;
 use tonic::metadata::{Ascii, MetadataValue};
 
-/// A session ID for a register remote agent.
+/// Remote agent session ID.
 ///
 /// Session IDs are acquired when registering as a remote agent with the Datadog Agent. This session ID must be provided
 /// when refreshing a remote agent's registration, as well as when streaming configuration updates. To ease passing this

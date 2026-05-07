@@ -138,7 +138,12 @@ impl OriginResolver {
         )
     }
 
-    pub(crate) fn get_resolved_origin(&self, origin: RawOrigin<'_>) -> Option<ResolvedOrigin> {
+    /// Returns the resolved origin for the given raw origin.
+    ///
+    /// If the raw origin is "empty" -- no origin information is available -- then `None` is returned.
+    ///
+    /// The resolved origin may be cached for speeding up future lookups.
+    pub fn get_resolved_origin(&self, origin: RawOrigin<'_>) -> Option<ResolvedOrigin> {
         // If there's no origin information at all, then there's nothing to key off of.
         if origin.is_empty() {
             return None;

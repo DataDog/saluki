@@ -6,19 +6,21 @@ use saluki_core::health::HealthRegistry;
 use saluki_core::runtime::Supervisor;
 use saluki_error::GenericError;
 
+use crate::config::DataPlaneConfiguration;
+
 mod control_plane;
 pub use self::control_plane::create_control_plane_supervisor;
+
+pub mod env;
+use self::env::ADPEnvironmentProvider;
 
 pub mod logging;
 
 mod observability;
 pub use self::observability::create_observability_supervisor;
 
-pub mod platform;
-
 pub mod remote_agent;
 use self::remote_agent::RemoteAgentBootstrap;
-use crate::{config::DataPlaneConfiguration, env_provider::ADPEnvironmentProvider};
 
 /// Creates the root internal supervisor containing control plane and observability subsystems.
 ///

@@ -9,28 +9,28 @@ use saluki_context::{
     tags::SharedTagSet,
 };
 use saluki_core::health::{Health, HealthRegistry};
-use saluki_error::{generic_error, GenericError};
-use stringtheory::interning::GenericMapInterner;
-
 #[cfg(target_os = "linux")]
-use crate::workload::collectors::CgroupsMetadataCollector;
-use crate::{
+use saluki_env::workload::collectors::CgroupsMetadataCollector;
+use saluki_env::{
     features::{Feature, FeatureDetector},
     workload::{
         aggregator::MetadataAggregator,
-        collectors::{
-            ContainerdMetadataCollector, RemoteAgentTaggerMetadataCollector, RemoteAgentWorkloadMetadataCollector,
-        },
+        collectors::ContainerdMetadataCollector,
         entity::EntityId,
-        on_demand_pid::OnDemandPIDResolver,
         origin::{OriginResolver, ResolvedOrigin},
         stores::{ExternalDataStore, ExternalDataStoreResolver, TagStore, TagStoreQuerier},
+        OnDemandPIDResolver,
     },
     WorkloadProvider,
 };
+use saluki_error::{generic_error, GenericError};
+use stringtheory::interning::GenericMapInterner;
 
 mod api;
 pub use self::api::RemoteAgentWorkloadAPIHandler;
+
+mod collectors;
+use self::collectors::{RemoteAgentTaggerMetadataCollector, RemoteAgentWorkloadMetadataCollector};
 
 // TODO: Make these configurable.
 

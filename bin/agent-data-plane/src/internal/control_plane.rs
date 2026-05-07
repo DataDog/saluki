@@ -1,7 +1,7 @@
-use std::path::PathBuf;
-
 use async_trait::async_trait;
+use datadog_agent_commons::ipc::{config::IpcAuthConfiguration, tls::build_ipc_server_tls_config};
 use memory_accounting::ComponentRegistry;
+use rustls::ServerConfig;
 use saluki_api::EndpointType;
 use saluki_app::{
     api::APIBuilder,
@@ -20,33 +20,13 @@ use saluki_core::{
         SupervisorFuture,
     },
 };
-use saluki_error::{ErrorContext as _, GenericError};
-use saluki_io::net::{build_datadog_agent_server_tls_config, get_ipc_cert_file_path, ServerConfig};
+use saluki_error::GenericError;
 use tracing::info;
 
 use crate::{
     config::DataPlaneConfiguration,
-    env_provider::ADPEnvironmentProvider,
-    internal::{logging::DynamicLogLevelWorker, platform::PlatformSettings, remote_agent::RemoteAgentBootstrap},
+    internal::{env::ADPEnvironmentProvider, logging::DynamicLogLevelWorker, remote_agent::RemoteAgentBootstrap},
 };
-
-/// Gets the IPC certificate file path from the configuration.
-fn get_cert_path_from_config(config: &GenericConfiguration) -> Result<PathBuf, GenericError> {
-    let auth_token_file_path = config
-        .try_get_typed::<PathBuf>("auth_token_file_path")
-        .error_context("Failed to get Agent auth token file path.")?
-        .unwrap_or_else(PlatformSettings::get_auth_token_path);
-
-    let ipc_cert_file_path = config
-        .try_get_typed::<Option<PathBuf>>("ipc_cert_file_path")
-        .error_context("Failed to get Agent IPC cert file path.")?
-        .flatten();
-
-    Ok(get_ipc_cert_file_path(
-        ipc_cert_file_path.as_ref(),
-        &auth_token_file_path,
-    ))
-}
 
 /// A worker that serves the privileged HTTP API with TLS.
 ///
@@ -72,8 +52,8 @@ impl PrivilegedApiWorker {
         config: GenericConfiguration, dp_config: DataPlaneConfiguration, env_provider: ADPEnvironmentProvider,
         dsd_stats_config: DogStatsDStatisticsConfiguration, ra_bootstrap: Option<RemoteAgentBootstrap>,
     ) -> Result<Self, GenericError> {
-        let cert_path = get_cert_path_from_config(&config)?;
-        let tls_config = build_datadog_agent_server_tls_config(cert_path).await?;
+        let ipc_config = IpcAuthConfiguration::from_configuration(&config)?;
+        let tls_config = build_ipc_server_tls_config(ipc_config.ipc_cert_file_path()).await?;
 
         Ok(Self {
             config,

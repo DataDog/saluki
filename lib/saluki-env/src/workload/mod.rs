@@ -1,20 +1,20 @@
 //! Workload provider.
 //!
-//! This modules provides the `WorkloadProvider` trait, which deals with providing information about workloads running on
-//! the process host.
+//! This modules provides the `WorkloadProvider` trait, which deals with providing information about workloads running
+//! on the process host.
 //!
-//! A number of building blocks are included -- generic entity identifiers, tag storage, metadata collection and
-//! aggregation -- along with a default workload provider implementation based on the Datadog Agent.
+//! A number of building blocks are included: generic entity identifiers, tag storage, metadata collection and
+//! aggregation.
 
 use saluki_context::{
     origin::{OriginTagCardinality, RawOrigin},
     tags::SharedTagSet,
 };
 
-mod aggregator;
-mod collectors;
+pub mod aggregator;
+pub mod collectors;
 
-mod entity;
+pub mod entity;
 pub use self::entity::EntityId;
 
 mod helpers;
@@ -22,13 +22,14 @@ mod metadata;
 pub use self::metadata::{MetadataAction, MetadataOperation};
 
 mod on_demand_pid;
+pub use self::on_demand_pid::OnDemandPIDResolver;
 
 pub mod origin;
 use self::origin::ResolvedOrigin;
 
 pub mod providers;
 
-mod stores;
+pub mod stores;
 
 /// Provides information about workloads running on the process host.
 pub trait WorkloadProvider {

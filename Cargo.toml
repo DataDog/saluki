@@ -6,6 +6,7 @@ members = [
   "bin/correctness/millstone",
   "bin/correctness/panoramic",
   "bin/correctness/stele",
+  "lib/datadog-agent-commons",
   "lib/ddsketch",
   "lib/memory-accounting",
   "lib/ottl",
@@ -37,6 +38,7 @@ license = "Apache-2.0"
 repository = "https://github.com/DataDog/saluki"
 
 [workspace.dependencies]
+datadog-agent-commons = { path = "lib/datadog-agent-commons" }
 datadog-protos = { path = "lib/protos/datadog" }
 containerd-protos = { path = "lib/protos/containerd" }
 ddsketch = { path = "lib/ddsketch" }

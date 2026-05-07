@@ -22,18 +22,23 @@ pub struct PlatformSettings;
 
 impl PlatformSettings {
     /// Returns the path to the default Datadog Agent configuration directory.
-    pub fn get_config_dir_path() -> PathBuf {
-        PathBuf::from(DATADOG_AGENT_CONF_DIR)
+    pub fn get_config_dir_path() -> &'static Path {
+        Path::new(DATADOG_AGENT_CONF_DIR)
     }
 
     /// Returns the path to the default Datadog Agent configuration file.
     pub fn get_config_file_path() -> PathBuf {
-        Path::new(DATADOG_AGENT_CONF_DIR).join("datadog.yaml")
+        Self::get_config_dir_path().join("datadog.yaml")
     }
 
     /// Returns the path to the default Datadog Agent authentication token.
     pub fn get_auth_token_path() -> PathBuf {
-        Path::new(DATADOG_AGENT_CONF_DIR).join("auth_token")
+        Self::get_config_dir_path().join("auth_token")
+    }
+
+    /// Returns the filename of the IPC certificate file.
+    pub fn get_ipc_cert_filename() -> &'static Path {
+        Path::new("ipc_cert.pem")
     }
 
     /// Returns the default log file path for the Agent Data Plane.

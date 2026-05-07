@@ -41,7 +41,7 @@ impl LocalAutodiscoveryProvider {
             })
             .collect();
 
-        let (sender, _) = broadcast::channel::<AutodiscoveryEvent>(super::AD_STREAM_CAPACITY);
+        let (sender, _) = broadcast::channel::<AutodiscoveryEvent>(16);
 
         Self {
             search_paths,
