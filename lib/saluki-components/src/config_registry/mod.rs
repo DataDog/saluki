@@ -8,9 +8,12 @@
 //! configuration surface as an operator would see it, and can be used at runtime to detect
 //! unknown or unsupported keys in a loaded configuration file.
 
+mod classifier;
 pub mod datadog;
 /// Generated schema entries from the vendored Datadog Agent config schema.
 pub mod generated;
+
+pub use classifier::{Classification, ConfigClassifier};
 
 pub use self::datadog::{ALL_ANNOTATIONS, SUPPORTED_ANNOTATIONS, SUPPORTED_KEYS, UNSUPPORTED_ANNOTATIONS};
 pub use self::generated::schema::{ALL_SCHEMA_ENTRIES, IGNORED_ENTRIES};
