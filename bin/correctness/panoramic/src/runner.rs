@@ -184,20 +184,14 @@ impl Runner {
 
             // Kind tests wait for cluster readiness before acquiring a concurrency slot.
             if test.runtime() == "kubernetes_in_docker" {
-                if let Some(ref rx) = self.kind_ready {
+                if let Some(mut rx) = self.kind_ready.clone() {
                     loop {
-                        let is_ready = rx.lock().await.borrow().is_some();
-                        if is_ready {
+                        if rx.borrow().is_some() {
                             break;
                         }
                         tokio::select! {
                             _ = cancel_all.cancelled() => break,
-                            result = {
-                                let mut rx = rx.lock().await;
-                                async move { rx.changed().await }
-                            } => {
-                                if result.is_err() { break; }
-                            }
+                            result = rx.changed() => { if result.is_err() { break; } }
                         }
                     }
                 }
@@ -236,7 +230,7 @@ impl Runner {
             let cancel = cancel_all.clone();
             let log_base_dir = self.log_base_dir.clone();
             let mounts_dir = self.mounts_dir.clone();
-            let kind_ready = self.kind_ready.clone();
+            let mut kind_ready = self.kind_ready.clone();
             futures.push(async move {
                 if cancel.is_cancelled() {
                     return None;
@@ -245,22 +239,14 @@ impl Runner {
                 // Kind tests wait for cluster readiness before acquiring a concurrency slot
                 // so they don't starve Docker tests while the cluster is being set up.
                 if test.runtime() == "kubernetes_in_docker" {
-                    if let Some(ref rx) = kind_ready {
+                    if let Some(ref mut rx) = kind_ready {
                         loop {
-                            // Drop the lock between iterations so all concurrent kind tests
-                            // can check simultaneously rather than serializing.
-                            let is_ready = rx.lock().await.borrow().is_some();
-                            if is_ready {
+                            if rx.borrow().is_some() {
                                 break;
                             }
                             tokio::select! {
                                 _ = cancel.cancelled() => break,
-                                result = {
-                                    let mut rx = rx.lock().await;
-                                    async move { rx.changed().await }
-                                } => {
-                                    if result.is_err() { break; }
-                                }
+                                result = rx.changed() => { if result.is_err() { break; } }
                             }
                         }
                     }

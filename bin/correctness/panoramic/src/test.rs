@@ -1,11 +1,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{watch, Mutex};
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::reporter::TestResult;
@@ -13,9 +12,9 @@ use crate::reporter::TestResult;
 /// Signal used to notify kind-runtime tests when the cluster is ready.
 ///
 /// The receiver holds `None` until setup completes, then `Some(Ok(()))` on success or
-/// `Some(Err(message))` on failure. Wrapped in `Arc<Mutex<_>>` so multiple concurrent kind
-/// tests can each wait on it.
-pub(crate) type KindReadyReceiver = Arc<Mutex<watch::Receiver<Option<Result<(), String>>>>>;
+/// `Some(Err(message))` on failure. `watch::Receiver` implements `Clone`, so each task
+/// gets its own independent receiver with its own "last seen" mark — no mutex needed.
+pub(crate) type KindReadyReceiver = watch::Receiver<Option<Result<(), String>>>;
 
 #[derive(Debug, Default, Clone, Copy, Eq, Ord, PartialOrd, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

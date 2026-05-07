@@ -18,7 +18,8 @@ stages:
 EOF
 
 # Ask panoramic for the test list. jq yields one `<case>\t<runtime>\t<baseline-image>`
-# line per test. kind-runtime tests are excluded from the Docker-based dynamic pipeline.
+# line per test. Kind-runtime tests use .test-correctness-kind-definition (longer timeout);
+# all cluster and image management is handled inside panoramic at runtime.
 ./target/release/panoramic list -d test/correctness --json \
     | jq -r 'to_entries[] | "\(.key)\t\(.value.runtime)\t\(.value.images.baseline)"' \
     | while IFS=$'\t' read -r case runtime baseline; do

@@ -46,7 +46,7 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
     // Wait for the kind cluster to be ready. The runner already waited before acquiring a concurrency
     // slot, so this is a fast-path check — the value should already be Some by the time we get here.
     if let Some(ref rx) = tctx.kind_ready {
-        let status: Option<Result<(), String>> = rx.lock().await.borrow().clone();
+        let status: Option<Result<(), String>> = rx.borrow().clone();
         match status {
             Some(Ok(())) => {}
             Some(Err(e)) => {

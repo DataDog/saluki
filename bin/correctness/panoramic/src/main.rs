@@ -166,7 +166,7 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
                 }
             }
         });
-        Some(std::sync::Arc::new(Mutex::new(kind_rx)))
+        Some(kind_rx)
     };
 
     // Inject runtime config and build the test registry.
@@ -177,8 +177,6 @@ async fn run_tests(cmd: cli::RunCommand, use_tui: bool) -> ExitCode {
     for tc in test_cases {
         registry.register(tc).expect("failure to register test");
     }
-
-    // Cancellation token for the test run.
 
     // Create a signal sender so that we can shut it down on ctrl-c.
     let cancel_all = CancellationToken::new();
