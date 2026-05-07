@@ -3,7 +3,7 @@ use std::num::NonZeroUsize;
 use bytes::{BufMut as _, Bytes, BytesMut};
 use bytesize::ByteSize;
 use lading_payload::{opentelemetry::metric::OpentelemetryMetrics, DogStatsD, OpentelemetryTraces};
-use rand::{rngs::StdRng, Rng, SeedableRng as _};
+use rand::{rngs::StdRng, SeedableRng as _};
 use saluki_error::{generic_error, GenericError};
 use tracing::info;
 
@@ -66,10 +66,7 @@ fn get_finalized_corpus_blueprint(config: &Config) -> Result<CorpusBlueprint, Ge
     Ok(blueprint)
 }
 
-fn generate_payloads<R>(mut rng: R, blueprint: CorpusBlueprint) -> Result<(Vec<Bytes>, ByteSize), GenericError>
-where
-    R: Rng,
-{
+fn generate_payloads(mut rng: StdRng, blueprint: CorpusBlueprint) -> Result<(Vec<Bytes>, ByteSize), GenericError> {
     let mut payloads = Vec::new();
 
     match blueprint.payload {
@@ -77,7 +74,7 @@ where
             // We set our `max_bytes` to 8192, which is the default packet size for the Datadog Agent's DogStatsD
             // server. It _can_ be increased beyond that, but rarely is, and so that's the fixed size we're going to
             // target here.
-            let mut generator = DogStatsD::new(config, &mut rng)?;
+            let mut generator = DogStatsD::new(&config, &mut rng)?;
             generate_payloads_inner(&mut generator, rng, &mut payloads, blueprint.size, 8192)?
         }
         Payload::OpenTelemetryMetrics(config) => {
@@ -99,12 +96,11 @@ where
     }
 }
 
-fn generate_payloads_inner<G, R>(
-    generator: &mut G, mut rng: R, payloads: &mut Vec<Bytes>, size: NonZeroUsize, max_bytes: usize,
+fn generate_payloads_inner<G>(
+    generator: &mut G, mut rng: StdRng, payloads: &mut Vec<Bytes>, size: NonZeroUsize, max_bytes: usize,
 ) -> Result<(), GenericError>
 where
     G: lading_payload::Serialize,
-    R: Rng,
 {
     for _ in 0..size.get() {
         let mut payload = BytesMut::new();
