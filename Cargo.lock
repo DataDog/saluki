@@ -4044,7 +4044,6 @@ dependencies = [
  "futures",
  "hyper-util",
  "memory-accounting",
- "pin-project-lite",
  "proptest",
  "prost",
  "regex",

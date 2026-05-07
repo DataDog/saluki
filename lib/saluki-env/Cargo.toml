@@ -19,7 +19,6 @@ fnv = { workspace = true }
 futures = { workspace = true }
 hyper-util = { workspace = true }
 memory-accounting = { workspace = true }
-pin-project-lite = { workspace = true }
 prost = { workspace = true }
 regex = { workspace = true, features = ["std", "perf"] }
 saluki-common = { workspace = true }
