@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["BoxedHostProvider","FixedHostProvider","RemoteAgentHostProvider"]};
+window.SIDEBAR_ITEMS = {"struct":["BoxedHostProvider","FixedHostProvider"]};

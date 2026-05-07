@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"struct":["CgroupsMetadataCollector","ContainerdMetadataCollector","MetadataCollectorWorker"],"trait":["MetadataCollector"]};

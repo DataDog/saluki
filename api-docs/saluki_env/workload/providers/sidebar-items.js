@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["NoopWorkloadProvider","RemoteAgentWorkloadAPIHandler","RemoteAgentWorkloadProvider"]};
+window.SIDEBAR_ITEMS = {"struct":["NoopWorkloadProvider"]};

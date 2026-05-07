@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["autodiscovery","features","helpers","host","workload"],"trait":["EnvironmentProvider"]};
+window.SIDEBAR_ITEMS = {"mod":["autodiscovery","features","host","workload"],"trait":["EnvironmentProvider"]};

@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["EntityId","MetadataAction"],"mod":["origin","providers"],"struct":["MetadataOperation"],"trait":["WorkloadProvider"]};
+window.SIDEBAR_ITEMS = {"enum":["MetadataAction"],"mod":["aggregator","collectors","entity","origin","providers","stores"],"struct":["MetadataOperation","OnDemandPIDResolver"],"trait":["WorkloadProvider"]};
