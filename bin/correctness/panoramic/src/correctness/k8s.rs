@@ -12,7 +12,7 @@ use k8s_openapi::{
     apimachinery::pkg::apis::meta::v1::ObjectMeta,
 };
 use kube::{
-    api::{Api, DeleteParams, LogParams, PostParams},
+    api::{Api, AttachParams, DeleteParams, LogParams, PostParams},
     Client,
 };
 use rand::{distr::SampleString as _, rng};
@@ -206,23 +206,17 @@ async fn run_group(
 
     // 2. Create ConfigMaps for config files that need to be injected.
     //    - One ConfigMap per unique target-container directory derived from `files:` entries.
-    //    - One ConfigMap for the millstone config.
     //    (datadog-intake hardcodes 0.0.0.0:2049 and ignores any config file.)
-    let millstone_config_content = std::fs::read_to_string(&millstone_cfg.config_path).with_error_context(|| {
+    //    Millstone's config is NOT a ConfigMap: the pod mounts an EmptyDir at /etc/millstone and
+    //    the harness writes the config there after the pod is Running, once it knows the pod UID
+    //    and container IDs. This allows the config to contain real runtime values for origin
+    //    detection extension fields (|c:, |e:) that are only known after scheduling.
+    let millstone_config_template = std::fs::read_to_string(&millstone_cfg.config_path).with_error_context(|| {
         format!(
             "Failed to read millstone config: {}",
             millstone_cfg.config_path.display()
         )
     })?;
-
-    create_config_map(
-        client.clone(),
-        &namespace,
-        "millstone-config",
-        [("config.toml".to_string(), millstone_config_content)].into(),
-    )
-    .await
-    .error_context("Failed to create millstone ConfigMap")?;
 
     // Parse target files and group by container directory so we create one ConfigMap per mount point.
     let (agent_volumes, agent_volume_mounts) =
@@ -260,7 +254,34 @@ async fn run_group(
         .await
         .with_error_context(|| format!("Pod in namespace '{}' failed to reach Running phase", namespace))?;
 
-    // 5. Stream container logs to the log directory (best-effort; errors are logged and ignored).
+    // 5. Gather the pod UID and millstone container ID, then write the millstone config.
+    //    These values are only available after scheduling. The config template may contain
+    //    {{POD_UID}} and {{CONTAINER_ID}} placeholders that are substituted here.
+    //    Millstone's wait script blocks until the config file appears, so this write must
+    //    happen before the agent creates its DSD socket — which takes a few seconds after
+    //    the pod reaches Running, giving us a clean ordering window.
+    let origin_data = gather_pod_origin_data(&pod_api, POD_NAME)
+        .await
+        .with_error_context(|| format!("Failed to gather origin data from pod in namespace '{}'", namespace))?;
+
+    debug!(
+        "Pod origin data: pod_uid={}, millstone_container_id={}",
+        origin_data.pod_uid, origin_data.millstone_container_id
+    );
+
+    let millstone_config_content = substitute_origin_placeholders(&millstone_config_template, &origin_data);
+    exec_write_file(
+        client.clone(),
+        &namespace,
+        POD_NAME,
+        "millstone",
+        "/etc/millstone/config.toml",
+        &millstone_config_content,
+    )
+    .await
+    .with_error_context(|| format!("Failed to write millstone config in namespace '{}'", namespace))?;
+
+    // 6. Stream container logs to the log directory (best-effort; errors are logged and ignored).
     {
         if let Err(e) = tokio::fs::create_dir_all(&log_dir).await {
             warn!("Failed to create log directory '{}': {}", log_dir.display(), e);
@@ -277,7 +298,7 @@ async fn run_group(
         }
     }
 
-    // 6. Start a local port-forward to datadog-intake's port 2049.
+    // 7. Start a local port-forward to datadog-intake's port 2049.
     let pf_cancel = CancellationToken::new();
     let local_port = start_port_forward(
         client.clone(),
@@ -294,7 +315,7 @@ async fn run_group(
         local_port, POD_NAME
     );
 
-    // 7. Wait for the millstone container to exit successfully.
+    // 8. Wait for the millstone container to exit successfully.
     wait_for_millstone_exit(&pod_api, POD_NAME, MILLSTONE_EXIT_TIMEOUT)
         .await
         .with_error_context(|| format!("Millstone container in namespace '{}' did not exit cleanly", namespace))?;
@@ -304,10 +325,10 @@ async fn run_group(
         namespace, FLUSH_WAIT
     );
 
-    // 8. Wait for the aggregation flush interval.
+    // 9. Wait for the aggregation flush interval.
     sleep(FLUSH_WAIT).await;
 
-    // 9. Collect telemetry from datadog-intake via the forwarded port.
+    // 10. Collect telemetry from datadog-intake via the forwarded port.
     let data = CollectedData::for_port(local_port).await.with_error_context(|| {
         format!(
             "Failed to collect telemetry from datadog-intake in namespace '{}'",
@@ -373,12 +394,11 @@ fn build_pod(cfg: PodConfig<'_>) -> Pod {
             }),
             ..Default::default()
         },
+        // EmptyDir so the harness can write the config after the pod is Running, substituting
+        // real pod UID and container ID values into the template.
         Volume {
             name: "millstone-config".to_string(),
-            config_map: Some(ConfigMapVolumeSource {
-                name: Some("millstone-config".to_string()),
-                ..Default::default()
-            }),
+            empty_dir: Some(EmptyDirVolumeSource::default()),
             ..Default::default()
         },
     ];
@@ -421,8 +441,10 @@ fn build_pod(cfg: PodConfig<'_>) -> Pod {
     target_mounts.extend(agent_extra_mounts);
 
     // Millstone waits for the DSD socket before sending, ensuring the agent is ready.
+    // Wait for both the config file (written by the harness after pod Running) and the DSD
+    // socket (created by the agent after initialization) before starting millstone.
     let millstone_wait_cmd = format!(
-        "until [ -S /airlock/metrics.sock ]; do sleep 1; done; exec {} /etc/millstone/config.toml",
+        "until [ -f /etc/millstone/config.toml ] && [ -S /airlock/metrics.sock ]; do sleep 1; done; exec {} /etc/millstone/config.toml",
         millstone_binary
     );
 
@@ -789,6 +811,104 @@ async fn start_port_forward(
     });
 
     Ok(local_port)
+}
+
+// ---------------------------------------------------------------------------
+// Pod origin data
+// ---------------------------------------------------------------------------
+
+/// Runtime origin data extracted from a running pod, used to substitute placeholders in the
+/// millstone config template before writing it into the pod.
+struct PodOriginData {
+    /// Kubernetes UID of the pod (e.g. `"a1b2c3d4-..."`).
+    pod_uid: String,
+    /// Container ID of the millstone container, with the `containerd://` scheme stripped
+    /// (e.g. `"abc123..."`). This is the ID the agent resolves via the containerd socket.
+    millstone_container_id: String,
+}
+
+/// Queries the running pod to extract its UID and the millstone container's runtime container ID.
+///
+/// Must be called after the pod has reached Running phase.
+async fn gather_pod_origin_data(pods: &Api<Pod>, pod_name: &str) -> Result<PodOriginData, GenericError> {
+    let pod = pods
+        .get(pod_name)
+        .await
+        .map_err(|e| generic_error!("Failed to get pod '{}': {}", pod_name, e))?;
+
+    let pod_uid = pod
+        .metadata
+        .uid
+        .ok_or_else(|| generic_error!("Pod '{}' has no UID", pod_name))?;
+
+    let millstone_container_id = pod
+        .status
+        .as_ref()
+        .and_then(|s| s.container_statuses.as_ref())
+        .and_then(|cs| cs.iter().find(|c| c.name == "millstone"))
+        .and_then(|c| c.container_id.as_deref())
+        .map(|id| id.trim_start_matches("containerd://").to_string())
+        .ok_or_else(|| {
+            generic_error!(
+                "Could not find container ID for 'millstone' container in pod '{}'",
+                pod_name
+            )
+        })?;
+
+    Ok(PodOriginData {
+        pod_uid,
+        millstone_container_id,
+    })
+}
+
+/// Replaces `{{POD_UID}}` and `{{CONTAINER_ID}}` placeholder tokens in the millstone config
+/// template with the real runtime values from the pod.
+///
+/// Tests that do not use these placeholders are unaffected: the substitution is a no-op.
+fn substitute_origin_placeholders(template: &str, origin: &PodOriginData) -> String {
+    template
+        .replace("{{POD_UID}}", &origin.pod_uid)
+        .replace("{{CONTAINER_ID}}", &origin.millstone_container_id)
+}
+
+/// Writes `content` to `path` inside `container` by running `cat > path` via the k8s exec API
+/// and streaming the content to its stdin.
+async fn exec_write_file(
+    client: Client, namespace: &str, pod_name: &str, container: &str, path: &str, content: &str,
+) -> Result<(), GenericError> {
+    use tokio::io::AsyncWriteExt as _;
+
+    let pods: Api<Pod> = Api::namespaced(client, namespace);
+    let ap = AttachParams::default()
+        .container(container)
+        .stdin(true)
+        .stdout(false)
+        .stderr(false)
+        .tty(false);
+
+    let mut proc = pods
+        .exec(pod_name, vec!["sh", "-c", &format!("cat > '{}'", path)], &ap)
+        .await
+        .with_error_context(|| {
+            format!(
+                "Failed to exec into container '{}' in pod '{}/{}'",
+                container, namespace, pod_name
+            )
+        })?;
+
+    if let Some(mut stdin) = proc.stdin() {
+        stdin
+            .write_all(content.as_bytes())
+            .await
+            .error_context("Failed to write config content to exec stdin")?;
+        stdin.shutdown().await.error_context("Failed to close exec stdin")?;
+    }
+
+    proc.join()
+        .await
+        .map_err(|e| generic_error!("Exec command failed: {}", e))?;
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
