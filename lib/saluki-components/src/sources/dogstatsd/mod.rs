@@ -35,7 +35,7 @@ use saluki_io::{
     buf::{BytesBuffer, ClearableIoBuffer as _, FixedSizeVec},
     deser::{
         codec::dogstatsd::*,
-        framing::{Framer as _, FramingError},
+        framing::{FramerExt as _, FramingError},
     },
     net::{
         listener::{Listener, ListenerError},
@@ -438,8 +438,8 @@ impl EolRequired {
                 "uds" => eol_required.uds = true,
                 "named_pipe" => {}
                 _ => warn!(
-                    value = value.as_str(),
-                    "Invalid dogstatsd_eol_required value. Expected 'true' or 'false'"
+                    value,
+                    "Invalid dogstatsd_eol_required value. Expected 'udp', 'uds', or 'named_pipe'."
                 ),
             }
         }
@@ -1043,8 +1043,9 @@ async fn drive_stream(
                     );
 
                     'frame: loop {
-                        match framer.next_frame(&mut *io_buffer, reached_eof) {
-                            Ok(Some(frame)) => {
+                        let next_frame = io_buffer.framed(&mut framer, reached_eof).next();
+                        match next_frame {
+                            Some(Ok(frame)) => {
                                 trace!(%listen_addr, %peer_addr, ?frame, "Decoded frame.");
                                 match handle_frame(&frame[..], &codec, &mut context_resolvers, &metrics, &peer_addr, enabled_filter, &additional_tags) {
                                     Ok(Some(event)) => {
@@ -1066,7 +1067,7 @@ async fn drive_stream(
                                     },
                                 }
                             }
-                            Err(e) => {
+                            Some(Err(e)) => {
                                 metrics.framing_errors().increment(1);
                                 if should_warn_stream_log_too_big(&listen_addr, &e, stream_log_too_big) {
                                     warn!(
@@ -1088,7 +1089,7 @@ async fn drive_stream(
                                     break 'read;
                                 }
                             }
-                            Ok(None) => {
+                            None => {
                                 trace!(%listen_addr, %peer_addr, "Not enough data to decode another frame.");
                                 if eof && !stream.is_connectionless() {
                                     debug!(%listen_addr, %peer_addr, "Stream received EOF. Shutting down handler.");

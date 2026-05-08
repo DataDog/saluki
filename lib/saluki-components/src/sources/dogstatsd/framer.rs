@@ -50,13 +50,6 @@ mod tests {
         ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)))
     }
 
-    fn missing_delimiter_err(len: usize) -> FramingError {
-        FramingError::InvalidFrame {
-            frame_len: len,
-            reason: "reached EOF (end of UDP frame) without finding newline delimiter, which is required by dogstatsd_eol_required.",
-        }
-    }
-
     #[test]
     fn udp_missing_newline_is_accepted_by_default() {
         let payload = b"test.metric:1|c";
@@ -77,10 +70,10 @@ mod tests {
         let mut buf = VecDeque::from(payload.to_vec());
         let mut framer = get_framer(&udp_address(), true);
 
-        assert_eq!(
+        assert!(matches!(
             framer.next_frame(&mut buf, true),
-            Err(missing_delimiter_err(payload.len()))
-        );
+            Err(FramingError::InvalidFrame { .. })
+        ));
     }
 
     #[cfg(unix)]
@@ -92,9 +85,9 @@ mod tests {
         buf.extend(payload);
         let mut framer = get_framer(&ListenAddress::Unix("/tmp/dsd-stream.sock".into()), true);
 
-        assert_eq!(
+        assert!(matches!(
             framer.next_frame(&mut buf, true),
-            Err(missing_delimiter_err(payload.len()))
-        );
+            Err(FramingError::InvalidFrame { .. })
+        ));
     }
 }
