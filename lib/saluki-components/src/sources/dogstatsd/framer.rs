@@ -53,7 +53,7 @@ mod tests {
     fn missing_delimiter_err(len: usize) -> FramingError {
         FramingError::InvalidFrame {
             frame_len: len,
-            reason: "reached EOF without finding newline delimiter",
+            reason: "reached EOF (end of UDP frame) without finding newline delimiter, which is required by dogstatsd_eol_required.",
         }
     }
 
