@@ -135,20 +135,20 @@
 <a href=#135 id=135 data-nosnippet>135</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#136 id=136 data-nosnippet>136</a>    };
 <a href=#137 id=137 data-nosnippet>137</a>
-<a href=#138 id=138 data-nosnippet>138</a>    <span class="doccomment">/// `dogstatsd_non_local_traffic` — accept packets from non-localhost addresses.
-<a href=#139 id=139 data-nosnippet>139</a>    </span>DOGSTATSD_NON_LOCAL_TRAFFIC = SalukiAnnotation {
-<a href=#140 id=140 data-nosnippet>140</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_NON_LOCAL_TRAFFIC,
+<a href=#138 id=138 data-nosnippet>138</a>    <span class="doccomment">/// `dogstatsd_eol_required` — require newline-terminated messages for selected listener types.
+<a href=#139 id=139 data-nosnippet>139</a>    </span>DOGSTATSD_EOL_REQUIRED = SalukiAnnotation {
+<a href=#140 id=140 data-nosnippet>140</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_EOL_REQUIRED,
 <a href=#141 id=141 data-nosnippet>141</a>        support_level: SupportLevel::Full,
 <a href=#142 id=142 data-nosnippet>142</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#143 id=143 data-nosnippet>143</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#144 id=144 data-nosnippet>144</a>        used_by: <span class="kw-2">&amp;</span>[structs::DOGSTATSD_CONFIGURATION],
 <a href=#145 id=145 data-nosnippet>145</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#146 id=146 data-nosnippet>146</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#146 id=146 data-nosnippet>146</a>        test_json: <span class="prelude-val">Some</span>(<span class="string">r#"["udp"]"#</span>),
 <a href=#147 id=147 data-nosnippet>147</a>    };
 <a href=#148 id=148 data-nosnippet>148</a>
-<a href=#149 id=149 data-nosnippet>149</a>    <span class="doccomment">/// `dogstatsd_origin_detection` — enable UDS-based origin detection.
-<a href=#150 id=150 data-nosnippet>150</a>    </span>DOGSTATSD_ORIGIN_DETECTION = SalukiAnnotation {
-<a href=#151 id=151 data-nosnippet>151</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_ORIGIN_DETECTION,
+<a href=#149 id=149 data-nosnippet>149</a>    <span class="doccomment">/// `dogstatsd_non_local_traffic` — accept packets from non-localhost addresses.
+<a href=#150 id=150 data-nosnippet>150</a>    </span>DOGSTATSD_NON_LOCAL_TRAFFIC = SalukiAnnotation {
+<a href=#151 id=151 data-nosnippet>151</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_NON_LOCAL_TRAFFIC,
 <a href=#152 id=152 data-nosnippet>152</a>        support_level: SupportLevel::Full,
 <a href=#153 id=153 data-nosnippet>153</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#154 id=154 data-nosnippet>154</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -157,9 +157,9 @@
 <a href=#157 id=157 data-nosnippet>157</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#158 id=158 data-nosnippet>158</a>    };
 <a href=#159 id=159 data-nosnippet>159</a>
-<a href=#160 id=160 data-nosnippet>160</a>    <span class="doccomment">/// `dogstatsd_origin_detection_client` — enable container enrichment fields.
-<a href=#161 id=161 data-nosnippet>161</a>    </span>DOGSTATSD_ORIGIN_DETECTION_CLIENT = SalukiAnnotation {
-<a href=#162 id=162 data-nosnippet>162</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_ORIGIN_DETECTION_CLIENT,
+<a href=#160 id=160 data-nosnippet>160</a>    <span class="doccomment">/// `dogstatsd_origin_detection` — enable UDS-based origin detection.
+<a href=#161 id=161 data-nosnippet>161</a>    </span>DOGSTATSD_ORIGIN_DETECTION = SalukiAnnotation {
+<a href=#162 id=162 data-nosnippet>162</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_ORIGIN_DETECTION,
 <a href=#163 id=163 data-nosnippet>163</a>        support_level: SupportLevel::Full,
 <a href=#164 id=164 data-nosnippet>164</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#165 id=165 data-nosnippet>165</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -168,9 +168,9 @@
 <a href=#168 id=168 data-nosnippet>168</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#169 id=169 data-nosnippet>169</a>    };
 <a href=#170 id=170 data-nosnippet>170</a>
-<a href=#171 id=171 data-nosnippet>171</a>    <span class="doccomment">/// `dogstatsd_origin_optout_enabled` — skip enrichment when cardinality=none.
-<a href=#172 id=172 data-nosnippet>172</a>    </span>DOGSTATSD_ORIGIN_OPTOUT_ENABLED = SalukiAnnotation {
-<a href=#173 id=173 data-nosnippet>173</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_ORIGIN_OPTOUT_ENABLED,
+<a href=#171 id=171 data-nosnippet>171</a>    <span class="doccomment">/// `dogstatsd_origin_detection_client` — enable container enrichment fields.
+<a href=#172 id=172 data-nosnippet>172</a>    </span>DOGSTATSD_ORIGIN_DETECTION_CLIENT = SalukiAnnotation {
+<a href=#173 id=173 data-nosnippet>173</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_ORIGIN_DETECTION_CLIENT,
 <a href=#174 id=174 data-nosnippet>174</a>        support_level: SupportLevel::Full,
 <a href=#175 id=175 data-nosnippet>175</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#176 id=176 data-nosnippet>176</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -179,31 +179,31 @@
 <a href=#179 id=179 data-nosnippet>179</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#180 id=180 data-nosnippet>180</a>    };
 <a href=#181 id=181 data-nosnippet>181</a>
-<a href=#182 id=182 data-nosnippet>182</a>    <span class="doccomment">/// `dogstatsd_port` — UDP port. Schema says Float; field is u16.
-<a href=#183 id=183 data-nosnippet>183</a>    </span>DOGSTATSD_PORT = SalukiAnnotation {
-<a href=#184 id=184 data-nosnippet>184</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_PORT,
+<a href=#182 id=182 data-nosnippet>182</a>    <span class="doccomment">/// `dogstatsd_origin_optout_enabled` — skip enrichment when cardinality=none.
+<a href=#183 id=183 data-nosnippet>183</a>    </span>DOGSTATSD_ORIGIN_OPTOUT_ENABLED = SalukiAnnotation {
+<a href=#184 id=184 data-nosnippet>184</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_ORIGIN_OPTOUT_ENABLED,
 <a href=#185 id=185 data-nosnippet>185</a>        support_level: SupportLevel::Full,
 <a href=#186 id=186 data-nosnippet>186</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#187 id=187 data-nosnippet>187</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#188 id=188 data-nosnippet>188</a>        used_by: <span class="kw-2">&amp;</span>[structs::DOGSTATSD_CONFIGURATION],
-<a href=#189 id=189 data-nosnippet>189</a>        value_type_override: <span class="prelude-val">Some</span>(ValueType::Integer),
+<a href=#189 id=189 data-nosnippet>189</a>        value_type_override: <span class="prelude-val">None</span>,
 <a href=#190 id=190 data-nosnippet>190</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#191 id=191 data-nosnippet>191</a>    };
 <a href=#192 id=192 data-nosnippet>192</a>
-<a href=#193 id=193 data-nosnippet>193</a>    <span class="doccomment">/// `dogstatsd_socket` — UDS datagram socket path.
-<a href=#194 id=194 data-nosnippet>194</a>    </span>DOGSTATSD_SOCKET = SalukiAnnotation {
-<a href=#195 id=195 data-nosnippet>195</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_SOCKET,
+<a href=#193 id=193 data-nosnippet>193</a>    <span class="doccomment">/// `dogstatsd_port` — UDP port. Schema says Float; field is u16.
+<a href=#194 id=194 data-nosnippet>194</a>    </span>DOGSTATSD_PORT = SalukiAnnotation {
+<a href=#195 id=195 data-nosnippet>195</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_PORT,
 <a href=#196 id=196 data-nosnippet>196</a>        support_level: SupportLevel::Full,
 <a href=#197 id=197 data-nosnippet>197</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#198 id=198 data-nosnippet>198</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#199 id=199 data-nosnippet>199</a>        used_by: <span class="kw-2">&amp;</span>[structs::DOGSTATSD_CONFIGURATION],
-<a href=#200 id=200 data-nosnippet>200</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#200 id=200 data-nosnippet>200</a>        value_type_override: <span class="prelude-val">Some</span>(ValueType::Integer),
 <a href=#201 id=201 data-nosnippet>201</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#202 id=202 data-nosnippet>202</a>    };
 <a href=#203 id=203 data-nosnippet>203</a>
-<a href=#204 id=204 data-nosnippet>204</a>    <span class="doccomment">/// `dogstatsd_so_rcvbuf` — DogStatsD UDP/UDS socket receive buffer size.
-<a href=#205 id=205 data-nosnippet>205</a>    </span>DOGSTATSD_SO_RCVBUF = SalukiAnnotation {
-<a href=#206 id=206 data-nosnippet>206</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_SO_RCVBUF_SCHEMA,
+<a href=#204 id=204 data-nosnippet>204</a>    <span class="doccomment">/// `dogstatsd_socket` — UDS datagram socket path.
+<a href=#205 id=205 data-nosnippet>205</a>    </span>DOGSTATSD_SOCKET = SalukiAnnotation {
+<a href=#206 id=206 data-nosnippet>206</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_SOCKET,
 <a href=#207 id=207 data-nosnippet>207</a>        support_level: SupportLevel::Full,
 <a href=#208 id=208 data-nosnippet>208</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#209 id=209 data-nosnippet>209</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -212,9 +212,9 @@
 <a href=#212 id=212 data-nosnippet>212</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#213 id=213 data-nosnippet>213</a>    };
 <a href=#214 id=214 data-nosnippet>214</a>
-<a href=#215 id=215 data-nosnippet>215</a>    <span class="doccomment">/// `dogstatsd_stream_socket` — UDS stream socket path.
-<a href=#216 id=216 data-nosnippet>216</a>    </span>DOGSTATSD_STREAM_SOCKET = SalukiAnnotation {
-<a href=#217 id=217 data-nosnippet>217</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_STREAM_SOCKET,
+<a href=#215 id=215 data-nosnippet>215</a>    <span class="doccomment">/// `dogstatsd_so_rcvbuf` — DogStatsD UDP/UDS socket receive buffer size.
+<a href=#216 id=216 data-nosnippet>216</a>    </span>DOGSTATSD_SO_RCVBUF = SalukiAnnotation {
+<a href=#217 id=217 data-nosnippet>217</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_SO_RCVBUF_SCHEMA,
 <a href=#218 id=218 data-nosnippet>218</a>        support_level: SupportLevel::Full,
 <a href=#219 id=219 data-nosnippet>219</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#220 id=220 data-nosnippet>220</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -223,9 +223,9 @@
 <a href=#223 id=223 data-nosnippet>223</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#224 id=224 data-nosnippet>224</a>    };
 <a href=#225 id=225 data-nosnippet>225</a>
-<a href=#226 id=226 data-nosnippet>226</a>    <span class="doccomment">/// `dogstatsd_stream_log_too_big` — log oversized UDS stream frames.
-<a href=#227 id=227 data-nosnippet>227</a>    </span>DOGSTATSD_STREAM_LOG_TOO_BIG = SalukiAnnotation {
-<a href=#228 id=228 data-nosnippet>228</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_STREAM_LOG_TOO_BIG,
+<a href=#226 id=226 data-nosnippet>226</a>    <span class="doccomment">/// `dogstatsd_stream_socket` — UDS stream socket path.
+<a href=#227 id=227 data-nosnippet>227</a>    </span>DOGSTATSD_STREAM_SOCKET = SalukiAnnotation {
+<a href=#228 id=228 data-nosnippet>228</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_STREAM_SOCKET,
 <a href=#229 id=229 data-nosnippet>229</a>        support_level: SupportLevel::Full,
 <a href=#230 id=230 data-nosnippet>230</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#231 id=231 data-nosnippet>231</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -234,43 +234,43 @@
 <a href=#234 id=234 data-nosnippet>234</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#235 id=235 data-nosnippet>235</a>    };
 <a href=#236 id=236 data-nosnippet>236</a>
-<a href=#237 id=237 data-nosnippet>237</a>    <span class="doccomment">/// `dogstatsd_string_interner_size` — context interner entry count. Schema Float; field u64.
-<a href=#238 id=238 data-nosnippet>238</a>    </span>DOGSTATSD_STRING_INTERNER_SIZE = SalukiAnnotation {
-<a href=#239 id=239 data-nosnippet>239</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_STRING_INTERNER_SIZE,
+<a href=#237 id=237 data-nosnippet>237</a>    <span class="doccomment">/// `dogstatsd_stream_log_too_big` — log oversized UDS stream frames.
+<a href=#238 id=238 data-nosnippet>238</a>    </span>DOGSTATSD_STREAM_LOG_TOO_BIG = SalukiAnnotation {
+<a href=#239 id=239 data-nosnippet>239</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_STREAM_LOG_TOO_BIG,
 <a href=#240 id=240 data-nosnippet>240</a>        support_level: SupportLevel::Full,
 <a href=#241 id=241 data-nosnippet>241</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#242 id=242 data-nosnippet>242</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#243 id=243 data-nosnippet>243</a>        used_by: <span class="kw-2">&amp;</span>[structs::DOGSTATSD_CONFIGURATION],
-<a href=#244 id=244 data-nosnippet>244</a>        value_type_override: <span class="prelude-val">Some</span>(ValueType::Integer),
+<a href=#244 id=244 data-nosnippet>244</a>        value_type_override: <span class="prelude-val">None</span>,
 <a href=#245 id=245 data-nosnippet>245</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#246 id=246 data-nosnippet>246</a>    };
 <a href=#247 id=247 data-nosnippet>247</a>
-<a href=#248 id=248 data-nosnippet>248</a>    <span class="doccomment">/// `dogstatsd_tag_cardinality` — default tag cardinality for origin enrichment.
-<a href=#249 id=249 data-nosnippet>249</a>    /// Default is "Low"; inject "high" as test value to differ from default.
-<a href=#250 id=250 data-nosnippet>250</a>    </span>DOGSTATSD_TAG_CARDINALITY = SalukiAnnotation {
-<a href=#251 id=251 data-nosnippet>251</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_TAG_CARDINALITY,
-<a href=#252 id=252 data-nosnippet>252</a>        support_level: SupportLevel::Full,
-<a href=#253 id=253 data-nosnippet>253</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#254 id=254 data-nosnippet>254</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#255 id=255 data-nosnippet>255</a>        used_by: <span class="kw-2">&amp;</span>[structs::DOGSTATSD_CONFIGURATION],
-<a href=#256 id=256 data-nosnippet>256</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#257 id=257 data-nosnippet>257</a>        test_json: <span class="prelude-val">Some</span>(<span class="string">r#""high""#</span>),
-<a href=#258 id=258 data-nosnippet>258</a>    };
-<a href=#259 id=259 data-nosnippet>259</a>
-<a href=#260 id=260 data-nosnippet>260</a>    <span class="doccomment">/// `dogstatsd_tags` — additional tags applied to all ingested metrics.
-<a href=#261 id=261 data-nosnippet>261</a>    </span>DOGSTATSD_TAGS = SalukiAnnotation {
-<a href=#262 id=262 data-nosnippet>262</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_TAGS,
+<a href=#248 id=248 data-nosnippet>248</a>    <span class="doccomment">/// `dogstatsd_string_interner_size` — context interner entry count. Schema Float; field u64.
+<a href=#249 id=249 data-nosnippet>249</a>    </span>DOGSTATSD_STRING_INTERNER_SIZE = SalukiAnnotation {
+<a href=#250 id=250 data-nosnippet>250</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_STRING_INTERNER_SIZE,
+<a href=#251 id=251 data-nosnippet>251</a>        support_level: SupportLevel::Full,
+<a href=#252 id=252 data-nosnippet>252</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#253 id=253 data-nosnippet>253</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#254 id=254 data-nosnippet>254</a>        used_by: <span class="kw-2">&amp;</span>[structs::DOGSTATSD_CONFIGURATION],
+<a href=#255 id=255 data-nosnippet>255</a>        value_type_override: <span class="prelude-val">Some</span>(ValueType::Integer),
+<a href=#256 id=256 data-nosnippet>256</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#257 id=257 data-nosnippet>257</a>    };
+<a href=#258 id=258 data-nosnippet>258</a>
+<a href=#259 id=259 data-nosnippet>259</a>    <span class="doccomment">/// `dogstatsd_tag_cardinality` — default tag cardinality for origin enrichment.
+<a href=#260 id=260 data-nosnippet>260</a>    /// Default is "Low"; inject "high" as test value to differ from default.
+<a href=#261 id=261 data-nosnippet>261</a>    </span>DOGSTATSD_TAG_CARDINALITY = SalukiAnnotation {
+<a href=#262 id=262 data-nosnippet>262</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_TAG_CARDINALITY,
 <a href=#263 id=263 data-nosnippet>263</a>        support_level: SupportLevel::Full,
 <a href=#264 id=264 data-nosnippet>264</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#265 id=265 data-nosnippet>265</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#266 id=266 data-nosnippet>266</a>        used_by: <span class="kw-2">&amp;</span>[structs::DOGSTATSD_CONFIGURATION],
 <a href=#267 id=267 data-nosnippet>267</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#268 id=268 data-nosnippet>268</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#268 id=268 data-nosnippet>268</a>        test_json: <span class="prelude-val">Some</span>(<span class="string">r#""high""#</span>),
 <a href=#269 id=269 data-nosnippet>269</a>    };
 <a href=#270 id=270 data-nosnippet>270</a>
-<a href=#271 id=271 data-nosnippet>271</a>    <span class="doccomment">/// `origin_detection_unified` — use unified entity ID resolution for origin enrichment.
-<a href=#272 id=272 data-nosnippet>272</a>    </span>ORIGIN_DETECTION_UNIFIED = SalukiAnnotation {
-<a href=#273 id=273 data-nosnippet>273</a>        schema: <span class="kw-2">&amp;</span>schema::ORIGIN_DETECTION_UNIFIED,
+<a href=#271 id=271 data-nosnippet>271</a>    <span class="doccomment">/// `dogstatsd_tags` — additional tags applied to all ingested metrics.
+<a href=#272 id=272 data-nosnippet>272</a>    </span>DOGSTATSD_TAGS = SalukiAnnotation {
+<a href=#273 id=273 data-nosnippet>273</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_TAGS,
 <a href=#274 id=274 data-nosnippet>274</a>        support_level: SupportLevel::Full,
 <a href=#275 id=275 data-nosnippet>275</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#276 id=276 data-nosnippet>276</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -279,20 +279,20 @@
 <a href=#279 id=279 data-nosnippet>279</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#280 id=280 data-nosnippet>280</a>    };
 <a href=#281 id=281 data-nosnippet>281</a>
-<a href=#282 id=282 data-nosnippet>282</a>    <span class="doccomment">/// `dogstatsd_log_file` — path to the DogStatsD metric debug log file.
-<a href=#283 id=283 data-nosnippet>283</a>    </span>DOGSTATSD_LOG_FILE = SalukiAnnotation {
-<a href=#284 id=284 data-nosnippet>284</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_LOG_FILE_SCHEMA,
+<a href=#282 id=282 data-nosnippet>282</a>    <span class="doccomment">/// `origin_detection_unified` — use unified entity ID resolution for origin enrichment.
+<a href=#283 id=283 data-nosnippet>283</a>    </span>ORIGIN_DETECTION_UNIFIED = SalukiAnnotation {
+<a href=#284 id=284 data-nosnippet>284</a>        schema: <span class="kw-2">&amp;</span>schema::ORIGIN_DETECTION_UNIFIED,
 <a href=#285 id=285 data-nosnippet>285</a>        support_level: SupportLevel::Full,
 <a href=#286 id=286 data-nosnippet>286</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#287 id=287 data-nosnippet>287</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#288 id=288 data-nosnippet>288</a>        used_by: <span class="kw-2">&amp;</span>[structs::DOGSTATSD_DEBUG_LOG_CONFIGURATION],
+<a href=#288 id=288 data-nosnippet>288</a>        used_by: <span class="kw-2">&amp;</span>[structs::DOGSTATSD_CONFIGURATION],
 <a href=#289 id=289 data-nosnippet>289</a>        value_type_override: <span class="prelude-val">None</span>,
 <a href=#290 id=290 data-nosnippet>290</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#291 id=291 data-nosnippet>291</a>    };
 <a href=#292 id=292 data-nosnippet>292</a>
-<a href=#293 id=293 data-nosnippet>293</a>    <span class="doccomment">/// `dogstatsd_log_file_max_rolls` — number of rotated DogStatsD metric debug log files to keep.
-<a href=#294 id=294 data-nosnippet>294</a>    </span>DOGSTATSD_LOG_FILE_MAX_ROLLS = SalukiAnnotation {
-<a href=#295 id=295 data-nosnippet>295</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_LOG_FILE_MAX_ROLLS_SCHEMA,
+<a href=#293 id=293 data-nosnippet>293</a>    <span class="doccomment">/// `dogstatsd_log_file` — path to the DogStatsD metric debug log file.
+<a href=#294 id=294 data-nosnippet>294</a>    </span>DOGSTATSD_LOG_FILE = SalukiAnnotation {
+<a href=#295 id=295 data-nosnippet>295</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_LOG_FILE_SCHEMA,
 <a href=#296 id=296 data-nosnippet>296</a>        support_level: SupportLevel::Full,
 <a href=#297 id=297 data-nosnippet>297</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#298 id=298 data-nosnippet>298</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -301,32 +301,32 @@
 <a href=#301 id=301 data-nosnippet>301</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#302 id=302 data-nosnippet>302</a>    };
 <a href=#303 id=303 data-nosnippet>303</a>
-<a href=#304 id=304 data-nosnippet>304</a>    <span class="doccomment">/// `dogstatsd_log_file_max_size` — maximum active DogStatsD metric debug log file size before rotation.
-<a href=#305 id=305 data-nosnippet>305</a>    </span>DOGSTATSD_LOG_FILE_MAX_SIZE = SalukiAnnotation {
-<a href=#306 id=306 data-nosnippet>306</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_LOG_FILE_MAX_SIZE_SCHEMA,
+<a href=#304 id=304 data-nosnippet>304</a>    <span class="doccomment">/// `dogstatsd_log_file_max_rolls` — number of rotated DogStatsD metric debug log files to keep.
+<a href=#305 id=305 data-nosnippet>305</a>    </span>DOGSTATSD_LOG_FILE_MAX_ROLLS = SalukiAnnotation {
+<a href=#306 id=306 data-nosnippet>306</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_LOG_FILE_MAX_ROLLS_SCHEMA,
 <a href=#307 id=307 data-nosnippet>307</a>        support_level: SupportLevel::Full,
 <a href=#308 id=308 data-nosnippet>308</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#309 id=309 data-nosnippet>309</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#310 id=310 data-nosnippet>310</a>        used_by: <span class="kw-2">&amp;</span>[structs::DOGSTATSD_DEBUG_LOG_CONFIGURATION],
 <a href=#311 id=311 data-nosnippet>311</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#312 id=312 data-nosnippet>312</a>        test_json: <span class="prelude-val">Some</span>(<span class="string">r#""42MB""#</span>),
+<a href=#312 id=312 data-nosnippet>312</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#313 id=313 data-nosnippet>313</a>    };
 <a href=#314 id=314 data-nosnippet>314</a>
-<a href=#315 id=315 data-nosnippet>315</a>    <span class="doccomment">/// `dogstatsd_logging_enabled` — enable writing DogStatsD metric debug stats to a file.
-<a href=#316 id=316 data-nosnippet>316</a>    </span>DOGSTATSD_LOGGING_ENABLED = SalukiAnnotation {
-<a href=#317 id=317 data-nosnippet>317</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_LOGGING_ENABLED_SCHEMA,
+<a href=#315 id=315 data-nosnippet>315</a>    <span class="doccomment">/// `dogstatsd_log_file_max_size` — maximum active DogStatsD metric debug log file size before rotation.
+<a href=#316 id=316 data-nosnippet>316</a>    </span>DOGSTATSD_LOG_FILE_MAX_SIZE = SalukiAnnotation {
+<a href=#317 id=317 data-nosnippet>317</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_LOG_FILE_MAX_SIZE_SCHEMA,
 <a href=#318 id=318 data-nosnippet>318</a>        support_level: SupportLevel::Full,
 <a href=#319 id=319 data-nosnippet>319</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#320 id=320 data-nosnippet>320</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#321 id=321 data-nosnippet>321</a>        used_by: <span class="kw-2">&amp;</span>[structs::DOGSTATSD_DEBUG_LOG_CONFIGURATION],
 <a href=#322 id=322 data-nosnippet>322</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#323 id=323 data-nosnippet>323</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#323 id=323 data-nosnippet>323</a>        test_json: <span class="prelude-val">Some</span>(<span class="string">r#""42MB""#</span>),
 <a href=#324 id=324 data-nosnippet>324</a>    };
 <a href=#325 id=325 data-nosnippet>325</a>
-<a href=#326 id=326 data-nosnippet>326</a>    <span class="doccomment">/// `dogstatsd_metrics_stats_enable` — enable metric-level DogStatsD debug statistics.
-<a href=#327 id=327 data-nosnippet>327</a>    </span>DOGSTATSD_METRICS_STATS_ENABLE = SalukiAnnotation {
-<a href=#328 id=328 data-nosnippet>328</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_METRICS_STATS_ENABLE_SCHEMA,
-<a href=#329 id=329 data-nosnippet>329</a>        support_level: SupportLevel::Partial,
+<a href=#326 id=326 data-nosnippet>326</a>    <span class="doccomment">/// `dogstatsd_logging_enabled` — enable writing DogStatsD metric debug stats to a file.
+<a href=#327 id=327 data-nosnippet>327</a>    </span>DOGSTATSD_LOGGING_ENABLED = SalukiAnnotation {
+<a href=#328 id=328 data-nosnippet>328</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_LOGGING_ENABLED_SCHEMA,
+<a href=#329 id=329 data-nosnippet>329</a>        support_level: SupportLevel::Full,
 <a href=#330 id=330 data-nosnippet>330</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#331 id=331 data-nosnippet>331</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#332 id=332 data-nosnippet>332</a>        used_by: <span class="kw-2">&amp;</span>[structs::DOGSTATSD_DEBUG_LOG_CONFIGURATION],
@@ -334,22 +334,22 @@
 <a href=#334 id=334 data-nosnippet>334</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#335 id=335 data-nosnippet>335</a>    };
 <a href=#336 id=336 data-nosnippet>336</a>
-<a href=#337 id=337 data-nosnippet>337</a>    <span class="comment">// ── ADP-specific ──────────────────────────────────────────────────────────
-<a href=#338 id=338 data-nosnippet>338</a>
-<a href=#339 id=339 data-nosnippet>339</a>    </span><span class="doccomment">/// `dogstatsd_allow_context_heap_allocs` — allow heap allocations when interner is full.
-<a href=#340 id=340 data-nosnippet>340</a>    </span>DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS = SalukiAnnotation {
-<a href=#341 id=341 data-nosnippet>341</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS_SCHEMA,
-<a href=#342 id=342 data-nosnippet>342</a>        support_level: SupportLevel::Full,
-<a href=#343 id=343 data-nosnippet>343</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#344 id=344 data-nosnippet>344</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#345 id=345 data-nosnippet>345</a>        used_by: <span class="kw-2">&amp;</span>[structs::DOGSTATSD_CONFIGURATION],
-<a href=#346 id=346 data-nosnippet>346</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#347 id=347 data-nosnippet>347</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#348 id=348 data-nosnippet>348</a>    };
+<a href=#337 id=337 data-nosnippet>337</a>    <span class="doccomment">/// `dogstatsd_metrics_stats_enable` — enable metric-level DogStatsD debug statistics.
+<a href=#338 id=338 data-nosnippet>338</a>    </span>DOGSTATSD_METRICS_STATS_ENABLE = SalukiAnnotation {
+<a href=#339 id=339 data-nosnippet>339</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_METRICS_STATS_ENABLE_SCHEMA,
+<a href=#340 id=340 data-nosnippet>340</a>        support_level: SupportLevel::Partial,
+<a href=#341 id=341 data-nosnippet>341</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#342 id=342 data-nosnippet>342</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#343 id=343 data-nosnippet>343</a>        used_by: <span class="kw-2">&amp;</span>[structs::DOGSTATSD_DEBUG_LOG_CONFIGURATION],
+<a href=#344 id=344 data-nosnippet>344</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#345 id=345 data-nosnippet>345</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#346 id=346 data-nosnippet>346</a>    };
+<a href=#347 id=347 data-nosnippet>347</a>
+<a href=#348 id=348 data-nosnippet>348</a>    <span class="comment">// ── ADP-specific ──────────────────────────────────────────────────────────
 <a href=#349 id=349 data-nosnippet>349</a>
-<a href=#350 id=350 data-nosnippet>350</a>    <span class="doccomment">/// `dogstatsd_buffer_count` — number of message buffers to pre-allocate.
-<a href=#351 id=351 data-nosnippet>351</a>    </span>DOGSTATSD_BUFFER_COUNT = SalukiAnnotation {
-<a href=#352 id=352 data-nosnippet>352</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_BUFFER_COUNT_SCHEMA,
+<a href=#350 id=350 data-nosnippet>350</a>    </span><span class="doccomment">/// `dogstatsd_allow_context_heap_allocs` — allow heap allocations when interner is full.
+<a href=#351 id=351 data-nosnippet>351</a>    </span>DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS = SalukiAnnotation {
+<a href=#352 id=352 data-nosnippet>352</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS_SCHEMA,
 <a href=#353 id=353 data-nosnippet>353</a>        support_level: SupportLevel::Full,
 <a href=#354 id=354 data-nosnippet>354</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#355 id=355 data-nosnippet>355</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -358,9 +358,9 @@
 <a href=#358 id=358 data-nosnippet>358</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#359 id=359 data-nosnippet>359</a>    };
 <a href=#360 id=360 data-nosnippet>360</a>
-<a href=#361 id=361 data-nosnippet>361</a>    <span class="doccomment">/// `dogstatsd_cached_contexts_limit` — max cached metric contexts.
-<a href=#362 id=362 data-nosnippet>362</a>    </span>DOGSTATSD_CACHED_CONTEXTS_LIMIT = SalukiAnnotation {
-<a href=#363 id=363 data-nosnippet>363</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_CACHED_CONTEXTS_LIMIT_SCHEMA,
+<a href=#361 id=361 data-nosnippet>361</a>    <span class="doccomment">/// `dogstatsd_buffer_count` — number of message buffers to pre-allocate.
+<a href=#362 id=362 data-nosnippet>362</a>    </span>DOGSTATSD_BUFFER_COUNT = SalukiAnnotation {
+<a href=#363 id=363 data-nosnippet>363</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_BUFFER_COUNT_SCHEMA,
 <a href=#364 id=364 data-nosnippet>364</a>        support_level: SupportLevel::Full,
 <a href=#365 id=365 data-nosnippet>365</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#366 id=366 data-nosnippet>366</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -369,9 +369,9 @@
 <a href=#369 id=369 data-nosnippet>369</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#370 id=370 data-nosnippet>370</a>    };
 <a href=#371 id=371 data-nosnippet>371</a>
-<a href=#372 id=372 data-nosnippet>372</a>    <span class="doccomment">/// `dogstatsd_cached_tagsets_limit` — max cached tag sets.
-<a href=#373 id=373 data-nosnippet>373</a>    </span>DOGSTATSD_CACHED_TAGSETS_LIMIT = SalukiAnnotation {
-<a href=#374 id=374 data-nosnippet>374</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_CACHED_TAGSETS_LIMIT_SCHEMA,
+<a href=#372 id=372 data-nosnippet>372</a>    <span class="doccomment">/// `dogstatsd_cached_contexts_limit` — max cached metric contexts.
+<a href=#373 id=373 data-nosnippet>373</a>    </span>DOGSTATSD_CACHED_CONTEXTS_LIMIT = SalukiAnnotation {
+<a href=#374 id=374 data-nosnippet>374</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_CACHED_CONTEXTS_LIMIT_SCHEMA,
 <a href=#375 id=375 data-nosnippet>375</a>        support_level: SupportLevel::Full,
 <a href=#376 id=376 data-nosnippet>376</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#377 id=377 data-nosnippet>377</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -380,9 +380,9 @@
 <a href=#380 id=380 data-nosnippet>380</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#381 id=381 data-nosnippet>381</a>    };
 <a href=#382 id=382 data-nosnippet>382</a>
-<a href=#383 id=383 data-nosnippet>383</a>    <span class="doccomment">/// `dogstatsd_minimum_sample_rate` — minimum allowed sample rate.
-<a href=#384 id=384 data-nosnippet>384</a>    </span>DOGSTATSD_MINIMUM_SAMPLE_RATE = SalukiAnnotation {
-<a href=#385 id=385 data-nosnippet>385</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_MINIMUM_SAMPLE_RATE_SCHEMA,
+<a href=#383 id=383 data-nosnippet>383</a>    <span class="doccomment">/// `dogstatsd_cached_tagsets_limit` — max cached tag sets.
+<a href=#384 id=384 data-nosnippet>384</a>    </span>DOGSTATSD_CACHED_TAGSETS_LIMIT = SalukiAnnotation {
+<a href=#385 id=385 data-nosnippet>385</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_CACHED_TAGSETS_LIMIT_SCHEMA,
 <a href=#386 id=386 data-nosnippet>386</a>        support_level: SupportLevel::Full,
 <a href=#387 id=387 data-nosnippet>387</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#388 id=388 data-nosnippet>388</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -391,9 +391,9 @@
 <a href=#391 id=391 data-nosnippet>391</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#392 id=392 data-nosnippet>392</a>    };
 <a href=#393 id=393 data-nosnippet>393</a>
-<a href=#394 id=394 data-nosnippet>394</a>    <span class="doccomment">/// `dogstatsd_permissive_decoding` — relax decoding strictness for Agent compat.
-<a href=#395 id=395 data-nosnippet>395</a>    </span>DOGSTATSD_PERMISSIVE_DECODING = SalukiAnnotation {
-<a href=#396 id=396 data-nosnippet>396</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_PERMISSIVE_DECODING_SCHEMA,
+<a href=#394 id=394 data-nosnippet>394</a>    <span class="doccomment">/// `dogstatsd_minimum_sample_rate` — minimum allowed sample rate.
+<a href=#395 id=395 data-nosnippet>395</a>    </span>DOGSTATSD_MINIMUM_SAMPLE_RATE = SalukiAnnotation {
+<a href=#396 id=396 data-nosnippet>396</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_MINIMUM_SAMPLE_RATE_SCHEMA,
 <a href=#397 id=397 data-nosnippet>397</a>        support_level: SupportLevel::Full,
 <a href=#398 id=398 data-nosnippet>398</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#399 id=399 data-nosnippet>399</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -402,9 +402,9 @@
 <a href=#402 id=402 data-nosnippet>402</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#403 id=403 data-nosnippet>403</a>    };
 <a href=#404 id=404 data-nosnippet>404</a>
-<a href=#405 id=405 data-nosnippet>405</a>    <span class="doccomment">/// `dogstatsd_string_interner_size_bytes` — explicit interner byte budget (overrides entry count).
-<a href=#406 id=406 data-nosnippet>406</a>    </span>DOGSTATSD_STRING_INTERNER_SIZE_BYTES = SalukiAnnotation {
-<a href=#407 id=407 data-nosnippet>407</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_STRING_INTERNER_SIZE_BYTES_SCHEMA,
+<a href=#405 id=405 data-nosnippet>405</a>    <span class="doccomment">/// `dogstatsd_permissive_decoding` — relax decoding strictness for Agent compat.
+<a href=#406 id=406 data-nosnippet>406</a>    </span>DOGSTATSD_PERMISSIVE_DECODING = SalukiAnnotation {
+<a href=#407 id=407 data-nosnippet>407</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_PERMISSIVE_DECODING_SCHEMA,
 <a href=#408 id=408 data-nosnippet>408</a>        support_level: SupportLevel::Full,
 <a href=#409 id=409 data-nosnippet>409</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#410 id=410 data-nosnippet>410</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -413,9 +413,9 @@
 <a href=#413 id=413 data-nosnippet>413</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#414 id=414 data-nosnippet>414</a>    };
 <a href=#415 id=415 data-nosnippet>415</a>
-<a href=#416 id=416 data-nosnippet>416</a>    <span class="doccomment">/// `dogstatsd_tcp_port` — TCP port (0 = disabled).
-<a href=#417 id=417 data-nosnippet>417</a>    </span>DOGSTATSD_TCP_PORT = SalukiAnnotation {
-<a href=#418 id=418 data-nosnippet>418</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_TCP_PORT_SCHEMA,
+<a href=#416 id=416 data-nosnippet>416</a>    <span class="doccomment">/// `dogstatsd_string_interner_size_bytes` — explicit interner byte budget (overrides entry count).
+<a href=#417 id=417 data-nosnippet>417</a>    </span>DOGSTATSD_STRING_INTERNER_SIZE_BYTES = SalukiAnnotation {
+<a href=#418 id=418 data-nosnippet>418</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_STRING_INTERNER_SIZE_BYTES_SCHEMA,
 <a href=#419 id=419 data-nosnippet>419</a>        support_level: SupportLevel::Full,
 <a href=#420 id=420 data-nosnippet>420</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#421 id=421 data-nosnippet>421</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -424,9 +424,9 @@
 <a href=#424 id=424 data-nosnippet>424</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#425 id=425 data-nosnippet>425</a>    };
 <a href=#426 id=426 data-nosnippet>426</a>
-<a href=#427 id=427 data-nosnippet>427</a>    <span class="doccomment">/// `enable_payloads.events` — forward event payloads.
-<a href=#428 id=428 data-nosnippet>428</a>    </span>ENABLE_PAYLOADS_EVENTS = SalukiAnnotation {
-<a href=#429 id=429 data-nosnippet>429</a>        schema: <span class="kw-2">&amp;</span>schema::ENABLE_PAYLOADS_EVENTS,
+<a href=#427 id=427 data-nosnippet>427</a>    <span class="doccomment">/// `dogstatsd_tcp_port` — TCP port (0 = disabled).
+<a href=#428 id=428 data-nosnippet>428</a>    </span>DOGSTATSD_TCP_PORT = SalukiAnnotation {
+<a href=#429 id=429 data-nosnippet>429</a>        schema: <span class="kw-2">&amp;</span>DOGSTATSD_TCP_PORT_SCHEMA,
 <a href=#430 id=430 data-nosnippet>430</a>        support_level: SupportLevel::Full,
 <a href=#431 id=431 data-nosnippet>431</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#432 id=432 data-nosnippet>432</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -435,9 +435,9 @@
 <a href=#435 id=435 data-nosnippet>435</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#436 id=436 data-nosnippet>436</a>    };
 <a href=#437 id=437 data-nosnippet>437</a>
-<a href=#438 id=438 data-nosnippet>438</a>    <span class="doccomment">/// `enable_payloads.series` — forward series (counter/gauge/rate) payloads.
-<a href=#439 id=439 data-nosnippet>439</a>    </span>ENABLE_PAYLOADS_SERIES = SalukiAnnotation {
-<a href=#440 id=440 data-nosnippet>440</a>        schema: <span class="kw-2">&amp;</span>schema::ENABLE_PAYLOADS_SERIES,
+<a href=#438 id=438 data-nosnippet>438</a>    <span class="doccomment">/// `enable_payloads.events` — forward event payloads.
+<a href=#439 id=439 data-nosnippet>439</a>    </span>ENABLE_PAYLOADS_EVENTS = SalukiAnnotation {
+<a href=#440 id=440 data-nosnippet>440</a>        schema: <span class="kw-2">&amp;</span>schema::ENABLE_PAYLOADS_EVENTS,
 <a href=#441 id=441 data-nosnippet>441</a>        support_level: SupportLevel::Full,
 <a href=#442 id=442 data-nosnippet>442</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#443 id=443 data-nosnippet>443</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -446,9 +446,9 @@
 <a href=#446 id=446 data-nosnippet>446</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#447 id=447 data-nosnippet>447</a>    };
 <a href=#448 id=448 data-nosnippet>448</a>
-<a href=#449 id=449 data-nosnippet>449</a>    <span class="doccomment">/// `enable_payloads.service_checks` — forward service check payloads.
-<a href=#450 id=450 data-nosnippet>450</a>    </span>ENABLE_PAYLOADS_SERVICE_CHECKS = SalukiAnnotation {
-<a href=#451 id=451 data-nosnippet>451</a>        schema: <span class="kw-2">&amp;</span>schema::ENABLE_PAYLOADS_SERVICE_CHECKS,
+<a href=#449 id=449 data-nosnippet>449</a>    <span class="doccomment">/// `enable_payloads.series` — forward series (counter/gauge/rate) payloads.
+<a href=#450 id=450 data-nosnippet>450</a>    </span>ENABLE_PAYLOADS_SERIES = SalukiAnnotation {
+<a href=#451 id=451 data-nosnippet>451</a>        schema: <span class="kw-2">&amp;</span>schema::ENABLE_PAYLOADS_SERIES,
 <a href=#452 id=452 data-nosnippet>452</a>        support_level: SupportLevel::Full,
 <a href=#453 id=453 data-nosnippet>453</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#454 id=454 data-nosnippet>454</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -457,9 +457,9 @@
 <a href=#457 id=457 data-nosnippet>457</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#458 id=458 data-nosnippet>458</a>    };
 <a href=#459 id=459 data-nosnippet>459</a>
-<a href=#460 id=460 data-nosnippet>460</a>    <span class="doccomment">/// `enable_payloads.sketches` — forward sketch (distribution) payloads.
-<a href=#461 id=461 data-nosnippet>461</a>    </span>ENABLE_PAYLOADS_SKETCHES = SalukiAnnotation {
-<a href=#462 id=462 data-nosnippet>462</a>        schema: <span class="kw-2">&amp;</span>schema::ENABLE_PAYLOADS_SKETCHES,
+<a href=#460 id=460 data-nosnippet>460</a>    <span class="doccomment">/// `enable_payloads.service_checks` — forward service check payloads.
+<a href=#461 id=461 data-nosnippet>461</a>    </span>ENABLE_PAYLOADS_SERVICE_CHECKS = SalukiAnnotation {
+<a href=#462 id=462 data-nosnippet>462</a>        schema: <span class="kw-2">&amp;</span>schema::ENABLE_PAYLOADS_SERVICE_CHECKS,
 <a href=#463 id=463 data-nosnippet>463</a>        support_level: SupportLevel::Full,
 <a href=#464 id=464 data-nosnippet>464</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#465 id=465 data-nosnippet>465</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -467,5 +467,16 @@
 <a href=#467 id=467 data-nosnippet>467</a>        value_type_override: <span class="prelude-val">None</span>,
 <a href=#468 id=468 data-nosnippet>468</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#469 id=469 data-nosnippet>469</a>    };
-<a href=#470 id=470 data-nosnippet>470</a>}
+<a href=#470 id=470 data-nosnippet>470</a>
+<a href=#471 id=471 data-nosnippet>471</a>    <span class="doccomment">/// `enable_payloads.sketches` — forward sketch (distribution) payloads.
+<a href=#472 id=472 data-nosnippet>472</a>    </span>ENABLE_PAYLOADS_SKETCHES = SalukiAnnotation {
+<a href=#473 id=473 data-nosnippet>473</a>        schema: <span class="kw-2">&amp;</span>schema::ENABLE_PAYLOADS_SKETCHES,
+<a href=#474 id=474 data-nosnippet>474</a>        support_level: SupportLevel::Full,
+<a href=#475 id=475 data-nosnippet>475</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#476 id=476 data-nosnippet>476</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#477 id=477 data-nosnippet>477</a>        used_by: <span class="kw-2">&amp;</span>[structs::DOGSTATSD_CONFIGURATION],
+<a href=#478 id=478 data-nosnippet>478</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#479 id=479 data-nosnippet>479</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#480 id=480 data-nosnippet>480</a>    };
+<a href=#481 id=481 data-nosnippet>481</a>}
 </code></pre></div></section></main></body></html>
