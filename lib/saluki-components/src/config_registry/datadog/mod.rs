@@ -9,17 +9,17 @@ pub mod forwarder;
 pub mod otlp;
 pub mod proxy;
 pub mod trace_obfuscation;
-pub mod unsupported;
+pub(super) mod unsupported;
 
 use std::sync::LazyLock;
 
-use super::{ConfigKey, SalukiAnnotation};
+use super::SalukiAnnotation;
 
 /// Supported saluki annotations across every sub-system, in registration order.
 ///
 /// The source of truth for which config keys saluki consumes partially or fully supports.
 /// Used by the smoke test runner and runtime unknown-key detection.
-pub static SUPPORTED_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>> = LazyLock::new(|| {
+pub(crate) static SUPPORTED_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>> = LazyLock::new(|| {
     let mut v = Vec::new();
     v.extend_from_slice(aggregate::ALL);
     v.extend_from_slice(dogstatsd::ALL);
@@ -36,7 +36,7 @@ pub static SUPPORTED_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>> = Laz
 /// Annotations for keys that Saluki intentionally does not support.
 ///
 /// All entries have [`Incompatible`](super::SupportLevel::Incompatible) and empty `used_by`.
-pub static UNSUPPORTED_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>> = LazyLock::new(|| {
+pub(crate) static UNSUPPORTED_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>> = LazyLock::new(|| {
     let mut v = Vec::new();
     v.extend_from_slice(unsupported::ALL);
     v
@@ -45,17 +45,11 @@ pub static UNSUPPORTED_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>> = L
 /// All saluki annotations: supported and unsupported combined.
 ///
 /// Used by the adp-runtime config check to classify every key in the resolved config.
-pub static ALL_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>> = LazyLock::new(|| {
+pub(crate) static ALL_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>> = LazyLock::new(|| {
     let mut v = SUPPORTED_ANNOTATIONS.clone();
     v.extend_from_slice(&UNSUPPORTED_ANNOTATIONS);
     v
 });
-
-/// All resolved [`ConfigKey`] entries, derived from [`SUPPORTED_ANNOTATIONS`] at first access.
-///
-/// Provides a flattened, owned view suitable for runtime unknown-key detection.
-pub static SUPPORTED_KEYS: LazyLock<Vec<ConfigKey>> =
-    LazyLock::new(|| SUPPORTED_ANNOTATIONS.iter().map(|a| ConfigKey::from(*a)).collect());
 
 #[cfg(test)]
 mod registry_tests {

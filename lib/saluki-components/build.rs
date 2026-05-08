@@ -238,7 +238,7 @@ fn render_array(entries: &[SchemaEntry], output: &mut String) {
     .unwrap();
     writeln!(
         output,
-        "pub static ALL_SCHEMA_ENTRIES: [&SchemaEntry; {}] = [",
+        "pub(crate) static ALL_SCHEMA_ENTRIES: [&SchemaEntry; {}] = [",
         entries.len()
     )
     .unwrap();
@@ -277,7 +277,7 @@ fn render_ignored_keys(ignored_keys_path: &Path, output: &mut String) {
         "/// The list of entries found in the Datadog config schema which we are intentionally ignoring."
     )
     .unwrap();
-    writeln!(output, "pub static IGNORED_ENTRIES: [&str; {}] = [", names.len()).unwrap();
+    writeln!(output, "pub(crate) static IGNORED_ENTRIES: [&str; {}] = [", names.len()).unwrap();
     for name in names {
         writeln!(output, "    \"{name}\",").unwrap();
     }

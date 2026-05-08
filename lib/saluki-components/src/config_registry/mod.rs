@@ -15,8 +15,12 @@ pub mod generated;
 
 pub use classifier::{Classification, ConfigClassifier};
 
-pub use self::datadog::{ALL_ANNOTATIONS, SUPPORTED_ANNOTATIONS, SUPPORTED_KEYS, UNSUPPORTED_ANNOTATIONS};
-pub use self::generated::schema::{ALL_SCHEMA_ENTRIES, IGNORED_ENTRIES};
+pub(crate) use self::datadog::ALL_ANNOTATIONS;
+#[cfg(any(test, feature = "config-test-support"))]
+pub(crate) use self::datadog::SUPPORTED_ANNOTATIONS;
+#[cfg(test)]
+pub(crate) use self::generated::schema::ALL_SCHEMA_ENTRIES;
+pub(crate) use self::generated::schema::IGNORED_ENTRIES;
 
 /// Declares a set of [`SalukiAnnotation`] constants and generates a companion `ALL` slice.
 ///
@@ -149,7 +153,7 @@ pub enum ValueType {
 /// Which schema source of truth defined the `SchemaEntry`
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 #[repr(u8)]
-pub enum Schema {
+pub(crate) enum Schema {
     /// Saluki defined the `SchemaEntry` and the key is not expected to exist in the vendored Datadog config schema.
     Saluki,
     /// The vendored Datadog config schema defines the `SchemaEntry`.
@@ -167,7 +171,8 @@ pub enum Schema {
 #[derive(Debug)]
 pub struct SchemaEntry {
     /// The source of truth from which this entry was derived.
-    pub schema: Schema,
+    #[allow(dead_code)]
+    pub(crate) schema: Schema,
 
     /// Canonical dot-separated YAML path for this key (e.g. `"proxy.http"`).
     pub yaml_path: &'static str,
