@@ -173,12 +173,67 @@ pub fn external_data(input: &[u8]) -> IResult<&[u8], &str> {
 /// This matches the behavior of the core Datadog Agent, which silently ignores unrecognized values.
 #[inline]
 pub fn cardinality(input: &[u8]) -> IResult<&[u8], Option<OriginTagCardinality>> {
-    let (remaining, raw_cardinality) = map(all_consuming(preceded(tag(CARDINALITY_PREFIX), rest)), |b| {
-        // SAFETY: The DogStatsD frame is validated as UTF-8 upstream before reaching this parser,
-        // so any bytes remaining after the prefix are valid UTF-8.
-        unsafe { std::str::from_utf8_unchecked(b) }
-    })
-    .parse(input)?;
+    let (remaining, raw_bytes) = all_consuming(preceded(tag(CARDINALITY_PREFIX), rest)).parse(input)?;
 
-    Ok((remaining, OriginTagCardinality::try_from(raw_cardinality).ok()))
+    // Use checked UTF-8 conversion: non-UTF-8 bytes in the cardinality value are treated the same
+    // as an unrecognized string — return None so the frame continues processing rather than
+    // invoking undefined behavior or hard-failing.
+    let cardinality = std::str::from_utf8(raw_bytes)
+        .ok()
+        .and_then(|s| OriginTagCardinality::try_from(s).ok());
+
+    Ok((remaining, cardinality))
+}
+
+#[cfg(test)]
+mod tests {
+    use saluki_context::origin::OriginTagCardinality;
+
+    use super::{cardinality, CARDINALITY_PREFIX};
+
+    fn card(s: &str) -> Vec<u8> {
+        format!("{}{}", std::str::from_utf8(CARDINALITY_PREFIX).unwrap(), s).into_bytes()
+    }
+
+    #[test]
+    fn cardinality_known_values() {
+        let cases = [
+            ("none", Some(OriginTagCardinality::None)),
+            ("low", Some(OriginTagCardinality::Low)),
+            ("orchestrator", Some(OriginTagCardinality::Orchestrator)),
+            ("high", Some(OriginTagCardinality::High)),
+        ];
+        for (value, expected) in cases {
+            let (_, result) = cardinality(&card(value)).expect("parse should succeed");
+            assert_eq!(result, expected, "failed for '{}'", value);
+        }
+    }
+
+    #[test]
+    fn cardinality_unknown_value_returns_none() {
+        // An unrecognized value should parse successfully and return None rather than
+        // failing the parse and dropping the whole metric frame.
+        let (_, result) = cardinality(&card("not-a-valid-cardinality")).expect("parse should succeed");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn cardinality_case_sensitive() {
+        // Cardinality values are case-sensitive; wrong case returns None, not an error.
+        for value in ["Low", "HIGH", "Orchestrator", "NONE"] {
+            let (_, result) = cardinality(&card(value)).expect("parse should succeed");
+            assert_eq!(result, None, "expected None for '{}'", value);
+        }
+    }
+
+    #[test]
+    fn cardinality_non_utf8_bytes_returns_none() {
+        // Non-UTF-8 bytes after the prefix must not invoke undefined behavior; they should
+        // be treated as an unrecognized value and return None. This is the bug that was fixed:
+        // the previous implementation used from_utf8_unchecked which would cause UB here.
+        let mut input = CARDINALITY_PREFIX.to_vec();
+        input.extend_from_slice(&[0xff, 0xfe]);
+        let (_, result) = cardinality(&input).expect("parse should succeed");
+        assert_eq!(result, None);
+    }
 }

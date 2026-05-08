@@ -657,14 +657,17 @@ fn build_millstone_pod(cfg: MillstonePodConfig<'_>) -> Pod {
         comparison_socket_dir,
     } = cfg;
 
+    // Capture both child PIDs and propagate a non-zero exit if either run fails. Plain `wait`
+    // with no arguments exits with the status of the last reaped job, which would mask a failure
+    // from the first child if the second exits cleanly.
     let wait_cmd = format!(
         "until [ -f /etc/millstone/baseline.toml ] && \
                [ -f /etc/millstone/comparison.toml ] && \
                [ -S /baseline-airlock/metrics.sock ] && \
                [ -S /comparison-airlock/metrics.sock ]; do sleep 1; done; \
-         exec sh -c '{bin} /etc/millstone/baseline.toml & \
-                      {bin} /etc/millstone/comparison.toml & \
-                      wait'",
+         exec sh -c '{bin} /etc/millstone/baseline.toml & P1=$!; \
+                      {bin} /etc/millstone/comparison.toml & P2=$!; \
+                      wait $P1; R1=$?; wait $P2; R2=$?; exit $((R1 | R2))'",
         bin = millstone_binary
     );
 
