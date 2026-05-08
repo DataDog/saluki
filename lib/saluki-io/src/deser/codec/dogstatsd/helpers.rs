@@ -174,8 +174,8 @@ pub fn external_data(input: &[u8]) -> IResult<&[u8], &str> {
 #[inline]
 pub fn cardinality(input: &[u8]) -> IResult<&[u8], Option<OriginTagCardinality>> {
     let (remaining, raw_cardinality) = map(all_consuming(preceded(tag(CARDINALITY_PREFIX), rest)), |b| {
-        // SAFETY: We know the bytes in `b` can only be comprised of UTF-8 characters, because our tags are all based on valid
-        // UTF-8 strings, which ensures that it's valid to interpret the bytes directly as UTF-8.
+        // SAFETY: The DogStatsD frame is validated as UTF-8 upstream before reaching this parser,
+        // so any bytes remaining after the prefix are valid UTF-8.
         unsafe { std::str::from_utf8_unchecked(b) }
     })
     .parse(input)?;

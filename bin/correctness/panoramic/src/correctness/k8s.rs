@@ -80,15 +80,19 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
         }
     };
 
-    let baseline_ns = format!("airlock-{}-baseline", generate_isolation_id());
-    let comparison_ns = format!("airlock-{}-comparison", generate_isolation_id());
+    let run_id = generate_isolation_id();
+    let baseline_ns = format!("airlock-{}-baseline", run_id);
+    let comparison_ns = format!("airlock-{}-comparison", run_id);
+    let millstone_ns = format!("airlock-{}-millstone", run_id);
 
     // Socket directories are created on the kind node via DirectoryOrCreate HostPath volumes —
     // no manual setup required. Both agent pods and the shared millstone pod mount these paths,
     // giving millstone access to both agent sockets without any cross-pod coordination.
-    let baseline_socket_dir = format!("/tmp/saluki-correctness/{}/baseline", generate_isolation_id());
-    let comparison_socket_dir = format!("/tmp/saluki-correctness/{}/comparison", generate_isolation_id());
-    let millstone_ns = format!("airlock-{}-millstone", generate_isolation_id());
+    //
+    // Note: these directories are not deleted after the test. Kind clusters are ephemeral in CI
+    // and the directories are small, so this is acceptable for now.
+    let baseline_socket_dir = format!("/tmp/saluki-correctness/{}/baseline", run_id);
+    let comparison_socket_dir = format!("/tmp/saluki-correctness/{}/comparison", run_id);
 
     let millstone_cfg = config.millstone_config();
     let millstone_template = match std::fs::read_to_string(&millstone_cfg.config_path).with_error_context(|| {
@@ -1062,19 +1066,31 @@ async fn gather_pod_origin_data(pods: &Api<Pod>, pod_name: &str) -> Result<PodOr
         .uid
         .ok_or_else(|| generic_error!("Pod '{}' has no UID", pod_name))?;
 
-    let millstone_container_id = pod
+    let raw_container_id = pod
         .status
         .as_ref()
         .and_then(|s| s.container_statuses.as_ref())
         .and_then(|cs| cs.iter().find(|c| c.name == "millstone"))
         .and_then(|c| c.container_id.as_deref())
-        .map(|id| id.trim_start_matches("containerd://").to_string())
         .ok_or_else(|| {
             generic_error!(
                 "Could not find container ID for 'millstone' container in pod '{}'",
                 pod_name
             )
         })?;
+
+    const CONTAINERD_PREFIX: &str = "containerd://";
+    let millstone_container_id = raw_container_id
+        .strip_prefix(CONTAINERD_PREFIX)
+        .ok_or_else(|| {
+            generic_error!(
+                "Container ID '{}' for 'millstone' in pod '{}' does not have the expected '{}' prefix",
+                raw_container_id,
+                pod_name,
+                CONTAINERD_PREFIX
+            )
+        })?
+        .to_string();
 
     Ok(PodOriginData {
         pod_uid,
@@ -1117,13 +1133,15 @@ async fn exec_write_file(
             )
         })?;
 
-    if let Some(mut stdin) = proc.stdin() {
-        stdin
-            .write_all(content.as_bytes())
-            .await
-            .error_context("Failed to write config content to exec stdin")?;
-        stdin.shutdown().await.error_context("Failed to close exec stdin")?;
-    }
+    let mut stdin = proc
+        .stdin()
+        .ok_or_else(|| generic_error!("Exec stdin not available for container '{}'", container))?;
+
+    stdin
+        .write_all(content.as_bytes())
+        .await
+        .error_context("Failed to write config content to exec stdin")?;
+    stdin.shutdown().await.error_context("Failed to close exec stdin")?;
 
     proc.join()
         .await

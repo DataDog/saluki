@@ -50,17 +50,22 @@ corpus:
         histogram: 1
       # Pool of container IDs for the |c: (Local Data) extension field. The harness substitutes
       # {{CONTAINER_ID}} with the real runtime container ID of the millstone container, so the
-      # agent can resolve it to actual pod tags via the containerd socket. The invalid value
-      # exercises the agent's handling of an unresolvable container ID.
+      # agent can resolve it to actual pod tags via the containerd socket. The second value is a
+      # syntactically valid container ID string that no real container has, exercising the agent's
+      # handling of an unresolvable |c: value.
       container_ids:
         - "{{CONTAINER_ID}}"
         - "this-is-not-a-real-container-id"
       # Pool of External Data strings for the |e: extension field. The harness substitutes
-      # {{POD_UID}} with the pod's real UID so the agent can resolve it to pod-level tags.
+      # {{POD_UID}} with the pod's real UID so the agent can resolve it to pod-level tags. The
+      # second value is syntactically valid but refers to no real pod, exercising graceful handling
+      # of an unresolvable |e: value.
       external_data:
         - "pu-{{POD_UID}},cn-millstone,it-false"
         - "this-is-not-valid-external-data"
-      # Per-metric cardinality override pool for the |card: extension field.
+      # Pool of cardinality values for the |card: extension field. Covers all four valid levels
+      # plus an unrecognized value to verify both agents treat it identically (fall back to default
+      # cardinality rather than dropping the frame).
       cardinality:
         - "low"
         - "orchestrator"
