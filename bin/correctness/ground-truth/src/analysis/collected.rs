@@ -19,6 +19,7 @@ impl CollectedData {
     /// If the collected data cannot be retrieved from the `datadog-intake` server, an error is returned.
     pub async fn for_port(datadog_intake_port: u16) -> Result<Self, GenericError> {
         let metrics = get_captured_metrics(datadog_intake_port).await?;
+        check_metrics_validation_status(datadog_intake_port).await?;
         let spans = get_captured_spans(datadog_intake_port).await?;
         let trace_stats = get_captured_trace_stats(datadog_intake_port).await?;
 
@@ -59,6 +60,35 @@ async fn get_captured_metrics(datadog_intake_port: u16) -> Result<Vec<Metric>, G
     debug!("Metrics dumped successfully.");
 
     Ok(metrics)
+}
+
+async fn check_metrics_validation_status(datadog_intake_port: u16) -> Result<(), GenericError> {
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!(
+            "http://localhost:{}/metrics/validation_status",
+            datadog_intake_port
+        ))
+        .send()
+        .await
+        .error_context("Failed to call metrics validation status endpoint on datadog-intake server.")?;
+
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .error_context("Failed to read metrics validation status response body.")?;
+
+    if status.is_success() {
+        debug!("Metrics validation status checked successfully.");
+        Ok(())
+    } else {
+        Err(generic_error!(
+            "Metrics validation failed with status {}: {}",
+            status,
+            body.trim()
+        ))
+    }
 }
 
 async fn get_captured_spans(datadog_intake_port: u16) -> Result<Vec<Span>, GenericError> {

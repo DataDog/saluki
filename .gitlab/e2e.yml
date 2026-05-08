@@ -98,6 +98,16 @@ test-correctness-dsd-plain:
   variables:
     CORRECTNESS_TEST_CASE: dsd-plain
 
+test-correctness-dsd-plain-v3:
+  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-baseline]
+  variables:
+    CORRECTNESS_TEST_CASE: dsd-plain-v3
+
+test-correctness-dsd-plain-v3-validation:
+  extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-baseline]
+  variables:
+    CORRECTNESS_TEST_CASE: dsd-plain-v3-validation
+
 test-correctness-dsd-origin-detection:
   extends: [.build-common-variables, .test-correctness-definition, .test-correctness-adp-baseline]
   variables:
