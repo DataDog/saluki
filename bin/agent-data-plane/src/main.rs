@@ -8,11 +8,12 @@
 use std::time::Instant;
 
 use datadog_agent_commons::platform::PlatformSettings;
+use metrics::Level;
 use saluki_app::bootstrap::{AppBootstrapper, Bootstrap, BootstrapGuard};
 use saluki_components::config::{DatadogRemapper, KEY_ALIASES};
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_core::runtime::Supervisor;
-use saluki_error::{ErrorContext as _, GenericError};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tracing::{error, info, warn};
 
 mod cli;
@@ -57,6 +58,8 @@ async fn main() -> Result<(), GenericError> {
     let bootstrap_logging_config = LoggingConfigurationTranslator::translate(&bootstrap_config)
         .error_context("Failed to translate logging configuration during bootstrap phase.")?;
 
+    let metrics_default_level = parse_metrics_level(&bootstrap_config)?;
+
     // Proceed with bootstrapping.
     //
     // This initializes logging, metrics, allocator telemetry, TLS, and more. We get handled a guard that we need to
@@ -64,6 +67,7 @@ async fn main() -> Result<(), GenericError> {
     let bootstrapper = AppBootstrapper::from_configuration(&bootstrap_config)
         .error_context("Failed to parse bootstrap configuration during bootstrap phase.")?
         .with_metrics_prefix("adp")
+        .with_metrics_default_level(metrics_default_level)
         .with_logging_configuration(bootstrap_logging_config);
     let Bootstrap {
         supervisor: bootstrap_supervisor,
@@ -94,6 +98,18 @@ async fn main() -> Result<(), GenericError> {
     }
 
     Ok(())
+}
+
+fn parse_metrics_level(config: &GenericConfiguration) -> Result<Level, GenericError> {
+    let raw = config
+        .try_get_typed::<String>("metrics_level")
+        .error_context("Failed to read `metrics_level`.")?;
+    match raw {
+        Some(value) => {
+            Level::try_from(value.as_str()).map_err(|e| generic_error!("Failed to parse `metrics_level`: {}", e))
+        }
+        None => Ok(Level::INFO),
+    }
 }
 
 async fn run_inner(

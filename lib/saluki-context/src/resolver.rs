@@ -40,14 +40,14 @@ static_metrics! {
         gauge(interner_capacity_bytes),
         gauge(interner_len_bytes),
         gauge(interner_entries),
-        counter(intern_fallback_total),
+        debug_counter(intern_fallback_total),
 
-        counter(resolved_existing_context_total),
-        counter(resolved_new_context_total),
+        debug_counter(resolved_existing_context_total),
+        debug_counter(resolved_new_context_total),
         gauge(active_contexts),
 
-        counter(resolved_existing_tagset_total),
-        counter(resolved_new_tagset_total),
+        debug_counter(resolved_existing_tagset_total),
+        debug_counter(resolved_new_tagset_total),
     ],
 }
 

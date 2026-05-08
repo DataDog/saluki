@@ -95,12 +95,12 @@ pub fn build_metrics(component_context: &ComponentContext) -> Metrics {
 
     Metrics {
         metrics_received: builder
-            .register_debug_counter_with_tags("component_events_received_total", [("message_type", "otlp_metrics")]),
+            .register_counter_with_tags("component_events_received_total", [("message_type", "otlp_metrics")]),
         logs_received: builder
-            .register_debug_counter_with_tags("component_events_received_total", [("message_type", "otlp_logs")]),
+            .register_counter_with_tags("component_events_received_total", [("message_type", "otlp_logs")]),
         bytes_received: builder.register_counter_with_tags("component_bytes_received_total", [("source", "otlp")]),
         spans_received: builder
-            .register_debug_counter_with_tags("component_events_received_total", [("message_type", "otlp_spans")]),
+            .register_counter_with_tags("component_events_received_total", [("message_type", "otlp_spans")]),
     }
 }
 

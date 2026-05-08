@@ -26,9 +26,9 @@ static_metrics! {
         gauge(weight_limit),
         counter(hits_total),
         counter(misses_total),
-        counter(items_inserted_total),
-        counter(items_removed_total),
-        counter(items_expired_total),
+        debug_counter(items_inserted_total),
+        debug_counter(items_removed_total),
+        debug_counter(items_expired_total),
         trace_histogram(items_expired_batch_size),
     ],
 }
