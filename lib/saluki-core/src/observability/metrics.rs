@@ -222,12 +222,18 @@ async fn flush_metrics(flush_interval: Duration) {
     loop {
         flush_interval.tick().await;
 
-        // If we have no downstream listeners, just clear our histograms so they don't accumulate memory forever.
+        // If we have no downstream listeners, clear our counters and histograms to keep them in a quieseced state.
         if state.flush_tx.receiver_count() == 0 {
+            let counters = state.registry.get_counter_handles();
+            for (_, counter) in counters {
+                counter.swap(0, Ordering::Relaxed);
+            }
+
             let histograms = state.registry.get_histogram_handles();
             for (_, histogram) in histograms {
                 histogram.clear();
             }
+
             continue;
         }
 
@@ -238,45 +244,40 @@ async fn flush_metrics(flush_interval: Duration) {
         let gauges = state.registry.get_gauge_handles();
         let histograms = state.registry.get_histogram_handles();
 
+        // For all metric types, we take their value (in a consuming fashion) _before_ checking if they're filtered.
+        //
+        // This lets us avoid emitting large, accumulated values for counters the first time they pass the filter check,
+        // and likewise, it avoids endless accumulation of histogram values, which translates to actual allocations
+        // behind the scenes.
+
         for (key, counter) in counters {
+            let value = counter.swap(0, Ordering::Relaxed) as f64;
+
             if state.is_metric_filtered(&key, &current_level) {
                 continue;
             }
 
             let context = context_resolver.resolve_from_key(key);
-            let value = counter.swap(0, Ordering::Relaxed) as f64;
-
             let metric = Metric::counter(context, value);
             metrics.push(Event::Metric(metric));
         }
 
         for (key, gauge) in gauges {
+            let value = f64::from_bits(gauge.load(Ordering::Relaxed));
+
             if state.is_metric_filtered(&key, &current_level) {
                 continue;
             }
 
             let context = context_resolver.resolve_from_key(key);
-            let value = f64::from_bits(gauge.load(Ordering::Relaxed));
-
             let metric = Metric::gauge(context, value);
             metrics.push(Event::Metric(metric));
         }
 
         for (key, histogram) in histograms {
-            // Collect all of the samples from the histogram.
-            //
-            // If the histogram was empty, skip emitting a metric for this histogram entirely. Empty sketches don't make
-            // sense to send.
             histogram_samples.clear();
             histogram.clear_with(|samples| histogram_samples.extend(samples));
 
-            if histogram_samples.is_empty() {
-                continue;
-            }
-
-            // Filter the histogram _after_ clearing out its values.
-            //
-            // This ensures that we don't endlessly accumulate samples while the histogram isn't being emitted.
             if state.is_metric_filtered(&key, &current_level) {
                 continue;
             }
