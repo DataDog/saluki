@@ -56,7 +56,7 @@ impl TryFrom<String> for TargetAddress {
 pub enum Payload {
     /// DogStatsD-encoded metrics.
     #[serde(rename = "dogstatsd")]
-    DogStatsD(lading_payload::dogstatsd::Config),
+    DogStatsD(Box<lading_payload::dogstatsd::Config>),
 
     /// OpenTelemetry-encoded metrics.
     #[serde(rename = "opentelemetry_metrics")]

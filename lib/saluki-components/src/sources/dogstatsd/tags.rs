@@ -88,16 +88,17 @@ mod tests {
     #[test]
     fn well_known_tags_cardinality() {
         let cases = [
-            // Happy path.
+            // Canonical lowercase values.
             ("none", Some(OriginTagCardinality::None)),
             ("low", Some(OriginTagCardinality::Low)),
             ("orch", Some(OriginTagCardinality::Orchestrator)),
             ("orchestrator", Some(OriginTagCardinality::Orchestrator)),
             ("high", Some(OriginTagCardinality::High)),
-            // Invalid values: either the wrong case, or just not even real cardinality levels.
-            ("Low", None),
+            // Wrong-case variants — case-insensitive to match the core Datadog Agent.
+            ("Low", Some(OriginTagCardinality::Low)),
+            ("HiGH", Some(OriginTagCardinality::High)),
+            // Genuinely unknown values still return None.
             ("MEDIUM", None),
-            ("HiGH", None),
             ("fakelevel", None),
         ];
 

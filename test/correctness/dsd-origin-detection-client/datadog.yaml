@@ -14,8 +14,18 @@ dd_url: "http://localhost:2049"
 dogstatsd_port: 0
 dogstatsd_socket: /airlock/metrics.sock
 
-# Ensure origin detection is disabled since we can't support it with ADP in standalone mode.
-dogstatsd_origin_detection: false
+# Enable origin detection so the agent enriches metrics with entity tags.
+dogstatsd_origin_detection: true
+
+# Enable parsing of the DogStatsD origin detection protocol extension fields: |c: (Local Data
+# container ID), |e: (External Data pod UID + container name), and |card: (cardinality override).
+# Without this, those fields are ignored even when present in the packet.
+dogstatsd_origin_detection_client: true
+
+# See dsd-origin-detection-kind/datadog.yaml for the full explanation: both the core agent and ADP
+# skip containerd auto-detection when running inside Docker (i.e. inside a kind pod), so the path
+# must be configured explicitly here.
+cri_socket_path: /var/run/containerd/containerd.sock
 
 # Gauges can be processed out-of-order when multiple workers are used, while ADP does not use multiple workers, so ADP
 # always ends up with the correct (last seen) value, while DSD might return the last seen value... or the value seen
