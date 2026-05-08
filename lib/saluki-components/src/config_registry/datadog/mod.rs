@@ -219,6 +219,31 @@ mod registry_tests {
     }
 
     #[test]
+    fn saluki_schema_entries_not_in_vendored_schema() {
+        let schema_paths: HashSet<&str> = ALL_SCHEMA_ENTRIES.iter().map(|e| e.yaml_path).collect();
+
+        let misclassified: Vec<&str> = ALL_ANNOTATIONS
+            .iter()
+            .filter(|a| a.schema.schema == Schema::Saluki)
+            .map(|a| a.yaml_path())
+            .filter(|p| schema_paths.contains(p))
+            .collect();
+
+        if !misclassified.is_empty() {
+            panic!(
+                "{} annotation(s) marked Schema::Saluki but found in ALL_SCHEMA_ENTRIES \
+                 (should reference the generated schema:: constant instead):\n{}",
+                misclassified.len(),
+                misclassified
+                    .iter()
+                    .map(|p| format!("  - {}", p))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
+        }
+    }
+
+    #[test]
     fn all_schema_entries_are_annotated_or_ignored() {
         // The union of all annotated keys plus all the keys we intend to ignore.
         let all_accounted_for_entries: HashSet<&str> = HashSet::from_iter(
