@@ -70,6 +70,7 @@ impl ConfigClassifier {
                 support_level: SupportLevel::NotApplicable,
                 is_default: true,
             },
+            // If we don't know about it, we cannot know its default.
             None => Classification {
                 support_level: SupportLevel::Unrecognized,
                 is_default: false,
@@ -79,6 +80,7 @@ impl ConfigClassifier {
 }
 
 /// Determines whether the runtime `value` matches the default value according to config registry.
+/// We rely on the schema's default and the runtime value deserializing to the same `serde_json::Value`.
 fn is_default_value(schema: &SchemaEntry, value: &Value) -> bool {
     match schema.default {
         Some(default_str) => match serde_json::from_str::<Value>(default_str) {
@@ -133,8 +135,8 @@ mod tests {
     }
 
     #[test]
-    // To whoever implemented this config: sorry! We just wanted to make sure this is working with correctly by giving
-    // it a currently unsupported key. You can delete the usupported tests or choose a different unsupported key.
+    // To whoever implements this config in the future: sorry! We just wanted to make sure this is working correctly
+    // by giving it a currently unsupported key. You can delete the unsupported tests or choose a different key.
     fn incompatible_non_default() {
         let c = classifier();
         let key = unsupported::TLS_HANDSHAKE_TIMEOUT.yaml_path();

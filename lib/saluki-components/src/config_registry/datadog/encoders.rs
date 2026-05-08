@@ -1,9 +1,10 @@
 //! Annotations for shared Datadog encoder configuration keys.
-use crate::config_registry::{
-    generated::schema, structs, SalukiAnnotation, Schema, SchemaEntry, SupportLevel, ValueType,
-};
+#[cfg(test)]
+use crate::config_registry::Schema;
+use crate::config_registry::{generated::schema, structs, SalukiAnnotation, SchemaEntry, SupportLevel, ValueType};
 
 static FLUSH_TIMEOUT_SECS_SCHEMA: SchemaEntry = SchemaEntry {
+    #[cfg(test)]
     schema: Schema::Saluki,
     yaml_path: "flush_timeout_secs",
     env_vars: &[],
@@ -12,6 +13,7 @@ static FLUSH_TIMEOUT_SECS_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static SERIALIZER_MAX_METRICS_PER_PAYLOAD_SCHEMA: SchemaEntry = SchemaEntry {
+    #[cfg(test)]
     schema: Schema::Saluki,
     yaml_path: "serializer_max_metrics_per_payload",
     env_vars: &[],

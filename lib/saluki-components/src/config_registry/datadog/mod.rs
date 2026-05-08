@@ -253,26 +253,19 @@ mod registry_tests {
                 .chain(IGNORED_ENTRIES.iter().copied()),
         );
 
-        // Iterate through all schema entries. If a schema entry is not found, that it bad. We want
-        // to add it to a list of missing keys.
         let mut missing_keys = Vec::new();
         for schema_key in ALL_SCHEMA_ENTRIES.iter().map(|&entry| entry.yaml_path) {
             if !all_accounted_for_entries.contains(schema_key) {
-                // This schema_key is missing from Saluki's config registry system.
                 missing_keys.push(schema_key);
             }
         }
 
-        if missing_keys.is_empty() {
-            // The test succeeded. All keys are accounted for.
-            return;
+        if !missing_keys.is_empty() {
+            panic!(
+                "{} config key(s) are missing from the Saluki registry: \n\n{}",
+                missing_keys.len(),
+                missing_keys.join("\n")
+            );
         }
-
-        // The test failed. Build a list of missing keys.
-        panic!(
-            "{} config key(s) are missing from the Saluki registry: \n\n{}",
-            missing_keys.len(),
-            missing_keys.join("\n")
-        );
     }
 }

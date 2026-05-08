@@ -3,7 +3,7 @@
 # considered with a human-in the loop before being added here.
 #
 # BE CAREFUL: adding a key here means that ADP will not issue a warning or error when the key exists
-# in configuration. Even if it is unsupported by ADP. Only those keys which are expected to have no
+# in configuration, even if it is unsupported by ADP. Only those keys which are expected to have no
 # effect on ADP behavior (by design) should be listed here.
 #
 # Reason "initial bulk" refers to the initial population of this file using the results of a

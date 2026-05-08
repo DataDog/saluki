@@ -826,6 +826,7 @@ impl GenericConfiguration {
     }
 }
 
+/// Recursively descend into the tree building a dot-separated path until hitting a non-Object leaf node.
 fn flatten_value(value: &serde_json::Value, prefix: &mut String, out: &mut Vec<(String, serde_json::Value)>) {
     if let serde_json::Value::Object(map) = value {
         for (key, child) in map {

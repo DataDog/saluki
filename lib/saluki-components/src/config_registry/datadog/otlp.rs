@@ -1,9 +1,10 @@
 //! Annotations for OTLP source, decoder, and relay configuration keys.
-use crate::config_registry::{
-    generated::schema, structs, SalukiAnnotation, Schema, SchemaEntry, SupportLevel, ValueType,
-};
+#[cfg(test)]
+use crate::config_registry::Schema;
+use crate::config_registry::{generated::schema, structs, SalukiAnnotation, SchemaEntry, SupportLevel, ValueType};
 
 static OTLP_CONFIG_TRACES_ENABLE_TOP_LEVEL_BY_SPAN_KIND_SCHEMA: SchemaEntry = SchemaEntry {
+    #[cfg(test)]
     schema: Schema::Saluki,
     yaml_path: "otlp_config.traces.enable_otlp_compute_top_level_by_span_kind",
     env_vars: &[],
@@ -12,6 +13,7 @@ static OTLP_CONFIG_TRACES_ENABLE_TOP_LEVEL_BY_SPAN_KIND_SCHEMA: SchemaEntry = Sc
 };
 
 static OTLP_CONFIG_TRACES_IGNORE_MISSING_DATADOG_FIELDS_SCHEMA: SchemaEntry = SchemaEntry {
+    #[cfg(test)]
     schema: Schema::Saluki,
     yaml_path: "otlp_config.traces.ignore_missing_datadog_fields",
     env_vars: &[],
@@ -20,6 +22,7 @@ static OTLP_CONFIG_TRACES_IGNORE_MISSING_DATADOG_FIELDS_SCHEMA: SchemaEntry = Sc
 };
 
 static OTLP_CONFIG_TRACES_STRING_INTERNER_SIZE_SCHEMA: SchemaEntry = SchemaEntry {
+    #[cfg(test)]
     schema: Schema::Saluki,
     yaml_path: "otlp_config.traces.string_interner_size",
     env_vars: &[],
@@ -28,6 +31,7 @@ static OTLP_CONFIG_TRACES_STRING_INTERNER_SIZE_SCHEMA: SchemaEntry = SchemaEntry
 };
 
 static OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TRANSPORT_SCHEMA: SchemaEntry = SchemaEntry {
+    #[cfg(test)]
     schema: Schema::Saluki,
     yaml_path: "otlp_config.receiver.protocols.http.transport",
     env_vars: &[],
@@ -36,6 +40,7 @@ static OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TRANSPORT_SCHEMA: SchemaEntry = Schem
 };
 
 static OTLP_ALLOW_CONTEXT_HEAP_ALLOCS_SCHEMA: SchemaEntry = SchemaEntry {
+    #[cfg(test)]
     schema: Schema::Saluki,
     yaml_path: "otlp_allow_context_heap_allocs",
     env_vars: &[],
@@ -44,6 +49,7 @@ static OTLP_ALLOW_CONTEXT_HEAP_ALLOCS_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static OTLP_CACHED_CONTEXTS_LIMIT_SCHEMA: SchemaEntry = SchemaEntry {
+    #[cfg(test)]
     schema: Schema::Saluki,
     yaml_path: "otlp_cached_contexts_limit",
     env_vars: &[],
@@ -52,6 +58,7 @@ static OTLP_CACHED_CONTEXTS_LIMIT_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static OTLP_CACHED_TAGSETS_LIMIT_SCHEMA: SchemaEntry = SchemaEntry {
+    #[cfg(test)]
     schema: Schema::Saluki,
     yaml_path: "otlp_cached_tagsets_limit",
     env_vars: &[],
@@ -60,6 +67,7 @@ static OTLP_CACHED_TAGSETS_LIMIT_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static OTLP_STRING_INTERNER_SIZE_SCHEMA: SchemaEntry = SchemaEntry {
+    #[cfg(test)]
     schema: Schema::Saluki,
     yaml_path: "otlp_string_interner_size",
     env_vars: &[],

@@ -1,9 +1,10 @@
 //! Annotations for DogStatsD source configuration keys.
-use crate::config_registry::{
-    generated::schema, structs, SalukiAnnotation, Schema, SchemaEntry, SupportLevel, ValueType,
-};
+#[cfg(test)]
+use crate::config_registry::Schema;
+use crate::config_registry::{generated::schema, structs, SalukiAnnotation, SchemaEntry, SupportLevel, ValueType};
 
 static DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS_SCHEMA: SchemaEntry = SchemaEntry {
+    #[cfg(test)]
     schema: Schema::Saluki,
     yaml_path: "dogstatsd_allow_context_heap_allocs",
     env_vars: &[],
@@ -12,6 +13,7 @@ static DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static DOGSTATSD_BUFFER_COUNT_SCHEMA: SchemaEntry = SchemaEntry {
+    #[cfg(test)]
     schema: Schema::Saluki,
     yaml_path: "dogstatsd_buffer_count",
     env_vars: &[],
@@ -20,6 +22,7 @@ static DOGSTATSD_BUFFER_COUNT_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static DOGSTATSD_CACHED_CONTEXTS_LIMIT_SCHEMA: SchemaEntry = SchemaEntry {
+    #[cfg(test)]
     schema: Schema::Saluki,
     yaml_path: "dogstatsd_cached_contexts_limit",
     env_vars: &[],
@@ -28,6 +31,7 @@ static DOGSTATSD_CACHED_CONTEXTS_LIMIT_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static DOGSTATSD_CACHED_TAGSETS_LIMIT_SCHEMA: SchemaEntry = SchemaEntry {
+    #[cfg(test)]
     schema: Schema::Saluki,
     yaml_path: "dogstatsd_cached_tagsets_limit",
     env_vars: &[],
@@ -36,6 +40,7 @@ static DOGSTATSD_CACHED_TAGSETS_LIMIT_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static DOGSTATSD_MINIMUM_SAMPLE_RATE_SCHEMA: SchemaEntry = SchemaEntry {
+    #[cfg(test)]
     schema: Schema::Saluki,
     yaml_path: "dogstatsd_minimum_sample_rate",
     env_vars: &[],
@@ -44,6 +49,7 @@ static DOGSTATSD_MINIMUM_SAMPLE_RATE_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static DOGSTATSD_PERMISSIVE_DECODING_SCHEMA: SchemaEntry = SchemaEntry {
+    #[cfg(test)]
     schema: Schema::Saluki,
     yaml_path: "dogstatsd_permissive_decoding",
     env_vars: &[],
@@ -52,6 +58,7 @@ static DOGSTATSD_PERMISSIVE_DECODING_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static DOGSTATSD_STRING_INTERNER_SIZE_BYTES_SCHEMA: SchemaEntry = SchemaEntry {
+    #[cfg(test)]
     schema: Schema::Saluki,
     yaml_path: "dogstatsd_string_interner_size_bytes",
     env_vars: &[],
@@ -60,6 +67,7 @@ static DOGSTATSD_STRING_INTERNER_SIZE_BYTES_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static DOGSTATSD_TCP_PORT_SCHEMA: SchemaEntry = SchemaEntry {
+    #[cfg(test)]
     schema: Schema::Saluki,
     yaml_path: "dogstatsd_tcp_port",
     env_vars: &[],

@@ -1,12 +1,13 @@
 //! Annotations for trace obfuscation transform configuration keys.
-use crate::config_registry::{
-    generated::schema, structs, SalukiAnnotation, Schema, SchemaEntry, SupportLevel, ValueType,
-};
+#[cfg(test)]
+use crate::config_registry::Schema;
+use crate::config_registry::{generated::schema, structs, SalukiAnnotation, SchemaEntry, SupportLevel, ValueType};
 
 // Custom statics for SQL obfuscation fields: no corresponding entries exist in the
 // vendored Agent schema, so these are defined manually with the correct paths.
 
 static SQL_DBMS: SchemaEntry = SchemaEntry {
+    #[cfg(test)]
     schema: Schema::Saluki,
     yaml_path: "apm_config.obfuscation.sql.dbms",
     env_vars: &[],
@@ -15,6 +16,7 @@ static SQL_DBMS: SchemaEntry = SchemaEntry {
 };
 
 static SQL_DOLLAR_QUOTED: SchemaEntry = SchemaEntry {
+    #[cfg(test)]
     schema: Schema::Saluki,
     yaml_path: "apm_config.obfuscation.sql.dollar_quoted_func",
     env_vars: &[],
@@ -23,6 +25,7 @@ static SQL_DOLLAR_QUOTED: SchemaEntry = SchemaEntry {
 };
 
 static SQL_KEEP_ALIAS: SchemaEntry = SchemaEntry {
+    #[cfg(test)]
     schema: Schema::Saluki,
     yaml_path: "apm_config.obfuscation.sql.keep_sql_alias",
     env_vars: &[],
@@ -31,6 +34,7 @@ static SQL_KEEP_ALIAS: SchemaEntry = SchemaEntry {
 };
 
 static SQL_REPLACE_DIGITS: SchemaEntry = SchemaEntry {
+    #[cfg(test)]
     schema: Schema::Saluki,
     yaml_path: "apm_config.obfuscation.sql.replace_digits",
     env_vars: &[],
@@ -39,6 +43,7 @@ static SQL_REPLACE_DIGITS: SchemaEntry = SchemaEntry {
 };
 
 static SQL_TABLE_NAMES: SchemaEntry = SchemaEntry {
+    #[cfg(test)]
     schema: Schema::Saluki,
     yaml_path: "apm_config.obfuscation.sql.table_names",
     env_vars: &[],
