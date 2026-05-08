@@ -1,8 +1,7 @@
 use nom::{
-    branch::alt,
     bytes::complete::{tag, take_while1},
     character::complete::u64 as parse_u64,
-    combinator::{all_consuming, map},
+    combinator::{all_consuming, map, rest},
     error::{Error, ErrorKind},
     sequence::preceded,
     IResult, Parser as _,
@@ -170,30 +169,16 @@ pub fn external_data(input: &[u8]) -> IResult<&[u8], &str> {
 
 /// Parses `OriginTagCardinality` from the input slice.
 ///
-/// # Errors
-///
-///
+/// Unknown cardinality values are accepted and returned as `None` rather than failing the parse.
+/// This matches the behavior of the core Datadog Agent, which silently ignores unrecognized values.
 #[inline]
 pub fn cardinality(input: &[u8]) -> IResult<&[u8], Option<OriginTagCardinality>> {
-    // Cardinality is a string that can be one of the following values:
-    // - "none"
-    // - "low"
-    // - "orchestrator"
-    // - "high"
-    let (remaining, raw_cardinality) = map(
-        all_consuming(preceded(
-            tag(CARDINALITY_PREFIX),
-            alt((tag("none"), tag("low"), tag("orchestrator"), tag("high"))),
-        )),
-        |b| {
-            // SAFETY: We know the bytes in `b` can only be comprised of UTF-8 characters, because our tags are all based on valid
-            // UTF-8 strings, which ensures that it's valid to interpret the bytes directly as UTF-8.
-            unsafe { std::str::from_utf8_unchecked(b) }
-        },
-    )
+    let (remaining, raw_cardinality) = map(all_consuming(preceded(tag(CARDINALITY_PREFIX), rest)), |b| {
+        // SAFETY: We know the bytes in `b` can only be comprised of UTF-8 characters, because our tags are all based on valid
+        // UTF-8 strings, which ensures that it's valid to interpret the bytes directly as UTF-8.
+        unsafe { std::str::from_utf8_unchecked(b) }
+    })
     .parse(input)?;
 
-    OriginTagCardinality::try_from(raw_cardinality)
-        .map(|cardinality| (remaining, Some(cardinality)))
-        .map_err(|_| nom::Err::Error(Error::new(input, ErrorKind::Verify)))
+    Ok((remaining, OriginTagCardinality::try_from(raw_cardinality).ok()))
 }

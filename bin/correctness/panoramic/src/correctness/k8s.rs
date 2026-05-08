@@ -545,20 +545,6 @@ fn build_agent_pod(cfg: AgentPodConfig<'_>) -> Pod {
             }),
             ..Default::default()
         },
-        // The containerd socket from the kind node is mounted so the agent can use the containerd
-        // gRPC API to resolve sender PIDs to container IDs for UDS origin detection. Without it,
-        // cgroup-based PID resolution fails: the container's private cgroup namespace makes
-        // /proc/<pid>/cgroup paths useless for identifying containers. Both ADP (cri_socket_path)
-        // and the core agent skip containerd auto-detection when running inside Docker, so the
-        // socket path must also be configured explicitly in datadog.yaml.
-        Volume {
-            name: "containerd-socket".to_string(),
-            host_path: Some(HostPathVolumeSource {
-                path: "/run/containerd/containerd.sock".to_string(),
-                type_: Some("Socket".to_string()),
-            }),
-            ..Default::default()
-        },
     ];
     volumes.extend(agent_extra_volumes);
 
