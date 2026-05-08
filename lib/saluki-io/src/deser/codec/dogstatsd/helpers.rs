@@ -175,10 +175,10 @@ pub fn external_data(input: &[u8]) -> IResult<&[u8], &str> {
 pub fn cardinality(input: &[u8]) -> IResult<&[u8], Option<OriginTagCardinality>> {
     let (remaining, raw_bytes) = all_consuming(preceded(tag(CARDINALITY_PREFIX), rest)).parse(input)?;
 
-    // Use checked UTF-8 conversion: non-UTF-8 bytes in the cardinality value are treated the same
-    // as an unrecognized string — return None so the frame continues processing rather than
-    // invoking undefined behavior or hard-failing.
-    let cardinality = std::str::from_utf8(raw_bytes)
+    // Use simdutf8 (consistent with other UTF-8 checks in this codec) for checked conversion.
+    // Non-UTF-8 bytes are treated as an unrecognized value — return None so the frame continues
+    // processing rather than hard-failing.
+    let cardinality = simdutf8::basic::from_utf8(raw_bytes)
         .ok()
         .and_then(|s| OriginTagCardinality::try_from(s).ok());
 
@@ -218,11 +218,18 @@ mod tests {
     }
 
     #[test]
-    fn cardinality_case_sensitive() {
-        // Cardinality values are case-sensitive; wrong case returns None, not an error.
-        for value in ["Low", "HIGH", "Orchestrator", "NONE"] {
+    fn cardinality_case_insensitive() {
+        // Matching is case-insensitive to align with the core Datadog Agent (StringToTagCardinality
+        // uses strings.ToLower). Wrong-case values should resolve to the correct cardinality.
+        let cases = [
+            ("LOW", Some(OriginTagCardinality::Low)),
+            ("HIGH", Some(OriginTagCardinality::High)),
+            ("Orchestrator", Some(OriginTagCardinality::Orchestrator)),
+            ("NONE", Some(OriginTagCardinality::None)),
+        ];
+        for (value, expected) in cases {
             let (_, result) = cardinality(&card(value)).expect("parse should succeed");
-            assert_eq!(result, None, "expected None for '{}'", value);
+            assert_eq!(result, expected, "failed for '{}'", value);
         }
     }
 

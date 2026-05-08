@@ -63,15 +63,16 @@ corpus:
       external_data:
         - "pu-{{POD_UID}},cn-millstone,it-false"
         - "this-is-not-valid-external-data"
-      # Pool of cardinality values for the |card: extension field. Covers all four valid levels
-      # plus an unrecognized value and a wrong-case value to verify both agents treat them
-      # identically (fall back to default cardinality rather than dropping the frame).
-      # "HIGH" is intentionally wrong-case: cardinality matching is case-sensitive, so both
-      # agents should ignore it and apply default enrichment, producing identical output.
+      # Pool of cardinality values for the |card: extension field. Covers all four canonical
+      # lowercase levels, the "orch" shorthand supported by the Go agent, wrong-case variants
+      # ("HIGH", "ORCH") to exercise case-insensitive matching, and an unrecognized value to
+      # verify both agents fall back to default cardinality rather than dropping the frame.
       cardinality:
         - "low"
         - "orchestrator"
+        - "orch"
         - "high"
         - "none"
         - "HIGH"
+        - "ORCH"
         - "this-is-not-a-valid-cardinality"
