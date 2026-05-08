@@ -135,6 +135,17 @@ crate::declare_annotations! {
         test_json: None,
     };
 
+    /// `dogstatsd_eol_required` — require newline-terminated messages for selected listener types.
+    DOGSTATSD_EOL_REQUIRED = SalukiAnnotation {
+        schema: &schema::DOGSTATSD_EOL_REQUIRED,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DOGSTATSD_CONFIGURATION],
+        value_type_override: None,
+        test_json: Some(r#"["udp"]"#),
+    };
+
     /// `dogstatsd_non_local_traffic` — accept packets from non-localhost addresses.
     DOGSTATSD_NON_LOCAL_TRAFFIC = SalukiAnnotation {
         schema: &schema::DOGSTATSD_NON_LOCAL_TRAFFIC,
