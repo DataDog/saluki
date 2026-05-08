@@ -57,9 +57,10 @@ corpus:
       # {{POD_UID}} with the pod's real UID so the agent can resolve it to pod-level tags.
       external_data:
         - "pu-{{POD_UID}},cn-millstone,it-false"
-      # Per-metric cardinality override pool for the |card: extension field. Exercises all
-      # non-none levels to verify baseline DSD and ADP apply the same tag sets at each level.
+      # Per-metric cardinality override pool for the |card: extension field. Only "low" is used
+      # here because higher cardinality levels include container_id as a tag, and baseline and
+      # comparison run in separate pods with different container IDs. At low cardinality the
+      # enrichment only returns image-level tags (image_name, image_tag, etc.) which are
+      # identical across both pods since they use the same image.
       cardinality:
         - "low"
-        - "orchestrator"
-        - "high"

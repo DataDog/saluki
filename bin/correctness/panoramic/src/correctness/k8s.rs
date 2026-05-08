@@ -83,45 +83,195 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
     let baseline_ns = format!("airlock-{}-baseline", generate_isolation_id());
     let comparison_ns = format!("airlock-{}-comparison", generate_isolation_id());
 
+    // Socket directories are created on the kind node via DirectoryOrCreate HostPath volumes —
+    // no manual setup required. Both agent pods and the shared millstone pod mount these paths,
+    // giving millstone access to both agent sockets without any cross-pod coordination.
+    let baseline_socket_dir = format!("/tmp/saluki-correctness/{}/baseline", generate_isolation_id());
+    let comparison_socket_dir = format!("/tmp/saluki-correctness/{}/comparison", generate_isolation_id());
+    let millstone_ns = format!("airlock-{}-millstone", generate_isolation_id());
+
+    let millstone_cfg = config.millstone_config();
+    let millstone_template = match std::fs::read_to_string(&millstone_cfg.config_path).with_error_context(|| {
+        format!(
+            "Failed to read millstone config: {}",
+            millstone_cfg.config_path.display()
+        )
+    }) {
+        Ok(t) => t,
+        Err(e) => return make_error_result(name, started, "read_millstone_config", e),
+    };
+    let millstone_binary = millstone_cfg
+        .binary_path
+        .unwrap_or_else(|| "/usr/local/bin/millstone".to_string());
+
     info!(
-        "Spawning kind pods for baseline ({}) and comparison ({})...",
-        baseline_ns, comparison_ns
+        "Spawning kind pods: baseline ({}), comparison ({}), millstone ({})...",
+        baseline_ns, comparison_ns, millstone_ns
     );
 
     let run_start = Instant::now();
-    let (baseline_result, comparison_result) = tokio::join!(
-        run_group(
+
+    // Phase 1: Start all three pods in parallel. Agent pods use HostPath airlocks. The shared
+    // millstone pod mounts both airlock directories and waits for both configs + both sockets.
+    let (baseline_prep, comparison_prep, millstone_prep) = tokio::join!(
+        prepare_agent_group(
             client.clone(),
             baseline_ns.clone(),
             &config,
             &config.baseline,
-            tctx.log_dir().join("baseline")
+            &baseline_socket_dir,
+            tctx.log_dir().join("baseline"),
         ),
-        run_group(
+        prepare_agent_group(
             client.clone(),
             comparison_ns.clone(),
             &config,
             &config.comparison,
-            tctx.log_dir().join("comparison")
+            &comparison_socket_dir,
+            tctx.log_dir().join("comparison"),
+        ),
+        prepare_millstone_group(
+            client.clone(),
+            millstone_ns.clone(),
+            &millstone_cfg.image,
+            &millstone_binary,
+            &baseline_socket_dir,
+            &comparison_socket_dir,
+            tctx.log_dir().join("millstone"),
         ),
     );
+
+    // Clean up all three namespaces regardless of outcome.
+    let cleanup = |err: GenericError| {
+        let client = client.clone();
+        let (bns, cns, mns) = (baseline_ns.clone(), comparison_ns.clone(), millstone_ns.clone());
+        async move {
+            tokio::join!(
+                cleanup_namespace(client.clone(), &bns),
+                cleanup_namespace(client.clone(), &cns),
+                cleanup_namespace(client.clone(), &mns),
+            );
+            err
+        }
+    };
+
+    if let Err(e) = baseline_prep {
+        return make_error_result(name, started, "agent_pod_start", cleanup(e).await);
+    }
+    if let Err(e) = comparison_prep {
+        return make_error_result(name, started, "agent_pod_start", cleanup(e).await);
+    }
+    if let Err(e) = millstone_prep {
+        return make_error_result(name, started, "millstone_pod_start", cleanup(e).await);
+    }
+
+    // Phase 2: All pods are Running. Gather origin data from the millstone pod and write both
+    // configs. Both runs use the same container ID and pod UID so both agents resolve identical
+    // enrichment — even though the origin actually belongs to the millstone pod, not the agents.
+    let millstone_pod_api: Api<Pod> = Api::namespaced(client.clone(), &millstone_ns);
+
+    let origin_data = match gather_pod_origin_data(&millstone_pod_api, POD_NAME).await {
+        Ok(d) => d,
+        Err(e) => return make_error_result(name, started, "gather_origin_data", cleanup(e).await),
+    };
+
+    debug!(
+        "Millstone pod origin data: pod_uid={}, container_id={}",
+        origin_data.pod_uid, origin_data.millstone_container_id
+    );
+
+    let config_content = substitute_origin_placeholders(&millstone_template, &origin_data);
+    let baseline_config =
+        make_millstone_config_for_target(&config_content, "unixgram:///baseline-airlock/metrics.sock");
+    let comparison_config =
+        make_millstone_config_for_target(&config_content, "unixgram:///comparison-airlock/metrics.sock");
+
+    let write_result = tokio::try_join!(
+        exec_write_file(
+            client.clone(),
+            &millstone_ns,
+            POD_NAME,
+            "millstone",
+            "/etc/millstone/baseline.toml",
+            &baseline_config,
+        ),
+        exec_write_file(
+            client.clone(),
+            &millstone_ns,
+            POD_NAME,
+            "millstone",
+            "/etc/millstone/comparison.toml",
+            &comparison_config,
+        ),
+    );
+    if let Err(e) = write_result {
+        return make_error_result(name, started, "write_millstone_configs", cleanup(e).await);
+    }
+
+    // Phase 3: Both agent pods are ready; start port-forwards for data collection.
+    let baseline_pf_cancel = CancellationToken::new();
+    let comparison_pf_cancel = CancellationToken::new();
+    let (baseline_port, comparison_port) = match tokio::try_join!(
+        start_port_forward(
+            client.clone(),
+            baseline_ns.clone(),
+            POD_NAME.to_string(),
+            2049,
+            baseline_pf_cancel.clone()
+        ),
+        start_port_forward(
+            client.clone(),
+            comparison_ns.clone(),
+            POD_NAME.to_string(),
+            2049,
+            comparison_pf_cancel.clone()
+        ),
+    ) {
+        Ok(ports) => ports,
+        Err(e) => return make_error_result(name, started, "port_forward", cleanup(e).await),
+    };
+
+    // Phase 4: Wait for millstone to finish both parallel runs, then flush.
+    if let Err(e) = wait_for_millstone_exit(&millstone_pod_api, POD_NAME, MILLSTONE_EXIT_TIMEOUT).await {
+        baseline_pf_cancel.cancel();
+        comparison_pf_cancel.cancel();
+        return make_error_result(name, started, "millstone_exit", cleanup(e).await);
+    }
+
+    debug!("Millstone completed. Waiting {:?} for flush...", FLUSH_WAIT);
+    sleep(FLUSH_WAIT).await;
+
+    // Phase 5: Collect data from both agent pods in parallel.
+    let (baseline_result, comparison_result) = tokio::join!(
+        CollectedData::for_port(baseline_port),
+        CollectedData::for_port(comparison_port),
+    );
+
+    baseline_pf_cancel.cancel();
+    comparison_pf_cancel.cancel();
+
     let run_duration = run_start.elapsed();
 
-    // Clean up both namespaces regardless of outcome.
+    // Clean up all three namespaces now that data is collected.
     tokio::join!(
         cleanup_namespace(client.clone(), &baseline_ns),
         cleanup_namespace(client.clone(), &comparison_ns),
+        cleanup_namespace(client.clone(), &millstone_ns),
     );
 
     let (baseline_data, comparison_data) = match (baseline_result, comparison_result) {
         (Ok(b), Ok(c)) => (b, c),
         (Err(baseline_err), Err(comparison_err)) => {
-            let combined = generic_error!(
-                "Both groups failed.\n  baseline: {:?}\n  comparison: {:?}",
-                baseline_err,
-                comparison_err
+            return make_error_result(
+                name,
+                started,
+                "collect_data",
+                generic_error!(
+                    "Both groups failed to collect data.\n  baseline: {:?}\n  comparison: {:?}",
+                    baseline_err,
+                    comparison_err
+                ),
             );
-            return make_error_result(name, started, "collect_data", combined);
         }
         (Err(e), _) | (_, Err(e)) => return make_error_result(name, started, "collect_data", e),
     };
@@ -185,47 +335,30 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
     }
 }
 
-const CONTAINER_NAMES: &[&str] = &["datadog-intake", "target", "millstone"];
+const AGENT_CONTAINER_NAMES: &[&str] = &["datadog-intake", "target"];
+const MILLSTONE_CONTAINER_NAMES: &[&str] = &["millstone"];
 
-/// Runs one test group (baseline or comparison) as a multi-container pod.
+/// Creates the namespace and agent pod (datadog-intake + target agent) for one test group,
+/// waits for the pod to reach Running, and starts background log streaming.
 ///
-/// All three containers (datadog-intake, target agent, millstone) share the same pod and a single
-/// emptyDir volume at `/airlock`. Because they share the pod network namespace, containers
-/// communicate over `localhost` rather than container-name DNS.
-async fn run_group(
+/// The airlock volume is a HostPath directory on the kind node so the shared millstone pod can
+/// mount both groups' socket directories simultaneously.
+async fn prepare_agent_group(
     client: Client, namespace: String, config: &Config, target_config: &crate::correctness::config::TargetConfig,
-    log_dir: PathBuf,
-) -> Result<CollectedData, GenericError> {
-    let millstone_cfg = config.millstone_config();
+    socket_dir: &str, log_dir: PathBuf,
+) -> Result<(), GenericError> {
     let intake_cfg = config.datadog_intake_config();
 
-    // 1. Create the namespace.
     create_namespace(client.clone(), &namespace)
         .await
         .with_error_context(|| format!("Failed to create namespace '{}'", namespace))?;
 
-    // 2. Create ConfigMaps for config files that need to be injected.
-    //    - One ConfigMap per unique target-container directory derived from `files:` entries.
-    //    (datadog-intake hardcodes 0.0.0.0:2049 and ignores any config file.)
-    //    Millstone's config is NOT a ConfigMap: the pod mounts an EmptyDir at /etc/millstone and
-    //    the harness writes the config there after the pod is Running, once it knows the pod UID
-    //    and container IDs. This allows the config to contain real runtime values for origin
-    //    detection extension fields (|c:, |e:) that are only known after scheduling.
-    let millstone_config_template = std::fs::read_to_string(&millstone_cfg.config_path).with_error_context(|| {
-        format!(
-            "Failed to read millstone config: {}",
-            millstone_cfg.config_path.display()
-        )
-    })?;
-
-    // Parse target files and group by container directory so we create one ConfigMap per mount point.
     let (agent_volumes, agent_volume_mounts) =
         build_agent_config_volumes(client.clone(), &namespace, config, target_config)
             .await
             .error_context("Failed to create agent config ConfigMaps")?;
 
-    // 3. Build and create the pod.
-    let pod = build_pod(PodConfig {
+    let pod = build_agent_pod(AgentPodConfig {
         namespace: &namespace,
         intake_image: &intake_cfg.image,
         intake_binary: &intake_cfg
@@ -235,120 +368,114 @@ async fn run_group(
         target_env_strs: &target_config.additional_env_vars,
         agent_extra_volumes: agent_volumes,
         agent_extra_mounts: agent_volume_mounts,
-        millstone_image: &millstone_cfg.image,
-        millstone_binary: &millstone_cfg
-            .binary_path
-            .unwrap_or_else(|| "/usr/local/bin/millstone".to_string()),
+        socket_dir,
     });
 
     let pod_api: Api<Pod> = Api::namespaced(client.clone(), &namespace);
     pod_api
         .create(&PostParams::default(), &pod)
         .await
-        .map_err(|e| generic_error!("Failed to create pod in namespace '{}': {}", namespace, e))?;
+        .map_err(|e| generic_error!("Failed to create agent pod in namespace '{}': {}", namespace, e))?;
 
-    debug!("Pod created in namespace '{}'. Waiting for Running phase...", namespace);
-
-    // 4. Wait for the pod to reach Running (or Succeeded) phase.
     wait_for_pod_running(&pod_api, POD_NAME, POD_READY_TIMEOUT)
         .await
-        .with_error_context(|| format!("Pod in namespace '{}' failed to reach Running phase", namespace))?;
+        .with_error_context(|| format!("Agent pod in namespace '{}' failed to reach Running phase", namespace))?;
 
-    // 5. Gather the pod UID and millstone container ID, then write the millstone config.
-    //    These values are only available after scheduling. The config template may contain
-    //    {{POD_UID}} and {{CONTAINER_ID}} placeholders that are substituted here.
-    //    Millstone's wait script blocks until the config file appears, so this write must
-    //    happen before the agent creates its DSD socket — which takes a few seconds after
-    //    the pod reaches Running, giving us a clean ordering window.
-    let origin_data = gather_pod_origin_data(&pod_api, POD_NAME)
-        .await
-        .with_error_context(|| format!("Failed to gather origin data from pod in namespace '{}'", namespace))?;
-
-    debug!(
-        "Pod origin data: pod_uid={}, millstone_container_id={}",
-        origin_data.pod_uid, origin_data.millstone_container_id
-    );
-
-    let millstone_config_content = substitute_origin_placeholders(&millstone_config_template, &origin_data);
-    exec_write_file(
-        client.clone(),
-        &namespace,
-        POD_NAME,
-        "millstone",
-        "/etc/millstone/config.toml",
-        &millstone_config_content,
-    )
-    .await
-    .with_error_context(|| format!("Failed to write millstone config in namespace '{}'", namespace))?;
-
-    // 6. Stream container logs to the log directory (best-effort; errors are logged and ignored).
-    {
-        if let Err(e) = tokio::fs::create_dir_all(&log_dir).await {
-            warn!("Failed to create log directory '{}': {}", log_dir.display(), e);
-        } else {
-            for &container in CONTAINER_NAMES {
-                let log_path = log_dir.join(format!("{}.log", container));
-                tokio::spawn(stream_container_logs(
-                    pod_api.clone(),
-                    POD_NAME,
-                    container.to_string(),
-                    log_path,
-                ));
-            }
+    if let Err(e) = tokio::fs::create_dir_all(&log_dir).await {
+        warn!("Failed to create log directory '{}': {}", log_dir.display(), e);
+    } else {
+        for &container in AGENT_CONTAINER_NAMES {
+            tokio::spawn(stream_container_logs(
+                pod_api.clone(),
+                POD_NAME,
+                container.to_string(),
+                log_dir.join(format!("{}.log", container)),
+            ));
         }
     }
 
-    // 7. Start a local port-forward to datadog-intake's port 2049.
-    let pf_cancel = CancellationToken::new();
-    let local_port = start_port_forward(
-        client.clone(),
-        namespace.clone(),
-        POD_NAME.to_string(),
-        2049,
-        pf_cancel.clone(),
-    )
-    .await
-    .error_context("Failed to start port-forward to datadog-intake")?;
+    debug!("Agent pod running in namespace '{}'.", namespace);
+    Ok(())
+}
 
-    debug!(
-        "Port-forward established: localhost:{} -> pod/{} port 2049",
-        local_port, POD_NAME
-    );
-
-    // 8. Wait for the millstone container to exit successfully.
-    wait_for_millstone_exit(&pod_api, POD_NAME, MILLSTONE_EXIT_TIMEOUT)
+/// Creates the namespace and shared millstone pod, waits for it to reach Running, and starts
+/// background log streaming.
+///
+/// The millstone pod mounts both agent socket directories and waits for both config files and
+/// both sockets before launching two parallel millstone processes — one targeting each agent.
+async fn prepare_millstone_group(
+    client: Client, namespace: String, millstone_image: &str, millstone_binary: &str, baseline_socket_dir: &str,
+    comparison_socket_dir: &str, log_dir: PathBuf,
+) -> Result<(), GenericError> {
+    create_namespace(client.clone(), &namespace)
         .await
-        .with_error_context(|| format!("Millstone container in namespace '{}' did not exit cleanly", namespace))?;
+        .with_error_context(|| format!("Failed to create millstone namespace '{}'", namespace))?;
 
-    debug!(
-        "Millstone completed in namespace '{}'. Waiting {:?} for flush...",
-        namespace, FLUSH_WAIT
-    );
+    let pod = build_millstone_pod(MillstonePodConfig {
+        namespace: &namespace,
+        millstone_image,
+        millstone_binary,
+        baseline_socket_dir,
+        comparison_socket_dir,
+    });
 
-    // 9. Wait for the aggregation flush interval.
-    sleep(FLUSH_WAIT).await;
+    let pod_api: Api<Pod> = Api::namespaced(client.clone(), &namespace);
+    pod_api
+        .create(&PostParams::default(), &pod)
+        .await
+        .map_err(|e| generic_error!("Failed to create millstone pod in namespace '{}': {}", namespace, e))?;
 
-    // 10. Collect telemetry from datadog-intake via the forwarded port.
-    let data = CollectedData::for_port(local_port).await.with_error_context(|| {
-        format!(
-            "Failed to collect telemetry from datadog-intake in namespace '{}'",
-            namespace
-        )
-    })?;
+    wait_for_pod_running(&pod_api, POD_NAME, POD_READY_TIMEOUT)
+        .await
+        .with_error_context(|| {
+            format!(
+                "Millstone pod in namespace '{}' failed to reach Running phase",
+                namespace
+            )
+        })?;
 
-    // Port-forward is no longer needed once data is collected.
-    pf_cancel.cancel();
+    if let Err(e) = tokio::fs::create_dir_all(&log_dir).await {
+        warn!("Failed to create log directory '{}': {}", log_dir.display(), e);
+    } else {
+        for &container in MILLSTONE_CONTAINER_NAMES {
+            tokio::spawn(stream_container_logs(
+                pod_api.clone(),
+                POD_NAME,
+                container.to_string(),
+                log_dir.join(format!("{}.log", container)),
+            ));
+        }
+    }
 
-    info!("Data collected from namespace '{}'.", namespace);
+    debug!("Millstone pod running in namespace '{}'.", namespace);
+    Ok(())
+}
 
-    Ok(data)
+/// Replaces the `target:` field value in a millstone config YAML with the given socket path.
+///
+/// The convention for kind tests is that the on-disk millstone.yaml uses
+/// `target: "unixgram:///airlock/metrics.sock"` as a placeholder. The harness generates two
+/// configs from the same template — one per agent — by substituting the target path here.
+fn make_millstone_config_for_target(template: &str, target: &str) -> String {
+    let mut result = String::with_capacity(template.len());
+    for line in template.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("target:") {
+            let indent = &line[..line.len() - trimmed.len()];
+            result.push_str(&format!("{}target: \"{}\"\n", indent, target));
+        } else {
+            result.push_str(line);
+            result.push('\n');
+        }
+    }
+    result
 }
 
 // ---------------------------------------------------------------------------
 // Pod construction helpers
 // ---------------------------------------------------------------------------
 
-struct PodConfig<'a> {
+struct AgentPodConfig<'a> {
     namespace: &'a str,
     intake_image: &'a str,
     intake_binary: &'a str,
@@ -356,12 +483,17 @@ struct PodConfig<'a> {
     target_env_strs: &'a [String],
     agent_extra_volumes: Vec<Volume>,
     agent_extra_mounts: Vec<VolumeMount>,
-    millstone_image: &'a str,
-    millstone_binary: &'a str,
+    /// HostPath directory on the kind node where the agent creates its DSD socket.
+    /// Used by the shared millstone pod to reach this agent's socket.
+    socket_dir: &'a str,
 }
 
-fn build_pod(cfg: PodConfig<'_>) -> Pod {
-    let PodConfig {
+/// Builds the agent pod spec (datadog-intake + target agent, no millstone).
+///
+/// The airlock volume is a HostPath directory rather than an EmptyDir so the shared millstone pod
+/// can mount both agents' socket directories simultaneously.
+fn build_agent_pod(cfg: AgentPodConfig<'_>) -> Pod {
+    let AgentPodConfig {
         namespace,
         intake_image,
         intake_binary,
@@ -369,13 +501,18 @@ fn build_pod(cfg: PodConfig<'_>) -> Pod {
         target_env_strs,
         agent_extra_volumes,
         agent_extra_mounts,
-        millstone_image,
-        millstone_binary,
+        socket_dir,
     } = cfg;
+
     let mut volumes = vec![
+        // HostPath so the shared millstone pod can see this agent's socket directory.
+        // DirectoryOrCreate means the kubelet creates the path on the node if absent.
         Volume {
             name: "airlock".to_string(),
-            empty_dir: Some(EmptyDirVolumeSource::default()),
+            host_path: Some(HostPathVolumeSource {
+                path: socket_dir.to_string(),
+                type_: Some("DirectoryOrCreate".to_string()),
+            }),
             ..Default::default()
         },
         Volume {
@@ -394,11 +531,18 @@ fn build_pod(cfg: PodConfig<'_>) -> Pod {
             }),
             ..Default::default()
         },
-        // EmptyDir so the harness can write the config after the pod is Running, substituting
-        // real pod UID and container ID values into the template.
+        // The containerd socket from the kind node is mounted so the agent can use the containerd
+        // gRPC API to resolve sender PIDs to container IDs for UDS origin detection. Without it,
+        // cgroup-based PID resolution fails: the container's private cgroup namespace makes
+        // /proc/<pid>/cgroup paths useless for identifying containers. Both ADP (cri_socket_path)
+        // and the core agent skip containerd auto-detection when running inside Docker, so the
+        // socket path must also be configured explicitly in datadog.yaml.
         Volume {
-            name: "millstone-config".to_string(),
-            empty_dir: Some(EmptyDirVolumeSource::default()),
+            name: "containerd-socket".to_string(),
+            host_path: Some(HostPathVolumeSource {
+                path: "/run/containerd/containerd.sock".to_string(),
+                type_: Some("Socket".to_string()),
+            }),
             ..Default::default()
         },
     ];
@@ -440,14 +584,6 @@ fn build_pod(cfg: PodConfig<'_>) -> Pod {
     ];
     target_mounts.extend(agent_extra_mounts);
 
-    // Millstone waits for the DSD socket before sending, ensuring the agent is ready.
-    // Wait for both the config file (written by the harness after pod Running) and the DSD
-    // socket (created by the agent after initialization) before starting millstone.
-    let millstone_wait_cmd = format!(
-        "until [ -f /etc/millstone/config.toml ] && [ -S /airlock/metrics.sock ]; do sleep 1; done; exec {} /etc/millstone/config.toml",
-        millstone_binary
-    );
-
     Pod {
         metadata: ObjectMeta {
             name: Some(POD_NAME.to_string()),
@@ -479,27 +615,106 @@ fn build_pod(cfg: PodConfig<'_>) -> Pod {
                     volume_mounts: Some(target_mounts),
                     ..Default::default()
                 },
-                Container {
-                    name: "millstone".to_string(),
-                    image: Some(millstone_image.to_string()),
-                    command: Some(vec!["/bin/sh".to_string()]),
-                    args: Some(vec!["-c".to_string(), millstone_wait_cmd]),
-                    image_pull_policy: Some("IfNotPresent".to_string()),
-                    volume_mounts: Some(vec![
-                        VolumeMount {
-                            name: "airlock".to_string(),
-                            mount_path: "/airlock".to_string(),
-                            ..Default::default()
-                        },
-                        VolumeMount {
-                            name: "millstone-config".to_string(),
-                            mount_path: "/etc/millstone".to_string(),
-                            ..Default::default()
-                        },
-                    ]),
+            ],
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+struct MillstonePodConfig<'a> {
+    namespace: &'a str,
+    millstone_image: &'a str,
+    millstone_binary: &'a str,
+    /// HostPath directory for the baseline agent's socket.
+    baseline_socket_dir: &'a str,
+    /// HostPath directory for the comparison agent's socket.
+    comparison_socket_dir: &'a str,
+}
+
+/// Builds the shared millstone pod spec.
+///
+/// The pod mounts both agents' socket directories (as `/baseline-airlock` and
+/// `/comparison-airlock`) and an EmptyDir for the two config files the harness writes after
+/// the pod is Running. The wait script blocks until both configs and both sockets are present,
+/// then launches both millstone processes in parallel and waits for both to exit.
+fn build_millstone_pod(cfg: MillstonePodConfig<'_>) -> Pod {
+    let MillstonePodConfig {
+        namespace,
+        millstone_image,
+        millstone_binary,
+        baseline_socket_dir,
+        comparison_socket_dir,
+    } = cfg;
+
+    let wait_cmd = format!(
+        "until [ -f /etc/millstone/baseline.toml ] && \
+               [ -f /etc/millstone/comparison.toml ] && \
+               [ -S /baseline-airlock/metrics.sock ] && \
+               [ -S /comparison-airlock/metrics.sock ]; do sleep 1; done; \
+         exec sh -c '{bin} /etc/millstone/baseline.toml & \
+                      {bin} /etc/millstone/comparison.toml & \
+                      wait'",
+        bin = millstone_binary
+    );
+
+    Pod {
+        metadata: ObjectMeta {
+            name: Some(POD_NAME.to_string()),
+            namespace: Some(namespace.to_string()),
+            ..Default::default()
+        },
+        spec: Some(PodSpec {
+            restart_policy: Some("Never".to_string()),
+            volumes: Some(vec![
+                Volume {
+                    name: "baseline-airlock".to_string(),
+                    host_path: Some(HostPathVolumeSource {
+                        path: baseline_socket_dir.to_string(),
+                        type_: Some("DirectoryOrCreate".to_string()),
+                    }),
                     ..Default::default()
                 },
-            ],
+                Volume {
+                    name: "comparison-airlock".to_string(),
+                    host_path: Some(HostPathVolumeSource {
+                        path: comparison_socket_dir.to_string(),
+                        type_: Some("DirectoryOrCreate".to_string()),
+                    }),
+                    ..Default::default()
+                },
+                // EmptyDir for the two config files written by the harness via exec.
+                Volume {
+                    name: "millstone-config".to_string(),
+                    empty_dir: Some(EmptyDirVolumeSource::default()),
+                    ..Default::default()
+                },
+            ]),
+            containers: vec![Container {
+                name: "millstone".to_string(),
+                image: Some(millstone_image.to_string()),
+                command: Some(vec!["/bin/sh".to_string()]),
+                args: Some(vec!["-c".to_string(), wait_cmd]),
+                image_pull_policy: Some("IfNotPresent".to_string()),
+                volume_mounts: Some(vec![
+                    VolumeMount {
+                        name: "baseline-airlock".to_string(),
+                        mount_path: "/baseline-airlock".to_string(),
+                        ..Default::default()
+                    },
+                    VolumeMount {
+                        name: "comparison-airlock".to_string(),
+                        mount_path: "/comparison-airlock".to_string(),
+                        ..Default::default()
+                    },
+                    VolumeMount {
+                        name: "millstone-config".to_string(),
+                        mount_path: "/etc/millstone".to_string(),
+                        ..Default::default()
+                    },
+                ]),
+                ..Default::default()
+            }],
             ..Default::default()
         }),
         ..Default::default()
