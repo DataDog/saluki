@@ -64,11 +64,14 @@ corpus:
         - "pu-{{POD_UID}},cn-millstone,it-false"
         - "this-is-not-valid-external-data"
       # Pool of cardinality values for the |card: extension field. Covers all four valid levels
-      # plus an unrecognized value to verify both agents treat it identically (fall back to default
-      # cardinality rather than dropping the frame).
+      # plus an unrecognized value and a wrong-case value to verify both agents treat them
+      # identically (fall back to default cardinality rather than dropping the frame).
+      # "HIGH" is intentionally wrong-case: cardinality matching is case-sensitive, so both
+      # agents should ignore it and apply default enrichment, producing identical output.
       cardinality:
         - "low"
         - "orchestrator"
         - "high"
         - "none"
+        - "HIGH"
         - "this-is-not-a-valid-cardinality"
