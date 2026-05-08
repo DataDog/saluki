@@ -7,6 +7,8 @@
 //! This registry is intentionally free of Rust field names and struct internals — it models the
 //! configuration surface as an operator would see it, and can be used at runtime to detect
 //! unknown or unsupported keys in a loaded configuration file.
+//!
+//! TODO: add a user's guide here for developers
 
 mod classifier;
 pub mod datadog;

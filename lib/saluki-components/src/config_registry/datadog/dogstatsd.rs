@@ -35,46 +35,6 @@ static DOGSTATSD_CACHED_TAGSETS_LIMIT_SCHEMA: SchemaEntry = SchemaEntry {
     default: None,
 };
 
-static DOGSTATSD_LOG_FILE_SCHEMA: SchemaEntry = SchemaEntry {
-    schema: Schema::Saluki,
-    yaml_path: "dogstatsd_log_file",
-    env_vars: &["DD_DOGSTATSD_LOG_FILE"],
-    value_type: ValueType::String,
-    default: Some("\"\""),
-};
-
-static DOGSTATSD_LOG_FILE_MAX_ROLLS_SCHEMA: SchemaEntry = SchemaEntry {
-    schema: Schema::Saluki,
-    yaml_path: "dogstatsd_log_file_max_rolls",
-    env_vars: &["DD_DOGSTATSD_LOG_FILE_MAX_ROLLS"],
-    value_type: ValueType::Integer,
-    default: Some("3"),
-};
-
-static DOGSTATSD_LOG_FILE_MAX_SIZE_SCHEMA: SchemaEntry = SchemaEntry {
-    schema: Schema::Saluki,
-    yaml_path: "dogstatsd_log_file_max_size",
-    env_vars: &["DD_DOGSTATSD_LOG_FILE_MAX_SIZE"],
-    value_type: ValueType::String,
-    default: Some("\"10Mb\""),
-};
-
-static DOGSTATSD_LOGGING_ENABLED_SCHEMA: SchemaEntry = SchemaEntry {
-    schema: Schema::Saluki,
-    yaml_path: "dogstatsd_logging_enabled",
-    env_vars: &["DD_DOGSTATSD_LOGGING_ENABLED"],
-    value_type: ValueType::Bool,
-    default: Some("true"),
-};
-
-static DOGSTATSD_METRICS_STATS_ENABLE_SCHEMA: SchemaEntry = SchemaEntry {
-    schema: Schema::Saluki,
-    yaml_path: "dogstatsd_metrics_stats_enable",
-    env_vars: &["DD_DOGSTATSD_METRICS_STATS_ENABLE"],
-    value_type: ValueType::Bool,
-    default: Some("false"),
-};
-
 static DOGSTATSD_MINIMUM_SAMPLE_RATE_SCHEMA: SchemaEntry = SchemaEntry {
     schema: Schema::Saluki,
     yaml_path: "dogstatsd_minimum_sample_rate",
@@ -97,14 +57,6 @@ static DOGSTATSD_STRING_INTERNER_SIZE_BYTES_SCHEMA: SchemaEntry = SchemaEntry {
     env_vars: &[],
     value_type: ValueType::Integer,
     default: None,
-};
-
-static DOGSTATSD_SO_RCVBUF_SCHEMA: SchemaEntry = SchemaEntry {
-    schema: Schema::Saluki,
-    yaml_path: "dogstatsd_so_rcvbuf",
-    env_vars: &["DD_DOGSTATSD_SO_RCVBUF"],
-    value_type: ValueType::Integer,
-    default: Some("0"),
 };
 
 static DOGSTATSD_TCP_PORT_SCHEMA: SchemaEntry = SchemaEntry {
@@ -228,14 +180,14 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_so_rcvbuf` — DogStatsD UDP/UDS socket receive buffer size.
+    /// `dogstatsd_so_rcvbuf` — DogStatsD UDP/UDS socket receive buffer size. Schema Float; field usize.
     DOGSTATSD_SO_RCVBUF = SalukiAnnotation {
-        schema: &DOGSTATSD_SO_RCVBUF_SCHEMA,
+        schema: &schema::DOGSTATSD_SO_RCVBUF,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
-        value_type_override: None,
+        value_type_override: Some(ValueType::Integer),
         test_json: None,
     };
 
@@ -308,7 +260,7 @@ crate::declare_annotations! {
 
     /// `dogstatsd_log_file` — path to the DogStatsD metric debug log file.
     DOGSTATSD_LOG_FILE = SalukiAnnotation {
-        schema: &DOGSTATSD_LOG_FILE_SCHEMA,
+        schema: &schema::DOGSTATSD_LOG_FILE,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
@@ -317,20 +269,20 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_log_file_max_rolls` — number of rotated DogStatsD metric debug log files to keep.
+    /// `dogstatsd_log_file_max_rolls` — number of rotated debug log files to keep. Schema Float; field usize.
     DOGSTATSD_LOG_FILE_MAX_ROLLS = SalukiAnnotation {
-        schema: &DOGSTATSD_LOG_FILE_MAX_ROLLS_SCHEMA,
+        schema: &schema::DOGSTATSD_LOG_FILE_MAX_ROLLS,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[structs::DOGSTATSD_DEBUG_LOG_CONFIGURATION],
-        value_type_override: None,
+        value_type_override: Some(ValueType::Integer),
         test_json: None,
     };
 
-    /// `dogstatsd_log_file_max_size` — maximum active DogStatsD metric debug log file size before rotation.
+    /// `dogstatsd_log_file_max_size` — max active debug log file size before rotation.
     DOGSTATSD_LOG_FILE_MAX_SIZE = SalukiAnnotation {
-        schema: &DOGSTATSD_LOG_FILE_MAX_SIZE_SCHEMA,
+        schema: &schema::DOGSTATSD_LOG_FILE_MAX_SIZE,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
@@ -341,7 +293,7 @@ crate::declare_annotations! {
 
     /// `dogstatsd_logging_enabled` — enable writing DogStatsD metric debug stats to a file.
     DOGSTATSD_LOGGING_ENABLED = SalukiAnnotation {
-        schema: &DOGSTATSD_LOGGING_ENABLED_SCHEMA,
+        schema: &schema::DOGSTATSD_LOGGING_ENABLED,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
@@ -352,7 +304,7 @@ crate::declare_annotations! {
 
     /// `dogstatsd_metrics_stats_enable` — enable metric-level DogStatsD debug statistics.
     DOGSTATSD_METRICS_STATS_ENABLE = SalukiAnnotation {
-        schema: &DOGSTATSD_METRICS_STATS_ENABLE_SCHEMA,
+        schema: &schema::DOGSTATSD_METRICS_STATS_ENABLE,
         support_level: SupportLevel::Partial,
         additional_yaml_paths: &[],
         env_var_override: None,
