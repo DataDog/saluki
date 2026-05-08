@@ -12,6 +12,7 @@ use saluki_app::{
     memory::{initialize_memory_bounds, MemoryBoundsConfiguration},
     metrics::emit_startup_metrics,
 };
+use saluki_components::config_registry::{ConfigClassifier, SupportLevel};
 use saluki_components::{
     config::{DatadogRemapper, KEY_ALIASES},
     decoders::otlp::OtlpDecoderConfiguration,
@@ -36,7 +37,7 @@ use saluki_core::topology::TopologyBlueprint;
 use saluki_env::EnvironmentProvider as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::{select, time::interval};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::{
     components::{
@@ -148,6 +149,39 @@ pub async fn handle_run_command(
     if !in_standalone_mode && !dp_config.enabled() {
         info!("Agent Data Plane is not enabled. Exiting.");
         return Ok(());
+    }
+
+    // Analyze the config and respond to configurations that may be incompatible with ADP.
+    let config_classifier = ConfigClassifier::new();
+    debug!("Analyzing configuration.");
+    for (key, val) in config
+        .flattened_keys()
+        .error_context("Unable to analyze configuration.")?
+    {
+        let classification = config_classifier.classify(&key, &val);
+        match (classification.support_level, classification.is_default) {
+            (_, true) => {
+                trace!(key = %key, "Configuration interpreted as having a default value.")
+            }
+            (SupportLevel::Full, _) => {
+                trace!(key = %key, "Configuration key is fully supported and has a non-default value")
+            }
+            (SupportLevel::Partial, _) => {
+                warn!(key = %key, "Partially supported configuration key. See documentation for details.")
+            }
+            (SupportLevel::Incompatible, _) => {
+                error!(key = %key, "Unsupported configuration key. See documentation for configuration support levels");
+                // TODO: link to the documentation?
+                // TODO: consider returning an error to exit the program?
+            }
+            (SupportLevel::NotApplicable, _) => {
+                trace!(key = %key, "Configuration key is not applicable to this system. Safely ignoring.")
+            }
+            (SupportLevel::Unrecognized, _) => {
+                error!(key = %key, "Unrecognized configuration key.");
+                // TODO: consider returning an error to exit the program?
+            }
+        }
     }
 
     // Set up all of the building blocks for building our topologies and launching internal processes.

@@ -21,7 +21,6 @@ enum RegistryEntry {
     Ignored,
 }
 
-
 /// Classifies the support level of config keys and determines if a value is default.
 pub struct ConfigClassifier {
     lookup: HashMap<&'static str, RegistryEntry>,
