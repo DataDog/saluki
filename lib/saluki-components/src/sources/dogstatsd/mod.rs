@@ -1042,9 +1042,9 @@ async fn drive_stream(
                         bytes_read
                     );
 
+                    let mut frames = io_buffer.framed(&mut framer, reached_eof);
                     'frame: loop {
-                        let next_frame = io_buffer.framed(&mut framer, reached_eof).next();
-                        match next_frame {
+                        match frames.next(){
                             Some(Ok(frame)) => {
                                 trace!(%listen_addr, %peer_addr, ?frame, "Decoded frame.");
                                 match handle_frame(&frame[..], &codec, &mut context_resolvers, &metrics, &peer_addr, enabled_filter, &additional_tags) {
