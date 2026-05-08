@@ -3,7 +3,7 @@
 use std::{sync::Mutex, time::Duration};
 
 use async_trait::async_trait;
-use metrics::gauge;
+use metrics::{gauge, Level};
 use saluki_core::{
     observability::metrics::MetricsFlusherWorker,
     runtime::{InitializationError, ProcessShutdown, Supervisable, SupervisorFuture},
@@ -31,7 +31,8 @@ pub(crate) struct MetricsWorkers {
 /// Initializes the metrics subsystem for `metrics`.
 ///
 /// The given prefix is used to namespace all metrics that are emitted by the application, and is prepended to all
-/// metrics, followed by a period (for example, `<prefix>.<metric name>`).
+/// metrics, followed by a period (for example, `<prefix>.<metric name>`). The given default level seeds the runtime
+/// filter and is what the filter is restored to when [`MetricsAPIHandler`]'s reset route is invoked.
 ///
 /// Returns a [`MetricsWorkers`] bundle containing the supervisable workers needed to drive the metrics subsystem
 /// at runtime.
@@ -39,14 +40,16 @@ pub(crate) struct MetricsWorkers {
 /// # Errors
 ///
 /// If the metrics subsystem was already initialized, an error will be returned.
-pub(crate) async fn initialize_metrics(metrics_prefix: impl Into<String>) -> Result<MetricsWorkers, GenericError> {
+pub(crate) async fn initialize_metrics(
+    metrics_prefix: impl Into<String>, default_level: Level,
+) -> Result<MetricsWorkers, GenericError> {
     // We forward to the implementation in `saluki_core` so that we can have this crate be the collection point of all
     // helpers/types that are specific to generic application setup/initialization.
     //
     // The implementation itself has to live in `saluki_core`, however, to have access to all of the underlying types
     // that are created and used to install the global recorder, such that they need not be exposed publicly.
     let (filter_handle, flusher) =
-        saluki_core::observability::metrics::initialize_metrics(metrics_prefix.into()).await?;
+        saluki_core::observability::metrics::initialize_metrics(metrics_prefix.into(), default_level).await?;
 
     let (api_handler, override_processor) = MetricsAPIHandler::new(filter_handle);
     API_HANDLER.lock().unwrap().replace(api_handler);
@@ -198,18 +201,18 @@ static_metrics!(
     prefix => runtime,
     labels => [runtime_id: String],
     metrics => [
-        gauge(num_alive_tasks),
-        gauge(blocking_queue_depth),
-        gauge(budget_forced_yield_count),
-        gauge(global_queue_depth),
-        gauge(io_driver_fd_deregistered_count),
-        gauge(io_driver_fd_registered_count),
-        gauge(io_driver_ready_count),
-        gauge(num_blocking_threads),
-        gauge(num_idle_blocking_threads),
-        gauge(num_workers),
-        gauge(remote_schedule_count),
-        gauge(spawned_tasks_count),
+        debug_gauge(num_alive_tasks),
+        debug_gauge(blocking_queue_depth),
+        debug_gauge(budget_forced_yield_count),
+        debug_gauge(global_queue_depth),
+        debug_gauge(io_driver_fd_deregistered_count),
+        debug_gauge(io_driver_fd_registered_count),
+        debug_gauge(io_driver_ready_count),
+        debug_gauge(num_blocking_threads),
+        debug_gauge(num_idle_blocking_threads),
+        debug_gauge(num_workers),
+        debug_gauge(remote_schedule_count),
+        debug_gauge(spawned_tasks_count),
     ],
 );
 

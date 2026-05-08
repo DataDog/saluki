@@ -158,9 +158,9 @@ struct FilterlistTelemetry {
 impl FilterlistTelemetry {
     fn new(builder: &MetricsBuilder) -> Self {
         Self {
-            filterlist_size: builder.register_debug_gauge(METRIC_FILTERLIST_SIZE_METRIC),
-            filterlist_updates: builder.register_debug_counter(METRIC_FILTERLIST_UPDATES_METRIC),
-            listener_filtered_points: builder.register_debug_counter(LISTENER_FILTERED_POINTS_METRIC),
+            filterlist_size: builder.register_gauge(METRIC_FILTERLIST_SIZE_METRIC),
+            filterlist_updates: builder.register_counter(METRIC_FILTERLIST_UPDATES_METRIC),
+            listener_filtered_points: builder.register_counter(LISTENER_FILTERED_POINTS_METRIC),
         }
     }
 

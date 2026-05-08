@@ -764,15 +764,15 @@ fn build_metrics(listen_addr: &ListenAddress, component_context: &ComponentConte
         ),
         connections_active: builder
             .register_gauge_with_tags("component_connections_active", [("listener_type", listener_type)]),
-        packet_receive_success: builder.register_debug_counter_with_tags(
+        packet_receive_success: builder.register_counter_with_tags(
             "component_packets_received_total",
             [("listener_type", listener_type), ("state", "ok")],
         ),
-        packet_receive_failure: builder.register_debug_counter_with_tags(
+        packet_receive_failure: builder.register_counter_with_tags(
             "component_packets_received_total",
             [("listener_type", listener_type), ("state", "error")],
         ),
-        failed_context_resolve_total: builder.register_debug_counter("component_failed_context_resolve_total"),
+        failed_context_resolve_total: builder.register_counter("component_failed_context_resolve_total"),
     }
 }
 

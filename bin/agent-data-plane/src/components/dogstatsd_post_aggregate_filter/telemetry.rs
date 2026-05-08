@@ -11,7 +11,7 @@ pub(super) struct Telemetry {
 impl Telemetry {
     pub(super) fn new(builder: &MetricsBuilder) -> Self {
         Self {
-            filtered_metrics: builder.register_debug_counter(FILTERED_METRICS_METRIC),
+            filtered_metrics: builder.register_counter(FILTERED_METRICS_METRIC),
         }
     }
 

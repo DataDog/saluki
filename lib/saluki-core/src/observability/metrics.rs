@@ -51,12 +51,12 @@ pub struct FilterHandle {
 impl FilterHandle {
     /// Overrides the current metrics filter level.
     pub fn override_filter(&self, level: Level) {
-        *self.state.current_level.lock().unwrap() = Some(level);
+        *self.state.current_level.lock().unwrap() = level;
     }
 
-    /// Resets the metrics filter level to the default (INFO).
+    /// Resets the metrics filter level to the default that was configured when the metrics subsystem was initialized.
     pub fn reset_filter(&self) {
-        *self.state.current_level.lock().unwrap() = None;
+        *self.state.current_level.lock().unwrap() = self.state.default_level;
     }
 }
 
@@ -65,7 +65,8 @@ struct State {
     level_map: FastConcurrentHashMap<Key, Level>,
     flush_tx: broadcast::Sender<SharedEvents>,
     metrics_prefix: String,
-    current_level: Mutex<Option<Level>>,
+    default_level: Level,
+    current_level: Mutex<Level>,
 }
 
 impl State {
@@ -86,7 +87,7 @@ struct MetricsRecorder {
 }
 
 impl MetricsRecorder {
-    fn new(metrics_prefix: String) -> Self {
+    fn new(metrics_prefix: String, default_level: Level) -> Self {
         let (flush_tx, _) = broadcast::channel(2);
         Self {
             state: Arc::new(State {
@@ -94,7 +95,8 @@ impl MetricsRecorder {
                 level_map: FastConcurrentHashMap::default(),
                 flush_tx,
                 metrics_prefix,
-                current_level: Mutex::new(None),
+                default_level,
+                current_level: Mutex::new(default_level),
             }),
         }
     }
@@ -220,67 +222,67 @@ async fn flush_metrics(flush_interval: Duration) {
     loop {
         flush_interval.tick().await;
 
-        // If we have no downstream listeners, just clear our histograms so they don't accumulate memory forever.
+        // If we have no downstream listeners, clear our counters and histograms to keep them in a quieseced state.
         if state.flush_tx.receiver_count() == 0 {
+            let counters = state.registry.get_counter_handles();
+            for (_, counter) in counters {
+                counter.swap(0, Ordering::Relaxed);
+            }
+
             let histograms = state.registry.get_histogram_handles();
             for (_, histogram) in histograms {
                 histogram.clear();
             }
+
             continue;
         }
 
         let mut metrics = Vec::new();
-        let current_level = {
-            let current_level = state.current_level.lock().unwrap();
-            current_level.as_ref().copied().unwrap_or(Level::TRACE)
-        };
+        let current_level = *state.current_level.lock().unwrap();
 
         let counters = state.registry.get_counter_handles();
         let gauges = state.registry.get_gauge_handles();
         let histograms = state.registry.get_histogram_handles();
 
+        // For all metric types, we take their value (in a consuming fashion) _before_ checking if they're filtered.
+        //
+        // This lets us avoid emitting large, accumulated values for counters the first time they pass the filter check,
+        // and likewise, it avoids endless accumulation of histogram values, which translates to actual allocations
+        // behind the scenes.
+
         for (key, counter) in counters {
+            let value = counter.swap(0, Ordering::Relaxed) as f64;
+
             if state.is_metric_filtered(&key, &current_level) {
                 continue;
             }
 
             let context = context_resolver.resolve_from_key(key);
-            let value = counter.swap(0, Ordering::Relaxed) as f64;
-
             let metric = Metric::counter(context, value);
             metrics.push(Event::Metric(metric));
         }
 
         for (key, gauge) in gauges {
+            let value = f64::from_bits(gauge.load(Ordering::Relaxed));
+
             if state.is_metric_filtered(&key, &current_level) {
                 continue;
             }
 
             let context = context_resolver.resolve_from_key(key);
-            let value = f64::from_bits(gauge.load(Ordering::Relaxed));
-
             let metric = Metric::gauge(context, value);
             metrics.push(Event::Metric(metric));
         }
 
         for (key, histogram) in histograms {
+            histogram_samples.clear();
+            histogram.clear_with(|samples| histogram_samples.extend(samples));
+
             if state.is_metric_filtered(&key, &current_level) {
                 continue;
             }
 
             let context = context_resolver.resolve_from_key(key);
-
-            // Collect all of the samples from the histogram.
-            //
-            // If the histogram was empty, skip emitting a metric for this histogram entirely. Empty sketches don't make
-            // sense to send.
-            histogram_samples.clear();
-            histogram.clear_with(|samples| histogram_samples.extend(samples));
-
-            if histogram_samples.is_empty() {
-                continue;
-            }
-
             let metric = Metric::histogram(context, &histogram_samples[..]);
             metrics.push(Event::Metric(metric));
         }
@@ -336,7 +338,11 @@ impl MetricsContextResolver {
     }
 }
 
-/// Initializes the metrics subsystem with the given metrics prefix.
+/// Initializes the metrics subsystem with the given metrics prefix and default filter level.
+///
+/// `default_level` sets the initial filter level for emitted metrics, and is also what the filter is restored to when
+/// [`FilterHandle::reset_filter`] is invoked. Metrics whose level is more verbose than this default are filtered out
+/// until a runtime override is applied via [`FilterHandle::override_filter`].
 ///
 /// Returns a [`FilterHandle`] for adjusting the runtime metrics filter, plus a [`MetricsFlusherWorker`]
 /// that must be added to a [`Supervisor`][crate::runtime::Supervisor] in order to drive the periodic
@@ -345,8 +351,10 @@ impl MetricsContextResolver {
 /// # Errors
 ///
 /// If a global recorder was already installed, an error will be returned.
-pub async fn initialize_metrics(metrics_prefix: String) -> Result<(FilterHandle, MetricsFlusherWorker), GenericError> {
-    let recorder = MetricsRecorder::new(metrics_prefix);
+pub async fn initialize_metrics(
+    metrics_prefix: String, default_level: Level,
+) -> Result<(FilterHandle, MetricsFlusherWorker), GenericError> {
+    let recorder = MetricsRecorder::new(metrics_prefix, default_level);
     let filter_handle = recorder.filter_handle();
     recorder.install()?;
 

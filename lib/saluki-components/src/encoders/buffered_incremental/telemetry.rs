@@ -11,7 +11,7 @@ impl ComponentTelemetry {
     /// Creates a new `ComponentTelemetry` instance with default tags derived from the given component context.
     pub fn from_builder(builder: &MetricsBuilder) -> Self {
         Self {
-            events_dropped_encoder: builder.register_debug_counter_with_tags(
+            events_dropped_encoder: builder.register_counter_with_tags(
                 "component_events_dropped_total",
                 ["intentional:false", "drop_reason:encoder_failure"],
             ),

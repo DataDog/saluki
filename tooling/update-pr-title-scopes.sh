@@ -27,6 +27,7 @@ FIXED_SCOPES=(
     docs
     integration
     test
+    o11y
 )
 
 # Reads the crate name from a Cargo.toml file.

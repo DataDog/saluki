@@ -122,9 +122,9 @@ impl PerEndpointTelemetry {
             .add_default_tag(("domain", domain))
             .add_default_tag(("endpoint", endpoint_name.to_string()));
 
-        let dropped = builder.register_debug_counter("network_http_requests_failed_total");
-        let success = builder.register_debug_counter("network_http_requests_success_total");
-        let success_bytes = builder.register_debug_counter("network_http_requests_success_sent_bytes_total");
+        let dropped = builder.register_counter("network_http_requests_failed_total");
+        let success = builder.register_counter("network_http_requests_success_total");
+        let success_bytes = builder.register_counter("network_http_requests_success_sent_bytes_total");
         let errors_map = Mutex::new(HashMap::new());
         let http_errors_map = Mutex::new(HashMap::new());
 
@@ -154,7 +154,7 @@ impl PerEndpointTelemetry {
         let mut errors_map = self.errors_map.lock().unwrap();
         let counter = errors_map.entry(error_type).or_insert_with(|| {
             self.builder
-                .register_debug_counter_with_tags("network_http_requests_errors_total", [("error_type", error_type)])
+                .register_counter_with_tags("network_http_requests_errors_total", [("error_type", error_type)])
         });
         counter.increment(1);
     }
@@ -162,7 +162,7 @@ impl PerEndpointTelemetry {
     fn increment_http_error(&self, status: StatusCode) {
         let mut http_errors_map = self.http_errors_map.lock().unwrap();
         let counter = http_errors_map.entry(status).or_insert_with(move || {
-            self.builder.register_debug_counter_with_tags(
+            self.builder.register_counter_with_tags(
                 "network_http_requests_errors_total",
                 [
                     ("error_type", "client_error".to_string()),

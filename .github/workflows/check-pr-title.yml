@@ -44,6 +44,7 @@ jobs:
             blackhole
             buffered incremental
             chained
+            checks ipc
             ci
             common
             components
@@ -53,6 +54,7 @@ jobs:
             core
             correctness
             datadog
+            datadog-agent-commons
             datadog-intake
             datadog-protos
             ddsketch
@@ -61,14 +63,12 @@ jobs:
             docs
             dogstatsd
             dogstatsd mapper
-            dogstatsd prefix filter
             dsd debug log
             dsd stats
             env
             error
             heartbeat
             host enrichment
-            host tags
             integration
             internal metrics
             io
@@ -77,6 +77,7 @@ jobs:
             metric router
             metrics
             millstone
+            o11y
             otlp
             otlp-protos
             ottl

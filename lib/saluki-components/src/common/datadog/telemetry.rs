@@ -29,24 +29,23 @@ impl ComponentTelemetry {
     pub fn from_builder(builder: &MetricsBuilder) -> Self {
         Self {
             builder: builder.clone(),
-            events_sent: builder.register_debug_counter("component_events_sent_total"),
-            events_sent_batch_size: builder.register_debug_histogram("component_events_sent_batch_size"),
-            bytes_sent: builder.register_debug_counter("component_bytes_sent_total"),
-            events_dropped_http: builder.register_debug_counter_with_tags(
+            events_sent: builder.register_counter("component_events_sent_total"),
+            events_sent_batch_size: builder.register_trace_histogram("component_events_sent_batch_size"),
+            bytes_sent: builder.register_counter("component_bytes_sent_total"),
+            events_dropped_http: builder.register_counter_with_tags(
                 "component_events_dropped_total",
                 ["intentional:false", "drop_reason:http_failure"],
             ),
-            events_dropped_encoder: builder.register_debug_counter_with_tags(
+            events_dropped_encoder: builder.register_counter_with_tags(
                 "component_events_dropped_total",
                 ["intentional:false", "drop_reason:encoder_failure"],
             ),
-            events_dropped_queue: builder.register_debug_counter_with_tags(
+            events_dropped_queue: builder.register_counter_with_tags(
                 "component_events_dropped_total",
                 ["intentional:true", "drop_reason:queue_limit"],
             ),
-            items_dropped_total: builder.register_debug_counter("component_items_dropped_total"),
-            http_failed_send: builder
-                .register_debug_counter_with_tags("component_errors_total", ["error_type:http_send"]),
+            items_dropped_total: builder.register_counter("component_items_dropped_total"),
+            http_failed_send: builder.register_counter_with_tags("component_errors_total", ["error_type:http_send"]),
             http_errors_by_code: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -76,7 +75,7 @@ impl ComponentTelemetry {
             Some(status) => {
                 let mut map = self.http_errors_by_code.lock().unwrap();
                 let counter = map.entry(status).or_insert_with(|| {
-                    self.builder.register_debug_counter_with_tags(
+                    self.builder.register_counter_with_tags(
                         "component_errors_total",
                         [
                             ("error_type", "http_send".to_string()),

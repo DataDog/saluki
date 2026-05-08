@@ -1,5 +1,6 @@
 //! Bootstrap utilities.
 
+use metrics::Level;
 use saluki_config::GenericConfiguration;
 use saluki_core::runtime::Supervisor;
 use saluki_error::{ErrorContext as _, GenericError};
@@ -52,8 +53,8 @@ impl BootstrapGuard {
 /// the logging and metrics subsystems.
 pub struct AppBootstrapper {
     logging_config: LoggingConfiguration,
-    // TODO: Just prefix at the moment.
-    metrics_config: String,
+    metrics_prefix: String,
+    metrics_default_level: Level,
 }
 
 impl AppBootstrapper {
@@ -69,7 +70,8 @@ impl AppBootstrapper {
     pub fn from_configuration(_config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(Self {
             logging_config: LoggingConfiguration::simple(),
-            metrics_config: "saluki".to_string(),
+            metrics_prefix: "saluki".to_string(),
+            metrics_default_level: Level::INFO,
         })
     }
 
@@ -77,7 +79,18 @@ impl AppBootstrapper {
     ///
     /// Defaults to "saluki".
     pub fn with_metrics_prefix<S: Into<String>>(mut self, prefix: S) -> Self {
-        self.metrics_config = prefix.into();
+        self.metrics_prefix = prefix.into();
+        self
+    }
+
+    /// Sets the default filter level for internal metrics.
+    ///
+    /// Metrics whose level is more verbose than this default are filtered out at flush time. The default also drives
+    /// the level that the filter is restored to whenever a runtime override is reset.
+    ///
+    /// Defaults to [`Level::INFO`].
+    pub fn with_metrics_default_level(mut self, level: Level) -> Self {
+        self.metrics_default_level = level;
         self
     }
 
@@ -109,7 +122,7 @@ impl AppBootstrapper {
 
         // Initialize everything else.
         initialize_tls().error_context("Failed to initialize TLS subsystem.")?;
-        let metrics_workers = initialize_metrics(self.metrics_config)
+        let metrics_workers = initialize_metrics(self.metrics_prefix, self.metrics_default_level)
             .await
             .error_context("Failed to initialize metrics subsystem.")?;
 
