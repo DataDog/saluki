@@ -3,21 +3,24 @@
 use std::{
     collections::{HashMap, VecDeque},
     env, fs,
-    sync::atomic::{AtomicBool, Ordering::Relaxed},
     time::Duration,
 };
 
 use bytesize::ByteSize;
 use memory_accounting::{
     allocator::{ResourceGroupRegistry, ResourceStats, ResourceStatsSnapshot},
-    ComponentBounds, ComponentRegistry, MemoryGrant, MemoryLimiter,
+    ComponentBounds, ComponentRegistry, ComponentRegistryHandle, MemoryGrant, MemoryLimiter,
 };
 use metrics::{counter, gauge, Counter, Gauge, Level};
-use saluki_common::task::spawn_traced_named;
+use saluki_api::{DynamicRoute, EndpointType};
 use saluki_config::GenericConfiguration;
+use saluki_core::runtime::{
+    state::DataspaceRegistry, InitializationError, ProcessShutdown, Supervisable, SupervisorFuture,
+};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
-use tokio::time::sleep;
+use tokio::{pin, select, time::sleep};
+use tonic::async_trait;
 use tracing::{error, info, warn};
 
 const fn default_memory_slop_factor() -> f64 {
@@ -295,49 +298,71 @@ impl ResourceGroupMetrics {
     }
 }
 
-/// Initializes the resource telemetry subsystem.
+/// A worker that periodically collects per-resource group memory usage statistics and emits the internal telemetry.
 ///
-/// This spawns a background task that will periodically collect resource usage statistics (memory allocations and CPU
-/// time), reporting which components are responsible for which portion of resource consumption as internal telemetry.
-///
-/// # Errors
-///
-/// If the resource telemetry subsystem has already been initialized, an error will be returned.
-pub(crate) async fn initialize_resource_telemetry() -> Result<(), GenericError> {
-    // Simple initialization guard to prevent multiple calls to this function.
-    static INIT: AtomicBool = AtomicBool::new(false);
-    if INIT.swap(true, Relaxed) {
-        return Err(generic_error!("Resource telemetry subsystem already initialized."));
-    }
+/// Additionally, asserts the memory API routes from the given [`ComponentRegistry`] as a [`DynamicRoute`] on the
+/// unprivileged API endpoint.
+pub struct ResourceTelemetryWorker {
+    component_registry: ComponentRegistryHandle,
+}
 
-    // We can't enforce, at compile-time, that the tracking allocator must be installed if a caller is trying to
-    // initialize the allocator's reporting infrastructure... but we can at least warn them if we detect it's not
-    // installed here at runtime.
-    if !ResourceGroupRegistry::allocator_installed() {
-        warn!("Tracking allocator not installed. Memory telemetry will not be available.");
-    }
-
-    // Spawn the background task that will periodically collect resource usage statistics.
-    spawn_traced_named("resource-telemetry-collector", async {
-        let mut metrics = HashMap::new();
-
-        loop {
-            sleep(Duration::from_secs(1)).await;
-
-            ResourceGroupRegistry::global().visit_resource_groups(|group_name, stats| {
-                let group_metrics = match metrics.get_mut(group_name) {
-                    Some(group_metrics) => group_metrics,
-                    None => metrics
-                        .entry(group_name.to_string())
-                        .or_insert_with(|| ResourceGroupMetrics::new(group_name)),
-                };
-
-                group_metrics.update(stats);
-            });
+impl ResourceTelemetryWorker {
+    /// Creates a new `ResourceTelemetryWorker` for the given component registry.
+    pub fn new(component_registry: &ComponentRegistry) -> Self {
+        Self {
+            component_registry: component_registry.root(),
         }
-    });
+    }
+}
 
-    Ok(())
+#[async_trait]
+impl Supervisable for ResourceTelemetryWorker {
+    fn name(&self) -> &str {
+        "resource-telemetry"
+    }
+
+    async fn initialize(&self, mut process_shutdown: ProcessShutdown) -> Result<SupervisorFuture, InitializationError> {
+        // We can't enforce, at compile-time, that the tracking allocator must be installed if a caller is trying to
+        // initialize the allocator's reporting infrastructure... but we can at least warn them if we detect it's not
+        // installed here at runtime.
+        if !ResourceGroupRegistry::allocator_installed() {
+            warn!("Tracking allocator not installed. Memory telemetry will not be available.");
+        }
+
+        let memory_routes = DynamicRoute::http(EndpointType::Unprivileged, self.component_registry.api_handler());
+
+        Ok(Box::pin(async move {
+            // Register our API routes before we actually start running.
+            DataspaceRegistry::try_current()
+                .ok_or_else(|| generic_error!("Dataspace not available."))?
+                .assert(memory_routes, "resource-telemetry-api");
+
+            let mut metrics = HashMap::new();
+
+            let shutdown = process_shutdown.wait_for_shutdown();
+            pin!(shutdown);
+
+            loop {
+                select! {
+                    _ = &mut shutdown => break,
+                    _ = sleep(Duration::from_secs(1)) => {
+                        ResourceGroupRegistry::global().visit_resource_groups(|group_name, stats| {
+                            let group_metrics = match metrics.get_mut(group_name) {
+                                Some(group_metrics) => group_metrics,
+                                None => metrics
+                                    .entry(group_name.to_string())
+                                    .or_insert_with(|| ResourceGroupMetrics::new(group_name)),
+                            };
+
+                            group_metrics.update(stats);
+                        });
+                    }
+                }
+            }
+
+            Ok(())
+        }))
+    }
 }
 
 struct CgroupMemoryParser;

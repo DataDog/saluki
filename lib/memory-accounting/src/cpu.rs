@@ -28,12 +28,16 @@ impl CpuStats {
 #[cfg(target_os = "linux")]
 #[inline]
 pub(crate) fn thread_cpu_time_nanos() -> Option<u64> {
-    let mut ts = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: We pass a valid pointer to a timespec struct. CLOCK_THREAD_CPUTIME_ID is available
-    // on Linux 2.6.12+ and is implemented as a vDSO call (~20ns overhead).
+    // NOTE: `CLOCK_THREAD_CPUTIME_ID` is not vDSO accelerated and degrades to a full syscall.
+    //
+    // Practically speaking, this ends up being roughly ~40-50x slower than a vDSO call at around 850ns or so. This is
+    // acceptable for our use case, because we're only tracking thread CPU time on task enter/exit, and only doing so on
+    // root task futures which are running for appreciable amounts of time so the rate at which we're calling this is fairly
+    // low.
+
+    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: We pass a valid reference to the `timespec` struct, and `CLOCK_THREAD_CPUTIME_ID` has been available
+    // since Linux 2.6.12.
     let ret = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
     if ret == 0 {
         Some(ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64)
@@ -42,7 +46,7 @@ pub(crate) fn thread_cpu_time_nanos() -> Option<u64> {
     }
 }
 
-/// Returns `None` on non-Linux platforms where `CLOCK_THREAD_CPUTIME_ID` is not available.
+/// Returns the current thread's CPU time in nanoseconds, or `None` if unavailable.
 #[cfg(not(target_os = "linux"))]
 #[inline]
 pub(crate) fn thread_cpu_time_nanos() -> Option<u64> {

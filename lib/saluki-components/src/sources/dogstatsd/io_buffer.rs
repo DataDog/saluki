@@ -101,3 +101,39 @@ where
         self.current.as_mut().unwrap()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use bytes::BufMut as _;
+    use saluki_core::pooling::OnDemandObjectPool;
+    use saluki_io::buf::FixedSizeVec;
+    use tokio::net::UdpSocket;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn connectionless_buffer_is_retained_across_get_buffer_mut() {
+        let socket = UdpSocket::bind("127.0.0.1:0").await.expect("bind udp");
+        let stream = Stream::from(socket);
+        assert!(stream.is_connectionless());
+
+        let pool = OnDemandObjectPool::<BytesBuffer>::with_builder("test_io_buffer_manager", || {
+            FixedSizeVec::with_capacity(64)
+        });
+        let mut manager = IoBufferManager::new(&pool, &stream);
+
+        let first_ptr = {
+            let buf = manager.get_buffer_mut().await;
+            buf.put_slice(b"bad_metric:1|c");
+            buf.chunk().as_ptr()
+        };
+
+        let second = manager.get_buffer_mut().await;
+        assert_eq!(second.chunk().as_ptr(), first_ptr, "same buffer instance");
+        assert_eq!(
+            second.chunk(),
+            b"bad_metric:1|c",
+            "leftover bytes are preserved across get_buffer_mut for connectionless streams",
+        );
+    }
+}
