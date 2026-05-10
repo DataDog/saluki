@@ -89,7 +89,7 @@ mod registry_tests {
                         annotation.support_level,
                     );
                 }
-                SupportLevel::Incompatible => {
+                SupportLevel::Incompatible(_) => {
                     assert!(
                         annotation.used_by.is_empty(),
                         "annotation '{}' has support level Incompatible but used_by is not empty — \
@@ -97,7 +97,7 @@ mod registry_tests {
                         path,
                     );
                 }
-                SupportLevel::NotApplicable | SupportLevel::Unrecognized => {
+                SupportLevel::Ignored | SupportLevel::Unrecognized => {
                     panic!(
                         "annotation '{}' has support level {:?} — \
                          Ignored is reserved for unannotated schema keys and must not appear \

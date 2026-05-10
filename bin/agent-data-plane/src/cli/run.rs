@@ -12,7 +12,7 @@ use saluki_app::{
     memory::{initialize_memory_bounds, MemoryBoundsConfiguration},
     metrics::emit_startup_metrics,
 };
-use saluki_components::config_registry::{ConfigClassifier, SupportLevel};
+use saluki_components::config_registry::{ConfigClassifier, Severity, SupportLevel};
 use saluki_components::{
     config::{DatadogRemapper, KEY_ALIASES},
     decoders::otlp::OtlpDecoderConfiguration,
@@ -151,38 +151,7 @@ pub async fn handle_run_command(
         return Ok(());
     }
 
-    // Analyze the config and respond to configurations that may be incompatible with ADP.
-    let config_classifier = ConfigClassifier::new();
-    debug!("Analyzing configuration.");
-    for (key, val) in config
-        .flattened_keys()
-        .error_context("Unable to analyze configuration.")?
-    {
-        let classification = config_classifier.classify(&key, &val);
-        match (classification.support_level, classification.is_default) {
-            (_, true) => {
-                trace!(key = %key, "Configuration interpreted as having a default value.")
-            }
-            (SupportLevel::Full, _) => {
-                trace!(key = %key, "Configuration key is fully supported and has a non-default value")
-            }
-            (SupportLevel::Partial, _) => {
-                warn!(key = %key, "Partially supported configuration key. See documentation for details.")
-            }
-            (SupportLevel::Incompatible, _) => {
-                error!(key = %key, "Unsupported configuration key. See documentation for configuration support levels");
-                // TODO: link to the documentation?
-                // TODO: consider returning an error to exit the program?
-            }
-            (SupportLevel::NotApplicable, _) => {
-                trace!(key = %key, "Configuration key is not applicable to this system. Safely ignoring.")
-            }
-            (SupportLevel::Unrecognized, _) => {
-                error!(key = %key, "Unrecognized configuration key.");
-                // TODO: consider returning an error to exit the program?
-            }
-        }
-    }
+    check_and_warn_config(&config).error_context("Incompatible configuration detected.")?;
 
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
@@ -340,6 +309,81 @@ pub async fn handle_run_command(
         }
         Err(e) => Err(e),
     }
+}
+
+/// Check the resolved configuration against the config registry for incompatibilities.
+///
+/// Classifies each flattened key in `config` with the config registry `Classifier`. Returns an
+/// `Error` if one or more high severity incompatibility is discovered. Emits warnings for less
+/// severe incompatibilities. Keys are only considered incompatible when they have non-default
+/// values.
+///
+/// # Error
+///
+/// To provide a better debugging experience in the presence of multiple high-severity incompatible
+/// keys, all keys are checked before returning. The error reports the count of incompatible keys;
+/// individual keys are logged at error level during iteration.
+///
+fn check_and_warn_config(config: &GenericConfiguration) -> Result<(), GenericError> {
+    // Analyze the config and respond to configurations that may be incompatible with ADP.
+    let config_classifier = ConfigClassifier::new();
+    let mut high_severity_incompatibilities = 0u32;
+    debug!("Analyzing configuration.");
+    for (key, val) in config
+        .flattened_keys()
+        .error_context("Unable to flatten configuration into a list of dot-separated keys.")?
+    {
+        // Get the classification. The classifier returns None if the config key is invalid or not-applicable to ADP.
+        let Some(classification) = config_classifier.classify(&key, &val) else {
+            continue;
+        };
+
+        // The Agent populates default values into the config, so we do not consider keys with default values.
+        if classification.is_default {
+            trace!(key = %key, "Configuration key has a default value.");
+            continue;
+        }
+
+        // Return a warning with a custom message on how to enable ADP telemetry.
+        if key == "telemetry.enabled" {
+            warn!(
+                key = %key,
+                "The telemetry.enabled key is not read by ADP. \
+                 Use data_plane.telemetry_enabled and data_plane.telemetry_filter_level instead."
+            );
+            continue;
+        }
+
+        match classification.support_level {
+            SupportLevel::Full => {
+                trace!(key = %key, "Fully supported key with non-default value detected. Proceeding.")
+            }
+            SupportLevel::Incompatible(Severity::Low) => debug!("Low-severity incompatible key detected. Proceeding."),
+            SupportLevel::Partial => {
+                warn!(key = %key, "Partially supported configuration key. See documentation for details. Proceeding.")
+            }
+            SupportLevel::Incompatible(Severity::Medium) => {
+                warn!(key = %key, "Unsupported configuration key. Proceeding.")
+            }
+            SupportLevel::Incompatible(Severity::High) => {
+                error!(key = %key, "Unsupported configuration key with non-default value. ADP cannot run safely with \
+                this setting.");
+                high_severity_incompatibilities += 1;
+            }
+            SupportLevel::Ignored | SupportLevel::Unrecognized => {
+                trace!(key = %key, "Configuration key not-applicable. Silently ignoring.")
+            }
+        }
+    }
+
+    if high_severity_incompatibilities > 0 {
+        return Err(generic_error!(
+            "{high_severity_incompatibilities} incompatible configuration detected. ADP cannot start. Review error \
+            logs for details."
+        ));
+    }
+
+    Ok(())
 }
 
 async fn create_topology(

@@ -22,6 +22,7 @@ pub(crate) use self::datadog::ALL_ANNOTATIONS;
 pub(crate) use self::datadog::SUPPORTED_ANNOTATIONS;
 #[cfg(test)]
 pub(crate) use self::generated::schema::ALL_SCHEMA_ENTRIES;
+#[cfg(test)]
 pub(crate) use self::generated::schema::IGNORED_ENTRIES;
 
 /// Declares a set of [`SalukiAnnotation`] constants and generates a companion `ALL` slice.
@@ -104,11 +105,24 @@ pub mod structs {
     pub const TRACE_OBFUSCATION_CONFIGURATION: &str = "TraceObfuscationConfiguration";
 }
 
+/// The `Severity` level of a config key that Saluki does not support.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Severity {
+    /// Saluki's incompatibility with the key is considered minor.
+    Low,
+
+    /// Saluki's incompatibility with the key is considered potentially impactful.
+    Medium,
+
+    /// Saluki's incompatibility with the key is considered problematic.
+    High,
+}
+
 /// How well saluki supports a given configuration key.
 ///
 /// Used in [`SalukiAnnotation`] to classify each key from saluki's perspective. `Ignored` is
 /// reserved for keys in the schema that have no annotation at all — it must not appear in any
-/// hand-written annotation.
+/// handwritten annotation.
 ///
 /// Invariants enforced at test time:
 /// - `Full` and `Partial` require a non-empty `used_by` list.
@@ -122,12 +136,12 @@ pub enum SupportLevel {
     /// Explicitly incompatible. Saluki does not support this key and may not behave as expected in
     /// its presence; `used_by` must be empty. Support for the key may be added in the future but
     /// tracking such intent is not encoded here.
-    Incompatible,
-    /// Not applicable. The key is not relevant to Saluki and we ignore it. This assignment must be
-    /// intentionally chosen and specified for a key. We never assume that a key is `NotApplicable`
-    /// just because we are unaware of it.
+    Incompatible(Severity),
+    /// Intentionally ignored. The key is not relevant to Saluki. This assignment must be
+    /// intentionally chosen and specified for a key. We never assume that a key is `Ignored` just
+    /// because we are unaware of it.
     #[allow(unused)]
-    NotApplicable,
+    Ignored,
     /// Unrecognized. The Saluki codebase is unaware of the existence of this key. It is not in our
     /// vendored datadog config schema, nor is it annotated.
     #[allow(unused)]
@@ -212,8 +226,8 @@ pub struct SalukiAnnotation {
 
     /// How well saluki supports this key.
     ///
-    /// Must not be [`SupportLevel::NotApplicable`] or [`SupportLevel::Unrecognized`] which are
-    /// reserved for unannotated keys.
+    /// Must not be [`SupportLevel::Ignored`] or [`SupportLevel::Unrecognized`] which are reserved
+    /// for unannotated keys.
     pub support_level: SupportLevel,
 
     /// Additional YAML paths beyond the canonical one in the schema (aliases).

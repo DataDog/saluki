@@ -1874,6 +1874,8 @@
   reason: initial bulk
 - name: log_to_syslog
   reason: initial bulk
+- name: logging_frequency
+  reason: "accepted divergence: ADP logs success below info level"
 - name: logon_duration.enabled
   reason: initial bulk
 - name: logs_config.add_logsource_tag
