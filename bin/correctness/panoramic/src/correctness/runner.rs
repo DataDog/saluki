@@ -511,6 +511,11 @@ impl CorrectnessRunner {
         );
 
         // Phase 6: Give agents time to flush all remaining aggregated metrics.
+        //
+        // TODO: This should maybe be configurable, or perhaps we can figure out a better way to
+        // determine when the next flush has happened... and further, we might not need to care
+        // about this for particular analysis modes if the functionality we're testing doesn't rely
+        // on flushing like metrics does.
         sleep(FLUSH_WAIT).await;
 
         // Phase 7: Collect data from both datadog-intake containers, then shut everything down.
@@ -537,6 +542,7 @@ impl CorrectnessRunner {
 
         // Signal all remaining containers to shut down and wait for them.
         info!("Cleaning up remaining containers and resources...");
+        // TODO: is it correct to be using tctx.test_cancel_token for this? Or is this cancel() call necessary?
         self.tctx.test_cancel_token().cancel();
         self.baseline_coordinator.wait().await;
         self.comparison_coordinator.wait().await;
