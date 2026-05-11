@@ -458,6 +458,19 @@ pub struct MatrixConfig {
     /// Comparison target configuration (shared base; variant env vars are appended).
     pub comparison: CorrectnessTargetConfig,
 
+    /// When analysis mode is traces: if true, use OTLP-direct analysis (baseline is OTel-based).
+    ///
+    /// Propagated unchanged to every expanded [`CorrectnessConfig`].
+    #[serde(default)]
+    pub otlp_direct_analysis_mode: bool,
+
+    /// When analysis mode is traces: additional span field paths to ignore when diffing baseline
+    /// vs comparison.
+    ///
+    /// Propagated unchanged to every expanded [`CorrectnessConfig`].
+    #[serde(default)]
+    pub additional_span_ignore_fields: Vec<String>,
+
     /// Matrix variants. Each entry produces one expanded test case.
     pub variants: Vec<MatrixVariant>,
 
@@ -516,21 +529,21 @@ impl MatrixConfig {
                     .additional_env_vars
                     .extend(variant.additional_env_vars.iter().cloned());
 
-                CorrectnessConfig::from_parts(
-                    format!("{}/{}", base_name, variant.name),
-                    self.runtime.clone(),
-                    self.analysis_mode.clone(),
-                    CorrectnessMillstoneConfig {
+                CorrectnessConfig {
+                    name: format!("{}/{}", base_name, variant.name),
+                    runtime: self.runtime.clone(),
+                    analysis_mode: self.analysis_mode.clone(),
+                    millstone: CorrectnessMillstoneConfig {
                         image: self.millstone.image.clone(),
                         binary_path: self.millstone.binary_path.clone(),
                         config_path: self.get_canonicalized_config_path(&self.millstone.config_path),
                     },
-                    CorrectnessDatadogIntakeConfig {
+                    datadog_intake: CorrectnessDatadogIntakeConfig {
                         image: self.datadog_intake.image.clone(),
                         binary_path: self.datadog_intake.binary_path.clone(),
                         config_path: self.get_canonicalized_config_path(&self.datadog_intake.config_path),
                     },
-                    CorrectnessTargetConfig {
+                    baseline: CorrectnessTargetConfig {
                         image: baseline.image,
                         entrypoint: baseline.entrypoint,
                         command: baseline.command,
@@ -541,7 +554,7 @@ impl MatrixConfig {
                             .collect(),
                         additional_env_vars: baseline.additional_env_vars,
                     },
-                    CorrectnessTargetConfig {
+                    comparison: CorrectnessTargetConfig {
                         image: comparison.image,
                         entrypoint: comparison.entrypoint,
                         command: comparison.command,
@@ -552,7 +565,10 @@ impl MatrixConfig {
                             .collect(),
                         additional_env_vars: comparison.additional_env_vars,
                     },
-                )
+                    otlp_direct_analysis_mode: self.otlp_direct_analysis_mode,
+                    additional_span_ignore_fields: self.additional_span_ignore_fields.clone(),
+                    base_config_path: PathBuf::new(),
+                }
             })
             .collect()
     }
