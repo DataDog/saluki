@@ -1,9 +1,6 @@
 //! Traces.
 
-pub mod v1;
-
 use saluki_common::collections::FastHashMap;
-use saluki_context::tags::TagSet;
 use stringtheory::MetaString;
 
 /// Trace-level sampling metadata.
@@ -88,23 +85,11 @@ pub enum EventAttributeScalarValue {
 /// A trace event.
 ///
 /// A trace is a collection of spans that represent a distributed trace.
-///
-/// ## Migration note
-///
-/// New unified fields (`trace_id_high`, `trace_id_low`, payload metadata, flat sampling
-/// fields, `attributes`) are populated by the OTLP translator and APM source.  The legacy
-/// `resource_tags` and `sampling` fields are kept for backward compatibility with existing
-/// transforms and encoders and will be removed once those consumers are migrated (Steps 5–9).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Trace {
     // ── Legacy fields (private, accessed via methods, kept for compat) ──────────
     /// The spans that make up this trace.
     spans: Vec<Span>,
-    /// Resource-level tags derived from OTLP resource attributes.
-    ///
-    /// Kept for backward compatibility. New code should use `trace.attributes`
-    /// and the explicit metadata fields instead.
-    resource_tags: TagSet,
     /// Sampling metadata (legacy wrapper).
     ///
     /// Kept for backward compatibility. New code should use the flat
@@ -159,14 +144,13 @@ pub struct Trace {
 }
 
 impl Trace {
-    /// Creates a new `Trace` with the given spans and resource tags.
+    /// Creates a new `Trace` with the given spans.
     ///
     /// All unified fields default to empty / zero. Callers should set them
     /// directly after construction.
-    pub fn new(spans: Vec<Span>, resource_tags: impl Into<TagSet>) -> Self {
+    pub fn new(spans: Vec<Span>) -> Self {
         Self {
             spans,
-            resource_tags: resource_tags.into(),
             sampling: None,
             trace_id_high: 0,
             trace_id_low: 0,
@@ -248,13 +232,6 @@ impl Trace {
         spans.retain(|span| !f(self, span));
         spans.shrink_to_fit();
         let _ = std::mem::replace(&mut self.spans, spans);
-    }
-
-    /// Returns the resource-level tags associated with this trace.
-    ///
-    /// Deprecated: prefer `trace.attributes` for new code.
-    pub fn resource_tags(&self) -> &TagSet {
-        &self.resource_tags
     }
 
     /// Returns a reference to the legacy trace-level sampling metadata, if present.

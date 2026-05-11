@@ -7,7 +7,6 @@ use otlp_protos::opentelemetry::proto::resource::v1::Resource as OtlpResource;
 use otlp_protos::opentelemetry::proto::trace::v1::ResourceSpans;
 use saluki_common::collections::FastHashMap;
 use saluki_common::strings::StringBuilder;
-use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_core::data_model::event::trace::{AttributeValue, Span as DdSpan, Trace, TraceSampling};
 use saluki_core::data_model::event::Event;
 use stringtheory::interning::GenericMapInterner;
@@ -50,34 +49,11 @@ pub fn convert_span_id(span_id: &[u8]) -> u64 {
     u64::from_be_bytes(span_id.try_into().unwrap_or_default())
 }
 
-fn resource_attributes_to_tagset(
-    attributes: &[otlp_common::KeyValue], string_builder: &mut StringBuilder<GenericMapInterner>,
-) -> TagSet {
-    let mut tags = TagSet::with_capacity(attributes.len());
-    for kv in attributes {
-        if let Some(key_value) = &kv.value {
-            if let Some(value) = &key_value.value {
-                if let Some(string_value) = otlp_value_to_string(value) {
-                    string_builder.clear();
-                    let _ = string_builder.push_str(kv.key.as_str());
-                    let _ = string_builder.push(':');
-                    let _ = string_builder.push_str(string_value.as_str());
-                    tags.insert_tag(string_builder.to_meta_string());
-                }
-            }
-        }
-    }
-    tags
-}
-
 /// Metadata extracted from OTLP resource attributes for the unified `Trace` fields.
 ///
 /// Built once per `ResourceSpans` batch and shared across all traces derived from
-/// the same resource. The `resource_tags` field is kept for backward compat with
-/// transforms that still read `Trace::resource_tags()`.
+/// the same resource.
 struct OtlpResourceMeta {
-    /// Legacy TagSet representation (kept for compat with existing transforms/encoder).
-    resource_tags: SharedTagSet,
     /// Resolved environment name.
     env: MetaString,
     /// Resolved hostname.
@@ -100,8 +76,8 @@ struct OtlpResourceMeta {
 /// downstream code can use a single map lookup regardless of whether a field is
 /// explicitly modelled on `Trace`.
 fn extract_resource_meta(
-    attributes: &[otlp_common::KeyValue], resource_tags: SharedTagSet, ignore_missing_fields: bool,
-    interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
+    attributes: &[otlp_common::KeyValue], ignore_missing_fields: bool, interner: &GenericMapInterner,
+    string_builder: &mut StringBuilder<GenericMapInterner>,
 ) -> OtlpResourceMeta {
     // Reuse the existing normalizing helpers (span_attrs = empty, resource_attrs = full).
     let empty: &[otlp_common::KeyValue] = &[];
@@ -158,7 +134,6 @@ fn extract_resource_meta(
     }
 
     OtlpResourceMeta {
-        resource_tags,
         env,
         hostname,
         container_id,
@@ -201,17 +176,8 @@ impl OtlpTracesTranslator {
         let interner = &self.interner;
         let string_builder = &mut self.string_builder;
 
-        // Build legacy TagSet for backward compat with existing transforms/encoder.
-        let resource_tags = resource_attributes_to_tagset(&resource.attributes, string_builder).into_shared();
-
         // Build unified resource metadata for the new Trace fields.
-        let resource_meta = extract_resource_meta(
-            &resource.attributes,
-            resource_tags,
-            ignore_missing_fields,
-            interner,
-            string_builder,
-        );
+        let resource_meta = extract_resource_meta(&resource.attributes, ignore_missing_fields, interner, string_builder);
 
         let mut traces_by_id: FastHashMap<u64, TraceEntry> = FastHashMap::default();
         let trace_count_hint = resource_spans.scope_spans.len();
@@ -276,9 +242,7 @@ impl Iterator for OtlpTraceEventsIter {
                 continue;
             }
 
-            // Keep building the legacy resource_tags-based Trace for compat with
-            // existing transforms and encoder.  New fields are populated below.
-            let mut trace = Trace::new(entry.spans, self.resource_meta.resource_tags.clone());
+            let mut trace = Trace::new(entry.spans);
 
             // ── Legacy sampling compat ────────────────────────────────────────────
             if let Some(priority) = entry.priority {

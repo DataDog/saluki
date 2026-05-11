@@ -136,11 +136,12 @@ impl SynchronousTransform for OttlTransform {
             return;
         }
 
+        // TODO: migrate resource.attributes access to trace.attributes (FastHashMap<MetaString, AttributeValue>)
+        let empty_tags = saluki_context::tags::TagSet::default();
         for event in event_buffer {
             if let Some(trace) = event.try_as_trace_mut() {
-                let resource_tags = trace.resource_tags().clone();
                 for span in trace.spans_mut() {
-                    self.transform_span(span, &resource_tags);
+                    self.transform_span(span, &empty_tags);
                 }
             }
         }
@@ -153,7 +154,6 @@ mod tests {
 
     use saluki_common::collections::FastHashMap;
     use saluki_config::ConfigurationLoader;
-    use saluki_context::tags::TagSet;
     use saluki_core::{
         components::{transforms::*, ComponentContext},
         data_model::event::{
@@ -177,14 +177,8 @@ mod tests {
         Span::new("svc", "op", "res", "web", trace_id, span_id, 0, 0, 1000, 0).with_meta(meta_map)
     }
 
-    fn make_trace(spans: Vec<Span>, resource_tags: Option<Vec<&'static str>>) -> Trace {
-        let mut tag_set = TagSet::default();
-        if let Some(tags) = resource_tags {
-            for t in tags {
-                tag_set.insert_tag(t);
-            }
-        }
-        Trace::new(spans, tag_set)
+    fn make_trace(spans: Vec<Span>, _resource_tags: Option<Vec<&'static str>>) -> Trace {
+        Trace::new(spans)
     }
 
     fn get_span_attr(buffer: &EventsBuffer, span_index: usize, key: &str) -> Option<String> {

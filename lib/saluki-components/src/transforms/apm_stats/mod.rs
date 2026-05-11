@@ -9,7 +9,6 @@ use std::{
 
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use opentelemetry_semantic_conventions::resource::{CONTAINER_ID, K8S_POD_UID};
 use saluki_config::GenericConfiguration;
 use saluki_context::{origin::OriginTagCardinality, tags::TagSet};
 use saluki_core::{
@@ -31,13 +30,11 @@ use tracing::{debug, error};
 
 use crate::common::{
     datadog::apm::ApmConfig,
-    otlp::util::{extract_container_tags_from_resource_tagset, KEY_DATADOG_CONTAINER_ID},
+    otlp::util::extract_container_tags_from_attributes_map,
 };
 
 mod aggregation;
 pub(crate) use self::aggregation::{process_tags_hash, PayloadAggregationKey};
-#[cfg(test)]
-pub(crate) use self::aggregation::BUCKET_DURATION_NS;
 
 mod span_concentrator;
 pub(crate) use self::span_concentrator::{InfraTags, SpanConcentrator};
@@ -180,15 +177,15 @@ impl ApmStats {
     }
 
     fn build_infra_tags(&self, trace: &Trace, process_tags: &str) -> InfraTags {
-        let resource_tags = trace.resource_tags();
-        let container_id = resolve_container_id(resource_tags);
+        let container_id = trace.container_id.clone();
         let mut container_tags = if container_id.is_empty() {
             TagSet::default()
         } else {
-            extract_container_tags(resource_tags)
+            let mut tags = TagSet::default();
+            extract_container_tags_from_attributes_map(&trace.attributes, &mut tags);
+            tags
         };
 
-        // Query the workload provider for additional container tags.
         if !container_id.is_empty() {
             if let Some(workload_provider) = &self.workload_provider {
                 let entity_id = EntityId::Container(container_id.clone());
@@ -208,39 +205,64 @@ impl ApmStats {
             .find(|s| s.parent_id() == 0)
             .or_else(|| trace.spans().first());
 
-        let span_env = root_span.and_then(|s| s.meta().get("env")).filter(|s| !s.is_empty());
-        let env = span_env.cloned().unwrap_or_else(|| self.agent_env.clone());
+        let env = root_span
+            .and_then(|s| s.meta().get("env").filter(|s| !s.is_empty()))
+            .cloned()
+            .unwrap_or_else(|| {
+                if !trace.env.is_empty() {
+                    trace.env.clone()
+                } else {
+                    self.agent_env.clone()
+                }
+            });
 
         let hostname = root_span
-            .and_then(|s| s.meta().get("_dd.hostname"))
-            .filter(|s| !s.is_empty())
+            .and_then(|s| s.meta().get("_dd.hostname").filter(|s| !s.is_empty()))
             .cloned()
-            .unwrap_or_else(|| self.agent_hostname.clone());
+            .unwrap_or_else(|| {
+                if !trace.hostname.is_empty() {
+                    trace.hostname.clone()
+                } else {
+                    self.agent_hostname.clone()
+                }
+            });
 
-        let version = root_span
-            .and_then(|s| s.meta().get("version"))
-            .cloned()
-            .unwrap_or_default();
+        let version = if !trace.app_version.is_empty() {
+            trace.app_version.clone()
+        } else {
+            root_span
+                .and_then(|s| s.meta().get("version").filter(|s| !s.is_empty()))
+                .cloned()
+                .unwrap_or_default()
+        };
 
-        let container_id = root_span
-            .and_then(|s| s.meta().get("_dd.container_id"))
-            .cloned()
-            .unwrap_or_default();
+        let container_id = if !trace.container_id.is_empty() {
+            trace.container_id.clone()
+        } else {
+            root_span
+                .and_then(|s| s.meta().get("_dd.container_id"))
+                .cloned()
+                .unwrap_or_default()
+        };
 
         let git_commit_sha = root_span
-            .and_then(|s| s.meta().get("_dd.git.commit.sha"))
+            .and_then(|s| s.meta().get("_dd.git.commit.sha").filter(|s| !s.is_empty()))
             .cloned()
             .unwrap_or_default();
 
         let image_tag = root_span
-            .and_then(|s| s.meta().get("_dd.image_tag"))
+            .and_then(|s| s.meta().get("_dd.image_tag").filter(|s| !s.is_empty()))
             .cloned()
             .unwrap_or_default();
 
-        let lang = root_span
-            .and_then(|s| s.meta().get("language"))
-            .cloned()
-            .unwrap_or_default();
+        let lang = if !trace.language_name.is_empty() {
+            trace.language_name.clone()
+        } else {
+            root_span
+                .and_then(|s| s.meta().get("language"))
+                .cloned()
+                .unwrap_or_default()
+        };
 
         PayloadAggregationKey {
             env,
@@ -423,37 +445,21 @@ fn now_nanos() -> u64 {
         .as_nanos() as u64
 }
 
-/// Resolves container ID from OTLP resource tags.
-fn resolve_container_id(resource_tags: &TagSet) -> MetaString {
-    for key in [KEY_DATADOG_CONTAINER_ID, CONTAINER_ID, K8S_POD_UID] {
-        if let Some(tag) = resource_tags.get_single_tag(key) {
-            if let Some(value) = tag.value() {
-                if !value.is_empty() {
-                    return MetaString::from(value);
-                }
-            }
-        }
-    }
-
-    MetaString::empty()
-}
-
-/// Extracts container tags from OTLP resource tags.
-fn extract_container_tags(resource_tags: &TagSet) -> TagSet {
-    let mut container_tags_set = TagSet::default();
-    extract_container_tags_from_resource_tagset(resource_tags, &mut container_tags_set);
-
-    container_tags_set
-}
-
-/// Extracts process tags from trace.
+/// Extracts process tags from trace, checking both span meta and trace attributes.
 fn extract_process_tags(trace: &Trace) -> MetaString {
-    if let Some(first_span) = trace.spans().first() {
-        if let Some(process_tags) = first_span.meta().get(TAG_PROCESS_TAGS) {
-            return process_tags.clone();
+    use saluki_core::data_model::event::trace::AttributeValue;
+
+    let root_span = trace.spans().iter().find(|s| s.parent_id() == 0).or_else(|| trace.spans().first());
+    if let Some(span) = root_span {
+        if let Some(tags) = span.meta().get(TAG_PROCESS_TAGS).filter(|s| !s.is_empty()) {
+            return tags.clone();
         }
     }
-
+    if let Some(AttributeValue::String(tags)) = trace.attributes.get(TAG_PROCESS_TAGS) {
+        if !tags.is_empty() {
+            return tags.clone();
+        }
+    }
     MetaString::empty()
 }
 
@@ -461,7 +467,6 @@ fn extract_process_tags(trace: &Trace) -> MetaString {
 mod tests {
     use proptest::prelude::*;
     use saluki_common::collections::FastHashMap;
-    use saluki_context::tags::TagSet;
     use saluki_core::data_model::event::trace_stats::ClientStatsBucket;
     use saluki_core::data_model::event::{trace::Span, trace_stats::ClientGroupedStats};
 
@@ -537,7 +542,7 @@ mod tests {
         };
 
         let span = make_test_span("test-service", "test-operation", "test-resource");
-        let trace = Trace::new(vec![span], TagSet::default());
+        let trace = Trace::new(vec![span]);
 
         transform.process_trace(&trace);
 
@@ -578,7 +583,7 @@ mod tests {
         )
         .with_metrics(metrics);
 
-        let trace = Trace::new(vec![span], TagSet::default());
+        let trace = Trace::new(vec![span]);
         transform.process_trace(&trace);
 
         let stats = transform.concentrator.flush(now + BUCKET_DURATION_NS * 2, true);
@@ -600,7 +605,7 @@ mod tests {
 
         // Add a span
         let span = make_top_level_span(aligned_now, 1, 50, 5, "A1", "resource1", 0, None);
-        let trace = Trace::new(vec![span], TagSet::default());
+        let trace = Trace::new(vec![span]);
 
         let payload_key = PayloadAggregationKey {
             env: MetaString::from("test"),
@@ -641,7 +646,7 @@ mod tests {
         metrics.insert(MetaString::from(METRIC_PARTIAL_VERSION), 830604.0);
 
         let span = test_span(aligned_now, 1, 0, 50, 5, "A1", "resource1", 0, None, Some(metrics));
-        let trace = Trace::new(vec![span], TagSet::default());
+        let trace = Trace::new(vec![span]);
 
         let payload_key = PayloadAggregationKey {
             env: MetaString::from("test"),
@@ -1098,7 +1103,7 @@ mod tests {
         // Test with no process tags
         {
             let span = Span::default();
-            let trace = Trace::new(vec![span], TagSet::default());
+            let trace = Trace::new(vec![span]);
             let process_tags = extract_process_tags(&trace);
             assert!(process_tags.is_empty(), "Should be empty when no _dd.tags.process");
         }
@@ -1108,7 +1113,7 @@ mod tests {
             let mut meta = FastHashMap::default();
             meta.insert(MetaString::from(TAG_PROCESS_TAGS), MetaString::from("a:1,b:2,c:3"));
             let span = Span::default().with_meta(meta);
-            let trace = Trace::new(vec![span], TagSet::default());
+            let trace = Trace::new(vec![span]);
             let process_tags = extract_process_tags(&trace);
             assert_eq!(process_tags, "a:1,b:2,c:3");
         }
@@ -1118,7 +1123,7 @@ mod tests {
             let mut meta = FastHashMap::default();
             meta.insert(MetaString::from(TAG_PROCESS_TAGS), MetaString::from(""));
             let span = Span::default().with_meta(meta);
-            let trace = Trace::new(vec![span], TagSet::default());
+            let trace = Trace::new(vec![span]);
             let process_tags = extract_process_tags(&trace);
             assert!(
                 process_tags.is_empty(),
@@ -1128,7 +1133,7 @@ mod tests {
 
         // Test with empty trace
         {
-            let trace = Trace::new(vec![], TagSet::default());
+            let trace = Trace::new(vec![]);
             let process_tags = extract_process_tags(&trace);
             assert!(process_tags.is_empty(), "Should be empty when trace has no spans");
         }

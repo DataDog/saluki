@@ -544,7 +544,6 @@ impl SynchronousTransform for TraceSampler {
 mod tests {
     use std::collections::HashMap;
 
-    use saluki_context::tags::TagSet;
     use saluki_core::data_model::event::trace::{Span as DdSpan, Trace};
     const PRIORITY_USER_DROP: i32 = -1;
 
@@ -596,8 +595,7 @@ mod tests {
     }
 
     fn create_test_trace(spans: Vec<DdSpan>) -> Trace {
-        let tags = TagSet::default();
-        Trace::new(spans, tags)
+        Trace::new(spans)
     }
 
     #[test]

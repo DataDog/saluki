@@ -110,7 +110,6 @@ mod tests {
     // logic for these tests are taken from here: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/sampler/prioritysampler_test.go
     use std::time::{Duration, SystemTime};
 
-    use saluki_context::tags::TagSet;
     use saluki_core::data_model::event::trace::{Span, Trace};
     use stringtheory::MetaString;
 
@@ -151,7 +150,7 @@ mod tests {
             0,      // error
         );
 
-        let trace = Trace::new(vec![root, child], TagSet::default());
+        let trace = Trace::new(vec![root, child]);
         (trace, 0)
     }
 

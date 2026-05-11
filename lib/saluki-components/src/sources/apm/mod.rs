@@ -20,13 +20,15 @@ use saluki_core::{
     },
     data_model::event::{
         trace::{
-            v1::{V1AnyValue, V1KeyValue, V1Span, V1SpanEvent, V1SpanLink, V1Trace, V1TraceChunk},
             EventAttributeScalarValue, EventAttributeValue, Span, SpanEvent, SpanLink, Trace, TraceSampling,
         },
         Event, EventType,
     },
     topology::OutputDefinition,
 };
+
+mod v1_types;
+use self::v1_types::{V1AnyValue, V1KeyValue, V1Span, V1SpanEvent, V1SpanLink, V1Trace, V1TraceChunk};
 use saluki_common::collections::FastHashMap;
 use saluki_error::{generic_error, GenericError};
 use stringtheory::{interning::GenericMapInterner, MetaString};
@@ -430,7 +432,7 @@ fn v1_trace_to_trace(v1: V1Trace) -> Trace {
 
     let spans = v1.chunk.spans.into_iter().map(v1_span_to_span).collect();
 
-    let mut trace = Trace::new(spans, saluki_context::tags::TagSet::default());
+    let mut trace = Trace::new(spans);
 
     // Unified trace-level fields.
     trace.trace_id_high = v1.chunk.trace_id_high;

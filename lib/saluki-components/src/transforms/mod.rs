@@ -34,5 +34,3 @@ mod v1_trace_sampler;
 pub use self::v1_trace_sampler::V1TraceSamplerConfiguration;
 
 
-mod v1_apm_stats;
-pub use self::v1_apm_stats::V1ApmStatsTransformConfiguration;

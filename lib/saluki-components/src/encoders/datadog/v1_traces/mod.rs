@@ -869,7 +869,6 @@ mod tests {
     use protobuf::Message as _;
     use saluki_common::collections::FastHashMap;
     use saluki_config::ConfigurationLoader;
-    use saluki_context::tags::TagSet;
     use saluki_core::data_model::event::trace::{
         EventAttributeValue, Span, SpanEvent, SpanLink, Trace,
     };
@@ -895,7 +894,7 @@ mod tests {
     }
 
     fn make_trace(spans: Vec<Span>) -> Trace {
-        let mut trace = Trace::new(spans, TagSet::default());
+        let mut trace = Trace::new(spans);
         trace.priority = Some(1);
         trace.trace_id_high = 0x0102030405060708;
         trace.trace_id_low = 0x090a0b0c0d0e0f10;

@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use ottl::{CallbackMap, EnumMap, OttlParser, Value};
 use saluki_config::GenericConfiguration;
+use saluki_context::tags::TagSet;
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     data_model::event::trace::{Span, Trace},
@@ -99,12 +100,14 @@ impl OttlFilter {
     /// Returns true if the span should be dropped (any condition matched).
     ///
     /// Uses `self.current_trace` (set in `transform_buffer`) to access resource tags.
-    fn should_drop_span(&self, trace: &Trace, span: &Span) -> bool {
+    fn should_drop_span(&self, _trace: &Trace, span: &Span) -> bool {
         if self.span_parsers.is_empty() {
             return false;
         }
 
-        let mut ctx = SpanFilterContext::new(span, trace.resource_tags());
+        // TODO: migrate resource.attributes access to trace.attributes (FastHashMap<MetaString, AttributeValue>)
+        let empty_tags = TagSet::default();
+        let mut ctx = SpanFilterContext::new(span, &empty_tags);
 
         for parser in &self.span_parsers {
             match parser.execute(&mut ctx) {
@@ -153,7 +156,6 @@ mod tests {
 
     use saluki_common::collections::FastHashMap;
     use saluki_config::ConfigurationLoader;
-    use saluki_context::tags::TagSet;
     use saluki_core::{
         components::{transforms::*, ComponentContext},
         data_model::event::{trace::Span, trace::Trace, Event},
@@ -171,14 +173,8 @@ mod tests {
         Span::new("svc", "op", "res", "web", trace_id, span_id, 0, 0, 1000, 0).with_meta(meta_map)
     }
 
-    fn make_trace(spans: Vec<Span>, resource_tags: Option<Vec<&'static str>>) -> Trace {
-        let mut tag_set = TagSet::default();
-        if let Some(tags) = resource_tags {
-            for t in tags {
-                tag_set.insert_tag(t);
-            }
-        }
-        Trace::new(spans, tag_set)
+    fn make_trace(spans: Vec<Span>, _resource_tags: Option<Vec<&'static str>>) -> Trace {
+        Trace::new(spans)
     }
 
     fn span_count_in_buffer(buffer: &EventsBuffer) -> usize {

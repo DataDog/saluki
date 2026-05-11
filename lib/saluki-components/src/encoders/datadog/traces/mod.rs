@@ -785,7 +785,6 @@ mod tests {
     use datadog_protos::traces::AgentPayload;
     use protobuf::Message as _;
     use saluki_config::ConfigurationLoader;
-    use saluki_context::tags::TagSet;
     use saluki_core::data_model::event::trace::{Span as DdSpan, Trace};
     use stringtheory::MetaString;
 
@@ -831,7 +830,7 @@ mod tests {
             1000,
             0,
         );
-        let mut trace = Trace::new(vec![span], TagSet::default());
+        let mut trace = Trace::new(vec![span]);
         trace.priority = Some(1);
         trace
     }
@@ -849,7 +848,7 @@ mod tests {
             1000, // duration
             1,    // error
         );
-        let mut trace = Trace::new(vec![span], TagSet::default());
+        let mut trace = Trace::new(vec![span]);
         trace.priority = Some(1);
         trace
     }

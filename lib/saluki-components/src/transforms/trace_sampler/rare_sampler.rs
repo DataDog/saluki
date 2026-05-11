@@ -219,7 +219,6 @@ mod tests {
     use std::time::Duration;
 
     use saluki_common::collections::FastHashMap;
-    use saluki_context::tags::TagSet;
     use saluki_core::data_model::event::trace::{Span as DdSpan, Trace};
     use stringtheory::MetaString;
 
@@ -260,7 +259,7 @@ mod tests {
     }
 
     fn make_trace(spans: Vec<DdSpan>) -> Trace {
-        Trace::new(spans, TagSet::default())
+        Trace::new(spans)
     }
 
     #[test]

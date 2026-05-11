@@ -1,10 +1,3 @@
-//! v1.0 APM pipeline types.
-//!
-//! These are the canonical in-memory types used throughout the APM trace pipeline. All string
-//! fields use [`MetaString`] for efficient storage (SSO for strings ≤ 23 bytes, shared interned
-//! storage for longer strings). The wire-format deserialization intermediates (`StringTable`,
-//! `RawTracerPayload`, etc.) live in the source module that owns the network endpoint.
-
 use stringtheory::MetaString;
 
 /// A chunk of spans belonging to a single trace.

@@ -164,19 +164,6 @@ impl SpanConcentrator {
         self.new_stat_span(span)
     }
 
-    /// Adds a unified [`Span`] to the concentrator if it is eligible for stats computation.
-    ///
-    /// Mirrors `add_v1_span_if_eligible` but operates on the unified `Span` type produced
-    /// by the OTLP translator and the converted APM source.
-    pub fn add_span_if_eligible(
-        &mut self, span: &Span, weight: f64, payload_key: &PayloadAggregationKey, infra_tags: &InfraTags,
-        origin: &str,
-    ) {
-        if let Some(stat_span) = self.new_stat_span(span) {
-            self.add_span_internal(&stat_span, weight, payload_key, infra_tags, origin);
-        }
-    }
-
     pub(super) fn add_span(
         &mut self, stat_span: &StatSpan, weight: f64, payload_key: &PayloadAggregationKey, infra_tags: &InfraTags,
         origin: &str,

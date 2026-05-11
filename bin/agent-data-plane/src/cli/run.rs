@@ -25,8 +25,7 @@ use saluki_components::{
     transforms::{
         AggregateConfiguration, ApmStatsTransformConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
         DogStatsDPrefixFilterConfiguration, HostEnrichmentConfiguration, HostTagsConfiguration,
-        TraceObfuscationConfiguration, TraceSamplerConfiguration, V1ApmStatsTransformConfiguration,
-        V1TraceSamplerConfiguration,
+        TraceObfuscationConfiguration, TraceSamplerConfiguration, V1TraceSamplerConfiguration,
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
@@ -375,28 +374,28 @@ async fn add_apm_pipeline_to_blueprint(
         .with_environment_provider(env_provider.clone())
         .await?;
 
-    let v1_apm_stats_config = V1ApmStatsTransformConfiguration::from_configuration(config)
-        .error_context("Failed to configure V1 APM stats transform.")?
+    let apm_stats_config = ApmStatsTransformConfiguration::from_configuration(config)
+        .error_context("Failed to configure APM stats transform.")?
         .with_environment_provider(env_provider.clone())
         .await?;
 
     blueprint
         .add_source("apm_in", apm_receiver_config)?
         .add_transform("v1_traces_enrich", v1_traces_enrich_config)?
-        .add_transform("v1_dd_apm_stats", v1_apm_stats_config)?
+        .add_transform("apm_dd_apm_stats", apm_stats_config)?
         .add_encoder("v1_dd_traces_encode", v1_dd_traces_config)?
         .connect_component("v1_traces_enrich", ["apm_in.traces"])?
         .connect_component("v1_dd_traces_encode", ["v1_traces_enrich"])?
-        .connect_component("v1_dd_apm_stats", ["v1_traces_enrich"])?
+        .connect_component("apm_dd_apm_stats", ["v1_traces_enrich"])?
         .connect_component("dd_out", ["v1_dd_traces_encode"])?;
 
     // `dd_stats_encode` is shared with the OTLP traces pipeline when both are active.
     //
-    // APM-only:  we own the encoder — register it first, then connect v1_dd_apm_stats
+    // APM-only:  we own the encoder — register it first, then connect apm_dd_apm_stats
     //            as its input and dd_out as its output.
     //
     // OTLP+APM:  the encoder already exists (registered by add_baseline_traces_pipeline)
-    //            and dd_out is already wired to it; we only need to add v1_dd_apm_stats
+    //            and dd_out is already wired to it; we only need to add apm_dd_apm_stats
     //            as a second upstream. Adding the dd_out edge again would create a
     //            duplicate graph edge that forwards every stats payload twice.
     if !dp_config.traces_pipeline_required() {
@@ -406,10 +405,10 @@ async fn add_apm_pipeline_to_blueprint(
             .await?;
         blueprint
             .add_encoder("dd_stats_encode", dd_apm_stats_encoder)?
-            .connect_component("dd_stats_encode", ["v1_dd_apm_stats"])?
+            .connect_component("dd_stats_encode", ["apm_dd_apm_stats"])?
             .connect_component("dd_out", ["dd_stats_encode"])?;
     } else {
-        blueprint.connect_component("dd_stats_encode", ["v1_dd_apm_stats"])?;
+        blueprint.connect_component("dd_stats_encode", ["apm_dd_apm_stats"])?;
     }
 
     Ok(())

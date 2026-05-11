@@ -143,38 +143,6 @@ pub fn extract_container_tags_from_resource_attributes(attributes: &[otlp_common
     }
 }
 
-/// Extracts container tags from a resource tagset and inserts them into the provided TagSet.
-///
-/// This mirrors `extract_container_tags_from_resource_attributes`, but operates on a `TagSet` representation of
-/// the resource.
-pub fn extract_container_tags_from_resource_tagset(resource_tags: &TagSet, tags: &mut TagSet) {
-    let mut extracted_tags = FastHashSet::default();
-
-    for tag in resource_tags {
-        let Some(value) = tag.value() else {
-            continue;
-        };
-
-        // Semantic Conventions
-        if let Some(datadog_key) = CONTAINER_MAPPINGS.get(tag.name()) {
-            tags.insert_tag(format!("{}:{}", datadog_key, value));
-            extracted_tags.insert(*datadog_key);
-        }
-
-        // Custom (datadog.container.tag namespace)
-        if tag.name().starts_with(CUSTOM_CONTAINER_TAG_PREFIX) {
-            if let Some(custom_key) = tag.name().get(CUSTOM_CONTAINER_TAG_PREFIX.len()..) {
-                if !custom_key.is_empty() {
-                    // Do not replace if set via semantic conventions mappings.
-                    if !extracted_tags.insert(custom_key) {
-                        tags.insert_tag(format!("{}:{}", custom_key, value));
-                    }
-                }
-            }
-        }
-    }
-}
-
 /// Resolves the source metadata from OTLP resource attributes.
 ///
 /// This determines whether the telemetry came from a hostname or serverless environment.

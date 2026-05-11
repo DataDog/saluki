@@ -307,7 +307,7 @@ mod tests {
     }
 
     fn make_trace(priority: i32, spans: Vec<saluki_core::data_model::event::trace::Span>) -> Trace {
-        let mut trace = Trace::new(spans, saluki_context::tags::TagSet::default());
+        let mut trace = Trace::new(spans);
         if priority == PRIORITY_NONE {
             trace.priority = None;
         } else {
