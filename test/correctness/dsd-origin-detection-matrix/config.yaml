@@ -39,13 +39,11 @@ variants:
     additional_env_vars:
       - DD_DOGSTATSD_ORIGIN_DETECTION=true
 
-  # Legacy origin detection with entity ID precedence enabled. When a client-provided pod UID
-  # (dd.internal.entity_id) is present, the UDS-detected process ID tags are suppressed and only
-  # the client-provided entity's tags are used.
-  - name: legacy-entity-id-precedence
-    additional_env_vars:
-      - DD_DOGSTATSD_ORIGIN_DETECTION=true
-      - DD_DOGSTATSD_ENTITY_ID_PRECEDENCE=true
+  # NOTE: dogstatsd_entity_id_precedence is not tested here. It only has an effect when a metric
+  # carries a dd.internal.entity_id tag (the client-provided pod UID), which millstone's
+  # lading-payload corpus generator does not emit. A correctness_matrix variant that sets
+  # DD_DOGSTATSD_ENTITY_ID_PRECEDENCE=true would be functionally identical to 'legacy'. Coverage
+  # of this setting requires millstone to grow support for generating dd.internal.entity_id tags.
 
   # Unified origin detection: all entity ID sources (UDS PID, |c: local data, |e: external data,
   # dd.internal.entity_id) are evaluated in priority order. The first source that resolves to a
