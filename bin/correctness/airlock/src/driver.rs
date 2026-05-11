@@ -56,6 +56,13 @@ pub struct DriverConfig {
     binds: Vec<String>,
     healthcheck: Option<HealthConfig>,
     exposed_ports: Vec<(&'static str, u16)>,
+    /// Additional named Docker volume mounts, in `volume_name:/container/path` format.
+    ///
+    /// Unlike bind mounts specified via [`with_bind_mount`][Self::with_bind_mount], these reference
+    /// existing named Docker volumes rather than host filesystem paths. Used to mount volumes that
+    /// belong to other isolation groups (for example, a shared millstone mounting both the baseline
+    /// and comparison agent volumes).
+    additional_volume_mounts: Vec<String>,
 }
 
 impl DriverConfig {
@@ -137,7 +144,7 @@ impl DriverConfig {
     }
 
     /// Creates a new `DriverConfig` from the given driver identifier and container image reference.
-    fn from_image(driver_id: &'static str, image: String) -> Self {
+    pub fn from_image(driver_id: &'static str, image: String) -> Self {
         Self {
             driver_id,
             image,
@@ -147,6 +154,7 @@ impl DriverConfig {
             binds: vec![],
             healthcheck: None,
             exposed_ports: vec![],
+            additional_volume_mounts: vec![],
         }
     }
 
@@ -234,6 +242,19 @@ impl DriverConfig {
             start_period: Some(start_period.as_nanos() as i64),
             start_interval: Some(start_interval.as_nanos() as i64),
         });
+        self
+    }
+
+    /// Mounts a named Docker volume into the container at the given path.
+    ///
+    /// Unlike [`with_bind_mount`][Self::with_bind_mount], this references a named Docker volume
+    /// rather than a host filesystem path. The volume must already exist when the container starts.
+    /// This is useful for mounting volumes that belong to other isolation groups — for example,
+    /// a shared millstone container that needs to reach the DogStatsD sockets of both the baseline
+    /// and comparison agent containers.
+    pub fn with_volume_mount(mut self, volume_name: impl Into<String>, container_path: impl AsRef<Path>) -> Self {
+        self.additional_volume_mounts
+            .push(format!("{}:{}", volume_name.into(), container_path.as_ref().display()));
         self
     }
 
@@ -578,6 +599,11 @@ impl Driver {
         binds.push("/proc:/host/proc:ro".to_string());
         binds.push("/sys/fs/cgroup:/host/sys/fs/cgroup:ro".to_string());
         binds.push("/var/run/docker.sock:/var/run/docker.sock:ro".to_string());
+
+        // Append any additional named volume mounts (e.g., cross-group volumes for shared millstone).
+        for mount in &self.config.additional_volume_mounts {
+            binds.push(mount.clone());
+        }
 
         let (publish_all_ports, exposed_ports) = if self.config.exposed_ports.is_empty() {
             (None, None)
