@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     future::Future,
-    path::{Path, PathBuf},
+    path::PathBuf,
     pin::Pin,
     task::{ready, Context, Poll},
     time::{Duration, Instant},
@@ -29,11 +29,11 @@ use crate::{
     test::TestContext,
 };
 
-/// Internal path where the baseline millstone config is written inside the shared millstone container.
-const MILLSTONE_BASELINE_CONFIG_INTERNAL: &str = "/etc/millstone/baseline.toml";
+/// Path inside the shared millstone container where the baseline config is written at startup.
+const MILLSTONE_BASELINE_CONFIG_INTERNAL: &str = "/tmp/millstone-baseline.toml";
 
-/// Internal path where the comparison millstone config is written inside the shared millstone container.
-const MILLSTONE_COMPARISON_CONFIG_INTERNAL: &str = "/etc/millstone/comparison.toml";
+/// Path inside the shared millstone container where the comparison config is written at startup.
+const MILLSTONE_COMPARISON_CONFIG_INTERNAL: &str = "/tmp/millstone-comparison.toml";
 
 /// How long to wait after millstone exits before querying datadog-intake for data.
 ///
@@ -153,8 +153,8 @@ pub(crate) fn make_error_result(name: String, started: Instant, phase: &str, e: 
 ///
 /// The on-disk `millstone.yaml` uses `target: "unixgram:///airlock/metrics.sock"` as a
 /// placeholder. The harness generates two configs from the same template — one per agent — by
-/// substituting the target socket path here before bind-mounting each config into the shared
-/// millstone container.
+/// substituting the target socket path here before embedding each config in the shared
+/// millstone container's startup command.
 fn make_millstone_config_for_target(template: &str, target: &str) -> String {
     let mut result = String::with_capacity(template.len());
     for line in template.lines() {
@@ -259,12 +259,16 @@ impl CorrectnessRunner {
     ///    bitwise-identical inputs.
     /// 3. Waits for both processes to exit and propagates any non-zero exit code.
     ///
-    /// The two per-target config files are written to the test log directory and bind-mounted
-    /// into the container at well-known paths before the container starts.
+    /// Config content is embedded in the shell command as base64 rather than bind-mounted from
+    /// the host. On macOS with Docker Desktop, bind-mounting individual files to paths whose
+    /// parent directory does not exist in the image creates a directory at the mount point
+    /// instead of a file, which causes the millstone binary to fail with `EISDIR`.
     async fn build_shared_millstone_group_runner(
         &self, isolation_group_id: String, baseline_isolation_group_id: &str, comparison_isolation_group_id: &str,
-        baseline_config_path: &Path, comparison_config_path: &Path,
+        baseline_config_content: &str, comparison_config_content: &str,
     ) -> Result<GroupRunner, GenericError> {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+
         debug!("Creating shared millstone group runner...");
 
         let millstone_binary = self
@@ -273,14 +277,25 @@ impl CorrectnessRunner {
             .clone()
             .unwrap_or_else(|| "/usr/local/bin/millstone".to_string());
 
-        // Wait for both agent sockets, then launch both millstone processes in parallel and
-        // propagate any non-zero exit code from either child.
+        let baseline_b64 = STANDARD.encode(baseline_config_content);
+        let comparison_b64 = STANDARD.encode(comparison_config_content);
+
+        // Decode configs from base64 into /tmp, wait for both agent sockets, then launch both
+        // millstone processes in parallel and propagate any non-zero exit code from either child.
+        //
+        // Configs are embedded as base64 rather than bind-mounted as files to avoid a Docker
+        // Desktop on macOS quirk: bind-mounting a file to a path whose parent does not exist
+        // in the image creates a directory at the target instead of a file.
         let wait_cmd = format!(
-            "until [ -S /baseline-airlock/metrics.sock ] && \
+            "echo {baseline_b64} | base64 -d > {baseline_cfg} && \
+             echo {comparison_b64} | base64 -d > {comparison_cfg} && \
+             until [ -S /baseline-airlock/metrics.sock ] && \
                    [ -S /comparison-airlock/metrics.sock ]; do sleep 1; done; \
              exec sh -c '{bin} {baseline_cfg} & P1=$!; \
                           {bin} {comparison_cfg} & P2=$!; \
                           wait $P1; R1=$?; wait $P2; R2=$?; exit $((R1 | R2))'",
+            baseline_b64 = baseline_b64,
+            comparison_b64 = comparison_b64,
             bin = millstone_binary,
             baseline_cfg = MILLSTONE_BASELINE_CONFIG_INTERNAL,
             comparison_cfg = MILLSTONE_COMPARISON_CONFIG_INTERNAL,
@@ -289,9 +304,6 @@ impl CorrectnessRunner {
         let driver_config = DriverConfig::from_image("millstone", self.millstone_config.image.clone())
             .with_entrypoint(vec!["/bin/sh".to_string(), "-c".to_string()])
             .with_command(vec![wait_cmd])
-            // Bind-mount the two per-target configs generated on the host.
-            .with_bind_mount(baseline_config_path, MILLSTONE_BASELINE_CONFIG_INTERNAL)
-            .with_bind_mount(comparison_config_path, MILLSTONE_COMPARISON_CONFIG_INTERNAL)
             // Mount both agent isolation-group volumes so millstone can reach their DSD sockets.
             .with_volume_mount(format!("airlock-{}", baseline_isolation_group_id), "/baseline-airlock")
             .with_volume_mount(
@@ -386,21 +398,6 @@ impl CorrectnessRunner {
         let comparison_config_content =
             make_millstone_config_for_target(&millstone_template, "unixgram:///comparison-airlock/metrics.sock");
 
-        // Write the per-target configs to the test log directory so they can be bind-mounted into
-        // the shared millstone container.
-        let millstone_log_dir = self.tctx.log_dir().join("millstone");
-        tokio::fs::create_dir_all(&millstone_log_dir)
-            .await
-            .error_context("Failed to create millstone log directory.")?;
-        let baseline_config_path = millstone_log_dir.join("baseline.toml");
-        let comparison_config_path = millstone_log_dir.join("comparison.toml");
-        tokio::fs::write(&baseline_config_path, &baseline_config_content)
-            .await
-            .error_context("Failed to write baseline millstone config.")?;
-        tokio::fs::write(&comparison_config_path, &comparison_config_content)
-            .await
-            .error_context("Failed to write comparison millstone config.")?;
-
         // Phase 2: Build all three group runners.
         let baseline_group_runner = self
             .build_baseline_group_runner(baseline_isolation_group_id.clone())
@@ -413,8 +410,8 @@ impl CorrectnessRunner {
                 millstone_isolation_group_id.clone(),
                 &baseline_isolation_group_id,
                 &comparison_isolation_group_id,
-                &baseline_config_path,
-                &comparison_config_path,
+                &baseline_config_content,
+                &comparison_config_content,
             )
             .await?;
 
