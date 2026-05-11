@@ -329,7 +329,7 @@ def build_report(report: dict) -> str:
         headline = "## Optimization Goals: ✅ No significant changes detected"
 
     sections = [
-        f"**Run ID:** `{job_id}`<br />",
+        f"**Run ID:** `{job_id}`",
         f"**Baseline:** `{short_sha(baseline_sha)}` &middot; "
         f"**Comparison:** `{short_sha(comparison_sha)}` &middot; "
         f"{diff_link(baseline_sha, comparison_sha)}",
