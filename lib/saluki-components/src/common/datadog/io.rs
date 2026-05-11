@@ -388,6 +388,7 @@ async fn run_endpoint_io_loop<B>(
                 },
                 Err(e) => match e {
                     RetryCircuitBreakerError::Service(e) => {
+                        telemetry.track_sent_request_error();
                         error!(endpoint_url, error = %e, error_source = ?e.source(), "Unexpected error when querying service for readiness.");
                         break;
                     },

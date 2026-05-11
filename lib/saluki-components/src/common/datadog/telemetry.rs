@@ -8,6 +8,10 @@ use stringtheory::MetaString;
 
 use super::transaction::Metadata;
 
+const NETWORK_HTTP_REQUESTS_ERRORS_TOTAL: &str = "network_http_requests_errors_total";
+const ERROR_TYPE_SENT_REQUEST: &str = "sent_request_error";
+const ERROR_SCOPE_TRANSACTION: &str = "transaction";
+
 /// Component-specific telemetry.
 ///
 /// This type covers high-level component telemetry, such as events/bytes sent, tailored to the Datadog destinations and
@@ -23,6 +27,7 @@ pub struct ComponentTelemetry {
     events_dropped_queue: Counter,
     items_dropped_total: Counter,
     http_failed_send: Counter,
+    sent_request_errors: Counter,
     http_errors_by_code: Arc<Mutex<HashMap<StatusCode, Counter>>>,
 }
 
@@ -48,6 +53,13 @@ impl ComponentTelemetry {
             ),
             items_dropped_total: builder.register_counter("component_items_dropped_total"),
             http_failed_send: builder.register_counter_with_tags("component_errors_total", ["error_type:http_send"]),
+            sent_request_errors: builder.register_counter_with_tags(
+                NETWORK_HTTP_REQUESTS_ERRORS_TOTAL,
+                [
+                    ("error_type", ERROR_TYPE_SENT_REQUEST),
+                    ("error_scope", ERROR_SCOPE_TRANSACTION),
+                ],
+            ),
             http_errors_by_code: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -89,6 +101,11 @@ impl ComponentTelemetry {
             }
         }
         self.events_dropped_http.increment(metadata.event_count as u64);
+    }
+
+    /// Tracks a failure before a transaction is submitted to the HTTP client.
+    pub fn track_sent_request_error(&self) {
+        self.sent_request_errors.increment(1);
     }
 
     /// Tracks dropped items from queue eviction.

@@ -570,6 +570,13 @@ mod tests {
                 ),
                 1.0,
             )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.network_http_requests_errors_total",
+                    &["error_type:sent_request_error", "error_scope:transaction"],
+                ),
+                2.0,
+            )),
             Event::Metric(Metric::gauge("adp.network_http_retry_queue_size", 2.0)),
         ];
 
@@ -586,7 +593,10 @@ mod tests {
         assert!(
             output.contains("forwarder_transactions_errors_by_type_connection_errors{source=\"agent-data-plane\"} 3")
         );
-        assert!(output.contains("forwarder_transactions_errors{source=\"agent-data-plane\"} 1"));
+        assert!(
+            output.contains("forwarder_transactions_errors_by_type_sent_request_errors{source=\"agent-data-plane\"} 2")
+        );
+        assert!(output.contains("forwarder_transactions_errors{source=\"agent-data-plane\"} 3"));
         assert!(output.contains("forwarder_transactions_retry_queue_size{source=\"agent-data-plane\"} 2"));
     }
 

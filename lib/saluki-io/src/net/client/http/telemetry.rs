@@ -42,8 +42,6 @@ impl HttpTransactionErrorTelemetry {
     pub(crate) fn from_builder(builder: &MetricsBuilder) -> Self {
         // Mirror Core Agent forwarder buckets by counting lifecycle failures at their source. See
         // datadog-agent/comp/forwarder/defaultforwarder/transaction/transaction.go::GetClientTrace.
-        // The remaining gap is `SentRequestErrors`, which Core Agent increments when request construction fails before
-        // the HTTP client runs.
         Self {
             dns_errors: register_scoped_error(builder, ERROR_TYPE_DNS, ERROR_SCOPE_PHASE),
             connection_errors: register_scoped_error(builder, ERROR_TYPE_CONNECTION, ERROR_SCOPE_PHASE),
