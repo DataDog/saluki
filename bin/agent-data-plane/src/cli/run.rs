@@ -25,7 +25,7 @@ use saluki_components::{
     transforms::{
         AggregateConfiguration, ApmStatsTransformConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
         DogStatsDPrefixFilterConfiguration, HostEnrichmentConfiguration, HostTagsConfiguration,
-        TraceObfuscationConfiguration, TraceSamplerConfiguration, V1TraceSamplerConfiguration,
+        TraceObfuscationConfiguration, TraceSamplerConfiguration,
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
@@ -360,7 +360,7 @@ async fn add_apm_pipeline_to_blueprint(
     let v1_trace_obfuscation_config = TraceObfuscationConfiguration::from_apm_configuration(config)
         .error_context("Failed to configure trace obfuscation.")?;
 
-    let v1_trace_sampler_config = V1TraceSamplerConfiguration::from_configuration(config)
+    let v1_trace_sampler_config = TraceSamplerConfiguration::from_configuration(config)
         .error_context("Failed to configure V1 trace sampler.")?
         .with_sampling_rates(sampling_rates.clone());
 

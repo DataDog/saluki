@@ -157,6 +157,7 @@ mod tests {
 
     use super::*;
     use crate::sources::apm::sampling_rates::V1SamplingRatesHandle;
+    use crate::transforms::trace_sampler::signature::ServiceSignature;
 
     fn make_sampler() -> V1PrioritySampler {
         V1PrioritySampler::new(

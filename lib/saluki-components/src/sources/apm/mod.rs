@@ -20,7 +20,7 @@ use saluki_core::{
     },
     data_model::event::{
         trace::{
-            EventAttributeScalarValue, EventAttributeValue, Span, SpanEvent, SpanLink, Trace, TraceSampling,
+            EventAttributeScalarValue, EventAttributeValue, Span, SpanEvent, SpanLink, Trace,
         },
         Event, EventType,
     },
@@ -451,11 +451,6 @@ fn v1_trace_to_trace(v1: V1Trace) -> Trace {
     trace.app_version = v1.app_version;
     trace.client_dropped_p0s_weight = v1.client_dropped_p0s_weight;
     trace.attributes = attributes;
-
-    // Populate legacy sampling for compat with transforms that still read `trace.sampling()`.
-    if let Some(p) = priority {
-        trace.set_sampling(Some(TraceSampling::new(false, Some(p), None, None)));
-    }
 
     trace
 }

@@ -1,4 +1,4 @@
-//! V1 trace sampling transform.
+//! V1 trace sampling implementation.
 //!
 //! Implements `runSamplersV1` from `pkg/trace/agent/agent.go`: reads the tracer-set
 //! sampling priority from each chunk, runs the appropriate sampler(s), and writes the
@@ -10,125 +10,41 @@
 //! 2. Override `PriorityAutoDrop` traces when the rare sampler or error sampler fires.
 //! 3. Propagate per-service rates back to tracers via the `ApmReceiver` HTTP response.
 
-use async_trait::async_trait;
-use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::rate::TokenBucket;
-use saluki_config::GenericConfiguration;
 use saluki_core::{
-    components::{transforms::*, ComponentContext},
     data_model::event::{trace::Trace, Event},
     topology::EventsBuffer,
 };
-use saluki_error::GenericError;
-use std::time::{Duration, SystemTime};
+use saluki_core::components::transforms::SynchronousTransform;
+use std::time::SystemTime;
 use tracing::debug;
 
-mod no_priority;
-mod priority;
-mod rare_sampler;
-
-use self::no_priority::V1NoPrioritySampler;
-use self::priority::V1PrioritySampler;
-use self::rare_sampler::V1RareSampler;
-
-use crate::common::datadog::apm::ApmConfig;
-use crate::sources::apm::sampling_rates::V1SamplingRatesHandle;
+use super::v1_no_priority::V1NoPrioritySampler;
+use super::v1_priority::V1PrioritySampler;
+use super::v1_rare_sampler::V1RareSampler;
 
 /// Sentinel indicating the tracer set no priority (matches Go's `PriorityNone = math.MinInt8`).
-const PRIORITY_NONE: i32 = i8::MIN as i32;
+pub(super) const PRIORITY_NONE: i32 = i8::MIN as i32;
 
-const PRIORITY_AUTO_KEEP: i32 = 1;
-const ERROR_SAMPLER_BURST: usize = 100;
+pub(super) const PRIORITY_AUTO_KEEP: i32 = 1;
+pub(super) const ERROR_SAMPLER_BURST: usize = 100;
 
-/// Configuration for the V1 trace sampler transform.
-pub struct V1TraceSamplerConfiguration {
-    apm_config: ApmConfig,
-    sampling_rates: V1SamplingRatesHandle,
+pub(super) struct V1TraceSamplerImpl {
+    pub(super) priority_sampler: V1PrioritySampler,
+    pub(super) no_priority_sampler: V1NoPrioritySampler,
+    pub(super) rare_sampler: V1RareSampler,
+    pub(super) error_token_bucket: Option<TokenBucket>,
+    pub(super) error_sampling_enabled: bool,
+    pub(super) error_tracking_standalone: bool,
 }
 
-impl V1TraceSamplerConfiguration {
-    /// Creates a new `V1TraceSamplerConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let apm_config = ApmConfig::from_configuration(config)?;
-        Ok(Self {
-            apm_config,
-            sampling_rates: V1SamplingRatesHandle::new(),
-        })
-    }
-
-    /// Attaches a shared [`V1SamplingRatesHandle`] so the sampler can push rates to the
-    /// APM receiver source for inclusion in HTTP responses.
-    pub fn with_sampling_rates(mut self, handle: V1SamplingRatesHandle) -> Self {
-        self.sampling_rates = handle;
-        self
-    }
-}
-
-#[async_trait]
-impl SynchronousTransformBuilder for V1TraceSamplerConfiguration {
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
-        let error_token_bucket = if self.apm_config.error_sampling_enabled() {
-            Some(TokenBucket::new(self.apm_config.errors_per_second(), ERROR_SAMPLER_BURST))
-        } else {
-            None
-        };
-
-        // TODO: implement the probabilistic sampler path from the Go agent
-        // (agent.go ProbabilisticSamplerEnabled branch). Users who enable
-        // apm_config.probabilistic_sampler.enabled will silently receive
-        // the priority-sampler path instead.
-        if self.apm_config.probabilistic_sampler_enabled() {
-            tracing::warn!(
-                "apm_config.probabilistic_sampler.enabled is set but the V1 trace sampler \
-                 does not yet implement the probabilistic path; falling back to priority sampler"
-            );
-        }
-
-        let sampler = V1TraceSampler {
-            priority_sampler: V1PrioritySampler::new(
-                self.apm_config.default_env().clone(),
-                self.apm_config.target_traces_per_second(),
-                1.0,
-                self.sampling_rates.clone(),
-            ),
-            no_priority_sampler: V1NoPrioritySampler::new(self.apm_config.target_traces_per_second()),
-            rare_sampler: V1RareSampler::new(
-                self.apm_config.rare_sampler_enabled(),
-                self.apm_config.rare_sampler_tps(),
-                Duration::from_secs_f64(self.apm_config.rare_sampler_cooldown_period_secs()),
-                self.apm_config.rare_sampler_cardinality(),
-            ),
-            error_token_bucket,
-            error_sampling_enabled: self.apm_config.error_sampling_enabled(),
-            error_tracking_standalone: self.apm_config.error_tracking_standalone_enabled(),
-        };
-
-        Ok(Box::new(sampler))
-    }
-}
-
-impl MemoryBounds for V1TraceSamplerConfiguration {
-    fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
-        builder.minimum().with_single_value::<V1TraceSampler>("component struct");
-    }
-}
-
-pub struct V1TraceSampler {
-    priority_sampler: V1PrioritySampler,
-    no_priority_sampler: V1NoPrioritySampler,
-    rare_sampler: V1RareSampler,
-    error_token_bucket: Option<TokenBucket>,
-    error_sampling_enabled: bool,
-    error_tracking_standalone: bool,
-}
-
-impl V1TraceSampler {
+impl V1TraceSamplerImpl {
     /// Implements `runSamplersV1` / `traceSamplingV1` from the Go Trace Agent.
     ///
     /// Returns `true` if the trace should be forwarded, `false` if it should be
     /// removed from the buffer entirely. In ETS mode the trace is always forwarded
     /// (with `dropped_trace` set to reflect whether it was a kept or dropped trace).
-    fn process_trace(
+    pub(super) fn process_trace(
         &mut self,
         now: SystemTime,
         trace: &mut Trace,
@@ -224,7 +140,7 @@ impl V1TraceSampler {
     }
 }
 
-impl SynchronousTransform for V1TraceSampler {
+impl SynchronousTransform for V1TraceSamplerImpl {
     fn transform_buffer(&mut self, buffer: &mut EventsBuffer) {
         let now = SystemTime::now();
         let mut kept = 0u32;
@@ -250,7 +166,7 @@ impl SynchronousTransform for V1TraceSampler {
 }
 
 /// Find the index of the root span (parent_id == 0). Falls back to the last span.
-fn find_root_span_idx(spans: &[saluki_core::data_model::event::trace::Span]) -> usize {
+pub(super) fn find_root_span_idx(spans: &[saluki_core::data_model::event::trace::Span]) -> usize {
     let len = spans.len();
 
     // Fast path: scan from the end (tracers often report root last).
@@ -279,13 +195,15 @@ fn find_root_span_idx(spans: &[saluki_core::data_model::event::trace::Span]) -> 
 #[cfg(test)]
 mod tests {
     use saluki_core::data_model::event::trace::Trace;
+    use saluki_common::rate::TokenBucket;
     use stringtheory::MetaString;
+    use std::time::{Duration, SystemTime};
 
     use super::*;
     use crate::sources::apm::sampling_rates::V1SamplingRatesHandle;
 
-    fn make_sampler() -> V1TraceSampler {
-        V1TraceSampler {
+    fn make_sampler() -> V1TraceSamplerImpl {
+        V1TraceSamplerImpl {
             priority_sampler: V1PrioritySampler::new(
                 MetaString::from_static("prod"),
                 10.0,
@@ -316,7 +234,7 @@ mod tests {
         trace
     }
 
-    fn process(sampler: &mut V1TraceSampler, trace: &mut Trace) -> bool {
+    fn process(sampler: &mut V1TraceSamplerImpl, trace: &mut Trace) -> bool {
         sampler.process_trace(SystemTime::now(), trace, "prod", 0.0)
     }
 
@@ -364,7 +282,7 @@ mod tests {
 
     #[test]
     fn auto_drop_without_error_no_rare_is_dropped() {
-        let mut s = V1TraceSampler {
+        let mut s = V1TraceSamplerImpl {
             error_token_bucket: None,
             error_sampling_enabled: false,
             ..make_sampler()
@@ -377,7 +295,7 @@ mod tests {
 
     #[test]
     fn rare_sampler_overrides_auto_drop_first_occurrence() {
-        let mut s = V1TraceSampler {
+        let mut s = V1TraceSamplerImpl {
             rare_sampler: V1RareSampler::new(true, 1000.0, Duration::from_secs(300), 200),
             error_token_bucket: None,
             error_sampling_enabled: false,
@@ -390,7 +308,7 @@ mod tests {
 
     #[test]
     fn rare_sampler_runs_before_drop_decision() {
-        let mut s = V1TraceSampler {
+        let mut s = V1TraceSamplerImpl {
             rare_sampler: V1RareSampler::new(true, 1000.0, Duration::from_secs(300), 200),
             error_token_bucket: None,
             error_sampling_enabled: false,
@@ -407,7 +325,7 @@ mod tests {
 
     #[test]
     fn priority_none_goes_to_no_priority_sampler() {
-        let mut s = V1TraceSampler {
+        let mut s = V1TraceSamplerImpl {
             priority_sampler: V1PrioritySampler::new(
                 MetaString::from_static("prod"),
                 0.0,
@@ -429,7 +347,7 @@ mod tests {
 
     #[test]
     fn ets_keeps_error_trace() {
-        let mut s = V1TraceSampler {
+        let mut s = V1TraceSamplerImpl {
             error_tracking_standalone: true,
             error_token_bucket: Some(TokenBucket::new(10.0, 100)),
             ..make_sampler()
@@ -441,7 +359,7 @@ mod tests {
 
     #[test]
     fn ets_drops_non_error_trace_but_forwards_it() {
-        let mut s = V1TraceSampler {
+        let mut s = V1TraceSamplerImpl {
             error_tracking_standalone: true,
             error_token_bucket: Some(TokenBucket::new(10.0, 100)),
             ..make_sampler()

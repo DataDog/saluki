@@ -3,39 +3,6 @@
 use saluki_common::collections::FastHashMap;
 use stringtheory::MetaString;
 
-/// Trace-level sampling metadata.
-///
-/// Kept for backward compatibility during the migration to unified trace types.
-/// New code should use the flat sampling fields directly on `Trace`.
-#[derive(Clone, Debug, PartialEq)]
-pub struct TraceSampling {
-    /// Whether or not the trace was dropped during sampling.
-    pub dropped_trace: bool,
-
-    /// The sampling priority assigned to this trace.
-    pub priority: Option<i32>,
-
-    /// The decision maker identifier indicating which sampler made the sampling decision.
-    pub decision_maker: Option<MetaString>,
-
-    /// The OTLP sampling rate applied to this trace.
-    pub otlp_sampling_rate: Option<f64>,
-}
-
-impl TraceSampling {
-    /// Creates a new `TraceSampling` instance.
-    pub fn new(
-        dropped_trace: bool, priority: Option<i32>, decision_maker: Option<MetaString>, otlp_sampling_rate: Option<f64>,
-    ) -> Self {
-        Self {
-            dropped_trace,
-            priority,
-            decision_maker,
-            otlp_sampling_rate,
-        }
-    }
-}
-
 /// Typed value for span and trace-level attributes.
 ///
 /// This covers the three storage types used in the Datadog APM wire format:
@@ -116,15 +83,9 @@ pub enum EventAttributeScalarValue {
 /// A trace is a collection of spans that represent a distributed trace.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Trace {
-    // ── Legacy fields (private, accessed via methods, kept for compat) ──────────
+    // ── Core fields ──────────────────────────────────────────────────────────────
     /// The spans that make up this trace.
     spans: Vec<Span>,
-    /// Sampling metadata (legacy wrapper).
-    ///
-    /// Kept for backward compatibility. New code should use the flat
-    /// `priority`, `dropped_trace`, `decision_maker`, and `otlp_sampling_rate`
-    /// fields directly.
-    sampling: Option<TraceSampling>,
 
     // ── Unified fields (public) ──────────────────────────────────────────────────
     /// Upper 8 bytes of the 128-bit trace ID (big-endian). Zero for 64-bit-only sources.
@@ -158,8 +119,7 @@ pub struct Trace {
     /// `V1TraceChunk.attributes` once downstream consumers are migrated).
     pub attributes: FastHashMap<MetaString, AttributeValue>,
 
-    // Flat sampling fields (replaces `sampling: Option<TraceSampling>` once
-    // the trace sampler and encoder are migrated).
+    // Flat sampling fields.
     /// Sampling priority set by the tracer or a sampler.
     pub priority: Option<i32>,
     /// Whether this trace was dropped during sampling.
@@ -180,7 +140,6 @@ impl Trace {
     pub fn new(spans: Vec<Span>) -> Self {
         Self {
             spans,
-            sampling: None,
             trace_id_high: 0,
             trace_id_low: 0,
             origin: MetaString::empty(),
@@ -263,19 +222,6 @@ impl Trace {
         let _ = std::mem::replace(&mut self.spans, spans);
     }
 
-    /// Returns a reference to the legacy trace-level sampling metadata, if present.
-    ///
-    /// Deprecated: prefer `trace.priority`, `trace.dropped_trace`, etc. for new code.
-    pub fn sampling(&self) -> Option<&TraceSampling> {
-        self.sampling.as_ref()
-    }
-
-    /// Sets the legacy trace-level sampling metadata.
-    ///
-    /// Deprecated: prefer setting `trace.priority`, `trace.dropped_trace`, etc. directly.
-    pub fn set_sampling(&mut self, sampling: Option<TraceSampling>) {
-        self.sampling = sampling;
-    }
 }
 
 /// A span event.

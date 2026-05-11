@@ -15,11 +15,12 @@
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::collections::FastHashMap;
+use saluki_common::rate::TokenBucket;
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     data_model::event::{
-        trace::{AttributeValue, Span, Trace, TraceSampling},
+        trace::{AttributeValue, Span, Trace},
         Event,
     },
     topology::EventsBuffer,
@@ -36,13 +37,23 @@ mod probabilistic;
 mod rare_sampler;
 mod score_sampler;
 pub(crate) mod signature;
+mod v1;
+mod v1_no_priority;
+mod v1_priority;
+mod v1_rare_sampler;
 
 use self::probabilistic::PROB_RATE_KEY;
+use self::v1::V1TraceSamplerImpl;
+use self::v1::ERROR_SAMPLER_BURST as V1_ERROR_SAMPLER_BURST;
+use self::v1_no_priority::V1NoPrioritySampler;
+use self::v1_priority::V1PrioritySampler;
+use self::v1_rare_sampler::V1RareSampler;
 use crate::common::datadog::{
     apm::ApmConfig, sample_by_rate, DECISION_MAKER_MANUAL, DECISION_MAKER_PROBABILISTIC, OTEL_TRACE_ID_META_KEY,
     SAMPLING_PRIORITY_METRIC_KEY, TAG_DECISION_MAKER,
 };
 use crate::common::otlp::config::TracesConfig;
+use crate::sources::apm::sampling_rates::V1SamplingRatesHandle;
 
 // Sampling priority constants (matching datadog-agent)
 const PRIORITY_AUTO_DROP: i32 = 0;
@@ -66,10 +77,20 @@ fn normalize_sampling_rate(rate: f64) -> f64 {
 }
 
 /// Configuration for the trace sampler transform.
-#[derive(Debug)]
 pub struct TraceSamplerConfiguration {
     apm_config: ApmConfig,
     otlp_sampling_rate: f64,
+    sampling_rates: Option<V1SamplingRatesHandle>,
+}
+
+impl std::fmt::Debug for TraceSamplerConfiguration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TraceSamplerConfiguration")
+            .field("apm_config", &self.apm_config)
+            .field("otlp_sampling_rate", &self.otlp_sampling_rate)
+            .field("sampling_rates", &self.sampling_rates.as_ref().map(|_| "<V1SamplingRatesHandle>"))
+            .finish()
+    }
 }
 
 impl TraceSamplerConfiguration {
@@ -81,7 +102,16 @@ impl TraceSamplerConfiguration {
         Ok(Self {
             apm_config,
             otlp_sampling_rate,
+            sampling_rates: None,
         })
+    }
+
+    /// Attaches a shared [`V1SamplingRatesHandle`] to enable the APM (V1) sampling path.
+    ///
+    /// When set, `build()` returns a `V1TraceSamplerImpl` instead of the OTLP-path `TraceSampler`.
+    pub fn with_sampling_rates(mut self, handle: V1SamplingRatesHandle) -> Self {
+        self.sampling_rates = Some(handle);
+        self
     }
 }
 
@@ -90,37 +120,79 @@ impl SynchronousTransformBuilder for TraceSamplerConfiguration {
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         // TODO: Need to support remote configuration changing these at runtime
         // See https://github.com/DataDog/saluki/issues/1326
-        let sampler = TraceSampler {
-            sampling_rate: self.apm_config.probabilistic_sampler_sampling_percentage() / 100.0,
-            error_sampling_enabled: self.apm_config.error_sampling_enabled(),
-            error_tracking_standalone: self.apm_config.error_tracking_standalone_enabled(),
-            probabilistic_sampler_enabled: self.apm_config.probabilistic_sampler_enabled(),
-            otlp_sampling_rate: self.otlp_sampling_rate,
-            error_sampler: errors::ErrorsSampler::new(self.apm_config.errors_per_second(), ERROR_SAMPLE_RATE),
-            priority_sampler: priority_sampler::PrioritySampler::new(
-                self.apm_config.default_env().clone(),
-                ERROR_SAMPLE_RATE,
-                self.apm_config.target_traces_per_second(),
-            ),
-            no_priority_sampler: score_sampler::NoPrioritySampler::new(
-                self.apm_config.target_traces_per_second(),
-                ERROR_SAMPLE_RATE,
-            ),
-            rare_sampler: rare_sampler::RareSampler::new(
-                self.apm_config.rare_sampler_enabled(),
-                self.apm_config.rare_sampler_tps(),
-                std::time::Duration::from_secs_f64(self.apm_config.rare_sampler_cooldown_period_secs()),
-                self.apm_config.rare_sampler_cardinality(),
-            ),
-        };
+        if let Some(rates) = &self.sampling_rates {
+            // APM path: use V1 sampler with priority/rate-feedback loop.
+            if self.apm_config.probabilistic_sampler_enabled() {
+                tracing::warn!(
+                    "apm_config.probabilistic_sampler.enabled is set but the V1 trace sampler \
+                     does not yet implement the probabilistic path; falling back to priority sampler"
+                );
+            }
 
-        Ok(Box::new(sampler))
+            let error_token_bucket = if self.apm_config.error_sampling_enabled() {
+                Some(TokenBucket::new(self.apm_config.errors_per_second(), V1_ERROR_SAMPLER_BURST))
+            } else {
+                None
+            };
+
+            let sampler = V1TraceSamplerImpl {
+                priority_sampler: V1PrioritySampler::new(
+                    self.apm_config.default_env().clone(),
+                    self.apm_config.target_traces_per_second(),
+                    1.0,
+                    rates.clone(),
+                ),
+                no_priority_sampler: V1NoPrioritySampler::new(self.apm_config.target_traces_per_second()),
+                rare_sampler: V1RareSampler::new(
+                    self.apm_config.rare_sampler_enabled(),
+                    self.apm_config.rare_sampler_tps(),
+                    std::time::Duration::from_secs_f64(self.apm_config.rare_sampler_cooldown_period_secs()),
+                    self.apm_config.rare_sampler_cardinality(),
+                ),
+                error_token_bucket,
+                error_sampling_enabled: self.apm_config.error_sampling_enabled(),
+                error_tracking_standalone: self.apm_config.error_tracking_standalone_enabled(),
+            };
+
+            Ok(Box::new(sampler))
+        } else {
+            // OTLP path: existing TraceSampler.
+            let sampler = TraceSampler {
+                sampling_rate: self.apm_config.probabilistic_sampler_sampling_percentage() / 100.0,
+                error_sampling_enabled: self.apm_config.error_sampling_enabled(),
+                error_tracking_standalone: self.apm_config.error_tracking_standalone_enabled(),
+                probabilistic_sampler_enabled: self.apm_config.probabilistic_sampler_enabled(),
+                otlp_sampling_rate: self.otlp_sampling_rate,
+                error_sampler: errors::ErrorsSampler::new(self.apm_config.errors_per_second(), ERROR_SAMPLE_RATE),
+                priority_sampler: priority_sampler::PrioritySampler::new(
+                    self.apm_config.default_env().clone(),
+                    ERROR_SAMPLE_RATE,
+                    self.apm_config.target_traces_per_second(),
+                ),
+                no_priority_sampler: score_sampler::NoPrioritySampler::new(
+                    self.apm_config.target_traces_per_second(),
+                    ERROR_SAMPLE_RATE,
+                ),
+                rare_sampler: rare_sampler::RareSampler::new(
+                    self.apm_config.rare_sampler_enabled(),
+                    self.apm_config.rare_sampler_tps(),
+                    std::time::Duration::from_secs_f64(self.apm_config.rare_sampler_cooldown_period_secs()),
+                    self.apm_config.rare_sampler_cardinality(),
+                ),
+            };
+
+            Ok(Box::new(sampler))
+        }
     }
 }
 
 impl MemoryBounds for TraceSamplerConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
-        builder.minimum().with_single_value::<TraceSampler>("component struct");
+        if self.sampling_rates.is_some() {
+            builder.minimum().with_single_value::<V1TraceSamplerImpl>("component struct");
+        } else {
+            builder.minimum().with_single_value::<TraceSampler>("component struct");
+        }
     }
 }
 
@@ -188,10 +260,8 @@ impl TraceSampler {
     /// Check for user-set sampling priority in trace
     fn get_user_priority(&self, trace: &Trace, root_span_idx: usize) -> Option<i32> {
         // First check trace-level sampling priority (last-seen priority from OTLP ingest)
-        if let Some(sampling) = trace.sampling() {
-            if let Some(priority) = sampling.priority {
-                return Some(priority);
-            }
+        if let Some(priority) = trace.priority {
+            return Some(priority);
         }
 
         if trace.spans().is_empty() {
@@ -282,8 +352,9 @@ impl TraceSampler {
         let retained = trace.retain_spans(|_, span| span.attributes.get(KEY_ANALYZED_SPANS).and_then(AttributeValue::as_float).is_some());
         if retained > 0 {
             // Mark trace as kept with high priority
-            let sampling = TraceSampling::new(false, Some(PRIORITY_USER_KEEP), None, Some(self.sampling_rate));
-            trace.set_sampling(Some(sampling));
+            trace.priority = Some(PRIORITY_USER_KEEP);
+            trace.dropped_trace = false;
+            trace.otlp_sampling_rate = Some(self.sampling_rate);
             true
         } else {
             false
@@ -304,13 +375,9 @@ impl TraceSampler {
         let retained = trace.retain_spans(|_, span| span.attributes.get(KEY_SPAN_SAMPLING_MECHANISM).and_then(AttributeValue::as_float).is_some());
         if retained > 0 {
             // Set high priority and mark as kept
-            let sampling = TraceSampling::new(
-                false,
-                Some(PRIORITY_USER_KEEP),
-                None, // No decision maker for SSS
-                Some(self.sampling_rate),
-            );
-            trace.set_sampling(Some(sampling));
+            trace.priority = Some(PRIORITY_USER_KEEP);
+            trace.dropped_trace = false;
+            trace.otlp_sampling_rate = Some(self.sampling_rate);
             true
         } else {
             false
@@ -467,7 +534,7 @@ impl TraceSampler {
         // When the APM-level probabilistic sampler is used with OTLP traces, the DD Agent writes
         // _dd.p.dm to trace chunk tags only (not span meta). For the legacy OTLP sampling path,
         // it is written to both. We match that behavior by skipping the span meta write only when
-        // both conditions hold; the DM value still flows through TraceSampling to the encoder.
+        // both conditions hold; the DM value still flows through the flat `decision_maker` field to the encoder.
         if priority > 0 && !(is_otlp && self.probabilistic_sampler_enabled) {
             if let Some(dm) = decision_maker_meta.as_ref() {
                 root_span_value.attributes.insert(MetaString::from(TAG_DECISION_MAKER), AttributeValue::String(dm.clone()));
@@ -475,17 +542,14 @@ impl TraceSampler {
         }
 
         // Now we can use trace again to set sampling metadata.
-        let sampling = TraceSampling::new(
-            !keep,
-            Some(priority),
-            if priority > 0 { decision_maker_meta } else { None },
-            Some(if is_otlp {
-                self.otlp_sampling_rate
-            } else {
-                self.sampling_rate
-            }),
-        );
-        trace.set_sampling(Some(sampling));
+        trace.priority = Some(priority);
+        trace.dropped_trace = !keep;
+        trace.decision_maker = if priority > 0 { decision_maker_meta } else { None };
+        trace.otlp_sampling_rate = Some(if is_otlp {
+            self.otlp_sampling_rate
+        } else {
+            self.sampling_rate
+        });
     }
 
     fn process_trace(&mut self, trace: &mut Trace) -> bool {
@@ -649,7 +713,7 @@ mod tests {
         assert_eq!(sampler.get_user_priority(&trace, root_idx), Some(0));
 
         // Now set trace-level priority to 2 (simulating last-seen priority from OTLP translator)
-        trace.set_sampling(Some(TraceSampling::new(false, Some(2), None, None)));
+        trace.priority = Some(2);
 
         // Trace-level priority should take precedence
         assert_eq!(sampler.get_user_priority(&trace, root_idx), Some(2));
@@ -657,7 +721,7 @@ mod tests {
         // Test that trace-level priority is used even when no span has priority
         let span_no_priority = create_test_span(12345, 3, 0);
         let mut trace_only_trace_level = create_test_trace(vec![span_no_priority]);
-        trace_only_trace_level.set_sampling(Some(TraceSampling::new(false, Some(1), None, None)));
+        trace_only_trace_level.priority = Some(1);
         let root_idx = sampler.get_root_span_index(&trace_only_trace_level).unwrap();
 
         assert_eq!(sampler.get_user_priority(&trace_only_trace_level, root_idx), Some(1));
@@ -671,7 +735,7 @@ mod tests {
         // Test that manual keep (priority = 2) works via trace-level priority
         let span = create_test_span(12345, 1, 0);
         let mut trace = create_test_trace(vec![span]);
-        trace.set_sampling(Some(TraceSampling::new(false, Some(PRIORITY_USER_KEEP), None, None)));
+        trace.priority = Some(PRIORITY_USER_KEEP);
 
         let (keep, priority, decision_maker, _) = sampler.run_samplers(&mut trace);
         assert!(keep);
@@ -681,7 +745,7 @@ mod tests {
         // Test manual drop (priority = -1) via trace-level priority
         let span = create_test_span(12345, 1, 0);
         let mut trace = create_test_trace(vec![span]);
-        trace.set_sampling(Some(TraceSampling::new(false, Some(PRIORITY_USER_DROP), None, None)));
+        trace.priority = Some(PRIORITY_USER_DROP);
 
         let (keep, priority, _, _) = sampler.run_samplers(&mut trace);
         assert!(!keep); // Should not keep when user drops
@@ -690,7 +754,7 @@ mod tests {
         // Test that priority = 1 (auto keep) via trace-level is also respected
         let span = create_test_span(12345, 1, 0);
         let mut trace = create_test_trace(vec![span]);
-        trace.set_sampling(Some(TraceSampling::new(false, Some(PRIORITY_AUTO_KEEP), None, None)));
+        trace.priority = Some(PRIORITY_AUTO_KEEP);
 
         let (keep, priority, decision_maker, _) = sampler.run_samplers(&mut trace);
         assert!(keep);
@@ -851,8 +915,8 @@ mod tests {
         assert_eq!(trace.spans()[0].span_id(), 1); // It's the SSS span
 
         // Check that trace has been marked as kept with high priority
-        assert!(trace.sampling().is_some());
-        assert_eq!(trace.sampling().as_ref().unwrap().priority, Some(PRIORITY_USER_KEEP));
+        assert!(trace.priority.is_some());
+        assert_eq!(trace.priority, Some(PRIORITY_USER_KEEP));
 
         // Test 2: Trace without SSS tags should not be modified
         let trace_without_sss = create_test_trace(vec![create_test_span(12345, 3, 0)]);
@@ -887,7 +951,7 @@ mod tests {
         assert!(modified);
         assert_eq!(trace.spans().len(), 1);
         assert_eq!(trace.spans()[0].span_id(), 1);
-        assert!(trace.sampling().is_some());
+        assert!(trace.priority.is_some());
 
         // Test 2: Trace without analyzed spans
         let trace_no_analytics = create_test_trace(vec![create_test_span(12345, 3, 0)]);
@@ -1276,7 +1340,7 @@ mod tests {
         let forwarded = sampler.process_trace(&mut trace);
         assert!(forwarded, "ETS should forward non-error traces to intake");
         assert!(
-            trace.sampling().is_some_and(|s| s.dropped_trace),
+            trace.dropped_trace,
             "non-error ETS trace should have DroppedTrace=true"
         );
     }

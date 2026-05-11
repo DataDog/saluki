@@ -7,7 +7,7 @@ use otlp_protos::opentelemetry::proto::resource::v1::Resource as OtlpResource;
 use otlp_protos::opentelemetry::proto::trace::v1::ResourceSpans;
 use saluki_common::collections::FastHashMap;
 use saluki_common::strings::StringBuilder;
-use saluki_core::data_model::event::trace::{AttributeValue, Span as DdSpan, Trace, TraceSampling};
+use saluki_core::data_model::event::trace::{AttributeValue, Span as DdSpan, Trace};
 use saluki_core::data_model::event::Event;
 use stringtheory::interning::GenericMapInterner;
 use stringtheory::MetaString;
@@ -244,12 +244,7 @@ impl Iterator for OtlpTraceEventsIter {
 
             let mut trace = Trace::new(entry.spans);
 
-            // ── Legacy sampling compat ────────────────────────────────────────────
-            if let Some(priority) = entry.priority {
-                trace.set_sampling(Some(TraceSampling::new(false, Some(priority), None, None)));
-            }
-
-            // ── New unified Trace fields ──────────────────────────────────────────
+            // ── Unified Trace fields ──────────────────────────────────────────────
             trace.trace_id_low = trace_id_low;
             trace.trace_id_high = entry.trace_id_high;
             trace.priority = entry.priority;
