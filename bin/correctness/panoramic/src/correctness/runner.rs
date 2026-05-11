@@ -166,8 +166,7 @@ pub(crate) fn make_error_result(name: String, started: Instant, phase: &str, e: 
 ///
 /// The on-disk `millstone.yaml` uses `target: "unixgram:///airlock/metrics.sock"` as a
 /// placeholder. The harness generates two configs from the same template — one per agent — by
-/// substituting the target socket path here before embedding each config in the shared
-/// millstone container's startup command.
+/// substituting the target socket path here before writing each config to disk.
 fn make_millstone_config_for_target(template: &str, target: &str) -> String {
     let mut result = String::with_capacity(template.len());
     for line in template.lines() {
@@ -268,10 +267,10 @@ impl CorrectnessRunner {
     ///    bitwise-identical inputs.
     /// 3. Waits for both processes to exit and propagates any non-zero exit code.
     ///
-    /// The two per-target config files are written to a host-side directory and that directory is
-    /// bind-mounted into the container. A directory mount is used rather than individual file
-    /// mounts because Docker Desktop on macOS creates a directory at the bind-mount target when
-    /// the source is a file — a quirk that does not affect directory mounts.
+    /// The two per-target config files are written to the test case directory alongside
+    /// `millstone.yaml` and that directory is bind-mounted into the container. The test case
+    /// directory is used because it is always under `/Users/...` on macOS and therefore
+    /// reliably shared with Docker Desktop via VirtioFS.
     async fn build_shared_millstone_group_runner(
         &self, isolation_group_id: String, baseline_isolation_group_id: &str, comparison_isolation_group_id: &str,
         config_dir: &PathBuf,
@@ -308,9 +307,7 @@ impl CorrectnessRunner {
         let driver_config = DriverConfig::from_image("millstone", self.millstone_config.image.clone())
             .with_entrypoint(vec!["/bin/sh".to_string(), "-c".to_string()])
             .with_command(vec![wait_cmd])
-            // Bind-mount the config directory. A directory mount is used instead of individual
-            // file mounts to work around a Docker Desktop on macOS quirk where file bind mounts
-            // create a directory at the target path rather than a file.
+            // Bind-mount the test case directory containing both per-target config files.
             .with_bind_mount(config_dir, MILLSTONE_CONFIG_DIR_INTERNAL)
             // Mount both agent isolation-group volumes so millstone can reach their DSD sockets.
             .with_volume_mount(format!("airlock-{}", baseline_isolation_group_id), "/baseline-airlock")
@@ -412,9 +409,8 @@ impl CorrectnessRunner {
         // therefore reliably shared with Docker Desktop via VirtioFS. The isolation group ID
         // suffix prevents collisions between concurrent test runs.
         //
-        // A directory mount is used rather than individual file mounts because Docker Desktop
-        // on macOS creates a directory at the bind-mount target when the source is a file
-        // (see `build_shared_millstone_group_runner` for details).
+        // A directory mount is used because both configs live in the same directory and it
+        // is simpler to bind the directory once than to bind each file individually.
         let millstone_config_dir = self
             .millstone_config
             .config_path
