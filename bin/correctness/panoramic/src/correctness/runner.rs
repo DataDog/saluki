@@ -32,12 +32,6 @@ use crate::{
 /// Directory mounted inside the shared millstone container that holds the per-target config files.
 const MILLSTONE_CONFIG_DIR_INTERNAL: &str = "/etc/millstone";
 
-/// Path inside the shared millstone container for the baseline config file.
-const MILLSTONE_BASELINE_CONFIG_INTERNAL: &str = "/etc/millstone/baseline.toml";
-
-/// Path inside the shared millstone container for the comparison config file.
-const MILLSTONE_COMPARISON_CONFIG_INTERNAL: &str = "/etc/millstone/comparison.toml";
-
 /// How long to wait after millstone exits before querying datadog-intake for data.
 ///
 /// This gives the agents time to flush any remaining aggregated metrics after millstone stops
@@ -278,6 +272,14 @@ impl CorrectnessRunner {
             .clone()
             .unwrap_or_else(|| "/usr/local/bin/millstone".to_string());
 
+        // Config filenames include the isolation group ID so concurrent runs of the same test
+        // case don't clobber each other's files in the shared test case directory.
+        let baseline_cfg = format!("{}/{}-baseline.toml", MILLSTONE_CONFIG_DIR_INTERNAL, isolation_group_id);
+        let comparison_cfg = format!(
+            "{}/{}-comparison.toml",
+            MILLSTONE_CONFIG_DIR_INTERNAL, isolation_group_id
+        );
+
         // Wait for both agent sockets, then launch both millstone processes in parallel and
         // propagate any non-zero exit code from either child.
         let wait_cmd = format!(
@@ -287,8 +289,8 @@ impl CorrectnessRunner {
                           {bin} {comparison_cfg} & P2=$!; \
                           wait $P1; R1=$?; wait $P2; R2=$?; exit $((R1 | R2))'",
             bin = millstone_binary,
-            baseline_cfg = MILLSTONE_BASELINE_CONFIG_INTERNAL,
-            comparison_cfg = MILLSTONE_COMPARISON_CONFIG_INTERNAL,
+            baseline_cfg = baseline_cfg,
+            comparison_cfg = comparison_cfg,
         );
 
         let driver_config = DriverConfig::from_image("millstone", self.millstone_config.image.clone())
@@ -392,28 +394,28 @@ impl CorrectnessRunner {
         let comparison_config_content =
             make_millstone_config_for_target(&millstone_template, "unixgram:///comparison-airlock/metrics.sock");
 
-        // Write the per-target configs to a host-side directory that will be bind-mounted into
-        // the shared millstone container as `/etc/millstone`. A directory mount is used rather
-        // than individual file mounts because Docker Desktop on macOS creates a directory at the
-        // bind-mount target when the source is a file (see `build_shared_millstone_group_runner`).
+        // Write the two per-target configs alongside the original millstone.yaml in the test
+        // case directory. The test case directory is part of the source tree (e.g.
+        // `test/correctness/dsd-plain/`), so on macOS it is always under `/Users/...` and
+        // therefore reliably shared with Docker Desktop via VirtioFS. The isolation group ID
+        // suffix prevents collisions between concurrent test runs.
         //
-        // The directory is placed under `$HOME/.cache` rather than the system temp directory
-        // because Docker Desktop on macOS only shares paths under `/Users` via VirtioFS;
-        // directories under `/var/folders` (the macOS temp dir) appear empty inside containers.
-        // On Linux in CI, any path is accessible, so `$HOME` works there too.
-        let config_cache_base = std::env::var("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| std::env::temp_dir())
-            .join(".cache")
-            .join("saluki-panoramic");
-        let millstone_config_dir = config_cache_base.join(&millstone_isolation_group_id);
-        tokio::fs::create_dir_all(&millstone_config_dir)
-            .await
-            .error_context("Failed to create millstone config directory.")?;
-        tokio::fs::write(millstone_config_dir.join("baseline.toml"), &baseline_config_content)
+        // A directory mount is used rather than individual file mounts because Docker Desktop
+        // on macOS creates a directory at the bind-mount target when the source is a file
+        // (see `build_shared_millstone_group_runner` for details).
+        let millstone_config_dir = self
+            .millstone_config
+            .config_path
+            .parent()
+            .expect("millstone config path must have a parent directory")
+            .to_path_buf();
+        let baseline_config_path = millstone_config_dir.join(format!("{}-baseline.toml", millstone_isolation_group_id));
+        let comparison_config_path =
+            millstone_config_dir.join(format!("{}-comparison.toml", millstone_isolation_group_id));
+        tokio::fs::write(&baseline_config_path, &baseline_config_content)
             .await
             .error_context("Failed to write baseline millstone config.")?;
-        tokio::fs::write(millstone_config_dir.join("comparison.toml"), &comparison_config_content)
+        tokio::fs::write(&comparison_config_path, &comparison_config_content)
             .await
             .error_context("Failed to write comparison millstone config.")?;
 
@@ -525,9 +527,11 @@ impl CorrectnessRunner {
             error!(error = %e, "Failed to clean up resources for millstone group. Manual cleanup may be required.");
         }
 
-        debug!("Cleaning up millstone config directory...");
-        if let Err(e) = tokio::fs::remove_dir_all(&millstone_config_dir).await {
-            error!(error = %e, "Failed to remove millstone config directory '{}'. Manual cleanup may be required.", millstone_config_dir.display());
+        debug!("Cleaning up generated millstone config files...");
+        for path in [&baseline_config_path, &comparison_config_path] {
+            if let Err(e) = tokio::fs::remove_file(path).await {
+                error!(error = %e, "Failed to remove generated millstone config '{}'. Manual cleanup may be required.", path.display());
+            }
         }
 
         info!("Cleanup complete.");
