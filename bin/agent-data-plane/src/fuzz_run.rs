@@ -68,12 +68,12 @@ pub async fn handle_run_command(
     let in_standalone_mode = dp_config.standalone_mode();
     // Bootstrap (logging, TLS, metrics) sets global process state — only run once.
     // Drop the MutexGuard before `.await` to keep the future Send.
-    let needs_bootstrap = BOOTSTRAP_GUARD.lock().unwrap().is_none();
+    let needs_bootstrap = BOOTSTRAP_GUARD.lock().expect("BOOTSTRAP_GUARD mutex poisoned").is_none();
     if needs_bootstrap {
         let guard = AppBootstrapper::from_configuration(&config)?
             .bootstrap()
             .await?;
-        *BOOTSTRAP_GUARD.lock().unwrap() = Some(guard);
+        *BOOTSTRAP_GUARD.lock().expect("BOOTSTRAP_GUARD mutex poisoned") = Some(guard);
     }
     // simpl: no remote loading, only the local config
     assert!(!dp_config.remote_agent_enabled());

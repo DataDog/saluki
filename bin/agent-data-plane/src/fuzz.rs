@@ -122,17 +122,22 @@ pub async fn inner(corpus: DogStatsDInput) {
 
     // run injection
     info!("Starting injection");
-    inject_plan(corpus.messages).await.unwrap();
+    inject_plan(stream, corpus.messages)
+        .await
+        .expect("failed to inject corpus into dogstatsd socket");
     time::sleep(Duration::from_secs(10)).await;
 
     // trigger shutdown
     info!("Trigger shutdown");
     let _ = st1_tx.send(());
-    saluki_handle.await.unwrap().unwrap();
+    saluki_handle
+        .await
+        .expect("saluki task panicked or was cancelled before shutdown")
+        .expect("saluki run command returned an error");
 
     info!("stopping mock intake");
     let _ = st2_tx.send(());
-    if let Err(e) = intake_handle.await.unwrap() {
+    if let Err(e) = intake_handle.await.expect("mock intake task panicked or was cancelled before shutdown") {
         warn!("Mock intake error: {}", e);
     }
 }

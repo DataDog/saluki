@@ -10,8 +10,8 @@ use saluki_error::GenericError;
 
 static GRAMMAR_SINGLE: LazyLock<GrammarIr> = LazyLock::new(|| {
     let grammar_path: PathBuf = saluki_path().join("fuzz/dogstatsd_offset.ebnf");
-    let grammar = std::fs::read_to_string(grammar_path).unwrap();
-    barkus_ebnf::compile(&grammar).unwrap()
+    let grammar = std::fs::read_to_string(grammar_path).expect("Grammar file not found");
+    barkus_ebnf::compile(&grammar).expect("failed to compile dogstatsd single-line EBNF grammar")
 });
 
 fn generate_corpus_random() -> Result<DogStatsDInput, GenericError> {
@@ -35,11 +35,11 @@ fn generate_corpus_random() -> Result<DogStatsDInput, GenericError> {
 
 fn main() {
     println!("hello!");
-    let corpus = generate_corpus_random().unwrap();
+    let corpus = generate_corpus_random().expect("failed to generate random corpus");
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .unwrap()
+        .expect("failed to build tokio runtime")
         .block_on(inner(corpus));
     println!("goodbye!");
 }
