@@ -98,7 +98,7 @@ enum ListenerInner {
 /// On Linux, UDP listeners can be configured to bind multiple sockets to the same address using `SO_REUSEPORT`,
 /// allowing the kernel to load-balance incoming datagrams across them. The configured number of sockets are yielded
 /// one at a time from successive calls to [`Listener::accept`] before the listener returns pending forever. See
-/// the `udp_streams_to_yield` parameter of [`Listener::from_listen_address`].
+/// the `udp_streams` parameter of [`Listener::from_listen_address`].
 pub struct Listener {
     listen_address: ListenAddress,
     inner: ListenerInner,
@@ -108,22 +108,23 @@ pub struct Listener {
 impl Listener {
     /// Creates a new `Listener` from the given listen address.
     ///
-    /// For UDP listen addresses, `udp_streams_to_yield` controls how many sockets are bound to the address and how
-    /// many `Stream`s the listener will yield from [`accept`](Self::accept) before going pending forever. `None`
-    /// behaves like `Some(1)`: a single socket is bound normally and one stream is yielded.
+    /// ## UDP streams
+    ///
+    /// For UDP listen addresses, `udp_streams` controls how many sockets are bound to the address and how many
+    /// `Stream`s the listener will yield from [`accept`](Self::accept) before going pending forever. `None` behaves
+    /// like `Some(1)`: a single socket is bound normally and one stream is yielded.
     ///
     /// When `Some(N)` with N > 1 is requested on Linux, the listener binds N sockets with `SO_REUSEPORT` set before
     /// `bind`, so the kernel will hash-load-balance incoming datagrams across them. On non-Linux platforms,
-    /// `SO_REUSEPORT` does not provide load balancing, so the request is downgraded to a single socket and a warning
-    /// is logged.
+    /// `SO_REUSEPORT` does not provide load balancing, so the request is downgraded to a single socket.
     ///
-    /// For non-UDP listen addresses, `udp_streams_to_yield` is ignored.
+    /// For non-UDP listen addresses, `udp_streams` is ignored.
     ///
     /// ## Errors
     ///
     /// If the listen address cannot be bound, or if the listener cannot be configured correctly, an error is returned.
     pub async fn from_listen_address(
-        listen_address: ListenAddress, udp_streams_to_yield: Option<NonZeroUsize>,
+        listen_address: ListenAddress, udp_streams: Option<NonZeroUsize>,
     ) -> Result<Self, ListenerError> {
         let inner = match &listen_address {
             ListenAddress::Tcp(addr) => {
@@ -135,11 +136,9 @@ impl Listener {
                     })?
             }
             ListenAddress::Udp(addr) => {
-                let sockets = bind_udp_sockets(*addr, udp_streams_to_yield)
-                    .await
-                    .context(FailedToBind {
-                        address: listen_address.clone(),
-                    })?;
+                let sockets = bind_udp_sockets(*addr, udp_streams).await.context(FailedToBind {
+                    address: listen_address.clone(),
+                })?;
                 ListenerInner::Udp(sockets)
             }
             #[cfg(unix)]
@@ -300,6 +299,13 @@ where
     Ok(())
 }
 
+async fn bind_udp_socket_standard(addr: SocketAddr) -> io::Result<VecDeque<TokioUdpSocket>> {
+    let socket = TokioUdpSocket::bind(addr).await?;
+    let mut sockets = VecDeque::with_capacity(1);
+    sockets.push_back(socket);
+    Ok(sockets)
+}
+
 #[cfg(target_os = "linux")]
 async fn bind_udp_sockets(
     addr: SocketAddr, maybe_socket_count: Option<NonZeroUsize>,
@@ -314,6 +320,10 @@ async fn bind_udp_sockets(
         socket.bind(&SockAddr::from(addr))?;
         let std_socket: std::net::UdpSocket = socket.into();
         TokioUdpSocket::from_std(std_socket)
+    }
+
+    if maybe_socket_count.is_none() {
+        return bind_udp_socket_standard(addr).await;
     }
 
     let socket_count = maybe_socket_count.map(NonZeroUsize::get).unwrap_or(1);
@@ -335,10 +345,7 @@ async fn bind_udp_sockets(
 
 #[cfg(not(target_os = "linux"))]
 async fn bind_udp_sockets(addr: SocketAddr, _: Option<NonZeroUsize>) -> io::Result<VecDeque<TokioUdpSocket>> {
-    let socket = TokioUdpSocket::bind(addr).await?;
-    let mut sockets = VecDeque::with_capacity(1);
-    sockets.push_back(socket);
-    Ok(sockets)
+    bind_udp_socket_standard(addr).await
 }
 
 enum ConnectionOrientedListenerInner {

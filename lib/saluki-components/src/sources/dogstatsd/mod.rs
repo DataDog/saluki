@@ -1599,7 +1599,8 @@ mod tests {
     }
 
     #[test]
-    fn autoscale_udp_listeners_from_config() {
+    #[cfg(target_os = "linux")]
+    fn autoscale_udp_listeners_from_config_linux() {
         let config = deser_config(r#"{"dogstatsd_autoscale_udp_listeners": true}"#);
         assert!(config.autoscale_udp_listeners);
 
@@ -1611,6 +1612,15 @@ mod tests {
             (1..=4).contains(&n),
             "expected 1..=4 streams from vCPU formula, got {n}"
         );
+    }
+
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn autoscale_udp_listeners_from_config_non_linux() {
+        let config = deser_config(r#"{"dogstatsd_autoscale_udp_listeners": true}"#);
+        assert!(config.autoscale_udp_listeners);
+
+        assert_eq!(None, config.udp_streams_to_yield());
     }
 
     #[test]
