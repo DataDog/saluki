@@ -595,8 +595,7 @@ fn canonicalize_file_entry(entry: &str, base_path: &Path) -> String {
 ///
 /// Each `config.yaml` found in a direct subdirectory must have a top-level `type` field set to
 /// `"integration"`, `"correctness"`, or `"correctness_matrix"`. Files with a missing or unknown
-/// `type` are skipped with a warning. Multiple test types may coexist freely within the same
-/// directory.
+/// `type` cause a panic. Multiple test types may coexist freely within the same directory.
 pub fn discover_tests(dirs: &[PathBuf]) -> Result<Vec<Box<dyn Test>>, GenericError> {
     let mut tests: Vec<Box<dyn Test>> = Vec::new();
 
