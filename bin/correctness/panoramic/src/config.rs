@@ -9,7 +9,12 @@ use async_trait::async_trait;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
 
-use crate::correctness::config::Config as CorrectnessConfig;
+use crate::correctness::analysis::AnalysisMode;
+use crate::correctness::config::{
+    Config as CorrectnessConfig, DatadogIntakeConfig as CorrectnessDatadogIntakeConfig,
+    MillstoneConfig as CorrectnessMillstoneConfig, Runtime as CorrectnessRuntime,
+    TargetConfig as CorrectnessTargetConfig,
+};
 use crate::reporter::TestResult;
 use crate::test::{Test, TestContext, TestSuite};
 
@@ -404,11 +409,193 @@ impl IntegrationConfig {
     }
 }
 
+/// A single variant in a `correctness_matrix` test.
+///
+/// Each variant expands into an independent correctness test. The variant's `additional_env_vars`
+/// are appended to the environment variables of both the baseline and comparison targets in the
+/// base configuration, allowing a single test directory to exercise multiple agent configurations
+/// without duplicating the full config layout.
+#[derive(Clone, Deserialize)]
+pub struct MatrixVariant {
+    /// Name suffix for this variant.
+    ///
+    /// The expanded test name is `{base_name}/{variant_name}`, e.g.
+    /// `dsd-origin-detection-matrix/unified`.
+    pub name: String,
+
+    /// Environment variables appended to both the baseline and comparison targets.
+    ///
+    /// Entries must be in `KEY=VALUE` format, identical to `additional_env_vars` on
+    /// [`CorrectnessTargetConfig`]. These are appended after the base config's env vars, so they
+    /// can override defaults by relying on last-write-wins semantics in the agent's config loader.
+    #[serde(default)]
+    pub additional_env_vars: Vec<String>,
+}
+
+/// A matrix correctness test that fans out into one independent test per variant.
+///
+/// This is the deserialized form of a `type: correctness_matrix` config file. It shares all
+/// structural fields with a standard `correctness` config, but adds a `variants` list. At
+/// discovery time each variant is expanded into a standalone [`CorrectnessConfig`] named
+/// `{base_name}/{variant_name}`, which the runner treats as a fully independent test case.
+#[derive(Clone, Deserialize)]
+pub struct MatrixConfig {
+    /// Container runtime backend to use.
+    pub runtime: CorrectnessRuntime,
+
+    /// Analysis mode to use.
+    pub analysis_mode: AnalysisMode,
+
+    /// Millstone configuration (shared across all variants).
+    pub millstone: CorrectnessMillstoneConfig,
+
+    /// Datadog intake configuration (shared across all variants).
+    pub datadog_intake: CorrectnessDatadogIntakeConfig,
+
+    /// Baseline target configuration (shared base; variant env vars are appended).
+    pub baseline: CorrectnessTargetConfig,
+
+    /// Comparison target configuration (shared base; variant env vars are appended).
+    pub comparison: CorrectnessTargetConfig,
+
+    /// When analysis mode is traces: if true, use OTLP-direct analysis (baseline is OTel-based).
+    ///
+    /// Propagated unchanged to every expanded [`CorrectnessConfig`].
+    #[serde(default)]
+    pub otlp_direct_analysis_mode: bool,
+
+    /// When analysis mode is traces: additional span field paths to ignore when diffing baseline
+    /// vs comparison.
+    ///
+    /// Propagated unchanged to every expanded [`CorrectnessConfig`].
+    #[serde(default)]
+    pub additional_span_ignore_fields: Vec<String>,
+
+    /// Matrix variants. Each entry produces one expanded test case.
+    pub variants: Vec<MatrixVariant>,
+
+    #[serde(skip, default = "PathBuf::new")]
+    base_config_path: PathBuf,
+}
+
+impl MatrixConfig {
+    fn from_yaml(config_path: &str) -> Result<Self, GenericError> {
+        use saluki_config::ConfigurationLoader;
+
+        let config_path = PathBuf::from(config_path)
+            .canonicalize()
+            .error_context("Failed to canonicalize matrix configuration file path.")?;
+
+        let mut config = ConfigurationLoader::default()
+            .from_yaml(&config_path)
+            .error_context("Failed to load matrix configuration file.")?
+            .from_environment("PANORAMIC")
+            .expect("Environment variable prefix should not be empty.")
+            .into_typed::<MatrixConfig>()
+            .error_context("Failed to deserialize matrix configuration file.")?;
+
+        config.base_config_path = config_path
+            .parent()
+            .expect("Configuration file path must be an absolute file path.")
+            .to_path_buf();
+
+        Ok(config)
+    }
+
+    fn get_canonicalized_config_path<P: AsRef<Path>>(&self, path: P) -> PathBuf {
+        let path = path.as_ref();
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.base_config_path.join(path)
+        }
+    }
+
+    /// Expands this matrix into one [`CorrectnessConfig`] per variant.
+    ///
+    /// Each expanded config is a clone of the base configuration with the variant's
+    /// `additional_env_vars` appended to both the baseline and comparison targets.
+    fn expand(self, base_name: &str) -> Vec<CorrectnessConfig> {
+        self.variants
+            .iter()
+            .map(|variant| {
+                let mut baseline = self.baseline.clone();
+                baseline
+                    .additional_env_vars
+                    .extend(variant.additional_env_vars.iter().cloned());
+
+                let mut comparison = self.comparison.clone();
+                comparison
+                    .additional_env_vars
+                    .extend(variant.additional_env_vars.iter().cloned());
+
+                CorrectnessConfig {
+                    name: format!("{}/{}", base_name, variant.name),
+                    runtime: self.runtime.clone(),
+                    analysis_mode: self.analysis_mode.clone(),
+                    millstone: CorrectnessMillstoneConfig {
+                        image: self.millstone.image.clone(),
+                        binary_path: self.millstone.binary_path.clone(),
+                        config_path: self.get_canonicalized_config_path(&self.millstone.config_path),
+                    },
+                    datadog_intake: CorrectnessDatadogIntakeConfig {
+                        image: self.datadog_intake.image.clone(),
+                        binary_path: self.datadog_intake.binary_path.clone(),
+                        config_path: self.get_canonicalized_config_path(&self.datadog_intake.config_path),
+                    },
+                    baseline: CorrectnessTargetConfig {
+                        image: baseline.image,
+                        entrypoint: baseline.entrypoint,
+                        command: baseline.command,
+                        files: baseline
+                            .files
+                            .iter()
+                            .map(|f| canonicalize_file_entry(f, &self.base_config_path))
+                            .collect(),
+                        additional_env_vars: baseline.additional_env_vars,
+                    },
+                    comparison: CorrectnessTargetConfig {
+                        image: comparison.image,
+                        entrypoint: comparison.entrypoint,
+                        command: comparison.command,
+                        files: comparison
+                            .files
+                            .iter()
+                            .map(|f| canonicalize_file_entry(f, &self.base_config_path))
+                            .collect(),
+                        additional_env_vars: comparison.additional_env_vars,
+                    },
+                    otlp_direct_analysis_mode: self.otlp_direct_analysis_mode,
+                    additional_span_ignore_fields: self.additional_span_ignore_fields.clone(),
+                    base_config_path: PathBuf::new(),
+                }
+            })
+            .collect()
+    }
+}
+
+/// Rewrites the host-path portion of a `host_path:container_path` file entry to an absolute path
+/// anchored at `base_path`, mirroring the canonicalization that `CorrectnessConfig::from_yaml`
+/// performs for its own `files` entries.
+fn canonicalize_file_entry(entry: &str, base_path: &Path) -> String {
+    match entry.split_once(':') {
+        Some((host, container)) => {
+            let abs = if Path::new(host).is_absolute() {
+                PathBuf::from(host)
+            } else {
+                base_path.join(host)
+            };
+            format!("{}:{}", abs.display(), container)
+        }
+        None => entry.to_string(),
+    }
+}
+
 /// Discover all test cases across one or more directories.
 ///
 /// Each `config.yaml` found in a direct subdirectory must have a top-level `type` field set to
-/// either `"integration"` or `"correctness"`. Files with a missing or unknown `type` are skipped
-/// with a warning. Multiple test types may coexist freely within the same directory.
+/// `"integration"`, `"correctness"`, or `"correctness_matrix"`. Files with a missing or unknown
+/// `type` cause a panic. Multiple test types may coexist freely within the same directory.
 pub fn discover_tests(dirs: &[PathBuf]) -> Result<Vec<Box<dyn Test>>, GenericError> {
     let mut tests: Vec<Box<dyn Test>> = Vec::new();
 
@@ -428,7 +615,7 @@ pub fn discover_tests(dirs: &[PathBuf]) -> Result<Vec<Box<dyn Test>>, GenericErr
                 let config_path = path.join("config.yaml");
                 if config_path.exists() {
                     match try_load_test(&config_path, &path) {
-                        Ok(test) => tests.push(test),
+                        Ok(loaded) => tests.extend(loaded),
                         Err(e) => {
                             // Previously we had a warning here that cannot be seen in TUI-mode. It is better to fail
                             // loudly and fast when we have a bad test configuration than to falsely believe our test is
@@ -447,8 +634,12 @@ pub fn discover_tests(dirs: &[PathBuf]) -> Result<Vec<Box<dyn Test>>, GenericErr
     Ok(tests)
 }
 
-/// Load a test case from a config file, dispatching on the top-level `type` field.
-fn try_load_test(config_path: &Path, dir_path: &Path) -> Result<Box<dyn Test>, GenericError> {
+/// Load one or more test cases from a config file, dispatching on the top-level `type` field.
+///
+/// Returns a `Vec` because a `correctness_matrix` config expands into multiple independent test
+/// cases — one per variant — while `integration` and `correctness` configs each produce exactly
+/// one test case.
+fn try_load_test(config_path: &Path, dir_path: &Path) -> Result<Vec<Box<dyn Test>>, GenericError> {
     let content = std::fs::read_to_string(config_path)
         .error_context(format!("Failed to read config file: {}", config_path.display()))?;
 
@@ -457,15 +648,14 @@ fn try_load_test(config_path: &Path, dir_path: &Path) -> Result<Box<dyn Test>, G
         config_path.display()
     ))?;
 
-    let test_type = peek
-        .get("type")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| generic_error!("Missing required 'type' field (expected 'integration' or 'correctness')"))?;
+    let test_type = peek.get("type").and_then(|v| v.as_str()).ok_or_else(|| {
+        generic_error!("Missing required 'type' field (expected 'integration', 'correctness', or 'correctness_matrix')")
+    })?;
 
     match test_type {
         "integration" => {
             let config = IntegrationConfig::from_yaml(config_path)?;
-            Ok(Box::new(config))
+            Ok(vec![Box::new(config)])
         }
         "correctness" => {
             let config_path_str = config_path
@@ -477,10 +667,32 @@ fn try_load_test(config_path: &Path, dir_path: &Path) -> Result<Box<dyn Test>, G
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown")
                 .to_string();
-            Ok(Box::new(config))
+            Ok(vec![Box::new(config)])
+        }
+        "correctness_matrix" => {
+            let config_path_str = config_path
+                .to_str()
+                .ok_or_else(|| generic_error!("Invalid UTF-8 in config path: {}", config_path.display()))?;
+            let base_name = dir_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let matrix = MatrixConfig::from_yaml(config_path_str)?;
+            if matrix.variants.is_empty() {
+                return Err(generic_error!(
+                    "correctness_matrix '{}' has no variants defined",
+                    base_name
+                ));
+            }
+            Ok(matrix
+                .expand(&base_name)
+                .into_iter()
+                .map(|c| Box::new(c) as Box<dyn Test>)
+                .collect())
         }
         other => Err(generic_error!(
-            "Unknown test type '{}' (expected 'integration' or 'correctness')",
+            "Unknown test type '{}' (expected 'integration', 'correctness', or 'correctness_matrix')",
             other
         )),
     }
