@@ -2,7 +2,7 @@
 
 use saluki_common::collections::FastHashMap;
 use saluki_context::tags::TagSet;
-use saluki_core::data_model::event::trace::Span;
+use saluki_core::data_model::event::trace::{AttributeValue, Span};
 use saluki_core::data_model::event::trace_stats::{ClientStatsBucket, ClientStatsPayload};
 use stringtheory::MetaString;
 
@@ -226,18 +226,18 @@ impl SpanConcentrator {
     }
 
     fn is_span_eligible(&self, span: &Span) -> bool {
-        if let Some(&val) = span.metrics().get(METRIC_TOP_LEVEL) {
+        if let Some(val) = span.attributes.get(METRIC_TOP_LEVEL).and_then(AttributeValue::as_float) {
             if val == 1.0 {
                 return true;
             }
         }
-        if let Some(&val) = span.metrics().get(METRIC_MEASURED) {
+        if let Some(val) = span.attributes.get(METRIC_MEASURED).and_then(AttributeValue::as_float) {
             if val == 1.0 {
                 return true;
             }
         }
         if self.compute_stats_by_span_kind {
-            if let Some(kind) = span.meta().get(TAG_SPAN_KIND) {
+            if let Some(kind) = span.attributes.get(TAG_SPAN_KIND).and_then(AttributeValue::as_string) {
                 return compute_stats_for_span_kind(kind);
             }
         }
@@ -253,10 +253,10 @@ impl SpanConcentrator {
             return None;
         }
 
-        let span_kind = span.meta().get(TAG_SPAN_KIND).cloned().unwrap_or_default();
-        let status_code = get_status_code(span.meta(), span.metrics());
-        let grpc_status_code = get_grpc_status_code(span.meta(), span.metrics()).to_metastring();
-        let is_top_level = span.metrics().get(METRIC_TOP_LEVEL).map(|&v| v == 1.0).unwrap_or(false);
+        let span_kind = span.attributes.get(TAG_SPAN_KIND).and_then(AttributeValue::as_string).cloned().unwrap_or_default();
+        let status_code = get_status_code(span);
+        let grpc_status_code = get_grpc_status_code(span).to_metastring();
+        let is_top_level = span.attributes.get(METRIC_TOP_LEVEL).and_then(AttributeValue::as_float).map(|v| v == 1.0).unwrap_or(false);
         let matching_peer_tags = self.matching_peer_tags(span, &span_kind);
 
         Some(StatSpan {
@@ -281,9 +281,10 @@ impl SpanConcentrator {
     fn matching_peer_tags(&self, span: &Span, span_kind: &str) -> Vec<MetaString> {
         let mut peer_tags = Vec::new();
 
-        let keys_to_check = self.peer_tag_keys_to_aggregate_for_span(span_kind, span.meta().get(TAG_BASE_SERVICE));
+        let base_service = span.attributes.get(TAG_BASE_SERVICE).and_then(AttributeValue::as_string);
+        let keys_to_check = self.peer_tag_keys_to_aggregate_for_span(span_kind, base_service);
         for key in keys_to_check {
-            if let Some(value) = span.meta().get(key) {
+            if let Some(value) = span.attributes.get(key.as_ref()).and_then(AttributeValue::as_string) {
                 if !value.is_empty() {
                     peer_tags.push(MetaString::from(format!("{}:{}", key, value)));
                 }
@@ -354,8 +355,8 @@ pub const fn compute_stats_for_span_kind(kind: &str) -> bool {
 }
 
 fn is_partial_snapshot(span: &Span) -> bool {
-    match span.metrics().get(METRIC_PARTIAL_VERSION) {
-        Some(&v) => v >= 0.0,
+    match span.attributes.get(METRIC_PARTIAL_VERSION).and_then(AttributeValue::as_float) {
+        Some(v) => v >= 0.0,
         None => false,
     }
 }

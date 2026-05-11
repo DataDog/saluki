@@ -2184,25 +2184,30 @@ mod tests {
                 &mut string_builder,
                 None,
             );
-            let meta = dd_span.meta();
+
+            use saluki_core::data_model::event::trace::AttributeValue;
+            let get_meta_str = |key: &str| -> Option<&str> {
+                dd_span.attributes.get(key).and_then(AttributeValue::as_string).map(|s| s.as_ref())
+            };
 
             if tc.should_map {
                 assert_eq!(
-                    meta.get("db.name").map(|s| s.as_ref()),
+                    get_meta_str("db.name"),
                     Some(tc.expected_name),
                     "test case: {}",
                     tc.name
                 );
             } else if !tc.expected_name.is_empty() {
                 assert_eq!(
-                    meta.get("db.name").map(|s| s.as_ref()),
+                    get_meta_str("db.name"),
                     Some(tc.expected_name),
                     "test case: {}",
                     tc.name
                 );
             } else {
+                let val = get_meta_str("db.name");
                 assert!(
-                    meta.get("db.name").is_none() || meta.get("db.name").map(|s| s.as_ref()) == Some(""),
+                    val.is_none() || val == Some(""),
                     "test case: {}",
                     tc.name
                 );

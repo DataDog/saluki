@@ -213,7 +213,7 @@ impl OtlpTracesTranslator {
                 );
 
                 // Track last-seen priority for this trace (overwrites previous values)
-                if let Some(&priority) = dd_span.metrics().get(SAMPLING_PRIORITY_METRIC_KEY) {
+                if let Some(priority) = dd_span.attributes.get(SAMPLING_PRIORITY_METRIC_KEY).and_then(AttributeValue::as_float) {
                     entry.priority = Some(priority as i32);
                 }
 

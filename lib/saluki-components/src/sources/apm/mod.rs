@@ -461,11 +461,10 @@ fn v1_trace_to_trace(v1: V1Trace) -> Trace {
 }
 
 fn v1_span_to_span(v1: V1Span) -> Span {
-    let (meta, metrics, meta_struct) = v1_kvs_to_meta_metrics_struct(v1.attributes);
     let span_links = v1.links.into_iter().map(v1_span_link_to_span_link).collect();
     let span_events = v1.events.into_iter().map(v1_span_event_to_span_event).collect();
 
-    Span::new(
+    let mut span = Span::new(
         v1.service,
         v1.name,
         v1.resource,
@@ -477,15 +476,20 @@ fn v1_span_to_span(v1: V1Span) -> Span {
         v1.duration,
         if v1.error { 1 } else { 0 },
     )
-    .with_meta(Some(meta))
-    .with_metrics(Some(metrics))
-    .with_meta_struct(Some(meta_struct))
     .with_span_links(Some(span_links))
     .with_span_events(Some(span_events))
     .with_env(v1.env)
     .with_version(v1.version)
     .with_component(v1.component)
-    .with_kind(v1.kind)
+    .with_kind(v1.kind);
+
+    for kv in v1.attributes {
+        if let Some(av) = v1_anyvalue_to_attribute_value(kv.value) {
+            span.attributes.insert(kv.key, av);
+        }
+    }
+
+    span
 }
 
 fn v1_span_link_to_span_link(v1: V1SpanLink) -> SpanLink {
@@ -520,49 +524,6 @@ fn v1_span_event_to_span_event(v1: V1SpanEvent) -> SpanEvent {
         .collect();
 
     SpanEvent::new(v1.time_unix_nano, v1.name).with_attributes(Some(attrs))
-}
-
-/// Split `Vec<V1KeyValue>` into the three compatible span attribute maps.
-///
-/// - `String` / `Bool` values → `meta` (string tags)
-/// - `Double` / `Int` values  → `metrics` (numeric tags)
-/// - `Bytes` values           → `meta_struct` (binary blobs)
-/// - `Array` / `KeyValueList` → dropped (complex types are rare in APM v1 span attributes)
-fn v1_kvs_to_meta_metrics_struct(
-    kvs: Vec<V1KeyValue>,
-) -> (
-    FastHashMap<MetaString, MetaString>,
-    FastHashMap<MetaString, f64>,
-    FastHashMap<MetaString, Vec<u8>>,
-) {
-    let mut meta = FastHashMap::default();
-    let mut metrics = FastHashMap::default();
-    let mut meta_struct = FastHashMap::default();
-
-    for kv in kvs {
-        match kv.value {
-            V1AnyValue::String(s) => {
-                meta.insert(kv.key, s);
-            }
-            V1AnyValue::Bool(b) => {
-                meta.insert(kv.key, MetaString::from_static(if b { "true" } else { "false" }));
-            }
-            V1AnyValue::Double(d) => {
-                metrics.insert(kv.key, d);
-            }
-            V1AnyValue::Int(i) => {
-                metrics.insert(kv.key, i as f64);
-            }
-            V1AnyValue::Bytes(b) => {
-                meta_struct.insert(kv.key, b);
-            }
-            V1AnyValue::Array(_) | V1AnyValue::KeyValueList(_) => {
-                // Complex types are not representable in the legacy maps; skip.
-            }
-        }
-    }
-
-    (meta, metrics, meta_struct)
 }
 
 /// Convert a `Vec<V1KeyValue>` into `Trace.attributes` (typed attribute map).

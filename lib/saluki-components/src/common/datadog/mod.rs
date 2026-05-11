@@ -56,12 +56,16 @@ pub fn sample_by_rate(trace_id: u64, rate: f64) -> bool {
 
 pub fn get_trace_env(trace: &Trace, root_span_idx: usize) -> Option<&MetaString> {
     // logic taken from here: https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/traceutil/trace.go#L19-L20
-    let env = trace.spans().get(root_span_idx).and_then(|span| span.meta().get("env"));
+    use saluki_core::data_model::event::trace::AttributeValue;
+    let env = trace
+        .spans()
+        .get(root_span_idx)
+        .and_then(|span| span.attributes.get("env").and_then(AttributeValue::as_string));
     match env {
         Some(env) => Some(env),
         None => {
             for span in trace.spans().iter() {
-                if let Some(env) = span.meta().get("env") {
+                if let Some(env) = span.attributes.get("env").and_then(AttributeValue::as_string) {
                     return Some(env);
                 }
             }

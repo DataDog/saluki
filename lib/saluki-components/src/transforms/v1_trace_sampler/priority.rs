@@ -12,7 +12,7 @@
 
 use std::time::SystemTime;
 
-use saluki_core::data_model::event::trace::Span;
+use saluki_core::data_model::event::trace::{AttributeValue, Span};
 use stringtheory::MetaString;
 
 use crate::sources::apm::sampling_rates::V1SamplingRatesHandle;
@@ -107,19 +107,19 @@ impl V1PrioritySampler {
 /// Mirrors `weightRootV1` from `pkg/trace/sampler/sampler.go`:
 /// `weight = 1 / (client_rate * pre_sampler_rate)`.
 ///
-/// Reads `_sample_rate` and `_dd1.sr.rapre` from span metrics.
+/// Reads `_sample_rate` and `_dd1.sr.rapre` from span attributes.
 /// Both default to 1.0 when absent or out of range.
 pub(super) fn weight_root(root: &Span) -> f64 {
     let client_rate = root
-        .metrics()
+        .attributes
         .get(KEY_SAMPLE_RATE)
-        .copied()
+        .and_then(AttributeValue::as_float)
         .filter(|&r| r > 0.0 && r <= 1.0)
         .unwrap_or(1.0);
     let pre_sampler_rate = root
-        .metrics()
+        .attributes
         .get(KEY_PRE_SAMPLER_RATE)
-        .copied()
+        .and_then(AttributeValue::as_float)
         .filter(|&r| r > 0.0 && r <= 1.0)
         .unwrap_or(1.0);
     1.0 / (client_rate * pre_sampler_rate)
@@ -133,17 +133,17 @@ fn apply_rate(root: &mut Span, signature: &Signature, core_sampler: &Sampler) {
     if root.parent_id() != 0 {
         return;
     }
-    if root.metrics().contains_key(KEY_AGENT_PSR) {
+    if root.attributes.get(KEY_AGENT_PSR).and_then(AttributeValue::as_float).is_some() {
         return;
     }
-    if root.metrics().contains_key(KEY_RULE_PSR) {
+    if root.attributes.get(KEY_RULE_PSR).and_then(AttributeValue::as_float).is_some() {
         return;
     }
-    if root.metrics().contains_key(KEY_DEPRECATED_RATE) {
+    if root.attributes.get(KEY_DEPRECATED_RATE).and_then(AttributeValue::as_float).is_some() {
         return;
     }
     let rate = core_sampler.get_signature_sample_rate(signature);
-    root.metrics_mut().insert(MetaString::from(KEY_DEPRECATED_RATE), rate);
+    root.attributes.insert(MetaString::from(KEY_DEPRECATED_RATE), AttributeValue::Float(rate));
 }
 
 
@@ -152,7 +152,7 @@ mod tests {
     use std::time::SystemTime;
 
     use saluki_common::collections::FastHashMap;
-    use saluki_core::data_model::event::trace::Span;
+    use saluki_core::data_model::event::trace::{AttributeValue, Span};
     use stringtheory::MetaString;
 
     use super::*;
@@ -225,7 +225,7 @@ mod tests {
         let mut root = make_span(0);
         sampler.sample(SystemTime::now(), 1, &mut root, "prod", 0.0);
         assert!(
-            root.metrics().contains_key(KEY_DEPRECATED_RATE),
+            root.attributes.get(KEY_DEPRECATED_RATE).and_then(AttributeValue::as_float).is_some(),
             "rate metric should be written to kept root span"
         );
     }
@@ -236,7 +236,7 @@ mod tests {
         let mut root = make_span(0);
         sampler.sample(SystemTime::now(), 0, &mut root, "prod", 0.0);
         assert!(
-            !root.metrics().contains_key(KEY_DEPRECATED_RATE),
+            root.attributes.get(KEY_DEPRECATED_RATE).and_then(AttributeValue::as_float).is_none(),
             "rate metric should not be written for dropped trace"
         );
     }
@@ -245,12 +245,12 @@ mod tests {
     fn existing_agent_psr_is_not_overwritten() {
         let mut sampler = make_sampler();
         let mut root = make_span(0);
-        root.metrics_mut().insert(MetaString::from(KEY_AGENT_PSR), 0.25);
+        root.attributes.insert(MetaString::from(KEY_AGENT_PSR), AttributeValue::Float(0.25));
 
         sampler.sample(SystemTime::now(), 1, &mut root, "prod", 0.0);
 
         assert_eq!(
-            root.metrics().get(KEY_AGENT_PSR).copied(),
+            root.attributes.get(KEY_AGENT_PSR).and_then(AttributeValue::as_float),
             Some(0.25),
             "existing _dd.agent_psr must not be overwritten"
         );
@@ -265,7 +265,7 @@ mod tests {
 
         let has_rate = [KEY_DEPRECATED_RATE, KEY_AGENT_PSR, KEY_RULE_PSR]
             .iter()
-            .any(|k| non_root.metrics().contains_key(*k));
+            .any(|k| non_root.attributes.get(*k).and_then(AttributeValue::as_float).is_some());
         assert!(!has_rate, "rate must not be written for non-root spans");
     }
 
@@ -280,22 +280,22 @@ mod tests {
     #[test]
     fn weight_root_divides_by_sample_rate() {
         let mut span = make_span(0);
-        span.metrics_mut().insert(MetaString::from(KEY_SAMPLE_RATE), 0.5);
+        span.attributes.insert(MetaString::from(KEY_SAMPLE_RATE), AttributeValue::Float(0.5));
         assert_eq!(weight_root(&span), 2.0);
     }
 
     #[test]
     fn weight_root_uses_both_rates() {
         let mut span = make_span(0);
-        span.metrics_mut().insert(MetaString::from(KEY_SAMPLE_RATE), 0.5);
-        span.metrics_mut().insert(MetaString::from(KEY_PRE_SAMPLER_RATE), 0.5);
+        span.attributes.insert(MetaString::from(KEY_SAMPLE_RATE), AttributeValue::Float(0.5));
+        span.attributes.insert(MetaString::from(KEY_PRE_SAMPLER_RATE), AttributeValue::Float(0.5));
         assert_eq!(weight_root(&span), 4.0);
     }
 
     #[test]
     fn weight_root_ignores_out_of_range_rates() {
         let mut span = make_span(0);
-        span.metrics_mut().insert(MetaString::from(KEY_SAMPLE_RATE), 2.0); // rate > 1.0 → 1.0
+        span.attributes.insert(MetaString::from(KEY_SAMPLE_RATE), AttributeValue::Float(2.0)); // rate > 1.0 → 1.0
         assert_eq!(weight_root(&span), 1.0);
     }
 

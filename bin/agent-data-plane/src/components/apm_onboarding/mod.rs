@@ -6,7 +6,7 @@ use saluki_common::{
 };
 use saluki_core::{
     components::{transforms::*, ComponentContext},
-    data_model::event::trace::{Span, Trace},
+    data_model::event::trace::{AttributeValue, Span, Trace},
     topology::EventsBuffer,
 };
 use saluki_error::GenericError;
@@ -154,7 +154,5 @@ fn add_onboarding_metadata_to_span(span: &mut Span, install_info: &InstallInfo) 
 }
 
 fn add_meta_entry_if_missing(span: &mut Span, key: &MetaString, value: &MetaString) {
-    if !span.meta().contains_key(key) {
-        span.meta_mut().insert(key.clone(), value.clone());
-    }
+    span.attributes.entry(key.clone()).or_insert_with(|| AttributeValue::String(value.clone()));
 }

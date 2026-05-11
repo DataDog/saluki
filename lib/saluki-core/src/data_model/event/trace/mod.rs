@@ -50,6 +50,35 @@ pub enum AttributeValue {
     Bytes(Vec<u8>),
 }
 
+impl AttributeValue {
+    /// Returns the inner string if this is a `String` variant.
+    pub fn as_string(&self) -> Option<&MetaString> {
+        if let AttributeValue::String(s) = self {
+            Some(s)
+        } else {
+            None
+        }
+    }
+
+    /// Returns the inner float if this is a `Float` variant.
+    pub fn as_float(&self) -> Option<f64> {
+        if let AttributeValue::Float(f) = self {
+            Some(*f)
+        } else {
+            None
+        }
+    }
+
+    /// Returns the inner bytes if this is a `Bytes` variant.
+    pub fn as_bytes(&self) -> Option<&[u8]> {
+        if let AttributeValue::Bytes(b) = self {
+            Some(b)
+        } else {
+            None
+        }
+    }
+}
+
 /// Values supported for span event attributes.
 ///
 /// This is the richer OTLP attribute type used exclusively by `SpanEvent`.
@@ -272,14 +301,8 @@ pub struct Span {
     duration: u64,
     /// Error flag represented as 0 (no error) or 1 (error).
     error: i32,
-    /// String-valued tags attached to this span (legacy `meta` map).
-    meta: FastHashMap<MetaString, MetaString>,
-    /// Numeric-valued tags attached to this span (legacy `metrics` map).
-    metrics: FastHashMap<MetaString, f64>,
     /// Span type classification (for example, web, db, lambda).
     span_type: MetaString,
-    /// Structured metadata payloads (legacy `meta_struct` map).
-    meta_struct: FastHashMap<MetaString, Vec<u8>>,
     /// Links describing relationships to other spans.
     span_links: Vec<SpanLink>,
     /// Events associated with this span.
@@ -294,6 +317,8 @@ pub struct Span {
     pub component: MetaString,
     /// Span kind: 0=unspecified, 1=server, 2=client, 3=producer, 4=consumer, 5=internal.
     pub kind: u32,
+    /// Typed span-level attributes (replaces `meta`, `metrics`, and `meta_struct`).
+    pub attributes: FastHashMap<MetaString, AttributeValue>,
 }
 
 impl Span {
@@ -379,21 +404,33 @@ impl Span {
         self
     }
 
-    /// Replaces the string-valued tag map.
+    /// Inserts string-valued entries into the attributes map.
     pub fn with_meta(mut self, meta: impl Into<Option<FastHashMap<MetaString, MetaString>>>) -> Self {
-        self.meta = meta.into().unwrap_or_default();
+        if let Some(m) = meta.into() {
+            for (k, v) in m {
+                self.attributes.insert(k, AttributeValue::String(v));
+            }
+        }
         self
     }
 
-    /// Replaces the numeric-valued tag map.
+    /// Inserts float-valued entries into the attributes map.
     pub fn with_metrics(mut self, metrics: impl Into<Option<FastHashMap<MetaString, f64>>>) -> Self {
-        self.metrics = metrics.into().unwrap_or_default();
+        if let Some(m) = metrics.into() {
+            for (k, v) in m {
+                self.attributes.insert(k, AttributeValue::Float(v));
+            }
+        }
         self
     }
 
-    /// Replaces the structured metadata map.
+    /// Inserts bytes-valued entries into the attributes map.
     pub fn with_meta_struct(mut self, meta_struct: impl Into<Option<FastHashMap<MetaString, Vec<u8>>>>) -> Self {
-        self.meta_struct = meta_struct.into().unwrap_or_default();
+        if let Some(m) = meta_struct.into() {
+            for (k, v) in m {
+                self.attributes.insert(k, AttributeValue::Bytes(v));
+            }
+        }
         self
     }
 
@@ -486,31 +523,6 @@ impl Span {
     /// Returns the span type.
     pub fn span_type(&self) -> &str {
         &self.span_type
-    }
-
-    /// Returns the string-valued tag map.
-    pub fn meta(&self) -> &FastHashMap<MetaString, MetaString> {
-        &self.meta
-    }
-
-    /// Returns a mutable reference to the meta map.
-    pub fn meta_mut(&mut self) -> &mut FastHashMap<MetaString, MetaString> {
-        &mut self.meta
-    }
-
-    /// Returns the numeric-valued tag map.
-    pub fn metrics(&self) -> &FastHashMap<MetaString, f64> {
-        &self.metrics
-    }
-
-    /// Returns a mutable reference to the metrics map.
-    pub fn metrics_mut(&mut self) -> &mut FastHashMap<MetaString, f64> {
-        &mut self.metrics
-    }
-
-    /// Returns the structured metadata map.
-    pub fn meta_struct(&self) -> &FastHashMap<MetaString, Vec<u8>> {
-        &self.meta_struct
     }
 
     /// Returns the span links collection.

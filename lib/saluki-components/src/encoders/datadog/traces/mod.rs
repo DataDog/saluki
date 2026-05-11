@@ -518,26 +518,30 @@ impl TraceEndpointEncoder {
 
                         {
                             let mut meta = s.meta();
-                            for (k, v) in span.meta() {
-                                meta.write_entry(k.as_ref(), v.as_ref())?;
+                            for (k, v) in &span.attributes {
+                                if let AttributeValue::String(s_val) = v {
+                                    meta.write_entry(k.as_ref(), s_val.as_ref())?;
+                                }
                             }
                         }
-
                         {
                             let mut metrics = s.metrics();
-                            for (k, v) in span.metrics() {
-                                metrics.write_entry(k.as_ref(), *v)?;
+                            for (k, v) in &span.attributes {
+                                if let AttributeValue::Float(f) = v {
+                                    metrics.write_entry(k.as_ref(), *f)?;
+                                }
+                            }
+                        }
+                        {
+                            let mut ms = s.meta_struct();
+                            for (k, v) in &span.attributes {
+                                if let AttributeValue::Bytes(b) = v {
+                                    ms.write_entry(k.as_ref(), b.as_slice())?;
+                                }
                             }
                         }
 
                         s.type_(span.span_type())?;
-
-                        {
-                            let mut ms = s.meta_struct();
-                            for (k, v) in span.meta_struct() {
-                                ms.write_entry(k.as_ref(), v.as_slice())?;
-                            }
-                        }
 
                         for link in span.span_links() {
                             s.add_span_links(|sl| {
@@ -583,8 +587,9 @@ impl TraceEndpointEncoder {
                         let trace_has_error = trace.spans().iter().any(|span| {
                             span.error() != 0
                                 || span
-                                    .meta()
+                                    .attributes
                                     .get("_dd.span_events.has_exception")
+                                    .and_then(AttributeValue::as_string)
                                     .is_some_and(|v| v == "true")
                         });
                         if trace_has_error {

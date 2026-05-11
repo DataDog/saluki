@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use ottl::{EvalContextFamily, Field, IndexExpr, PathAccessor, PathResolverMap, Value};
 use saluki_context::tags::TagSet;
-use saluki_core::data_model::event::trace::Span;
+use saluki_core::data_model::event::trace::{AttributeValue, Span};
 use stringtheory::MetaString;
 
 /// Family type for the span transform evaluation context.
@@ -51,22 +51,23 @@ impl<'a> SpanTransformContext<'a> {
     }
 }
 
-/// Path accessor for `attributes` (span-level string metadata).
+/// Path accessor for `attributes` (span-level attributes).
 ///
-/// Reads from and writes to the span's `meta` map, which stores `MetaString` key-value
-/// pairs. On `set`, string values are inserted directly; `Nil` removes the key; other
-/// value types are converted to their display representation.
+/// Reads from and writes to the span's `attributes` map.
+/// On `set`, string values are inserted as `AttributeValue::String`; `Nil` removes the key;
+/// numeric types become `AttributeValue::Float`; other types are stringified.
 #[derive(Debug)]
 pub struct SpanAttributesAccessor;
 
 impl PathAccessor<SpanTransformFamily> for SpanAttributesAccessor {
     fn get<'a>(&self, ctx: &SpanTransformContext<'a>, fields: &[Field]) -> ottl::Result<Value> {
         let value = if let Some(IndexExpr::String(key)) = fields.first().and_then(|f| f.keys.first()) {
-            ctx.span
-                .meta()
-                .get(key.as_str())
-                .map(|v| Value::string(v.as_ref()))
-                .unwrap_or(Value::Nil)
+            match ctx.span.attributes.get(key.as_str()) {
+                Some(AttributeValue::String(s)) => Value::string(s.as_ref()),
+                Some(AttributeValue::Float(f)) => Value::Float(*f),
+                Some(AttributeValue::Bytes(_)) => Value::Nil,
+                None => Value::Nil,
+            }
         } else {
             Value::Nil
         };
@@ -77,27 +78,30 @@ impl PathAccessor<SpanTransformFamily> for SpanAttributesAccessor {
         if let Some(IndexExpr::String(key)) = fields.first().and_then(|f| f.keys.first()) {
             match value {
                 Value::Nil => {
-                    ctx.span.meta_mut().remove(key.as_str());
+                    ctx.span.attributes.remove(key.as_str());
                 }
                 Value::String(s) => {
-                    ctx.span
-                        .meta_mut()
-                        .insert(MetaString::from(key.as_str()), MetaString::from(Arc::clone(s)));
+                    ctx.span.attributes.insert(
+                        MetaString::from(key.as_str()),
+                        AttributeValue::String(MetaString::from(Arc::clone(s))),
+                    );
                 }
                 Value::Int(n) => {
-                    ctx.span
-                        .meta_mut()
-                        .insert(MetaString::from(key.as_str()), MetaString::from(n.to_string().as_str()));
+                    ctx.span.attributes.insert(
+                        MetaString::from(key.as_str()),
+                        AttributeValue::String(MetaString::from(n.to_string().as_str())),
+                    );
                 }
                 Value::Float(f) => {
-                    ctx.span
-                        .meta_mut()
-                        .insert(MetaString::from(key.as_str()), MetaString::from(f.to_string().as_str()));
+                    ctx.span.attributes.insert(
+                        MetaString::from(key.as_str()),
+                        AttributeValue::String(MetaString::from(f.to_string().as_str())),
+                    );
                 }
                 Value::Bool(b) => {
-                    ctx.span.meta_mut().insert(
+                    ctx.span.attributes.insert(
                         MetaString::from(key.as_str()),
-                        MetaString::from(if *b { "true" } else { "false" }),
+                        AttributeValue::String(MetaString::from(if *b { "true" } else { "false" })),
                     );
                 }
                 _ => {

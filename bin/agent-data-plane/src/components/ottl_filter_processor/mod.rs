@@ -494,6 +494,7 @@ mod tests {
         assert!(buffer.try_push(Event::Trace(trace)).is_none());
         transform.transform_buffer(&mut buffer);
         assert_eq!(span_count_in_buffer(&buffer), 2);
+        use saluki_core::data_model::event::trace::AttributeValue;
         let remaining_labels: Vec<String> = buffer
             .into_iter()
             .filter_map(|e| match e {
@@ -502,10 +503,10 @@ mod tests {
             })
             .flatten()
             .filter_map(|s| {
-                s.meta()
+                s.attributes
                     .iter()
                     .find(|(k, _)| k.as_ref() == "label")
-                    .map(|(_, v)| v.as_ref().to_string())
+                    .and_then(|(_, v)| AttributeValue::as_string(v).map(|s| s.as_ref().to_string()))
             })
             .collect();
         assert_eq!(

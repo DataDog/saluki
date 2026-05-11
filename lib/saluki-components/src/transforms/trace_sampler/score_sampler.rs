@@ -1,7 +1,7 @@
 use std::time::SystemTime;
 
 use saluki_common::collections::FastHashMap;
-use saluki_core::data_model::event::trace::{Span, Trace};
+use saluki_core::data_model::event::trace::{AttributeValue, Span, Trace};
 use stringtheory::MetaString;
 
 use super::signature::{compute_signature_with_root_and_env, Signature};
@@ -146,8 +146,8 @@ impl ScoreSampler {
 
     /// Set the sampling rate metric on a span.
     pub fn set_sampling_rate_metric(&self, span: &mut Span, rate: f64) {
-        span.metrics_mut()
-            .insert(MetaString::from(self.sampling_rate_key), rate);
+        span.attributes
+            .insert(MetaString::from(self.sampling_rate_key), AttributeValue::Float(rate));
     }
 }
 
@@ -169,16 +169,16 @@ impl ScoreSampler {
 /// Calculate the weight from the span's global rate and presampler rate.
 pub(super) fn weight_root(span: &Span) -> f32 {
     let client_rate = span
-        .metrics()
+        .attributes
         .get(KEY_SAMPLING_RATE_GLOBAL)
-        .copied()
+        .and_then(AttributeValue::as_float)
         .filter(|&r| r > 0.0 && r <= 1.0)
         .unwrap_or(1.0);
 
     let pre_sampler_rate = span
-        .metrics()
+        .attributes
         .get(KEY_SAMPLING_RATE_PRE_SAMPLER)
-        .copied()
+        .and_then(AttributeValue::as_float)
         .filter(|&r| r > 0.0 && r <= 1.0)
         .unwrap_or(1.0);
 
@@ -187,5 +187,5 @@ pub(super) fn weight_root(span: &Span) -> f32 {
 
 /// Get the cumulative sample rate of the trace to which this span belongs.
 fn get_global_rate(span: &Span) -> f64 {
-    span.metrics().get(KEY_SAMPLING_RATE_GLOBAL).copied().unwrap_or(1.0)
+    span.attributes.get(KEY_SAMPLING_RATE_GLOBAL).and_then(AttributeValue::as_float).unwrap_or(1.0)
 }

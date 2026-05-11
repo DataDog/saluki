@@ -182,6 +182,7 @@ mod tests {
     }
 
     fn get_span_attr(buffer: &EventsBuffer, span_index: usize, key: &str) -> Option<String> {
+        use saluki_core::data_model::event::trace::AttributeValue;
         buffer
             .into_iter()
             .filter_map(|e| match e {
@@ -190,7 +191,7 @@ mod tests {
             })
             .flat_map(|spans| spans.iter())
             .nth(span_index)
-            .and_then(|span| span.meta().get(key).map(|v| v.as_ref().to_string()))
+            .and_then(|span| span.attributes.get(key).and_then(AttributeValue::as_string).map(|v| v.as_ref().to_string()))
     }
 
     async fn build_transform(cfg_json: Option<serde_json::Value>) -> Box<dyn SynchronousTransform + Send> {

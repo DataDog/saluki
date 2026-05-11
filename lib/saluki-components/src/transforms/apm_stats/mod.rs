@@ -14,7 +14,7 @@ use saluki_context::{origin::OriginTagCardinality, tags::TagSet};
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     data_model::event::{
-        trace::Trace,
+        trace::{AttributeValue, Trace},
         trace_stats::{ClientStatsPayload, TraceStats},
         Event, EventType,
     },
@@ -164,7 +164,7 @@ impl ApmStats {
         let origin = trace
             .spans()
             .first()
-            .and_then(|s| s.meta().get("_dd.origin"))
+            .and_then(|s| s.attributes.get("_dd.origin").and_then(AttributeValue::as_string))
             .map(|s| s.as_ref())
             .unwrap_or("");
 
@@ -206,7 +206,7 @@ impl ApmStats {
             .or_else(|| trace.spans().first());
 
         let env = root_span
-            .and_then(|s| s.meta().get("env").filter(|s| !s.is_empty()))
+            .and_then(|s| s.attributes.get("env").and_then(AttributeValue::as_string).filter(|s| !s.is_empty()))
             .cloned()
             .unwrap_or_else(|| {
                 if !trace.env.is_empty() {
@@ -217,7 +217,7 @@ impl ApmStats {
             });
 
         let hostname = root_span
-            .and_then(|s| s.meta().get("_dd.hostname").filter(|s| !s.is_empty()))
+            .and_then(|s| s.attributes.get("_dd.hostname").and_then(AttributeValue::as_string).filter(|s| !s.is_empty()))
             .cloned()
             .unwrap_or_else(|| {
                 if !trace.hostname.is_empty() {
@@ -231,7 +231,7 @@ impl ApmStats {
             trace.app_version.clone()
         } else {
             root_span
-                .and_then(|s| s.meta().get("version").filter(|s| !s.is_empty()))
+                .and_then(|s| s.attributes.get("version").and_then(AttributeValue::as_string).filter(|s| !s.is_empty()))
                 .cloned()
                 .unwrap_or_default()
         };
@@ -240,18 +240,18 @@ impl ApmStats {
             trace.container_id.clone()
         } else {
             root_span
-                .and_then(|s| s.meta().get("_dd.container_id"))
+                .and_then(|s| s.attributes.get("_dd.container_id").and_then(AttributeValue::as_string))
                 .cloned()
                 .unwrap_or_default()
         };
 
         let git_commit_sha = root_span
-            .and_then(|s| s.meta().get("_dd.git.commit.sha").filter(|s| !s.is_empty()))
+            .and_then(|s| s.attributes.get("_dd.git.commit.sha").and_then(AttributeValue::as_string).filter(|s| !s.is_empty()))
             .cloned()
             .unwrap_or_default();
 
         let image_tag = root_span
-            .and_then(|s| s.meta().get("_dd.image_tag").filter(|s| !s.is_empty()))
+            .and_then(|s| s.attributes.get("_dd.image_tag").and_then(AttributeValue::as_string).filter(|s| !s.is_empty()))
             .cloned()
             .unwrap_or_default();
 
@@ -259,7 +259,7 @@ impl ApmStats {
             trace.language_name.clone()
         } else {
             root_span
-                .and_then(|s| s.meta().get("language"))
+                .and_then(|s| s.attributes.get("language").and_then(AttributeValue::as_string))
                 .cloned()
                 .unwrap_or_default()
         };
@@ -447,11 +447,9 @@ fn now_nanos() -> u64 {
 
 /// Extracts process tags from trace, checking both span meta and trace attributes.
 fn extract_process_tags(trace: &Trace) -> MetaString {
-    use saluki_core::data_model::event::trace::AttributeValue;
-
     let root_span = trace.spans().iter().find(|s| s.parent_id() == 0).or_else(|| trace.spans().first());
     if let Some(span) = root_span {
-        if let Some(tags) = span.meta().get(TAG_PROCESS_TAGS).filter(|s| !s.is_empty()) {
+        if let Some(tags) = span.attributes.get(TAG_PROCESS_TAGS).and_then(AttributeValue::as_string).filter(|s| !s.is_empty()) {
             return tags.clone();
         }
     }

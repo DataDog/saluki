@@ -403,16 +403,12 @@ fn collect_strings(trace: &Trace) -> IdxStringTable {
         st.intern(&span.version);
         st.intern(&span.component);
 
-        // Span attributes from the three legacy maps.
-        for (k, v) in span.meta() {
+        // Span attributes.
+        for (k, v) in &span.attributes {
             st.intern(k);
-            st.intern(v);
-        }
-        for k in span.metrics().keys() {
-            st.intern(k);
-        }
-        for k in span.meta_struct().keys() {
-            st.intern(k);
+            if let AttributeValue::String(s) = v {
+                st.intern(s);
+            }
         }
 
         for link in span.span_links() {
@@ -561,42 +557,38 @@ fn write_idx_string_map<S: piecemeal::ScratchBuffer + 'static>(
     Ok(())
 }
 
-/// Write span attributes from `meta`/`metrics`/`meta_struct` into an `idx` attribute map.
+/// Write span attributes into an `idx` attribute map.
 fn write_idx_span_attrs<S: piecemeal::ScratchBuffer + 'static>(
     map: &mut piecemeal::MessageMapBuilder<'_, S, piecemeal::types::protobuf::Varint<u32>, idx::AnyValue>,
     span: &Span,
     st: &IdxStringTable,
 ) -> std::io::Result<()> {
-    for (k, v) in span.meta() {
+    for (k, v) in &span.attributes {
         let key_ref = st.get(k);
         if key_ref == 0 {
             continue;
         }
-        let val_ref = st.get(v);
-        map.write_entry(key_ref, |av| {
-            av.value(|vb| vb.string_value_ref(val_ref))?;
-            Ok(())
-        })?;
-    }
-    for (k, v) in span.metrics() {
-        let key_ref = st.get(k);
-        if key_ref == 0 {
-            continue;
+        match v {
+            AttributeValue::String(s) => {
+                let val_ref = st.get(s);
+                map.write_entry(key_ref, |av| {
+                    av.value(|vb| vb.string_value_ref(val_ref))?;
+                    Ok(())
+                })?;
+            }
+            AttributeValue::Float(f) => {
+                map.write_entry(key_ref, |av| {
+                    av.value(|vb| vb.double_value(*f))?;
+                    Ok(())
+                })?;
+            }
+            AttributeValue::Bytes(b) => {
+                map.write_entry(key_ref, |av| {
+                    av.value(|vb| vb.bytes_value(b.as_slice()))?;
+                    Ok(())
+                })?;
+            }
         }
-        map.write_entry(key_ref, |av| {
-            av.value(|vb| vb.double_value(*v))?;
-            Ok(())
-        })?;
-    }
-    for (k, v) in span.meta_struct() {
-        let key_ref = st.get(k);
-        if key_ref == 0 {
-            continue;
-        }
-        map.write_entry(key_ref, |av| {
-            av.value(|vb| vb.bytes_value(v.as_slice()))?;
-            Ok(())
-        })?;
     }
     Ok(())
 }

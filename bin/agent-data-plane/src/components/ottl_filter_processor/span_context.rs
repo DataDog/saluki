@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use ottl::{EvalContextFamily, Field, IndexExpr, PathAccessor, PathResolverMap, Value};
 use saluki_context::tags::TagSet;
-use saluki_core::data_model::event::trace::Span;
+use saluki_core::data_model::event::trace::{AttributeValue, Span};
 
 /// Family type for the span filter evaluation context.
 ///
@@ -54,11 +54,11 @@ pub struct SpanAttributesAccessor;
 impl PathAccessor<SpanFilterFamily> for SpanAttributesAccessor {
     fn get<'a>(&self, ctx: &SpanFilterContext<'a>, fields: &[Field]) -> ottl::Result<Value> {
         let value = if let Some(IndexExpr::String(key)) = fields.first().and_then(|f| f.keys.first()) {
-            ctx.span
-                .meta()
-                .get(key.as_str())
-                .map(|v| Value::string(v.as_ref()))
-                .unwrap_or(Value::Nil)
+            match ctx.span.attributes.get(key.as_str()) {
+                Some(AttributeValue::String(s)) => Value::string(s.as_ref()),
+                Some(AttributeValue::Float(f)) => Value::Float(*f),
+                Some(AttributeValue::Bytes(_)) | None => Value::Nil,
+            }
         } else {
             Value::Nil
         };

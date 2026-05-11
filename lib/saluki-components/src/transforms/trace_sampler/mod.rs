@@ -19,7 +19,7 @@ use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     data_model::event::{
-        trace::{Span, Trace, TraceSampling},
+        trace::{AttributeValue, Span, Trace, TraceSampling},
         Event,
     },
     topology::EventsBuffer,
@@ -201,14 +201,14 @@ impl TraceSampler {
         // Fall back to checking spans (for compatibility with non-OTLP traces)
         // Prefer the root span (common case), but fall back to scanning all spans to be robust to ordering.
         if let Some(root) = trace.spans().get(root_span_idx) {
-            if let Some(&p) = root.metrics().get(SAMPLING_PRIORITY_METRIC_KEY) {
+            if let Some(p) = root.attributes.get(SAMPLING_PRIORITY_METRIC_KEY).and_then(AttributeValue::as_float) {
                 return Some(p as i32);
             }
         }
         let spans = trace.spans();
         spans
             .iter()
-            .find_map(|span| span.metrics().get(SAMPLING_PRIORITY_METRIC_KEY).map(|&p| p as i32))
+            .find_map(|span| span.attributes.get(SAMPLING_PRIORITY_METRIC_KEY).and_then(AttributeValue::as_float).map(|p| p as i32))
     }
 
     /// Returns `true` if the given trace ID should be probabilistically sampled.
@@ -221,8 +221,10 @@ impl TraceSampler {
             .spans()
             .get(root_span_idx)
             .map(|span| {
-                span.meta()
-                    .contains_key(&MetaString::from_static(OTEL_TRACE_ID_META_KEY))
+                span.attributes
+                    .get(OTEL_TRACE_ID_META_KEY)
+                    .and_then(AttributeValue::as_string)
+                    .is_some()
             })
             .unwrap_or(false)
     }
@@ -238,10 +240,10 @@ impl TraceSampler {
     ///
     /// This checks for the `_dd.span_events.has_exception` meta field set to `"true"`.
     fn span_contains_exception_span_event(&self, span: &Span) -> bool {
-        if let Some(has_exception) = span.meta().get("_dd.span_events.has_exception") {
-            return has_exception == "true";
-        }
-        false
+        span.attributes
+            .get("_dd.span_events.has_exception")
+            .and_then(AttributeValue::as_string)
+            .is_some_and(|v| v == "true")
     }
 
     /// Computes the OTLP pre-sampling priority and decision maker for a trace, mirroring
@@ -267,7 +269,7 @@ impl TraceSampler {
         };
         if priority == PRIORITY_AUTO_KEEP {
             if let Some(root_span) = trace.spans_mut().get_mut(root_span_idx) {
-                root_span.metrics_mut().remove(PROB_RATE_KEY);
+                root_span.attributes.remove(PROB_RATE_KEY);
             }
         }
         Some((priority, dm))
@@ -277,7 +279,7 @@ impl TraceSampler {
     ///
     /// Returns `true` if the trace was modified.
     fn analyzed_span_sampling(&self, trace: &mut Trace) -> bool {
-        let retained = trace.retain_spans(|_, span| span.metrics().contains_key(KEY_ANALYZED_SPANS));
+        let retained = trace.retain_spans(|_, span| span.attributes.get(KEY_ANALYZED_SPANS).and_then(AttributeValue::as_float).is_some());
         if retained > 0 {
             // Mark trace as kept with high priority
             let sampling = TraceSampling::new(false, Some(PRIORITY_USER_KEEP), None, Some(self.sampling_rate));
@@ -293,13 +295,13 @@ impl TraceSampler {
         trace
             .spans()
             .iter()
-            .any(|span| span.metrics().contains_key(KEY_ANALYZED_SPANS))
+            .any(|span| span.attributes.get(KEY_ANALYZED_SPANS).and_then(AttributeValue::as_float).is_some())
     }
 
     /// Apply Single Span Sampling to the trace
     /// Returns true if the trace was modified
     fn single_span_sampling(&self, trace: &mut Trace) -> bool {
-        let retained = trace.retain_spans(|_, span| span.metrics().contains_key(KEY_SPAN_SAMPLING_MECHANISM));
+        let retained = trace.retain_spans(|_, span| span.attributes.get(KEY_SPAN_SAMPLING_MECHANISM).and_then(AttributeValue::as_float).is_some());
         if retained > 0 {
             // Set high priority and mark as kept
             let sampling = TraceSampling::new(
@@ -368,8 +370,7 @@ impl TraceSampler {
                     prob_keep = true;
 
                     if let Some(root_span) = trace.spans_mut().get_mut(root_span_idx) {
-                        let metrics = root_span.metrics_mut();
-                        metrics.insert(MetaString::from(PROB_RATE_KEY), self.sampling_rate);
+                        root_span.attributes.insert(MetaString::from(PROB_RATE_KEY), AttributeValue::Float(self.sampling_rate));
                     }
                 } else if self.error_sampling_enabled && contains_error {
                     prob_keep = self.error_sampler.sample_error(now, trace, root_span_idx);
@@ -409,7 +410,7 @@ impl TraceSampler {
             let root_trace_id = trace.spans()[root_span_idx].trace_id();
             if sample_by_rate(root_trace_id, self.otlp_sampling_rate) {
                 if let Some(root_span) = trace.spans_mut().get_mut(root_span_idx) {
-                    root_span.metrics_mut().remove(PROB_RATE_KEY);
+                    root_span.attributes.remove(PROB_RATE_KEY);
                 }
                 return (
                     true,
@@ -453,7 +454,7 @@ impl TraceSampler {
 
         // Add tag for the decision maker
         let existing_decision_maker = if decision_maker.is_empty() {
-            root_span_value.meta().get(TAG_DECISION_MAKER).cloned()
+            root_span_value.attributes.get(TAG_DECISION_MAKER).and_then(AttributeValue::as_string).cloned()
         } else {
             None
         };
@@ -463,14 +464,13 @@ impl TraceSampler {
             Some(MetaString::from(decision_maker))
         };
 
-        let meta = root_span_value.meta_mut();
         // When the APM-level probabilistic sampler is used with OTLP traces, the DD Agent writes
         // _dd.p.dm to trace chunk tags only (not span meta). For the legacy OTLP sampling path,
         // it is written to both. We match that behavior by skipping the span meta write only when
         // both conditions hold; the DM value still flows through TraceSampling to the encoder.
         if priority > 0 && !(is_otlp && self.probabilistic_sampler_enabled) {
             if let Some(dm) = decision_maker_meta.as_ref() {
-                meta.insert(MetaString::from(TAG_DECISION_MAKER), dm.clone());
+                root_span_value.attributes.insert(MetaString::from(TAG_DECISION_MAKER), AttributeValue::String(dm.clone()));
             }
         }
 
@@ -877,7 +877,7 @@ mod tests {
         let analyzed_span_ids: Vec<u64> = trace
             .spans()
             .iter()
-            .filter(|span| span.metrics().contains_key(KEY_ANALYZED_SPANS))
+            .filter(|span| span.attributes.get(KEY_ANALYZED_SPANS).and_then(AttributeValue::as_float).is_some())
             .map(|span| span.span_id())
             .collect();
         assert_eq!(analyzed_span_ids, vec![1]);
@@ -895,7 +895,7 @@ mod tests {
         let analyzed_span_ids: Vec<u64> = trace_no_analytics
             .spans()
             .iter()
-            .filter(|span| span.metrics().contains_key(KEY_ANALYZED_SPANS))
+            .filter(|span| span.attributes.get(KEY_ANALYZED_SPANS).and_then(AttributeValue::as_float).is_some())
             .map(|span| span.span_id())
             .collect();
         assert!(analyzed_span_ids.is_empty());
@@ -937,8 +937,8 @@ mod tests {
             // Check that the root span already has the probRateKey (it should have been added in run_samplers)
             let root_idx = root_span_idx.unwrap_or(0);
             let root_span = &trace.spans()[root_idx];
-            assert!(root_span.metrics().contains_key(PROB_RATE_KEY));
-            assert_eq!(*root_span.metrics().get(PROB_RATE_KEY).unwrap(), 0.75);
+            assert!(root_span.attributes.get(PROB_RATE_KEY).and_then(AttributeValue::as_float).is_some());
+            assert_eq!(root_span.attributes.get(PROB_RATE_KEY).and_then(AttributeValue::as_float).unwrap(), 0.75);
 
             // Test that apply_sampling_metadata still works correctly for other metadata
             let mut trace_with_metadata = trace.clone();
@@ -946,9 +946,9 @@ mod tests {
 
             // Check that decision maker tag was added
             let modified_root = &trace_with_metadata.spans()[root_idx];
-            assert!(modified_root.meta().contains_key(TAG_DECISION_MAKER));
+            assert!(modified_root.attributes.get(TAG_DECISION_MAKER).and_then(AttributeValue::as_string).is_some());
             assert_eq!(
-                modified_root.meta().get(TAG_DECISION_MAKER).unwrap(),
+                modified_root.attributes.get(TAG_DECISION_MAKER).and_then(AttributeValue::as_string).unwrap(),
                 &MetaString::from(DECISION_MAKER_PROBABILISTIC)
             );
         }
@@ -1012,7 +1012,7 @@ mod tests {
         assert!(keep);
         let root = &trace.spans()[root_idx.unwrap()];
         assert_eq!(
-            root.metrics().get(rare_sampler::RARE_KEY).copied(),
+            root.attributes.get(rare_sampler::RARE_KEY).and_then(AttributeValue::as_float),
             Some(1.0),
             "_dd.rare should be 1 on first occurrence"
         );
@@ -1158,9 +1158,9 @@ mod tests {
         assert_eq!(decision_maker, "");
         assert_eq!(
             trace.spans()[root_idx.unwrap()]
-                .metrics()
+                .attributes
                 .get(rare_sampler::RARE_KEY)
-                .copied(),
+                .and_then(AttributeValue::as_float),
             Some(1.0),
             "_dd.rare should be set to 1 on first occurrence"
         );
