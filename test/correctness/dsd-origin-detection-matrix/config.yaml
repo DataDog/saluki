@@ -71,6 +71,13 @@ variants:
       - DD_ORIGIN_DETECTION_UNIFIED=true
       - DD_DOGSTATSD_ORIGIN_DETECTION_CLIENT=true
 
+  # Legacy origin detection with high tag cardinality. Verifies that the cardinality setting is
+  # respected in the legacy code path.
+  - name: legacy-high-cardinality
+    additional_env_vars:
+      - DD_DOGSTATSD_ORIGIN_DETECTION=true
+      - DD_DOGSTATSD_TAG_CARDINALITY=high
+
   # Unified origin detection with high tag cardinality. Verifies that the cardinality setting is
   # respected end-to-end and that both agents return the same set of high-cardinality tags.
   - name: unified-high-cardinality
@@ -78,3 +85,13 @@ variants:
       - DD_DOGSTATSD_ORIGIN_DETECTION=true
       - DD_ORIGIN_DETECTION_UNIFIED=true
       - DD_DOGSTATSD_TAG_CARDINALITY=high
+
+  # Legacy origin detection with the cardinality opt-out disabled. By default
+  # (dogstatsd_origin_optout_enabled=true), metrics that explicitly request cardinality=none via
+  # |card:none or dd.internal.card:none are exempted from enrichment entirely. With opt-out
+  # disabled those metrics are enriched at the configured default cardinality instead. This variant
+  # verifies both agents agree on that boundary.
+  - name: legacy-optout-disabled
+    additional_env_vars:
+      - DD_DOGSTATSD_ORIGIN_DETECTION=true
+      - DD_DOGSTATSD_ORIGIN_OPTOUT_ENABLED=false
