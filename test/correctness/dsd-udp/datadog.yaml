@@ -1,0 +1,28 @@
+# Using a fixed hostname is both required to avoid errors, and also will ensure consistent tags between DSD/ADP.
+hostname: "correctness-testing"
+
+# Dummy API key.
+api_key: dummy-api-key-correctness-testing
+
+# We have to specifically configure the health port to use.
+health_port: 5555
+
+# Point ourselves at the datadog-intake service.
+dd_url: "http://datadog-intake:2049"
+
+# Listen on UDP port 8125. Millstone runs in a separate container, so we must accept non-local
+# traffic by binding to all interfaces.
+dogstatsd_port: 8125
+dogstatsd_non_local_traffic: true
+
+# Disable UDS listeners so only UDP is active.
+dogstatsd_socket: ""
+dogstatsd_stream_socket: ""
+
+# Ensure origin detection is disabled since we can't support it with ADP in standalone mode.
+dogstatsd_origin_detection: false
+
+# Gauges can be processed out-of-order when multiple workers are used, while ADP does not use
+# multiple workers, so ADP always ends up with the correct (last seen) value, while DSD might
+# return the last seen value... or the value seen four updates ago, etc.
+dogstatsd_workers_count: 1

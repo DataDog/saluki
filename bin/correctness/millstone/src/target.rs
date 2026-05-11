@@ -56,7 +56,7 @@ impl TargetSender {
     pub fn from_config(config: &Config) -> Result<Self, GenericError> {
         let (backend, runtime) = match &config.target {
             TargetAddress::Tcp(addr) => {
-                let stream = TcpStream::connect(addr)
+                let stream = TcpStream::connect(addr.as_str())
                     .with_error_context(|| format!("Failed to connect to TCP target '{}'.", addr))?;
                 (TargetBackend::Tcp(stream), None)
             }
@@ -64,7 +64,7 @@ impl TargetSender {
                 // We have to bind the socket first before we can "connect" it.
                 let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).error_context("Failed to bind UDP socket.")?;
                 socket
-                    .connect(addr)
+                    .connect(addr.as_str())
                     .with_error_context(|| format!("Failed to connect to UDP target '{}'.", addr))?;
 
                 (TargetBackend::Udp(socket), None)

@@ -1,5 +1,4 @@
 use std::{
-    net::SocketAddr,
     num::NonZeroUsize,
     path::{Path, PathBuf},
 };
@@ -11,10 +10,16 @@ use serde::Deserialize;
 #[serde(try_from = "String")]
 pub enum TargetAddress {
     /// TCP socket.
-    Tcp(SocketAddr),
+    ///
+    /// Stored as a `host:port` string so that Docker network aliases (e.g. `baseline:8125`)
+    /// are resolved at connection time rather than at config-parse time.
+    Tcp(String),
 
     /// UDP socket.
-    Udp(SocketAddr),
+    ///
+    /// Stored as a `host:port` string so that Docker network aliases (e.g. `baseline:8125`)
+    /// are resolved at connection time rather than at config-parse time.
+    Udp(String),
 
     /// Unix Domain Socket in SOCK_DGRAM mode.
     UnixDatagram(PathBuf),
@@ -33,14 +38,24 @@ impl TryFrom<String> for TargetAddress {
         // Try to parse the value as a URI first, where the scheme indicates the socket type.
         if let Some((scheme, addr_data)) = value.split_once("://") {
             match scheme {
-                "tcp" => addr_data
-                    .parse::<SocketAddr>()
-                    .map(Self::Tcp)
-                    .map_err(|e| format!("invalid TCP address: {}", e)),
-                "udp" => addr_data
-                    .parse::<SocketAddr>()
-                    .map(Self::Udp)
-                    .map_err(|e| format!("invalid UDP address: {}", e)),
+                "tcp" => {
+                    // Validate that the address looks like host:port without forcing DNS
+                    // resolution at parse time. Docker network aliases such as `baseline:8125`
+                    // are only resolvable inside the container network, not on the host.
+                    if addr_data.contains(':') {
+                        Ok(Self::Tcp(addr_data.to_string()))
+                    } else {
+                        Err(format!("invalid TCP address '{}': expected host:port", addr_data))
+                    }
+                }
+                "udp" => {
+                    // Same rationale as TCP above.
+                    if addr_data.contains(':') {
+                        Ok(Self::Udp(addr_data.to_string()))
+                    } else {
+                        Err(format!("invalid UDP address '{}': expected host:port", addr_data))
+                    }
+                }
                 "unixgram" => Ok(Self::UnixDatagram(PathBuf::from(addr_data))),
                 "unix" => Ok(Self::Unix(PathBuf::from(addr_data))),
                 "grpc" => Ok(Self::Grpc(addr_data.to_string())),
@@ -130,6 +145,22 @@ pub struct Config {
     /// This controls the number of payloads to send. If this number is larger than the corpus size, then the entire
     /// corpus will be sent multiple times, repeatedly cycling through it, until the target volume is reached.
     pub volume: NonZeroUsize,
+
+    /// Delay between individual payload sends, in microseconds.
+    ///
+    /// When set to a nonzero value, millstone sleeps for this many microseconds after each send. This is
+    /// primarily useful for UDP targets, where the kernel socket receive buffer is small (typically ~208 KiB
+    /// on Linux) and a zero-delay blast of payloads will overflow the buffer and cause packet loss before the
+    /// receiver has a chance to drain it.
+    ///
+    /// For example, a value of `500` (500 µs) limits the send rate to ~2,000 payloads/s, which is well within
+    /// what a DogStatsD agent can drain. At 8 KiB per payload, that is ~16 MB/s — low enough that the 208 KiB
+    /// buffer never accumulates more than a handful of packets at any moment, and all 10,000 payloads are
+    /// delivered in ~5 seconds — well within a single 10-second aggregation bucket.
+    ///
+    /// Defaults to `0` (no delay).
+    #[serde(default)]
+    pub send_delay_us: u64,
 
     /// Corpus blueprint.
     ///

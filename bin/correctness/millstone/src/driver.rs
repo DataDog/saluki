@@ -1,5 +1,6 @@
 use std::{
     path::PathBuf,
+    thread,
     time::{Duration, Instant, SystemTime},
 };
 
@@ -73,6 +74,8 @@ impl Driver {
 
         let start = Instant::now();
 
+        let send_delay = (self.config.send_delay_us > 0).then(|| Duration::from_micros(self.config.send_delay_us));
+
         loop {
             if payloads_sent >= max_payloads {
                 break;
@@ -82,6 +85,10 @@ impl Driver {
             let bytes_sent = self.sender.send(payload)?;
 
             trace!(payload_len = payload.len(), bytes_sent, "Payload sent.");
+
+            if let Some(delay) = send_delay {
+                thread::sleep(delay);
+            }
 
             payload_bytes_sent += bytes_sent as u64;
             payloads_sent += 1;
