@@ -15,7 +15,7 @@ use stringtheory::MetaString;
 use tokio::sync::OnceCell;
 
 mod rules;
-pub use self::rules::{get_datadog_agent_remappings, RemapperRule};
+pub use self::rules::{get_compat_remappings, get_datadog_agent_remappings, RemapperRule};
 
 /// Aggregated metric value.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -270,12 +270,12 @@ fn merge_aggregated_values(existing: AggregatedMetricValue, incoming: Aggregated
     }
 }
 
-/// Renders the RAR-relevant subset of internal metrics in Prometheus text exposition format.
+/// Renders remapped internal metrics in Prometheus text exposition format.
 ///
 /// Iterates the aggregated metrics state, matches each metric against the remapper rules, and renders only the
 /// matching metrics (in their Agent-compatible remapped form) using the provided renderer. The remapper rules act as
 /// both the filter (only matched metrics are included) and the name translator.
-pub fn render_rar_telemetry(
+pub fn render_telemetry(
     state: &AggregatedMetricsState, rules: &[RemapperRule], renderer: &mut PrometheusRenderer,
 ) -> String {
     renderer.clear();
@@ -295,12 +295,16 @@ pub fn render_rar_telemetry(
             if let Some(mut remapped) = rule.try_match_no_context(context) {
                 remapped.tags.sort();
 
+                let continue_matching = rule.should_continue_matching();
                 let series = groups.entry(remapped.name).or_default();
                 series
                     .entry(remapped.tags)
                     .and_modify(|existing| *existing = merge_aggregated_values(*existing, *value))
                     .or_insert(*value);
-                return;
+
+                if !continue_matching {
+                    return;
+                }
             }
         }
     });
@@ -337,6 +341,20 @@ pub fn render_rar_telemetry(
     }
 
     renderer.output().to_string()
+}
+
+/// Renders the RAR-relevant subset of internal metrics in Prometheus text exposition format.
+pub fn render_rar_telemetry(
+    state: &AggregatedMetricsState, rules: &[RemapperRule], renderer: &mut PrometheusRenderer,
+) -> String {
+    render_telemetry(state, rules, renderer)
+}
+
+/// Renders ADP telemetry using Core Agent `go_expvar`-compatible metric names.
+pub fn render_compat_telemetry(
+    state: &AggregatedMetricsState, rules: &[RemapperRule], renderer: &mut PrometheusRenderer,
+) -> String {
+    render_telemetry(state, rules, renderer)
 }
 
 fn get_help_text(metric_name: &str) -> Option<&'static str> {
@@ -509,6 +527,105 @@ mod tests {
         // Should have TYPE headers.
         assert!(output.contains("# TYPE dogstatsd__packet_pool_get counter"));
         assert!(output.contains("# TYPE dogstatsd__packet_pool gauge"));
+    }
+
+    #[test]
+    fn test_render_compat_telemetry() {
+        let processor = AggregatedMetricsProcessor;
+        let state = processor.build_initial_state();
+
+        let metrics = vec![
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_events_received_total",
+                    &["component_id:dsd_in", "message_type:metrics"],
+                ),
+                11.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_packets_received_total",
+                    &["component_id:dsd_in", "listener_type:unix"],
+                ),
+                7.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_packets_received_total",
+                    &["component_id:dsd_in", "listener_type:unixgram"],
+                ),
+                5.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.network_http_requests_errors_total",
+                    &["error_type:connection_error", "error_scope:phase"],
+                ),
+                3.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.network_http_requests_errors_total",
+                    &["error_type:cant_send", "error_scope:transaction"],
+                ),
+                1.0,
+            )),
+            Event::Metric(Metric::gauge("adp.network_http_retry_queue_size", 2.0)),
+        ];
+
+        for metric in metrics {
+            processor.process(metric, &state);
+        }
+
+        let rules = get_compat_remappings();
+        let mut renderer = PrometheusRenderer::new();
+        let output = render_compat_telemetry(&state, &rules, &mut renderer);
+
+        assert!(output.contains("dogstatsd_metric_packets 11"));
+        assert!(output.contains("dogstatsd_uds_packets 12"));
+        assert!(
+            output.contains("forwarder_transactions_errors_by_type_connection_errors{source=\"agent-data-plane\"} 3")
+        );
+        assert!(output.contains("forwarder_transactions_errors{source=\"agent-data-plane\"} 1"));
+        assert!(output.contains("forwarder_transactions_retry_queue_size{source=\"agent-data-plane\"} 2"));
+    }
+
+    #[test]
+    fn test_compat_remappings_cover_expected_names() {
+        let rules = get_compat_remappings();
+        let expected_names = [
+            "dogstatsd_event_packets",
+            "dogstatsd_event_parse_errors",
+            "dogstatsd_metric_packets",
+            "dogstatsd_metric_parse_errors",
+            "dogstatsd_service_check_packets",
+            "dogstatsd_service_check_parse_errors",
+            "dogstatsd_udp_packets",
+            "dogstatsd_udp_bytes",
+            "dogstatsd_udp_packet_reading_errors",
+            "dogstatsd_uds_packets",
+            "dogstatsd_uds_bytes",
+            "dogstatsd_uds_packet_reading_errors",
+            "dogstatsd_uds_origin_detection_errors",
+            "forwarder_transactions_dropped",
+            "forwarder_transactions_success",
+            "forwarder_transactions_errors",
+            "forwarder_transactions_http_errors",
+            "forwarder_transactions_errors_by_type_connection_errors",
+            "forwarder_transactions_errors_by_type_dns_errors",
+            "forwarder_transactions_errors_by_type_tls_errors",
+            "forwarder_transactions_errors_by_type_wrote_request_errors",
+            "forwarder_transactions_errors_by_type_sent_request_errors",
+            "forwarder_transactions_retry_queue_size",
+            "retry_queue_duration_bytes_per_sec",
+        ];
+
+        for expected_name in expected_names {
+            assert!(
+                rules.iter().any(|rule| rule.remapped_name() == expected_name),
+                "missing compat rule for {expected_name}"
+            );
+        }
     }
 
     #[test]

@@ -1,3 +1,12 @@
+//! DogStatsD source.
+//!
+//! # Missing
+//!
+//! - Create a health handle for each listener.
+//! - Handle UDS stream framing without treating EOF the same way as UDP and UDS datagram framing.
+//! - Align UDS stream origin-detection error counting with length-delimited packet boundaries.
+//! - Track dispatch failures without depending on whether all events were already iterated.
+
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -124,6 +133,8 @@ const fn default_no_aggregation_pipeline_support() -> bool {
 const fn default_context_string_interner_entry_count() -> u64 {
     4096
 }
+
+const ERROR_TYPE_ORIGIN_DETECTION: &str = "origin_detection";
 
 /// Baseline byte cost per interner entry, used to convert the Core Agent's entry-count-based
 /// `dogstatsd_string_interner_size` to a byte size.
@@ -538,6 +549,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             ));
         }
 
+        let origin_detection_enabled = self.origin_enrichment.enabled();
         let maybe_origin_tags_resolver = self
             .workload_provider
             .clone()
@@ -567,6 +579,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             codec,
             context_resolvers,
             enabled_filter: enable_payloads_filter,
+            origin_detection_enabled,
             stream_log_too_big: self.stream_log_too_big,
             additional_tags: self.additional_tags.clone().into(),
         }))
@@ -612,6 +625,7 @@ pub struct DogStatsD {
     codec: DogStatsDCodec,
     context_resolvers: ContextResolvers,
     enabled_filter: EnablePayloadsFilter,
+    origin_detection_enabled: bool,
     stream_log_too_big: bool,
     additional_tags: Arc<[String]>,
 }
@@ -622,6 +636,7 @@ struct ListenerContext {
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
     codec: DogStatsDCodec,
     context_resolvers: ContextResolvers,
+    origin_detection_enabled: bool,
     stream_log_too_big: bool,
     additional_tags: Arc<[String]>,
 }
@@ -633,6 +648,7 @@ struct HandlerContext {
     io_buffer_pool: FixedSizeObjectPool<BytesBuffer>,
     metrics: Metrics,
     context_resolvers: ContextResolvers,
+    origin_detection_enabled: bool,
     stream_log_too_big: bool,
     additional_tags: Arc<[String]>,
 }
@@ -647,6 +663,7 @@ struct Metrics {
     metric_decoder_errors: Counter,
     event_decoder_errors: Counter,
     service_check_decoder_errors: Counter,
+    origin_detection_errors: Counter,
     failed_context_resolve_total: Counter,
     connections_active: Gauge,
     packet_receive_success: Counter,
@@ -688,6 +705,10 @@ impl Metrics {
 
     fn service_check_decode_failed(&self) -> &Counter {
         &self.service_check_decoder_errors
+    }
+
+    fn origin_detection_errors(&self) -> &Counter {
+        &self.origin_detection_errors
     }
 
     fn failed_context_resolve_total(&self) -> &Counter {
@@ -762,6 +783,8 @@ fn build_metrics(listen_addr: &ListenAddress, component_context: &ComponentConte
                 ("message_type", "service_checks"),
             ],
         ),
+        origin_detection_errors: builder
+            .register_counter_with_tags("component_errors_total", [("error_type", ERROR_TYPE_ORIGIN_DETECTION)]),
         connections_active: builder
             .register_gauge_with_tags("component_connections_active", [("listener_type", listener_type)]),
         packet_receive_success: builder.register_counter_with_tags(
@@ -800,6 +823,7 @@ impl Source for DogStatsD {
                 io_buffer_pool: self.io_buffer_pool.clone(),
                 codec: self.codec.clone(),
                 context_resolvers: self.context_resolvers.clone(),
+                origin_detection_enabled: self.origin_detection_enabled,
                 stream_log_too_big: self.stream_log_too_big,
                 additional_tags: self.additional_tags.clone(),
             };
@@ -846,6 +870,7 @@ async fn process_listener(
         io_buffer_pool,
         codec,
         context_resolvers,
+        origin_detection_enabled,
         stream_log_too_big,
         additional_tags,
     } = listener_context;
@@ -873,6 +898,7 @@ async fn process_listener(
                         io_buffer_pool: io_buffer_pool.clone(),
                         metrics: build_metrics(&listen_addr, source_context.component_context()),
                         context_resolvers: context_resolvers.clone(),
+                        origin_detection_enabled,
                         stream_log_too_big,
                         additional_tags: additional_tags.clone(),
                     };
@@ -918,6 +944,7 @@ async fn drive_stream(
         io_buffer_pool,
         metrics,
         mut context_resolvers,
+        origin_detection_enabled,
         stream_log_too_big,
         additional_tags,
     } = handler_context;
@@ -936,6 +963,7 @@ async fn drive_stream(
     let mut event_buffer_manager = EventBufferManager::default();
     let mut io_buffer_manager = IoBufferManager::new(&io_buffer_pool, &stream);
     let memory_limiter = source_context.topology_context().memory_limiter();
+    let mut reported_origin_detection_error = false;
 
     'read: loop {
         let mut eof = false;
@@ -964,6 +992,15 @@ async fn drive_stream(
                     metrics.packet_receive_success().increment(1);
                     metrics.bytes_received().increment(bytes_read as u64);
                     metrics.bytes_received_size().record(bytes_read as f64);
+                    // Core Agent increments this for UDS credential-processing errors from `processUDSOrigin`:
+                    // datadog-agent/comp/dogstatsd/listeners/uds_common.go.
+                    // TODO: Count UDS stream errors on length-delimited packet boundaries instead of stream reads.
+                    let origin_detection_failed =
+                        origin_detection_enabled && bytes_read > 0 && peer_addr.has_process_credential_error();
+                    if origin_detection_failed && (stream.is_connectionless() || !reported_origin_detection_error) {
+                        metrics.origin_detection_errors().increment(1);
+                        reported_origin_detection_error = true;
+                    }
 
                     // When we're actually at EOF, or we're dealing with a connectionless stream, we try to decode in EOF mode.
                     //
@@ -1171,7 +1208,7 @@ fn handle_metric_packet(
     let well_known_tags = WellKnownTags::from_raw_tags(packet.tags.clone());
 
     let mut origin = origin_from_metric_packet(&packet, &well_known_tags);
-    if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
+    if let Some(creds) = peer_addr.process_credentials() {
         origin.set_process_id(creds.pid as u32);
     }
 
@@ -1209,7 +1246,7 @@ fn handle_event_packet(
     let well_known_tags = WellKnownTags::from_raw_tags(packet.tags.clone());
 
     let mut origin = origin_from_event_packet(&packet, &well_known_tags);
-    if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
+    if let Some(creds) = peer_addr.process_credentials() {
         origin.set_process_id(creds.pid as u32);
     }
     let origin_tags = tags_resolver.resolve_origin_tags(Some(origin));
@@ -1254,7 +1291,7 @@ fn handle_service_check_packet(
     let well_known_tags = WellKnownTags::from_raw_tags(packet.tags.clone());
 
     let mut origin = origin_from_service_check_packet(&packet, &well_known_tags);
-    if let ConnectionAddress::ProcessLike(Some(creds)) = &peer_addr {
+    if let Some(creds) = peer_addr.process_credentials() {
         origin.set_process_id(creds.pid as u32);
     }
     let origin_tags = tags_resolver.resolve_origin_tags(Some(origin));
