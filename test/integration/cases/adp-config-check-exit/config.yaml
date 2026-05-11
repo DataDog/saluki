@@ -30,3 +30,10 @@ assertions:
   - type: log_contains
     pattern: "incompatible configuration detected"
     timeout: 30s
+  # The bundled image runs ADP under s6, which logs this line from
+  # docker/s6-services/agent-data-plane/finish when the ADP process exits.
+  # Asserting it proves ADP actually terminated rather than logging the
+  # error and continuing.
+  - type: log_contains
+    pattern: "agent-data-plane exited with code"
+    timeout: 30s
