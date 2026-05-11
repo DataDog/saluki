@@ -131,6 +131,22 @@ async fn run_docker_correctness_test(name: String, config: Config, tctx: TestCon
     }
 }
 
+/// Removes the two generated per-target millstone config files written alongside `millstone.yaml`.
+///
+/// Called on every exit path from `run()` — both success and error — to ensure no stale files
+/// accumulate in the test case directory after failed or interrupted runs.
+async fn cleanup_millstone_configs(baseline: &PathBuf, comparison: &PathBuf) {
+    for path in [baseline, comparison] {
+        if let Err(e) = tokio::fs::remove_file(path).await {
+            error!(
+                error = %e,
+                "Failed to remove generated millstone config '{}'. Manual cleanup may be required.",
+                path.display()
+            );
+        }
+    }
+}
+
 pub(crate) fn make_error_result(name: String, started: Instant, phase: &str, e: GenericError) -> TestResult {
     TestResult {
         name,
@@ -445,29 +461,35 @@ impl CorrectnessRunner {
         let baseline_spawn_result = run_in_background(&baseline_runner_span, baseline_group_runner.spawn());
         let comparison_spawn_result = run_in_background(&comparison_runner_span, comparison_group_runner.spawn());
 
-        let (baseline_collector, comparison_collector) = self
+        let (baseline_collector, comparison_collector) = match self
             .unwrap_or_shutdown(
                 "spawn_agent_containers",
                 baseline_spawn_result.await,
                 comparison_spawn_result.await,
             )
-            .await?;
+            .await
+        {
+            Ok(pair) => pair,
+            Err(e) => {
+                cleanup_millstone_configs(&baseline_config_path, &comparison_config_path).await;
+                return Err(e);
+            }
+        };
         info!("Agent containers spawned successfully. Starting shared millstone...");
 
         // Phase 4: Spawn the shared millstone container now that both agent volumes exist.
-        let millstone_spawn_result =
-            run_in_background(&millstone_runner_span, millstone_group_runner.spawn_millstone()).await;
-
-        let millstone_waiter = match millstone_spawn_result {
-            Ok(w) => w,
-            Err(e) => {
-                self.tctx.test_cancel_token().cancel();
-                self.baseline_coordinator.wait().await;
-                self.comparison_coordinator.wait().await;
-                self.millstone_coordinator.wait().await;
-                return Err(generic_error!("Failed to spawn shared millstone container: {:?}", e));
-            }
-        };
+        let millstone_waiter =
+            match run_in_background(&millstone_runner_span, millstone_group_runner.spawn_millstone()).await {
+                Ok(w) => w,
+                Err(e) => {
+                    self.tctx.test_cancel_token().cancel();
+                    self.baseline_coordinator.wait().await;
+                    self.comparison_coordinator.wait().await;
+                    self.millstone_coordinator.wait().await;
+                    cleanup_millstone_configs(&baseline_config_path, &comparison_config_path).await;
+                    return Err(generic_error!("Failed to spawn shared millstone container: {}", e));
+                }
+            };
         info!("Shared millstone started. Waiting for it to complete...");
 
         // Phase 5: Wait for millstone to finish both parallel runs.
@@ -476,6 +498,7 @@ impl CorrectnessRunner {
             self.baseline_coordinator.wait().await;
             self.comparison_coordinator.wait().await;
             self.millstone_coordinator.wait().await;
+            cleanup_millstone_configs(&baseline_config_path, &comparison_config_path).await;
             return Err(generic_error!(
                 "Shared millstone exited with non-zero exit code ({}). Error: {}",
                 code,
@@ -501,9 +524,16 @@ impl CorrectnessRunner {
             CollectedData::for_port(comparison_collector.datadog_intake_port),
         );
 
-        let (baseline_data, comparison_data) = self
+        let (baseline_data, comparison_data) = match self
             .unwrap_or_shutdown("collect_data", maybe_baseline_data.await, maybe_comparison_data.await)
-            .await?;
+            .await
+        {
+            Ok(pair) => pair,
+            Err(e) => {
+                cleanup_millstone_configs(&baseline_config_path, &comparison_config_path).await;
+                return Err(e);
+            }
+        };
 
         // Signal all remaining containers to shut down and wait for them.
         info!("Cleaning up remaining containers and resources...");
@@ -527,12 +557,7 @@ impl CorrectnessRunner {
             error!(error = %e, "Failed to clean up resources for millstone group. Manual cleanup may be required.");
         }
 
-        debug!("Cleaning up generated millstone config files...");
-        for path in [&baseline_config_path, &comparison_config_path] {
-            if let Err(e) = tokio::fs::remove_file(path).await {
-                error!(error = %e, "Failed to remove generated millstone config '{}'. Manual cleanup may be required.", path.display());
-            }
-        }
+        cleanup_millstone_configs(&baseline_config_path, &comparison_config_path).await;
 
         info!("Cleanup complete.");
 
@@ -609,13 +634,22 @@ impl GroupRunner {
         Ok(self)
     }
 
-    async fn spawn(mut self) -> Result<AgentGroupCollector, GenericError> {
+    async fn spawn(self) -> Result<AgentGroupCollector, GenericError> {
+        AgentGroupCollector::new(self.spawn_into().await?)
+    }
+
+    /// Spawns all drivers in this group and returns the resulting [`SpawnedDrivers`].
+    ///
+    /// If any driver fails to start, any already-started drivers are cleaned up and the error is
+    /// returned. This is the shared core of [`spawn`][Self::spawn] and
+    /// [`spawn_millstone`][Self::spawn_millstone].
+    async fn spawn_into(mut self) -> Result<SpawnedDrivers, GenericError> {
         let mut driver_handles = Vec::new();
 
         // Spawn all of our drivers, short-circuiting if any of them fail to start.
         //
-        // We capture the error if any of them _do_ happen to fail, and return it only after we have attempted to clean
-        // up any drivers that were successfully spawned.
+        // We capture the error if any of them _do_ happen to fail, and return it only after we
+        // have attempted to clean up any drivers that were successfully spawned.
         let mut maybe_spawn_error = None;
         for driver in self.drivers {
             let driver_token = self.cancel_token.child_token();
@@ -638,9 +672,6 @@ impl GroupRunner {
         match maybe_spawn_error {
             Some(e) => {
                 debug!("Encountered error while spawning drivers. Cleaning up any successfully spawned drivers...");
-
-                // We encountered an error while spawning drivers, so we need to clean up any drivers that were successfully
-                // spawned before returning the error. We simply use our existing `SpawnedDrivers` to carry that out.
                 let driver_results = spawned_drivers.stop_and_wait().await;
                 if !driver_results.all_succeeded() {
                     error!("Failed to stop spawned drivers cleanly after encountering error during spawn.");
@@ -648,12 +679,10 @@ impl GroupRunner {
                         error!(driver_id, %status, "Driver failed to stop cleanly.");
                     }
                 }
-
                 debug!("Successfully cleaned up any spawned drivers.");
-
                 Err(e)
             }
-            None => AgentGroupCollector::new(spawned_drivers),
+            None => Ok(spawned_drivers),
         }
     }
 }
@@ -719,42 +748,9 @@ impl MillstoneWaiter {
     }
 }
 
-// Private extension for GroupRunner so the shared millstone group can return its own collector.
 impl GroupRunner {
-    async fn spawn_millstone(mut self) -> Result<MillstoneWaiter, GenericError> {
-        let mut driver_handles = Vec::new();
-        let mut maybe_spawn_error = None;
-
-        for driver in self.drivers {
-            let driver_token = self.cancel_token.child_token();
-            match spawn_driver_with_details(driver, &mut self.coordinator, driver_token).await {
-                Ok(handle) => driver_handles.push(handle),
-                Err(e) => {
-                    maybe_spawn_error = Some(e);
-                    break;
-                }
-            }
-        }
-
-        let mut spawned_drivers = SpawnedDrivers::new(self.coordinator, self.cancel_token);
-        for driver_handle in driver_handles {
-            spawned_drivers.add_driver_handle(driver_handle);
-        }
-
-        match maybe_spawn_error {
-            Some(e) => {
-                debug!("Encountered error while spawning millstone drivers. Cleaning up...");
-                let driver_results = spawned_drivers.stop_and_wait().await;
-                if !driver_results.all_succeeded() {
-                    error!("Failed to stop spawned millstone drivers cleanly after encountering error during spawn.");
-                    for (driver_id, status) in driver_results.failures() {
-                        error!(driver_id, %status, "Driver failed to stop cleanly.");
-                    }
-                }
-                Err(e)
-            }
-            None => MillstoneWaiter::new(spawned_drivers),
-        }
+    async fn spawn_millstone(self) -> Result<MillstoneWaiter, GenericError> {
+        MillstoneWaiter::new(self.spawn_into().await?)
     }
 }
 
