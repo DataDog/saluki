@@ -8,7 +8,37 @@
 //! configuration surface as an operator would see it, and can be used at runtime to detect
 //! unknown or unsupported keys in a loaded configuration file.
 //!
-//! TODO: add a user's guide here for developers
+//! ## User Guide
+//!
+//! The config registry tests enforce uniqueness and completeness constraints similar to
+//! primary-key and unique constraints in a relational database. Every key in the vendored
+//! schema (`core_schema.yaml`) must appear in exactly one of two places: an annotation
+//! ([`SalukiAnnotation`]) or the ignored-keys list (`etc/ignored_keys.yaml`). No key may
+//! appear in both, and no key may appear twice within either list.
+//!
+//! If a test fails, it means one of these constraints was violated. Common scenarios:
+//!
+//! ### Adding a Configuration Key
+//!
+//! When Saluki gains support for a new key, add a [`SalukiAnnotation`] in the appropriate
+//! `config_registry::datadog::*` submodule with [`SupportLevel::Full`] or
+//! [`SupportLevel::Partial`] and a non-empty `used_by` list. If the key was previously in
+//! `etc/ignored_keys.yaml`, remove it from there. If it was previously
+//! [`SupportLevel::Incompatible`], move it from `datadog/unsupported.rs` to the
+//! appropriate submodule and update its support level.
+//!
+//! ### Updating the Vendored Schema
+//!
+//! After updating `vendor/core_schema.yaml`, rebuild to regenerate the schema module
+//! (the `build.rs` script handles this automatically). Any new keys will cause the
+//! `all_schema_entries_are_annotated_or_ignored` test to fail. For each new key, decide:
+//!
+//! - **Irrelevant to ADP**: add to `etc/ignored_keys.yaml` with a reason.
+//! - **Incompatible**: add to `datadog/unsupported.rs` with a [`Severity`] level.
+//! - **Supported**: add to the appropriate `datadog/*.rs` submodule.
+//!
+//! If the update removed keys, the `no_stale_entries` test catches annotations or
+//! ignored entries that reference keys no longer in the schema. Delete the stale entries.
 
 mod classifier;
 pub mod datadog;

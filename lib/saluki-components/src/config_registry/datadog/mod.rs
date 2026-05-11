@@ -84,7 +84,8 @@ mod registry_tests {
                     assert!(
                         !annotation.used_by.is_empty(),
                         "annotation '{}' has support level {:?} but used_by is empty — \
-                         add the consuming struct name(s) to used_by, or change the support level",
+                         add the consuming struct name(s) to used_by, or change the support level. \
+                         See config_registry/mod.rs module docs for details.",
                         path,
                         annotation.support_level,
                     );
@@ -93,15 +94,17 @@ mod registry_tests {
                     assert!(
                         annotation.used_by.is_empty(),
                         "annotation '{}' has support level Incompatible but used_by is not empty — \
-                         remove the struct name(s) from used_by, or change the support level",
+                         remove the struct name(s) from used_by, or change the support level. \
+                         See config_registry/mod.rs module docs for details.",
                         path,
                     );
                 }
                 SupportLevel::Ignored | SupportLevel::Unrecognized => {
                     panic!(
                         "annotation '{}' has support level {:?} — \
-                         Ignored is reserved for unannotated schema keys and must not appear \
-                         in a hand-written SalukiAnnotation",
+                         Ignored and Unrecognized are reserved for unannotated keys and must not \
+                         appear in a handwritten SalukiAnnotation. \
+                         See config_registry/mod.rs module docs for details.",
                         path, annotation.support_level
                     );
                 }
@@ -123,7 +126,8 @@ mod registry_tests {
 
         if !duplicates.is_empty() {
             panic!(
-                "{} key(s) appear in both SUPPORTED_ANNOTATIONS and UNSUPPORTED_ANNOTATIONS:\n{}",
+                "{} key(s) appear in both SUPPORTED_ANNOTATIONS and UNSUPPORTED_ANNOTATIONS:\n{}\n\
+                 See config_registry/mod.rs module docs for details.",
                 duplicates.len(),
                 duplicates
                     .iter()
@@ -137,21 +141,23 @@ mod registry_tests {
     #[test]
     fn no_duplicates_in_supported_annotations() {
         if let Err(dupes) = check_for_duplicates(SUPPORTED_ANNOTATIONS.iter().map(|&a| a.yaml_path())) {
-            panic!("Duplicates in SUPPORTED_ANNOTATIONS:{dupes}");
+            panic!("Duplicates in SUPPORTED_ANNOTATIONS:{dupes}\nSee config_registry/mod.rs module docs for details.");
         }
     }
 
     #[test]
     fn no_duplicates_in_unsupported_annotations() {
         if let Err(dupes) = check_for_duplicates(UNSUPPORTED_ANNOTATIONS.iter().map(|&a| a.yaml_path())) {
-            panic!("Duplicates in UNSUPPORTED_ANNOTATIONS:{dupes}");
+            panic!(
+                "Duplicates in UNSUPPORTED_ANNOTATIONS:{dupes}\nSee config_registry/mod.rs module docs for details."
+            );
         }
     }
 
     #[test]
     fn no_duplicates_in_ignored_keys() {
         if let Err(dupes) = check_for_duplicates(IGNORED_ENTRIES.iter()) {
-            panic!("Duplicates in IGNORED_ENTRIES:{dupes}");
+            panic!("Duplicates in IGNORED_ENTRIES:{dupes}\nSee config_registry/mod.rs module docs for details.");
         }
     }
 
@@ -164,7 +170,8 @@ mod registry_tests {
             .collect();
         if !overlaps.is_empty() {
             panic!(
-                "{} key(s) appear in both ALL_ANNOTATIONS and IGNORED_ENTRIES:\n{}",
+                "{} key(s) appear in both ALL_ANNOTATIONS and IGNORED_ENTRIES:\n{}\n\
+                 See config_registry/mod.rs module docs for details.",
                 overlaps.len(),
                 overlaps
                     .iter()
@@ -215,7 +222,7 @@ mod registry_tests {
                     .join("\n"),
             ));
         }
-        panic!("{msg}");
+        panic!("{msg}\nSee config_registry/mod.rs module docs for details.");
     }
 
     #[test]
@@ -232,7 +239,8 @@ mod registry_tests {
         if !misclassified.is_empty() {
             panic!(
                 "{} annotation(s) marked Schema::Saluki but found in ALL_SCHEMA_ENTRIES \
-                 (should reference the generated schema:: constant instead):\n{}",
+                 (should reference the generated schema:: constant instead):\n{}\n\
+                 See config_registry/mod.rs module docs for details.",
                 misclassified.len(),
                 misclassified
                     .iter()
@@ -262,7 +270,8 @@ mod registry_tests {
 
         if !missing_keys.is_empty() {
             panic!(
-                "{} config key(s) are missing from the Saluki registry: \n\n{}",
+                "{} config key(s) are missing from the Saluki registry: \n\n{}\n\n\
+                 See config_registry/mod.rs module docs for details.",
                 missing_keys.len(),
                 missing_keys.join("\n")
             );
