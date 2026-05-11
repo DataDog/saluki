@@ -190,9 +190,7 @@ fn render(entries: &[SchemaEntry]) -> String {
     )
     .unwrap();
     writeln!(out).unwrap();
-    writeln!(out, "#[cfg(test)]").unwrap();
-    writeln!(out, "use crate::config_registry::Schema;").unwrap();
-    writeln!(out, "use crate::config_registry::{{SchemaEntry, ValueType}};").unwrap();
+    writeln!(out, "use crate::config_registry::{{Schema, SchemaEntry, ValueType}};").unwrap();
     writeln!(out).unwrap();
 
     for entry in entries {
@@ -218,7 +216,6 @@ fn render(entries: &[SchemaEntry]) -> String {
         };
 
         writeln!(out, "pub const {}: SchemaEntry = SchemaEntry {{", entry.const_name).unwrap();
-        writeln!(out, "    #[cfg(test)]").unwrap();
         writeln!(out, "    schema: Schema::Datadog,").unwrap();
         writeln!(out, "    yaml_path: \"{}\",", entry.yaml_path).unwrap();
         writeln!(out, "    env_vars: {},", env_vars_literal).unwrap();

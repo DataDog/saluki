@@ -196,7 +196,6 @@ pub enum ValueType {
     StringList,
 }
 
-#[cfg(test)]
 /// Which schema source of truth defined the `SchemaEntry`
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 #[repr(u8)]
@@ -218,7 +217,7 @@ pub(crate) enum Schema {
 #[derive(Debug)]
 pub struct SchemaEntry {
     /// The source of truth from which this entry was derived.
-    #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) schema: Schema,
 
     /// Canonical dot-separated YAML path for this key (e.g. `"proxy.http"`).

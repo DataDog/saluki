@@ -1,11 +1,10 @@
 //! Annotations for the aggregate transform configuration keys.
-#[cfg(test)]
-use crate::config_registry::Schema;
-use crate::config_registry::{generated::schema, structs, SalukiAnnotation, SchemaEntry, SupportLevel, ValueType};
+use crate::config_registry::{
+    generated::schema, structs, SalukiAnnotation, Schema, SchemaEntry, SupportLevel, ValueType,
+};
 
 // ADP-specific keys not present in the vendored Agent schema.
 static AGGREGATE_WINDOW_DURATION_SCHEMA: SchemaEntry = SchemaEntry {
-    #[cfg(test)]
     schema: Schema::Saluki,
     yaml_path: "aggregate_window_duration",
     env_vars: &[],
@@ -14,7 +13,6 @@ static AGGREGATE_WINDOW_DURATION_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static AGGREGATE_FLUSH_INTERVAL_SCHEMA: SchemaEntry = SchemaEntry {
-    #[cfg(test)]
     schema: Schema::Saluki,
     yaml_path: "aggregate_flush_interval",
     env_vars: &[],
@@ -23,7 +21,6 @@ static AGGREGATE_FLUSH_INTERVAL_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static AGGREGATE_CONTEXT_LIMIT_SCHEMA: SchemaEntry = SchemaEntry {
-    #[cfg(test)]
     schema: Schema::Saluki,
     yaml_path: "aggregate_context_limit",
     env_vars: &[],
@@ -32,7 +29,6 @@ static AGGREGATE_CONTEXT_LIMIT_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static COUNTER_EXPIRY_SECONDS_SCHEMA: SchemaEntry = SchemaEntry {
-    #[cfg(test)]
     schema: Schema::Saluki,
     yaml_path: "counter_expiry_seconds",
     env_vars: &[],
@@ -41,7 +37,6 @@ static COUNTER_EXPIRY_SECONDS_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static AGGREGATE_PASSTHROUGH_IDLE_FLUSH_TIMEOUT_SCHEMA: SchemaEntry = SchemaEntry {
-    #[cfg(test)]
     schema: Schema::Saluki,
     yaml_path: "aggregate_passthrough_idle_flush_timeout",
     env_vars: &[],
