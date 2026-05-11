@@ -153,16 +153,45 @@ run-benchmarks-adp:
       --wait-delay-seconds 60
       --submission-metadata submission_metadata
     # Pull the analysis report and output it to stdout.
+    #
+    # The condensed PR comment is posted from the `report-benchmarks-adp`
+    # downstream job so we still get a comment even if `job result` below
+    # exits non-zero.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job sync
       --submission-metadata submission_metadata
       --output-path outputs
-    # Post the report to the linked PR.
-    - cat outputs/report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Agent Data Plane)"
     # Finally, exit 1 if the job signals a regression else 0.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job result
       --submission-metadata submission_metadata
+
+report-benchmarks-adp:
+  stage: benchmark
+  # Build a condensed report from run-benchmarks-adp's report.json and post it
+  # to the linked PR. Runs whether or not `run-benchmarks-adp` succeeded so a
+  # comment is posted even when SMP signals a regression (and the parent job
+  # exits non-zero).
+  rules:
+    - if: !reference [.on_mq_branch, rules, if]
+      when: never
+    - if: !reference [.on_development_branch, rules, if]
+      when: always
+  needs:
+    - job: run-benchmarks-adp
+      artifacts: true
+  image: "${SALUKI_SMP_CI_IMAGE}"
+  timeout: 5m
+  artifacts:
+    expire_in: 1 week
+    paths:
+      - outputs/condensed-report.md
+    when: always
+  script:
+    - python3 ./test/smp/build-smp-report.py
+      --report-json outputs/report.json
+      --output-report outputs/condensed-report.md
+    - cat outputs/condensed-report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Agent Data Plane)"
 
 binary-size-analysis:
   stage: benchmark
