@@ -391,12 +391,14 @@ async fn add_apm_pipeline_to_blueprint(
         .connect_component("dd_out", ["v1_dd_traces_encode"])?;
 
     // `dd_stats_encode` is shared with the OTLP traces pipeline when both are active.
-    // If OTLP traces are not present we own the encoder AND the dd_out edge for stats.
-    // If OTLP traces ARE present the encoder already exists and is already wired to
-    // dd_out — we only need to add v1_dd_apm_stats as a second upstream.
-    // Adding the dd_out edge unconditionally would create a duplicate graph edge that
-    // causes every stats payload to be forwarded twice.
-    blueprint.connect_component("dd_stats_encode", ["v1_dd_apm_stats"])?;
+    //
+    // APM-only:  we own the encoder — register it first, then connect v1_dd_apm_stats
+    //            as its input and dd_out as its output.
+    //
+    // OTLP+APM:  the encoder already exists (registered by add_baseline_traces_pipeline)
+    //            and dd_out is already wired to it; we only need to add v1_dd_apm_stats
+    //            as a second upstream. Adding the dd_out edge again would create a
+    //            duplicate graph edge that forwards every stats payload twice.
     if !dp_config.traces_pipeline_required() {
         let dd_apm_stats_encoder = DatadogApmStatsEncoderConfiguration::from_configuration(config)
             .error_context("Failed to configure Datadog APM Stats encoder.")?
@@ -404,7 +406,10 @@ async fn add_apm_pipeline_to_blueprint(
             .await?;
         blueprint
             .add_encoder("dd_stats_encode", dd_apm_stats_encoder)?
+            .connect_component("dd_stats_encode", ["v1_dd_apm_stats"])?
             .connect_component("dd_out", ["dd_stats_encode"])?;
+    } else {
+        blueprint.connect_component("dd_stats_encode", ["v1_dd_apm_stats"])?;
     }
 
     Ok(())

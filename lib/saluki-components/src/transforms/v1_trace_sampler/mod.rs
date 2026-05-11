@@ -16,7 +16,7 @@ use saluki_common::rate::TokenBucket;
 use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{transforms::*, ComponentContext},
-    data_model::event::{trace::v1::V1TraceChunk, Event},
+    data_model::event::{trace::Trace, Event},
     topology::EventsBuffer,
 };
 use saluki_error::GenericError;
@@ -125,97 +125,99 @@ pub struct V1TraceSampler {
 impl V1TraceSampler {
     /// Implements `runSamplersV1` / `traceSamplingV1` from the Go Trace Agent.
     ///
-    /// Returns `true` if the chunk should be forwarded, `false` if it should be
-    /// removed from the buffer entirely. In ETS mode the chunk is always forwarded
+    /// Returns `true` if the trace should be forwarded, `false` if it should be
+    /// removed from the buffer entirely. In ETS mode the trace is always forwarded
     /// (with `dropped_trace` set to reflect whether it was a kept or dropped trace).
-    fn process_chunk(
+    fn process_trace(
         &mut self,
         now: SystemTime,
-        chunk: &mut V1TraceChunk,
+        trace: &mut Trace,
         tracer_env: &str,
         client_dropped_p0s_weight: f64,
     ) -> bool {
-        if chunk.spans.is_empty() {
+        if trace.spans().is_empty() {
             return false;
         }
 
         // ── Error Tracking Standalone (ETS) ────────────────────────────────────
-        // Only keep traces containing errors; always forward (with dropped_trace flag).
         if self.error_tracking_standalone {
-            let has_error = chunk.spans.iter().any(|s| s.error);
+            let has_error = trace.spans().iter().any(|s| s.error() != 0);
             let keep = has_error
                 && self
                     .error_token_bucket
                     .as_mut()
                     .map(|b| b.allow())
                     .unwrap_or(true);
-            chunk.dropped_trace = !keep;
+            trace.dropped_trace = !keep;
             return true;
         }
 
         // ── Rare sampler runs unconditionally before any keep/drop decision ─────
-        let rare = self.rare_sampler.sample(chunk);
+        let rare = self.rare_sampler.sample(trace.spans());
 
         // ── Manual/user drop: hard drop, no overrides possible ─────────────────
-        // TODO: implement the full isManualUserDropV1 check from the Go agent:
-        // hard-drop should only fire when BOTH priority < 0 AND
-        // sampling_mechanism == manualSamplingV1 (4). As-written, any negative
-        // priority hard-drops even when it wasn't an explicit user drop, which
-        // prevents the rare/error samplers from overriding it.
-        // See: pkg/trace/agent/agent.go isManualUserDropV1
-        if chunk.priority < 0 {
-            chunk.dropped_trace = true;
+        // TODO: implement the full isManualUserDropV1 check from the Go agent.
+        let priority = trace.priority.unwrap_or(PRIORITY_NONE);
+        if priority < 0 {
+            trace.dropped_trace = true;
             return false;
         }
 
         // ── Rare sampler override ───────────────────────────────────────────────
         if rare {
-            chunk.priority = PRIORITY_AUTO_KEEP;
-            chunk.dropped_trace = false;
+            trace.priority = Some(PRIORITY_AUTO_KEEP);
+            trace.dropped_trace = false;
+            debug!(trace_id_low = trace.trace_id_low, "Keeping V1 trace chunk: rare sampler override.");
             return true;
         }
 
         // ── Priority / NoPriority path ──────────────────────────────────────────
-        let has_priority = chunk.priority != PRIORITY_NONE;
+        let has_priority = trace.priority.is_some();
 
-        let root_idx = find_root_span_idx(chunk);
+        let root_idx = find_root_span_idx(trace.spans());
 
-        let priority = chunk.priority;
         let keep = if has_priority {
-            let root = &mut chunk.spans[root_idx];
+            let spans = trace.spans_mut();
+            let root = &mut spans[root_idx];
             self.priority_sampler.sample(now, priority, root, tracer_env, client_dropped_p0s_weight)
         } else {
             self.no_priority_sampler.sample()
         };
 
         if keep {
-            // Normalize PRIORITY_NONE (-128) so the encoder never writes an undefined
-            // priority value into the proto. Go's runSamplers always lands on {-1,0,1,2}.
-            if chunk.priority == PRIORITY_NONE {
-                chunk.priority = PRIORITY_AUTO_KEEP;
+            // Normalize PRIORITY_NONE so the encoder never writes an undefined priority.
+            if trace.priority.is_none() {
+                trace.priority = Some(PRIORITY_AUTO_KEEP);
             }
-            chunk.dropped_trace = false;
+            trace.dropped_trace = false;
+            debug!(
+                trace_id_low = trace.trace_id_low,
+                priority = trace.priority,
+                has_priority,
+                "Keeping V1 trace chunk: priority/no-priority sampler."
+            );
             return true;
         }
 
         // ── Error sampler as final override ────────────────────────────────────
-        if self.error_sampling_enabled && chunk.spans.iter().any(|s| s.error) {
+        if self.error_sampling_enabled && trace.spans().iter().any(|s| s.error() != 0) {
             if let Some(ref mut bucket) = self.error_token_bucket {
                 if bucket.allow() {
-                    chunk.priority = PRIORITY_AUTO_KEEP;
-                    chunk.dropped_trace = false;
+                    trace.priority = Some(PRIORITY_AUTO_KEEP);
+                    trace.dropped_trace = false;
+                    debug!(trace_id_low = trace.trace_id_low, "Keeping V1 trace chunk: error sampler override.");
                     return true;
                 }
             }
         }
 
         // Normalize PRIORITY_NONE on the drop path too.
-        if chunk.priority == PRIORITY_NONE {
-            chunk.priority = 0; // PRIORITY_AUTO_DROP
+        if trace.priority.is_none() {
+            trace.priority = Some(0); // PRIORITY_AUTO_DROP
         }
         debug!(
-            trace_id_low = chunk.trace_id_low,
-            priority = chunk.priority,
+            trace_id_low = trace.trace_id_low,
+            priority = trace.priority,
             "Dropping V1 trace chunk."
         );
         false
@@ -225,26 +227,35 @@ impl V1TraceSampler {
 impl SynchronousTransform for V1TraceSampler {
     fn transform_buffer(&mut self, buffer: &mut EventsBuffer) {
         let now = SystemTime::now();
+        let mut kept = 0u32;
+        let mut dropped = 0u32;
         buffer.remove_if(|event| match event {
-            Event::V1Trace(trace) => {
+            Event::Trace(trace) => {
                 let tracer_env = trace.env.clone();
                 let weight = trace.client_dropped_p0s_weight;
-                !self.process_chunk(now, &mut trace.chunk, tracer_env.as_ref(), weight)
+                let remove = !self.process_trace(now, trace, tracer_env.as_ref(), weight);
+                if remove {
+                    dropped += 1;
+                } else {
+                    kept += 1;
+                }
+                remove
             }
             _ => false,
         });
+        if kept + dropped > 0 {
+            debug!(kept, dropped, "V1 trace sampler processed buffer.");
+        }
     }
 }
 
-/// Find the index of the root span (parent_id == 0) using the same heuristic as the
-/// OTLP-path `TraceSampler`. Falls back to the last span if none is found.
-fn find_root_span_idx(chunk: &V1TraceChunk) -> usize {
-    let spans = &chunk.spans;
+/// Find the index of the root span (parent_id == 0). Falls back to the last span.
+fn find_root_span_idx(spans: &[saluki_core::data_model::event::trace::Span]) -> usize {
     let len = spans.len();
 
     // Fast path: scan from the end (tracers often report root last).
     for i in (0..len).rev() {
-        if spans[i].parent_id == 0 {
+        if spans[i].parent_id() == 0 {
             return i;
         }
     }
@@ -253,10 +264,10 @@ fn find_root_span_idx(chunk: &V1TraceChunk) -> usize {
     let mut parent_to_child: std::collections::HashMap<u64, usize> = spans
         .iter()
         .enumerate()
-        .map(|(i, s)| (s.parent_id, i))
+        .map(|(i, s)| (s.parent_id(), i))
         .collect();
     for span in spans {
-        parent_to_child.remove(&span.span_id);
+        parent_to_child.remove(&span.span_id());
     }
     if let Some((&_, &idx)) = parent_to_child.iter().next() {
         return idx;
@@ -267,7 +278,7 @@ fn find_root_span_idx(chunk: &V1TraceChunk) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use saluki_core::data_model::event::trace::v1::{V1Span, V1TraceChunk};
+    use saluki_core::data_model::event::trace::Trace;
     use stringtheory::MetaString;
 
     use super::*;
@@ -289,42 +300,24 @@ mod tests {
         }
     }
 
-    fn make_span(parent_id: u64, error: bool) -> V1Span {
-        V1Span {
-            service: MetaString::from_static("svc"),
-            name: MetaString::from_static("op"),
-            resource: MetaString::from_static("res"),
-            span_id: 1,
-            parent_id,
-            start: 0,
-            duration: 1000,
-            error,
-            attributes: Vec::new(),
-            span_type: MetaString::from_static("web"),
-            links: Vec::new(),
-            events: Vec::new(),
-            env: MetaString::default(),
-            version: MetaString::default(),
-            component: MetaString::default(),
-            kind: 0,
-        }
+    fn make_span(parent_id: u64, error: bool) -> saluki_core::data_model::event::trace::Span {
+        saluki_core::data_model::event::trace::Span::new(
+            "svc", "op", "res", "web", 0, 1, parent_id, 0, 1000, if error { 1 } else { 0 },
+        )
     }
 
-    fn make_chunk(priority: i32, spans: Vec<V1Span>) -> V1TraceChunk {
-        V1TraceChunk {
-            priority,
-            origin: MetaString::default(),
-            attributes: Vec::new(),
-            spans,
-            dropped_trace: false,
-            trace_id_high: 0,
-            trace_id_low: 1,
-            sampling_mechanism: 0,
+    fn make_trace(priority: i32, spans: Vec<saluki_core::data_model::event::trace::Span>) -> Trace {
+        let mut trace = Trace::new(spans, saluki_context::tags::TagSet::default());
+        if priority == PRIORITY_NONE {
+            trace.priority = None;
+        } else {
+            trace.priority = Some(priority);
         }
+        trace
     }
 
-    fn process(sampler: &mut V1TraceSampler, chunk: &mut V1TraceChunk) -> bool {
-        sampler.process_chunk(SystemTime::now(), chunk, "prod", 0.0)
+    fn process(sampler: &mut V1TraceSampler, trace: &mut Trace) -> bool {
+        sampler.process_trace(SystemTime::now(), trace, "prod", 0.0)
     }
 
     // ── Basic keep/drop ─────────────────────────────────────────────────────
@@ -332,41 +325,41 @@ mod tests {
     #[test]
     fn empty_chunk_is_dropped() {
         let mut s = make_sampler();
-        let mut chunk = make_chunk(0, vec![]);
-        assert!(!process(&mut s, &mut chunk));
+        let mut trace = make_trace(0, vec![]);
+        assert!(!process(&mut s, &mut trace));
     }
 
     #[test]
     fn user_drop_is_hard_dropped() {
         let mut s = make_sampler();
-        let mut chunk = make_chunk(-1, vec![make_span(0, false)]);
-        assert!(!process(&mut s, &mut chunk));
-        assert!(chunk.dropped_trace);
+        let mut trace = make_trace(-1, vec![make_span(0, false)]);
+        assert!(!process(&mut s, &mut trace));
+        assert!(trace.dropped_trace);
     }
 
     #[test]
     fn auto_keep_is_forwarded() {
         let mut s = make_sampler();
-        let mut chunk = make_chunk(1, vec![make_span(0, false)]);
-        assert!(process(&mut s, &mut chunk));
-        assert!(!chunk.dropped_trace);
+        let mut trace = make_trace(1, vec![make_span(0, false)]);
+        assert!(process(&mut s, &mut trace));
+        assert!(!trace.dropped_trace);
     }
 
     #[test]
     fn user_keep_is_forwarded() {
         let mut s = make_sampler();
-        let mut chunk = make_chunk(2, vec![make_span(0, false)]);
-        assert!(process(&mut s, &mut chunk));
-        assert!(!chunk.dropped_trace);
+        let mut trace = make_trace(2, vec![make_span(0, false)]);
+        assert!(process(&mut s, &mut trace));
+        assert!(!trace.dropped_trace);
     }
 
     #[test]
     fn auto_drop_with_error_is_kept_by_error_sampler() {
         let mut s = make_sampler();
-        let mut chunk = make_chunk(0, vec![make_span(0, true)]);
-        assert!(process(&mut s, &mut chunk));
-        assert_eq!(chunk.priority, PRIORITY_AUTO_KEEP);
-        assert!(!chunk.dropped_trace);
+        let mut trace = make_trace(0, vec![make_span(0, true)]);
+        assert!(process(&mut s, &mut trace));
+        assert_eq!(trace.priority, Some(PRIORITY_AUTO_KEEP));
+        assert!(!trace.dropped_trace);
     }
 
     #[test]
@@ -376,8 +369,8 @@ mod tests {
             error_sampling_enabled: false,
             ..make_sampler()
         };
-        let mut chunk = make_chunk(0, vec![make_span(0, false)]);
-        assert!(!process(&mut s, &mut chunk));
+        let mut trace = make_trace(0, vec![make_span(0, false)]);
+        assert!(!process(&mut s, &mut trace));
     }
 
     // ── Rare sampler ────────────────────────────────────────────────────────
@@ -390,54 +383,45 @@ mod tests {
             error_sampling_enabled: false,
             ..make_sampler()
         };
-        let mut chunk = make_chunk(0, vec![make_span(0, false)]);
-        assert!(process(&mut s, &mut chunk));
-        assert_eq!(chunk.priority, PRIORITY_AUTO_KEEP);
+        let mut trace = make_trace(0, vec![make_span(0, false)]);
+        assert!(process(&mut s, &mut trace));
+        assert_eq!(trace.priority, Some(PRIORITY_AUTO_KEEP));
     }
 
     #[test]
     fn rare_sampler_runs_before_drop_decision() {
-        // Even if the tracer set priority == 0, rare sampler fires first.
         let mut s = V1TraceSampler {
             rare_sampler: V1RareSampler::new(true, 1000.0, Duration::from_secs(300), 200),
             error_token_bucket: None,
             error_sampling_enabled: false,
             ..make_sampler()
         };
-        // First call: new signature → rare keeps it.
-        let mut chunk = make_chunk(0, vec![make_span(0, false)]);
-        assert!(process(&mut s, &mut chunk), "rare should keep first occurrence");
+        let mut trace = make_trace(0, vec![make_span(0, false)]);
+        assert!(process(&mut s, &mut trace), "rare should keep first occurrence");
 
-        // Second call same signature within TTL: rare won't keep it again.
-        let mut chunk2 = make_chunk(0, vec![make_span(0, false)]);
-        assert!(!process(&mut s, &mut chunk2), "rare should not repeat-sample within TTL");
+        let mut trace2 = make_trace(0, vec![make_span(0, false)]);
+        assert!(!process(&mut s, &mut trace2), "rare should not repeat-sample within TTL");
     }
 
     // ── PriorityNone path ───────────────────────────────────────────────────
 
     #[test]
     fn priority_none_goes_to_no_priority_sampler() {
-        // PRIORITY_NONE (-128) should not go through the priority sampler.
         let mut s = V1TraceSampler {
-            // Replace priority sampler with one that would fail if called (TPS=0).
             priority_sampler: V1PrioritySampler::new(
                 MetaString::from_static("prod"),
-                0.0, // would drop everything
+                0.0,
                 1.0,
                 V1SamplingRatesHandle::new(),
             ),
-            // No-priority sampler with very high rate.
             no_priority_sampler: V1NoPrioritySampler::new(10000.0),
             rare_sampler: V1RareSampler::new(false, 5.0, Duration::from_secs(300), 200),
             error_token_bucket: None,
             error_sampling_enabled: false,
             error_tracking_standalone: false,
         };
-        let mut chunk = make_chunk(PRIORITY_NONE, vec![make_span(0, false)]);
-        // no_priority_sampler at 10k TPS should allow this.
-        let result = process(&mut s, &mut chunk);
-        // We can't assert definitively on the result (token bucket), but we verify
-        // the chunk reached the no-priority path without panicking.
+        let mut trace = make_trace(PRIORITY_NONE, vec![make_span(0, false)]);
+        let result = process(&mut s, &mut trace);
         let _ = result;
     }
 
@@ -450,9 +434,9 @@ mod tests {
             error_token_bucket: Some(TokenBucket::new(10.0, 100)),
             ..make_sampler()
         };
-        let mut chunk = make_chunk(0, vec![make_span(0, true)]);
-        assert!(process(&mut s, &mut chunk));
-        assert!(!chunk.dropped_trace);
+        let mut trace = make_trace(0, vec![make_span(0, true)]);
+        assert!(process(&mut s, &mut trace));
+        assert!(!trace.dropped_trace);
     }
 
     #[test]
@@ -462,9 +446,8 @@ mod tests {
             error_token_bucket: Some(TokenBucket::new(10.0, 100)),
             ..make_sampler()
         };
-        let mut chunk = make_chunk(1, vec![make_span(0, false)]);
-        // ETS always forwards (returns true) but with dropped_trace=true for non-errors.
-        assert!(process(&mut s, &mut chunk));
-        assert!(chunk.dropped_trace, "non-error ETS trace must have dropped_trace=true");
+        let mut trace = make_trace(1, vec![make_span(0, false)]);
+        assert!(process(&mut s, &mut trace));
+        assert!(trace.dropped_trace, "non-error ETS trace must have dropped_trace=true");
     }
 }

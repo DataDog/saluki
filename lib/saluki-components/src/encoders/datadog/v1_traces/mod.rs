@@ -1,7 +1,8 @@
-//! V1 APM traces encoder.
+//! APM traces encoder (idx format).
 //!
-//! Encodes [`Event::V1Trace`] to `AgentPayload.idxTracerPayloads` (proto field 11) using the
-//! `idx.TracerPayload` string-indexed format, forwarded to `/api/v0.2/traces`.
+//! Encodes `Event::Trace` events from the APM pipeline to `AgentPayload.idxTracerPayloads`
+//! (proto field 11) using the `idx.TracerPayload` string-indexed format, forwarded to
+//! `/api/v0.2/traces`.
 //!
 //! **Wire format note**: The Go Trace Agent V1 writer uses `idxTracerPayloads` (field 11), NOT
 //! the legacy `tracerPayloads` (field 5) used by the OTLP encoder. The `idx.TracerPayload`
@@ -24,7 +25,7 @@ use saluki_core::{
     components::{encoders::*, ComponentContext},
     data_model::{
         event::{
-            trace::v1::{V1AnyValue, V1KeyValue, V1Trace},
+            trace::{AttributeValue, EventAttributeScalarValue, EventAttributeValue, Span, Trace},
             EventType,
         },
         payload::{HttpPayload, Payload, PayloadMetadata, PayloadType},
@@ -54,6 +55,8 @@ use crate::common::datadog::{
 };
 
 const MAX_TRACES_PER_PAYLOAD: usize = 10000;
+/// Sentinel priority value matching Go's `PriorityNone = math.MinInt8`.
+const PRIORITY_NONE: i32 = i8::MIN as i32;
 static CONTENT_TYPE_PROTOBUF: HeaderValue = HeaderValue::from_static("application/x-protobuf");
 
 fn default_serializer_compressor_kind() -> String {
@@ -125,7 +128,7 @@ impl V1DatadogTraceConfiguration {
 #[async_trait]
 impl EncoderBuilder for V1DatadogTraceConfiguration {
     fn input_event_type(&self) -> EventType {
-        EventType::V1Trace
+        EventType::Trace
     }
 
     fn output_payload_type(&self) -> PayloadType {
@@ -170,7 +173,7 @@ impl MemoryBounds for V1DatadogTraceConfiguration {
 
         builder
             .firm()
-            .with_array::<V1Trace>("traces split re-encode buffer", MAX_TRACES_PER_PAYLOAD);
+            .with_array::<Trace>("traces split re-encode buffer", MAX_TRACES_PER_PAYLOAD);
     }
 }
 
@@ -249,7 +252,7 @@ async fn run_request_builder(
         select! {
             Some(event_buffer) = events_rx.recv() => {
                 for event in event_buffer {
-                    let trace = match event.try_into_v1_trace() {
+                    let trace = match event.try_into_trace() {
                         Some(t) => t,
                         None => continue,
                     };
@@ -322,7 +325,7 @@ async fn run_request_builder(
 ///
 /// Index 0 is always the empty string (reserved by the proto format). Non-empty
 /// strings are assigned indices 1..N in first-encounter order during a pre-pass
-/// over the entire `V1Trace`, ensuring the `Strings` proto field can be written
+/// over the entire `Trace`, ensuring the `Strings` proto field can be written
 /// before any `*_ref` field references an index.
 struct IdxStringTable {
     map: FastHashMap<MetaString, u32>,
@@ -332,7 +335,6 @@ struct IdxStringTable {
 
 impl IdxStringTable {
     fn new() -> Self {
-        // Pre-allocate enough capacity for a typical trace.
         let mut strings = Vec::with_capacity(64);
         strings.push(MetaString::empty()); // index 0 = empty string
         Self {
@@ -362,10 +364,17 @@ impl IdxStringTable {
         }
         *self.map.get(s).unwrap_or(&0)
     }
+
+    fn get_str(&self, s: &str) -> u32 {
+        if s.is_empty() {
+            return 0;
+        }
+        *self.map.get(s).unwrap_or(&0)
+    }
 }
 
-/// Build the complete string table from a `V1Trace` in a single pre-pass.
-fn collect_strings(trace: &V1Trace) -> IdxStringTable {
+/// Build the complete string table from a `Trace` in a single pre-pass.
+fn collect_strings(trace: &Trace) -> IdxStringTable {
     let mut st = IdxStringTable::new();
 
     // Payload-level metadata strings.
@@ -377,70 +386,82 @@ fn collect_strings(trace: &V1Trace) -> IdxStringTable {
     st.intern(&trace.env);
     st.intern(&trace.hostname);
     st.intern(&trace.app_version);
-    intern_kv_slice(&mut st, &trace.payload_attributes);
+
+    // Trace-level attributes (merged payload + chunk attributes).
+    intern_attribute_map(&mut st, &trace.attributes);
 
     // Chunk-level strings.
-    let chunk = &trace.chunk;
-    st.intern(&chunk.origin);
-    intern_kv_slice(&mut st, &chunk.attributes);
+    st.intern(&trace.origin);
 
     // Per-span strings.
-    for span in &chunk.spans {
-        st.intern(&span.service);
-        st.intern(&span.name);
-        st.intern(&span.resource);
-        st.intern(&span.span_type);
+    for span in trace.spans() {
+        st.intern(&MetaString::from(span.service()));
+        st.intern(&MetaString::from(span.name()));
+        st.intern(&MetaString::from(span.resource()));
+        st.intern(&MetaString::from(span.span_type()));
         st.intern(&span.env);
         st.intern(&span.version);
         st.intern(&span.component);
-        intern_kv_slice(&mut st, &span.attributes);
 
-        for link in &span.links {
-            st.intern(&link.tracestate);
-            intern_kv_slice(&mut st, &link.attributes);
+        // Span attributes from the three legacy maps.
+        for (k, v) in span.meta() {
+            st.intern(k);
+            st.intern(v);
         }
-        for event in &span.events {
-            st.intern(&event.name);
-            intern_kv_slice(&mut st, &event.attributes);
+        for k in span.metrics().keys() {
+            st.intern(k);
+        }
+        for k in span.meta_struct().keys() {
+            st.intern(k);
+        }
+
+        for link in span.span_links() {
+            st.intern(&MetaString::from(link.tracestate()));
+            for (k, v) in link.attributes() {
+                st.intern(k);
+                st.intern(v);
+            }
+        }
+        for event in span.span_events() {
+            st.intern(&MetaString::from(event.name()));
+            for (k, v) in event.attributes() {
+                st.intern(k);
+                intern_event_attribute_value_strings(&mut st, v);
+            }
         }
     }
 
     st
 }
 
-/// Intern all keys and string values from a `V1KeyValue` slice.
-fn intern_kv_slice(st: &mut IdxStringTable, kvs: &[V1KeyValue]) {
-    for kv in kvs {
-        st.intern(&kv.key);
-        intern_any_value_strings(st, &kv.value);
+fn intern_attribute_map(st: &mut IdxStringTable, attrs: &FastHashMap<MetaString, AttributeValue>) {
+    for (k, v) in attrs {
+        st.intern(k);
+        if let AttributeValue::String(s) = v {
+            st.intern(s);
+        }
     }
 }
 
-fn intern_any_value_strings(st: &mut IdxStringTable, v: &V1AnyValue) {
+fn intern_event_attribute_value_strings(st: &mut IdxStringTable, v: &EventAttributeValue) {
     match v {
-        V1AnyValue::String(s) => {
+        EventAttributeValue::String(s) => {
             st.intern(s);
         }
-        V1AnyValue::Array(arr) => {
+        EventAttributeValue::Array(arr) => {
             for elem in arr {
-                intern_any_value_strings(st, elem);
+                if let EventAttributeScalarValue::String(s) = elem {
+                    st.intern(s);
+                }
             }
         }
-        V1AnyValue::KeyValueList(kvs) => {
-            for kv in kvs {
-                st.intern(&kv.key);
-                intern_any_value_strings(st, &kv.value);
-            }
-        }
-        V1AnyValue::Bool(_) | V1AnyValue::Double(_) | V1AnyValue::Int(_) | V1AnyValue::Bytes(_) => {}
+        _ => {}
     }
 }
 
 // ── Encoding helpers ──────────────────────────────────────────────────────────
 
 /// Pack a 128-bit trace ID into a 16-byte big-endian representation.
-/// The native idx.TraceChunk.traceID field carries the full 128 bits, so no
-/// `_dd.p.tid` span meta tag is needed on the idx path.
 fn trace_id_bytes(high: u64, low: u64) -> [u8; 16] {
     let mut b = [0u8; 16];
     b[..8].copy_from_slice(&high.to_be_bytes());
@@ -448,10 +469,9 @@ fn trace_id_bytes(high: u64, low: u64) -> [u8; 16] {
     b
 }
 
-/// Map a V1 span kind integer to the `idx.SpanKind` enum.
+/// Map a span kind integer to the `idx.SpanKind` enum.
 ///
 /// V1 wire format: 0=unspecified, 1=server, 2=client, 3=producer, 4=consumer, 5=internal.
-/// idx.SpanKind:   UNSPECIFIED=0, INTERNAL=1, SERVER=2, CLIENT=3, PRODUCER=4, CONSUMER=5.
 fn v1_kind_to_span_kind(kind: u32) -> idx::SpanKind {
     match kind {
         1 => idx::SpanKind::SPAN_KIND_SERVER,
@@ -463,39 +483,36 @@ fn v1_kind_to_span_kind(kind: u32) -> idx::SpanKind {
     }
 }
 
-/// Encode a `V1AnyValue` into an `idx.ValueOneOfBuilder`.
-///
-/// The `S: 'static` bound is required because `MessageMapBuilder::write_entry` uses
-/// a HRTB closure `for<'a> FnOnce(&mut AnyValueBuilder<'a, S>)` which forces `S: 'static`.
-fn encode_idx_value<S: piecemeal::ScratchBuffer + 'static>(
-    v: &mut idx::ValueOneOfBuilder<'_, S>, value: &V1AnyValue, st: &IdxStringTable,
+/// Write an `AttributeValue` into an `idx.ValueOneOfBuilder`.
+fn encode_attribute_value<S: piecemeal::ScratchBuffer + 'static>(
+    v: &mut idx::ValueOneOfBuilder<'_, S>, value: &AttributeValue, st: &IdxStringTable,
 ) -> std::io::Result<()> {
     match value {
-        V1AnyValue::String(s) => v.string_value_ref(st.get(s)),
-        V1AnyValue::Bool(b) => v.bool_value(*b),
-        V1AnyValue::Int(i) => v.int_value(*i),
-        V1AnyValue::Double(f) => v.double_value(*f),
-        V1AnyValue::Bytes(b) => v.bytes_value(b.as_slice()),
-        V1AnyValue::Array(arr) => v.array_value(|a| {
+        AttributeValue::String(s) => v.string_value_ref(st.get(s)),
+        AttributeValue::Float(f) => v.double_value(*f),
+        AttributeValue::Bytes(b) => v.bytes_value(b.as_slice()),
+    }
+}
+
+/// Write an `EventAttributeValue` into an `idx.ValueOneOfBuilder`.
+fn encode_event_attribute_value<S: piecemeal::ScratchBuffer + 'static>(
+    v: &mut idx::ValueOneOfBuilder<'_, S>, value: &EventAttributeValue, st: &IdxStringTable,
+) -> std::io::Result<()> {
+    match value {
+        EventAttributeValue::String(s) => v.string_value_ref(st.get(s)),
+        EventAttributeValue::Bool(b) => v.bool_value(*b),
+        EventAttributeValue::Int(i) => v.int_value(*i),
+        EventAttributeValue::Double(f) => v.double_value(*f),
+        EventAttributeValue::Array(arr) => v.array_value(|a| {
             for elem in arr {
                 a.add_values(|av| {
-                    av.value(|v2| encode_idx_value(v2, elem, st))?;
-                    Ok(())
-                })?;
-            }
-            Ok(())
-        }),
-        V1AnyValue::KeyValueList(kvs) => v.key_value_list(|kl| {
-            for kv in kvs {
-                let key_ref = st.get(&kv.key);
-                if key_ref == 0 {
-                    continue;
-                }
-                kl.add_key_values(|kb| {
-                    kb.key(key_ref)?;
-                    kb.value(|av| {
-                        av.value(|v2| encode_idx_value(v2, &kv.value, st))?;
-                        Ok(())
+                    av.value(|v2| {
+                        match elem {
+                            EventAttributeScalarValue::String(s) => v2.string_value_ref(st.get(s)),
+                            EventAttributeScalarValue::Bool(b) => v2.bool_value(*b),
+                            EventAttributeScalarValue::Int(i) => v2.int_value(*i),
+                            EventAttributeScalarValue::Double(f) => v2.double_value(*f),
+                        }
                     })?;
                     Ok(())
                 })?;
@@ -505,19 +522,98 @@ fn encode_idx_value<S: piecemeal::ScratchBuffer + 'static>(
     }
 }
 
-/// Write a `Vec<V1KeyValue>` into an `idx` attribute map (`map<uint32, AnyValue>`).
-fn write_idx_attrs<S: piecemeal::ScratchBuffer + 'static>(
+/// Write a `FastHashMap<MetaString, AttributeValue>` into an `idx` attribute map.
+fn write_idx_attribute_map<S: piecemeal::ScratchBuffer + 'static>(
     map: &mut piecemeal::MessageMapBuilder<'_, S, piecemeal::types::protobuf::Varint<u32>, idx::AnyValue>,
-    kvs: &[V1KeyValue],
+    attrs: &FastHashMap<MetaString, AttributeValue>,
     st: &IdxStringTable,
 ) -> std::io::Result<()> {
-    for kv in kvs {
-        let key_ref = st.get(&kv.key);
+    for (k, v) in attrs {
+        let key_ref = st.get(k);
         if key_ref == 0 {
-            continue; // skip empty-key attributes
+            continue;
         }
         map.write_entry(key_ref, |av| {
-            av.value(|v| encode_idx_value(v, &kv.value, st))?;
+            av.value(|vb| encode_attribute_value(vb, v, st))?;
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+
+/// Write a `FastHashMap<MetaString, MetaString>` (link attributes) into an `idx` attribute map.
+fn write_idx_string_map<S: piecemeal::ScratchBuffer + 'static>(
+    map: &mut piecemeal::MessageMapBuilder<'_, S, piecemeal::types::protobuf::Varint<u32>, idx::AnyValue>,
+    attrs: &FastHashMap<MetaString, MetaString>,
+    st: &IdxStringTable,
+) -> std::io::Result<()> {
+    for (k, v) in attrs {
+        let key_ref = st.get(k);
+        if key_ref == 0 {
+            continue;
+        }
+        let val_ref = st.get(v);
+        map.write_entry(key_ref, |av| {
+            av.value(|vb| vb.string_value_ref(val_ref))?;
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+
+/// Write span attributes from `meta`/`metrics`/`meta_struct` into an `idx` attribute map.
+fn write_idx_span_attrs<S: piecemeal::ScratchBuffer + 'static>(
+    map: &mut piecemeal::MessageMapBuilder<'_, S, piecemeal::types::protobuf::Varint<u32>, idx::AnyValue>,
+    span: &Span,
+    st: &IdxStringTable,
+) -> std::io::Result<()> {
+    for (k, v) in span.meta() {
+        let key_ref = st.get(k);
+        if key_ref == 0 {
+            continue;
+        }
+        let val_ref = st.get(v);
+        map.write_entry(key_ref, |av| {
+            av.value(|vb| vb.string_value_ref(val_ref))?;
+            Ok(())
+        })?;
+    }
+    for (k, v) in span.metrics() {
+        let key_ref = st.get(k);
+        if key_ref == 0 {
+            continue;
+        }
+        map.write_entry(key_ref, |av| {
+            av.value(|vb| vb.double_value(*v))?;
+            Ok(())
+        })?;
+    }
+    for (k, v) in span.meta_struct() {
+        let key_ref = st.get(k);
+        if key_ref == 0 {
+            continue;
+        }
+        map.write_entry(key_ref, |av| {
+            av.value(|vb| vb.bytes_value(v.as_slice()))?;
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+
+/// Write event attributes into an `idx` attribute map.
+fn write_idx_event_attrs<S: piecemeal::ScratchBuffer + 'static>(
+    map: &mut piecemeal::MessageMapBuilder<'_, S, piecemeal::types::protobuf::Varint<u32>, idx::AnyValue>,
+    attrs: &FastHashMap<MetaString, EventAttributeValue>,
+    st: &IdxStringTable,
+) -> std::io::Result<()> {
+    for (k, v) in attrs {
+        let key_ref = st.get(k);
+        if key_ref == 0 {
+            continue;
+        }
+        map.write_entry(key_ref, |av| {
+            av.value(|vb| encode_event_attribute_value(vb, v, st))?;
             Ok(())
         })?;
     }
@@ -546,13 +642,24 @@ impl V1TraceEndpointEncoder {
         }
     }
 
-    fn encode_idx_payload(&mut self, trace: &V1Trace, output: &mut Vec<u8>) -> std::io::Result<()> {
+    fn encode_idx_payload(&mut self, trace: &Trace, output: &mut Vec<u8>) -> std::io::Result<()> {
+        let root_service = trace
+            .spans()
+            .iter()
+            .find(|s| s.parent_id() == 0)
+            .or_else(|| trace.spans().first())
+            .map(|s| s.service())
+            .unwrap_or("");
+        debug!(
+            spans = trace.spans().len(),
+            env = trace.env.as_ref(),
+            service = root_service,
+            "Encoding V1 trace."
+        );
+
         // ── Phase 1: build the string table ──────────────────────────────────
         let st = collect_strings(trace);
-        let chunk = &trace.chunk;
 
-        // Pre-compute all payload-level refs so we don't need to borrow `st` and the
-        // builder at the same time inside the outer closure.
         let container_id_ref = st.get(&trace.container_id);
         let language_name_ref = st.get(&trace.language_name);
         let language_version_ref = st.get(&trace.language_version);
@@ -561,7 +668,8 @@ impl V1TraceEndpointEncoder {
         let env_ref = st.get(&trace.env);
         let hostname_ref = st.get(&trace.hostname);
         let app_version_ref = st.get(&trace.app_version);
-        let origin_ref = st.get(&chunk.origin);
+        let origin_ref = st.get(&trace.origin);
+        let priority = trace.priority.unwrap_or(PRIORITY_NONE);
 
         // ── Phase 2: write the payload ────────────────────────────────────────
         let mut ap = AgentPayloadBuilder::new(&mut self.scratch);
@@ -581,7 +689,6 @@ impl V1TraceEndpointEncoder {
                 Ok(())
             })?;
 
-            // Payload-level string refs (skip index 0 = empty).
             if container_id_ref != 0 {
                 tp.container_id_ref(container_id_ref)?;
             }
@@ -607,37 +714,34 @@ impl V1TraceEndpointEncoder {
                 tp.app_version_ref(app_version_ref)?;
             }
 
-            // Payload-level attributes.
-            write_idx_attrs(&mut tp.attributes(), &trace.payload_attributes, &st)?;
+            // Payload-level attributes (merged from payload_attributes + chunk attributes).
+            write_idx_attribute_map(&mut tp.attributes(), &trace.attributes, &st)?;
 
             // The single chunk.
             tp.add_chunks(|ch| {
-                ch.priority(chunk.priority)?;
+                ch.priority(priority)?;
 
                 if origin_ref != 0 {
                     ch.origin_ref(origin_ref)?;
                 }
-                if chunk.dropped_trace {
+                if trace.dropped_trace {
                     ch.dropped_trace(true)?;
                 }
 
-                // Sampling mechanism: native field in the idx format (not a chunk tag).
-                if chunk.sampling_mechanism != 0 {
-                    ch.sampling_mechanism(chunk.sampling_mechanism)?;
+                if trace.sampling_mechanism != 0 {
+                    ch.sampling_mechanism(trace.sampling_mechanism)?;
                 }
 
-                // Full 128-bit trace ID as 16 bytes big-endian (high ‖ low).
-                let tid = trace_id_bytes(chunk.trace_id_high, chunk.trace_id_low);
+                let tid = trace_id_bytes(trace.trace_id_high, trace.trace_id_low);
                 ch.trace_id(&tid)?;
 
-                // Chunk-level attributes.
-                write_idx_attrs(&mut ch.attributes(), &chunk.attributes, &st)?;
+                // Chunk-level attributes: written at payload level above; leave chunk attrs empty.
 
-                for span in &chunk.spans {
-                    let service_ref = st.get(&span.service);
-                    let name_ref = st.get(&span.name);
-                    let resource_ref = st.get(&span.resource);
-                    let type_ref = st.get(&span.span_type);
+                for span in trace.spans() {
+                    let service_ref = st.get_str(span.service());
+                    let name_ref = st.get_str(span.name());
+                    let resource_ref = st.get_str(span.resource());
+                    let type_ref = st.get_str(span.span_type());
                     let span_env_ref = st.get(&span.env);
                     let version_ref = st.get(&span.version);
                     let component_ref = st.get(&span.component);
@@ -654,11 +758,11 @@ impl V1TraceEndpointEncoder {
                             sb.resource_ref(resource_ref)?;
                         }
 
-                        sb.span_id(span.span_id)?
-                            .parent_id(span.parent_id)?
-                            .start(span.start)?
-                            .duration(span.duration)?
-                            .error(span.error)?;
+                        sb.span_id(span.span_id())?
+                            .parent_id(span.parent_id())?
+                            .start(span.start())?
+                            .duration(span.duration())?
+                            .error(span.error() != 0)?;
 
                         if type_ref != 0 {
                             sb.type_ref(type_ref)?;
@@ -676,31 +780,31 @@ impl V1TraceEndpointEncoder {
                             sb.kind(span_kind)?;
                         }
 
-                        write_idx_attrs(&mut sb.attributes(), &span.attributes, &st)?;
+                        write_idx_span_attrs(&mut sb.attributes(), span, &st)?;
 
-                        for link in &span.links {
-                            let tracestate_ref = st.get(&link.tracestate);
-                            let link_tid = trace_id_bytes(link.trace_id_high, link.trace_id_low);
+                        for link in span.span_links() {
+                            let tracestate_ref = st.get_str(link.tracestate());
+                            let link_tid = trace_id_bytes(link.trace_id_high(), link.trace_id());
                             sb.add_links(|sl| {
                                 sl.trace_id(&link_tid)?;
-                                sl.span_id(link.span_id)?;
-                                write_idx_attrs(&mut sl.attributes(), &link.attributes, &st)?;
+                                sl.span_id(link.span_id())?;
+                                write_idx_string_map(&mut sl.attributes(), link.attributes(), &st)?;
                                 if tracestate_ref != 0 {
                                     sl.tracestate_ref(tracestate_ref)?;
                                 }
-                                sl.flags(link.flags)?;
+                                sl.flags(link.flags())?;
                                 Ok(())
                             })?;
                         }
 
-                        for event in &span.events {
-                            let event_name_ref = st.get(&event.name);
+                        for event in span.span_events() {
+                            let event_name_ref = st.get_str(event.name());
                             sb.add_events(|se| {
-                                se.time(event.time_unix_nano)?;
+                                se.time(event.time_unix_nano())?;
                                 if event_name_ref != 0 {
                                     se.name_ref(event_name_ref)?;
                                 }
-                                write_idx_attrs(&mut se.attributes(), &event.attributes, &st)?;
+                                write_idx_event_attrs(&mut se.attributes(), event.attributes(), &st)?;
                                 Ok(())
                             })?;
                         }
@@ -721,7 +825,7 @@ impl V1TraceEndpointEncoder {
 }
 
 impl EndpointEncoder for V1TraceEndpointEncoder {
-    type Input = V1Trace;
+    type Input = Trace;
     type EncodeError = std::io::Error;
 
     fn encoder_name() -> &'static str {
@@ -763,9 +867,11 @@ impl EndpointEncoder for V1TraceEndpointEncoder {
 mod tests {
     use datadog_protos::traces::AgentPayload;
     use protobuf::Message as _;
+    use saluki_common::collections::FastHashMap;
     use saluki_config::ConfigurationLoader;
-    use saluki_core::data_model::event::trace::v1::{
-        V1AnyValue, V1KeyValue, V1Span, V1SpanEvent, V1SpanLink, V1Trace, V1TraceChunk,
+    use saluki_context::tags::TagSet;
+    use saluki_core::data_model::event::trace::{
+        EventAttributeValue, Span, SpanEvent, SpanLink, Trace,
     };
     use stringtheory::MetaString;
 
@@ -783,54 +889,29 @@ mod tests {
         )
     }
 
-    fn make_span(service: &str, name: &str, resource: &str, span_id: u64, parent_id: u64) -> V1Span {
-        V1Span {
-            service: MetaString::from(service),
-            name: MetaString::from(name),
-            resource: MetaString::from(resource),
-            span_id,
-            parent_id,
-            start: 1_000_000_000,
-            duration: 5_000_000,
-            error: false,
-            attributes: vec![],
-            span_type: MetaString::from("web"),
-            links: vec![],
-            events: vec![],
-            env: MetaString::default(),
-            version: MetaString::default(),
-            component: MetaString::default(),
-            kind: 1, // server
-        }
+    fn make_span(service: &str, name: &str, resource: &str, span_id: u64, parent_id: u64) -> Span {
+        Span::new(service, name, resource, "web", 0, span_id, parent_id, 1_000_000_000, 5_000_000, 0)
+            .with_kind(1) // server
     }
 
-    fn make_trace(spans: Vec<V1Span>) -> V1Trace {
-        V1Trace {
-            chunk: V1TraceChunk {
-                priority: 1,
-                origin: MetaString::default(),
-                attributes: vec![],
-                spans,
-                dropped_trace: false,
-                trace_id_high: 0x0102030405060708,
-                trace_id_low: 0x090a0b0c0d0e0f10,
-                sampling_mechanism: 4,
-            },
-            container_id: MetaString::from("abc123"),
-            language_name: MetaString::from("python"),
-            language_version: MetaString::from("3.11"),
-            tracer_version: MetaString::from("1.2.3"),
-            runtime_id: MetaString::from("runtime-uuid"),
-            env: MetaString::from("prod"),
-            hostname: MetaString::from("web-01"),
-            app_version: MetaString::from("2.0.0"),
-            payload_attributes: vec![],
-            client_dropped_p0s_weight: 0.5, // internal — must NOT appear in output
-        }
+    fn make_trace(spans: Vec<Span>) -> Trace {
+        let mut trace = Trace::new(spans, TagSet::default());
+        trace.priority = Some(1);
+        trace.trace_id_high = 0x0102030405060708;
+        trace.trace_id_low = 0x090a0b0c0d0e0f10;
+        trace.sampling_mechanism = 4;
+        trace.container_id = MetaString::from("abc123");
+        trace.language_name = MetaString::from("python");
+        trace.language_version = MetaString::from("3.11");
+        trace.tracer_version = MetaString::from("1.2.3");
+        trace.runtime_id = MetaString::from("runtime-uuid");
+        trace.env = MetaString::from("prod");
+        trace.hostname = MetaString::from("web-01");
+        trace.app_version = MetaString::from("2.0.0");
+        trace.client_dropped_p0s_weight = 0.5; // internal — must NOT appear in output
+        trace
     }
 
-    // Parse the outer AgentPayload fields only; don't try to decode idxTracerPayloads
-    // using the wrong (non-idx) TracerPayload type from the generated code.
     fn parse_outer(buf: &[u8]) -> AgentPayload {
         AgentPayload::parse_from_bytes(buf).expect("should parse AgentPayload")
     }
@@ -844,7 +925,6 @@ mod tests {
 
         let payload = parse_outer(&buf);
 
-        // Must use field 11 (idxTracerPayloads), NOT field 5 (tracerPayloads).
         assert!(
             payload.tracerPayloads.is_empty(),
             "legacy tracerPayloads (field 5) must be empty for V1 traces"
@@ -870,7 +950,6 @@ mod tests {
 
     #[tokio::test]
     async fn string_table_deduplicates_repeated_strings() {
-        // Two spans with the same service name should intern the service string once.
         let span1 = make_span("shared-service", "op1", "res1", 1, 0);
         let span2 = make_span("shared-service", "op2", "res2", 2, 1);
         let trace = make_trace(vec![span1, span2]);
@@ -881,7 +960,6 @@ mod tests {
         assert_eq!(idx1, idx2, "same string must get the same index");
         assert_ne!(idx1, 0, "non-empty string must not get index 0");
 
-        // Index 0 is always the empty string
         assert_eq!(st.get(&MetaString::empty()), 0);
     }
 
@@ -919,25 +997,15 @@ mod tests {
     #[tokio::test]
     async fn encode_succeeds_with_span_attributes() {
         let mut enc = make_encoder().await;
-        let mut span = make_span("svc", "op", "res", 1, 0);
-        span.attributes = vec![
-            V1KeyValue {
-                key: MetaString::from("http.method"),
-                value: V1AnyValue::String(MetaString::from("GET")),
-            },
-            V1KeyValue {
-                key: MetaString::from("http.status_code"),
-                value: V1AnyValue::Int(200),
-            },
-            V1KeyValue {
-                key: MetaString::from("latency_ms"),
-                value: V1AnyValue::Double(3.14),
-            },
-            V1KeyValue {
-                key: MetaString::from("cache_hit"),
-                value: V1AnyValue::Bool(true),
-            },
-        ];
+        let mut meta = FastHashMap::default();
+        meta.insert(MetaString::from("http.method"), MetaString::from("GET"));
+        meta.insert(MetaString::from("cache_hit"), MetaString::from("true"));
+        let mut metrics = FastHashMap::default();
+        metrics.insert(MetaString::from("http.status_code"), 200.0f64);
+        metrics.insert(MetaString::from("latency_ms"), 3.14f64);
+        let span = make_span("svc", "op", "res", 1, 0)
+            .with_meta(Some(meta))
+            .with_metrics(Some(metrics));
         let trace = make_trace(vec![span]);
         let mut buf = Vec::new();
         enc.encode(&trace, &mut buf).expect("encode with attributes should succeed");
@@ -947,26 +1015,24 @@ mod tests {
     #[tokio::test]
     async fn encode_succeeds_with_span_links_and_events() {
         let mut enc = make_encoder().await;
-        let mut span = make_span("svc", "op", "res", 1, 0);
-        span.links = vec![V1SpanLink {
-            trace_id_high: 0xAAAAAAAAAAAAAAAA,
-            trace_id_low: 0xBBBBBBBBBBBBBBBB,
-            span_id: 42,
-            attributes: vec![V1KeyValue {
-                key: MetaString::from("link.type"),
-                value: V1AnyValue::String(MetaString::from("follows_from")),
-            }],
-            tracestate: MetaString::from("dd=t.dm:-4"),
-            flags: 1,
-        }];
-        span.events = vec![V1SpanEvent {
-            time_unix_nano: 999_000_000,
-            name: MetaString::from("exception"),
-            attributes: vec![V1KeyValue {
-                key: MetaString::from("exception.message"),
-                value: V1AnyValue::String(MetaString::from("oops")),
-            }],
-        }];
+        let mut link_attrs = FastHashMap::default();
+        link_attrs.insert(MetaString::from("link.type"), MetaString::from("follows_from"));
+        let link = SpanLink::new(0xBBBBBBBBBBBBBBBB, 42)
+            .with_trace_id_high(0xAAAAAAAAAAAAAAAA)
+            .with_attributes(Some(link_attrs))
+            .with_tracestate(MetaString::from("dd=t.dm:-4"))
+            .with_flags(1);
+
+        let mut event_attrs = FastHashMap::default();
+        event_attrs.insert(
+            MetaString::from("exception.message"),
+            EventAttributeValue::String(MetaString::from("oops")),
+        );
+        let event = SpanEvent::new(999_000_000, "exception").with_attributes(Some(event_attrs));
+
+        let span = make_span("svc", "op", "res", 1, 0)
+            .with_span_links(Some(vec![link]))
+            .with_span_events(Some(vec![event]));
         let trace = make_trace(vec![span]);
         let mut buf = Vec::new();
         enc.encode(&trace, &mut buf).expect("encode with links and events should succeed");
@@ -977,12 +1043,9 @@ mod tests {
     async fn dropped_trace_flag_propagates() {
         let mut enc = make_encoder().await;
         let mut trace = make_trace(vec![make_span("svc", "op", "res", 1, 0)]);
-        trace.chunk.dropped_trace = true;
+        trace.dropped_trace = true;
         let mut buf = Vec::new();
         enc.encode(&trace, &mut buf).unwrap();
-        // Verify encode completes without error; field 11 carries dropped_trace inside
-        // the idx.TraceChunk message which we can't easily decode here, but the important
-        // thing is no panic and valid outer protobuf.
         let payload = parse_outer(&buf);
         assert!(!payload.idxTracerPayloads.is_empty());
     }
@@ -990,30 +1053,9 @@ mod tests {
     #[tokio::test]
     async fn empty_optional_metadata_does_not_panic() {
         let mut enc = make_encoder().await;
-        let trace = V1Trace {
-            chunk: V1TraceChunk {
-                priority: 1,
-                origin: MetaString::default(),
-                attributes: vec![],
-                spans: vec![make_span("svc", "op", "res", 1, 0)],
-                dropped_trace: false,
-                trace_id_high: 0,
-                trace_id_low: 1,
-                sampling_mechanism: 0,
-            },
-            container_id: MetaString::default(),
-            language_name: MetaString::default(),
-            language_version: MetaString::default(),
-            tracer_version: MetaString::default(),
-            runtime_id: MetaString::default(),
-            env: MetaString::default(),
-            hostname: MetaString::default(),
-            app_version: MetaString::default(),
-            payload_attributes: vec![],
-            client_dropped_p0s_weight: 0.0,
-        };
+        let trace = make_trace(vec![make_span("svc", "op", "res", 1, 0)]);
         let mut buf = Vec::new();
-        enc.encode(&trace, &mut buf).expect("encode with empty metadata should not panic");
+        enc.encode(&trace, &mut buf).expect("empty metadata should not panic");
         assert!(!buf.is_empty());
     }
 }

@@ -8,34 +8,20 @@ use stringtheory::MetaString;
 
 /// Trace-level sampling metadata.
 ///
-/// This struct stores sampling-related metadata that applies to the entire trace,
-/// typically set by the trace sampler and consumed by the encoder.
+/// Kept for backward compatibility during the migration to unified trace types.
+/// New code should use the flat sampling fields directly on `Trace`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TraceSampling {
     /// Whether or not the trace was dropped during sampling.
     pub dropped_trace: bool,
 
     /// The sampling priority assigned to this trace.
-    ///
-    /// Common values include:
-    /// - `2`: Manual keep (user-requested)
-    /// - `1`: Auto keep (sampled in)
-    /// - `0`: Auto drop (sampled out)
-    /// - `-1`: Manual drop (user-requested drop)
     pub priority: Option<i32>,
 
     /// The decision maker identifier indicating which sampler made the sampling decision.
-    ///
-    /// Common values include:
-    /// - `-9`: Probabilistic sampler
-    /// - `-4`: Errors sampler
-    /// - `None`: No decision maker set
     pub decision_maker: Option<MetaString>,
 
     /// The OTLP sampling rate applied to this trace.
-    ///
-    /// This corresponds to the `_dd.otlp_sr` tag and represents the effective sampling rate
-    /// from the OTLP ingest path.
     pub otlp_sampling_rate: Option<f64>,
 }
 
@@ -53,32 +39,153 @@ impl TraceSampling {
     }
 }
 
+/// Typed value for span and trace-level attributes.
+///
+/// This covers the three storage types used in the Datadog APM wire format:
+/// string tags (`meta`), numeric metrics (`metrics`), and binary blobs (`meta_struct`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum AttributeValue {
+    /// String-valued attribute (corresponds to `meta`).
+    String(MetaString),
+    /// Floating-point-valued attribute (corresponds to `metrics`).
+    Float(f64),
+    /// Raw bytes attribute (corresponds to `meta_struct`).
+    Bytes(Vec<u8>),
+}
+
+/// Values supported for span event attributes.
+///
+/// This is the richer OTLP attribute type used exclusively by `SpanEvent`.
+/// Renamed from `AttributeValue` to avoid a collision with the new unified
+/// `AttributeValue` enum used for span and trace-level attributes.
+#[derive(Clone, Debug, PartialEq)]
+pub enum EventAttributeValue {
+    /// String attribute value.
+    String(MetaString),
+    /// Boolean attribute value.
+    Bool(bool),
+    /// Integer attribute value.
+    Int(i64),
+    /// Floating-point attribute value.
+    Double(f64),
+    /// Array attribute values.
+    Array(Vec<EventAttributeScalarValue>),
+}
+
+/// Scalar values supported inside event attribute arrays.
+#[derive(Clone, Debug, PartialEq)]
+pub enum EventAttributeScalarValue {
+    /// String array value.
+    String(MetaString),
+    /// Boolean array value.
+    Bool(bool),
+    /// Integer array value.
+    Int(i64),
+    /// Floating-point array value.
+    Double(f64),
+}
+
 /// A trace event.
 ///
 /// A trace is a collection of spans that represent a distributed trace.
+///
+/// ## Migration note
+///
+/// New unified fields (`trace_id_high`, `trace_id_low`, payload metadata, flat sampling
+/// fields, `attributes`) are populated by the OTLP translator and APM source.  The legacy
+/// `resource_tags` and `sampling` fields are kept for backward compatibility with existing
+/// transforms and encoders and will be removed once those consumers are migrated (Steps 5–9).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Trace {
+    // ── Legacy fields (private, accessed via methods, kept for compat) ──────────
     /// The spans that make up this trace.
     spans: Vec<Span>,
-    /// Resource-level tags associated with this trace.
+    /// Resource-level tags derived from OTLP resource attributes.
     ///
-    /// This is derived from the resource of the spans and used to construct the tracer payload.
+    /// Kept for backward compatibility. New code should use `trace.attributes`
+    /// and the explicit metadata fields instead.
     resource_tags: TagSet,
-    /// Trace-level sampling metadata.
+    /// Sampling metadata (legacy wrapper).
     ///
-    /// This field contains sampling decision information (priority, decision maker, rates)
-    /// that applies to the entire trace. It is set by the trace sampler component and consumed
-    /// by the encoder to populate trace chunk metadata.
+    /// Kept for backward compatibility. New code should use the flat
+    /// `priority`, `dropped_trace`, `decision_maker`, and `otlp_sampling_rate`
+    /// fields directly.
     sampling: Option<TraceSampling>,
+
+    // ── Unified fields (public) ──────────────────────────────────────────────────
+    /// Upper 8 bytes of the 128-bit trace ID (big-endian). Zero for 64-bit-only sources.
+    pub trace_id_high: u64,
+    /// Lower 8 bytes of the 128-bit trace ID (big-endian).
+    pub trace_id_low: u64,
+    /// Trace origin string (e.g. `"lambda"`, `"rum"`).
+    pub origin: MetaString,
+
+    // Payload-level metadata (promoted from the tracer payload or OTLP resource).
+    /// Container ID associated with the tracer.
+    pub container_id: MetaString,
+    /// Tracer language name (e.g. `"go"`, `"python"`).
+    pub language_name: MetaString,
+    /// Tracer language runtime version.
+    pub language_version: MetaString,
+    /// Tracer library version.
+    pub tracer_version: MetaString,
+    /// Tracer runtime ID.
+    pub runtime_id: MetaString,
+    /// Deployment environment (e.g. `"production"`, `"staging"`).
+    pub env: MetaString,
+    /// Hostname of the tracer host.
+    pub hostname: MetaString,
+    /// Application version string.
+    pub app_version: MetaString,
+    /// Per-chunk weight from `Datadog-Client-Dropped-P0-Traces` header. Zero if absent.
+    pub client_dropped_p0s_weight: f64,
+
+    /// Chunk-level or resource-level attributes (replaces `resource_tags` and
+    /// `V1TraceChunk.attributes` once downstream consumers are migrated).
+    pub attributes: FastHashMap<MetaString, AttributeValue>,
+
+    // Flat sampling fields (replaces `sampling: Option<TraceSampling>` once
+    // the trace sampler and encoder are migrated).
+    /// Sampling priority set by the tracer or a sampler.
+    pub priority: Option<i32>,
+    /// Whether this trace was dropped during sampling.
+    pub dropped_trace: bool,
+    /// Sampling mechanism identifier (see Datadog trace agent constants).
+    pub sampling_mechanism: u32,
+    /// Identifier of the component that made the final sampling decision.
+    pub decision_maker: Option<MetaString>,
+    /// Effective OTLP sampling rate (`_dd.otlp_sr`), if set.
+    pub otlp_sampling_rate: Option<f64>,
 }
 
 impl Trace {
-    /// Creates a new `Trace` with the given spans.
+    /// Creates a new `Trace` with the given spans and resource tags.
+    ///
+    /// All unified fields default to empty / zero. Callers should set them
+    /// directly after construction.
     pub fn new(spans: Vec<Span>, resource_tags: impl Into<TagSet>) -> Self {
         Self {
             spans,
             resource_tags: resource_tags.into(),
             sampling: None,
+            trace_id_high: 0,
+            trace_id_low: 0,
+            origin: MetaString::empty(),
+            container_id: MetaString::empty(),
+            language_name: MetaString::empty(),
+            language_version: MetaString::empty(),
+            tracer_version: MetaString::empty(),
+            runtime_id: MetaString::empty(),
+            env: MetaString::empty(),
+            hostname: MetaString::empty(),
+            app_version: MetaString::empty(),
+            client_dropped_p0s_weight: 0.0,
+            attributes: FastHashMap::default(),
+            priority: None,
+            dropped_trace: false,
+            sampling_mechanism: 0,
+            decision_maker: None,
+            otlp_sampling_rate: None,
         }
     }
 
@@ -144,16 +251,22 @@ impl Trace {
     }
 
     /// Returns the resource-level tags associated with this trace.
+    ///
+    /// Deprecated: prefer `trace.attributes` for new code.
     pub fn resource_tags(&self) -> &TagSet {
         &self.resource_tags
     }
 
-    /// Returns a reference to the trace-level sampling metadata, if present.
+    /// Returns a reference to the legacy trace-level sampling metadata, if present.
+    ///
+    /// Deprecated: prefer `trace.priority`, `trace.dropped_trace`, etc. for new code.
     pub fn sampling(&self) -> Option<&TraceSampling> {
         self.sampling.as_ref()
     }
 
-    /// Sets the trace-level sampling metadata.
+    /// Sets the legacy trace-level sampling metadata.
+    ///
+    /// Deprecated: prefer setting `trace.priority`, `trace.dropped_trace`, etc. directly.
     pub fn set_sampling(&mut self, sampling: Option<TraceSampling>) {
         self.sampling = sampling;
     }
@@ -169,6 +282,8 @@ pub struct Span {
     /// The resource associated with this span.
     resource: MetaString,
     /// The trace identifier this span belongs to.
+    ///
+    /// Deprecated: trace IDs are moving to `Trace.trace_id_high/low`. Kept for compat.
     trace_id: u64,
     /// The unique identifier of this span.
     span_id: u64,
@@ -180,18 +295,28 @@ pub struct Span {
     duration: u64,
     /// Error flag represented as 0 (no error) or 1 (error).
     error: i32,
-    /// String-valued tags attached to this span.
+    /// String-valued tags attached to this span (legacy `meta` map).
     meta: FastHashMap<MetaString, MetaString>,
-    /// Numeric-valued tags attached to this span.
+    /// Numeric-valued tags attached to this span (legacy `metrics` map).
     metrics: FastHashMap<MetaString, f64>,
     /// Span type classification (for example, web, db, lambda).
     span_type: MetaString,
-    /// Structured metadata payloads.
+    /// Structured metadata payloads (legacy `meta_struct` map).
     meta_struct: FastHashMap<MetaString, Vec<u8>>,
     /// Links describing relationships to other spans.
     span_links: Vec<SpanLink>,
     /// Events associated with this span.
     span_events: Vec<SpanEvent>,
+
+    // ── New V1 / unified fields ──────────────────────────────────────────────────
+    /// Per-span environment override (V1 path). Overrides `Trace.env` when non-empty.
+    pub env: MetaString,
+    /// Per-span application version (V1 path).
+    pub version: MetaString,
+    /// Instrumentation component name (V1 path).
+    pub component: MetaString,
+    /// Span kind: 0=unspecified, 1=server, 2=client, 3=producer, 4=consumer, 5=internal.
+    pub kind: u32,
 }
 
 impl Span {
@@ -304,6 +429,30 @@ impl Span {
     /// Replaces the span events collection.
     pub fn with_span_events(mut self, span_events: impl Into<Option<Vec<SpanEvent>>>) -> Self {
         self.span_events = span_events.into().unwrap_or_default();
+        self
+    }
+
+    /// Sets the per-span environment override.
+    pub fn with_env(mut self, env: impl Into<MetaString>) -> Self {
+        self.env = env.into();
+        self
+    }
+
+    /// Sets the per-span application version.
+    pub fn with_version(mut self, version: impl Into<MetaString>) -> Self {
+        self.version = version.into();
+        self
+    }
+
+    /// Sets the instrumentation component.
+    pub fn with_component(mut self, component: impl Into<MetaString>) -> Self {
+        self.component = component.into();
+        self
+    }
+
+    /// Sets the span kind.
+    pub fn with_kind(mut self, kind: u32) -> Self {
+        self.kind = kind;
         self
     }
 
@@ -500,7 +649,7 @@ pub struct SpanEvent {
     /// Event name.
     name: MetaString,
     /// Arbitrary attributes describing the event.
-    attributes: FastHashMap<MetaString, AttributeValue>,
+    attributes: FastHashMap<MetaString, EventAttributeValue>,
 }
 
 impl SpanEvent {
@@ -526,7 +675,9 @@ impl SpanEvent {
     }
 
     /// Replaces the attributes map.
-    pub fn with_attributes(mut self, attributes: impl Into<Option<FastHashMap<MetaString, AttributeValue>>>) -> Self {
+    pub fn with_attributes(
+        mut self, attributes: impl Into<Option<FastHashMap<MetaString, EventAttributeValue>>>,
+    ) -> Self {
         self.attributes = attributes.into().unwrap_or_default();
         self
     }
@@ -542,35 +693,7 @@ impl SpanEvent {
     }
 
     /// Returns the attributes map.
-    pub fn attributes(&self) -> &FastHashMap<MetaString, AttributeValue> {
+    pub fn attributes(&self) -> &FastHashMap<MetaString, EventAttributeValue> {
         &self.attributes
     }
-}
-
-/// Values supported for span and event attributes.
-#[derive(Clone, Debug, PartialEq)]
-pub enum AttributeValue {
-    /// String attribute value.
-    String(MetaString),
-    /// Boolean attribute value.
-    Bool(bool),
-    /// Integer attribute value.
-    Int(i64),
-    /// Floating-point attribute value.
-    Double(f64),
-    /// Array attribute values.
-    Array(Vec<AttributeScalarValue>),
-}
-
-/// Scalar values supported inside attribute arrays.
-#[derive(Clone, Debug, PartialEq)]
-pub enum AttributeScalarValue {
-    /// String array value.
-    String(MetaString),
-    /// Boolean array value.
-    Bool(bool),
-    /// Integer array value.
-    Int(i64),
-    /// Floating-point array value.
-    Double(f64),
 }

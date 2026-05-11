@@ -12,7 +12,7 @@
 
 use std::time::SystemTime;
 
-use saluki_core::data_model::event::trace::v1::{V1AnyValue, V1KeyValue, V1Span};
+use saluki_core::data_model::event::trace::Span;
 use stringtheory::MetaString;
 
 use crate::sources::apm::sampling_rates::V1SamplingRatesHandle;
@@ -63,7 +63,7 @@ impl V1PrioritySampler {
         &mut self,
         now: SystemTime,
         priority: i32,
-        root: &mut V1Span,
+        root: &mut Span,
         tracer_env: &str,
         client_dropped_p0s_weight: f64,
     ) -> bool {
@@ -79,7 +79,7 @@ impl V1PrioritySampler {
             tracer_env
         };
 
-        let svc_sig = ServiceSignature::new(root.service.as_ref(), effective_env);
+        let svc_sig = ServiceSignature::new(root.service(), effective_env);
         let signature = self.catalog.register(svc_sig);
 
         let weight = weight_root(root) as f32 + client_dropped_p0s_weight as f32;
@@ -107,13 +107,19 @@ impl V1PrioritySampler {
 /// Mirrors `weightRootV1` from `pkg/trace/sampler/sampler.go`:
 /// `weight = 1 / (client_rate * pre_sampler_rate)`.
 ///
-/// Reads `_sample_rate` and `_dd1.sr.rapre` from span attributes.
+/// Reads `_sample_rate` and `_dd1.sr.rapre` from span metrics.
 /// Both default to 1.0 when absent or out of range.
-pub(super) fn weight_root(root: &V1Span) -> f64 {
-    let client_rate = find_f64_attr(&root.attributes, KEY_SAMPLE_RATE)
+pub(super) fn weight_root(root: &Span) -> f64 {
+    let client_rate = root
+        .metrics()
+        .get(KEY_SAMPLE_RATE)
+        .copied()
         .filter(|&r| r > 0.0 && r <= 1.0)
         .unwrap_or(1.0);
-    let pre_sampler_rate = find_f64_attr(&root.attributes, KEY_PRE_SAMPLER_RATE)
+    let pre_sampler_rate = root
+        .metrics()
+        .get(KEY_PRE_SAMPLER_RATE)
+        .copied()
         .filter(|&r| r > 0.0 && r <= 1.0)
         .unwrap_or(1.0);
     1.0 / (client_rate * pre_sampler_rate)
@@ -122,53 +128,31 @@ pub(super) fn weight_root(root: &V1Span) -> f64 {
 /// Write the agent-computed sampling rate to the root span.
 ///
 /// Mirrors `applyRateV1` from `pkg/trace/sampler/prioritysampler.go`.
-/// Does nothing if the tracer already annotated the root with a rate
-/// (`_dd.agent_psr`, `_dd.rule_psr`, or `_sampling_priority_rate_v1`).
-fn apply_rate(root: &mut V1Span, signature: &Signature, core_sampler: &Sampler) {
-    if root.parent_id != 0 {
+/// Does nothing if the tracer already annotated the root with a rate.
+fn apply_rate(root: &mut Span, signature: &Signature, core_sampler: &Sampler) {
+    if root.parent_id() != 0 {
         return;
     }
-    if find_f64_attr(&root.attributes, KEY_AGENT_PSR).is_some() {
+    if root.metrics().contains_key(KEY_AGENT_PSR) {
         return;
     }
-    if find_f64_attr(&root.attributes, KEY_RULE_PSR).is_some() {
+    if root.metrics().contains_key(KEY_RULE_PSR) {
         return;
     }
-    if find_f64_attr(&root.attributes, KEY_DEPRECATED_RATE).is_some() {
+    if root.metrics().contains_key(KEY_DEPRECATED_RATE) {
         return;
     }
     let rate = core_sampler.get_signature_sample_rate(signature);
-    set_f64_attr(&mut root.attributes, KEY_DEPRECATED_RATE, rate);
+    root.metrics_mut().insert(MetaString::from(KEY_DEPRECATED_RATE), rate);
 }
 
-/// Search `attrs` for a key and return its value as `f64`.
-pub(super) fn find_f64_attr(attrs: &[V1KeyValue], key: &str) -> Option<f64> {
-    attrs.iter().find(|kv| kv.key.as_ref() == key).and_then(|kv| match &kv.value {
-        V1AnyValue::Double(v) => Some(*v),
-        V1AnyValue::Int(v) => Some(*v as f64),
-        _ => None,
-    })
-}
-
-fn set_f64_attr(attrs: &mut Vec<V1KeyValue>, key: &str, value: f64) {
-    for kv in attrs.iter_mut() {
-        if kv.key.as_ref() == key {
-            kv.value = V1AnyValue::Double(value);
-            return;
-        }
-    }
-    attrs.push(V1KeyValue {
-        key: MetaString::from(key),
-        value: V1AnyValue::Double(value),
-    });
-}
 
 #[cfg(test)]
 mod tests {
     use std::time::SystemTime;
 
     use saluki_common::collections::FastHashMap;
-    use saluki_core::data_model::event::trace::v1::{V1AnyValue, V1KeyValue, V1Span, V1TraceChunk};
+    use saluki_core::data_model::event::trace::Span;
     use stringtheory::MetaString;
 
     use super::*;
@@ -183,38 +167,8 @@ mod tests {
         )
     }
 
-    fn make_span(parent_id: u64) -> V1Span {
-        V1Span {
-            service: MetaString::from_static("svc"),
-            name: MetaString::from_static("op"),
-            resource: MetaString::from_static("res"),
-            span_id: 1,
-            parent_id,
-            start: 0,
-            duration: 1000,
-            error: false,
-            attributes: Vec::new(),
-            span_type: MetaString::from_static("web"),
-            links: Vec::new(),
-            events: Vec::new(),
-            env: MetaString::default(),
-            version: MetaString::default(),
-            component: MetaString::default(),
-            kind: 0,
-        }
-    }
-
-    fn make_chunk(priority: i32, spans: Vec<V1Span>) -> V1TraceChunk {
-        V1TraceChunk {
-            priority,
-            origin: MetaString::default(),
-            attributes: Vec::new(),
-            spans,
-            dropped_trace: false,
-            trace_id_high: 0,
-            trace_id_low: 1,
-            sampling_mechanism: 0,
-        }
+    fn make_span(parent_id: u64) -> Span {
+        Span::new("svc", "op", "res", "web", 0, 1, parent_id, 0, 1000, 0)
     }
 
     // ── Short-circuit tests ─────────────────────────────────────────────────
@@ -222,26 +176,29 @@ mod tests {
     #[test]
     fn user_drop_short_circuits_without_counting() {
         let mut sampler = make_sampler();
-        let chunk = make_chunk(-1, vec![make_span(0)]);
         let mut root = make_span(0);
         let now = SystemTime::now();
 
-        // Should return false without mutating the catalog.
-        assert!(!sampler.sample(now, chunk.priority, &mut root, "prod", 0.0));
-        assert_eq!(sampler.catalog.rates_by_service("prod", &FastHashMap::default(), 1.0)
-            .len(), 1, "only default rate key; no service registered");
+        assert!(!sampler.sample(now, -1, &mut root, "prod", 0.0));
+        assert_eq!(
+            sampler.catalog.rates_by_service("prod", &FastHashMap::default(), 1.0).len(),
+            1,
+            "only default rate key; no service registered"
+        );
     }
 
     #[test]
     fn user_keep_short_circuits_returns_true() {
         let mut sampler = make_sampler();
-        let chunk = make_chunk(2, vec![make_span(0)]);
         let mut root = make_span(0);
         let now = SystemTime::now();
 
-        assert!(sampler.sample(now, chunk.priority, &mut root, "prod", 0.0));
-        assert_eq!(sampler.catalog.rates_by_service("prod", &FastHashMap::default(), 1.0)
-            .len(), 1, "only default rate key; no service registered");
+        assert!(sampler.sample(now, 2, &mut root, "prod", 0.0));
+        assert_eq!(
+            sampler.catalog.rates_by_service("prod", &FastHashMap::default(), 1.0).len(),
+            1,
+            "only default rate key; no service registered"
+        );
     }
 
     // ── Counting tests ──────────────────────────────────────────────────────
@@ -249,17 +206,15 @@ mod tests {
     #[test]
     fn auto_keep_priority_returns_true() {
         let mut sampler = make_sampler();
-        let chunk = make_chunk(1, vec![make_span(0)]);
         let mut root = make_span(0);
-        assert!(sampler.sample(SystemTime::now(), chunk.priority, &mut root, "prod", 0.0));
+        assert!(sampler.sample(SystemTime::now(), 1, &mut root, "prod", 0.0));
     }
 
     #[test]
     fn auto_drop_priority_returns_false() {
         let mut sampler = make_sampler();
-        let chunk = make_chunk(0, vec![make_span(0)]);
         let mut root = make_span(0);
-        assert!(!sampler.sample(SystemTime::now(), chunk.priority, &mut root, "prod", 0.0));
+        assert!(!sampler.sample(SystemTime::now(), 0, &mut root, "prod", 0.0));
     }
 
     // ── apply_rate tests ────────────────────────────────────────────────────
@@ -267,55 +222,50 @@ mod tests {
     #[test]
     fn kept_trace_gets_rate_written_to_root_span() {
         let mut sampler = make_sampler();
-        let chunk = make_chunk(1, vec![make_span(0)]);
         let mut root = make_span(0);
-
-        sampler.sample(SystemTime::now(), chunk.priority, &mut root, "prod", 0.0);
-
-        // Root span should have the rate attribute set.
-        let has_rate = root.attributes.iter().any(|kv| kv.key.as_ref() == KEY_DEPRECATED_RATE);
-        assert!(has_rate, "rate attribute should be written to kept root span");
+        sampler.sample(SystemTime::now(), 1, &mut root, "prod", 0.0);
+        assert!(
+            root.metrics().contains_key(KEY_DEPRECATED_RATE),
+            "rate metric should be written to kept root span"
+        );
     }
 
     #[test]
     fn dropped_trace_does_not_get_rate_written() {
         let mut sampler = make_sampler();
-        let chunk = make_chunk(0, vec![make_span(0)]);
         let mut root = make_span(0);
-
-        sampler.sample(SystemTime::now(), chunk.priority, &mut root, "prod", 0.0);
-
-        let has_rate = root.attributes.iter().any(|kv| kv.key.as_ref() == KEY_DEPRECATED_RATE);
-        assert!(!has_rate, "rate attribute should not be written for dropped trace");
+        sampler.sample(SystemTime::now(), 0, &mut root, "prod", 0.0);
+        assert!(
+            !root.metrics().contains_key(KEY_DEPRECATED_RATE),
+            "rate metric should not be written for dropped trace"
+        );
     }
 
     #[test]
     fn existing_agent_psr_is_not_overwritten() {
         let mut sampler = make_sampler();
-        let chunk = make_chunk(1, vec![make_span(0)]);
         let mut root = make_span(0);
-        root.attributes.push(V1KeyValue {
-            key: MetaString::from(KEY_AGENT_PSR),
-            value: V1AnyValue::Double(0.25),
-        });
+        root.metrics_mut().insert(MetaString::from(KEY_AGENT_PSR), 0.25);
 
-        sampler.sample(SystemTime::now(), chunk.priority, &mut root, "prod", 0.0);
+        sampler.sample(SystemTime::now(), 1, &mut root, "prod", 0.0);
 
-        let agent_psr = find_f64_attr(&root.attributes, KEY_AGENT_PSR);
-        assert_eq!(agent_psr, Some(0.25), "existing _dd.agent_psr must not be overwritten");
+        assert_eq!(
+            root.metrics().get(KEY_AGENT_PSR).copied(),
+            Some(0.25),
+            "existing _dd.agent_psr must not be overwritten"
+        );
     }
 
     #[test]
     fn non_root_span_does_not_get_rate() {
         let mut sampler = make_sampler();
-        let chunk = make_chunk(1, vec![make_span(99)]); // parent_id != 0
-        let mut non_root = make_span(99);
+        let mut non_root = make_span(99); // parent_id != 0
 
-        sampler.sample(SystemTime::now(), chunk.priority, &mut non_root, "prod", 0.0);
+        sampler.sample(SystemTime::now(), 1, &mut non_root, "prod", 0.0);
 
-        let has_rate = non_root.attributes.iter().any(|kv| {
-            [KEY_DEPRECATED_RATE, KEY_AGENT_PSR, KEY_RULE_PSR].contains(&kv.key.as_ref())
-        });
+        let has_rate = [KEY_DEPRECATED_RATE, KEY_AGENT_PSR, KEY_RULE_PSR]
+            .iter()
+            .any(|k| non_root.metrics().contains_key(*k));
         assert!(!has_rate, "rate must not be written for non-root spans");
     }
 
@@ -330,35 +280,22 @@ mod tests {
     #[test]
     fn weight_root_divides_by_sample_rate() {
         let mut span = make_span(0);
-        span.attributes.push(V1KeyValue {
-            key: MetaString::from(KEY_SAMPLE_RATE),
-            value: V1AnyValue::Double(0.5),
-        });
+        span.metrics_mut().insert(MetaString::from(KEY_SAMPLE_RATE), 0.5);
         assert_eq!(weight_root(&span), 2.0);
     }
 
     #[test]
     fn weight_root_uses_both_rates() {
         let mut span = make_span(0);
-        span.attributes.push(V1KeyValue {
-            key: MetaString::from(KEY_SAMPLE_RATE),
-            value: V1AnyValue::Double(0.5),
-        });
-        span.attributes.push(V1KeyValue {
-            key: MetaString::from(KEY_PRE_SAMPLER_RATE),
-            value: V1AnyValue::Double(0.5),
-        });
+        span.metrics_mut().insert(MetaString::from(KEY_SAMPLE_RATE), 0.5);
+        span.metrics_mut().insert(MetaString::from(KEY_PRE_SAMPLER_RATE), 0.5);
         assert_eq!(weight_root(&span), 4.0);
     }
 
     #[test]
     fn weight_root_ignores_out_of_range_rates() {
         let mut span = make_span(0);
-        // rate > 1.0 → treated as 1.0
-        span.attributes.push(V1KeyValue {
-            key: MetaString::from(KEY_SAMPLE_RATE),
-            value: V1AnyValue::Double(2.0),
-        });
+        span.metrics_mut().insert(MetaString::from(KEY_SAMPLE_RATE), 2.0); // rate > 1.0 → 1.0
         assert_eq!(weight_root(&span), 1.0);
     }
 

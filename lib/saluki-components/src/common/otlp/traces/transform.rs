@@ -1429,7 +1429,7 @@ fn use_both_maps_key_list(
     None
 }
 
-fn get_otel_env(
+pub(crate) fn get_otel_env(
     span_attributes: &[KeyValue], resource_attributes: &[KeyValue], ignore_missing_fields: bool,
     interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
 ) -> MetaString {
@@ -1463,7 +1463,7 @@ fn get_otel_env(
 }
 
 // GetOTelVersion returns the version based on OTel span and resource attributes, with span taking precedence.
-fn get_otel_version(
+pub(crate) fn get_otel_version(
     span_attributes: &[KeyValue], resource_attributes: &[KeyValue], ignore_missing_fields: bool,
     interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
 ) -> MetaString {
@@ -1496,7 +1496,7 @@ fn get_otel_version(
     MetaString::empty()
 }
 
-fn get_otel_container_id(
+pub(crate) fn get_otel_container_id(
     span_attributes: &[KeyValue], resource_attributes: &[KeyValue], ignore_missing_fields: bool,
     interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
 ) -> MetaString {

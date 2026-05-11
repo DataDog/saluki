@@ -3,13 +3,12 @@
 use saluki_common::collections::FastHashMap;
 use saluki_context::tags::TagSet;
 use saluki_core::data_model::event::trace::Span;
-use saluki_core::data_model::event::trace::v1::{V1AnyValue, V1KeyValue, V1Span};
 use saluki_core::data_model::event::trace_stats::{ClientStatsBucket, ClientStatsPayload};
 use stringtheory::MetaString;
 
 use super::aggregation::AggregationRegistry;
 use super::aggregation::{
-    get_grpc_status_code, get_status_code, process_tags_hash, GrpcStatusCode, PayloadAggregationKey,
+    get_grpc_status_code, get_status_code, process_tags_hash, PayloadAggregationKey,
     BUCKET_DURATION_NS, TAG_BASE_SERVICE, TAG_SPAN_KIND,
 };
 use super::statsraw::RawBucket;
@@ -165,65 +164,17 @@ impl SpanConcentrator {
         self.new_stat_span(span)
     }
 
-    /// Adds a [`V1Span`] to the concentrator if it is eligible for stats computation.
+    /// Adds a unified [`Span`] to the concentrator if it is eligible for stats computation.
     ///
-    /// Eligibility mirrors the OTLP path: the span must have `_top_level=1` or `_dd.measured=1` in
-    /// its attributes, or `compute_stats_by_span_kind` must be enabled and the span's kind must be
-    /// one of server/client/producer/consumer.  Partial snapshots (`_dd.partial_version`) are
-    /// always excluded.
-    pub fn add_v1_span_if_eligible(
-        &mut self, span: &V1Span, weight: f64, payload_key: &PayloadAggregationKey, infra_tags: &InfraTags,
+    /// Mirrors `add_v1_span_if_eligible` but operates on the unified `Span` type produced
+    /// by the OTLP translator and the converted APM source.
+    pub fn add_span_if_eligible(
+        &mut self, span: &Span, weight: f64, payload_key: &PayloadAggregationKey, infra_tags: &InfraTags,
         origin: &str,
     ) {
-        if let Some(stat_span) = self.new_stat_span_from_v1_span(span) {
+        if let Some(stat_span) = self.new_stat_span(span) {
             self.add_span_internal(&stat_span, weight, payload_key, infra_tags, origin);
         }
-    }
-
-    fn new_stat_span_from_v1_span(&self, span: &V1Span) -> Option<StatSpan> {
-        let is_top_level = get_v1_float_attr(&span.attributes, METRIC_TOP_LEVEL)
-            .map(|v| v == 1.0)
-            .unwrap_or(false);
-        let is_measured = get_v1_float_attr(&span.attributes, METRIC_MEASURED)
-            .map(|v| v == 1.0)
-            .unwrap_or(false);
-        let span_kind_str = v1_span_kind_str(span.kind);
-        let has_eligible_span_kind =
-            self.compute_stats_by_span_kind && compute_stats_for_span_kind(span_kind_str);
-
-        if !is_top_level && !is_measured && !has_eligible_span_kind {
-            return None;
-        }
-
-        if get_v1_float_attr(&span.attributes, METRIC_PARTIAL_VERSION)
-            .map(|v| v >= 0.0)
-            .unwrap_or(false)
-        {
-            return None;
-        }
-
-        let span_kind = MetaString::from(span_kind_str);
-        let status_code = get_v1_status_code(&span.attributes);
-        let grpc_status_code = get_v1_grpc_status_code(&span.attributes).to_metastring();
-        let matching_peer_tags = self.matching_peer_tags_v1(span, span_kind_str);
-
-        Some(StatSpan {
-            service: span.service.clone(),
-            resource: span.resource.clone(),
-            name: span.name.clone(),
-            typ: span.span_type.clone(),
-            span_kind,
-            status_code,
-            error: span.error as i32,
-            parent_id: span.parent_id,
-            start: span.start,
-            duration: span.duration,
-            is_top_level,
-            matching_peer_tags,
-            grpc_status_code,
-            http_method: MetaString::default(),
-            http_endpoint: MetaString::default(),
-        })
     }
 
     pub(super) fn add_span(
@@ -400,39 +351,6 @@ impl SpanConcentrator {
         b.handle_span(s, weight, origin, agg_key.clone(), &mut self.key_registry);
     }
 
-    fn matching_peer_tags_v1(&self, span: &V1Span, span_kind: &str) -> Vec<MetaString> {
-        let base_service_nonempty = get_v1_str_attr(&span.attributes, TAG_BASE_SERVICE)
-            .map(|s| !s.is_empty())
-            .unwrap_or(false);
-
-        static EMPTY_PEER_TAGS: &[MetaString] = &[];
-        static BASE_SERVICE_PEER_TAGS: &[MetaString] = &[MetaString::from_static(TAG_BASE_SERVICE)];
-
-        if !self.peer_tags_aggregation || self.peer_tag_keys.is_empty() {
-            return Vec::new();
-        }
-
-        let keys_to_check: &[MetaString] =
-            if (span_kind.is_empty() || span_kind.eq_ignore_ascii_case("internal")) && base_service_nonempty {
-                BASE_SERVICE_PEER_TAGS
-            } else if span_kind.eq_ignore_ascii_case("client")
-                || span_kind.eq_ignore_ascii_case("producer")
-                || span_kind.eq_ignore_ascii_case("consumer")
-            {
-                &self.peer_tag_keys
-            } else {
-                EMPTY_PEER_TAGS
-            };
-
-        keys_to_check
-            .iter()
-            .filter_map(|key| {
-                get_v1_str_attr(&span.attributes, key.as_ref())
-                    .filter(|v| !v.is_empty())
-                    .map(|v| MetaString::from(format!("{}:{}", key, v)))
-            })
-            .collect()
-    }
 }
 
 /// Align timestamp to bucket boundary.
@@ -455,78 +373,3 @@ fn is_partial_snapshot(span: &Span) -> bool {
     }
 }
 
-/// Maps a V1 span kind integer to the string used by the SpanConcentrator.
-///
-/// V1 wire format: 0=unspecified, 1=server, 2=client, 3=producer, 4=consumer, 5=internal.
-fn v1_span_kind_str(kind: u32) -> &'static str {
-    match kind {
-        1 => "server",
-        2 => "client",
-        3 => "producer",
-        4 => "consumer",
-        5 => "internal",
-        _ => "",
-    }
-}
-
-fn get_v1_float_attr(attrs: &[V1KeyValue], key: &str) -> Option<f64> {
-    attrs
-        .iter()
-        .find(|kv| kv.key.as_ref() == key)
-        .and_then(|kv| match &kv.value {
-            V1AnyValue::Double(f) => Some(*f),
-            V1AnyValue::Int(i) => Some(*i as f64),
-            _ => None,
-        })
-}
-
-fn get_v1_str_attr<'a>(attrs: &'a [V1KeyValue], key: &str) -> Option<&'a str> {
-    attrs
-        .iter()
-        .find(|kv| kv.key.as_ref() == key)
-        .and_then(|kv| match &kv.value {
-            V1AnyValue::String(s) => Some(s.as_ref()),
-            _ => None,
-        })
-}
-
-fn get_v1_status_code(attrs: &[V1KeyValue]) -> u32 {
-    const TAG_STATUS_CODE: &str = "http.status_code";
-
-    if let Some(val) = attrs.iter().find(|kv| kv.key.as_ref() == TAG_STATUS_CODE) {
-        match &val.value {
-            V1AnyValue::Int(i) => return *i as u32,
-            V1AnyValue::Double(f) => return *f as u32,
-            V1AnyValue::String(s) => {
-                if let Ok(code) = s.as_ref().parse::<u32>() {
-                    return code;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    0
-}
-
-fn get_v1_grpc_status_code(attrs: &[V1KeyValue]) -> GrpcStatusCode {
-    const STATUS_CODE_FIELDS: &[&str] = &[
-        "rpc.grpc.status_code",
-        "grpc.code",
-        "rpc.grpc.status.code",
-        "grpc.status.code",
-    ];
-
-    for key in STATUS_CODE_FIELDS {
-        if let Some(kv) = attrs.iter().find(|kv| kv.key.as_ref() == *key) {
-            match &kv.value {
-                V1AnyValue::String(s) if !s.is_empty() => return GrpcStatusCode::from_str(s.as_ref()),
-                V1AnyValue::Int(i) => return GrpcStatusCode::from_code(*i as u8),
-                V1AnyValue::Double(f) => return GrpcStatusCode::from_code(*f as u8),
-                _ => {}
-            }
-        }
-    }
-
-    GrpcStatusCode::Unset
-}

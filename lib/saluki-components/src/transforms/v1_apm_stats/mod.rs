@@ -1,8 +1,8 @@
 //! V1 APM stats transform.
 //!
-//! V1 counterpart to [`ApmStatsTransformConfiguration`][super::apm_stats::ApmStatsTransformConfiguration].
-//! Aggregates `Event::V1Trace` events into time-bucketed statistics using the same
-//! `SpanConcentrator` as the OTLP path, producing `Event::TraceStats` events.
+//! Aggregates APM `Event::Trace` events (produced by the APM receiver source) into
+//! time-bucketed statistics using the same `SpanConcentrator` as the OTLP path,
+//! producing `Event::TraceStats` events.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -13,7 +13,7 @@ use saluki_context::tags::TagSet;
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     data_model::event::{
-        trace::v1::{V1AnyValue, V1KeyValue, V1Trace},
+        trace::Trace,
         trace_stats::{ClientStatsPayload, TraceStats},
         Event, EventType,
     },
@@ -90,7 +90,7 @@ impl TransformBuilder for V1ApmStatsTransformConfiguration {
     }
 
     fn input_event_type(&self) -> EventType {
-        EventType::V1Trace
+        EventType::Trace
     }
 
     fn outputs(&self) -> &[OutputDefinition<EventType>] {
@@ -114,40 +114,30 @@ struct V1ApmStats {
 }
 
 impl V1ApmStats {
-    fn process_trace(&mut self, trace: &V1Trace) {
-        let root_span = trace
-            .chunk
-            .spans
-            .iter()
-            .find(|s| s.parent_id == 0)
-            .or_else(|| trace.chunk.spans.first());
+    fn process_trace(&mut self, trace: &Trace) {
+        let root_span = trace.spans().iter().find(|s| s.parent_id() == 0).or_else(|| trace.spans().first());
 
-        let trace_weight = root_span.map(v1_weight).unwrap_or(1.0);
+        let trace_weight = root_span.map(weight).unwrap_or(1.0);
 
-        let process_tags = extract_v1_process_tags(trace);
+        let process_tags = extract_process_tags(trace);
         let payload_key = self.build_payload_key(trace, &process_tags);
         let infra_tags = build_infra_tags(trace, &process_tags);
 
-        let origin = trace.chunk.origin.as_ref();
+        let origin = trace.origin.as_ref();
 
-        for span in &trace.chunk.spans {
+        for span in trace.spans() {
             self.concentrator
-                .add_v1_span_if_eligible(span, trace_weight, &payload_key, &infra_tags, origin);
+                .add_span_if_eligible(span, trace_weight, &payload_key, &infra_tags, origin);
         }
     }
 
-    fn build_payload_key(&self, trace: &V1Trace, process_tags: &str) -> PayloadAggregationKey {
-        let root_span = trace
-            .chunk
-            .spans
-            .iter()
-            .find(|s| s.parent_id == 0)
-            .or_else(|| trace.chunk.spans.first());
+    fn build_payload_key(&self, trace: &Trace, process_tags: &str) -> PayloadAggregationKey {
+        let root_span = trace.spans().iter().find(|s| s.parent_id() == 0).or_else(|| trace.spans().first());
 
         // Span-level env overrides payload-level env which overrides agent default.
         let env = root_span
-            .and_then(|s| get_v1_str_attr(&s.attributes, "env").filter(|s| !s.is_empty()))
-            .map(MetaString::from)
+            .and_then(|s| s.meta().get("env").filter(|s| !s.is_empty()))
+            .map(|s| s.clone())
             .unwrap_or_else(|| {
                 if !trace.env.is_empty() {
                     trace.env.clone()
@@ -157,8 +147,8 @@ impl V1ApmStats {
             });
 
         let hostname = root_span
-            .and_then(|s| get_v1_str_attr(&s.attributes, "_dd.hostname").filter(|s| !s.is_empty()))
-            .map(MetaString::from)
+            .and_then(|s| s.meta().get("_dd.hostname").filter(|s| !s.is_empty()))
+            .map(|s| s.clone())
             .unwrap_or_else(|| {
                 if !trace.hostname.is_empty() {
                     trace.hostname.clone()
@@ -171,21 +161,21 @@ impl V1ApmStats {
             trace.app_version.clone()
         } else {
             root_span
-                .and_then(|s| get_v1_str_attr(&s.attributes, "version").filter(|s| !s.is_empty()))
-                .map(MetaString::from)
+                .and_then(|s| s.meta().get("version").filter(|s| !s.is_empty()))
+                .map(|s| s.clone())
                 .unwrap_or_default()
         };
 
         let container_id = trace.container_id.clone();
 
         let git_commit_sha = root_span
-            .and_then(|s| get_v1_str_attr(&s.attributes, "_dd.git.commit.sha").filter(|s| !s.is_empty()))
-            .map(MetaString::from)
+            .and_then(|s| s.meta().get("_dd.git.commit.sha").filter(|s| !s.is_empty()))
+            .map(|s| s.clone())
             .unwrap_or_default();
 
         let image_tag = root_span
-            .and_then(|s| get_v1_str_attr(&s.attributes, "_dd.image_tag").filter(|s| !s.is_empty()))
-            .map(MetaString::from)
+            .and_then(|s| s.meta().get("_dd.image_tag").filter(|s| !s.is_empty()))
+            .map(|s| s.clone())
             .unwrap_or_default();
 
         let lang = trace.language_name.clone();
@@ -245,10 +235,15 @@ impl Transform for V1ApmStats {
                 maybe_events = context.events().next(), if !final_flush => {
                     match maybe_events {
                         Some(events) => {
+                            let mut count = 0u32;
                             for event in events {
-                                if let Event::V1Trace(trace) = event {
+                                if let Event::Trace(trace) = event {
+                                    count += 1;
                                     self.process_trace(&trace);
                                 }
+                            }
+                            if count > 0 {
+                                debug!(traces = count, "V1 APM stats processed buffer.");
                             }
                         }
                         None => {
@@ -266,63 +261,41 @@ impl Transform for V1ApmStats {
     }
 }
 
-fn build_infra_tags(trace: &V1Trace, process_tags: &str) -> InfraTags {
+fn build_infra_tags(trace: &Trace, process_tags: &str) -> InfraTags {
     InfraTags::new(trace.container_id.clone(), TagSet::default(), process_tags)
 }
 
-fn extract_v1_process_tags(trace: &V1Trace) -> MetaString {
-    // Check root span attributes first, then payload attributes.
-    let root_span = trace
-        .chunk
-        .spans
-        .iter()
-        .find(|s| s.parent_id == 0)
-        .or_else(|| trace.chunk.spans.first());
+fn extract_process_tags(trace: &Trace) -> MetaString {
+    let root_span = trace.spans().iter().find(|s| s.parent_id() == 0).or_else(|| trace.spans().first());
 
     if let Some(span) = root_span {
-        if let Some(tags) = get_v1_str_attr(&span.attributes, TAG_PROCESS_TAGS) {
+        if let Some(tags) = span.meta().get(TAG_PROCESS_TAGS) {
             if !tags.is_empty() {
-                return MetaString::from(tags);
+                return tags.clone();
             }
         }
     }
 
-    if let Some(tags) = get_v1_str_attr(&trace.payload_attributes, TAG_PROCESS_TAGS) {
+    // Check trace-level attributes (merged from payload_attributes during APM source conversion).
+    if let Some(saluki_core::data_model::event::trace::AttributeValue::String(tags)) =
+        trace.attributes.get(TAG_PROCESS_TAGS)
+    {
         if !tags.is_empty() {
-            return MetaString::from(tags);
+            return tags.clone();
         }
     }
 
     MetaString::empty()
 }
 
-fn v1_weight(span: &saluki_core::data_model::event::trace::v1::V1Span) -> f64 {
+fn weight(span: &saluki_core::data_model::event::trace::Span) -> f64 {
     const KEY_SAMPLING_RATE: &str = "_sample_rate";
-    if let Some(rate) = span
-        .attributes
-        .iter()
-        .find(|kv| kv.key.as_ref() == KEY_SAMPLING_RATE)
-        .and_then(|kv| match &kv.value {
-            V1AnyValue::Double(f) => Some(*f),
-            V1AnyValue::Int(i) => Some(*i as f64),
-            _ => None,
-        })
-    {
+    if let Some(&rate) = span.metrics().get(KEY_SAMPLING_RATE) {
         if rate > 0.0 && rate <= 1.0 {
             return 1.0 / rate;
         }
     }
     1.0
-}
-
-fn get_v1_str_attr<'a>(attrs: &'a [V1KeyValue], key: &str) -> Option<&'a str> {
-    attrs
-        .iter()
-        .find(|kv| kv.key.as_ref() == key)
-        .and_then(|kv| match &kv.value {
-            V1AnyValue::String(s) => Some(s.as_ref()),
-            _ => None,
-        })
 }
 
 fn now_nanos() -> u64 {
@@ -402,71 +375,34 @@ fn split_into_trace_stats(client_payloads: Vec<ClientStatsPayload>, max_entries_
     events
 }
 
-// TODO (#17): plumb a workload provider into V1ApmStatsTransformConfiguration so
-// that build_infra_tags can resolve container tags (kube_namespace, image_name,
-// etc.) from container_id — mirroring ApmStatsTransformConfiguration::with_workload_provider.
-// Until then, stats payloads from the V1 pipeline are missing container/k8s tags.
-
 #[cfg(test)]
 mod tests {
-    use saluki_core::data_model::event::trace::v1::{V1AnyValue, V1KeyValue, V1Span, V1Trace, V1TraceChunk};
+    use saluki_common::collections::FastHashMap;
+    use saluki_context::tags::TagSet;
+    use saluki_core::data_model::event::trace::{Span, Trace};
     use stringtheory::MetaString;
 
     use crate::transforms::apm_stats::{SpanConcentrator, BUCKET_DURATION_NS};
 
     use super::*;
 
-    fn make_v1_span(service: &str, resource: &str, parent_id: u64, is_top_level: bool) -> V1Span {
-        let mut attributes = Vec::new();
+    fn make_span(service: &str, resource: &str, parent_id: u64, is_top_level: bool) -> Span {
+        let mut metrics = FastHashMap::default();
         if is_top_level {
-            attributes.push(V1KeyValue {
-                key: MetaString::from("_top_level"),
-                value: V1AnyValue::Double(1.0),
-            });
+            metrics.insert(MetaString::from("_top_level"), 1.0);
         }
-        V1Span {
-            service: MetaString::from(service),
-            name: MetaString::from("op"),
-            resource: MetaString::from(resource),
-            span_id: 1,
-            parent_id,
-            start: 1_000_000_000,
-            duration: 100_000_000,
-            error: false,
-            attributes,
-            span_type: MetaString::from("web"),
-            links: Vec::new(),
-            events: Vec::new(),
-            env: MetaString::default(),
-            version: MetaString::default(),
-            component: MetaString::default(),
-            kind: 0,
-        }
+        Span::new(service, "op", resource, "web", 0, 1, parent_id, 1_000_000_000, 100_000_000, 0)
+            .with_metrics(Some(metrics))
     }
 
-    fn make_v1_trace(spans: Vec<V1Span>) -> V1Trace {
-        V1Trace {
-            chunk: V1TraceChunk {
-                priority: 1,
-                origin: MetaString::default(),
-                attributes: Vec::new(),
-                spans,
-                dropped_trace: false,
-                trace_id_high: 0,
-                trace_id_low: 1,
-                sampling_mechanism: 0,
-            },
-            container_id: MetaString::default(),
-            language_name: MetaString::from("rust"),
-            language_version: MetaString::default(),
-            tracer_version: MetaString::default(),
-            runtime_id: MetaString::default(),
-            env: MetaString::from("prod"),
-            hostname: MetaString::from("test-host"),
-            app_version: MetaString::from("1.0.0"),
-            payload_attributes: Vec::new(),
-            client_dropped_p0s_weight: 0.0,
-        }
+    fn make_trace(spans: Vec<Span>) -> Trace {
+        let mut trace = Trace::new(spans, TagSet::default());
+        trace.priority = Some(1);
+        trace.language_name = MetaString::from("rust");
+        trace.env = MetaString::from("prod");
+        trace.hostname = MetaString::from("test-host");
+        trace.app_version = MetaString::from("1.0.0");
+        trace
     }
 
     #[test]
@@ -480,8 +416,8 @@ mod tests {
             agent_hostname: MetaString::default(),
         };
 
-        let span = make_v1_span("test-service", "test-resource", 0, true);
-        let trace = make_v1_trace(vec![span]);
+        let span = make_span("test-service", "test-resource", 0, true);
+        let trace = make_trace(vec![span]);
 
         transform.process_trace(&trace);
 
@@ -500,9 +436,8 @@ mod tests {
             agent_hostname: MetaString::default(),
         };
 
-        // Span with no _top_level, no _dd.measured, no span.kind, no compute_stats_by_span_kind
-        let span = make_v1_span("test-service", "test-resource", 0, false);
-        let trace = make_v1_trace(vec![span]);
+        let span = make_span("test-service", "test-resource", 0, false);
+        let trace = make_trace(vec![span]);
 
         transform.process_trace(&trace);
 
@@ -521,8 +456,8 @@ mod tests {
             agent_hostname: MetaString::from("agent-host"),
         };
 
-        let span = make_v1_span("svc", "res", 0, true);
-        let trace = make_v1_trace(vec![span]);
+        let span = make_span("svc", "res", 0, true);
+        let trace = make_trace(vec![span]);
 
         let process_tags = "";
         let key = transform.build_payload_key(&trace, process_tags);

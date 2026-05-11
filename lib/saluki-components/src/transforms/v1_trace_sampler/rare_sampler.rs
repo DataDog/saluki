@@ -6,7 +6,7 @@
 use std::time::{Duration, Instant};
 
 use saluki_common::{collections::FastHashMap, rate::TokenBucket};
-use saluki_core::data_model::event::trace::v1::{V1Span, V1TraceChunk};
+use saluki_core::data_model::event::trace::Span;
 
 const RARE_SAMPLER_BURST: usize = 50;
 const TTL_RENEWAL_PERIOD: Duration = Duration::from_secs(60);
@@ -24,18 +24,18 @@ fn write_hash(mut hash: u32, bytes: &[u8]) -> u32 {
 }
 
 /// Compute FNV-1a 32-bit hash of a span's (service, name, resource, error) tuple.
-fn span_hash(span: &V1Span) -> u32 {
+fn span_hash(span: &Span) -> u32 {
     let mut h = OFFSET_32;
-    h = write_hash(h, span.service.as_ref().as_bytes());
-    h = write_hash(h, span.name.as_ref().as_bytes());
-    h = write_hash(h, span.resource.as_ref().as_bytes());
-    h = write_hash(h, &[u8::from(span.error)]);
+    h = write_hash(h, span.service().as_bytes());
+    h = write_hash(h, span.name().as_bytes());
+    h = write_hash(h, span.resource().as_bytes());
+    h = write_hash(h, &[u8::from(span.error() != 0)]);
     h
 }
 
 /// Compute a shard key for a span based on its service name.
-fn shard_key(span: &V1Span) -> u32 {
-    write_hash(OFFSET_32, span.service.as_ref().as_bytes())
+fn shard_key(span: &Span) -> u32 {
+    write_hash(OFFSET_32, span.service().as_bytes())
 }
 
 /// Tracks span signatures seen within a shard, with per-signature TTL expiry.
@@ -113,8 +113,8 @@ impl V1RareSampler {
         }
     }
 
-    /// Returns `true` if the chunk should be kept by the rare sampler.
-    pub(super) fn sample(&mut self, chunk: &V1TraceChunk) -> bool {
+    /// Returns `true` if the spans should be kept by the rare sampler.
+    pub(super) fn sample(&mut self, spans: &[Span]) -> bool {
         if !self.enabled {
             return false;
         }
@@ -122,7 +122,7 @@ impl V1RareSampler {
         let now = Instant::now();
         let expire = now + self.ttl;
 
-        let found_rare = chunk.spans.iter().any(|span| {
+        let found_rare = spans.iter().any(|span| {
             let key = shard_key(span);
             let hash = span_hash(span);
             let seen = self.seen.entry(key).or_insert_with(|| SeenSpans::new(self.cardinality));
@@ -134,7 +134,7 @@ impl V1RareSampler {
             return false;
         }
 
-        for span in &chunk.spans {
+        for span in spans {
             let key = shard_key(span);
             let hash = span_hash(span);
             let seen = self.seen.entry(key).or_insert_with(|| SeenSpans::new(self.cardinality));
