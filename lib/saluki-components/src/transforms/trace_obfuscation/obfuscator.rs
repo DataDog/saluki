@@ -125,19 +125,4 @@ impl Obfuscator {
         Some(self.open_search_obfuscator.as_ref()?.obfuscate(query).into())
     }
 
-    /// Obfuscates a SQL query string using the configured SQL obfuscation settings.
-    ///
-    /// `dbms` is an optional database system name that overrides the config's DBMS setting.
-    /// Returns `Ok((obfuscated_query, table_names))` on success, `Err(())` if the query could not
-    /// be parsed.
-    pub fn obfuscate_sql_string(&self, query: &str, dbms: Option<&str>) -> Result<(String, String), ()> {
-        use super::sql;
-        let config = match dbms {
-            Some(d) if !d.is_empty() => self.config.sql().with_dbms(d.to_string()),
-            _ => self.config.sql().clone(),
-        };
-        sql::obfuscate_sql_string(query, &config)
-            .map(|r| (r.query, r.table_names))
-            .map_err(|_| ())
-    }
 }

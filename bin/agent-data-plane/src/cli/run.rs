@@ -26,7 +26,7 @@ use saluki_components::{
         AggregateConfiguration, ApmStatsTransformConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
         DogStatsDPrefixFilterConfiguration, HostEnrichmentConfiguration, HostTagsConfiguration,
         TraceObfuscationConfiguration, TraceSamplerConfiguration, V1ApmStatsTransformConfiguration,
-        V1TraceObfuscationConfiguration, V1TraceSamplerConfiguration,
+        V1TraceSamplerConfiguration,
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
@@ -358,8 +358,8 @@ async fn add_apm_pipeline_to_blueprint(
         .error_context("Failed to configure APM receiver.")?
         .with_sampling_rates(sampling_rates.clone());
 
-    let v1_trace_obfuscation_config = V1TraceObfuscationConfiguration::from_apm_configuration(config)
-        .error_context("Failed to configure V1 trace obfuscation.")?;
+    let v1_trace_obfuscation_config = TraceObfuscationConfiguration::from_apm_configuration(config)
+        .error_context("Failed to configure trace obfuscation.")?;
 
     let v1_trace_sampler_config = V1TraceSamplerConfiguration::from_configuration(config)
         .error_context("Failed to configure V1 trace sampler.")?
@@ -367,7 +367,7 @@ async fn add_apm_pipeline_to_blueprint(
 
     let v1_traces_enrich_config = ChainedConfiguration::default()
         .with_transform_builder("v1_apm_onboarding", V1ApmOnboardingConfiguration)
-        .with_transform_builder("v1_trace_obfuscation", v1_trace_obfuscation_config)
+        .with_transform_builder("trace_obfuscation", v1_trace_obfuscation_config)
         .with_transform_builder("v1_trace_sampler", v1_trace_sampler_config);
 
     let v1_dd_traces_config = V1DatadogTraceConfiguration::from_configuration(config)
