@@ -1,5 +1,5 @@
 //! Network listeners.
-use std::{future::pending, io, net::SocketAddr};
+use std::{collections::VecDeque, future::pending, io, net::SocketAddr, num::NonZeroUsize};
 
 use snafu::{ResultExt as _, Snafu};
 use socket2::SockRef;
@@ -73,7 +73,7 @@ pub enum ListenerError {
 
 enum ListenerInner {
     Tcp(TcpListener),
-    Udp(Option<TokioUdpSocket>),
+    Udp(VecDeque<TokioUdpSocket>),
     #[cfg(unix)]
     Unixgram(Option<tokio::net::UnixDatagram>),
     #[cfg(unix)]
@@ -93,10 +93,12 @@ enum ListenerInner {
 /// continually "accepted". Instead, `Listener` will emit a single `Stream` that can be used to send and receive data
 /// from multiple remote peers.
 ///
-/// ## Missing
+/// ## UDP autoscaling
 ///
-/// - Ability to configure `Listener` to emit multiple streams for connectionless address families, allowing for load
-///   balancing. (Only possible for UDP via SO_REUSEPORT, as UDS does not support SO_REUSEPORT.)
+/// On Linux, UDP listeners can be configured to bind multiple sockets to the same address using `SO_REUSEPORT`,
+/// allowing the kernel to load-balance incoming datagrams across them. The configured number of sockets are yielded
+/// one at a time from successive calls to [`Listener::accept`] before the listener returns pending forever. See
+/// the `udp_streams_to_yield` parameter of [`Listener::from_listen_address`].
 pub struct Listener {
     listen_address: ListenAddress,
     inner: ListenerInner,
@@ -106,10 +108,23 @@ pub struct Listener {
 impl Listener {
     /// Creates a new `Listener` from the given listen address.
     ///
+    /// For UDP listen addresses, `udp_streams_to_yield` controls how many sockets are bound to the address and how
+    /// many `Stream`s the listener will yield from [`accept`](Self::accept) before going pending forever. `None`
+    /// behaves like `Some(1)`: a single socket is bound normally and one stream is yielded.
+    ///
+    /// When `Some(N)` with N > 1 is requested on Linux, the listener binds N sockets with `SO_REUSEPORT` set before
+    /// `bind`, so the kernel will hash-load-balance incoming datagrams across them. On non-Linux platforms,
+    /// `SO_REUSEPORT` does not provide load balancing, so the request is downgraded to a single socket and a warning
+    /// is logged.
+    ///
+    /// For non-UDP listen addresses, `udp_streams_to_yield` is ignored.
+    ///
     /// ## Errors
     ///
     /// If the listen address cannot be bound, or if the listener cannot be configured correctly, an error is returned.
-    pub async fn from_listen_address(listen_address: ListenAddress) -> Result<Self, ListenerError> {
+    pub async fn from_listen_address(
+        listen_address: ListenAddress, udp_streams_to_yield: Option<NonZeroUsize>,
+    ) -> Result<Self, ListenerError> {
         let inner = match &listen_address {
             ListenAddress::Tcp(addr) => {
                 TcpListener::bind(addr)
@@ -119,13 +134,14 @@ impl Listener {
                         address: listen_address.clone(),
                     })?
             }
-            ListenAddress::Udp(addr) => TokioUdpSocket::bind(addr)
-                .await
-                .map(Some)
-                .map(ListenerInner::Udp)
-                .context(FailedToBind {
-                    address: listen_address.clone(),
-                })?,
+            ListenAddress::Udp(addr) => {
+                let sockets = bind_udp_sockets(*addr, udp_streams_to_yield)
+                    .await
+                    .context(FailedToBind {
+                        address: listen_address.clone(),
+                    })?;
+                ListenerInner::Udp(sockets)
+            }
             #[cfg(unix)]
             ListenAddress::Unixgram(addr) => {
                 ensure_unix_socket_free(addr).await.context(FailedToBind {
@@ -190,11 +206,27 @@ impl Listener {
         &self.listen_address
     }
 
+    /// Minimum number of I/O buffers needed to safely service every stream this listener will yield.
+    ///
+    /// Connectionless streams permanently retain their buffer for the lifetime of the stream, so the reservation
+    /// matches the total number of yielded streams. Connection-oriented streams return their buffer to the pool
+    /// between connections, so the reservation is a lower bound of `1` per listener.
+    pub fn min_buffer_reservation(&self) -> usize {
+        match &self.inner {
+            ListenerInner::Tcp(_) => 1,
+            ListenerInner::Udp(sockets) => sockets.len(),
+            #[cfg(unix)]
+            ListenerInner::Unixgram(_) => 1,
+            #[cfg(unix)]
+            ListenerInner::Unix(_) => 1,
+        }
+    }
+
     /// Accepts a new stream from the listener.
     ///
     /// For connection-oriented address families, this will accept a new connection and return a `Stream` that is bound
-    /// to that remote peer. For connectionless address families, this will return a single `Stream` that will receive
-    /// from multiple remote peers, and no further streams will be emitted.
+    /// to that remote peer. For connectionless address families, this will yield up to the configured number of
+    /// pre-bound `Stream`s — one per call — before returning pending forever.
     ///
     /// ## Errors
     ///
@@ -211,11 +243,7 @@ impl Listener {
                 Ok((socket, addr).into())
             }
             ListenerInner::Udp(udp) => {
-                // TODO: We only emit a single stream here, but we _could_ do something like an internal configuration
-                // to allow for multiple streams to be emitted, where the socket is bound via SO_REUSEPORT and then we
-                // get load balancing between the sockets.... basically make it possible to parallelize UDP handling if
-                // that's a thing we want to do.
-                if let Some(socket) = udp.take() {
+                if let Some(socket) = udp.pop_front() {
                     configure_stream_socket_receive_buffer_size(&socket, self.socket_receive_buffer_size, stream_type)?;
                     Ok(socket.into())
                 } else {
@@ -270,6 +298,47 @@ where
     }
 
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+async fn bind_udp_sockets(
+    addr: SocketAddr, maybe_socket_count: Option<NonZeroUsize>,
+) -> io::Result<VecDeque<TokioUdpSocket>> {
+    use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+
+    fn bind_one(addr: SocketAddr) -> io::Result<TokioUdpSocket> {
+        let socket = Socket::new(Domain::for_address(addr), Type::DGRAM, Some(Protocol::UDP))?;
+        socket.set_reuse_address(true)?;
+        socket.set_reuse_port(true)?;
+        socket.set_nonblocking(true)?;
+        socket.bind(&SockAddr::from(addr))?;
+        let std_socket: std::net::UdpSocket = socket.into();
+        TokioUdpSocket::from_std(std_socket)
+    }
+
+    let socket_count = maybe_socket_count.map(NonZeroUsize::get).unwrap_or(1);
+    let mut sockets = VecDeque::with_capacity(socket_count);
+
+    // Bind the first socket to learn the effective address. When the caller passed port `0`, the OS assigns an
+    // ephemeral port; every remaining socket must bind to that same port for SO_REUSEPORT load balancing to work
+    // (otherwise each subsequent socket would receive its own distinct ephemeral port).
+    let first = bind_one(addr)?;
+    let effective_addr = first.local_addr()?;
+    sockets.push_back(first);
+
+    for _ in 1..socket_count {
+        sockets.push_back(bind_one(effective_addr)?);
+    }
+
+    Ok(sockets)
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn bind_udp_sockets(addr: SocketAddr, _: Option<NonZeroUsize>) -> io::Result<VecDeque<TokioUdpSocket>> {
+    let socket = TokioUdpSocket::bind(addr).await?;
+    let mut sockets = VecDeque::with_capacity(1);
+    sockets.push_back(socket);
+    Ok(sockets)
 }
 
 enum ConnectionOrientedListenerInner {
@@ -403,7 +472,7 @@ mod tests {
     #[tokio::test]
     async fn zero_receive_buffer_size_preserves_udp_default() {
         let default_address = ListenAddress::Udp(([127, 0, 0, 1], 0).into());
-        let mut default_listener = Listener::from_listen_address(default_address)
+        let mut default_listener = Listener::from_listen_address(default_address, None)
             .await
             .expect("default listener should bind");
         let default_stream = default_listener
@@ -415,7 +484,7 @@ mod tests {
             .expect("receive buffer size should be available");
 
         let zero_address = ListenAddress::Udp(([127, 0, 0, 1], 0).into());
-        let mut zero_listener = Listener::from_listen_address(zero_address)
+        let mut zero_listener = Listener::from_listen_address(zero_address, None)
             .await
             .expect("zero-sized listener should bind")
             .with_receive_buffer_size(None);
@@ -433,7 +502,7 @@ mod tests {
     #[tokio::test]
     async fn udp_listener_sets_receive_buffer_size() {
         let address = ListenAddress::Udp(([127, 0, 0, 1], 0).into());
-        let mut listener = Listener::from_listen_address(address)
+        let mut listener = Listener::from_listen_address(address, None)
             .await
             .expect("listener should bind")
             .with_receive_buffer_size(Some(REQUESTED_RECV_BUFFER_SIZE));
@@ -467,7 +536,7 @@ mod tests {
     #[tokio::test]
     async fn tcp_listener_sets_receive_buffer_size() {
         let address = ListenAddress::Tcp(([127, 0, 0, 1], 0).into());
-        let mut listener = Listener::from_listen_address(address)
+        let mut listener = Listener::from_listen_address(address, None)
             .await
             .expect("listener should bind")
             .with_receive_buffer_size(Some(REQUESTED_RECV_BUFFER_SIZE));
@@ -499,7 +568,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         let socket_path = temp_dir.path().join("dogstatsd.sock");
         let address = ListenAddress::Unixgram(socket_path.clone());
-        let mut listener = Listener::from_listen_address(address)
+        let mut listener = Listener::from_listen_address(address, None)
             .await
             .expect("listener should bind")
             .with_receive_buffer_size(Some(REQUESTED_RECV_BUFFER_SIZE));
@@ -538,7 +607,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         let socket_path = temp_dir.path().join("dogstatsd-stream.sock");
         let address = ListenAddress::Unix(socket_path.clone());
-        let mut listener = Listener::from_listen_address(address)
+        let mut listener = Listener::from_listen_address(address, None)
             .await
             .expect("listener should bind")
             .with_receive_buffer_size(Some(REQUESTED_RECV_BUFFER_SIZE));
@@ -563,6 +632,90 @@ mod tests {
         assert!(!stream.is_connectionless());
     }
 
+    #[tokio::test]
+    async fn udp_listener_default_yields_single_stream_then_pends() {
+        let address = ListenAddress::Udp(([127, 0, 0, 1], 0).into());
+        let mut listener = Listener::from_listen_address(address, None)
+            .await
+            .expect("listener should bind");
+        assert_eq!(listener.min_buffer_reservation(), 1);
+
+        let _stream = listener.accept().await.expect("first accept should yield a stream");
+
+        let pending_result = timeout(Duration::from_millis(50), listener.accept()).await;
+        assert!(pending_result.is_err(), "second accept should be pending forever");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn udp_listener_with_streams_yields_n_streams_then_pends() {
+        let count = NonZeroUsize::new(3).unwrap();
+        let address = ListenAddress::Udp(([127, 0, 0, 1], 0).into());
+        let mut listener = Listener::from_listen_address(address, Some(count))
+            .await
+            .expect("listener should bind with multiple sockets");
+        assert_eq!(listener.min_buffer_reservation(), 3);
+
+        let ports = udp_socket_ports(&listener);
+        assert_eq!(ports.len(), 3);
+        assert!(ports.iter().all(|p| *p == ports[0]), "all sockets should share a port");
+
+        for _ in 0..3 {
+            listener.accept().await.expect("accept should yield a stream");
+        }
+
+        let pending_result = timeout(Duration::from_millis(50), listener.accept()).await;
+        assert!(pending_result.is_err(), "fourth accept should be pending forever");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn udp_listener_port_zero_shares_port_across_sockets() {
+        let count = NonZeroUsize::new(2).unwrap();
+        let address = ListenAddress::Udp(([127, 0, 0, 1], 0).into());
+        let listener = Listener::from_listen_address(address, Some(count))
+            .await
+            .expect("listener should bind two sockets to the same ephemeral port");
+
+        let ports = udp_socket_ports(&listener);
+        assert_eq!(ports.len(), 2);
+        assert_eq!(ports[0], ports[1]);
+        assert_ne!(ports[0], 0, "OS should have assigned an ephemeral port");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn udp_listener_with_streams_applies_receive_buffer_size_to_all_sockets() {
+        let count = NonZeroUsize::new(3).unwrap();
+        let address = ListenAddress::Udp(([127, 0, 0, 1], 0).into());
+        let mut listener = Listener::from_listen_address(address, Some(count))
+            .await
+            .expect("listener should bind multiple sockets")
+            .with_receive_buffer_size(Some(REQUESTED_RECV_BUFFER_SIZE));
+
+        for _ in 0..3 {
+            let stream = listener.accept().await.expect("stream should be accepted");
+            let buf_size = stream
+                .recv_buffer_size()
+                .expect("receive buffer size should be available");
+            assert!(
+                buf_size >= REQUESTED_RECV_BUFFER_SIZE,
+                "expected receive buffer size >= {REQUESTED_RECV_BUFFER_SIZE}, got {buf_size}"
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn udp_socket_ports(listener: &Listener) -> Vec<u16> {
+        match &listener.inner {
+            ListenerInner::Udp(sockets) => sockets
+                .iter()
+                .map(|s| s.local_addr().expect("socket should have local addr").port())
+                .collect(),
+            _ => panic!("expected UDP listener"),
+        }
+    }
+
     fn tcp_local_addr(listener: &Listener) -> io::Result<SocketAddr> {
         match &listener.inner {
             ListenerInner::Tcp(tcp) => tcp.local_addr(),
@@ -572,7 +725,7 @@ mod tests {
 
     fn udp_local_addr(listener: &Listener) -> io::Result<SocketAddr> {
         match &listener.inner {
-            ListenerInner::Udp(Some(socket)) => socket.local_addr(),
+            ListenerInner::Udp(sockets) => sockets.front().expect("UDP listener has no sockets").local_addr(),
             _ => panic!("expected UDP listener"),
         }
     }
