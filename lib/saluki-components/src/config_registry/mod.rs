@@ -133,6 +133,8 @@ pub mod structs {
     pub const OTLP_RELAY_CONFIGURATION: &str = "OtlpRelayConfiguration";
     /// Identifier for `TraceObfuscationConfiguration`.
     pub const TRACE_OBFUSCATION_CONFIGURATION: &str = "TraceObfuscationConfiguration";
+    /// Keys read via `get_typed` / `try_get_typed` rather than struct deserialization.
+    pub const GET_TYPED: &str = "get_typed";
 }
 
 /// The `Severity` level of a config key that Saluki does not support.

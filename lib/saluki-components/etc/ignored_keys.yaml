@@ -3324,10 +3324,6 @@
   reason: initial bulk
 - name: synthetics.forwarder.zstd_compression_level
   reason: initial bulk
-- name: syslog_rfc
-  reason: initial bulk
-- name: syslog_uri
-  reason: initial bulk
 - name: system_tray.log_file
   reason: initial bulk
 - name: tag_value_split_separator
