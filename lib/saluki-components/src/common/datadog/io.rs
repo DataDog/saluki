@@ -1,4 +1,17 @@
-use std::{collections::VecDeque, error::Error as _, path::PathBuf, sync::Arc, time::Duration};
+//! Datadog forwarder I/O.
+//!
+//! # Missing
+//!
+//! - Account for dynamic API key updates when deriving endpoint queue IDs.
+//! - Avoid initializing the process-wide crypto provider from tests.
+
+use std::{
+    collections::VecDeque,
+    error::Error as _,
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use bytes::Buf;
 use futures::FutureExt as _;
@@ -31,7 +44,7 @@ use super::{
     config::ForwarderConfiguration,
     endpoints::ResolvedEndpoint,
     middleware::{for_resolved_endpoint, with_version_info},
-    telemetry::{ComponentTelemetry, TransactionQueueTelemetry},
+    telemetry::{ComponentTelemetry, SharedTransactionQueueTelemetry, TransactionQueueTelemetry},
     transaction::{Metadata, Transaction, TransactionBody},
 };
 
@@ -39,6 +52,9 @@ use super::{
 ///
 /// Used to influence the size of chunks in `ChunkedBytesBuffer`.
 pub const RB_BUFFER_CHUNK_SIZE: usize = 32 * 1024; // 32 KB
+
+const RETRY_QUEUE_CAPACITY_HISTORY_DURATION_SECS: u64 = 15 * 60;
+const RETRY_QUEUE_CAPACITY_BUCKET_DURATION_SECS: u64 = 10;
 
 /// A handle to the transaction forwarder.
 pub struct Handle<B>
@@ -226,11 +242,13 @@ async fn run_io_loop<B>(
     // Spawn an endpoint I/O task for each endpoint we're configured to send to, which we'll forward transactions to.
     let mut endpoint_txs = Vec::new();
     let task_barrier = Arc::new(Barrier::new(resolved_endpoints.len() + 1));
+    let shared_txnq_telemetry = SharedTransactionQueueTelemetry::from_builder(&metrics_builder);
 
     for resolved_endpoint in resolved_endpoints {
         let endpoint_url = resolved_endpoint.endpoint().to_string();
 
-        let txnq_telemetry = TransactionQueueTelemetry::from_builder(&metrics_builder, &endpoint_url);
+        let txnq_telemetry =
+            TransactionQueueTelemetry::from_builder(&metrics_builder, &endpoint_url, shared_txnq_telemetry.clone());
 
         let (endpoint_tx, endpoint_rx) = mpsc::channel(8);
         let task_barrier = Arc::clone(&task_barrier);
@@ -504,6 +522,77 @@ struct PendingTransactions<T> {
     high_priority: VecDeque<T>,
     low_priority: RetryQueue<T>,
     telemetry: TransactionQueueTelemetry,
+    incoming_bytes_per_sec: IncomingBytesPerSec,
+}
+
+// Mirrors the Datadog Agent retry queue duration traffic-rate input:
+// https://github.com/DataDog/datadog-agent/blob/main/comp/forwarder/defaultforwarder/internal/retry/queue_duration_capacity.go
+// https://github.com/DataDog/datadog-agent/blob/main/comp/forwarder/defaultforwarder/internal/retry/time_interval_accumulator.go
+struct IncomingBytesPerSec {
+    bucket_sum: Vec<u64>,
+    current_index: usize,
+    current_index_time_secs: Option<u64>,
+    start_index_time_secs: Option<u64>,
+    sum: u64,
+    bucket_duration_secs: u64,
+}
+
+impl IncomingBytesPerSec {
+    fn new(history_duration_secs: u64, bucket_duration_secs: u64) -> Self {
+        assert!(bucket_duration_secs > 0, "bucket duration must be at least one second");
+        assert!(
+            history_duration_secs >= bucket_duration_secs,
+            "history duration must be greater than or equal to bucket duration"
+        );
+
+        Self {
+            bucket_sum: vec![0; (history_duration_secs / bucket_duration_secs) as usize],
+            current_index: 0,
+            current_index_time_secs: None,
+            start_index_time_secs: None,
+            sum: 0,
+            bucket_duration_secs,
+        }
+    }
+
+    fn record(&mut self, now_secs: u64, bytes: u64) -> f64 {
+        if self.start_index_time_secs.is_none() {
+            self.start_index_time_secs = Some(now_secs);
+            self.current_index_time_secs = Some(now_secs);
+        }
+
+        while now_secs
+            >= self.current_index_time_secs.expect("current index time should be set") + self.bucket_duration_secs
+        {
+            self.current_index = (self.current_index + 1) % self.bucket_sum.len();
+            self.sum -= self.bucket_sum[self.current_index];
+            self.bucket_sum[self.current_index] = 0;
+
+            let current_index_time_secs =
+                self.current_index_time_secs.expect("current index time should be set") + self.bucket_duration_secs;
+            self.current_index_time_secs = Some(current_index_time_secs);
+
+            let start_index_time_secs = self.start_index_time_secs.expect("start index time should be set");
+            if current_index_time_secs
+                >= start_index_time_secs + self.bucket_sum.len() as u64 * self.bucket_duration_secs
+            {
+                self.start_index_time_secs = Some(start_index_time_secs + self.bucket_duration_secs);
+            }
+        }
+
+        self.bucket_sum[self.current_index] += bytes;
+        self.sum += bytes;
+        self.bytes_per_sec(now_secs)
+    }
+
+    fn bytes_per_sec(&self, now_secs: u64) -> f64 {
+        let Some(start_index_time_secs) = self.start_index_time_secs else {
+            return 0.0;
+        };
+
+        let duration_secs = now_secs.saturating_sub(start_index_time_secs) + 1;
+        self.sum as f64 / duration_secs as f64
+    }
 }
 
 impl<T: Retryable> PendingTransactions<T> {
@@ -516,6 +605,10 @@ impl<T: Retryable> PendingTransactions<T> {
             high_priority: VecDeque::with_capacity(max_enqueued),
             low_priority: retry_queue,
             telemetry,
+            incoming_bytes_per_sec: IncomingBytesPerSec::new(
+                RETRY_QUEUE_CAPACITY_HISTORY_DURATION_SECS,
+                RETRY_QUEUE_CAPACITY_BUCKET_DURATION_SECS,
+            ),
         }
     }
 
@@ -530,6 +623,8 @@ impl<T: Retryable> PendingTransactions<T> {
     ///
     /// If the high-priority queue is full, the transaction will be pushed into the low-priority queue.
     pub async fn push_high_priority(&mut self, transaction: T) -> Result<PushResult, GenericError> {
+        self.record_incoming_transaction_size(transaction.size_bytes());
+
         if self.high_priority.len() < self.high_priority.capacity() {
             self.high_priority.push_back(transaction);
             self.telemetry.high_prio_queue_insertions().increment(1);
@@ -543,6 +638,7 @@ impl<T: Retryable> PendingTransactions<T> {
         } else {
             let push_result = self.low_priority.push(transaction).await?;
             self.telemetry.low_prio_queue_insertions().increment(1);
+            self.record_retry_queue_size();
 
             debug!(
                 low_prio_queue_len = self.low_priority.len(),
@@ -557,6 +653,7 @@ impl<T: Retryable> PendingTransactions<T> {
     pub async fn push_low_priority(&mut self, transaction: T) -> Result<PushResult, GenericError> {
         let push_result = self.low_priority.push(transaction).await?;
         self.telemetry.low_prio_queue_insertions().increment(1);
+        self.record_retry_queue_size();
 
         debug!(
             low_prio_queue_len = self.low_priority.len(),
@@ -595,6 +692,7 @@ impl<T: Retryable> PendingTransactions<T> {
             match pop_result {
                 Ok(Some(transaction)) => {
                     self.telemetry.low_prio_queue_removals().increment(1);
+                    self.record_retry_queue_size();
 
                     debug!(
                         low_prio_queue_len = self.low_priority.len(),
@@ -602,7 +700,10 @@ impl<T: Retryable> PendingTransactions<T> {
                     );
                     return Some(transaction);
                 }
-                Ok(None) => return None,
+                Ok(None) => {
+                    self.record_retry_queue_size();
+                    return None;
+                }
                 Err(e) => {
                     error!(error = %e, "Failed to pop transaction from low-priority queue.");
                     continue;
@@ -632,6 +733,7 @@ impl<T: Retryable> PendingTransactions<T> {
 
             let subpush_result = self.low_priority.push(transaction).await?;
             self.telemetry.low_prio_queue_insertions().increment(1);
+            self.record_retry_queue_size();
 
             push_result.merge(subpush_result);
         }
@@ -642,6 +744,26 @@ impl<T: Retryable> PendingTransactions<T> {
 
         Ok(push_result)
     }
+
+    fn record_retry_queue_size(&self) {
+        self.telemetry.record_retry_queue_size(self.low_priority.len());
+    }
+
+    fn record_incoming_transaction_size(&mut self, bytes: u64) {
+        self.record_incoming_transaction_size_at(bytes, current_unix_time_secs());
+    }
+
+    fn record_incoming_transaction_size_at(&mut self, bytes: u64, now_secs: u64) {
+        let bytes_per_sec = self.incoming_bytes_per_sec.record(now_secs, bytes);
+        self.telemetry.record_retry_queue_bytes_per_sec(bytes_per_sec);
+    }
+}
+
+fn current_unix_time_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time should be after Unix epoch")
+        .as_secs()
 }
 
 #[cfg(test)]
@@ -741,6 +863,52 @@ mod tests {
         });
 
         (format!("https://127.0.0.1:{port}/"), request_rx)
+    }
+
+    fn transaction_queue_telemetry() -> (SharedTransactionQueueTelemetry, TransactionQueueTelemetry) {
+        let builder = MetricsBuilder::default();
+        let shared = SharedTransactionQueueTelemetry::from_builder(&builder);
+        let telemetry = TransactionQueueTelemetry::from_builder(&builder, "https://example.com", shared.clone());
+
+        (shared, telemetry)
+    }
+
+    #[test]
+    fn incoming_bytes_per_sec_matches_agent_windowed_rate() {
+        let mut incoming_bytes_per_sec = IncomingBytesPerSec::new(10, 1);
+
+        assert_eq!(incoming_bytes_per_sec.record(1, 5), 5.0);
+        assert_eq!(incoming_bytes_per_sec.record(2, 15), 10.0);
+    }
+
+    #[tokio::test]
+    async fn retry_queue_bytes_per_sec_tracks_incoming_transaction_payloads() {
+        let (shared, telemetry) = transaction_queue_telemetry();
+        let retry_queue = RetryQueue::new("test".to_string(), 1024);
+        let mut pending_txns = PendingTransactions::new(4, retry_queue, telemetry);
+
+        let push_result = pending_txns.push_high_priority("payload".to_string()).await.unwrap();
+
+        assert!(!push_result.had_drops());
+        assert_eq!(shared.aggregate_snapshot(), (0, 7.0));
+    }
+
+    #[tokio::test]
+    async fn retry_queue_bytes_per_sec_does_not_track_retry_drains_or_empty_queue() {
+        let (shared, telemetry) = transaction_queue_telemetry();
+        let retry_queue = RetryQueue::new("test".to_string(), 1024);
+        let mut pending_txns = PendingTransactions::new(4, retry_queue, telemetry);
+
+        pending_txns.record_incoming_transaction_size_at(20, 1);
+        let push_result = pending_txns.push_low_priority("retry".to_string()).await.unwrap();
+
+        assert!(!push_result.had_drops());
+        assert_eq!(shared.aggregate_snapshot(), (1, 20.0));
+        assert_eq!(pending_txns.pop().await.as_deref(), Some("retry"));
+        assert_eq!(shared.aggregate_snapshot(), (0, 20.0));
+
+        assert!(pending_txns.pop().await.is_none());
+        assert_eq!(shared.aggregate_snapshot(), (0, 20.0));
     }
 
     #[test]

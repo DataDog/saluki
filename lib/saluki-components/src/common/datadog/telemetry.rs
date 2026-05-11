@@ -1,8 +1,10 @@
 use std::{collections::HashMap, sync::Arc, sync::Mutex};
 
 use http::StatusCode;
-use metrics::{Counter, Histogram};
+use metrics::{Counter, Gauge, Histogram};
+use saluki_common::collections::FastHashMap;
 use saluki_metrics::MetricsBuilder;
+use stringtheory::MetaString;
 
 use super::transaction::Metadata;
 
@@ -106,6 +108,8 @@ impl ComponentTelemetry {
 /// retry, etc.
 #[derive(Clone)]
 pub struct TransactionQueueTelemetry {
+    endpoint_id: MetaString,
+    shared: SharedTransactionQueueTelemetry,
     high_prio_queue_insertions: Counter,
     high_prio_queue_removals: Counter,
     low_prio_queue_insertions: Counter,
@@ -113,13 +117,78 @@ pub struct TransactionQueueTelemetry {
     low_prio_queue_entries_dropped: Counter,
 }
 
+/// Shared transaction queue telemetry.
+#[derive(Clone)]
+pub struct SharedTransactionQueueTelemetry {
+    inner: Arc<Mutex<SharedTransactionQueueTelemetryInner>>,
+}
+
+struct SharedTransactionQueueTelemetryInner {
+    per_endpoint: FastHashMap<MetaString, RetryQueueStats>,
+    retry_queue_size: Gauge,
+    retry_queue_bytes_per_sec: Gauge,
+}
+
+#[derive(Default)]
+struct RetryQueueStats {
+    size: usize,
+    bytes_per_sec: f64,
+}
+
+impl SharedTransactionQueueTelemetry {
+    /// Creates a new `SharedTransactionQueueTelemetry` instance.
+    pub fn from_builder(builder: &MetricsBuilder) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(SharedTransactionQueueTelemetryInner {
+                per_endpoint: FastHashMap::default(),
+                retry_queue_size: builder.register_gauge("network_http_retry_queue_size"),
+                retry_queue_bytes_per_sec: builder.register_gauge("network_http_retry_queue_bytes_per_sec"),
+            })),
+        }
+    }
+
+    fn record_retry_queue_size(&self, endpoint_id: &MetaString, len: usize) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.per_endpoint.entry(endpoint_id.clone()).or_default().size = len;
+
+        let total_size = inner.per_endpoint.values().map(|stats| stats.size).sum::<usize>();
+        inner.retry_queue_size.set(total_size as f64);
+    }
+
+    fn record_retry_queue_bytes_per_sec(&self, endpoint_id: &MetaString, bytes_per_sec: f64) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.per_endpoint.entry(endpoint_id.clone()).or_default().bytes_per_sec = bytes_per_sec;
+
+        let total_bytes_per_sec = inner
+            .per_endpoint
+            .values()
+            .map(|stats| stats.bytes_per_sec)
+            .sum::<f64>();
+        inner.retry_queue_bytes_per_sec.set(total_bytes_per_sec);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn aggregate_snapshot(&self) -> (usize, f64) {
+        let inner = self.inner.lock().unwrap();
+        let total_size = inner.per_endpoint.values().map(|stats| stats.size).sum::<usize>();
+        let total_bytes_per_sec = inner
+            .per_endpoint
+            .values()
+            .map(|stats| stats.bytes_per_sec)
+            .sum::<f64>();
+        (total_size, total_bytes_per_sec)
+    }
+}
+
 impl TransactionQueueTelemetry {
     /// Creates a new `TransactionQueueTelemetry` instance with default tags derived from the given component context and the
     /// endpoint URL.
-    pub fn from_builder(builder: &MetricsBuilder, endpoint_url: &str) -> Self {
+    pub fn from_builder(builder: &MetricsBuilder, endpoint_url: &str, shared: SharedTransactionQueueTelemetry) -> Self {
         let builder = builder.clone().add_default_tag(("endpoint", endpoint_url.to_string()));
 
         Self {
+            endpoint_id: MetaString::from(endpoint_url),
+            shared,
             high_prio_queue_insertions: builder.register_debug_counter("endpoint_high_prio_queue_insertions_total"),
             high_prio_queue_removals: builder.register_debug_counter("endpoint_high_prio_queue_removals_total"),
             low_prio_queue_insertions: builder.register_debug_counter("endpoint_low_prio_queue_insertions_total"),
@@ -147,5 +216,39 @@ impl TransactionQueueTelemetry {
 
     pub fn low_prio_queue_entries_dropped(&self) -> &Counter {
         &self.low_prio_queue_entries_dropped
+    }
+
+    pub fn record_retry_queue_size(&self, len: usize) {
+        self.shared.record_retry_queue_size(&self.endpoint_id, len);
+    }
+
+    pub fn record_retry_queue_bytes_per_sec(&self, bytes_per_sec: f64) {
+        self.shared
+            .record_retry_queue_bytes_per_sec(&self.endpoint_id, bytes_per_sec);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_transaction_queue_telemetry_aggregates_endpoint_snapshots() {
+        let builder = MetricsBuilder::default();
+        let shared = SharedTransactionQueueTelemetry::from_builder(&builder);
+        let first = TransactionQueueTelemetry::from_builder(&builder, "https://one.example", shared.clone());
+        let second = TransactionQueueTelemetry::from_builder(&builder, "https://two.example", shared.clone());
+
+        first.record_retry_queue_size(3);
+        first.record_retry_queue_bytes_per_sec(10.0);
+        second.record_retry_queue_size(5);
+        second.record_retry_queue_bytes_per_sec(2.5);
+
+        assert_eq!(shared.aggregate_snapshot(), (8, 12.5));
+
+        first.record_retry_queue_size(1);
+        first.record_retry_queue_bytes_per_sec(4.0);
+
+        assert_eq!(shared.aggregate_snapshot(), (6, 6.5));
     }
 }
