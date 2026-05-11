@@ -192,7 +192,7 @@ mod tests {
     use super::{cardinality, CARDINALITY_PREFIX};
 
     fn card(s: &str) -> Vec<u8> {
-        format!("{}{}", std::str::from_utf8(CARDINALITY_PREFIX).unwrap(), s).into_bytes()
+        format!("{}{}", simdutf8::basic::from_utf8(CARDINALITY_PREFIX).unwrap(), s).into_bytes()
     }
 
     #[test]

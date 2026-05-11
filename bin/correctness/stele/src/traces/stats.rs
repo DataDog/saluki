@@ -1,3 +1,7 @@
+// serde_with's DeserializeFromStr macro generates code that calls core::str::from_utf8 internally,
+// which we otherwise disallow in favor of simdutf8::basic::from_utf8.
+#![allow(clippy::disallowed_methods)]
+
 use std::{
     collections::hash_map::Entry,
     fmt,
