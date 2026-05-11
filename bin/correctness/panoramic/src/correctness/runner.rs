@@ -219,9 +219,6 @@ impl CorrectnessRunner {
     }
 
     /// Builds the group runner for the baseline agent containers (datadog-intake + target).
-    ///
-    /// Millstone is intentionally excluded; the shared millstone group runner handles traffic
-    /// generation for both agents.
     async fn build_baseline_group_runner(&self, isolation_group_id: String) -> Result<GroupRunner, GenericError> {
         debug!("Creating baseline group runner...");
 
@@ -230,6 +227,7 @@ impl CorrectnessRunner {
             "baseline",
             self.tctx.log_dir().to_path_buf(),
             self.baseline_coordinator.clone(),
+            // Pass a child from the test context so that a cancellation from above will affect the group runners.
             self.tctx.test_cancel_token().child_token(),
         );
         group_runner
@@ -240,9 +238,6 @@ impl CorrectnessRunner {
     }
 
     /// Builds the group runner for the comparison agent containers (datadog-intake + target).
-    ///
-    /// Millstone is intentionally excluded; the shared millstone group runner handles traffic
-    /// generation for both agents.
     async fn build_comparison_group_runner(&self, isolation_group_id: String) -> Result<GroupRunner, GenericError> {
         debug!("Creating comparison group runner...");
 
@@ -251,6 +246,7 @@ impl CorrectnessRunner {
             "comparison",
             self.tctx.log_dir().to_path_buf(),
             self.comparison_coordinator.clone(),
+            // Pass a child from the test context so that a cancellation from above will affect the group runners.
             self.tctx.test_cancel_token().child_token(),
         );
 
