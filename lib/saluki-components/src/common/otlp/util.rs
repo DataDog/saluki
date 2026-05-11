@@ -8,13 +8,14 @@ use opentelemetry_semantic_conventions::resource::*;
 use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common, any_value::Value};
 use saluki_common::collections::{FastHashMap, FastHashSet};
 use saluki_context::tags::TagSet;
+use saluki_core::data_model::event::trace::AttributeValue;
+use stringtheory::MetaString;
 
 // ============================================================================
 // Datadog attribute key constants shared across the encoder and translator
 // ============================================================================
 
 pub const KEY_DATADOG_VERSION: &str = "datadog.version";
-pub const KEY_DATADOG_HOST: &str = "datadog.host";
 pub const KEY_DATADOG_ENVIRONMENT: &str = "datadog.env";
 pub const KEY_DATADOG_CONTAINER_ID: &str = "datadog.container_id";
 pub const KEY_DATADOG_CONTAINER_TAGS: &str = "datadog.container_tags";
@@ -208,18 +209,27 @@ pub fn resource_to_source(resource: &otlp_protos::opentelemetry::proto::resource
     None
 }
 
-/// Resolves the source metadata from a resource `TagSet`.
+/// Resolves the source metadata from a typed attribute map.
 ///
-/// This is equivalent to `resource_to_source`, but avoids the OTLP protobuf resource type.
-pub fn tags_to_source(resource_tags: &TagSet) -> Option<Source> {
-    let get = |key: &str| -> Option<&str> { resource_tags.get_single_tag(key).and_then(|t| t.value()) };
+/// Equivalent to [`tags_to_source`] but works on a `FastHashMap<MetaString, AttributeValue>`
+/// instead of a `TagSet`.
+pub fn source_from_attributes_map(attributes: &FastHashMap<MetaString, AttributeValue>) -> Option<Source> {
+    let get_str = |key: &str| -> Option<&str> {
+        attributes.get(key).and_then(|v| {
+            if let AttributeValue::String(s) = v {
+                Some(s.as_ref())
+            } else {
+                None
+            }
+        })
+    };
 
     // AWS ECS Fargate
-    if get(CLOUD_PROVIDER) == Some("aws")
-        && get(opentelemetry_semantic_conventions::resource::CLOUD_PLATFORM) == Some("aws_ecs")
-        && get(opentelemetry_semantic_conventions::resource::AWS_ECS_LAUNCHTYPE) == Some("fargate")
+    if get_str(CLOUD_PROVIDER) == Some("aws")
+        && get_str(opentelemetry_semantic_conventions::resource::CLOUD_PLATFORM) == Some("aws_ecs")
+        && get_str(opentelemetry_semantic_conventions::resource::AWS_ECS_LAUNCHTYPE) == Some("fargate")
     {
-        if let Some(task_arn) = get(AWS_ECS_TASK_ARN) {
+        if let Some(task_arn) = get_str(AWS_ECS_TASK_ARN) {
             return Some(Source {
                 kind: SourceKind::AwsEcsFargateKind,
                 identifier: task_arn.to_string(),
@@ -228,7 +238,7 @@ pub fn tags_to_source(resource_tags: &TagSet) -> Option<Source> {
     }
 
     // Hostname from attributes
-    if let Some(host_name) = get(opentelemetry_semantic_conventions::resource::HOST_NAME) {
+    if let Some(host_name) = get_str(opentelemetry_semantic_conventions::resource::HOST_NAME) {
         return Some(Source {
             kind: SourceKind::HostnameKind,
             identifier: host_name.to_string(),
@@ -236,4 +246,39 @@ pub fn tags_to_source(resource_tags: &TagSet) -> Option<Source> {
     }
 
     None
+}
+
+/// Extracts container tags from a typed attribute map and inserts them into `tags`.
+///
+/// Equivalent to [`extract_container_tags_from_resource_tagset`] but works on a
+/// `FastHashMap<MetaString, AttributeValue>` instead of a `TagSet`.
+pub fn extract_container_tags_from_attributes_map(
+    attributes: &FastHashMap<MetaString, AttributeValue>, tags: &mut TagSet,
+) {
+    let mut extracted_tags = FastHashSet::default();
+
+    for (key, value) in attributes {
+        let s_val = match value {
+            AttributeValue::String(s) => s.as_ref(),
+            _ => continue,
+        };
+
+        // Semantic Conventions
+        if let Some(datadog_key) = CONTAINER_MAPPINGS.get(key.as_ref()) {
+            tags.insert_tag(format!("{}:{}", datadog_key, s_val));
+            extracted_tags.insert(*datadog_key);
+        }
+
+        // Custom (datadog.container.tag namespace)
+        if key.as_ref().starts_with(CUSTOM_CONTAINER_TAG_PREFIX) {
+            if let Some(custom_key) = key.as_ref().get(CUSTOM_CONTAINER_TAG_PREFIX.len()..) {
+                if !custom_key.is_empty() {
+                    // Do not replace if set via semantic conventions mappings.
+                    if !extracted_tags.insert(custom_key) {
+                        tags.insert_tag(format!("{}:{}", custom_key, s_val));
+                    }
+                }
+            }
+        }
+    }
 }

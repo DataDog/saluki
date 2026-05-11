@@ -10,15 +10,13 @@ use datadog_protos::traces::builders::{
 use facet::Facet;
 use http::{uri::PathAndQuery, HeaderName, HeaderValue, Method, Uri};
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
-use opentelemetry_semantic_conventions::resource::{
-    CONTAINER_ID, DEPLOYMENT_ENVIRONMENT_NAME, K8S_POD_UID, SERVICE_VERSION,
-};
 use piecemeal::{ScratchBuffer, ScratchWriter};
+use saluki_common::collections::FastHashMap;
 use saluki_common::strings::StringBuilder;
 use saluki_common::task::HandleExt as _;
 use saluki_config::GenericConfiguration;
 use saluki_context::tags::TagSet;
-use saluki_core::data_model::event::trace::{AttributeScalarValue, AttributeValue, Span as DdSpan};
+use saluki_core::data_model::event::trace::{AttributeValue, EventAttributeScalarValue, EventAttributeValue};
 use saluki_core::topology::{EventsBuffer, PayloadsBuffer};
 use saluki_core::{
     components::{encoders::*, ComponentContext},
@@ -52,9 +50,8 @@ use crate::common::datadog::{
 };
 use crate::common::otlp::config::TracesConfig;
 use crate::common::otlp::util::{
-    extract_container_tags_from_resource_tagset, tags_to_source, Source as OtlpSource, SourceKind as OtlpSourceKind,
-    DEPLOYMENT_ENVIRONMENT_KEY, KEY_DATADOG_CONTAINER_ID, KEY_DATADOG_CONTAINER_TAGS, KEY_DATADOG_ENVIRONMENT,
-    KEY_DATADOG_HOST, KEY_DATADOG_VERSION,
+    extract_container_tags_from_attributes_map, source_from_attributes_map, SourceKind as OtlpSourceKind,
+    KEY_DATADOG_CONTAINER_TAGS,
 };
 
 const CONTAINER_TAGS_META_KEY: &str = "_dd.tags.container";
@@ -445,39 +442,44 @@ impl TraceEndpointEncoder {
 
     fn encode_tracer_payload(&mut self, trace: &Trace, output_buffer: &mut Vec<u8>) -> std::io::Result<()> {
         let sampling_rate = self.sampling_rate();
-        let resource_tags = trace.resource_tags();
-        let first_span = trace.spans().first();
-        let source = tags_to_source(resource_tags);
 
-        // Resolve metadata from resource tags.
-        let container_id = resolve_container_id(resource_tags, first_span);
-        let lang = get_resource_tag_value(resource_tags, "telemetry.sdk.language");
-        let sdk_version = get_resource_tag_value(resource_tags, "telemetry.sdk.version").unwrap_or("");
-        let tracer_version = format!("otlp-{}", sdk_version);
-        let container_tags = resolve_container_tags(
-            resource_tags,
-            source.as_ref(),
-            self.otlp_traces.ignore_missing_datadog_fields,
-        );
-        let env = resolve_env(resource_tags, self.otlp_traces.ignore_missing_datadog_fields);
-        let hostname = resolve_hostname(
-            resource_tags,
-            source.as_ref(),
-            Some(self.default_hostname.as_ref()),
-            self.otlp_traces.ignore_missing_datadog_fields,
-        );
-        let app_version = resolve_app_version(resource_tags);
-
-        // Resolve sampling metadata.
-        let (priority, dropped_trace, decision_maker, otlp_sr) = match trace.sampling() {
-            Some(sampling) => (
-                sampling.priority.unwrap_or(DEFAULT_CHUNK_PRIORITY),
-                sampling.dropped_trace,
-                sampling.decision_maker.as_deref(),
-                sampling.otlp_sampling_rate.unwrap_or(sampling_rate),
-            ),
-            None => (DEFAULT_CHUNK_PRIORITY, false, None, sampling_rate),
+        // Read metadata directly from unified Trace fields.
+        let container_id = if trace.container_id.is_empty() {
+            None
+        } else {
+            Some(trace.container_id.as_ref())
         };
+        let lang = if trace.language_name.is_empty() {
+            None
+        } else {
+            Some(trace.language_name.as_ref())
+        };
+        let tracer_version = if trace.tracer_version.is_empty() {
+            "otlp-".to_string()
+        } else {
+            format!("otlp-{}", trace.tracer_version.as_ref())
+        };
+        let container_tags =
+            resolve_container_tags_from_attributes(&trace.attributes, self.otlp_traces.ignore_missing_datadog_fields);
+        let env = if trace.env.is_empty() { None } else { Some(trace.env.as_ref()) };
+        let hostname = if !trace.hostname.is_empty() {
+            Some(trace.hostname.as_ref())
+        } else if !self.default_hostname.is_empty() {
+            Some(self.default_hostname.as_ref())
+        } else {
+            None
+        };
+        let app_version = if trace.app_version.is_empty() {
+            None
+        } else {
+            Some(trace.app_version.as_ref())
+        };
+
+        // Read sampling from flat fields.
+        let priority = trace.priority.unwrap_or(DEFAULT_CHUNK_PRIORITY);
+        let dropped_trace = trace.dropped_trace;
+        let decision_maker = trace.decision_maker.as_deref();
+        let otlp_sr = trace.otlp_sampling_rate.unwrap_or(sampling_rate);
 
         // Now incrementally build the payload.
         let mut ap_builder = AgentPayloadBuilder::new(&mut self.scratch);
@@ -673,22 +675,22 @@ impl EndpointEncoder for TraceEndpointEncoder {
 }
 
 fn encode_attribute_value<S: ScratchBuffer>(
-    builder: &mut AttributeAnyValueBuilder<'_, S>, value: &AttributeValue,
+    builder: &mut AttributeAnyValueBuilder<'_, S>, value: &EventAttributeValue,
 ) -> std::io::Result<()> {
     match value {
-        AttributeValue::String(v) => {
+        EventAttributeValue::String(v) => {
             builder.type_(AttributeAnyValueType::STRING_VALUE)?.string_value(v)?;
         }
-        AttributeValue::Bool(v) => {
+        EventAttributeValue::Bool(v) => {
             builder.type_(AttributeAnyValueType::BOOL_VALUE)?.bool_value(*v)?;
         }
-        AttributeValue::Int(v) => {
+        EventAttributeValue::Int(v) => {
             builder.type_(AttributeAnyValueType::INT_VALUE)?.int_value(*v)?;
         }
-        AttributeValue::Double(v) => {
+        EventAttributeValue::Double(v) => {
             builder.type_(AttributeAnyValueType::DOUBLE_VALUE)?.double_value(*v)?;
         }
-        AttributeValue::Array(values) => {
+        EventAttributeValue::Array(values) => {
             builder.type_(AttributeAnyValueType::ARRAY_VALUE)?.array_value(|arr| {
                 for val in values {
                     arr.add_values(|av| encode_attribute_array_value(av, val))?;
@@ -701,108 +703,44 @@ fn encode_attribute_value<S: ScratchBuffer>(
 }
 
 fn encode_attribute_array_value<S: ScratchBuffer>(
-    builder: &mut AttributeArrayValueBuilder<'_, S>, value: &AttributeScalarValue,
+    builder: &mut AttributeArrayValueBuilder<'_, S>, value: &EventAttributeScalarValue,
 ) -> std::io::Result<()> {
     match value {
-        AttributeScalarValue::String(v) => {
+        EventAttributeScalarValue::String(v) => {
             builder.type_(AttributeArrayValueType::STRING_VALUE)?.string_value(v)?;
         }
-        AttributeScalarValue::Bool(v) => {
+        EventAttributeScalarValue::Bool(v) => {
             builder.type_(AttributeArrayValueType::BOOL_VALUE)?.bool_value(*v)?;
         }
-        AttributeScalarValue::Int(v) => {
+        EventAttributeScalarValue::Int(v) => {
             builder.type_(AttributeArrayValueType::INT_VALUE)?.int_value(*v)?;
         }
-        AttributeScalarValue::Double(v) => {
+        EventAttributeScalarValue::Double(v) => {
             builder.type_(AttributeArrayValueType::DOUBLE_VALUE)?.double_value(*v)?;
         }
     }
     Ok(())
 }
 
-fn get_resource_tag_value<'a>(resource_tags: &'a TagSet, key: &str) -> Option<&'a str> {
-    resource_tags.get_single_tag(key).and_then(|t| t.value())
-}
-
-fn resolve_hostname<'a>(
-    resource_tags: &'a TagSet, source: Option<&'a OtlpSource>, default_hostname: Option<&'a str>,
-    ignore_missing_fields: bool,
-) -> Option<&'a str> {
-    let mut hostname = match source {
-        Some(src) => match src.kind {
-            OtlpSourceKind::HostnameKind => Some(src.identifier.as_str()),
-            _ => Some(""),
-        },
-        None => default_hostname,
-    };
-
-    if ignore_missing_fields {
-        hostname = Some("");
-    }
-
-    if let Some(value) = get_resource_tag_value(resource_tags, KEY_DATADOG_HOST) {
-        hostname = Some(value);
-    }
-
-    hostname
-}
-
-fn resolve_env(resource_tags: &TagSet, ignore_missing_fields: bool) -> Option<&str> {
-    if let Some(value) = get_resource_tag_value(resource_tags, KEY_DATADOG_ENVIRONMENT) {
-        return Some(value);
-    }
-    if ignore_missing_fields {
-        return None;
-    }
-    if let Some(value) = get_resource_tag_value(resource_tags, DEPLOYMENT_ENVIRONMENT_NAME) {
-        return Some(value);
-    }
-    get_resource_tag_value(resource_tags, DEPLOYMENT_ENVIRONMENT_KEY)
-}
-
-fn resolve_container_id<'a>(resource_tags: &'a TagSet, first_span: Option<&'a DdSpan>) -> Option<&'a str> {
-    for key in [KEY_DATADOG_CONTAINER_ID, CONTAINER_ID, K8S_POD_UID] {
-        if let Some(value) = get_resource_tag_value(resource_tags, key) {
-            return Some(value);
-        }
-    }
-    // TODO: add container id fallback equivalent to cidProvider
-    // https://github.com/DataDog/datadog-agent/blob/main/pkg/trace/api/otlp.go#L414
-    if let Some(span) = first_span {
-        for (k, v) in span.meta() {
-            if k == KEY_DATADOG_CONTAINER_ID || k == K8S_POD_UID {
-                return Some(v.as_ref());
-            }
-        }
-    }
-    None
-}
-
-fn resolve_app_version(resource_tags: &TagSet) -> Option<&str> {
-    if let Some(value) = get_resource_tag_value(resource_tags, KEY_DATADOG_VERSION) {
-        return Some(value);
-    }
-    get_resource_tag_value(resource_tags, SERVICE_VERSION)
-}
-
-fn resolve_container_tags(
-    resource_tags: &TagSet, source: Option<&OtlpSource>, ignore_missing_fields: bool,
+fn resolve_container_tags_from_attributes(
+    attributes: &FastHashMap<MetaString, AttributeValue>, ignore_missing_fields: bool,
 ) -> Option<MetaString> {
-    // TODO: some refactoring is probably needed to normalize this function, the tags should already be normalized
-    // since we do so when we transform OTLP spans to DD spans however to make this class extensible for non otlp traces, we would
-    // need to normalize the tags here.
-    if let Some(tags) = get_resource_tag_value(resource_tags, KEY_DATADOG_CONTAINER_TAGS) {
+    if let Some(AttributeValue::String(tags)) = attributes.get(KEY_DATADOG_CONTAINER_TAGS) {
         if !tags.is_empty() {
-            return Some(MetaString::from(tags));
+            return Some(tags.clone());
         }
     }
 
     if ignore_missing_fields {
         return None;
     }
+
     let mut container_tags = TagSet::default();
-    extract_container_tags_from_resource_tagset(resource_tags, &mut container_tags);
-    let is_fargate_source = source.is_some_and(|src| src.kind == OtlpSourceKind::AwsEcsFargateKind);
+    extract_container_tags_from_attributes_map(attributes, &mut container_tags);
+
+    let source = source_from_attributes_map(attributes);
+    let is_fargate_source = source.as_ref().is_some_and(|src| src.kind == OtlpSourceKind::AwsEcsFargateKind);
+
     if container_tags.is_empty() && !is_fargate_source {
         return None;
     }
@@ -848,7 +786,7 @@ mod tests {
     use protobuf::Message as _;
     use saluki_config::ConfigurationLoader;
     use saluki_context::tags::TagSet;
-    use saluki_core::data_model::event::trace::{Span as DdSpan, Trace, TraceSampling};
+    use saluki_core::data_model::event::trace::{Span as DdSpan, Trace};
     use stringtheory::MetaString;
 
     use super::*;
@@ -894,7 +832,7 @@ mod tests {
             0,
         );
         let mut trace = Trace::new(vec![span], TagSet::default());
-        trace.set_sampling(Some(TraceSampling::new(false, Some(1), None, None)));
+        trace.priority = Some(1);
         trace
     }
 
@@ -912,7 +850,7 @@ mod tests {
             1,    // error
         );
         let mut trace = Trace::new(vec![span], TagSet::default());
-        trace.set_sampling(Some(TraceSampling::new(false, Some(1), None, None)));
+        trace.priority = Some(1);
         trace
     }
 
