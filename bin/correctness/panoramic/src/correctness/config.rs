@@ -213,6 +213,30 @@ impl Config {
         Ok(config)
     }
 
+    /// Constructs a `Config` directly from its constituent parts.
+    ///
+    /// All file paths inside `millstone`, `datadog_intake`, `baseline`, and `comparison` must
+    /// already be absolute — no further canonicalization is performed. This is used by
+    /// [`crate::config::MatrixConfig`] which pre-canonicalizes paths before calling this.
+    pub fn from_parts(
+        name: String, runtime: Runtime, analysis_mode: crate::correctness::analysis::AnalysisMode,
+        millstone: MillstoneConfig, datadog_intake: DatadogIntakeConfig, baseline: TargetConfig,
+        comparison: TargetConfig,
+    ) -> Self {
+        Self {
+            name,
+            runtime,
+            analysis_mode,
+            millstone,
+            datadog_intake,
+            baseline,
+            comparison,
+            otlp_direct_analysis_mode: false,
+            additional_span_ignore_fields: Vec::new(),
+            base_config_path: PathBuf::new(),
+        }
+    }
+
     pub fn get_canonicalized_config_path<P: AsRef<Path>>(&self, path: P) -> PathBuf {
         let path = path.as_ref();
         if path.is_absolute() {

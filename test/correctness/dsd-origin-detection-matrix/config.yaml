@@ -1,0 +1,80 @@
+type: correctness_matrix
+runtime: kubernetes_in_docker
+analysis_mode: metrics
+millstone:
+  image: saluki-images/correctness-tools:latest
+  config_path: millstone.yaml
+datadog_intake:
+  image: saluki-images/correctness-tools:latest
+  config_path: ../datadog-intake.yaml
+baseline:
+  image: saluki-images/datadog-agent:testing-release
+  files:
+    - datadog-base.yaml:/etc/datadog-agent/datadog.yaml
+  additional_env_vars:
+    - DD_API_KEY=correctness-test
+comparison:
+  image: saluki-images/datadog-agent:testing-release
+  files:
+    - datadog-base.yaml:/etc/datadog-agent/datadog.yaml
+  additional_env_vars:
+    - DD_API_KEY=correctness-test
+    - DD_DATA_PLANE_ENABLED=true
+    - DD_DATA_PLANE_DOGSTATSD_ENABLED=true
+    - DD_DATA_PLANE_REMOTE_AGENT_ENABLED=true
+    - DD_DATA_PLANE_STANDALONE_MODE=false
+    - DD_AGGREGATE_CONTEXT_LIMIT=500000
+
+# Each variant expands into an independent correctness test. All variants share the same base
+# agent config (datadog-base.yaml) and millstone corpus; only the origin detection settings differ.
+#
+# The variant's additional_env_vars are appended to both the baseline and comparison targets.
+# Because the Datadog Agent (and ADP) map DD_<UPPERCASE_KEY> env vars directly to config keys,
+# these override the corresponding fields from datadog-base.yaml.
+variants:
+  # Legacy origin detection: UDS SO_PASSCRED-based PID resolution only. No client protocol
+  # fields are parsed; entity_id_precedence is off, so both process ID tags and client-provided
+  # pod UID tags are collected when present.
+  - name: legacy
+    additional_env_vars:
+      - DD_DOGSTATSD_ORIGIN_DETECTION=true
+
+  # Legacy origin detection with entity ID precedence enabled. When a client-provided pod UID
+  # (dd.internal.entity_id) is present, the UDS-detected process ID tags are suppressed and only
+  # the client-provided entity's tags are used.
+  - name: legacy-entity-id-precedence
+    additional_env_vars:
+      - DD_DOGSTATSD_ORIGIN_DETECTION=true
+      - DD_DOGSTATSD_ENTITY_ID_PRECEDENCE=true
+
+  # Unified origin detection: all entity ID sources (UDS PID, |c: local data, |e: external data,
+  # dd.internal.entity_id) are evaluated in priority order. The first source that resolves to a
+  # non-empty tag set wins; tags from multiple sources are never merged.
+  - name: unified
+    additional_env_vars:
+      - DD_DOGSTATSD_ORIGIN_DETECTION=true
+      - DD_ORIGIN_DETECTION_UNIFIED=true
+
+  # Legacy origin detection with client origin fields enabled. The |c: (container ID), |e:
+  # (external data), and |card: (cardinality override) DogStatsD protocol extensions are parsed
+  # and used alongside UDS PID-based origin detection.
+  - name: legacy-with-client-fields
+    additional_env_vars:
+      - DD_DOGSTATSD_ORIGIN_DETECTION=true
+      - DD_DOGSTATSD_ORIGIN_DETECTION_CLIENT=true
+
+  # Unified origin detection with client origin fields enabled. Combines the unified priority
+  # waterfall with parsing of the full set of client-provided protocol extension fields.
+  - name: unified-with-client-fields
+    additional_env_vars:
+      - DD_DOGSTATSD_ORIGIN_DETECTION=true
+      - DD_ORIGIN_DETECTION_UNIFIED=true
+      - DD_DOGSTATSD_ORIGIN_DETECTION_CLIENT=true
+
+  # Unified origin detection with high tag cardinality. Verifies that the cardinality setting is
+  # respected end-to-end and that both agents return the same set of high-cardinality tags.
+  - name: unified-high-cardinality
+    additional_env_vars:
+      - DD_DOGSTATSD_ORIGIN_DETECTION=true
+      - DD_ORIGIN_DETECTION_UNIFIED=true
+      - DD_DOGSTATSD_TAG_CARDINALITY=high
