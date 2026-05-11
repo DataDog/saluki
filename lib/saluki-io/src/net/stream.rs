@@ -13,7 +13,7 @@ use tokio::{
 };
 
 use super::{
-    addr::ConnectionAddress,
+    addr::{ConnectionAddress, ProcessIdentity},
     unix::{unix_recvmsg, unixgram_recvmsg},
 };
 
@@ -44,7 +44,7 @@ impl Connection {
         match self {
             Self::Tcp(_, addr) => ConnectionAddress::SocketLike(*addr),
             #[cfg(unix)]
-            Self::Unix(_) => ConnectionAddress::ProcessLike(None),
+            Self::Unix(_) => ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable),
         }
     }
 }

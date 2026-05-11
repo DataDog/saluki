@@ -4,7 +4,7 @@ use bytes::BufMut;
 use socket2::{MaybeUninitSlice, MsgHdrMut, SockAddr, SockAddrStorage, SockRef};
 
 use super::ancillary::{ControlMessage, SocketCredentialsAncillaryData};
-use crate::net::addr::{ConnectionAddress, ProcessCredentials};
+use crate::net::addr::{ConnectionAddress, ProcessCredentials, ProcessCredentialsError, ProcessIdentity};
 
 /// Enables the `SO_PASSCRED` option on the given socket.
 ///
@@ -49,25 +49,31 @@ where
     // If we got any socket credentials back, parse them.
     let control_len = msg_hdr.control_len();
 
-    let maybe_process_creds = if control_len > 0 {
+    let process_identity = if control_len > 0 {
         unsafe {
             ancillary_data.set_len(control_len);
             let messages = ancillary_data.messages();
-            messages
+
+            match messages
                 .map(|m| match m {
-                    ControlMessage::Credentials(creds) => ProcessCredentials {
-                        pid: creds.pid,
-                        uid: creds.uid,
-                        gid: creds.gid,
-                    },
+                    ControlMessage::Credentials(creds) => creds,
                 })
                 .next()
+            {
+                Some(creds) if creds.pid == 0 => ProcessIdentity::Error(ProcessCredentialsError::ZeroPid),
+                Some(creds) => ProcessIdentity::Credentials(ProcessCredentials {
+                    pid: creds.pid,
+                    uid: creds.uid,
+                    gid: creds.gid,
+                }),
+                None => ProcessIdentity::Error(ProcessCredentialsError::InvalidCredentials),
+            }
         }
     } else {
-        None
+        ProcessIdentity::Error(ProcessCredentialsError::EmptyAncillaryData)
     };
 
-    let conn_addr = ConnectionAddress::ProcessLike(maybe_process_creds);
+    let conn_addr = ConnectionAddress::ProcessLike(process_identity);
 
     // Finally, update our buffer to reflect the bytes we've read.
     unsafe {

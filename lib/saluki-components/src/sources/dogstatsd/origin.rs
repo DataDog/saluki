@@ -98,6 +98,12 @@ impl Default for OriginEnrichmentConfiguration {
     }
 }
 
+impl OriginEnrichmentConfiguration {
+    pub(super) const fn enabled(&self) -> bool {
+        self.enabled
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct DogStatsDOriginTagResolver {
     config: OriginEnrichmentConfiguration,
