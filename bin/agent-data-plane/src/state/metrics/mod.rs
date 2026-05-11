@@ -558,6 +558,34 @@ mod tests {
             )),
             Event::Metric(Metric::counter(
                 Context::from_static_parts(
+                    "adp.component_packets_received_total",
+                    &["component_id:dsd_in", "listener_type:udp", "state:error"],
+                ),
+                13.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_packets_received_total",
+                    &["component_id:dsd_in", "listener_type:unix", "state:error"],
+                ),
+                17.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_packets_received_total",
+                    &["component_id:dsd_in", "listener_type:unixgram", "state:error"],
+                ),
+                19.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_errors_total",
+                    &["component_id:dsd_in", "listener_type:udp", "error_type:framing"],
+                ),
+                23.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
                     "adp.network_http_requests_errors_total",
                     &["error_type:connection_error", "error_scope:phase"],
                 ),
@@ -589,7 +617,10 @@ mod tests {
         let output = render_compat_telemetry(&state, &rules, &mut renderer);
 
         assert!(output.contains("dogstatsd_metric_packets 11"));
-        assert!(output.contains("dogstatsd_uds_packets 12"));
+        assert!(output.contains("dogstatsd_uds_packets 48"));
+        assert!(output.contains("dogstatsd_udp_packet_reading_errors 13"));
+        assert!(output.contains("dogstatsd_uds_packet_reading_errors 36"));
+        assert!(!output.contains("dogstatsd_udp_packet_reading_errors 23"));
         assert!(
             output.contains("forwarder_transactions_errors_by_type_connection_errors{source=\"agent-data-plane\"} 3")
         );
