@@ -13,7 +13,7 @@ use airlock::{
 };
 use rand::{distr::SampleString as _, rng};
 use rand_distr::Alphanumeric;
-use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_error::{generic_error, GenericError};
 use tokio::{select, task::JoinHandle, time::sleep};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, info_span, Instrument as _, Span};
@@ -29,8 +29,10 @@ use crate::{
     test::TestContext,
 };
 
-/// Directory mounted inside the shared millstone container that holds the per-target config files.
-const MILLSTONE_CONFIG_DIR_INTERNAL: &str = "/etc/millstone";
+/// Path where the original millstone config is mounted inside the shared millstone container.
+///
+/// This mirrors the path used by the single-millstone setup so the same bind-mount machinery works.
+const MILLSTONE_CONFIG_INTERNAL: &str = "/etc/millstone/config.toml";
 
 /// How long to wait after millstone exits before querying datadog-intake for data.
 ///
@@ -131,20 +133,6 @@ async fn run_docker_correctness_test(name: String, config: Config, tctx: TestCon
     }
 }
 
-/// Removes the temporary directory holding the two per-target millstone config files.
-///
-/// Called on every exit path from `run()` — both success and error — to ensure no stale
-/// directories accumulate under `~/.cache/saluki-panoramic/` after failed or interrupted runs.
-async fn cleanup_millstone_config_dir(dir: &PathBuf) {
-    if let Err(e) = tokio::fs::remove_dir_all(dir).await {
-        error!(
-            error = %e,
-            "Failed to remove millstone config directory '{}'. Manual cleanup may be required.",
-            dir.display()
-        );
-    }
-}
-
 pub(crate) fn make_error_result(name: String, started: Instant, phase: &str, e: GenericError) -> TestResult {
     TestResult {
         name,
@@ -158,34 +146,6 @@ pub(crate) fn make_error_result(name: String, started: Instant, phase: &str, e: 
         }],
         assertion_details: vec![],
     }
-}
-
-/// Rewrites the `target:` field in the millstone config YAML for a specific test group.
-///
-/// Two substitutions are applied to the target value:
-///
-/// - Unix socket targets (`unixgram:///airlock/...`): `/airlock/` is replaced with
-///   `/{group}-airlock/`, directing millstone at the group's volume mount.
-/// - TCP/gRPC targets (`grpc://target:...`): `://target` is replaced with `://{group}`,
-///   directing millstone at the group's network alias.
-fn make_millstone_config_for_group(template: &str, group: &str) -> String {
-    let mut result = String::with_capacity(template.len());
-    for line in template.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("target:") {
-            let indent = &line[..line.len() - trimmed.len()];
-            let new_line = trimmed
-                .replace("/airlock/", &format!("/{}-airlock/", group))
-                .replace("://target", &format!("://{}", group));
-            result.push_str(indent);
-            result.push_str(&new_line);
-            result.push('\n');
-        } else {
-            result.push_str(line);
-            result.push('\n');
-        }
-    }
-    result
 }
 
 /// Manages the state and program flow of running a *correctness* test.
@@ -276,22 +236,18 @@ impl CorrectnessRunner {
 
     /// Builds the group runner for the shared millstone container.
     ///
-    /// The millstone container mounts both the baseline and comparison agent volumes so it can
-    /// reach each agent's target endpoint (DogStatsD Unix socket or gRPC port). It runs a shell
-    /// wrapper that:
+    /// The millstone container is set up identically to the original single-millstone setup:
+    /// `millstone.yaml` is bind-mounted at the same path as before. The shell entrypoint then
+    /// uses `sed` to derive two per-target configs in `/tmp` — one with `baseline` addresses and
+    /// one with `comparison` addresses — before launching both millstone processes in parallel.
     ///
-    /// 1. Launches two millstone processes in parallel — one per agent — with the same seed and
-    ///    config (except for the target address), ensuring both agents receive bitwise-identical
-    ///    inputs. No startup wait is needed: both agents are healthy before this container starts.
-    /// 2. Waits for both processes to exit and propagates any non-zero exit code.
+    /// Two `sed` substitutions cover all target types:
+    /// - DSD socket targets: `/airlock/` → `/{group}-airlock/`
+    /// - TCP/gRPC targets: `://target` → `://{group}`
     ///
-    /// The two per-target config files are written to the test case directory alongside
-    /// `millstone.yaml` and that directory is bind-mounted into the container. The test case
-    /// directory is used because it is always under `/Users/...` on macOS and therefore
-    /// reliably shared with Docker Desktop via VirtioFS.
+    /// Both agents are healthy before this container starts, so no startup wait is needed.
     async fn build_shared_millstone_group_runner(
         &self, isolation_group_id: String, baseline_isolation_group_id: &str, comparison_isolation_group_id: &str,
-        config_dir: &PathBuf,
     ) -> Result<GroupRunner, GenericError> {
         debug!("Creating shared millstone group runner...");
 
@@ -301,26 +257,24 @@ impl CorrectnessRunner {
             .clone()
             .unwrap_or_else(|| "/usr/local/bin/millstone".to_string());
 
-        let baseline_cfg = format!("{}/baseline.toml", MILLSTONE_CONFIG_DIR_INTERNAL);
-        let comparison_cfg = format!("{}/comparison.toml", MILLSTONE_CONFIG_DIR_INTERNAL);
-
-        // Launch both millstone processes in parallel and propagate any non-zero exit code.
-        // Both agent containers are healthy before millstone starts, so their sockets and ports
-        // are ready without an explicit wait loop.
+        // Substitute $GROUP in the bind-mounted config to produce two per-target configs, then
+        // run both millstone processes in parallel. `exec sh -c '...'` ensures both seds complete
+        // before either millstone process starts.
         let cmd = format!(
-            "{bin} {baseline_cfg} & P1=$!; \
-             {bin} {comparison_cfg} & P2=$!; \
-             wait $P1; R1=$?; wait $P2; R2=$?; exit $((R1 | R2))",
+            "sed 's/\\$GROUP/baseline/g' {cfg} > /tmp/millstone-baseline.toml && \
+             sed 's/\\$GROUP/comparison/g' {cfg} > /tmp/millstone-comparison.toml && \
+             exec sh -c '{bin} /tmp/millstone-baseline.toml & P1=$!; \
+                          {bin} /tmp/millstone-comparison.toml & P2=$!; \
+                          wait $P1; R1=$?; wait $P2; R2=$?; exit $((R1 | R2))'",
+            cfg = MILLSTONE_CONFIG_INTERNAL,
             bin = millstone_binary,
-            baseline_cfg = baseline_cfg,
-            comparison_cfg = comparison_cfg,
         );
 
         let driver_config = DriverConfig::from_image("millstone", self.millstone_config.image.clone())
             .with_entrypoint(vec!["/bin/sh".to_string(), "-c".to_string()])
             .with_command(vec![cmd])
-            // Bind-mount the test case directory containing both per-target config files.
-            .with_bind_mount(config_dir, MILLSTONE_CONFIG_DIR_INTERNAL)
+            // Bind-mount the original millstone.yaml — same as the single-millstone setup.
+            .with_bind_mount(&self.millstone_config.config_path, MILLSTONE_CONFIG_INTERNAL)
             // Mount both agent isolation-group volumes so millstone can reach their DSD sockets.
             .with_volume_mount(format!("airlock-{}", baseline_isolation_group_id), "/baseline-airlock")
             .with_volume_mount(
@@ -402,43 +356,7 @@ impl CorrectnessRunner {
             test_id = "millstone"
         );
 
-        // Phase 1: Read the millstone config template and generate per-target configs.
-        //
-        // Each config is identical except for its `target:` line, which points to the DSD socket
-        // path for that agent's volume. Both use the same seed, so both agents receive
-        // bitwise-identical inputs.
-        let millstone_template =
-            std::fs::read_to_string(&self.millstone_config.config_path).with_error_context(|| {
-                format!(
-                    "Failed to read millstone config template: {}",
-                    self.millstone_config.config_path.display()
-                )
-            })?;
-        let baseline_config_content = make_millstone_config_for_group(&millstone_template, "baseline");
-        let comparison_config_content = make_millstone_config_for_group(&millstone_template, "comparison");
-
-        // Write the two per-target configs to a unique run directory under ~/.cache/saluki-panoramic/.
-        // Using $HOME ensures the path is always under /Users/... on macOS and therefore reliably
-        // shared with Docker Desktop via VirtioFS. The source tree is intentionally not used:
-        // generated files do not belong there.
-        let cache_dir = std::env::var("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| std::env::temp_dir())
-            .join(".cache")
-            .join("saluki-panoramic")
-            .join(&millstone_isolation_group_id);
-        tokio::fs::create_dir_all(&cache_dir)
-            .await
-            .error_context("Failed to create millstone config cache directory.")?;
-        let millstone_config_dir = cache_dir;
-        tokio::fs::write(millstone_config_dir.join("baseline.toml"), &baseline_config_content)
-            .await
-            .error_context("Failed to write baseline millstone config.")?;
-        tokio::fs::write(millstone_config_dir.join("comparison.toml"), &comparison_config_content)
-            .await
-            .error_context("Failed to write comparison millstone config.")?;
-
-        // Phase 2: Build all three group runners.
+        // Phase 1: Build all three group runners.
         let baseline_group_runner = self
             .build_baseline_group_runner(baseline_isolation_group_id.clone())
             .await?;
@@ -450,7 +368,6 @@ impl CorrectnessRunner {
                 millstone_isolation_group_id.clone(),
                 &baseline_isolation_group_id,
                 &comparison_isolation_group_id,
-                &millstone_config_dir,
             )
             .await?;
 
@@ -472,10 +389,7 @@ impl CorrectnessRunner {
             .await
         {
             Ok(pair) => pair,
-            Err(e) => {
-                cleanup_millstone_config_dir(&millstone_config_dir).await;
-                return Err(e);
-            }
+            Err(e) => return Err(e),
         };
         info!("Agent containers spawned successfully. Starting shared millstone...");
 
@@ -488,7 +402,6 @@ impl CorrectnessRunner {
                     self.baseline_coordinator.wait().await;
                     self.comparison_coordinator.wait().await;
                     self.millstone_coordinator.wait().await;
-                    cleanup_millstone_config_dir(&millstone_config_dir).await;
                     return Err(generic_error!("Failed to spawn shared millstone container: {}", e));
                 }
             };
@@ -500,7 +413,6 @@ impl CorrectnessRunner {
             self.baseline_coordinator.wait().await;
             self.comparison_coordinator.wait().await;
             self.millstone_coordinator.wait().await;
-            cleanup_millstone_config_dir(&millstone_config_dir).await;
             return Err(generic_error!(
                 "Shared millstone exited with non-zero exit code ({}). Error: {}",
                 code,
@@ -536,10 +448,7 @@ impl CorrectnessRunner {
             .await
         {
             Ok(pair) => pair,
-            Err(e) => {
-                cleanup_millstone_config_dir(&millstone_config_dir).await;
-                return Err(e);
-            }
+            Err(e) => return Err(e),
         };
 
         // Signal all remaining containers to shut down and wait for them.
@@ -564,8 +473,6 @@ impl CorrectnessRunner {
         if let Err(e) = Driver::clean_related_resources(millstone_isolation_group_id).await {
             error!(error = %e, "Failed to clean up resources for millstone group. Manual cleanup may be required.");
         }
-
-        cleanup_millstone_config_dir(&millstone_config_dir).await;
 
         info!("Cleanup complete.");
 

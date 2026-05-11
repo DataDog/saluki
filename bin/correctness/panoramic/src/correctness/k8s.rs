@@ -190,21 +190,26 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
 
     let config_content = substitute_origin_placeholders(&millstone_template, &origin_data);
 
-    // For TCP/gRPC targets, get each agent pod's cluster IP so millstone can reach it.
-    // For socket targets these IPs are unused (the substitution is a no-op), but fetching them
-    // unconditionally keeps the code simple.
-    let baseline_pod_api: Api<Pod> = Api::namespaced(client.clone(), &baseline_ns);
-    let comparison_pod_api: Api<Pod> = Api::namespaced(client.clone(), &comparison_ns);
-    let (baseline_pod_ip, comparison_pod_ip) = match tokio::try_join!(
-        get_pod_ip(&baseline_pod_api, POD_NAME),
-        get_pod_ip(&comparison_pod_api, POD_NAME),
-    ) {
-        Ok(ips) => ips,
-        Err(e) => return make_error_result(name, started, "get_pod_ips", cleanup(e).await),
+    // For socket targets $GROUP is the group name (used in the airlock volume path).
+    // For TCP/gRPC targets $GROUP is the agent pod's cluster IP (the only routable address
+    // from the separate millstone pod).
+    let (baseline_group_value, comparison_group_value) = if is_socket_target(&config_content) {
+        ("baseline".to_string(), "comparison".to_string())
+    } else {
+        let baseline_pod_api: Api<Pod> = Api::namespaced(client.clone(), &baseline_ns);
+        let comparison_pod_api: Api<Pod> = Api::namespaced(client.clone(), &comparison_ns);
+        let (baseline_pod_ip, comparison_pod_ip) = match tokio::try_join!(
+            get_pod_ip(&baseline_pod_api, POD_NAME),
+            get_pod_ip(&comparison_pod_api, POD_NAME),
+        ) {
+            Ok(ips) => ips,
+            Err(e) => return make_error_result(name, started, "get_pod_ips", cleanup(e).await),
+        };
+        (baseline_pod_ip, comparison_pod_ip)
     };
 
-    let baseline_config = make_millstone_config_for_group(&config_content, "baseline", &baseline_pod_ip);
-    let comparison_config = make_millstone_config_for_group(&config_content, "comparison", &comparison_pod_ip);
+    let baseline_config = make_millstone_config_for_group(&config_content, &baseline_group_value);
+    let comparison_config = make_millstone_config_for_group(&config_content, &comparison_group_value);
 
     let write_result = tokio::try_join!(
         exec_write_file(
@@ -472,32 +477,13 @@ async fn prepare_millstone_group(
     Ok(())
 }
 
-/// Rewrites the `target:` field in the millstone config YAML for a specific test group.
+/// Replaces the `$GROUP` placeholder in the millstone config with the given value.
 ///
-/// Two substitutions are applied to the target value:
-///
-/// - Unix socket targets (`unixgram:///airlock/...`): `/airlock/` is replaced with
-///   `/{group}-airlock/`, directing millstone at the group's HostPath volume mount.
-/// - TCP/gRPC targets (`grpc://target:...`): `://target` is replaced with `://{pod_ip}`,
-///   directing millstone at the agent pod's cluster IP.
-fn make_millstone_config_for_group(template: &str, group: &str, pod_ip: &str) -> String {
-    let mut result = String::with_capacity(template.len());
-    for line in template.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("target:") {
-            let indent = &line[..line.len() - trimmed.len()];
-            let new_line = trimmed
-                .replace("/airlock/", &format!("/{}-airlock/", group))
-                .replace("://target", &format!("://{}", pod_ip));
-            result.push_str(indent);
-            result.push_str(&new_line);
-            result.push('\n');
-        } else {
-            result.push_str(line);
-            result.push('\n');
-        }
-    }
-    result
+/// For socket targets, `group_value` is `"baseline"` or `"comparison"` (the directory-name
+/// component of the HostPath airlock volume). For TCP/gRPC targets it is the agent pod's
+/// cluster IP, which millstone uses to reach the agent across pod boundaries.
+fn make_millstone_config_for_group(template: &str, group_value: &str) -> String {
+    template.replace("$GROUP", group_value)
 }
 
 /// Returns true if the millstone config template uses a Unix socket target.
