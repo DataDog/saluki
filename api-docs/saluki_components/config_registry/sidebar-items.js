@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["SupportLevel","ValueType"],"mod":["datadog","generated","structs"],"struct":["ConfigKey","SalukiAnnotation","SchemaEntry"],"type":["SalukiAnnotationRef"]};
+window.SIDEBAR_ITEMS = {"enum":["Severity","SupportLevel","ValueType"],"mod":["datadog","generated","structs"],"struct":["Classification","ConfigClassifier","ConfigKey","SalukiAnnotation","SchemaEntry"],"type":["SalukiAnnotationRef"]};
