@@ -162,18 +162,26 @@ pub(crate) fn make_error_result(name: String, started: Instant, phase: &str, e: 
     }
 }
 
-/// Rewrites the `target:` field in a millstone config YAML to the given socket path.
+/// Rewrites the `target:` field in the millstone config YAML for a specific test group.
 ///
-/// The on-disk `millstone.yaml` uses `target: "unixgram:///airlock/metrics.sock"` as a
-/// placeholder. The harness generates two configs from the same template — one per agent — by
-/// substituting the target socket path here before writing each config to disk.
-fn make_millstone_config_for_target(template: &str, target: &str) -> String {
+/// Two substitutions are applied to the target value:
+///
+/// - Unix socket targets (`unixgram:///airlock/...`): `/airlock/` is replaced with
+///   `/{group}-airlock/`, directing millstone at the group's volume mount.
+/// - TCP/gRPC targets (`grpc://target:...`): `://target` is replaced with `://{group}`,
+///   directing millstone at the group's network alias.
+fn make_millstone_config_for_group(template: &str, group: &str) -> String {
     let mut result = String::with_capacity(template.len());
     for line in template.lines() {
         let trimmed = line.trim_start();
         if trimmed.starts_with("target:") {
             let indent = &line[..line.len() - trimmed.len()];
-            result.push_str(&format!("{}target: \"{}\"\n", indent, target));
+            let new_line = trimmed
+                .replace("/airlock/", &format!("/{}-airlock/", group))
+                .replace("://target", &format!("://{}", group));
+            result.push_str(indent);
+            result.push_str(&new_line);
+            result.push('\n');
         } else {
             result.push_str(line);
             result.push('\n');
@@ -231,7 +239,13 @@ impl CorrectnessRunner {
         );
         group_runner
             .with_driver(DriverConfig::datadog_intake(self.datadog_intake_config.clone()).await?)?
-            .with_driver(self.baseline_target_driver_config.clone())?;
+            // Give the agent a "baseline" alias on its network so the shared millstone can
+            // address it unambiguously when connected to both agent networks.
+            .with_driver(
+                self.baseline_target_driver_config
+                    .clone()
+                    .with_network_alias("baseline"),
+            )?;
 
         Ok(group_runner)
     }
@@ -251,7 +265,13 @@ impl CorrectnessRunner {
 
         group_runner
             .with_driver(DriverConfig::datadog_intake(self.datadog_intake_config.clone()).await?)?
-            .with_driver(self.comparison_target_driver_config.clone())?;
+            // Give the agent a "comparison" alias on its network so the shared millstone can
+            // address it unambiguously when connected to both agent networks.
+            .with_driver(
+                self.comparison_target_driver_config
+                    .clone()
+                    .with_network_alias("comparison"),
+            )?;
 
         Ok(group_runner)
     }
@@ -291,14 +311,13 @@ impl CorrectnessRunner {
             MILLSTONE_CONFIG_DIR_INTERNAL, isolation_group_id
         );
 
-        // Wait for both agent sockets, then launch both millstone processes in parallel and
-        // propagate any non-zero exit code from either child.
-        let wait_cmd = format!(
-            "until [ -S /baseline-airlock/metrics.sock ] && \
-                   [ -S /comparison-airlock/metrics.sock ]; do sleep 1; done; \
-             exec sh -c '{bin} {baseline_cfg} & P1=$!; \
-                          {bin} {comparison_cfg} & P2=$!; \
-                          wait $P1; R1=$?; wait $P2; R2=$?; exit $((R1 | R2))'",
+        // Launch both millstone processes in parallel and propagate any non-zero exit code.
+        // Both agent containers are healthy before millstone starts, so their sockets and ports
+        // are ready without an explicit wait loop.
+        let cmd = format!(
+            "{bin} {baseline_cfg} & P1=$!; \
+             {bin} {comparison_cfg} & P2=$!; \
+             wait $P1; R1=$?; wait $P2; R2=$?; exit $((R1 | R2))",
             bin = millstone_binary,
             baseline_cfg = baseline_cfg,
             comparison_cfg = comparison_cfg,
@@ -306,7 +325,7 @@ impl CorrectnessRunner {
 
         let driver_config = DriverConfig::from_image("millstone", self.millstone_config.image.clone())
             .with_entrypoint(vec!["/bin/sh".to_string(), "-c".to_string()])
-            .with_command(vec![wait_cmd])
+            .with_command(vec![cmd])
             // Bind-mount the test case directory containing both per-target config files.
             .with_bind_mount(config_dir, MILLSTONE_CONFIG_DIR_INTERNAL)
             // Mount both agent isolation-group volumes so millstone can reach their DSD sockets.
@@ -314,7 +333,11 @@ impl CorrectnessRunner {
             .with_volume_mount(
                 format!("airlock-{}", comparison_isolation_group_id),
                 "/comparison-airlock",
-            );
+            )
+            // Connect to both agent networks so millstone can resolve "baseline" and "comparison"
+            // hostnames for TCP/gRPC targets.
+            .with_network(format!("airlock-{}", baseline_isolation_group_id))
+            .with_network(format!("airlock-{}", comparison_isolation_group_id));
 
         let mut group_runner = GroupRunner::new(
             isolation_group_id,
@@ -398,10 +421,8 @@ impl CorrectnessRunner {
                     self.millstone_config.config_path.display()
                 )
             })?;
-        let baseline_config_content =
-            make_millstone_config_for_target(&millstone_template, "unixgram:///baseline-airlock/metrics.sock");
-        let comparison_config_content =
-            make_millstone_config_for_target(&millstone_template, "unixgram:///comparison-airlock/metrics.sock");
+        let baseline_config_content = make_millstone_config_for_group(&millstone_template, "baseline");
+        let comparison_config_content = make_millstone_config_for_group(&millstone_template, "comparison");
 
         // Write the two per-target configs alongside the original millstone.yaml in the test
         // case directory. The test case directory is part of the source tree (e.g.
