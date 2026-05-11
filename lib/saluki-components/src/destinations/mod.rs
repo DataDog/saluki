@@ -10,4 +10,4 @@ mod dsd_debug_log;
 pub use self::dsd_debug_log::DogStatsDDebugLogConfiguration;
 
 mod prometheus;
-pub use self::prometheus::PrometheusConfiguration;
+pub use self::prometheus::{PrometheusConfiguration, PrometheusPayloadProvider};
