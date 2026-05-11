@@ -1,0 +1,4 @@
+# Generated per-target millstone configs written at test runtime alongside millstone.yaml.
+# Normally deleted by panoramic on exit; this pattern catches any leftovers from killed runs.
+*-baseline.toml
+*-comparison.toml
