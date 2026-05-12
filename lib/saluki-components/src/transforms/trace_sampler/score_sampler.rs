@@ -189,3 +189,42 @@ pub(super) fn weight_root(span: &Span) -> f32 {
 fn get_global_rate(span: &Span) -> f64 {
     span.attributes.get(KEY_SAMPLING_RATE_GLOBAL).and_then(AttributeValue::as_float).unwrap_or(1.0)
 }
+
+#[cfg(test)]
+mod tests {
+    use saluki_core::data_model::event::trace::{AttributeValue, Span};
+    use stringtheory::MetaString;
+
+    use super::*;
+
+    fn make_span() -> Span {
+        Span::new("svc", "op", "res", "web", 1, 0, 0, 1000, 0)
+    }
+
+    #[test]
+    fn weight_root_defaults_to_one() {
+        assert_eq!(weight_root(&make_span()), 1.0f32);
+    }
+
+    #[test]
+    fn weight_root_divides_by_client_rate() {
+        let mut span = make_span();
+        span.attributes.insert(MetaString::from(KEY_SAMPLING_RATE_GLOBAL), AttributeValue::Float(0.5));
+        assert_eq!(weight_root(&span), 2.0f32);
+    }
+
+    #[test]
+    fn weight_root_uses_both_rates() {
+        let mut span = make_span();
+        span.attributes.insert(MetaString::from(KEY_SAMPLING_RATE_GLOBAL), AttributeValue::Float(0.5));
+        span.attributes.insert(MetaString::from(KEY_SAMPLING_RATE_PRE_SAMPLER), AttributeValue::Float(0.5));
+        assert_eq!(weight_root(&span), 4.0f32);
+    }
+
+    #[test]
+    fn weight_root_ignores_out_of_range_rates() {
+        let mut span = make_span();
+        span.attributes.insert(MetaString::from(KEY_SAMPLING_RATE_GLOBAL), AttributeValue::Float(2.0));
+        assert_eq!(weight_root(&span), 1.0f32);
+    }
+}

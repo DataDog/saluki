@@ -32,7 +32,6 @@ use tracing::debug;
 pub(crate) mod catalog;
 pub(crate) mod core_sampler;
 mod errors;
-mod priority_sampler;
 mod probabilistic;
 mod rare_sampler;
 mod score_sampler;
@@ -46,11 +45,11 @@ use self::probabilistic::PROB_RATE_KEY;
 use self::v1::V1TraceSamplerImpl;
 use self::v1::ERROR_SAMPLER_BURST as V1_ERROR_SAMPLER_BURST;
 use self::v1_no_priority::V1NoPrioritySampler;
-use self::v1_priority::V1PrioritySampler;
+use self::v1_priority::PrioritySampler;
 use self::v1_rare_sampler::V1RareSampler;
 use crate::common::datadog::{
-    apm::ApmConfig, sample_by_rate, DECISION_MAKER_MANUAL, DECISION_MAKER_PROBABILISTIC, OTEL_TRACE_ID_META_KEY,
-    SAMPLING_PRIORITY_METRIC_KEY, TAG_DECISION_MAKER,
+    apm::ApmConfig, get_trace_env, sample_by_rate, DECISION_MAKER_MANUAL, DECISION_MAKER_PROBABILISTIC,
+    OTEL_TRACE_ID_META_KEY, SAMPLING_PRIORITY_METRIC_KEY, TAG_DECISION_MAKER,
 };
 use crate::common::otlp::config::TracesConfig;
 use crate::sources::apm::sampling_rates::V1SamplingRatesHandle;
@@ -136,7 +135,7 @@ impl SynchronousTransformBuilder for TraceSamplerConfiguration {
             };
 
             let sampler = V1TraceSamplerImpl {
-                priority_sampler: V1PrioritySampler::new(
+                priority_sampler: PrioritySampler::new(
                     self.apm_config.default_env().clone(),
                     self.apm_config.target_traces_per_second(),
                     1.0,
@@ -164,10 +163,11 @@ impl SynchronousTransformBuilder for TraceSamplerConfiguration {
                 probabilistic_sampler_enabled: self.apm_config.probabilistic_sampler_enabled(),
                 otlp_sampling_rate: self.otlp_sampling_rate,
                 error_sampler: errors::ErrorsSampler::new(self.apm_config.errors_per_second(), ERROR_SAMPLE_RATE),
-                priority_sampler: priority_sampler::PrioritySampler::new(
+                priority_sampler: PrioritySampler::new(
                     self.apm_config.default_env().clone(),
-                    ERROR_SAMPLE_RATE,
                     self.apm_config.target_traces_per_second(),
+                    ERROR_SAMPLE_RATE,
+                    V1SamplingRatesHandle::new(),
                 ),
                 no_priority_sampler: score_sampler::NoPrioritySampler::new(
                     self.apm_config.target_traces_per_second(),
@@ -203,7 +203,7 @@ pub struct TraceSampler {
     probabilistic_sampler_enabled: bool,
     otlp_sampling_rate: f64,
     error_sampler: errors::ErrorsSampler,
-    priority_sampler: priority_sampler::PrioritySampler,
+    priority_sampler: PrioritySampler,
     no_priority_sampler: score_sampler::NoPrioritySampler,
     rare_sampler: rare_sampler::RareSampler,
 }
@@ -464,7 +464,11 @@ impl TraceSampler {
                 return (true, priority, "", Some(root_span_idx));
             }
 
-            if self.priority_sampler.sample(now, trace, root_span_idx, priority, 0.0) {
+            let tracer_env = get_trace_env(trace, root_span_idx)
+                .map(|e| e.as_ref().to_owned())
+                .unwrap_or_default();
+            let root = &mut trace.spans_mut()[root_span_idx];
+            if self.priority_sampler.sample(now, priority, root, &tracer_env, 0.0) {
                 return (true, priority, "", Some(root_span_idx));
             }
         } else if self.is_otlp_trace(trace, root_span_idx) {
@@ -620,7 +624,7 @@ mod tests {
             probabilistic_sampler_enabled: true,
             otlp_sampling_rate: 1.0,
             error_sampler: errors::ErrorsSampler::new(10.0, 1.0),
-            priority_sampler: priority_sampler::PrioritySampler::new(MetaString::from("agent-env"), 1.0, 10.0),
+            priority_sampler: PrioritySampler::new(MetaString::from("agent-env"), 10.0, 1.0, V1SamplingRatesHandle::new()),
             no_priority_sampler: score_sampler::NoPrioritySampler::new(10.0, 1.0),
             rare_sampler: rare_sampler::RareSampler::new(false, 5.0, std::time::Duration::from_secs(300), 200),
         }

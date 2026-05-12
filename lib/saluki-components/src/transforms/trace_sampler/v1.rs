@@ -20,7 +20,7 @@ use std::time::SystemTime;
 use tracing::debug;
 
 use super::v1_no_priority::V1NoPrioritySampler;
-use super::v1_priority::V1PrioritySampler;
+use super::v1_priority::PrioritySampler;
 use super::v1_rare_sampler::V1RareSampler;
 
 /// Sentinel indicating the tracer set no priority (matches Go's `PriorityNone = math.MinInt8`).
@@ -30,7 +30,7 @@ pub(super) const PRIORITY_AUTO_KEEP: i32 = 1;
 pub(super) const ERROR_SAMPLER_BURST: usize = 100;
 
 pub(super) struct V1TraceSamplerImpl {
-    pub(super) priority_sampler: V1PrioritySampler,
+    pub(super) priority_sampler: PrioritySampler,
     pub(super) no_priority_sampler: V1NoPrioritySampler,
     pub(super) rare_sampler: V1RareSampler,
     pub(super) error_token_bucket: Option<TokenBucket>,
@@ -208,7 +208,7 @@ mod tests {
 
     fn make_sampler() -> V1TraceSamplerImpl {
         V1TraceSamplerImpl {
-            priority_sampler: V1PrioritySampler::new(
+            priority_sampler: PrioritySampler::new(
                 MetaString::from_static("prod"),
                 10.0,
                 1.0,
@@ -336,7 +336,7 @@ mod tests {
             // target_tps=0 ensures the priority sampler would drop everything — if a
             // no-priority trace were incorrectly routed here it would still be dropped,
             // making the test a clean signal for which path was taken.
-            priority_sampler: V1PrioritySampler::new(
+            priority_sampler: PrioritySampler::new(
                 MetaString::from_static("prod"),
                 0.0,
                 1.0,

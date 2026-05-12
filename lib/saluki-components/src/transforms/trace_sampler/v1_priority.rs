@@ -1,4 +1,4 @@
-//! V1 priority sampler.
+//! Priority sampler with per-service rate propagation.
 //!
 //! Mirrors `PrioritySampler.SampleV1` + `countSignatureV1` + `applyRateV1` + `updateRates`
 //! from `pkg/trace/sampler/prioritysampler.go`.
@@ -19,26 +19,25 @@ use crate::sources::apm::sampling_rates::V1SamplingRatesHandle;
 use crate::transforms::trace_sampler::catalog::ServiceKeyCatalog;
 use crate::transforms::trace_sampler::core_sampler::Sampler;
 use crate::transforms::trace_sampler::signature::{ServiceSignature, Signature};
+use super::score_sampler::weight_root;
 
 // Root-span attribute keys (matching Go agent sampler constants).
-const KEY_SAMPLE_RATE: &str = "_sample_rate";
-const KEY_PRE_SAMPLER_RATE: &str = "_dd1.sr.rapre";
 const KEY_AGENT_PSR: &str = "_dd.agent_psr";
 const KEY_RULE_PSR: &str = "_dd.rule_psr";
 const KEY_DEPRECATED_RATE: &str = "_sampling_priority_rate_v1";
 
-/// Priority sampler for V1 trace chunks.
+/// Priority sampler.
 ///
 /// Counts auto-priority traces toward a TPS-based rate computation and propagates
 /// the resulting per-service rates to tracers via the HTTP response.
-pub(super) struct V1PrioritySampler {
+pub(super) struct PrioritySampler {
     agent_env: MetaString,
     core_sampler: Sampler,
     catalog: ServiceKeyCatalog,
     rates: V1SamplingRatesHandle,
 }
 
-impl V1PrioritySampler {
+impl PrioritySampler {
     pub(super) fn new(
         agent_env: MetaString,
         target_tps: f64,
@@ -82,7 +81,7 @@ impl V1PrioritySampler {
         let svc_sig = ServiceSignature::new(root.service(), effective_env);
         let signature = self.catalog.register(svc_sig);
 
-        let weight = weight_root(root) as f32 + client_dropped_p0s_weight as f32;
+        let weight = weight_root(root) + client_dropped_p0s_weight as f32;
         let new_rates = self.core_sampler.count_weighted_sig(now, &signature, weight);
         if new_rates {
             self.update_rates();
@@ -100,29 +99,6 @@ impl V1PrioritySampler {
         let new_rates = self.catalog.rates_by_service(self.agent_env.as_ref(), &rates_map, default_rate);
         self.rates.set_all(new_rates);
     }
-}
-
-/// Compute the statistical weight of a root span.
-///
-/// Mirrors `weightRootV1` from `pkg/trace/sampler/sampler.go`:
-/// `weight = 1 / (client_rate * pre_sampler_rate)`.
-///
-/// Reads `_sample_rate` and `_dd1.sr.rapre` from span attributes.
-/// Both default to 1.0 when absent or out of range.
-pub(super) fn weight_root(root: &Span) -> f64 {
-    let client_rate = root
-        .attributes
-        .get(KEY_SAMPLE_RATE)
-        .and_then(AttributeValue::as_float)
-        .filter(|&r| r > 0.0 && r <= 1.0)
-        .unwrap_or(1.0);
-    let pre_sampler_rate = root
-        .attributes
-        .get(KEY_PRE_SAMPLER_RATE)
-        .and_then(AttributeValue::as_float)
-        .filter(|&r| r > 0.0 && r <= 1.0)
-        .unwrap_or(1.0);
-    1.0 / (client_rate * pre_sampler_rate)
 }
 
 /// Write the agent-computed sampling rate to the root span.
@@ -159,8 +135,8 @@ mod tests {
     use crate::sources::apm::sampling_rates::V1SamplingRatesHandle;
     use crate::transforms::trace_sampler::signature::ServiceSignature;
 
-    fn make_sampler() -> V1PrioritySampler {
-        V1PrioritySampler::new(
+    fn make_sampler() -> PrioritySampler {
+        PrioritySampler::new(
             MetaString::from_static("prod"),
             10.0,
             1.0,
@@ -270,36 +246,6 @@ mod tests {
         assert!(!has_rate, "rate must not be written for non-root spans");
     }
 
-    // ── weight_root tests ───────────────────────────────────────────────────
-
-    #[test]
-    fn weight_root_defaults_to_one() {
-        let span = make_span(0);
-        assert_eq!(weight_root(&span), 1.0);
-    }
-
-    #[test]
-    fn weight_root_divides_by_sample_rate() {
-        let mut span = make_span(0);
-        span.attributes.insert(MetaString::from(KEY_SAMPLE_RATE), AttributeValue::Float(0.5));
-        assert_eq!(weight_root(&span), 2.0);
-    }
-
-    #[test]
-    fn weight_root_uses_both_rates() {
-        let mut span = make_span(0);
-        span.attributes.insert(MetaString::from(KEY_SAMPLE_RATE), AttributeValue::Float(0.5));
-        span.attributes.insert(MetaString::from(KEY_PRE_SAMPLER_RATE), AttributeValue::Float(0.5));
-        assert_eq!(weight_root(&span), 4.0);
-    }
-
-    #[test]
-    fn weight_root_ignores_out_of_range_rates() {
-        let mut span = make_span(0);
-        span.attributes.insert(MetaString::from(KEY_SAMPLE_RATE), AttributeValue::Float(2.0)); // rate > 1.0 → 1.0
-        assert_eq!(weight_root(&span), 1.0);
-    }
-
     // ── effective_env test ─────────────────────────────────────────────────
 
     #[test]
@@ -307,13 +253,13 @@ mod tests {
         // Two samplers: one with agent_env="staging", one with agent_env="prod".
         // With an empty tracer_env, the agent_env is used, so the two samplers
         // produce different signatures for the same service.
-        let mut sampler_staging = V1PrioritySampler::new(
+        let mut sampler_staging = PrioritySampler::new(
             MetaString::from_static("staging"),
             10.0,
             1.0,
             V1SamplingRatesHandle::new(),
         );
-        let mut sampler_prod = V1PrioritySampler::new(
+        let mut sampler_prod = PrioritySampler::new(
             MetaString::from_static("prod"),
             10.0,
             1.0,
