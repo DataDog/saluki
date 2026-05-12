@@ -17,7 +17,7 @@ use saluki_components::{
     encoders::{
         BufferedIncrementalConfiguration, DatadogApmStatsEncoderConfiguration, DatadogEventsConfiguration,
         DatadogLogsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration,
-        DatadogTraceConfiguration, V1DatadogTraceConfiguration,
+        V1DatadogTraceConfiguration,
     },
     forwarders::{DatadogConfiguration, OtlpForwarderConfiguration},
     relays::otlp::OtlpRelayConfiguration,
@@ -463,7 +463,7 @@ async fn add_baseline_logs_pipeline_to_blueprint(
 async fn add_baseline_traces_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
-    let dd_traces_config = DatadogTraceConfiguration::from_configuration(config)
+    let dd_traces_config = V1DatadogTraceConfiguration::from_configuration(config)
         .error_context("Failed to configure Datadog Traces encoder.")?
         .with_environment_provider(env_provider.clone())
         .await?;

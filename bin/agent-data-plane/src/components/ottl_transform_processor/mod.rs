@@ -10,13 +10,14 @@
 use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use ottl::{CallbackMap, EnumMap, OttlParser};
+use saluki_common::collections::FastHashMap;
 use saluki_config::GenericConfiguration;
-use saluki_context::tags::TagSet;
 use saluki_core::{
     components::{transforms::*, ComponentContext},
-    data_model::event::trace::Span,
+    data_model::event::trace::{AttributeValue, Span},
     topology::EventsBuffer,
 };
+use stringtheory::MetaString;
 use saluki_error::{generic_error, GenericError};
 use tracing::{debug, error};
 
@@ -106,8 +107,8 @@ impl OttlTransform {
     /// Each statement is executed in order. For editor statements (e.g. `set`), the `where`
     /// clause is evaluated first; if it matches (or is absent), the editor function runs.
     /// Errors are handled according to `error_mode`.
-    fn transform_span(&self, span: &mut Span, resource_tags: &TagSet) {
-        let mut ctx = SpanTransformContext::new(span, resource_tags);
+    fn transform_span(&self, span: &mut Span, resource_attrs: &FastHashMap<MetaString, AttributeValue>) {
+        let mut ctx = SpanTransformContext::new(span, resource_attrs);
 
         for parser in &self.span_parsers {
             match parser.execute(&mut ctx) {
@@ -136,13 +137,13 @@ impl SynchronousTransform for OttlTransform {
             return;
         }
 
-        // TODO: migrate resource.attributes access to trace.attributes (FastHashMap<MetaString, AttributeValue>)
-        let empty_tags = saluki_context::tags::TagSet::default();
         for event in event_buffer {
             if let Some(trace) = event.try_as_trace_mut() {
+                let resource_attrs = std::mem::take(&mut trace.attributes);
                 for span in trace.spans_mut() {
-                    self.transform_span(span, &empty_tags);
+                    self.transform_span(span, &resource_attrs);
                 }
+                trace.attributes = resource_attrs;
             }
         }
     }
@@ -158,7 +159,7 @@ mod tests {
         components::{transforms::*, ComponentContext},
         data_model::event::{
             service_check::{CheckStatus, ServiceCheck},
-            trace::{Span, Trace},
+            trace::{AttributeValue, Span, Trace},
             Event,
         },
         topology::{ComponentId, EventsBuffer},
@@ -177,8 +178,19 @@ mod tests {
         Span::new("svc", "op", "res", "web", span_id, 0, 0, 1000, 0).with_meta(meta_map)
     }
 
-    fn make_trace(spans: Vec<Span>, _resource_tags: Option<Vec<&'static str>>) -> Trace {
-        Trace::new(spans)
+    fn make_trace(spans: Vec<Span>, resource_tags: Option<Vec<&'static str>>) -> Trace {
+        let mut trace = Trace::new(spans);
+        if let Some(tags) = resource_tags {
+            for tag_str in tags {
+                if let Some((k, v)) = tag_str.split_once(':') {
+                    trace.attributes.insert(
+                        MetaString::from(k),
+                        AttributeValue::String(MetaString::from(v)),
+                    );
+                }
+            }
+        }
+        trace
     }
 
     fn get_span_attr(buffer: &EventsBuffer, span_index: usize, key: &str) -> Option<String> {
@@ -716,9 +728,10 @@ mod tests {
             })
             .expect("trace should still be in buffer");
         let tag_val = trace_out
-            .resource_tags()
-            .get_single_tag("key")
-            .and_then(|t| t.value().map(|v| v.to_string()));
+            .attributes
+            .get("key")
+            .and_then(AttributeValue::as_string)
+            .map(|v| v.as_ref().to_string());
         assert_eq!(
             tag_val.as_deref(),
             Some("original"),
@@ -810,7 +823,12 @@ mod tests {
                     trace_span_x = t
                         .spans()
                         .first()
-                        .and_then(|s| s.meta().get("x").map(|v| v.as_ref().to_string()));
+                        .and_then(|s| {
+                            s.attributes
+                                .get("x")
+                                .and_then(AttributeValue::as_string)
+                                .map(|v| v.as_ref().to_string())
+                        });
                 }
                 _ => {}
             }

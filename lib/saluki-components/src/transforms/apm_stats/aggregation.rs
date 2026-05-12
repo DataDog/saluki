@@ -499,7 +499,7 @@ pub fn get_grpc_status_code(span: &Span) -> GrpcStatusCode {
                 AttributeValue::Float(code) => {
                     return GrpcStatusCode::from_code(*code as u8);
                 }
-                AttributeValue::Bytes(_) => continue,
+                _ => continue,
             }
         }
     }

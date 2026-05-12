@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use ottl::{EvalContextFamily, Field, IndexExpr, PathAccessor, PathResolverMap, Value};
-use saluki_context::tags::TagSet;
+use saluki_common::collections::FastHashMap;
 use saluki_core::data_model::event::trace::{AttributeValue, Span};
 use stringtheory::MetaString;
 
@@ -39,15 +39,15 @@ impl EvalContextFamily for SpanTransformFamily {
 pub struct SpanTransformContext<'a> {
     /// Mutable reference to the span being transformed.
     pub(super) span: &'a mut Span,
-    /// Reference to the trace's resource-level tags (read-only).
-    pub(super) resource_tags: &'a TagSet,
+    /// Reference to the trace's resource-level attributes (read-only).
+    pub(super) resource_attrs: &'a FastHashMap<MetaString, AttributeValue>,
 }
 
 impl<'a> SpanTransformContext<'a> {
-    /// Creates a context from a mutable span reference and immutable resource tags.
+    /// Creates a context from a mutable span reference and immutable resource attributes.
     #[inline]
-    pub fn new(span: &'a mut Span, resource_tags: &'a TagSet) -> Self {
-        Self { span, resource_tags }
+    pub fn new(span: &'a mut Span, resource_attrs: &'a FastHashMap<MetaString, AttributeValue>) -> Self {
+        Self { span, resource_attrs }
     }
 }
 
@@ -65,8 +65,7 @@ impl PathAccessor<SpanTransformFamily> for SpanAttributesAccessor {
             match ctx.span.attributes.get(key.as_str()) {
                 Some(AttributeValue::String(s)) => Value::string(s.as_ref()),
                 Some(AttributeValue::Float(f)) => Value::Float(*f),
-                Some(AttributeValue::Bytes(_)) => Value::Nil,
-                None => Value::Nil,
+                Some(_) | None => Value::Nil,
             }
         } else {
             Value::Nil
@@ -127,11 +126,11 @@ impl PathAccessor<SpanTransformFamily> for ResourceAttributesAccessor {
     fn get<'a>(&self, ctx: &SpanTransformContext<'a>, fields: &[Field]) -> ottl::Result<Value> {
         let attrs_field = fields.get(1);
         let value = if let Some(IndexExpr::String(key)) = attrs_field.and_then(|f| f.keys.first()) {
-            ctx.resource_tags
-                .get_single_tag(key.as_str())
-                .and_then(|t| t.value())
-                .map(Value::string)
-                .unwrap_or(Value::Nil)
+            match ctx.resource_attrs.get(key.as_str()) {
+                Some(AttributeValue::String(s)) => Value::string(s.as_ref()),
+                Some(AttributeValue::Float(f)) => Value::Float(*f),
+                Some(_) | None => Value::Nil,
+            }
         } else if attrs_field.is_none_or(|f| f.keys.is_empty()) {
             Value::Map(HashMap::new())
         } else {

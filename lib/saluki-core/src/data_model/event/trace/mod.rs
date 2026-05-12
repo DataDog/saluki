@@ -3,18 +3,26 @@
 use saluki_common::collections::FastHashMap;
 use stringtheory::MetaString;
 
-/// Typed value for span and trace-level attributes.
+/// Typed value for attributes at every level of the trace model: span attributes,
+/// span event attributes, span link attributes, and trace-level attributes.
 ///
-/// This covers the three storage types used in the Datadog APM wire format:
-/// string tags (`meta`), numeric metrics (`metrics`), and binary blobs (`meta_struct`).
+/// Covers all variants carried by the V1 APM idx wire format (`RawAnyValue`).
 #[derive(Clone, Debug, PartialEq)]
 pub enum AttributeValue {
-    /// String-valued attribute (corresponds to `meta`).
+    /// String-valued attribute.
     String(MetaString),
-    /// Floating-point-valued attribute (corresponds to `metrics`).
+    /// Boolean attribute.
+    Bool(bool),
+    /// Integer attribute.
+    Int(i64),
+    /// Floating-point attribute.
     Float(f64),
-    /// Raw bytes attribute (corresponds to `meta_struct`).
+    /// Raw bytes attribute.
     Bytes(Vec<u8>),
+    /// Array of attribute values (may be heterogeneous).
+    Array(Vec<AttributeValue>),
+    /// List of key-value pairs.
+    KeyValueList(Vec<(MetaString, AttributeValue)>),
 }
 
 impl AttributeValue {
@@ -44,38 +52,6 @@ impl AttributeValue {
             None
         }
     }
-}
-
-/// Values supported for span event attributes.
-///
-/// This is the richer OTLP attribute type used exclusively by `SpanEvent`.
-/// Renamed from `AttributeValue` to avoid a collision with the new unified
-/// `AttributeValue` enum used for span and trace-level attributes.
-#[derive(Clone, Debug, PartialEq)]
-pub enum EventAttributeValue {
-    /// String attribute value.
-    String(MetaString),
-    /// Boolean attribute value.
-    Bool(bool),
-    /// Integer attribute value.
-    Int(i64),
-    /// Floating-point attribute value.
-    Double(f64),
-    /// Array attribute values.
-    Array(Vec<EventAttributeScalarValue>),
-}
-
-/// Scalar values supported inside event attribute arrays.
-#[derive(Clone, Debug, PartialEq)]
-pub enum EventAttributeScalarValue {
-    /// String array value.
-    String(MetaString),
-    /// Boolean array value.
-    Bool(bool),
-    /// Integer array value.
-    Int(i64),
-    /// Floating-point array value.
-    Double(f64),
 }
 
 /// A trace event.
@@ -579,7 +555,7 @@ pub struct SpanEvent {
     /// Event name.
     name: MetaString,
     /// Arbitrary attributes describing the event.
-    attributes: FastHashMap<MetaString, EventAttributeValue>,
+    attributes: FastHashMap<MetaString, AttributeValue>,
 }
 
 impl SpanEvent {
@@ -606,7 +582,7 @@ impl SpanEvent {
 
     /// Replaces the attributes map.
     pub fn with_attributes(
-        mut self, attributes: impl Into<Option<FastHashMap<MetaString, EventAttributeValue>>>,
+        mut self, attributes: impl Into<Option<FastHashMap<MetaString, AttributeValue>>>,
     ) -> Self {
         self.attributes = attributes.into().unwrap_or_default();
         self
@@ -623,7 +599,7 @@ impl SpanEvent {
     }
 
     /// Returns the attributes map.
-    pub fn attributes(&self) -> &FastHashMap<MetaString, EventAttributeValue> {
+    pub fn attributes(&self) -> &FastHashMap<MetaString, AttributeValue> {
         &self.attributes
     }
 }

@@ -20,7 +20,7 @@ use saluki_core::{
     },
     data_model::event::{
         trace::{
-            EventAttributeScalarValue, EventAttributeValue, Span, SpanEvent, SpanLink, Trace,
+            AttributeValue, Span, SpanEvent, SpanLink, Trace,
         },
         Event, EventType,
     },
@@ -504,10 +504,7 @@ fn v1_span_event_to_span_event(v1: V1SpanEvent) -> SpanEvent {
     let attrs = v1
         .attributes
         .into_iter()
-        .filter_map(|kv| {
-            let ev = v1_anyvalue_to_event_attribute_value(kv.value)?;
-            Some((kv.key, ev))
-        })
+        .filter_map(|kv| v1_anyvalue_to_attribute_value(kv.value).map(|av| (kv.key, av)))
         .collect();
 
     SpanEvent::new(v1.time_unix_nano, v1.name).with_attributes(Some(attrs))
@@ -526,42 +523,20 @@ fn v1_kvs_to_attribute_map(
     map
 }
 
-fn v1_anyvalue_to_attribute_value(
-    v: V1AnyValue,
-) -> Option<saluki_core::data_model::event::trace::AttributeValue> {
-    use saluki_core::data_model::event::trace::AttributeValue;
+fn v1_anyvalue_to_attribute_value(v: V1AnyValue) -> Option<AttributeValue> {
     match v {
         V1AnyValue::String(s) => Some(AttributeValue::String(s)),
-        V1AnyValue::Bool(b) => {
-            Some(AttributeValue::String(MetaString::from_static(if b { "true" } else { "false" })))
-        }
+        V1AnyValue::Bool(b) => Some(AttributeValue::Bool(b)),
+        V1AnyValue::Int(i) => Some(AttributeValue::Int(i)),
         V1AnyValue::Double(d) => Some(AttributeValue::Float(d)),
-        V1AnyValue::Int(i) => Some(AttributeValue::Float(i as f64)),
         V1AnyValue::Bytes(b) => Some(AttributeValue::Bytes(b)),
-        V1AnyValue::Array(_) | V1AnyValue::KeyValueList(_) => None,
-    }
-}
-
-fn v1_anyvalue_to_event_attribute_value(v: V1AnyValue) -> Option<EventAttributeValue> {
-    match v {
-        V1AnyValue::String(s) => Some(EventAttributeValue::String(s)),
-        V1AnyValue::Bool(b) => Some(EventAttributeValue::Bool(b)),
-        V1AnyValue::Int(i) => Some(EventAttributeValue::Int(i)),
-        V1AnyValue::Double(d) => Some(EventAttributeValue::Double(d)),
-        V1AnyValue::Bytes(_) => None, // no Bytes variant in EventAttributeValue
-        V1AnyValue::Array(items) => {
-            let scalars = items
-                .into_iter()
-                .filter_map(|item| match item {
-                    V1AnyValue::String(s) => Some(EventAttributeScalarValue::String(s)),
-                    V1AnyValue::Bool(b) => Some(EventAttributeScalarValue::Bool(b)),
-                    V1AnyValue::Int(i) => Some(EventAttributeScalarValue::Int(i)),
-                    V1AnyValue::Double(d) => Some(EventAttributeScalarValue::Double(d)),
-                    _ => None,
-                })
-                .collect();
-            Some(EventAttributeValue::Array(scalars))
-        }
-        V1AnyValue::KeyValueList(_) => None, // no KVList in EventAttributeValue
+        V1AnyValue::Array(items) => Some(AttributeValue::Array(
+            items.into_iter().filter_map(v1_anyvalue_to_attribute_value).collect(),
+        )),
+        V1AnyValue::KeyValueList(kvs) => Some(AttributeValue::KeyValueList(
+            kvs.into_iter()
+                .filter_map(|kv| v1_anyvalue_to_attribute_value(kv.value).map(|v| (kv.key, v)))
+                .collect(),
+        )),
     }
 }

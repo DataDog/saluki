@@ -9,7 +9,6 @@ use async_trait::async_trait;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use ottl::{CallbackMap, EnumMap, OttlParser, Value};
 use saluki_config::GenericConfiguration;
-use saluki_context::tags::TagSet;
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     data_model::event::trace::{Span, Trace},
@@ -105,9 +104,7 @@ impl OttlFilter {
             return false;
         }
 
-        // TODO: migrate resource.attributes access to trace.attributes (FastHashMap<MetaString, AttributeValue>)
-        let empty_tags = TagSet::default();
-        let mut ctx = SpanFilterContext::new(span, &empty_tags);
+        let mut ctx = SpanFilterContext::new(span, &_trace.attributes);
 
         for parser in &self.span_parsers {
             match parser.execute(&mut ctx) {
@@ -158,7 +155,7 @@ mod tests {
     use saluki_config::ConfigurationLoader;
     use saluki_core::{
         components::{transforms::*, ComponentContext},
-        data_model::event::{trace::Span, trace::Trace, Event},
+        data_model::event::{trace::{AttributeValue, Span, Trace}, Event},
         topology::{ComponentId, EventsBuffer},
     };
     use stringtheory::MetaString;
@@ -173,8 +170,19 @@ mod tests {
         Span::new("svc", "op", "res", "web", span_id, 0, 0, 1000, 0).with_meta(meta_map)
     }
 
-    fn make_trace(spans: Vec<Span>, _resource_tags: Option<Vec<&'static str>>) -> Trace {
-        Trace::new(spans)
+    fn make_trace(spans: Vec<Span>, resource_tags: Option<Vec<&'static str>>) -> Trace {
+        let mut trace = Trace::new(spans);
+        if let Some(tags) = resource_tags {
+            for tag_str in tags {
+                if let Some((k, v)) = tag_str.split_once(':') {
+                    trace.attributes.insert(
+                        MetaString::from(k),
+                        AttributeValue::String(MetaString::from(v)),
+                    );
+                }
+            }
+        }
+        trace
     }
 
     fn span_count_in_buffer(buffer: &EventsBuffer) -> usize {
