@@ -1,7 +1,7 @@
 <!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `lib/saluki-io/src/net/unix/linux.rs`."><title>linux.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../../static.files/rustdoc-17e0aaed.css"><meta name="rustdoc-vars" data-root-path="../../../../" data-static-root-path="../../../../static.files/" data-current-crate="saluki_io" data-themes="" data-resource-suffix="" data-rustdoc-version="1.97.0-nightly (64a965e90 2026-05-11)" data-channel="nightly" data-search-js="search-b5634cc7.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../../../static.files/storage-41dd4d93.js"></script><script defer src="../../../../static.files/src-script-813739b1.js"></script><script defer src="../../../../src-files.js"></script><script defer src="../../../../static.files/main-aa4d37ac.js"></script><noscript><link rel="stylesheet" href="../../../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">saluki_io/net/unix/</div>linux.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-2"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="kw">use </span>std::io;
 <a href=#2 id=2 data-nosnippet>2</a>
 <a href=#3 id=3 data-nosnippet>3</a><span class="kw">use </span>bytes::BufMut;
-<a href=#4 id=4 data-nosnippet>4</a><span class="kw">use </span>socket2::{MaybeUninitSlice, MsgHdrMut, SockAddr, SockAddrStorage, SockRef};
+<a href=#4 id=4 data-nosnippet>4</a><span class="kw">use </span>socket2::{Domain, MaybeUninitSlice, MsgHdrMut, Protocol, SockAddr, SockAddrStorage, SockRef, Socket, Type};
 <a href=#5 id=5 data-nosnippet>5</a>
 <a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span><span class="kw">super</span>::ancillary::{ControlMessage, SocketCredentialsAncillaryData};
 <a href=#7 id=7 data-nosnippet>7</a><span class="kw">use </span><span class="kw">crate</span>::net::addr::{ConnectionAddress, ProcessCredentials};
@@ -76,4 +76,17 @@
 <a href=#76 id=76 data-nosnippet>76</a>
 <a href=#77 id=77 data-nosnippet>77</a>    <span class="prelude-val">Ok</span>((n, conn_addr))
 <a href=#78 id=78 data-nosnippet>78</a>}
+<a href=#79 id=79 data-nosnippet>79</a>
+<a href=#80 id=80 data-nosnippet>80</a><span class="doccomment">/// Returns `true` if `SO_REUSEPORT` is supported for UDP sockets on the current platform.
+<a href=#81 id=81 data-nosnippet>81</a></span><span class="kw">pub fn </span>socket_reuseport_supported() -&gt; bool {
+<a href=#82 id=82 data-nosnippet>82</a>    <span class="kw">let </span>socket = <span class="kw">match </span>Socket::new(Domain::IPV4, Type::DGRAM, <span class="prelude-val">Some</span>(Protocol::UDP)) {
+<a href=#83 id=83 data-nosnippet>83</a>        <span class="prelude-val">Ok</span>(socket) =&gt; socket,
+<a href=#84 id=84 data-nosnippet>84</a>        <span class="prelude-val">Err</span>(<span class="kw">_</span>) =&gt; <span class="kw">return </span><span class="bool-val">false</span>,
+<a href=#85 id=85 data-nosnippet>85</a>    };
+<a href=#86 id=86 data-nosnippet>86</a>
+<a href=#87 id=87 data-nosnippet>87</a>    <span class="kw">match </span>socket.set_reuse_port(<span class="bool-val">true</span>) {
+<a href=#88 id=88 data-nosnippet>88</a>        <span class="prelude-val">Ok</span>(()) =&gt; <span class="bool-val">true</span>,
+<a href=#89 id=89 data-nosnippet>89</a>        <span class="prelude-val">Err</span>(<span class="kw">_</span>) =&gt; <span class="bool-val">false</span>,
+<a href=#90 id=90 data-nosnippet>90</a>    }
+<a href=#91 id=91 data-nosnippet>91</a>}
 </code></pre></div></section></main></body></html>

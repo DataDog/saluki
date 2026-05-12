@@ -16,16 +16,16 @@
 <a href=#16 id=16 data-nosnippet>16</a><span class="attr">#[cfg(target_os = <span class="string">"linux"</span>)]
 <a href=#17 id=17 data-nosnippet>17</a></span><span class="kw">mod </span>linux;
 <a href=#18 id=18 data-nosnippet>18</a><span class="attr">#[cfg(target_os = <span class="string">"linux"</span>)]
-<a href=#19 id=19 data-nosnippet>19</a></span><span class="kw">pub use </span><span class="self">self</span>::linux::enable_uds_socket_credentials;
+<a href=#19 id=19 data-nosnippet>19</a></span><span class="kw">use </span><span class="self">self</span>::linux::uds_recvmsg;
 <a href=#20 id=20 data-nosnippet>20</a><span class="attr">#[cfg(target_os = <span class="string">"linux"</span>)]
-<a href=#21 id=21 data-nosnippet>21</a></span><span class="kw">use </span><span class="self">self</span>::linux::uds_recvmsg;
+<a href=#21 id=21 data-nosnippet>21</a></span><span class="kw">pub use </span><span class="self">self</span>::linux::{enable_uds_socket_credentials, socket_reuseport_supported};
 <a href=#22 id=22 data-nosnippet>22</a>
 <a href=#23 id=23 data-nosnippet>23</a><span class="attr">#[cfg(not(target_os = <span class="string">"linux"</span>))]
 <a href=#24 id=24 data-nosnippet>24</a></span><span class="kw">mod </span>non_linux;
 <a href=#25 id=25 data-nosnippet>25</a><span class="attr">#[cfg(not(target_os = <span class="string">"linux"</span>))]
-<a href=#26 id=26 data-nosnippet>26</a></span><span class="kw">pub use </span><span class="self">self</span>::non_linux::enable_uds_socket_credentials;
+<a href=#26 id=26 data-nosnippet>26</a></span><span class="kw">use </span><span class="self">self</span>::non_linux::uds_recvmsg;
 <a href=#27 id=27 data-nosnippet>27</a><span class="attr">#[cfg(not(target_os = <span class="string">"linux"</span>))]
-<a href=#28 id=28 data-nosnippet>28</a></span><span class="kw">use </span><span class="self">self</span>::non_linux::uds_recvmsg;
+<a href=#28 id=28 data-nosnippet>28</a></span><span class="kw">pub use </span><span class="self">self</span>::non_linux::{enable_uds_socket_credentials, socket_reuseport_supported};
 <a href=#29 id=29 data-nosnippet>29</a><span class="kw">use </span><span class="kw">super</span>::addr::ConnectionAddress;
 <a href=#30 id=30 data-nosnippet>30</a>
 <a href=#31 id=31 data-nosnippet>31</a><span class="doccomment">/// Ensures that the given path is read for use as a UNIX socket.
