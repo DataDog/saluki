@@ -161,8 +161,9 @@ pub fn get_compat_remappings() -> Vec<RemapperRule> {
         )
         .with_additional_tags([SOURCE_TAG])
         .with_continued_matching(),
-        RemapperRule::by_name(
+        RemapperRule::by_name_and_tags(
             "adp.network_http_requests_errors_total",
+            &[ERROR_SCOPE_TRANSACTION_TAG],
             "forwarder_transactions_errors",
         )
         .with_additional_tags([SOURCE_TAG]),
