@@ -13,7 +13,7 @@ use airlock::{
 };
 use rand::{distr::SampleString as _, rng};
 use rand_distr::Alphanumeric;
-use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_error::{generic_error, GenericError};
 use tokio::{select, task::JoinHandle, time::sleep};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, info_span, Instrument as _, Span};
@@ -28,6 +28,17 @@ use crate::{
     reporter::{PhaseTiming, TestResult},
     test::TestContext,
 };
+
+/// Path where the original millstone config is mounted inside the shared millstone container.
+///
+/// This mirrors the path used by the single-millstone setup so the same bind-mount machinery works.
+const MILLSTONE_CONFIG_INTERNAL: &str = "/etc/millstone/config.toml";
+
+/// How long to wait after millstone exits before querying datadog-intake for data.
+///
+/// This gives the agents time to flush any remaining aggregated metrics after millstone stops
+/// sending. The value is slightly longer than a full aggregation bucket width.
+const FLUSH_WAIT: Duration = Duration::from_secs(32);
 
 /// Run a single correctness test and return a panoramic `TestResult`.
 pub async fn run_correctness_test(name: String, config: Config, tctx: TestContext) -> TestResult {
@@ -122,6 +133,19 @@ async fn run_docker_correctness_test(name: String, config: Config, tctx: TestCon
     }
 }
 
+/// Cleans up Docker volumes and networks for all three isolation groups.
+///
+/// Containers are already removed by the coordinator waits on every exit path; this handles the
+/// volumes and networks that `Driver::cleanup` does not remove. Safe to call even if a group was
+/// never fully started — Docker returns 404 for unknown resources and we log and continue.
+async fn cleanup_groups(baseline_id: &str, comparison_id: &str, millstone_id: &str) {
+    for id in [baseline_id, comparison_id, millstone_id] {
+        if let Err(e) = Driver::clean_related_resources(id.to_string()).await {
+            error!(error = %e, "Failed to clean up isolation group '{}'. Manual cleanup may be required.", id);
+        }
+    }
+}
+
 pub(crate) fn make_error_result(name: String, started: Instant, phase: &str, e: GenericError) -> TestResult {
     TestResult {
         name,
@@ -139,8 +163,10 @@ pub(crate) fn make_error_result(name: String, started: Instant, phase: &str, e: 
 
 /// Manages the state and program flow of running a *correctness* test.
 ///
-/// In a correctness test, two isolated groups of containers are created. One containing the Agent alone, and the other
-/// containing ADP and the Agent working together. These are called 'baseline' and 'comparison', respectively.
+/// In a correctness test, two isolated groups of containers are created. One containing the Agent
+/// alone (baseline), and the other containing ADP and the Agent working together (comparison). A
+/// single shared millstone container runs two parallel millstone processes — one targeting each
+/// agent — to ensure both agents receive bitwise-identical inputs from the same seed.
 pub struct CorrectnessRunner {
     datadog_intake_config: DatadogIntakeConfig,
     millstone_config: MillstoneConfig,
@@ -149,6 +175,7 @@ pub struct CorrectnessRunner {
     tctx: TestContext,
     baseline_coordinator: Coordinator,
     comparison_coordinator: Coordinator,
+    millstone_coordinator: Coordinator,
 }
 
 impl CorrectnessRunner {
@@ -165,9 +192,11 @@ impl CorrectnessRunner {
             tctx,
             baseline_coordinator: Coordinator::new(),
             comparison_coordinator: Coordinator::new(),
+            millstone_coordinator: Coordinator::new(),
         })
     }
 
+    /// Builds the group runner for the baseline agent containers (datadog-intake + target).
     async fn build_baseline_group_runner(&self, isolation_group_id: String) -> Result<GroupRunner, GenericError> {
         debug!("Creating baseline group runner...");
 
@@ -181,12 +210,18 @@ impl CorrectnessRunner {
         );
         group_runner
             .with_driver(DriverConfig::datadog_intake(self.datadog_intake_config.clone()).await?)?
-            .with_driver(self.baseline_target_driver_config.clone())?
-            .with_driver(DriverConfig::millstone(self.millstone_config.clone()).await?)?;
+            // Give the agent a "baseline" alias on its network so the shared millstone can
+            // address it unambiguously when connected to both agent networks.
+            .with_driver(
+                self.baseline_target_driver_config
+                    .clone()
+                    .with_network_alias("baseline"),
+            )?;
 
         Ok(group_runner)
     }
 
+    /// Builds the group runner for the comparison agent containers (datadog-intake + target).
     async fn build_comparison_group_runner(&self, isolation_group_id: String) -> Result<GroupRunner, GenericError> {
         debug!("Creating comparison group runner...");
 
@@ -195,13 +230,83 @@ impl CorrectnessRunner {
             "comparison",
             self.tctx.log_dir().to_path_buf(),
             self.comparison_coordinator.clone(),
+            // Pass a child from the test context so that a cancellation from above will affect the group runners.
             self.tctx.test_cancel_token().child_token(),
         );
 
         group_runner
             .with_driver(DriverConfig::datadog_intake(self.datadog_intake_config.clone()).await?)?
-            .with_driver(self.comparison_target_driver_config.clone())?
-            .with_driver(DriverConfig::millstone(self.millstone_config.clone()).await?)?;
+            // Give the agent a "comparison" alias on its network so the shared millstone can
+            // address it unambiguously when connected to both agent networks.
+            .with_driver(
+                self.comparison_target_driver_config
+                    .clone()
+                    .with_network_alias("comparison"),
+            )?;
+
+        Ok(group_runner)
+    }
+
+    /// Builds the group runner for the shared millstone container.
+    ///
+    /// The millstone container is set up identically to the original single-millstone setup:
+    /// `millstone.yaml` is bind-mounted at the same path as before. The shell entrypoint then
+    /// uses `sed` to derive two per-target configs in `/tmp` — one with `baseline` addresses and
+    /// one with `comparison` addresses — before launching both millstone processes in parallel.
+    ///
+    /// Two `sed` substitutions cover all target types:
+    /// - DSD socket targets: `/airlock/` → `/{group}-airlock/`
+    /// - TCP/gRPC targets: `://target` → `://{group}`
+    ///
+    /// Both agents are healthy before this container starts, so no startup wait is needed.
+    async fn build_shared_millstone_group_runner(
+        &self, isolation_group_id: String, baseline_isolation_group_id: &str, comparison_isolation_group_id: &str,
+    ) -> Result<GroupRunner, GenericError> {
+        debug!("Creating shared millstone group runner...");
+
+        let millstone_binary = self
+            .millstone_config
+            .binary_path
+            .clone()
+            .unwrap_or_else(|| "/usr/local/bin/millstone".to_string());
+
+        // Substitute $GROUP in the bind-mounted config to produce two per-target configs, then
+        // run both millstone processes in parallel. `exec sh -c '...'` ensures both seds complete
+        // before either millstone process starts.
+        let cmd = format!(
+            "sed 's/\\$GROUP/baseline/g' {cfg} > /tmp/millstone-baseline.toml && \
+             sed 's/\\$GROUP/comparison/g' {cfg} > /tmp/millstone-comparison.toml && \
+             exec sh -c '{bin} /tmp/millstone-baseline.toml & P1=$!; \
+                          {bin} /tmp/millstone-comparison.toml & P2=$!; \
+                          wait $P1; R1=$?; wait $P2; R2=$?; exit $((R1 | R2))'",
+            cfg = MILLSTONE_CONFIG_INTERNAL,
+            bin = millstone_binary,
+        );
+
+        let driver_config = DriverConfig::from_image("millstone", self.millstone_config.image.clone())
+            .with_entrypoint(vec!["/bin/sh".to_string(), "-c".to_string()])
+            .with_command(vec![cmd])
+            // Bind-mount the original millstone.yaml — same as the single-millstone setup.
+            .with_bind_mount(&self.millstone_config.config_path, MILLSTONE_CONFIG_INTERNAL)
+            // Mount both agent isolation-group volumes so millstone can reach their DSD sockets.
+            .with_volume_mount(format!("airlock-{}", baseline_isolation_group_id), "/baseline-airlock")
+            .with_volume_mount(
+                format!("airlock-{}", comparison_isolation_group_id),
+                "/comparison-airlock",
+            )
+            // Connect to both agent networks so millstone can resolve "baseline" and "comparison"
+            // hostnames for TCP/gRPC targets.
+            .with_network(format!("airlock-{}", baseline_isolation_group_id))
+            .with_network(format!("airlock-{}", comparison_isolation_group_id));
+
+        let mut group_runner = GroupRunner::new(
+            isolation_group_id,
+            "millstone",
+            self.tctx.log_dir().to_path_buf(),
+            self.millstone_coordinator.clone(),
+            self.tctx.test_cancel_token().child_token(),
+        );
+        group_runner.with_driver(driver_config)?;
 
         Ok(group_runner)
     }
@@ -219,6 +324,7 @@ impl CorrectnessRunner {
                 self.tctx.test_cancel_token().cancel();
                 self.baseline_coordinator.wait().await;
                 self.comparison_coordinator.wait().await;
+                self.millstone_coordinator.wait().await;
 
                 // Figure out which side failed to initially spawn successfully, and return the appropriate
                 // error. If both failed, then we log both errors and return a generic error instead.
@@ -245,6 +351,7 @@ impl CorrectnessRunner {
     pub async fn run(mut self) -> Result<(CollectedData, CollectedData), GenericError> {
         let baseline_isolation_group_id = generate_isolation_group_id();
         let comparison_isolation_group_id = generate_isolation_group_id();
+        let millstone_isolation_group_id = generate_isolation_group_id();
 
         let baseline_runner_span = info_span!(
             "runner",
@@ -256,54 +363,149 @@ impl CorrectnessRunner {
             isolation_group_id = comparison_isolation_group_id.clone(),
             test_id = "comparison"
         );
+        let millstone_runner_span = info_span!(
+            "runner",
+            isolation_group_id = millstone_isolation_group_id.clone(),
+            test_id = "millstone"
+        );
 
-        // Build a group runner for both the baseline and comparison targets, and then spawn the groups.
-        //
-        // This spawns all the necessary containers in the correct order, and waits for them to become healthy.
-        info!("Spawning containers for baseline and comparison targets...");
+        // Phase 1: Build all three group runners.
         let baseline_group_runner = self
             .build_baseline_group_runner(baseline_isolation_group_id.clone())
             .await?;
         let comparison_group_runner = self
             .build_comparison_group_runner(comparison_isolation_group_id.clone())
             .await?;
+        let millstone_group_runner = self
+            .build_shared_millstone_group_runner(
+                millstone_isolation_group_id.clone(),
+                &baseline_isolation_group_id,
+                &comparison_isolation_group_id,
+            )
+            .await?;
 
+        // Phase 3: Spawn both agent groups in parallel and wait for them to become healthy.
+        //
+        // The agent volumes and networks are created as part of this step. We must wait for the
+        // agent groups before starting millstone so that the volumes exist when the millstone
+        // container mounts them, and the networks exist when it connects to them.
+        info!("Spawning containers for baseline and comparison targets...");
         let baseline_spawn_result = run_in_background(&baseline_runner_span, baseline_group_runner.spawn());
         let comparison_spawn_result = run_in_background(&comparison_runner_span, comparison_group_runner.spawn());
 
-        // Everything is running, so just wait for the data (or an error) to come back from both group runners.
-        let (baseline_collector, comparison_collector) = self
+        let (baseline_collector, comparison_collector) = match self
             .unwrap_or_shutdown(
-                "spawn_containers",
+                "spawn_agent_containers",
                 baseline_spawn_result.await,
                 comparison_spawn_result.await,
             )
-            .await?;
-        info!("Containers spawned successfully. Waiting for data...");
+            .await
+        {
+            Ok(pair) => pair,
+            Err(e) => {
+                cleanup_groups(
+                    &baseline_isolation_group_id,
+                    &comparison_isolation_group_id,
+                    &millstone_isolation_group_id,
+                )
+                .await;
+                return Err(e);
+            }
+        };
+        info!("Agent containers spawned successfully. Starting shared millstone...");
 
-        let maybe_baseline_data = run_in_background(&baseline_runner_span, baseline_collector.wait_for_data());
-        let maybe_comparison_data = run_in_background(&comparison_runner_span, comparison_collector.wait_for_data());
+        // Phase 4: Spawn the shared millstone container now that both agent volumes exist.
+        let millstone_waiter =
+            match run_in_background(&millstone_runner_span, millstone_group_runner.spawn_millstone()).await {
+                Ok(w) => w,
+                Err(e) => {
+                    self.tctx.test_cancel_token().cancel();
+                    self.baseline_coordinator.wait().await;
+                    self.comparison_coordinator.wait().await;
+                    self.millstone_coordinator.wait().await;
+                    cleanup_groups(
+                        &baseline_isolation_group_id,
+                        &comparison_isolation_group_id,
+                        &millstone_isolation_group_id,
+                    )
+                    .await;
+                    return Err(generic_error!("Failed to spawn shared millstone container: {}", e));
+                }
+            };
+        info!("Shared millstone started. Waiting for it to complete...");
 
-        let (baseline_data, comparison_data) = self
+        // Phase 5: Wait for millstone to finish both parallel runs.
+        if let ExitStatus::Failed { code, error } = millstone_waiter.millstone_handle.wait().await {
+            self.tctx.test_cancel_token().cancel();
+            self.baseline_coordinator.wait().await;
+            self.comparison_coordinator.wait().await;
+            self.millstone_coordinator.wait().await;
+            cleanup_groups(
+                &baseline_isolation_group_id,
+                &comparison_isolation_group_id,
+                &millstone_isolation_group_id,
+            )
+            .await;
+            return Err(generic_error!(
+                "Shared millstone exited with non-zero exit code ({}). Error: {}",
+                code,
+                error
+            ));
+        }
+        debug!(
+            "Shared millstone completed. Waiting {:?} for agents to flush...",
+            FLUSH_WAIT
+        );
+
+        // Phase 6: Give agents time to flush all remaining aggregated metrics.
+        //
+        // TODO: This should maybe be configurable, or perhaps we can figure out a better way to
+        // determine when the next flush has happened... and further, we might not need to care
+        // about this for particular analysis modes if the functionality we're testing doesn't rely
+        // on flushing like metrics does.
+        sleep(FLUSH_WAIT).await;
+
+        // Phase 7: Collect data from both datadog-intake containers, then shut everything down.
+        info!("Collecting data from baseline and comparison intake containers...");
+        let maybe_baseline_data = run_in_background(
+            &baseline_runner_span,
+            CollectedData::for_port(baseline_collector.datadog_intake_port),
+        );
+        let maybe_comparison_data = run_in_background(
+            &comparison_runner_span,
+            CollectedData::for_port(comparison_collector.datadog_intake_port),
+        );
+
+        let (baseline_data, comparison_data) = match self
             .unwrap_or_shutdown("collect_data", maybe_baseline_data.await, maybe_comparison_data.await)
-            .await?;
+            .await
+        {
+            Ok(pair) => pair,
+            Err(e) => {
+                cleanup_groups(
+                    &baseline_isolation_group_id,
+                    &comparison_isolation_group_id,
+                    &millstone_isolation_group_id,
+                )
+                .await;
+                return Err(e);
+            }
+        };
 
-        // We've gotten our data back, so signal to any remaining containers that they can shutdown now.
+        // Signal all remaining containers to shut down and wait for them.
         info!("Cleaning up remaining containers and resources...");
         // TODO: is it correct to be using tctx.test_cancel_token for this? Or is this cancel() call necessary?
         self.tctx.test_cancel_token().cancel();
         self.baseline_coordinator.wait().await;
         self.comparison_coordinator.wait().await;
+        self.millstone_coordinator.wait().await;
 
-        debug!("Cleaning up resources from baseline group...");
-        if let Err(e) = Driver::clean_related_resources(baseline_isolation_group_id).await {
-            error!(error = %e, "Failed to clean up resources for baseline group. Manual cleanup may be required.");
-        }
-
-        debug!("Cleaning up resources from comparison group...");
-        if let Err(e) = Driver::clean_related_resources(comparison_isolation_group_id).await {
-            error!(error = %e, "Failed to clean up resources for comparison group. Manual cleanup may be required.");
-        }
+        cleanup_groups(
+            &baseline_isolation_group_id,
+            &comparison_isolation_group_id,
+            &millstone_isolation_group_id,
+        )
+        .await;
 
         info!("Cleanup complete.");
 
@@ -380,13 +582,22 @@ impl GroupRunner {
         Ok(self)
     }
 
-    async fn spawn(mut self) -> Result<DataCollector, GenericError> {
+    async fn spawn(self) -> Result<AgentGroupCollector, GenericError> {
+        AgentGroupCollector::new(self.spawn_into().await?)
+    }
+
+    /// Spawns all drivers in this group and returns the resulting [`SpawnedDrivers`].
+    ///
+    /// If any driver fails to start, any already-started drivers are cleaned up and the error is
+    /// returned. This is the shared core of [`spawn`][Self::spawn] and
+    /// [`spawn_millstone`][Self::spawn_millstone].
+    async fn spawn_into(mut self) -> Result<SpawnedDrivers, GenericError> {
         let mut driver_handles = Vec::new();
 
         // Spawn all of our drivers, short-circuiting if any of them fail to start.
         //
-        // We capture the error if any of them _do_ happen to fail, and return it only after we have attempted to clean
-        // up any drivers that were successfully spawned.
+        // We capture the error if any of them _do_ happen to fail, and return it only after we
+        // have attempted to clean up any drivers that were successfully spawned.
         let mut maybe_spawn_error = None;
         for driver in self.drivers {
             let driver_token = self.cancel_token.child_token();
@@ -409,9 +620,6 @@ impl GroupRunner {
         match maybe_spawn_error {
             Some(e) => {
                 debug!("Encountered error while spawning drivers. Cleaning up any successfully spawned drivers...");
-
-                // We encountered an error while spawning drivers, so we need to clean up any drivers that were successfully
-                // spawned before returning the error. We simply use our existing `SpawnedDrivers` to carry that out.
                 let driver_results = spawned_drivers.stop_and_wait().await;
                 if !driver_results.all_succeeded() {
                     error!("Failed to stop spawned drivers cleanly after encountering error during spawn.");
@@ -419,12 +627,10 @@ impl GroupRunner {
                         error!(driver_id, %status, "Driver failed to stop cleanly.");
                     }
                 }
-
                 debug!("Successfully cleaned up any spawned drivers.");
-
                 Err(e)
             }
-            None => DataCollector::new(spawned_drivers),
+            None => Ok(spawned_drivers),
         }
     }
 }
@@ -453,49 +659,46 @@ impl DriverResults {
     }
 }
 
-struct DataCollector {
-    millstone_handle: DriverHandle,
+/// Holds the intake port for one agent group after all containers have been spawned.
+///
+/// The millstone waiter is managed separately; this type is only responsible for tracking the
+/// port needed to collect data from `datadog-intake`.
+struct AgentGroupCollector {
     datadog_intake_port: u16,
 }
 
-impl DataCollector {
-    fn new(mut spawned_drivers: SpawnedDrivers) -> Result<Self, GenericError> {
-        let millstone_handle = spawned_drivers
-            .take_driver_handle("millstone")
-            .ok_or_else(|| generic_error!("Failed to get millstone driver handle."))?;
+impl AgentGroupCollector {
+    fn new(spawned_drivers: SpawnedDrivers) -> Result<Self, GenericError> {
         let datadog_intake_port = spawned_drivers
             .get_driver_details("datadog-intake")
             .and_then(|details| details.try_get_exposed_port("tcp", 2049))
             .ok_or_else(|| generic_error!("Failed to get exposed port details for datadog-intake container."))?;
 
-        Ok(Self {
-            millstone_handle,
-            datadog_intake_port,
-        })
+        Ok(Self { datadog_intake_port })
     }
+}
 
-    async fn wait_for_data(self) -> Result<CollectedData, GenericError> {
-        debug!("Waiting for millstone container to complete...");
+/// Holds the millstone driver handle for the shared millstone group.
+///
+/// The caller must wait on `millstone_handle` to detect when millstone has finished sending
+/// traffic to both agents.
+struct MillstoneWaiter {
+    millstone_handle: DriverHandle,
+}
 
-        // Wait for millstone to complete, since that signals that all metrics have been _sent_ to the target.
-        if let ExitStatus::Failed { code, error } = self.millstone_handle.wait().await {
-            return Err(generic_error!("Failed to drive millstone to completion; process exited with non-zero exit code ({}). Error message: {}", code, error));
-        }
-        debug!(
-            "Millstone container stopped successfully. Waiting for flush interval to elapse before dumping metrics..."
-        );
+impl MillstoneWaiter {
+    fn new(mut spawned_drivers: SpawnedDrivers) -> Result<Self, GenericError> {
+        let millstone_handle = spawned_drivers
+            .take_driver_handle("millstone")
+            .ok_or_else(|| generic_error!("Failed to get millstone driver handle from shared millstone group."))?;
 
-        // Now we'll briefly wait (for the duration of an aggregation flush interval, plus a little extra) before dumping the metrics from
-        // datadog-intake, to ensure everything from the target has been flushed out.
-        //
-        // TODO: This should maybe be configurable, or perhaps we can figure out a better way to determine when the next flush
-        // has happened... and further, we might not need to care about this for particular analysis modes if the functionality
-        // we're testing doesn't rely on flushing like metrics does.
-        sleep(Duration::from_secs(32)).await;
+        Ok(Self { millstone_handle })
+    }
+}
 
-        CollectedData::for_port(self.datadog_intake_port)
-            .await
-            .error_context("Failed to collect telemetry data from datadog-intake container.")
+impl GroupRunner {
+    async fn spawn_millstone(self) -> Result<MillstoneWaiter, GenericError> {
+        MillstoneWaiter::new(self.spawn_into().await?)
     }
 }
 
@@ -627,7 +830,7 @@ async fn spawn_driver_with_details(
     })
 }
 
-/// Generates a random 16-character alphanumeric string suitable for use as an isolation group ID.
+/// Generates a random 8-character alphanumeric string suitable for use as an isolation group ID.
 fn generate_isolation_group_id() -> String {
     Alphanumeric.sample_string(&mut rng(), 8)
 }
