@@ -72,9 +72,11 @@ impl V1TraceSamplerImpl {
         let rare = self.rare_sampler.sample(trace.spans());
 
         // ── Manual/user drop: hard drop, no overrides possible ─────────────────
+        // Only hard-drop when the tracer explicitly set a negative priority.
+        // A missing priority (trace.priority == None, wire sentinel MinInt8) is NOT a user
+        // drop — it must reach the no-priority path below.
         // TODO: implement the full isManualUserDropV1 check from the Go agent.
-        let priority = trace.priority.unwrap_or(PRIORITY_NONE);
-        if priority < 0 {
+        if matches!(trace.priority, Some(p) if p < 0) {
             trace.dropped_trace = true;
             return false;
         }
@@ -89,6 +91,8 @@ impl V1TraceSamplerImpl {
 
         // ── Priority / NoPriority path ──────────────────────────────────────────
         let has_priority = trace.priority.is_some();
+        // Unwrap to 0 (auto-drop) for the no-priority branch; the value is unused there.
+        let priority = trace.priority.unwrap_or(0);
 
         let root_idx = find_root_span_idx(trace.spans());
 
@@ -323,24 +327,34 @@ mod tests {
 
     // ── PriorityNone path ───────────────────────────────────────────────────
 
+    // A trace with no tracer-set priority (trace.priority == None, wire value MinInt8)
+    // must be routed to V1NoPrioritySampler, not hard-dropped as a user-drop.
+    // When the no-priority sampler has budget, the trace should be kept.
     #[test]
-    fn priority_none_goes_to_no_priority_sampler() {
+    fn priority_none_is_routed_to_no_priority_sampler_not_hard_dropped() {
         let mut s = V1TraceSamplerImpl {
+            // target_tps=0 ensures the priority sampler would drop everything — if a
+            // no-priority trace were incorrectly routed here it would still be dropped,
+            // making the test a clean signal for which path was taken.
             priority_sampler: V1PrioritySampler::new(
                 MetaString::from_static("prod"),
                 0.0,
                 1.0,
                 V1SamplingRatesHandle::new(),
             ),
+            // High TPS budget: the no-priority sampler keeps all traces within the burst window.
             no_priority_sampler: V1NoPrioritySampler::new(10000.0),
             rare_sampler: V1RareSampler::new(false, 5.0, Duration::from_secs(300), 200),
             error_token_bucket: None,
             error_sampling_enabled: false,
             error_tracking_standalone: false,
         };
+
         let mut trace = make_trace(PRIORITY_NONE, vec![make_span(0, false)]);
-        let result = process(&mut s, &mut trace);
-        let _ = result;
+        let kept = process(&mut s, &mut trace);
+
+        assert!(kept, "no-priority trace must be kept when no-priority sampler has budget");
+        assert!(!trace.dropped_trace, "dropped_trace must be false for a kept no-priority trace");
     }
 
     // ── ETS mode ────────────────────────────────────────────────────────────

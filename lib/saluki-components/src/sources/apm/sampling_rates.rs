@@ -33,6 +33,9 @@ impl Default for V1SamplingRates {
 
 impl V1SamplingRates {
     fn set_all(&mut self, new_rates: FastHashMap<String, f64>) {
+        if new_rates == self.rates {
+            return;
+        }
         self.rates = new_rates;
         self.generation = self.generation.wrapping_add(1);
         self.version = new_version(self.generation);
@@ -142,7 +145,7 @@ mod tests {
     }
 
     #[test]
-    fn version_changes_on_set_all() {
+    fn version_changes_when_rates_change() {
         let handle = V1SamplingRatesHandle::new();
         handle.set_all(make_rates(&[("service:foo,env:prod", 0.5)]));
         let v1 = handle.inner.read().unwrap().version.clone();
@@ -150,7 +153,17 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(1));
         handle.set_all(make_rates(&[("service:foo,env:prod", 0.3)]));
         let v2 = handle.inner.read().unwrap().version.clone();
-        assert_ne!(v1, v2, "version must change on each set_all");
+        assert_ne!(v1, v2, "version must change when rates change");
+    }
+
+    #[test]
+    fn version_unchanged_when_rates_unchanged() {
+        let handle = V1SamplingRatesHandle::new();
+        handle.set_all(make_rates(&[("service:foo,env:prod", 0.5)]));
+        let v1 = handle.inner.read().unwrap().version.clone();
+        handle.set_all(make_rates(&[("service:foo,env:prod", 0.5)]));
+        let v2 = handle.inner.read().unwrap().version.clone();
+        assert_eq!(v1, v2, "version must not change when rates are identical");
     }
 
     #[test]
