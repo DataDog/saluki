@@ -55,11 +55,20 @@ impl TryFrom<&str> for OriginTagCardinality {
     type Error = String;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
+        // Exact lowercase match first (zero-cost happy path), then case-insensitive fallback
+        // using eq_ignore_ascii_case (also allocation-free) to match the core Datadog Agent,
+        // which normalises with strings.ToLower before matching.
         match value {
             "none" => Ok(Self::None),
             "low" => Ok(Self::Low),
             "high" => Ok(Self::High),
             "orch" | "orchestrator" => Ok(Self::Orchestrator),
+            other if other.eq_ignore_ascii_case("none") => Ok(Self::None),
+            other if other.eq_ignore_ascii_case("low") => Ok(Self::Low),
+            other if other.eq_ignore_ascii_case("high") => Ok(Self::High),
+            other if other.eq_ignore_ascii_case("orch") || other.eq_ignore_ascii_case("orchestrator") => {
+                Ok(Self::Orchestrator)
+            }
             other => Err(format!("unknown tag cardinality type '{}'", other)),
         }
     }

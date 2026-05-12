@@ -1,0 +1,43 @@
+# Verify the config check emits warnings for medium-severity incompatible keys without exiting.
+#
+# Two keys are set to non-default values:
+# - telemetry.enabled: medium severity with a custom warning message directing users to ADP's
+#   telemetry config (data_plane.telemetry_enabled / data_plane.telemetry_filter_level).
+# - dogstatsd_capture_depth: medium severity, generic warning. Capture/replay is a diagnostic
+#   tool with no ADP equivalent.
+#
+# Both keys were chosen because they are architecturally irrelevant to ADP and unlikely to be
+# implemented. If either key becomes supported in the future, update or replace it with another
+# medium-severity incompatible key.
+
+type: integration
+name: "adp-config-check-warn"
+description: "Verify config check warns on medium-severity incompatible keys without exiting"
+timeout: 90s
+
+container:
+  image: "saluki-images/datadog-agent:testing-devel"
+  env:
+    DD_API_KEY: "test-api-key"
+    DD_HOSTNAME: "integration-test-config-warn"
+    DD_DATA_PLANE_ENABLED: "true"
+    DD_DATA_PLANE_STANDALONE_MODE: "false"
+    DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
+    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+    DD_TELEMETRY_ENABLED: "true" # Incompatible(Medium) - triggers custom telemetry warning
+    DD_DOGSTATSD_CAPTURE_DEPTH: "100" # Incompatible(Medium) - triggers generic warning
+
+assertions:
+  - type: log_contains
+    pattern: "telemetry.enabled key is not read by ADP"
+    timeout: 30s
+  - type: log_contains
+    pattern: "Unsupported configuration key"
+    timeout: 30s
+  - parallel:
+      - type: process_stable_for
+        duration: 10s
+      - type: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s

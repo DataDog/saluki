@@ -16,16 +16,16 @@ mod ancillary;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
-pub use self::linux::enable_uds_socket_credentials;
-#[cfg(target_os = "linux")]
 use self::linux::uds_recvmsg;
+#[cfg(target_os = "linux")]
+pub use self::linux::{enable_uds_socket_credentials, socket_reuseport_supported};
 
 #[cfg(not(target_os = "linux"))]
 mod non_linux;
 #[cfg(not(target_os = "linux"))]
-pub use self::non_linux::enable_uds_socket_credentials;
-#[cfg(not(target_os = "linux"))]
 use self::non_linux::uds_recvmsg;
+#[cfg(not(target_os = "linux"))]
+pub use self::non_linux::{enable_uds_socket_credentials, socket_reuseport_supported};
 use super::addr::ConnectionAddress;
 
 /// Ensures that the given path is read for use as a UNIX socket.

@@ -78,7 +78,7 @@ pub struct Config {
     pub additional_span_ignore_fields: Vec<String>,
 
     #[serde(skip, default = "PathBuf::new")]
-    base_config_path: PathBuf,
+    pub(crate) base_config_path: PathBuf,
 }
 
 #[derive(Clone, Deserialize)]

@@ -7,12 +7,53 @@
 //! This registry is intentionally free of Rust field names and struct internals — it models the
 //! configuration surface as an operator would see it, and can be used at runtime to detect
 //! unknown or unsupported keys in a loaded configuration file.
+//!
+//! ## User Guide
+//!
+//! The config registry tests enforce uniqueness and completeness constraints similar to
+//! primary-key and unique constraints in a relational database. Every key in the vendored
+//! schema (`core_schema.yaml`) must appear in exactly one of two places: an annotation
+//! ([`SalukiAnnotation`]) or the ignored-keys list (`etc/ignored_keys.yaml`). No key may
+//! appear in both, and no key may appear twice within either list.
+//!
+//! If a test fails, it means one of these constraints was violated. Common scenarios:
+//!
+//! ### Adding a Configuration Key
+//!
+//! When Saluki gains support for a new key, add a [`SalukiAnnotation`] in the appropriate
+//! `config_registry::datadog::*` submodule with [`SupportLevel::Full`] or
+//! [`SupportLevel::Partial`] and a non-empty `used_by` list. If the key was previously in
+//! `etc/ignored_keys.yaml`, remove it from there. If it was previously
+//! [`SupportLevel::Incompatible`], move it from `datadog/unsupported.rs` to the
+//! appropriate submodule and update its support level.
+//!
+//! ### Updating the Vendored Schema
+//!
+//! After updating `vendor/core_schema.yaml`, rebuild to regenerate the schema module
+//! (the `build.rs` script handles this automatically). Any new keys will cause the
+//! `all_schema_entries_are_annotated_or_ignored` test to fail. For each new key, decide:
+//!
+//! - **Irrelevant to ADP**: add to `etc/ignored_keys.yaml` with a reason.
+//! - **Incompatible**: add to `datadog/unsupported.rs` with a [`Severity`] level.
+//! - **Supported**: add to the appropriate `datadog/*.rs` submodule.
+//!
+//! If the update removed keys, the `no_stale_entries` test catches annotations or
+//! ignored entries that reference keys no longer in the schema. Delete the stale entries.
 
+mod classifier;
 pub mod datadog;
 /// Generated schema entries from the vendored Datadog Agent config schema.
 pub mod generated;
 
-pub use self::datadog::{ALL_ANNOTATIONS, ALL_KEYS};
+pub use classifier::{Classification, ConfigClassifier};
+
+pub(crate) use self::datadog::ALL_ANNOTATIONS;
+#[cfg(any(test, feature = "config-test-support"))]
+pub(crate) use self::datadog::SUPPORTED_ANNOTATIONS;
+#[cfg(test)]
+pub(crate) use self::generated::schema::ALL_SCHEMA_ENTRIES;
+#[cfg(test)]
+pub(crate) use self::generated::schema::IGNORED_ENTRIES;
 
 /// Declares a set of [`SalukiAnnotation`] constants and generates a companion `ALL` slice.
 ///
@@ -92,13 +133,28 @@ pub mod structs {
     pub const OTLP_RELAY_CONFIGURATION: &str = "OtlpRelayConfiguration";
     /// Identifier for `TraceObfuscationConfiguration`.
     pub const TRACE_OBFUSCATION_CONFIGURATION: &str = "TraceObfuscationConfiguration";
+    /// Keys read via `get_typed` / `try_get_typed` rather than struct deserialization.
+    pub const GET_TYPED: &str = "get_typed";
+}
+
+/// The `Severity` level of a config key that Saluki does not support.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Severity {
+    /// Saluki's incompatibility with the key is considered minor.
+    Low,
+
+    /// Saluki's incompatibility with the key is considered potentially impactful.
+    Medium,
+
+    /// Saluki's incompatibility with the key is considered problematic.
+    High,
 }
 
 /// How well saluki supports a given configuration key.
 ///
 /// Used in [`SalukiAnnotation`] to classify each key from saluki's perspective. `Ignored` is
 /// reserved for keys in the schema that have no annotation at all — it must not appear in any
-/// hand-written annotation.
+/// handwritten annotation.
 ///
 /// Invariants enforced at test time:
 /// - `Full` and `Partial` require a non-empty `used_by` list.
@@ -109,12 +165,19 @@ pub enum SupportLevel {
     Full,
     /// Partially supported. The key is consumed by at least one struct, but support is incomplete.
     Partial,
-    /// Explicitly incompatible. Saluki intentionally does not support this key; `used_by` must be
-    /// empty.
-    Incompatible,
-    /// Not annotated. Applied implicitly at runtime to any schema key that has no
-    /// [`SalukiAnnotation`]. Must not be set on a hand-written annotation.
+    /// Explicitly incompatible. Saluki does not support this key and may not behave as expected in
+    /// its presence; `used_by` must be empty. Support for the key may be added in the future but
+    /// tracking such intent is not encoded here.
+    Incompatible(Severity),
+    /// Intentionally ignored. The key is not relevant to Saluki. This assignment must be
+    /// intentionally chosen and specified for a key. We never assume that a key is `Ignored` just
+    /// because we are unaware of it.
+    #[allow(unused)]
     Ignored,
+    /// Unrecognized. The Saluki codebase is unaware of the existence of this key. It is not in our
+    /// vendored datadog config schema, nor is it annotated.
+    #[allow(unused)]
+    Unrecognized,
 }
 
 /// The shape of a configuration value.
@@ -135,6 +198,16 @@ pub enum ValueType {
     StringList,
 }
 
+/// Which schema source of truth defined the `SchemaEntry`
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+#[repr(u8)]
+pub(crate) enum Schema {
+    /// Saluki defined the `SchemaEntry` and the key is not expected to exist in the vendored Datadog config schema.
+    Saluki,
+    /// The vendored Datadog config schema defines the `SchemaEntry`.
+    Datadog,
+}
+
 /// Schema-derived metadata for a single configuration key.
 ///
 /// Generated from the vendored Datadog Agent config schema. Contains only what the schema
@@ -145,6 +218,10 @@ pub enum ValueType {
 /// live in `config_registry::generated::schema`.
 #[derive(Debug)]
 pub struct SchemaEntry {
+    /// The source of truth from which this entry was derived.
+    #[allow(dead_code)]
+    pub(crate) schema: Schema,
+
     /// Canonical dot-separated YAML path for this key (e.g. `"proxy.http"`).
     pub yaml_path: &'static str,
 
@@ -180,7 +257,8 @@ pub struct SalukiAnnotation {
 
     /// How well saluki supports this key.
     ///
-    /// Must not be [`SupportLevel::Ignored`] — that level is reserved for unannotated schema keys.
+    /// Must not be [`SupportLevel::Ignored`] or [`SupportLevel::Unrecognized`] which are reserved
+    /// for unannotated keys.
     pub support_level: SupportLevel,
 
     /// Additional YAML paths beyond the canonical one in the schema (aliases).

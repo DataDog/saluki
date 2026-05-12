@@ -379,11 +379,11 @@
   },
   {
     "key": "dogstatsd_eol_required",
-    "feature_state": "MISSING",
-    "action": "IMPLEMENT",
-    "description": "Require newline-terminated msgs",
-    "reason": "Codec supports EOL enforcement but config path may not be wired.",
-    "issue": "#1339",
+    "feature_state": "PARITY",
+    "action": "NONE",
+    "description": "Require newline-terminated messages",
+    "reason": "ADP honors the udp and uds values. The named_pipe value is accepted for compatibility, with named pipe listener support tracked separately.",
+    "issue": null,
     "adp_key": null
   },
   {

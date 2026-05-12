@@ -6,6 +6,7 @@
 //! - Handle UDS stream framing without treating EOF the same way as UDP and UDS datagram framing.
 //! - Track dispatch failures without depending on whether all events were already iterated.
 
+use std::num::NonZeroUsize;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -15,7 +16,7 @@ use bytesize::ByteSize;
 use memory_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use metrics::{Counter, Gauge, Histogram};
 use saluki_common::task::spawn_traced_named;
-use saluki_config::GenericConfiguration;
+use saluki_config::{deserialize_space_separated_or_seq, GenericConfiguration};
 use saluki_context::{
     tags::{RawTags, RawTagsFilter},
     TagsResolver,
@@ -40,7 +41,7 @@ use saluki_core::{
 use saluki_env::WorkloadProvider;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::{
-    buf::{BytesBuffer, FixedSizeVec},
+    buf::{BytesBuffer, ClearableIoBuffer as _, FixedSizeVec},
     deser::{
         codec::dogstatsd::*,
         framing::{Framer as _, FramingError},
@@ -280,6 +281,21 @@ pub struct DogStatsDConfiguration {
     #[serde(rename = "dogstatsd_stream_log_too_big", default)]
     stream_log_too_big: bool,
 
+    /// Listener types that require DogStatsD messages to be newline-terminated.
+    ///
+    /// Valid values are `udp`, `uds`, and `named_pipe`. ADP accepts `named_pipe` for compatibility, but it has no effect
+    /// until named pipe listeners are supported. Invalid values are ignored.
+    ///
+    /// Enable this when DogStatsD clients must reject packets or stream frames that do not end with a newline.
+    ///
+    /// Defaults to unset, which accepts the final message without a newline.
+    #[serde(
+        rename = "dogstatsd_eol_required",
+        default,
+        deserialize_with = "deserialize_space_separated_or_seq"
+    )]
+    eol_required: Vec<String>,
+
     /// The host address to bind DogStatsD UDP and TCP listeners to.
     ///
     /// When set, UDP and TCP listeners bind to this address. Accepts either an IP literal (e.g.
@@ -299,6 +315,23 @@ pub struct DogStatsDConfiguration {
     /// Defaults to `false`.
     #[serde(rename = "dogstatsd_non_local_traffic", default)]
     non_local_traffic: bool,
+
+    /// Whether to autoscale UDP stream handlers using `SO_REUSEPORT`.
+    ///
+    /// When enabled on Linux, the DogStatsD source binds multiple UDP sockets to the configured port with
+    /// `SO_REUSEPORT`, allowing the kernel to load-balance incoming datagrams across independent stream handler
+    /// tasks. The number of sockets scales with available vCPUs: one stream handler base, plus one additional
+    /// per 8 vCPUs, capped at 4 total.
+    ///
+    /// Has no effect on non-Linux platforms because `SO_REUSEPORT` does not provide kernel-level load balancing
+    /// there; a warning is logged at startup if enabled outside of Linux.
+    ///
+    /// Enable this on multi-vCPU Linux deployments where UDP DogStatsD throughput is bottlenecked on a single
+    /// receive task.
+    ///
+    /// Defaults to `false`.
+    #[serde(rename = "dogstatsd_autoscale_udp_listeners", default)]
+    autoscale_udp_listeners: bool,
 
     /// Whether or not to allow heap allocations when resolving contexts.
     ///
@@ -417,6 +450,41 @@ pub struct DogStatsDConfiguration {
     additional_tags: Vec<String>,
 }
 
+#[derive(Clone, Copy, Default)]
+struct EolRequired {
+    udp: bool,
+    uds: bool,
+}
+
+impl EolRequired {
+    fn from_config_values(values: &[String]) -> Self {
+        let mut eol_required = Self::default();
+
+        for value in values {
+            match value.as_str() {
+                "udp" => eol_required.udp = true,
+                "uds" => eol_required.uds = true,
+                "named_pipe" => {}
+                _ => warn!(
+                    value,
+                    "Invalid dogstatsd_eol_required value. Expected 'udp', 'uds', or 'named_pipe'."
+                ),
+            }
+        }
+
+        eol_required
+    }
+
+    fn for_listener(&self, listen_addr: &ListenAddress) -> bool {
+        match listen_addr {
+            ListenAddress::Udp(_) => self.udp,
+            ListenAddress::Tcp(_) => false,
+            #[cfg(unix)]
+            ListenAddress::Unixgram(_) | ListenAddress::Unix(_) => self.uds,
+        }
+    }
+}
+
 /// Resolves a `bind_host` string to an `IpAddr`.
 ///
 /// Accepts either an IP literal (no DNS required) or a hostname (resolved via async DNS). Returns
@@ -448,6 +516,31 @@ impl DogStatsDConfiguration {
             Some(explicit_bytes) => explicit_bytes,
             None => ByteSize::b(self.context_string_interner_entry_count * INTERNER_BASELINE_BYTES_PER_ENTRY),
         }
+    }
+
+    fn eol_required(&self) -> EolRequired {
+        EolRequired::from_config_values(&self.eol_required)
+    }
+
+    /// Returns the number of UDP stream handlers to spawn, derived from `dogstatsd_autoscale_udp_listeners` and
+    /// the number of available vCPUs.
+    ///
+    /// Returns `None` when autoscaling is disabled, which keeps the legacy single-socket behavior. The platform
+    /// gate for `SO_REUSEPORT` lives inside the listener — this method intentionally stays platform-agnostic.
+    fn udp_streams_to_yield(&self) -> Option<NonZeroUsize> {
+        if !self.autoscale_udp_listeners {
+            return None;
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        if self.autoscale_udp_listeners {
+            warn!("UDP stream handler autoscaling not supported on non-Linux platforms. Default to single stream handler.");
+            return None;
+        }
+
+        let vcpus = std::thread::available_parallelism().map(NonZeroUsize::get).unwrap_or(1);
+        let streams = (1 + vcpus / 8).min(4);
+        NonZeroUsize::new(streams)
     }
 
     /// Sets the workload provider to use for configuring origin detection/enrichment.
@@ -518,9 +611,13 @@ impl DogStatsDConfiguration {
         let mut listeners = Vec::new();
         let socket_receive_buffer_size =
             (self.socket_receive_buffer_size != 0).then_some(self.socket_receive_buffer_size);
+        let udp_streams_to_yield = self.udp_streams_to_yield();
         for address in addresses {
             let listener_type = address.listener_type();
-            let listener = Listener::from_listen_address(address)
+            let listener_streams = matches!(address, ListenAddress::Udp(_))
+                .then_some(udp_streams_to_yield)
+                .flatten();
+            let listener = Listener::from_listen_address(address, listener_streams)
                 .await
                 .context(FailedToCreateListener { listener_type })?
                 .with_receive_buffer_size(socket_receive_buffer_size);
@@ -540,11 +637,14 @@ impl SourceBuilder for DogStatsDConfiguration {
         }
 
         // Every listener requires at least one I/O buffer to ensure that all listeners can be serviced without
-        // deadlocking any of the others.
-        if self.buffer_count < listeners.len() {
+        // deadlocking any of the others. Connectionless listeners retain their buffer for the lifetime of the stream,
+        // so multi-socket UDP listeners require one buffer per yielded socket.
+        let min_buffers: usize = listeners.iter().map(Listener::min_buffer_reservation).sum();
+        if self.buffer_count < min_buffers {
             return Err(generic_error!(
-                "Must have a minimum of {} I/O buffers based on the number of listeners configured.",
-                listeners.len()
+                "Must have a minimum of {} I/O buffers to service all configured listeners (have {}).",
+                min_buffers,
+                self.buffer_count,
             ));
         }
 
@@ -563,6 +663,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             .with_client_origin_detection(self.origin_enrichment.origin_detection_client);
 
         let codec = DogStatsDCodec::from_configuration(codec_config);
+        let eol_required = self.eol_required();
 
         let enable_payloads_filter = EnablePayloadsFilter::default()
             .with_allow_series(self.enable_payloads.series)
@@ -580,6 +681,7 @@ impl SourceBuilder for DogStatsDConfiguration {
             enabled_filter: enable_payloads_filter,
             origin_detection_enabled,
             stream_log_too_big: self.stream_log_too_big,
+            eol_required,
             additional_tags: self.additional_tags.clone().into(),
         }))
     }
@@ -626,6 +728,7 @@ pub struct DogStatsD {
     enabled_filter: EnablePayloadsFilter,
     origin_detection_enabled: bool,
     stream_log_too_big: bool,
+    eol_required: EolRequired,
     additional_tags: Arc<[String]>,
 }
 
@@ -637,6 +740,7 @@ struct ListenerContext {
     context_resolvers: ContextResolvers,
     origin_detection_enabled: bool,
     stream_log_too_big: bool,
+    eol_required: EolRequired,
     additional_tags: Arc<[String]>,
 }
 
@@ -824,6 +928,7 @@ impl Source for DogStatsD {
                 context_resolvers: self.context_resolvers.clone(),
                 origin_detection_enabled: self.origin_detection_enabled,
                 stream_log_too_big: self.stream_log_too_big,
+                eol_required: self.eol_required,
                 additional_tags: self.additional_tags.clone(),
             };
 
@@ -871,12 +976,14 @@ async fn process_listener(
         context_resolvers,
         origin_detection_enabled,
         stream_log_too_big,
+        eol_required,
         additional_tags,
     } = listener_context;
     tokio::pin!(shutdown_handle);
 
     let listen_addr = listener.listen_address().clone();
     let mut stream_shutdown_coordinator = DynamicShutdownCoordinator::default();
+    let mut stream_idx: u32 = 0;
 
     info!(%listen_addr, "DogStatsD listener started.");
 
@@ -892,7 +999,7 @@ async fn process_listener(
 
                     let handler_context = HandlerContext {
                         listen_addr: listen_addr.clone(),
-                        framer: get_framer(&listen_addr),
+                        framer: get_framer(&listen_addr, eol_required.for_listener(&listen_addr)),
                         codec: codec.clone(),
                         io_buffer_pool: io_buffer_pool.clone(),
                         metrics: build_metrics(&listen_addr, source_context.component_context()),
@@ -902,7 +1009,12 @@ async fn process_listener(
                         additional_tags: additional_tags.clone(),
                     };
 
-                    let task_name = format!("dogstatsd-stream-handler-{}", listen_addr.listener_type());
+                    let task_name = format!(
+                        "dogstatsd-stream-handler-{}-{}",
+                        listen_addr.listener_type(),
+                        stream_idx,
+                    );
+                    stream_idx = stream_idx.wrapping_add(1);
                     spawn_traced_named(task_name, process_stream(stream, source_context.clone(), handler_context, stream_shutdown_coordinator.register(), enabled_filter));
                 }
                 Err(e) => {
@@ -1055,6 +1167,7 @@ async fn drive_stream(
                                 }
 
                                 if stream.is_connectionless() {
+                                    io_buffer.clear();
                                     // For connectionless streams, we don't want to shutdown the stream since we can just keep
                                     // reading more packets.
                                     debug!(%listen_addr, %peer_addr, error = %e, "Error decoding frame. Continuing stream.");
@@ -1398,10 +1511,9 @@ mod tests {
 
     use bytesize::ByteSize;
     use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
-    use saluki_io::net::ListenAddress;
     use saluki_io::{
         deser::codec::dogstatsd::{DogStatsDCodec, DogStatsDCodecConfiguration, ParsedPacket},
-        net::ConnectionAddress,
+        net::{ConnectionAddress, ListenAddress},
     };
 
     use super::{handle_metric_packet, ContextResolvers, DogStatsDConfiguration};
@@ -1477,6 +1589,14 @@ mod tests {
         serde_json::from_str(json).expect("failed to deserialize config")
     }
 
+    fn udp_listen_address() -> ListenAddress {
+        ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)))
+    }
+
+    fn tcp_listen_address() -> ListenAddress {
+        ListenAddress::Tcp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)))
+    }
+
     #[test]
     fn interner_size_defaults_to_2mib() {
         let config = deser_config("{}");
@@ -1505,6 +1625,70 @@ mod tests {
     fn stream_log_too_big_from_config() {
         let config = deser_config(r#"{"dogstatsd_stream_log_too_big": true}"#);
         assert!(config.stream_log_too_big);
+    }
+
+    #[test]
+    fn autoscale_udp_listeners_defaults_to_false() {
+        let config = deser_config("{}");
+        assert!(!config.autoscale_udp_listeners);
+        assert!(config.udp_streams_to_yield().is_none());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn autoscale_udp_listeners_from_config_linux() {
+        let config = deser_config(r#"{"dogstatsd_autoscale_udp_listeners": true}"#);
+        assert!(config.autoscale_udp_listeners);
+
+        let streams = config
+            .udp_streams_to_yield()
+            .expect("autoscale yields at least 1 stream");
+        let n = streams.get();
+        assert!(
+            (1..=4).contains(&n),
+            "expected 1..=4 streams from vCPU formula, got {n}"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn autoscale_udp_listeners_from_config_non_linux() {
+        let config = deser_config(r#"{"dogstatsd_autoscale_udp_listeners": true}"#);
+        assert!(config.autoscale_udp_listeners);
+
+        assert_eq!(None, config.udp_streams_to_yield());
+    }
+
+    #[test]
+    fn eol_required_defaults_to_no_listeners() {
+        let config = deser_config("{}");
+        let eol_required = config.eol_required();
+
+        assert!(!eol_required.for_listener(&udp_listen_address()));
+        assert!(!eol_required.for_listener(&tcp_listen_address()));
+    }
+
+    #[test]
+    fn eol_required_matches_configured_listener_types() {
+        let config = deser_config(r#"{"dogstatsd_eol_required": ["udp", "uds"]}"#);
+        let eol_required = config.eol_required();
+
+        assert!(eol_required.for_listener(&udp_listen_address()));
+        assert!(!eol_required.for_listener(&tcp_listen_address()));
+
+        #[cfg(unix)]
+        {
+            assert!(eol_required.for_listener(&ListenAddress::Unixgram("/tmp/dsd.sock".into())));
+            assert!(eol_required.for_listener(&ListenAddress::Unix("/tmp/dsd-stream.sock".into())));
+        }
+    }
+
+    #[test]
+    fn eol_required_accepts_space_separated_string() {
+        let config = deser_config(r#"{"dogstatsd_eol_required": "udp uds"}"#);
+        let eol_required = config.eol_required();
+
+        assert!(eol_required.for_listener(&udp_listen_address()));
     }
 
     #[test]

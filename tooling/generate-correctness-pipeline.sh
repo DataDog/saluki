@@ -40,9 +40,15 @@ EOF
             extends="[${base_mixin}]"
         fi
 
+        # GitLab job names cannot contain '/'. Matrix variant names use '/'
+        # as a separator (e.g. dsd-origin-detection-matrix/legacy), so
+        # replace it with '-' for the job name while keeping the original
+        # name for CORRECTNESS_TEST_CASE, which panoramic receives as-is.
+        job_name="${case//\//-}"
+
         cat <<EOF
 
-test-correctness-${case}:
+test-correctness-${job_name}:
   extends: ${extends}
   variables:
     CORRECTNESS_TEST_CASE: ${case}

@@ -2,7 +2,7 @@ use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use serde::Serialize;
 use serde_json::json;
 
-use super::{SalukiAnnotation, ValueType, ALL_ANNOTATIONS};
+use super::{SalukiAnnotation, ValueType, SUPPORTED_ANNOTATIONS};
 use crate::config::{DatadogRemapper, KEY_ALIASES};
 
 /// Test value injected for `String` keys.
@@ -135,7 +135,7 @@ async fn make_config_from_env(
 
 /// Runs smoke tests for all annotations registered to `struct_name` against a deserialized config struct `T`.
 ///
-/// Annotations are discovered automatically from [`ALL_ANNOTATIONS`] by filtering on `used_by` —
+/// Annotations are discovered automatically from [`SUPPORTED_ANNOTATIONS`] by filtering on `used_by` —
 /// there is no need to pass a list of keys explicitly. Register an annotation for a struct by
 /// adding its name (from [`crate::config_registry::structs`]) to the annotation's `used_by` field.
 ///
@@ -166,7 +166,7 @@ pub async fn run_config_smoke_tests<T, Factory>(
     T: PartialEq + Serialize,
     Factory: Fn(GenericConfiguration) -> T,
 {
-    let keys: Vec<&'static SalukiAnnotation> = ALL_ANNOTATIONS
+    let keys: Vec<&'static SalukiAnnotation> = SUPPORTED_ANNOTATIONS
         .iter()
         .copied()
         .filter(|a| a.used_by.contains(&struct_name))
@@ -233,7 +233,10 @@ pub async fn run_config_smoke_tests<T, Factory>(
     }
 
     // Unsupported keys: setting any of their yaml_paths must not change the struct.
-    for annotation in ALL_ANNOTATIONS.iter().filter(|a| !a.used_by.contains(&struct_name)) {
+    for annotation in SUPPORTED_ANNOTATIONS
+        .iter()
+        .filter(|a| !a.used_by.contains(&struct_name))
+    {
         for yaml_path in annotation.all_yaml_paths() {
             let with_foreign = config_factory(
                 make_config_from_file(merge_over_base(

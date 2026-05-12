@@ -6,12 +6,12 @@ use std::{
 };
 
 use bollard::{
-    container::LogOutput,
+    container::{LogOutput, NetworkingConfig as ContainerNetworkingConfig},
     errors::Error,
     exec::{CreateExecOptions, StartExecResults},
     models::{
-        ContainerCreateBody, ContainerStateStatusEnum, HealthConfig, HealthStatusEnum, HostConfig, Ipam,
-        NetworkCreateRequest, VolumeCreateRequest,
+        ContainerCreateBody, ContainerStateStatusEnum, EndpointSettings, HealthConfig, HealthStatusEnum, HostConfig,
+        Ipam, NetworkConnectRequest, NetworkCreateRequest, VolumeCreateRequest,
     },
     query_parameters::{CreateContainerOptionsBuilder, CreateImageOptions, ListContainersOptionsBuilder, LogsOptions},
     Docker,
@@ -56,6 +56,29 @@ pub struct DriverConfig {
     binds: Vec<String>,
     healthcheck: Option<HealthConfig>,
     exposed_ports: Vec<(&'static str, u16)>,
+    /// Additional named Docker volume mounts, in `volume_name:/container/path` format.
+    ///
+    /// Unlike bind mounts specified via [`with_bind_mount`][Self::with_bind_mount], these reference
+    /// existing named Docker volumes rather than host filesystem paths. Used to mount volumes that
+    /// belong to other isolation groups (for example, a shared millstone mounting both the baseline
+    /// and comparison agent volumes).
+    additional_volume_mounts: Vec<String>,
+
+    /// DNS aliases for this container on its primary network.
+    ///
+    /// Set via `NetworkingConfig.EndpointsConfig` at container creation time. Other containers on
+    /// the same network can reach this container using any of these aliases in addition to its
+    /// hostname. Used to give agent containers unambiguous names (e.g. `"baseline"`, `"comparison"`)
+    /// that the shared millstone can use to address each one independently.
+    network_aliases: Vec<String>,
+
+    /// Additional Docker networks to connect this container to after creation.
+    ///
+    /// The primary network is set via `HostConfig.NetworkMode`. Each network listed here is joined
+    /// via a separate `docker network connect` call after the container is created but before it is
+    /// started. Used to connect the shared millstone container to both agent networks so it can
+    /// reach `baseline` and `comparison` by hostname.
+    additional_networks: Vec<String>,
 }
 
 impl DriverConfig {
@@ -137,7 +160,7 @@ impl DriverConfig {
     }
 
     /// Creates a new `DriverConfig` from the given driver identifier and container image reference.
-    fn from_image(driver_id: &'static str, image: String) -> Self {
+    pub fn from_image(driver_id: &'static str, image: String) -> Self {
         Self {
             driver_id,
             image,
@@ -147,6 +170,9 @@ impl DriverConfig {
             binds: vec![],
             healthcheck: None,
             exposed_ports: vec![],
+            additional_volume_mounts: vec![],
+            network_aliases: vec![],
+            additional_networks: vec![],
         }
     }
 
@@ -234,6 +260,38 @@ impl DriverConfig {
             start_period: Some(start_period.as_nanos() as i64),
             start_interval: Some(start_interval.as_nanos() as i64),
         });
+        self
+    }
+
+    /// Adds a DNS alias for this container on its primary network.
+    ///
+    /// Other containers on the same network can resolve this container by `alias` in addition to
+    /// its hostname. Call this before the container is started.
+    pub fn with_network_alias(mut self, alias: impl Into<String>) -> Self {
+        self.network_aliases.push(alias.into());
+        self
+    }
+
+    /// Connects this container to an additional Docker network after creation.
+    ///
+    /// The primary network is always the container's isolation group network. Each network added
+    /// here is joined via `docker network connect` after the container is created but before it
+    /// is started, so the container is reachable on all listed networks from the moment it runs.
+    pub fn with_network(mut self, network: impl Into<String>) -> Self {
+        self.additional_networks.push(network.into());
+        self
+    }
+
+    /// Mounts a named Docker volume into the container at the given path.
+    ///
+    /// Unlike [`with_bind_mount`][Self::with_bind_mount], this references a named Docker volume
+    /// rather than a host filesystem path. The volume must already exist when the container starts.
+    /// This is useful for mounting volumes that belong to other isolation groups — for example,
+    /// a shared millstone container that needs to reach the DogStatsD sockets of both the baseline
+    /// and comparison agent containers.
+    pub fn with_volume_mount(mut self, volume_name: impl Into<String>, container_path: impl AsRef<Path>) -> Self {
+        self.additional_volume_mounts
+            .push(format!("{}:{}", volume_name.into(), container_path.as_ref().display()));
         self
     }
 
@@ -579,6 +637,31 @@ impl Driver {
         binds.push("/sys/fs/cgroup:/host/sys/fs/cgroup:ro".to_string());
         binds.push("/var/run/docker.sock:/var/run/docker.sock:ro".to_string());
 
+        // Append any additional named volume mounts (e.g., cross-group volumes for shared millstone).
+        for mount in &self.config.additional_volume_mounts {
+            binds.push(mount.clone());
+        }
+
+        // Set up NetworkingConfig to apply aliases on the primary network, if any are configured.
+        let networking_config = if !self.config.network_aliases.is_empty() {
+            let mut endpoints = HashMap::new();
+            endpoints.insert(
+                self.isolation_group_name.clone(),
+                EndpointSettings {
+                    aliases: Some(self.config.network_aliases.clone()),
+                    ..Default::default()
+                },
+            );
+            Some(
+                ContainerNetworkingConfig {
+                    endpoints_config: endpoints,
+                }
+                .into(),
+            )
+        } else {
+            None
+        };
+
         let (publish_all_ports, exposed_ports) = if self.config.exposed_ports.is_empty() {
             (None, None)
         } else {
@@ -607,6 +690,7 @@ impl Driver {
             healthcheck: self.config.healthcheck.clone(),
             exposed_ports,
             labels: Some(get_default_airlock_labels(self.isolation_group_id.as_str())),
+            networking_config,
             ..Default::default()
         };
 
@@ -716,6 +800,33 @@ impl Driver {
         Ok(details)
     }
 
+    /// Connects this container to each network listed in `additional_networks`.
+    ///
+    /// Called after container creation but before start, so the container is already reachable
+    /// on all configured networks from the moment it begins running.
+    async fn connect_to_additional_networks(&self) -> Result<(), GenericError> {
+        for network in &self.config.additional_networks {
+            self.docker
+                .connect_network(
+                    network,
+                    NetworkConnectRequest {
+                        container: self.container_name.clone(),
+                        endpoint_config: None,
+                    },
+                )
+                .await
+                .map_err(|e| {
+                    generic_error!(
+                        "Failed to connect container '{}' to network '{}': {}",
+                        self.container_name,
+                        network,
+                        e
+                    )
+                })?;
+        }
+        Ok(())
+    }
+
     /// Starts the container, creating any necessary resources.
     ///
     /// # Errors
@@ -729,6 +840,7 @@ impl Driver {
         self.adjust_shared_volume_permissions().await?;
 
         self.create_container().await?;
+        self.connect_to_additional_networks().await?;
         self.start_container().await
     }
 

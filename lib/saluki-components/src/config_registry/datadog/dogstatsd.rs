@@ -1,14 +1,26 @@
 //! Annotations for DogStatsD source configuration keys.
-use crate::config_registry::{generated::schema, structs, SalukiAnnotation, SchemaEntry, SupportLevel, ValueType};
+use crate::config_registry::{
+    generated::schema, structs, SalukiAnnotation, Schema, SchemaEntry, SupportLevel, ValueType,
+};
 
 static DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
     yaml_path: "dogstatsd_allow_context_heap_allocs",
     env_vars: &[],
     value_type: ValueType::Bool,
     default: Some("true"),
 };
 
+static DOGSTATSD_AUTOSCALE_UDP_LISTENERS_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "dogstatsd_autoscale_udp_listeners",
+    env_vars: &[],
+    value_type: ValueType::Bool,
+    default: Some("false"),
+};
+
 static DOGSTATSD_BUFFER_COUNT_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
     yaml_path: "dogstatsd_buffer_count",
     env_vars: &[],
     value_type: ValueType::Integer,
@@ -16,6 +28,7 @@ static DOGSTATSD_BUFFER_COUNT_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static DOGSTATSD_CACHED_CONTEXTS_LIMIT_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
     yaml_path: "dogstatsd_cached_contexts_limit",
     env_vars: &[],
     value_type: ValueType::Integer,
@@ -23,48 +36,15 @@ static DOGSTATSD_CACHED_CONTEXTS_LIMIT_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static DOGSTATSD_CACHED_TAGSETS_LIMIT_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
     yaml_path: "dogstatsd_cached_tagsets_limit",
     env_vars: &[],
     value_type: ValueType::Integer,
     default: None,
 };
 
-static DOGSTATSD_LOG_FILE_SCHEMA: SchemaEntry = SchemaEntry {
-    yaml_path: "dogstatsd_log_file",
-    env_vars: &["DD_DOGSTATSD_LOG_FILE"],
-    value_type: ValueType::String,
-    default: Some("\"\""),
-};
-
-static DOGSTATSD_LOG_FILE_MAX_ROLLS_SCHEMA: SchemaEntry = SchemaEntry {
-    yaml_path: "dogstatsd_log_file_max_rolls",
-    env_vars: &["DD_DOGSTATSD_LOG_FILE_MAX_ROLLS"],
-    value_type: ValueType::Integer,
-    default: Some("3"),
-};
-
-static DOGSTATSD_LOG_FILE_MAX_SIZE_SCHEMA: SchemaEntry = SchemaEntry {
-    yaml_path: "dogstatsd_log_file_max_size",
-    env_vars: &["DD_DOGSTATSD_LOG_FILE_MAX_SIZE"],
-    value_type: ValueType::String,
-    default: Some("\"10Mb\""),
-};
-
-static DOGSTATSD_LOGGING_ENABLED_SCHEMA: SchemaEntry = SchemaEntry {
-    yaml_path: "dogstatsd_logging_enabled",
-    env_vars: &["DD_DOGSTATSD_LOGGING_ENABLED"],
-    value_type: ValueType::Bool,
-    default: Some("true"),
-};
-
-static DOGSTATSD_METRICS_STATS_ENABLE_SCHEMA: SchemaEntry = SchemaEntry {
-    yaml_path: "dogstatsd_metrics_stats_enable",
-    env_vars: &["DD_DOGSTATSD_METRICS_STATS_ENABLE"],
-    value_type: ValueType::Bool,
-    default: Some("false"),
-};
-
 static DOGSTATSD_MINIMUM_SAMPLE_RATE_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
     yaml_path: "dogstatsd_minimum_sample_rate",
     env_vars: &[],
     value_type: ValueType::Float,
@@ -72,6 +52,7 @@ static DOGSTATSD_MINIMUM_SAMPLE_RATE_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static DOGSTATSD_PERMISSIVE_DECODING_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
     yaml_path: "dogstatsd_permissive_decoding",
     env_vars: &[],
     value_type: ValueType::Bool,
@@ -79,20 +60,15 @@ static DOGSTATSD_PERMISSIVE_DECODING_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static DOGSTATSD_STRING_INTERNER_SIZE_BYTES_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
     yaml_path: "dogstatsd_string_interner_size_bytes",
     env_vars: &[],
     value_type: ValueType::Integer,
     default: None,
 };
 
-static DOGSTATSD_SO_RCVBUF_SCHEMA: SchemaEntry = SchemaEntry {
-    yaml_path: "dogstatsd_so_rcvbuf",
-    env_vars: &["DD_DOGSTATSD_SO_RCVBUF"],
-    value_type: ValueType::Integer,
-    default: Some("0"),
-};
-
 static DOGSTATSD_TCP_PORT_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
     yaml_path: "dogstatsd_tcp_port",
     env_vars: &[],
     value_type: ValueType::Integer,
@@ -129,10 +105,21 @@ crate::declare_annotations! {
         schema: &schema::DOGSTATSD_ENTITY_ID_PRECEDENCE,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
-        env_var_override: None,
+        env_var_override: Some(&["DD_DOGSTATSD_ENTITY_ID_PRECEDENCE"]),
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+    };
+
+    /// `dogstatsd_eol_required` — require newline-terminated messages for selected listener types.
+    DOGSTATSD_EOL_REQUIRED = SalukiAnnotation {
+        schema: &schema::DOGSTATSD_EOL_REQUIRED,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DOGSTATSD_CONFIGURATION],
+        value_type_override: None,
+        test_json: Some(r#"["udp"]"#),
     };
 
     /// `dogstatsd_non_local_traffic` — accept packets from non-localhost addresses.
@@ -151,7 +138,7 @@ crate::declare_annotations! {
         schema: &schema::DOGSTATSD_ORIGIN_DETECTION,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
-        env_var_override: None,
+        env_var_override: Some(&["DD_DOGSTATSD_ORIGIN_DETECTION"]),
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
@@ -162,7 +149,7 @@ crate::declare_annotations! {
         schema: &schema::DOGSTATSD_ORIGIN_DETECTION_CLIENT,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
-        env_var_override: None,
+        env_var_override: Some(&["DD_DOGSTATSD_ORIGIN_DETECTION_CLIENT"]),
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
@@ -173,7 +160,7 @@ crate::declare_annotations! {
         schema: &schema::DOGSTATSD_ORIGIN_OPTOUT_ENABLED,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
-        env_var_override: None,
+        env_var_override: Some(&["DD_DOGSTATSD_ORIGIN_OPTOUT_ENABLED"]),
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
@@ -201,14 +188,14 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_so_rcvbuf` — DogStatsD UDP/UDS socket receive buffer size.
+    /// `dogstatsd_so_rcvbuf` — DogStatsD UDP/UDS socket receive buffer size. Schema Float; field usize.
     DOGSTATSD_SO_RCVBUF = SalukiAnnotation {
-        schema: &DOGSTATSD_SO_RCVBUF_SCHEMA,
+        schema: &schema::DOGSTATSD_SO_RCVBUF,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
-        value_type_override: None,
+        value_type_override: Some(ValueType::Integer),
         test_json: None,
     };
 
@@ -251,7 +238,7 @@ crate::declare_annotations! {
         schema: &schema::DOGSTATSD_TAG_CARDINALITY,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
-        env_var_override: None,
+        env_var_override: Some(&["DD_DOGSTATSD_TAG_CARDINALITY"]),
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: Some(r#""high""#),
@@ -273,7 +260,7 @@ crate::declare_annotations! {
         schema: &schema::ORIGIN_DETECTION_UNIFIED,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
-        env_var_override: None,
+        env_var_override: Some(&["DD_ORIGIN_DETECTION_UNIFIED"]),
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
@@ -281,7 +268,7 @@ crate::declare_annotations! {
 
     /// `dogstatsd_log_file` — path to the DogStatsD metric debug log file.
     DOGSTATSD_LOG_FILE = SalukiAnnotation {
-        schema: &DOGSTATSD_LOG_FILE_SCHEMA,
+        schema: &schema::DOGSTATSD_LOG_FILE,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
@@ -290,20 +277,20 @@ crate::declare_annotations! {
         test_json: None,
     };
 
-    /// `dogstatsd_log_file_max_rolls` — number of rotated DogStatsD metric debug log files to keep.
+    /// `dogstatsd_log_file_max_rolls` — number of rotated debug log files to keep. Schema Float; field usize.
     DOGSTATSD_LOG_FILE_MAX_ROLLS = SalukiAnnotation {
-        schema: &DOGSTATSD_LOG_FILE_MAX_ROLLS_SCHEMA,
+        schema: &schema::DOGSTATSD_LOG_FILE_MAX_ROLLS,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[structs::DOGSTATSD_DEBUG_LOG_CONFIGURATION],
-        value_type_override: None,
+        value_type_override: Some(ValueType::Integer),
         test_json: None,
     };
 
-    /// `dogstatsd_log_file_max_size` — maximum active DogStatsD metric debug log file size before rotation.
+    /// `dogstatsd_log_file_max_size` — max active debug log file size before rotation.
     DOGSTATSD_LOG_FILE_MAX_SIZE = SalukiAnnotation {
-        schema: &DOGSTATSD_LOG_FILE_MAX_SIZE_SCHEMA,
+        schema: &schema::DOGSTATSD_LOG_FILE_MAX_SIZE,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
@@ -314,7 +301,7 @@ crate::declare_annotations! {
 
     /// `dogstatsd_logging_enabled` — enable writing DogStatsD metric debug stats to a file.
     DOGSTATSD_LOGGING_ENABLED = SalukiAnnotation {
-        schema: &DOGSTATSD_LOGGING_ENABLED_SCHEMA,
+        schema: &schema::DOGSTATSD_LOGGING_ENABLED,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
@@ -325,7 +312,7 @@ crate::declare_annotations! {
 
     /// `dogstatsd_metrics_stats_enable` — enable metric-level DogStatsD debug statistics.
     DOGSTATSD_METRICS_STATS_ENABLE = SalukiAnnotation {
-        schema: &DOGSTATSD_METRICS_STATS_ENABLE_SCHEMA,
+        schema: &schema::DOGSTATSD_METRICS_STATS_ENABLE,
         support_level: SupportLevel::Partial,
         additional_yaml_paths: &[],
         env_var_override: None,
@@ -339,6 +326,17 @@ crate::declare_annotations! {
     /// `dogstatsd_allow_context_heap_allocs` — allow heap allocations when interner is full.
     DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS = SalukiAnnotation {
         schema: &DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS_SCHEMA,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DOGSTATSD_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+    };
+
+    /// `dogstatsd_autoscale_udp_listeners` — bind multiple UDP sockets with SO_REUSEPORT for kernel load balancing.
+    DOGSTATSD_AUTOSCALE_UDP_LISTENERS = SalukiAnnotation {
+        schema: &DOGSTATSD_AUTOSCALE_UDP_LISTENERS_SCHEMA,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,

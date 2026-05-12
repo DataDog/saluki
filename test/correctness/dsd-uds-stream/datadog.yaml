@@ -1,0 +1,28 @@
+# Using a fixed hostname is both required to avoid errors, and also will ensure consistent tags between DSD/ADP.
+hostname: "correctness-testing"
+
+# Dummy API key.
+api_key: dummy-api-key-correctness-testing
+
+# We have to specifically configure the health port to use.
+health_port: 5555
+
+# Point ourselves at the datadog-intake service.
+dd_url: "http://datadog-intake:2049"
+
+# Disable UDP and listen on a UDS stream socket instead.
+# UDS stream uses SOCK_STREAM with length-prefix framing (4-byte LE length header per packet),
+# which exercises a different framing path than the datagram-based tests.
+dogstatsd_port: 0
+dogstatsd_stream_socket: /airlock/metrics.sock
+
+# Disable the UDS datagram socket so only the stream socket is active.
+dogstatsd_socket: ""
+
+# Ensure origin detection is disabled since we can't support it with ADP in standalone mode.
+dogstatsd_origin_detection: false
+
+# Gauges can be processed out-of-order when multiple workers are used, while ADP does not use
+# multiple workers, so ADP always ends up with the correct (last seen) value, while DSD might
+# return the last seen value... or the value seen four updates ago, etc.
+dogstatsd_workers_count: 1

@@ -325,7 +325,7 @@ impl<'a> SQLTokenizer<'a> {
         }
 
         let buf = &self.buf[start..self.pos];
-        let upper = std::str::from_utf8(buf).unwrap_or("").to_uppercase();
+        let upper = simdutf8::basic::from_utf8(buf).unwrap_or("").to_uppercase();
         let kind = match upper.as_str() {
             "NULL" => TokenKind::Null,
             "TRUE" | "FALSE" => TokenKind::BooleanLiteral,
