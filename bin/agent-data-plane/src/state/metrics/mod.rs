@@ -632,10 +632,10 @@ mod tests {
 
         assert!(output.contains("dogstatsd_metric_packets 11"));
         assert!(output.contains("dogstatsd_uds_packets 48"));
-        assert!(output.contains("dogstatsd_udp_packet_reading_errors 23"));
-        assert!(output.contains("dogstatsd_uds_packet_reading_errors 60"));
-        assert!(!output.contains("dogstatsd_udp_packet_reading_errors 13"));
-        assert!(!output.contains("dogstatsd_uds_packet_reading_errors 36"));
+        assert!(output.contains("dogstatsd_udp_packet_reading_errors 13"));
+        assert!(output.contains("dogstatsd_uds_packet_reading_errors 36"));
+        assert!(!output.contains("dogstatsd_udp_packet_reading_errors 23"));
+        assert!(!output.contains("dogstatsd_uds_packet_reading_errors 60"));
         assert!(
             output.contains("forwarder_transactions_errors_by_type_connection_errors{source=\"agent-data-plane\"} 3")
         );

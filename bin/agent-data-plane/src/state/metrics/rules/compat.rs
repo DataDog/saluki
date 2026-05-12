@@ -5,7 +5,6 @@ const LISTENER_UDP_TAG: &str = "listener_type:udp";
 const LISTENER_UNIX_TAG: &str = "listener_type:unix";
 const LISTENER_UNIXGRAM_TAG: &str = "listener_type:unixgram";
 const ERROR_DECODE_TAG: &str = "error_type:decode";
-const ERROR_FRAMING_TAG: &str = "error_type:framing";
 const ERROR_ORIGIN_DETECTION_TAG: &str = "error_type:origin_detection";
 const ERROR_CANT_SEND_TAG: &str = "error_type:cant_send";
 const ERROR_SCOPE_PHASE_TAG: &str = "error_scope:phase";
@@ -61,8 +60,8 @@ pub fn get_compat_remappings() -> Vec<RemapperRule> {
             "dogstatsd_udp_bytes",
         ),
         RemapperRule::by_name_and_tags(
-            "adp.component_errors_total",
-            &[DSD_COMPONENT_TAG, LISTENER_UDP_TAG, ERROR_FRAMING_TAG],
+            "adp.component_packets_received_total",
+            &[DSD_COMPONENT_TAG, LISTENER_UDP_TAG, STATE_ERROR_TAG],
             "dogstatsd_udp_packet_reading_errors",
         ),
         RemapperRule::by_name_and_tags(
@@ -88,14 +87,14 @@ pub fn get_compat_remappings() -> Vec<RemapperRule> {
             "dogstatsd_uds_bytes",
         ),
         RemapperRule::by_name_and_tags(
-            "adp.component_errors_total",
-            &[DSD_COMPONENT_TAG, LISTENER_UNIX_TAG, ERROR_FRAMING_TAG],
+            "adp.component_packets_received_total",
+            &[DSD_COMPONENT_TAG, LISTENER_UNIX_TAG, STATE_ERROR_TAG],
             "dogstatsd_uds_packet_reading_errors",
         )
         .with_continued_matching(),
         RemapperRule::by_name_and_tags(
-            "adp.component_errors_total",
-            &[DSD_COMPONENT_TAG, LISTENER_UNIXGRAM_TAG, ERROR_FRAMING_TAG],
+            "adp.component_packets_received_total",
+            &[DSD_COMPONENT_TAG, LISTENER_UNIXGRAM_TAG, STATE_ERROR_TAG],
             "dogstatsd_uds_packet_reading_errors",
         ),
         RemapperRule::by_name_and_tags(
