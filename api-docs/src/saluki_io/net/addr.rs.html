@@ -208,135 +208,225 @@
 <a href=#208 id=208 data-nosnippet>208</a>    </span><span class="kw">pub </span>gid: u32,
 <a href=#209 id=209 data-nosnippet>209</a>}
 <a href=#210 id=210 data-nosnippet>210</a>
-<a href=#211 id=211 data-nosnippet>211</a><span class="doccomment">/// Connection address.
-<a href=#212 id=212 data-nosnippet>212</a>///
-<a href=#213 id=213 data-nosnippet>213</a>/// A generic representation of the address of a remote peer. This can either be a typical socket address (used for
-<a href=#214 id=214 data-nosnippet>214</a>/// IPv4/IPv6), or potentially the process credentials of a Unix domain socket connection.
-<a href=#215 id=215 data-nosnippet>215</a></span><span class="attr">#[derive(Clone)]
-<a href=#216 id=216 data-nosnippet>216</a></span><span class="kw">pub enum </span>ConnectionAddress {
-<a href=#217 id=217 data-nosnippet>217</a>    <span class="doccomment">/// A socket-like address.
-<a href=#218 id=218 data-nosnippet>218</a>    </span>SocketLike(SocketAddr),
-<a href=#219 id=219 data-nosnippet>219</a>
-<a href=#220 id=220 data-nosnippet>220</a>    <span class="doccomment">/// A process-like address.
-<a href=#221 id=221 data-nosnippet>221</a>    </span><span class="attr">#[cfg(unix)]
-<a href=#222 id=222 data-nosnippet>222</a>    </span>ProcessLike(<span class="prelude-ty">Option</span>&lt;ProcessCredentials&gt;),
+<a href=#211 id=211 data-nosnippet>211</a><span class="doccomment">/// Reason UDS process credential detection failed.
+<a href=#212 id=212 data-nosnippet>212</a></span><span class="attr">#[cfg(unix)]
+<a href=#213 id=213 data-nosnippet>213</a>#[derive(Clone, Copy)]
+<a href=#214 id=214 data-nosnippet>214</a></span><span class="kw">pub enum </span>ProcessCredentialsError {
+<a href=#215 id=215 data-nosnippet>215</a>    <span class="doccomment">/// Ancillary data was present but did not contain usable process credentials.
+<a href=#216 id=216 data-nosnippet>216</a>    </span>InvalidCredentials,
+<a href=#217 id=217 data-nosnippet>217</a>
+<a href=#218 id=218 data-nosnippet>218</a>    <span class="doccomment">/// Process credentials were present, but the PID was zero.
+<a href=#219 id=219 data-nosnippet>219</a>    </span>ZeroPid,
+<a href=#220 id=220 data-nosnippet>220</a>
+<a href=#221 id=221 data-nosnippet>221</a>    <span class="doccomment">/// UDS process credential detection is not supported on this platform.
+<a href=#222 id=222 data-nosnippet>222</a>    </span>UnsupportedPlatform,
 <a href=#223 id=223 data-nosnippet>223</a>}
 <a href=#224 id=224 data-nosnippet>224</a>
-<a href=#225 id=225 data-nosnippet>225</a><span class="kw">impl </span>fmt::Display <span class="kw">for </span>ConnectionAddress {
-<a href=#226 id=226 data-nosnippet>226</a>    <span class="kw">fn </span>fmt(<span class="kw-2">&amp;</span><span class="self">self</span>, f: <span class="kw-2">&amp;mut </span>fmt::Formatter&lt;<span class="lifetime">'_</span>&gt;) -&gt; fmt::Result {
-<a href=#227 id=227 data-nosnippet>227</a>        <span class="kw">match </span><span class="self">self </span>{
-<a href=#228 id=228 data-nosnippet>228</a>            <span class="self">Self</span>::SocketLike(addr) =&gt; <span class="macro">write!</span>(f, <span class="string">"{}"</span>, addr),
-<a href=#229 id=229 data-nosnippet>229</a>            <span class="attr">#[cfg(unix)]
-<a href=#230 id=230 data-nosnippet>230</a>            </span><span class="self">Self</span>::ProcessLike(maybe_creds) =&gt; <span class="kw">match </span>maybe_creds {
-<a href=#231 id=231 data-nosnippet>231</a>                <span class="prelude-val">None </span>=&gt; <span class="macro">write!</span>(f, <span class="string">"&lt;unbound&gt;"</span>),
-<a href=#232 id=232 data-nosnippet>232</a>                <span class="prelude-val">Some</span>(creds) =&gt; <span class="macro">write!</span>(f, <span class="string">"&lt;pid={} uid={} gid={}&gt;"</span>, creds.pid, creds.uid, creds.gid),
-<a href=#233 id=233 data-nosnippet>233</a>            },
-<a href=#234 id=234 data-nosnippet>234</a>        }
-<a href=#235 id=235 data-nosnippet>235</a>    }
-<a href=#236 id=236 data-nosnippet>236</a>}
-<a href=#237 id=237 data-nosnippet>237</a>
-<a href=#238 id=238 data-nosnippet>238</a><span class="kw">impl </span>From&lt;SocketAddr&gt; <span class="kw">for </span>ConnectionAddress {
-<a href=#239 id=239 data-nosnippet>239</a>    <span class="kw">fn </span>from(value: SocketAddr) -&gt; <span class="self">Self </span>{
-<a href=#240 id=240 data-nosnippet>240</a>        <span class="self">Self</span>::SocketLike(value)
-<a href=#241 id=241 data-nosnippet>241</a>    }
-<a href=#242 id=242 data-nosnippet>242</a>}
-<a href=#243 id=243 data-nosnippet>243</a>
-<a href=#244 id=244 data-nosnippet>244</a><span class="attr">#[cfg(unix)]
-<a href=#245 id=245 data-nosnippet>245</a></span><span class="kw">impl </span>From&lt;ProcessCredentials&gt; <span class="kw">for </span>ConnectionAddress {
-<a href=#246 id=246 data-nosnippet>246</a>    <span class="kw">fn </span>from(creds: ProcessCredentials) -&gt; <span class="self">Self </span>{
-<a href=#247 id=247 data-nosnippet>247</a>        <span class="self">Self</span>::ProcessLike(<span class="prelude-val">Some</span>(creds))
-<a href=#248 id=248 data-nosnippet>248</a>    }
-<a href=#249 id=249 data-nosnippet>249</a>}
-<a href=#250 id=250 data-nosnippet>250</a>
-<a href=#251 id=251 data-nosnippet>251</a><span class="kw">impl</span>&lt;<span class="lifetime">'a</span>&gt; Connected&lt;<span class="kw-2">&amp;</span><span class="lifetime">'a </span>Connection&gt; <span class="kw">for </span>ConnectionAddress {
-<a href=#252 id=252 data-nosnippet>252</a>    <span class="kw">fn </span>connect_info(target: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>Connection) -&gt; <span class="self">Self </span>{
-<a href=#253 id=253 data-nosnippet>253</a>        target.remote_addr()
-<a href=#254 id=254 data-nosnippet>254</a>    }
-<a href=#255 id=255 data-nosnippet>255</a>}
-<a href=#256 id=256 data-nosnippet>256</a>
-<a href=#257 id=257 data-nosnippet>257</a><span class="doccomment">/// A gRPC target address.
-<a href=#258 id=258 data-nosnippet>258</a>///
-<a href=#259 id=259 data-nosnippet>259</a>/// This represents the address of a gRPC server that can be connected to. `GrpcTargetAddress` exposes a `Display`
-<a href=#260 id=260 data-nosnippet>260</a>/// implementation that emits the target address following the rules of the [gRPC Name
-<a href=#261 id=261 data-nosnippet>261</a>/// Resolution][grpc_name_resolution_docs] documentation.
-<a href=#262 id=262 data-nosnippet>262</a>///
-<a href=#263 id=263 data-nosnippet>263</a>/// Only connection-oriented transports are supported: TCP and Unix domain sockets in SOCK_STREAM mode.
-<a href=#264 id=264 data-nosnippet>264</a>///
-<a href=#265 id=265 data-nosnippet>265</a>/// [grpc_name_resolution_docs]: https://github.com/grpc/grpc/blob/master/doc/naming.md
-<a href=#266 id=266 data-nosnippet>266</a></span><span class="kw">pub enum </span>GrpcTargetAddress {
-<a href=#267 id=267 data-nosnippet>267</a>    Tcp(SocketAddr),
-<a href=#268 id=268 data-nosnippet>268</a>    Unix(PathBuf),
-<a href=#269 id=269 data-nosnippet>269</a>}
-<a href=#270 id=270 data-nosnippet>270</a>
-<a href=#271 id=271 data-nosnippet>271</a><span class="kw">impl </span>GrpcTargetAddress {
-<a href=#272 id=272 data-nosnippet>272</a>    <span class="doccomment">/// Creates a new `GrpcTargetAddress` from the given `ListenAddress`.
-<a href=#273 id=273 data-nosnippet>273</a>    ///
-<a href=#274 id=274 data-nosnippet>274</a>    /// For TCP addresses, this method converts unspecified addresses (`0.0.0.0` or `::`) to localhost
-<a href=#275 id=275 data-nosnippet>275</a>    /// (`127.0.0.1` or `::1`) to ensure the advertised address matches TLS certificates.
-<a href=#276 id=276 data-nosnippet>276</a>    ///
-<a href=#277 id=277 data-nosnippet>277</a>    /// Returns `None` if the listen address is not a connection-oriented transport.
-<a href=#278 id=278 data-nosnippet>278</a>    </span><span class="kw">pub fn </span>try_from_listen_addr(listen_address: <span class="kw-2">&amp;</span>ListenAddress) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="self">Self</span>&gt; {
-<a href=#279 id=279 data-nosnippet>279</a>        <span class="kw">match </span>listen_address {
-<a href=#280 id=280 data-nosnippet>280</a>            ListenAddress::Tcp(<span class="kw">_</span>) =&gt; {
-<a href=#281 id=281 data-nosnippet>281</a>                <span class="comment">// For TCP, convert 0.0.0.0 to 127.0.0.1 to match TLS certificate
-<a href=#282 id=282 data-nosnippet>282</a>                </span>listen_address.as_local_connect_addr().map(GrpcTargetAddress::Tcp)
-<a href=#283 id=283 data-nosnippet>283</a>            }
-<a href=#284 id=284 data-nosnippet>284</a>            ListenAddress::Unix(path) =&gt; <span class="prelude-val">Some</span>(GrpcTargetAddress::Unix(path.clone())),
-<a href=#285 id=285 data-nosnippet>285</a>            <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
-<a href=#286 id=286 data-nosnippet>286</a>        }
-<a href=#287 id=287 data-nosnippet>287</a>    }
-<a href=#288 id=288 data-nosnippet>288</a>}
-<a href=#289 id=289 data-nosnippet>289</a>
-<a href=#290 id=290 data-nosnippet>290</a><span class="kw">impl </span>fmt::Display <span class="kw">for </span>GrpcTargetAddress {
-<a href=#291 id=291 data-nosnippet>291</a>    <span class="kw">fn </span>fmt(<span class="kw-2">&amp;</span><span class="self">self</span>, f: <span class="kw-2">&amp;mut </span>fmt::Formatter) -&gt; fmt::Result {
-<a href=#292 id=292 data-nosnippet>292</a>        <span class="kw">match </span><span class="self">self </span>{
-<a href=#293 id=293 data-nosnippet>293</a>            GrpcTargetAddress::Tcp(addr) =&gt; <span class="macro">write!</span>(f, <span class="string">"{}"</span>, addr),
-<a href=#294 id=294 data-nosnippet>294</a>            GrpcTargetAddress::Unix(path) =&gt; <span class="macro">write!</span>(f, <span class="string">"unix://{}"</span>, path.display()),
-<a href=#295 id=295 data-nosnippet>295</a>        }
-<a href=#296 id=296 data-nosnippet>296</a>    }
-<a href=#297 id=297 data-nosnippet>297</a>}
-<a href=#298 id=298 data-nosnippet>298</a>
-<a href=#299 id=299 data-nosnippet>299</a><span class="attr">#[cfg(test)]
-<a href=#300 id=300 data-nosnippet>300</a></span><span class="kw">mod </span>tests {
-<a href=#301 id=301 data-nosnippet>301</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
-<a href=#302 id=302 data-nosnippet>302</a>
-<a href=#303 id=303 data-nosnippet>303</a>    <span class="attr">#[test]
-<a href=#304 id=304 data-nosnippet>304</a>    </span><span class="kw">fn </span>test_as_local_connect_addr() {
-<a href=#305 id=305 data-nosnippet>305</a>        <span class="kw">let </span>tcp_any_addr = ListenAddress::try_from(<span class="string">"tcp://0.0.0.0:1234"</span>).unwrap();
-<a href=#306 id=306 data-nosnippet>306</a>        <span class="macro">assert_eq!</span>(
-<a href=#307 id=307 data-nosnippet>307</a>            tcp_any_addr.as_local_connect_addr(),
-<a href=#308 id=308 data-nosnippet>308</a>            <span class="prelude-val">Some</span>(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, <span class="number">1234</span>)))
-<a href=#309 id=309 data-nosnippet>309</a>        );
-<a href=#310 id=310 data-nosnippet>310</a>
-<a href=#311 id=311 data-nosnippet>311</a>        <span class="kw">let </span>tcp_localhost_addr = ListenAddress::try_from(<span class="string">"tcp://127.0.0.1:2345"</span>).unwrap();
-<a href=#312 id=312 data-nosnippet>312</a>        <span class="macro">assert_eq!</span>(
-<a href=#313 id=313 data-nosnippet>313</a>            tcp_localhost_addr.as_local_connect_addr(),
-<a href=#314 id=314 data-nosnippet>314</a>            <span class="prelude-val">Some</span>(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, <span class="number">2345</span>)))
-<a href=#315 id=315 data-nosnippet>315</a>        );
-<a href=#316 id=316 data-nosnippet>316</a>
-<a href=#317 id=317 data-nosnippet>317</a>        <span class="kw">let </span>tcp_private_addr = ListenAddress::try_from(<span class="string">"tcp://192.168.10.2:3456"</span>).unwrap();
-<a href=#318 id=318 data-nosnippet>318</a>        <span class="macro">assert_eq!</span>(
-<a href=#319 id=319 data-nosnippet>319</a>            tcp_private_addr.as_local_connect_addr(),
-<a href=#320 id=320 data-nosnippet>320</a>            <span class="prelude-val">Some</span>(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(<span class="number">192</span>, <span class="number">168</span>, <span class="number">10</span>, <span class="number">2</span>), <span class="number">3456</span>)))
-<a href=#321 id=321 data-nosnippet>321</a>        );
-<a href=#322 id=322 data-nosnippet>322</a>
-<a href=#323 id=323 data-nosnippet>323</a>        <span class="kw">let </span>udp_any_addr = ListenAddress::try_from(<span class="string">"udp://0.0.0.0:4567"</span>).unwrap();
-<a href=#324 id=324 data-nosnippet>324</a>        <span class="macro">assert_eq!</span>(
-<a href=#325 id=325 data-nosnippet>325</a>            udp_any_addr.as_local_connect_addr(),
-<a href=#326 id=326 data-nosnippet>326</a>            <span class="prelude-val">Some</span>(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, <span class="number">4567</span>)))
-<a href=#327 id=327 data-nosnippet>327</a>        );
-<a href=#328 id=328 data-nosnippet>328</a>
-<a href=#329 id=329 data-nosnippet>329</a>        <span class="kw">let </span>udp_localhost_addr = ListenAddress::try_from(<span class="string">"udp://127.0.0.1:5678"</span>).unwrap();
-<a href=#330 id=330 data-nosnippet>330</a>        <span class="macro">assert_eq!</span>(
-<a href=#331 id=331 data-nosnippet>331</a>            udp_localhost_addr.as_local_connect_addr(),
-<a href=#332 id=332 data-nosnippet>332</a>            <span class="prelude-val">Some</span>(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, <span class="number">5678</span>)))
-<a href=#333 id=333 data-nosnippet>333</a>        );
-<a href=#334 id=334 data-nosnippet>334</a>
-<a href=#335 id=335 data-nosnippet>335</a>        <span class="kw">let </span>udp_private_addr = ListenAddress::try_from(<span class="string">"udp://192.168.10.2:6789"</span>).unwrap();
-<a href=#336 id=336 data-nosnippet>336</a>        <span class="macro">assert_eq!</span>(
-<a href=#337 id=337 data-nosnippet>337</a>            udp_private_addr.as_local_connect_addr(),
-<a href=#338 id=338 data-nosnippet>338</a>            <span class="prelude-val">Some</span>(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(<span class="number">192</span>, <span class="number">168</span>, <span class="number">10</span>, <span class="number">2</span>), <span class="number">6789</span>)))
-<a href=#339 id=339 data-nosnippet>339</a>        );
-<a href=#340 id=340 data-nosnippet>340</a>    }
-<a href=#341 id=341 data-nosnippet>341</a>}
+<a href=#225 id=225 data-nosnippet>225</a><span class="attr">#[cfg(unix)]
+<a href=#226 id=226 data-nosnippet>226</a></span><span class="kw">impl </span>ProcessCredentialsError {
+<a href=#227 id=227 data-nosnippet>227</a>    <span class="doccomment">/// Returns a concise identifier for the failure reason.
+<a href=#228 id=228 data-nosnippet>228</a>    </span><span class="kw">pub const fn </span>identifier(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str {
+<a href=#229 id=229 data-nosnippet>229</a>        <span class="kw">match </span><span class="self">self </span>{
+<a href=#230 id=230 data-nosnippet>230</a>            <span class="self">Self</span>::InvalidCredentials =&gt; <span class="string">"invalid-credentials"</span>,
+<a href=#231 id=231 data-nosnippet>231</a>            <span class="self">Self</span>::ZeroPid =&gt; <span class="string">"zero-pid"</span>,
+<a href=#232 id=232 data-nosnippet>232</a>            <span class="self">Self</span>::UnsupportedPlatform =&gt; <span class="string">"unsupported-platform"</span>,
+<a href=#233 id=233 data-nosnippet>233</a>        }
+<a href=#234 id=234 data-nosnippet>234</a>    }
+<a href=#235 id=235 data-nosnippet>235</a>}
+<a href=#236 id=236 data-nosnippet>236</a>
+<a href=#237 id=237 data-nosnippet>237</a><span class="attr">#[cfg(unix)]
+<a href=#238 id=238 data-nosnippet>238</a></span><span class="kw">impl </span>fmt::Display <span class="kw">for </span>ProcessCredentialsError {
+<a href=#239 id=239 data-nosnippet>239</a>    <span class="kw">fn </span>fmt(<span class="kw-2">&amp;</span><span class="self">self</span>, f: <span class="kw-2">&amp;mut </span>fmt::Formatter&lt;<span class="lifetime">'_</span>&gt;) -&gt; fmt::Result {
+<a href=#240 id=240 data-nosnippet>240</a>        <span class="kw">match </span><span class="self">self </span>{
+<a href=#241 id=241 data-nosnippet>241</a>            <span class="self">Self</span>::InvalidCredentials =&gt; <span class="macro">write!</span>(f, <span class="string">"invalid process credentials"</span>),
+<a href=#242 id=242 data-nosnippet>242</a>            <span class="self">Self</span>::ZeroPid =&gt; <span class="macro">write!</span>(f, <span class="string">"process credential PID is zero"</span>),
+<a href=#243 id=243 data-nosnippet>243</a>            <span class="self">Self</span>::UnsupportedPlatform =&gt; <span class="macro">write!</span>(f, <span class="string">"process credentials are unsupported on this platform"</span>),
+<a href=#244 id=244 data-nosnippet>244</a>        }
+<a href=#245 id=245 data-nosnippet>245</a>    }
+<a href=#246 id=246 data-nosnippet>246</a>}
+<a href=#247 id=247 data-nosnippet>247</a>
+<a href=#248 id=248 data-nosnippet>248</a><span class="doccomment">/// Process identity associated with a Unix domain socket peer.
+<a href=#249 id=249 data-nosnippet>249</a></span><span class="attr">#[cfg(unix)]
+<a href=#250 id=250 data-nosnippet>250</a>#[derive(Clone)]
+<a href=#251 id=251 data-nosnippet>251</a></span><span class="kw">pub enum </span>ProcessIdentity {
+<a href=#252 id=252 data-nosnippet>252</a>    <span class="doccomment">/// Process credentials were detected.
+<a href=#253 id=253 data-nosnippet>253</a>    </span>Credentials(ProcessCredentials),
+<a href=#254 id=254 data-nosnippet>254</a>
+<a href=#255 id=255 data-nosnippet>255</a>    <span class="doccomment">/// Process credential detection failed.
+<a href=#256 id=256 data-nosnippet>256</a>    </span>Error(ProcessCredentialsError),
+<a href=#257 id=257 data-nosnippet>257</a>
+<a href=#258 id=258 data-nosnippet>258</a>    <span class="doccomment">/// Process identity is not available for this peer.
+<a href=#259 id=259 data-nosnippet>259</a>    </span>Unavailable,
+<a href=#260 id=260 data-nosnippet>260</a>}
+<a href=#261 id=261 data-nosnippet>261</a>
+<a href=#262 id=262 data-nosnippet>262</a><span class="attr">#[cfg(unix)]
+<a href=#263 id=263 data-nosnippet>263</a></span><span class="kw">impl </span>ProcessIdentity {
+<a href=#264 id=264 data-nosnippet>264</a>    <span class="doccomment">/// Returns process credentials, if they were detected.
+<a href=#265 id=265 data-nosnippet>265</a>    </span><span class="kw">pub fn </span>credentials(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>ProcessCredentials&gt; {
+<a href=#266 id=266 data-nosnippet>266</a>        <span class="kw">match </span><span class="self">self </span>{
+<a href=#267 id=267 data-nosnippet>267</a>            <span class="self">Self</span>::Credentials(creds) =&gt; <span class="prelude-val">Some</span>(creds),
+<a href=#268 id=268 data-nosnippet>268</a>            <span class="self">Self</span>::Error(<span class="kw">_</span>) | <span class="self">Self</span>::Unavailable =&gt; <span class="prelude-val">None</span>,
+<a href=#269 id=269 data-nosnippet>269</a>        }
+<a href=#270 id=270 data-nosnippet>270</a>    }
+<a href=#271 id=271 data-nosnippet>271</a>
+<a href=#272 id=272 data-nosnippet>272</a>    <span class="doccomment">/// Returns `true` if process credential detection failed.
+<a href=#273 id=273 data-nosnippet>273</a>    </span><span class="kw">pub const fn </span>is_error(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; bool {
+<a href=#274 id=274 data-nosnippet>274</a>        <span class="macro">matches!</span>(<span class="self">self</span>, <span class="self">Self</span>::Error(<span class="kw">_</span>))
+<a href=#275 id=275 data-nosnippet>275</a>    }
+<a href=#276 id=276 data-nosnippet>276</a>}
+<a href=#277 id=277 data-nosnippet>277</a>
+<a href=#278 id=278 data-nosnippet>278</a><span class="doccomment">/// Connection address.
+<a href=#279 id=279 data-nosnippet>279</a>///
+<a href=#280 id=280 data-nosnippet>280</a>/// A generic representation of the address of a remote peer. This can either be a typical socket address (used for
+<a href=#281 id=281 data-nosnippet>281</a>/// IPv4/IPv6), or potentially the process credentials of a Unix domain socket connection.
+<a href=#282 id=282 data-nosnippet>282</a></span><span class="attr">#[derive(Clone)]
+<a href=#283 id=283 data-nosnippet>283</a></span><span class="kw">pub enum </span>ConnectionAddress {
+<a href=#284 id=284 data-nosnippet>284</a>    <span class="doccomment">/// A socket-like address.
+<a href=#285 id=285 data-nosnippet>285</a>    </span>SocketLike(SocketAddr),
+<a href=#286 id=286 data-nosnippet>286</a>
+<a href=#287 id=287 data-nosnippet>287</a>    <span class="doccomment">/// A process-like address.
+<a href=#288 id=288 data-nosnippet>288</a>    </span><span class="attr">#[cfg(unix)]
+<a href=#289 id=289 data-nosnippet>289</a>    </span>ProcessLike(ProcessIdentity),
+<a href=#290 id=290 data-nosnippet>290</a>}
+<a href=#291 id=291 data-nosnippet>291</a>
+<a href=#292 id=292 data-nosnippet>292</a><span class="kw">impl </span>fmt::Display <span class="kw">for </span>ConnectionAddress {
+<a href=#293 id=293 data-nosnippet>293</a>    <span class="kw">fn </span>fmt(<span class="kw-2">&amp;</span><span class="self">self</span>, f: <span class="kw-2">&amp;mut </span>fmt::Formatter&lt;<span class="lifetime">'_</span>&gt;) -&gt; fmt::Result {
+<a href=#294 id=294 data-nosnippet>294</a>        <span class="kw">match </span><span class="self">self </span>{
+<a href=#295 id=295 data-nosnippet>295</a>            <span class="self">Self</span>::SocketLike(addr) =&gt; <span class="macro">write!</span>(f, <span class="string">"{}"</span>, addr),
+<a href=#296 id=296 data-nosnippet>296</a>            <span class="attr">#[cfg(unix)]
+<a href=#297 id=297 data-nosnippet>297</a>            </span><span class="self">Self</span>::ProcessLike(identity) =&gt; <span class="kw">match </span>identity {
+<a href=#298 id=298 data-nosnippet>298</a>                ProcessIdentity::Credentials(creds) =&gt; {
+<a href=#299 id=299 data-nosnippet>299</a>                    <span class="macro">write!</span>(f, <span class="string">"&lt;pid={} uid={} gid={}&gt;"</span>, creds.pid, creds.uid, creds.gid)
+<a href=#300 id=300 data-nosnippet>300</a>                }
+<a href=#301 id=301 data-nosnippet>301</a>                ProcessIdentity::Error(error) =&gt; <span class="macro">write!</span>(f, <span class="string">"&lt;origin-detection-error: {}&gt;"</span>, error.identifier()),
+<a href=#302 id=302 data-nosnippet>302</a>                ProcessIdentity::Unavailable =&gt; <span class="macro">write!</span>(f, <span class="string">"&lt;no-origin&gt;"</span>),
+<a href=#303 id=303 data-nosnippet>303</a>            },
+<a href=#304 id=304 data-nosnippet>304</a>        }
+<a href=#305 id=305 data-nosnippet>305</a>    }
+<a href=#306 id=306 data-nosnippet>306</a>}
+<a href=#307 id=307 data-nosnippet>307</a>
+<a href=#308 id=308 data-nosnippet>308</a><span class="kw">impl </span>ConnectionAddress {
+<a href=#309 id=309 data-nosnippet>309</a>    <span class="doccomment">/// Returns process credentials for a Unix domain socket peer, if available.
+<a href=#310 id=310 data-nosnippet>310</a>    </span><span class="attr">#[cfg(unix)]
+<a href=#311 id=311 data-nosnippet>311</a>    </span><span class="kw">pub fn </span>process_credentials(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>ProcessCredentials&gt; {
+<a href=#312 id=312 data-nosnippet>312</a>        <span class="kw">match </span><span class="self">self </span>{
+<a href=#313 id=313 data-nosnippet>313</a>            <span class="self">Self</span>::ProcessLike(identity) =&gt; identity.credentials(),
+<a href=#314 id=314 data-nosnippet>314</a>            <span class="self">Self</span>::SocketLike(<span class="kw">_</span>) =&gt; <span class="prelude-val">None</span>,
+<a href=#315 id=315 data-nosnippet>315</a>        }
+<a href=#316 id=316 data-nosnippet>316</a>    }
+<a href=#317 id=317 data-nosnippet>317</a>
+<a href=#318 id=318 data-nosnippet>318</a>    <span class="doccomment">/// Returns `true` if Unix domain socket process credential detection failed.
+<a href=#319 id=319 data-nosnippet>319</a>    </span><span class="attr">#[cfg(unix)]
+<a href=#320 id=320 data-nosnippet>320</a>    </span><span class="kw">pub const fn </span>has_process_credential_error(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; bool {
+<a href=#321 id=321 data-nosnippet>321</a>        <span class="kw">match </span><span class="self">self </span>{
+<a href=#322 id=322 data-nosnippet>322</a>            <span class="self">Self</span>::ProcessLike(identity) =&gt; identity.is_error(),
+<a href=#323 id=323 data-nosnippet>323</a>            <span class="self">Self</span>::SocketLike(<span class="kw">_</span>) =&gt; <span class="bool-val">false</span>,
+<a href=#324 id=324 data-nosnippet>324</a>        }
+<a href=#325 id=325 data-nosnippet>325</a>    }
+<a href=#326 id=326 data-nosnippet>326</a>}
+<a href=#327 id=327 data-nosnippet>327</a>
+<a href=#328 id=328 data-nosnippet>328</a><span class="kw">impl </span>From&lt;SocketAddr&gt; <span class="kw">for </span>ConnectionAddress {
+<a href=#329 id=329 data-nosnippet>329</a>    <span class="kw">fn </span>from(value: SocketAddr) -&gt; <span class="self">Self </span>{
+<a href=#330 id=330 data-nosnippet>330</a>        <span class="self">Self</span>::SocketLike(value)
+<a href=#331 id=331 data-nosnippet>331</a>    }
+<a href=#332 id=332 data-nosnippet>332</a>}
+<a href=#333 id=333 data-nosnippet>333</a>
+<a href=#334 id=334 data-nosnippet>334</a><span class="attr">#[cfg(unix)]
+<a href=#335 id=335 data-nosnippet>335</a></span><span class="kw">impl </span>From&lt;ProcessCredentials&gt; <span class="kw">for </span>ConnectionAddress {
+<a href=#336 id=336 data-nosnippet>336</a>    <span class="kw">fn </span>from(creds: ProcessCredentials) -&gt; <span class="self">Self </span>{
+<a href=#337 id=337 data-nosnippet>337</a>        <span class="self">Self</span>::ProcessLike(ProcessIdentity::Credentials(creds))
+<a href=#338 id=338 data-nosnippet>338</a>    }
+<a href=#339 id=339 data-nosnippet>339</a>}
+<a href=#340 id=340 data-nosnippet>340</a>
+<a href=#341 id=341 data-nosnippet>341</a><span class="kw">impl</span>&lt;<span class="lifetime">'a</span>&gt; Connected&lt;<span class="kw-2">&amp;</span><span class="lifetime">'a </span>Connection&gt; <span class="kw">for </span>ConnectionAddress {
+<a href=#342 id=342 data-nosnippet>342</a>    <span class="kw">fn </span>connect_info(target: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>Connection) -&gt; <span class="self">Self </span>{
+<a href=#343 id=343 data-nosnippet>343</a>        target.remote_addr()
+<a href=#344 id=344 data-nosnippet>344</a>    }
+<a href=#345 id=345 data-nosnippet>345</a>}
+<a href=#346 id=346 data-nosnippet>346</a>
+<a href=#347 id=347 data-nosnippet>347</a><span class="doccomment">/// A gRPC target address.
+<a href=#348 id=348 data-nosnippet>348</a>///
+<a href=#349 id=349 data-nosnippet>349</a>/// This represents the address of a gRPC server that can be connected to. `GrpcTargetAddress` exposes a `Display`
+<a href=#350 id=350 data-nosnippet>350</a>/// implementation that emits the target address following the rules of the [gRPC Name
+<a href=#351 id=351 data-nosnippet>351</a>/// Resolution][grpc_name_resolution_docs] documentation.
+<a href=#352 id=352 data-nosnippet>352</a>///
+<a href=#353 id=353 data-nosnippet>353</a>/// Only connection-oriented transports are supported: TCP and Unix domain sockets in SOCK_STREAM mode.
+<a href=#354 id=354 data-nosnippet>354</a>///
+<a href=#355 id=355 data-nosnippet>355</a>/// [grpc_name_resolution_docs]: https://github.com/grpc/grpc/blob/master/doc/naming.md
+<a href=#356 id=356 data-nosnippet>356</a></span><span class="kw">pub enum </span>GrpcTargetAddress {
+<a href=#357 id=357 data-nosnippet>357</a>    Tcp(SocketAddr),
+<a href=#358 id=358 data-nosnippet>358</a>    Unix(PathBuf),
+<a href=#359 id=359 data-nosnippet>359</a>}
+<a href=#360 id=360 data-nosnippet>360</a>
+<a href=#361 id=361 data-nosnippet>361</a><span class="kw">impl </span>GrpcTargetAddress {
+<a href=#362 id=362 data-nosnippet>362</a>    <span class="doccomment">/// Creates a new `GrpcTargetAddress` from the given `ListenAddress`.
+<a href=#363 id=363 data-nosnippet>363</a>    ///
+<a href=#364 id=364 data-nosnippet>364</a>    /// For TCP addresses, this method converts unspecified addresses (`0.0.0.0` or `::`) to localhost
+<a href=#365 id=365 data-nosnippet>365</a>    /// (`127.0.0.1` or `::1`) to ensure the advertised address matches TLS certificates.
+<a href=#366 id=366 data-nosnippet>366</a>    ///
+<a href=#367 id=367 data-nosnippet>367</a>    /// Returns `None` if the listen address is not a connection-oriented transport.
+<a href=#368 id=368 data-nosnippet>368</a>    </span><span class="kw">pub fn </span>try_from_listen_addr(listen_address: <span class="kw-2">&amp;</span>ListenAddress) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="self">Self</span>&gt; {
+<a href=#369 id=369 data-nosnippet>369</a>        <span class="kw">match </span>listen_address {
+<a href=#370 id=370 data-nosnippet>370</a>            ListenAddress::Tcp(<span class="kw">_</span>) =&gt; {
+<a href=#371 id=371 data-nosnippet>371</a>                <span class="comment">// For TCP, convert 0.0.0.0 to 127.0.0.1 to match TLS certificate
+<a href=#372 id=372 data-nosnippet>372</a>                </span>listen_address.as_local_connect_addr().map(GrpcTargetAddress::Tcp)
+<a href=#373 id=373 data-nosnippet>373</a>            }
+<a href=#374 id=374 data-nosnippet>374</a>            ListenAddress::Unix(path) =&gt; <span class="prelude-val">Some</span>(GrpcTargetAddress::Unix(path.clone())),
+<a href=#375 id=375 data-nosnippet>375</a>            <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
+<a href=#376 id=376 data-nosnippet>376</a>        }
+<a href=#377 id=377 data-nosnippet>377</a>    }
+<a href=#378 id=378 data-nosnippet>378</a>}
+<a href=#379 id=379 data-nosnippet>379</a>
+<a href=#380 id=380 data-nosnippet>380</a><span class="kw">impl </span>fmt::Display <span class="kw">for </span>GrpcTargetAddress {
+<a href=#381 id=381 data-nosnippet>381</a>    <span class="kw">fn </span>fmt(<span class="kw-2">&amp;</span><span class="self">self</span>, f: <span class="kw-2">&amp;mut </span>fmt::Formatter) -&gt; fmt::Result {
+<a href=#382 id=382 data-nosnippet>382</a>        <span class="kw">match </span><span class="self">self </span>{
+<a href=#383 id=383 data-nosnippet>383</a>            GrpcTargetAddress::Tcp(addr) =&gt; <span class="macro">write!</span>(f, <span class="string">"{}"</span>, addr),
+<a href=#384 id=384 data-nosnippet>384</a>            GrpcTargetAddress::Unix(path) =&gt; <span class="macro">write!</span>(f, <span class="string">"unix://{}"</span>, path.display()),
+<a href=#385 id=385 data-nosnippet>385</a>        }
+<a href=#386 id=386 data-nosnippet>386</a>    }
+<a href=#387 id=387 data-nosnippet>387</a>}
+<a href=#388 id=388 data-nosnippet>388</a>
+<a href=#389 id=389 data-nosnippet>389</a><span class="attr">#[cfg(test)]
+<a href=#390 id=390 data-nosnippet>390</a></span><span class="kw">mod </span>tests {
+<a href=#391 id=391 data-nosnippet>391</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
+<a href=#392 id=392 data-nosnippet>392</a>
+<a href=#393 id=393 data-nosnippet>393</a>    <span class="attr">#[test]
+<a href=#394 id=394 data-nosnippet>394</a>    </span><span class="kw">fn </span>test_as_local_connect_addr() {
+<a href=#395 id=395 data-nosnippet>395</a>        <span class="kw">let </span>tcp_any_addr = ListenAddress::try_from(<span class="string">"tcp://0.0.0.0:1234"</span>).unwrap();
+<a href=#396 id=396 data-nosnippet>396</a>        <span class="macro">assert_eq!</span>(
+<a href=#397 id=397 data-nosnippet>397</a>            tcp_any_addr.as_local_connect_addr(),
+<a href=#398 id=398 data-nosnippet>398</a>            <span class="prelude-val">Some</span>(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, <span class="number">1234</span>)))
+<a href=#399 id=399 data-nosnippet>399</a>        );
+<a href=#400 id=400 data-nosnippet>400</a>
+<a href=#401 id=401 data-nosnippet>401</a>        <span class="kw">let </span>tcp_localhost_addr = ListenAddress::try_from(<span class="string">"tcp://127.0.0.1:2345"</span>).unwrap();
+<a href=#402 id=402 data-nosnippet>402</a>        <span class="macro">assert_eq!</span>(
+<a href=#403 id=403 data-nosnippet>403</a>            tcp_localhost_addr.as_local_connect_addr(),
+<a href=#404 id=404 data-nosnippet>404</a>            <span class="prelude-val">Some</span>(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, <span class="number">2345</span>)))
+<a href=#405 id=405 data-nosnippet>405</a>        );
+<a href=#406 id=406 data-nosnippet>406</a>
+<a href=#407 id=407 data-nosnippet>407</a>        <span class="kw">let </span>tcp_private_addr = ListenAddress::try_from(<span class="string">"tcp://192.168.10.2:3456"</span>).unwrap();
+<a href=#408 id=408 data-nosnippet>408</a>        <span class="macro">assert_eq!</span>(
+<a href=#409 id=409 data-nosnippet>409</a>            tcp_private_addr.as_local_connect_addr(),
+<a href=#410 id=410 data-nosnippet>410</a>            <span class="prelude-val">Some</span>(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(<span class="number">192</span>, <span class="number">168</span>, <span class="number">10</span>, <span class="number">2</span>), <span class="number">3456</span>)))
+<a href=#411 id=411 data-nosnippet>411</a>        );
+<a href=#412 id=412 data-nosnippet>412</a>
+<a href=#413 id=413 data-nosnippet>413</a>        <span class="kw">let </span>udp_any_addr = ListenAddress::try_from(<span class="string">"udp://0.0.0.0:4567"</span>).unwrap();
+<a href=#414 id=414 data-nosnippet>414</a>        <span class="macro">assert_eq!</span>(
+<a href=#415 id=415 data-nosnippet>415</a>            udp_any_addr.as_local_connect_addr(),
+<a href=#416 id=416 data-nosnippet>416</a>            <span class="prelude-val">Some</span>(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, <span class="number">4567</span>)))
+<a href=#417 id=417 data-nosnippet>417</a>        );
+<a href=#418 id=418 data-nosnippet>418</a>
+<a href=#419 id=419 data-nosnippet>419</a>        <span class="kw">let </span>udp_localhost_addr = ListenAddress::try_from(<span class="string">"udp://127.0.0.1:5678"</span>).unwrap();
+<a href=#420 id=420 data-nosnippet>420</a>        <span class="macro">assert_eq!</span>(
+<a href=#421 id=421 data-nosnippet>421</a>            udp_localhost_addr.as_local_connect_addr(),
+<a href=#422 id=422 data-nosnippet>422</a>            <span class="prelude-val">Some</span>(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, <span class="number">5678</span>)))
+<a href=#423 id=423 data-nosnippet>423</a>        );
+<a href=#424 id=424 data-nosnippet>424</a>
+<a href=#425 id=425 data-nosnippet>425</a>        <span class="kw">let </span>udp_private_addr = ListenAddress::try_from(<span class="string">"udp://192.168.10.2:6789"</span>).unwrap();
+<a href=#426 id=426 data-nosnippet>426</a>        <span class="macro">assert_eq!</span>(
+<a href=#427 id=427 data-nosnippet>427</a>            udp_private_addr.as_local_connect_addr(),
+<a href=#428 id=428 data-nosnippet>428</a>            <span class="prelude-val">Some</span>(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(<span class="number">192</span>, <span class="number">168</span>, <span class="number">10</span>, <span class="number">2</span>), <span class="number">6789</span>)))
+<a href=#429 id=429 data-nosnippet>429</a>        );
+<a href=#430 id=430 data-nosnippet>430</a>    }
+<a href=#431 id=431 data-nosnippet>431</a>}
 </code></pre></div></section></main></body></html>

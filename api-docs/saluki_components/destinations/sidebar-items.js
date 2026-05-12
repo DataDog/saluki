@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["BlackholeConfiguration","DogStatsDDebugLogConfiguration","DogStatsDStatisticsConfiguration","PrometheusConfiguration"]};
+window.SIDEBAR_ITEMS = {"struct":["BlackholeConfiguration","DogStatsDDebugLogConfiguration","DogStatsDStatisticsConfiguration","PrometheusConfiguration"],"trait":["PrometheusPayloadProvider"]};

@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["Connection","ConnectionAddress","GrpcTargetAddress","ListenAddress"],"mod":["client","dns","listener","server","unix","util"],"struct":["ProcessCredentials","Stream"]};
+window.SIDEBAR_ITEMS = {"enum":["Connection","ConnectionAddress","GrpcTargetAddress","ListenAddress","ProcessCredentialsError","ProcessIdentity"],"mod":["client","dns","listener","server","unix","util"],"struct":["ProcessCredentials","Stream"]};
