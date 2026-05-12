@@ -1,0 +1,36 @@
+type: integration
+name: "dogstatsd-autoscale-udp"
+description: "Verifies DogStatsD UDP listener autoscaling (SO_REUSEPORT) starts cleanly on Linux"
+timeout: 90s
+
+container:
+  image: "saluki-images/datadog-agent:testing-devel"
+  env:
+    DD_API_KEY: "test-api-key"
+    DD_HOSTNAME: "integration-test-dsd-autoscale"
+    DD_DATA_PLANE_ENABLED: "true"
+    DD_DATA_PLANE_STANDALONE_MODE: "true"
+    DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+    DD_DOGSTATSD_PORT: "8125"
+    DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
+    DD_DOGSTATSD_AUTOSCALE_UDP_LISTENERS: "true"
+  exposed_ports:
+    - "8125/udp"
+
+assertions:
+  # Make sure the process becomes healthy and stays up without errors when autoscale is enabled,
+  # and that the UDP listener still binds to the configured port.
+  - parallel:
+      - type: process_stable_for
+        duration: 10s
+      - type: port_listening
+        port: 8125
+        protocol: udp
+        timeout: 10s
+      - type: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s
+      - type: log_contains
+        pattern: "DogStatsD listener started"
+        timeout: 30s

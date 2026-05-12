@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -305,6 +306,23 @@ pub struct DogStatsDConfiguration {
     #[serde(rename = "dogstatsd_non_local_traffic", default)]
     non_local_traffic: bool,
 
+    /// Whether to autoscale UDP stream handlers using `SO_REUSEPORT`.
+    ///
+    /// When enabled on Linux, the DogStatsD source binds multiple UDP sockets to the configured port with
+    /// `SO_REUSEPORT`, allowing the kernel to load-balance incoming datagrams across independent stream handler
+    /// tasks. The number of sockets scales with available vCPUs: one stream handler base, plus one additional
+    /// per 8 vCPUs, capped at 4 total.
+    ///
+    /// Has no effect on non-Linux platforms because `SO_REUSEPORT` does not provide kernel-level load balancing
+    /// there; a warning is logged at startup if enabled outside of Linux.
+    ///
+    /// Enable this on multi-vCPU Linux deployments where UDP DogStatsD throughput is bottlenecked on a single
+    /// receive task.
+    ///
+    /// Defaults to `false`.
+    #[serde(rename = "dogstatsd_autoscale_udp_listeners", default)]
+    autoscale_udp_listeners: bool,
+
     /// Whether or not to allow heap allocations when resolving contexts.
     ///
     /// When resolving contexts during parsing, the metric name and tags are interned to reduce memory usage. The
@@ -494,6 +512,27 @@ impl DogStatsDConfiguration {
         EolRequired::from_config_values(&self.eol_required)
     }
 
+    /// Returns the number of UDP stream handlers to spawn, derived from `dogstatsd_autoscale_udp_listeners` and
+    /// the number of available vCPUs.
+    ///
+    /// Returns `None` when autoscaling is disabled, which keeps the legacy single-socket behavior. The platform
+    /// gate for `SO_REUSEPORT` lives inside the listener — this method intentionally stays platform-agnostic.
+    fn udp_streams_to_yield(&self) -> Option<NonZeroUsize> {
+        if !self.autoscale_udp_listeners {
+            return None;
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        if self.autoscale_udp_listeners {
+            warn!("UDP stream handler autoscaling not supported on non-Linux platforms. Default to single stream handler.");
+            return None;
+        }
+
+        let vcpus = std::thread::available_parallelism().map(NonZeroUsize::get).unwrap_or(1);
+        let streams = (1 + vcpus / 8).min(4);
+        NonZeroUsize::new(streams)
+    }
+
     /// Sets the workload provider to use for configuring origin detection/enrichment.
     ///
     /// A workload provider must be set otherwise origin detection/enrichment will not be enabled.
@@ -562,9 +601,13 @@ impl DogStatsDConfiguration {
         let mut listeners = Vec::new();
         let socket_receive_buffer_size =
             (self.socket_receive_buffer_size != 0).then_some(self.socket_receive_buffer_size);
+        let udp_streams_to_yield = self.udp_streams_to_yield();
         for address in addresses {
             let listener_type = address.listener_type();
-            let listener = Listener::from_listen_address(address)
+            let listener_streams = matches!(address, ListenAddress::Udp(_))
+                .then_some(udp_streams_to_yield)
+                .flatten();
+            let listener = Listener::from_listen_address(address, listener_streams)
                 .await
                 .context(FailedToCreateListener { listener_type })?
                 .with_receive_buffer_size(socket_receive_buffer_size);
@@ -584,11 +627,14 @@ impl SourceBuilder for DogStatsDConfiguration {
         }
 
         // Every listener requires at least one I/O buffer to ensure that all listeners can be serviced without
-        // deadlocking any of the others.
-        if self.buffer_count < listeners.len() {
+        // deadlocking any of the others. Connectionless listeners retain their buffer for the lifetime of the stream,
+        // so multi-socket UDP listeners require one buffer per yielded socket.
+        let min_buffers: usize = listeners.iter().map(Listener::min_buffer_reservation).sum();
+        if self.buffer_count < min_buffers {
             return Err(generic_error!(
-                "Must have a minimum of {} I/O buffers based on the number of listeners configured.",
-                listeners.len()
+                "Must have a minimum of {} I/O buffers to service all configured listeners (have {}).",
+                min_buffers,
+                self.buffer_count,
             ));
         }
 
@@ -913,6 +959,7 @@ async fn process_listener(
 
     let listen_addr = listener.listen_address().clone();
     let mut stream_shutdown_coordinator = DynamicShutdownCoordinator::default();
+    let mut stream_idx: u32 = 0;
 
     info!(%listen_addr, "DogStatsD listener started.");
 
@@ -937,7 +984,12 @@ async fn process_listener(
                         additional_tags: additional_tags.clone(),
                     };
 
-                    let task_name = format!("dogstatsd-stream-handler-{}", listen_addr.listener_type());
+                    let task_name = format!(
+                        "dogstatsd-stream-handler-{}-{}",
+                        listen_addr.listener_type(),
+                        stream_idx,
+                    );
+                    stream_idx = stream_idx.wrapping_add(1);
                     spawn_traced_named(task_name, process_stream(stream, source_context.clone(), handler_context, stream_shutdown_coordinator.register(), enabled_filter));
                 }
                 Err(e) => {
@@ -1537,6 +1589,38 @@ mod tests {
     fn stream_log_too_big_from_config() {
         let config = deser_config(r#"{"dogstatsd_stream_log_too_big": true}"#);
         assert!(config.stream_log_too_big);
+    }
+
+    #[test]
+    fn autoscale_udp_listeners_defaults_to_false() {
+        let config = deser_config("{}");
+        assert!(!config.autoscale_udp_listeners);
+        assert!(config.udp_streams_to_yield().is_none());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn autoscale_udp_listeners_from_config_linux() {
+        let config = deser_config(r#"{"dogstatsd_autoscale_udp_listeners": true}"#);
+        assert!(config.autoscale_udp_listeners);
+
+        let streams = config
+            .udp_streams_to_yield()
+            .expect("autoscale yields at least 1 stream");
+        let n = streams.get();
+        assert!(
+            (1..=4).contains(&n),
+            "expected 1..=4 streams from vCPU formula, got {n}"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn autoscale_udp_listeners_from_config_non_linux() {
+        let config = deser_config(r#"{"dogstatsd_autoscale_udp_listeners": true}"#);
+        assert!(config.autoscale_udp_listeners);
+
+        assert_eq!(None, config.udp_streams_to_yield());
     }
 
     #[test]

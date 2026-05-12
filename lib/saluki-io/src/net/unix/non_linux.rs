@@ -41,3 +41,8 @@ where
 
     Ok((n, ConnectionAddress::ProcessLike(None)))
 }
+
+/// Returns `true` if `SO_REUSEPORT` is supported for UDP sockets on the current platform.
+pub fn socket_reuseport_supported() -> bool {
+    false
+}

@@ -1,7 +1,7 @@
 use std::io;
 
 use bytes::BufMut;
-use socket2::{MaybeUninitSlice, MsgHdrMut, SockAddr, SockAddrStorage, SockRef};
+use socket2::{Domain, MaybeUninitSlice, MsgHdrMut, Protocol, SockAddr, SockAddrStorage, SockRef, Socket, Type};
 
 use super::ancillary::{ControlMessage, SocketCredentialsAncillaryData};
 use crate::net::addr::{ConnectionAddress, ProcessCredentials};
@@ -75,4 +75,17 @@ where
     }
 
     Ok((n, conn_addr))
+}
+
+/// Returns `true` if `SO_REUSEPORT` is supported for UDP sockets on the current platform.
+pub fn socket_reuseport_supported() -> bool {
+    let socket = match Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)) {
+        Ok(socket) => socket,
+        Err(_) => return false,
+    };
+
+    match socket.set_reuse_port(true) {
+        Ok(()) => true,
+        Err(_) => false,
+    }
 }

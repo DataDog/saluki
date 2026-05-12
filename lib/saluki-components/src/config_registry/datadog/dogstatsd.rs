@@ -11,6 +11,14 @@ static DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS_SCHEMA: SchemaEntry = SchemaEntry {
     default: Some("true"),
 };
 
+static DOGSTATSD_AUTOSCALE_UDP_LISTENERS_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "dogstatsd_autoscale_udp_listeners",
+    env_vars: &[],
+    value_type: ValueType::Bool,
+    default: Some("false"),
+};
+
 static DOGSTATSD_BUFFER_COUNT_SCHEMA: SchemaEntry = SchemaEntry {
     schema: Schema::Saluki,
     yaml_path: "dogstatsd_buffer_count",
@@ -318,6 +326,17 @@ crate::declare_annotations! {
     /// `dogstatsd_allow_context_heap_allocs` — allow heap allocations when interner is full.
     DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS = SalukiAnnotation {
         schema: &DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS_SCHEMA,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DOGSTATSD_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+    };
+
+    /// `dogstatsd_autoscale_udp_listeners` — bind multiple UDP sockets with SO_REUSEPORT for kernel load balancing.
+    DOGSTATSD_AUTOSCALE_UDP_LISTENERS = SalukiAnnotation {
+        schema: &DOGSTATSD_AUTOSCALE_UDP_LISTENERS_SCHEMA,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
