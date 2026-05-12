@@ -473,6 +473,7 @@ pub struct DogStatsDConfiguration {
     capture_depth: usize,
 
     #[serde(skip, default)]
+    #[cfg_attr(test, derive_where(skip))]
     capture_control: DogStatsDCaptureControl,
 }
 

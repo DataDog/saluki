@@ -435,10 +435,12 @@ pub async fn create_control_plane_supervisor(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_go_duration, DogStatsDCaptureApi};
-    use datadog_protos::agent::{agent_secure_server::AgentSecure, CaptureTriggerRequest};
     use std::time::Duration;
+
+    use datadog_protos::agent::{agent_secure_server::AgentSecure, CaptureTriggerRequest};
     use tonic::{Code, Request};
+
+    use super::{parse_go_duration, DogStatsDCaptureApi};
 
     #[test]
     fn parse_go_duration_supports_go_style_units() {

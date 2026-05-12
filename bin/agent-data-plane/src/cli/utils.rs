@@ -1,17 +1,18 @@
-use std::{path::PathBuf, time::Duration};
+use std::time::Duration;
 
+use datadog_agent_commons::ipc::{
+    client::BearerAuthInterceptor, config::IpcAuthConfiguration, tls::build_ipc_client_ipc_tls_config,
+};
 use datadog_protos::agent::{AgentSecureClient, CaptureTriggerRequest};
 use futures::TryFutureExt as _;
 use http::{uri::PathAndQuery, Request, Response, StatusCode, Uri};
 use http_body_util::BodyExt as _;
 use hyper::body::Incoming;
 use saluki_config::GenericConfiguration;
-use saluki_env::helpers::tonic::BearerAuthInterceptor;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::{
-    build_datadog_agent_client_ipc_tls_config,
     client::http::{HttpClient, HttpsCapableConnectorBuilder},
-    get_ipc_cert_file_path, GrpcTargetAddress, ListenAddress,
+    GrpcTargetAddress, ListenAddress,
 };
 use tonic::{
     service::interceptor::InterceptedService,
@@ -19,7 +20,7 @@ use tonic::{
     Code, Status,
 };
 
-use crate::{config::DataPlaneConfiguration, internal::platform::PlatformSettings};
+use crate::config::DataPlaneConfiguration;
 
 type SecureDataPlaneService = InterceptedService<Channel, BearerAuthInterceptor>;
 
@@ -267,28 +268,9 @@ impl DataPlaneSecureClient {
                 )
             })?;
 
-        let mut auth_token_file_path = config
-            .try_get_typed::<PathBuf>("auth_token_file_path")
-            .error_context("Failed to get Agent auth token file path.")?
-            .unwrap_or_else(PlatformSettings::get_auth_token_path);
-        if auth_token_file_path.as_os_str().is_empty() {
-            auth_token_file_path = PlatformSettings::get_auth_token_path();
-        }
-
-        let mut ipc_cert_file_path = config
-            .try_get_typed::<Option<PathBuf>>("ipc_cert_file_path")
-            .error_context("Failed to get Agent IPC cert file path.")?
-            .flatten();
-        if ipc_cert_file_path
-            .as_ref()
-            .is_some_and(|path| path.as_os_str().is_empty())
-        {
-            ipc_cert_file_path = None;
-        }
-
-        let auth_interceptor = BearerAuthInterceptor::from_file(&auth_token_file_path).await?;
-        let ipc_cert_file_path = get_ipc_cert_file_path(ipc_cert_file_path.as_ref(), &auth_token_file_path);
-        let client_tls_config = build_datadog_agent_client_ipc_tls_config(ipc_cert_file_path).await?;
+        let ipc_config = IpcAuthConfiguration::from_configuration(config)?;
+        let auth_interceptor = BearerAuthInterceptor::from_file(ipc_config.auth_token_file_path()).await?;
+        let client_tls_config = build_ipc_client_ipc_tls_config(ipc_config.ipc_cert_file_path()).await?;
 
         let mut connector_builder =
             HttpsCapableConnectorBuilder::default().with_connect_timeout(Duration::from_secs(2));
@@ -399,8 +381,9 @@ fn map_dogstatsd_capture_error(error: Status) -> GenericError {
 
 #[cfg(test)]
 mod tests {
-    use super::map_dogstatsd_capture_error;
     use tonic::{Code, Status};
+
+    use super::map_dogstatsd_capture_error;
 
     #[test]
     fn dogstatsd_capture_failed_precondition_surfaces_server_message() {
