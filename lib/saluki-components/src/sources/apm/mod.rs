@@ -174,6 +174,8 @@ async fn handle_v1_traces(
                 debug!(traces = traces.len(), "Dispatching trace events to topology.");
                 if let Err(e) = state.tx.try_send(traces) {
                     warn!(error = %e, "APM receiver channel full; dropping payload.");
+                    // TODO: The v1 spec requires a 429 response here so tracers can back off.
+                    // Currently we return 200 OK even when dropping, matching legacy v0.4 behaviour.
                 }
             }
 
