@@ -16,6 +16,74 @@ use tower::{Layer, Service};
 
 pub type EndpointNameFn = dyn Fn(&Uri) -> Option<MetaString> + Send + Sync;
 
+const ERROR_TYPE_CLIENT: &str = "client_error";
+pub(super) const ERROR_TYPE_CONNECTION: &str = "connection_error";
+pub(super) const ERROR_TYPE_DNS: &str = "dns_error";
+pub(super) const ERROR_TYPE_TLS: &str = "tls_error";
+pub(super) const ERROR_TYPE_WROTE_REQUEST: &str = "wrote_request_error";
+const ERROR_TYPE_CANT_SEND: &str = "cant_send";
+const ERROR_TYPE_GT_400: &str = "gt_400";
+const ERROR_SCOPE_PHASE: &str = "phase";
+const ERROR_SCOPE_TRANSACTION: &str = "transaction";
+
+/// Emits lifecycle and transaction error telemetry for HTTP requests.
+#[derive(Clone)]
+pub(crate) struct HttpTransactionErrorTelemetry {
+    dns_errors: Counter,
+    connection_errors: Counter,
+    tls_errors: Counter,
+    wrote_request_errors: Counter,
+    send_errors: Counter,
+    http_errors: Counter,
+}
+
+impl HttpTransactionErrorTelemetry {
+    /// Creates a new `HttpTransactionErrorTelemetry` from a metrics builder.
+    pub(crate) fn from_builder(builder: &MetricsBuilder) -> Self {
+        // Mirror Core Agent forwarder buckets by counting lifecycle failures at their source. See
+        // datadog-agent/comp/forwarder/defaultforwarder/transaction/transaction.go::GetClientTrace.
+        Self {
+            dns_errors: register_scoped_error(builder, ERROR_TYPE_DNS, ERROR_SCOPE_PHASE),
+            connection_errors: register_scoped_error(builder, ERROR_TYPE_CONNECTION, ERROR_SCOPE_PHASE),
+            tls_errors: register_scoped_error(builder, ERROR_TYPE_TLS, ERROR_SCOPE_PHASE),
+            wrote_request_errors: register_scoped_error(builder, ERROR_TYPE_WROTE_REQUEST, ERROR_SCOPE_PHASE),
+            send_errors: register_scoped_error(builder, ERROR_TYPE_CANT_SEND, ERROR_SCOPE_TRANSACTION),
+            http_errors: register_scoped_error(builder, ERROR_TYPE_GT_400, ERROR_SCOPE_TRANSACTION),
+        }
+    }
+
+    pub(crate) fn dns_errors(&self) -> Counter {
+        self.dns_errors.clone()
+    }
+
+    pub(crate) fn increment_connection_error(&self) {
+        self.connection_errors.increment(1);
+    }
+
+    pub(crate) fn increment_tls_error(&self) {
+        self.tls_errors.increment(1);
+    }
+
+    pub(crate) fn increment_wrote_request_error(&self) {
+        self.wrote_request_errors.increment(1);
+    }
+
+    fn increment_send_error(&self) {
+        self.send_errors.increment(1);
+    }
+
+    fn increment_http_error(&self) {
+        self.http_errors.increment(1);
+    }
+}
+
+fn register_scoped_error(builder: &MetricsBuilder, error_type: &'static str, error_scope: &'static str) -> Counter {
+    builder.register_counter_with_tags(
+        "network_http_requests_errors_total",
+        [("error_type", error_type), ("error_scope", error_scope)],
+    )
+}
+
 /// Emit telemetry about the status of HTTP transactions.
 ///
 /// This layer can be used with services that deal with `http::Request` and `http::Response`, and wraps them to provide
@@ -33,9 +101,9 @@ pub type EndpointNameFn = dyn Fn(&Uri) -> Option<MetaString> + Send + Sync;
 ///   (see note below on how this is calculated)
 /// - `network_http_requests_errors_total`: The total number of HTTP requests that had an error, either during the
 ///   sending of the request or in the response. This is further broken down by the `error_type` label.
-///   - For all responses with a status code greater than 400, `error_type` will be `client_error` and `code` will be the
-///     string version of the status code.
-///   - When there is an error during the sending of the request, `error_type` will be `send_failed`.
+///   - For all responses with a status code greater than 400, `error_type` will be `client_error` and `code` will be
+///     the string version of the status code.
+///   - When there is an error during the sending of the request, `error_type` classifies the request failure.
 ///
 /// All metrics are emitted with two base tags:
 ///
@@ -56,6 +124,7 @@ pub type EndpointNameFn = dyn Fn(&Uri) -> Option<MetaString> + Send + Sync;
 pub struct EndpointTelemetryLayer {
     builder: MetricsBuilder,
     endpoint_name_fn: Option<Arc<EndpointNameFn>>,
+    error_telemetry: Option<HttpTransactionErrorTelemetry>,
 }
 
 impl EndpointTelemetryLayer {
@@ -65,6 +134,11 @@ impl EndpointTelemetryLayer {
     /// attributes the metrics to the component issuing the HTTP requests.
     pub fn with_metrics_builder(mut self, builder: MetricsBuilder) -> Self {
         self.builder = builder;
+        self
+    }
+
+    pub(super) fn with_error_telemetry(mut self, error_telemetry: HttpTransactionErrorTelemetry) -> Self {
+        self.error_telemetry = Some(error_telemetry);
         self
     }
 
@@ -94,6 +168,7 @@ impl<S> Layer<S> for EndpointTelemetryLayer {
             service,
             builder: self.builder.clone(),
             endpoint_name_fn: self.endpoint_name_fn.clone(),
+            error_telemetry: self.error_telemetry.clone(),
             domains: HashMap::new(),
             endpoint_name_cache: HashMap::new(),
         }
@@ -105,7 +180,6 @@ struct PerEndpointTelemetry {
     dropped: Counter,
     success: Counter,
     success_bytes: Counter,
-    errors_map: Mutex<HashMap<&'static str, Counter>>,
     http_errors_map: Mutex<HashMap<StatusCode, Counter>>,
 }
 
@@ -125,7 +199,6 @@ impl PerEndpointTelemetry {
         let dropped = builder.register_counter("network_http_requests_failed_total");
         let success = builder.register_counter("network_http_requests_success_total");
         let success_bytes = builder.register_counter("network_http_requests_success_sent_bytes_total");
-        let errors_map = Mutex::new(HashMap::new());
         let http_errors_map = Mutex::new(HashMap::new());
 
         Self {
@@ -133,7 +206,6 @@ impl PerEndpointTelemetry {
             dropped,
             success,
             success_bytes,
-            errors_map,
             http_errors_map,
         }
     }
@@ -150,22 +222,13 @@ impl PerEndpointTelemetry {
         self.success_bytes.increment(len);
     }
 
-    fn increment_error(&self, error_type: &'static str) {
-        let mut errors_map = self.errors_map.lock().unwrap();
-        let counter = errors_map.entry(error_type).or_insert_with(|| {
-            self.builder
-                .register_counter_with_tags("network_http_requests_errors_total", [("error_type", error_type)])
-        });
-        counter.increment(1);
-    }
-
     fn increment_http_error(&self, status: StatusCode) {
         let mut http_errors_map = self.http_errors_map.lock().unwrap();
         let counter = http_errors_map.entry(status).or_insert_with(move || {
             self.builder.register_counter_with_tags(
                 "network_http_requests_errors_total",
                 [
-                    ("error_type", "client_error".to_string()),
+                    ("error_type", ERROR_TYPE_CLIENT.to_string()),
                     ("code", status.as_str().to_string()),
                 ],
             )
@@ -180,6 +243,7 @@ pub struct EndpointTelemetry<S> {
     service: S,
     builder: MetricsBuilder,
     endpoint_name_fn: Option<Arc<EndpointNameFn>>,
+    error_telemetry: Option<HttpTransactionErrorTelemetry>,
     domains: HashMap<Authority, HashMap<MetaString, Arc<PerEndpointTelemetry>>>,
     endpoint_name_cache: HashMap<Uri, MetaString>,
 }
@@ -254,6 +318,7 @@ where
 
         EndpointTelemetryFuture {
             per_endpoint,
+            error_telemetry: self.error_telemetry.clone(),
             maybe_body_len,
             fut,
         }
@@ -264,6 +329,7 @@ pin_project! {
     /// Response future from [`EndpointTelemetry`] services.
     pub struct EndpointTelemetryFuture<F> {
         per_endpoint: Option<Arc<PerEndpointTelemetry>>,
+        error_telemetry: Option<HttpTransactionErrorTelemetry>,
         maybe_body_len: Option<u64>,
 
         #[pin]
@@ -293,6 +359,8 @@ where
                             // There's some specific errors where we're not going to retry them, so we can reasonable
                             // classify these requests as being dropped: they won't be retried, etc.
                             per_endpoint.increment_dropped()
+                        } else if let Some(error_telemetry) = this.error_telemetry.as_ref() {
+                            error_telemetry.increment_http_error();
                         }
                     } else {
                         per_endpoint.increment_success();
@@ -305,8 +373,8 @@ where
                 Poll::Ready(Ok(response))
             }
             Err(e) => {
-                if let Some(per_endpoint) = this.per_endpoint.as_ref() {
-                    per_endpoint.increment_error("send_failed");
+                if let Some(error_telemetry) = this.error_telemetry.as_ref() {
+                    error_telemetry.increment_send_error();
                 }
 
                 Poll::Ready(Err(e))

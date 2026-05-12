@@ -61,6 +61,7 @@ pub struct NestedFramer<Inner, Outer> {
     inner: Inner,
     outer: Outer,
     current_outer_frame: Option<Bytes>,
+    completed_outer_frames: usize,
 }
 
 impl<Inner, Outer> NestedFramer<Inner, Outer> {
@@ -70,7 +71,15 @@ impl<Inner, Outer> NestedFramer<Inner, Outer> {
             inner,
             outer,
             current_outer_frame: None,
+            completed_outer_frames: 0,
         }
+    }
+
+    /// Returns the number of outer frames that have been fully consumed since the last call.
+    pub fn take_completed_outer_frames(&mut self) -> usize {
+        let completed = self.completed_outer_frames;
+        self.completed_outer_frames = 0;
+        completed
     }
 }
 
@@ -116,12 +125,19 @@ where
             // Try to get the next inner frame.
             match self.inner.next_frame(outer_frame, true)? {
                 Some(frame) => {
+                    let completed_outer_frame = outer_frame.is_empty();
+
                     trace!(
                         buf_len = buf.remaining(),
                         outer_frame_len = outer_frame.len(),
                         inner_frame_len = frame.len(),
                         "Extracted inner frame."
                     );
+
+                    if completed_outer_frame {
+                        self.current_outer_frame = None;
+                        self.completed_outer_frames += 1;
+                    }
 
                     return Ok(Some(frame));
                 }
@@ -134,12 +150,15 @@ where
                         "Couldn't extract inner frame from existing outer frame."
                     );
 
-                    if outer_frame.is_empty() && buf.remaining() != 0 {
+                    if outer_frame.is_empty() {
                         self.current_outer_frame = None;
-                        continue;
-                    } else {
-                        return Ok(None);
+                        self.completed_outer_frames += 1;
+                        if buf.remaining() != 0 {
+                            continue;
+                        }
                     }
+
+                    return Ok(None);
                 }
             }
         }
@@ -270,6 +289,59 @@ mod tests {
 
         // We should have consumed the entire buffer.
         assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn nested_framer_tracks_completed_outer_frames() {
+        let input_frames = &[b"frame1", b"frame2", b"frame3"];
+        let mut framer = NestedFramer::new(NewlineFramer::default(), LengthDelimitedFramer);
+        let mut buf = VecDeque::new();
+
+        for inner_frame_data in input_frames {
+            let mut inner_frame = Vec::new();
+            inner_frame.extend_from_slice(&inner_frame_data[..]);
+            inner_frame.push(b'\n');
+
+            buf.extend(&(inner_frame.len() as u32).to_le_bytes());
+            buf.extend(inner_frame);
+        }
+
+        for input_frame in input_frames {
+            let frame = framer
+                .next_frame(&mut buf, false)
+                .expect("should not fail to read from payload")
+                .expect("should extract frame from payload");
+            assert_eq!(&frame[..], &input_frame[..]);
+            assert_eq!(framer.take_completed_outer_frames(), 1);
+        }
+
+        assert!(buf.is_empty());
+        assert_eq!(framer.take_completed_outer_frames(), 0);
+    }
+
+    #[test]
+    fn nested_framer_waits_to_complete_outer_frame_until_last_inner_frame() {
+        let mut framer = NestedFramer::new(NewlineFramer::default(), LengthDelimitedFramer);
+        let mut inner_frames = Vec::new();
+        inner_frames.extend_from_slice(b"frame1\nframe2\n");
+
+        let mut buf = VecDeque::new();
+        buf.extend(&(inner_frames.len() as u32).to_le_bytes());
+        buf.extend(inner_frames);
+
+        let first_frame = framer
+            .next_frame(&mut buf, false)
+            .expect("should not fail to read from payload")
+            .expect("should extract first frame from payload");
+        assert_eq!(&first_frame[..], b"frame1");
+        assert_eq!(framer.take_completed_outer_frames(), 0);
+
+        let second_frame = framer
+            .next_frame(&mut buf, false)
+            .expect("should not fail to read from payload")
+            .expect("should extract second frame from payload");
+        assert_eq!(&second_frame[..], b"frame2");
+        assert_eq!(framer.take_completed_outer_frames(), 1);
     }
 
     #[test]

@@ -45,7 +45,7 @@ impl DataPlaneConfiguration {
             secure_api_listen_address: config
                 .try_get_typed("data_plane.secure_api_listen_address")?
                 .unwrap_or_else(|| ListenAddress::any_tcp(5101)),
-            telemetry_enabled: config.try_get_typed("data_plane.telemetry_enabled")?.unwrap_or(false),
+            telemetry_enabled: config.try_get_typed("data_plane.telemetry_enabled")?.unwrap_or(true),
             telemetry_listen_addr: config
                 .try_get_typed("data_plane.telemetry_listen_addr")?
                 .unwrap_or_else(|| ListenAddress::any_tcp(5102)),

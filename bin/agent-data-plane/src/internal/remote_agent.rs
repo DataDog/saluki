@@ -30,8 +30,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::DataPlaneConfiguration;
 use crate::state::metrics::{
-    get_datadog_agent_remappings, get_shared_metrics_state, render_rar_telemetry, AggregatedMetricsProcessor,
-    RemapperRule,
+    get_datadog_agent_remappings, get_shared_metrics_state, render_telemetry, AggregatedMetricsProcessor, RemapperRule,
 };
 
 const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
@@ -479,7 +478,7 @@ impl TelemetryProvider for RemoteAgentImpl {
 
                 let state = self.internal_metrics.state();
                 let mut renderer = self.renderer.lock().await;
-                let prom_text = render_rar_telemetry(state, &self.remapper_rules, &mut renderer);
+                let prom_text = render_telemetry(state, &self.remapper_rules, &mut renderer);
 
                 Ok(tonic::Response::new(GetTelemetryResponse {
                     payload: Some(Payload::PromText(prom_text)),

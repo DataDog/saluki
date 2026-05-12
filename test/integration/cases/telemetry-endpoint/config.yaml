@@ -11,7 +11,6 @@ container:
     DD_DATA_PLANE_ENABLED: "true"
     DD_DATA_PLANE_STANDALONE_MODE: "true"
     DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-    DD_DATA_PLANE_TELEMETRY_ENABLED: "true"
     DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR: "tcp://0.0.0.0:5102"
   exposed_ports:
     - "5102/tcp"
@@ -31,6 +30,10 @@ assertions:
         timeout: 10s
       - type: health_check
         endpoint: "http://localhost:5102/metrics"
+        expected_status: 200
+        timeout: 10s
+      - type: health_check
+        endpoint: "http://localhost:5102/compat/metrics"
         expected_status: 200
         timeout: 10s
       - type: log_not_contains

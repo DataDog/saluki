@@ -25,6 +25,7 @@ use tower::{timeout::TimeoutLayer, util::BoxCloneService, BoxError, Service, Ser
 
 use super::{
     conn::{check_connection_state, HttpsCapableConnectorBuilder},
+    telemetry::HttpTransactionErrorTelemetry,
     EndpointTelemetryLayer,
 };
 
@@ -217,7 +218,12 @@ impl HttpClientBuilder {
     where
         F: Fn(&Uri) -> Option<MetaString> + Send + Sync + 'static,
     {
-        let mut layer = EndpointTelemetryLayer::default().with_metrics_builder(metrics_builder);
+        let error_telemetry = HttpTransactionErrorTelemetry::from_builder(&metrics_builder);
+        self.connector_builder = self.connector_builder.with_error_telemetry(error_telemetry.clone());
+
+        let mut layer = EndpointTelemetryLayer::default()
+            .with_metrics_builder(metrics_builder)
+            .with_error_telemetry(error_telemetry);
 
         if let Some(endpoint_name_fn) = endpoint_name_fn {
             layer = layer.with_endpoint_name_fn(endpoint_name_fn);
