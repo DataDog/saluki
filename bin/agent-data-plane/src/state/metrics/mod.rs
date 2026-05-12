@@ -640,7 +640,7 @@ mod tests {
             output.contains("forwarder_transactions_errors_by_type_connection_errors{source=\"agent-data-plane\"} 3")
         );
         assert!(
-            output.contains("forwarder_transactions_errors_by_type_sent_request_errors{source=\"agent-data-plane\"} 3")
+            output.contains("forwarder_transactions_errors_by_type_sent_request_errors{source=\"agent-data-plane\"} 2")
         );
         assert!(output.contains("forwarder_transactions_errors{source=\"agent-data-plane\"} 3"));
         assert!(output.contains("forwarder_transactions_retry_queue_size{source=\"agent-data-plane\"} 2"));

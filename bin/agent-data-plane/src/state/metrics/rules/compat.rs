@@ -6,7 +6,6 @@ const LISTENER_UNIX_TAG: &str = "listener_type:unix";
 const LISTENER_UNIXGRAM_TAG: &str = "listener_type:unixgram";
 const ERROR_DECODE_TAG: &str = "error_type:decode";
 const ERROR_ORIGIN_DETECTION_TAG: &str = "error_type:origin_detection";
-const ERROR_CANT_SEND_TAG: &str = "error_type:cant_send";
 const ERROR_SCOPE_PHASE_TAG: &str = "error_scope:phase";
 const ERROR_SCOPE_TRANSACTION_TAG: &str = "error_scope:transaction";
 const MESSAGE_EVENTS_TAG: &str = "message_type:events";
@@ -144,13 +143,6 @@ pub fn get_compat_remappings() -> Vec<RemapperRule> {
             "adp.network_http_requests_errors_total",
             &["error_type:wrote_request_error", ERROR_SCOPE_PHASE_TAG],
             "forwarder_transactions_errors_by_type_wrote_request_errors",
-        )
-        .with_additional_tags([SOURCE_TAG])
-        .with_continued_matching(),
-        RemapperRule::by_name_and_tags(
-            "adp.network_http_requests_errors_total",
-            &[ERROR_CANT_SEND_TAG, ERROR_SCOPE_TRANSACTION_TAG],
-            "forwarder_transactions_errors_by_type_sent_request_errors",
         )
         .with_additional_tags([SOURCE_TAG])
         .with_continued_matching(),
