@@ -21,8 +21,8 @@ pub(super) enum DeserializeError {
     InvalidAttributeCount(u32),
     /// Array element count for an AnyValue::Array was not a multiple of 2.
     InvalidArrayElementCount(u32),
-    /// Field 1 (strings bulk-insert) appeared after another field was already decoded.
-    StringsNotFirst,
+    /// Field 1 (bulk strings) was present; msgpack payloads must use streaming strings instead.
+    UnexpectedStringsField,
     UnknownAnyValueType(u32),
     /// TraceID binary payload was not exactly 16 bytes.
     InvalidTraceIdLength(u32),
@@ -222,12 +222,6 @@ fn read_str_body<R: Read>(rd: &mut R, marker: Marker) -> Result<String, Deserial
     let mut buf = vec![0u8; len as usize];
     rd.read_exact(&mut buf).map_err(|_| DeserializeError::UnexpectedEof)?;
     String::from_utf8(buf).map_err(|_| DeserializeError::InvalidUtf8)
-}
-
-/// Read a complete msgpack string (marker + body).
-fn read_raw_string<R: Read>(rd: &mut R) -> Result<String, DeserializeError> {
-    let marker = rmp::decode::read_marker(rd).map_err(|_| DeserializeError::UnexpectedEof)?;
-    read_str_body(rd, marker)
 }
 
 /// Read a uint given that the leading marker has already been consumed.
@@ -721,64 +715,40 @@ pub(super) fn decode_tracer_payload<R: Read>(rd: &mut R) -> Result<RawTracerPayl
     let mut attributes = Vec::new();
     let mut chunks = Vec::new();
 
-    let mut non_strings_seen = false;
-
     for _ in 0..map_len {
         let field_num: u32 = rmp::decode::read_int(rd).map_err(nvr_err)?;
         match field_num {
             tracer_payload::FIELD_STRINGS => {
-                if non_strings_seen {
-                    return Err(DeserializeError::StringsNotFirst);
-                }
-                let arr_len = rmp::decode::read_array_len(rd).map_err(vr_err)?;
-                if arr_len as u64 > MAX_SIZE {
-                    return Err(DeserializeError::LimitExceeded(arr_len as u64));
-                }
-                for _ in 0..arr_len {
-                    let s = read_raw_string(rd)?;
-                    if !s.is_empty() {
-                        table.push(s);
-                    }
-                }
+                return Err(DeserializeError::UnexpectedStringsField);
             }
             tracer_payload::FIELD_CONTAINER_ID => {
-                non_strings_seen = true;
                 container_id = decode_streaming_string(rd, &mut table)?;
             }
             tracer_payload::FIELD_LANGUAGE_NAME => {
-                non_strings_seen = true;
                 language_name = decode_streaming_string(rd, &mut table)?;
             }
             tracer_payload::FIELD_LANGUAGE_VERSION => {
-                non_strings_seen = true;
                 language_version = decode_streaming_string(rd, &mut table)?;
             }
             tracer_payload::FIELD_TRACER_VERSION => {
-                non_strings_seen = true;
                 tracer_version = decode_streaming_string(rd, &mut table)?;
             }
             tracer_payload::FIELD_RUNTIME_ID => {
-                non_strings_seen = true;
                 runtime_id = decode_streaming_string(rd, &mut table)?;
             }
             tracer_payload::FIELD_ENV => {
-                non_strings_seen = true;
                 env = decode_streaming_string(rd, &mut table)?;
             }
             tracer_payload::FIELD_HOSTNAME => {
-                non_strings_seen = true;
                 hostname = decode_streaming_string(rd, &mut table)?;
             }
             tracer_payload::FIELD_APP_VERSION => {
-                non_strings_seen = true;
                 app_version = decode_streaming_string(rd, &mut table)?;
             }
             tracer_payload::FIELD_ATTRIBUTES => {
-                non_strings_seen = true;
                 attributes = decode_attributes(rd, &mut table)?;
             }
             tracer_payload::FIELD_CHUNKS => {
-                non_strings_seen = true;
                 let arr_len = rmp::decode::read_array_len(rd).map_err(vr_err)?;
                 if arr_len as u64 > MAX_SIZE {
                     return Err(DeserializeError::LimitExceeded(arr_len as u64));
@@ -788,7 +758,6 @@ pub(super) fn decode_tracer_payload<R: Read>(rd: &mut R) -> Result<RawTracerPayl
                     .collect::<Result<_, _>>()?;
             }
             _ => {
-                non_strings_seen = true;
                 skip_msgpack_value(rd)?;
             }
         }
@@ -1004,37 +973,15 @@ mod tests {
         assert_eq!(table.get(1), Some(s.as_str()));
     }
 
-    // ── Field 1 bulk-insert ─────────────────────────────────────────────────
+    // ── Field 1 (strings) is always an error ───────────────────────────────
 
     #[test]
-    fn payload_field1_bulk_inserts_strings() {
-        let strings_arr = concat(&[
-            encode_fixarray_header(3),
-            encode_fixstr("svc"),
-            encode_fixstr("web"),
-            encode_fixstr("prod"),
-        ]);
+    fn payload_field1_strings_is_error() {
+        let strings_arr = concat(&[encode_fixarray_header(1), encode_fixstr("svc")]);
         let data = concat(&[encode_fixmap_header(1), encode_fixpos(1), strings_arr]);
         let mut rd = data.as_slice();
-        let payload = decode_tracer_payload(&mut rd).unwrap();
-        assert_eq!(payload.string_table.get(1), Some("svc"));
-        assert_eq!(payload.string_table.get(2), Some("web"));
-        assert_eq!(payload.string_table.get(3), Some("prod"));
-        assert_eq!(payload.chunks.len(), 0);
-    }
-
-    #[test]
-    fn payload_field1_after_other_field_is_error() {
-        let data = concat(&[
-            encode_fixmap_header(2),
-            encode_fixpos(2),
-            encode_fixstr("mycontainer"),
-            encode_fixpos(1),
-            concat(&[encode_fixarray_header(1), encode_fixstr("x")]),
-        ]);
-        let mut rd = data.as_slice();
         let err = decode_tracer_payload(&mut rd).unwrap_err();
-        assert!(matches!(err, DeserializeError::StringsNotFirst));
+        assert!(matches!(err, DeserializeError::UnexpectedStringsField));
     }
 
     // ── AnyValue decoding ───────────────────────────────────────────────────
@@ -1497,69 +1444,55 @@ mod tests {
     // ── Realistic golden-input test ─────────────────────────────────────────
 
     fn test_payload() -> Vec<u8> {
-        let strings_arr = concat(&[
-            encode_fixarray_header(10),
-            encode_fixstr("my-service"),
-            encode_fixstr("http.get"),
-            encode_fixstr("/users/{id}"),
-            encode_fixstr("web"),
-            encode_fixstr("prod"),
-            encode_fixstr("host-1"),
-            encode_fixstr("v1"),
-            encode_fixstr("component"),
-            encode_fixstr("attr-key"),
-            encode_fixstr("staging"),
-        ]);
-
-        let simple_span = |env_idx: u8| {
+        let simple_span = |env_str: &str| {
             concat(&[
                 encode_fixmap_header(8),
-                encode_fixpos(1),
-                encode_fixpos(1_u8),
-                encode_fixpos(2),
-                encode_fixpos(2_u8),
-                encode_fixpos(3),
-                encode_fixpos(3_u8),
-                encode_fixpos(4),
+                encode_fixpos(span::FIELD_SERVICE as u8),
+                encode_fixstr("my-service"),
+                encode_fixpos(span::FIELD_NAME as u8),
+                encode_fixstr("http.get"),
+                encode_fixpos(span::FIELD_RESOURCE as u8),
+                encode_fixstr("/users/{id}"),
+                encode_fixpos(span::FIELD_SPAN_ID as u8),
                 encode_u64(0xaaaa_0000_0000_0001),
-                encode_fixpos(7),
+                encode_fixpos(span::FIELD_DURATION as u8),
                 encode_u64(100_000_u64),
-                encode_fixpos(8),
+                encode_fixpos(span::FIELD_ERROR as u8),
                 encode_bool(false),
-                encode_fixpos(9),
+                encode_fixpos(span::FIELD_ATTRIBUTES as u8),
                 encode_fixarray_header(0),
-                encode_fixpos(13),
-                encode_fixpos(env_idx),
+                encode_fixpos(span::FIELD_ENV as u8),
+                encode_fixstr(env_str),
             ])
         };
 
         let rich_span = concat(&[
             encode_fixmap_header(4),
-            encode_fixpos(1),
-            encode_fixpos(1_u8),
-            encode_fixpos(2),
-            encode_fixpos(2_u8),
-            encode_fixpos(4),
+            encode_fixpos(span::FIELD_SERVICE as u8),
+            encode_fixstr("my-service"),
+            encode_fixpos(span::FIELD_NAME as u8),
+            encode_fixstr("http.get"),
+            encode_fixpos(span::FIELD_SPAN_ID as u8),
             encode_u64(0xbbbb_0000_0000_0002),
-            encode_fixpos(9),
+            encode_fixpos(span::FIELD_ATTRIBUTES as u8),
             concat(&[
                 encode_array16_header(21),
-                encode_fixpos(9),
+                encode_fixstr("attr-key"),
                 encode_fixpos(1),
-                encode_fixpos(4),
-                encode_fixpos(9),
+                encode_fixstr("some-val"),
+                encode_fixstr("attr-key"),
                 encode_fixpos(2),
                 encode_bool(true),
-                encode_fixpos(9),
+                encode_fixstr("attr-key"),
                 encode_fixpos(3),
                 encode_f64(1.5),
-                encode_fixpos(9),
+                encode_fixstr("attr-key"),
                 encode_fixpos(4),
                 encode_i64(-1),
-                encode_fixpos(9),
+                encode_fixstr("attr-key"),
                 encode_fixpos(5),
                 encode_bin8(&[0xab]),
-                encode_fixpos(9),
+                encode_fixstr("attr-key"),
                 encode_fixpos(6),
                 concat(&[
                     encode_fixarray_header(4),
@@ -1568,11 +1501,11 @@ mod tests {
                     encode_fixpos(4),
                     encode_fixpos(0),
                 ]),
-                encode_fixpos(9),
+                encode_fixstr("attr-key"),
                 encode_fixpos(7),
                 concat(&[
                     encode_fixarray_header(3),
-                    encode_fixpos(9),
+                    encode_fixstr("nested-key"),
                     encode_fixpos(2),
                     encode_bool(true),
                 ]),
@@ -1581,70 +1514,68 @@ mod tests {
 
         let linked_span = concat(&[
             encode_fixmap_header(4),
-            encode_fixpos(1),
-            encode_fixpos(1_u8),
-            encode_fixpos(4),
+            encode_fixpos(span::FIELD_SERVICE as u8),
+            encode_fixstr("my-service"),
+            encode_fixpos(span::FIELD_SPAN_ID as u8),
             encode_u64(0xcccc_0000_0000_0003),
-            encode_fixpos(11),
+            encode_fixpos(span::FIELD_LINKS as u8),
             concat(&[
                 encode_fixarray_header(1),
                 concat(&[
                     encode_fixmap_header(3),
-                    encode_fixpos(1),
+                    encode_fixpos(span_link::FIELD_TRACE_ID as u8),
                     encode_trace_id(0x1234, 0x5678),
-                    encode_fixpos(2),
+                    encode_fixpos(span_link::FIELD_SPAN_ID as u8),
                     encode_u64(0xdeadbeef),
-                    encode_fixpos(5),
+                    encode_fixpos(span_link::FIELD_FLAGS as u8),
                     encode_fixpos(1),
                 ]),
             ]),
-            encode_fixpos(12),
+            encode_fixpos(span::FIELD_EVENTS as u8),
             concat(&[
                 encode_fixarray_header(1),
                 concat(&[
                     encode_fixmap_header(2),
-                    encode_fixpos(1),
+                    encode_fixpos(span_event::FIELD_TIME_UNIX_NANO as u8),
                     encode_u64(999_999_999_u64),
-                    encode_fixpos(2),
-                    encode_fixpos(2_u8),
+                    encode_fixpos(span_event::FIELD_NAME as u8),
+                    encode_fixstr("my-event"),
                 ]),
             ]),
         ]);
 
         let chunk1 = concat(&[
             encode_fixmap_header(4),
-            encode_fixpos(1),
+            encode_fixpos(trace_chunk::FIELD_PRIORITY as u8),
             encode_i32(1),
-            encode_fixpos(4),
-            concat(&[encode_fixarray_header(3), simple_span(5), rich_span, linked_span]),
-            encode_fixpos(5),
+            encode_fixpos(trace_chunk::FIELD_SPANS as u8),
+            concat(&[encode_fixarray_header(3), simple_span("prod"), rich_span, linked_span]),
+            encode_fixpos(trace_chunk::FIELD_DROPPED_TRACE as u8),
             encode_bool(false),
-            encode_fixpos(6),
+            encode_fixpos(trace_chunk::FIELD_TRACE_ID as u8),
             encode_trace_id(0xfeed_face_dead_beef, 0xcafe_babe_1234_5678),
         ]);
 
         let chunk2 = concat(&[
             encode_fixmap_header(3),
-            encode_fixpos(1),
+            encode_fixpos(trace_chunk::FIELD_PRIORITY as u8),
             encode_i32(-1),
-            encode_fixpos(4),
+            encode_fixpos(trace_chunk::FIELD_SPANS as u8),
             concat(&[
                 encode_fixarray_header(3),
-                simple_span(10),
-                simple_span(10),
-                simple_span(10),
+                simple_span("staging"),
+                simple_span("staging"),
+                simple_span("staging"),
             ]),
-            encode_fixpos(5),
+            encode_fixpos(trace_chunk::FIELD_DROPPED_TRACE as u8),
             encode_bool(true),
         ]);
 
         concat(&[
-            encode_fixmap_header(3),
-            encode_fixpos(1),
-            strings_arr,
-            encode_fixpos(8),
-            encode_fixpos(6_u8),
-            encode_fixpos(11),
+            encode_fixmap_header(2),
+            encode_fixpos(tracer_payload::FIELD_HOSTNAME as u8),
+            encode_fixstr("host-1"),
+            encode_fixpos(tracer_payload::FIELD_CHUNKS as u8),
             concat(&[encode_fixarray_header(2), chunk1, chunk2]),
         ])
     }
@@ -1656,8 +1587,6 @@ mod tests {
         let payload = decode_tracer_payload(&mut rd).unwrap();
 
         assert_eq!(rd.len(), 0, "all bytes should be consumed");
-        assert_eq!(payload.string_table.get(1), Some("my-service"));
-        assert_eq!(payload.string_table.get(6), Some("host-1"));
         assert_eq!(payload.string_table.get(payload.hostname), Some("host-1"));
         assert_eq!(payload.chunks.len(), 2);
 
