@@ -1,6 +1,6 @@
 //! Metrics.
 
-use std::{sync::Mutex, time::Duration};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use metrics::{gauge, Level};
@@ -12,8 +12,6 @@ use saluki_error::GenericError;
 use saluki_metrics::static_metrics;
 use tokio::{runtime::Handle, select, time::sleep};
 
-static API_HANDLER: Mutex<Option<MetricsAPIHandler>> = Mutex::new(None);
-
 mod api;
 pub use self::api::{MetricsAPIHandler, MetricsOverrideWorker};
 
@@ -21,7 +19,8 @@ pub use self::api::{MetricsAPIHandler, MetricsOverrideWorker};
 ///
 /// Each worker must be added to a [`Supervisor`][saluki_core::runtime::Supervisor] for the metrics subsystem to
 /// fully function: the flusher worker propagates internal metrics to subscribers, the runtime worker emits Tokio
-/// runtime gauges, and the override processor handles dynamic filter overrides driven by [`MetricsAPIHandler`].
+/// runtime gauges, and the override processor asserts the privileged API routes and handles dynamic filter
+/// overrides driven through them.
 pub(crate) struct MetricsWorkers {
     pub runtime: RuntimeMetricsWorker,
     pub flusher: MetricsFlusherWorker,
@@ -51,8 +50,7 @@ pub(crate) async fn initialize_metrics(
     let (filter_handle, flusher) =
         saluki_core::observability::metrics::initialize_metrics(metrics_prefix.into(), default_level).await?;
 
-    let (api_handler, override_processor) = MetricsAPIHandler::new(filter_handle);
-    API_HANDLER.lock().unwrap().replace(api_handler);
+    let override_processor = MetricsOverrideWorker::new(filter_handle);
 
     // Capture the current runtime handle eagerly so the runtime metrics worker measures the runtime that owns
     // bootstrap, regardless of where the worker future eventually executes under the supervisor.
@@ -63,17 +61,6 @@ pub(crate) async fn initialize_metrics(
         flusher,
         override_processor,
     })
-}
-
-/// Acquires the metrics API handler.
-///
-/// This function is mutable, and consumes the handler if it's present. This means it should only be called once, and
-/// only after metrics have been initialized via `initialize_metrics`.
-///
-/// The metrics API handler can be used to install API routes which allow dynamically controlling the metrics level
-/// filtering. See [`MetricsAPIHandler`] for more information.
-pub fn acquire_metrics_api_handler() -> Option<MetricsAPIHandler> {
-    API_HANDLER.lock().unwrap().take()
 }
 
 /// Emits the startup metrics for the application.

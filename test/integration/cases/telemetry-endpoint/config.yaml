@@ -28,9 +28,10 @@ assertions:
         port: 5102
         protocol: tcp
         timeout: 10s
-      - type: health_check
+      - type: http_check
         endpoint: "http://localhost:5102/metrics"
-        expected_status: 200
+        status:
+          equal: 200
         timeout: 10s
       - type: health_check
         endpoint: "http://localhost:5102/compat/metrics"

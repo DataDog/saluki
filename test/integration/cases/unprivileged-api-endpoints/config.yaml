@@ -18,17 +18,20 @@ assertions:
   - parallel:
       - type: process_stable_for
         duration: 10s
-      - type: health_check
+      - type: http_check
         endpoint: "http://localhost:5100/ready"
-        expected_status: 200
+        status:
+          equal: 200
         timeout: 10s
-      - type: health_check
+      - type: http_check
         endpoint: "http://localhost:5100/live"
-        expected_status: 200
+        status:
+          equal: 200
         timeout: 10s
-      - type: health_check
+      - type: http_check
         endpoint: "http://localhost:5100/memory/status"
-        expected_status: 200
+        status:
+          equal: 200
         timeout: 10s
       - type: log_not_contains
         pattern: "panic|PANIC"

@@ -16,8 +16,7 @@ use tracing_rolling_file::RollingFileAppenderBase;
 use tracing_subscriber::{layer::SubscriberExt as _, reload, util::SubscriberInitExt as _, Layer, Registry};
 
 mod api;
-use self::api::set_logging_api_handler;
-pub use self::api::{acquire_logging_api_handler, LoggingAPIHandler, LoggingOverrideController, LoggingOverrideWorker};
+pub use self::api::{LoggingAPIHandler, LoggingOverrideController, LoggingOverrideWorker};
 
 mod config;
 pub use self::config::{LogLevel, LoggingConfiguration};
@@ -91,12 +90,10 @@ impl LoggingGuard {
 /// Initializes the logging subsystem for `tracing` with the ability to dynamically update the log filtering directives
 /// at runtime.
 ///
-/// An API handler can be acquired (via [`acquire_logging_api_handler`]) to install the API routes which allow for
-/// dynamically controlling the logging level filtering. See [`LoggingAPIHandler`] for more information.
-///
 /// Returns a [`LoggingGuard`] which must be held until the application is about to shutdown, plus a
 /// [`LoggingOverrideWorker`] that must be added to a [`Supervisor`][saluki_core::runtime::Supervisor] to drive
-/// the dynamic override processor; without the worker running, override requests are accepted but never applied.
+/// the dynamic override processor; the worker also asserts the privileged API routes for runtime filter control.
+/// Without the worker running, override requests are accepted but never applied.
 ///
 /// # Errors
 ///
@@ -118,7 +115,6 @@ pub(crate) async fn initialize_logging(
     // `LoggingGuard::reload` once the Agent's configuration is applied and by any other caller (e.g. a runtime
     // `log_level` watcher) wired up via [`LoggingGuard::controller`].
     let (override_worker, controller) = LoggingOverrideWorker::new(level_filter, filter_handle);
-    set_logging_api_handler(LoggingAPIHandler::new(controller.clone()));
 
     tracing_subscriber::registry()
         .with(output_layer.with_filter(filter_layer))
@@ -225,7 +221,8 @@ mod tests {
 
     #[tokio::test]
     async fn reload_can_enable_change_disable_syslog_and_preserves_previous_stack_on_invalid_config() {
-        use saluki_core::runtime::{ProcessShutdown, Supervisable as _};
+        use saluki_core::runtime::Supervisor;
+        use tokio::sync::oneshot;
 
         let config = logging_config_without_outputs();
         let (output_stack, worker_guards) = build_output_stack(&config).expect("build initial output stack");
@@ -240,12 +237,12 @@ mod tests {
         };
         let _keep_layers_alive = (output_layer, filter_layer);
 
-        // Spawn the override worker so update_base calls inside reload() don't block on a full channel.
-        let worker_fut = override_worker
-            .initialize(ProcessShutdown::noop())
-            .await
-            .expect("worker init");
-        let worker_handle = tokio::spawn(worker_fut);
+        // Run the override worker inside a Supervisor so it has the dataspace context required for
+        // its route assertion. The supervisor's shutdown signal drives the worker to exit cleanly.
+        let mut sup = Supervisor::new("test-logging-override").expect("create supervisor");
+        sup.add_worker(override_worker);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let sup_handle = tokio::spawn(async move { sup.run_with_shutdown(shutdown_rx).await });
 
         guard
             .reload(logging_config_with_syslog(TEST_SYSLOG_URI))
@@ -278,12 +275,14 @@ mod tests {
         assert!(error.to_string().contains("Failed to build syslog log writer"));
         assert_eq!(guard.worker_guards.len(), 1);
 
-        // Dropping the guard closes the controller channel, which lets the worker exit.
-        drop(guard);
-        worker_handle
+        // Trigger supervisor shutdown so the worker exits via its shutdown branch rather than via
+        // the channel-close path (which would prompt a restart attempt by the supervisor).
+        shutdown_tx.send(()).expect("send shutdown");
+        sup_handle
             .await
-            .expect("override worker should exit cleanly")
-            .expect("override worker should not error");
+            .expect("supervisor task joins")
+            .expect("supervisor should exit cleanly");
+        drop(guard);
     }
 
     fn logging_config_without_outputs() -> LoggingConfiguration {
