@@ -511,14 +511,15 @@ fn trace_id_bytes(high: u64, low: u64) -> [u8; 16] {
 
 /// Map a span kind integer to the `idx.SpanKind` enum.
 ///
-/// V1 wire format: 0=unspecified, 1=server, 2=client, 3=producer, 4=consumer, 5=internal.
+/// Both the V1 wire format and the internal `Span.kind` field use OTEL values:
+/// 0=unspecified, 1=internal, 2=server, 3=client, 4=producer, 5=consumer.
 fn v1_kind_to_span_kind(kind: u32) -> idx::SpanKind {
     match kind {
-        1 => idx::SpanKind::SPAN_KIND_SERVER,
-        2 => idx::SpanKind::SPAN_KIND_CLIENT,
-        3 => idx::SpanKind::SPAN_KIND_PRODUCER,
-        4 => idx::SpanKind::SPAN_KIND_CONSUMER,
-        5 => idx::SpanKind::SPAN_KIND_INTERNAL,
+        1 => idx::SpanKind::SPAN_KIND_INTERNAL,
+        2 => idx::SpanKind::SPAN_KIND_SERVER,
+        3 => idx::SpanKind::SPAN_KIND_CLIENT,
+        4 => idx::SpanKind::SPAN_KIND_PRODUCER,
+        5 => idx::SpanKind::SPAN_KIND_CONSUMER,
         _ => idx::SpanKind::SPAN_KIND_UNSPECIFIED,
     }
 }
@@ -1084,7 +1085,7 @@ mod tests {
 
     fn make_span(service: &str, name: &str, resource: &str, span_id: u64, parent_id: u64) -> Span {
         Span::new(service, name, resource, "web", span_id, parent_id, 1_000_000_000, 5_000_000, 0)
-            .with_kind(1) // server
+            .with_kind(2) // server
     }
 
     fn make_trace(spans: Vec<Span>) -> Trace {
@@ -1184,11 +1185,11 @@ mod tests {
     async fn span_kind_mapping_covers_all_v1_values() {
         let cases: &[(u32, idx::SpanKind)] = &[
             (0, idx::SpanKind::SPAN_KIND_UNSPECIFIED),
-            (1, idx::SpanKind::SPAN_KIND_SERVER),
-            (2, idx::SpanKind::SPAN_KIND_CLIENT),
-            (3, idx::SpanKind::SPAN_KIND_PRODUCER),
-            (4, idx::SpanKind::SPAN_KIND_CONSUMER),
-            (5, idx::SpanKind::SPAN_KIND_INTERNAL),
+            (1, idx::SpanKind::SPAN_KIND_INTERNAL),
+            (2, idx::SpanKind::SPAN_KIND_SERVER),
+            (3, idx::SpanKind::SPAN_KIND_CLIENT),
+            (4, idx::SpanKind::SPAN_KIND_PRODUCER),
+            (5, idx::SpanKind::SPAN_KIND_CONSUMER),
             (99, idx::SpanKind::SPAN_KIND_UNSPECIFIED),
         ];
         for &(v1_kind, expected) in cases {

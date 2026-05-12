@@ -54,7 +54,7 @@ pub struct V1Span {
     pub version: MetaString,
     /// Instrumentation component.
     pub component: MetaString,
-    /// Span kind (0=unspecified, 1=server, 2=client, 3=producer, 4=consumer, 5=internal).
+    /// Span kind (OTEL values): 0=unspecified, 1=internal, 2=server, 3=client, 4=producer, 5=consumer.
     pub kind: u32,
 }
 

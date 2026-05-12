@@ -15,6 +15,7 @@ use super::statsraw::RawBucket;
 
 const DEFAULT_BUFFER_LEN: u64 = 2;
 const METRIC_TOP_LEVEL: &str = "_top_level";
+const METRIC_TRACER_TOP_LEVEL: &str = "_dd.top_level";
 const METRIC_MEASURED: &str = "_dd.measured";
 pub const METRIC_PARTIAL_VERSION: &str = "_dd.partial_version";
 
@@ -231,6 +232,11 @@ impl SpanConcentrator {
                 return true;
             }
         }
+        if let Some(val) = span.attributes.get(METRIC_TRACER_TOP_LEVEL).and_then(AttributeValue::as_float) {
+            if val == 1.0 {
+                return true;
+            }
+        }
         if let Some(val) = span.attributes.get(METRIC_MEASURED).and_then(AttributeValue::as_float) {
             if val == 1.0 {
                 return true;
@@ -256,7 +262,8 @@ impl SpanConcentrator {
         let span_kind = span.attributes.get(TAG_SPAN_KIND).and_then(AttributeValue::as_string).cloned().unwrap_or_default();
         let status_code = get_status_code(span);
         let grpc_status_code = get_grpc_status_code(span).to_metastring();
-        let is_top_level = span.attributes.get(METRIC_TOP_LEVEL).and_then(AttributeValue::as_float).map(|v| v == 1.0).unwrap_or(false);
+        let is_top_level = span.attributes.get(METRIC_TOP_LEVEL).and_then(AttributeValue::as_float).is_some_and(|v| v == 1.0)
+            || span.attributes.get(METRIC_TRACER_TOP_LEVEL).and_then(AttributeValue::as_float).is_some_and(|v| v == 1.0);
         let matching_peer_tags = self.matching_peer_tags(span, &span_kind);
 
         Some(StatSpan {
@@ -352,6 +359,55 @@ pub const fn compute_stats_for_span_kind(kind: &str) -> bool {
         || kind.eq_ignore_ascii_case("client")
         || kind.eq_ignore_ascii_case("producer")
         || kind.eq_ignore_ascii_case("consumer")
+}
+
+#[cfg(test)]
+mod tests {
+    use saluki_common::collections::FastHashMap;
+    use saluki_core::data_model::event::trace::Span;
+    use stringtheory::MetaString;
+
+    use super::*;
+
+    fn concentrator() -> SpanConcentrator {
+        SpanConcentrator::new(false, false, &[], 1_000_000_000)
+    }
+
+    fn span_with_metric(key: &str, val: f64) -> Span {
+        let mut metrics = FastHashMap::default();
+        metrics.insert(MetaString::from(key), val);
+        Span::new("svc", "op", "resource", "web", 1, 0, 1_000_000_000, 100_000_000, 0).with_metrics(metrics)
+    }
+
+    // Issue 3: _dd.top_level is the tracer-set key in v1 payloads. The concentrator
+    // must treat it the same as the legacy agent-set _top_level key.
+
+    #[test]
+    fn tracer_top_level_key_makes_span_eligible_for_stats() {
+        let span = span_with_metric("_dd.top_level", 1.0);
+        assert!(
+            concentrator().new_stat_span_from_span(&span).is_some(),
+            "_dd.top_level=1.0 should make a span eligible for stats (same as _top_level)"
+        );
+    }
+
+    #[test]
+    fn tracer_top_level_key_sets_is_top_level_flag_on_stat_span() {
+        let span = span_with_metric("_dd.top_level", 1.0);
+        let stat = concentrator()
+            .new_stat_span_from_span(&span)
+            .expect("span with _dd.top_level=1.0 should produce a stat span");
+        assert!(stat.is_top_level, "stat span from _dd.top_level=1.0 should have is_top_level=true");
+    }
+
+    #[test]
+    fn agent_top_level_key_still_makes_span_eligible() {
+        let span = span_with_metric("_top_level", 1.0);
+        let stat = concentrator()
+            .new_stat_span_from_span(&span)
+            .expect("_top_level=1.0 should still produce a stat span");
+        assert!(stat.is_top_level);
+    }
 }
 
 fn is_partial_snapshot(span: &Span) -> bool {

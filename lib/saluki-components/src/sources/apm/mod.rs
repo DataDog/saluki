@@ -422,9 +422,10 @@ fn v1_trace_to_trace(v1: V1Trace) -> Trace {
         Some(v1.chunk.priority)
     };
 
-    // Convert chunk-level attributes (process tags, etc.) and merge payload-level attributes.
-    let mut attributes = v1_kvs_to_attribute_map(v1.chunk.attributes);
-    for kv in v1.payload_attributes {
+    // Payload attributes are defaults common to all chunks; chunk attributes are more
+    // specific and override them for the same key.
+    let mut attributes = v1_kvs_to_attribute_map(v1.payload_attributes);
+    for kv in v1.chunk.attributes {
         if let Some(av) = v1_anyvalue_to_attribute_value(kv.value) {
             attributes.insert(kv.key, av);
         }
@@ -538,5 +539,88 @@ fn v1_anyvalue_to_attribute_value(v: V1AnyValue) -> Option<AttributeValue> {
                 .filter_map(|kv| v1_anyvalue_to_attribute_value(kv.value).map(|v| (kv.key, v)))
                 .collect(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use saluki_common::collections::FastHashMap;
+    use stringtheory::MetaString;
+
+    use super::*;
+
+    fn kv(key: &str, value: &str) -> V1KeyValue {
+        V1KeyValue {
+            key: MetaString::from(key),
+            value: V1AnyValue::String(MetaString::from(value)),
+        }
+    }
+
+    fn empty_chunk(chunk_attrs: Vec<V1KeyValue>) -> V1TraceChunk {
+        V1TraceChunk {
+            priority: 1,
+            origin: MetaString::default(),
+            attributes: chunk_attrs,
+            spans: vec![],
+            dropped_trace: false,
+            trace_id_high: 0,
+            trace_id_low: 1,
+            sampling_mechanism: 0,
+        }
+    }
+
+    fn make_v1_trace(chunk_attrs: Vec<V1KeyValue>, payload_attrs: Vec<V1KeyValue>) -> V1Trace {
+        V1Trace {
+            chunk: empty_chunk(chunk_attrs),
+            container_id: MetaString::default(),
+            language_name: MetaString::default(),
+            language_version: MetaString::default(),
+            tracer_version: MetaString::default(),
+            runtime_id: MetaString::default(),
+            env: MetaString::default(),
+            hostname: MetaString::default(),
+            app_version: MetaString::default(),
+            payload_attributes: payload_attrs,
+            client_dropped_p0s_weight: 0.0,
+        }
+    }
+
+    fn attr_string(attrs: &FastHashMap<MetaString, AttributeValue>, key: &str) -> Option<String> {
+        attrs.get(key).and_then(|v| {
+            if let AttributeValue::String(s) = v {
+                Some(s.to_string())
+            } else {
+                None
+            }
+        })
+    }
+
+    // Issue 2: chunk-level attributes must take priority over payload-level attributes
+    // when both set the same key. The payload defines defaults common to all chunks;
+    // a chunk can override them.
+
+    #[test]
+    fn chunk_attr_takes_priority_over_payload_attr_for_same_key() {
+        let v1 = make_v1_trace(
+            vec![kv("env", "chunk-env")],
+            vec![kv("env", "payload-env")],
+        );
+        let trace = v1_trace_to_trace(v1);
+        assert_eq!(
+            attr_string(&trace.attributes, "env").as_deref(),
+            Some("chunk-env"),
+            "chunk attribute should win over payload attribute for the same key"
+        );
+    }
+
+    #[test]
+    fn payload_attr_present_when_no_chunk_conflict() {
+        let v1 = make_v1_trace(vec![], vec![kv("payload-key", "payload-val")]);
+        let trace = v1_trace_to_trace(v1);
+        assert_eq!(
+            attr_string(&trace.attributes, "payload-key").as_deref(),
+            Some("payload-val"),
+            "payload attribute with no chunk conflict should still be present"
+        );
     }
 }
