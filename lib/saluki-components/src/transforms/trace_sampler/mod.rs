@@ -39,14 +39,12 @@ pub(crate) mod signature;
 mod v1;
 mod v1_no_priority;
 mod v1_priority;
-mod v1_rare_sampler;
 
 use self::probabilistic::PROB_RATE_KEY;
 use self::v1::V1TraceSamplerImpl;
 use self::v1::ERROR_SAMPLER_BURST as V1_ERROR_SAMPLER_BURST;
 use self::v1_no_priority::V1NoPrioritySampler;
 use self::v1_priority::PrioritySampler;
-use self::v1_rare_sampler::V1RareSampler;
 use crate::common::datadog::{
     apm::ApmConfig, get_trace_env, sample_by_rate, DECISION_MAKER_MANUAL, DECISION_MAKER_PROBABILISTIC,
     OTEL_TRACE_ID_META_KEY, SAMPLING_PRIORITY_METRIC_KEY, TAG_DECISION_MAKER,
@@ -142,7 +140,7 @@ impl SynchronousTransformBuilder for TraceSamplerConfiguration {
                     rates.clone(),
                 ),
                 no_priority_sampler: V1NoPrioritySampler::new(self.apm_config.target_traces_per_second()),
-                rare_sampler: V1RareSampler::new(
+                rare_sampler: rare_sampler::RareSampler::new(
                     self.apm_config.rare_sampler_enabled(),
                     self.apm_config.rare_sampler_tps(),
                     std::time::Duration::from_secs_f64(self.apm_config.rare_sampler_cooldown_period_secs()),

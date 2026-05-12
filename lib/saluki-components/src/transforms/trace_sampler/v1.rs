@@ -21,7 +21,7 @@ use tracing::debug;
 
 use super::v1_no_priority::V1NoPrioritySampler;
 use super::v1_priority::PrioritySampler;
-use super::v1_rare_sampler::V1RareSampler;
+use super::rare_sampler::RareSampler;
 
 /// Sentinel indicating the tracer set no priority (matches Go's `PriorityNone = math.MinInt8`).
 pub(super) const PRIORITY_NONE: i32 = i8::MIN as i32;
@@ -32,7 +32,7 @@ pub(super) const ERROR_SAMPLER_BURST: usize = 100;
 pub(super) struct V1TraceSamplerImpl {
     pub(super) priority_sampler: PrioritySampler,
     pub(super) no_priority_sampler: V1NoPrioritySampler,
-    pub(super) rare_sampler: V1RareSampler,
+    pub(super) rare_sampler: RareSampler,
     pub(super) error_token_bucket: Option<TokenBucket>,
     pub(super) error_sampling_enabled: bool,
     pub(super) error_tracking_standalone: bool,
@@ -69,7 +69,8 @@ impl V1TraceSamplerImpl {
         }
 
         // ── Rare sampler runs unconditionally before any keep/drop decision ─────
-        let rare = self.rare_sampler.sample(trace.spans());
+        let root_idx = find_root_span_idx(trace.spans());
+        let rare = self.rare_sampler.sample(trace, root_idx);
 
         // ── Manual/user drop: hard drop, no overrides possible ─────────────────
         // Only hard-drop when the tracer explicitly set a negative priority.
@@ -93,8 +94,6 @@ impl V1TraceSamplerImpl {
         let has_priority = trace.priority.is_some();
         // Unwrap to 0 (auto-drop) for the no-priority branch; the value is unused there.
         let priority = trace.priority.unwrap_or(0);
-
-        let root_idx = find_root_span_idx(trace.spans());
 
         let keep = if has_priority {
             let spans = trace.spans_mut();
@@ -215,7 +214,7 @@ mod tests {
                 V1SamplingRatesHandle::new(),
             ),
             no_priority_sampler: V1NoPrioritySampler::new(10.0),
-            rare_sampler: V1RareSampler::new(false, 5.0, Duration::from_secs(300), 200),
+            rare_sampler: RareSampler::new(false, 5.0, Duration::from_secs(300), 200),
             error_token_bucket: Some(TokenBucket::new(10.0, 100)),
             error_sampling_enabled: true,
             error_tracking_standalone: false,
@@ -226,6 +225,13 @@ mod tests {
         saluki_core::data_model::event::trace::Span::new(
             "svc", "op", "res", "web", 1, parent_id, 0, 1000, if error { 1 } else { 0 },
         )
+    }
+
+    fn make_top_level_span(parent_id: u64, error: bool) -> saluki_core::data_model::event::trace::Span {
+        use saluki_core::data_model::event::trace::AttributeValue;
+        let mut span = make_span(parent_id, error);
+        span.attributes.insert(MetaString::from("_top_level"), AttributeValue::Float(1.0));
+        span
     }
 
     fn make_trace(priority: i32, spans: Vec<saluki_core::data_model::event::trace::Span>) -> Trace {
@@ -300,12 +306,12 @@ mod tests {
     #[test]
     fn rare_sampler_overrides_auto_drop_first_occurrence() {
         let mut s = V1TraceSamplerImpl {
-            rare_sampler: V1RareSampler::new(true, 1000.0, Duration::from_secs(300), 200),
+            rare_sampler: RareSampler::new(true, 1000.0, Duration::from_secs(300), 200),
             error_token_bucket: None,
             error_sampling_enabled: false,
             ..make_sampler()
         };
-        let mut trace = make_trace(0, vec![make_span(0, false)]);
+        let mut trace = make_trace(0, vec![make_top_level_span(0, false)]);
         assert!(process(&mut s, &mut trace));
         assert_eq!(trace.priority, Some(PRIORITY_AUTO_KEEP));
     }
@@ -313,15 +319,15 @@ mod tests {
     #[test]
     fn rare_sampler_runs_before_drop_decision() {
         let mut s = V1TraceSamplerImpl {
-            rare_sampler: V1RareSampler::new(true, 1000.0, Duration::from_secs(300), 200),
+            rare_sampler: RareSampler::new(true, 1000.0, Duration::from_secs(300), 200),
             error_token_bucket: None,
             error_sampling_enabled: false,
             ..make_sampler()
         };
-        let mut trace = make_trace(0, vec![make_span(0, false)]);
+        let mut trace = make_trace(0, vec![make_top_level_span(0, false)]);
         assert!(process(&mut s, &mut trace), "rare should keep first occurrence");
 
-        let mut trace2 = make_trace(0, vec![make_span(0, false)]);
+        let mut trace2 = make_trace(0, vec![make_top_level_span(0, false)]);
         assert!(!process(&mut s, &mut trace2), "rare should not repeat-sample within TTL");
     }
 
@@ -344,7 +350,7 @@ mod tests {
             ),
             // High TPS budget: the no-priority sampler keeps all traces within the burst window.
             no_priority_sampler: V1NoPrioritySampler::new(10000.0),
-            rare_sampler: V1RareSampler::new(false, 5.0, Duration::from_secs(300), 200),
+            rare_sampler: RareSampler::new(false, 5.0, Duration::from_secs(300), 200),
             error_token_bucket: None,
             error_sampling_enabled: false,
             error_tracking_standalone: false,
