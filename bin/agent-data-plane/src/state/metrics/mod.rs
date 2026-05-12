@@ -586,6 +586,20 @@ mod tests {
             )),
             Event::Metric(Metric::counter(
                 Context::from_static_parts(
+                    "adp.component_errors_total",
+                    &["component_id:dsd_in", "listener_type:unix", "error_type:framing"],
+                ),
+                29.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_errors_total",
+                    &["component_id:dsd_in", "listener_type:unixgram", "error_type:framing"],
+                ),
+                31.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
                     "adp.network_http_requests_errors_total",
                     &["error_type:connection_error", "error_scope:phase"],
                 ),
@@ -618,9 +632,10 @@ mod tests {
 
         assert!(output.contains("dogstatsd_metric_packets 11"));
         assert!(output.contains("dogstatsd_uds_packets 48"));
-        assert!(output.contains("dogstatsd_udp_packet_reading_errors 13"));
-        assert!(output.contains("dogstatsd_uds_packet_reading_errors 36"));
-        assert!(!output.contains("dogstatsd_udp_packet_reading_errors 23"));
+        assert!(output.contains("dogstatsd_udp_packet_reading_errors 23"));
+        assert!(output.contains("dogstatsd_uds_packet_reading_errors 60"));
+        assert!(!output.contains("dogstatsd_udp_packet_reading_errors 13"));
+        assert!(!output.contains("dogstatsd_uds_packet_reading_errors 36"));
         assert!(
             output.contains("forwarder_transactions_errors_by_type_connection_errors{source=\"agent-data-plane\"} 3")
         );
