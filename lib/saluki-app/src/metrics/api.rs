@@ -102,15 +102,10 @@ impl APIHandler for MetricsAPIHandler {
     }
 }
 
-/// A worker that processes dynamic metric filter override requests and serves the metrics API.
+/// A worker that processes dynamic metric filter override requests.
 ///
-/// On initialization, asserts a [`DynamicRoute`] for the privileged API endpoint that exposes the
-/// `/metrics/override` and `/metrics/reset` routes, then owns the receiving half of the override channel
-/// (the corresponding sender is held by the [`MetricsAPIHandler`] embedded in the asserted route). The
-/// worker exits cleanly on either supervisor shutdown or channel close.
-///
-/// This worker is one-shot: a successful initialization consumes the worker state. Restart by the supervisor
-/// will fail with an initialization error, propagating up to bring the supervisor down.
+/// When running, the worker asserts a set of routes (based on [`MetricsAPIHandler`]) that allow triggering
+/// an override of the current metrics filter directives as well as clearing (resetting) the active override.
 pub struct MetricsOverrideWorker {
     handler: MetricsAPIHandler,
     state: Arc<Mutex<MetricsOverrideWorkerState>>,
@@ -123,11 +118,6 @@ struct MetricsOverrideWorkerState {
 
 impl MetricsOverrideWorker {
     /// Creates a new `MetricsOverrideWorker` driving the given filter handle.
-    ///
-    /// The worker owns the paired [`MetricsAPIHandler`] internally and asserts it as a [`DynamicRoute`]
-    /// on the privileged API endpoint when it initializes. The worker must be added to a
-    /// [`Supervisor`][saluki_core::runtime::Supervisor] for the route to be registered and for override
-    /// requests to be processed.
     pub(super) fn new(filter_handle: FilterHandle) -> Self {
         let (override_tx, override_rx) = mpsc::channel(1);
         let handler = MetricsAPIHandler {

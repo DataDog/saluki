@@ -161,15 +161,10 @@ impl APIHandler for LoggingAPIHandler {
     }
 }
 
-/// A worker that processes log filter directive overrides and serves the logging API.
+/// A worker that processes log filter directive overrides.
 ///
-/// On initialization, asserts a [`DynamicRoute`] for the privileged API endpoint that exposes the
-/// `/logging/override` and `/logging/reset` routes, then owns the receiving half of the controller's
-/// channel and the canonical base filter. The worker exits cleanly on either supervisor shutdown or
-/// channel close.
-///
-/// One-shot: a successful initialization consumes the worker state. Restart by the supervisor will fail with an
-/// initialization error, propagating up to bring the supervisor down.
+/// When running, the worker asserts a set of routes (based on [`LoggingAPIHandler`]) that allow triggering
+/// an override of the current logging filter directives as well as clearing (resetting) the active override.
 pub struct LoggingOverrideWorker {
     handler: LoggingAPIHandler,
     state: Arc<Mutex<LoggingOverrideWorkerState>>,
@@ -182,15 +177,9 @@ struct LoggingOverrideWorkerState {
 }
 
 impl LoggingOverrideWorker {
-    /// Creates a new worker paired with a [`LoggingOverrideController`].
+    /// Creates a new `LoggingOverrideWorker` driving the given reload handle.
     ///
-    /// `base_filter` is the base filter to restore after an override expires; it can be replaced at runtime via
-    /// [`LoggingOverrideController::update_base`]. `reload_handle` is the `tracing_subscriber` reload handle that
-    /// the worker drives directly.
-    ///
-    /// The worker must be added to a [`Supervisor`][saluki_core::runtime::Supervisor] for the controller's actions
-    /// to take effect and for the privileged API route to be registered; without it, sends are accepted but never
-    /// applied.
+    /// `base_filter` is used as the default filter that gets restored after an override expires.
     pub(super) fn new(
         base_filter: EnvFilter, reload_handle: Handle<EnvFilter, Registry>,
     ) -> (Self, LoggingOverrideController) {

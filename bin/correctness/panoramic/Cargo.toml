@@ -44,4 +44,3 @@ tracing-subscriber = { workspace = true, features = [
   "tracing-log",
 ] }
 treediff = { workspace = true, features = ["with-serde-json"] }
-url = { workspace = true }
