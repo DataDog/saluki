@@ -8,6 +8,31 @@ While the rise of agentic coding has spurred the ability for developers to produ
 and software in record time, it also poses an increased risk for eroding the security and quality
 of software projects, in addition to making them harder to maintain and debug over time.
 
+## Guiding Principles
+
+- Top priorities are correctness, then performance, in that order.
+- Code should be maintainable and human-readable.
+- Documentation is crucial.
+- Development is a conversation, not a monologue: agents should communicate early and often during
+  the development process, from ideation to execution, to ensure that both sides are aligned on
+  whatever the current task is: debugging an issue, adding a new feature, or refactoring code.
+
+## Project Index
+
+- `bin/agent-data-plane`: the primary artifact of this project. A binary that runs alongside the
+  DataDog Agent.
+- `bin/correctness`: the framework for integration tests.
+- `lib/`: the production frameworks and common code supporting `agent-data-plane`
+- `docs/`: Human-oriented documentation.
+- `test/`: Integration test cases.
+
+### Gotchas
+
+- `agent-data-plane` `standalone` mode is a vestige of earlier development and testing cycles. It is
+  not for production use and supporting it need not be a blocker during feature development.
+- We have customized our use of `cargo fmt` and `clippy`. The `Makefile` is authoritative.
+- Our Rust code wraps at 120 characters.
+
 ## Building and Testing
 
 Use `./Makefile` to understand build commands.
@@ -15,7 +40,7 @@ Use `./Makefile` to understand build commands.
 ### Checking your Work
 
 Use these commands to check your Rust work. Each command is progressively deeper. Use Level 1 when
-you are editing Rust code, then whe you think you are done, progress through the additional levels.
+you are editing Rust code, then when you think you are done, progress through the additional levels.
 
 - Level 1: `cargo check --workspace && cargo check --workspace --tests`: At first this may be
   specialized to the `--bin` or `--lib` you are working on, but run it on the whole workspace before
@@ -46,13 +71,13 @@ Alternatively, `panoramic` can be invoked directly, for example if the user requ
 - `cargo run --release --bin panoramic -- run -d test/correctness -t test-name-1 -t test-name-2`
 - `cargo run --release --bin panoramic -- --help`
 
-## High-level guidelines
+## Agent guidelines
 
-Overall, use of LLMs while working on Saluki is **absolutely fine.** This covers all aspects
-of working on the project: feature development, testing, debugging, and so on.
+Use of LLMs while working on Saluki is **absolutely fine.** This covers all aspects of working on the
+project: feature development, testing, debugging, and so on.
 
-However, we do not allow for fully autonomous/unsupervised development by agents. What this means
-in practice is that:
+However, we do not allow fully autonomous/unsupervised development by agents. What this means in
+practice is that:
 
 - a human operator using LLMs as part of their workflow is **OK**, but
 - setting up agents to run autonomously is **NOT OK**, and likewise
@@ -62,23 +87,7 @@ These guidelines have a singular goal: ensure that human operators are always pa
 development process so that the quality of the software is maintained, and that we don't
 lose understanding and context of what we're building.
 
-## Agent guidelines
-
-For all agents examining this repository, this section should act as your set of guiding principles
-during development:
-
-- "Make it work, then make it fast": we always prioritize correctness and safety over performance,
-  and performance without correctness or safety is unacceptable.
-- Saluki is built and operated by humans: we strive to produce a software artifact that is both
-  easy to understand and maintain by humans and LLMs alike. This means documentation is crucial.
-- Development is a conversation, not a monologue: agents should communicate early and often during
-  the development process, from ideation to execution, to ensure that both sides are aligned on
-  whatever the current task is: debugging an issue, adding a new feature, or refactoring code.
-  
-Any and all sections that follow in this document should serve as the primary technical reference
-for agents: tooling to use, technical best practices, and so on.
-
-### Technical documentation
+## Writing technical documentation
 
 When writing or updating documentation, follow these guidelines. For full details, see
 `docs/development/style-guide.md`.
