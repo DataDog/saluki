@@ -1090,21 +1090,15 @@ async fn drive_stream(
                         eof = true;
                     }
 
-                    // TODO: This is correct for UDP and UDS in SOCK_DGRAM mode, but not for UDS in SOCK_STREAM mode...
-                    // because to match the Datadog Agent, we would only want to increment the number of successful
-                    // packets for each length-delimited frame, but this is obviously being incremented before we do any
-                    // framing... and even further, with the nested framer, we don't have access to the signal that
-                    // we've gotten a full length-delimited outer frame, only each individual newline-delimited inner
-                    // frame.
-                    //
-                    // As such, we'll potentially be over-reporting this metric for UDS in SOCK_STREAM mode compared to
-                    // the Datadog Agent.
-                    metrics.packet_receive_success().increment(1);
+                    let is_connectionless = stream.is_connectionless();
+                    if is_connectionless {
+                        metrics.packet_receive_success().increment(1);
+                    }
                     metrics.bytes_received().increment(bytes_read as u64);
                     metrics.bytes_received_size().record(bytes_read as f64);
                     let origin_detection_failed =
                         origin_detection_enabled && bytes_read > 0 && peer_addr.has_process_credential_error();
-                    if origin_detection_failed && stream.is_connectionless() {
+                    if origin_detection_failed && is_connectionless {
                         metrics.origin_detection_errors().increment(1);
                     }
 
@@ -1113,7 +1107,7 @@ async fn drive_stream(
                     // For connectionless streams, we always try to decode the buffer as if it's EOF, since it effectively _is_
                     // always the end of file after a receive. For connection-oriented streams, we only want to do this once we've
                     // actually hit true EOF.
-                    let reached_eof = eof || stream.is_connectionless();
+                    let reached_eof = eof || is_connectionless;
 
                     trace!(
                         buffer_len = io_buffer.remaining(),
@@ -1128,6 +1122,9 @@ async fn drive_stream(
                     'frame: loop {
                         let frame_result = framer.next_frame(io_buffer, reached_eof);
                         let completed_outer_frames = framer.take_completed_outer_frames();
+                        if !is_connectionless && completed_outer_frames > 0 {
+                            metrics.packet_receive_success().increment(completed_outer_frames as u64);
+                        }
                         if origin_detection_failed && completed_outer_frames > 0 {
                             metrics.origin_detection_errors().increment(completed_outer_frames as u64);
                         }
