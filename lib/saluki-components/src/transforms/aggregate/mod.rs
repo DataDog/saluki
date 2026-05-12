@@ -21,6 +21,7 @@ use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use smallvec::SmallVec;
+use stringtheory::MetaString;
 use tokio::{
     select,
     time::{interval, interval_at},
@@ -31,7 +32,7 @@ mod telemetry;
 use self::telemetry::Telemetry;
 
 mod config;
-use self::config::HistogramConfiguration;
+use self::config::{HistogramConfiguration, HistogramStatistic};
 
 const PASSTHROUGH_IDLE_FLUSH_CHECK_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -780,8 +781,15 @@ async fn transform_and_push_metric(
                     MetricValues::gauge(new_points)
                 };
 
+                // Counts are dimensionless, so clear any unit inherited from the input histogram.
+                let new_metadata = if matches!(statistic, HistogramStatistic::Count) {
+                    metadata.clone().with_unit(MetaString::empty())
+                } else {
+                    metadata.clone()
+                };
+
                 let new_context = context.with_name(format!("{}.{}", context.name(), statistic.suffix()));
-                let new_metric = Metric::from_parts(new_context, new_values, metadata.clone());
+                let new_metric = Metric::from_parts(new_context, new_values, new_metadata);
                 dispatcher.push(Event::Metric(new_metric)).await?;
             }
 
@@ -1289,14 +1297,25 @@ mod tests {
         let flushed_metrics = get_flushed_metrics(flush_ts(1), &mut state).await;
         assert_eq!(flushed_metrics.len(), 3);
 
-        // Every output metric (count, p50, sum) must carry the unit from the input histogram.
+        // Counts are dimensionless: the `.count` series must drop the unit while all other
+        // aggregate series carry the unit from the input histogram.
         for metric in &flushed_metrics {
-            assert_eq!(
-                metric.metadata().unit(),
-                Some("millisecond"),
-                "flushed metric '{}' should carry unit='millisecond'",
-                metric.context().name()
-            );
+            let name = metric.context().name();
+            if name.ends_with(".count") {
+                assert_eq!(
+                    metric.metadata().unit(),
+                    None,
+                    "flushed metric '{}' should be dimensionless",
+                    name
+                );
+            } else {
+                assert_eq!(
+                    metric.metadata().unit(),
+                    Some("millisecond"),
+                    "flushed metric '{}' should carry unit='millisecond'",
+                    name
+                );
+            }
         }
     }
 
