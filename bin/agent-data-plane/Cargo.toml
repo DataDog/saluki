@@ -19,6 +19,7 @@ fuzzing = [
   "dep:rand",
   "dep:memchr",
   "dep:datadog-intake",
+  "dep:tempfile"
 ]
 
 [dependencies]
@@ -66,6 +67,9 @@ tokio = { workspace = true, features = [
   "rt",
   "rt-multi-thread",
   "signal",
+  "full",
+  "tracing", # tokio_console instrumentation
+  "test-util", # for start_paused
 ] }
 tonic = { workspace = true }
 tracing = { workspace = true }
@@ -73,6 +77,9 @@ uuid = { workspace = true }
 libfuzzer-sys = { version = "0.4.12", optional = true }
 arbitrary = { version = "1.4.2", optional = true }
 memchr = { workspace = true, optional = true }
+console-subscriber = "0.5.0" # tokio_console instrumentation
+tempfile = { workspace = true, optional = true }
+tracing-subscriber.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tikv-jemallocator = { workspace = true, features = [

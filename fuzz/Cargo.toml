@@ -21,6 +21,7 @@ barkus-ebnf = { path = "../../barkus/crates/barkus-ebnf" }
 saluki-io = { workspace = true }
 argh.workspace = true
 rand = "0.10"
+bytes.workspace = true
 
 [[bin]]
 name = "apd"

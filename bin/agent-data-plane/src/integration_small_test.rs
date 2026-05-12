@@ -1,9 +1,9 @@
-use std::{path::PathBuf, sync::LazyLock};
+use std::{fmt, path::PathBuf, sync::{LazyLock, OnceLock}};
 
 use agent_data_plane::fuzz::{
-    DogStatsDInput, PROFILE, aggregate_metric_lines, metric_line_from_raw, inner, saluki_path
+    DogStatsDInput, aggregate_metric_lines, metric_line_from_raw, inner, saluki_path
 };
-use barkus_core::ir::GrammarIr;
+use barkus_core::{ir::GrammarIr, profile::Profile};
 use bytes::Bytes;
 use rand::{rngs::SmallRng, SeedableRng};
 use saluki_error::GenericError;
@@ -43,7 +43,7 @@ fn generate_corpus_random() -> Result<DogStatsDInput, GenericError> {
     };
     let generated_packets: Vec<(u64, Bytes)> = (0..count)
         .map(|_| {
-            let (ast, _tape, _map) = barkus_core::generate::generate(&GRAMMAR_SINGLE, &PROFILE, &mut rng)
+            let (ast, _tape, _map) = barkus_core::generate::generate(&GRAMMAR_SINGLE, &Profile::default(), &mut rng)
                 .map_err(|e| GenericError::msg("Barkus - failed to generate").context(e))?;
             let ast_bytes = ast.serialize();
             metric_line_from_raw(&ast_bytes)
@@ -51,7 +51,6 @@ fn generate_corpus_random() -> Result<DogStatsDInput, GenericError> {
         .collect::<Result<_, GenericError>>()?;
     Ok(DogStatsDInput { messages: aggregate_metric_lines(generated_packets) })
 }
-
 
 fn main() {
     tracing_subscriber::fmt()
@@ -68,6 +67,7 @@ fn main() {
     info!("hello!");
     let corpus = generate_corpus_random().expect("failed to generate random corpus");
     tokio::runtime::Builder::new_current_thread()
+        .start_paused(true)
         .enable_all()
         .build()
         .expect("failed to build tokio runtime")

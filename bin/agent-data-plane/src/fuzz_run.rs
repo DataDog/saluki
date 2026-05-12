@@ -1,5 +1,4 @@
 use std::{
-    path::PathBuf,
     sync::Mutex,
     time::{Duration, Instant},
 };
@@ -17,7 +16,6 @@ use saluki_app::{
     metrics::emit_startup_metrics,
 };
 use saluki_components::{
-    config::{DatadogRemapper, KEY_ALIASES},
     destinations::DogStatsDStatisticsConfiguration,
     forwarders::DatadogConfiguration,
 };
@@ -31,10 +29,10 @@ use tracing::{error, info, warn};
 use crate::cli::run::{
     add_baseline_metrics_pipeline_to_blueprint, add_dsd_pipeline_to_blueprint, add_otlp_pipeline_to_blueprint,
 };
-use crate::internal::platform::PlatformSettings;
 use crate::{config::DataPlaneConfiguration, env_provider::ADPEnvironmentProvider};
 
-// TODO: fuzz entry modeled after the content of that command
+
+
 // extract stuff to get a function that gives us enough to build the topology
 // get rid of the supervisor - we don't need it
 // the topology should shut itself down after a fixed delay
@@ -45,23 +43,13 @@ use crate::{config::DataPlaneConfiguration, env_provider::ADPEnvironmentProvider
 // call the network calls to send packets to the topology
 /// Entrypoint for the `run` commands.
 pub async fn handle_run_command(
-    bootstrap_config_path: PathBuf, shutdown: tokio::sync::oneshot::Receiver<()>, started: Instant,
+    bootstrap_config: serde_json::Value, shutdown: tokio::sync::oneshot::Receiver<()>, started: Instant
 ) -> Result<(), GenericError> {
     info!("Agent Data Plane starting...");
 
     // Load our static configuration
-
-    let config = ConfigurationLoader::default()
-        .with_key_aliases(KEY_ALIASES)
-        .from_yaml(bootstrap_config_path)
-        .error_context("Failed to load Datadog Agent configuration file during bootstrap.")?
-        .add_providers([DatadogRemapper::new()])
-        .from_environment(PlatformSettings::get_env_var_prefix())
-        .error_context("Environment variable prefix should not be empty.")?
-        .with_default_secrets_resolution()
-        .await
-        .error_context("Failed to load secrets resolution configuration during bootstrap.")?
-        .bootstrap_generic();
+    let (config, maybe_sender) = ConfigurationLoader::for_tests(Some(bootstrap_config), None, false).await;
+    assert!(maybe_sender.is_none());
     let dp_config = DataPlaneConfiguration::from_configuration(&config)
         .error_context("Failed to load data plane configuration.")?;
 
