@@ -4,7 +4,6 @@
 //!
 //! - Create a health handle for each listener.
 //! - Handle UDS stream framing without treating EOF the same way as UDP and UDS datagram framing.
-//! - Align UDS stream origin-detection error counting with length-delimited packet boundaries.
 //! - Track dispatch failures without depending on whether all events were already iterated.
 
 use std::sync::{Arc, LazyLock};
@@ -44,7 +43,7 @@ use saluki_io::{
     buf::{BytesBuffer, FixedSizeVec},
     deser::{
         codec::dogstatsd::*,
-        framing::{FramerExt as _, FramingError},
+        framing::{Framer as _, FramingError},
     },
     net::{
         listener::{Listener, ListenerError},
@@ -963,7 +962,6 @@ async fn drive_stream(
     let mut event_buffer_manager = EventBufferManager::default();
     let mut io_buffer_manager = IoBufferManager::new(&io_buffer_pool, &stream);
     let memory_limiter = source_context.topology_context().memory_limiter();
-    let mut reported_origin_detection_error = false;
 
     'read: loop {
         let mut eof = false;
@@ -992,14 +990,10 @@ async fn drive_stream(
                     metrics.packet_receive_success().increment(1);
                     metrics.bytes_received().increment(bytes_read as u64);
                     metrics.bytes_received_size().record(bytes_read as f64);
-                    // Core Agent increments this for UDS credential-processing errors from `processUDSOrigin`:
-                    // datadog-agent/comp/dogstatsd/listeners/uds_common.go.
-                    // TODO: Count UDS stream errors on length-delimited packet boundaries instead of stream reads.
                     let origin_detection_failed =
                         origin_detection_enabled && bytes_read > 0 && peer_addr.has_process_credential_error();
-                    if origin_detection_failed && (stream.is_connectionless() || !reported_origin_detection_error) {
+                    if origin_detection_failed && stream.is_connectionless() {
                         metrics.origin_detection_errors().increment(1);
-                        reported_origin_detection_error = true;
                     }
 
                     // When we're actually at EOF, or we're dealing with a connectionless stream, we try to decode in EOF mode.
@@ -1019,10 +1013,15 @@ async fn drive_stream(
                         bytes_read
                     );
 
-                    let mut frames = io_buffer.framed(&mut framer, reached_eof);
                     'frame: loop {
-                        match frames.next() {
-                            Some(Ok(frame)) => {
+                        let frame_result = framer.next_frame(io_buffer, reached_eof);
+                        let completed_outer_frames = framer.take_completed_outer_frames();
+                        if origin_detection_failed && completed_outer_frames > 0 {
+                            metrics.origin_detection_errors().increment(completed_outer_frames as u64);
+                        }
+
+                        match frame_result {
+                            Ok(Some(frame)) => {
                                 trace!(%listen_addr, %peer_addr, ?frame, "Decoded frame.");
                                 match handle_frame(&frame[..], &codec, &mut context_resolvers, &metrics, &peer_addr, enabled_filter, &additional_tags) {
                                     Ok(Some(event)) => {
@@ -1044,7 +1043,7 @@ async fn drive_stream(
                                     },
                                 }
                             }
-                            Some(Err(e)) => {
+                            Err(e) => {
                                 metrics.framing_errors().increment(1);
                                 if should_warn_stream_log_too_big(&listen_addr, &e, stream_log_too_big) {
                                     warn!(
@@ -1065,7 +1064,7 @@ async fn drive_stream(
                                     break 'read;
                                 }
                             }
-                            None => {
+                            Ok(None) => {
                                 trace!(%listen_addr, %peer_addr, "Not enough data to decode another frame.");
                                 if eof && !stream.is_connectionless() {
                                     debug!(%listen_addr, %peer_addr, "Stream received EOF. Shutting down handler.");

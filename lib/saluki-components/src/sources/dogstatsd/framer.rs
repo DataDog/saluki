@@ -10,6 +10,15 @@ pub enum DsdFramer {
     Stream(NestedFramer<NewlineFramer, LengthDelimitedFramer>),
 }
 
+impl DsdFramer {
+    pub fn take_completed_outer_frames(&mut self) -> usize {
+        match self {
+            Self::NonStream(_) => 0,
+            Self::Stream(framer) => framer.take_completed_outer_frames(),
+        }
+    }
+}
+
 impl Framer for DsdFramer {
     fn next_frame<B: ReadIoBuffer>(&mut self, buf: &mut B, is_eof: bool) -> Result<Option<Bytes>, FramingError> {
         match self {
