@@ -12,6 +12,7 @@ static DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 static DOGSTATSD_AUTOSCALE_UDP_LISTENERS_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
     yaml_path: "dogstatsd_autoscale_udp_listeners",
     env_vars: &[],
     value_type: ValueType::Bool,

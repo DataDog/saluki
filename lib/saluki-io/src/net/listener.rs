@@ -4,11 +4,14 @@ use std::{collections::VecDeque, future::pending, io, net::SocketAddr, num::NonZ
 use snafu::{ResultExt as _, Snafu};
 use socket2::SockRef;
 use tokio::net::{TcpListener, UdpSocket as TokioUdpSocket};
+use tracing::warn;
 
 use super::{
     addr::ListenAddress,
     stream::{Connection, Stream},
-    unix::{enable_uds_socket_credentials, ensure_unix_socket_free, set_unix_socket_write_only},
+    unix::{
+        enable_uds_socket_credentials, ensure_unix_socket_free, set_unix_socket_write_only, socket_reuseport_supported,
+    },
 };
 
 const SOCKET_RECV_BUFFER_SIZE_SETTING: &str = "SO_RCVBUF";
@@ -124,7 +127,7 @@ impl Listener {
     ///
     /// If the listen address cannot be bound, or if the listener cannot be configured correctly, an error is returned.
     pub async fn from_listen_address(
-        listen_address: ListenAddress, udp_streams: Option<NonZeroUsize>,
+        listen_address: ListenAddress, mut udp_streams: Option<NonZeroUsize>,
     ) -> Result<Self, ListenerError> {
         let inner = match &listen_address {
             ListenAddress::Tcp(addr) => {
@@ -136,6 +139,12 @@ impl Listener {
                     })?
             }
             ListenAddress::Udp(addr) => {
+                // See if we have platform support for SO_REUSEPORT, and if not, fall back to the default behavior.
+                if !socket_reuseport_supported() {
+                    udp_streams = None;
+                    warn!("SO_REUSEPORT not supported on the current platform. Falling back to the default behavior.");
+                }
+
                 let sockets = bind_udp_sockets(*addr, udp_streams).await.context(FailedToBind {
                     address: listen_address.clone(),
                 })?;
@@ -322,11 +331,11 @@ async fn bind_udp_sockets(
         TokioUdpSocket::from_std(std_socket)
     }
 
-    if maybe_socket_count.is_none() {
+    let socket_count = maybe_socket_count.map(NonZeroUsize::get).unwrap_or(1);
+    if socket_count == 1 {
         return bind_udp_socket_standard(addr).await;
     }
 
-    let socket_count = maybe_socket_count.map(NonZeroUsize::get).unwrap_or(1);
     let mut sockets = VecDeque::with_capacity(socket_count);
 
     // Bind the first socket to learn the effective address. When the caller passed port `0`, the OS assigns an
