@@ -133,6 +133,19 @@ async fn run_docker_correctness_test(name: String, config: Config, tctx: TestCon
     }
 }
 
+/// Cleans up Docker volumes and networks for all three isolation groups.
+///
+/// Containers are already removed by the coordinator waits on every exit path; this handles the
+/// volumes and networks that `Driver::cleanup` does not remove. Safe to call even if a group was
+/// never fully started — Docker returns 404 for unknown resources and we log and continue.
+async fn cleanup_groups(baseline_id: &str, comparison_id: &str, millstone_id: &str) {
+    for id in [baseline_id, comparison_id, millstone_id] {
+        if let Err(e) = Driver::clean_related_resources(id.to_string()).await {
+            error!(error = %e, "Failed to clean up isolation group '{}'. Manual cleanup may be required.", id);
+        }
+    }
+}
+
 pub(crate) fn make_error_result(name: String, started: Instant, phase: &str, e: GenericError) -> TestResult {
     TestResult {
         name,
@@ -389,7 +402,15 @@ impl CorrectnessRunner {
             .await
         {
             Ok(pair) => pair,
-            Err(e) => return Err(e),
+            Err(e) => {
+                cleanup_groups(
+                    &baseline_isolation_group_id,
+                    &comparison_isolation_group_id,
+                    &millstone_isolation_group_id,
+                )
+                .await;
+                return Err(e);
+            }
         };
         info!("Agent containers spawned successfully. Starting shared millstone...");
 
@@ -402,6 +423,12 @@ impl CorrectnessRunner {
                     self.baseline_coordinator.wait().await;
                     self.comparison_coordinator.wait().await;
                     self.millstone_coordinator.wait().await;
+                    cleanup_groups(
+                        &baseline_isolation_group_id,
+                        &comparison_isolation_group_id,
+                        &millstone_isolation_group_id,
+                    )
+                    .await;
                     return Err(generic_error!("Failed to spawn shared millstone container: {}", e));
                 }
             };
@@ -413,6 +440,12 @@ impl CorrectnessRunner {
             self.baseline_coordinator.wait().await;
             self.comparison_coordinator.wait().await;
             self.millstone_coordinator.wait().await;
+            cleanup_groups(
+                &baseline_isolation_group_id,
+                &comparison_isolation_group_id,
+                &millstone_isolation_group_id,
+            )
+            .await;
             return Err(generic_error!(
                 "Shared millstone exited with non-zero exit code ({}). Error: {}",
                 code,
@@ -448,7 +481,15 @@ impl CorrectnessRunner {
             .await
         {
             Ok(pair) => pair,
-            Err(e) => return Err(e),
+            Err(e) => {
+                cleanup_groups(
+                    &baseline_isolation_group_id,
+                    &comparison_isolation_group_id,
+                    &millstone_isolation_group_id,
+                )
+                .await;
+                return Err(e);
+            }
         };
 
         // Signal all remaining containers to shut down and wait for them.
@@ -459,20 +500,12 @@ impl CorrectnessRunner {
         self.comparison_coordinator.wait().await;
         self.millstone_coordinator.wait().await;
 
-        debug!("Cleaning up resources from baseline group...");
-        if let Err(e) = Driver::clean_related_resources(baseline_isolation_group_id).await {
-            error!(error = %e, "Failed to clean up resources for baseline group. Manual cleanup may be required.");
-        }
-
-        debug!("Cleaning up resources from comparison group...");
-        if let Err(e) = Driver::clean_related_resources(comparison_isolation_group_id).await {
-            error!(error = %e, "Failed to clean up resources for comparison group. Manual cleanup may be required.");
-        }
-
-        debug!("Cleaning up resources from millstone group...");
-        if let Err(e) = Driver::clean_related_resources(millstone_isolation_group_id).await {
-            error!(error = %e, "Failed to clean up resources for millstone group. Manual cleanup may be required.");
-        }
+        cleanup_groups(
+            &baseline_isolation_group_id,
+            &comparison_isolation_group_id,
+            &millstone_isolation_group_id,
+        )
+        .await;
 
         info!("Cleanup complete.");
 
