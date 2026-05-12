@@ -32,7 +32,7 @@ use crate::common::otlp::traces::normalize::{
     normalize_tag_value_into_unchecked,
 };
 use crate::common::otlp::traces::normalize::{truncate_utf8, MAX_RESOURCE_LEN};
-use crate::common::otlp::traces::translator::{convert_span_id, convert_trace_id};
+use crate::common::otlp::traces::translator::convert_span_id;
 use crate::common::otlp::util::get_string_attribute;
 use crate::common::otlp::util::{
     DEPLOYMENT_ENVIRONMENT_KEY, KEY_DATADOG_CONTAINER_ID, KEY_DATADOG_ENVIRONMENT, KEY_DATADOG_VERSION,
@@ -117,6 +117,7 @@ pub fn otel_span_to_dd_span(
         interner,
         string_builder,
     );
+    let mut meta_struct: FastHashMap<MetaString, Vec<u8>> = FastHashMap::default();
 
     for (dd_key, apm_key) in DD_NAMESPACED_TO_APM_CONVENTIONS {
         if let Some(value) = use_both_maps(
@@ -136,6 +137,7 @@ pub fn otel_span_to_dd_span(
             attribute,
             &mut meta,
             &mut metrics,
+            &mut meta_struct,
             ignore_missing_fields,
             interner,
             string_builder,
@@ -274,7 +276,7 @@ pub fn otel_span_to_dd_span(
         }
     }
 
-    dd_span.with_meta(Some(meta)).with_metrics(Some(metrics))
+    dd_span.with_meta(Some(meta)).with_metrics(Some(metrics)).with_meta_struct(Some(meta_struct))
 }
 
 // OtelSpanToDDSpanMinimal otelSpanToDDSpan converts an OTel span to a DD span.
@@ -293,7 +295,6 @@ pub fn otel_to_dd_span_minimal(
     let resource_attributes = &otel_resource.attributes;
     let mut dd_span = DdSpan::default();
 
-    let trace_id = convert_trace_id(&otel_span.trace_id);
     let span_id = convert_span_id(&otel_span.span_id);
     let parent_id = convert_span_id(&otel_span.parent_span_id);
     let start = otel_span.start_time_unix_nano;
@@ -431,7 +432,6 @@ pub fn otel_to_dd_span_minimal(
         .with_name(name)
         .with_resource(resource)
         .with_span_type(span_type)
-        .with_trace_id(trace_id)
         .with_span_id(span_id)
         .with_parent_id(parent_id)
         .with_start(start)
@@ -942,7 +942,8 @@ const SQL_DB_SYSTEMS: &[&str] = &[
 
 fn map_attribute_generic(
     attribute: &KeyValue, meta: &mut FastHashMap<MetaString, MetaString>, metrics: &mut FastHashMap<MetaString, f64>,
-    ignore_missing_fields: bool, interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
+    meta_struct: &mut FastHashMap<MetaString, Vec<u8>>, ignore_missing_fields: bool,
+    interner: &GenericMapInterner, string_builder: &mut StringBuilder<GenericMapInterner>,
 ) {
     if attribute.key.is_empty() {
         return;
@@ -977,16 +978,10 @@ fn map_attribute_generic(
             );
         }
         OtlpValue::BytesValue(bytes) => {
-            let placeholder = format!("<{} bytes>", bytes.len());
-            conditionally_map_otlp_attribute_to_meta(
-                attribute.key.as_str(),
-                &placeholder,
-                meta,
-                metrics,
-                ignore_missing_fields,
-                interner,
-                string_builder,
-            );
+            if !attribute.key.is_empty() {
+                let key = MetaString::from_interner(attribute.key.as_str(), interner);
+                meta_struct.insert(key, bytes.clone());
+            }
         }
         OtlpValue::IntValue(i) => {
             conditionally_map_otlp_attribute_to_metric(
@@ -1747,6 +1742,7 @@ mod tests {
     fn test_map_attribute_generic_matches_agent_rules() {
         let mut meta = FastHashMap::default();
         let mut metrics = FastHashMap::default();
+        let mut meta_struct: FastHashMap<MetaString, Vec<u8>> = FastHashMap::default();
         let interner = test_interner();
         let mut string_builder = StringBuilder::new().with_interner(interner.clone());
 
@@ -1755,6 +1751,7 @@ mod tests {
             &http_attr,
             &mut meta,
             &mut metrics,
+            &mut meta_struct,
             false,
             &interner,
             &mut string_builder,
@@ -1766,6 +1763,7 @@ mod tests {
             &sampling_attr,
             &mut meta,
             &mut metrics,
+            &mut meta_struct,
             false,
             &interner,
             &mut string_builder,
@@ -1777,6 +1775,7 @@ mod tests {
             &analytics_attr,
             &mut meta,
             &mut metrics,
+            &mut meta_struct,
             false,
             &interner,
             &mut string_builder,
@@ -1784,16 +1783,18 @@ mod tests {
         assert_eq!(metrics.get(EVENT_EXTRACTION_METRIC_KEY), Some(&1.0));
 
         let dd_attr = kv_str("datadog.service", "svc");
-        map_attribute_generic(&dd_attr, &mut meta, &mut metrics, false, &interner, &mut string_builder);
+        map_attribute_generic(&dd_attr, &mut meta, &mut metrics, &mut meta_struct, false, &interner, &mut string_builder);
         assert!(!meta.contains_key("datadog.service"));
 
         let mut meta_ignore = FastHashMap::default();
         let mut metrics_ignore = FastHashMap::default();
+        let mut meta_struct_ignore: FastHashMap<MetaString, Vec<u8>> = FastHashMap::default();
         let env_attr = kv_str("env", "prod");
         map_attribute_generic(
             &env_attr,
             &mut meta_ignore,
             &mut metrics_ignore,
+            &mut meta_struct_ignore,
             true,
             &interner,
             &mut string_builder,

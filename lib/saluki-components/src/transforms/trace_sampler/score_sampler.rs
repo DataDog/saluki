@@ -97,15 +97,15 @@ impl ScoreSampler {
         let rate = self.sampler.get_signature_sample_rate(&signature);
 
         // Apply the sampling decision
+        let trace_id_low = trace.trace_id_low;
         let root = &mut trace.spans_mut()[root_idx];
-        self.apply_sample_rate(root, rate)
+        self.apply_sample_rate(root, rate, trace_id_low)
     }
 
     /// Apply the sampling rate to determine if the trace should be kept.
-    fn apply_sample_rate(&self, root: &mut Span, rate: f64) -> bool {
+    fn apply_sample_rate(&self, root: &mut Span, rate: f64, trace_id: u64) -> bool {
         let initial_rate = get_global_rate(root);
         let new_rate = initial_rate * rate;
-        let trace_id = root.trace_id();
         let sampled = sample_by_rate(trace_id, new_rate);
 
         if sampled {

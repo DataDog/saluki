@@ -169,7 +169,7 @@ mod tests {
     }
 
     fn make_span(parent_id: u64) -> Span {
-        Span::new("svc", "op", "res", "web", 0, 1, parent_id, 0, 1000, 0)
+        Span::new("svc", "op", "res", "web", 1, parent_id, 0, 1000, 0)
     }
 
     // ── Short-circuit tests ─────────────────────────────────────────────────

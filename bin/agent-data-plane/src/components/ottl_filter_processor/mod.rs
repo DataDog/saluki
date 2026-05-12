@@ -165,12 +165,12 @@ mod tests {
 
     use super::*;
 
-    fn make_span(trace_id: u64, span_id: u64, meta: HashMap<String, String>) -> Span {
+    fn make_span(_trace_id: u64, span_id: u64, meta: HashMap<String, String>) -> Span {
         let mut meta_map = FastHashMap::default();
         for (k, v) in meta {
             meta_map.insert(MetaString::from(k), MetaString::from(v));
         }
-        Span::new("svc", "op", "res", "web", trace_id, span_id, 0, 0, 1000, 0).with_meta(meta_map)
+        Span::new("svc", "op", "res", "web", span_id, 0, 0, 1000, 0).with_meta(meta_map)
     }
 
     fn make_trace(spans: Vec<Span>, _resource_tags: Option<Vec<&'static str>>) -> Trace {

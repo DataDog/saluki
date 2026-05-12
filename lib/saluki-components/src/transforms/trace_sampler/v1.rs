@@ -220,7 +220,7 @@ mod tests {
 
     fn make_span(parent_id: u64, error: bool) -> saluki_core::data_model::event::trace::Span {
         saluki_core::data_model::event::trace::Span::new(
-            "svc", "op", "res", "web", 0, 1, parent_id, 0, 1000, if error { 1 } else { 0 },
+            "svc", "op", "res", "web", 1, parent_id, 0, 1000, if error { 1 } else { 0 },
         )
     }
 

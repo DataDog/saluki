@@ -415,7 +415,9 @@ fn collect_strings(trace: &Trace) -> IdxStringTable {
             st.intern(&MetaString::from(link.tracestate()));
             for (k, v) in link.attributes() {
                 st.intern(k);
-                st.intern(v);
+                if let AttributeValue::String(s) = v {
+                    st.intern(s);
+                }
             }
         }
         for event in span.span_events() {
@@ -531,26 +533,6 @@ fn write_idx_attribute_map<S: piecemeal::ScratchBuffer + 'static>(
         }
         map.write_entry(key_ref, |av| {
             av.value(|vb| encode_attribute_value(vb, v, st))?;
-            Ok(())
-        })?;
-    }
-    Ok(())
-}
-
-/// Write a `FastHashMap<MetaString, MetaString>` (link attributes) into an `idx` attribute map.
-fn write_idx_string_map<S: piecemeal::ScratchBuffer + 'static>(
-    map: &mut piecemeal::MessageMapBuilder<'_, S, piecemeal::types::protobuf::Varint<u32>, idx::AnyValue>,
-    attrs: &FastHashMap<MetaString, MetaString>,
-    st: &IdxStringTable,
-) -> std::io::Result<()> {
-    for (k, v) in attrs {
-        let key_ref = st.get(k);
-        if key_ref == 0 {
-            continue;
-        }
-        let val_ref = st.get(v);
-        map.write_entry(key_ref, |av| {
-            av.value(|vb| vb.string_value_ref(val_ref))?;
             Ok(())
         })?;
     }
@@ -780,7 +762,7 @@ impl V1TraceEndpointEncoder {
                             sb.add_links(|sl| {
                                 sl.trace_id(&link_tid)?;
                                 sl.span_id(link.span_id())?;
-                                write_idx_string_map(&mut sl.attributes(), link.attributes(), &st)?;
+                                write_idx_attribute_map(&mut sl.attributes(), link.attributes(), &st)?;
                                 if tracestate_ref != 0 {
                                     sl.tracestate_ref(tracestate_ref)?;
                                 }
@@ -862,7 +844,7 @@ mod tests {
     use saluki_common::collections::FastHashMap;
     use saluki_config::ConfigurationLoader;
     use saluki_core::data_model::event::trace::{
-        EventAttributeValue, Span, SpanEvent, SpanLink, Trace,
+        AttributeValue, EventAttributeValue, Span, SpanEvent, SpanLink, Trace,
     };
     use stringtheory::MetaString;
 
@@ -881,7 +863,7 @@ mod tests {
     }
 
     fn make_span(service: &str, name: &str, resource: &str, span_id: u64, parent_id: u64) -> Span {
-        Span::new(service, name, resource, "web", 0, span_id, parent_id, 1_000_000_000, 5_000_000, 0)
+        Span::new(service, name, resource, "web", span_id, parent_id, 1_000_000_000, 5_000_000, 0)
             .with_kind(1) // server
     }
 
@@ -1007,7 +989,7 @@ mod tests {
     async fn encode_succeeds_with_span_links_and_events() {
         let mut enc = make_encoder().await;
         let mut link_attrs = FastHashMap::default();
-        link_attrs.insert(MetaString::from("link.type"), MetaString::from("follows_from"));
+        link_attrs.insert(MetaString::from("link.type"), AttributeValue::String(MetaString::from("follows_from")));
         let link = SpanLink::new(0xBBBBBBBBBBBBBBBB, 42)
             .with_trace_id_high(0xAAAAAAAAAAAAAAAA)
             .with_attributes(Some(link_attrs))

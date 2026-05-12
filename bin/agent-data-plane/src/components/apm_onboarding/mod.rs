@@ -101,6 +101,7 @@ impl SynchronousTransform for ApmOnboarding {
 }
 
 fn get_root_span_from_trace_mut(trace: &mut Trace) -> Option<&mut Span> {
+    let trace_id_low = trace.trace_id_low;
     let spans = trace.spans_mut();
     if spans.is_empty() {
         return None;
@@ -129,7 +130,7 @@ fn get_root_span_from_trace_mut(trace: &mut Trace) -> Option<&mut Span> {
 
     if parent_to_child.len() != 1 {
         debug!(
-            trace_id = spans[0].trace_id(),
+            trace_id = trace_id_low,
             "Failed to reliably identify a root span for a trace."
         );
     }

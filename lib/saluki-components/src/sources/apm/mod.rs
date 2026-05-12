@@ -464,7 +464,6 @@ fn v1_span_to_span(v1: V1Span) -> Span {
         v1.name,
         v1.resource,
         v1.span_type,
-        0, // trace_id is now on Trace; leave 0 on Span
         v1.span_id,
         v1.parent_id,
         v1.start,
@@ -488,17 +487,10 @@ fn v1_span_to_span(v1: V1Span) -> Span {
 }
 
 fn v1_span_link_to_span_link(v1: V1SpanLink) -> SpanLink {
-    // SpanLink.attributes is FastHashMap<MetaString, MetaString>: keep only string-valued entries.
     let attrs = v1
         .attributes
         .into_iter()
-        .filter_map(|kv| {
-            if let V1AnyValue::String(s) = kv.value {
-                Some((kv.key, s))
-            } else {
-                None
-            }
-        })
+        .filter_map(|kv| v1_anyvalue_to_attribute_value(kv.value).map(|av| (kv.key, av)))
         .collect();
 
     SpanLink::new(v1.trace_id_low, v1.span_id)

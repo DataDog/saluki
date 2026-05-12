@@ -128,7 +128,6 @@ mod tests {
             MetaString::from("root-operation"),
             MetaString::from("root-resource"),
             MetaString::from("web"),
-            trace_id,
             1,       // span_id
             0,       // parent_id
             42,      // start
@@ -141,7 +140,6 @@ mod tests {
             MetaString::from("child-operation"),
             MetaString::from("child-resource"),
             MetaString::from("sql"),
-            trace_id,
             2,      // span_id
             1,      // parent_id
             100,    // start
@@ -149,7 +147,8 @@ mod tests {
             0,      // error
         );
 
-        let trace = Trace::new(vec![root, child]);
+        let mut trace = Trace::new(vec![root, child]);
+        trace.trace_id_low = trace_id;
         (trace, 0)
     }
 

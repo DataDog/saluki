@@ -233,10 +233,6 @@ pub struct Span {
     name: MetaString,
     /// The resource associated with this span.
     resource: MetaString,
-    /// The trace identifier this span belongs to.
-    ///
-    /// Deprecated: trace IDs are moving to `Trace.trace_id_high/low`. Kept for compat.
-    trace_id: u64,
     /// The unique identifier of this span.
     span_id: u64,
     /// The identifier of this span's parent, if any.
@@ -272,15 +268,13 @@ impl Span {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         service: impl Into<MetaString>, name: impl Into<MetaString>, resource: impl Into<MetaString>,
-        span_type: impl Into<MetaString>, trace_id: u64, span_id: u64, parent_id: u64, start: u64, duration: u64,
-        error: i32,
+        span_type: impl Into<MetaString>, span_id: u64, parent_id: u64, start: u64, duration: u64, error: i32,
     ) -> Self {
         Self {
             service: service.into(),
             name: name.into(),
             resource: resource.into(),
             span_type: span_type.into(),
-            trace_id,
             span_id,
             parent_id,
             start,
@@ -305,12 +299,6 @@ impl Span {
     /// Sets the resource name.
     pub fn with_resource(mut self, resource: impl Into<MetaString>) -> Self {
         self.resource = resource.into();
-        self
-    }
-
-    /// Sets the trace identifier.
-    pub fn with_trace_id(mut self, trace_id: u64) -> Self {
-        self.trace_id = trace_id;
         self
     }
 
@@ -350,7 +338,11 @@ impl Span {
         self
     }
 
-    /// Inserts string-valued entries into the attributes map.
+    /// Inserts string-valued entries into the unified attributes map.
+    ///
+    /// Entries are merged into `attributes`; passing `None` is a no-op. Keys must be unique across
+    /// `with_meta`, `with_metrics`, and `with_meta_struct` — a key present in more than one call
+    /// will be overwritten by the last call.
     pub fn with_meta(mut self, meta: impl Into<Option<FastHashMap<MetaString, MetaString>>>) -> Self {
         if let Some(m) = meta.into() {
             for (k, v) in m {
@@ -360,7 +352,11 @@ impl Span {
         self
     }
 
-    /// Inserts float-valued entries into the attributes map.
+    /// Inserts float-valued entries into the unified attributes map.
+    ///
+    /// Entries are merged into `attributes`; passing `None` is a no-op. Keys must be unique across
+    /// `with_meta`, `with_metrics`, and `with_meta_struct` — a key present in more than one call
+    /// will be overwritten by the last call.
     pub fn with_metrics(mut self, metrics: impl Into<Option<FastHashMap<MetaString, f64>>>) -> Self {
         if let Some(m) = metrics.into() {
             for (k, v) in m {
@@ -370,7 +366,11 @@ impl Span {
         self
     }
 
-    /// Inserts bytes-valued entries into the attributes map.
+    /// Inserts bytes-valued entries into the unified attributes map.
+    ///
+    /// Entries are merged into `attributes`; passing `None` is a no-op. Keys must be unique across
+    /// `with_meta`, `with_metrics`, and `with_meta_struct` — a key present in more than one call
+    /// will be overwritten by the last call.
     pub fn with_meta_struct(mut self, meta_struct: impl Into<Option<FastHashMap<MetaString, Vec<u8>>>>) -> Self {
         if let Some(m) = meta_struct.into() {
             for (k, v) in m {
@@ -436,11 +436,6 @@ impl Span {
         self.resource = resource.into();
     }
 
-    /// Returns the trace identifier.
-    pub fn trace_id(&self) -> u64 {
-        self.trace_id
-    }
-
     /// Returns the span identifier.
     pub fn span_id(&self) -> u64 {
         self.span_id
@@ -492,7 +487,7 @@ pub struct SpanLink {
     /// Span identifier for the linked span.
     span_id: u64,
     /// Additional attributes attached to the link.
-    attributes: FastHashMap<MetaString, MetaString>,
+    attributes: FastHashMap<MetaString, AttributeValue>,
     /// W3C tracestate value.
     tracestate: MetaString,
     /// W3C trace flags where the high bit must be set when provided.
@@ -528,7 +523,7 @@ impl SpanLink {
     }
 
     /// Replaces the attributes map.
-    pub fn with_attributes(mut self, attributes: impl Into<Option<FastHashMap<MetaString, MetaString>>>) -> Self {
+    pub fn with_attributes(mut self, attributes: impl Into<Option<FastHashMap<MetaString, AttributeValue>>>) -> Self {
         self.attributes = attributes.into().unwrap_or_default();
         self
     }
@@ -561,7 +556,7 @@ impl SpanLink {
     }
 
     /// Returns the attributes map.
-    pub fn attributes(&self) -> &FastHashMap<MetaString, MetaString> {
+    pub fn attributes(&self) -> &FastHashMap<MetaString, AttributeValue> {
         &self.attributes
     }
 

@@ -509,7 +509,7 @@ impl TraceEndpointEncoder {
                         s.service(span.service())?
                             .name(span.name())?
                             .resource(span.resource())?
-                            .trace_id(span.trace_id())?
+                            .trace_id(trace.trace_id_low)?
                             .span_id(span.span_id())?
                             .parent_id(span.parent_id())?
                             .start(span.start() as i64)?
@@ -551,7 +551,9 @@ impl TraceEndpointEncoder {
                                 {
                                     let mut attrs = sl.attributes();
                                     for (k, v) in link.attributes() {
-                                        attrs.write_entry(&**k, &**v)?;
+                                        if let AttributeValue::String(s) = v {
+                                            attrs.write_entry(&**k, &**s)?;
+                                        }
                                     }
                                 }
                                 let tracestate = link.tracestate().to_string();
@@ -828,12 +830,11 @@ mod tests {
             MetaString::from("op"),
             MetaString::from("res"),
             MetaString::from("web"),
-            1,
-            1,
-            0,
-            0,
-            1000,
-            0,
+            1,    // span_id
+            0,    // parent_id
+            0,    // start
+            1000, // duration
+            0,    // error
         );
         let mut trace = Trace::new(vec![span]);
         trace.priority = Some(1);
@@ -846,7 +847,6 @@ mod tests {
             MetaString::from("op"),
             MetaString::from("res"),
             MetaString::from("web"),
-            1,    // trace_id
             1,    // span_id
             0,    // parent_id
             0,    // start

@@ -100,6 +100,8 @@ fn extract_resource_meta(
         .filter(|s| !s.is_empty())
         .map(|s| MetaString::from_interner(s, interner))
         .unwrap_or_default();
+    // language_version is intentionally not populated for OTLP traces: OTLP has no standardised
+    // attribute for the language runtime version, so we leave it empty rather than guess.
 
     // Build the typed attributes map from all resource attributes.
     let mut attr_map: FastHashMap<MetaString, AttributeValue> = FastHashMap::default();

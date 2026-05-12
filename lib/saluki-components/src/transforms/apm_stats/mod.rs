@@ -491,7 +491,7 @@ mod tests {
         let start = bucket_start - duration;
 
         Span::new(
-            service, "query", resource, "db", 1, span_id, parent_id, start, duration, error,
+            service, "query", resource, "db", span_id, parent_id, start, duration, error,
         )
         .with_meta(meta)
         .with_metrics(metrics)
@@ -502,7 +502,7 @@ mod tests {
         let mut metrics = FastHashMap::default();
         metrics.insert(MetaString::from("_dd.measured"), 1.0);
 
-        Span::new(service, name, resource, "web", 1, 1, 0, 1000000000, 100000000, 0).with_metrics(metrics)
+        Span::new(service, name, resource, "web", 1, 0, 1000000000, 100000000, 0).with_metrics(metrics)
     }
 
     /// Creates a top-level span (parent_id = 0, has _top_level metric)
@@ -572,7 +572,6 @@ mod tests {
             "test-op",
             "test-resource",
             "web",
-            1,
             1,
             0,
             now,
@@ -819,7 +818,7 @@ mod tests {
             // Create a simple top-level span using the same pattern as make_test_span (which works)
             let mut metrics = FastHashMap::default();
             metrics.insert(MetaString::from("_top_level"), 1.0);
-            let span = Span::new("myservice", "query", "GET /users", "web", 1, 1, 0, now, 500, 0).with_metrics(metrics);
+            let span = Span::new("myservice", "query", "GET /users", "web", 1, 0, now, 500, 0).with_metrics(metrics);
 
             let payload_key = PayloadAggregationKey {
                 env: MetaString::from("test"),
@@ -835,7 +834,7 @@ mod tests {
             // Should NOT produce stats when compute_stats_by_span_kind is disabled
             let mut client_meta = FastHashMap::default();
             client_meta.insert(MetaString::from("span.kind"), MetaString::from("client"));
-            let client_span = Span::new("myservice", "postgres.query", "SELECT ...", "db", 1, 2, 1, now, 75, 0)
+            let client_span = Span::new("myservice", "postgres.query", "SELECT ...", "db", 2, 1, now, 75, 0)
                 .with_meta(client_meta);
 
             if let Some(stat_span) = concentrator.new_stat_span_from_span(&client_span) {
@@ -862,7 +861,7 @@ mod tests {
             // Create a simple top-level span
             let mut metrics = FastHashMap::default();
             metrics.insert(MetaString::from("_top_level"), 1.0);
-            let span = Span::new("myservice", "query", "GET /users", "web", 1, 1, 0, now, 500, 0).with_metrics(metrics);
+            let span = Span::new("myservice", "query", "GET /users", "web", 1, 0, now, 500, 0).with_metrics(metrics);
 
             let payload_key = PayloadAggregationKey {
                 env: MetaString::from("test"),
@@ -878,7 +877,7 @@ mod tests {
             // SHOULD produce stats when compute_stats_by_span_kind is enabled
             let mut client_meta = FastHashMap::default();
             client_meta.insert(MetaString::from("span.kind"), MetaString::from("client"));
-            let client_span = Span::new("myservice", "postgres.query", "SELECT ...", "db", 1, 2, 1, now, 75, 0)
+            let client_span = Span::new("myservice", "postgres.query", "SELECT ...", "db", 2, 1, now, 75, 0)
                 .with_meta(client_meta);
 
             if let Some(stat_span) = concentrator.new_stat_span_from_span(&client_span) {
@@ -914,7 +913,7 @@ mod tests {
             client_meta.insert(MetaString::from("db.system"), MetaString::from("postgres"));
             let mut client_metrics = FastHashMap::default();
             client_metrics.insert(MetaString::from("_dd.measured"), 1.0);
-            let client_span = Span::new("myservice", "postgres.query", "SELECT ...", "db", 1, 2, 1, now, 75, 0)
+            let client_span = Span::new("myservice", "postgres.query", "SELECT ...", "db", 2, 1, now, 75, 0)
                 .with_meta(client_meta)
                 .with_metrics(client_metrics);
 
@@ -955,7 +954,7 @@ mod tests {
             client_meta.insert(MetaString::from("db.system"), MetaString::from("postgres"));
             let mut client_metrics = FastHashMap::default();
             client_metrics.insert(MetaString::from("_dd.measured"), 1.0);
-            let client_span = Span::new("myservice", "postgres.query", "SELECT ...", "db", 1, 2, 1, now, 75, 0)
+            let client_span = Span::new("myservice", "postgres.query", "SELECT ...", "db", 2, 1, now, 75, 0)
                 .with_meta(client_meta)
                 .with_metrics(client_metrics);
 
