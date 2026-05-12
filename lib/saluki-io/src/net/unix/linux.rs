@@ -70,7 +70,7 @@ where
             }
         }
     } else {
-        ProcessIdentity::Error(ProcessCredentialsError::EmptyAncillaryData)
+        ProcessIdentity::Unavailable
     };
 
     let conn_addr = ConnectionAddress::ProcessLike(process_identity);

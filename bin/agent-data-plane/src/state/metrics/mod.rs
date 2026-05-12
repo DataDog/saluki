@@ -343,20 +343,6 @@ pub fn render_telemetry(
     renderer.output().to_string()
 }
 
-/// Renders the RAR-relevant subset of internal metrics in Prometheus text exposition format.
-pub fn render_rar_telemetry(
-    state: &AggregatedMetricsState, rules: &[RemapperRule], renderer: &mut PrometheusRenderer,
-) -> String {
-    render_telemetry(state, rules, renderer)
-}
-
-/// Renders ADP telemetry using Core Agent `go_expvar`-compatible metric names.
-pub fn render_compat_telemetry(
-    state: &AggregatedMetricsState, rules: &[RemapperRule], renderer: &mut PrometheusRenderer,
-) -> String {
-    render_telemetry(state, rules, renderer)
-}
-
 fn get_help_text(metric_name: &str) -> Option<&'static str> {
     // The HELP text for overlapped metrics MUST match the agent's HELP text exactly or else an error will occur on the
     // agent's side when parsing the metrics. Keys here use the raw (pre-normalization) metric names as produced by the
@@ -515,7 +501,7 @@ mod tests {
 
         let rules = get_datadog_agent_remappings();
         let mut renderer = PrometheusRenderer::new();
-        let output = render_rar_telemetry(&state, &rules, &mut renderer);
+        let output = render_telemetry(&state, &rules, &mut renderer);
 
         // Matched metrics should appear with remapped names.
         assert!(output.contains("dogstatsd__packet_pool_get "));
@@ -628,7 +614,7 @@ mod tests {
 
         let rules = get_compat_remappings();
         let mut renderer = PrometheusRenderer::new();
-        let output = render_compat_telemetry(&state, &rules, &mut renderer);
+        let output = render_telemetry(&state, &rules, &mut renderer);
 
         assert!(output.contains("dogstatsd_metric_packets 11"));
         assert!(output.contains("dogstatsd_uds_packets 48"));
@@ -758,7 +744,7 @@ mod tests {
 
         let rules = get_datadog_agent_remappings();
         let mut renderer = PrometheusRenderer::new();
-        let output = render_rar_telemetry(&state, &rules, &mut renderer);
+        let output = render_telemetry(&state, &rules, &mut renderer);
 
         // Should only have one dogstatsd__processed series with state="ok" and message_type="metrics",
         // with the summed value of 35.
@@ -821,7 +807,7 @@ mod tests {
 
         let rules = get_datadog_agent_remappings();
         let mut renderer = PrometheusRenderer::new();
-        let output = render_rar_telemetry(&state, &rules, &mut renderer);
+        let output = render_telemetry(&state, &rules, &mut renderer);
 
         assert!(output.contains("datadog__agent__filterlist__size 2"));
         assert!(output.contains("datadog__agent__filterlist__updates 3"));

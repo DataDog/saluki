@@ -212,9 +212,6 @@ pub struct ProcessCredentials {
 #[cfg(unix)]
 #[derive(Clone, Copy)]
 pub enum ProcessCredentialsError {
-    /// The kernel did not provide ancillary data.
-    EmptyAncillaryData,
-
     /// Ancillary data was present but did not contain usable process credentials.
     InvalidCredentials,
 
@@ -226,10 +223,21 @@ pub enum ProcessCredentialsError {
 }
 
 #[cfg(unix)]
+impl ProcessCredentialsError {
+    /// Returns a concise identifier for the failure reason.
+    pub const fn identifier(&self) -> &'static str {
+        match self {
+            Self::InvalidCredentials => "invalid-credentials",
+            Self::ZeroPid => "zero-pid",
+            Self::UnsupportedPlatform => "unsupported-platform",
+        }
+    }
+}
+
+#[cfg(unix)]
 impl fmt::Display for ProcessCredentialsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::EmptyAncillaryData => write!(f, "empty ancillary data"),
             Self::InvalidCredentials => write!(f, "invalid process credentials"),
             Self::ZeroPid => write!(f, "process credential PID is zero"),
             Self::UnsupportedPlatform => write!(f, "process credentials are unsupported on this platform"),
@@ -290,8 +298,8 @@ impl fmt::Display for ConnectionAddress {
                 ProcessIdentity::Credentials(creds) => {
                     write!(f, "<pid={} uid={} gid={}>", creds.pid, creds.uid, creds.gid)
                 }
-                ProcessIdentity::Error(error) => write!(f, "<origin-detection-error: {}>", error),
-                ProcessIdentity::Unavailable => write!(f, "<unbound>"),
+                ProcessIdentity::Error(error) => write!(f, "<origin-detection-error: {}>", error.identifier()),
+                ProcessIdentity::Unavailable => write!(f, "<no-origin>"),
             },
         }
     }

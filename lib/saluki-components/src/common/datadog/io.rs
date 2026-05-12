@@ -5,13 +5,7 @@
 //! - Account for dynamic API key updates when deriving endpoint queue IDs.
 //! - Avoid initializing the process-wide crypto provider from tests.
 
-use std::{
-    collections::VecDeque,
-    error::Error as _,
-    path::PathBuf,
-    sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{collections::VecDeque, error::Error as _, path::PathBuf, sync::Arc, time::Duration};
 
 use bytes::Buf;
 use futures::FutureExt as _;
@@ -19,7 +13,7 @@ use http::{Request, Uri};
 use http_body::Body;
 use http_body_util::BodyExt as _;
 use hyper::{body::Incoming, Response};
-use saluki_common::{hash::hash_single_stable, task::spawn_traced_named};
+use saluki_common::{hash::hash_single_stable, task::spawn_traced_named, time::get_unix_timestamp};
 use saluki_config::GenericConfiguration;
 use saluki_core::components::ComponentContext;
 use saluki_error::{generic_error, GenericError};
@@ -751,20 +745,13 @@ impl<T: Retryable> PendingTransactions<T> {
     }
 
     fn record_incoming_transaction_size(&mut self, bytes: u64) {
-        self.record_incoming_transaction_size_at(bytes, current_unix_time_secs());
+        self.record_incoming_transaction_size_at(bytes, get_unix_timestamp());
     }
 
     fn record_incoming_transaction_size_at(&mut self, bytes: u64, now_secs: u64) {
         let bytes_per_sec = self.incoming_bytes_per_sec.record(now_secs, bytes);
         self.telemetry.record_retry_queue_bytes_per_sec(bytes_per_sec);
     }
-}
-
-fn current_unix_time_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time should be after Unix epoch")
-        .as_secs()
 }
 
 #[cfg(test)]

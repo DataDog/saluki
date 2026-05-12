@@ -23,7 +23,7 @@ use saluki_error::{generic_error, GenericError};
 use tracing::info;
 
 use crate::config::DataPlaneConfiguration;
-use crate::state::metrics::{get_compat_remappings, get_shared_metrics_state, render_compat_telemetry};
+use crate::state::metrics::{get_compat_remappings, get_shared_metrics_state, render_telemetry};
 
 // SAFETY: This value is clearly non-zero.
 const DEFAULT_INTERCONNECT_CAPACITY: NonZeroUsize = NonZeroUsize::new(4).unwrap();
@@ -68,7 +68,7 @@ impl Supervisable for InternalTelemetryWorker {
             let mut renderer = compat_renderer
                 .lock()
                 .expect("compat renderer mutex should not be poisoned");
-            render_compat_telemetry(state, &compat_rules, &mut renderer)
+            render_telemetry(state, &compat_rules, &mut renderer)
         });
         let prometheus_config =
             PrometheusConfiguration::from_listen_address(self.dp_config.telemetry_listen_addr().clone())
