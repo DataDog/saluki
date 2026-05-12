@@ -107,14 +107,13 @@ pub(crate) async fn initialize_logging(
     let (output_layer, stack_handle) = reload::Layer::new(output_stack);
 
     // Set up our log level filtering and dynamic filter layer.
-    let level_filter = config.log_level.as_env_filter();
-    let (filter_layer, filter_handle) = reload::Layer::new(level_filter.clone());
+    let (filter_layer, filter_handle) = reload::Layer::new(config.log_level.as_env_filter());
 
     // The override worker owns the canonical base filter -- the directives the system restores to after an override
-    // expires or is reset. It starts as the bootstrap level and is updated via the controller, both by
-    // `LoggingGuard::reload` once the Agent's configuration is applied and by any other caller (e.g. a runtime
-    // `log_level` watcher) wired up via [`LoggingGuard::controller`].
-    let (override_worker, controller) = LoggingOverrideWorker::new(level_filter, filter_handle);
+    // expires or is reset. It seeds the base from the reload handle on startup and is updated via the controller,
+    // both by `LoggingGuard::reload` once the Agent's configuration is applied and by any other caller (e.g. a
+    // runtime `log_level` watcher) wired up via [`LoggingGuard::controller`].
+    let (override_worker, controller) = LoggingOverrideWorker::new(filter_handle);
 
     tracing_subscriber::registry()
         .with(output_layer.with_filter(filter_layer))
@@ -227,9 +226,8 @@ mod tests {
         let config = logging_config_without_outputs();
         let (output_stack, worker_guards) = build_output_stack(&config).expect("build initial output stack");
         let (output_layer, stack_handle) = reload::Layer::new(output_stack);
-        let level_filter = config.log_level.as_env_filter();
-        let (filter_layer, filter_handle) = reload::Layer::new(level_filter.clone());
-        let (override_worker, controller) = LoggingOverrideWorker::new(level_filter, filter_handle);
+        let (filter_layer, filter_handle) = reload::Layer::new(config.log_level.as_env_filter());
+        let (override_worker, controller) = LoggingOverrideWorker::new(filter_handle);
         let mut guard = LoggingGuard {
             worker_guards,
             stack_handle,
