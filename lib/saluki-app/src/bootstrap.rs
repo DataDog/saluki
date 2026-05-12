@@ -77,4 +77,21 @@ impl AppBootstrapper {
 
         Ok(bootstrap_guard)
     }
+
+    /// Like [`bootstrap`][Self::bootstrap], but skips logging initialization.
+    ///
+    /// Use this when an external tracing subscriber has already been installed (e.g. in tests).
+    /// TLS and metrics are still initialized normally. The returned [`BootstrapGuard`] holds no
+    /// logging guard, so the caller is responsible for the subscriber's lifecycle.
+    ///
+    /// # Errors
+    ///
+    /// If TLS or metrics initialization fails, an error will be returned.
+    pub async fn bootstrap_without_logging(self) -> Result<BootstrapGuard, GenericError> {
+        initialize_tls().error_context("Failed to initialize TLS subsystem.")?;
+        initialize_metrics(self.metrics_config)
+            .await
+            .error_context("Failed to initialize metrics subsystem.")?;
+        Ok(BootstrapGuard::default())
+    }
 }

@@ -70,9 +70,8 @@ pub async fn handle_run_command(
     // Drop the MutexGuard before `.await` to keep the future Send.
     let needs_bootstrap = BOOTSTRAP_GUARD.lock().expect("BOOTSTRAP_GUARD mutex poisoned").is_none();
     if needs_bootstrap {
-        let guard = AppBootstrapper::from_configuration(&config)?
-            .bootstrap()
-            .await?;
+        let bootstrapper = AppBootstrapper::from_configuration(&config)?;
+        let guard = bootstrapper.bootstrap_without_logging().await?;
         *BOOTSTRAP_GUARD.lock().expect("BOOTSTRAP_GUARD mutex poisoned") = Some(guard);
     }
     // simpl: no remote loading, only the local config
