@@ -144,6 +144,15 @@
     "adp_key": null
   },
   {
+    "key": "cmd_port",
+    "feature_state": "PARITY",
+    "action": "NONE",
+    "description": "Datadog Agent IPC/CMD API port",
+    "reason": "Read by RemoteAgentClientConfiguration to build the IPC endpoint URI. Takes precedence over agent_ipc_endpoint when set.",
+    "issue": "#1645",
+    "adp_key": null
+  },
+  {
     "key": "connect_retry_attempts",
     "feature_state": "ADP_ONLY",
     "action": "NONE",

@@ -305,6 +305,7 @@ when the receiving syslog daemon expects the Agent's RFC-style header.
 | `api_key`                                 | API key for endpoint auth        |
 | `auth_token_file_path`                    | IPC auth token file path         |
 | `bind_host`                               | Global listen host fallback      |
+| `cmd_port`                                | Agent IPC/CMD API port           |
 | `container_cgroup_root`                   | Cgroup filesystem root path      |
 | `container_proc_root`                     | Procfs root path for containers  |
 | `cri_socket_path`                         | CRI/containerd socket path       |
