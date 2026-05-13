@@ -33,7 +33,7 @@ use crate::{
 };
 
 const POD_NAME: &str = "correctness-pod";
-const FLUSH_WAIT: Duration = Duration::from_secs(30);
+const DEFAULT_K8S_FLUSH_WAIT: Duration = Duration::from_secs(30);
 const POD_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const POD_READY_TIMEOUT: Duration = Duration::from_secs(120);
 // Allow enough time for millstone to finish sending all metrics plus a buffer.
@@ -291,8 +291,9 @@ pub async fn run_k8s_correctness_test(name: String, config: Config, tctx: TestCo
         return make_error_result(name, started, "millstone_exit", cleanup(e).await);
     }
 
-    debug!("Millstone completed. Waiting {:?} for flush...", FLUSH_WAIT);
-    sleep(FLUSH_WAIT).await;
+    let flush_wait = Duration::from_secs(config.flush_wait_secs).max(DEFAULT_K8S_FLUSH_WAIT);
+    debug!("Millstone completed. Waiting {:?} for flush...", flush_wait);
+    sleep(flush_wait).await;
 
     // Phase 5: Collect data from both agent pods in parallel.
     let (baseline_result, comparison_result) = tokio::join!(

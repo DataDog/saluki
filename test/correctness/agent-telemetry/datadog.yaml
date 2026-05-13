@@ -1,0 +1,71 @@
+# Using a fixed hostname is both required to avoid errors, and also will ensure consistent tags between DSD/ADP.
+hostname: "correctness-testing"
+
+# Dummy API key.
+api_key: dummy-api-key-correctness-testing
+
+# We have to specifically configure the health port to use.
+health_port: 5555
+
+# Point ourselves at the datadog-intake service.
+dd_url: "http://datadog-intake:2049"
+
+# Turn off UDP and listen on a UDS socket instead.
+dogstatsd_port: 0
+dogstatsd_socket: /airlock/metrics.sock
+
+# Ensure origin detection is disabled since we can't support it with ADP in standalone mode.
+dogstatsd_origin_detection: false
+
+# Gauges can be processed out-of-order when multiple workers are used, while ADP does not use multiple workers, so ADP
+# always ends up with the correct (last seen) value, while DSD might return the last seen value... or the value seen
+# four updates ago, etc etc.
+dogstatsd_workers_count: 1
+
+# Allow the agent to connect to our self-signed HTTPS listener without certificate validation.
+# This is required because the agenttelemetry sender always uses HTTPS regardless of the configured URL scheme.
+skip_ssl_validation: true
+
+# Route agent telemetry to our local intake's HTTPS listener (port 2050) instead of the default
+# instrumentation-telemetry-intake endpoint. The intake's TLS proxy decrypts the connection and
+# forwards to the plain HTTP intake on port 2049.
+#
+# The profile below is scoped to the forwarder metrics most relevant for ADP correctness testing.
+# Both the baseline (plain agent) and comparison (agent + ADP) should emit these, so any gap
+# surfaces a real difference in how ADP integrates with the agent's telemetry component.
+agent_telemetry:
+  enabled: true
+  logs_dd_url: "https://datadog-intake:2050"
+  profiles:
+    - name: adp-forwarder
+      metric:
+        metrics:
+          - name: point.sent
+          - name: point.dropped
+          - name: transactions.input_count
+          - name: transactions.dropped
+          - name: transactions.success
+            aggregate_tags:
+              - domain
+              - endpoint
+          - name: transactions.errors
+            aggregate_tags:
+              - domain
+              - endpoint
+              - error_type
+          - name: transactions.http_errors
+            aggregate_tags:
+              - code
+              - endpoint
+      schedule:
+        # Fire 67 seconds after agent start, chosen to land between the aggregator's 15-second
+        # flush boundaries. The aggregator (DefaultFlushInterval = 15s) first flushes at ~t=16s
+        # (driven by when the first check/DogStatsD data arrives) and then every 15s after that:
+        # t≈16, 31, 46, 61, 76, 91... The snapshot at t=67 sits safely between the flush at
+        # ~t=61 and the next at ~t=76, so it always captures exactly 4 complete flush cycles with
+        # no race condition. flush_wait_secs in config.yaml is 90s so data is collected at ~t=116s.
+        start_after: 67
+        # Exactly one snapshot per test run. With period: 900 the next firing would be at
+        # t=967s — well outside the test window — but iterations: 1 makes the intent explicit.
+        iterations: 1
+        period: 900

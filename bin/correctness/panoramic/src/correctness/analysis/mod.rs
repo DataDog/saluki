@@ -1,6 +1,7 @@
 use saluki_error::GenericError;
 use serde::Deserialize;
 
+mod agent_telemetry;
 mod collected;
 pub use self::collected::CollectedData;
 
@@ -13,6 +14,13 @@ mod traces;
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AnalysisMode {
+    /// Compares agent telemetry payloads between the baseline and comparison targets.
+    ///
+    /// Checks that both targets report the same set of metric names via the `agenttelemetry`
+    /// component. Requires the agent to be configured with `agent_telemetry.logs_dd_url` pointing
+    /// to the intake's HTTPS listener (port 2050) and `skip_ssl_validation: true`.
+    AgentTelemetry,
+
     /// Compares events between the baseline and comparison targets.
     Events,
 
@@ -67,6 +75,10 @@ impl AnalysisRunner {
     /// an error is returned alongside the full list of mismatch details (for log output).
     pub fn run_analysis(self) -> Result<(), (GenericError, Vec<String>)> {
         match self.mode {
+            AnalysisMode::AgentTelemetry => {
+                let analyzer = agent_telemetry::AgentTelemetryAnalyzer::new(&self.baseline_data, &self.comparison_data);
+                analyzer.run_analysis()
+            }
             AnalysisMode::Events => {
                 let analyzer = events::EventsAnalyzer::new(&self.baseline_data, &self.comparison_data);
                 analyzer.run_analysis()
