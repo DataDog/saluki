@@ -488,6 +488,20 @@ mod tests {
                 Context::from_static_parts("adp.object_pool_in_use", &["pool_name:dsd_packet_bufs"]),
                 7.0,
             )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_data_points_sent_total",
+                    &["domain:https://api.datadoghq.com"],
+                ),
+                12.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_data_points_dropped_total",
+                    &["domain:https://api.datadoghq.com"],
+                ),
+                3.0,
+            )),
             // This metric should NOT appear in output (no matching rule).
             Event::Metric(Metric::counter(
                 Context::from_static_parts("adp.some_unrelated_metric", &[]),
@@ -506,6 +520,12 @@ mod tests {
         // Matched metrics should appear with remapped names.
         assert!(output.contains("dogstatsd__packet_pool_get "));
         assert!(output.contains("dogstatsd__packet_pool "));
+        assert!(
+            output.contains("point__sent{domain=\"https://api.datadoghq.com\",remote_agent=\"agent-data-plane\"} 12")
+        );
+        assert!(
+            output.contains("point__dropped{domain=\"https://api.datadoghq.com\",remote_agent=\"agent-data-plane\"} 3")
+        );
 
         // Unmatched metrics should NOT appear.
         assert!(!output.contains("some_unrelated_metric"));
@@ -513,6 +533,8 @@ mod tests {
         // Should have TYPE headers.
         assert!(output.contains("# TYPE dogstatsd__packet_pool_get counter"));
         assert!(output.contains("# TYPE dogstatsd__packet_pool gauge"));
+        assert!(output.contains("# TYPE point__sent counter"));
+        assert!(output.contains("# TYPE point__dropped counter"));
     }
 
     #[test]

@@ -28,6 +28,11 @@ pub trait EndpointEncoder: std::fmt::Debug {
     /// Returns the maximum size of the uncompressed payload in bytes.
     fn uncompressed_size_limit(&self) -> usize;
 
+    /// Returns the number of metric data points represented by an input.
+    fn input_data_point_count(&self, _input: &Self::Input) -> usize {
+        0
+    }
+
     /// Returns `true` if the given input is valid for this encoder.
     ///
     /// This method has a default implementation that always returns `true`, but can be overridden by specific encoders
@@ -389,7 +394,9 @@ where
     /// # Errors
     ///
     /// If an error occurs while finalizing the compressor or creating the request, an error will be returned.
-    pub async fn flush(&mut self) -> Vec<Result<(usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
+    pub async fn flush(
+        &mut self,
+    ) -> Vec<Result<(usize, usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
         if self.encoded_inputs.is_empty() {
             return vec![];
         }
@@ -417,10 +424,13 @@ where
             return self.split_request().await;
         }
 
+        let data_points_written = self.encoded_data_point_count();
         let inputs_written = self.clear_encoded_inputs();
-        debug!(encoder = E::encoder_name(), endpoint = ?self.encoder.endpoint_uri(), uncompressed_len, compressed_len, inputs_written, "Flushing request.");
+        debug!(encoder = E::encoder_name(), endpoint = ?self.encoder.endpoint_uri(), uncompressed_len, compressed_len, inputs_written, data_points_written, "Flushing request.");
 
-        vec![self.create_request(compressed_buf).map(|req| (inputs_written, req))]
+        vec![self
+            .create_request(compressed_buf)
+            .map(|req| (inputs_written, data_points_written, req))]
     }
 
     /// Internal implementation of `flush`.
@@ -482,9 +492,16 @@ where
         len
     }
 
+    fn encoded_data_point_count(&self) -> usize {
+        self.encoded_inputs
+            .iter()
+            .map(|input| self.encoder.input_data_point_count(input))
+            .sum()
+    }
+
     async fn split_request(
         &mut self,
-    ) -> Vec<Result<(usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
+    ) -> Vec<Result<(usize, usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
         // Nothing to do if we have no encoded inputs.
         let mut requests = Vec::new();
         if self.encoded_inputs.is_empty() {
@@ -545,7 +562,7 @@ where
 
     async fn try_split_request(
         &mut self, inputs: &[E::Input],
-    ) -> Option<Result<(usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
+    ) -> Option<Result<(usize, usize, Request<FrozenChunkedBytesBuffer>), RequestBuilderError<E>>> {
         trace!(
             encoder = E::encoder_name(),
             endpoint = ?self.encoder.endpoint_uri(),
@@ -605,9 +622,14 @@ where
             }));
         }
 
+        let data_points_written = inputs
+            .iter()
+            .map(|input| self.encoder.input_data_point_count(input))
+            .sum();
+
         Some(
             self.create_request(compressed_buf)
-                .map(|request| (inputs.len(), request)),
+                .map(|request| (inputs.len(), data_points_written, request)),
         )
     }
 
@@ -679,7 +701,7 @@ mod tests {
 
         for (request, expected_request_body) in requests.into_iter().zip(expected_request_bodies) {
             let (request, expected_request_body) = match request {
-                Ok((_, request)) => (request, expected_request_body),
+                Ok((_, _data_points, request)) => (request, expected_request_body),
                 Err(e) => panic!("failed to create request: {}", e),
             };
 
@@ -1059,7 +1081,7 @@ mod tests {
             let requests = request_builder.flush().await;
             for request in requests {
                 match request {
-                    Ok((events, _request)) => {
+                    Ok((events, _data_points, _request)) => {
                         flushed_inputs_len += events;
                     }
                     Err(e) => match e {
@@ -1098,7 +1120,7 @@ mod tests {
         let requests = request_builder.flush().await;
         for request in requests {
             match request {
-                Ok((events, _request)) => {
+                Ok((events, _data_points, _request)) => {
                     flushed_inputs_len += events;
                 }
                 Err(e) => match e {

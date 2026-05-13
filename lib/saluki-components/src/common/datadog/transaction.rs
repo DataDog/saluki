@@ -174,12 +174,19 @@ impl<B> From<Vec<u8>> for TransactionBody<B> {
 pub struct Metadata {
     /// Number of events represented by this transaction.
     pub event_count: usize,
+
+    /// Number of metric data points represented by this transaction.
+    #[serde(default)]
+    pub data_point_count: usize,
 }
 
 impl Metadata {
-    /// Create a new `Metadata` instance with the given event count.
-    pub const fn from_event_count(event_count: usize) -> Self {
-        Self { event_count }
+    /// Create a new `Metadata` instance with the given event and data point counts.
+    pub const fn from_event_and_data_point_count(event_count: usize, data_point_count: usize) -> Self {
+        Self {
+            event_count,
+            data_point_count,
+        }
     }
 }
 
@@ -235,6 +242,10 @@ where
     fn event_count(&self) -> u64 {
         self.metadata.event_count as u64
     }
+
+    fn data_point_count(&self) -> u64 {
+        self.metadata.data_point_count as u64
+    }
 }
 
 impl<B> Retryable for Transaction<B>
@@ -252,13 +263,14 @@ mod tests {
 
     use bytes::Buf as _;
     use http::Request;
+    use saluki_io::net::util::retry::EventContainer as _;
 
     use super::{Metadata, Transaction};
 
     #[test]
     fn basic_transaction_ser_deser_roundtrip() {
         // Create a basic transaction with a simple body.
-        let metadata = Metadata::from_event_count(1);
+        let metadata = Metadata::from_event_and_data_point_count(1, 7);
         let body = VecDeque::from("hello, world!".as_bytes().to_vec());
         let request = Request::builder().uri("http://example.com").body(body.clone()).unwrap();
 
@@ -269,6 +281,9 @@ mod tests {
 
         // Check some basic properties.
         assert_eq!(deserialized.metadata.event_count, metadata.event_count);
+        assert_eq!(deserialized.metadata.data_point_count, metadata.data_point_count);
+        assert_eq!(deserialized.event_count(), metadata.event_count as u64);
+        assert_eq!(deserialized.data_point_count(), metadata.data_point_count as u64);
         assert_eq!(deserialized.request.uri(), "http://example.com");
 
         // Clone / drain the request body, and make sure it matches the original body.

@@ -334,7 +334,7 @@ async fn run_request_builder(
 
                     for maybe_request in maybe_requests {
                         match maybe_request {
-                            Ok((events, request)) => {
+                            Ok((events, _data_points, request)) => {
                                 let payload_meta = PayloadMetadata::from_event_count(events);
                                 let http_payload = HttpPayload::new(payload_meta, request);
                                 let payload = Payload::Http(http_payload);
@@ -376,7 +376,7 @@ async fn run_request_builder(
                 let maybe_trace_requests = trace_request_builder.flush().await;
                 for maybe_request in maybe_trace_requests {
                     match maybe_request {
-                        Ok((events, request)) => {
+                        Ok((events, _data_points, request)) => {
                             let payload_meta = PayloadMetadata::from_event_count(events);
                             let http_payload = HttpPayload::new(payload_meta, request);
                             let payload = Payload::Http(http_payload);

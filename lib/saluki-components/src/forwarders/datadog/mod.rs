@@ -150,7 +150,10 @@ impl Forwarder for Datadog {
                 maybe_payload = context.payloads().next() => match maybe_payload {
                     Some(payload) => if let Some(http_payload) = payload.try_into_http_payload() {
                         let (payload_meta, request) = http_payload.into_parts();
-                        let transaction_meta = Metadata::from_event_count(payload_meta.event_count());
+                        let transaction_meta = Metadata::from_event_and_data_point_count(
+                            payload_meta.event_count(),
+                            payload_meta.data_point_count(),
+                        );
                         let transaction = Transaction::from_original(transaction_meta, request);
 
                         forwarder.send_transaction(transaction).await?;
