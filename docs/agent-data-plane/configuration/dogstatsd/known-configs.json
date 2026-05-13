@@ -1458,6 +1458,15 @@
     "adp_key": null
   },
   {
+    "key": "provider_kind",
+    "feature_state": "PARITY",
+    "action": "NONE",
+    "description": "Provider kind static tag",
+    "reason": "Implemented in ADP. Appends provider_kind:<value> as a static tag to all DogStatsD metrics when set via DD_PROVIDER_KIND.",
+    "issue": "#1640",
+    "adp_key": null
+  },
+  {
     "key": "proxy",
     "feature_state": "PARITY",
     "action": "NONE",
